@@ -7,6 +7,8 @@ package licenseservice
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,6 +39,32 @@ type testSetup struct {
 	publicKey  ed25519.PublicKey
 }
 
+func testServiceIntermediateCert(t *testing.T, intermediatePub ed25519.PublicKey) []byte {
+	t.Helper()
+	_, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(root): %v", err)
+	}
+	now := time.Now().UTC()
+	im, err := license.SignIntermediate(license.IntermediatePayload{
+		Serial:    "im_service_test",
+		Purpose:   license.PurposeLicenseSigning,
+		Algorithm: license.AlgorithmEd25519,
+		PublicKey: hex.EncodeToString(intermediatePub),
+		NotBefore: now.Add(-time.Minute).Unix(),
+		NotAfter:  now.Add(time.Hour).Unix(),
+		IssuedAt:  now.Add(-time.Minute).Unix(),
+	}, rootPriv)
+	if err != nil {
+		t.Fatalf("SignIntermediate: %v", err)
+	}
+	data, err := json.Marshal(im)
+	if err != nil {
+		t.Fatalf("Marshal intermediate: %v", err)
+	}
+	return data
+}
+
 // newTestSetup creates a complete test environment. The Polar mock returns
 // the subscription set via setPolarResponse. The email mock always succeeds.
 func newTestSetup(t *testing.T) *testSetup {
@@ -48,6 +76,10 @@ func newTestSetup(t *testing.T) *testSetup {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
+	}
+	_, crlPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate CRL key: %v", err)
 	}
 
 	// Default Polar mock: returns an active pro subscription.
@@ -75,6 +107,8 @@ func newTestSetup(t *testing.T) *testSetup {
 		PolarWebhookSecret:  "whsec_" + "dGVzdA==",
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
+		IntermediateCert:    testServiceIntermediateCert(t, pub),
+		CRLPrivateKey:       crlPriv,
 		ResendAPIKey:        "re_" + "test_key",
 		DBPath:              ":memory:",
 		LedgerPath:          filepath.Join(t.TempDir(), "test.jsonl"),
@@ -1052,6 +1086,62 @@ func TestNewWebhookHandler_InitializesFoundingCount(t *testing.T) {
 	}
 }
 
+func TestNewWebhookHandler_RejectsIntermediateSigningKeyMismatch(t *testing.T) {
+	db := openTestDB(t)
+	ledger, _ := openTestLedger(t)
+
+	certPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(cert): %v", err)
+	}
+	_, signingPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(signing): %v", err)
+	}
+
+	cfg := &Config{
+		IntermediateCert:    testServiceIntermediateCert(t, certPub),
+		FoundingProCap:      50,
+		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+	}
+	polar := NewPolarClient("token", "http://localhost")
+	email := NewEmailSender("key", "from@test.com")
+
+	_, err = NewWebhookHandler(cfg, db, polar, email, ledger, signingPriv, zerolog.Nop())
+	if err == nil {
+		t.Fatal("expected intermediate/signing key mismatch error")
+	}
+	if !strings.Contains(err.Error(), "intermediate certificate public key does not match") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewWebhookHandler_RejectsMalformedIntermediate(t *testing.T) {
+	db := openTestDB(t)
+	ledger, _ := openTestLedger(t)
+
+	_, signingPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(signing): %v", err)
+	}
+
+	cfg := &Config{
+		IntermediateCert:    []byte("{bad json"),
+		FoundingProCap:      50,
+		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+	}
+	polar := NewPolarClient("token", "http://localhost")
+	email := NewEmailSender("key", "from@test.com")
+
+	_, err = NewWebhookHandler(cfg, db, polar, email, ledger, signingPriv, zerolog.Nop())
+	if err == nil {
+		t.Fatal("expected malformed intermediate error")
+	}
+	if !strings.Contains(err.Error(), "parse intermediate certificate public key") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestHandleEvent_BadSubscriptionID(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()
@@ -1204,6 +1294,61 @@ func TestProcessSubscription_RevokesAllUnexpiredIssuedLicenses(t *testing.T) {
 		if revoked.Reason != "" {
 			t.Fatalf("public CRL should omit reason, got %+v", revoked)
 		}
+	}
+}
+
+// TestSignedCRL_NoSigningKeyFailsClosed proves SignedCRL refuses to produce a
+// CRL when the dedicated CRL signing key is absent. The token signing key
+// (h.privateKey, the intermediate key) must never be reused to sign CRLs:
+// clients verify CRLs against the ROOT key, so an intermediate-signed CRL would
+// be silently rejected. Failing closed here surfaces the misconfiguration
+// instead of emitting an unverifiable CRL.
+func TestSignedCRL_NoSigningKeyFailsClosed(t *testing.T) {
+	ts := newTestSetup(t)
+	ts.handler.cfg.CRLPrivateKey = nil
+
+	_, err := ts.handler.SignedCRL(t.Context(), time.Now())
+	if err == nil {
+		t.Fatal("SignedCRL must fail closed when CRL signing key is not configured")
+	}
+	if !strings.Contains(err.Error(), "CRL signing key not configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSignedCRL_UsesDedicatedSigningKey(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	crlPub, crlPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(CRL): %v", err)
+	}
+	ts.handler.cfg.CRLPrivateKey = crlPriv
+
+	if err := ts.db.UpsertLicenseRevocation(ctx, RevokedLicenseRecord{
+		LicenseID:      "lic_dedicated_crl_key",
+		SubscriptionID: "sub_dedicated_crl_key",
+		Reason:         "subscription_canceled",
+		RevokedAt:      now,
+	}); err != nil {
+		t.Fatalf("UpsertLicenseRevocation: %v", err)
+	}
+
+	crl, err := ts.handler.SignedCRL(ctx, now)
+	if err != nil {
+		t.Fatalf("SignedCRL: %v", err)
+	}
+	data, err := json.Marshal(crl)
+	if err != nil {
+		t.Fatalf("Marshal CRL: %v", err)
+	}
+	if _, err := license.ParseAndVerifyCRL(data, crlPub, now); err != nil {
+		t.Fatalf("CRL should verify with dedicated CRL key: %v", err)
+	}
+	if _, err := license.ParseAndVerifyCRL(data, ts.publicKey, now); err == nil {
+		t.Fatal("CRL unexpectedly verified with token signing key")
 	}
 }
 

@@ -1993,6 +1993,23 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						a2aResult.Reason = cardResult.Reason
 					}
 				}
+				// Positive attestation: emit an allow receipt when the card's
+				// signature verified against a trusted, origin-scoped key.
+				if cardResult.SignatureVerified {
+					pattern := "verified key_id=" + cardResult.SignatureKeyID
+					p.logger.LogAnomaly(actx, scannerLabelA2ACardSignature, pattern, 0)
+					p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionAllow,
+						Layer:     scannerLabelA2ACardSignature,
+						Pattern:   pattern,
+						Transport: "forward",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: requestID,
+						Agent:     agent,
+					}))
+				}
 			} else {
 				a2aResult = mcp.ScanA2AResponseBody(r.Context(), respBody, sc, &cfg.A2AScanning)
 			}

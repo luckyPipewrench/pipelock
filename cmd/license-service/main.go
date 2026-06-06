@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/licenseservice"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/rs/zerolog"
 )
@@ -46,13 +47,30 @@ func run(log zerolog.Logger) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Load the Ed25519 private key for signing license tokens.
-	// Uses the same key format as `pipelock license keygen`.
+	// Load the Ed25519 intermediate private key for signing license tokens.
+	// Uses the same key format as `pipelock license keygen`; the offline root
+	// key signs only the intermediate certificate and never runs in this service.
 	privateKey, err := signing.LoadPrivateKeyFile(cfg.PrivateKeyPath)
 	if err != nil {
 		return fmt.Errorf("load signing key: %w", err)
 	}
 	log.Info().Str("key_path", cfg.PrivateKeyPath).Msg("signing key loaded")
+
+	intermediateCert, err := license.LoadIntermediateCertFile(cfg.IntermediateCertPath)
+	if err != nil {
+		return fmt.Errorf("load intermediate certificate: %w", err)
+	}
+	cfg.IntermediateCert = intermediateCert
+	log.Info().Str("cert_path", cfg.IntermediateCertPath).Msg("intermediate certificate loaded")
+
+	if cfg.CRLSigningKeyPath != "" {
+		crlKey, err := signing.LoadPrivateKeyFile(cfg.CRLSigningKeyPath)
+		if err != nil {
+			return fmt.Errorf("load CRL signing key: %w", err)
+		}
+		cfg.CRLPrivateKey = crlKey
+		log.Info().Str("key_path", cfg.CRLSigningKeyPath).Msg("CRL signing key loaded")
+	}
 
 	// Open SQLite entitlement database (runs migrations).
 	db, err := licenseservice.OpenEntitlementDB(context.Background(), cfg.DBPath)

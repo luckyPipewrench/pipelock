@@ -297,12 +297,13 @@ func TestPrintLicenseStatusVariants(t *testing.T) {
 		DaysRemaining:  7,
 		WarningBand:    7,
 		Severity:       "warn",
+		Intermediate:   true,
 		CRLConfigured:  true,
 		CRLExpiresAt:   "2026-06-02",
 		CRLSHA256:      "abc123",
 	})
 	out := buf.String()
-	for _, want := range []string{"lic_print", "Warning:", "CRL SHA:"} {
+	for _, want := range []string{"lic_print", "Warning:", "Chain:", "CRL SHA:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}

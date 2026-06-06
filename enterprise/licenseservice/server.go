@@ -66,6 +66,7 @@ func NewServer(
 
 	s.mux.HandleFunc("POST /webhook/polar", s.handleWebhook)
 	s.mux.HandleFunc(http.MethodGet+" /crl.json", s.handleCRL)
+	s.mux.HandleFunc(http.MethodGet+" /intermediate.json", s.handleIntermediate)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 
 	s.srv = &http.Server{
@@ -78,6 +79,28 @@ func NewServer(
 	}
 
 	return s
+}
+
+// handleIntermediate returns the root-signed intermediate certificate used to
+// verify tokens minted by this service.
+func (s *Server) handleIntermediate(w http.ResponseWriter, _ *http.Request) {
+	if len(s.cfg.IntermediateCert) == 0 {
+		http.Error(w, "intermediate certificate not configured", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(s.cfg.IntermediateCert); err != nil {
+		s.log.Error().Err(err).Msg("write intermediate certificate")
+		return
+	}
+	// The early return above guarantees IntermediateCert is non-empty here.
+	if s.cfg.IntermediateCert[len(s.cfg.IntermediateCert)-1] != '\n' {
+		if _, err := w.Write([]byte("\n")); err != nil {
+			s.log.Error().Err(err).Msg("write intermediate certificate newline")
+		}
+	}
 }
 
 // ListenAndServe starts the HTTP server. Blocks until the server is shut down.

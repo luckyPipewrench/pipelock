@@ -245,6 +245,26 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "A2A Agent Card drift detection disabled",
 		})
 	}
+	// Signature-verification downgrades only matter while A2A scanning is on; if
+	// it is being disabled the top-level "A2A scanning disabled" warning covers it.
+	if updated.A2AScanning.Enabled {
+		if old.A2AScanning.RequireSignedAgentCards && !updated.A2AScanning.RequireSignedAgentCards {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "a2a_scanning.require_signed_agent_cards",
+				Message: "A2A require-signed-agent-cards disabled",
+			})
+		}
+		// Removing a trusted key is revocation (stricter), not a downgrade, so a
+		// count decrease must NOT warn — that would block emergency key revocation
+		// under strict-mode reload. The genuine weakening is verification turning
+		// off: the trusted-key set going from non-empty to empty.
+		if len(old.A2AScanning.TrustedAgentCardKeys) > 0 && len(updated.A2AScanning.TrustedAgentCardKeys) == 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "a2a_scanning.trusted_agent_card_keys",
+				Message: "A2A trusted Agent Card keys removed (signature verification disabled)",
+			})
+		}
+	}
 	if old.A2AScanning.SessionSmugglingDetection && !updated.A2AScanning.SessionSmugglingDetection {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "a2a_scanning.session_smuggling_detection",

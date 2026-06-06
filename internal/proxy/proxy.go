@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -334,15 +335,16 @@ type Proxy struct {
 	approver            *hitl.Approver
 	a2aCardBaseline     *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs          capture.CaptureObserver
-	recorder            *recorder.Recorder                // flight recorder for tamper-evident evidence (nil = disabled)
-	receiptEmitterPtr   atomic.Pointer[receipt.Emitter]   // action receipt emitter (nil = disabled)
-	receiptKeyPath      string                            // active signing key path, for reload comparison
-	envelopeEmitterPtr  atomic.Pointer[envelope.Emitter]  // mediation envelope emitter (nil = disabled)
-	envelopeVerifierPtr atomic.Pointer[envelope.Verifier] // inbound mediation envelope verifier (nil = disabled)
-	shieldEngine        *shield.Engine                    // browser shield HTML/JS rewriter (nil = not initialized)
-	frozenTools         *FrozenToolRegistry               // frozen tool inventories for airlock hard tier
-	wd                  *health.Watchdog                  // wedge-detection watchdog (nil = disabled)
-	probeInflight       atomic.Bool                       // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
+	recorder            *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
+	receiptEmitterPtr   atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
+	v2EmitterPtr        atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
+	receiptKeyPath      string                                // active signing key path, for reload comparison
+	envelopeEmitterPtr  atomic.Pointer[envelope.Emitter]      // mediation envelope emitter (nil = disabled)
+	envelopeVerifierPtr atomic.Pointer[envelope.Verifier]     // inbound mediation envelope verifier (nil = disabled)
+	shieldEngine        *shield.Engine                        // browser shield HTML/JS rewriter (nil = not initialized)
+	frozenTools         *FrozenToolRegistry                   // frozen tool inventories for airlock hard tier
+	wd                  *health.Watchdog                      // wedge-detection watchdog (nil = disabled)
+	probeInflight       atomic.Bool                           // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
 }
 
 // Option configures optional Proxy behavior.
@@ -382,6 +384,18 @@ func WithRecorder(rec *recorder.Recorder) Option {
 // recorder. Pass nil to disable (default).
 func WithReceiptEmitter(e *receipt.Emitter) Option {
 	return func(p *Proxy) { p.receiptEmitterPtr.Store(e) }
+}
+
+// WithV2ReceiptEmitter sets the v2 proxy_decision emitter. When non-nil, the
+// proxy dual-emits a signed EvidenceReceipt v2 proxy_decision alongside every v1
+// action receipt the proxy emit path produces (fetch, forward, CONNECT,
+// intercept, WebSocket, reverse, and MCP-over-HTTP that transits the proxy).
+// The standalone MCP proxy emits v1 on a separate path (internal/mcp
+// EmitMCPDecision) that this does NOT cover; that surface is a follow-up. Pass
+// nil to disable (default). v2 emission is gated on the same receipt intent as
+// v1 (flight recorder + signing key); no separate config flag.
+func WithV2ReceiptEmitter(e *proxydecision.Emitter) Option {
+	return func(p *Proxy) { p.v2EmitterPtr.Store(e) }
 }
 
 // WithReceiptKeyPath sets the initial signing key path for reload comparison.
@@ -952,15 +966,18 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested.
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
-	e := p.receiptEmitterPtr.Load()
-	if e == nil {
-		return
-	}
-	if err := e.Emit(opts); err != nil {
-		p.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-			fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
-				opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
-				opts.Transport, opts.Method, opts.Target, opts.Agent, err))
+	if e := p.receiptEmitterPtr.Load(); e != nil {
+		if err := e.Emit(opts); err != nil {
+			p.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
+				fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
+					opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
+					opts.Transport, opts.Method, opts.Target, opts.Agent, err))
+			// v1 stays authoritative: skip v2 when v1 failed to record, so a
+			// proxy_decision never outlives its action_receipt sibling.
+			return
+		}
+		// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
+		p.emitV2Receipt(opts)
 	}
 }
 
@@ -975,6 +992,10 @@ type receiptEmitterStage struct {
 	// Store(nil) on publish in that case and also reset receiptKeyPath
 	// to "" via the keyPath field.
 	emitter *receipt.Emitter
+	// v2 is the new v2 proxy_decision emitter, built from the same signing
+	// key as emitter and dual-emitted with it. nil when receipts are
+	// disabled. Published to p.v2EmitterPtr alongside emitter.
+	v2 *proxydecision.Emitter
 	// keyPath is the signing key path that was actually loaded, or ""
 	// when receipts are disabled. The caller assigns this to
 	// p.receiptKeyPath at publish time.
@@ -1017,6 +1038,12 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		return receiptEmitterStage{}, fmt.Errorf("loading receipt signing key %q: %w", keyPath, err)
 	}
 
+	// Carry the v2 chain head forward across reload so the v2 proxy_decision
+	// chain stays continuous within the process when the emitter is rebuilt
+	// (e.g. key rotation). Cross-restart the chain restarts at genesis; the
+	// recorder's outer hash chain provides tamper-evidence across restarts.
+	resumeSeq, resumePrev := p.v2EmitterPtr.Load().ChainState()
+
 	return receiptEmitterStage{
 		emitter: receipt.NewEmitter(receipt.EmitterConfig{
 			Recorder:   p.recorder,
@@ -1024,6 +1051,15 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 			ConfigHash: cfg.Hash(),
 			Principal:  "local",
 			Actor:      "pipelock",
+		}),
+		v2: proxydecision.NewEmitter(proxydecision.EmitterConfig{
+			Recorder:       p.recorder,
+			Signer:         proxydecision.NewKeyedSigner(privKey),
+			Sanitize:       proxydecision.SanitizeFromRedactor(p.recorder.ReceiptRedactor()),
+			Principal:      "local",
+			Actor:          "pipelock",
+			ResumeSeq:      resumeSeq,
+			ResumePrevHash: resumePrev,
 		}),
 		keyPath: keyPath,
 	}, nil
@@ -1227,6 +1263,13 @@ func (p *Proxy) ReceiptEmitterPtr() *atomic.Pointer[receipt.Emitter] {
 	return &p.receiptEmitterPtr
 }
 
+// V2EmitterPtr returns the atomic pointer to the v2 proxy_decision emitter.
+// The reverse proxy uses this to dual-emit v2 receipts and pick up hot-reload
+// changes in parity with ReceiptEmitterPtr.
+func (p *Proxy) V2EmitterPtr() *atomic.Pointer[proxydecision.Emitter] {
+	return &p.v2EmitterPtr
+}
+
 // ContractLoaderPtr returns the atomic pointer to the learn-lock loader.
 // Long-lived runtimes use this to pick up hot-reload contract state changes.
 func (p *Proxy) ContractLoaderPtr() *atomic.Pointer[contractruntime.Loader] {
@@ -1377,9 +1420,11 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// (receipts silently off when no recorder) is preserved.
 	if cfg.FlightRecorder.SigningKeyPath == "" {
 		p.receiptEmitterPtr.Store(nil)
+		p.v2EmitterPtr.Store(nil)
 		p.receiptKeyPath = ""
 	} else if p.recorder != nil {
 		p.receiptEmitterPtr.Store(receiptStage.emitter)
+		p.v2EmitterPtr.Store(receiptStage.v2)
 		p.receiptKeyPath = receiptStage.keyPath
 	}
 

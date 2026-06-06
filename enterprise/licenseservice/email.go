@@ -23,11 +23,12 @@ const (
 
 // licenseEmailData is the render context for the license delivery email.
 type licenseEmailData struct {
-	DisplayName  string
-	Token        string
-	ValidityDays int
-	IsTrial      bool
-	IsEval       bool
+	DisplayName      string
+	Token            string
+	IntermediateCert string
+	ValidityDays     int
+	IsTrial          bool
+	IsEval           bool
 }
 
 // licenseEmailTmpl renders the license delivery email. html/template auto-escapes
@@ -38,6 +39,8 @@ var licenseEmailTmpl = template.Must(template.New("license").Parse(
 <p>Thanks for choosing Pipelock {{.DisplayName}}!</p>
 <p>Your license token (add this to your pipelock config as <code>license_key</code>):</p>
 <pre style="background:#f4f4f4;padding:16px;border-radius:4px;overflow-x:auto;font-size:13px;">{{.Token}}</pre>
+<p>Your intermediate certificate (save as a file and set <code>license_intermediate_file</code> to that path):</p>
+<pre style="background:#f4f4f4;padding:16px;border-radius:4px;overflow-x:auto;font-size:13px;">{{.IntermediateCert}}</pre>
 {{- if .IsTrial}}
 <p>This token is valid for {{.ValidityDays}} days. To continue using Pro features after the trial, subscribe at <a href="https://pipelab.org/pricing/">pipelab.org/pricing</a>.</p>
 {{- else if .IsEval}}
@@ -103,13 +106,13 @@ func tierDisplayName(tier string) string {
 
 // SendLicenseDelivery sends the license token to the customer via email.
 // Returns the Resend message ID on success.
-func (e *EmailSender) SendLicenseDelivery(ctx context.Context, to, licenseToken, tier string) (string, error) {
+func (e *EmailSender) SendLicenseDelivery(ctx context.Context, to, licenseToken, tier, intermediateCert string) (string, error) {
 	displayName := tierDisplayName(tier)
 	subject := fmt.Sprintf("Your Pipelock %s License", displayName)
 
 	// Validity days are derived from the same lifetime constants the issuer uses,
 	// so the email copy can never drift from the actual token lifetime.
-	data := licenseEmailData{DisplayName: displayName, Token: licenseToken}
+	data := licenseEmailData{DisplayName: displayName, Token: licenseToken, IntermediateCert: intermediateCert}
 	switch tier {
 	case tierTrial:
 		data.IsTrial = true

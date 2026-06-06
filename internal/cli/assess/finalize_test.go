@@ -6,6 +6,8 @@ package assess
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,8 +16,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -126,6 +130,63 @@ func TestAssessFinalize_Licensed_AutoSigns(t *testing.T) {
 	// Assert: NO summary files.
 	if _, err := os.Stat(filepath.Join(runDir, "summary.json")); err == nil {
 		t.Error("summary.json should not exist on licensed finalize")
+	}
+}
+
+func TestCheckAssessLicense_IntermediateChain(t *testing.T) {
+	now := time.Now().UTC()
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intermediatePub, intermediatePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	im, err := license.SignIntermediate(license.IntermediatePayload{
+		Serial:    "im_assess_valid",
+		Purpose:   license.PurposeLicenseSigning,
+		Algorithm: license.AlgorithmEd25519,
+		PublicKey: hex.EncodeToString(intermediatePub),
+		NotBefore: now.Add(-time.Minute).Unix(),
+		NotAfter:  now.Add(time.Hour).Unix(),
+		IssuedAt:  now.Add(-time.Minute).Unix(),
+	}, rootPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certData, err := json.Marshal(im)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runDir, cfgFile := initTestRun(t)
+	certPath := filepath.Join(filepath.Dir(cfgFile), "intermediate.json")
+	if err := os.WriteFile(certPath, certData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token, err := license.Issue(license.License{
+		ID:        "lic_assess_intermediate",
+		Email:     "assess@example.com",
+		Features:  []string{license.FeatureAssess},
+		ExpiresAt: now.Add(time.Hour).Unix(),
+	}, intermediatePriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgData := "mode: audit\nlicense_key: " + token + "\nlicense_public_key: " + hex.EncodeToString(rootPub) + "\nlicense_intermediate_file: intermediate.json\n"
+	if err := os.WriteFile(cfgFile, []byte(cfgData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !checkAssessLicense(runDir) {
+		t.Fatal("expected intermediate-signed assess license to be accepted")
+	}
+
+	if err := os.WriteFile(certPath, []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if checkAssessLicense(runDir) {
+		t.Fatal("expected malformed configured intermediate to deny assess license")
 	}
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -75,6 +76,7 @@ type ReverseProxyHandler struct {
 	envelopeEmitterPtr  *atomic.Pointer[envelope.Emitter]
 	envelopeVerifierPtr *atomic.Pointer[envelope.Verifier]
 	receiptEmitterPtr   *atomic.Pointer[receipt.Emitter]
+	v2EmitterPtr        *atomic.Pointer[proxydecision.Emitter]
 	contractLoaderPtr   *atomic.Pointer[contractruntime.Loader]
 	reqPolicyFn         func(requestPolicyInput) requestPolicyResult                 // nil = disabled
 	reqPolicyPrepareFn  func(*http.Request, *requestPolicyInput) requestPolicyResult // nil = no body pre-read
@@ -202,6 +204,13 @@ func (rp *ReverseProxyHandler) SetReceiptEmitter(ptr *atomic.Pointer[receipt.Emi
 	rp.receiptEmitterPtr = ptr
 }
 
+// SetV2ReceiptEmitter sets the atomic pointer to the v2 proxy_decision emitter
+// so reverse-proxy decisions dual-emit v2 receipts in parity with forward /
+// intercept. When unset (or pointing at nil), v2 emission is a no-op.
+func (rp *ReverseProxyHandler) SetV2ReceiptEmitter(ptr *atomic.Pointer[proxydecision.Emitter]) {
+	rp.v2EmitterPtr = ptr
+}
+
 // SetContractLoader sets the atomic pointer to the learn-lock loader.
 func (rp *ReverseProxyHandler) SetContractLoader(ptr *atomic.Pointer[contractruntime.Loader]) {
 	rp.contractLoaderPtr = ptr
@@ -233,19 +242,24 @@ func (rp *ReverseProxyHandler) SetRequestPolicyPrepareFn(fn func(*http.Request, 
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested. Plain RequestID alone is too thin for that.
 func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
-	if rp.receiptEmitterPtr == nil {
-		return
+	if rp.receiptEmitterPtr != nil {
+		if e := rp.receiptEmitterPtr.Load(); e != nil {
+			if err := e.Emit(opts); err != nil {
+				rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
+					fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
+						opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
+						opts.Transport, opts.Method, opts.Target, opts.Agent, err))
+				// v1 stays authoritative: skip v2 when v1 failed to record.
+				return
+			}
+		}
 	}
-	e := rp.receiptEmitterPtr.Load()
-	if e == nil {
-		return
-	}
-	if err := e.Emit(opts); err != nil {
+	// Dual-emit the v2 proxy_decision receipt.
+	emitV2(rp.v2EmitterPtr, opts, func(err error) {
 		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-			fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
-				opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
-				opts.Transport, opts.Method, opts.Target, opts.Agent, err))
-	}
+			fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s transport=%s: %w",
+				opts.ActionID, opts.Verdict, opts.Transport, err))
+	})
 }
 
 func reverseTargetURL(upstream *url.URL, r *http.Request) string {

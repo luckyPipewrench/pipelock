@@ -188,14 +188,17 @@ func allowDecision() HookDecision {
 func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDecision {
 	switch event.HookEventName {
 	case HookPreToolCall:
+		// Outbound: the agent is invoking a tool; arguments may egress.
 		return scanCombined(ctx, sc, extractToolInputText(event.ToolInput),
-			fmt.Sprintf("tool %q arguments", event.ToolName))
+			fmt.Sprintf("tool %q arguments", event.ToolName), directionOutbound)
 	case HookTransformToolResult:
+		// Inbound: a tool result flowing back to the agent.
 		return scanCombined(ctx, sc, extractToolInputText(event.ToolInput),
-			fmt.Sprintf("tool %q result", event.ToolName))
+			fmt.Sprintf("tool %q result", event.ToolName), directionInbound)
 	case HookPreGatewayDispatch:
+		// Inbound: an operator->agent message being dispatched.
 		return scanCombined(ctx, sc, extractToolInputText(event.ToolInput),
-			"inbound gateway dispatch")
+			"inbound gateway dispatch", directionInbound)
 	case HookOnSessionStart, HookOnSessionEnd:
 		// Observer hooks. The current release emits no decision; a follow-up
 		// release may hook these to receipt emission.
@@ -207,16 +210,47 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 	}
 }
 
+// scanDirection classifies a hook event for DLP scan selection.
+//
+//   - directionOutbound: text the agent is SENDING (a tool call's arguments may
+//     egress). Gets the full DLP scan, including the agent's-own-secret exfil
+//     checks (env-var and file-secret value matching) — this is the surface
+//     where a secret actually leaves.
+//   - directionInbound: text the agent is RECEIVING (an operator->agent gateway
+//     dispatch, or a tool result flowing back). Gets injection scanning plus DLP
+//     WITHOUT the exfil checks: a value the agent received is not something it
+//     exfiltrated, so running the exfil checks here only false-positives and
+//     gags normal operation. Generic detectors (regex patterns, seed phrases,
+//     canary, hostname-exfil) still run in both directions.
+type scanDirection int
+
+const (
+	directionOutbound scanDirection = iota
+	directionInbound
+)
+
 // scanCombined applies DLP and response/injection scans to text and returns a
-// block decision on the first finding. Empty text short-circuits to allow:
-// nothing to scan means nothing to flag, and a spurious block on an
-// empty-arguments tool call would be a denial of service.
-func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string) HookDecision {
+// block decision on the first finding. The direction selects the DLP variant
+// (see scanDirection). Empty text short-circuits to allow: nothing to scan
+// means nothing to flag, and a spurious block on an empty-arguments tool call
+// would be a denial of service.
+func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string, dir scanDirection) HookDecision {
 	if strings.TrimSpace(text) == "" {
 		return allowDecision()
 	}
 
-	if dlp := sc.ScanTextForDLP(ctx, text); !dlp.Clean && len(dlp.Matches) > 0 {
+	// Outbound runs the full exfil-aware scan; inbound skips the agent's-own-
+	// secret exfil checks. Exactly one variant runs — calling the full scan for
+	// an inbound event would run the exfil checks and emit warn telemetry before
+	// being discarded. Injection scanning (ScanResponse) runs regardless: a
+	// poisoned tool result or operator message is the real inbound threat.
+	var dlp scanner.TextDLPResult
+	if dir == directionInbound {
+		dlp = sc.ScanTextForDLPInbound(ctx, text)
+	} else {
+		dlp = sc.ScanTextForDLP(ctx, text)
+	}
+	if !dlp.Clean && len(dlp.Matches) > 0 {
 		first := dlp.Matches[0]
 		return blockDecision(fmt.Sprintf("pipelock DLP match on %s: %s (severity=%s)",
 			surface, first.PatternName, first.Severity))

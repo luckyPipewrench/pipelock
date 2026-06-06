@@ -2149,10 +2149,58 @@ func isNonSecretEnvName(name string) bool {
 	return false
 }
 
+// isPathShapedValue reports whether an environment-variable value looks like a
+// multi-component filesystem path (or a colon-separated list of paths) rather
+// than a secret. extractEnvSecrets uses it to keep path-valued variables out of
+// the env-leak matcher set: a path the agent references during normal operation
+// is not an exfiltrated secret, and a deep directory path carries enough Shannon
+// entropy to slip past the entropy filter and become a spurious matcher.
+// Matching is on value SHAPE, not variable name, because the name skip-list is
+// incomplete — it misses HERMES_HOME, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, and
+// any other path-valued variable a deployment introduces.
+//
+// Unix-path-shaped only: a multi-component value beginning with "/" or "~/", or
+// a "/"-prefixed colon list (PATH, LD_LIBRARY_PATH). Windows drive paths are
+// not recognised; pipelock's agent-containment target is Linux. Slash-prefixed
+// opaque tokens are left in the matcher set, as are values containing '+' or '='
+// because those are common in encoded secrets.
+func isPathShapedValue(value string) bool {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return false
+	}
+	if strings.ContainsAny(v, "+=") {
+		return false
+	}
+
+	// Colon-separated list where every element is an absolute path
+	// (PATH-style). Checked first so multi-path lists aren't missed.
+	if strings.Contains(v, ":") {
+		for _, seg := range strings.Split(v, ":") {
+			if seg == "" || !strings.HasPrefix(seg, "/") {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Single absolute or home-relative path. Require at least one directory
+	// separator after the prefix so "/opaque-token-value" stays scannable.
+	if strings.HasPrefix(v, "~/") {
+		rest := strings.TrimPrefix(v, "~/")
+		return strings.Contains(rest, "/") || strings.HasPrefix(rest, ".")
+	}
+	if strings.HasPrefix(v, "/") {
+		return strings.Contains(strings.TrimPrefix(v, "/"), "/")
+	}
+	return false
+}
+
 // extractEnvSecrets filters environment variables for likely secrets.
 // Returns values >= minLen chars with Shannon entropy >3.0.
-// Skips well-known non-secret variable names (PWD, PATH, HOME, etc.)
-// to avoid false positives on paths and locale strings.
+// Skips well-known non-secret variable names (PWD, PATH, HOME, etc.) and
+// path-shaped values (see isPathShapedValue) to avoid false positives on paths
+// and locale strings.
 func extractEnvSecrets(minLen int) []string {
 	const minEntropy = 3.0
 
@@ -2172,6 +2220,13 @@ func extractEnvSecrets(minLen int) []string {
 
 		// Skip well-known non-secret variables (paths, locale, shell config).
 		if isNonSecretEnvName(name) {
+			continue
+		}
+
+		// Skip path-shaped values regardless of variable name. Deep paths
+		// carry high entropy and would otherwise become spurious matchers
+		// that flag the agent's own normal path references as leaks.
+		if isPathShapedValue(value) {
 			continue
 		}
 

@@ -2514,3 +2514,54 @@ func TestScanTextForDLP_BlocksEncodedExfilHostname(t *testing.T) {
 		})
 	}
 }
+
+// TestScanTextForDLPInbound_SkipsEnvLeak proves the direction gate: the
+// agent's-own-secret exfil check fires outbound (ScanTextForDLP) but is skipped
+// inbound (ScanTextForDLPInbound), so a received env value is not a false leak.
+func TestScanTextForDLPInbound_SkipsEnvLeak(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	cfg.DLP.Patterns = nil // isolate env-leak: only the env-secret check can fire
+
+	// High-entropy value that matches no regex pattern and is not path-shaped,
+	// so the ONLY thing that could flag it is the env-secret exfil check.
+	secret := "zQ8xR4kP2" + "mN7wL9vT3jH" // split to satisfy gosec G101
+	t.Setenv("PIPELOCK_TEST_INBOUND_SECRET", secret)
+	s := New(cfg)
+
+	carrier := "operator note: the value is " + secret + " please proceed"
+	ctx := context.Background()
+
+	// Outbound: the exfil check runs and flags the leak.
+	if out := s.ScanTextForDLP(ctx, carrier); out.Clean || len(out.Matches) == 0 {
+		t.Fatalf("ScanTextForDLP (outbound) should flag the env-secret leak, got Clean=%v matches=%v", out.Clean, out.Matches)
+	}
+
+	// Inbound: the exfil check is skipped, so the same received value is clean.
+	if in := s.ScanTextForDLPInbound(ctx, carrier); !in.Clean {
+		t.Fatalf("ScanTextForDLPInbound must NOT flag a received env value, got matches=%v", in.Matches)
+	}
+}
+
+// TestScanTextForDLPInbound_StillCatchesGenericDLP proves the gate is narrow:
+// only the exfil-class env/file-secret checks are direction-scoped. Generic
+// regex pattern DLP still runs inbound (a real secret pattern in a tool result
+// is still caught).
+func TestScanTextForDLPInbound_StillCatchesGenericDLP(t *testing.T) {
+	s := New(testConfig()) // default DLP patterns enabled
+
+	// An Anthropic-key-shaped value (same construction as the existing pattern
+	// tests, so it reliably matches a default regex pattern and is not a
+	// redacted documentation example). This is a regex DLP pattern, not an
+	// exfil-class check, so it must fire on inbound too.
+	key := testAnthropicPrefix + strings.Repeat("A", 10)
+	carrier := "tool result payload: " + key
+	ctx := context.Background()
+
+	if out := s.ScanTextForDLP(ctx, carrier); out.Clean {
+		t.Fatalf("baseline: ScanTextForDLP should flag the Anthropic key pattern, got clean")
+	}
+	if in := s.ScanTextForDLPInbound(ctx, carrier); in.Clean {
+		t.Fatalf("ScanTextForDLPInbound must still run generic pattern DLP, got clean for key pattern")
+	}
+}

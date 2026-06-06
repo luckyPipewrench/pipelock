@@ -249,6 +249,8 @@ func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
 					fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
 						opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
 						opts.Transport, opts.Method, opts.Target, opts.Agent, err))
+				// v1 stays authoritative: skip v2 when v1 failed to record.
+				return
 			}
 		}
 	}

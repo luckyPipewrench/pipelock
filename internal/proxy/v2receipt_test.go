@@ -382,7 +382,9 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
-	p.Reload(reloadCfg, scanner.New(reloadCfg))
+	if !p.Reload(reloadCfg, scanner.New(reloadCfg)) {
+		t.Fatal("Reload returned false")
+	}
 
 	if p.v2EmitterPtr.Load() == nil {
 		t.Fatal("v2 emitter nil after reload with signing key")
@@ -420,5 +422,39 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 	}
 	if v2s[1].ChainPrevHash != h0 {
 		t.Errorf("post-reload receipt ChainPrevHash = %q, want %q (chain broke across reload)", v2s[1].ChainPrevHash, h0)
+	}
+}
+
+// TestDualEmit_V1FailureSkipsV2 proves v1 stays authoritative: when the v1
+// emitter rejects (here, a sealed chain), no v2 proxy_decision is written, so a
+// v2 receipt never outlives its v1 action_receipt sibling.
+func TestDualEmit_V1FailureSkipsV2(t *testing.T) {
+	f := newDualEmitFixture(t, false)
+	v1 := f.p.receiptEmitterPtr.Load()
+	// Seed one v1 receipt directly (no v2) so the chain is non-empty, then seal
+	// it. A sealed chain makes the next v1 Emit return ErrChainSealed.
+	if err := v1.Emit(receipt.EmitOpts{
+		ActionID: "seed", Transport: TransportForward, Method: "GET",
+		Target: "https://x.example/seed", Verdict: "allow",
+	}); err != nil {
+		t.Fatalf("seed Emit: %v", err)
+	}
+	if err := v1.EmitTranscriptRoot("proxy"); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+
+	// This decision's v1 Emit fails (sealed); v2 must be skipped.
+	f.p.emitReceipt(receipt.EmitOpts{
+		ActionID: "a1", Transport: TransportForward, Method: "GET",
+		Target: "https://x.example/a", Verdict: "block",
+		Layer: "dlp", Pattern: "inj", RequestID: "r1",
+	})
+	if err := f.rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	for _, e := range readRecorderEntries(t, f.dir) {
+		if e.Type == "evidence_receipt" && e.EventKind == string(contractreceipt.PayloadProxyDecision) {
+			t.Error("v2 proxy_decision emitted after v1 failed; v1 must stay authoritative")
+		}
 	}
 }

@@ -145,12 +145,18 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) {
 	ic.Proxy.reloadMu.RLock()
 	e := ic.Proxy.receiptEmitterPtr.Load()
 	ic.Proxy.reloadMu.RUnlock()
-	if e == nil {
-		return
+	if e != nil {
+		if err := e.Emit(opts); err != nil && ic.Logger != nil {
+			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+		}
 	}
-	if err := e.Emit(opts); err != nil && ic.Logger != nil {
-		ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
-	}
+	// Dual-emit the v2 proxy_decision receipt. The atomic load is current at
+	// call time so long-lived tunnels pick up the post-reload emitter.
+	emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
+		if ic.Logger != nil {
+			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+		}
+	})
 }
 
 // interceptReadHeaderTimeout is the maximum time to read request headers on an

@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -454,6 +455,21 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				proxyOpts = append(proxyOpts, proxy.WithReceiptKeyPath(cfg.FlightRecorder.SigningKeyPath))
 			}
 			_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: enabled (action receipts signed)\n")
+
+			// v2 proxy_decision emitter: dual-emitted alongside the v1 action
+			// receipt on every proxy decision, signed with the same key and
+			// gated on the same receipt intent (no separate flag). Sanitizes
+			// targets with the recorder's redactor (#676) before signing.
+			if v2Emitter := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+				Recorder:  rec,
+				Signer:    proxydecision.NewKeyedSigner(recPrivKey),
+				Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
+				Principal: "local",
+				Actor:     "pipelock",
+			}); v2Emitter != nil {
+				proxyOpts = append(proxyOpts, proxy.WithV2ReceiptEmitter(v2Emitter))
+				_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: v2 proxy_decision dual-emit enabled\n")
+			}
 		}
 
 		_, _ = fmt.Fprintf(opts.Stderr, "  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)

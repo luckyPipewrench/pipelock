@@ -161,19 +161,47 @@ type TextDLPResult struct {
 	InformationalMatches []TextDLPMatch `json:"informational_matches,omitempty"` // warn-mode matches (non-blocking)
 }
 
+// textDLPOptions tunes a text-DLP scan. emitWarns controls warn-hook telemetry.
+// scanSecretLeak controls whether the agent's-own-secret exfil checks run —
+// the environment-variable and file-secret value matchers. Those checks detect
+// a secret VALUE the proxy holds (env or secrets-file) appearing in the text,
+// which only indicates exfiltration when the text is OUTBOUND. Callers scanning
+// inbound content (operator->agent messages, tool results flowing back) set it
+// false: a value the agent is receiving is not a leak, and matching it there
+// produces false positives that gag normal operation. Generic detectors
+// (regex patterns, seed phrases, canary tokens, hostname-exfil) are unaffected
+// and run in both directions.
+type textDLPOptions struct {
+	emitWarns      bool
+	scanSecretLeak bool
+}
+
 // ScanTextForDLP checks arbitrary text for DLP pattern matches and env secret leaks.
 // Unlike checkDLP (which operates on URLs), this method works on raw text strings
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
+// This is the full OUTBOUND scan: it runs the agent's-own-secret exfil checks.
 func (s *Scanner) ScanTextForDLP(ctx context.Context, text string) TextDLPResult {
-	return s.scanTextForDLP(ctx, text, true)
+	return s.scanTextForDLP(ctx, text, textDLPOptions{emitWarns: true, scanSecretLeak: true})
 }
 
 // ScanTextForDLPQuiet runs the same text-DLP detection logic as ScanTextForDLP
 // but suppresses warn-hook emission. Callers use this when they need to compare
 // multiple related scans without duplicating warn telemetry.
 func (s *Scanner) ScanTextForDLPQuiet(ctx context.Context, text string) TextDLPResult {
-	return s.scanTextForDLP(ctx, text, false)
+	return s.scanTextForDLP(ctx, text, textDLPOptions{emitWarns: false, scanSecretLeak: true})
+}
+
+// ScanTextForDLPInbound runs text DLP for INBOUND content — text the agent is
+// receiving rather than sending (operator->agent messages, tool results flowing
+// back). It runs the full pattern / seed / canary / hostname-exfil detection but
+// SKIPS the agent's-own-secret exfil checks (environment-variable and
+// file-secret value matching). Those only indicate exfiltration on an outbound
+// surface; on inbound content the same value appearing is legitimately-received
+// data, not a leak, and scanning for it false-positives. Exfil protection is
+// untouched: the outbound surfaces still call ScanTextForDLP.
+func (s *Scanner) ScanTextForDLPInbound(ctx context.Context, text string) TextDLPResult {
+	return s.scanTextForDLP(ctx, text, textDLPOptions{emitWarns: true, scanSecretLeak: false})
 }
 
 // EmitTextDLPWarnMatches replays the warn hook for the provided informational
@@ -197,7 +225,7 @@ func (s *Scanner) EmitTextDLPWarnMatches(ctx context.Context, matches []TextDLPM
 	s.emitDLPWarns(ctx, deduplicateWarnMatches(warns))
 }
 
-func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns bool) TextDLPResult {
+func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPOptions) TextDLPResult {
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
 
 	// Core DLP runs FIRST - immutable safety floor. Core matches are
@@ -367,11 +395,17 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 		matches = append(matches, s.decodeTextSegments(cleaned)...)
 	}
 
-	// Check for env secret leaks (raw + encoded forms).
-	matches = append(matches, s.checkSecretsInText(s.envSecrets, cleaned, "Environment Variable Leak", "env")...)
-
-	// Check for file secret leaks (raw + encoded forms).
-	matches = append(matches, s.checkSecretsInText(s.fileSecrets, cleaned, "Known Secret Leak", "")...)
+	// Check for env + file secret leaks (raw + encoded forms). These detect a
+	// secret VALUE the proxy holds appearing in the text, i.e. exfiltration —
+	// meaningful only when the text is outbound. Inbound callers disable them
+	// (a received value is not a leak) to avoid gagging normal operation. The
+	// gate lives INSIDE the scan, not as a post-hoc filter on the result, so it
+	// cannot create a masking bypass: a disabled check never runs rather than
+	// running and being filtered away.
+	if opts.scanSecretLeak {
+		matches = append(matches, s.checkSecretsInText(s.envSecrets, cleaned, "Environment Variable Leak", "env")...)
+		matches = append(matches, s.checkSecretsInText(s.fileSecrets, cleaned, "Known Secret Leak", "")...)
+	}
 
 	// Deduplicate matches by pattern name + encoding.
 	matches = deduplicateMatches(matches)
@@ -399,7 +433,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 	}
 
 	// Emit warn events through the shared helper so warn-hook behavior stays centralized.
-	if emitWarns && len(informational) > 0 {
+	if opts.emitWarns && len(informational) > 0 {
 		warns := make([]WarnMatch, 0, len(informational))
 		for _, m := range informational {
 			warns = append(warns, WarnMatch{

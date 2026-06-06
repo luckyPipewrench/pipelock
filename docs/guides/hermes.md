@@ -78,6 +78,10 @@ The original headers are retained in the `_pipelock` metadata so `rollback` rest
 
 The **full** column reflects what the plugin scans once enabled; the plugin path is proven end-to-end against a live Hermes by `make hermes-e2e`. The **mcp-only** column is the lighter opt-in path for MCP traffic only.
 
+### Direction-aware DLP
+
+The exfil-class DLP checks — environment-variable and file-secret **value** matching, which detect a secret the proxy holds appearing in text — run only on **outbound** surfaces, where a secret could actually leave: a tool call's arguments (`pre_tool_call`). On **inbound** surfaces — an operator→agent message (`pre_gateway_dispatch`) and a tool result flowing back to the agent (`transform_tool_result`) — those checks are skipped, because a value the agent is *receiving* is not exfiltration. Inbound surfaces still get full prompt-injection scanning plus the generic DLP detectors (regex patterns, seed phrases, canary tokens, hostname exfiltration); only the agent's-own-secret value match is direction-scoped. This prevents an operator message or a local file read that happens to contain an env value (a path, a config setting) from false-positively blocking the agent, without weakening exfiltration protection on the outbound path. Outbound exfil detection is unchanged.
+
 ## Verify and Roll Back
 
 ```bash

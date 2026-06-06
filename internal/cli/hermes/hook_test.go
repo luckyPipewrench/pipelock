@@ -369,3 +369,70 @@ func TestEvaluate_EmptyToolInputAllows(t *testing.T) {
 		t.Fatalf("observer hook produced decision=%q, want allow", dec.Decision)
 	}
 }
+
+const (
+	// envLeakRegressionSecret is a high-entropy value that matches no DLP regex
+	// pattern and is not path-shaped, so the env-secret exfil check is the ONLY
+	// thing that can flag it. That makes the direction-aware behaviour
+	// observable: a block can only come from the exfil check.
+	envLeakRegressionSecret = "zQ8xR4kP2" + "mN7wL9vT3jH" // split to satisfy gosec G101
+	envLeakRegressionVar    = "PIPELOCK_HOOK_ENVLEAK"
+)
+
+// TestHook_EnvLeakBlocksOutboundToolCall is the OUTBOUND half of the
+// direction-aware regression: a tool call (the agent sending) carrying the
+// agent's own env secret must still block. This also guards that env scanning
+// is active on the hook path.
+func TestHook_EnvLeakBlocksOutboundToolCall(t *testing.T) {
+	// t.Setenv forbids t.Parallel. The scanner extracts os.Environ() at
+	// construction, so the value must be set before runHookCLI builds it.
+	t.Setenv(envLeakRegressionVar, envLeakRegressionSecret)
+
+	payload := `{"hook_event_name":"pre_tool_call","tool_name":"shell",` +
+		`"tool_input":{"command":"echo ` + envLeakRegressionSecret + `"}}`
+	decision, err := runHookCLI(t, payload)
+	if err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if decision.Decision != DecisionBlock {
+		t.Fatalf("outbound tool call leaking env secret: decision=%q, want block", decision.Decision)
+	}
+	if !strings.Contains(decision.Reason, "DLP") {
+		t.Fatalf("block reason missing DLP marker: %q", decision.Reason)
+	}
+}
+
+// TestHook_EnvLeakAllowedInboundGatewayDispatch is the INBOUND half: an
+// operator->agent message that happens to contain the env value (an operator
+// telling the agent a setting) is not exfiltration and must be allowed. Before the
+// direction-aware fix this false-positive blocked the agent.
+func TestHook_EnvLeakAllowedInboundGatewayDispatch(t *testing.T) {
+	t.Setenv(envLeakRegressionVar, envLeakRegressionSecret)
+
+	payload := `{"hook_event_name":"pre_gateway_dispatch","tool_name":"gateway",` +
+		`"tool_input":{"text":"the workspace value is ` + envLeakRegressionSecret + ` please proceed","sender":"@ops"}}`
+	decision, err := runHookCLI(t, payload)
+	if err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if decision.Decision != "" {
+		t.Fatalf("inbound gateway dispatch with received env value: decision=%q, want allow", decision.Decision)
+	}
+}
+
+// TestHook_EnvLeakAllowedInboundToolResult is the other INBOUND half: a tool
+// result flowing back to the agent (e.g. the agent read its own config) that
+// contains the env value is not exfiltration and must be allowed.
+func TestHook_EnvLeakAllowedInboundToolResult(t *testing.T) {
+	t.Setenv(envLeakRegressionVar, envLeakRegressionSecret)
+
+	payload := `{"hook_event_name":"transform_tool_result","tool_name":"read_file",` +
+		`"tool_input":{"result":"the agent read back ` + envLeakRegressionSecret + ` from its workspace file"}}`
+	decision, err := runHookCLI(t, payload)
+	if err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if decision.Decision != "" {
+		t.Fatalf("inbound tool result with received env value: decision=%q, want allow", decision.Decision)
+	}
+}

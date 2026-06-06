@@ -1,3 +1,10 @@
+# Stage ownership is explicit. Fast hygiene and file-scoped formatters run at
+# commit (default_stages); the heavy Go checks run only at the pre-push gate
+# (.git/hooks/pre-push runs `pre-commit run --hook-stage pre-push --all-files`).
+# This keeps commits fast and stops a Go-only push from invoking the TS/Rust
+# verifier toolchains it never touched. Secret and large-file gates run at both.
+default_stages: [pre-commit]
+
 repos:
   # General file hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -28,16 +35,22 @@ repos:
           )$
       - id: check-merge-conflict
       - id: detect-private-key
+        # Secret gate also runs at the push boundary as a backstop.
+        stages: [pre-commit, pre-push]
       - id: check-added-large-files
         args: ['--maxkb=500']
+        stages: [pre-commit, pre-push]
 
   # Secret detection
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.24.3
     hooks:
       - id: gitleaks
+        # Secret gate also runs at the push boundary as a backstop.
+        stages: [pre-commit, pre-push]
 
-  # Go: vet, build, test
+  # Go: vet, build, test. Heavy checks, scoped to the pre-push gate so commits
+  # stay fast (matches the .git/hooks/pre-push comment's stated intent).
   - repo: local
     hooks:
       - id: go-vet
@@ -46,6 +59,7 @@ repos:
         language: system
         pass_filenames: false
         types: [go]
+        stages: [pre-push]
 
       - id: go-build
         name: go build
@@ -53,6 +67,7 @@ repos:
         language: system
         pass_filenames: false
         types: [go]
+        stages: [pre-push]
 
       - id: golangci-lint
         name: golangci-lint
@@ -60,6 +75,7 @@ repos:
         language: system
         pass_filenames: false
         types: [go]
+        stages: [pre-push]
 
       - id: go-test
         name: go test
@@ -67,6 +83,7 @@ repos:
         language: system
         pass_filenames: false
         types: [go]
+        stages: [pre-push]
 
       - id: go-mod-tidy
         name: go mod tidy
@@ -74,6 +91,7 @@ repos:
         language: system
         pass_filenames: false
         types: [go]
+        stages: [pre-push]
 
   # Rust verifier: cargo fmt --check on sdk/verifiers/rust/.
   # Matches the verifiers.yaml `cargo fmt --check` CI step so the same
@@ -86,10 +104,14 @@ repos:
         language: system
         pass_filenames: false
         files: ^sdk/verifiers/rust/(.*\.rs|\.?rustfmt\.toml)$
+        # Commit-stage + files-scoped: only runs when Rust verifier files are
+        # staged, so it never gates a Go-only push. CI is the backstop.
+        stages: [pre-commit]
 
   # TypeScript verifier: prettier --check on sdk/verifiers/ts/.
-  # Matches the verifiers.yaml `npm run format:check` CI step. Scoped via
-  # files: so it only runs when TS verifier sources or config change.
+  # Matches the verifiers.yaml `npm run format:check` CI step. Commit-stage +
+  # files-scoped: only runs when TS verifier sources or config are staged, so a
+  # Go-only push never needs sdk/verifiers/ts/node_modules. CI is the backstop.
   - repo: local
     hooks:
       - id: prettier-verifier-ts
@@ -98,6 +120,7 @@ repos:
         language: system
         pass_filenames: false
         files: ^sdk/verifiers/ts/(.*\.(ts|js|mjs|json|md)|\.prettierignore)$
+        stages: [pre-commit]
 
   # Write marker for pre-push-gate.sh so it skips re-running lint+test.
   # Runs as post-commit, so HEAD is the newly created commit SHA.

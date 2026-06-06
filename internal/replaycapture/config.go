@@ -5,6 +5,7 @@ package replaycapture
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -16,6 +17,7 @@ const (
 	labFixtureIP   = "127.0.0.1"
 	labDocsHost    = "docs.fixture.test"
 	labContentHost = "content.fixture.test"
+	labAPIHost     = "api.fixture.test"
 )
 
 // awsKeyRegex matches the AWS access key id shape (AKIA + 16 upper/digits). The
@@ -28,6 +30,10 @@ const (
 	injectionPatternName = "Prompt Injection: ignore-instructions"
 	injectionRegex       = `(?i)ignore\s+(all\s+)?previous\s+instructions`
 )
+
+// operationPolicyRuleName is a public-safe request_policy rule id surfaced in
+// the operation-aware policy scenario's block receipt.
+const operationPolicyRuleName = "block-destructive-graphql-mutation"
 
 // labConfig returns a public-safe Pipelock config tuned for one scenario. It
 // starts from product defaults and flips only the knobs that scenario exercises,
@@ -48,9 +54,9 @@ func labConfig(s Scenario) (*config.Config, error) {
 	case "ssrf-internal-target-blocked":
 		// Leave SSRF active (cfg.Internal stays at defaults) so the link-local
 		// metadata target is blocked by the SSRF layer.
-	case "domain-blocklist-denied":
-		cfg.Internal = nil // blocked at blocklist, before any DNS
-		cfg.FetchProxy.Monitoring.Blocklist = []string{synthBlocklistedHost}
+	case "operation-aware-policy":
+		allowFixtureHosts(cfg, labAPIHost)
+		enableOperationPolicy(cfg)
 	default:
 		return nil, fmt.Errorf("unknown scenario id %q", s.ID)
 	}
@@ -90,4 +96,26 @@ func enableResponseInjection(cfg *config.Config) {
 		Name:  injectionPatternName,
 		Regex: injectionRegex,
 	})
+}
+
+// enableOperationPolicy blocks a destructive GraphQL mutation while allowing
+// safe queries on the same synthetic API route.
+func enableOperationPolicy(cfg *config.Config) {
+	cfg.ForwardProxy.Enabled = true
+	cfg.RequestPolicy.Enabled = true
+	cfg.RequestPolicy.Rules = []config.RequestPolicyRule{{
+		Name:   operationPolicyRuleName,
+		Action: config.ActionBlock,
+		Route: config.RequestPolicyRoute{
+			Hosts:        []string{labAPIHost},
+			Methods:      []string{http.MethodPost},
+			PathPrefixes: []string{"/graphql"},
+			ContentTypes: []string{"application/json"},
+		},
+		GraphQL: &config.RequestPolicyGraphQL{
+			OperationTypes:    []string{"mutation"},
+			RootFieldPatterns: []string{`^deleteRecord$`},
+		},
+		Reason: "destructive mutations require review",
+	}}
 }

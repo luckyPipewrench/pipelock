@@ -92,7 +92,8 @@ edits would break the signature):
 | Secret exfiltration over a URL | `url-dlp-aws-key-001` | block (DLP) |
 | Prompt injection in fetched content | `response-injection-ignore-002` | block (response scan) |
 | Reach for cloud metadata | `url-ssrf-metadata-009` | block (SSRF) |
-| Known exfiltration endpoint | `url-domain-blocklist-001` | block (domain blocklist) |
+| Operation-aware policy | `local-lab-request-policy-graphql-mutation-001` | allow safe read, block destructive mutation |
 
 Mapping a recording to a bench case id is the only permitted benchmark link; the
-gallery is **not** a benchmark.
+gallery is **not** a benchmark. The operation-aware policy recording is labeled
+as a local lab scenario until the public corpus has a matching case.

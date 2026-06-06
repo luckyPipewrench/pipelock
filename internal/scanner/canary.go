@@ -37,11 +37,9 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 	return out
 }
 
-// scanCanaryText scans RAW text for configured canary tokens.
-// It owns normalization: applies ForDLP internally, then iterative URL
-// decoding, base64/hex decoding, and separator canonicalization.
-// Callers pass raw (un-normalized) text. matchCanaryTokens receives
-// already-normalized text and only lowercases - no re-normalization.
+// scanCanaryText scans text for configured canary tokens. It owns DLP
+// normalization, then checks URL-decoded, encoded, and separator-canonicalized
+// views. Span labels name the lowercased/canonicalized view that was indexed.
 func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 	if len(s.canaryTokens) == 0 || text == "" {
 		return nil
@@ -53,23 +51,23 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 	}
 
 	var matches []TextDLPMatch
-	matches = append(matches, s.matchCanaryTokens(cleaned, "", false)...)
+	matches = append(matches, s.matchCanaryTokens(cleaned, "", false, ViewDLPNormalized)...)
 
 	if decoded := IterativeDecode(cleaned); decoded != cleaned {
-		matches = append(matches, s.matchCanaryTokens(decoded, "url", false)...)
+		matches = append(matches, s.matchCanaryTokens(decoded, "url", false, spanViewLabel("url_decoded", ViewDLPNormalized))...)
 	}
 	if strings.Contains(cleaned, ".") {
 		dotless := strings.ReplaceAll(cleaned, ".", "")
 		if dotless != cleaned {
-			matches = append(matches, s.matchCanaryTokens(dotless, "subdomain", false)...)
+			matches = append(matches, s.matchCanaryTokens(dotless, "subdomain", false, spanViewLabel("dotless_hostname", ViewDLPNormalized))...)
 		}
 	}
 	if collapsed := canonicalizeCanaryText(cleaned); collapsed != "" && collapsed != cleaned {
-		matches = append(matches, s.matchCanaryTokens(collapsed, "split", true)...)
+		matches = append(matches, s.matchCanaryTokens(cleaned, "split", true, ViewDLPNormalized)...)
 	}
 
 	for _, d := range decodeEncodings(cleaned) {
-		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false)...)
+		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized))...)
 	}
 
 	segments := strings.FieldsFunc(cleaned, func(r rune) bool {
@@ -80,30 +78,32 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 			continue
 		}
 		for _, d := range decodeEncodings(seg) {
-			matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false)...)
+			matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", "dlp_segment"))...)
 		}
 		if collapsed := canonicalizeCanaryText(seg); collapsed != "" && collapsed != seg {
-			matches = append(matches, s.matchCanaryTokens(collapsed, "split", true)...)
+			matches = append(matches, s.matchCanaryTokens(seg, "split", true, "dlp_segment")...)
 		}
 	}
 
 	return deduplicateMatches(matches)
 }
 
-// matchCanaryTokens checks pre-normalized text for canary token matches.
-// The caller (scanCanaryText) is responsible for ForDLP normalization -
-// this function only lowercases and optionally canonicalizes.
-func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool) []TextDLPMatch {
+// matchCanaryTokens checks a pre-built view for canary token matches. It always
+// indexes a lowercased view and, for split matches, a canonicalized lowercased
+// view, so the span label must include those final transforms.
+func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool, inputViewLabel string) []TextDLPMatch {
 	if len(s.canaryTokens) == 0 || text == "" {
 		return nil
 	}
 
 	haystack := strings.ToLower(text)
+	viewLabel := lowerViewLabel(inputViewLabel)
 	if canonical {
 		haystack = strings.ToLower(canonicalizeCanaryText(haystack))
 		if haystack == "" {
 			return nil
 		}
+		viewLabel = canonicalLowerViewLabel(inputViewLabel)
 	}
 
 	var matches []TextDLPMatch
@@ -115,11 +115,14 @@ func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool) []Tex
 		if needle == "" {
 			continue
 		}
-		if strings.Contains(haystack, needle) {
+		if start := strings.Index(haystack, needle); start >= 0 {
+			end := start + len(needle)
+			patternName := "Canary Token (" + token.name + ")"
 			matches = append(matches, TextDLPMatch{
-				PatternName: "Canary Token (" + token.name + ")",
+				PatternName: patternName,
 				Severity:    "critical",
 				Encoded:     encoding,
+				span:        newMatchSpan(start, end, viewLabel, patternName, "", ""),
 			})
 		}
 	}

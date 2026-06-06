@@ -111,6 +111,25 @@ func (s *Server) Start(ctx context.Context) error {
 	var reloadWG sync.WaitGroup
 	defer reloadWG.Wait()
 
+	// lifecycleWG joins every long-lived listener/watcher goroutine spawned
+	// below (kill-switch API, metrics, scan API, MCP, reverse proxy, agent
+	// listeners, license watchers). This deferred join is registered after
+	// s.cleanup(), so in LIFO order it runs BEFORE cleanup() closes and nils
+	// shared Server fields (s.logger, s.scanner, s.emitter, ...). Without it,
+	// an early-error return (e.g. a fetch_proxy bind failure) races cleanup()
+	// against an in-flight listener goroutine still reading those fields.
+	// Order matters: cancel() first so ctx-driven goroutines and the HTTP
+	// shutdown goroutines wake, then ShutdownAgentServers() to unblock agent
+	// listener Serve loops on early-error paths where proxy.Start never ran its
+	// own shutdown, then Wait() for every goroutine to finish (HTTP shutdown
+	// goroutines complete only after in-flight handlers drain).
+	var lifecycleWG sync.WaitGroup
+	defer func() {
+		cancel()
+		s.proxy.ShutdownAgentServers()
+		lifecycleWG.Wait()
+	}()
+
 	// Capture duration timer: cancel context after the specified capture
 	// duration so the proxy shuts down automatically.
 	if s.opts.CaptureOutput != "" && s.opts.CaptureDuration > 0 {
@@ -340,7 +359,9 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 
 		apiSrv := newHTTPServer(apiMux)
+		lifecycleWG.Add(1)
 		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
+			defer lifecycleWG.Done()
 			<-ctx.Done()
 			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 			defer shutCancel()
@@ -348,7 +369,9 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 
 		ksAPIErr = make(chan error, 1)
+		lifecycleWG.Add(1)
 		go func() {
+			defer lifecycleWG.Done()
 			err := apiSrv.Serve(apiLn)
 			if errors.Is(err, http.ErrServerClosed) {
 				err = nil
@@ -372,14 +395,18 @@ func (s *Server) Start(ctx context.Context) error {
 			return err
 		}
 		metricsSrv := newHTTPServer(metricsMux)
+		lifecycleWG.Add(1)
 		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
+			defer lifecycleWG.Done()
 			<-ctx.Done()
 			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 			defer shutCancel()
 			_ = metricsSrv.Shutdown(shutdownCtx)
 		}()
 		metricsErr = make(chan error, 1)
+		lifecycleWG.Add(1)
 		go func() {
+			defer lifecycleWG.Done()
 			srvErr := metricsSrv.Serve(metricsLn)
 			if errors.Is(srvErr, http.ErrServerClosed) {
 				srvErr = nil
@@ -428,7 +455,9 @@ func (s *Server) Start(ctx context.Context) error {
 		scanAPISrv.ReadTimeout = readTimeout
 		scanAPISrv.ReadHeaderTimeout = readTimeout
 		scanAPISrv.WriteTimeout = writeTimeout
+		lifecycleWG.Add(1)
 		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
+			defer lifecycleWG.Done()
 			<-ctx.Done()
 			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 			defer shutCancel()
@@ -436,7 +465,9 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 
 		scanAPIErr = make(chan error, 1)
+		lifecycleWG.Add(1)
 		go func() {
+			defer lifecycleWG.Done()
 			srvErr := scanAPISrv.Serve(scanAPILn)
 			if errors.Is(srvErr, http.ErrServerClosed) {
 				srvErr = nil
@@ -520,7 +551,10 @@ func (s *Server) Start(ctx context.Context) error {
 		var mcpApprover *hitl.Approver
 		if s.scanner.ResponseAction() == config.ActionAsk {
 			mcpApprover = hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
-			defer mcpApprover.Close()
+			// Closed inside the MCP listener goroutine below, after
+			// RunHTTPListenerProxy returns, so the approver outlives every
+			// request the listener hands it. A function-scoped defer would
+			// close it while the listener goroutine is still serving.
 		}
 
 		// Bind MCP listener synchronously so port conflicts are caught
@@ -568,7 +602,12 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 
 		mcpErr = make(chan error, 1)
+		lifecycleWG.Add(1)
 		go func() {
+			defer lifecycleWG.Done()
+			if mcpApprover != nil {
+				defer mcpApprover.Close()
+			}
 			var mcpCaptureObs capture.CaptureObserver
 			if s.captureWriter != nil {
 				mcpCaptureObs = s.captureWriter
@@ -648,7 +687,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 		rpSrv := newHTTPServer(rpHandler)
 		rpSrv.WriteTimeout = 30 * time.Second // reverse proxy upstream requests need more time
-		go func() {                           //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
+		lifecycleWG.Add(1)
+		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
+			defer lifecycleWG.Done()
 			<-ctx.Done()
 			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 			defer shutCancel()
@@ -656,7 +697,9 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 
 		reverseProxyErr = make(chan error, 1)
+		lifecycleWG.Add(1)
 		go func() {
+			defer lifecycleWG.Done()
 			srvErr := rpSrv.Serve(rpLn)
 			if errors.Is(srvErr, http.ErrServerClosed) {
 				srvErr = nil
@@ -700,7 +743,9 @@ func (s *Server) Start(ctx context.Context) error {
 			// Register with proxy so its shutdown goroutine gracefully
 			// stops agent servers alongside the main server.
 			s.proxy.RegisterAgentServer(srv)
+			lifecycleWG.Add(1)
 			go func(srv *http.Server, listener net.Listener) {
+				defer lifecycleWG.Done()
 				srvErr := srv.Serve(listener)
 				if errors.Is(srvErr, http.ErrServerClosed) {
 					srvErr = nil
@@ -716,7 +761,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// when listeners exist, but renewal warnings still emit for long-running
 	// proxy-only processes.
 	if agentListenerCount > 0 && cfg.LicenseExpiresAt > 0 {
+		lifecycleWG.Add(1)
 		go func() {
+			defer lifecycleWG.Done()
 			remaining := time.Until(time.Unix(cfg.LicenseExpiresAt, 0))
 			if remaining <= 0 {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: license expired, shutting down agent listeners\n")
@@ -734,10 +781,18 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 	if cfg.LicenseExpiresAt > 0 {
-		go s.startLicenseExpiryWatcher(ctx)
+		lifecycleWG.Add(1)
+		go func() {
+			defer lifecycleWG.Done()
+			s.startLicenseExpiryWatcher(ctx)
+		}()
 	}
 	if agentListenerCount > 0 && cfg.LicenseCRLFile != "" {
-		go s.startLicenseCRLWatcher(ctx)
+		lifecycleWG.Add(1)
+		go func() {
+			defer lifecycleWG.Done()
+			s.startLicenseCRLWatcher(ctx)
+		}()
 	}
 
 	// Start the fetch proxy (blocks until context cancelled or error).

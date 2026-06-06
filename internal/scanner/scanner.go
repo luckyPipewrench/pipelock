@@ -94,6 +94,12 @@ const (
 type WarnMatch struct {
 	PatternName string `json:"pattern_name"`
 	Severity    string `json:"severity"`
+	span        MatchSpan
+}
+
+// Span returns retained coordinates for this warn-mode DLP match.
+func (m WarnMatch) Span() MatchSpan {
+	return m.span
 }
 
 // DNSErrorKind tags the specific DNS resolver failure mode that produced a
@@ -129,6 +135,13 @@ type Result struct {
 	Class        ResultClass  `json:"-"`                 // internal: threat vs protective classification
 	DNSErrorKind DNSErrorKind `json:"-"`                 // internal: DNS resolver failure subtype (set only when Class == ClassInfrastructureError on the DNS path)
 	WarnMatches  []WarnMatch  `json:"warn_matches,omitempty"`
+	spans        []MatchSpan
+}
+
+// Spans returns retained scanner match coordinates for this result.
+// The returned slice is caller-owned and never includes matched bytes.
+func (r Result) Spans() []MatchSpan {
+	return copySpans(r.spans)
 }
 
 // IsProtective reports whether this result represents protective enforcement
@@ -1499,8 +1512,8 @@ func normalizeHex(s string) string {
 }
 
 // hexByteSep formats a contiguous hex string with a separator between each byte
-// pair. Used by matchSecretEncodings to generate delimiter-separated variants
-// of known secrets for substring matching.
+// pair. Used by matchSecretEncodingSpan to generate delimiter-separated
+// variants of known secrets for substring matching.
 // Example: hexByteSep("736b2d", ":") returns "73:6b:2d".
 func hexByteSep(hexStr, sep string) string {
 	if len(hexStr) < 4 || len(hexStr)%2 != 0 {
@@ -1571,15 +1584,18 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// DLP patterns don't cover. Both are evaluated - DLP wins if it matches.
 
 	var warnMatches []WarnMatch
+	type dlpTarget struct {
+		text      string
+		viewLabel string
+	}
 
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, iteratively decode to catch multi-layer encoding.
 	decodedQuery := IterativeDecode(parsed.RawQuery)
 
-	targets := []string{
-		parsed.String(), // full URL - catches secrets in hostname/subdomains
-		parsed.Path,
-		decodedQuery,
+	targets := []dlpTarget{
+		{parsed.Path, dlpViewLabel("url_path")},
+		{decodedQuery, dlpViewLabel("url_query")},
 	}
 
 	// Also check decoded query keys and values individually.
@@ -1588,29 +1604,33 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// (e.g. ?key=736b2d616e742d... is hex-encoded sk-ant-...).
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
-		targets = append(targets, decodedKey)
+		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key")})
 		for _, d := range decodeEncodings(decodedKey) {
-			targets = append(targets, d.text)
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
 		}
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
-			targets = append(targets, stripped)
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 		}
 		for _, v := range values {
 			decoded := IterativeDecode(v)
-			targets = append(targets, decoded)
+			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value")})
 			for _, d := range decodeEncodings(decoded) {
-				targets = append(targets, d.text)
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
 			}
 			if stripped := stripURLNoise(decoded); stripped != decoded {
-				targets = append(targets, stripped)
+				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 			}
 		}
 	}
 
-	// Also apply iterative decode to the raw path for double-encoded path segments.
-	decodedPath := IterativeDecode(parsed.RawPath)
+	// Also apply iterative decode to the escaped path for double-encoded path segments.
+	rawPath := parsed.RawPath
+	if rawPath == "" {
+		rawPath = parsed.EscapedPath()
+	}
+	decodedPath := IterativeDecode(rawPath)
 	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, decodedPath)
+		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded")})
 	}
 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
@@ -1619,7 +1639,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if len(segment) >= 10 { // minimum viable encoded secret length
 			for _, d := range decodeEncodings(segment) {
-				targets = append(targets, d.text)
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
 			}
 		}
 	}
@@ -1628,14 +1648,14 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// (e.g. "sk-ant-api03-.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03-AABBCCDDEEFFGGHHevilcom").
 	// Dots break regex character classes, so individual labels pass DLP checks.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
-		targets = append(targets, strings.ReplaceAll(hostname, ".", ""))
+		targets = append(targets, dlpTarget{strings.ReplaceAll(hostname, ".", ""), dlpViewLabel("subdomain")})
 	}
 
 	// Strip URL noise from path to catch secrets split by dots, slashes, and
 	// other separators (e.g., "/sk-ant-api03-AAAA.AAAA/AAAA" → "sk-ant-api03-AAAAAAAAAAAA").
 	// Covers both dot-split and encoded-slash attacks (%2f splitting path segments).
 	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
-		targets = append(targets, stripped)
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 	}
 
 	// Concatenate all query values in URL order to catch secrets split across
@@ -1645,32 +1665,38 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
 	if parsed.RawQuery != "" && strings.Contains(parsed.RawQuery, "&") {
 		concat := orderedQueryConcat(parsed.RawQuery)
-		targets = append(targets, concat)
+		targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat")})
 		if stripped := stripURLNoise(concat); stripped != concat {
-			targets = append(targets, stripped)
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
 		}
 	}
 
+	// Coarse full-URL fallback runs after component targets so path/query spans
+	// keep their more precise view labels when both views match.
+	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url")})
+
 	for _, target := range targets {
-		if target == "" {
+		if target.text == "" {
 			continue
 		}
 		// Full normalization before DLP pattern matching: strip control chars,
 		// NFKC, cross-script confusable mapping, and combining mark removal.
 		// Must match response scanning depth - otherwise attackers use homoglyphs
 		// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
-		cleaned := normalize.ForDLP(target)
+		cleaned := normalize.ForDLP(target.text)
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
-			if p.matches(cleaned) {
+			if start, end, ok := p.matchSpan(cleaned); ok {
 				// Skip pattern if the destination domain is explicitly exempted.
 				if len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
 					continue
 				}
+				span := newMatchSpan(start, end, target.viewLabel, p.name, p.bundle, p.bundleVersion)
 				if p.warn {
 					warnMatches = append(warnMatches, WarnMatch{
 						PatternName: p.name,
 						Severity:    p.severity,
+						span:        span,
 					})
 					continue
 				}
@@ -1679,6 +1705,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
 					Scanner: ScannerDLP,
 					Score:   1.0,
+					spans:   []MatchSpan{span},
 				}, warnMatches
 			}
 		}
@@ -1698,14 +1725,17 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// NOT on dot-collapsed or noise-stripped text (creates synthetic word runs).
 	// Covers: query values, path, hostname labels (pre-DNS exfil), path segments.
 	if s.seedEnabled {
-		seedTargets := []string{parsed.Path, decodedQuery}
+		seedTargets := []dlpTarget{
+			{parsed.Path, "url_path"},
+			{decodedQuery, spanViewLabel("url_decoded", "url_query")},
+		}
 		// Individual query values: raw decoded + encoding variants (base64/hex/base32).
 		for _, values := range parsed.Query() {
 			for _, v := range values {
 				decoded := IterativeDecode(v)
-				seedTargets = append(seedTargets, decoded)
+				seedTargets = append(seedTargets, dlpTarget{decoded, spanViewLabel("url_decoded", "url_query_value")})
 				for _, d := range decodeEncodings(decoded) {
-					seedTargets = append(seedTargets, d.text)
+					seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_query_value")})
 				}
 			}
 		}
@@ -1724,7 +1754,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 					seedConcat.WriteString(IterativeDecode(value))
 				}
 			}
-			seedTargets = append(seedTargets, seedConcat.String())
+			seedTargets = append(seedTargets, dlpTarget{seedConcat.String(), "query_concat:url_decoded"})
 		}
 		// Decoded path segments: base64/hex/base32 encoded seed phrases in path.
 		for _, seg := range strings.Split(parsed.Path, "/") {
@@ -1732,7 +1762,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 				continue
 			}
 			for _, d := range decodeEncodings(IterativeDecode(seg)) {
-				seedTargets = append(seedTargets, d.text)
+				seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_path_segment")})
 			}
 		}
 		// Hostname labels: catch seed words as subdomain labels
@@ -1740,23 +1770,28 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 		// Join labels with spaces so the tokenizer sees them as words.
 		hostname := parsed.Hostname()
 		if strings.Contains(hostname, ".") {
-			seedTargets = append(seedTargets, strings.ReplaceAll(hostname, ".", " "))
+			seedTargets = append(seedTargets, dlpTarget{strings.ReplaceAll(hostname, ".", " "), "hostname_labels_joined"})
 		}
 		// Path segments: catch seed words as path components
 		// (e.g., "/abandon/abandon/abandon/.../about").
 		if strings.Contains(parsed.Path, "/") {
-			seedTargets = append(seedTargets, strings.ReplaceAll(parsed.Path, "/", " "))
+			seedTargets = append(seedTargets, dlpTarget{strings.ReplaceAll(parsed.Path, "/", " "), spanViewLabel("slash_joined", "url_path")})
 		}
 		for _, target := range seedTargets {
-			if target == "" {
+			if target.text == "" {
 				continue
 			}
-			if matches := seedprotect.Detect(target, s.seedMinWords, s.seedVerifyChecksum); len(matches) > 0 {
+			if matches := seedprotect.DetectSpans(target.text, s.seedMinWords, s.seedVerifyChecksum); len(matches) > 0 {
+				match := matches[0]
+				patternName := "BIP-39 Seed Phrase"
 				return Result{
 					Allowed: false,
-					Reason:  "DLP match: BIP-39 Seed Phrase (critical)",
+					Reason:  "DLP match: " + patternName + " (critical)",
 					Scanner: ScannerDLP,
 					Score:   1.0,
+					spans: []MatchSpan{
+						newMatchSpan(match.Start, match.End, target.viewLabel, patternName, "", ""),
+					},
 				}, warnMatches
 			}
 		}
@@ -1835,14 +1870,16 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
-			if p.matches(cleaned) {
+			if start, end, ok := p.matchSpan(cleaned); ok {
 				if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
 					continue
 				}
+				span := newMatchSpan(start, end, dlpViewLabel("query_subsequence"), p.name, p.bundle, p.bundleVersion)
 				if p.warn {
 					warnMatches = append(warnMatches, WarnMatch{
 						PatternName: p.name,
 						Severity:    p.severity,
+						span:        span,
 					})
 					continue
 				}
@@ -1851,6 +1888,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
 					Scanner: ScannerDLP,
 					Score:   1.0,
+					spans:   []MatchSpan{span},
 				}, warnMatches
 			}
 		}
@@ -1915,16 +1953,30 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 
 	fullURL := normalize.StripControlChars(parsed.String())
 	decodedURL := normalize.StripControlChars(IterativeDecode(fullURL))
-	texts := []string{fullURL, decodedURL}
-	lowerTexts := []string{strings.ToLower(fullURL), strings.ToLower(decodedURL)}
+	texts := []spanTextView{
+		{text: fullURL, viewLabel: "control_stripped_url"},
+		{text: decodedURL, viewLabel: "control_stripped_url:url_decoded"},
+	}
+	lowerTexts := []spanTextView{
+		{text: strings.ToLower(fullURL), viewLabel: lowerViewLabel("control_stripped_url")},
+		{text: strings.ToLower(decodedURL), viewLabel: lowerViewLabel("control_stripped_url:url_decoded")},
+	}
 
 	for _, secret := range secrets {
-		if matched, enc := matchSecretEncodings(secret, texts, lowerTexts); matched {
+		if matched, enc, start, end, viewLabel := matchSecretEncodingSpan(secret, texts, lowerTexts); matched {
 			reason := reasonPrefix
 			if enc != "" {
 				reason += " (" + enc + "-encoded)"
 			}
-			return Result{Allowed: false, Reason: reason, Scanner: ScannerDLP, Score: 1.0}
+			return Result{
+				Allowed: false,
+				Reason:  reason,
+				Scanner: ScannerDLP,
+				Score:   1.0,
+				spans: []MatchSpan{
+					newMatchSpan(start, end, viewLabel, reasonPrefix, "", ""),
+				},
+			}
 		}
 	}
 	// Canary fallback: if no DLP pattern matched, check canary tokens.
@@ -1935,52 +1987,68 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		if m.Encoded != "" {
 			reason += " [" + m.Encoded + "]"
 		}
-		return Result{Allowed: false, Reason: reason, Scanner: ScannerDLP, Score: 1.0}
+		return Result{
+			Allowed: false,
+			Reason:  reason,
+			Scanner: ScannerDLP,
+			Score:   1.0,
+			spans:   []MatchSpan{m.Span()},
+		}
 	}
 
 	return Result{Allowed: true}
 }
 
-// containsAny returns true if needle appears in any of the haystacks.
-func containsAny(needle string, haystacks ...string) bool {
-	for _, h := range haystacks {
-		if strings.Contains(h, needle) {
-			return true
-		}
-	}
-	return false
+type spanTextView struct {
+	text      string
+	viewLabel string
 }
 
-// matchSecretEncodings checks all encoded forms of a secret against the given texts.
-// texts are for case-sensitive checks; lowerTexts (pre-lowercased) are for hex comparison.
-// Returns (true, encoding) on first match. Encoding is "" for raw, or "base64",
-// "base64url", "hex", "base32" for encoded forms.
-func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, string) {
+func indexAnyView(needle string, views []spanTextView) (int, int, string, bool) {
+	for _, view := range views {
+		if start := strings.Index(view.text, needle); start >= 0 {
+			return start, start + len(needle), view.viewLabel, true
+		}
+	}
+	return 0, 0, "", false
+}
+
+func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (bool, string, int, int, string) {
 	// Raw match.
-	if containsAny(secret, texts...) {
-		return true, ""
+	if start, end, viewLabel, ok := indexAnyView(secret, texts); ok {
+		return true, "", start, end, viewLabel
 	}
 
 	// Base64 standard (padded + unpadded).
 	b64Std := base64.StdEncoding.EncodeToString([]byte(secret))
 	b64StdNoPad := strings.TrimRight(b64Std, "=")
-	if containsAny(b64Std, texts...) ||
-		(b64StdNoPad != b64Std && containsAny(b64StdNoPad, texts...)) {
-		return true, encodingBase64
+	if start, end, viewLabel, ok := indexAnyView(b64Std, texts); ok {
+		return true, encodingBase64, start, end, viewLabel
+	}
+	if b64StdNoPad != b64Std {
+		if start, end, viewLabel, ok := indexAnyView(b64StdNoPad, texts); ok {
+			return true, encodingBase64, start, end, viewLabel
+		}
 	}
 
 	// Base64 URL-safe (padded + unpadded).
 	b64URL := base64.URLEncoding.EncodeToString([]byte(secret))
 	b64URLNoPad := strings.TrimRight(b64URL, "=")
-	if (b64URL != b64Std && containsAny(b64URL, texts...)) ||
-		(b64URLNoPad != b64StdNoPad && containsAny(b64URLNoPad, texts...)) {
-		return true, "base64url"
+	if b64URL != b64Std {
+		if start, end, viewLabel, ok := indexAnyView(b64URL, texts); ok {
+			return true, "base64url", start, end, viewLabel
+		}
+	}
+	if b64URLNoPad != b64StdNoPad {
+		if start, end, viewLabel, ok := indexAnyView(b64URLNoPad, texts); ok {
+			return true, "base64url", start, end, viewLabel
+		}
 	}
 
 	// Hex (case-insensitive via pre-lowered texts).
 	hexEnc := hex.EncodeToString([]byte(secret))
-	if containsAny(hexEnc, lowerTexts...) {
-		return true, encodingHex
+	if start, end, viewLabel, ok := indexAnyView(hexEnc, lowerTexts); ok {
+		return true, encodingHex, start, end, viewLabel
 	}
 
 	// Delimiter-separated hex variants for env/file secret detection.
@@ -1991,24 +2059,25 @@ func matchSecretEncodings(secret string, texts, lowerTexts []string) (bool, stri
 	commaHex := hexByteSep(hexEnc, ",")
 	bsxHex := hexBytePrefix(hexEnc, `\x`)
 	zxHex := hexBytePrefix(hexEnc, "0x")
-	if containsAny(colonHex, lowerTexts...) ||
-		containsAny(spaceHex, lowerTexts...) ||
-		containsAny(hyphenHex, lowerTexts...) ||
-		containsAny(commaHex, lowerTexts...) ||
-		containsAny(bsxHex, lowerTexts...) ||
-		containsAny(zxHex, lowerTexts...) {
-		return true, encodingHex
+	for _, candidate := range []string{colonHex, spaceHex, hyphenHex, commaHex, bsxHex, zxHex} {
+		if start, end, viewLabel, ok := indexAnyView(candidate, lowerTexts); ok {
+			return true, encodingHex, start, end, viewLabel
+		}
 	}
 
 	// Base32 standard (padded + unpadded).
 	b32Std := base32.StdEncoding.EncodeToString([]byte(secret))
 	b32NoPad := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret))
-	if containsAny(b32Std, texts...) ||
-		(b32NoPad != b32Std && containsAny(b32NoPad, texts...)) {
-		return true, encodingBase32
+	if start, end, viewLabel, ok := indexAnyView(b32Std, texts); ok {
+		return true, encodingBase32, start, end, viewLabel
+	}
+	if b32NoPad != b32Std {
+		if start, end, viewLabel, ok := indexAnyView(b32NoPad, texts); ok {
+			return true, encodingBase32, start, end, viewLabel
+		}
 	}
 
-	return false, ""
+	return false, "", 0, 0, ""
 }
 
 // nonSecretEnvNames lists environment variable names that are never secrets.

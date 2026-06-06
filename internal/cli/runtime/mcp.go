@@ -134,8 +134,12 @@ func readHeaderFile(path string) ([]string, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("--header-file %q: not a regular file (mode=%s)", path, info.Mode())
 	}
+	// Unix-only gate: secperm.TooPermissive returns false on Windows, where Go
+	// reports the mode from the read-only attribute rather than the NTFS ACL.
+	// On Windows, restrict access with file ACLs instead; this check does not
+	// fire there, so the chmod-style message below is only ever seen on Unix.
 	if secperm.TooPermissive(info.Mode().Perm(), 0o037) {
-		return nil, fmt.Errorf("--header-file %q: permissions %04o reveal the header values to other users; restrict to 0600 or 0640", path, info.Mode().Perm())
+		return nil, fmt.Errorf("--header-file %q: permissions %04o reveal the header values to other users; restrict to 0600 or 0640 (Unix); on Windows restrict with file ACLs", path, info.Mode().Perm())
 	}
 	data, err := os.ReadFile(clean) //nolint:gosec // path is operator-supplied and cleaned + perm-gated above
 	if err != nil {
@@ -1206,7 +1210,7 @@ Key-free evidence capture:
 	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
 	cmd.Flags().StringArrayVar(&rawHeaders, "header", nil, "extra HTTP header for upstream MCP server in --upstream HTTP mode (repeatable, format: 'Key: Value')")
-	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a 0o600 (or 0o640) file with extra HTTP headers, one per line as 'Key: Value' (comments with '#'); merged with --header")
+	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a headers file (one 'Key: Value' per line, '#' comments) merged with --header; on Unix it must be mode 0o600 or 0o640, on Windows restrict access with file ACLs")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
 	cmd.Flags().StringVar(&captureOutput, "capture-output", "", "directory for key-free evidence capture (evidence-*.jsonl); mirrors 'pipelock run --capture-output'")
 	cmd.Flags().StringVar(&captureEscrowKey, "capture-escrow-public-key", "", "X25519 public key (64 hex chars) to encrypt captured payload sidecars; requires --capture-output")

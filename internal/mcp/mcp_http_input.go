@@ -615,8 +615,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			Profile:           opts.captureProfile(),
 			ActionClass:       captureActionClass,
 			Request: capture.CaptureRequest{
-				ToolName:  toolName,
-				MCPMethod: methodToolsCall,
+				ToolName:     toolName,
+				ToolArgsJSON: string(frame.Args),
+				MCPMethod:    verdict.Method,
 			},
 			RawFindings:     policyFindings,
 			EffectiveAction: effectiveAction,

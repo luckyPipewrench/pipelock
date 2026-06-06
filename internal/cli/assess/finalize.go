@@ -65,16 +65,15 @@ func checkAssessLicense(runDir string) bool {
 		return false
 	}
 
-	var lic license.License
+	var crl *license.CRL
 	if cfg.LicenseCRLFile != "" {
-		crl, crlErr := license.LoadAndVerifyCRL(cfg.LicenseCRLFile, pubKey, time.Now())
+		loaded, crlErr := license.LoadAndVerifyCRL(cfg.LicenseCRLFile, pubKey, time.Now())
 		if crlErr != nil {
 			return false
 		}
-		lic, err = license.VerifyWithCRL(cfg.LicenseKey, pubKey, &crl)
-	} else {
-		lic, err = license.Verify(cfg.LicenseKey, pubKey)
+		crl = &loaded
 	}
+	lic, err := license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, crl, time.Now())
 	if err != nil {
 		return false
 	}

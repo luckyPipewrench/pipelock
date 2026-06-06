@@ -249,6 +249,9 @@ func checkDoctorLicense(cfg *config.Config) doctorReportCheck {
 	if cfg.LicenseCRLFile != "" {
 		detail += "; signed CRL configured"
 	}
+	if len(cfg.LicenseIntermediateCert) > 0 {
+		detail += "; intermediate certificate configured"
+	}
 	return doctorReportCheck{
 		Name:       "license_status",
 		Surface:    doctorSurfaceConfig,
@@ -280,7 +283,7 @@ func doctorVerifiedLicense(cfg *config.Config) (license.License, bool, error) {
 		}
 		crl = &loaded
 	}
-	lic, verifyErr := license.VerifyWithCRL(cfg.LicenseKey, pubKey, crl)
+	lic, verifyErr := license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, crl, time.Now())
 	return lic, true, verifyErr
 }
 

@@ -32,7 +32,7 @@ func TestEmailSender_SendLicenseDelivery(t *testing.T) {
 		apiURL:    srv.URL,
 	}
 
-	msgID, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token123", tierPro)
+	msgID, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token123", tierPro, "test-intermediate-cert")
 	if err != nil {
 		t.Fatalf("SendLicenseDelivery: %v", err)
 	}
@@ -44,6 +44,9 @@ func TestEmailSender_SendLicenseDelivery(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, testCustomerEmail) {
 		t.Errorf("body should contain recipient email")
+	}
+	if !strings.Contains(gotBody, "license_intermediate_file") || !strings.Contains(gotBody, "test-intermediate-cert") {
+		t.Errorf("body should include intermediate certificate setup")
 	}
 }
 
@@ -64,7 +67,7 @@ func TestEmailSender_SendLicenseDelivery_FoundingPro(t *testing.T) {
 		apiURL:    srv.URL,
 	}
 
-	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token456", tierFoundingPro)
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token456", tierFoundingPro, "test-intermediate-cert")
 	if err != nil {
 		t.Fatalf("SendLicenseDelivery founding: %v", err)
 	}
@@ -111,7 +114,7 @@ func TestEmailSender_Send_APIError(t *testing.T) {
 		apiURL:    srv.URL,
 	}
 
-	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro)
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro, "test-intermediate-cert")
 	if err == nil {
 		t.Fatal("expected error for 400 response, got nil")
 	}
@@ -134,7 +137,7 @@ func TestEmailSender_Send_InvalidJSON(t *testing.T) {
 		apiURL:    srv.URL,
 	}
 
-	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro)
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro, "test-intermediate-cert")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response, got nil")
 	}
@@ -154,7 +157,7 @@ func TestEmailSender_Send_NetworkError(t *testing.T) {
 		apiURL:    srv.URL,
 	}
 
-	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro)
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro, "test-intermediate-cert")
 	if err == nil {
 		t.Fatal("expected network error for closed server, got nil")
 	}
@@ -168,7 +171,7 @@ func TestEmailSender_Send_BadURL(t *testing.T) {
 		apiURL:    "://invalid-url", // will fail NewRequestWithContext
 	}
 
-	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro)
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro, "test-intermediate-cert")
 	if err == nil {
 		t.Fatal("expected error for invalid URL, got nil")
 	}
@@ -191,7 +194,7 @@ func TestEmailSender_Send_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel before sending
 
-	_, err := sender.SendLicenseDelivery(ctx, testCustomerEmail, "token", tierPro)
+	_, err := sender.SendLicenseDelivery(ctx, testCustomerEmail, "token", tierPro, "test-intermediate-cert")
 	if err == nil {
 		t.Fatal("expected error for canceled context, got nil")
 	}
@@ -218,7 +221,7 @@ func TestEmailSender_Send_EmptyAPIURL(t *testing.T) {
 		apiURL:    "", // empty, triggers fallback
 	}
 
-	msgID, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro)
+	msgID, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token", tierPro, "test-intermediate-cert")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -277,7 +280,7 @@ func TestEmailSender_SendLicenseDelivery_TrialSubject(t *testing.T) {
 		apiURL:    srv.URL,
 	}
 
-	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token789", tierTrial)
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token789", tierTrial, "test-intermediate-cert")
 	if err != nil {
 		t.Fatalf("SendLicenseDelivery trial: %v", err)
 	}
@@ -306,7 +309,7 @@ func TestEmailSender_SendLicenseDelivery_EnterpriseEvalValidity(t *testing.T) {
 		apiURL:    srv.URL,
 	}
 
-	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token_eval", tierEnterpriseEval)
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token_eval", tierEnterpriseEval, "test-intermediate-cert")
 	if err != nil {
 		t.Fatalf("SendLicenseDelivery enterprise eval: %v", err)
 	}
@@ -335,7 +338,7 @@ func TestEmailSender_SendLicenseDelivery_EscapesToken(t *testing.T) {
 
 	e := &EmailSender{apiKey: "k", fromEmail: "f@x.test", client: srv.Client(), apiURL: srv.URL}
 	maliciousToken := "pipelock_lic_" + "v1_" + `<script>alert(1)</script>` //nolint:gosec // not a credential, an XSS probe for the escaping test
-	if _, err := e.SendLicenseDelivery(t.Context(), "to@x.test", maliciousToken, tierEnterpriseEval); err != nil {
+	if _, err := e.SendLicenseDelivery(t.Context(), "to@x.test", maliciousToken, tierEnterpriseEval, "test-intermediate-cert"); err != nil {
 		t.Fatalf("SendLicenseDelivery: %v", err)
 	}
 	if strings.Contains(gotBody, "<script>alert(1)</script>") {

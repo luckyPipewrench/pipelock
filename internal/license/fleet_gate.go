@@ -28,6 +28,11 @@ const EnvLicensePublicKey = "PIPELOCK_LICENSE_PUBLIC_KEY"
 // this to fail closed on revoked licenses.
 const EnvLicenseCRLFile = "PIPELOCK_LICENSE_CRL_FILE"
 
+// EnvLicenseIntermediateFile points to a root-signed intermediate
+// license-signing certificate. When set, fleet verification uses the
+// token->intermediate->root chain and fails closed if the certificate is bad.
+const EnvLicenseIntermediateFile = "PIPELOCK_LICENSE_INTERMEDIATE_FILE"
+
 // ErrFleetLicenseRequired is returned by RequireFleet when the supplied
 // license does not carry the fleet feature (or no license is present).
 // Callers should refuse to start fleet work and surface this error verbatim
@@ -61,6 +66,14 @@ func RequireFleet(licenseKey, publicKeyHex string) error {
 // crlFile argument, or PIPELOCK_LICENSE_CRL_FILE when empty, enables fail-closed
 // revocation checks with a signed CRL.
 func VerifyFleet(licenseKey, publicKeyHex, crlFile string) (License, error) {
+	return VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, "")
+}
+
+// VerifyFleetWithIntermediate verifies the supplied fleet license, optionally
+// using a configured intermediate certificate file. Empty intermediateFile
+// falls back to PIPELOCK_LICENSE_INTERMEDIATE_FILE, then legacy direct-root
+// verification if neither is set.
+func VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, intermediateFile string) (License, error) {
 	if licenseKey == "" {
 		licenseKey = os.Getenv(EnvLicenseKey)
 	}
@@ -87,19 +100,27 @@ func VerifyFleet(licenseKey, publicKeyHex, crlFile string) (License, error) {
 	if crlFile == "" {
 		crlFile = os.Getenv(EnvLicenseCRLFile)
 	}
-	var (
-		lic License
-		err error
-	)
+	var crl *CRL
 	if crlFile != "" {
-		crl, crlErr := LoadAndVerifyCRL(crlFile, pubKey, time.Now())
+		loaded, crlErr := LoadAndVerifyCRL(crlFile, pubKey, time.Now())
 		if crlErr != nil {
 			return License{}, fmt.Errorf("%w: loading license CRL: %w", ErrFleetLicenseRequired, crlErr)
 		}
-		lic, err = VerifyWithCRL(licenseKey, pubKey, &crl)
-	} else {
-		lic, err = Verify(licenseKey, pubKey)
+		crl = &loaded
 	}
+	if intermediateFile == "" {
+		intermediateFile = os.Getenv(EnvLicenseIntermediateFile)
+	}
+	var intermediateCert []byte
+	if intermediateFile != "" {
+		data, loadErr := LoadIntermediateCertFile(intermediateFile)
+		if loadErr != nil {
+			return License{}, fmt.Errorf("%w: loading intermediate certificate: %w", ErrFleetLicenseRequired, loadErr)
+		}
+		intermediateCert = data
+	}
+
+	lic, err := VerifyTokenWithOptionalIntermediate(licenseKey, intermediateCert, pubKey, crl, time.Now())
 	if err != nil {
 		return License{}, fmt.Errorf("%w: %w", ErrFleetLicenseRequired, err)
 	}

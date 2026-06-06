@@ -317,7 +317,7 @@ func (h *WebhookHandler) revokeEvalForOrder(ctx context.Context, order *PolarOrd
 // retry resends the same token via resendEvalIfNeeded (no re-mint).
 func (h *WebhookHandler) deliverEvalToken(ctx context.Context, ent *Entitlement, token string) error {
 	now := time.Now()
-	msgID, emailErr := h.email.SendLicenseDelivery(ctx, ent.CustomerEmail, token, ent.Tier)
+	msgID, emailErr := h.email.SendLicenseDelivery(ctx, ent.CustomerEmail, token, ent.Tier, string(h.cfg.IntermediateCert))
 	if emailErr != nil {
 		if err := h.db.UpdateDeliveryStatus(ctx, ent.SubscriptionID, "failed", now); err != nil {
 			return fmt.Errorf("update delivery status after email failure: %w", err)

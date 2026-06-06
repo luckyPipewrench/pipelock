@@ -5,6 +5,10 @@ package config
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"gopkg.in/yaml.v3"
 )
@@ -8569,6 +8574,273 @@ func TestLicenseFileParsedFromYAML(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "/some/path/license.token") {
 		t.Errorf("error should reference the configured path, got: %v", err)
+	}
+}
+
+func writeTestIntermediateCert(t *testing.T, rootPriv ed25519.PrivateKey, intermediatePub ed25519.PublicKey, serial string, notBefore, notAfter time.Time) []byte {
+	t.Helper()
+	im, err := license.SignIntermediate(license.IntermediatePayload{
+		Serial:    serial,
+		Purpose:   license.PurposeLicenseSigning,
+		Algorithm: license.AlgorithmEd25519,
+		PublicKey: hex.EncodeToString(intermediatePub),
+		NotBefore: notBefore.Unix(),
+		NotAfter:  notAfter.Unix(),
+		IssuedAt:  notBefore.Unix(),
+	}, rootPriv)
+	if err != nil {
+		t.Fatalf("SignIntermediate: %v", err)
+	}
+	data, err := json.Marshal(im)
+	if err != nil {
+		t.Fatalf("Marshal intermediate: %v", err)
+	}
+	return data
+}
+
+func TestLicenseIntermediateFileConfigStates(t *testing.T) {
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(root): %v", err)
+	}
+	intermediatePub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(intermediate): %v", err)
+	}
+	now := time.Now().UTC()
+	cert := writeTestIntermediateCert(t, rootPriv, intermediatePub, "im_config", now.Add(-time.Minute), now.Add(time.Hour))
+
+	t.Run("omitted", func(t *testing.T) {
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LicenseIntermediateFile != "" || len(cfg.LicenseIntermediateCert) != 0 {
+			t.Fatalf("intermediate should be empty on omitted field, got file=%q bytes=%d", cfg.LicenseIntermediateFile, len(cfg.LicenseIntermediateCert))
+		}
+	})
+
+	t.Run("null", func(t *testing.T) {
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_intermediate_file:\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LicenseIntermediateFile != "" || len(cfg.LicenseIntermediateCert) != 0 {
+			t.Fatalf("intermediate should be empty on null field, got file=%q bytes=%d", cfg.LicenseIntermediateFile, len(cfg.LicenseIntermediateCert))
+		}
+	})
+
+	t.Run("blank", func(t *testing.T) {
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_intermediate_file: \"   \"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LicenseIntermediateFile != "" || len(cfg.LicenseIntermediateCert) != 0 {
+			t.Fatalf("intermediate should be empty on blank field, got file=%q bytes=%d", cfg.LicenseIntermediateFile, len(cfg.LicenseIntermediateCert))
+		}
+	})
+
+	t.Run("explicit", func(t *testing.T) {
+		tmp := t.TempDir()
+		certPath := filepath.Join(tmp, "intermediate.json")
+		if err := os.WriteFile(certPath, cert, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		cfgData := "mode: balanced\nlicense_public_key: " + hex.EncodeToString(rootPub) + "\nlicense_intermediate_file: intermediate.json\n"
+		if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LicenseIntermediateFile != certPath {
+			t.Fatalf("intermediate path = %q, want %q", cfg.LicenseIntermediateFile, certPath)
+		}
+		if string(cfg.LicenseIntermediateCert) != string(cert) {
+			t.Fatalf("intermediate cert bytes not loaded")
+		}
+	})
+
+	// A malformed configured intermediate must NOT block startup: it degrades to
+	// a warning so free single-agent detection keeps running and a short-lived
+	// intermediate's expiry can never crash-loop the proxy. The runtime license
+	// gate fails closed separately by disabling agent profiles.
+	t.Run("malformed warns, does not block startup", func(t *testing.T) {
+		tmp := t.TempDir()
+		certPath := filepath.Join(tmp, "intermediate.json")
+		if err := os.WriteFile(certPath, []byte("{bad json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		cfgData := "mode: balanced\nlicense_public_key: " + hex.EncodeToString(rootPub) + "\nlicense_intermediate_file: intermediate.json\n"
+		if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("malformed intermediate must not fail config load, got %v", err)
+		}
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("malformed intermediate must not be a fatal validate error, got %v", err)
+		}
+		if !hasLicenseIntermediateWarning(warnings) {
+			t.Fatalf("expected a license_intermediate_file warning, got %+v", warnings)
+		}
+	})
+
+	// A configured-but-missing intermediate must behave like any other bad
+	// configured intermediate: boot with a warning, but keep cert bytes non-empty
+	// so license verification cannot silently downgrade to direct-root mode.
+	t.Run("missing file warns, does not downgrade", func(t *testing.T) {
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		cfgData := "mode: balanced\nlicense_public_key: " + hex.EncodeToString(rootPub) + "\nlicense_intermediate_file: missing-intermediate.json\n"
+		if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("missing intermediate must not fail config load, got %v", err)
+		}
+		if cfg.LicenseIntermediateLoadError == "" {
+			t.Fatal("expected load error to be recorded")
+		}
+		if len(cfg.LicenseIntermediateCert) == 0 {
+			t.Fatal("missing intermediate must leave non-empty cert bytes to prevent root fallback")
+		}
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("missing intermediate must not be a fatal validate error, got %v", err)
+		}
+		if !hasLicenseIntermediateWarning(warnings) {
+			t.Fatalf("expected a license_intermediate_file warning, got %+v", warnings)
+		}
+	})
+
+	// Configured intermediate but no usable public key: warn, do not block.
+	t.Run("no public key warns, does not block startup", func(t *testing.T) {
+		tmp := t.TempDir()
+		certPath := filepath.Join(tmp, "intermediate.json")
+		if err := os.WriteFile(certPath, cert, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		// No license_public_key, and unit tests run without an embedded key.
+		cfgData := "mode: balanced\nlicense_intermediate_file: intermediate.json\n"
+		if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("missing public key must not fail config load, got %v", err)
+		}
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("missing public key must not be a fatal validate error, got %v", err)
+		}
+		if !hasLicenseIntermediateWarning(warnings) {
+			t.Fatalf("expected a license_intermediate_file warning, got %+v", warnings)
+		}
+	})
+
+	t.Run("invalid public key warns, does not block startup", func(t *testing.T) {
+		tmp := t.TempDir()
+		certPath := filepath.Join(tmp, "intermediate.json")
+		if err := os.WriteFile(certPath, cert, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		cfgData := "mode: balanced\nlicense_public_key: not-hex\nlicense_intermediate_file: intermediate.json\n"
+		if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("invalid public key must not fail config load, got %v", err)
+		}
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("invalid public key must not be a fatal validate error, got %v", err)
+		}
+		if !hasLicenseIntermediateWarning(warnings) {
+			t.Fatalf("expected a license_intermediate_file warning, got %+v", warnings)
+		}
+	})
+}
+
+func hasLicenseIntermediateWarning(warnings []Warning) bool {
+	for _, w := range warnings {
+		if w.Field == "license_intermediate_file" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLicenseIntermediateFileReloadParity(t *testing.T) {
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(root): %v", err)
+	}
+	intermediatePub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(intermediate): %v", err)
+	}
+	now := time.Now().UTC()
+	cert1 := writeTestIntermediateCert(t, rootPriv, intermediatePub, "im_reload_1", now.Add(-time.Minute), now.Add(time.Hour))
+	cert2 := writeTestIntermediateCert(t, rootPriv, intermediatePub, "im_reload_2", now.Add(-time.Minute), now.Add(time.Hour))
+
+	tmp := t.TempDir()
+	certPath := filepath.Join(tmp, "intermediate.json")
+	cfgPath := filepath.Join(tmp, "cfg.yaml")
+	cfgData := "mode: balanced\nlicense_public_key: " + hex.EncodeToString(rootPub) + "\nlicense_intermediate_file: intermediate.json\n"
+	if err := os.WriteFile(certPath, cert1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first.LicenseIntermediateCert) != string(cert1) {
+		t.Fatal("first load did not read cert1")
+	}
+	unchanged, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(unchanged.LicenseIntermediateCert) != string(cert1) {
+		t.Fatal("reload without file change did not preserve cert1 bytes")
+	}
+	if err := os.WriteFile(certPath, cert2, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(changed.LicenseIntermediateCert) != string(cert2) {
+		t.Fatal("reload with file change did not read cert2")
 	}
 }
 

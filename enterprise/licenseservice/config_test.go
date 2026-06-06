@@ -15,6 +15,7 @@ func setRequiredConfigEnv(t *testing.T) {
 	t.Setenv("POLAR_WEBHOOK_SECRET", "whsec_"+"dGVzdA==")
 	t.Setenv("POLAR_API_TOKEN", "polar_"+"test")
 	t.Setenv("PIPELOCK_LICENSE_KEY_PATH", "/tmp/test.key")
+	t.Setenv("PIPELOCK_LICENSE_INTERMEDIATE_FILE", "/tmp/intermediate.json")
 	t.Setenv("RESEND_API_KEY", "re_"+"test")
 }
 
@@ -48,6 +49,7 @@ func TestLoadConfig_MissingRequired(t *testing.T) {
 		{"missing POLAR_WEBHOOK_SECRET", "POLAR_WEBHOOK_SECRET"},
 		{"missing POLAR_API_TOKEN", "POLAR_API_TOKEN"},
 		{"missing PIPELOCK_LICENSE_KEY_PATH", "PIPELOCK_LICENSE_KEY_PATH"},
+		{"missing PIPELOCK_LICENSE_INTERMEDIATE_FILE", "PIPELOCK_LICENSE_INTERMEDIATE_FILE"},
 		{"missing RESEND_API_KEY", "RESEND_API_KEY"},
 	}
 

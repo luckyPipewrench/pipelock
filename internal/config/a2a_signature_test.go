@@ -439,6 +439,20 @@ func TestReloadWarnings_A2ASignature(t *testing.T) {
 	})
 }
 
+// TestValidateA2ATrustedCardKeys_RunsWhenDisabled proves trusted-key validation
+// is fail-fast at load even when a2a_scanning.enabled is false, so a bad key
+// config does not slip through to only fail on a later enabling reload.
+func TestValidateA2ATrustedCardKeys_RunsWhenDisabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.A2AScanning.Enabled = false
+	cfg.A2AScanning.TrustedAgentCardKeys = []A2ATrustedCardKey{
+		{KeyID: "k1", PublicKey: "not-a-key", AllowedOrigins: []string{"https://agent.example.com"}},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "invalid public_key") {
+		t.Fatalf("disabled A2A must still reject a malformed trusted key, got %v", err)
+	}
+}
+
 func hasWarning(warns []ReloadWarning, field string) bool {
 	for _, w := range warns {
 		if w.Field == field {

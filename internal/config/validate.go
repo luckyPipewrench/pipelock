@@ -1234,7 +1234,12 @@ func (c *Config) validateMCPSessionBinding() error {
 }
 
 func (c *Config) validateA2AScanning() error {
-	// Validate A2A scanning config
+	// Validate trusted keys regardless of Enabled so malformed entries and
+	// require_signed_agent_cards-without-keys fail fast at load, not only on a
+	// later reload that turns A2A on. This also normalizes accepted entries.
+	if err := c.validateA2ATrustedCardKeys(); err != nil {
+		return err
+	}
 	if !c.A2AScanning.Enabled {
 		return nil
 	}
@@ -1252,9 +1257,6 @@ func (c *Config) validateA2AScanning() error {
 	}
 	if c.A2AScanning.MaxRawSize <= 0 {
 		c.A2AScanning.MaxRawSize = 1 << 20
-	}
-	if err := c.validateA2ATrustedCardKeys(); err != nil {
-		return err
 	}
 	return nil
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -273,7 +274,7 @@ func readKeyFileBytes(cleanPath string, requireSecretPerms bool) ([]byte, error)
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("key file %q is not a regular file (mode=%s)", cleanPath, info.Mode())
 	}
-	if requireSecretPerms && info.Mode().Perm()&privateKeyDisallowedPermBits != 0 {
+	if requireSecretPerms && secperm.TooPermissive(info.Mode().Perm(), privateKeyDisallowedPermBits) {
 		return nil, fmt.Errorf("private key %s has permissions %04o, want 0600 or 0640 (run: chmod 640 %s)", cleanPath, info.Mode().Perm(), cleanPath)
 	}
 	if info.Size() > keyFileMaxSize {

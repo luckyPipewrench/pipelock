@@ -6,7 +6,6 @@ package runtime
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -359,30 +358,16 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	}
 
 	if opts.CaptureOutput != "" {
-		var escrowPub *[32]byte
-		if opts.CaptureEscrowKey != "" {
-			keyBytes, hexErr := hex.DecodeString(opts.CaptureEscrowKey)
-			if hexErr != nil || len(keyBytes) != 32 {
-				s.cleanup()
-				return nil, fmt.Errorf("invalid --capture-escrow-public-key: must be 64 hex chars (32 bytes)")
-			}
-			escrowPub = (*[32]byte)(keyBytes)
+		// Redaction parity with the MCP proxy: DLP-scrub captured payloads
+		// before they hit disk unless flight_recorder.redact is disabled.
+		// Previously the HTTP --capture-output path passed no RedactFn, so
+		// tool args / bodies were written un-redacted regardless of the
+		// redact knob; buildCaptureWriter now honors it on both surfaces.
+		var captureRedactFn recorder.RedactFunc
+		if cfg.FlightRecorder.Redact {
+			captureRedactFn = sc.ScanTextForDLP
 		}
-
-		cw, cwErr := capture.NewWriter(capture.WriterConfig{
-			RecorderConfig: recorder.Config{
-				Enabled:           true,
-				Dir:               opts.CaptureOutput,
-				MaxEntriesPerFile: 10000, // 10k entries per file before rotation
-				FileMode:          cfg.FlightRecorder.FileMode,
-			},
-			EscrowPublicKey: escrowPub,
-			DropSink:        m,
-			MetricsSink:     m,
-			QueueSize:       4096, // bounded channel capacity
-			BuildVersion:    cliutil.Version,
-			BuildSHA:        cliutil.GitCommit,
-		})
+		cw, cwErr := buildCaptureWriter(opts.CaptureOutput, opts.CaptureEscrowKey, cfg.FlightRecorder.FileMode, captureRedactFn, m)
 		if cwErr != nil {
 			s.cleanup()
 			return nil, fmt.Errorf("creating capture writer: %w", cwErr)

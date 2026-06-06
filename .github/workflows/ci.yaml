@@ -135,6 +135,47 @@ jobs:
       - name: Verify cross-platform build
         run: go build ./...
 
+  # Native Windows smoke lane. Pipelock had zero Windows CI, which let the
+  # recorder signing-key perm gate (#695) and the key-free MCP capture path
+  # (#696) regress on real Windows undetected. This is a TARGETED lane, not full
+  # parity: the full suite asserts Unix file modes that Go can't report on
+  # Windows (it derives FileMode from the read-only attribute, never the ACL),
+  # and internal/config test files use unix-only syscalls. So we run the
+  # OS-split predicate plus the load/capture paths that #695/#696 touch, scoped
+  # with -run. config's perm behavior is proven transitively by the secperm
+  # Windows test (all masks skip when secperm.Enforced is false).
+  test-windows:
+    needs: [security-scan]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.26'
+
+      - name: Verify Windows build (OSS + enterprise)
+        run: |
+          go build ./...
+          go build -tags enterprise ./...
+
+      # -race is intentionally omitted: it needs a CGO C compiler on the runner,
+      # a common source of unrelated red CI on Windows. The Linux matrix already
+      # runs the race detector across all code; this lane proves Windows
+      # functional behavior, not data races.
+      - name: secperm OS split (mode checks skipped on Windows)
+        run: go test -count=1 ./internal/secperm/...
+
+      - name: Signing key / salt / header-file load at any reported mode (#695)
+        run: go test -count=1 -run "TestWindows" ./internal/signing/... ./internal/contract/privacy/... ./internal/cli/runtime/...
+
+      - name: Key-free MCP capture writer smoke (#696)
+        run: go test -count=1 -run "TestBuildCaptureWriter|TestParseCaptureEscrowKey" ./internal/cli/runtime/...
+
   lint:
     needs: [security-scan]
     runs-on: ubuntu-latest

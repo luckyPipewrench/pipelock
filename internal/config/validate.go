@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -538,7 +539,7 @@ func validateLearnSaltSource(src string) error {
 	if !fi.Mode().IsRegular() {
 		return fmt.Errorf("learn.privacy.salt_source: file must be a regular file")
 	}
-	if fi.Mode().Perm()&0o077 != 0 {
+	if secperm.TooPermissive(fi.Mode().Perm(), 0o077) {
 		return fmt.Errorf("learn.privacy.salt_source: file must have mode 0o600 or stricter (got: 0o%03o)", fi.Mode().Perm())
 	}
 	return nil
@@ -632,7 +633,7 @@ func (c *Config) validateDLP() error {
 		}
 		// Reject group-write/execute and all other access. Group-read
 		// allowed for k8s Secret volume compatibility.
-		if info.Mode().Perm()&0o037 != 0 {
+		if secperm.TooPermissive(info.Mode().Perm(), 0o037) {
 			return fmt.Errorf("secrets_file %q has unsafe permissions (mode %04o): restrict to 0600 or 0640", c.DLP.SecretsFile, info.Mode().Perm())
 		}
 	}
@@ -1546,7 +1547,7 @@ func (c *Config) validateTLSInterception() error {
 	}
 	// Reject world-readable, any writable, or any executable bits. Allow
 	// group-read (0o040) because Kubernetes fsGroup sets it on secret volumes.
-	if keyInfo.Mode().Perm()&0o137 != 0 {
+	if secperm.TooPermissive(keyInfo.Mode().Perm(), 0o137) {
 		return fmt.Errorf("CA key %s is too permissive (mode %04o): restrict to 0600 or 0640", keyPath, keyInfo.Mode().Perm())
 	}
 	return nil

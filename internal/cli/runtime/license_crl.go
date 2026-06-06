@@ -65,7 +65,7 @@ func (s *Server) checkLicenseCRL() (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	_, err = license.VerifyWithCRL(cfg.LicenseKey, pubKey, &crl)
+	_, err = license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, &crl, time.Now())
 	if err == nil {
 		return false, nil
 	}

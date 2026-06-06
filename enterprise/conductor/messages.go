@@ -140,6 +140,7 @@ var forbiddenLicenseFields = map[string]struct{}{
 	"license_key":               {},
 	"license_file":              {},
 	"license_crl_file":          {},
+	"license_intermediate_file": {},
 	"license_public_key":        {},
 	"license_expires_at":        {},
 	"license_id":                {},

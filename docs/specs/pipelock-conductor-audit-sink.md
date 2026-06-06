@@ -770,6 +770,7 @@ Policy bundles must not carry:
 - `license_file`
 - `license_public_key`
 - `license_crl_file`
+- `license_intermediate_file`
 - runtime-derived license status fields
 
 Reason: current Pipelock canonical policy hashes intentionally exclude license

@@ -548,6 +548,53 @@ func testLicenseKeyPair(t *testing.T) (token string, pubHex string) {
 	return tok, hex.EncodeToString(pub)
 }
 
+func testIntermediateLicenseBundle(t *testing.T, serial string, notBefore, notAfter time.Time) (rootPub ed25519.PublicKey, rootPriv ed25519.PrivateKey, token string, cert []byte) {
+	t.Helper()
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intermediatePub, intermediatePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	im, err := license.SignIntermediate(license.IntermediatePayload{
+		Serial:    serial,
+		Purpose:   license.PurposeLicenseSigning,
+		Algorithm: license.AlgorithmEd25519,
+		PublicKey: hex.EncodeToString(intermediatePub),
+		NotBefore: notBefore.Unix(),
+		NotAfter:  notAfter.Unix(),
+		IssuedAt:  notBefore.Unix(),
+	}, rootPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err = json.Marshal(im)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID:        "lic_" + serial,
+		Email:     "test@example.com",
+		Features:  []string{license.FeatureAgents},
+		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+	}
+	token, err = license.Issue(lic, intermediatePriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rootPub, rootPriv, token, cert
+}
+
+func testConfigWithNamedAgent() *config.Config {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"claude-code": {Mode: config.ModeStrict},
+	}
+	return cfg
+}
+
 func TestEnforceLicenseGate_NoAgents(t *testing.T) {
 	cfg := testConfig()
 	cfg.Agents = nil
@@ -616,6 +663,122 @@ func TestEnforceLicenseGate_ValidLicense(t *testing.T) {
 	if cfg.LicenseExpiresAt == 0 {
 		t.Error("expected non-zero LicenseExpiresAt after valid license")
 	}
+}
+
+func TestEnforceLicenseGate_IntermediateChain(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("valid chain allows agents", func(t *testing.T) {
+		rootPub, _, token, cert := testIntermediateLicenseBundle(t, "im_agents_valid", now.Add(-time.Minute), now.Add(time.Hour))
+		cfg := testConfigWithNamedAgent()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = hex.EncodeToString(rootPub)
+		cfg.LicenseIntermediateCert = cert
+
+		EnforceLicenseGate(cfg)
+		if cfg.Agents == nil {
+			t.Fatal("expected agents to remain with valid intermediate chain")
+		}
+	})
+
+	t.Run("expired intermediate denies", func(t *testing.T) {
+		rootPub, _, token, cert := testIntermediateLicenseBundle(t, "im_agents_expired", now.Add(-2*time.Hour), now.Add(-time.Hour))
+		cfg := testConfigWithNamedAgent()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = hex.EncodeToString(rootPub)
+		cfg.LicenseIntermediateCert = cert
+
+		EnforceLicenseGate(cfg)
+		if cfg.Agents != nil {
+			t.Fatal("expected agents disabled with expired intermediate")
+		}
+	})
+
+	t.Run("malformed intermediate denies", func(t *testing.T) {
+		token, pubHex := testLicenseKeyPair(t)
+		cfg := testConfigWithNamedAgent()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = pubHex
+		cfg.LicenseIntermediateCert = []byte("{bad json")
+
+		EnforceLicenseGate(cfg)
+		if cfg.Agents != nil {
+			t.Fatal("expected agents disabled with malformed intermediate")
+		}
+	})
+
+	t.Run("load error denies without direct root fallback", func(t *testing.T) {
+		token, pubHex := testLicenseKeyPair(t)
+		cfg := testConfigWithNamedAgent()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = pubHex
+		cfg.LicenseIntermediateLoadError = "stat license_intermediate_file: no such file"
+
+		EnforceLicenseGate(cfg)
+		if cfg.Agents != nil {
+			t.Fatal("expected agents disabled when configured intermediate failed to load")
+		}
+		if cfg.LicenseID != "" {
+			t.Fatalf("license ID = %q, want empty for rejected intermediate load", cfg.LicenseID)
+		}
+		if cfg.LicenseRevoked {
+			t.Fatal("license should not be marked revoked for intermediate load failure")
+		}
+	})
+
+	t.Run("wrong root intermediate denies", func(t *testing.T) {
+		_, _, token, cert := testIntermediateLicenseBundle(t, "im_agents_wrong_root", now.Add(-time.Minute), now.Add(time.Hour))
+		wrongRootPub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := testConfigWithNamedAgent()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = hex.EncodeToString(wrongRootPub)
+		cfg.LicenseIntermediateCert = cert
+
+		EnforceLicenseGate(cfg)
+		if cfg.Agents != nil {
+			t.Fatal("expected agents disabled with wrong-root intermediate")
+		}
+	})
+
+	t.Run("revoked intermediate denies", func(t *testing.T) {
+		const serial = "im_agents_revoked"
+		rootPub, rootPriv, token, cert := testIntermediateLicenseBundle(t, serial, now.Add(-time.Minute), now.Add(time.Hour))
+		cfg := testConfigWithNamedAgent()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = hex.EncodeToString(rootPub)
+		cfg.LicenseIntermediateCert = cert
+
+		crl, err := license.SignCRL(license.CRLPayload{
+			Version:   license.CRLVersion,
+			IssuedAt:  now.Add(-time.Minute).Unix(),
+			ExpiresAt: now.Add(time.Hour).Unix(),
+			RevokedIntermediates: []license.RevokedIntermediate{{
+				Serial:    serial,
+				Reason:    "rotation",
+				RevokedAt: now.Unix(),
+			}},
+		}, rootPriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		crlData, err := json.Marshal(crl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		crlPath := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.WriteFile(crlPath, crlData, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg.LicenseCRLFile = crlPath
+
+		EnforceLicenseGate(cfg)
+		if cfg.Agents != nil {
+			t.Fatal("expected agents disabled with revoked intermediate")
+		}
+	})
 }
 
 func TestEnforceLicenseGate_RevokedLicense(t *testing.T) {
@@ -1116,6 +1279,8 @@ func TestMergeAgentProfile_TrustedDomainsNilInherits(t *testing.T) {
 func TestDeepCopyConfig(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict
+	cfg.LicenseIntermediateCert = []byte("intermediate-cert")
+	cfg.LicenseIntermediateLoadError = "load failed"
 
 	cloned, err := deepCopyConfig(cfg)
 	if err != nil {
@@ -1124,6 +1289,16 @@ func TestDeepCopyConfig(t *testing.T) {
 	cloned.Mode = config.ModeAudit
 	if cfg.Mode != config.ModeStrict {
 		t.Error("deep copy mutated original")
+	}
+	if string(cloned.LicenseIntermediateCert) != "intermediate-cert" {
+		t.Fatalf("runtime intermediate cert not preserved: %q", string(cloned.LicenseIntermediateCert))
+	}
+	if cloned.LicenseIntermediateLoadError != "load failed" {
+		t.Fatalf("runtime intermediate load error = %q", cloned.LicenseIntermediateLoadError)
+	}
+	cloned.LicenseIntermediateCert[0] = 'X'
+	if string(cfg.LicenseIntermediateCert) != "intermediate-cert" {
+		t.Fatal("deep copy aliased runtime intermediate cert bytes")
 	}
 }
 

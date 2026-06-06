@@ -54,6 +54,31 @@ func writeTestCRLFile(t *testing.T, priv ed25519.PrivateKey, revokedID string) s
 	return path
 }
 
+func writeTestIntermediateFile(t *testing.T, rootPriv ed25519.PrivateKey, intermediatePub ed25519.PublicKey, serial string, notBefore, notAfter time.Time) string {
+	t.Helper()
+	im, err := SignIntermediate(IntermediatePayload{
+		Serial:    serial,
+		Purpose:   PurposeLicenseSigning,
+		Algorithm: AlgorithmEd25519,
+		PublicKey: hex.EncodeToString(intermediatePub),
+		NotBefore: notBefore.Unix(),
+		NotAfter:  notAfter.Unix(),
+		IssuedAt:  notBefore.Unix(),
+	}, rootPriv)
+	if err != nil {
+		t.Fatalf("SignIntermediate: %v", err)
+	}
+	data, err := json.Marshal(im)
+	if err != nil {
+		t.Fatalf("Marshal intermediate: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "intermediate.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(intermediate): %v", err)
+	}
+	return path
+}
+
 func TestRequireFleet_NoLicenseFailsClosed(t *testing.T) {
 	t.Setenv(EnvLicenseKey, "")
 	t.Setenv(EnvLicensePublicKey, "")
@@ -181,5 +206,65 @@ func TestVerifyFleet_ReadsCRLFromEnv(t *testing.T) {
 	_, err := VerifyFleet(tok, hex.EncodeToString(pub), "")
 	if !errors.Is(err, ErrLicenseRevoked) {
 		t.Fatalf("env CRL revoked fleet license: want ErrLicenseRevoked, got %v", err)
+	}
+}
+
+func TestVerifyFleetWithIntermediate_ValidChainAccepted(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	intermediatePub, intermediatePriv := newKeyPair(t)
+	now := time.Now().UTC()
+	intermediateFile := writeTestIntermediateFile(t, rootPriv, intermediatePub, "im_fleet_valid", now.Add(-time.Minute), now.Add(time.Hour))
+	tok := mustIssue(t, intermediatePriv, "lic_fleet_intermediate", []string{FeatureFleet})
+
+	got, err := VerifyFleetWithIntermediate(tok, hex.EncodeToString(rootPub), "", intermediateFile)
+	if err != nil {
+		t.Fatalf("VerifyFleetWithIntermediate: %v", err)
+	}
+	if got.ID != "lic_fleet_intermediate" {
+		t.Fatalf("license ID = %q, want lic_fleet_intermediate", got.ID)
+	}
+}
+
+func TestVerifyFleetWithIntermediate_BadConfiguredCertFailsClosed(t *testing.T) {
+	rootPub, intermediatePriv := newKeyPair(t)
+	tok := mustIssue(t, intermediatePriv, "lic_fleet_bad_im", []string{FeatureFleet})
+	intermediateFile := filepath.Join(t.TempDir(), "intermediate.json")
+	if err := os.WriteFile(intermediateFile, []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := VerifyFleetWithIntermediate(tok, hex.EncodeToString(rootPub), "", intermediateFile)
+	if !errors.Is(err, ErrFleetLicenseRequired) {
+		t.Fatalf("bad intermediate: want ErrFleetLicenseRequired, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "intermediate") {
+		t.Fatalf("error should mention intermediate, got %v", err)
+	}
+}
+
+func TestVerifyFleetWithIntermediate_LoadIntermediateErrorFailsClosed(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	tok := mustIssue(t, rootPriv, "lic_fleet_missing_im", []string{FeatureFleet})
+	intermediateFile := filepath.Join(t.TempDir(), "missing-intermediate.json")
+
+	_, err := VerifyFleetWithIntermediate(tok, hex.EncodeToString(rootPub), "", intermediateFile)
+	if !errors.Is(err, ErrFleetLicenseRequired) {
+		t.Fatalf("missing intermediate: want ErrFleetLicenseRequired, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "loading intermediate certificate") {
+		t.Fatalf("error should mention intermediate load failure, got %v", err)
+	}
+}
+
+func TestVerifyFleetWithIntermediate_ReadsIntermediateFromEnv(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	intermediatePub, intermediatePriv := newKeyPair(t)
+	now := time.Now().UTC()
+	intermediateFile := writeTestIntermediateFile(t, rootPriv, intermediatePub, "im_fleet_env", now.Add(-time.Minute), now.Add(time.Hour))
+	tok := mustIssue(t, intermediatePriv, "lic_fleet_env_im", []string{FeatureFleet})
+	t.Setenv(EnvLicenseIntermediateFile, intermediateFile)
+
+	if _, err := VerifyFleet(tok, hex.EncodeToString(rootPub), ""); err != nil {
+		t.Fatalf("env intermediate fleet license: %v", err)
 	}
 }

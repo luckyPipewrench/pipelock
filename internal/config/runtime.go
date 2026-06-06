@@ -204,6 +204,9 @@ func (c *Config) Clone() *Config {
 		copy(buf, c.rawBytes)
 		clone.rawBytes = buf
 	}
+	if c.LicenseIntermediateCert != nil {
+		clone.LicenseIntermediateCert = append([]byte(nil), c.LicenseIntermediateCert...)
+	}
 
 	clone.DLP.Patterns = cloneDLPPatterns(c.DLP.Patterns)
 	clone.ResponseScanning.Patterns = cloneResponseScanPatterns(c.ResponseScanning.Patterns)

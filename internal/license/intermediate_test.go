@@ -9,6 +9,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,6 +142,125 @@ func TestSignAndParseIntermediate_RoundTrip(t *testing.T) {
 	if got.Serial() != testSerial {
 		t.Fatalf("parsed Serial() = %q, want %q", got.Serial(), testSerial)
 	}
+}
+
+func TestExtractIntermediatePublicKey(t *testing.T) {
+	_, rootPriv := testKeyPair(t)
+	intPub, _ := testKeyPair(t)
+	now := time.Now().UTC()
+	_, data := testIntermediate(t, rootPriv, intPub, now.Add(-time.Hour), now.Add(time.Hour))
+
+	got, err := ExtractIntermediatePublicKey(data)
+	if err != nil {
+		t.Fatalf("ExtractIntermediatePublicKey: %v", err)
+	}
+	if !got.Equal(intPub) {
+		t.Fatal("extracted public key does not match intermediate payload")
+	}
+	got[0] ^= 0xff
+	if got2, err := ExtractIntermediatePublicKey(data); err != nil || !got2.Equal(intPub) {
+		t.Fatalf("extracted key should not expose mutable package state: key=%x err=%v", got2, err)
+	}
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"oversized", intermediateBytesOfLen(maxIntermediateBytes + 1)},
+		{"bad-wire-json", []byte("{bad json")},
+		{"bad-payload-base64", mustWire(t, "!!notb64", "")},
+		{"bad-payload-json", mustWire(t, base64.RawURLEncoding.EncodeToString([]byte("not json")), "")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ExtractIntermediatePublicKey(tc.data); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestLoadIntermediateCertFile(t *testing.T) {
+	_, rootPriv := testKeyPair(t)
+	intPub, _ := testKeyPair(t)
+	now := time.Now().UTC()
+	_, data := testIntermediate(t, rootPriv, intPub, now.Add(-time.Hour), now.Add(time.Hour))
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "intermediate.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadIntermediateCertFile(path)
+	if err != nil {
+		t.Fatalf("LoadIntermediateCertFile: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatal("loaded intermediate bytes do not match file")
+	}
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) string
+		wantErr string
+	}{
+		{
+			name: "missing",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				return filepath.Join(t.TempDir(), "missing.json")
+			},
+			wantErr: "stat license_intermediate_file",
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				return t.TempDir()
+			},
+			wantErr: "regular file",
+		},
+		{
+			name: "oversized",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "oversized.json")
+				if err := os.WriteFile(path, intermediateBytesOfLen(maxIntermediateBytes+1), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			wantErr: "maximum size",
+		},
+		{
+			name: "empty",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "empty.json")
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			wantErr: "empty",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadIntermediateCertFile(tc.setup(t))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("LoadIntermediateCertFile error = %v, want contains %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func intermediateBytesOfLen(n int) []byte {
+	data := make([]byte, n)
+	for i := range data {
+		data[i] = 'x'
+	}
+	return data
 }
 
 func TestParseAndVerifyIntermediate_WrongRootRejected(t *testing.T) {

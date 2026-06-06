@@ -148,9 +148,20 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) {
 	if e == nil {
 		return
 	}
-	if err := e.Emit(opts); err != nil && ic.Logger != nil {
-		ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+	if err := e.Emit(opts); err != nil {
+		if ic.Logger != nil {
+			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+		}
+		// v1 stays authoritative: skip v2 when v1 failed to record.
+		return
 	}
+	// Dual-emit the v2 proxy_decision receipt. The atomic load is current at
+	// call time so long-lived tunnels pick up the post-reload emitter.
+	emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
+		if ic.Logger != nil {
+			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+		}
+	})
 }
 
 // interceptReadHeaderTimeout is the maximum time to read request headers on an
@@ -161,6 +172,11 @@ const interceptReadHeaderTimeout = 30 * time.Second
 // metrics. Distinguishes A2A-specific scanning from generic body_dlp or
 // response_scan findings.
 const scannerLabelA2A = "a2a_scan"
+
+// scannerLabelA2ACardSignature is the receipt/log layer for Agent Card
+// signature attestation outcomes (positive verification and verification
+// failures distinct from generic A2A content findings).
+const scannerLabelA2ACardSignature = "a2a_card_signature"
 
 // interceptHandshakeTimeout is the maximum time for the client-side TLS
 // handshake during interception. Prevents goroutine/semaphore exhaustion
@@ -1634,6 +1650,23 @@ func newInterceptHandler(
 					if a2aRespResult.Reason == "" {
 						a2aRespResult.Reason = cardResult.Reason
 					}
+				}
+				// Positive attestation: emit an allow receipt when the card's
+				// signature verified against a trusted, origin-scoped key.
+				if cardResult.SignatureVerified {
+					pattern := "verified key_id=" + cardResult.SignatureKeyID
+					ic.Logger.LogAnomaly(actx, scannerLabelA2ACardSignature, pattern, 0)
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionAllow,
+						Layer:     scannerLabelA2ACardSignature,
+						Pattern:   pattern,
+						Transport: "intercept",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: ic.RequestID,
+						Agent:     ic.Agent,
+					}))
 				}
 			} else {
 				a2aRespResult = mcp.ScanA2AResponseBody(r.Context(), respBody, ic.Scanner, &ic.Config.A2AScanning)

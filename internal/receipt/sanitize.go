@@ -136,3 +136,28 @@ func coarsenUntilClean(u *url.URL, clean dlpClean) string {
 	// Nothing structural is safe to keep.
 	return redactedTarget
 }
+
+// SanitizeTarget exposes the v1 emitter's pre-sign target sanitization to the
+// v2 proxy_decision emitter (internal/contract/proxydecision). The v2 receipt
+// stamps the same secret-bearing target field into a SIGNED payload, so it MUST
+// apply byte-identical sanitization (#676) rather than duplicate this
+// security-critical logic. clean is gated on flight-recorder redaction being
+// enabled; pass nil (or build it from recorder.ReceiptRedactor) to leave
+// targets unchanged when redaction is off.
+func SanitizeTarget(target string, clean func(string) bool) string {
+	if clean == nil {
+		return sanitizeTarget(target, nil)
+	}
+	return sanitizeTarget(target, dlpClean(clean))
+}
+
+// CleanOrRedacted exposes the v1 emitter's pre-sign field sanitization for
+// non-URL secret-bearing fields (e.g. a scanner pattern/rule label that may
+// echo matched bytes). Same rationale as SanitizeTarget: the v2 emitter signs
+// these fields, so it reuses this function instead of duplicating it.
+func CleanOrRedacted(s string, clean func(string) bool) string {
+	if clean == nil {
+		return s
+	}
+	return cleanOrRedacted(s, dlpClean(clean))
+}

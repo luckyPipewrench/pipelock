@@ -288,6 +288,46 @@ func TestDoctorLicenseStatusBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("valid intermediate detail", func(t *testing.T) {
+		rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		intermediatePub, intermediatePriv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		im, err := license.SignIntermediate(license.IntermediatePayload{
+			Serial:    "im_doctor",
+			Purpose:   license.PurposeLicenseSigning,
+			Algorithm: license.AlgorithmEd25519,
+			PublicKey: hex.EncodeToString(intermediatePub),
+			NotBefore: now.Add(-time.Minute).Unix(),
+			NotAfter:  now.Add(time.Hour).Unix(),
+			IssuedAt:  now.Add(-time.Minute).Unix(),
+		}, rootPriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert, err := json.Marshal(im)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := license.Issue(active, intermediatePriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Defaults()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = hex.EncodeToString(rootPub)
+		cfg.LicenseIntermediateCert = cert
+
+		check := checkDoctorLicense(cfg)
+		if check.Status != doctorStatusOK || !strings.Contains(check.Detail, "intermediate certificate configured") {
+			t.Fatalf("check = %+v, want ok intermediate detail", check)
+		}
+	})
+
 	t.Run("revoked from CRL", func(t *testing.T) {
 		crl, err := license.SignCRL(license.CRLPayload{
 			Version:   license.CRLVersion,

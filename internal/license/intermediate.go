@@ -10,6 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -193,6 +196,31 @@ func ParseAndVerifyIntermediate(data []byte, rootPub ed25519.PublicKey, now time
 	return verifyIntermediateBytes(payloadBytes, wire.Signature, rootPub, now)
 }
 
+// ExtractIntermediatePublicKey decodes the public key carried by an
+// intermediate certificate without trusting the certificate. It exists for
+// local service configuration checks, such as confirming the configured token
+// signing private key matches the public key operators will distribute in the
+// intermediate cert. It does not verify the root signature or current validity;
+// callers must use ParseAndVerifyIntermediate for trust decisions.
+func ExtractIntermediatePublicKey(data []byte) (ed25519.PublicKey, error) {
+	if len(data) > maxIntermediateBytes {
+		return nil, fmt.Errorf("%w: exceeds maximum size", ErrIntermediateMalformed)
+	}
+	var wire intermediateWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrIntermediateMalformed, err)
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(wire.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("%w: decode payload: %w", ErrIntermediateMalformed, err)
+	}
+	var payload IntermediatePayload
+	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, fmt.Errorf("%w: parse payload: %w", ErrIntermediateMalformed, err)
+	}
+	return validateIntermediatePayload(payload)
+}
+
 // verifyIntermediateObject defensively re-validates an already decoded
 // Intermediate against the root trust anchor. VerifyChain calls this so future
 // wiring cannot accidentally trust a hand-built or stale Intermediate value.
@@ -371,4 +399,38 @@ func VerifyTokenWithOptionalIntermediate(token string, intermediateCert []byte, 
 		}
 	}
 	return VerifyChain(token, &im, rootPub, crl, now)
+}
+
+// LoadIntermediateCertFile reads an operator-configured intermediate
+// certificate file. The certificate is public, but this still rejects devices,
+// FIFOs, and oversized files so startup cannot hang or allocate unboundedly.
+func LoadIntermediateCertFile(path string) ([]byte, error) {
+	cleanPath := filepath.Clean(path)
+	f, err := os.Open(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat license_intermediate_file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat license_intermediate_file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("license_intermediate_file must be a regular file")
+	}
+	if info.Size() > maxIntermediateBytes {
+		return nil, errors.New("license_intermediate_file exceeds maximum size")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxIntermediateBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read license_intermediate_file: %w", err)
+	}
+	if len(data) > maxIntermediateBytes {
+		return nil, errors.New("license_intermediate_file exceeds maximum size")
+	}
+	if len(data) == 0 {
+		return nil, errors.New("license_intermediate_file is empty")
+	}
+	return data, nil
 }

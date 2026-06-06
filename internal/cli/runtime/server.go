@@ -309,7 +309,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// process does not silently start a half-wired follower the operator
 	// expects to be participating.
 	if cfg.Conductor.Enabled {
-		lic, err := license.VerifyFleet(cfg.LicenseKey, cfg.LicensePublicKey, cfg.LicenseCRLFile)
+		lic, err := license.VerifyFleetWithIntermediate(cfg.LicenseKey, cfg.LicensePublicKey, cfg.LicenseCRLFile, cfg.LicenseIntermediateFile)
 		if err != nil {
 			s.cleanup()
 			return nil, err

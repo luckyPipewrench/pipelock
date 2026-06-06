@@ -23,7 +23,7 @@ func TestBuildManifest_BindsPacketAndReceipts(t *testing.T) {
 	// signed receipt view.
 	var scenario Scenario
 	for _, s := range DefaultScenarios() {
-		if s.ID == "domain-blocklist-denied" {
+		if s.ID == "operation-aware-policy" {
 			scenario = s
 		}
 	}

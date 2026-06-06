@@ -5,6 +5,7 @@
 package licenseservice
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"os"
 	"strconv"
@@ -22,9 +23,27 @@ type Config struct {
 	// PolarAPIToken is the bearer token for Polar API calls.
 	PolarAPIToken string
 
-	// PrivateKeyPath is the filesystem path to the Ed25519 private key
-	// used for signing license tokens.
+	// PrivateKeyPath is the filesystem path to the Ed25519 intermediate
+	// private key used for signing license tokens. The offline root key must
+	// never be deployed to the license service.
 	PrivateKeyPath string
+
+	// IntermediateCertPath is the filesystem path to the root-signed
+	// intermediate certificate served beside issued tokens.
+	IntermediateCertPath string
+
+	// IntermediateCert is populated by cmd/license-service after loading
+	// IntermediateCertPath. It is public certificate bytes, not a secret.
+	IntermediateCert []byte
+
+	// CRLSigningKeyPath optionally points at the root/private key used to sign
+	// dynamic CRLs. Leave empty when CRLs are signed offline and distributed as
+	// files. The token signing key must not be reused for CRLs.
+	CRLSigningKeyPath string
+
+	// CRLPrivateKey is populated by cmd/license-service when CRLSigningKeyPath
+	// is set. It is intentionally separate from PrivateKeyPath.
+	CRLPrivateKey ed25519.PrivateKey
 
 	// ResendAPIKey is the API key for the Resend email service.
 	ResendAPIKey string
@@ -87,12 +106,16 @@ func LoadConfig() (*Config, error) {
 		PolarWebhookSecret: os.Getenv("POLAR_WEBHOOK_SECRET"),
 		PolarAPIToken:      os.Getenv("POLAR_API_TOKEN"),
 		PrivateKeyPath:     os.Getenv("PIPELOCK_LICENSE_KEY_PATH"),
-		ResendAPIKey:       os.Getenv("RESEND_API_KEY"),
-		DBPath:             envOrDefault("DB_PATH", defaultDBPath),
-		LedgerPath:         envOrDefault("LEDGER_PATH", defaultLedgerPath),
-		ListenAddr:         envOrDefault("LISTEN_ADDR", defaultListenAddr),
-		FromEmail:          envOrDefault("FROM_EMAIL", defaultFromEmail),
-		PolarAPIBase:       envOrDefault("POLAR_API_BASE", defaultPolarAPIBase),
+		IntermediateCertPath: os.Getenv(
+			"PIPELOCK_LICENSE_INTERMEDIATE_FILE",
+		),
+		CRLSigningKeyPath: os.Getenv("PIPELOCK_LICENSE_CRL_SIGNING_KEY_PATH"),
+		ResendAPIKey:      os.Getenv("RESEND_API_KEY"),
+		DBPath:            envOrDefault("DB_PATH", defaultDBPath),
+		LedgerPath:        envOrDefault("LEDGER_PATH", defaultLedgerPath),
+		ListenAddr:        envOrDefault("LISTEN_ADDR", defaultListenAddr),
+		FromEmail:         envOrDefault("FROM_EMAIL", defaultFromEmail),
+		PolarAPIBase:      envOrDefault("POLAR_API_BASE", defaultPolarAPIBase),
 	}
 
 	// Parse founding pro cap.
@@ -142,7 +165,10 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("POLAR_API_TOKEN is required")
 	}
 	if cfg.PrivateKeyPath == "" {
-		return nil, fmt.Errorf("PIPELOCK_LICENSE_KEY_PATH is required (path to Ed25519 private key file)")
+		return nil, fmt.Errorf("PIPELOCK_LICENSE_KEY_PATH is required (path to Ed25519 intermediate private key file)")
+	}
+	if cfg.IntermediateCertPath == "" {
+		return nil, fmt.Errorf("PIPELOCK_LICENSE_INTERMEDIATE_FILE is required (path to root-signed intermediate certificate)")
 	}
 	if cfg.ResendAPIKey == "" {
 		return nil, fmt.Errorf("RESEND_API_KEY is required")

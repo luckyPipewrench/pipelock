@@ -313,14 +313,14 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 
 	// Primary pass.
 	if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, content); len(matches) > 0 {
-		return responseMatchSet{matches: matches, content: content}
+		return responseMatchSet{matches: withResponseSpans(matches, ViewForMatching), content: content}
 	}
 
 	// Secondary: replace invisible chars with spaces.
 	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 	if spaced != content {
 		if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: spaced}
+			return responseMatchSet{matches: withResponseSpans(matches, ViewInvisibleSpaced), content: spaced}
 		}
 	}
 
@@ -328,14 +328,14 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 	leeted := normalize.Leetspeak(content)
 	if leeted != content {
 		if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: leeted}
+			return responseMatchSet{matches: withResponseSpans(matches, ViewLeetspeak), content: leeted}
 		}
 	}
 
 	// Quaternary: optional-whitespace matching.
 	if len(s.core.responseOptSpacePatterns) > 0 {
 		if matches := matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: content}
+			return responseMatchSet{matches: withResponseSpans(matches, ViewForMatching), content: content}
 		}
 	}
 
@@ -344,7 +344,7 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 		folded := normalize.FoldVowels(content)
 		if folded != content {
 			if matches := matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded); len(matches) > 0 {
-				return responseMatchSet{matches: matches, content: folded}
+				return responseMatchSet{matches: withResponseSpans(matches, ViewVowelFold), content: folded}
 			}
 		}
 	}
@@ -387,7 +387,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 	} {
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
-			if decodedSet := s.matchDecodedCoreNormalized(d); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
 			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
@@ -397,7 +397,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
-		if decodedSet := s.matchDecodedCoreNormalized(d); len(decodedSet.matches) > 0 {
+		if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}
 		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
@@ -414,7 +414,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 		} {
 			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
-				if decodedSet := s.matchDecodedCoreNormalized(d); len(decodedSet.matches) > 0 {
+				if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
 					return decodedSet
 				}
 				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
@@ -424,7 +424,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 		}
 		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			d := string(decoded)
-			if decodedSet := s.matchDecodedCoreNormalized(d); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
 			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
@@ -436,10 +436,10 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 	return responseMatchSet{}
 }
 
-func (s *Scanner) matchDecodedCoreNormalized(decoded string) responseMatchSet {
+func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
 	if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized); len(matches) > 0 {
-		return responseMatchSet{matches: matches, content: normalized}
+		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 	}
 	return responseMatchSet{}
 }
@@ -456,10 +456,11 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 
 	for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
 		p := s.core.dlpPatterns[idx]
-		if p.matches(cleaned) {
+		if start, end, ok := p.matchSpan(cleaned); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName: p.name,
 				Severity:    p.severity,
+				span:        newMatchSpan(start, end, ViewDLPNormalized, p.name, "", ""),
 			})
 		}
 	}
@@ -499,11 +500,12 @@ func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
 	var matches []TextDLPMatch
 	for _, idx := range s.core.dlpPreFilter.patternsToCheck(text) {
 		p := s.core.dlpPatterns[idx]
-		if p.matches(text) {
+		if start, end, ok := p.matchSpan(text); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName: p.name,
 				Severity:    p.severity,
 				Encoded:     encoding,
+				span:        newMatchSpan(start, end, dlpViewLabel(encoding), p.name, "", ""),
 			})
 		}
 	}
@@ -696,49 +698,56 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	}
 
 	decodedQuery := IterativeDecode(parsed.RawQuery)
-	targets := []string{
-		parsed.String(),
-		parsed.Path,
-		decodedQuery,
+	type dlpTarget struct {
+		text      string
+		viewLabel string
+	}
+	targets := []dlpTarget{
+		{parsed.Path, dlpViewLabel("url_path")},
+		{decodedQuery, dlpViewLabel("url_query")},
 	}
 
 	// Individual query keys and values (decoded + encoding variants).
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
-		targets = append(targets, decodedKey)
+		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key")})
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
-			targets = append(targets, stripped)
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 		}
 		for _, v := range values {
 			decoded := IterativeDecode(v)
-			targets = append(targets, decoded)
+			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value")})
 			if stripped := stripURLNoise(decoded); stripped != decoded {
-				targets = append(targets, stripped)
+				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 			}
 		}
 	}
 
 	// Dot-collapse hostname.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
-		targets = append(targets, strings.ReplaceAll(hostname, ".", ""))
+		targets = append(targets, dlpTarget{strings.ReplaceAll(hostname, ".", ""), dlpViewLabel("subdomain")})
 	}
 
 	// Noise-stripped path.
 	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
-		targets = append(targets, stripped)
+		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 	}
 
-	// Double-encoded raw path.
-	decodedPath := IterativeDecode(parsed.RawPath)
+	// Double-encoded escaped path.
+	rawPath := parsed.RawPath
+	if rawPath == "" {
+		rawPath = parsed.EscapedPath()
+	}
+	decodedPath := IterativeDecode(rawPath)
 	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, decodedPath)
+		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded")})
 	}
 
 	// Path segment decoding (hex/base64/base32).
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if len(segment) >= 10 {
 			for _, d := range decodeEncodings(segment) {
-				targets = append(targets, d.text)
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
 			}
 		}
 	}
@@ -746,25 +755,32 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	// Ordered query-value concatenation (catches secrets split across params).
 	if parsed.RawQuery != "" && strings.Contains(parsed.RawQuery, "&") {
 		concat := orderedQueryConcat(parsed.RawQuery)
-		targets = append(targets, concat)
+		targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat")})
 		if stripped := stripURLNoise(concat); stripped != concat {
-			targets = append(targets, stripped)
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
 		}
 	}
 
+	// Coarse full-URL fallback runs after component targets so path/query spans
+	// keep their more precise view labels when both views match.
+	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url")})
+
 	for _, target := range targets {
-		if target == "" {
+		if target.text == "" {
 			continue
 		}
-		cleaned := normalize.ForDLP(target)
+		cleaned := normalize.ForDLP(target.text)
 		for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.core.dlpPatterns[idx]
-			if p.matches(cleaned) {
+			if start, end, ok := p.matchSpan(cleaned); ok {
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("core DLP match: %s (%s)", p.name, p.severity),
 					Scanner: ScannerCoreDLP,
 					Score:   1.0,
+					spans: []MatchSpan{
+						newMatchSpan(start, end, target.viewLabel, p.name, "", ""),
+					},
 				}
 			}
 		}
@@ -824,12 +840,15 @@ func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int) Result 
 		cleaned := normalize.ForDLP(combined)
 		for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.core.dlpPatterns[idx]
-			if p.matches(cleaned) {
+			if start, end, ok := p.matchSpan(cleaned); ok {
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("core DLP match: %s (%s)", p.name, p.severity),
 					Scanner: ScannerCoreDLP,
 					Score:   1.0,
+					spans: []MatchSpan{
+						newMatchSpan(start, end, dlpViewLabel("query_subsequence"), p.name, "", ""),
+					},
 				}
 			}
 		}

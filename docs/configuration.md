@@ -1651,6 +1651,8 @@ If defined, `_default` applies to any request that does not match a named agent.
 
 Multi-agent profiles (the `agents:` section) require a signed license token. The token is an Ed25519-signed JWT-like string issued by `pipelock license issue`. At startup, pipelock verifies the signature, checks expiration, and confirms the token includes the `agents` feature. If any check fails, agent profiles are disabled with a warning. All single-agent protection remains active.
 
+New deployments may receive a root-signed intermediate certificate alongside the token. When `license_intermediate_file` is configured, Pipelock verifies the token through `token -> intermediate -> embedded root public key` and fails closed if the intermediate is malformed, expired, signed by the wrong root, or revoked by the CRL. Omitting `license_intermediate_file` preserves legacy direct-root token verification.
+
 ### Loading Sources
 
 Pipelock checks three sources for the license token, in priority order:
@@ -1691,6 +1693,7 @@ license_key: "pipelock_lic_v1_eyJ..."
 license_key: "pipelock_lic_v1_eyJ..."        # inline token (lowest priority)
 license_file: "/etc/pipelock/license.token"  # file path (medium priority)
 license_crl_file: "/etc/pipelock/license.crl" # signed revocation list
+license_intermediate_file: "/etc/pipelock/license-intermediate.json" # root-signed intermediate cert
 license_public_key: "a1b2c3d4..."            # hex-encoded Ed25519 public key (dev builds only)
 ```
 
@@ -1711,6 +1714,7 @@ Or mount the Secret as a file and reference it in config:
 
 ```yaml
 license_file: /etc/pipelock/license/token
+license_intermediate_file: /etc/pipelock/license/intermediate.json
 ```
 
 ### Key Verification
@@ -1718,6 +1722,8 @@ license_file: /etc/pipelock/license/token
 Official release builds embed the signing public key at compile time via ldflags. The embedded key takes priority over `license_public_key` and cannot be overridden by config, preventing self-signing bypasses. The `license_public_key` config field is only used in development builds where no key is embedded.
 
 `license_crl_file` points at a signed license revocation list. It is read and verified at startup and on config reload; a revoked active license is disabled immediately. The CRL file should be mounted from trusted operator-controlled storage, not written by the agent.
+
+`license_intermediate_file` points at the root-signed intermediate license-signing certificate. It is public cert material, not a secret, but it controls the active signing chain and should still come from trusted operator-controlled storage. Relative paths resolve against the config file directory. A configured intermediate certificate is checked at startup: a missing, unreadable, malformed, expired, or wrong-root cert emits a startup warning and disables licensed features such as multi-agent profiles and Assess signing, rather than silently downgrading to direct-root verification. It never blocks startup or single-agent protection — a licensing-tier misconfiguration must not take the proxy down, and a short-lived intermediate's expiry must not crash-loop it. Changing this field requires a restart for the new license chain to take effect.
 
 ### CLI Commands
 

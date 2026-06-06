@@ -65,7 +65,7 @@ func checkAssessLicense(runDir string) bool {
 		return false
 	}
 
-	lic, err := license.Verify(cfg.LicenseKey, pubKey)
+	lic, err := license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, nil, time.Now())
 	if err != nil {
 		return false
 	}

@@ -41,11 +41,18 @@ type ResponseMatch struct {
 	Bundle        string `json:"bundle,omitempty"`
 	BundleVersion string `json:"bundle_version,omitempty"`
 	matchLength   int
+	span          MatchSpan
 }
 
 type responseMatchSet struct {
 	matches []ResponseMatch
 	content string
+}
+
+// Span returns retained coordinates for this match in the normalized scanner
+// view named by MatchSpan.ViewLabel. It never includes matched bytes.
+func (m ResponseMatch) Span() MatchSpan {
+	return m.span
 }
 
 // ScanResponse checks fetched content for prompt injection patterns.
@@ -125,7 +132,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// own keyword check because normalization reveals new keywords
 	// (e.g., leetspeak "1gnore" → "ignore" after normalization).
 	var matches []ResponseMatch
-	matches = s.matchResponsePatternsPreFiltered(content)
+	matches = withResponseSpans(s.matchResponsePatternsPreFiltered(content), ViewForMatching)
 
 	// Secondary: replace invisible chars with spaces, then normalize. Catches
 	// word-boundary collapse where the attacker uses ZW instead of space:
@@ -134,7 +141,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 {
 		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 		if spaced != content {
-			matches = s.matchResponsePatternsPreFiltered(spaced)
+			matches = withResponseSpans(s.matchResponsePatternsPreFiltered(spaced), ViewInvisibleSpaced)
 			if len(matches) > 0 {
 				matchContent = spaced
 				content = spaced // use spaced version for strip action
@@ -147,7 +154,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 {
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
-			matches = s.matchResponsePatternsPreFiltered(leeted)
+			matches = withResponseSpans(s.matchResponsePatternsPreFiltered(leeted), ViewLeetspeak)
 			if len(matches) > 0 {
 				matchContent = leeted
 			}
@@ -159,7 +166,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// "i\u200bgnore\u200ball\u200bprevious" -> strip ZW -> "ignoreallprevious"
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
 	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 {
-		matches = matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)
+		matches = withResponseSpans(matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content), ViewForMatching)
 		if len(matches) > 0 {
 			matchContent = content
 		}
@@ -172,7 +179,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			matches = matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)
+			matches = withResponseSpans(matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded), ViewVowelFold)
 			if len(matches) > 0 {
 				matchContent = folded
 			}
@@ -349,6 +356,21 @@ func matchPatternsAgainst(patterns []*compiledPattern, content string) []Respons
 	return matches
 }
 
+func withResponseSpans(matches []ResponseMatch, viewLabel string) []ResponseMatch {
+	for i := range matches {
+		end := matches[i].Position + matches[i].matchLength
+		matches[i].span = newMatchSpan(
+			matches[i].Position,
+			end,
+			viewLabel,
+			matches[i].PatternName,
+			matches[i].Bundle,
+			matches[i].BundleVersion,
+		)
+	}
+	return matches
+}
+
 // matchResponsePatternsPreFiltered checks the primary response pre-filter
 // for keyword candidates, then runs only matching patterns' regex.
 func (s *Scanner) matchResponsePatternsPreFiltered(content string) []ResponseMatch {
@@ -429,7 +451,7 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) respo
 	} {
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
-			if decodedSet := s.matchDecodedNormalized(d); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
 			// Always recurse on successful decode. The depth limit is the
@@ -442,7 +464,7 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) respo
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
-		if decodedSet := s.matchDecodedNormalized(d); len(decodedSet.matches) > 0 {
+		if decodedSet := s.matchDecodedNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}
 		if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
@@ -473,7 +495,7 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) respo
 		} {
 			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
-				if decodedSet := s.matchDecodedNormalized(d); len(decodedSet.matches) > 0 {
+				if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
 					return decodedSet
 				}
 				if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
@@ -483,7 +505,7 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) respo
 		}
 		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			d := string(decoded)
-			if decodedSet := s.matchDecodedNormalized(d); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
 			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
@@ -573,21 +595,21 @@ func isPrintableText(data []byte) bool {
 // matchDecodedNormalized runs all response scanning passes (primary, opt-space,
 // vowel-fold) against decoded content. Without this, encoded payloads carrying
 // vowel-substituted or zero-width-separated injection would bypass detection.
-func (s *Scanner) matchDecodedNormalized(decoded string) responseMatchSet {
+func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
 	if matches := matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized); len(matches) > 0 {
-		return responseMatchSet{matches: matches, content: normalized}
+		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 	}
 	if len(s.responseOptSpacePatterns) > 0 {
 		if matches := matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized); len(matches) > 0 {
-			return responseMatchSet{matches: matches, content: normalized}
+			return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 		}
 	}
 	if len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
 		if folded != normalized {
 			if matches := matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded); len(matches) > 0 {
-				return responseMatchSet{matches: matches, content: folded}
+				return responseMatchSet{matches: withResponseSpans(matches, vowelFoldViewLabel(decodedViewLabel)), content: folded}
 			}
 		}
 	}

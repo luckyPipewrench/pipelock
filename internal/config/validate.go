@@ -4,6 +4,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -85,6 +87,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateLogging(); err != nil {
 		return warnings, err
 	}
+	c.validateLicenseIntermediate(&warnings)
 	if err := c.validateDLP(); err != nil {
 		return warnings, err
 	}
@@ -237,6 +240,53 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	return warnings, nil
+}
+
+// validateLicenseIntermediate surfaces a configured intermediate certificate
+// that cannot anchor the license chain as an advisory WARNING, never a fatal
+// error. A licensing-tier misconfiguration must not block proxy startup: doing
+// so would take down free single-agent detection (violating the "never gate
+// detection behind a license" rule) and would crash-loop on the next restart
+// once a short-lived intermediate expires. The runtime license gate
+// (EnforceLicenseGate -> VerifyTokenWithOptionalIntermediate) already fails
+// closed on a bad cert by disabling agent profiles, so the safe degraded state
+// is reached without the early hard rejection.
+func (c *Config) validateLicenseIntermediate(warnings *[]Warning) {
+	if len(c.LicenseIntermediateCert) == 0 {
+		return
+	}
+	if c.LicenseIntermediateLoadError != "" {
+		*warnings = append(*warnings, Warning{
+			Field:   "license_intermediate_file",
+			Message: fmt.Sprintf("could not be loaded (%s) — licensed features will be disabled until the certificate is available", c.LicenseIntermediateLoadError),
+		})
+		return
+	}
+	pubKey := license.EmbeddedPublicKey()
+	if pubKey == nil {
+		if c.LicensePublicKey == "" {
+			*warnings = append(*warnings, Warning{
+				Field:   "license_intermediate_file",
+				Message: "configured but no license public key is available — agent profiles will be disabled until a key is provided",
+			})
+			return
+		}
+		keyBytes, err := hex.DecodeString(c.LicensePublicKey)
+		if err != nil || len(keyBytes) != ed25519.PublicKeySize {
+			*warnings = append(*warnings, Warning{
+				Field:   "license_intermediate_file",
+				Message: "configured but license_public_key is not a valid hex Ed25519 key — agent profiles will be disabled",
+			})
+			return
+		}
+		pubKey = ed25519.PublicKey(keyBytes)
+	}
+	if _, err := license.ParseAndVerifyIntermediate(c.LicenseIntermediateCert, pubKey, time.Now()); err != nil {
+		*warnings = append(*warnings, Warning{
+			Field:   "license_intermediate_file",
+			Message: fmt.Sprintf("rejected (%v) — agent profiles will be disabled until the certificate is valid", err),
+		})
+	}
 }
 
 // validateLearnLock enforces the schema for the lock runtime. When

@@ -165,6 +165,51 @@ func TestApplyConductorPolicyBundle_FailsAfterTeardown(t *testing.T) {
 	}
 }
 
+// TestApplyConductorPolicyBundle_TeardownMidApplyAborts closes the in-flight
+// window the entry/under-lock conductorDown checks cannot: a bundle that passes
+// both guards and then loses its fleet entitlement WHILE staging must not reach
+// the live-config reload or activate. The signature resolver is the injection
+// seam — it runs during staging, after both guards, so flipping conductorDown
+// there reproduces "teardownConductor fired mid-apply" deterministically.
+func TestApplyConductorPolicyBundle_TeardownMidApplyAborts(t *testing.T) {
+	s, signer := newConductorApplyTestServer(t)
+	liveBefore := s.proxy.CurrentConfig()
+	bundle := signedRuntimePolicyBundle(t, signer, "bundle-1", 1, "", strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.example.com",
+		"",
+	}, "\n"))
+
+	// Real resolver, wrapped to tear down the fleet entitlement the first time
+	// it is consulted (i.e. during signature verification in staging).
+	base := signer.resolver()
+	teardownDuringStage := func(keyID string) (conductor.SignatureKey, error) {
+		s.teardownConductor("revoked mid-apply")
+		return base(keyID)
+	}
+
+	_, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: teardownDuringStage})
+	if !errors.Is(err, applycache.ErrEntitlementLost) {
+		t.Fatalf("ApplyConductorPolicyBundle with mid-apply teardown = %v, want ErrEntitlementLost", err)
+	}
+	// The live proxy config must be untouched: the bundle never reloaded.
+	if live := s.proxy.CurrentConfig(); live == nil || live.Mode == config.ModeStrict {
+		t.Fatalf("live mode = %v, want the pre-apply mode (bundle must not have reloaded)", live)
+	}
+	if liveBefore != nil && s.proxy.CurrentConfig().Mode != liveBefore.Mode {
+		t.Fatal("live config changed despite aborted apply")
+	}
+	// Nothing activated in the durable cache.
+	cache, _ := s.conductorApply.(*applycache.Cache)
+	if cache == nil {
+		t.Fatalf("conductorApply: want *applycache.Cache, got %T", s.conductorApply)
+	}
+	if _, activeErr := cache.Active(); !errors.Is(activeErr, applycache.ErrNoValidBundle) {
+		t.Fatalf("Active() after aborted apply = %v, want ErrNoValidBundle", activeErr)
+	}
+}
+
 // TestRefreshLicenseCRL_RevokedTearsDownConductor proves gap 2 is closed: the
 // runtime CRL watcher tears down a running Conductor follower (not just agent
 // listeners) when the license is revoked, including the conductor-only case
@@ -237,6 +282,57 @@ func TestReload_NoLicenseChangeKeepsConductor(t *testing.T) {
 	}
 	if s.conductorDown.Load() {
 		t.Fatal("a reload that does not change license inputs must not tear down Conductor")
+	}
+}
+
+// TestReload_UnverifiableLicenseInputKeepsConductor proves the Item B fix on
+// the Conductor surface: a reload that introduces an UNVERIFIABLE new license
+// input (an unreadable CRL path) must NOT tear down a still-entitled follower.
+// License inputs are restart-only, so the effective fleet entitlement (the env
+// token installed by the fixture) is unchanged; tearing down on a typo would be
+// a denial-of-service, not fail-closed security.
+func TestReload_UnverifiableLicenseInputKeepsConductor(t *testing.T) {
+	s, _ := newConductorApplyTestServer(t)
+	_, cancel := context.WithCancel(context.Background())
+	s.setConductorCancel(cancel)
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.LicenseCRLFile = filepath.Join(t.TempDir(), "missing.crl.json")
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if s.conductorDown.Load() {
+		t.Fatal("an unverifiable new CRL input must NOT tear down a still-entitled Conductor")
+	}
+	if s.proxy.CurrentConfig() == nil {
+		t.Fatal("proxy/detection must keep running")
+	}
+}
+
+// TestReload_RevokedLicenseTearsDownConductor proves the genuine-loss side of
+// the Item B classification: a reload whose new license inputs PROVE revocation
+// (a signed CRL revoking the token) tears the follower down fail-closed, exactly
+// like the fleet-downgrade case.
+func TestReload_RevokedLicenseTearsDownConductor(t *testing.T) {
+	s, _ := newConductorApplyTestServer(t)
+	_, cancel := context.WithCancel(context.Background())
+	s.setConductorCancel(cancel)
+
+	tok, pubHex, crlPath := revokedLicenseConfigFixture(t)
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.LicenseKey = tok
+	newCfg.LicensePublicKey = pubHex
+	newCfg.LicenseCRLFile = crlPath
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !s.conductorDown.Load() {
+		t.Fatal("a reload with a revoked license must tear down Conductor")
+	}
+	if s.proxy.CurrentConfig() == nil {
+		t.Fatal("proxy/detection must keep running after a revocation teardown")
 	}
 }
 

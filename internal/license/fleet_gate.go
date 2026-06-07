@@ -69,16 +69,31 @@ func VerifyFleet(licenseKey, publicKeyHex, crlFile string) (License, error) {
 	return VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, "")
 }
 
-// VerifyFleetWithIntermediate verifies the supplied fleet license, optionally
-// using a configured intermediate certificate file. Empty intermediateFile
-// falls back to PIPELOCK_LICENSE_INTERMEDIATE_FILE, then legacy direct-root
-// verification if neither is set.
-func VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, intermediateFile string) (License, error) {
+// errNoLicenseToken and errNoVerifierKey are the unverifiable-input causes that
+// verifyLicenseInputs returns before any token verification can run. They are
+// unexported because callers classify by behavior (any non-revoked/non-expired
+// failure is "unverifiable"), not by these specific identities; VerifyFleet*
+// wraps them in ErrFleetLicenseRequired for the operator-facing message.
+var (
+	errNoLicenseToken = errors.New("no license token provided")
+	errNoVerifierKey  = errors.New("no verifier public key available " +
+		"(build-embedded key missing and PIPELOCK_LICENSE_PUBLIC_KEY unset)")
+)
+
+// verifyLicenseInputs resolves the verifier public key, loads the optional
+// signed CRL and intermediate certificate, and verifies the token signature,
+// expiry, and revocation — but performs NO feature check. The fleet gate
+// (VerifyFleetWithIntermediate) and the hot-reload classifier (ClassifyReload)
+// share this one input-handling path so they never drift on key resolution,
+// env fallback, or CRL/intermediate loading. The returned error preserves
+// ErrLicenseRevoked / ErrLicenseExpired in its chain so callers can distinguish
+// proven entitlement loss from an unverifiable/malformed input.
+func verifyLicenseInputs(licenseKey, publicKeyHex, crlFile, intermediateFile string) (License, error) {
 	if licenseKey == "" {
 		licenseKey = os.Getenv(EnvLicenseKey)
 	}
 	if licenseKey == "" {
-		return License{}, ErrFleetLicenseRequired
+		return License{}, errNoLicenseToken
 	}
 	pubKey := EmbeddedPublicKey()
 	if pubKey == nil {
@@ -93,9 +108,7 @@ func VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, intermediate
 		}
 	}
 	if pubKey == nil {
-		return License{}, fmt.Errorf("%w: no verifier public key available "+
-			"(build-embedded key missing and PIPELOCK_LICENSE_PUBLIC_KEY unset)",
-			ErrFleetLicenseRequired)
+		return License{}, errNoVerifierKey
 	}
 	if crlFile == "" {
 		crlFile = os.Getenv(EnvLicenseCRLFile)
@@ -104,7 +117,7 @@ func VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, intermediate
 	if crlFile != "" {
 		loaded, crlErr := LoadAndVerifyCRL(crlFile, pubKey, time.Now())
 		if crlErr != nil {
-			return License{}, fmt.Errorf("%w: loading license CRL: %w", ErrFleetLicenseRequired, crlErr)
+			return License{}, fmt.Errorf("loading license CRL: %w", crlErr)
 		}
 		crl = &loaded
 	}
@@ -115,12 +128,19 @@ func VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, intermediate
 	if intermediateFile != "" {
 		data, loadErr := LoadIntermediateCertFile(intermediateFile)
 		if loadErr != nil {
-			return License{}, fmt.Errorf("%w: loading intermediate certificate: %w", ErrFleetLicenseRequired, loadErr)
+			return License{}, fmt.Errorf("loading intermediate certificate: %w", loadErr)
 		}
 		intermediateCert = data
 	}
+	return VerifyTokenWithOptionalIntermediate(licenseKey, intermediateCert, pubKey, crl, time.Now())
+}
 
-	lic, err := VerifyTokenWithOptionalIntermediate(licenseKey, intermediateCert, pubKey, crl, time.Now())
+// VerifyFleetWithIntermediate verifies the supplied fleet license, optionally
+// using a configured intermediate certificate file. Empty intermediateFile
+// falls back to PIPELOCK_LICENSE_INTERMEDIATE_FILE, then legacy direct-root
+// verification if neither is set.
+func VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, intermediateFile string) (License, error) {
+	lic, err := verifyLicenseInputs(licenseKey, publicKeyHex, crlFile, intermediateFile)
 	if err != nil {
 		return License{}, fmt.Errorf("%w: %w", ErrFleetLicenseRequired, err)
 	}

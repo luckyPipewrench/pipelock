@@ -40,6 +40,11 @@ var (
 	ErrRollbackRequired      = errors.New("conductor rollback authorization required")
 	ErrInvalidActiveRecord   = errors.New("conductor apply cache active record invalid")
 	ErrUnsupportedMinVersion = errors.New("conductor policy bundle requires unsupported pipelock version")
+	// ErrEntitlementLost aborts an in-flight policy-bundle apply when the fleet
+	// entitlement is revoked/expired/downgraded mid-apply (Boundary.StillEntitled
+	// reports false). It fires before the live-config Reload, so an aborted apply
+	// never reaches the running proxy and never activates a durable bundle.
+	ErrEntitlementLost = errors.New("conductor fleet entitlement lost during policy bundle apply")
 
 	hashPattern = regexp.MustCompile(`\A[a-fA-F0-9]{64}\z`)
 )

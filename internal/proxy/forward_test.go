@@ -874,6 +874,61 @@ func TestForwardHTTPBlockedDomain(t *testing.T) {
 	}
 }
 
+func TestForwardHTTPBlocksNonAllowlistedGitPush(t *testing.T) {
+	var upstreamHits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		_, _ = fmt.Fprint(w, "should not reach here")
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.GitProtection.Enabled = true
+		cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
+	})
+	defer cleanup()
+	p.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == "github.com:80" {
+				return (&net.Dialer{}).DialContext(ctx, network, backend.Listener.Addr().String())
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+		DisableCompression: true,
+	}
+
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   2 * time.Second,
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://github.com/acme/public.git/git-receive-pack", strings.NewReader("0000"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("forward git push request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), "non-allowlisted repo") {
+		t.Fatalf("body missing git allowlist reason: %s", string(body))
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
+	}
+}
+
 // TestForwardHTTPBlocksEncodedSubdomainExfil proves transport parity for the
 // absolute-URI forward path: an encoded-subdomain exfil target is blocked at
 // the scan (pre-dial), matching the fetch and CONNECT paths.

@@ -668,10 +668,11 @@ type ReverseProxyTrustedUpstream struct {
 
 // GitProtection configures git-aware security features.
 type GitProtection struct {
-	Enabled         bool     `yaml:"enabled"`
-	AllowedBranches []string `yaml:"allowed_branches"`
-	BlockedCommands []string `yaml:"blocked_commands"`
-	PrePushScan     bool     `yaml:"pre_push_scan"`
+	Enabled          bool     `yaml:"enabled"`
+	AllowedBranches  []string `yaml:"allowed_branches"`
+	BlockedCommands  []string `yaml:"blocked_commands"`
+	AllowedPushRepos []string `yaml:"allowed_push_repos"`
+	PrePushScan      bool     `yaml:"pre_push_scan"`
 }
 
 // FetchProxy configures the unprivileged fetch proxy.

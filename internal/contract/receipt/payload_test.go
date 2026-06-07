@@ -1628,12 +1628,14 @@ func TestValidateProxyDecision_RejectsTrailingDelimiter(t *testing.T) {
 func callValidator(t *testing.T, kind receipt.PayloadKind, raw json.RawMessage) error {
 	t.Helper()
 	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    kind,
-		EventID:        "01900000-0000-7000-8000-000000000001",
-		Timestamp:      time.Now(),
-		Payload:        raw,
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      kind,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(kind),
+		EventID:          "01900000-0000-7000-8000-000000000001",
+		Timestamp:        time.Now(),
+		Payload:          raw,
 		Signature: receipt.SignatureProof{
 			SignerKeyID: "test-key",
 			KeyPurpose:  testKeyPurposeForPayload(kind),

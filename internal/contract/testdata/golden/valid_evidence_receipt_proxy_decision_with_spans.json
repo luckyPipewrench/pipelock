@@ -2,13 +2,26 @@
   "record_type": "evidence_receipt_v2",
   "receipt_version": 2,
   "payload_kind": "proxy_decision_with_spans",
+  "canonicalization": {
+    "jcs_profile": "pipelock-jcs-rfc8785-nfc-v1",
+    "jcs_version": "rfc8785",
+    "hash_alg": "sha256",
+    "sig_alg": "ed25519",
+    "redaction_ruleset_id": "pipelock-transform-v1",
+    "redaction_ruleset_version": "1",
+    "redaction_ruleset_hash": "sha256:541896788b42651a202448894583a847db9d1aa081c33a7e1f0512303d72527e"
+  },
+  "crit": [
+    "canonicalization",
+    "source_spans"
+  ],
   "event_id": "01F8MECHZX3TBDSZ7XRADM79ZS",
   "timestamp": "2026-06-06T18:00:00Z",
   "signature": {
     "signer_key_id": "receipt-signing-test",
     "key_purpose": "receipt-signing",
     "algorithm": "ed25519",
-    "signature": "ed25519:a0fd4651412f5f0ca470fd853e234e6d6ad4b3e1bfcad3de3b2091f56983197c745817e9264838bc3e50d423892ce2b7a3d5b33dc96e624398e3c06557a7f703"
+    "signature": "ed25519:be26bce88e66bcb6832ef12a81e3a5242c6ca65ee63708379102f8d05a976eed850d51350d0ab4570a4a5dbe86c4f655fa92f46e302d213feb3a64d7bcb19b03"
   },
   "chain_seq": 1,
   "chain_prev_hash": "sha256:0",

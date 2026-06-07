@@ -51,6 +51,8 @@ func unsignedReceipt(t *testing.T, signerID string, seq uint64, prevHash string)
 		RecordType:         receipt.RecordTypeEvidenceV2,
 		ReceiptVersion:     2,
 		PayloadKind:        receipt.PayloadShadowDelta,
+		Canonicalization:   receipt.DefaultCanonicalizationProfile(),
+		Crit:               receipt.CritForPayloadKind(receipt.PayloadShadowDelta),
 		EventID:            "01900000-0000-7000-8000-00000000000" + string(rune('0'+seq%10)),
 		Timestamp:          time.Now().UTC(),
 		Actor:              "shadow",

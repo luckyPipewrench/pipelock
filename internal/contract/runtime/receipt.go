@@ -114,17 +114,19 @@ func BuildProxyDecisionReceipt(in ProxyDecisionInput) (contractreceipt.EvidenceR
 	}
 
 	receipt := contractreceipt.EvidenceReceipt{
-		RecordType:      contractreceipt.RecordTypeEvidenceV2,
-		ReceiptVersion:  2,
-		PayloadKind:     contractreceipt.PayloadProxyDecision,
-		EventID:         in.EventID,
-		Timestamp:       in.Timestamp,
-		Principal:       in.Principal,
-		Actor:           in.Actor,
-		DelegationChain: append([]string(nil), in.DelegationChain...),
-		ChainSeq:        in.ChainSeq,
-		ChainPrevHash:   in.ChainPrevHash,
-		Payload:         json.RawMessage(body),
+		RecordType:       contractreceipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      contractreceipt.PayloadProxyDecision,
+		Canonicalization: contractreceipt.DefaultCanonicalizationProfile(),
+		Crit:             contractreceipt.CritForPayloadKind(contractreceipt.PayloadProxyDecision),
+		EventID:          in.EventID,
+		Timestamp:        in.Timestamp,
+		Principal:        in.Principal,
+		Actor:            in.Actor,
+		DelegationChain:  append([]string(nil), in.DelegationChain...),
+		ChainSeq:         in.ChainSeq,
+		ChainPrevHash:    in.ChainPrevHash,
+		Payload:          json.RawMessage(body),
 	}
 	if in.ResolvedContract != nil {
 		receipt = in.ResolvedContract.ReceiptContext().StampReceipt(receipt)
@@ -154,17 +156,19 @@ func BuildProxyDecisionWithSpansReceipt(
 	}
 
 	receipt := contractreceipt.EvidenceReceipt{
-		RecordType:      contractreceipt.RecordTypeEvidenceV2,
-		ReceiptVersion:  2,
-		PayloadKind:     contractreceipt.PayloadProxyDecisionWithSpans,
-		EventID:         in.EventID,
-		Timestamp:       in.Timestamp,
-		Principal:       in.Principal,
-		Actor:           in.Actor,
-		DelegationChain: append([]string(nil), in.DelegationChain...),
-		ChainSeq:        in.ChainSeq,
-		ChainPrevHash:   in.ChainPrevHash,
-		Payload:         json.RawMessage(body),
+		RecordType:       contractreceipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      contractreceipt.PayloadProxyDecisionWithSpans,
+		Canonicalization: contractreceipt.DefaultCanonicalizationProfile(),
+		Crit:             contractreceipt.CritForPayloadKind(contractreceipt.PayloadProxyDecisionWithSpans),
+		EventID:          in.EventID,
+		Timestamp:        in.Timestamp,
+		Principal:        in.Principal,
+		Actor:            in.Actor,
+		DelegationChain:  append([]string(nil), in.DelegationChain...),
+		ChainSeq:         in.ChainSeq,
+		ChainPrevHash:    in.ChainPrevHash,
+		Payload:          json.RawMessage(body),
 	}
 	if in.ResolvedContract != nil {
 		receipt = in.ResolvedContract.ReceiptContext().StampReceipt(receipt)

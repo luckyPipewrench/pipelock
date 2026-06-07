@@ -34,12 +34,14 @@ func minimalProxyDecisionPayload() json.RawMessage {
 
 func validReceipt() receipt.EvidenceReceipt {
 	return receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadProxyDecision,
-		EventID:        "01900000-0000-7000-8000-000000000001",
-		Timestamp:      time.Now(),
-		Payload:        minimalProxyDecisionPayload(),
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      receipt.PayloadProxyDecision,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
+		EventID:          "01900000-0000-7000-8000-000000000001",
+		Timestamp:        time.Now(),
+		Payload:          minimalProxyDecisionPayload(),
 		Signature: receipt.SignatureProof{
 			SignerKeyID: "receipt-key",
 			KeyPurpose:  "receipt-signing",
@@ -64,6 +66,42 @@ func TestEvidenceReceipt_Validate_RejectsWrongVersion(t *testing.T) {
 	err := r.Validate()
 	if !errors.Is(err, receipt.ErrWrongReceiptVersion) {
 		t.Fatalf("expected ErrWrongReceiptVersion, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsMissingCanonicalization(t *testing.T) {
+	r := validReceipt()
+	r.Canonicalization = receipt.CanonicalizationProfile{}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsUnknownCrit(t *testing.T) {
+	r := validReceipt()
+	r.Crit = []string{receipt.CritCanonicalization, "future_extension"}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsMissingSourceSpanCrit(t *testing.T) {
+	r, _ := signedSpannedReceipt(t)
+	r.Crit = []string{receipt.CritCanonicalization}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadMissingField) {
+		t.Fatalf("expected ErrPayloadMissingField, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsSourceSpanCritOnPlainPayload(t *testing.T) {
+	r := validReceipt()
+	r.Crit = []string{receipt.CritCanonicalization, receipt.CritSourceSpans}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
 	}
 }
 
@@ -331,13 +369,15 @@ func signedSpannedReceipt(t *testing.T) (receipt.EvidenceReceipt, ed25519.Public
 		t.Fatalf("marshal payload: %v", err)
 	}
 	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadProxyDecisionWithSpans,
-		EventID:        eventID,
-		Timestamp:      time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
-		ChainPrevHash:  "sha256:0",
-		Payload:        body,
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      receipt.PayloadProxyDecisionWithSpans,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecisionWithSpans),
+		EventID:          eventID,
+		Timestamp:        time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
+		ChainPrevHash:    "sha256:0",
+		Payload:          body,
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {

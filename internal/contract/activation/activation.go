@@ -217,6 +217,8 @@ func SignReceipt(kind contractreceipt.PayloadKind, payload any, ctx ReceiptConte
 		RecordType:         contractreceipt.RecordTypeEvidenceV2,
 		ReceiptVersion:     2,
 		PayloadKind:        kind,
+		Canonicalization:   contractreceipt.DefaultCanonicalizationProfile(),
+		Crit:               contractreceipt.CritForPayloadKind(kind),
 		EventID:            eventID,
 		Timestamp:          timestamp,
 		Principal:          ctx.Principal,

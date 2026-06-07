@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -37,7 +38,10 @@ func TestAtomicWrite_SuccessVerifyContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows reports a synthesized 0o666 mode for any user-readable+writable
+	// file. Skip the perm assertion there; content correctness above is
+	// platform-independent and still covered.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("permissions = %04o, want 0600", info.Mode().Perm())
 	}
 }
@@ -79,6 +83,9 @@ func TestAtomicWrite_LargeData(t *testing.T) {
 }
 
 func TestAtomicWrite_MultiplePerm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666 regardless of the mode passed to atomicWrite")
+	}
 	tests := []struct {
 		name string
 		perm os.FileMode
@@ -218,12 +225,15 @@ func TestKeystore_GenerateAgent_Success(t *testing.T) {
 		t.Errorf("public key not created: %v", err)
 	}
 
-	// Private key should have 0600 permissions.
+	// Private key should have 0600 permissions on Unix. Windows uses NTFS
+	// ACLs and os.Stat reports a synthesized 0o666, so the mode-bit
+	// assertion is meaningless there; key generation correctness above is
+	// still verified.
 	info, err := os.Stat(privPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("private key permissions = %04o, want 0600", info.Mode().Perm())
 	}
 }
@@ -387,6 +397,9 @@ func TestKeystore_ListAgents(t *testing.T) {
 // is unset or empty, which is exactly the production failure mode this
 // branch is meant to surface.
 func TestDefaultKeystorePath_NoHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("DefaultKeystorePath on Windows falls back to USERPROFILE / APPDATA when HOME is empty; this test asserts Unix-specific HOME-only behavior")
+	}
 	t.Setenv("HOME", "")
 
 	got, err := DefaultKeystorePath()

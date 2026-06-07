@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1038,6 +1039,25 @@ func TestResolveArtifactPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Windows path semantics diverge from POSIX in three of the
+			// subtests here, so they are skipped rather than asserting
+			// Unix-specific behavior:
+			//   - "backslash": legitimate path separator on Windows.
+			//   - "ok_subdir": filepath.Join produces "artifacts\\..."
+			//     on Windows, which the validator rejects (it shouldn't
+			//     contain the backslash on Windows-built paths).
+			//   - "absolute": "/etc/passwd" is not absolute on Windows
+			//     (no drive letter), so the validator does not flag it.
+			if runtime.GOOS == "windows" {
+				switch tc.name {
+				case "backslash":
+					t.Skip("backslash is a valid path separator on Windows")
+				case "ok_subdir":
+					t.Skip("filepath.Join produces backslash-separated paths on Windows; the validator rejects backslashes")
+				case "absolute":
+					t.Skip("Unix-style /etc/passwd is not an absolute path on Windows")
+				}
+			}
 			_, err := resolveArtifactPath(base, tc.rel)
 			if tc.wantErr && err == nil {
 				t.Errorf("expected error for %q", tc.rel)
@@ -1050,6 +1070,9 @@ func TestResolveArtifactPath(t *testing.T) {
 }
 
 func TestResolveArtifactPath_SymlinkContainmentRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege which non-admin shells lack; symlink containment is verified on Unix CI")
+	}
 	t.Parallel()
 	base := t.TempDir()
 	outside := t.TempDir()

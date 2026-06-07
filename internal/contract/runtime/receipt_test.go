@@ -452,6 +452,7 @@ func TestBuildProxyDecisionWithSpansReceipt_RequiresSpans(t *testing.T) {
 		ActionType: testHTTPRequest,
 		Target:     "https://api.example.com/" + testSpanRedactedValue,
 		Transport:  testForward,
+		EventID:    testSpannedEventID,
 	}
 	_, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), nil)
 	if !errors.Is(err, ErrInvalidProxyDecisionInput) {

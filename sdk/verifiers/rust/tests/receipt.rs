@@ -6,6 +6,9 @@ use serde_json::Value;
 use std::fs;
 use std::process::Command;
 
+const V2_GOLDEN_PUBLIC_KEY: &str =
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+
 #[test]
 fn valid_single_receipt_verifies_with_shared_key() {
     let root = common::repo_root();
@@ -119,4 +122,207 @@ fn cli_accepts_key_equals_value() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("\"valid\": true"));
+}
+
+#[test]
+fn valid_spanned_v2_receipt_verifies_with_shared_key() {
+    let root = common::repo_root();
+    let report = run_receipt(
+        root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json")
+            .to_str()
+            .unwrap(),
+        V2_GOLDEN_PUBLIC_KEY,
+    )
+    .unwrap();
+    assert!(report.valid, "{:?}", report.error);
+    assert_eq!(
+        report.action_id.as_deref(),
+        Some("01F8MECHZX3TBDSZ7XRADM79ZS")
+    );
+    assert_eq!(report.verdict.as_deref(), Some("block"));
+    assert_eq!(report.transport.as_deref(), Some("forward"));
+    assert_eq!(report.signer_key.as_deref(), Some(V2_GOLDEN_PUBLIC_KEY));
+}
+
+#[test]
+fn tampered_spanned_v2_receipt_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["payload"]["source_spans"][0]["rule_id"] =
+        Value::String("aws_access_key_tampered".to_string());
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-tamper-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("signature verification failed"));
+}
+
+#[test]
+fn unknown_spanned_v2_field_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["payload"]["source_spans"][0]["raw_match"] = Value::String("lowentropy".to_string());
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-unknown-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("unknown field raw_match"));
+}
+
+#[test]
+fn empty_dlp_normalized_suffix_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["payload"]["source_spans"][0]["normalized_view"] =
+        Value::String("dlp_normalized:".to_string());
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-empty-view-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("normalized_view is invalid"));
+}
+
+#[test]
+fn unsupported_canonicalization_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["canonicalization"]["jcs_profile"] = Value::String("rfc8785".to_string());
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-bad-canon-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("canonicalization.jcs_profile is invalid"));
+}
+
+#[test]
+fn missing_source_spans_crit_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["crit"] = serde_json::json!(["canonicalization"]);
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-missing-crit-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("crit must include source_spans"));
+}
+
+#[test]
+fn unknown_crit_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["crit"] = serde_json::json!(["canonicalization", "source_spans", "future_extension"]);
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-unknown-crit-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("crit has unknown field future_extension"));
+}
+
+#[test]
+fn source_spans_crit_on_plain_payload_is_rejected() {
+    let root = common::repo_root();
+    let source =
+        root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json");
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["crit"] = serde_json::json!(["canonicalization", "source_spans"]);
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-plain-span-crit-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("crit source_spans is invalid for proxy_decision"));
+}
+
+#[test]
+fn spanned_v2_receipt_does_not_expose_low_entropy_oracle_key() {
+    let root = common::repo_root();
+    let receipt: Value = serde_json::from_str(
+        &fs::read_to_string(root.join(
+            "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let span = &receipt["payload"]["source_spans"][0];
+    assert_eq!(span["match_hash_alg"].as_str(), Some("hmac-sha256"));
+    assert!(span["match_hash"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("hmac-sha256:"));
+    assert!(!serde_json::to_string(&receipt)
+        .unwrap()
+        .contains("golden-span-mac-key"));
 }

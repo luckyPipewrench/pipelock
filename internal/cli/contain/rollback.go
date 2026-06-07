@@ -134,9 +134,13 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemovePath("combined CA bundle", func(e *installEnv) string { return e.caBundlePath }),
 		actionRemoveNFTRules(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
+		actionRemovePath("node undici shim", undiciShimPathOrDefault),
 		actionRemoveWrapper("plk-launch", "plk-launch"),
 		actionRemoveWrapper("plk meta-wrapper", "plk"),
 		actionRemoveToolWrappers(),
+		actionRemoveUtilityWrappers(),
+		actionRemovePath("login-shell runtime contract", profileScriptPathOrDefault),
+		actionRemoveAgentToolConfigs(),
 		actionRemovePath("wrapper inventory", func(e *installEnv) string { return e.wrapperInvPath }),
 		actionRemoveSudoers(),
 	}
@@ -344,6 +348,48 @@ func actionRemoveToolWrappers() step {
 				_ = env.removeFile(path + ".bak")
 			}
 			return nil
+		},
+	}
+}
+
+// actionRemoveUtilityWrappers removes the pipelock-curl/python/node known-good
+// wrappers placed on the agent PATH by stepWriteUtilityWrappers.
+func actionRemoveUtilityWrappers() step {
+	return step{
+		name: "remove-utility-wrappers",
+		desc: "remove pipelock-curl/python/node wrappers",
+		undo: func(_ context.Context, env *installEnv) error {
+			for _, w := range pipelockUtilityWrappers {
+				path := filepath.Join(env.wrapperDir, w)
+				if err := env.removeFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("remove %s: %w", path, err)
+				}
+				_ = env.removeFile(path + ".bak")
+			}
+			return nil
+		},
+	}
+}
+
+// actionRemoveAgentToolConfigs removes the per-tool config files written into
+// the agent home. A full rollback that deletes the agent user already removes
+// the home (userdel -r); this handles the --keep-users case where the home
+// survives. If install replaced a pre-existing config, restoreBackup preserves
+// that operator state instead of deleting the .bak.
+func actionRemoveAgentToolConfigs() step {
+	return step{
+		name: "remove-agent-tool-configs",
+		desc: "remove git/npm/pip/cargo proxy config from the agent home",
+		undo: func(_ context.Context, env *installEnv) error {
+			home := agentHomeDir(env)
+			var errs []error
+			for _, cfg := range agentToolConfigs() {
+				path := filepath.Join(home, cfg.rel)
+				if err := restoreBackup(env, path); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			return errors.Join(errs...)
 		},
 	}
 }

@@ -34,12 +34,21 @@ pub fn run_receipt(pathname: &str, signer_key: &str) -> Result<ReceiptReport> {
         return Ok(report);
     }
     let receipt: Value = parse_json_text(&text, "malformed JSON")?;
-    report.action_id = string_at(&receipt, &["action_record", "action_id"]).map(str::to_string);
-    report.verdict = string_at(&receipt, &["action_record", "verdict"]).map(str::to_string);
-    report.transport = string_at(&receipt, &["action_record", "transport"]).map(str::to_string);
-    report.signer_key = string_at(&receipt, &["signer_key"]).map(str::to_string);
-    report.policy_hash = string_at(&receipt, &["action_record", "policy_hash"]).map(str::to_string);
-    report.chain_seq = u64_at(&receipt, &["action_record", "chain_seq"]);
+    if string_at(&receipt, &["record_type"]) == Some("evidence_receipt_v2") {
+        report.action_id = string_at(&receipt, &["event_id"]).map(str::to_string);
+        report.verdict = string_at(&receipt, &["payload", "verdict"]).map(str::to_string);
+        report.transport = string_at(&receipt, &["payload", "transport"]).map(str::to_string);
+        report.signer_key = Some(key_hex.clone());
+        report.chain_seq = u64_at(&receipt, &["chain_seq"]);
+    } else {
+        report.action_id = string_at(&receipt, &["action_record", "action_id"]).map(str::to_string);
+        report.verdict = string_at(&receipt, &["action_record", "verdict"]).map(str::to_string);
+        report.transport = string_at(&receipt, &["action_record", "transport"]).map(str::to_string);
+        report.signer_key = string_at(&receipt, &["signer_key"]).map(str::to_string);
+        report.policy_hash =
+            string_at(&receipt, &["action_record", "policy_hash"]).map(str::to_string);
+        report.chain_seq = u64_at(&receipt, &["action_record", "chain_seq"]);
+    }
     match verify_receipt(&receipt, &key_hex) {
         Ok(()) => report.valid = true,
         Err(err) => report.error = Some(err),

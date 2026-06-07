@@ -6,8 +6,9 @@ The subcommands are:
 
 | Subcommand | What it does | Mutates state |
 |---|---|---|
-| `install` | Create users, systemd unit, nftables rules, wrappers, sudoers entry, CA bundle | yes (root only) |
+| `install` | Create users, systemd unit, nftables rules, wrappers, sudoers entry, CA bundle, runtime contract | yes (root only) |
 | `verify` | Read-only probes that report pass / fail / skip for the 12 invariants below | no |
+| `doctor` | Live self-test that proves common tooling reaches the internet *through* the proxy, with per-check remediation | no |
 | `rollback` | Idempotently undo `install`. Restores the prior state and removes wrappers, users, unit, rules | yes (root only) |
 | `add-tool` | Register an additional tool wrapper under `/usr/local/bin/plk-<name>` after install | yes (root only) |
 | `grant-workspace` | Grant the contained agent user ACL access to one project workspace | yes (root only) |
@@ -49,14 +50,18 @@ Flags:
 Install steps run in order; each one is idempotent. If any step fails, every previously-applied step is rolled back before exit so the system never settles in a partial state.
 
 1. Create `pipelock-proxy` and `pipelock-agent` system users.
-2. Lay down `/etc/pipelock/` and `/var/lib/pipelock/` with strict ownership and permissions. Agent-readable config artifacts stay traversable under `/etc/pipelock`; proxy-owned runtime state stays private under `/var/lib/pipelock`.
-3. Copy the pipelock binary into a system path the agent user cannot replace.
-4. Compute the binary SHA-256 and pin it at `/etc/pipelock/integrity/binary-pin.sha256`. Subsequent `verify` runs re-hash the binary and compare against the pin.
-5. Migrate the user-mode systemd unit (if present) to a system unit running as `pipelock-proxy`.
+2. Lay down `/etc/pipelock/` and `/var/lib/pipelock/` with strict ownership and permissions, copy `pipelock.yaml`, and set proxy ownership on the config/data roots. Agent-readable config artifacts stay traversable under `/etc/pipelock`; proxy-owned runtime state stays private under `/var/lib/pipelock`.
+3. Copy the pipelock binary into a system path the agent user cannot replace, then compute and pin its SHA-256 at `/etc/pipelock/integrity/binary-pin.sha256`. Subsequent `verify` runs re-hash the binary and compare against the pin.
+4. Migrate the user-mode systemd unit (if present), write and enable the system unit running as `pipelock-proxy`, then export the Pipelock CA.
+5. Bootstrap the combined CA bundle at `/etc/pipelock/combined-ca.pem` from the system trust store plus the Pipelock CA.
 6. Install the nftables containment ruleset: deny outbound from the agent user except to loopback, allow operator and `pipelock-proxy` to reach the internet directly.
-7. Drop the `plk-launch` wrapper plus one wrapper per registered tool into `/usr/local/bin/`.
-8. Install the sudoers entry that lets the operator user invoke `plk-launch` as `pipelock-agent` without a password prompt.
-9. Bootstrap the combined CA bundle at `/etc/pipelock/combined-ca.pem` from the system trust store plus the Pipelock CA.
+7. Write `/etc/pipelock/contain/tools.list`, the runtime allow-list consumed by `plk-launch`.
+8. Write the node undici proxy shim at `/etc/pipelock/contain/undici-shim.cjs` (see [Runtime contract](#runtime-contract)).
+9. Drop the `plk-launch` wrapper plus one wrapper per registered tool into `/usr/local/bin/`.
+10. Drop the known-good `pipelock-curl` / `pipelock-python` / `pipelock-node` wrappers into `/usr/local/bin/`.
+11. Write the login-shell runtime contract to `/etc/profile.d/pipelock-contain.sh`.
+12. Write per-tool proxy + CA config (`git` / `npm` / `pip` / `cargo`) into the agent home.
+13. Write the wrapper inventory, then install the sudoers entry that lets the operator user invoke `plk-launch` as `pipelock-agent` without a password prompt.
 
 Exit codes:
 
@@ -96,6 +101,74 @@ Flags:
 
 Exit code is 0 if every probe passed, 1 if any probe failed, and 2 if verification was incomplete because one or more probes skipped. Each failing probe prints a structured one-line detail so operators can dashboard the output.
 
+## Runtime contract
+
+The containment boundary is security-correct, but a tool that ignores the proxy environment looks *broken* — it dies with a generic network error and no hint that the firewall is the cause. To close that gap, `install` provisions a complete, proxy-correct runtime contract for the contained agent so common tooling works out of the box and stays routed through Pipelock.
+
+The contract has four parts:
+
+1. **Full environment matrix.** `plk-launch` (and the login-shell script below) export the complete proxy + CA set, because different ecosystems read different variables:
+
+   - Proxy (upper- and lower-case): `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and their lowercase forms, all pointing at `http://127.0.0.1:<proxy-port>`.
+   - `NO_PROXY` / `no_proxy` = `127.0.0.1,localhost,::1` (IPv6 loopback included so IPv6-first clients don't proxy a local dial).
+   - CA trust for the Pipelock MITM CA: `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, `PIP_CERT` → the combined bundle; `NODE_EXTRA_CA_CERTS` → the Pipelock CA (node *appends* this to its built-in store).
+   - `NODE_OPTIONS=--require <undici-shim>` (see below).
+
+2. **node undici shim** (`/etc/pipelock/contain/undici-shim.cjs`). Node's built-in `fetch()` and undici-based clients ignore `HTTPS_PROXY` unless a global dispatcher is installed. The shim installs an undici `ProxyAgent` at startup. It is best-effort: if undici cannot be required, `http`/`https`-module traffic still honors the proxy env, so the shim degrades silently rather than breaking node.
+
+3. **Known-good wrappers** on the agent PATH: `pipelock-curl`, `pipelock-python`, `pipelock-node`. Each forces the full contract before exec'ing the real tool, so it is proxy- and CA-correct even when the caller's environment is incomplete (for example, a bare `sudo -u pipelock-agent <cmd>` that inherits no proxy env).
+
+4. **Per-tool config files** written into the agent home (`~/.gitconfig`, `~/.npmrc`, `~/.config/pip/pip.conf`, `~/.cargo/config.toml`). These tools read their own config regardless of environment, so config-driven invocations are proxy-correct on every exec path.
+
+A login-shell script at `/etc/profile.d/pipelock-contain.sh` exports the same matrix so an interactive `sudo -iu pipelock-agent` session inherits it too. Because `/etc/profile.d` is sourced by all login shells, the script returns immediately for every user except `pipelock-agent`.
+
+This makes compatible tooling work; it does **not** widen egress. Direct (proxy-bypassing) connections from the agent user remain blocked by the nftables owner-match rule.
+
+## `pipelock contain doctor`
+
+Where `verify` proves the boundary is *installed*, `doctor` proves it is *usable*: it runs live checks that the contained agent can actually reach an allowed host through the proxy, and that direct egress is blocked. Run it as root (it sudoes to the agent for the live probes).
+
+```bash
+sudo pipelock contain doctor
+```
+
+Crucially, doctor makes the four failure classes distinguishable, so a *compatibility* problem doesn't read as a *broken agent*:
+
+| Class | Meaning |
+|---|---|
+| `policy` | Blocked because the request is dangerous (DLP / policy decision). |
+| `proxy-compat` | The tool isn't proxy-compatible (ignores `HTTPS_PROXY`). Use a `pipelock-*` wrapper. |
+| `local-context` | Pipelock misclassified harmless local context. |
+| `infra` | Infra protection tripped (DNS failure, gateway down, CA mismatch). |
+
+Checks:
+
+| # | Check | Proves |
+|---|---|---|
+| 1 | `gateway_health` | Pipelock is accepting connections on the loopback proxy port. |
+| 2 | `curl_through_proxy` | `curl` reaches an allowed host through the proxy (explicit `--proxy`/`--cacert`). |
+| 3 | `python_through_proxy` | `python` reaches an allowed host via the `pipelock-python` wrapper. |
+| 4 | `node_through_proxy` | node's `fetch()` reaches an allowed host via the `pipelock-node` wrapper + undici shim. |
+| 5 | `dns_failure_clean` | An unresolvable host fails fast with a clean proxy error — no hang, no bypass. |
+| 6 | `raw_egress_blocked` | Direct, proxy-bypassing egress from the agent is blocked. This is also the root cause a proxy-unaware tool surfaces, so the remediation names the fix. |
+
+Each non-passing check prints a one-line remediation tagged with its class. For example, a proxy-unaware tool produces:
+
+```text
+  [PASS] check 6: direct (proxy-bypassing) egress is blocked for the agent — direct egress blocked at dial (curl exit 7); proxy-unaware tools fail here
+          ↳ [proxy-compat] a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=http://127.0.0.1:8888
+```
+
+Flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--json` | false | Emit newline-delimited JSON records (`check`, `name`, `status`, `detail`, `remediation`, `class`) instead of text. |
+| `--port` | `8888` | Loopback proxy port to test (matches `--proxy-port` from install). |
+| `--url` | `https://example.com/` | Allowed canary URL the agent should be able to reach. |
+
+Exit code is 0 if every check passed, 1 if any check failed, and 2 if the diagnosis was incomplete because a check skipped (for example, not run as root, or a tool isn't installed). Checks that can't proceed skip with remediation rather than failing.
+
 ## `pipelock contain rollback`
 
 Idempotently undoes `install`. Safe to re-run on a partial install — every step checks state before mutating.
@@ -104,7 +177,7 @@ Idempotently undoes `install`. Safe to re-run on a partial install — every ste
 sudo pipelock contain rollback
 ```
 
-Removes wrappers, sudoers entry, nftables rules, systemd unit migration, and the `pipelock-proxy` / `pipelock-agent` users by default. It preserves `/etc/pipelock` and `/var/lib/pipelock` unless you pass `--keep-data=false`.
+Removes the `plk-*` and `pipelock-*` wrappers, the node undici shim, the `/etc/profile.d` runtime-contract script, the per-tool agent config, the sudoers entry, nftables rules, systemd unit migration, and the `pipelock-proxy` / `pipelock-agent` users by default. It preserves `/etc/pipelock` and `/var/lib/pipelock` unless you pass `--keep-data=false`.
 
 Flags:
 

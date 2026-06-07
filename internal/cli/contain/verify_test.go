@@ -849,7 +849,7 @@ func (*fakeConn) SetWriteDeadline(time.Time) error { return nil }
 func TestProbeNoProxyEnv(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		env := makeProbeEnv(t)
-		body := "#!/bin/bash\nexec env NO_PROXY=127.0.0.1,localhost HTTPS_PROXY=http://127.0.0.1:8888 sh\n"
+		body := "#!/bin/bash\nexec env NO_PROXY=127.0.0.1,localhost,::1 HTTPS_PROXY=http://127.0.0.1:8888 sh\n"
 		if err := os.WriteFile(env.launchPath, []byte(body), 0o600); err != nil {
 			t.Fatalf("write: %v", err)
 		}
@@ -1524,7 +1524,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 	writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
 	toolTarget := filepath.Join(t.TempDir(), "claude")
 	writeFakeWrapper(t, toolTarget, 0o755)
-	body := "#!/bin/bash\nexec env NO_PROXY=127.0.0.1,localhost HTTPS_PROXY=http://127.0.0.1:8888 sh\n"
+	body := "#!/bin/bash\nexec env NO_PROXY=127.0.0.1,localhost,::1 HTTPS_PROXY=http://127.0.0.1:8888 sh\n"
 	if err := os.WriteFile(env.launchPath, []byte(body), 0o755); err != nil { //nolint:gosec // wrapper script must be executable in test
 		t.Fatalf("rewrite launch: %v", err)
 	}

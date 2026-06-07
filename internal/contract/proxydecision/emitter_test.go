@@ -20,7 +20,10 @@ import (
 const testSpanDigest = "sha256:" +
 	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-const testRedactedSourceSpanValue = "[redacted-value]"
+const (
+	testRedactedSourceSpanValue = "[redacted-value]"
+	testSpanHMACKey             = "span-mac-key"
+)
 
 // captureRecorder records entries in memory so tests can extract the signed
 // receipt JSON and verify it offline.
@@ -98,7 +101,7 @@ func spannedEvidenceFixture() []contractruntime.SourceSpanEvidence {
 			NormalizedView:       contractreceipt.NormalizedViewDLPNormalized,
 			PipelockBinaryDigest: testSpanDigest,
 			RulesBundleDigest:    testSpanDigest,
-			TransformProfile:     "nfkc+zero-width-strip",
+			TransformProfile:     "pipelock-transform-v1",
 			PolicyHash:           testSpanDigest,
 			RuleID:               "aws_access_key",
 			Bundle:               "builtin",
@@ -186,7 +189,7 @@ func TestEmit_WithSpansBuildsVerifiableReceipt(t *testing.T) {
 		WinningSource:      SourceScanner,
 		PolicySources:      []string{SourceScanner},
 		RuleID:             "aws_access_key",
-		SpanHMACKey:        []byte("span-mac-key"),
+		SpanHMACKey:        []byte(testSpanHMACKey),
 		SourceSpanEvidence: evidence,
 	})
 	if err != nil {
@@ -215,7 +218,7 @@ func TestEmit_WithSpansBuildsVerifiableReceipt(t *testing.T) {
 		t.Fatalf("source_spans length = %d, want 1", len(payload.SourceSpans))
 	}
 	span := payload.SourceSpans[0]
-	wantHash, err := contractreceipt.SourceSpanMatchHash([]byte("span-mac-key"), rcpt.EventID, 0, span, testRedactedSourceSpanValue)
+	wantHash, err := contractreceipt.SourceSpanMatchHash([]byte(testSpanHMACKey), rcpt.EventID, 0, span, testRedactedSourceSpanValue)
 	if err != nil {
 		t.Fatalf("SourceSpanMatchHash: %v", err)
 	}
@@ -241,7 +244,7 @@ func TestEmit_WithSpansRejectsMalformedEvidenceBeforeRecording(t *testing.T) {
 		WinningSource:      SourceScanner,
 		PolicySources:      []string{SourceScanner},
 		RuleID:             "aws_access_key",
-		SpanHMACKey:        []byte("span-mac-key"),
+		SpanHMACKey:        []byte(testSpanHMACKey),
 		SourceSpanEvidence: evidence,
 	})
 	if !errors.Is(err, contractruntime.ErrInvalidProxyDecisionInput) {
@@ -280,7 +283,7 @@ func TestEmit_WithSpansSanitizesSpanFieldsBeforeSigning(t *testing.T) {
 		WinningSource:      SourceScanner,
 		PolicySources:      []string{SourceScanner},
 		RuleID:             "aws_access_key",
-		SpanHMACKey:        []byte("span-mac-key"),
+		SpanHMACKey:        []byte(testSpanHMACKey),
 		SourceSpanEvidence: evidence,
 	})
 	if err != nil {
@@ -313,7 +316,7 @@ func TestEmit_WithSpansSanitizesSpanFieldsBeforeSigning(t *testing.T) {
 	if strings.Contains(span.MatchClass, secret) {
 		t.Errorf("signed span MatchClass leaks secret: %q", span.MatchClass)
 	}
-	wantHash, err := contractreceipt.SourceSpanMatchHash([]byte("span-mac-key"), rcpt.EventID, 0, span, testRedactedSourceSpanValue)
+	wantHash, err := contractreceipt.SourceSpanMatchHash([]byte(testSpanHMACKey), rcpt.EventID, 0, span, testRedactedSourceSpanValue)
 	if err != nil {
 		t.Fatalf("SourceSpanMatchHash: %v", err)
 	}

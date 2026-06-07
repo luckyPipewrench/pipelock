@@ -1,6 +1,8 @@
 # Pipelock TypeScript Verifier
 
-Reference TypeScript verifier for Pipelock Audit Packet v0, action receipts, and receipt chains.
+Reference TypeScript verifier for Pipelock Audit Packet v0, action receipts,
+receipt chains, and the EvidenceReceipt v2 spanned proxy-decision conformance
+fixture.
 
 ## Install
 
@@ -28,7 +30,7 @@ Exit codes match the Go verifier:
 | 2    | runtime error   |
 | 64   | CLI usage error |
 
-`audit-packet` validates `packet.json` against `sdk/audit-packet/v0.json`, applies the structural v0 checks, and re-verifies the referenced receipt chain unless `--offline` is set. `chain` accepts either an `evidence.jsonl` file or a recorder session directory with `--dir`. `receipt` verifies one receipt JSON file.
+`audit-packet` validates `packet.json` against `sdk/audit-packet/v0.json`, applies the structural v0 checks, and re-verifies the referenced receipt chain unless `--offline` is set. `chain` accepts either an `evidence.jsonl` file or a recorder session directory with `--dir`. `receipt` verifies one receipt JSON file. For EvidenceReceipt v2, `receipt` requires a pinned `--key`, verifies the JCS preimage, and enforces strict validation for supported v2 payload kinds, including source-span rules for `proxy_decision_with_spans`.
 
 ## Development
 

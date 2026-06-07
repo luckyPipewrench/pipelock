@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -43,6 +44,38 @@ func TestRunRollback_ExecutesActionsInReverse(t *testing.T) {
 	}
 	if _, err := os.Stat(env.sudoersPath); err == nil {
 		t.Errorf("sudoers not removed")
+	}
+}
+
+func TestActionRemoveAgentToolConfigs_RestoresPreExistingBackups(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	gitConfig := filepath.Join(env.agentHome, ".gitconfig")
+	npmrc := filepath.Join(env.agentHome, ".npmrc")
+	if err := os.MkdirAll(env.agentHome, 0o750); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	if err := os.WriteFile(gitConfig, []byte("managed"), 0o600); err != nil {
+		t.Fatalf("write managed gitconfig: %v", err)
+	}
+	if err := os.WriteFile(gitConfig+".bak", []byte("pre-existing"), 0o600); err != nil {
+		t.Fatalf("write backup gitconfig: %v", err)
+	}
+	if err := os.WriteFile(npmrc, []byte("managed"), 0o600); err != nil {
+		t.Fatalf("write managed npmrc: %v", err)
+	}
+
+	if err := actionRemoveAgentToolConfigs().undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(gitConfig))
+	if err != nil {
+		t.Fatalf("read restored gitconfig: %v", err)
+	}
+	if string(got) != "pre-existing" {
+		t.Fatalf("gitconfig = %q, want restored backup", got)
+	}
+	if _, err := os.Stat(npmrc); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("npmrc without backup should be removed, stat err=%v", err)
 	}
 }
 

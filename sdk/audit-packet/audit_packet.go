@@ -4,6 +4,7 @@
 package auditpacket
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path"
@@ -79,6 +80,24 @@ var validVerdicts = map[string]struct{}{
 	VerdictError:              {},
 	VerdictNotRun:             {},
 	VerdictSelfConsistentOnly: {},
+}
+
+var validSourceKinds = map[string]struct{}{
+	"http_request_url": {},
+	"http_response":    {},
+	"mcp_tool_result":  {},
+	"mcp_tool_args":    {},
+}
+
+var validNormalizedViews = map[string]struct{}{
+	"sanitized_target":              {},
+	"for_matching":                  {},
+	"for_matching:invisible_spaced": {},
+	"leetspeak:for_matching":        {},
+	"vowel_fold:for_matching":       {},
+	"for_matching:base64_decoded":   {},
+	"for_matching:hex_decoded":      {},
+	"dlp_normalized":                {},
 }
 
 var validProviders = map[string]struct{}{
@@ -201,21 +220,45 @@ type Verifier struct {
 // reading evidence.jsonl directly because that is the byte-for-byte signed
 // input to the verifier.
 type Receipt struct {
-	ActionID       string `json:"action_id"`
-	ReceiptHash    string `json:"receipt_hash"`
-	ChainSeq       int    `json:"chain_seq"`
-	ChainPrevHash  string `json:"chain_prev_hash"`
-	Timestamp      string `json:"timestamp,omitempty"`
-	ActionType     string `json:"action_type,omitempty"`
-	Verdict        string `json:"verdict"`
-	Transport      string `json:"transport,omitempty"`
-	Method         string `json:"method,omitempty"`
-	TargetRedacted string `json:"target_redacted,omitempty"`
-	Layer          string `json:"layer,omitempty"`
-	Pattern        string `json:"pattern,omitempty"`
-	Severity       string `json:"severity,omitempty"`
-	PolicyHash     string `json:"policy_hash"`
-	SignerKey      string `json:"signer_key,omitempty"`
+	ActionID       string       `json:"action_id"`
+	ReceiptHash    string       `json:"receipt_hash"`
+	ChainSeq       int          `json:"chain_seq"`
+	ChainPrevHash  string       `json:"chain_prev_hash"`
+	Timestamp      string       `json:"timestamp,omitempty"`
+	ActionType     string       `json:"action_type,omitempty"`
+	Verdict        string       `json:"verdict"`
+	Transport      string       `json:"transport,omitempty"`
+	Method         string       `json:"method,omitempty"`
+	TargetRedacted string       `json:"target_redacted,omitempty"`
+	Layer          string       `json:"layer,omitempty"`
+	Pattern        string       `json:"pattern,omitempty"`
+	Severity       string       `json:"severity,omitempty"`
+	PolicyHash     string       `json:"policy_hash"`
+	SignerKey      string       `json:"signer_key,omitempty"`
+	SourceSpans    []SourceSpan `json:"source_spans,omitempty"`
+}
+
+// SourceSpan is the inline audit-packet mirror of EvidenceReceipt v2
+// source_spans. Producers still verify the signed EvidenceReceipt bytes; this
+// optional copy lets packet consumers display span metadata without parsing the
+// receipt payload first.
+type SourceSpan struct {
+	SourceID             string `json:"source_id"`
+	SourceKind           string `json:"source_kind"`
+	NormalizedView       string `json:"normalized_view"`
+	PipelockBinaryDigest string `json:"pipelock_binary_digest"`
+	RulesBundleDigest    string `json:"rules_bundle_digest"`
+	TransformProfile     string `json:"transform_profile"`
+	PolicyHash           string `json:"policy_hash"`
+	RuleID               string `json:"rule_id"`
+	Bundle               string `json:"bundle,omitempty"`
+	BundleVersion        string `json:"bundle_version,omitempty"`
+	CharOffset           *int   `json:"char_offset,omitempty"`
+	CharLength           *int   `json:"char_length,omitempty"`
+	MatchHash            string `json:"match_hash"`
+	MatchHashAlg         string `json:"match_hash_alg"`
+	MatchClass           string `json:"match_class"`
+	RedactedSample       string `json:"redacted_sample,omitempty"`
 }
 
 // ScannerConfigSnapshot is the optional summary of the pipelock config that
@@ -402,6 +445,64 @@ func (r Receipt) validate() error {
 	if r.PolicyHash == "" {
 		return errors.New("policy_hash is required")
 	}
+	for i, span := range r.SourceSpans {
+		if err := span.validate(); err != nil {
+			return fmt.Errorf("source_spans[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (s SourceSpan) validate() error {
+	if s.SourceID == "" {
+		return errors.New("source_id is required")
+	}
+	if _, ok := validSourceKinds[s.SourceKind]; !ok {
+		return fmt.Errorf("source_kind %q is invalid", s.SourceKind)
+	}
+	if !validNormalizedView(s.NormalizedView) {
+		return fmt.Errorf("normalized_view %q is invalid", s.NormalizedView)
+	}
+	if err := validatePrefixedHex("pipelock_binary_digest", s.PipelockBinaryDigest, "sha256:"); err != nil {
+		return err
+	}
+	if err := validatePrefixedHex("rules_bundle_digest", s.RulesBundleDigest, "sha256:"); err != nil {
+		return err
+	}
+	if !validTransformProfile(s.TransformProfile) {
+		return fmt.Errorf("transform_profile %q is invalid", s.TransformProfile)
+	}
+	if err := validatePrefixedHex("policy_hash", s.PolicyHash, "sha256:"); err != nil {
+		return err
+	}
+	if s.RuleID == "" {
+		return errors.New("rule_id is required")
+	}
+	if err := validatePrefixedHex("match_hash", s.MatchHash, "hmac-sha256:"); err != nil {
+		return err
+	}
+	if s.MatchHashAlg != "hmac-sha256" {
+		return fmt.Errorf("match_hash_alg %q is invalid", s.MatchHashAlg)
+	}
+	if s.MatchClass == "" {
+		return errors.New("match_class is required")
+	}
+	hasOffset := s.CharOffset != nil
+	hasLength := s.CharLength != nil
+	if hasOffset != hasLength {
+		return errors.New("char_offset and char_length must be paired")
+	}
+	if hasOffset {
+		if *s.CharOffset < 0 {
+			return errors.New("char_offset must be non-negative")
+		}
+		if *s.CharLength <= 0 {
+			return errors.New("char_length must be positive")
+		}
+		if !offsetsAllowedForView(s.NormalizedView) {
+			return errors.New("char_offset not allowed for normalized_view")
+		}
+	}
 	return nil
 }
 
@@ -411,6 +512,43 @@ func (s ScannerConfigSnapshot) validate() error {
 	}
 	if s.ResponsePatternsCount < 0 {
 		return errors.New("response_patterns_count must be non-negative")
+	}
+	return nil
+}
+
+func validNormalizedView(view string) bool {
+	if _, ok := validNormalizedViews[view]; ok {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(view, "dlp_normalized:")
+	return ok && suffix != ""
+}
+
+func offsetsAllowedForView(view string) bool {
+	return view == "sanitized_target" || view == "dlp_normalized" || strings.HasPrefix(view, "dlp_normalized:")
+}
+
+func validTransformProfile(profile string) bool {
+	version, ok := strings.CutPrefix(profile, "pipelock-transform-v")
+	if !ok || version == "" {
+		return false
+	}
+	for _, r := range version {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePrefixedHex(name, value, prefix string) error {
+	const hexLen = 64
+	hexValue, ok := strings.CutPrefix(value, prefix)
+	if !ok || len(hexValue) != hexLen {
+		return fmt.Errorf("%s must be %s<%d hex>", name, prefix, hexLen)
+	}
+	if _, err := hex.DecodeString(hexValue); err != nil {
+		return fmt.Errorf("%s must be %s<%d hex>", name, prefix, hexLen)
 	}
 	return nil
 }

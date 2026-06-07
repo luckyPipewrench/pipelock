@@ -30,8 +30,36 @@ var allPayloadKinds = []receipt.PayloadKind{
 }
 
 func TestRegistry_HasAll14PayloadKinds(t *testing.T) {
-	if len(allPayloadKinds) != 14 {
-		t.Fatalf("expected 14 payload kinds in test table, got %d", len(allPayloadKinds))
+	expectedKinds := []receipt.PayloadKind{
+		receipt.PayloadProxyDecision,
+		receipt.PayloadProxyDecisionWithSpans,
+		receipt.PayloadContractRatified,
+		receipt.PayloadContractPromoteIntent,
+		receipt.PayloadContractPromoteCommitted,
+		receipt.PayloadContractRollbackAuthorized,
+		receipt.PayloadContractRollbackCommitted,
+		receipt.PayloadContractDemoted,
+		receipt.PayloadContractExpired,
+		receipt.PayloadContractDrift,
+		receipt.PayloadShadowDelta,
+		receipt.PayloadOpportunityMissing,
+		receipt.PayloadKeyRotation,
+		receipt.PayloadContractRedactionRequest,
+	}
+	if len(allPayloadKinds) != len(expectedKinds) {
+		t.Fatalf("expected %d payload kinds in test table, got %d", len(expectedKinds), len(allPayloadKinds))
+	}
+	seen := make(map[receipt.PayloadKind]struct{}, len(allPayloadKinds))
+	for _, kind := range allPayloadKinds {
+		if _, ok := seen[kind]; ok {
+			t.Fatalf("duplicate payload kind in test table: %q", kind)
+		}
+		seen[kind] = struct{}{}
+	}
+	for _, kind := range expectedKinds {
+		if _, ok := seen[kind]; !ok {
+			t.Fatalf("missing payload kind in test table: %q", kind)
+		}
 	}
 	for _, kind := range allPayloadKinds {
 		kind := kind

@@ -162,6 +162,104 @@ func TestExtractEnvSecrets_FiltersCorrectly(t *testing.T) {
 	}
 }
 
+func TestIsPathShapedValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"empty", "", false},
+		{"absolute path", "/home/agent/.config/app/plugins/core", true},
+		{"ca bundle path", "/etc/ssl/certs/app-ca.pem", true},
+		{"home-relative path", "~/.config/app/state/cache", true},
+		{"path list (PATH-style)", "/opt/app/bin:/usr/local/bin:/usr/bin:/bin", true},
+		{"path list trailing colon", "/usr/bin:/bin:", false},
+		{"single short root path", "/etc", false},
+		{"slash-prefixed opaque token", "/" + "K7MDENGbPxRfiCYzQ", false},
+		// A base64 secret can begin with "/" and often carries '+' or '='
+		// artifacts, so it must NOT be treated as a path.
+		{"base64 secret starting with slash", "/K7MDENG+bPxRfiCYz=", false},
+		{"plain high-entropy secret", "sk-ant-abcdefghijklmnopqrstu1234567890", false},
+		{"token with slash mid-string", "AKIA" + "IOSFODNN7" + "/EXAMPLEKEY", false},
+		{"colon list with non-path segment", "host:sk-ant-abcdefghij12345", false},
+		{"leading colon (degenerate)", ":/usr/bin", false},
+		// PATH wrapper smuggling a slash-prefixed opaque token must NOT be
+		// treated as path-shaped, or the token escapes the env-leak matcher
+		// set (the single-value branch keeps "/<token>" scannable).
+		{"path list smuggling slash-prefixed token", "/usr/bin:/" + "K7MDENGbPxRfiCYzQ", false},
+		// Real PATH lists, including short single-component dirs, stay skipped.
+		{"path list short single-component dirs", "/bin:/sbin:/usr/bin", true},
+		{"path list multi-component only", "/usr/bin:/usr/local/bin", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPathShapedValue(tt.value); got != tt.want {
+				t.Errorf("isPathShapedValue(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractEnvSecrets_SkipsPathShapedValues(t *testing.T) {
+	// Path-valued variables the name skip-list misses (HERMES_HOME, CA bundle
+	// vars, ...). Their deep-path values clear the length+entropy filters but
+	// are not secrets, so they must be excluded by value shape. Names use a
+	// non-skipped prefix (PIPELOCK_TEST is collected elsewhere) so the only
+	// thing keeping them out is isPathShapedValue.
+	appHome := "/home/agent/.config/app/plugins/core/x9k2qz"
+	caBundle := "/etc/ssl/certs/app-ca.pem"
+	pathList := "/opt/app/bin:/usr/local/bin:/usr/bin"
+	t.Setenv("PIPELOCK_TEST_APP_HOME", appHome)
+	t.Setenv("PIPELOCK_TEST_CA_BUNDLE", caBundle)
+	t.Setenv("PIPELOCK_TEST_PATHLIST", pathList)
+
+	// A genuine secret value must still be collected.
+	realSecret := "sk-" + "ant-realkey-abcdefghij12345"
+	t.Setenv("PIPELOCK_TEST_REAL", realSecret)
+	slashPrefixedSecret := "/" + "K7MDENGbPxRfiCYzQ"
+	t.Setenv("PIPELOCK_TEST_SLASH_SECRET", slashPrefixedSecret)
+
+	// A PATH-like wrapper smuggling a slash-prefixed opaque token must NOT be
+	// skipped as path-shaped; the whole value stays in the matcher set so the
+	// wrapper can't be used to evade env-leak detection.
+	pathWrappedSecret := "/usr/bin:/" + "K7MDENGbPxRfiCYzQ"
+	t.Setenv("PIPELOCK_TEST_PATH_WRAPPED_SECRET", pathWrappedSecret)
+
+	secrets := extractEnvSecrets(16)
+
+	pathShaped := map[string]string{
+		appHome:  "PIPELOCK_TEST_APP_HOME",
+		caBundle: "PIPELOCK_TEST_CA_BUNDLE",
+		pathList: "PIPELOCK_TEST_PATHLIST",
+	}
+	foundReal := false
+	foundSlashPrefixedSecret := false
+	foundPathWrappedSecret := false
+	for _, s := range secrets {
+		if name, ok := pathShaped[s]; ok {
+			t.Errorf("%s value %q should be skipped (path-shaped, not a secret)", name, s)
+		}
+		if s == realSecret {
+			foundReal = true
+		}
+		if s == slashPrefixedSecret {
+			foundSlashPrefixedSecret = true
+		}
+		if s == pathWrappedSecret {
+			foundPathWrappedSecret = true
+		}
+	}
+	if !foundReal {
+		t.Error("expected genuine secret value to still be collected after path-skip")
+	}
+	if !foundSlashPrefixedSecret {
+		t.Error("expected slash-prefixed opaque secret value to still be collected after path-skip")
+	}
+	if !foundPathWrappedSecret {
+		t.Error("expected PATH-wrapped opaque token to still be collected (no path-wrapper exfil bypass)")
+	}
+}
+
 func TestExtractEnvSecrets_SkipsNonSecretNames(t *testing.T) {
 	// Set well-known non-secret vars with values that would otherwise
 	// pass length and entropy filters.

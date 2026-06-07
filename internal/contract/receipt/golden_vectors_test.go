@@ -22,6 +22,15 @@ const receiptTestPrivateSeedHex = "" +
 	"9d61b19d" + "effd5a60" + "ba844af4" + "92ec2cc4" +
 	"4449c569" + "7b326919" + "703bac03" + "1cae7f60"
 
+const goldenSpanDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+const (
+	goldenSpanRedactedValue = "[redacted-value]"
+	goldenSpanHMACSHA256    = "hmac-sha256"
+	goldenSpanAWSRule       = "aws_access_key"
+	goldenSpanEventID       = "01F8MECHZX3TBDSZ7XRADM79ZS"
+)
+
 func TestGolden_EvidenceReceiptProxyDecision(t *testing.T) {
 	t.Parallel()
 	seed, err := hex.DecodeString(receiptTestPrivateSeedHex)
@@ -32,14 +41,16 @@ func TestGolden_EvidenceReceiptProxyDecision(t *testing.T) {
 
 	payload := json.RawMessage(`{"action_type":"connect","target":"example.com","verdict":"allow","transport":"forward","policy_sources":["test"],"winning_source":"test"}`)
 	r := EvidenceReceipt{
-		RecordType:     RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    PayloadProxyDecision,
-		EventID:        "01F8MECHZX3TBDSZ7XRADM79XV",
-		Timestamp:      time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
-		ChainSeq:       1,
-		ChainPrevHash:  "sha256:0",
-		Payload:        payload,
+		RecordType:       RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      PayloadProxyDecision,
+		Canonicalization: DefaultCanonicalizationProfile(),
+		Crit:             CritForPayloadKind(PayloadProxyDecision),
+		EventID:          "01F8MECHZX3TBDSZ7XRADM79XV",
+		Timestamp:        time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
+		ChainSeq:         1,
+		ChainPrevHash:    "sha256:0",
+		Payload:          payload,
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {
@@ -74,6 +85,73 @@ func TestGolden_EvidenceReceiptProxyDecision(t *testing.T) {
 	}
 }
 
+func TestGolden_EvidenceReceiptProxyDecisionWithSpans(t *testing.T) {
+	t.Parallel()
+	seed, err := hex.DecodeString(receiptTestPrivateSeedHex)
+	if err != nil {
+		t.Fatalf("decode seed: %v", err)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+
+	span := goldenSourceSpan(t)
+	payloadBody, err := json.Marshal(PayloadProxyDecisionWithSpansStruct{
+		ActionType:    "block",
+		Target:        "https://example.com/" + goldenSpanRedactedValue,
+		Verdict:       "block",
+		Transport:     "forward",
+		PolicySources: []string{"dlp"},
+		WinningSource: "scanner",
+		RuleID:        goldenSpanAWSRule,
+		SourceSpans:   []SourceSpan{span},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	r := EvidenceReceipt{
+		RecordType:       RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      PayloadProxyDecisionWithSpans,
+		Canonicalization: DefaultCanonicalizationProfile(),
+		Crit:             CritForPayloadKind(PayloadProxyDecisionWithSpans),
+		EventID:          goldenSpanEventID,
+		Timestamp:        time.Date(2026, 6, 6, 18, 0, 0, 0, time.UTC),
+		ChainSeq:         1,
+		ChainPrevHash:    "sha256:0",
+		Payload:          json.RawMessage(payloadBody),
+	}
+	preimage, err := r.SignablePreimage()
+	if err != nil {
+		t.Fatalf("preimage: %v", err)
+	}
+	r.Signature = SignatureProof{
+		SignerKeyID: "receipt-signing-test",
+		KeyPurpose:  "receipt-signing",
+		Algorithm:   "ed25519",
+		Signature:   "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
+	}
+
+	body, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal receipt: %v", err)
+	}
+	body = append(body, '\n')
+
+	const goldenPath = "../testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json"
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(filepath.Clean(goldenPath), body, 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		return
+	}
+	got, err := os.ReadFile(filepath.Clean(goldenPath))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(body) {
+		t.Errorf("drift in spanned proxy_decision golden\n--- expected\n%s\n--- got\n%s", got, body)
+	}
+}
+
 // TestGolden_EvidenceReceiptPromoteCommitted is the cross-implementation
 // fixture for a `contract_promote_committed` v2 envelope. Covered by
 // pipelock-verify-python's tests/test_v2_conformance.py to prove
@@ -94,14 +172,16 @@ func TestGolden_EvidenceReceiptPromoteCommitted(t *testing.T) {
 		`"validation_outcome":"accepted"` +
 		`}`)
 	r := EvidenceReceipt{
-		RecordType:     RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    PayloadContractPromoteCommitted,
-		EventID:        "01F8MECHZX3TBDSZ7XRADM79XX",
-		Timestamp:      time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
-		ChainSeq:       1,
-		ChainPrevHash:  "sha256:0",
-		Payload:        payload,
+		RecordType:       RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      PayloadContractPromoteCommitted,
+		Canonicalization: DefaultCanonicalizationProfile(),
+		Crit:             CritForPayloadKind(PayloadContractPromoteCommitted),
+		EventID:          "01F8MECHZX3TBDSZ7XRADM79XX",
+		Timestamp:        time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
+		ChainSeq:         1,
+		ChainPrevHash:    "sha256:0",
+		Payload:          payload,
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {
@@ -162,14 +242,16 @@ func TestGolden_EvidenceReceiptShadowDelta(t *testing.T) {
 		`"exemplar_ids":["01F8MECHZX3TBDSZ7XRADM79YA","01F8MECHZX3TBDSZ7XRADM79YB"]` +
 		`}}`)
 	r := EvidenceReceipt{
-		RecordType:     RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    PayloadShadowDelta,
-		EventID:        "01F8MECHZX3TBDSZ7XRADM79YC",
-		Timestamp:      time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
-		ChainSeq:       1,
-		ChainPrevHash:  "sha256:0",
-		Payload:        payload,
+		RecordType:       RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      PayloadShadowDelta,
+		Canonicalization: DefaultCanonicalizationProfile(),
+		Crit:             CritForPayloadKind(PayloadShadowDelta),
+		EventID:          "01F8MECHZX3TBDSZ7XRADM79YC",
+		Timestamp:        time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
+		ChainSeq:         1,
+		ChainPrevHash:    "sha256:0",
+		Payload:          payload,
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {
@@ -201,4 +283,31 @@ func TestGolden_EvidenceReceiptShadowDelta(t *testing.T) {
 	if string(got) != string(body) {
 		t.Errorf("drift in shadow_delta golden\n--- expected\n%s\n--- got\n%s", got, body)
 	}
+}
+
+func goldenSourceSpan(t *testing.T) SourceSpan {
+	t.Helper()
+	offset := 20
+	length := len(goldenSpanRedactedValue)
+	span := SourceSpan{
+		SourceID:             "request-url",
+		SourceKind:           SourceKindHTTPRequestURL,
+		NormalizedView:       NormalizedViewSanitizedTarget,
+		PipelockBinaryDigest: goldenSpanDigest,
+		RulesBundleDigest:    goldenSpanDigest,
+		TransformProfile:     "pipelock-transform-v1",
+		PolicyHash:           goldenSpanDigest,
+		RuleID:               goldenSpanAWSRule,
+		CharOffset:           &offset,
+		CharLength:           &length,
+		MatchHashAlg:         goldenSpanHMACSHA256,
+		MatchClass:           "secret:aws_access_key",
+		RedactedSample:       goldenSpanRedactedValue,
+	}
+	matchHash, err := SourceSpanMatchHash([]byte("golden-span-mac-key"), goldenSpanEventID, 0, span, span.RedactedSample)
+	if err != nil {
+		t.Fatalf("SourceSpanMatchHash: %v", err)
+	}
+	span.MatchHash = matchHash
+	return span
 }

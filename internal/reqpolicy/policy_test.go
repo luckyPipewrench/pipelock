@@ -377,3 +377,123 @@ func TestBetterDecision(t *testing.T) {
 		}
 	}
 }
+
+func TestPathEntropyExempt(t *testing.T) {
+	const (
+		host    = "api.vendor.example"
+		idPath  = "/v1/messages/Xp9Qn0vM6Kf2Tz8Lr4Wd1"
+		newPath = "/v1/other/Xp9Qn0vM6Kf2Tz8Lr4Wd1"
+	)
+
+	govRoute := config.RequestPolicyRoute{
+		Hosts:        []string{host},
+		PathPatterns: []string{`^/v1/messages/`},
+	}
+	hostlessRoute := config.RequestPolicyRoute{
+		PathPatterns: []string{`^/v1/messages/`},
+	}
+	hostOnlyRoute := config.RequestPolicyRoute{
+		Hosts: []string{host},
+	}
+	prefixRoute := config.RequestPolicyRoute{
+		Hosts:        []string{host},
+		PathPrefixes: []string{"/v1/messages/"},
+	}
+	wildcardRoute := config.RequestPolicyRoute{
+		Hosts:        []string{"*.vendor.example"},
+		PathPatterns: []string{`^/v1/messages/`},
+	}
+
+	rule := func(r config.RequestPolicyRoute) config.RequestPolicyRule {
+		return config.RequestPolicyRule{Name: "r", Action: config.ActionBlock, Route: r}
+	}
+
+	tests := []struct {
+		name    string
+		cfg     *config.RequestPolicy
+		host    string
+		path    string
+		want    bool
+		comment string
+	}{
+		{
+			name: "governed host and path exempts",
+			cfg:  &config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule(govRoute)}},
+			host: host, path: idPath, want: true,
+		},
+		{
+			name: "governed host but ungoverned path not exempt",
+			cfg:  &config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule(govRoute)}},
+			host: host, path: newPath, want: false,
+		},
+		{
+			name: "ungoverned host not exempt",
+			cfg:  &config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule(govRoute)}},
+			host: "evil.example", path: idPath, want: false,
+			comment: "another host must still get path entropy",
+		},
+		{
+			name: "hostless route never exempts (would match every host)",
+			cfg:  &config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule(hostlessRoute)}},
+			host: "evil.example", path: idPath, want: false,
+		},
+		{
+			name: "host-only route (no path constraint) never exempts",
+			cfg:  &config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule(hostOnlyRoute)}},
+			host: host, path: idPath, want: false,
+			comment: "host-only would otherwise exempt the whole host",
+		},
+		{
+			name: "path_prefixes governance exempts on prefix match",
+			cfg:  &config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule(prefixRoute)}},
+			host: host, path: idPath, want: true,
+		},
+		{
+			name: "wildcard host exempts matching subdomain",
+			cfg:  &config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule(wildcardRoute)}},
+			host: "tenant1.vendor.example", path: idPath, want: true,
+		},
+		{
+			name: "disabled section never exempts",
+			cfg:  &config.RequestPolicy{Enabled: false, Rules: []config.RequestPolicyRule{rule(govRoute)}},
+			host: host, path: idPath, want: false,
+		},
+		{
+			name: "shadow route never exempts",
+			cfg: &config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{{
+				Name:   "shadow",
+				Action: config.ActionBlock,
+				Shadow: true,
+				Route:  govRoute,
+			}}},
+			host: host, path: idPath, want: false,
+			comment: "shadow rules do not enforce request_policy and must not relax entropy",
+		},
+		{
+			name: "batch route exempts on host and path",
+			cfg: &config.RequestPolicy{Enabled: true, Batch: []config.RequestPolicyBatch{{
+				Route: govRoute, RequestsField: "requests",
+			}}},
+			host: host, path: idPath, want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := NewMatcher(tt.cfg)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			if got := m.PathEntropyExempt(tt.host, tt.path); got != tt.want {
+				t.Errorf("PathEntropyExempt(%q, %q) = %v, want %v (%s)", tt.host, tt.path, got, tt.want, tt.comment)
+			}
+		})
+	}
+}
+
+func TestPathEntropyExempt_NilMatcher(t *testing.T) {
+	var m *Matcher
+	if m.PathEntropyExempt("api.vendor.example", "/v1/messages/abc") {
+		t.Error("nil matcher must never exempt")
+	}
+}

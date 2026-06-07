@@ -1077,8 +1077,9 @@ func ForwardScannedInput(
 				Profile:           opts.captureProfile(),
 				ActionClass:       captureActionClass,
 				Request: capture.CaptureRequest{
-					ToolName:  toolCallName,
-					MCPMethod: verdict.Method,
+					ToolName:     toolCallName,
+					ToolArgsJSON: string(frame.Args),
+					MCPMethod:    verdict.Method,
 				},
 				RawFindings:     policyFindings,
 				EffectiveAction: effectiveAction,

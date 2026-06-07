@@ -34,12 +34,14 @@ func minimalProxyDecisionPayload() json.RawMessage {
 
 func validReceipt() receipt.EvidenceReceipt {
 	return receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadProxyDecision,
-		EventID:        "01900000-0000-7000-8000-000000000001",
-		Timestamp:      time.Now(),
-		Payload:        minimalProxyDecisionPayload(),
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      receipt.PayloadProxyDecision,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
+		EventID:          "01900000-0000-7000-8000-000000000001",
+		Timestamp:        time.Now(),
+		Payload:          minimalProxyDecisionPayload(),
 		Signature: receipt.SignatureProof{
 			SignerKeyID: "receipt-key",
 			KeyPurpose:  "receipt-signing",
@@ -64,6 +66,42 @@ func TestEvidenceReceipt_Validate_RejectsWrongVersion(t *testing.T) {
 	err := r.Validate()
 	if !errors.Is(err, receipt.ErrWrongReceiptVersion) {
 		t.Fatalf("expected ErrWrongReceiptVersion, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsMissingCanonicalization(t *testing.T) {
+	r := validReceipt()
+	r.Canonicalization = receipt.CanonicalizationProfile{}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsUnknownCrit(t *testing.T) {
+	r := validReceipt()
+	r.Crit = []string{receipt.CritCanonicalization, "future_extension"}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsMissingSourceSpanCrit(t *testing.T) {
+	r, _ := signedSpannedReceipt(t)
+	r.Crit = []string{receipt.CritCanonicalization}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadMissingField) {
+		t.Fatalf("expected ErrPayloadMissingField, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsSourceSpanCritOnPlainPayload(t *testing.T) {
+	r := validReceipt()
+	r.Crit = []string{receipt.CritCanonicalization, receipt.CritSourceSpans}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
 	}
 }
 
@@ -265,8 +303,30 @@ func TestVerifyWithKey(t *testing.T) {
 
 	tampered := r
 	tampered.Payload = json.RawMessage(`{"action_type":"block","target":"https://example.com/tampered","verdict":"blocked","transport":"forward","policy_sources":["dlp"],"winning_source":"dlp"}`)
-	if err := receipt.VerifyWithKey(tampered, pub, "receipt-key"); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
-		t.Fatalf("VerifyWithKey tampered error = %v, want ErrPayloadInvalidEnum", err)
+	if err := receipt.VerifyWithKey(tampered, pub, "receipt-key"); !errors.Is(err, receipt.ErrSignatureVerification) {
+		t.Fatalf("VerifyWithKey tampered error = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestVerifyWithKey_SpannedReceiptTamperBreaksSignature(t *testing.T) {
+	t.Parallel()
+	r, pub := signedSpannedReceipt(t)
+	if err := receipt.VerifyWithKey(r, pub, "receipt-key"); err != nil {
+		t.Fatalf("VerifyWithKey valid spanned receipt: %v", err)
+	}
+
+	var payload receipt.PayloadProxyDecisionWithSpansStruct
+	if err := json.Unmarshal(r.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	payload.SourceSpans[0].NormalizedView = receipt.NormalizedViewDLPNormalized
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal tampered payload: %v", err)
+	}
+	r.Payload = body
+	if err := receipt.VerifyWithKey(r, pub, "receipt-key"); !errors.Is(err, receipt.ErrSignatureVerification) {
+		t.Fatalf("VerifyWithKey tampered spanned receipt error = %v, want ErrSignatureVerification", err)
 	}
 }
 
@@ -287,4 +347,74 @@ func signedReceipt(t *testing.T) (receipt.EvidenceReceipt, ed25519.PublicKey) {
 		Signature:   "ed25519:" + fmt.Sprintf("%x", ed25519.Sign(priv, preimage)),
 	}
 	return r, priv.Public().(ed25519.PublicKey)
+}
+
+func signedSpannedReceipt(t *testing.T) (receipt.EvidenceReceipt, ed25519.PublicKey) {
+	t.Helper()
+	const eventID = "01900000-0000-7000-8000-000000000010"
+	seed := sha256.Sum256([]byte("receipt verify spanned test key"))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	payload := receipt.PayloadProxyDecisionWithSpansStruct{
+		ActionType:    "block",
+		Target:        "https://example.com/" + testRedactedValue,
+		Verdict:       "block",
+		Transport:     "forward",
+		PolicySources: []string{"dlp"},
+		WinningSource: "scanner",
+		RuleID:        testAWSAccessKeyRule,
+		SourceSpans:   []receipt.SourceSpan{receiptTestSourceSpan(t, eventID)},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	r := receipt.EvidenceReceipt{
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      receipt.PayloadProxyDecisionWithSpans,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecisionWithSpans),
+		EventID:          eventID,
+		Timestamp:        time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
+		ChainPrevHash:    "sha256:0",
+		Payload:          body,
+	}
+	preimage, err := r.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	r.Signature = receipt.SignatureProof{
+		SignerKeyID: "receipt-key",
+		KeyPurpose:  "receipt-signing",
+		Algorithm:   "ed25519",
+		Signature:   "ed25519:" + fmt.Sprintf("%x", ed25519.Sign(priv, preimage)),
+	}
+	return r, priv.Public().(ed25519.PublicKey)
+}
+
+func receiptTestSourceSpan(t *testing.T, eventID string) receipt.SourceSpan {
+	t.Helper()
+	offset := 20
+	length := len(testRedactedValue)
+	span := receipt.SourceSpan{
+		SourceID:             "request-url",
+		SourceKind:           receipt.SourceKindHTTPRequestURL,
+		NormalizedView:       receipt.NormalizedViewSanitizedTarget,
+		PipelockBinaryDigest: testSHA256Digest,
+		RulesBundleDigest:    testSHA256Digest,
+		TransformProfile:     "pipelock-transform-v1",
+		PolicyHash:           testSHA256Digest,
+		RuleID:               testAWSAccessKeyRule,
+		CharOffset:           &offset,
+		CharLength:           &length,
+		MatchHashAlg:         testHMACSHA256,
+		MatchClass:           "secret:aws_access_key",
+		RedactedSample:       testRedactedValue,
+	}
+	hash, err := receipt.SourceSpanMatchHash([]byte(testSpanMACKey), eventID, 0, span, span.RedactedSample)
+	if err != nil {
+		t.Fatalf("SourceSpanMatchHash: %v", err)
+	}
+	span.MatchHash = hash
+	return span
 }

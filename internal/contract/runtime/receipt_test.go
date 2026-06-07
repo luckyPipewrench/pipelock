@@ -29,6 +29,17 @@ const validReceiptSignaturePlaceholder = "ed25519:" +
 // DelegationChain and PolicySources isolation cases.
 const tamperedSentinel = "tampered"
 
+const testSpanDigest = "sha256:" +
+	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+const (
+	testSpanRedactedValue = "[redacted-value]"
+	testSpanMACKey        = "span-mac-key"
+	testSpanHMACSHA256    = "hmac-sha256"
+	testSpanAWSRule       = "aws_access_key"
+	testSpannedEventID    = "01900000-0000-7000-8000-000000000009"
+)
+
 func resolvedContractFixture() *ResolvedContract {
 	return &ResolvedContract{
 		ActiveManifestHash: "sha256:manifest-1",
@@ -364,5 +375,217 @@ func TestBuildProxyDecisionReceipt_LeavesSignatureZero(t *testing.T) {
 	}
 	if got.Signature != (contractreceipt.SignatureProof{}) {
 		t.Fatalf("Signature = %+v, want zero (signer fills it in)", got.Signature)
+	}
+}
+
+func TestBuildProxyDecisionWithSpansReceipt_HappyPath(t *testing.T) {
+	t.Parallel()
+	rc := resolvedContractFixture()
+	evidence := []SourceSpanEvidence{runtimeSourceSpanEvidence(t)}
+	in := ProxyDecisionInput{
+		Decision: Decision{
+			Verdict:       config.ActionBlock,
+			LiveVerdict:   config.ActionBlock,
+			PolicySources: []string{PolicySourceScanner},
+			WinningSource: WinningSourceScanner,
+			RuleID:        testSpanAWSRule,
+		},
+		ResolvedContract: rc,
+		ActionType:       testHTTPRequest,
+		Target:           "https://api.example.com/" + testSpanRedactedValue,
+		Transport:        testForward,
+		EventID:          testSpannedEventID,
+		Timestamp:        time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
+	}
+	got, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), evidence)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans {
+		t.Fatalf("PayloadKind = %q, want %q", got.PayloadKind, contractreceipt.PayloadProxyDecisionWithSpans)
+	}
+	if got.ContractHash != rc.ContractHash {
+		t.Fatalf("ContractHash = %q, want %q", got.ContractHash, rc.ContractHash)
+	}
+	var payload contractreceipt.PayloadProxyDecisionWithSpansStruct
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if len(payload.SourceSpans) != 1 {
+		t.Fatalf("SourceSpans len = %d, want 1", len(payload.SourceSpans))
+	}
+	if payload.SourceSpans[0].MatchHash == "" {
+		t.Fatal("SourceSpan.MatchHash empty")
+	}
+	wantHash, err := contractreceipt.SourceSpanMatchHash(
+		[]byte(testSpanMACKey),
+		testSpannedEventID,
+		0,
+		evidence[0].Span,
+		evidence[0].MatchValue,
+	)
+	if err != nil {
+		t.Fatalf("SourceSpanMatchHash: %v", err)
+	}
+	if payload.SourceSpans[0].MatchHash != wantHash {
+		t.Fatalf("SourceSpan.MatchHash = %q, want event_id-bound hash %q", payload.SourceSpans[0].MatchHash, wantHash)
+	}
+	got.Signature = contractreceipt.SignatureProof{
+		SignerKeyID: "receipt-key-1",
+		KeyPurpose:  "receipt-signing",
+		Algorithm:   "ed25519",
+		Signature:   validReceiptSignaturePlaceholder,
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("Validate on built spanned receipt: %v", err)
+	}
+}
+
+func TestBuildProxyDecisionWithSpansReceipt_RequiresSpans(t *testing.T) {
+	t.Parallel()
+	in := ProxyDecisionInput{
+		Decision: Decision{
+			Verdict:       config.ActionBlock,
+			PolicySources: []string{PolicySourceScanner},
+			WinningSource: WinningSourceScanner,
+		},
+		ActionType: testHTTPRequest,
+		Target:     "https://api.example.com/" + testSpanRedactedValue,
+		Transport:  testForward,
+	}
+	_, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), nil)
+	if !errors.Is(err, ErrInvalidProxyDecisionInput) {
+		t.Fatalf("err = %v, want wrap of ErrInvalidProxyDecisionInput", err)
+	}
+}
+
+func TestBuildProxyDecisionWithSpansReceipt_RequiresEventID(t *testing.T) {
+	t.Parallel()
+	in := ProxyDecisionInput{
+		Decision: Decision{
+			Verdict:       config.ActionBlock,
+			PolicySources: []string{PolicySourceScanner},
+			WinningSource: WinningSourceScanner,
+		},
+		ActionType: testHTTPRequest,
+		Target:     "https://api.example.com/" + testSpanRedactedValue,
+		Transport:  testForward,
+	}
+	_, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), []SourceSpanEvidence{runtimeSourceSpanEvidence(t)})
+	if !errors.Is(err, ErrInvalidProxyDecisionInput) {
+		t.Fatalf("err = %v, want wrap of ErrInvalidProxyDecisionInput", err)
+	}
+}
+
+func TestBuildProxyDecisionWithSpansReceipt_RequiresMatchValue(t *testing.T) {
+	t.Parallel()
+	in := ProxyDecisionInput{
+		Decision: Decision{
+			Verdict:       config.ActionBlock,
+			PolicySources: []string{PolicySourceScanner},
+			WinningSource: WinningSourceScanner,
+		},
+		ActionType: testHTTPRequest,
+		Target:     "https://api.example.com/" + testSpanRedactedValue,
+		Transport:  testForward,
+		EventID:    testSpannedEventID,
+	}
+	evidence := runtimeSourceSpanEvidence(t)
+	evidence.MatchValue = ""
+	_, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), []SourceSpanEvidence{evidence})
+	if !errors.Is(err, ErrInvalidProxyDecisionInput) {
+		t.Fatalf("err = %v, want wrap of ErrInvalidProxyDecisionInput", err)
+	}
+}
+
+func TestBuildProxyDecisionWithSpansReceipt_RequiresHMACKey(t *testing.T) {
+	t.Parallel()
+	in := ProxyDecisionInput{
+		Decision: Decision{
+			Verdict:       config.ActionBlock,
+			PolicySources: []string{PolicySourceScanner},
+			WinningSource: WinningSourceScanner,
+		},
+		ActionType: testHTTPRequest,
+		Target:     "https://api.example.com/" + testSpanRedactedValue,
+		Transport:  testForward,
+		EventID:    testSpannedEventID,
+	}
+	_, err := BuildProxyDecisionWithSpansReceipt(in, nil, []SourceSpanEvidence{runtimeSourceSpanEvidence(t)})
+	if !errors.Is(err, ErrInvalidProxyDecisionInput) {
+		t.Fatalf("err = %v, want wrap of ErrInvalidProxyDecisionInput", err)
+	}
+	if !errors.Is(err, contractreceipt.ErrPayloadMissingField) {
+		t.Fatalf("err = %v, want wrap of ErrPayloadMissingField", err)
+	}
+}
+
+func TestBuildProxyDecisionWithSpansReceipt_RejectsMalformedSpanAtBuildTime(t *testing.T) {
+	t.Parallel()
+	in := ProxyDecisionInput{
+		Decision: Decision{
+			Verdict:       config.ActionBlock,
+			PolicySources: []string{PolicySourceScanner},
+			WinningSource: WinningSourceScanner,
+		},
+		ActionType: testHTTPRequest,
+		Target:     "https://api.example.com/" + testSpanRedactedValue,
+		Transport:  testForward,
+		EventID:    testSpannedEventID,
+	}
+	evidence := runtimeSourceSpanEvidence(t)
+	evidence.Span.SourceKind = "bogus_kind" // not a valid source_kind enum
+	_, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), []SourceSpanEvidence{evidence})
+	if !errors.Is(err, ErrInvalidProxyDecisionInput) {
+		t.Fatalf("err = %v, want wrap of ErrInvalidProxyDecisionInput", err)
+	}
+	// The underlying enum rejection from the shared span validator must surface.
+	if !errors.Is(err, contractreceipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("err = %v, want wrap of ErrPayloadInvalidEnum", err)
+	}
+}
+
+func TestProxyDecisionWithSpansPayload_SourceSpansIsolation(t *testing.T) {
+	t.Parallel()
+	spans := []contractreceipt.SourceSpan{runtimeSourceSpan(t)}
+	payload := ProxyDecisionWithSpansPayload(Decision{
+		Verdict:       config.ActionBlock,
+		PolicySources: []string{PolicySourceScanner},
+		WinningSource: WinningSourceScanner,
+	}, testHTTPRequest, "https://api.example.com/"+testSpanRedactedValue, testForward, spans)
+
+	spans[0].RuleID = tamperedSentinel
+	if payload.SourceSpans[0].RuleID == tamperedSentinel {
+		t.Fatal("payload SourceSpans aliases caller slice")
+	}
+}
+
+func runtimeSourceSpan(t *testing.T) contractreceipt.SourceSpan {
+	t.Helper()
+	offset := 24
+	length := len(testSpanRedactedValue)
+	span := contractreceipt.SourceSpan{
+		SourceID:             "request-url",
+		SourceKind:           contractreceipt.SourceKindHTTPRequestURL,
+		NormalizedView:       contractreceipt.NormalizedViewSanitizedTarget,
+		PipelockBinaryDigest: testSpanDigest,
+		RulesBundleDigest:    testSpanDigest,
+		TransformProfile:     "pipelock-transform-v1",
+		PolicyHash:           testSpanDigest,
+		RuleID:               testSpanAWSRule,
+		CharOffset:           &offset,
+		CharLength:           &length,
+		MatchHashAlg:         testSpanHMACSHA256,
+		MatchClass:           "secret:aws_access_key",
+		RedactedSample:       testSpanRedactedValue,
+	}
+	return span
+}
+
+func runtimeSourceSpanEvidence(t *testing.T) SourceSpanEvidence {
+	t.Helper()
+	return SourceSpanEvidence{
+		Span:       runtimeSourceSpan(t),
+		MatchValue: testSpanRedactedValue,
 	}
 }

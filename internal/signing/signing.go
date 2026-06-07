@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 )
 
 // SigExtension is the file extension for detached signature files.
@@ -248,12 +249,14 @@ func LoadPrivateKeyFile(path string) (ed25519.PrivateKey, error) {
 	// Check permissions on the resolved file, not the symlink.
 	// Mask 0o037: reject group-write (0o020), group-execute (0o010),
 	// and all other-access (0o007). Allow owner-rw (0o600) and
-	// group-read (0o040) for k8s fsGroup compatibility.
+	// group-read (0o040) for k8s fsGroup compatibility. On Windows the
+	// check is skipped (secperm.TooPermissive returns false) because Go
+	// reports the mode from the read-only attribute, not the NTFS ACL.
 	info, err := os.Stat(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("reading private key: %w", err)
 	}
-	if info.Mode().Perm()&0o037 != 0 {
+	if secperm.TooPermissive(info.Mode().Perm(), 0o037) {
 		return nil, fmt.Errorf("private key %s has permissions %04o, want 0600 or 0640 (run: chmod 640 %s)", resolved, info.Mode().Perm(), resolved)
 	}
 

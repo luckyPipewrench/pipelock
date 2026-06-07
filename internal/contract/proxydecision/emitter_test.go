@@ -7,13 +7,20 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
+
+const testSpanDigest = "sha256:" +
+	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+const testRedactedSourceSpanValue = "[redacted-value]"
 
 // captureRecorder records entries in memory so tests can extract the signed
 // receipt JSON and verify it offline.
@@ -73,6 +80,38 @@ func decodePayload(t *testing.T, rcpt contractreceipt.EvidenceReceipt) contractr
 	return p
 }
 
+func decodeSpannedPayload(t *testing.T, rcpt contractreceipt.EvidenceReceipt) contractreceipt.PayloadProxyDecisionWithSpansStruct {
+	t.Helper()
+	var p contractreceipt.PayloadProxyDecisionWithSpansStruct
+	if err := json.Unmarshal(rcpt.Payload, &p); err != nil {
+		t.Fatalf("unmarshal spanned payload: %v", err)
+	}
+	return p
+}
+
+func spannedEvidenceFixture() []contractruntime.SourceSpanEvidence {
+	offset, length := 9, len(testRedactedSourceSpanValue)
+	return []contractruntime.SourceSpanEvidence{{
+		Span: contractreceipt.SourceSpan{
+			SourceID:             "req-1",
+			SourceKind:           contractreceipt.SourceKindMCPToolArgs,
+			NormalizedView:       contractreceipt.NormalizedViewDLPNormalized,
+			PipelockBinaryDigest: testSpanDigest,
+			RulesBundleDigest:    testSpanDigest,
+			TransformProfile:     "nfkc+zero-width-strip",
+			PolicyHash:           testSpanDigest,
+			RuleID:               "aws_access_key",
+			Bundle:               "builtin",
+			BundleVersion:        "2026.06.05",
+			CharOffset:           &offset,
+			CharLength:           &length,
+			MatchClass:           "secret:aws_access_key",
+			RedactedSample:       testRedactedSourceSpanValue,
+		},
+		MatchValue: testRedactedSourceSpanValue,
+	}}
+}
+
 func TestEmit_BuildsVerifiableReceipt(t *testing.T) {
 	rec := &captureRecorder{}
 	em, pub, keyID := newTestEmitter(t, rec, nil)
@@ -130,6 +169,195 @@ func TestEmit_BuildsVerifiableReceipt(t *testing.T) {
 	}
 	if p.RuleID != "prompt_injection" {
 		t.Errorf("payload RuleID = %q", p.RuleID)
+	}
+}
+
+func TestEmit_WithSpansBuildsVerifiableReceipt(t *testing.T) {
+	rec := &captureRecorder{}
+	em, pub, keyID := newTestEmitter(t, rec, nil)
+
+	evidence := spannedEvidenceFixture()
+
+	err := em.Emit(Decision{
+		ActionType:         "mcp_tool_call",
+		Transport:          "mcp_stdio",
+		Target:             "tool://example/list",
+		Verdict:            "block",
+		WinningSource:      SourceScanner,
+		PolicySources:      []string{SourceScanner},
+		RuleID:             "aws_access_key",
+		SpanHMACKey:        []byte("span-mac-key"),
+		SourceSpanEvidence: evidence,
+	})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if len(rec.entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(rec.entries))
+	}
+	entry := rec.entries[0]
+	if entry.EventKind != string(contractreceipt.PayloadProxyDecisionWithSpans) {
+		t.Fatalf("entry EventKind = %q, want %q", entry.EventKind, contractreceipt.PayloadProxyDecisionWithSpans)
+	}
+	if !strings.HasPrefix(entry.Summary, string(contractreceipt.PayloadProxyDecisionWithSpans)+":") {
+		t.Fatalf("entry Summary = %q, want spanned payload kind prefix", entry.Summary)
+	}
+
+	rcpt := decodeReceipt(t, entry)
+	if rcpt.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans {
+		t.Fatalf("PayloadKind = %q, want %q", rcpt.PayloadKind, contractreceipt.PayloadProxyDecisionWithSpans)
+	}
+	if err := contractreceipt.VerifyWithKey(rcpt, pub, keyID); err != nil {
+		t.Fatalf("VerifyWithKey: %v", err)
+	}
+	payload := decodeSpannedPayload(t, rcpt)
+	if len(payload.SourceSpans) != 1 {
+		t.Fatalf("source_spans length = %d, want 1", len(payload.SourceSpans))
+	}
+	span := payload.SourceSpans[0]
+	wantHash, err := contractreceipt.SourceSpanMatchHash([]byte("span-mac-key"), rcpt.EventID, 0, span, testRedactedSourceSpanValue)
+	if err != nil {
+		t.Fatalf("SourceSpanMatchHash: %v", err)
+	}
+	if span.MatchHash != wantHash {
+		t.Fatalf("MatchHash = %q, want event_id-bound hash %q", span.MatchHash, wantHash)
+	}
+	if span.RedactedSample != testRedactedSourceSpanValue {
+		t.Fatalf("RedactedSample = %q, want %q", span.RedactedSample, testRedactedSourceSpanValue)
+	}
+}
+
+func TestEmit_WithSpansRejectsMalformedEvidenceBeforeRecording(t *testing.T) {
+	rec := &captureRecorder{}
+	em, _, _ := newTestEmitter(t, rec, nil)
+	evidence := spannedEvidenceFixture()
+	evidence[0].Span.SourceKind = "bogus"
+
+	err := em.Emit(Decision{
+		ActionType:         "mcp_tool_call",
+		Transport:          "mcp_stdio",
+		Target:             "tool://example/list",
+		Verdict:            "block",
+		WinningSource:      SourceScanner,
+		PolicySources:      []string{SourceScanner},
+		RuleID:             "aws_access_key",
+		SpanHMACKey:        []byte("span-mac-key"),
+		SourceSpanEvidence: evidence,
+	})
+	if !errors.Is(err, contractruntime.ErrInvalidProxyDecisionInput) {
+		t.Fatalf("Emit err = %v, want ErrInvalidProxyDecisionInput", err)
+	}
+	if len(rec.entries) != 0 {
+		t.Fatalf("recorded %d entries despite malformed source span", len(rec.entries))
+	}
+	if seq, _ := em.ChainState(); seq != 0 {
+		t.Fatalf("chain advanced to %d despite malformed source span", seq)
+	}
+}
+
+func TestEmit_WithSpansSanitizesSpanFieldsBeforeSigning(t *testing.T) {
+	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
+	// Active DLP redaction: clean reports false for any text containing the
+	// secret. A caller mistake puts raw matched bytes into "redacted" span
+	// fields; the emitter must scrub them out of the SIGNED spanned payload,
+	// exactly as it does for target/rule_id (#676).
+	clean := func(text string) bool { return !strings.Contains(text, secret) }
+
+	rec := &captureRecorder{}
+	em, pub, keyID := newTestEmitter(t, rec, clean)
+
+	evidence := spannedEvidenceFixture()
+	evidence[0].Span.SourceID = "source:" + secret
+	evidence[0].Span.RedactedSample = "sample:" + secret
+	evidence[0].Span.RuleID = "dlp:" + secret
+	evidence[0].Span.MatchClass = "class:" + secret
+
+	err := em.Emit(Decision{
+		ActionType:         "mcp_tool_call",
+		Transport:          "mcp_stdio",
+		Target:             "tool://example/list",
+		Verdict:            "block",
+		WinningSource:      SourceScanner,
+		PolicySources:      []string{SourceScanner},
+		RuleID:             "aws_access_key",
+		SpanHMACKey:        []byte("span-mac-key"),
+		SourceSpanEvidence: evidence,
+	})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	rcpt := decodeReceipt(t, rec.entries[0])
+	if rcpt.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans {
+		t.Fatalf("PayloadKind = %q, want %q", rcpt.PayloadKind, contractreceipt.PayloadProxyDecisionWithSpans)
+	}
+	// The signed receipt must still verify after pre-sign sanitization.
+	if err := contractreceipt.VerifyWithKey(rcpt, pub, keyID); err != nil {
+		t.Fatalf("VerifyWithKey: %v", err)
+	}
+	// The whole serialized receipt must be free of the secret.
+	full, err := json.Marshal(rcpt)
+	if err != nil {
+		t.Fatalf("marshal receipt: %v", err)
+	}
+	if strings.Contains(string(full), secret) {
+		t.Fatalf("serialized spanned receipt leaks secret: %s", full)
+	}
+	span := decodeSpannedPayload(t, rcpt).SourceSpans[0]
+	if strings.Contains(span.RedactedSample, secret) {
+		t.Errorf("signed RedactedSample leaks secret: %q", span.RedactedSample)
+	}
+	if strings.Contains(span.RuleID, secret) {
+		t.Errorf("signed span RuleID leaks secret: %q", span.RuleID)
+	}
+	if strings.Contains(span.MatchClass, secret) {
+		t.Errorf("signed span MatchClass leaks secret: %q", span.MatchClass)
+	}
+	wantHash, err := contractreceipt.SourceSpanMatchHash([]byte("span-mac-key"), rcpt.EventID, 0, span, testRedactedSourceSpanValue)
+	if err != nil {
+		t.Fatalf("SourceSpanMatchHash: %v", err)
+	}
+	if span.MatchHash != wantHash {
+		t.Fatalf("MatchHash = %q, want sanitized RuleID-bound hash %q", span.MatchHash, wantHash)
+	}
+	// The caller's evidence slice must not be mutated by sanitization.
+	if evidence[0].Span.SourceID != "source:"+secret {
+		t.Errorf("emitter mutated caller evidence SourceID: %q", evidence[0].Span.SourceID)
+	}
+	if evidence[0].Span.RedactedSample != "sample:"+secret {
+		t.Errorf("emitter mutated caller evidence RedactedSample: %q", evidence[0].Span.RedactedSample)
+	}
+	if evidence[0].Span.RuleID != "dlp:"+secret {
+		t.Errorf("emitter mutated caller evidence RuleID: %q", evidence[0].Span.RuleID)
+	}
+	if evidence[0].Span.MatchClass != "class:"+secret {
+		t.Errorf("emitter mutated caller evidence MatchClass: %q", evidence[0].Span.MatchClass)
+	}
+}
+
+func TestEmit_WithSpansRejectsMissingHMACKey(t *testing.T) {
+	rec := &captureRecorder{}
+	em, _, _ := newTestEmitter(t, rec, nil)
+
+	err := em.Emit(Decision{
+		ActionType:         "mcp_tool_call",
+		Transport:          "mcp_stdio",
+		Target:             "tool://example/list",
+		Verdict:            "block",
+		WinningSource:      SourceScanner,
+		PolicySources:      []string{SourceScanner},
+		RuleID:             "aws_access_key",
+		SpanHMACKey:        nil, // evidence present but no key
+		SourceSpanEvidence: spannedEvidenceFixture(),
+	})
+	if !errors.Is(err, contractruntime.ErrInvalidProxyDecisionInput) {
+		t.Fatalf("Emit err = %v, want ErrInvalidProxyDecisionInput", err)
+	}
+	if len(rec.entries) != 0 {
+		t.Fatalf("recorded %d entries despite missing span HMAC key", len(rec.entries))
+	}
+	if seq, _ := em.ChainState(); seq != 0 {
+		t.Fatalf("chain advanced to %d despite missing span HMAC key", seq)
 	}
 }
 

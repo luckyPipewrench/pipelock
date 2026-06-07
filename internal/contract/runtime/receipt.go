@@ -69,6 +69,15 @@ type ProxyDecisionInput struct {
 	ChainPrevHash string
 }
 
+// SourceSpanEvidence is the pre-receipt source-span input consumed by
+// BuildProxyDecisionWithSpansReceipt. MatchValue must be the normalized or
+// redacted value that the span commits to, never raw secret-bearing content
+// unless the caller intentionally owns signer-key-only value proof.
+type SourceSpanEvidence struct {
+	Span       contractreceipt.SourceSpan
+	MatchValue string
+}
+
 // BuildProxyDecisionReceipt turns a runtime Decision plus transport metadata
 // into an unsigned EvidenceReceipt v2 envelope ready for the receipt signer.
 //
@@ -104,23 +113,87 @@ func BuildProxyDecisionReceipt(in ProxyDecisionInput) (contractreceipt.EvidenceR
 		return contractreceipt.EvidenceReceipt{}, fmt.Errorf("%w: marshal payload: %w", ErrInvalidProxyDecisionInput, err)
 	}
 
+	return buildEvidenceReceiptEnvelope(in, contractreceipt.PayloadProxyDecision, body), nil
+}
+
+// BuildProxyDecisionWithSpansReceipt turns a runtime Decision plus
+// leak-safe SourceSpan provenance into an unsigned
+// proxy_decision_with_spans EvidenceReceipt v2 envelope.
+func BuildProxyDecisionWithSpansReceipt(
+	in ProxyDecisionInput,
+	spanHMACKey []byte,
+	evidence []SourceSpanEvidence,
+) (contractreceipt.EvidenceReceipt, error) {
+	spans, err := buildCommittedSourceSpans(in.EventID, spanHMACKey, evidence)
+	if err != nil {
+		return contractreceipt.EvidenceReceipt{}, err
+	}
+	payload := ProxyDecisionWithSpansPayload(in.Decision, in.ActionType, in.Target, in.Transport, spans)
+	if err := validateProxyDecisionWithSpansFields(payload); err != nil {
+		return contractreceipt.EvidenceReceipt{}, err
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return contractreceipt.EvidenceReceipt{}, fmt.Errorf("%w: marshal payload: %w", ErrInvalidProxyDecisionInput, err)
+	}
+
+	return buildEvidenceReceiptEnvelope(in, contractreceipt.PayloadProxyDecisionWithSpans, body), nil
+}
+
+func buildEvidenceReceiptEnvelope(
+	in ProxyDecisionInput,
+	kind contractreceipt.PayloadKind,
+	body []byte,
+) contractreceipt.EvidenceReceipt {
 	receipt := contractreceipt.EvidenceReceipt{
-		RecordType:      contractreceipt.RecordTypeEvidenceV2,
-		ReceiptVersion:  2,
-		PayloadKind:     contractreceipt.PayloadProxyDecision,
-		EventID:         in.EventID,
-		Timestamp:       in.Timestamp,
-		Principal:       in.Principal,
-		Actor:           in.Actor,
-		DelegationChain: append([]string(nil), in.DelegationChain...),
-		ChainSeq:        in.ChainSeq,
-		ChainPrevHash:   in.ChainPrevHash,
-		Payload:         json.RawMessage(body),
+		RecordType:       contractreceipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      kind,
+		Canonicalization: contractreceipt.DefaultCanonicalizationProfile(),
+		Crit:             contractreceipt.CritForPayloadKind(kind),
+		EventID:          in.EventID,
+		Timestamp:        in.Timestamp,
+		Principal:        in.Principal,
+		Actor:            in.Actor,
+		DelegationChain:  append([]string(nil), in.DelegationChain...),
+		ChainSeq:         in.ChainSeq,
+		ChainPrevHash:    in.ChainPrevHash,
+		Payload:          json.RawMessage(body),
 	}
 	if in.ResolvedContract != nil {
 		receipt = in.ResolvedContract.ReceiptContext().StampReceipt(receipt)
 	}
-	return receipt, nil
+	return receipt
+}
+
+func buildCommittedSourceSpans(eventID string, spanHMACKey []byte, evidence []SourceSpanEvidence) ([]contractreceipt.SourceSpan, error) {
+	if eventID == "" {
+		return nil, fmt.Errorf("%w: event_id", ErrInvalidProxyDecisionInput)
+	}
+	if len(evidence) == 0 {
+		return nil, fmt.Errorf("%w: source_spans", ErrInvalidProxyDecisionInput)
+	}
+	spans := make([]contractreceipt.SourceSpan, 0, len(evidence))
+	for i, item := range evidence {
+		if item.MatchValue == "" {
+			return nil, fmt.Errorf("%w: source_spans[%d].match_value", ErrInvalidProxyDecisionInput, i)
+		}
+		span := item.Span
+		span.MatchHashAlg = contractreceipt.SourceSpanMatchHashAlgHMACSHA256
+		matchHash, err := contractreceipt.SourceSpanMatchHash(spanHMACKey, eventID, i, span, item.MatchValue)
+		if err != nil {
+			return nil, fmt.Errorf("%w: source_spans[%d].match_hash: %w", ErrInvalidProxyDecisionInput, i, err)
+		}
+		span.MatchHash = matchHash
+		// Validate the fully-committed span against the same rules the v2
+		// dispatcher enforces, so a malformed span fails at build time rather
+		// than producing a signable receipt that Validate() would later reject.
+		if err := contractreceipt.ValidateSourceSpan(span); err != nil {
+			return nil, fmt.Errorf("%w: source_spans[%d]: %w", ErrInvalidProxyDecisionInput, i, err)
+		}
+		spans = append(spans, span)
+	}
+	return spans, nil
 }
 
 // validateProxyDecisionFields mirrors validateProxyDecision in the receipt
@@ -129,22 +202,36 @@ func BuildProxyDecisionReceipt(in ProxyDecisionInput) (contractreceipt.EvidenceR
 // an early build-time error instead of a delayed Validate() failure on a
 // partially-constructed envelope.
 func validateProxyDecisionFields(p contractreceipt.PayloadProxyDecisionStruct) error {
-	if p.ActionType == "" {
+	return validateProxyDecisionBaseFields(p.ActionType, p.Target, p.Verdict, p.Transport, p.PolicySources, p.WinningSource)
+}
+
+func validateProxyDecisionWithSpansFields(p contractreceipt.PayloadProxyDecisionWithSpansStruct) error {
+	if err := validateProxyDecisionBaseFields(p.ActionType, p.Target, p.Verdict, p.Transport, p.PolicySources, p.WinningSource); err != nil {
+		return err
+	}
+	if len(p.SourceSpans) == 0 {
+		return fmt.Errorf("%w: source_spans", ErrInvalidProxyDecisionInput)
+	}
+	return nil
+}
+
+func validateProxyDecisionBaseFields(actionType, target, verdict, transport string, policySources []string, winningSource string) error {
+	if actionType == "" {
 		return fmt.Errorf("%w: action_type", ErrInvalidProxyDecisionInput)
 	}
-	if p.Target == "" {
+	if target == "" {
 		return fmt.Errorf("%w: target", ErrInvalidProxyDecisionInput)
 	}
-	if p.Verdict == "" {
+	if verdict == "" {
 		return fmt.Errorf("%w: verdict", ErrInvalidProxyDecisionInput)
 	}
-	if p.Transport == "" {
+	if transport == "" {
 		return fmt.Errorf("%w: transport", ErrInvalidProxyDecisionInput)
 	}
-	if len(p.PolicySources) == 0 {
+	if len(policySources) == 0 {
 		return fmt.Errorf("%w: policy_sources", ErrInvalidProxyDecisionInput)
 	}
-	if p.WinningSource == "" {
+	if winningSource == "" {
 		return fmt.Errorf("%w: winning_source", ErrInvalidProxyDecisionInput)
 	}
 	return nil

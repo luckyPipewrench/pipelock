@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
 
@@ -227,12 +228,17 @@ type Scanner struct {
 	responseEnabled            bool
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
-	addressChecker             *addressprotect.Checker
-	seedEnabled                bool
-	seedMinWords               int
-	seedVerifyChecksum         bool
-	dlpWarnHookMu              sync.RWMutex
-	dlpWarnHook                func(ctx context.Context, patternName, severity string)
+	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
+	// already governs with a request_policy route (explicit host + path
+	// constraints). A nil or disabled matcher keeps path entropy fully active.
+	// Path-only: subdomain and query entropy are never affected by this.
+	pathEntropyExempt  *reqpolicy.Matcher
+	addressChecker     *addressprotect.Checker
+	seedEnabled        bool
+	seedMinWords       int
+	seedVerifyChecksum bool
+	dlpWarnHookMu      sync.RWMutex
+	dlpWarnHook        func(ctx context.Context, patternName, severity string)
 
 	// Lifecycle: BeginUse / Close coordination. Once Close starts, BeginUse
 	// returns ok=false and callers must re-Load the proxy's scannerPtr to
@@ -363,6 +369,7 @@ func New(cfg *config.Config) *Scanner {
 		maxURLLength:              cfg.FetchProxy.Monitoring.MaxURLLength,
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
+		pathEntropyExempt:         buildPathEntropyExempt(cfg),
 	}
 
 	// Initialize rate limiter if enabled
@@ -2149,13 +2156,92 @@ func isNonSecretEnvName(name string) bool {
 	return false
 }
 
+// envLeakMinEntropy is the Shannon-entropy floor (bits/char) above which an
+// env-variable value is treated as secret-shaped. Single source of truth shared
+// by extractEnvSecrets (whole-value filter) and looksLikeOpaqueToken (per-segment
+// guard) so the two stay consistent.
+const envLeakMinEntropy = 3.0
+
+// minOpaqueTokenLen is the component length at or above which a single-component,
+// slash-prefixed colon-list segment is treated as a possible opaque secret token
+// rather than a short directory name. Short PATH dirs (/bin, /sbin, /opt) fall
+// below it and stay recognised as path components.
+const minOpaqueTokenLen = 16
+
+// looksLikeOpaqueToken reports whether a colon-list segment (already known to
+// begin with "/") is shaped like an opaque secret token rather than a directory
+// component. A genuine directory entry is either multi-component (/usr/local/bin,
+// has an inner separator) or a short name (/bin, /sbin); a smuggled token is a
+// single long, high-entropy blob (/K7MDENGbPxRfiCYzQ). Used to stop a PATH-like
+// wrapper from skipping a value that the single-value branch would keep scannable.
+func looksLikeOpaqueToken(seg string) bool {
+	body := strings.TrimPrefix(seg, "/")
+	if strings.Contains(body, "/") {
+		return false // multi-component path, not a single opaque token
+	}
+	return len(body) >= minOpaqueTokenLen && ShannonEntropy(body) > envLeakMinEntropy
+}
+
+// isPathShapedValue reports whether an environment-variable value looks like a
+// multi-component filesystem path (or a colon-separated list of paths) rather
+// than a secret. extractEnvSecrets uses it to keep path-valued variables out of
+// the env-leak matcher set: a path the agent references during normal operation
+// is not an exfiltrated secret, and a deep directory path carries enough Shannon
+// entropy to slip past the entropy filter and become a spurious matcher.
+// Matching is on value SHAPE, not variable name, because the name skip-list is
+// incomplete — it misses HERMES_HOME, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, and
+// any other path-valued variable a deployment introduces.
+//
+// Unix-path-shaped only: a multi-component value beginning with "/" or "~/", or
+// a "/"-prefixed colon list (PATH, LD_LIBRARY_PATH). Windows drive paths are
+// not recognised; pipelock's agent-containment target is Linux. Slash-prefixed
+// opaque tokens are left in the matcher set, as are values containing '+' or '='
+// because those are common in encoded secrets.
+func isPathShapedValue(value string) bool {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return false
+	}
+	if strings.ContainsAny(v, "+=") {
+		return false
+	}
+
+	// Colon-separated list where every element is an absolute path
+	// (PATH-style). Checked first so multi-path lists aren't missed.
+	if strings.Contains(v, ":") {
+		for _, seg := range strings.Split(v, ":") {
+			if seg == "" || !strings.HasPrefix(seg, "/") {
+				return false
+			}
+			// A slash-prefixed opaque token riding in a PATH-like wrapper
+			// (e.g. "/usr/bin:/K7MDENGbPxRfiCYzQ") must not be skipped: the
+			// single-value branch keeps such tokens scannable, so the list
+			// branch has to as well, or the wrapper becomes an exfil bypass.
+			if looksLikeOpaqueToken(seg) {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Single absolute or home-relative path. Require at least one directory
+	// separator after the prefix so "/opaque-token-value" stays scannable.
+	if strings.HasPrefix(v, "~/") {
+		rest := strings.TrimPrefix(v, "~/")
+		return strings.Contains(rest, "/") || strings.HasPrefix(rest, ".")
+	}
+	if strings.HasPrefix(v, "/") {
+		return strings.Contains(strings.TrimPrefix(v, "/"), "/")
+	}
+	return false
+}
+
 // extractEnvSecrets filters environment variables for likely secrets.
 // Returns values >= minLen chars with Shannon entropy >3.0.
-// Skips well-known non-secret variable names (PWD, PATH, HOME, etc.)
-// to avoid false positives on paths and locale strings.
+// Skips well-known non-secret variable names (PWD, PATH, HOME, etc.) and
+// path-shaped values (see isPathShapedValue) to avoid false positives on paths
+// and locale strings.
 func extractEnvSecrets(minLen int) []string {
-	const minEntropy = 3.0
-
 	if minLen <= 0 {
 		minLen = 16
 	}
@@ -2175,11 +2261,18 @@ func extractEnvSecrets(minLen int) []string {
 			continue
 		}
 
+		// Skip path-shaped values regardless of variable name. Deep paths
+		// carry high entropy and would otherwise become spurious matchers
+		// that flag the agent's own normal path references as leaks.
+		if isPathShapedValue(value) {
+			continue
+		}
+
 		if len(value) < minLen {
 			continue
 		}
 
-		if ShannonEntropy(value) > minEntropy {
+		if ShannonEntropy(value) > envLeakMinEntropy {
 			secrets = append(secrets, value)
 		}
 	}
@@ -2288,6 +2381,18 @@ func LoadSecretsFile(path string, minLen int) ([]string, error) {
 	return secrets, nil
 }
 
+// buildPathEntropyExempt compiles a request_policy view used only to suppress
+// path entropy on operator-governed paths. Compilation errors are config errors
+// that config validation already rejects before New runs; if one slips through,
+// return nil so path entropy stays fully active (fail secure, never fail open).
+func buildPathEntropyExempt(cfg *config.Config) *reqpolicy.Matcher {
+	m, err := reqpolicy.NewMatcher(&cfg.RequestPolicy)
+	if err != nil {
+		return nil
+	}
+	return m
+}
+
 // checkEntropy calculates Shannon entropy on URL path segments and query values.
 // Domains listed in subdomain_entropy_exclusions skip path entropy checks only
 // (APIs that use high-entropy subdomains often embed tokens in URL paths too).
@@ -2306,8 +2411,16 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	excludedPath := s.isExcludedFromSubdomainEntropy(hostname)
 	excludedQuery := s.isExcludedFromQueryEntropy(hostname)
 
+	// Path entropy is also skipped when the operator already governs this
+	// exact host+path with a request_policy route (explicit host + path
+	// constraints). The blunt entropy heuristic is redundant on paths the
+	// operator inspects by rule, and it false-positives on legitimate
+	// high-entropy REST resource ids. This is path-only: it never affects
+	// query entropy (below), subdomain entropy, DLP, or SSRF.
+	routeExemptPath := s.pathEntropyExempt.PathEntropyExempt(hostname, parsed.Path)
+
 	// Check path segments (skipped for excluded domains).
-	if !excludedPath {
+	if !excludedPath && !routeExemptPath {
 		for _, segment := range strings.Split(parsed.Path, "/") {
 			if len(segment) >= s.entropyMinLen {
 				entropy := ShannonEntropy(segment)

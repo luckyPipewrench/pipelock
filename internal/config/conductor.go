@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -283,7 +284,7 @@ func validateConductorResolvedParent(field, displayPath, resolved string) error 
 	if !info.IsDir() {
 		return fmt.Errorf("%s parent %s is not a directory", field, displayPath)
 	}
-	if info.Mode().Perm()&0o002 != 0 {
+	if secperm.TooPermissive(info.Mode().Perm(), 0o002) {
 		return fmt.Errorf("%s must not be under world-writable parent %s", field, displayPath)
 	}
 	return nil

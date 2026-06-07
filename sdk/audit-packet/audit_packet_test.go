@@ -163,6 +163,12 @@ func auditpacketReceiptWithSpan(span auditpacket.SourceSpan) auditpacket.Receipt
 	}
 }
 
+func setAuditPacketSourceSpan(p *auditpacket.Packet, mutate func(*auditpacket.SourceSpan)) {
+	span := validAuditPacketSourceSpan()
+	mutate(&span)
+	p.Receipts = []auditpacket.Receipt{auditpacketReceiptWithSpan(span)}
+}
+
 // TestValidate covers the validator's contract: valid packets pass, malformed
 // packets fail with informative errors. Each row is one mutation of the
 // golden packet.
@@ -376,20 +382,159 @@ func TestValidate(t *testing.T) {
 		{
 			name: "inline receipt source span invalid digest",
 			mutate: func(p *auditpacket.Packet) {
-				span := validAuditPacketSourceSpan()
-				span.PipelockBinaryDigest = "sha256:not-hex"
-				p.Receipts = []auditpacket.Receipt{auditpacketReceiptWithSpan(span)}
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.PipelockBinaryDigest = "sha256:not-hex"
+				})
 			},
 			wantSub: "source_spans[0]",
 		},
 		{
+			name: "inline receipt source span invalid source kind",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.SourceKind = "browser_url"
+				})
+			},
+			wantSub: "source_kind",
+		},
+		{
+			name: "inline receipt source span rejects bare dlp prefix",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.NormalizedView = "dlp_normalized:"
+				})
+			},
+			wantSub: "normalized_view",
+		},
+		{
+			name: "inline receipt source span accepts dlp normalized suffix without offsets",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.NormalizedView = "dlp_normalized:aws_access_key"
+					span.CharOffset = nil
+					span.CharLength = nil
+				})
+			},
+			wantSub: "",
+		},
+		{
+			name: "inline receipt source span rejects empty transform profile version",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.TransformProfile = "pipelock-transform-v"
+				})
+			},
+			wantSub: "transform_profile",
+		},
+		{
+			name: "inline receipt source span rejects nonnumeric transform profile version",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.TransformProfile = "pipelock-transform-vx"
+				})
+			},
+			wantSub: "transform_profile",
+		},
+		{
+			name: "inline receipt source span invalid rules digest",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.RulesBundleDigest = "sha256:" + strings.Repeat("z", 64)
+				})
+			},
+			wantSub: "rules_bundle_digest",
+		},
+		{
+			name: "inline receipt source span invalid policy hash",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.PolicyHash = "sha256:" + strings.Repeat("z", 64)
+				})
+			},
+			wantSub: "policy_hash",
+		},
+		{
+			name: "inline receipt source span missing rule id",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.RuleID = ""
+				})
+			},
+			wantSub: "rule_id",
+		},
+		{
+			name: "inline receipt source span invalid match hash prefix",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.MatchHash = "sha256:" + strings.Repeat("1", 64)
+				})
+			},
+			wantSub: "match_hash",
+		},
+		{
+			name: "inline receipt source span invalid match hash hex",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.MatchHash = "hmac-sha256:" + strings.Repeat("z", 64)
+				})
+			},
+			wantSub: "match_hash",
+		},
+		{
+			name: "inline receipt source span invalid match hash alg",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.MatchHashAlg = "sha256"
+				})
+			},
+			wantSub: "match_hash_alg",
+		},
+		{
+			name: "inline receipt source span missing match class",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.MatchClass = ""
+				})
+			},
+			wantSub: "match_class",
+		},
+		{
 			name: "inline receipt source span requires paired coordinates",
 			mutate: func(p *auditpacket.Packet) {
-				span := validAuditPacketSourceSpan()
-				span.CharLength = nil
-				p.Receipts = []auditpacket.Receipt{auditpacketReceiptWithSpan(span)}
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.CharLength = nil
+				})
 			},
 			wantSub: "char_offset and char_length",
+		},
+		{
+			name: "inline receipt source span rejects negative offset",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					negative := -1
+					span.CharOffset = &negative
+				})
+			},
+			wantSub: "char_offset",
+		},
+		{
+			name: "inline receipt source span rejects zero length",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					zero := 0
+					span.CharLength = &zero
+				})
+			},
+			wantSub: "char_length",
+		},
+		{
+			name: "inline receipt source span rejects offsets on transformed response view",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.NormalizedView = "for_matching:base64_decoded"
+				})
+			},
+			wantSub: "char_offset",
 		},
 		{
 			name: "valid scanner config snapshot",

@@ -252,6 +252,10 @@ func TestValidateSourceSpan_RejectsMalformedFields(t *testing.T) {
 			mutate: func(span *receipt.SourceSpan) { span.NormalizedView = "unknown_view" },
 			want:   receipt.ErrPayloadInvalidEnum,
 		},
+		"bare dlp normalized prefix": {
+			mutate: func(span *receipt.SourceSpan) { span.NormalizedView = "dlp_normalized:" },
+			want:   receipt.ErrPayloadInvalidEnum,
+		},
 		"bad binary digest prefix": {
 			mutate: func(span *receipt.SourceSpan) { span.PipelockBinaryDigest = "md5:0123" },
 			want:   receipt.ErrPayloadInvalidEnum,
@@ -265,6 +269,14 @@ func TestValidateSourceSpan_RejectsMalformedFields(t *testing.T) {
 				span.PolicyHash = "sha256:" + strings.Repeat("z", 64)
 			},
 			want: receipt.ErrPayloadInvalidEnum,
+		},
+		"empty transform profile version": {
+			mutate: func(span *receipt.SourceSpan) { span.TransformProfile = "pipelock-transform-v" },
+			want:   receipt.ErrPayloadInvalidEnum,
+		},
+		"nonnumeric transform profile version": {
+			mutate: func(span *receipt.SourceSpan) { span.TransformProfile = "pipelock-transform-vx" },
+			want:   receipt.ErrPayloadInvalidEnum,
 		},
 		"wrong hash alg": {
 			mutate: func(span *receipt.SourceSpan) { span.MatchHashAlg = "sha256" },

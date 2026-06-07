@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
 
@@ -227,12 +228,17 @@ type Scanner struct {
 	responseEnabled            bool
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
-	addressChecker             *addressprotect.Checker
-	seedEnabled                bool
-	seedMinWords               int
-	seedVerifyChecksum         bool
-	dlpWarnHookMu              sync.RWMutex
-	dlpWarnHook                func(ctx context.Context, patternName, severity string)
+	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
+	// already governs with a request_policy route (explicit host + path
+	// constraints). A nil or disabled matcher keeps path entropy fully active.
+	// Path-only: subdomain and query entropy are never affected by this.
+	pathEntropyExempt  *reqpolicy.Matcher
+	addressChecker     *addressprotect.Checker
+	seedEnabled        bool
+	seedMinWords       int
+	seedVerifyChecksum bool
+	dlpWarnHookMu      sync.RWMutex
+	dlpWarnHook        func(ctx context.Context, patternName, severity string)
 
 	// Lifecycle: BeginUse / Close coordination. Once Close starts, BeginUse
 	// returns ok=false and callers must re-Load the proxy's scannerPtr to
@@ -363,6 +369,7 @@ func New(cfg *config.Config) *Scanner {
 		maxURLLength:              cfg.FetchProxy.Monitoring.MaxURLLength,
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
+		pathEntropyExempt:         buildPathEntropyExempt(cfg),
 	}
 
 	// Initialize rate limiter if enabled
@@ -2374,6 +2381,18 @@ func LoadSecretsFile(path string, minLen int) ([]string, error) {
 	return secrets, nil
 }
 
+// buildPathEntropyExempt compiles a request_policy view used only to suppress
+// path entropy on operator-governed paths. Compilation errors are config errors
+// that config validation already rejects before New runs; if one slips through,
+// return nil so path entropy stays fully active (fail secure, never fail open).
+func buildPathEntropyExempt(cfg *config.Config) *reqpolicy.Matcher {
+	m, err := reqpolicy.NewMatcher(&cfg.RequestPolicy)
+	if err != nil {
+		return nil
+	}
+	return m
+}
+
 // checkEntropy calculates Shannon entropy on URL path segments and query values.
 // Domains listed in subdomain_entropy_exclusions skip path entropy checks only
 // (APIs that use high-entropy subdomains often embed tokens in URL paths too).
@@ -2392,8 +2411,16 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	excludedPath := s.isExcludedFromSubdomainEntropy(hostname)
 	excludedQuery := s.isExcludedFromQueryEntropy(hostname)
 
+	// Path entropy is also skipped when the operator already governs this
+	// exact host+path with a request_policy route (explicit host + path
+	// constraints). The blunt entropy heuristic is redundant on paths the
+	// operator inspects by rule, and it false-positives on legitimate
+	// high-entropy REST resource ids. This is path-only: it never affects
+	// query entropy (below), subdomain entropy, DLP, or SSRF.
+	routeExemptPath := s.pathEntropyExempt.PathEntropyExempt(hostname, parsed.Path)
+
 	// Check path segments (skipped for excluded domains).
-	if !excludedPath {
+	if !excludedPath && !routeExemptPath {
 		for _, segment := range strings.Split(parsed.Path, "/") {
 			if len(segment) >= s.entropyMinLen {
 				entropy := ShannonEntropy(segment)

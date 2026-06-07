@@ -421,6 +421,58 @@ func (cr *compiledRoute) pathMatches(p string) bool {
 	return false
 }
 
+// PathEntropyExempt reports whether host+path is governed by an enabled
+// request_policy route that names BOTH an explicit host and explicit path
+// constraints (path_prefixes or path_patterns). When the operator has already
+// written path rules for a host, the scanner's blunt path-entropy heuristic is
+// redundant on those exact paths and false-positives on legitimate
+// high-entropy REST resource ids (e.g. an opaque id segment in
+// /v1/messages/<id>). The scanner consults this to suppress path-entropy ONLY
+// on the governed paths; every other path on the same host, plus DLP, query
+// entropy, subdomain entropy, and SSRF, stay fully active.
+//
+// Routes without an explicit host, without path constraints, or in shadow mode
+// never exempt: each would relax path-entropy beyond what the operator actually
+// enforces. The check is deliberately narrower than the rule's own match
+// surface - it ignores method and content-type, because the only question here
+// is "does the operator already inspect this host's paths".
+func (m *Matcher) PathEntropyExempt(host, path string) bool {
+	if m == nil || !m.enabled {
+		return false
+	}
+	for i := range m.rules {
+		if m.rules[i].shadow {
+			continue
+		}
+		if m.rules[i].exemptsPathEntropy(host, path) {
+			return true
+		}
+	}
+	for i := range m.batches {
+		if m.batches[i].exemptsPathEntropy(host, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// exemptsPathEntropy reports whether this route names both an explicit host and
+// explicit path constraints, and the given host+path satisfy them. A route with
+// no host, or with no path constraints (which pathMatches would otherwise treat
+// as match-all), never exempts.
+func (cr *compiledRoute) exemptsPathEntropy(host, path string) bool {
+	if len(cr.hosts) == 0 {
+		return false
+	}
+	if len(cr.pathPrefixes) == 0 && len(cr.pathPatterns) == 0 {
+		return false
+	}
+	if !hostMatches(NormalizeHost(host), cr.hosts) {
+		return false
+	}
+	return cr.pathMatches(NormalizePath(path))
+}
+
 // hostMatches reports whether host matches any pattern. Patterns are exact
 // hosts or *.suffix wildcards (already lowercased/trim-dotted at compile time).
 func hostMatches(host string, patterns []string) bool {

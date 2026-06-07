@@ -11,6 +11,7 @@ The subcommands are:
 | `doctor` | Live self-test that proves common tooling reaches the internet *through* the proxy, with per-check remediation | no |
 | `rollback` | Idempotently undo `install`. Restores the prior state and removes wrappers, users, unit, rules | yes (root only) |
 | `add-tool` | Register an additional tool wrapper under `/usr/local/bin/plk-<name>` after install | yes (root only) |
+| `explain` | Explain a contain egress block event and print remediation | no |
 | `grant-workspace` | Grant the contained agent user ACL access to one project workspace | yes (root only) |
 | `revoke-workspace` | Revoke a previously granted workspace ACL and clean unused parent traversal ACLs | yes (root only) |
 | `ca-refresh` | Rebuild the combined CA bundle at `/etc/pipelock/combined-ca.pem` after a CA rotation | yes (root only) |
@@ -54,7 +55,7 @@ Install steps run in order; each one is idempotent. If any step fails, every pre
 3. Copy the pipelock binary into a system path the agent user cannot replace, then compute and pin its SHA-256 at `/etc/pipelock/integrity/binary-pin.sha256`. Subsequent `verify` runs re-hash the binary and compare against the pin.
 4. Migrate the user-mode systemd unit (if present), write and enable the system unit running as `pipelock-proxy`, then export the Pipelock CA.
 5. Bootstrap the combined CA bundle at `/etc/pipelock/combined-ca.pem` from the system trust store plus the Pipelock CA.
-6. Install the nftables containment ruleset: deny outbound from the agent user except to loopback, allow operator and `pipelock-proxy` to reach the internet directly.
+6. Install the nftables containment ruleset: deny outbound from the agent user except to loopback, allow operator and `pipelock-proxy` to reach the internet directly. Raw-egress drops are classed in nft logs (`direct_dns_blocked` or `not_routing_through_pipelock`) and counted before the terminal drop.
 7. Write `/etc/pipelock/contain/tools.list`, the runtime allow-list consumed by `plk-launch`.
 8. Write the node undici proxy shim at `/etc/pipelock/contain/undici-shim.cjs` (see [Runtime contract](#runtime-contract)).
 9. Drop the `plk-launch` wrapper plus one wrapper per registered tool into `/usr/local/bin/`.
@@ -168,6 +169,27 @@ Flags:
 | `--url` | `https://example.com/` | Allowed canary URL the agent should be able to reach. |
 
 Exit code is 0 if every check passed, 1 if any check failed, and 2 if the diagnosis was incomplete because a check skipped (for example, not run as root, or a tool isn't installed). Checks that can't proceed skip with remediation rather than failing.
+
+## `pipelock contain explain`
+
+Explains a contained-egress block event from the contain JSONL event log:
+
+```bash
+pipelock contain explain evt-01HZ...
+pipelock contain explain evt-01HZ... --format json
+```
+
+By default the command reads `/var/lib/pipelock/contain/egress-events.jsonl`; pass `--events <path>` to inspect a copied event log. Each event can carry process, pid, uid, destination, port, protocol, response host, response size, and scan limit fields. The command maps the block class to an operator remediation:
+
+| Class | Remediation |
+|---|---|
+| `tool_ignores_proxy` | Use the `plk-*` wrapper or configure `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` for the tool. |
+| `missing_ca` | Refresh/install the contain CA bundle and point the tool at `/etc/pipelock/combined-ca.pem`. |
+| `direct_dns_blocked` | Stop direct DNS; route the tool through Pipelock or the wrapped runtime. |
+| `not_routing_through_pipelock` | Use `plk-launch` / `plk-*` wrappers or proxy-aware tool configuration. |
+| `dangerous` | Keep blocked unless policy review explicitly allows it. |
+| `misclassified_local_context` | Add a narrow suppression or rule fix without disabling egress scanning. |
+| `infra_protection` | Inspect session/airlock state and reset only after confirming non-adversarial traffic. |
 
 ## `pipelock contain rollback`
 

@@ -1156,3 +1156,120 @@ func TestProxy_ReceiptEmission_PostFetchResponseSize(t *testing.T) {
 		t.Fatal("no block receipt with layer=response_size found")
 	}
 }
+
+// TestProxy_ReceiptEmission_ForwardResponseSize verifies that the forward
+// proxy's fail-closed response-size block emits a terminal receipt.
+func TestProxy_ReceiptEmission_ForwardResponseSize(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Repeat("A", 1024*1024+1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "test-hash",
+		Principal:  "test",
+		Actor:      "test",
+	})
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = true
+	cfg.ForwardProxy.MaxTunnelSeconds = 10
+	cfg.ForwardProxy.IdleTimeoutSeconds = 2
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.FetchProxy.MaxResponseMB = 1
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0
+	savedInternal := cfg.Internal
+	cfg.ApplyDefaults()
+	cfg.Internal = savedInternal
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+
+	p, pErr := New(cfg, logger, sc, metrics.New(),
+		WithRecorder(rec),
+		WithReceiptEmitter(emitter),
+	)
+	if pErr != nil {
+		t.Fatalf("proxy.New: %v", pErr)
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	w := httptest.NewRecorder()
+	p.handleForwardHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	entries := readAllEntries(t, dir)
+
+	var found bool
+	for _, e := range entries {
+		if e.Type != receiptEntryType {
+			continue
+		}
+		detailJSON, mErr := json.Marshal(e.Detail)
+		if mErr != nil {
+			t.Fatalf("marshal detail: %v", mErr)
+		}
+		r, uErr := receipt.Unmarshal(detailJSON)
+		if uErr != nil {
+			t.Fatalf("unmarshal receipt: %v", uErr)
+		}
+		if r.ActionRecord.Verdict == actionBlock && r.ActionRecord.Layer == "response_scan" {
+			found = true
+			if err := receipt.Verify(r); err != nil {
+				t.Fatalf("receipt verification failed: %v", err)
+			}
+			if r.ActionRecord.Transport != TransportForward {
+				t.Errorf("transport = %q, want %q", r.ActionRecord.Transport, TransportForward)
+			}
+			if !strings.Contains(r.ActionRecord.Pattern, "response_scanning.size_exempt_domains") {
+				t.Errorf("pattern missing size-exempt remediation: %q", r.ActionRecord.Pattern)
+			}
+			break
+		}
+	}
+
+	if !found {
+		var summaries []string
+		for _, e := range entries {
+			if e.Type == receiptEntryType {
+				dj, _ := json.Marshal(e.Detail)
+				summaries = append(summaries, string(dj))
+			}
+		}
+		t.Fatalf("no block receipt with layer=response_scan found in %d entries (receipts: %v)", len(entries), summaries)
+	}
+}

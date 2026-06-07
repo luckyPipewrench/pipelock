@@ -1665,6 +1665,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	fwdRespHost := resp.Request.URL.Hostname()
 	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
+	fwdRespSizeExempt := isResponseSizeExempt(fwdRespHost, cfg.ResponseScanning.SizeExemptDomains)
 	if sc.ResponseScanningEnabled() && fwdRespExempt {
 		p.logger.LogResponseScanExempt(actx, fwdRespHost)
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
@@ -1939,11 +1940,57 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				// Could not fully inspect the response within the configured
 				// scan cap - block fail-closed, matching intercept/reverse.
-				p.logger.LogBlocked(actx, "response_scan", "response too large for scanning")
+				if fwdRespSizeExempt {
+					copyResponseHeaders(w.Header(), resp.Header)
+					w.Header().Del("Content-Length")
+					w.WriteHeader(resp.StatusCode)
+					written, _ := w.Write(respBody)
+					copied, _ := io.Copy(w, resp.Body)
+					totalWritten := int64(written) + copied
+					sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(totalWritten))
+					_ = resolved.Budget.RecordBytes(totalWritten)
+					duration := time.Since(start)
+					p.metrics.RecordAllowed(duration, agentLabel)
+					p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+						ActionID:            actionID,
+						Verdict:             config.ActionAllow,
+						Transport:           "forward",
+						Method:              r.Method,
+						Target:              targetURL,
+						RequestID:           requestID,
+						Agent:               agent,
+						SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+						SessionContaminated: forwardTaint.Risk.Contaminated,
+						RecentTaintSources:  forwardTaint.Risk.Sources,
+						SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+						SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+						AuthorityKind:       forwardTaint.Authority.String(),
+						TaintDecision:       forwardTaint.Result.Decision.String(),
+						TaintDecisionReason: forwardTaint.Result.Reason,
+						TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+					}))
+					p.logger.LogForwardHTTP(actx, resp.StatusCode, int(totalWritten), duration)
+					if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+						forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+					}
+					return
+				}
+				reason := responseSizeBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb")
+				p.logger.LogBlocked(actx, "response_scan", reason)
+				p.emitReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+					ActionID:  actionID,
+					RequestID: requestID,
+					Agent:     agent,
+					Method:    r.Method,
+					Target:    targetURL,
+					Layer:     "response_scan",
+					Pattern:   reason,
+					Taint:     forwardTaint,
+				})))
 				p.metrics.RecordBlocked(fwdRespHost, "response_scan", time.Since(start), agentLabel)
 				writeBlockedError(w,
-					blockInfoFor(blockreason.DataBudget, "response_scan"),
-					"blocked: response too large for scanning", http.StatusForbidden)
+					blockInfoFor(blockreason.ResponseSize, "response_scan"),
+					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
 		}

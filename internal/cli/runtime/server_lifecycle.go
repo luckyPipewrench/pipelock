@@ -165,6 +165,10 @@ func (s *Server) Start(ctx context.Context) error {
 				if err := s.Reload(newCfg); err != nil {
 					s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
 				}
+				// Signal reload-cycle completion for tests (no-op in
+				// production). Fires per delivered config so reload tests can
+				// block on the event instead of polling stderr on a deadline.
+				fireReloadCompletedHook()
 			}
 		}()
 	}
@@ -247,6 +251,18 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	var conductorWG sync.WaitGroup
+	// conductorCtx is a child of the process context so teardownConductor can
+	// stop the follower-side Conductor pollers on a runtime fleet-license
+	// revocation/expiry/downgrade WITHOUT tearing down the proxy/detection
+	// path. Process shutdown still cancels them via the parent ctx. When a
+	// poller's Run returns context.Canceled (the teardown signal) the error
+	// branches below intentionally skip the process-wide cancel().
+	conductorCtx := ctx
+	if s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil {
+		var conductorCancel context.CancelFunc
+		conductorCtx, conductorCancel = context.WithCancel(ctx)
+		s.setConductorCancel(conductorCancel)
+	}
 	if s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil {
 		if s.conductorRemoteKill != nil {
 			conductorWG.Add(1)
@@ -258,7 +274,7 @@ func (s *Server) Start(ctx context.Context) error {
 						cancel()
 					}
 				}()
-				if err := s.conductorRemoteKill.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				if err := s.conductorRemoteKill.Run(conductorCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 					s.logger.LogError(audit.NewResourceLogContext("conductor_remote_kill_poller", cfg.Conductor.ConductorURL), err)
 					_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor remote kill poller stopped: %v\n", err)
 					cancel()
@@ -275,7 +291,7 @@ func (s *Server) Start(ctx context.Context) error {
 					_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor audit transport panic: %v\n", r)
 				}
 			}()
-			if err := s.conductorAudit.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			if err := s.conductorAudit.Run(conductorCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				s.logger.LogError(audit.NewResourceLogContext("conductor_audit_transport", cfg.Conductor.ConductorURL), err)
 				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor audit transport stopped: %v\n", err)
 			}
@@ -291,7 +307,7 @@ func (s *Server) Start(ctx context.Context) error {
 					cancel()
 				}
 			}()
-			if err := s.conductorBundle.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			if err := s.conductorBundle.Run(conductorCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				s.logger.LogError(audit.NewResourceLogContext("conductor_policy_bundle_poller", cfg.Conductor.ConductorURL), err)
 				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor policy bundle poller stopped: %v\n", err)
 				cancel()
@@ -761,22 +777,20 @@ func (s *Server) Start(ctx context.Context) error {
 	// enterprise license expires at runtime. Agent shutdown only matters
 	// when listeners exist, but renewal warnings still emit for long-running
 	// proxy-only processes.
-	if agentListenerCount > 0 && cfg.LicenseExpiresAt > 0 {
+	if (agentListenerCount > 0 || cfg.Conductor.Enabled) && cfg.LicenseExpiresAt > 0 {
 		lifecycleWG.Add(1)
 		go func() {
 			defer lifecycleWG.Done()
 			remaining := time.Until(time.Unix(cfg.LicenseExpiresAt, 0))
 			if remaining <= 0 {
-				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: license expired, shutting down agent listeners\n")
-				s.proxy.ShutdownAgentServers()
+				s.expireLicensedRuntime()
 				return
 			}
 			timer := time.NewTimer(remaining)
 			defer timer.Stop()
 			select {
 			case <-timer.C:
-				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: license expired, shutting down agent listeners\n")
-				s.proxy.ShutdownAgentServers()
+				s.expireLicensedRuntime()
 			case <-ctx.Done():
 			}
 		}()
@@ -788,7 +802,7 @@ func (s *Server) Start(ctx context.Context) error {
 			s.startLicenseExpiryWatcher(ctx)
 		}()
 	}
-	if agentListenerCount > 0 && cfg.LicenseCRLFile != "" {
+	if (agentListenerCount > 0 || cfg.Conductor.Enabled) && cfg.LicenseCRLFile != "" {
 		lifecycleWG.Add(1)
 		go func() {
 			defer lifecycleWG.Done()

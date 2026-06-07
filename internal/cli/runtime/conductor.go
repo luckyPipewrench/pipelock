@@ -67,6 +67,12 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	if s == nil {
 		return applycache.AppliedBundle{}, errors.New("nil runtime server")
 	}
+	// Fail closed once the fleet entitlement has been revoked/expired/downgraded
+	// at runtime: teardownConductor sets conductorDown, after which no further
+	// policy bundles may be applied.
+	if s.conductorDown.Load() {
+		return applycache.AppliedBundle{}, applycache.ErrCacheRequired
+	}
 	cache, _ := s.conductorApply.(*applycache.Cache)
 	if cache == nil {
 		return applycache.AppliedBundle{}, applycache.ErrCacheRequired
@@ -75,6 +81,16 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	// last-known-good pointer must never diverge from the running config.
 	s.conductorApplyMu.Lock()
 	defer s.conductorApplyMu.Unlock()
+	// Re-check under the apply lock: teardownConductor runs concurrently (CRL
+	// watcher / expiry timer / reload) and sets conductorDown without taking
+	// this lock (taking it would deadlock the poller's own
+	// apply -> reload -> teardown path). Re-checking here means any teardown
+	// observed before stage/reload/activate aborts the apply; the only residual
+	// window is a single bundle already past this point when teardown fires, and
+	// the poller is cancelled so no further bundles follow.
+	if s.conductorDown.Load() {
+		return applycache.AppliedBundle{}, applycache.ErrCacheRequired
+	}
 	cfg := s.currentConfig()
 	if cfg == nil && s.proxy != nil {
 		cfg = s.proxy.CurrentConfig()

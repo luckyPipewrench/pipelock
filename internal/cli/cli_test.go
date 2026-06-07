@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -67,6 +68,65 @@ func waitForCLIOutput(t *testing.T, buf *cliTestBuffer, errCh <-chan error, canc
 		}
 		return false
 	}, "CLI output %q\nstderr:\n%s", want, buf.String())
+}
+
+// reloadWaitBackstop is a generous safety deadline for waitForReloadCycle. It is
+// NOT the gating mechanism (the reload-completed signal fires as soon as the
+// cycle runs); it only guards a genuinely broken fsnotify watcher, so it is set
+// far above any realistic CI reload latency. This is the fix for the
+// reload-test-family flakiness: the old 5s stderr poll made fsnotify delivery
+// latency the failure threshold; an event signal plus a large backstop removes
+// the guess.
+const reloadWaitBackstop = 30 * time.Second
+
+// installReloadWaiter registers a process-global reload-completion hook and
+// returns a channel that receives once per completed config reload cycle. Call
+// it BEFORE writing the config under test. Cleared via t.Cleanup. Not for
+// t.Parallel reload tests (the hook is process global).
+func installReloadWaiter(t *testing.T) <-chan struct{} {
+	t.Helper()
+	ch := make(chan struct{}, 16)
+	restore := runtime.SetReloadCompletedHookForTest(func() {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	})
+	t.Cleanup(restore)
+	return ch
+}
+
+// awaitReloadCycle blocks until one config reload cycle completes, the run
+// command exits, or the backstop elapses. Use when the post-reload assertion is
+// an HTTP effect rather than a stderr message.
+func awaitReloadCycle(t *testing.T, reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error, cancel context.CancelFunc) {
+	t.Helper()
+	dump := ""
+	if buf != nil {
+		dump = "\nstderr:\n" + buf.String()
+	}
+	select {
+	case <-reloaded:
+	case cmdErr := <-errCh:
+		cancel()
+		t.Fatalf("run exited before reload completed: %v%s", cmdErr, dump)
+	case <-time.After(reloadWaitBackstop):
+		cancel()
+		t.Fatalf("timed out waiting for config reload cycle%s", dump)
+	}
+}
+
+// requireCLIOutputAfterReload blocks until one config reload cycle completes,
+// then asserts want was emitted. The reload warning is always written before the
+// cycle-complete signal fires, so the assertion is deterministic — no polling
+// against a wall-clock deadline.
+func requireCLIOutputAfterReload(t *testing.T, reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error, cancel context.CancelFunc, want string) {
+	t.Helper()
+	awaitReloadCycle(t, reloaded, buf, errCh, cancel)
+	if !buf.contains(want) {
+		cancel()
+		t.Fatalf("expected %q in stderr after reload, got:\n%s", want, buf.String())
+	}
 }
 
 func waitForRunHTTP(
@@ -1403,6 +1463,8 @@ fetch_proxy:
 			return err
 		}
 
+		reloaded := installReloadWaiter(t)
+
 		// Reload config to action: ask and audit mode. The mode change is the
 		// observable signal that the reload carrying ask-mode config landed.
 		updatedCfg := fmt.Sprintf(`version: 1
@@ -1418,12 +1480,13 @@ response_scanning:
 			t.Fatal(err)
 		}
 
-		// Reload observation needs a longer deadline than the initial health
-		// check: fsnotify delivery plus the 100ms debounce plus the atomic config
-		// swap lag well past 5s under the heavy -race CI job (config+cli+mcp+proxy
-		// in one process). The startup wait above stays snappy; only this
-		// reload-to-take-effect wait gets the longer ceiling.
-		waitForRunHTTPWithin(t, 20*time.Second, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+		// Gate on the reload-cycle-complete signal so fsnotify delivery latency
+		// (plus the 100ms debounce and the atomic config swap) is not the
+		// failure threshold under the heavy -race CI job. Once the cycle has
+		// run, the new config is live, so the health check below confirms the
+		// effect immediately rather than polling against a wall-clock deadline.
+		awaitReloadCycle(t, reloaded, stderr, errCh, cancel)
+		waitForRunHTTPWithin(t, reloadWaitBackstop, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeAudit
@@ -1625,6 +1688,8 @@ logging:
 			return err
 		}
 
+		reloaded := installReloadWaiter(t)
+
 		// Hot-reload: enable forward_proxy (should be rejected)
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
@@ -1643,7 +1708,11 @@ logging:
 			t.Fatal(err)
 		}
 
-		testwait.For(t, 5*time.Second, func() bool {
+		// Gate on the reload-cycle-complete signal so fsnotify delivery latency
+		// is not the failure threshold; the short poll below then only covers
+		// audit-log file flush, which is fast.
+		awaitReloadCycle(t, reloaded, nil, errCh, cancel)
+		testwait.For(t, reloadWaitBackstop, func() bool {
 			select {
 			case cmdErr := <-errCh:
 				cancel()
@@ -2153,6 +2222,8 @@ fetch_proxy:
 			return err
 		}
 
+		reloaded := installReloadWaiter(t)
+
 		// Hot-reload: change metrics_listen (should be rejected).
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
@@ -2165,7 +2236,7 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		waitForCLIOutput(t, stderr, errCh, cancel, "metrics_listen changed")
+		requireCLIOutputAfterReload(t, reloaded, stderr, errCh, cancel, "metrics_listen changed")
 
 		cancel()
 		select {
@@ -2227,6 +2298,8 @@ fetch_proxy:
 			return err
 		}
 
+		reloaded := installReloadWaiter(t)
+
 		// Hot-reload: change license_key (should warn).
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
@@ -2239,7 +2312,7 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		waitForCLIOutput(t, stderr, errCh, cancel, "license key inputs changed")
+		requireCLIOutputAfterReload(t, reloaded, stderr, errCh, cancel, "license key inputs changed")
 
 		cancel()
 		select {
@@ -2301,6 +2374,8 @@ fetch_proxy:
 			return err
 		}
 
+		reloaded := installReloadWaiter(t)
+
 		// Hot-reload: same license_key, change something else (mode).
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: audit
@@ -2313,7 +2388,7 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		waitForCLIOutput(t, stderr, errCh, cancel, "mode downgraded from balanced to audit")
+		requireCLIOutputAfterReload(t, reloaded, stderr, errCh, cancel, "mode downgraded from balanced to audit")
 
 		cancel()
 		select {
@@ -2380,6 +2455,8 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
+		reloaded := installReloadWaiter(t)
+
 		// Hot-reload: add license_file (should warn about license inputs change).
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
@@ -2392,7 +2469,7 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		waitForCLIOutput(t, stderr, errCh, cancel, "license key inputs changed")
+		requireCLIOutputAfterReload(t, reloaded, stderr, errCh, cancel, "license key inputs changed")
 
 		cancel()
 		select {

@@ -44,6 +44,10 @@ func (s *Server) refreshLicenseCRLOnce() bool {
 	}
 	if failClosed {
 		s.proxy.ShutdownAgentServers()
+		// Parity with agent listeners: a revoked or expired license must also
+		// stop the follower-side Conductor runtime (Enterprise fleet feature),
+		// not just agent listeners. No-op when Conductor is not running.
+		s.teardownConductor("revoked or expired (CRL)")
 		return true
 	}
 	return false

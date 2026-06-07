@@ -1957,6 +1957,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				reason := responseSizeBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb")
 				p.logger.LogBlocked(actx, "response_scan", reason)
+				p.emitReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+					ActionID:  actionID,
+					RequestID: requestID,
+					Agent:     agent,
+					Method:    r.Method,
+					Target:    targetURL,
+					Layer:     "response_scan",
+					Pattern:   reason,
+					Taint:     forwardTaint,
+				})))
 				p.metrics.RecordBlocked(fwdRespHost, "response_scan", time.Since(start), agentLabel)
 				writeBlockedError(w,
 					blockInfoFor(blockreason.ResponseSize, "response_scan"),

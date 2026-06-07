@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -125,7 +126,7 @@ func runExplain(out io.Writer, opts containExplainOpts, id string) error {
 var errEgressEventNotFound = errors.New("contain egress event not found")
 
 func findEgressBlockEvent(path, id string) (egressBlockEvent, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: operator-supplied diagnostics path, read-only.
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return egressBlockEvent{}, err
 	}

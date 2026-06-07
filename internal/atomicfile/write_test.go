@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,12 +74,19 @@ func TestWrite_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat target: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows reports a synthesized 0o666 mode for any user-readable+writable
+	// file regardless of the mode passed to OpenFile. Skip the perm assertion
+	// there; the content-correctness assertions above still cover the
+	// cross-platform behavior of Write.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("permissions = %o, want %o", info.Mode().Perm(), 0o600)
 	}
 }
 
 func TestWrite_Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666 regardless of the mode passed to Write")
+	}
 	tests := []struct {
 		name string
 		perm os.FileMode

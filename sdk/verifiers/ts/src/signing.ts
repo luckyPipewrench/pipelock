@@ -10,6 +10,15 @@ const v2RecordType = "evidence_receipt_v2";
 const v2ReceiptVersion = 2;
 const v2SignatureAlgorithm = "ed25519";
 const v2RequiredSignaturePurpose = "receipt-signing";
+const v2JcsProfile = "pipelock-jcs-rfc8785-nfc-v1";
+const v2JcsVersion = "rfc8785";
+const v2HashAlg = "sha256";
+const v2RedactionRulesetId = "pipelock-transform-v1";
+const v2RedactionRulesetVersion = "1";
+const v2RedactionRulesetHash =
+  "sha256:541896788b42651a202448894583a847db9d1aa081c33a7e1f0512303d72527e";
+const critCanonicalization = "canonicalization";
+const critSourceSpans = "source_spans";
 
 const v2PayloadKinds = new Set(["proxy_decision", "proxy_decision_with_spans"]);
 
@@ -17,6 +26,8 @@ const envelopeFields = new Set([
   "record_type",
   "receipt_version",
   "payload_kind",
+  "canonicalization",
+  "crit",
   "event_id",
   "timestamp",
   "principal",
@@ -30,6 +41,16 @@ const envelopeFields = new Set([
   "selector_id",
   "contract_generation",
   "payload",
+]);
+
+const canonicalizationFields = new Set([
+  "jcs_profile",
+  "jcs_version",
+  "hash_alg",
+  "sig_alg",
+  "redaction_ruleset_id",
+  "redaction_ruleset_version",
+  "redaction_ruleset_hash",
 ]);
 
 const signatureFields = new Set(["signer_key_id", "key_purpose", "algorithm", "signature"]);
@@ -136,6 +157,79 @@ function requireStringArray(value: unknown, name: string): string[] {
   return value as string[];
 }
 
+function validateCanonicalization(value: unknown): void {
+  const canonicalization = requireObject(value, "canonicalization");
+  rejectUnknownFields(canonicalization, canonicalizationFields, "canonicalization");
+  if (
+    requireString(canonicalization["jcs_profile"], "canonicalization.jcs_profile") !== v2JcsProfile
+  ) {
+    throw new Error("canonicalization.jcs_profile is invalid");
+  }
+  if (
+    requireString(canonicalization["jcs_version"], "canonicalization.jcs_version") !== v2JcsVersion
+  ) {
+    throw new Error("canonicalization.jcs_version is invalid");
+  }
+  if (requireString(canonicalization["hash_alg"], "canonicalization.hash_alg") !== v2HashAlg) {
+    throw new Error("canonicalization.hash_alg is invalid");
+  }
+  if (
+    requireString(canonicalization["sig_alg"], "canonicalization.sig_alg") !== v2SignatureAlgorithm
+  ) {
+    throw new Error("canonicalization.sig_alg is invalid");
+  }
+  if (
+    requireString(
+      canonicalization["redaction_ruleset_id"],
+      "canonicalization.redaction_ruleset_id",
+    ) !== v2RedactionRulesetId
+  ) {
+    throw new Error("canonicalization.redaction_ruleset_id is invalid");
+  }
+  if (
+    requireString(
+      canonicalization["redaction_ruleset_version"],
+      "canonicalization.redaction_ruleset_version",
+    ) !== v2RedactionRulesetVersion
+  ) {
+    throw new Error("canonicalization.redaction_ruleset_version is invalid");
+  }
+  if (
+    requireString(
+      canonicalization["redaction_ruleset_hash"],
+      "canonicalization.redaction_ruleset_hash",
+    ) !== v2RedactionRulesetHash
+  ) {
+    throw new Error("canonicalization.redaction_ruleset_hash is invalid");
+  }
+}
+
+function validateCrit(value: unknown, payloadKind: string): void {
+  const crit = requireStringArray(value, "crit");
+  const seen = new Set<string>();
+  let hasCanonicalization = false;
+  let hasSourceSpans = false;
+  for (const name of crit) {
+    if (name === "") throw new Error("crit has an empty name");
+    if (seen.has(name)) throw new Error(`crit has duplicate ${name}`);
+    seen.add(name);
+    if (name === critCanonicalization) {
+      hasCanonicalization = true;
+    } else if (name === critSourceSpans) {
+      hasSourceSpans = true;
+    } else {
+      throw new Error(`crit has unknown field ${name}`);
+    }
+  }
+  if (!hasCanonicalization) throw new Error("crit must include canonicalization");
+  if (payloadKind === "proxy_decision_with_spans" && !hasSourceSpans) {
+    throw new Error("crit must include source_spans");
+  }
+  if (payloadKind !== "proxy_decision_with_spans" && hasSourceSpans) {
+    throw new Error(`crit source_spans is invalid for ${payloadKind}`);
+  }
+}
+
 function requireSHA256Digest(value: unknown, name: string): void {
   const digest = requireString(value, name);
   if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) throw new Error(`${name} must be sha256:<64 hex>`);
@@ -240,6 +334,8 @@ export function normalizeEvidenceReceipt(receipt: Receipt): Receipt {
   }
   const payloadKind = requireString(receipt.payload_kind, "payload_kind");
   if (!v2PayloadKinds.has(payloadKind)) throw new Error(`unknown payload_kind ${payloadKind}`);
+  validateCanonicalization(receipt.canonicalization);
+  validateCrit(receipt.crit, payloadKind);
   requireString(receipt.event_id, "event_id");
   requireString(receipt.timestamp, "timestamp");
   requireNumber(receipt.chain_seq, "chain_seq");

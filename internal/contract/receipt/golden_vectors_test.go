@@ -41,14 +41,16 @@ func TestGolden_EvidenceReceiptProxyDecision(t *testing.T) {
 
 	payload := json.RawMessage(`{"action_type":"connect","target":"example.com","verdict":"allow","transport":"forward","policy_sources":["test"],"winning_source":"test"}`)
 	r := EvidenceReceipt{
-		RecordType:     RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    PayloadProxyDecision,
-		EventID:        "01F8MECHZX3TBDSZ7XRADM79XV",
-		Timestamp:      time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
-		ChainSeq:       1,
-		ChainPrevHash:  "sha256:0",
-		Payload:        payload,
+		RecordType:       RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      PayloadProxyDecision,
+		Canonicalization: DefaultCanonicalizationProfile(),
+		Crit:             CritForPayloadKind(PayloadProxyDecision),
+		EventID:          "01F8MECHZX3TBDSZ7XRADM79XV",
+		Timestamp:        time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
+		ChainSeq:         1,
+		ChainPrevHash:    "sha256:0",
+		Payload:          payload,
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {
@@ -106,14 +108,16 @@ func TestGolden_EvidenceReceiptProxyDecisionWithSpans(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 	r := EvidenceReceipt{
-		RecordType:     RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    PayloadProxyDecisionWithSpans,
-		EventID:        goldenSpanEventID,
-		Timestamp:      time.Date(2026, 6, 6, 18, 0, 0, 0, time.UTC),
-		ChainSeq:       1,
-		ChainPrevHash:  "sha256:0",
-		Payload:        json.RawMessage(payloadBody),
+		RecordType:       RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      PayloadProxyDecisionWithSpans,
+		Canonicalization: DefaultCanonicalizationProfile(),
+		Crit:             CritForPayloadKind(PayloadProxyDecisionWithSpans),
+		EventID:          goldenSpanEventID,
+		Timestamp:        time.Date(2026, 6, 6, 18, 0, 0, 0, time.UTC),
+		ChainSeq:         1,
+		ChainPrevHash:    "sha256:0",
+		Payload:          json.RawMessage(payloadBody),
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {
@@ -168,14 +172,16 @@ func TestGolden_EvidenceReceiptPromoteCommitted(t *testing.T) {
 		`"validation_outcome":"accepted"` +
 		`}`)
 	r := EvidenceReceipt{
-		RecordType:     RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    PayloadContractPromoteCommitted,
-		EventID:        "01F8MECHZX3TBDSZ7XRADM79XX",
-		Timestamp:      time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
-		ChainSeq:       1,
-		ChainPrevHash:  "sha256:0",
-		Payload:        payload,
+		RecordType:       RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      PayloadContractPromoteCommitted,
+		Canonicalization: DefaultCanonicalizationProfile(),
+		Crit:             CritForPayloadKind(PayloadContractPromoteCommitted),
+		EventID:          "01F8MECHZX3TBDSZ7XRADM79XX",
+		Timestamp:        time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
+		ChainSeq:         1,
+		ChainPrevHash:    "sha256:0",
+		Payload:          payload,
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {
@@ -236,14 +242,16 @@ func TestGolden_EvidenceReceiptShadowDelta(t *testing.T) {
 		`"exemplar_ids":["01F8MECHZX3TBDSZ7XRADM79YA","01F8MECHZX3TBDSZ7XRADM79YB"]` +
 		`}}`)
 	r := EvidenceReceipt{
-		RecordType:     RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    PayloadShadowDelta,
-		EventID:        "01F8MECHZX3TBDSZ7XRADM79YC",
-		Timestamp:      time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
-		ChainSeq:       1,
-		ChainPrevHash:  "sha256:0",
-		Payload:        payload,
+		RecordType:       RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      PayloadShadowDelta,
+		Canonicalization: DefaultCanonicalizationProfile(),
+		Crit:             CritForPayloadKind(PayloadShadowDelta),
+		EventID:          "01F8MECHZX3TBDSZ7XRADM79YC",
+		Timestamp:        time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
+		ChainSeq:         1,
+		ChainPrevHash:    "sha256:0",
+		Payload:          payload,
 	}
 	preimage, err := r.SignablePreimage()
 	if err != nil {

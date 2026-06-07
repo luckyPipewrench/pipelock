@@ -16,6 +16,8 @@ export interface Receipt {
   record_type?: string;
   receipt_version?: number;
   payload_kind?: string;
+  canonicalization?: JSONObject;
+  crit?: string[];
   event_id?: string;
   timestamp?: string;
   chain_seq?: number;

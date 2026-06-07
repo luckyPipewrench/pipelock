@@ -17,6 +17,17 @@ from .canonical import canonicalize
 
 V2_RECORD_TYPE = "evidence_receipt_v2"
 SIGNATURE_PREFIX = "ed25519:"
+V2_SIGNATURE_ALGORITHM = "ed25519"
+V2_JCS_PROFILE = "pipelock-jcs-rfc8785-nfc-v1"
+V2_JCS_VERSION = "rfc8785"
+V2_HASH_ALG = "sha256"
+V2_REDACTION_RULESET_ID = "pipelock-transform-v1"
+V2_REDACTION_RULESET_VERSION = "1"
+V2_REDACTION_RULESET_HASH = (
+    "sha256:541896788b42651a202448894583a847db9d1aa081c33a7e1f0512303d72527e"
+)
+CRIT_CANONICALIZATION = "canonicalization"
+CRIT_SOURCE_SPANS = "source_spans"
 
 _PAYLOAD_KINDS = {
     "proxy_decision",
@@ -27,6 +38,8 @@ _ENVELOPE_FIELDS = {
     "record_type",
     "receipt_version",
     "payload_kind",
+    "canonicalization",
+    "crit",
     "event_id",
     "timestamp",
     "principal",
@@ -40,6 +53,16 @@ _ENVELOPE_FIELDS = {
     "selector_id",
     "contract_generation",
     "payload",
+}
+
+_CANONICALIZATION_FIELDS = {
+    "jcs_profile",
+    "jcs_version",
+    "hash_alg",
+    "sig_alg",
+    "redaction_ruleset_id",
+    "redaction_ruleset_version",
+    "redaction_ruleset_hash",
 }
 
 _SIGNATURE_FIELDS = {"signer_key_id", "key_purpose", "algorithm", "signature"}
@@ -171,6 +194,8 @@ def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
     payload_kind = _require_string(receipt.get("payload_kind"), "payload_kind")
     if payload_kind not in _PAYLOAD_KINDS:
         raise ReceiptError(f"unknown payload_kind {payload_kind}")
+    _validate_canonicalization(receipt.get("canonicalization"))
+    _validate_crit(receipt.get("crit"), payload_kind)
     _require_string(receipt.get("event_id"), "event_id")
     _require_string(receipt.get("timestamp"), "timestamp")
     _require_non_negative_int(receipt.get("chain_seq"), "chain_seq")
@@ -183,13 +208,69 @@ def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
         _validate_proxy_decision_with_spans_payload(payload)
 
 
+def _validate_canonicalization(value: Any) -> None:
+    canonicalization = _require_object(value, "canonicalization")
+    _reject_unknown(canonicalization, _CANONICALIZATION_FIELDS, "canonicalization")
+    if _require_string(canonicalization.get("jcs_profile"), "canonicalization.jcs_profile") != V2_JCS_PROFILE:
+        raise ReceiptError("canonicalization.jcs_profile is invalid")
+    if _require_string(canonicalization.get("jcs_version"), "canonicalization.jcs_version") != V2_JCS_VERSION:
+        raise ReceiptError("canonicalization.jcs_version is invalid")
+    if _require_string(canonicalization.get("hash_alg"), "canonicalization.hash_alg") != V2_HASH_ALG:
+        raise ReceiptError("canonicalization.hash_alg is invalid")
+    if _require_string(canonicalization.get("sig_alg"), "canonicalization.sig_alg") != V2_SIGNATURE_ALGORITHM:
+        raise ReceiptError("canonicalization.sig_alg is invalid")
+    if (
+        _require_string(canonicalization.get("redaction_ruleset_id"), "canonicalization.redaction_ruleset_id")
+        != V2_REDACTION_RULESET_ID
+    ):
+        raise ReceiptError("canonicalization.redaction_ruleset_id is invalid")
+    if (
+        _require_string(
+            canonicalization.get("redaction_ruleset_version"),
+            "canonicalization.redaction_ruleset_version",
+        )
+        != V2_REDACTION_RULESET_VERSION
+    ):
+        raise ReceiptError("canonicalization.redaction_ruleset_version is invalid")
+    if (
+        _require_string(canonicalization.get("redaction_ruleset_hash"), "canonicalization.redaction_ruleset_hash")
+        != V2_REDACTION_RULESET_HASH
+    ):
+        raise ReceiptError("canonicalization.redaction_ruleset_hash is invalid")
+
+
+def _validate_crit(value: Any, payload_kind: str) -> None:
+    crit = _require_string_list(value, "crit")
+    seen: set[str] = set()
+    has_canonicalization = False
+    has_source_spans = False
+    for name in crit:
+        if name == "":
+            raise ReceiptError("crit has an empty name")
+        if name in seen:
+            raise ReceiptError(f"crit has duplicate {name}")
+        seen.add(name)
+        if name == CRIT_CANONICALIZATION:
+            has_canonicalization = True
+        elif name == CRIT_SOURCE_SPANS:
+            has_source_spans = True
+        else:
+            raise ReceiptError(f"crit has unknown field {name}")
+    if not has_canonicalization:
+        raise ReceiptError("crit must include canonicalization")
+    if payload_kind == "proxy_decision_with_spans" and not has_source_spans:
+        raise ReceiptError("crit must include source_spans")
+    if payload_kind != "proxy_decision_with_spans" and has_source_spans:
+        raise ReceiptError(f"crit source_spans is invalid for {payload_kind}")
+
+
 def _validate_signature(receipt: dict[str, Any], payload_kind: str) -> None:
     signature = _require_object(receipt.get("signature"), "signature")
     _reject_unknown(signature, _SIGNATURE_FIELDS, "signature")
     _require_string(signature.get("signer_key_id"), "signature.signer_key_id")
     if _require_string(signature.get("key_purpose"), "signature.key_purpose") != "receipt-signing":
         raise ReceiptError(f"signature.key_purpose is not authorized for {payload_kind}")
-    if _require_string(signature.get("algorithm"), "signature.algorithm") != "ed25519":
+    if _require_string(signature.get("algorithm"), "signature.algorithm") != V2_SIGNATURE_ALGORITHM:
         raise ReceiptError("signature.algorithm is invalid")
     sig = _require_string(signature.get("signature"), "signature.signature")
     if not sig.startswith(SIGNATURE_PREFIX):
@@ -299,9 +380,10 @@ def _require_non_negative_int(value: Any, name: str) -> int:
     return value
 
 
-def _require_string_list(value: Any, name: str) -> None:
+def _require_string_list(value: Any, name: str) -> list[str]:
     if not isinstance(value, list) or not value or any(not isinstance(v, str) for v in value):
         raise ReceiptError(f"{name} is required")
+    return value
 
 
 def _require_hex(value: str, byte_len: int, name: str) -> None:

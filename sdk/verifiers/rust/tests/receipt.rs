@@ -216,6 +216,97 @@ fn empty_dlp_normalized_suffix_is_rejected() {
 }
 
 #[test]
+fn unsupported_canonicalization_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["canonicalization"]["jcs_profile"] = Value::String("rfc8785".to_string());
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-bad-canon-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("canonicalization.jcs_profile is invalid"));
+}
+
+#[test]
+fn missing_source_spans_crit_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["crit"] = serde_json::json!(["canonicalization"]);
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-missing-crit-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("crit must include source_spans"));
+}
+
+#[test]
+fn unknown_crit_is_rejected() {
+    let root = common::repo_root();
+    let source = root.join(
+        "internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["crit"] = serde_json::json!(["canonicalization", "source_spans", "future_extension"]);
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-unknown-crit-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("crit has unknown field future_extension"));
+}
+
+#[test]
+fn source_spans_crit_on_plain_payload_is_rejected() {
+    let root = common::repo_root();
+    let source =
+        root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json");
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["crit"] = serde_json::json!(["canonicalization", "source_spans"]);
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-plain-span-crit-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("crit source_spans is invalid for proxy_decision"));
+}
+
+#[test]
 fn spanned_v2_receipt_does_not_expose_low_entropy_oracle_key() {
     let root = common::repo_root();
     let receipt: Value = serde_json::from_str(

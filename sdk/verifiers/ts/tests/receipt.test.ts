@@ -10,6 +10,8 @@ const validSingle = "../../conformance/testdata/valid-single.json";
 const invalidSignature = "../../conformance/testdata/invalid-signature.json";
 const validSpannedV2 =
   "../../../internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json";
+const validPlainV2 =
+  "../../../internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json";
 const v2GoldenPublicKey = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
 
 test("receipt command accepts a valid Go-generated receipt", async () => {
@@ -107,6 +109,74 @@ test("receipt command rejects empty dlp normalized suffix", async () => {
     const report = await runReceipt(pathname, v2GoldenPublicKey);
     assert.equal(report.valid, false);
     assert.match(report.error ?? "", /normalized_view is invalid/u);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
+});
+
+test("receipt command rejects unsupported EvidenceReceipt v2 canonicalization", async () => {
+  const pathname = join(
+    process.env["TMPDIR"] ?? "/tmp",
+    `pipelock-verifier-ts-v2-bad-canon-${process.pid}.json`,
+  );
+  const receipt = JSON.parse(readFileSync(validSpannedV2, "utf8")) as Receipt;
+  (receipt.canonicalization as Record<string, unknown>)["jcs_profile"] = "rfc8785";
+  writeFileSync(pathname, JSON.stringify(receipt), { mode: 0o600 });
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /canonicalization\.jcs_profile is invalid/u);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
+});
+
+test("receipt command rejects missing source_spans critical marker", async () => {
+  const pathname = join(
+    process.env["TMPDIR"] ?? "/tmp",
+    `pipelock-verifier-ts-v2-missing-crit-${process.pid}.json`,
+  );
+  const receipt = JSON.parse(readFileSync(validSpannedV2, "utf8")) as Receipt;
+  receipt.crit = ["canonicalization"];
+  writeFileSync(pathname, JSON.stringify(receipt), { mode: 0o600 });
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /crit must include source_spans/u);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
+});
+
+test("receipt command rejects unknown EvidenceReceipt v2 critical marker", async () => {
+  const pathname = join(
+    process.env["TMPDIR"] ?? "/tmp",
+    `pipelock-verifier-ts-v2-unknown-crit-${process.pid}.json`,
+  );
+  const receipt = JSON.parse(readFileSync(validSpannedV2, "utf8")) as Receipt;
+  receipt.crit = ["canonicalization", "source_spans", "future_extension"];
+  writeFileSync(pathname, JSON.stringify(receipt), { mode: 0o600 });
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /crit has unknown field future_extension/u);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
+});
+
+test("receipt command rejects source_spans critical marker on plain EvidenceReceipt v2", async () => {
+  const pathname = join(
+    process.env["TMPDIR"] ?? "/tmp",
+    `pipelock-verifier-ts-v2-plain-span-crit-${process.pid}.json`,
+  );
+  const receipt = JSON.parse(readFileSync(validPlainV2, "utf8")) as Receipt;
+  receipt.crit = ["canonicalization", "source_spans"];
+  writeFileSync(pathname, JSON.stringify(receipt), { mode: 0o600 });
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /crit source_spans is invalid for proxy_decision/u);
   } finally {
     rmSync(pathname, { force: true });
   }

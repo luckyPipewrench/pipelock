@@ -15,6 +15,11 @@ VALID_SPANNED_V2 = (
     / "internal/contract/testdata/golden/"
     / "valid_evidence_receipt_proxy_decision_with_spans.json"
 )
+VALID_PLAIN_V2 = (
+    ROOT
+    / "internal/contract/testdata/golden/"
+    / "valid_evidence_receipt_proxy_decision.json"
+)
 V2_GOLDEN_PUBLIC_KEY = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
 
 
@@ -69,6 +74,50 @@ def test_optional_span_metadata_must_be_string(tmp_path: Path) -> None:
     report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
     assert report["valid"] is False
     assert "redacted_sample must be a string" in report["error"]
+
+
+def test_unsupported_canonicalization_rejects(tmp_path: Path) -> None:
+    receipt = json.loads(VALID_SPANNED_V2.read_text())
+    receipt["canonicalization"]["jcs_profile"] = "rfc8785"
+    path = tmp_path / "bad-canonicalization.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "canonicalization.jcs_profile is invalid" in report["error"]
+
+
+def test_missing_source_spans_crit_rejects(tmp_path: Path) -> None:
+    receipt = json.loads(VALID_SPANNED_V2.read_text())
+    receipt["crit"] = ["canonicalization"]
+    path = tmp_path / "missing-source-span-crit.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "crit must include source_spans" in report["error"]
+
+
+def test_unknown_crit_rejects(tmp_path: Path) -> None:
+    receipt = json.loads(VALID_SPANNED_V2.read_text())
+    receipt["crit"] = ["canonicalization", "source_spans", "future_extension"]
+    path = tmp_path / "unknown-crit.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "crit has unknown field future_extension" in report["error"]
+
+
+def test_source_spans_crit_on_plain_payload_rejects(tmp_path: Path) -> None:
+    receipt = json.loads(VALID_PLAIN_V2.read_text())
+    receipt["crit"] = ["canonicalization", "source_spans"]
+    path = tmp_path / "plain-source-span-crit.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "crit source_spans is invalid for proxy_decision" in report["error"]
 
 
 def test_spanned_v2_receipt_does_not_expose_oracle_key() -> None:

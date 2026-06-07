@@ -8,6 +8,15 @@ const SIGNATURE_PREFIX: &str = "ed25519:";
 const V2_RECORD_TYPE: &str = "evidence_receipt_v2";
 const V2_SIGNATURE_ALGORITHM: &str = "ed25519";
 const V2_KEY_PURPOSE: &str = "receipt-signing";
+const V2_JCS_PROFILE: &str = "pipelock-jcs-rfc8785-nfc-v1";
+const V2_JCS_VERSION: &str = "rfc8785";
+const V2_HASH_ALG: &str = "sha256";
+const V2_REDACTION_RULESET_ID: &str = "pipelock-transform-v1";
+const V2_REDACTION_RULESET_VERSION: &str = "1";
+const V2_REDACTION_RULESET_HASH: &str =
+    "sha256:541896788b42651a202448894583a847db9d1aa081c33a7e1f0512303d72527e";
+const CRIT_CANONICALIZATION: &str = "canonicalization";
+const CRIT_SOURCE_SPANS: &str = "source_spans";
 const VALID_ACTION_TYPES: &[&str] = &[
     "read",
     "derive",
@@ -113,6 +122,8 @@ pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), 
             "record_type",
             "receipt_version",
             "payload_kind",
+            "canonicalization",
+            "crit",
             "event_id",
             "timestamp",
             "principal",
@@ -143,6 +154,8 @@ pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), 
     if !valid_payload_kind(payload_kind) {
         return Err(format!("unknown payload_kind {payload_kind}"));
     }
+    validate_canonicalization(receipt.get("canonicalization"))?;
+    validate_crit(receipt.get("crit"), payload_kind)?;
     require_string(receipt.get("event_id"), "event_id")?;
     require_string(receipt.get("timestamp"), "timestamp")?;
     require_non_negative_integer(receipt.get("chain_seq"), "chain_seq")?;
@@ -156,6 +169,114 @@ pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), 
         "proxy_decision_with_spans" => validate_proxy_decision_with_spans_payload(payload),
         _ => Ok(()),
     }
+}
+
+fn validate_canonicalization(value: Option<&serde_json::Value>) -> std::result::Result<(), String> {
+    let canonicalization = value
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "canonicalization is required".to_string())?;
+    reject_unknown_object_fields(
+        canonicalization,
+        &[
+            "jcs_profile",
+            "jcs_version",
+            "hash_alg",
+            "sig_alg",
+            "redaction_ruleset_id",
+            "redaction_ruleset_version",
+            "redaction_ruleset_hash",
+        ],
+        "canonicalization",
+    )?;
+    if require_string(
+        canonicalization.get("jcs_profile"),
+        "canonicalization.jcs_profile",
+    )? != V2_JCS_PROFILE
+    {
+        return Err("canonicalization.jcs_profile is invalid".to_string());
+    }
+    if require_string(
+        canonicalization.get("jcs_version"),
+        "canonicalization.jcs_version",
+    )? != V2_JCS_VERSION
+    {
+        return Err("canonicalization.jcs_version is invalid".to_string());
+    }
+    if require_string(
+        canonicalization.get("hash_alg"),
+        "canonicalization.hash_alg",
+    )? != V2_HASH_ALG
+    {
+        return Err("canonicalization.hash_alg is invalid".to_string());
+    }
+    if require_string(canonicalization.get("sig_alg"), "canonicalization.sig_alg")?
+        != V2_SIGNATURE_ALGORITHM
+    {
+        return Err("canonicalization.sig_alg is invalid".to_string());
+    }
+    if require_string(
+        canonicalization.get("redaction_ruleset_id"),
+        "canonicalization.redaction_ruleset_id",
+    )? != V2_REDACTION_RULESET_ID
+    {
+        return Err("canonicalization.redaction_ruleset_id is invalid".to_string());
+    }
+    if require_string(
+        canonicalization.get("redaction_ruleset_version"),
+        "canonicalization.redaction_ruleset_version",
+    )? != V2_REDACTION_RULESET_VERSION
+    {
+        return Err("canonicalization.redaction_ruleset_version is invalid".to_string());
+    }
+    if require_string(
+        canonicalization.get("redaction_ruleset_hash"),
+        "canonicalization.redaction_ruleset_hash",
+    )? != V2_REDACTION_RULESET_HASH
+    {
+        return Err("canonicalization.redaction_ruleset_hash is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn validate_crit(
+    value: Option<&serde_json::Value>,
+    payload_kind: &str,
+) -> std::result::Result<(), String> {
+    let crit = value
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "crit is required".to_string())?;
+    if crit.is_empty() {
+        return Err("crit is required".to_string());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut has_canonicalization = false;
+    let mut has_source_spans = false;
+    for value in crit {
+        let name = value
+            .as_str()
+            .ok_or_else(|| "crit is required".to_string())?;
+        if name.is_empty() {
+            return Err("crit has an empty name".to_string());
+        }
+        if !seen.insert(name) {
+            return Err(format!("crit has duplicate {name}"));
+        }
+        match name {
+            CRIT_CANONICALIZATION => has_canonicalization = true,
+            CRIT_SOURCE_SPANS => has_source_spans = true,
+            _ => return Err(format!("crit has unknown field {name}")),
+        }
+    }
+    if !has_canonicalization {
+        return Err("crit must include canonicalization".to_string());
+    }
+    if payload_kind == "proxy_decision_with_spans" && !has_source_spans {
+        return Err("crit must include source_spans".to_string());
+    }
+    if payload_kind != "proxy_decision_with_spans" && has_source_spans {
+        return Err(format!("crit source_spans is invalid for {payload_kind}"));
+    }
+    Ok(())
 }
 
 fn validate_v2_signature(receipt: &Receipt, payload_kind: &str) -> std::result::Result<(), String> {

@@ -78,18 +78,20 @@ func newEvidenceFixture(t *testing.T, n int) *evidenceFixture {
 			t.Fatalf("marshal payload: %v", err)
 		}
 		r := contractreceipt.EvidenceReceipt{
-			RecordType:     contractreceipt.RecordTypeEvidenceV2,
-			ReceiptVersion: 2,
-			PayloadKind:    contractreceipt.PayloadShadowDelta,
-			EventID:        fmt.Sprintf("019e0000-0000-7000-8000-%012d", i+1),
-			Timestamp:      base.Add(time.Duration(i) * time.Second),
-			Principal:      "learn",
-			Actor:          "shadow",
-			ChainSeq:       uint64(i),
-			ChainPrevHash:  prev,
-			ContractHash:   v2ContractHash,
-			SelectorID:     "selector-a",
-			Payload:        payloadJSON,
+			RecordType:       contractreceipt.RecordTypeEvidenceV2,
+			ReceiptVersion:   2,
+			PayloadKind:      contractreceipt.PayloadShadowDelta,
+			Canonicalization: contractreceipt.DefaultCanonicalizationProfile(),
+			Crit:             contractreceipt.CritForPayloadKind(contractreceipt.PayloadShadowDelta),
+			EventID:          fmt.Sprintf("019e0000-0000-7000-8000-%012d", i+1),
+			Timestamp:        base.Add(time.Duration(i) * time.Second),
+			Principal:        "learn",
+			Actor:            "shadow",
+			ChainSeq:         uint64(i),
+			ChainPrevHash:    prev,
+			ContractHash:     v2ContractHash,
+			SelectorID:       "selector-a",
+			Payload:          payloadJSON,
 		}
 		preimage, err := r.SignablePreimage()
 		if err != nil {

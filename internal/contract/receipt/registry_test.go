@@ -38,13 +38,7 @@ func TestRegistry_HasAll14PayloadKinds(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			// A valid envelope but empty payload: we expect a payload validation
 			// error (missing field), NOT ErrUnknownPayloadKind.
-			r := receipt.EvidenceReceipt{
-				RecordType:     receipt.RecordTypeEvidenceV2,
-				ReceiptVersion: 2,
-				PayloadKind:    kind,
-				EventID:        "01900000-0000-7000-8000-000000000002",
-				Payload:        []byte(`{}`),
-			}
+			r := validRegistryEnvelope(kind, []byte(`{}`))
 			err := r.Validate()
 			if errors.Is(err, receipt.ErrUnknownPayloadKind) {
 				t.Fatalf("kind %q has no registered validator", kind)
@@ -55,13 +49,7 @@ func TestRegistry_HasAll14PayloadKinds(t *testing.T) {
 
 func TestRegistry_DispatchesToCorrectValidator_ProxyDecision(t *testing.T) {
 	// Empty payload → missing required field from proxy_decision validator.
-	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadProxyDecision,
-		EventID:        "01900000-0000-7000-8000-000000000003",
-		Payload:        []byte(`{}`),
-	}
+	r := validRegistryEnvelope(receipt.PayloadProxyDecision, []byte(`{}`))
 	err := r.Validate()
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
 		t.Fatalf("expected ErrPayloadMissingField from proxy_decision dispatch, got: %v", err)
@@ -69,13 +57,7 @@ func TestRegistry_DispatchesToCorrectValidator_ProxyDecision(t *testing.T) {
 }
 
 func TestRegistry_DispatchesToCorrectValidator_ContractRatified(t *testing.T) {
-	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadContractRatified,
-		EventID:        "01900000-0000-7000-8000-000000000004",
-		Payload:        []byte(`{}`),
-	}
+	r := validRegistryEnvelope(receipt.PayloadContractRatified, []byte(`{}`))
 	err := r.Validate()
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
 		t.Fatalf("expected ErrPayloadMissingField from contract_ratified dispatch, got: %v", err)
@@ -83,13 +65,7 @@ func TestRegistry_DispatchesToCorrectValidator_ContractRatified(t *testing.T) {
 }
 
 func TestRegistry_DispatchesToCorrectValidator_KeyRotation(t *testing.T) {
-	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadKeyRotation,
-		EventID:        "01900000-0000-7000-8000-000000000005",
-		Payload:        []byte(`{}`),
-	}
+	r := validRegistryEnvelope(receipt.PayloadKeyRotation, []byte(`{}`))
 	err := r.Validate()
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
 		t.Fatalf("expected ErrPayloadMissingField from key_rotation dispatch, got: %v", err)
@@ -97,16 +73,28 @@ func TestRegistry_DispatchesToCorrectValidator_KeyRotation(t *testing.T) {
 }
 
 func TestRegistry_UnknownKindReturnsError(t *testing.T) {
-	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    "totally_unknown",
-		EventID:        "01900000-0000-7000-8000-000000000006",
-		Timestamp:      time.Now(),
-		Payload:        []byte(`{}`),
-	}
+	r := validRegistryEnvelope("totally_unknown", []byte(`{}`))
 	err := r.Validate()
 	if !errors.Is(err, receipt.ErrUnknownPayloadKind) {
 		t.Fatalf("expected ErrUnknownPayloadKind, got: %v", err)
+	}
+}
+
+func validRegistryEnvelope(kind receipt.PayloadKind, payload []byte) receipt.EvidenceReceipt {
+	return receipt.EvidenceReceipt{
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      kind,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(kind),
+		EventID:          "01900000-0000-7000-8000-000000000002",
+		Timestamp:        time.Now(),
+		Payload:          payload,
+		Signature: receipt.SignatureProof{
+			SignerKeyID: "receipt-key",
+			KeyPurpose:  testKeyPurposeForPayload(kind),
+			Algorithm:   "ed25519",
+			Signature:   validReceiptSignature,
+		},
 	}
 }

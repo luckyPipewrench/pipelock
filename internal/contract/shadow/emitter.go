@@ -305,6 +305,8 @@ func (e *Emitter) EmitBatch(batch Batch) error {
 		RecordType:         contractreceipt.RecordTypeEvidenceV2,
 		ReceiptVersion:     2,
 		PayloadKind:        contractreceipt.PayloadShadowDelta,
+		Canonicalization:   contractreceipt.DefaultCanonicalizationProfile(),
+		Crit:               contractreceipt.CritForPayloadKind(contractreceipt.PayloadShadowDelta),
 		EventID:            eventID,
 		Timestamp:          e.clock().UTC(),
 		Principal:          e.principal,

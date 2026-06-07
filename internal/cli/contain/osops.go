@@ -83,6 +83,9 @@ type installEnv struct {
 	wrapperInvPath    string
 	toolsListPath     string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
 	workspaceInvPath  string
+	guardScriptPath   string
+	guardServiceUnit  string
+	guardPathUnit     string
 	undiciShimPath    string // node undici proxy shim loaded via NODE_OPTIONS
 	profileScriptPath string // /etc/profile.d login-shell runtime contract
 	agentHome         string // contained agent home (per-tool config destination)
@@ -136,6 +139,9 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		wrapperInvPath:    defaultWrapperInvPath,
 		toolsListPath:     defaultToolsListPath,
 		workspaceInvPath:  defaultWorkspaceInvPath,
+		guardScriptPath:   defaultGuardScriptPath,
+		guardServiceUnit:  defaultGuardServiceUnit,
+		guardPathUnit:     defaultGuardPathUnit,
 		undiciShimPath:    defaultUndiciShimPath,
 		profileScriptPath: defaultProfileScriptPath,
 		agentHome:         "/home/" + defaultAgentUser,
@@ -160,6 +166,9 @@ const (
 	defaultWrapperInvPath    = "/etc/pipelock/contain/wrappers.json"
 	defaultToolsListPath     = "/etc/pipelock/contain/tools.list"
 	defaultWorkspaceInvPath  = "/etc/pipelock/contain/workspaces.json"
+	defaultGuardScriptPath   = "/usr/local/bin/plk-cred-guard"                   //nolint:gosec // G101: executable filename, not a credential value.
+	defaultGuardServiceUnit  = "/etc/systemd/system/pipelock-cred-guard.service" //nolint:gosec // G101: unit filename, not a credential value.
+	defaultGuardPathUnit     = "/etc/systemd/system/pipelock-cred-guard.path"    //nolint:gosec // G101: unit filename, not a credential value.
 	defaultPipelockTarget    = "/usr/local/bin/pipelock"
 	defaultSystemCABundle    = "/etc/ssl/certs/ca-bundle.crt"
 

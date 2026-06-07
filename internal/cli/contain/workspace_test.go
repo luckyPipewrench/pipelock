@@ -17,8 +17,8 @@ const testSetfaclCmd = "setfacl"
 
 func TestWorkspaceACLCommands(t *testing.T) {
 	commands := workspaceACLCommands("/home/josh/dev/pipelock", "pipelock-agent", workspaceModeReadWrite)
-	if len(commands) != 3 {
-		t.Fatalf("commands len = %d, want 3", len(commands))
+	if len(commands) != 5 {
+		t.Fatalf("commands len = %d, want 5", len(commands))
 	}
 	if commands[0].name != testSetfaclCmd || !containsArg(commands[0].args, "/home/josh/dev") {
 		t.Fatalf("ancestor command = %+v", commands[0])
@@ -26,8 +26,16 @@ func TestWorkspaceACLCommands(t *testing.T) {
 	if got := strings.Join(commands[1].args, " "); !strings.Contains(got, "u:pipelock-agent:rwX") {
 		t.Fatalf("recursive command args = %q, want rwX ACL", got)
 	}
-	if commands[2].name != "find" || !containsArg(commands[2].args, "d:u:pipelock-agent:rwX") {
+	if commands[2].name != "find" || !containsArg(commands[2].args, "-mindepth") || !containsArg(commands[2].args, "1") ||
+		!containsArg(commands[2].args, "d:u:pipelock-agent:rwX") {
 		t.Fatalf("default ACL command = %+v", commands[2])
+	}
+	if !containsArg(commands[3].args, "auth.json") || !containsArg(commands[3].args, "*.token") ||
+		!containsArg(commands[3].args, "u:pipelock-agent") {
+		t.Fatalf("credential ACL lock command = %+v", commands[3])
+	}
+	if !containsArg(commands[4].args, "chmod") || !containsArg(commands[4].args, "0600") {
+		t.Fatalf("credential chmod lock command = %+v", commands[4])
 	}
 }
 
@@ -36,7 +44,8 @@ func TestWorkspaceACLCommandsReadOnly(t *testing.T) {
 	if got := strings.Join(commands[1].args, " "); !strings.Contains(got, "u:pipelock-agent:rX") {
 		t.Fatalf("recursive command args = %q, want rX ACL", got)
 	}
-	if !containsArg(commands[2].args, "d:u:pipelock-agent:rX") {
+	if !containsArg(commands[2].args, "-mindepth") || !containsArg(commands[2].args, "1") ||
+		!containsArg(commands[2].args, "d:u:pipelock-agent:rX") {
 		t.Fatalf("default ACL command = %+v", commands[2])
 	}
 }
@@ -109,8 +118,8 @@ func TestRunGrantWorkspaceExecutesCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grant: %v", err)
 	}
-	if len(runner.calls) != 3 {
-		t.Fatalf("calls = %d, want 3: %+v", len(runner.calls), runner.calls)
+	if len(runner.calls) != 5 {
+		t.Fatalf("calls = %d, want 5: %+v", len(runner.calls), runner.calls)
 	}
 	if runner.calls[0].name != testSetfaclCmd || runner.calls[1].name != testSetfaclCmd || runner.calls[2].name != "find" {
 		t.Fatalf("unexpected command sequence: %+v", runner.calls)

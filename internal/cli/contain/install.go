@@ -217,6 +217,7 @@ func installSteps(opts installOpts) []step {
 		stepWriteCombinedCABundle(),
 		stepInstallNFTRules(),
 		stepWriteToolsList(),
+		stepWriteCredentialGuard(),
 		// undici shim must exist before the launch wrapper / profile script
 		// activate NODE_OPTIONS=--require, otherwise every node invocation
 		// would fail on a missing module.
@@ -230,6 +231,141 @@ func installSteps(opts installOpts) []step {
 		stepWriteWrapperInventory(),
 		stepInstallSudoers(),
 	}
+}
+
+func stepWriteCredentialGuard() step {
+	return step{
+		name: "write-credential-guard",
+		desc: "write and enable contain credential guard",
+		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			operator, err := env.lookupUser(env.operatorUser)
+			if err != nil {
+				return false, fmt.Errorf("lookup operator user %s: %w", env.operatorUser, err)
+			}
+			home := filepath.Clean(operator.HomeDir)
+			if home == "." || !filepath.IsAbs(home) {
+				return false, fmt.Errorf("operator home for %s is not absolute", env.operatorUser)
+			}
+			writes := []struct {
+				path string
+				body string
+				mode os.FileMode
+			}{
+				{env.guardScriptPath, renderCredentialGuardScript(env.agentUserName, home), modeWrapperExec},
+				{env.guardServiceUnit, renderCredentialGuardService(env.guardScriptPath), modeUnitFile},
+				{env.guardPathUnit, renderCredentialGuardPathUnit(home, filepath.Base(env.guardServiceUnit)), modeUnitFile},
+			}
+			appliedFiles := false
+			for _, item := range writes {
+				if err := env.mkdirAll(filepath.Dir(item.path), modeDirReadable); err != nil {
+					return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(item.path), err)
+				}
+				if err := env.chmod(filepath.Dir(item.path), modeDirReadable); err != nil {
+					return false, fmt.Errorf("chmod %s: %w", filepath.Dir(item.path), err)
+				}
+				if existing, err := env.readFile(item.path); err == nil && string(existing) == item.body {
+					if err := env.chmod(item.path, item.mode); err != nil {
+						return false, fmt.Errorf("chmod %s: %w", item.path, err)
+					}
+					continue
+				}
+				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
+					return appliedFiles, fmt.Errorf("write %s: %w", item.path, err)
+				}
+				appliedFiles = true
+			}
+			if out, code, err := env.runCmd(ctx, env.guardScriptPath); err != nil {
+				return true, fmt.Errorf("%s: %w", env.guardScriptPath, err)
+			} else if code != 0 {
+				return true, fmt.Errorf("%s exit %d: %s", env.guardScriptPath, code, oneLine(out))
+			}
+			if out, code, err := env.runCmd(ctx, "systemctl", "daemon-reload"); err != nil {
+				return true, fmt.Errorf("systemctl daemon-reload: %w", err)
+			} else if code != 0 {
+				return true, fmt.Errorf("systemctl daemon-reload exit %d: %s", code, oneLine(out))
+			}
+			unit := filepath.Base(env.guardPathUnit)
+			if out, code, err := env.runCmd(ctx, "systemctl", "enable", "--now", unit); err != nil {
+				return true, fmt.Errorf("systemctl enable %s: %w", unit, err)
+			} else if code != 0 {
+				return true, fmt.Errorf("systemctl enable %s exit %d: %s", unit, code, oneLine(out))
+			}
+			return true, nil
+		},
+		undo: func(ctx context.Context, env *installEnv) error {
+			unit := filepath.Base(env.guardPathUnit)
+			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
+			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			for _, path := range []string{env.guardPathUnit, env.guardServiceUnit, env.guardScriptPath} {
+				if err := restoreBackup(env, path); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func renderCredentialGuardScript(agentUser, operatorHome string) string {
+	roots := []string{
+		filepath.Join(operatorHome, ".claude"),
+		filepath.Join(operatorHome, ".claude-cc2"),
+		filepath.Join(operatorHome, ".codex"),
+	}
+	var b strings.Builder
+	b.WriteString("#!/usr/bin/env bash\nset -euo pipefail\n\n")
+	b.WriteString("AGENT_USER=" + shellQuote(agentUser) + "\n")
+	b.WriteString("lock_matches() {\n")
+	b.WriteString("  local root=\"$1\"\n")
+	b.WriteString("  shift\n")
+	b.WriteString("  [[ -d \"$root\" ]] || return 0\n")
+	b.WriteString("  find \"$root\" \"$@\" -type f \\( -name auth.json -o -name .claude.json -o -name .credentials.json -o -name '*.token' \\) -exec setfacl -x \"u:${AGENT_USER}\" {} +\n")
+	b.WriteString("  find \"$root\" \"$@\" -type f \\( -name auth.json -o -name .claude.json -o -name .credentials.json -o -name '*.token' \\) -exec chmod 0600 {} +\n")
+	b.WriteString("}\n\n")
+	b.WriteString("lock_config_root() {\n")
+	b.WriteString("  local root=\"$1\"\n")
+	b.WriteString("  [[ -d \"$root\" ]] || return 0\n")
+	b.WriteString("  setfacl -m \"u:${AGENT_USER}:--x\" \"$root\"\n")
+	b.WriteString("  lock_matches \"$root\"\n")
+	b.WriteString("}\n\n")
+	b.WriteString("lock_home_root() {\n")
+	b.WriteString("  lock_matches \"$1\" -maxdepth 1\n")
+	b.WriteString("}\n\n")
+	b.WriteString("lock_home_root " + shellQuote(operatorHome) + "\n")
+	for _, root := range roots {
+		b.WriteString("lock_config_root " + shellQuote(root) + "\n")
+	}
+	return b.String()
+}
+
+func renderCredentialGuardService(scriptPath string) string {
+	return `[Unit]
+Description=Pipelock containment credential guard
+
+[Service]
+Type=oneshot
+ExecStart=` + scriptPath + `
+`
+}
+
+func renderCredentialGuardPathUnit(operatorHome, serviceUnit string) string {
+	return `[Unit]
+Description=Watch Pipelock containment credential roots
+
+[Path]
+PathChanged=` + operatorHome + `
+PathModified=` + filepath.Join(operatorHome, "auth.json") + `
+PathModified=` + filepath.Join(operatorHome, ".claude.json") + `
+PathModified=` + filepath.Join(operatorHome, ".credentials.json") + `
+PathExistsGlob=` + filepath.Join(operatorHome, "*.token") + `
+PathChanged=` + filepath.Join(operatorHome, ".claude") + `
+PathChanged=` + filepath.Join(operatorHome, ".claude-cc2") + `
+PathChanged=` + filepath.Join(operatorHome, ".codex") + `
+Unit=` + serviceUnit + `
+
+[Install]
+WantedBy=multi-user.target
+`
 }
 
 // stepWriteToolsList seeds /etc/pipelock/contain/tools.list with only the

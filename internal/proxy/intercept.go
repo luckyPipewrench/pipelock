@@ -660,6 +660,26 @@ func newInterceptHandler(
 			ic.Logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)
 		}
 
+		if gitPush := evaluateGitPushAllowlist(ic.Config.GitProtection, r.URL); gitPush.Block {
+			ic.Logger.LogBlocked(actx, "git_protection", gitPush.Reason)
+			ic.Metrics.RecordTLSRequestBlocked("git_protection")
+			interceptEmitReceipt(ic, receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     "git_protection",
+				Pattern:   gitPush.Reason,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			})
+			writeBlockedError(w,
+				blockInfoFor(blockreason.RequestPolicyDeny, "git_protection"),
+				"blocked: "+gitPush.Reason, http.StatusForbidden)
+			return
+		}
+
 		// A2A protocol detection: check path and Content-Type for A2A traffic.
 		// When detected, field-aware scanning replaces generic body DLP with
 		// protocol-specific classification (URL/text/secret/opaque per leaf).

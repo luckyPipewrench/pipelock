@@ -154,7 +154,10 @@ const (
 	// which are enforcement-relevant and so belong in the canonical policy hash.
 	// Re-bumped for response_scanning.size_exempt_domains: trusted per-host
 	// oversize response passthrough changes response-size enforcement.
-	goldenHashDefaults = "54c8e860a01e979c921bdbd5131087c1a4429ff6f4af9bbff8ae70a3789ae0cc"
+	// Re-bumped for git_protection.allowed_push_repos. The field is
+	// policy-semantic because it changes whether visible git-receive-pack
+	// pushes are allowed at the proxy.
+	goldenHashDefaults = "f7e3ab7acc9d826a78f7a37fa8632cf4b65487953da6fa86fe112936d17ac8f4"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -232,7 +235,10 @@ const (
 	// fixture inherits the default DLP pattern set, so the hash shifts in lockstep.
 	// Re-bumped for response_scanning.size_exempt_domains: see the
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "768fdc776630b0720e4dae1ea2ce8d388947fd1ad2d03b7a48e32598910fa7ff"
+	// Re-bumped for git_protection.allowed_push_repos: see goldenHashDefaults
+	// note above. The rich fixture omits the field, but the empty allowlist is
+	// still part of the canonical policy view.
+	goldenHashRichConfig = "beaad218a234855e54ed273bce0bf674f9417f92c990319207bd0e37c62268c8"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

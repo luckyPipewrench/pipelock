@@ -191,6 +191,43 @@ func TestAdaptiveScope_CleanRequestDoesNotAllocateScope(t *testing.T) {
 	}
 }
 
+func TestAdaptiveScope_SessionAPIFallbackBranches(t *testing.T) {
+	cfg := adaptiveScopedAirlockConfig()
+	p, _ := newAdaptiveScopeProxy(t, cfg)
+	sess := scopedSession(t, p)
+
+	if snaps := sess.ScopedSnapshots(); len(snaps) != 0 {
+		t.Fatalf("empty scoped snapshots = %d, want 0", len(snaps))
+	}
+	if got := sess.ScopedEscalationLevel(""); got != 0 {
+		t.Fatalf("empty scoped escalation level = %d, want global level 0", got)
+	}
+	if got := sess.ScopedThreatScore(""); got != 0 {
+		t.Fatalf("empty scoped threat score = %.1f, want global score 0", got)
+	}
+	if got := sess.ScopedEscalationLevel(adaptiveScopeForHost("missing.example")); got != 0 {
+		t.Fatalf("missing scoped escalation level = %d, want 0", got)
+	}
+	if got := sess.ScopedThreatScore(adaptiveScopeForHost("missing.example")); got != 0 {
+		t.Fatalf("missing scoped threat score = %.1f, want 0", got)
+	}
+
+	sess.RecordSignal(session.SignalBlock, 100.0)
+	sess.RecordScopedClean("", 1.0)
+	if got := sess.ThreatScore(); got >= session.SignalPoints[session.SignalBlock] {
+		t.Fatalf("empty-scope clean did not decay global score: %.1f", got)
+	}
+
+	sess.SetScopedBlockAll("", true)
+	if !sess.BlockAll() {
+		t.Fatal("empty-scope block_all did not update the global lane")
+	}
+	sess.SetScopedBlockAll("", false)
+	if sess.BlockAll() {
+		t.Fatal("empty-scope block_all clear did not update the global lane")
+	}
+}
+
 func TestAdaptiveScope_ScopeCardinalityIsBounded(t *testing.T) {
 	cfg := adaptiveScopedAirlockConfig()
 	p, _ := newAdaptiveScopeProxy(t, cfg)
@@ -246,6 +283,21 @@ func TestAdaptiveScope_OverCapEscalationLatchesGlobalBlockAll(t *testing.T) {
 	}
 }
 
+func TestAdaptiveScope_OverCapAirlockFallsBackToGlobal(t *testing.T) {
+	cfg := adaptiveScopedAirlockConfig()
+	p, _ := newAdaptiveScopeProxy(t, cfg)
+	sess := scopedSession(t, p)
+
+	for i := 0; i < maxAdaptiveScopes; i++ {
+		_ = sess.AirlockForScope(adaptiveScopeForHost(fmt.Sprintf("airlock-%d.example", i)))
+	}
+	globalAirlock := sess.Airlock()
+	overCapAirlock := sess.AirlockForScope(adaptiveScopeForHost("over-cap-airlock.example"))
+	if globalAirlock != overCapAirlock {
+		t.Fatal("over-cap scoped airlock should fall back to the global airlock")
+	}
+}
+
 func TestRecordScopedSignal_MirrorsAggregateScoreWithoutGlobalBlockAll(t *testing.T) {
 	cfg := adaptiveScopedAirlockConfig()
 	p, logger := newAdaptiveScopeProxy(t, cfg)
@@ -288,6 +340,60 @@ func TestRecordAdaptiveSignalForScope_LatchesOnlyScopedBlockAll(t *testing.T) {
 	sess.mu.Unlock()
 	if !scopedBlocked {
 		t.Fatal("scoped helper did not latch block_all for the threatened destination")
+	}
+}
+
+func TestRecordAdaptiveSignalForScope_GlobalFallbackRecorder(t *testing.T) {
+	rec := &interceptMockRecorder{escalateOnNext: true}
+	ep := decide.EscalationParams{Threshold: 1.0}
+
+	recordAdaptiveSignalForScope(rec, adaptiveScopeForHost(adaptiveScopePollHost), session.SignalNearMiss, nil, ep)
+
+	if len(rec.signals) != 1 || rec.signals[0] != session.SignalNearMiss {
+		t.Fatalf("global fallback recorder signals = %v, want [near_miss]", rec.signals)
+	}
+	if rec.level != 1 {
+		t.Fatalf("global fallback recorder level = %d, want 1", rec.level)
+	}
+}
+
+func TestAdaptiveScope_HelperFallbackBranches(t *testing.T) {
+	cfg := adaptiveScopedAirlockConfig()
+	p, logger := newAdaptiveScopeProxy(t, cfg)
+	sess := scopedSession(t, p)
+	scope := adaptiveScopeForHost(adaptiveScopePollHost)
+
+	recordCleanForAdaptiveScope(nil, scope, 1.0)
+
+	generic := &interceptMockRecorder{}
+	recordCleanForAdaptiveScope(generic, scope, 1.0)
+	if !generic.cleanCalled {
+		t.Fatal("generic recorder clean fallback was not called")
+	}
+
+	if got := airlockTierForScope(nil, scope); got != config.AirlockTierNone {
+		t.Fatalf("nil airlock tier = %q, want none", got)
+	}
+	if got := airlockTierForScope(sess, scope); got != config.AirlockTierNone {
+		t.Fatalf("empty scoped airlock tier = %q, want none", got)
+	}
+	if changed, _, _ := sess.AirlockForScope(scope).ForceSetTier(config.AirlockTierHard); !changed {
+		t.Fatal("ForceSetTier(hard) unexpectedly returned changed=false")
+	}
+	if got := airlockTierForScope(sess, scope); got != config.AirlockTierHard {
+		t.Fatalf("scoped airlock tier = %q, want hard", got)
+	}
+
+	ep := decide.EscalationParams{
+		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+		Logger:    logger,
+		Session:   adaptiveSessionKeyLoopback,
+		ClientIP:  adaptiveSessionKeyLoopback,
+		RequestID: "req-helper-branches",
+	}
+	recordAdaptiveSignalForScope(sess, "", session.SignalBlock, &cfg.AdaptiveEnforcement, ep)
+	if sess.ThreatScore() == 0 {
+		t.Fatal("empty-scope adaptive signal did not fall back to the global score")
 	}
 }
 
@@ -343,5 +449,31 @@ func TestAdaptiveScope_ScopedSnapshotsExposeAirlockState(t *testing.T) {
 	}
 	if snaps[0].EscalationLevel != session.EscalationLabel(1) {
 		t.Fatalf("escalation level = %q, want elevated", snaps[0].EscalationLevel)
+	}
+}
+
+func TestAdaptiveScope_TryDeescalateScopedAirlocks(t *testing.T) {
+	cfg := adaptiveScopedAirlockConfig()
+	p, _ := newAdaptiveScopeProxy(t, cfg)
+	sess := scopedSession(t, p)
+
+	if changes := sess.TryDeescalateScopedAirlocks(&config.AirlockTimers{}); len(changes) != 0 {
+		t.Fatalf("empty scoped airlock deescalation changes = %d, want 0", len(changes))
+	}
+
+	scope := adaptiveScopeForHost(adaptiveScopePollHost)
+	if changed, _, _ := sess.AirlockForScope(scope).ForceSetTier(config.AirlockTierHard); !changed {
+		t.Fatal("ForceSetTier(hard) unexpectedly returned changed=false")
+	}
+	sess.mu.Lock()
+	sess.scopes[scope].airlock.enteredAt = time.Now().Add(-time.Hour)
+	sess.mu.Unlock()
+
+	changes := sess.TryDeescalateScopedAirlocks(&config.AirlockTimers{HardMinutes: 1})
+	if len(changes) != 1 {
+		t.Fatalf("scoped airlock deescalation changes = %d, want 1", len(changes))
+	}
+	if changes[0].scope != scope || changes[0].from != config.AirlockTierHard || changes[0].to != config.AirlockTierSoft {
+		t.Fatalf("unexpected scoped airlock change: %+v", changes[0])
 	}
 }

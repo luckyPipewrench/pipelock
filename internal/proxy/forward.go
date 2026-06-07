@@ -527,7 +527,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// goes idle. Long-poll, SSE, and WebSocket control-plane streams must not
 	// be cut by a fixed wall-clock lifetime while bytes are still flowing.
 	maxDuration := time.Duration(cfg.ForwardProxy.MaxTunnelSeconds) * time.Second
-	dialCtx, dialCancel := context.WithDeadline(r.Context(), start.Add(maxDuration))
+	dialCtx, dialCancel := context.WithTimeout(r.Context(), maxDuration)
 	defer dialCancel()
 
 	targetConn, err := p.ssrfSafeDialContext(dialCtx, "tcp", target)

@@ -518,30 +518,7 @@ func (s *SessionState) ScopedThreatScore(scope string) float64 {
 func (s *SessionState) ScopedSnapshots() []AdaptiveScopeSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.scopes) == 0 {
-		return []AdaptiveScopeSnapshot{}
-	}
-	out := make([]AdaptiveScopeSnapshot, 0, len(s.scopes))
-	for scope, st := range s.scopes {
-		st.airlock.mu.Lock()
-		tier := st.airlock.tier
-		enteredAt := st.airlock.enteredAt
-		st.airlock.mu.Unlock()
-		if tier == "" {
-			tier = config.AirlockTierNone
-		}
-		out = append(out, AdaptiveScopeSnapshot{
-			Scope:              scope,
-			ThreatScore:        st.threatScore,
-			EscalationLevel:    session.EscalationLabel(st.escalationLevel),
-			EscalationLevelInt: st.escalationLevel,
-			BlockAll:           st.atBlockAll,
-			AirlockTier:        tier,
-			AirlockEnteredAt:   enteredAt,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Scope < out[j].Scope })
-	return out
+	return scopedSnapshotsLocked(s.scopes)
 }
 
 // TryAutoRecover checks whether the session has been at its current
@@ -611,23 +588,13 @@ func (s *SessionState) TryAutoRecoverScopes(blockAllCheck func(int) bool) []scop
 // lanes. The session-wide airlock is handled separately in sweepDeescalation.
 func (s *SessionState) TryDeescalateScopedAirlocks(timers *config.AirlockTimers) []scopedAirlockTransition {
 	s.mu.Lock()
-	scopes := make([]struct {
-		name    string
-		airlock *AirlockState
-	}, 0, len(s.scopes))
-	for scope, st := range s.scopes {
-		scopes = append(scopes, struct {
-			name    string
-			airlock *AirlockState
-		}{name: scope, airlock: &st.airlock})
-	}
-	s.mu.Unlock()
+	defer s.mu.Unlock()
 
 	changes := make([]scopedAirlockTransition, 0)
-	for _, scoped := range scopes {
-		changed, from, to := scoped.airlock.TryDeescalate(timers)
+	for scope, st := range s.scopes {
+		changed, from, to := st.airlock.TryDeescalate(timers)
 		if changed {
-			changes = append(changes, scopedAirlockTransition{scope: scoped.name, from: from, to: to})
+			changes = append(changes, scopedAirlockTransition{scope: scope, from: from, to: to})
 		}
 	}
 	return changes
@@ -2074,7 +2041,10 @@ func (sm *SessionManager) sweepDeescalation() {
 		for _, scoped := range sess.TryAutoRecoverScopes(blockAllCheck) {
 			fromLabel := session.EscalationLabel(scoped.from)
 			toLabel := session.EscalationLabel(scoped.to)
-			if sm.metrics != nil {
+			sm.mu.RLock()
+			_, stillLive := sm.sessions[sess.key]
+			sm.mu.RUnlock()
+			if stillLive && sm.metrics != nil {
 				sm.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
 				if scoped.from > 0 {
 					sm.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
@@ -2083,12 +2053,14 @@ func (sm *SessionManager) sweepDeescalation() {
 					sm.metrics.SetAdaptiveSessionLevel(toLabel, 1)
 				}
 			}
-			sess.RecordEvent(SessionEvent{
-				Kind:     "adaptive_deescalate",
-				Target:   scoped.scope,
-				Detail:   fromLabel + "->" + toLabel,
-				Severity: "info",
-			})
+			if stillLive {
+				sess.RecordEvent(SessionEvent{
+					Kind:     "adaptive_deescalate",
+					Target:   scoped.scope,
+					Detail:   fromLabel + "->" + toLabel,
+					Severity: "info",
+				})
+			}
 		}
 
 		// Airlock timer-based de-escalation.

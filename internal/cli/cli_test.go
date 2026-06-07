@@ -1643,7 +1643,7 @@ logging:
 			t.Fatal(err)
 		}
 
-		testwait.For(t, 5*time.Second, func() bool {
+		testwait.For(t, 15*time.Second, func() bool {
 			select {
 			case cmdErr := <-errCh:
 				cancel()

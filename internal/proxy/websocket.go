@@ -563,12 +563,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		sessionKey := sessionKeyFor(agent, clientIP)
 		wsRec = sm.GetOrCreate(sessionKey)
 	}
+	wsScope := adaptiveScopeForHost(parsed.Hostname())
 
 	// Airlock admission check: deny new WebSocket connections to sessions
 	// already in hard/drain tier. Existing connections are torn down via
 	// RegisterCancel; this blocks new ones from being established.
 	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
-		tier := wsSess.Airlock().Tier()
+		tier := airlockTierForScope(wsSess, wsScope)
 		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
 			log.LogAirlockDeny(wsSess.key, tier, TransportWS, http.MethodGet, clientIP, requestID)
 			p.metrics.RecordAirlockDenial(tier, TransportWS, http.MethodGet)
@@ -685,7 +686,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
 		// Register airlock cancel for WebSocket connections. When the session
 		// escalates to hard/drain, closing both ends terminates the relay.
-		wsSess.AirlockForScope(adaptiveScopeForHost(parsed.Hostname())).RegisterCancel(func() {
+		wsSess.AirlockForScope(wsScope).RegisterCancel(func() {
 			safeClose(clientConn, "airlock.ws.clientConn", log)
 			safeClose(upstreamConn, "airlock.ws.upstreamConn", log)
 		})
@@ -700,7 +701,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// (no URL scan hit, no header DLP hit). This prevents same-handshake
 	// raise+decay when a header carries a secret but the URL is clean.
 	if wsRec != nil && cfg.AdaptiveEnforcement.Enabled && !wsHasFinding {
-		recordCleanForAdaptiveScope(wsRec, adaptiveScopeForHost(parsed.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		recordCleanForAdaptiveScope(wsRec, wsScope, cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 
 	relay := &wsRelay{

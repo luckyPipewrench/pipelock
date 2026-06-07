@@ -6,6 +6,7 @@ package license
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,9 +150,11 @@ func TestClassifyReloadSharesFleetGateInputHandling(t *testing.T) {
 	tok := mustIssue(t, priv, "lic-shared", []string{FeatureFleet})
 	crl := writeTestCRLFile(t, priv, "lic-shared")
 
-	// Gate path: VerifyFleetWithIntermediate must still surface ErrLicenseRevoked.
-	if _, err := VerifyFleetWithIntermediate(tok, pubHex, crl, ""); err == nil {
-		t.Fatal("VerifyFleetWithIntermediate(revoked) = nil, want error")
+	// Gate path: VerifyFleetWithIntermediate must still surface ErrLicenseRevoked
+	// in its error chain (not merely return some error), proving the shared
+	// verifyLicenseInputs core propagates the sentinel both ways.
+	if _, err := VerifyFleetWithIntermediate(tok, pubHex, crl, ""); !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("VerifyFleetWithIntermediate(revoked) = %v, want ErrLicenseRevoked in chain", err)
 	}
 	// Classifier path: same inputs classify as revoked.
 	if _, class := ClassifyReload(tok, pubHex, crl, ""); class != ReloadRevoked {

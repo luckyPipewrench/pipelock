@@ -275,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     receipt_p = sub.add_parser("receipt", help="verify an EvidenceReceipt v2 receipt")
     receipt_p.add_argument("path", help="path to an EvidenceReceipt v2 JSON file")
-    receipt_p.add_argument("--key", default="", help="pinned Ed25519 public key hex")
+    receipt_p.add_argument("--key", required=True, help="pinned Ed25519 public key hex")
     receipt_p.add_argument("--json", action="store_true", help="emit JSON report")
 
     try:

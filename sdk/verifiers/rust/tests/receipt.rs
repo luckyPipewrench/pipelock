@@ -141,6 +141,7 @@ fn valid_spanned_v2_receipt_verifies_with_shared_key() {
     );
     assert_eq!(report.verdict.as_deref(), Some("block"));
     assert_eq!(report.transport.as_deref(), Some("forward"));
+    assert_eq!(report.signer_key.as_deref(), Some(V2_GOLDEN_PUBLIC_KEY));
 }
 
 #[test]

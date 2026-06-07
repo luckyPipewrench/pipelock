@@ -81,6 +81,24 @@ var validVerdicts = map[string]struct{}{
 	VerdictSelfConsistentOnly: {},
 }
 
+var validSourceKinds = map[string]struct{}{
+	"http_request_url": {},
+	"http_response":    {},
+	"mcp_tool_result":  {},
+	"mcp_tool_args":    {},
+}
+
+var validNormalizedViews = map[string]struct{}{
+	"sanitized_target":              {},
+	"for_matching":                  {},
+	"for_matching:invisible_spaced": {},
+	"leetspeak:for_matching":        {},
+	"vowel_fold:for_matching":       {},
+	"for_matching:base64_decoded":   {},
+	"for_matching:hex_decoded":      {},
+	"dlp_normalized":                {},
+}
+
 var validProviders = map[string]struct{}{
 	ProviderGitHubActions: {},
 	ProviderSelfHosted:    {},
@@ -426,6 +444,64 @@ func (r Receipt) validate() error {
 	if r.PolicyHash == "" {
 		return errors.New("policy_hash is required")
 	}
+	for i, span := range r.SourceSpans {
+		if err := span.validate(); err != nil {
+			return fmt.Errorf("source_spans[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (s SourceSpan) validate() error {
+	if s.SourceID == "" {
+		return errors.New("source_id is required")
+	}
+	if _, ok := validSourceKinds[s.SourceKind]; !ok {
+		return fmt.Errorf("source_kind %q is invalid", s.SourceKind)
+	}
+	if !validNormalizedView(s.NormalizedView) {
+		return fmt.Errorf("normalized_view %q is invalid", s.NormalizedView)
+	}
+	if err := validatePrefixedHex("pipelock_binary_digest", s.PipelockBinaryDigest, "sha256:"); err != nil {
+		return err
+	}
+	if err := validatePrefixedHex("rules_bundle_digest", s.RulesBundleDigest, "sha256:"); err != nil {
+		return err
+	}
+	if !validTransformProfile(s.TransformProfile) {
+		return fmt.Errorf("transform_profile %q is invalid", s.TransformProfile)
+	}
+	if err := validatePrefixedHex("policy_hash", s.PolicyHash, "sha256:"); err != nil {
+		return err
+	}
+	if s.RuleID == "" {
+		return errors.New("rule_id is required")
+	}
+	if err := validatePrefixedHex("match_hash", s.MatchHash, "hmac-sha256:"); err != nil {
+		return err
+	}
+	if s.MatchHashAlg != "hmac-sha256" {
+		return fmt.Errorf("match_hash_alg %q is invalid", s.MatchHashAlg)
+	}
+	if s.MatchClass == "" {
+		return errors.New("match_class is required")
+	}
+	hasOffset := s.CharOffset != nil
+	hasLength := s.CharLength != nil
+	if hasOffset != hasLength {
+		return errors.New("char_offset and char_length must be paired")
+	}
+	if hasOffset {
+		if *s.CharOffset < 0 {
+			return errors.New("char_offset must be non-negative")
+		}
+		if *s.CharLength <= 0 {
+			return errors.New("char_length must be positive")
+		}
+		if !offsetsAllowedForView(s.NormalizedView) {
+			return errors.New("char_offset not allowed for normalized_view")
+		}
+	}
 	return nil
 }
 
@@ -435,6 +511,45 @@ func (s ScannerConfigSnapshot) validate() error {
 	}
 	if s.ResponsePatternsCount < 0 {
 		return errors.New("response_patterns_count must be non-negative")
+	}
+	return nil
+}
+
+func validNormalizedView(view string) bool {
+	if _, ok := validNormalizedViews[view]; ok {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(view, "dlp_normalized:")
+	return ok && suffix != ""
+}
+
+func offsetsAllowedForView(view string) bool {
+	return view == "sanitized_target" || view == "dlp_normalized" || strings.HasPrefix(view, "dlp_normalized:")
+}
+
+func validTransformProfile(profile string) bool {
+	version, ok := strings.CutPrefix(profile, "pipelock-transform-v")
+	if !ok || version == "" {
+		return false
+	}
+	for _, r := range version {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePrefixedHex(name, value, prefix string) error {
+	const hexLen = 64
+	hexValue, ok := strings.CutPrefix(value, prefix)
+	if !ok || len(hexValue) != hexLen {
+		return fmt.Errorf("%s must be %s<%d hex>", name, prefix, hexLen)
+	}
+	for _, r := range hexValue {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return fmt.Errorf("%s must be %s<%d hex>", name, prefix, hexLen)
+		}
 	}
 	return nil
 }

@@ -88,6 +88,11 @@ pub fn verify_evidence_receipt(
     }
     let pub_key = decode_hex(&key_hex, 32, "signer_key_id")?;
     let signature = require_string(signature_obj.get("signature"), "signature.signature")?;
+    if !signature.starts_with(SIGNATURE_PREFIX) {
+        return Err(format!(
+            "invalid signature format: missing {SIGNATURE_PREFIX} prefix"
+        ));
+    }
     let sig_bytes = decode_hex(&signature[SIGNATURE_PREFIX.len()..], 64, "signature")?;
     let pub_key: [u8; 32] = pub_key
         .try_into()

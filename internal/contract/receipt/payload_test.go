@@ -104,6 +104,16 @@ func TestValidateProxyDecisionWithSpans_RejectsMissingSpans(t *testing.T) {
 	}
 }
 
+func TestValidateProxyDecisionWithSpans_RejectsEmptySpans(t *testing.T) {
+	t.Parallel()
+	p := validProxyDecisionWithSpansPayload(t)
+	p.SourceSpans = []receipt.SourceSpan{}
+	err := callValidator(t, receipt.PayloadProxyDecisionWithSpans, marshalPayload(t, p))
+	if !errors.Is(err, receipt.ErrPayloadMissingField) {
+		t.Fatalf("expected ErrPayloadMissingField, got: %v", err)
+	}
+}
+
 func TestValidateProxyDecisionWithSpans_RejectsUnknownField(t *testing.T) {
 	t.Parallel()
 	raw := json.RawMessage(`{

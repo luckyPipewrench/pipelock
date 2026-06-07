@@ -131,9 +131,7 @@ def verify_receipt_file(path: str | Path, key_hex: str = "") -> dict[str, Any]:
         if isinstance(payload, dict):
             report["verdict"] = payload.get("verdict")
             report["transport"] = payload.get("transport")
-        signature = receipt.get("signature")
-        if isinstance(signature, dict):
-            report["signer_key"] = signature.get("signer_key_id")
+        report["signer_key"] = key_hex
         report["chain_seq"] = receipt.get("chain_seq")
         verify_evidence_receipt(receipt, key_hex)
         report["valid"] = True
@@ -241,6 +239,9 @@ def _validate_source_span(value: Any, index: int) -> None:
     )
     _require_sha256(span.get("policy_hash"), f"source_spans[{index}].policy_hash")
     _require_string(span.get("rule_id"), f"source_spans[{index}].rule_id")
+    _require_optional_string(span.get("bundle"), f"source_spans[{index}].bundle")
+    _require_optional_string(span.get("bundle_version"), f"source_spans[{index}].bundle_version")
+    _require_optional_string(span.get("redacted_sample"), f"source_spans[{index}].redacted_sample")
     _require_hmac_hash(span.get("match_hash"), f"source_spans[{index}].match_hash")
     if _require_string(span.get("match_hash_alg"), f"source_spans[{index}].match_hash_alg") != "hmac-sha256":
         raise ReceiptError(f"source_spans[{index}].match_hash_alg is invalid")
@@ -285,6 +286,11 @@ def _require_string(value: Any, name: str) -> str:
     if not isinstance(value, str) or value == "":
         raise ReceiptError(f"{name} is required")
     return value
+
+
+def _require_optional_string(value: Any, name: str) -> None:
+    if value is not None and not isinstance(value, str):
+        raise ReceiptError(f"{name} must be a string when provided")
 
 
 def _require_non_negative_int(value: Any, name: str) -> int:

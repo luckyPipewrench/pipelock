@@ -167,6 +167,7 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify evidence receipt: %w", err))
 	}
+	report.SignaturesVerified = sigVerified
 	if opts.recheckSource != "" {
 		result, recheckErr := recheckEvidenceReceiptSpan(r, opts.recheckSource, opts.recheckSpanIndex)
 		report.RecheckValid = &result.Valid
@@ -179,7 +180,6 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 		}
 	}
 	report.Valid = true
-	report.SignaturesVerified = sigVerified
 	emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 	return nil
 }

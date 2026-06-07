@@ -55,6 +55,7 @@ test("receipt command accepts a valid EvidenceReceipt v2 spanned proxy decision"
   assert.equal(report.action_id, "01F8MECHZX3TBDSZ7XRADM79ZS");
   assert.equal(report.verdict, "block");
   assert.equal(report.transport, "forward");
+  assert.equal(report.signer_key, v2GoldenPublicKey);
 });
 
 test("receipt command rejects a tampered EvidenceReceipt v2 span", async () => {

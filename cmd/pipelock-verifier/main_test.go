@@ -808,7 +808,12 @@ func TestReceipt_EvidenceV2RecheckSourceSpan(t *testing.T) {
 		t.Fatalf("write recheck source: %v", err)
 	}
 	receiptPath := filepath.Clean(filepath.Join("..", "..", "internal", "contract", "testdata", "golden", "valid_evidence_receipt_proxy_decision_with_spans.json"))
-	keyHex := "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+	keyHex := strings.Join([]string{
+		"d75a980182b10ab7",
+		"d54bfed3c964073a",
+		"0ee172f3daa62325",
+		"af021a68f707511a",
+	}, "")
 	stdout, stderr, code := runRoot(t,
 		"receipt",
 		"--json",

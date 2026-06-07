@@ -24,6 +24,7 @@ def test_valid_spanned_v2_receipt_verifies() -> None:
     assert report["action_id"] == "01F8MECHZX3TBDSZ7XRADM79ZS"
     assert report["verdict"] == "block"
     assert report["transport"] == "forward"
+    assert report["signer_key"] == V2_GOLDEN_PUBLIC_KEY
 
 
 def test_tampered_spanned_v2_receipt_rejects(tmp_path: Path) -> None:
@@ -59,6 +60,17 @@ def test_empty_dlp_normalized_suffix_rejects(tmp_path: Path) -> None:
     assert "normalized_view is invalid" in report["error"]
 
 
+def test_optional_span_metadata_must_be_string(tmp_path: Path) -> None:
+    receipt = json.loads(VALID_SPANNED_V2.read_text())
+    receipt["payload"]["source_spans"][0]["redacted_sample"] = 42
+    path = tmp_path / "bad-optional-span-field.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "redacted_sample must be a string" in report["error"]
+
+
 def test_spanned_v2_receipt_does_not_expose_oracle_key() -> None:
     receipt = json.loads(VALID_SPANNED_V2.read_text())
     span = receipt["payload"]["source_spans"][0]
@@ -73,3 +85,8 @@ def test_receipt_cli_json(capsys) -> None:  # type: ignore[no-untyped-def]
     assert code == 0
     body = json.loads(captured.out)
     assert body["valid"] is True
+
+
+def test_receipt_cli_requires_key() -> None:
+    code = main(["receipt", str(VALID_SPANNED_V2), "--json"])
+    assert code == 64

@@ -266,6 +266,187 @@ func TestWriterRedaction(t *testing.T) {
 	}
 }
 
+// TestWriterRPCID_JoinsRequestToResponse verifies the contract the code
+// owner asked for explicitly: a DLP (request-side) record and a Response
+// (response-side) record that share session + transport + rpc_id round-trip
+// through the writer with byte-identical RPCID values, so a downstream
+// consumer can join them. It covers the string-id and numeric-id shapes
+// in subtests since JSON-RPC allows both.
+func TestWriterRPCID_JoinsRequestToResponse(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"numeric id", "1"},
+		{"string id", `"req-abc"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			w, err := capture.NewWriter(capture.WriterConfig{
+				RecorderConfig: recorder.Config{
+					Enabled:            true,
+					Dir:                dir,
+					CheckpointInterval: 1000,
+				},
+				QueueSize:    testQueueSize,
+				BuildVersion: testVersion,
+				BuildSHA:     testSHA,
+			})
+			if err != nil {
+				t.Fatalf("NewWriter: %v", err)
+			}
+
+			rpcID := json.RawMessage(tc.id)
+			w.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+				Subsurface:      "dlp_mcp_input",
+				Transport:       testTransportMCP,
+				SessionID:       testSessionID,
+				RequestID:       "req-join-" + tc.name,
+				ConfigHash:      testConfigHash,
+				EffectiveAction: capture.ActionBlock,
+				Outcome:         capture.OutcomeBlocked,
+				ScannerInput:    "x",
+				Request:         capture.CaptureRequest{RPCID: rpcID},
+			})
+			w.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
+				Subsurface:      "response_mcp",
+				Transport:       testTransportMCP,
+				SessionID:       testSessionID,
+				RequestID:       "resp-join-" + tc.name,
+				ConfigHash:      testConfigHash,
+				EffectiveAction: capture.ActionBlock,
+				Outcome:         capture.OutcomeBlocked,
+				WirePayload:     []byte(`{"jsonrpc":"2.0","id":` + tc.id + `,"result":{}}`),
+				Request:         capture.CaptureRequest{RPCID: rpcID},
+			})
+
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			entries := readSessionEntries(t, dir, testSessionID)
+			var summaries []capture.CaptureSummary
+			var transports []string
+			for _, e := range entries {
+				if e.Type != capture.EntryTypeCapture {
+					continue
+				}
+				raw, err := json.Marshal(e.Detail)
+				if err != nil {
+					t.Fatalf("marshal Detail: %v", err)
+				}
+				var s capture.CaptureSummary
+				if err := json.Unmarshal(raw, &s); err != nil {
+					t.Fatalf("unmarshal CaptureSummary: %v", err)
+				}
+				summaries = append(summaries, s)
+				transports = append(transports, e.Transport)
+			}
+			if len(summaries) != 2 {
+				t.Fatalf("expected 2 capture entries (request + response), got %d", len(summaries))
+			}
+			// Join on session + transport + rpc_id, per the code owner's note
+			// that ids can be reused within a session.
+			if transports[0] != transports[1] {
+				t.Fatalf("transport mismatch between request and response capture: %q vs %q",
+					transports[0], transports[1])
+			}
+			if string(summaries[0].Request.RPCID) != tc.id {
+				t.Errorf("request RPCID: got %q, want %q", string(summaries[0].Request.RPCID), tc.id)
+			}
+			if string(summaries[1].Request.RPCID) != tc.id {
+				t.Errorf("response RPCID: got %q, want %q", string(summaries[1].Request.RPCID), tc.id)
+			}
+			// Byte-identical join key on the wire form.
+			if string(summaries[0].Request.RPCID) != string(summaries[1].Request.RPCID) {
+				t.Errorf("rpc_id should be byte-identical across request and response; got %q vs %q",
+					string(summaries[0].Request.RPCID), string(summaries[1].Request.RPCID))
+			}
+		})
+	}
+}
+
+// TestWriterRedaction_PreservesRPCID locks in the contract that the
+// JSON-RPC id is retained as correlation metadata even when redaction is
+// configured. A future refactor that flips the redaction sweep to an
+// allowlist style would silently break request-to-response joins on
+// redacted captures; this test fails loudly if that happens.
+func TestWriterRedaction_PreservesRPCID(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
+	cfg.DLP.ScanEnv = false
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	w, err := capture.NewWriter(capture.WriterConfig{
+		RecorderConfig: recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 1000,
+			Redact:             true,
+		},
+		RedactFn:     sc.ScanTextForDLP,
+		QueueSize:    testQueueSize,
+		BuildVersion: testVersion,
+		BuildSHA:     testSHA,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	const wantID = `"req-42"`
+	w.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+		Subsurface:      testSubsurface,
+		Transport:       testTransportMCP,
+		SessionID:       testSessionID,
+		RequestID:       "req-redact-rpcid",
+		ConfigHash:      testConfigHash,
+		EffectiveAction: capture.ActionBlock,
+		Outcome:         capture.OutcomeBlocked,
+		ScannerInput:    "secret payload",
+		Request: capture.CaptureRequest{
+			BodySample: "should be redacted",
+			RPCID:      json.RawMessage(wantID),
+		},
+	})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := readSessionEntries(t, dir, testSessionID)
+	var captureEntries []recorder.Entry
+	for _, e := range entries {
+		if e.Type == capture.EntryTypeCapture {
+			captureEntries = append(captureEntries, e)
+		}
+	}
+	if len(captureEntries) != 1 {
+		t.Fatalf("expected 1 capture entry, got %d", len(captureEntries))
+	}
+
+	detailJSON, err := json.Marshal(captureEntries[0].Detail)
+	if err != nil {
+		t.Fatalf("Marshal Detail: %v", err)
+	}
+	var summary capture.CaptureSummary
+	if err := json.Unmarshal(detailJSON, &summary); err != nil {
+		t.Fatalf("Unmarshal CaptureSummary: %v", err)
+	}
+
+	if summary.Request.BodySample != testRedactedPlaceholder {
+		t.Errorf("BodySample should be redacted, got %q", summary.Request.BodySample)
+	}
+	if string(summary.Request.RPCID) != wantID {
+		t.Errorf("RPCID should survive redaction: got %q, want %q",
+			string(summary.Request.RPCID), wantID)
+	}
+}
+
 // TestWriterResponseVerdictWirePayloadSidecar verifies that
 // ObserveResponseVerdict uses wirePayload as the sidecar payload when no
 // scannerInput is set (response verdicts have empty scannerInput).

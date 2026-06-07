@@ -178,6 +178,56 @@ func TestFindingKindConstants_AllDistinct(t *testing.T) {
 	}
 }
 
+// TestCaptureRequest_RPCIDPreservesWireForm verifies that CaptureRequest.RPCID
+// survives a JSON marshal/unmarshal cycle byte-for-byte for both string and
+// numeric ids — the join key consumers use to correlate a request to its
+// response must not collapse "1" into 1 or vice versa.
+func TestCaptureRequest_RPCIDPreservesWireForm(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"numeric", "1"},
+		{"string", `"abc"`},
+		{"large numeric", "9007199254740992"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := capture.CaptureRequest{RPCID: json.RawMessage(tc.raw)}
+			data, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var got capture.CaptureRequest
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if string(got.RPCID) != tc.raw {
+				t.Errorf("RPCID: got %q, want %q", string(got.RPCID), tc.raw)
+			}
+		})
+	}
+}
+
+// TestCaptureRequest_RPCIDOmittedWhenEmpty verifies that an unset RPCID does
+// not appear in the JSON. Notifications and out-of-cap ids set RPCID to nil
+// at the helper, and the wire form must omit the field entirely so consumers
+// can distinguish "no id captured" from "id was zero".
+func TestCaptureRequest_RPCIDOmittedWhenEmpty(t *testing.T) {
+	req := capture.CaptureRequest{Method: http.MethodPost}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if _, present := raw["rpc_id"]; present {
+		t.Error("rpc_id should be absent from JSON when nil, but was present")
+	}
+}
+
 // TestNopObserver_ImplementsInterface verifies at compile time that NopObserver
 // satisfies the CaptureObserver interface, and verifies that all methods
 // return without panicking.

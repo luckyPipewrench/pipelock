@@ -6,16 +6,34 @@ package mcp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+// captureRPCID returns the JSON-RPC id to embed in a CaptureRequest. It returns
+// nil for notifications (no id field or literal null) and for ids exceeding
+// capture.MaxRPCIDLen so a malicious client cannot smuggle a large blob into
+// the cleartext summary via an oversized id. The id is preserved raw rather
+// than parsed into string/int so consumers get a byte-identical join key
+// across request and response captures (session + transport + rpc_id).
+func captureRPCID(id json.RawMessage) json.RawMessage {
+	if len(id) == 0 || string(id) == jsonrpc.Null {
+		return nil
+	}
+	if len(id) > capture.MaxRPCIDLen {
+		return nil
+	}
+	return id
+}
 
 func captureSessionID(transport string) string {
 	safe, _ := captureSessionIDAndOriginal(transport)

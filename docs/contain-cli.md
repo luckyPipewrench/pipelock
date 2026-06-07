@@ -154,8 +154,8 @@ Checks:
 
 Each non-passing check prints a one-line remediation tagged with its class. For example, a proxy-unaware tool produces:
 
-```
-  [PASS] check 6: direct (proxy-bypassing) egress is blocked for the agent — direct egress blocked (curl exit 7); proxy-unaware tools fail here
+```text
+  [PASS] check 6: direct (proxy-bypassing) egress is blocked for the agent — direct egress blocked at dial (curl exit 7); proxy-unaware tools fail here
           ↳ [proxy-compat] a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=http://127.0.0.1:8888
 ```
 

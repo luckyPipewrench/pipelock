@@ -45,10 +45,12 @@ const (
 	// contract regardless; this closes the interactive/login-shell gap.
 	defaultProfileScriptPath = "/etc/profile.d/pipelock-contain.sh"
 
-	// modeProfileScript is world-readable so the agent's login shell can source
-	// it (the agent is a separate UID). The script contains only public proxy
-	// URLs and CA paths, no secrets.
-	modeProfileScript os.FileMode = 0o644
+	// modeProfileScript is group-readable, not world-readable: the file is
+	// owned root:<agent-group> so only the contained agent's login shell can
+	// source it. The script holds only public proxy URLs and CA paths, but
+	// scoping it to the agent group avoids a repo-wide 0o644 exception and keeps
+	// it off every other user's login path.
+	modeProfileScript os.FileMode = 0o640
 
 	// modeAgentConfig is owner-only; the per-tool config files live in the
 	// agent's home and only the agent reads them.
@@ -398,6 +400,11 @@ func stepWriteUndiciShim() step {
 			}
 			body := renderUndiciShim()
 			if existing, err := env.readFile(path); err == nil && string(existing) == body {
+				// Re-assert mode on rerun: NODE_OPTIONS=--require points here, so
+				// an unreadable shim would break every node invocation.
+				if cerr := env.chmod(path, modeAllowListReadable); cerr != nil {
+					return false, fmt.Errorf("chmod %s: %w", path, cerr)
+				}
 				return false, nil
 			}
 			if err := backupAndWrite(env, path, []byte(body), modeAllowListReadable); err != nil {
@@ -419,16 +426,32 @@ func stepWriteProfileScript() step {
 		desc: "write login-shell runtime contract (" + defaultProfileScriptPath + ")",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			path := profileScriptPathOrDefault(env)
+			// Owned root:<agent-group> so only the agent can source it. Group is
+			// the agent's primary group (useradd --user-group => gid == agent).
+			_, gid, err := uidGidFor(env, env.agentUserName)
+			if err != nil {
+				return false, fmt.Errorf("resolve %s group: %w", env.agentUserName, err)
+			}
 			if err := env.mkdirAll(filepath.Dir(path), modeDirTraversable); err != nil {
 				return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 			}
 			body := renderProfileScript(env)
-			if existing, err := env.readFile(path); err == nil && string(existing) == body {
-				_ = env.chmod(path, modeProfileScript)
+			if existing, rerr := env.readFile(path); rerr == nil && string(existing) == body {
+				// Re-assert mode + ownership on rerun so a drifted profile script
+				// can't silently stop applying to the agent.
+				if err := env.chmod(path, modeProfileScript); err != nil {
+					return false, fmt.Errorf("chmod %s: %w", path, err)
+				}
+				if err := env.chown(path, 0, gid); err != nil {
+					return false, fmt.Errorf("chown %s: %w", path, err)
+				}
 				return false, nil
 			}
 			if err := backupAndWrite(env, path, []byte(body), modeProfileScript); err != nil {
 				return false, err
+			}
+			if err := env.chown(path, 0, gid); err != nil {
+				return false, fmt.Errorf("chown %s: %w", path, err)
 			}
 			return true, nil
 		},
@@ -454,19 +477,25 @@ func stepWriteUtilityWrappers() step {
 				}
 				path := filepath.Join(env.wrapperDir, name)
 				body := renderUtilityWrapper(env, tool)
-				if existing, err := env.readFile(path); err == nil && string(existing) == body {
-					_ = env.chmod(path, modeWrapperExec)
-					continue
-				}
-				if err := backupAndWrite(env, path, []byte(body), modeWrapperExec); err != nil {
-					var errs []error
-					errs = append(errs, fmt.Errorf("write %s: %w", path, err))
+				restoreTouched := func(cause error) (bool, error) {
+					errs := []error{cause}
 					for i := len(touched) - 1; i >= 0; i-- {
 						if rerr := restoreBackup(env, touched[i]); rerr != nil {
 							errs = append(errs, rerr)
 						}
 					}
 					return false, errors.Join(errs...)
+				}
+				if existing, err := env.readFile(path); err == nil && string(existing) == body {
+					// Re-assert the executable bit on rerun so a drifted wrapper
+					// can't become non-executable.
+					if cerr := env.chmod(path, modeWrapperExec); cerr != nil {
+						return restoreTouched(fmt.Errorf("chmod %s: %w", path, cerr))
+					}
+					continue
+				}
+				if err := backupAndWrite(env, path, []byte(body), modeWrapperExec); err != nil {
+					return restoreTouched(fmt.Errorf("write %s: %w", path, err))
 				}
 				touched = append(touched, path)
 			}
@@ -517,6 +546,11 @@ func stepWriteAgentToolConfigs() step {
 				}
 				body := cfg.render(env)
 				if existing, err := env.readFile(path); err == nil && string(existing) == body {
+					// Re-assert mode + ownership on rerun so an unchanged config
+					// can't drift broader than intended.
+					if cerr := env.chmod(path, modeAgentConfig); cerr != nil {
+						return restore(fmt.Errorf("chmod %s: %w", path, cerr))
+					}
 					if cerr := env.chown(path, uid, gid); cerr != nil {
 						return restore(fmt.Errorf("chown %s: %w", path, cerr))
 					}

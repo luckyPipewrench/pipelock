@@ -233,9 +233,19 @@ func checkCurlThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
 // Check 3: python through proxy (via the pipelock-python wrapper)
 // ---------------------------------------------------------------------------
 
-const pythonProbeScript = "import sys,urllib.request;" +
-	"r=urllib.request.urlopen(sys.argv[1],timeout=5);" +
-	"sys.stdout.write(str(getattr(r,'status',0) or r.getcode()))"
+// pythonProbeScript prefers the requests library so the check actually
+// exercises REQUESTS_CA_BUNDLE (requests/certifi), which urllib ignores. It
+// falls back to urllib (which honors SSL_CERT_FILE) when requests is absent.
+const pythonProbeScript = `import sys
+url = sys.argv[1]
+try:
+    import requests
+    sys.stdout.write(str(requests.get(url, timeout=5).status_code))
+except ImportError:
+    import urllib.request
+    resp = urllib.request.urlopen(url, timeout=5)
+    sys.stdout.write(str(getattr(resp, "status", 0) or resp.getcode()))
+`
 
 func checkPythonThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
 	wrapper := filepath.Join(env.wrapperDir, "pipelock-python")
@@ -362,26 +372,44 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	if isSudoTargetCommandMissing(out) {
 		return skip("curl not available for the agent", "install curl on the host")
 	}
-	if code != 0 {
-		// Direct egress was blocked by nftables — the intended state. This is
-		// also the root cause of "proxy-unaware tool" failures, so the
-		// remediation names the fix explicitly.
+	// Fail closed: only an exit code that proves the local dial or DNS was
+	// refused counts as "blocked." Exit 0 means the agent got an HTTP response
+	// (egress succeeded), and a post-connect failure (TLS error, etc.) means
+	// the TCP connection was established — both are holes, not a clean block.
+	if isDialBlockedCurlExit(code) {
 		return doctorResult{
 			status: statusPass,
-			detail: fmt.Sprintf("direct egress blocked (curl exit %d); proxy-unaware tools fail here", code),
+			detail: fmt.Sprintf("direct egress blocked at dial (curl exit %d); proxy-unaware tools fail here", code),
 			remediation: "a tool that 'can't reach the internet' is ignoring the proxy, NOT broken — " +
 				"run it via pipelock-curl / pipelock-python / pipelock-node, or export HTTPS_PROXY=" + proxyURLFor(env.port),
 			class: classProxyCompat,
 		}
 	}
-	httpCode, ok := trailingHTTPCode(out)
-	if ok && is2xx3xx(httpCode) {
-		return fail(classInfra,
-			fmt.Sprintf("CONTAINMENT HOLE: agent reached %s directly (HTTP %d), bypassing the proxy", env.canaryURL, httpCode),
+	if code == 0 {
+		httpCode, ok := trailingHTTPCode(out)
+		detail := "agent completed a direct HTTP request, bypassing the proxy"
+		if ok {
+			detail = fmt.Sprintf("CONTAINMENT HOLE: agent reached %s directly (HTTP %d), bypassing the proxy", env.canaryURL, httpCode)
+		}
+		return fail(classInfra, detail,
 			"the nftables owner-match egress rule is missing or broken; run `pipelock contain verify` and re-install")
 	}
-	return pass("direct egress did not succeed")
+	// Non-zero, but not a dial-level refusal: the connection likely
+	// established before failing (e.g. a TLS error), so egress was NOT blocked.
+	// Do not claim PASS — surface it as an inconclusive hole.
+	return fail(classInfra,
+		fmt.Sprintf("direct egress was not cleanly blocked (curl exit %d): the connection may have reached the host before failing: %s", code, oneLine(out)),
+		"verify the nftables owner-match drop is present (`pipelock contain verify`); a TLS/post-connect error here means the TCP dial was not blocked")
 }
+
+// dialBlockedCurlExitCodes are the curl exit codes that prove the agent's
+// outbound dial or DNS resolution was refused (the nftables owner-match drop
+// working): 6 (couldn't resolve host), 7 (couldn't connect), 28 (operation
+// timed out — a silently dropped SYN). Any other outcome means the connection
+// got further, so it must not be read as a blocked dial.
+var dialBlockedCurlExitCodes = map[int]bool{6: true, 7: true, 28: true}
+
+func isDialBlockedCurlExit(code int) bool { return dialBlockedCurlExitCodes[code] }
 
 // ---------------------------------------------------------------------------
 // Command wiring + runner

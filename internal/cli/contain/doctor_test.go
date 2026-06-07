@@ -289,8 +289,18 @@ func TestRunDoctor_JSONAndFailExit(t *testing.T) {
 		t.Fatalf("expected non-nil error on failing run")
 	}
 	out := buf.String()
-	if !strings.Contains(out, `"check":6`) || !strings.Contains(out, `"class":"infra"`) {
-		t.Fatalf("json missing containment-hole record:\n%s", out)
+	// Bind the class assertion to check 6's own record, not just anywhere in
+	// the output, so an unrelated infra record can't mask a regression.
+	idx := strings.Index(out, `"check":6`)
+	if idx == -1 {
+		t.Fatalf("json missing check 6 record:\n%s", out)
+	}
+	rec := out[idx:]
+	if nl := strings.IndexByte(rec, '\n'); nl != -1 {
+		rec = rec[:nl]
+	}
+	if !strings.Contains(rec, `"class":"infra"`) {
+		t.Fatalf("check 6 record missing infra class:\n%s", rec)
 	}
 	if !strings.Contains(out, `"aggregate"`) {
 		t.Fatalf("json missing aggregate:\n%s", out)
@@ -385,12 +395,32 @@ func TestCheck_UnexpectedStatusIsPolicy(t *testing.T) {
 	}
 }
 
-func TestCheckRawEgress_NonSuccessIsPass(t *testing.T) {
-	// Direct attempt exits 0 but returns a non-2xx (e.g. a captive 403): not a
-	// containment hole, so it passes.
+func TestCheckRawEgress_CompletedRequestIsHole(t *testing.T) {
+	// A completed HTTP request (even a 4xx) means the agent reached the host
+	// directly, so it is a containment hole, not a pass.
 	env := newDoctorEnv(t, func([]string) (string, int, error) { return "403", 0, nil })
-	if res := checkRawEgressBlocked(context.Background(), env); res.status != statusPass {
-		t.Fatalf("got %q (%s)", res.status, res.detail)
+	res := checkRawEgressBlocked(context.Background(), env)
+	if res.status != statusFail || res.class != classInfra {
+		t.Fatalf("403 over a completed connection must be a hole: status=%q class=%q", res.status, res.class)
+	}
+}
+
+func TestCheckRawEgress_DialBlockedExitsPass(t *testing.T) {
+	for _, code := range []int{6, 7, 28} {
+		env := newDoctorEnv(t, func([]string) (string, int, error) { return "curl error", code, nil })
+		if res := checkRawEgressBlocked(context.Background(), env); res.status != statusPass {
+			t.Errorf("curl exit %d should prove a blocked dial: got %q", code, res.status)
+		}
+	}
+}
+
+func TestCheckRawEgress_PostConnectFailureIsNotPass(t *testing.T) {
+	// curl exit 35 (TLS connect error) means the TCP dial succeeded, so egress
+	// was NOT cleanly blocked. Fail closed rather than claim PASS.
+	env := newDoctorEnv(t, func([]string) (string, int, error) { return "curl: (35) TLS error", 35, nil })
+	res := checkRawEgressBlocked(context.Background(), env)
+	if res.status != statusFail || res.class != classInfra {
+		t.Fatalf("post-connect failure must not pass: status=%q class=%q", res.status, res.class)
 	}
 }
 

@@ -63,7 +63,7 @@ func TestRuntimeContractVars_UppercaseNoProxyPrecedesLowercase(t *testing.T) {
 	// verify's extractNoProxy keys off the first NO_PROXY= assignment; the
 	// canonical uppercase form must come first.
 	env, _, _ := newFakeEnv(t)
-	var upper, lower int
+	upper, lower := -1, -1
 	for i, v := range runtimeContractVars(env) {
 		switch v.name {
 		case "NO_PROXY":
@@ -71,6 +71,9 @@ func TestRuntimeContractVars_UppercaseNoProxyPrecedesLowercase(t *testing.T) {
 		case "no_proxy":
 			lower = i
 		}
+	}
+	if upper == -1 || lower == -1 {
+		t.Fatalf("missing NO_PROXY assignments: upper=%d lower=%d", upper, lower)
 	}
 	if upper >= lower {
 		t.Errorf("NO_PROXY (idx %d) must precede no_proxy (idx %d)", upper, lower)
@@ -344,6 +347,68 @@ func TestStepWriteProfileScript_WritesIdempotent(t *testing.T) {
 	if err != nil || applied {
 		t.Fatalf("idempotent apply: applied=%v err=%v", applied, err)
 	}
+}
+
+func TestStepWriteProfileScript_FailsWhenAgentMissing(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.lookupUser = func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) }
+	if _, err := stepWriteProfileScript().apply(context.Background(), env); err == nil {
+		t.Fatalf("expected error when agent group unresolvable")
+	}
+}
+
+func TestStepWriteProfileScript_RerunReassertsModeAndSurfacesErrors(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	s := stepWriteProfileScript()
+	if _, err := s.apply(context.Background(), env); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	// Rerun with a failing chmod must surface the error (mode re-enforcement).
+	env.chmod = func(string, os.FileMode) error { return errors.New("ro fs") }
+	if _, err := s.apply(context.Background(), env); err == nil {
+		t.Fatalf("expected idempotent chmod error to surface")
+	}
+}
+
+func TestRuntimeSteps_RerunChmodErrorsSurface(t *testing.T) {
+	failChmod := func(string, os.FileMode) error { return errors.New("ro fs") }
+
+	t.Run("undici shim", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		s := stepWriteUndiciShim()
+		if _, err := s.apply(context.Background(), env); err != nil {
+			t.Fatalf("first apply: %v", err)
+		}
+		env.chmod = failChmod
+		if _, err := s.apply(context.Background(), env); err == nil {
+			t.Fatalf("expected idempotent chmod error")
+		}
+	})
+	t.Run("utility wrappers", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		if err := os.MkdirAll(env.wrapperDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		s := stepWriteUtilityWrappers()
+		if _, err := s.apply(context.Background(), env); err != nil {
+			t.Fatalf("first apply: %v", err)
+		}
+		env.chmod = failChmod
+		if _, err := s.apply(context.Background(), env); err == nil {
+			t.Fatalf("expected idempotent chmod error")
+		}
+	})
+	t.Run("agent configs", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		s := stepWriteAgentToolConfigs()
+		if _, err := s.apply(context.Background(), env); err != nil {
+			t.Fatalf("first apply: %v", err)
+		}
+		env.chmod = failChmod
+		if _, err := s.apply(context.Background(), env); err == nil {
+			t.Fatalf("expected idempotent chmod error")
+		}
+	})
 }
 
 func TestStepWriteUtilityWrappers_WritesAllThree(t *testing.T) {

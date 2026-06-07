@@ -3172,6 +3172,27 @@ func TestValidate_GitProtectionAllowedPushRepoRequiresHost(t *testing.T) {
 	}
 }
 
+func TestValidate_GitProtectionAllowedPushRepoRejectsEmptySegments(t *testing.T) {
+	tests := []string{
+		"/acme/project",
+		"github.com//project",
+		"github.com/acme/",
+		"github.com/acme/team/project",
+	}
+	for _, repo := range tests {
+		repo := repo
+		t.Run(repo, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.GitProtection.Enabled = true
+			cfg.GitProtection.AllowedBranches = []string{"main"}
+			cfg.GitProtection.AllowedPushRepos = []string{repo}
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected error for malformed allowed_push_repos entry %q", repo)
+			}
+		})
+	}
+}
+
 func TestValidate_GitProtectionInvalidAllowedPushRepoGlob(t *testing.T) {
 	cfg := Defaults()
 	cfg.GitProtection.Enabled = true

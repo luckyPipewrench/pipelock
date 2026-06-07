@@ -875,11 +875,27 @@ func TestForwardHTTPBlockedDomain(t *testing.T) {
 }
 
 func TestForwardHTTPBlocksNonAllowlistedGitPush(t *testing.T) {
-	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+	var upstreamHits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		_, _ = fmt.Fprint(w, "should not reach here")
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
 		cfg.GitProtection.Enabled = true
 		cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
 	})
 	defer cleanup()
+	p.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == "github.com:80" {
+				return (&net.Dialer{}).DialContext(ctx, network, backend.Listener.Addr().String())
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+		DisableCompression: true,
+	}
 
 	proxyURL, err := url.Parse("http://" + proxyAddr)
 	if err != nil {
@@ -907,6 +923,9 @@ func TestForwardHTTPBlocksNonAllowlistedGitPush(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "non-allowlisted repo") {
 		t.Fatalf("body missing git allowlist reason: %s", string(body))
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
 	}
 }
 

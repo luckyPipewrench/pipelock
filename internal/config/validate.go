@@ -1139,8 +1139,14 @@ func (c *Config) validateGitProtection() error {
 		if repo == "" {
 			return fmt.Errorf("empty allowed_push_repos entry")
 		}
-		if strings.Count(repo, "/") < 2 {
-			return fmt.Errorf("allowed_push_repos entry %q must include host/owner/repo", rawRepo)
+		parts := strings.Split(repo, "/")
+		if len(parts) != 3 {
+			return fmt.Errorf("allowed_push_repos entry %q must be host/owner/repo", rawRepo)
+		}
+		for _, part := range parts {
+			if part == "" {
+				return fmt.Errorf("allowed_push_repos entry %q must be host/owner/repo with no empty segments", rawRepo)
+			}
 		}
 		if _, err := filepath.Match(repo, "github.com/acme/project"); err != nil {
 			return fmt.Errorf("invalid allowed_push_repos glob pattern %q: %w", repo, err)

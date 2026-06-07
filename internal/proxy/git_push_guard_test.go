@@ -80,6 +80,17 @@ func TestEvaluateGitPushAllowlist(t *testing.T) {
 	}
 }
 
+func TestEvaluateGitPushAllowlistBlocksEmptyAllowlist(t *testing.T) {
+	cfg := config.GitProtection{Enabled: true}
+	u, err := url.Parse("https://github.com/acme/public.git/git-receive-pack")
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	if got := evaluateGitPushAllowlist(cfg, u); !got.Block {
+		t.Fatalf("enabled git push protection with empty allowlist must block, got %+v", got)
+	}
+}
+
 func TestEvaluateGitPushAllowlistDoesNotMatchHostlessRepoPath(t *testing.T) {
 	cfg := config.GitProtection{
 		Enabled:          true,

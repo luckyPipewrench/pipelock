@@ -20,12 +20,19 @@ type gitPushDecision struct {
 }
 
 func evaluateGitPushAllowlist(cfg config.GitProtection, u *url.URL) gitPushDecision {
-	if !cfg.Enabled || len(cfg.AllowedPushRepos) == 0 || u == nil {
+	if !cfg.Enabled || u == nil {
 		return gitPushDecision{}
 	}
 	repo, ok := gitPushRepoFromURL(u)
 	if !ok {
 		return gitPushDecision{}
+	}
+	if len(cfg.AllowedPushRepos) == 0 {
+		return gitPushDecision{
+			Block:  true,
+			Repo:   repo,
+			Reason: "git push to non-allowlisted repo",
+		}
 	}
 	if gitPushRepoAllowed(repo, cfg.AllowedPushRepos) {
 		return gitPushDecision{}

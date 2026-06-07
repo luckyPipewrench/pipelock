@@ -768,9 +768,12 @@ func TestRenderCredentialGuardScriptLocksCredentialNames(t *testing.T) {
 		"chmod 0600",
 		"lock_config_root '/home/operator/.codex'",
 	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("credential guard script missing %q:\n%s", want, body)
-		}
+		want := want
+		t.Run(want, func(t *testing.T) {
+			if !strings.Contains(body, want) {
+				t.Fatalf("credential guard script missing %q:\n%s", want, body)
+			}
+		})
 	}
 }
 
@@ -799,9 +802,12 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 		"PathExistsGlob=/home/operator/*.token",
 		"PathChanged=/home/operator/.codex",
 	} {
-		if !strings.Contains(string(pathUnit), want) {
-			t.Fatalf("path unit missing %q:\n%s", want, string(pathUnit))
-		}
+		want := want
+		t.Run(want, func(t *testing.T) {
+			if !strings.Contains(string(pathUnit), want) {
+				t.Fatalf("path unit missing %q:\n%s", want, string(pathUnit))
+			}
+		})
 	}
 	if len(runner.calls) < 3 {
 		t.Fatalf("credential guard calls = %v, want guard run, daemon-reload, and enable", runner.calls)
@@ -815,6 +821,7 @@ func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
 	}
 	if runner.calls[len(runner.calls)-1].name != testSystemctl ||
 		!containsArg(runner.calls[len(runner.calls)-1].args, "enable") ||
+		!containsArg(runner.calls[len(runner.calls)-1].args, "--now") ||
 		!containsArg(runner.calls[len(runner.calls)-1].args, "pipelock-cred-guard.path") {
 		t.Fatalf("missing enable --now path unit call: %+v", runner.calls)
 	}

@@ -20,8 +20,10 @@ import (
 const testSpanDigest = "sha256:" +
 	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-const testRedactedSourceSpanValue = "[redacted-value]"
-const testSpanHMACKey = "span-mac-key"
+const (
+	testRedactedSourceSpanValue = "[redacted-value]"
+	testSpanHMACKey             = "span-mac-key"
+)
 
 // captureRecorder records entries in memory so tests can extract the signed
 // receipt JSON and verify it offline.

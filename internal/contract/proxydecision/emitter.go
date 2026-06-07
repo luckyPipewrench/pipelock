@@ -121,6 +121,13 @@ type Decision struct {
 	ContractHash       string
 	SelectorID         string
 	ContractGeneration uint64
+
+	// SourceSpanEvidence and SpanHMACKey opt this decision into the
+	// proxy_decision_with_spans payload. Callers must provide a dedicated
+	// source-span HMAC key and leak-safe match values; the emitter binds each
+	// span commitment to the generated envelope event_id before signing.
+	SourceSpanEvidence []contractruntime.SourceSpanEvidence
+	SpanHMACKey        []byte
 }
 
 // EmitterConfig configures live proxy_decision emission.
@@ -235,7 +242,7 @@ func (e *Emitter) Emit(d Decision) error {
 		return fmt.Errorf("generate proxy_decision event id: %w", err)
 	}
 
-	rcpt, err := contractruntime.BuildProxyDecisionReceipt(contractruntime.ProxyDecisionInput{
+	in := contractruntime.ProxyDecisionInput{
 		Decision: contractruntime.Decision{
 			Verdict:       d.Verdict,
 			LiveVerdict:   d.LiveVerdict,
@@ -252,7 +259,14 @@ func (e *Emitter) Emit(d Decision) error {
 		Actor:         e.actor,
 		ChainSeq:      e.chainSeq,
 		ChainPrevHash: e.chainPrevHash,
-	})
+	}
+	// Sanitize free-form span fields BEFORE the commitment is computed, for the
+	// same reason target/rule_id are scrubbed above (#676): these fields land in
+	// the SIGNED spanned payload. RuleID and MatchClass are also match_hash
+	// preimage inputs, so scrubbing must happen before buildReceipt computes the
+	// HMAC.
+	evidence := sanitizeSpanEvidence(d.SourceSpanEvidence, e.sanitize)
+	rcpt, err := buildReceipt(in, d.SpanHMACKey, evidence)
 	if err != nil {
 		return fmt.Errorf("build proxy_decision receipt: %w", err)
 	}
@@ -300,9 +314,9 @@ func (e *Emitter) Emit(d Decision) error {
 	if err := e.recorder.Record(recorder.Entry{
 		SessionID: recorderSessionID,
 		Type:      evidenceReceiptEntryType,
-		EventKind: string(contractreceipt.PayloadProxyDecision),
+		EventKind: string(rcpt.PayloadKind),
 		Transport: d.Transport,
-		Summary:   fmt.Sprintf("proxy_decision: %s %s via %s", d.ActionType, d.Verdict, d.WinningSource),
+		Summary:   fmt.Sprintf("%s: %s %s via %s", rcpt.PayloadKind, d.ActionType, d.Verdict, d.WinningSource),
 		Detail:    json.RawMessage(rcptJSON),
 	}); err != nil {
 		return fmt.Errorf("record proxy_decision receipt: %w", err)
@@ -310,6 +324,46 @@ func (e *Emitter) Emit(d Decision) error {
 	e.chainPrevHash = rcptHash
 	e.chainSeq++
 	return nil
+}
+
+func buildReceipt(
+	in contractruntime.ProxyDecisionInput,
+	spanHMACKey []byte,
+	evidence []contractruntime.SourceSpanEvidence,
+) (contractreceipt.EvidenceReceipt, error) {
+	if len(evidence) == 0 {
+		return contractruntime.BuildProxyDecisionReceipt(in)
+	}
+	return contractruntime.BuildProxyDecisionWithSpansReceipt(in, spanHMACKey, evidence)
+}
+
+// sanitizeSpanEvidence returns a copy of evidence with every free-form
+// serialized span field run through the same pre-sign sanitizer the emitter
+// applies to target and rule_id (#676). This covers the expected secret-bearing
+// fields (RedactedSample, RuleID) and fails safer if a future caller accidentally
+// puts matched bytes into metadata such as SourceID or MatchClass. RuleID and
+// MatchClass are also match_hash preimage inputs, so they are scrubbed BEFORE
+// the commitment is computed, keeping the hash self-consistent. MatchValue is
+// never serialized (only its keyed HMAC), so it is left intact. The caller's
+// slice and spans are not mutated; a nil sanitizer leaves evidence unchanged.
+func sanitizeSpanEvidence(evidence []contractruntime.SourceSpanEvidence, sanitize SanitizeFunc) []contractruntime.SourceSpanEvidence {
+	if sanitize == nil || len(evidence) == 0 {
+		return evidence
+	}
+	out := make([]contractruntime.SourceSpanEvidence, len(evidence))
+	for i, item := range evidence {
+		span := item.Span
+		span.SourceID = receipt.CleanOrRedacted(span.SourceID, sanitize)
+		span.TransformProfile = receipt.CleanOrRedacted(span.TransformProfile, sanitize)
+		span.RuleID = receipt.CleanOrRedacted(span.RuleID, sanitize)
+		span.Bundle = receipt.CleanOrRedacted(span.Bundle, sanitize)
+		span.BundleVersion = receipt.CleanOrRedacted(span.BundleVersion, sanitize)
+		span.MatchClass = receipt.CleanOrRedacted(span.MatchClass, sanitize)
+		span.RedactedSample = receipt.CleanOrRedacted(span.RedactedSample, sanitize)
+		item.Span = span
+		out[i] = item
+	}
+	return out
 }
 
 // KeyedSigner wraps an Ed25519 private key as a Signer. KeyID is the

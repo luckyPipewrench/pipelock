@@ -1,7 +1,7 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-// Package receipt defines the EvidenceReceipt v2 envelope, the 13 typed payload
+// Package receipt defines the EvidenceReceipt v2 envelope, the typed payload
 // structs, and the payload-kind → validator dispatch registry.
 //
 // The EvidenceReceipt envelope is the v2 replacement for the legacy ActionReceipt
@@ -40,11 +40,26 @@ const (
 	signaturePrefixEd25519    = "ed25519:"
 )
 
+const (
+	canonicalizationJCSProfile         = "pipelock-jcs-rfc8785-nfc-v1"
+	canonicalizationJCSVersion         = "rfc8785"
+	canonicalizationHashAlg            = "sha256"
+	canonicalizationSigAlg             = "ed25519"
+	canonicalizationRedactionRulesetID = "pipelock-transform-v1"
+	canonicalizationRedactionVersion   = "1"
+	canonicalizationRedactionHash      = "sha256:541896788b42651a202448894583a847db9d1aa081c33a7e1f0512303d72527e"
+
+	CritCanonicalization = "canonicalization"
+	CritSourceSpans      = "source_spans"
+)
+
 // PayloadKind identifies the payload structure carried inside an EvidenceReceipt.
 type PayloadKind string
 
 const (
-	PayloadProxyDecision              PayloadKind = "proxy_decision"
+	PayloadProxyDecision          PayloadKind = "proxy_decision"
+	PayloadProxyDecisionWithSpans PayloadKind = "proxy_decision_with_spans"
+
 	PayloadContractRatified           PayloadKind = "contract_ratified"
 	PayloadContractPromoteIntent      PayloadKind = "contract_promote_intent"
 	PayloadContractPromoteCommitted   PayloadKind = "contract_promote_committed"
@@ -70,13 +85,52 @@ type SignatureProof struct {
 	Signature string `json:"signature"`
 }
 
+// CanonicalizationProfile names the exact signed interpretation of this receipt:
+// JSON canonicalization, digest/signature algorithms, and the redaction/transform
+// ruleset that source-span views are based on.
+type CanonicalizationProfile struct {
+	JCSProfile              string `json:"jcs_profile"`
+	JCSVersion              string `json:"jcs_version"`
+	HashAlg                 string `json:"hash_alg"`
+	SigAlg                  string `json:"sig_alg"`
+	RedactionRulesetID      string `json:"redaction_ruleset_id"`
+	RedactionRulesetVersion string `json:"redaction_ruleset_version"`
+	RedactionRulesetHash    string `json:"redaction_ruleset_hash"`
+}
+
+// DefaultCanonicalizationProfile returns the only EvidenceReceipt v2 profile
+// understood by this verifier.
+func DefaultCanonicalizationProfile() CanonicalizationProfile {
+	return CanonicalizationProfile{
+		JCSProfile:              canonicalizationJCSProfile,
+		JCSVersion:              canonicalizationJCSVersion,
+		HashAlg:                 canonicalizationHashAlg,
+		SigAlg:                  canonicalizationSigAlg,
+		RedactionRulesetID:      canonicalizationRedactionRulesetID,
+		RedactionRulesetVersion: canonicalizationRedactionVersion,
+		RedactionRulesetHash:    canonicalizationRedactionHash,
+	}
+}
+
+// CritForPayloadKind returns the critical receipt features that a verifier must
+// understand before accepting this payload kind.
+func CritForPayloadKind(kind PayloadKind) []string {
+	crit := []string{CritCanonicalization}
+	if kind == PayloadProxyDecisionWithSpans {
+		crit = append(crit, CritSourceSpans)
+	}
+	return crit
+}
+
 // EvidenceReceipt is the v2 evidence receipt envelope.
 // Payload holds a typed struct serialized as JSON; its structure is determined
 // by PayloadKind and validated by the registry in registry.go.
 type EvidenceReceipt struct {
-	RecordType     RecordType  `json:"record_type"`
-	ReceiptVersion int         `json:"receipt_version"`
-	PayloadKind    PayloadKind `json:"payload_kind"`
+	RecordType       RecordType              `json:"record_type"`
+	ReceiptVersion   int                     `json:"receipt_version"`
+	PayloadKind      PayloadKind             `json:"payload_kind"`
+	Canonicalization CanonicalizationProfile `json:"canonicalization"`
+	Crit             []string                `json:"crit"`
 	// EventID is a UUIDv7 uniquely identifying this receipt event.
 	EventID   string    `json:"event_id"`
 	Timestamp time.Time `json:"timestamp"`
@@ -110,6 +164,12 @@ func (r EvidenceReceipt) Validate() error {
 	if r.ReceiptVersion != 2 {
 		return fmt.Errorf("%w: got %d", ErrWrongReceiptVersion, r.ReceiptVersion)
 	}
+	if err := r.validateCanonicalization(); err != nil {
+		return err
+	}
+	if err := r.validateCrit(); err != nil {
+		return err
+	}
 	if r.EventID == "" {
 		return fmt.Errorf("%w: event_id", ErrPayloadMissingField)
 	}
@@ -124,6 +184,68 @@ func (r EvidenceReceipt) Validate() error {
 		return err
 	}
 	return r.validateSignatureProof()
+}
+
+func (r EvidenceReceipt) validateCanonicalization() error {
+	want := DefaultCanonicalizationProfile()
+	if r.Canonicalization.JCSProfile != want.JCSProfile {
+		return fmt.Errorf("%w: canonicalization.jcs_profile=%q", ErrPayloadInvalidEnum, r.Canonicalization.JCSProfile)
+	}
+	if r.Canonicalization.JCSVersion != want.JCSVersion {
+		return fmt.Errorf("%w: canonicalization.jcs_version=%q", ErrPayloadInvalidEnum, r.Canonicalization.JCSVersion)
+	}
+	if r.Canonicalization.HashAlg != want.HashAlg {
+		return fmt.Errorf("%w: canonicalization.hash_alg=%q", ErrPayloadInvalidEnum, r.Canonicalization.HashAlg)
+	}
+	if r.Canonicalization.SigAlg != want.SigAlg {
+		return fmt.Errorf("%w: canonicalization.sig_alg=%q", ErrPayloadInvalidEnum, r.Canonicalization.SigAlg)
+	}
+	if r.Canonicalization.RedactionRulesetID != want.RedactionRulesetID {
+		return fmt.Errorf("%w: canonicalization.redaction_ruleset_id=%q", ErrPayloadInvalidEnum, r.Canonicalization.RedactionRulesetID)
+	}
+	if r.Canonicalization.RedactionRulesetVersion != want.RedactionRulesetVersion {
+		return fmt.Errorf("%w: canonicalization.redaction_ruleset_version=%q", ErrPayloadInvalidEnum, r.Canonicalization.RedactionRulesetVersion)
+	}
+	if r.Canonicalization.RedactionRulesetHash != want.RedactionRulesetHash {
+		return fmt.Errorf("%w: canonicalization.redaction_ruleset_hash=%q", ErrPayloadInvalidEnum, r.Canonicalization.RedactionRulesetHash)
+	}
+	return nil
+}
+
+func (r EvidenceReceipt) validateCrit() error {
+	if len(r.Crit) == 0 {
+		return fmt.Errorf("%w: crit", ErrPayloadMissingField)
+	}
+	seen := make(map[string]struct{}, len(r.Crit))
+	hasCanonicalization := false
+	hasSourceSpans := false
+	for _, name := range r.Crit {
+		if name == "" {
+			return fmt.Errorf("%w: crit empty name", ErrPayloadInvalidEnum)
+		}
+		if _, ok := seen[name]; ok {
+			return fmt.Errorf("%w: crit duplicate %q", ErrPayloadInvalidEnum, name)
+		}
+		seen[name] = struct{}{}
+		switch name {
+		case CritCanonicalization:
+			hasCanonicalization = true
+		case CritSourceSpans:
+			hasSourceSpans = true
+		default:
+			return fmt.Errorf("%w: crit %q", ErrPayloadInvalidEnum, name)
+		}
+	}
+	if !hasCanonicalization {
+		return fmt.Errorf("%w: crit canonicalization", ErrPayloadMissingField)
+	}
+	if r.PayloadKind == PayloadProxyDecisionWithSpans && !hasSourceSpans {
+		return fmt.Errorf("%w: crit source_spans", ErrPayloadMissingField)
+	}
+	if r.PayloadKind != PayloadProxyDecisionWithSpans && hasSourceSpans {
+		return fmt.Errorf("%w: crit source_spans for payload_kind=%q", ErrPayloadInvalidEnum, r.PayloadKind)
+	}
+	return nil
 }
 
 func (r EvidenceReceipt) validateSignatureProof() error {
@@ -214,7 +336,7 @@ func VerifyWithKey(r EvidenceReceipt, pubKey ed25519.PublicKey, expectedSignerKe
 		return err
 	}
 	if !ed25519.Verify(pubKey, preimage, sig) {
-		return fmt.Errorf("%w: signature verification failed", ErrPayloadInvalidEnum)
+		return ErrSignatureVerification
 	}
 	return nil
 }

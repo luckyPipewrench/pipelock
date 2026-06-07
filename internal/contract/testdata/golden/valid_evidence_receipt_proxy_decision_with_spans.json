@@ -1,0 +1,57 @@
+{
+  "record_type": "evidence_receipt_v2",
+  "receipt_version": 2,
+  "payload_kind": "proxy_decision_with_spans",
+  "canonicalization": {
+    "jcs_profile": "pipelock-jcs-rfc8785-nfc-v1",
+    "jcs_version": "rfc8785",
+    "hash_alg": "sha256",
+    "sig_alg": "ed25519",
+    "redaction_ruleset_id": "pipelock-transform-v1",
+    "redaction_ruleset_version": "1",
+    "redaction_ruleset_hash": "sha256:541896788b42651a202448894583a847db9d1aa081c33a7e1f0512303d72527e"
+  },
+  "crit": [
+    "canonicalization",
+    "source_spans"
+  ],
+  "event_id": "01F8MECHZX3TBDSZ7XRADM79ZS",
+  "timestamp": "2026-06-06T18:00:00Z",
+  "signature": {
+    "signer_key_id": "receipt-signing-test",
+    "key_purpose": "receipt-signing",
+    "algorithm": "ed25519",
+    "signature": "ed25519:be26bce88e66bcb6832ef12a81e3a5242c6ca65ee63708379102f8d05a976eed850d51350d0ab4570a4a5dbe86c4f655fa92f46e302d213feb3a64d7bcb19b03"
+  },
+  "chain_seq": 1,
+  "chain_prev_hash": "sha256:0",
+  "payload": {
+    "action_type": "block",
+    "target": "https://example.com/[redacted-value]",
+    "verdict": "block",
+    "transport": "forward",
+    "policy_sources": [
+      "dlp"
+    ],
+    "winning_source": "scanner",
+    "rule_id": "aws_access_key",
+    "source_spans": [
+      {
+        "source_id": "request-url",
+        "source_kind": "http_request_url",
+        "normalized_view": "sanitized_target",
+        "pipelock_binary_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "rules_bundle_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "transform_profile": "pipelock-transform-v1",
+        "policy_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "rule_id": "aws_access_key",
+        "char_offset": 20,
+        "char_length": 16,
+        "match_hash": "hmac-sha256:d439ce6e9ccc2608fdc8d7c6168b5fddb435763a8d67f81aa30eb9bf0451f72d",
+        "match_hash_alg": "hmac-sha256",
+        "match_class": "secret:aws_access_key",
+        "redacted_sample": "[redacted-value]"
+      }
+    ]
+  }
+}

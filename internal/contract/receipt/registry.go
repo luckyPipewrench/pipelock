@@ -5,10 +5,15 @@ package receipt
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,6 +25,9 @@ var (
 	ErrPayloadMissingField = errors.New("payload missing required field")
 	// ErrPayloadInvalidEnum is returned when an enum-like field holds a disallowed value.
 	ErrPayloadInvalidEnum = errors.New("payload field has invalid enum value")
+	// ErrSignatureVerification is returned when the receipt is structurally valid
+	// but its detached Ed25519 signature does not verify.
+	ErrSignatureVerification = errors.New("signature verification failed")
 	// ErrUnsupportedRecordType is returned when record_type is not evidence_receipt_v2.
 	ErrUnsupportedRecordType = errors.New("unsupported record_type for v2 verifier")
 	// ErrWrongReceiptVersion is returned when receipt_version is not 2.
@@ -53,6 +61,7 @@ func decodeStrict(raw json.RawMessage, target any) error {
 // payloadValidators maps every known PayloadKind to its structural validator.
 var payloadValidators = map[PayloadKind]func(json.RawMessage) error{
 	PayloadProxyDecision:              validateProxyDecision,
+	PayloadProxyDecisionWithSpans:     validateProxyDecisionWithSpans,
 	PayloadContractRatified:           validateContractRatified,
 	PayloadContractPromoteIntent:      validateContractPromoteIntent,
 	PayloadContractPromoteCommitted:   validateContractPromoteCommitted,
@@ -95,11 +104,87 @@ const (
 	requestKindLocalErasureTombstone = "local_erasure_tombstone"
 )
 
+// SourceKind values identify the evidence surface a SourceSpan references.
+const (
+	SourceKindHTTPRequestURL = "http_request_url"
+	SourceKindHTTPResponse   = "http_response"
+	SourceKindMCPToolResult  = "mcp_tool_result"
+	SourceKindMCPToolArgs    = "mcp_tool_args"
+)
+
+// Normalized view labels name the scanner view that SourceSpan offsets index.
+const (
+	NormalizedViewSanitizedTarget     = "sanitized_target"
+	NormalizedViewForMatching         = "for_matching"
+	NormalizedViewInvisibleSpaced     = "for_matching:invisible_spaced"
+	NormalizedViewLeetspeak           = "leetspeak:for_matching"
+	NormalizedViewVowelFold           = "vowel_fold:for_matching"
+	NormalizedViewBase64Decoded       = "for_matching:base64_decoded"
+	NormalizedViewHexDecoded          = "for_matching:hex_decoded"
+	NormalizedViewDLPNormalized       = "dlp_normalized"
+	normalizedViewDLPNormalizedPrefix = "dlp_normalized:"
+)
+
+const (
+	// SourceSpanMatchHashAlgHMACSHA256 is the only match_hash algorithm
+	// accepted for SourceSpan commitments in this schema version.
+	SourceSpanMatchHashAlgHMACSHA256 = "hmac-sha256"
+
+	sourceSpanMatchHashPrefix = SourceSpanMatchHashAlgHMACSHA256 + ":"
+	sourceSpanHMACDomain      = "pipelock/source-span/v1"
+)
+
 func validateProxyDecision(raw json.RawMessage) error {
 	var p PayloadProxyDecisionStruct
 	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: action_type (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
+	return validateProxyDecisionBase(proxyDecisionBase{
+		ActionType:    p.ActionType,
+		Target:        p.Target,
+		Verdict:       p.Verdict,
+		Transport:     p.Transport,
+		PolicySources: p.PolicySources,
+		WinningSource: p.WinningSource,
+	})
+}
+
+func validateProxyDecisionWithSpans(raw json.RawMessage) error {
+	var p PayloadProxyDecisionWithSpansStruct
+	if err := decodeStrict(raw, &p); err != nil {
+		return fmt.Errorf("proxy_decision_with_spans strict decode: %w", err)
+	}
+	if err := validateProxyDecisionBase(proxyDecisionBase{
+		ActionType:    p.ActionType,
+		Target:        p.Target,
+		Verdict:       p.Verdict,
+		Transport:     p.Transport,
+		PolicySources: p.PolicySources,
+		WinningSource: p.WinningSource,
+	}); err != nil {
+		return err
+	}
+	if err := requireNonEmptySlice("source_spans", p.SourceSpans); err != nil {
+		return err
+	}
+	for i, span := range p.SourceSpans {
+		if err := ValidateSourceSpan(span); err != nil {
+			return fmt.Errorf("source_spans[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+type proxyDecisionBase struct {
+	ActionType    string
+	Target        string
+	Verdict       string
+	Transport     string
+	PolicySources []string
+	WinningSource string
+}
+
+func validateProxyDecisionBase(p proxyDecisionBase) error {
 	if err := requireNonEmpty("action_type", p.ActionType); err != nil {
 		return err
 	}
@@ -116,6 +201,170 @@ func validateProxyDecision(raw json.RawMessage) error {
 		return err
 	}
 	return requireNonEmpty("winning_source", p.WinningSource)
+}
+
+// ValidateSourceSpan applies the full structural validation a SourceSpan must
+// pass inside a proxy_decision_with_spans payload: required fields, source_kind
+// and normalized_view enums, sha256 digest shapes, the hmac-sha256 match_hash
+// algorithm and form, and the offset/view consistency rule. It is the single
+// source of truth shared by the registry validator and the runtime builder, so
+// the builder fails fast on a malformed span instead of emitting a signable
+// receipt that only Validate() would later reject.
+func ValidateSourceSpan(span SourceSpan) error {
+	for field, val := range map[string]string{
+		"source_id":              span.SourceID,
+		"source_kind":            span.SourceKind,
+		"normalized_view":        span.NormalizedView,
+		"pipelock_binary_digest": span.PipelockBinaryDigest,
+		"rules_bundle_digest":    span.RulesBundleDigest,
+		"transform_profile":      span.TransformProfile,
+		"policy_hash":            span.PolicyHash,
+		"rule_id":                span.RuleID,
+		"match_hash":             span.MatchHash,
+		"match_hash_alg":         span.MatchHashAlg,
+		"match_class":            span.MatchClass,
+	} {
+		if err := requireNonEmpty(field, val); err != nil {
+			return err
+		}
+	}
+	if !validSourceKind(span.SourceKind) {
+		return fmt.Errorf("%w: source_kind=%q", ErrPayloadInvalidEnum, span.SourceKind)
+	}
+	if !validNormalizedView(span.NormalizedView) {
+		return fmt.Errorf("%w: normalized_view=%q", ErrPayloadInvalidEnum, span.NormalizedView)
+	}
+	if err := validateSHA256Digest("pipelock_binary_digest", span.PipelockBinaryDigest); err != nil {
+		return err
+	}
+	if err := validateSHA256Digest("rules_bundle_digest", span.RulesBundleDigest); err != nil {
+		return err
+	}
+	if err := validateSHA256Digest("policy_hash", span.PolicyHash); err != nil {
+		return err
+	}
+	if span.MatchHashAlg != SourceSpanMatchHashAlgHMACSHA256 {
+		return fmt.Errorf("%w: match_hash_alg=%q", ErrPayloadInvalidEnum, span.MatchHashAlg)
+	}
+	if err := validateHMACMatchHash(span.MatchHash); err != nil {
+		return err
+	}
+	if span.CharOffset == nil && span.CharLength != nil {
+		return fmt.Errorf("%w: char_offset", ErrPayloadMissingField)
+	}
+	if span.CharOffset != nil && span.CharLength == nil {
+		return fmt.Errorf("%w: char_length", ErrPayloadMissingField)
+	}
+	if span.CharOffset != nil {
+		if *span.CharOffset < 0 {
+			return fmt.Errorf("%w: char_offset=%d", ErrPayloadInvalidEnum, *span.CharOffset)
+		}
+		if *span.CharLength <= 0 {
+			return fmt.Errorf("%w: char_length=%d", ErrPayloadInvalidEnum, *span.CharLength)
+		}
+		if !offsetsAllowedForView(span.NormalizedView) {
+			return fmt.Errorf("%w: char_offset not allowed for normalized_view=%q", ErrPayloadInvalidEnum, span.NormalizedView)
+		}
+	}
+	return nil
+}
+
+func validSourceKind(kind string) bool {
+	switch kind {
+	case SourceKindHTTPRequestURL, SourceKindHTTPResponse, SourceKindMCPToolResult, SourceKindMCPToolArgs:
+		return true
+	default:
+		return false
+	}
+}
+
+func validNormalizedView(view string) bool {
+	switch view {
+	case NormalizedViewSanitizedTarget,
+		NormalizedViewForMatching,
+		NormalizedViewInvisibleSpaced,
+		NormalizedViewLeetspeak,
+		NormalizedViewVowelFold,
+		NormalizedViewBase64Decoded,
+		NormalizedViewHexDecoded,
+		NormalizedViewDLPNormalized:
+		return true
+	default:
+		return strings.HasPrefix(view, normalizedViewDLPNormalizedPrefix) && len(view) > len(normalizedViewDLPNormalizedPrefix)
+	}
+}
+
+func offsetsAllowedForView(view string) bool {
+	return view == NormalizedViewSanitizedTarget ||
+		view == NormalizedViewDLPNormalized ||
+		strings.HasPrefix(view, normalizedViewDLPNormalizedPrefix)
+}
+
+func validateSHA256Digest(field, val string) error {
+	const digestPrefix = "sha256:"
+	if !strings.HasPrefix(val, digestPrefix) {
+		return fmt.Errorf("%w: %s", ErrPayloadInvalidEnum, field)
+	}
+	digest := strings.TrimPrefix(val, digestPrefix)
+	if len(digest) != sha256.Size*2 {
+		return fmt.Errorf("%w: %s length", ErrPayloadInvalidEnum, field)
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return fmt.Errorf("%w: %s hex: %w", ErrPayloadInvalidEnum, field, err)
+	}
+	return nil
+}
+
+func validateHMACMatchHash(val string) error {
+	if !strings.HasPrefix(val, sourceSpanMatchHashPrefix) {
+		return fmt.Errorf("%w: match_hash prefix", ErrPayloadInvalidEnum)
+	}
+	digest := strings.TrimPrefix(val, sourceSpanMatchHashPrefix)
+	if len(digest) != sha256.Size*2 {
+		return fmt.Errorf("%w: match_hash length", ErrPayloadInvalidEnum)
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return fmt.Errorf("%w: match_hash hex: %w", ErrPayloadInvalidEnum, err)
+	}
+	return nil
+}
+
+// SourceSpanMatchHash computes the signer-keyed match_hash for a span. eventID
+// MUST be the signed EvidenceReceipt.event_id for the receipt that will carry
+// the span; verifiers reconstruct the same input from that envelope field.
+// matchValue is the normalized/redacted evidence slice, or a class/placeholder
+// value for secret-bearing matches. The key is not serialized into the receipt,
+// which prevents offline confirmation of guessed low-entropy values.
+func SourceSpanMatchHash(key []byte, eventID string, spanIndex int, span SourceSpan, matchValue string) (string, error) {
+	if len(key) == 0 {
+		return "", fmt.Errorf("%w: source_span_hmac_key", ErrPayloadMissingField)
+	}
+	if eventID == "" {
+		return "", fmt.Errorf("%w: event_id", ErrPayloadMissingField)
+	}
+	if spanIndex < 0 {
+		return "", fmt.Errorf("%w: span_index=%d", ErrPayloadInvalidEnum, spanIndex)
+	}
+	if matchValue == "" {
+		return "", fmt.Errorf("%w: match_value", ErrPayloadMissingField)
+	}
+	mac := hmac.New(sha256.New, key)
+	writeMACPart(mac, sourceSpanHMACDomain)
+	writeMACPart(mac, eventID)
+	writeMACPart(mac, strconv.Itoa(spanIndex))
+	writeMACPart(mac, span.SourceKind)
+	writeMACPart(mac, span.NormalizedView)
+	writeMACPart(mac, span.RuleID)
+	writeMACPart(mac, span.MatchClass)
+	writeMACPart(mac, matchValue)
+	return sourceSpanMatchHashPrefix + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func writeMACPart(mac io.Writer, part string) {
+	_, _ = mac.Write([]byte(strconv.Itoa(len(part))))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(part))
+	_, _ = mac.Write([]byte{0})
 }
 
 func validateContractRatified(raw json.RawMessage) error {

@@ -25,6 +25,53 @@ type PayloadProxyDecisionStruct struct {
 	RuleID string `json:"rule_id,omitempty"`
 }
 
+// PayloadProxyDecisionWithSpansStruct is the v2 compatibility boundary for
+// proxy decisions that carry source-span provenance. The base proxy-decision
+// fields are intentionally repeated in a new payload_kind instead of making
+// source_spans an optional field on proxy_decision: v2 receipts reject unknown
+// payload fields, so this shape gives old and new validators an unambiguous
+// branch.
+type PayloadProxyDecisionWithSpansStruct struct {
+	ActionType    string       `json:"action_type"`
+	Target        string       `json:"target"`
+	Verdict       string       `json:"verdict"`
+	LiveVerdict   string       `json:"live_verdict,omitempty"`
+	Transport     string       `json:"transport"`
+	PolicySources []string     `json:"policy_sources"`
+	WinningSource string       `json:"winning_source"`
+	RuleID        string       `json:"rule_id,omitempty"`
+	SourceSpans   []SourceSpan `json:"source_spans"`
+}
+
+// SourceSpan carries signed, re-checkable provenance for one scanner match. It
+// indexes only the normalized/redacted scanner view named by NormalizedView.
+// Emitters must populate RedactedSample and MatchHash from sanitized or
+// class-only values; the schema rejects malformed fields but cannot prove a
+// caller avoided raw matched bytes.
+type SourceSpan struct {
+	SourceID       string `json:"source_id"`
+	SourceKind     string `json:"source_kind"`
+	NormalizedView string `json:"normalized_view"`
+
+	PipelockBinaryDigest string `json:"pipelock_binary_digest"`
+	RulesBundleDigest    string `json:"rules_bundle_digest"`
+	TransformProfile     string `json:"transform_profile"`
+	PolicyHash           string `json:"policy_hash"`
+
+	RuleID        string `json:"rule_id"`
+	Bundle        string `json:"bundle,omitempty"`
+	BundleVersion string `json:"bundle_version,omitempty"`
+
+	CharOffset *int `json:"char_offset,omitempty"`
+	CharLength *int `json:"char_length,omitempty"`
+
+	MatchHash    string `json:"match_hash"`
+	MatchHashAlg string `json:"match_hash_alg"`
+	MatchClass   string `json:"match_class"`
+
+	RedactedSample string `json:"redacted_sample,omitempty"`
+}
+
 // PayloadContractRatifiedStruct holds the typed fields for a contract_ratified payload.
 type PayloadContractRatifiedStruct struct {
 	ContractHash                string            `json:"contract_hash"`

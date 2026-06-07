@@ -35,11 +35,13 @@ func TestDecodeStrict_RejectsNullPayload(t *testing.T) {
 func TestEvidenceReceipt_Validate_RejectsBadSignatureHex(t *testing.T) {
 	t.Parallel()
 	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadProxyDecision,
-		EventID:        "01900000-0000-7000-8000-000000000001",
-		Timestamp:      time.Now(),
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      receipt.PayloadProxyDecision,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
+		EventID:          "01900000-0000-7000-8000-000000000001",
+		Timestamp:        time.Now(),
 		Payload: json.RawMessage(`{"action_type":"connect","target":"x.com","verdict":"allow",
 			"transport":"forward","policy_sources":["a"],"winning_source":"a"}`),
 		Signature: receipt.SignatureProof{
@@ -57,11 +59,13 @@ func TestEvidenceReceipt_Validate_RejectsBadSignatureHex(t *testing.T) {
 func TestEvidenceReceipt_Validate_RejectsShortSignature(t *testing.T) {
 	t.Parallel()
 	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadProxyDecision,
-		EventID:        "01900000-0000-7000-8000-000000000001",
-		Timestamp:      time.Now(),
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      receipt.PayloadProxyDecision,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
+		EventID:          "01900000-0000-7000-8000-000000000001",
+		Timestamp:        time.Now(),
 		Payload: json.RawMessage(`{"action_type":"connect","target":"x.com","verdict":"allow",
 			"transport":"forward","policy_sources":["a"],"winning_source":"a"}`),
 		Signature: receipt.SignatureProof{
@@ -79,11 +83,13 @@ func TestEvidenceReceipt_Validate_RejectsShortSignature(t *testing.T) {
 func TestEvidenceReceipt_Validate_RejectsMissingSignerKeyID(t *testing.T) {
 	t.Parallel()
 	r := receipt.EvidenceReceipt{
-		RecordType:     receipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    receipt.PayloadProxyDecision,
-		EventID:        "01900000-0000-7000-8000-000000000001",
-		Timestamp:      time.Now(),
+		RecordType:       receipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      receipt.PayloadProxyDecision,
+		Canonicalization: receipt.DefaultCanonicalizationProfile(),
+		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
+		EventID:          "01900000-0000-7000-8000-000000000001",
+		Timestamp:        time.Now(),
 		Payload: json.RawMessage(`{"action_type":"connect","target":"x.com","verdict":"allow",
 			"transport":"forward","policy_sources":["a"],"winning_source":"a"}`),
 		Signature: receipt.SignatureProof{

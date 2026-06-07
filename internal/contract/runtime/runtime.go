@@ -727,3 +727,33 @@ func ProxyDecisionPayload(decision Decision, actionType, target, transport strin
 		RuleID:        decision.RuleID,
 	}
 }
+
+// ProxyDecisionWithSpansPayload builds the typed EvidenceReceipt v2
+// proxy_decision_with_spans payload. SourceSpans are copied so caller-side
+// mutation after build cannot alter the signable preimage.
+//
+// Prefer BuildProxyDecisionWithSpansReceipt for new producer paths: that builder
+// computes event_id-bound match_hash values and runs the shared SourceSpan
+// validator before a receipt can be signed. This helper only packages already
+// committed spans.
+func ProxyDecisionWithSpansPayload(
+	decision Decision,
+	actionType, target, transport string,
+	spans []contractreceipt.SourceSpan,
+) contractreceipt.PayloadProxyDecisionWithSpansStruct {
+	live := decision.LiveVerdict
+	if live == decision.Verdict {
+		live = ""
+	}
+	return contractreceipt.PayloadProxyDecisionWithSpansStruct{
+		ActionType:    actionType,
+		Target:        target,
+		Verdict:       decision.Verdict,
+		LiveVerdict:   live,
+		Transport:     transport,
+		PolicySources: append([]string(nil), decision.PolicySources...),
+		WinningSource: decision.WinningSource,
+		RuleID:        decision.RuleID,
+		SourceSpans:   append([]contractreceipt.SourceSpan(nil), spans...),
+	}
+}

@@ -903,11 +903,13 @@ func mustURL(t *testing.T, raw string) *url.URL {
 
 func validateTestPayload(kind contractreceipt.PayloadKind, raw []byte) error {
 	return contractreceipt.EvidenceReceipt{
-		RecordType:     contractreceipt.RecordTypeEvidenceV2,
-		ReceiptVersion: 2,
-		PayloadKind:    kind,
-		EventID:        "018f0000-0000-7000-8000-000000000000",
-		Timestamp:      time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC),
+		RecordType:       contractreceipt.RecordTypeEvidenceV2,
+		ReceiptVersion:   2,
+		PayloadKind:      kind,
+		Canonicalization: contractreceipt.DefaultCanonicalizationProfile(),
+		Crit:             contractreceipt.CritForPayloadKind(kind),
+		EventID:          "018f0000-0000-7000-8000-000000000000",
+		Timestamp:        time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC),
 		Signature: contractreceipt.SignatureProof{
 			SignerKeyID: "receipt-key",
 			KeyPurpose:  "receipt-signing",

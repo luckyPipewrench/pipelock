@@ -19,6 +19,7 @@ var ErrUnknownPayloadKind = errors.New("unknown payload_kind")
 // Source: design doc Round 5, "EvidenceReceipt signing authority matrix".
 var payloadAuthority = map[string]string{
 	"proxy_decision":               "receipt-signing",
+	"proxy_decision_with_spans":    "receipt-signing",
 	"contract_ratified":            "receipt-signing",
 	"contract_promote_intent":      "contract-activation-signing",
 	"contract_promote_committed":   "receipt-signing",

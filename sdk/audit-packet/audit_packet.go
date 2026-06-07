@@ -4,6 +4,7 @@
 package auditpacket
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path"
@@ -546,10 +547,8 @@ func validatePrefixedHex(name, value, prefix string) error {
 	if !ok || len(hexValue) != hexLen {
 		return fmt.Errorf("%s must be %s<%d hex>", name, prefix, hexLen)
 	}
-	for _, r := range hexValue {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return fmt.Errorf("%s must be %s<%d hex>", name, prefix, hexLen)
-		}
+	if _, err := hex.DecodeString(hexValue); err != nil {
+		return fmt.Errorf("%s must be %s<%d hex>", name, prefix, hexLen)
 	}
 	return nil
 }

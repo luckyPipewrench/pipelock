@@ -144,7 +144,7 @@ func validAuditPacketSourceSpan() auditpacket.SourceSpan {
 		RuleID:               "aws_access_key",
 		CharOffset:           &offset,
 		CharLength:           &length,
-		MatchHash:            "hmac-sha256:" + strings.Repeat("4", 64),
+		MatchHash:            "hmac-sha256:" + strings.Repeat("A", 64),
 		MatchHashAlg:         "hmac-sha256",
 		MatchClass:           "secret:aws_access_key",
 		RedactedSample:       "[redacted-value]",

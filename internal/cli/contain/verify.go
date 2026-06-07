@@ -66,7 +66,7 @@ const (
 // set per the 2026-05-04 decision in the runbook's open questions
 // (cluster traffic flows through Pipelock, so NO_PROXY is limited to
 // loopback). Any deviation is a policy regression.
-const expectedNoProxy = "NO_PROXY=127.0.0.1,localhost"
+const expectedNoProxy = "NO_PROXY=" + contractNoProxy
 
 // defaultToolWrappers is the fallback wrapper list used when the inventory
 // file has not been written yet.

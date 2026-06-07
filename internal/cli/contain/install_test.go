@@ -157,27 +157,30 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 			h := sha256.Sum256(data)
 			return hex.EncodeToString(h[:]), nil
 		},
-		out:              out,
-		errOut:           out,
-		operatorUser:     containInstallOperatorUser,
-		proxyUserName:    "pipelock-proxy",
-		agentUserName:    "pipelock-agent",
-		configDir:        filepath.Join(root, "etc", "pipelock"),
-		dataDir:          filepath.Join(root, "var", "lib", "pipelock"),
-		wrapperDir:       filepath.Join(root, "usr", "local", "bin"),
-		systemUnitPath:   filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
-		nftRulesPath:     filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
-		nftMainPath:      filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
-		sudoersPath:      filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
-		caBundlePath:     filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
-		caExportPath:     filepath.Join(root, "etc", "pipelock", "ca.pem"),
-		integrityDir:     filepath.Join(root, "etc", "pipelock", "integrity"),
-		integrityPin:     filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
-		wrapperInvPath:   filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
-		toolsListPath:    filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
-		workspaceInvPath: filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
-		pipelockTarget:   filepath.Join(root, "usr", "local", "bin", "pipelock"),
-		proxyPort:        8888,
+		out:               out,
+		errOut:            out,
+		operatorUser:      containInstallOperatorUser,
+		proxyUserName:     "pipelock-proxy",
+		agentUserName:     "pipelock-agent",
+		configDir:         filepath.Join(root, "etc", "pipelock"),
+		dataDir:           filepath.Join(root, "var", "lib", "pipelock"),
+		wrapperDir:        filepath.Join(root, "usr", "local", "bin"),
+		systemUnitPath:    filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
+		nftRulesPath:      filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
+		nftMainPath:       filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
+		sudoersPath:       filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
+		caBundlePath:      filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
+		caExportPath:      filepath.Join(root, "etc", "pipelock", "ca.pem"),
+		integrityDir:      filepath.Join(root, "etc", "pipelock", "integrity"),
+		integrityPin:      filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
+		wrapperInvPath:    filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
+		toolsListPath:     filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
+		workspaceInvPath:  filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		undiciShimPath:    filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
+		profileScriptPath: filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
+		agentHome:         filepath.Join(root, "home", "pipelock-agent"),
+		pipelockTarget:    filepath.Join(root, "usr", "local", "bin", "pipelock"),
+		proxyPort:         8888,
 	}
 
 	// Plant the source binary the install will copy.
@@ -864,9 +867,12 @@ func TestRenderLaunchWrapper_HasExpectedEnv(t *testing.T) {
 	wants := []string{
 		"#!/bin/bash",
 		"HTTPS_PROXY=http://127.0.0.1:8888",
-		"NO_PROXY=127.0.0.1,localhost",
+		"https_proxy=http://127.0.0.1:8888",
+		"NO_PROXY=127.0.0.1,localhost,::1",
 		"NODE_EXTRA_CA_CERTS=" + env.caExportPath,
 		"SSL_CERT_FILE=" + env.caBundlePath,
+		"GIT_SSL_CAINFO=" + env.caBundlePath,
+		"NODE_OPTIONS='--require " + env.undiciShimPath + "'",
 		`"$TARGET"`,
 	}
 	for _, s := range wants {
@@ -1498,8 +1504,8 @@ func TestInstallSteps_Count(t *testing.T) {
 	// allow-list + 1 meta-wrapper). Changing this count is a documented
 	// breaking change for the dry-run / verify probe-4 inventory.
 	steps := installSteps(installOpts{})
-	if len(steps) != 22 {
-		t.Errorf("installSteps count: got %d, want 22", len(steps))
+	if len(steps) != 26 {
+		t.Errorf("installSteps count: got %d, want 26", len(steps))
 	}
 }
 

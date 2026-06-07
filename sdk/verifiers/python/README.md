@@ -4,10 +4,11 @@
 # AARP v0.1 assurance-envelope verifier (Python)
 
 This is the Python reference verifier for the AARP (Agent Action Receipt
-Profile) v0.1 assurance envelope. It is one of four reference verifiers (Go,
-TypeScript, Rust, Python). The Go implementation in `internal/aarp/` is the
-reference; this package ports **from** it so that, given the same envelope and
-the same trust file, every verifier emits byte-identical comparable output.
+Profile) v0.1 assurance envelope and the in-repo EvidenceReceipt v2 span
+conformance fixture. It is one of four reference verifiers (Go, TypeScript,
+Rust, Python). The Go implementation in `internal/aarp/` is the AARP reference;
+this package ports **from** it so that, given the same envelope and the same
+trust file, every verifier emits byte-identical comparable output.
 Cross-language divergence is the bug class the shared hostile corpus
 (`sdk/conformance/testdata/aarp-corpus/`) exists to kill.
 
@@ -34,6 +35,7 @@ rejection, so one bad parallel signature can neither mask nor poison a good one.
 
 ```
 python -m pipelock_aarp_verify aarp PATH --trust TRUST_JSON [--chain] [--json]
+python -m pipelock_aarp_verify receipt PATH --key PUBLIC_KEY_HEX [--json]
 ```
 
 - `PATH`: a single envelope (`*.aarp.json`) or, with `--chain`, a JSONL stream
@@ -42,6 +44,11 @@ python -m pipelock_aarp_verify aarp PATH --trust TRUST_JSON [--chain] [--json]
   (every signature is `unknown_key`).
 - `--json`: print the cross-language comparable output on stdout.
 - `--chain`: verify Rung-1 chain linkage instead of single-envelope appraisal.
+
+The `receipt` subcommand verifies an EvidenceReceipt v2 file against a pinned
+Ed25519 public key. It currently targets the shared `proxy_decision_with_spans`
+conformance fixture: JCS preimage, strict unknown-field rejection, and
+source-span HMAC commitment shape.
 
 Exit codes: `0` appraised / linked, `1` fatal / not linked, `2` I/O or
 trust-file error, `64` usage error. A fatal envelope with `--json` prints

@@ -278,6 +278,23 @@ jobs:
         # the conformance gate below, so no unpinned install command ever runs.
         run: pip install --require-hashes -r requirements.txt
 
+      - name: Python EvidenceReceipt v2 span smoke
+        working-directory: sdk/verifiers/python
+        run: |
+          PYTHONPATH=src python -m pipelock_aarp_verify receipt \
+            ../../../internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision_with_spans.json \
+            --key d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a \
+            --json > "$RUNNER_TEMP/python-v2-receipt.json"
+          python - "$RUNNER_TEMP/python-v2-receipt.json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              report = json.load(fh)
+          if report.get("valid") is not True:
+              raise SystemExit(f"Python v2 receipt verifier failed: {report}")
+          PY
+
       - name: Run AARP cross-language gate
         env:
           # All four verifiers implement --svid; require four-way agreement on the

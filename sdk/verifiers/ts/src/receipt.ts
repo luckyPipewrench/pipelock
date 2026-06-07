@@ -34,12 +34,21 @@ export async function runReceipt(pathname: string, signerKey: string): Promise<R
     return report;
   }
   const receipt = parseJSON<Receipt>(text, "receipt json");
-  report.action_id = receipt.action_record?.action_id;
-  report.verdict = receipt.action_record?.verdict;
-  report.transport = receipt.action_record?.transport;
-  report.signer_key = receipt.signer_key;
-  report.policy_hash = receipt.action_record?.policy_hash;
-  report.chain_seq = receipt.action_record?.chain_seq;
+  if (receipt.record_type === "evidence_receipt_v2") {
+    const payload = receipt.payload as { verdict?: string; transport?: string } | undefined;
+    report.action_id = receipt.event_id;
+    report.verdict = payload?.verdict;
+    report.transport = payload?.transport;
+    report.signer_key = keyHex;
+    report.chain_seq = receipt.chain_seq;
+  } else {
+    report.action_id = receipt.action_record?.action_id;
+    report.verdict = receipt.action_record?.verdict;
+    report.transport = receipt.action_record?.transport;
+    report.signer_key = receipt.signer_key;
+    report.policy_hash = receipt.action_record?.policy_hash;
+    report.chain_seq = receipt.action_record?.chain_seq;
+  }
   try {
     await verifyReceipt(receipt, keyHex);
     report.valid = true;

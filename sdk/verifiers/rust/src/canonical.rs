@@ -1,4 +1,5 @@
 use serde_json::{Map, Number, Value};
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone, Copy)]
 enum NestedKind {
@@ -142,6 +143,12 @@ pub fn canonical_json_string(value: &Value) -> String {
     go_html_escape(&serde_json::to_string(value).expect("serialize JSON value"))
 }
 
+pub fn canonicalize_jcs_value(value: &Value) -> Result<Vec<u8>, String> {
+    let mut out = String::new();
+    canonicalize_jcs_into(&mut out, value)?;
+    Ok(out.into_bytes())
+}
+
 fn canonical_json_bytes(value: &Value) -> Vec<u8> {
     canonical_json_string(value).into_bytes()
 }
@@ -229,6 +236,81 @@ fn normalize_maps(value: &Value) -> Value {
         }
         _ => value.clone(),
     }
+}
+
+fn canonicalize_jcs_into(out: &mut String, value: &Value) -> Result<(), String> {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(true) => out.push_str("true"),
+        Value::Bool(false) => out.push_str("false"),
+        Value::Number(number) => {
+            if number.is_i64() || number.is_u64() {
+                out.push_str(&number.to_string());
+            } else {
+                return Err(format!("float not allowed in canonicalization: {number}"));
+            }
+        }
+        Value::String(value) => out.push_str(&encode_jcs_string(value)),
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                canonicalize_jcs_into(out, item)?;
+            }
+            out.push(']');
+        }
+        Value::Object(object) => {
+            let mut pairs: Vec<(String, &Value)> = object
+                .iter()
+                .map(|(key, value)| (key.nfc().collect::<String>(), value))
+                .collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            for index in 1..pairs.len() {
+                if pairs[index].0 == pairs[index - 1].0 {
+                    return Err(format!("NFC collision on key {:?}", pairs[index].0));
+                }
+            }
+            out.push('{');
+            for (index, (key, value)) in pairs.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&encode_jcs_string(key));
+                out.push(':');
+                canonicalize_jcs_into(out, value)?;
+            }
+            out.push('}');
+        }
+    }
+    Ok(())
+}
+
+fn encode_jcs_string(s: &str) -> String {
+    let normalized: String = s.nfc().collect();
+    let mut out = String::with_capacity(normalized.len() + 2);
+    out.push('"');
+    for ch in normalized.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn go_html_escape(serialized: &str) -> String {

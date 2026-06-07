@@ -19,7 +19,9 @@ import (
 type receiptOptions struct {
 	signerKey string
 	evidenceBindingOptions
-	jsonOutput bool
+	jsonOutput       bool
+	recheckSource    string
+	recheckSpanIndex int
 }
 
 func newReceiptCmd() *cobra.Command {
@@ -48,6 +50,8 @@ with --key it verifies the Ed25519 signature against the pinned key.`,
 	cmd.Flags().StringVar(&opts.expectContractHash, "expect-contract", "", "EvidenceReceipt v2: require contract_hash")
 	cmd.Flags().StringVar(&opts.expectManifestHash, "expect-manifest", "", "EvidenceReceipt v2: require active_manifest_hash")
 	cmd.Flags().StringVar(&opts.expectPayloadKind, "expect-payload-kind", "", "EvidenceReceipt v2: require payload_kind")
+	cmd.Flags().StringVar(&opts.recheckSource, "recheck-source", "", "EvidenceReceipt v2 spans: source file containing the normalized/redacted source view input")
+	cmd.Flags().IntVar(&opts.recheckSpanIndex, "recheck-span-index", 0, "EvidenceReceipt v2 spans: source_spans index to recheck")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
 
 	return cmd
@@ -68,6 +72,8 @@ type receiptReport struct {
 	ContractHash       string `json:"contract_hash,omitempty"`
 	ActiveManifestHash string `json:"active_manifest_hash,omitempty"`
 	ChainSeq           uint64 `json:"chain_seq,omitempty"`
+	RecheckValid       *bool  `json:"recheck_valid,omitempty"`
+	RecheckView        string `json:"recheck_view,omitempty"`
 	Error              string `json:"error,omitempty"`
 }
 
@@ -94,7 +100,7 @@ func runReceipt(stdout, stderr io.Writer, target string, opts receiptOptions) er
 	case recordTypeEvidenceV2:
 		return runEvidenceReceipt(stdout, stderr, clean, data, keyHex, opts)
 	case recordTypeActionV1, "":
-		if opts.anySet() {
+		if opts.anySet() || opts.recheckSource != "" {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("EvidenceReceipt expectation flags require record_type=%s", recordTypeEvidenceV2))
 		}
 		return runActionReceipt(stdout, stderr, clean, data, keyHex, opts)
@@ -161,8 +167,19 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify evidence receipt: %w", err))
 	}
-	report.Valid = true
 	report.SignaturesVerified = sigVerified
+	if opts.recheckSource != "" {
+		result, recheckErr := recheckEvidenceReceiptSpan(r, opts.recheckSource, opts.recheckSpanIndex)
+		report.RecheckValid = &result.Valid
+		report.RecheckView = result.View
+		if recheckErr != nil {
+			report.Valid = false
+			report.Error = recheckErr.Error()
+			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("recheck evidence receipt: %w", recheckErr))
+		}
+	}
+	report.Valid = true
 	emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 	return nil
 }

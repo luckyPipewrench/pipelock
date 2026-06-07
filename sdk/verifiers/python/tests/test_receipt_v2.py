@@ -88,6 +88,6 @@ def test_receipt_cli_json(capsys) -> None:  # type: ignore[no-untyped-def]
 
 
 def test_receipt_cli_requires_key(capsys) -> None:  # type: ignore[no-untyped-def]
-	code = main(["receipt", str(VALID_SPANNED_V2), "--json"])
-	capsys.readouterr()
-	assert code == 64  # EXIT_USAGE
+    code = main(["receipt", str(VALID_SPANNED_V2), "--json"])
+    capsys.readouterr()
+    assert code == 64  # EXIT_USAGE

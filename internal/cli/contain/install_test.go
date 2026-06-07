@@ -176,6 +176,9 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		wrapperInvPath:   filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
 		toolsListPath:    filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
 		workspaceInvPath: filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		guardScriptPath:  filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
+		guardServiceUnit: filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
+		guardPathUnit:    filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
 		pipelockTarget:   filepath.Join(root, "usr", "local", "bin", "pipelock"),
 		proxyPort:        8888,
 	}
@@ -1494,12 +1497,12 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 22 steps total (20 install + 1 tools.list
-	// allow-list + 1 meta-wrapper). Changing this count is a documented
-	// breaking change for the dry-run / verify probe-4 inventory.
+	// Sanity: the install flow has 23 steps total (20 install + 1 tools.list
+	// allow-list + 1 credential guard + 1 meta-wrapper). Changing this count
+	// is a documented breaking change for the dry-run / verify probe-4 inventory.
 	steps := installSteps(installOpts{})
-	if len(steps) != 22 {
-		t.Errorf("installSteps count: got %d, want 22", len(steps))
+	if len(steps) != 23 {
+		t.Errorf("installSteps count: got %d, want 23", len(steps))
 	}
 }
 

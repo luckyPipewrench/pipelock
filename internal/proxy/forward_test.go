@@ -874,6 +874,42 @@ func TestForwardHTTPBlockedDomain(t *testing.T) {
 	}
 }
 
+func TestForwardHTTPBlocksNonAllowlistedGitPush(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.GitProtection.Enabled = true
+		cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
+	})
+	defer cleanup()
+
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   2 * time.Second,
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://github.com/acme/public.git/git-receive-pack", strings.NewReader("0000"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("forward git push request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", resp.StatusCode, string(body))
+	}
+	if !strings.Contains(string(body), "non-allowlisted repo") {
+		t.Fatalf("body missing git allowlist reason: %s", string(body))
+	}
+}
+
 // TestForwardHTTPBlocksEncodedSubdomainExfil proves transport parity for the
 // absolute-URI forward path: an encoded-subdomain exfil target is blocked at
 // the scan (pre-dial), matching the fetch and CONNECT paths.

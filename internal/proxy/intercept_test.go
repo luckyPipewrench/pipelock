@@ -3586,3 +3586,75 @@ func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.
 		t.Fatalf("Content-Length = %d, want rewritten body length %d", resp.ContentLength, len(got))
 	}
 }
+
+// TestInterceptBlocksNonAllowlistedGitPush proves transport parity for the
+// TLS-intercepted path: a git-receive-pack push to a repo outside
+// allowed_push_repos is blocked at the inner request, matching the forward
+// absolute-URI path (TestForwardHTTPBlocksNonAllowlistedGitPush). This guards
+// the wiring that depends on r.URL.Host being reconstructed from the CONNECT
+// target before evaluateGitPushAllowlist runs.
+func TestInterceptBlocksNonAllowlistedGitPush(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream reached for blocked git push")
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
+	proxy := interceptLiveLockProxy(emptyContractLoader(t), nil, m)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://github.com/acme/public.git/git-receive-pack", strings.NewReader("0000"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"github.com", req, proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "non-allowlisted repo") {
+		t.Fatalf("body missing git allowlist reason: %s", string(body))
+	}
+}
+
+// TestInterceptAllowsAllowlistedGitPush is the positive half of the parity
+// proof: a push to an allowlisted repo is not blocked by the git guard and
+// reaches the upstream.
+func TestInterceptAllowsAllowlistedGitPush(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
+	proxy := interceptLiveLockProxy(emptyContractLoader(t), nil, m)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://github.com/acme/private.git/git-receive-pack", strings.NewReader("0000"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"github.com", req, proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, string(body))
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}

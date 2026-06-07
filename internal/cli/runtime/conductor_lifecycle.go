@@ -81,6 +81,12 @@ func (s *Server) teardownConductor(reason string) {
 	}
 	s.conductorDown.Store(true)
 	cancel := s.conductorCancel
+	// Take ownership of the producer under the lock and clear the field so it is
+	// closed exactly once and never reused after teardown. conductorDown is
+	// already set, so a racing teardown bails at the guard above and a later
+	// hasConductorRuntime() check never sees the closed handle.
+	producer := s.conductorProducer
+	s.conductorProducer = nil
 	s.conductorLifeMu.Unlock()
 
 	// Stop the follower pollers. Their Run loops return context.Canceled, which
@@ -95,8 +101,8 @@ func (s *Server) teardownConductor(reason string) {
 	if s.recorder != nil {
 		s.recorder.SetObserver(nil)
 	}
-	if s.conductorProducer != nil {
-		_ = s.conductorProducer.Close()
+	if producer != nil {
+		_ = producer.Close()
 	}
 	if s.opts.Stderr != nil {
 		_, _ = fmt.Fprintf(s.opts.Stderr,

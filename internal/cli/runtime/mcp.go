@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -43,6 +44,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -132,8 +134,12 @@ func readHeaderFile(path string) ([]string, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("--header-file %q: not a regular file (mode=%s)", path, info.Mode())
 	}
-	if info.Mode().Perm()&0o037 != 0 {
-		return nil, fmt.Errorf("--header-file %q: permissions %04o reveal the header values to other users; restrict to 0600 or 0640", path, info.Mode().Perm())
+	// Unix-only gate: secperm.TooPermissive returns false on Windows, where Go
+	// reports the mode from the read-only attribute rather than the NTFS ACL.
+	// On Windows, restrict access with file ACLs instead; this check does not
+	// fire there, so the chmod-style message below is only ever seen on Unix.
+	if secperm.TooPermissive(info.Mode().Perm(), 0o037) {
+		return nil, fmt.Errorf("--header-file %q: permissions %04o reveal the header values to other users; restrict to 0600 or 0640 (Unix); on Windows restrict with file ACLs", path, info.Mode().Perm())
 	}
 	data, err := os.ReadFile(clean) //nolint:gosec // path is operator-supplied and cleaned + perm-gated above
 	if err != nil {
@@ -351,6 +357,8 @@ func mcpProxyCmd() *cobra.Command {
 	var sandboxStrict bool
 	var sandboxBestEffort bool
 	var sandboxWorkspace string
+	var captureOutput string
+	var captureEscrowKey string
 
 	cmd := &cobra.Command{
 		Use:   "proxy [flags] [-- COMMAND [ARGS...]]",
@@ -408,7 +416,15 @@ Environment passthrough (subprocess mode only):
 
 When flight_recorder.enabled is true in config, pipelock writes tamper-evident
 MCP evidence. If flight_recorder.signing_key_path is also set, pipelock emits
-signed action receipts for MCP decisions.`,
+signed action receipts for MCP decisions.
+
+Key-free evidence capture:
+  pipelock mcp proxy --capture-output ./evidence -- node server.js
+
+  --capture-output writes scan verdicts (DLP, injection, tool policy, CEE) as
+  evidence-*.jsonl without requiring a signing key, mirroring
+  'pipelock run --capture-output'. Captured tool arguments are DLP-redacted
+  unless flight_recorder.redact is set to false.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dashIdx := cmd.ArgsLenAtDash()
 			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
@@ -748,6 +764,37 @@ signed action receipts for MCP decisions.`,
 				contractAgent = captureProfile
 			}
 
+			// Key-free evidence capture (--capture-output): wire a
+			// capture.Writer as the CaptureObserver so DLP, injection,
+			// tool-policy, and CEE verdicts are written as evidence-*.jsonl
+			// without a signing key, mirroring `pipelock run --capture-output`.
+			// The signed receipt emitter above and this observer are
+			// independent evidence streams (different sinks), so both can run
+			// together. Built ONCE here; every transport's MCPProxyOpts is a
+			// value copy, so setting CaptureObs on each block below propagates
+			// it to stdio, sandbox-stdio, streamable-HTTP, HTTP-reverse, and WS.
+			if captureEscrowKey != "" && captureOutput == "" {
+				return fmt.Errorf("--capture-escrow-public-key requires --capture-output")
+			}
+			var captureObs capture.CaptureObserver
+			if captureOutput != "" {
+				var captureRedactFn recorder.RedactFunc
+				if cfg.FlightRecorder.Redact {
+					captureRedactFn = sc.ScanTextForDLP
+				}
+				cw, cwErr := buildCaptureWriter(captureOutput, captureEscrowKey, cfg.FlightRecorder.FileMode, captureRedactFn, mcpMetrics)
+				if cwErr != nil {
+					return fmt.Errorf("creating capture writer: %w", cwErr)
+				}
+				// capture.Writer is async and only drains its bounded queue on
+				// Close. Standalone MCP has no Server.cleanup(), so without this
+				// defer buffered evidence is dropped on normal return. Close is
+				// idempotent (sync.Once).
+				defer func() { _ = cw.Close() }()
+				captureObs = cw
+				cmd.PrintErrf("  Capture: %s (key-free evidence)\n", captureOutput)
+			}
+
 			toolAction := "disabled"
 			if toolCfg != nil {
 				toolAction = toolCfg.Action
@@ -814,6 +861,7 @@ signed action receipts for MCP decisions.`,
 						EnvelopeEmitter: envEmitter,
 						DoWCheck:        dowCheck,
 						ReceiptEmitter:  receiptEmitter,
+						CaptureObs:      captureObs,
 						MediaPolicy:     &cfg.MediaPolicy,
 						RedactMatcher:   mcpRedactMatcher,
 						RedactLimits:    cfg.Redaction.Limits.ToLimits(),
@@ -844,6 +892,7 @@ signed action receipts for MCP decisions.`,
 						Profile:         captureProfile,
 						Metrics:         mcpMetrics,
 						ReceiptEmitter:  receiptEmitter,
+						CaptureObs:      captureObs,
 						RedirectRT:      buildRedirectRT(cfg),
 						DoWCheck:        dowCheck,
 						EnvelopeEmitter: envEmitter,
@@ -878,6 +927,7 @@ signed action receipts for MCP decisions.`,
 					EnvelopeEmitter: envEmitter,
 					DoWCheck:        dowCheck,
 					ReceiptEmitter:  receiptEmitter,
+					CaptureObs:      captureObs,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
 					MediaPolicy:     &cfg.MediaPolicy,
@@ -1026,6 +1076,7 @@ signed action receipts for MCP decisions.`,
 					RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
 					EnvelopeEmitter: envEmitter,
 					ReceiptEmitter:  receiptEmitter,
+					CaptureObs:      captureObs,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
 					MediaPolicy:     &cfg.MediaPolicy,
@@ -1135,6 +1186,7 @@ signed action receipts for MCP decisions.`,
 				RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
 				EnvelopeEmitter: envEmitter,
 				ReceiptEmitter:  receiptEmitter,
+				CaptureObs:      captureObs,
 				IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 				ProvenanceCfg:   &cfg.MCPToolProvenance,
 				MediaPolicy:     &cfg.MediaPolicy,
@@ -1158,8 +1210,10 @@ signed action receipts for MCP decisions.`,
 	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
 	cmd.Flags().StringArrayVar(&rawHeaders, "header", nil, "extra HTTP header for upstream MCP server in --upstream HTTP mode (repeatable, format: 'Key: Value')")
-	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a 0o600 (or 0o640) file with extra HTTP headers, one per line as 'Key: Value' (comments with '#'); merged with --header")
+	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a headers file (one 'Key: Value' per line, '#' comments) merged with --header; on Unix it must be mode 0o600 or 0o640, on Windows restrict access with file ACLs")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
+	cmd.Flags().StringVar(&captureOutput, "capture-output", "", "directory for key-free evidence capture (evidence-*.jsonl); mirrors 'pipelock run --capture-output'")
+	cmd.Flags().StringVar(&captureEscrowKey, "capture-escrow-public-key", "", "X25519 public key (64 hex chars) to encrypt captured payload sidecars; requires --capture-output")
 	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + seccomp + network namespace, Linux only)")
 	cmd.Flags().BoolVar(&sandboxStrict, "sandbox-strict", false, "strict sandbox: error on missing layers, private /dev/shm, block clone3 (implies --sandbox)")
 	cmd.Flags().BoolVar(&sandboxBestEffort, "sandbox-best-effort", false, "degrade gracefully when namespace isolation is unavailable (implies --sandbox)")

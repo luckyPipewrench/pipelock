@@ -43,6 +43,37 @@ flight_recorder:
 The receipt-signing private key is loaded from
 `flight_recorder.signing_key_path`.
 
+### Key-free evidence capture (`--capture-output`)
+
+Signed action receipts require a signing key. To capture evidence **without** a
+key, use the `--capture-output` flag, available on both the HTTP proxy and the
+MCP proxy:
+
+```bash
+pipelock run --capture-output /var/lib/pipelock/evidence
+pipelock mcp proxy --capture-output /var/lib/pipelock/evidence -- node server.js
+```
+
+This writes `evidence-*.jsonl` for every scan verdict (DLP, injection,
+tool-policy, CEE) across all transports — including all MCP transports (stdio,
+streamable-HTTP, HTTP-reverse, WS-listener) — using the same on-disk format as
+the signed recorder, minus the signatures. Pass `--capture-escrow-public-key`
+(64 hex chars / 32 bytes) to encrypt payload sidecars. Captured payloads are
+DLP-redacted before they reach disk unless `flight_recorder.redact` is set to
+`false`. Signed receipts (`signing_key_path`) and key-free capture
+(`--capture-output`) are independent evidence streams and can run together.
+
+### Windows file-permission enforcement
+
+The signing-key, license, secrets, CA-key, salt, and `--header-file` loaders
+enforce strict file permissions on Unix as a fail-closed gate (a key readable or
+writable by group/other is rejected before it is read). On Windows this check is
+**skipped**: Go derives the file mode from the read-only attribute and never
+reflects the NTFS ACL, so the reported bits (`0666`/`0444`) are not
+security-meaningful — enforcing the Unix mask would reject every key. Enforce
+access control on Windows with NTFS ACLs at deployment time; Pipelock does not
+inspect them.
+
 ### Rotating the signing key
 
 Pipelock **rejects `flight_recorder.signing_key_path` changes at hot-reload time.** If you edit the config and SIGHUP (or rely on fsnotify), pipelock keeps the previously loaded key in memory, logs `WARNING: config reload: flight_recorder.signing_key_path changed — receipt chain cannot rotate at runtime, ignoring (restart required)`, and continues signing with the old key. This is intentional: rotating the key mid-run would break chain verification (consumers would see entries signed with two different public keys under one `chain_id`). To rotate safely:

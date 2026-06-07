@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	"gopkg.in/yaml.v3"
 )
 
@@ -189,7 +190,7 @@ func (c *Config) resolveLicenseKey(configDir string) error {
 		// Reject group-write/execute and all other access. Group-read
 		// (0o040) is allowed for k8s Secret volumes where fsGroup adds
 		// group-read automatically.
-		if info.Mode().Perm()&0o037 != 0 {
+		if secperm.TooPermissive(info.Mode().Perm(), 0o037) {
 			return fmt.Errorf("license_file %s is too permissive (mode %04o): restrict to 0600 or 0640",
 				c.LicenseFile, info.Mode().Perm())
 		}

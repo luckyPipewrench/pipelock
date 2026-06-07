@@ -592,6 +592,39 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		})
 	}
 
+	// Capture: record tool-policy verdict when policy matched. Mirrors the
+	// stdio path (ForwardScannedInput) so a tool-policy hit produces a
+	// mcp_tool_policy evidence entry on the HTTP transport too. Without this
+	// the HTTP path enforced policy but never captured the verdict — a
+	// transport-parity gap surfaced by the key-free capture work (#696).
+	if policyVerdict.Matched {
+		var policyFindings []capture.Finding
+		for _, r := range policyVerdict.Rules {
+			policyFindings = append(policyFindings, capture.Finding{
+				Kind:       capture.KindToolPolicy,
+				PolicyRule: r,
+				Action:     policyVerdict.Action,
+			})
+		}
+		obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
+			Subsurface:        "mcp_tool_policy",
+			Transport:         opts.Transport,
+			SessionID:         captureSessionID(opts.Transport),
+			SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+			ConfigHash:        opts.captureConfigHash(),
+			Profile:           opts.captureProfile(),
+			ActionClass:       captureActionClass,
+			Request: capture.CaptureRequest{
+				ToolName:     toolName,
+				ToolArgsJSON: string(frame.Args),
+				MCPMethod:    verdict.Method,
+			},
+			RawFindings:     policyFindings,
+			EffectiveAction: effectiveAction,
+			Outcome:         captureOutcome(effectiveAction, false),
+		})
+	}
+
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))

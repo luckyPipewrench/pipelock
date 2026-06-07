@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 )
 
 // Sentinel errors for salt resolution. All are errors.Is-comparable.
@@ -127,7 +129,7 @@ func loadSaltFile(rawPath string) ([]byte, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("learn salt file %q is not a regular file", cleanPath)
 	}
-	if fi.Mode().Perm()&0o077 != 0 {
+	if secperm.TooPermissive(fi.Mode().Perm(), 0o077) {
 		return nil, fmt.Errorf("%w: got mode 0o%03o for %q", ErrSaltMode, fi.Mode().Perm(), cleanPath)
 	}
 

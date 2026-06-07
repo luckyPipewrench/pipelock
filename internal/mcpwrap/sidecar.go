@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 )
 
 // SidecarOp is a deferred filesystem operation produced by WrapServer /
@@ -263,7 +265,7 @@ func commitHeaderSidecar(path string, body []byte) error {
 	if err != nil {
 		return fmt.Errorf("stat sidecar dir %s: %w", dir, err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if secperm.TooPermissive(info.Mode().Perm(), 0o077) {
 		return fmt.Errorf("sidecar dir %s is too permissive (%04o); restrict it to 0700", dir, info.Mode().Perm())
 	}
 

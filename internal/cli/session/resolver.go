@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/secperm"
 )
 
 // Environment variable names used by the resolver. Kept here so the
@@ -166,7 +167,10 @@ func checkConfigPerms(path string, stat func(string) (os.FileInfo, error)) error
 		return fmt.Errorf("stat config %s: %w", path, err)
 	}
 	mode := info.Mode().Perm()
-	if mode&0o177 != 0 {
+	// Skipped on Windows (secperm.TooPermissive returns false): Go reports the
+	// mode from the read-only attribute, not the NTFS ACL, so the bits are not
+	// security-meaningful. Unix behavior is unchanged (mode&0o177 != 0).
+	if secperm.TooPermissive(mode, 0o177) {
 		return fmt.Errorf("config file %s has group/world or owner-execute permission bits set (mode %o); restrict to 0o600 before using it as an admin API source", path, mode)
 	}
 	return nil

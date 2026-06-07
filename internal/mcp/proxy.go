@@ -379,6 +379,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
 					ActionClass:       captureMCPActionClass("", "tools/list"),
+					Request:           capture.CaptureRequest{RPCID: captureRPCID(toolResult.RPCID)},
 					RawFindings:       toolScanMatchesToFindings(toolResult.Matches),
 					EffectiveAction:   toolCaptureAction,
 					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean),
@@ -618,9 +619,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			ConfigHash:        opts.captureConfigHash(),
 			Profile:           opts.captureProfile(),
 			ActionClass:       captureMCPActionClass("", "resources/read"),
-			RawFindings:       responseMatchesToFindings(verdict.Matches, effectiveAction),
-			EffectiveAction:   effectiveAction,
-			Outcome:           captureOutcome(effectiveAction, false),
+			Request: capture.CaptureRequest{
+				RPCID: captureRPCID(verdict.ID),
+			},
+			RawFindings:     responseMatchesToFindings(verdict.Matches, effectiveAction),
+			EffectiveAction: effectiveAction,
+			Outcome:         captureOutcome(effectiveAction, false),
 		})
 	}
 

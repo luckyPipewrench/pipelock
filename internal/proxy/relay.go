@@ -50,14 +50,16 @@ func removeHopByHopHeaders(h http.Header) {
 }
 
 // bidirectionalCopy relays data between two connections with idle timeout.
-// The deadline is an absolute time computed once in handleConnect so the total
-// tunnel lifetime (including dial) never exceeds max_tunnel_seconds.
+// When deadline is non-zero, per-read deadlines are capped at that absolute
+// time; a zero deadline means the tunnel is governed by idle timeout only.
 // When ks is non-nil, the kill switch is checked after each read so activation
 // mid-stream terminates already-open tunnels immediately.
 // Returns the total bytes transferred in both directions.
 func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadline time.Time, ks *killswitch.Controller) int64 {
-	_ = client.SetDeadline(deadline)
-	_ = target.SetDeadline(deadline)
+	if !deadline.IsZero() {
+		_ = client.SetDeadline(deadline)
+		_ = target.SetDeadline(deadline)
+	}
 
 	var clientToTarget, targetToClient int64
 	done := make(chan struct{})
@@ -84,9 +86,10 @@ func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadl
 // tunnelBufSize is the buffer size for tunnel relay reads.
 const tunnelBufSize = 32 * 1024
 
-// copyWithIdleTimeout copies from src to dst, resetting the read deadline
-// on src after each successful read. The per-read deadline is capped at the
-// absolute deadline so tunnels cannot exceed max_tunnel_seconds while active.
+// copyWithIdleTimeout copies from src to dst, resetting the read deadline on
+// src after each successful read. When deadline is non-zero, the per-read
+// deadline is capped at that absolute time; otherwise active tunnels are
+// governed by idle timeout only.
 // When ks is non-nil, the kill switch is checked after each successful read
 // so activation mid-tunnel terminates the connection immediately.
 // Returns total bytes copied.
@@ -100,7 +103,7 @@ func copyWithIdleTimeout(dst, src net.Conn, idleTimeout time.Duration, deadline 
 		}
 
 		rd := time.Now().Add(idleTimeout)
-		if rd.After(deadline) {
+		if !deadline.IsZero() && rd.After(deadline) {
 			rd = deadline
 		}
 		_ = src.SetReadDeadline(rd)

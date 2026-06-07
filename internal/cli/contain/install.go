@@ -217,9 +217,16 @@ func installSteps(opts installOpts) []step {
 		stepWriteCombinedCABundle(),
 		stepInstallNFTRules(),
 		stepWriteToolsList(),
+		// undici shim must exist before the launch wrapper / profile script
+		// activate NODE_OPTIONS=--require, otherwise every node invocation
+		// would fail on a missing module.
+		stepWriteUndiciShim(),
 		stepWriteLaunchWrapper(),
 		stepWriteMetaWrapper(),
 		stepWriteToolWrappers(),
+		stepWriteUtilityWrappers(),
+		stepWriteProfileScript(),
+		stepWriteAgentToolConfigs(),
 		stepWriteWrapperInventory(),
 		stepInstallSudoers(),
 	}
@@ -1345,8 +1352,6 @@ func stepWriteLaunchWrapper() step {
 // Per the locked sudo-shape decision: per-tool wrappers do the outer
 // sudo, plk-launch already runs AS pipelock-agent, no nested sudo here.
 func renderLaunchWrapper(env *installEnv) string {
-	port := strconv.Itoa(env.proxyPort)
-	proxy := "http://127.0.0.1:" + port
 	return strings.Join([]string{
 		"#!/bin/bash",
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
@@ -1424,18 +1429,11 @@ func renderLaunchWrapper(env *installEnv) string {
 		`    exit 8`,
 		`fi`,
 		"",
-		"exec env \\",
-		"    HOME=/home/" + env.agentUserName + " \\",
-		"    HTTPS_PROXY=" + proxy + " \\",
-		"    HTTP_PROXY=" + proxy + " \\",
-		"    ALL_PROXY=" + proxy + " \\",
-		"    NO_PROXY=127.0.0.1,localhost \\",
-		"    NODE_EXTRA_CA_CERTS=" + env.caExportPath + " \\",
-		"    SSL_CERT_FILE=" + env.caBundlePath + " \\",
-		"    REQUESTS_CA_BUNDLE=" + env.caBundlePath + " \\",
-		"    CURL_CA_BUNDLE=" + env.caBundlePath + " \\",
-		`    PATH="$AGENT_PATH" \`,
-		`    "$TARGET" "$@"`,
+		// The runtime contract (proxy + CA across tool ecosystems, plus the
+		// node undici shim) is rendered from the single source of truth in
+		// runtime_contract.go so plk-launch, the profile.d script, and the
+		// pipelock-* wrappers never drift.
+		strings.Join(launchExecEnvLines(env), "\n"),
 		"",
 	}, "\n")
 }

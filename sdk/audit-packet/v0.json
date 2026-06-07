@@ -254,7 +254,49 @@
           "pattern":        { "type": "string" },
           "severity":       { "type": "string" },
           "policy_hash":    { "type": "string" },
-          "signer_key":     { "type": "string" }
+          "signer_key":     { "type": "string" },
+          "source_spans": {
+            "type": "array",
+            "description": "Optional display copy of EvidenceReceipt v2 source_spans. The signed receipt remains the authoritative proof.",
+            "items": {
+              "type": "object",
+              "required": [
+                "source_id",
+                "source_kind",
+                "normalized_view",
+                "pipelock_binary_digest",
+                "rules_bundle_digest",
+                "transform_profile",
+                "policy_hash",
+                "rule_id",
+                "match_hash",
+                "match_hash_alg",
+                "match_class"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "source_id": { "type": "string" },
+                "source_kind": {
+                  "type": "string",
+                  "enum": ["http_request_url", "http_response", "mcp_tool_result", "mcp_tool_args"]
+                },
+                "normalized_view": { "type": "string" },
+                "pipelock_binary_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+                "rules_bundle_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+                "transform_profile": { "type": "string" },
+                "policy_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+                "rule_id": { "type": "string" },
+                "bundle": { "type": "string" },
+                "bundle_version": { "type": "string" },
+                "char_offset": { "type": "integer", "minimum": 0 },
+                "char_length": { "type": "integer", "minimum": 1 },
+                "match_hash": { "type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$" },
+                "match_hash_alg": { "const": "hmac-sha256" },
+                "match_class": { "type": "string" },
+                "redacted_sample": { "type": "string" }
+              }
+            }
+          }
         }
       }
     },

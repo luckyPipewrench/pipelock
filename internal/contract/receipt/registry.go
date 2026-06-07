@@ -243,6 +243,9 @@ func ValidateSourceSpan(span SourceSpan) error {
 	if err := validateSHA256Digest("policy_hash", span.PolicyHash); err != nil {
 		return err
 	}
+	if !validTransformProfile(span.TransformProfile) {
+		return fmt.Errorf("%w: transform_profile=%q", ErrPayloadInvalidEnum, span.TransformProfile)
+	}
 	if span.MatchHashAlg != SourceSpanMatchHashAlgHMACSHA256 {
 		return fmt.Errorf("%w: match_hash_alg=%q", ErrPayloadInvalidEnum, span.MatchHashAlg)
 	}
@@ -267,6 +270,19 @@ func ValidateSourceSpan(span SourceSpan) error {
 		}
 	}
 	return nil
+}
+
+func validTransformProfile(profile string) bool {
+	const prefix = "pipelock-transform-v"
+	if !strings.HasPrefix(profile, prefix) || len(profile) == len(prefix) {
+		return false
+	}
+	for _, r := range strings.TrimPrefix(profile, prefix) {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func validSourceKind(kind string) bool {

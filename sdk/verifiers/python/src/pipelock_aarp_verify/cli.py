@@ -31,6 +31,7 @@ from .appraise import (
 )
 from .chain import comparable_chain, verify_chain
 from .envelope import unmarshal
+from .receipt import verify_receipt_file
 from .svid import SVIDConfigError, appraise_with_svid, load_svid_file
 
 ED25519_PUBLIC_KEY_SIZE = 32
@@ -232,6 +233,19 @@ def _emit_human(stdout: IO[str], ap: Any) -> None:
     stdout.write(f"  does_not_assert:    {ap.does_not_assert}\n")
 
 
+def _run_receipt(stdout: IO[str], target: str, key_hex: str, json_mode: bool) -> int:
+    report = verify_receipt_file(target, key_hex)
+    if json_mode:
+        stdout.write(json.dumps(report, separators=(",", ":"), ensure_ascii=False))
+        stdout.write("\n")
+    else:
+        status = "valid" if report.get("valid") else "invalid"
+        stdout.write(f"EvidenceReceipt v2: {status}\n")
+        if report.get("error"):
+            stdout.write(f"  error: {report['error']}\n")
+    return EXIT_OK if report.get("valid") else EXIT_GENERAL
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns the process exit code."""
     if argv is None:
@@ -259,12 +273,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="PATH is a JSONL stream; verify Rung-1 chain linkage",
     )
+    receipt_p = sub.add_parser("receipt", help="verify an EvidenceReceipt v2 receipt")
+    receipt_p.add_argument("path", help="path to an EvidenceReceipt v2 JSON file")
+    receipt_p.add_argument("--key", required=True, help="pinned Ed25519 public key hex")
+    receipt_p.add_argument("--json", action="store_true", help="emit JSON report")
 
     try:
         args = parser.parse_args(argv)
     except SystemExit:
         # argparse exits 2 on usage error; the gate expects 64 for usage.
         return EXIT_USAGE
+
+    if args.command == "receipt":
+        return _run_receipt(sys.stdout, args.path, args.key, args.json)
 
     if args.command != "aarp":
         parser.print_usage(sys.stderr)

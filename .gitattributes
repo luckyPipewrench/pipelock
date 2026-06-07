@@ -1,0 +1,9 @@
+# This file itself: text with LF (avoids a self-warning on Windows
+# checkouts where core.autocrlf would otherwise convert it to CRLF).
+.gitattributes text eol=lf
+
+# Test fixtures are byte-compared in golden tests. Force LF in the
+# working tree even when the user's core.autocrlf is true; otherwise
+# Windows checkouts get CRLF and tests fail byte-for-byte against
+# the LF-committed goldens without any real content drift.
+**/testdata/** text eol=lf

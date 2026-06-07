@@ -113,25 +113,7 @@ func BuildProxyDecisionReceipt(in ProxyDecisionInput) (contractreceipt.EvidenceR
 		return contractreceipt.EvidenceReceipt{}, fmt.Errorf("%w: marshal payload: %w", ErrInvalidProxyDecisionInput, err)
 	}
 
-	receipt := contractreceipt.EvidenceReceipt{
-		RecordType:       contractreceipt.RecordTypeEvidenceV2,
-		ReceiptVersion:   2,
-		PayloadKind:      contractreceipt.PayloadProxyDecision,
-		Canonicalization: contractreceipt.DefaultCanonicalizationProfile(),
-		Crit:             contractreceipt.CritForPayloadKind(contractreceipt.PayloadProxyDecision),
-		EventID:          in.EventID,
-		Timestamp:        in.Timestamp,
-		Principal:        in.Principal,
-		Actor:            in.Actor,
-		DelegationChain:  append([]string(nil), in.DelegationChain...),
-		ChainSeq:         in.ChainSeq,
-		ChainPrevHash:    in.ChainPrevHash,
-		Payload:          json.RawMessage(body),
-	}
-	if in.ResolvedContract != nil {
-		receipt = in.ResolvedContract.ReceiptContext().StampReceipt(receipt)
-	}
-	return receipt, nil
+	return buildEvidenceReceiptEnvelope(in, contractreceipt.PayloadProxyDecision, body), nil
 }
 
 // BuildProxyDecisionWithSpansReceipt turns a runtime Decision plus
@@ -155,12 +137,20 @@ func BuildProxyDecisionWithSpansReceipt(
 		return contractreceipt.EvidenceReceipt{}, fmt.Errorf("%w: marshal payload: %w", ErrInvalidProxyDecisionInput, err)
 	}
 
+	return buildEvidenceReceiptEnvelope(in, contractreceipt.PayloadProxyDecisionWithSpans, body), nil
+}
+
+func buildEvidenceReceiptEnvelope(
+	in ProxyDecisionInput,
+	kind contractreceipt.PayloadKind,
+	body []byte,
+) contractreceipt.EvidenceReceipt {
 	receipt := contractreceipt.EvidenceReceipt{
 		RecordType:       contractreceipt.RecordTypeEvidenceV2,
 		ReceiptVersion:   2,
-		PayloadKind:      contractreceipt.PayloadProxyDecisionWithSpans,
+		PayloadKind:      kind,
 		Canonicalization: contractreceipt.DefaultCanonicalizationProfile(),
-		Crit:             contractreceipt.CritForPayloadKind(contractreceipt.PayloadProxyDecisionWithSpans),
+		Crit:             contractreceipt.CritForPayloadKind(kind),
 		EventID:          in.EventID,
 		Timestamp:        in.Timestamp,
 		Principal:        in.Principal,
@@ -173,7 +163,7 @@ func BuildProxyDecisionWithSpansReceipt(
 	if in.ResolvedContract != nil {
 		receipt = in.ResolvedContract.ReceiptContext().StampReceipt(receipt)
 	}
-	return receipt, nil
+	return receipt
 }
 
 func buildCommittedSourceSpans(eventID string, spanHMACKey []byte, evidence []SourceSpanEvidence) ([]contractreceipt.SourceSpan, error) {

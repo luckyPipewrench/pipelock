@@ -2,8 +2,18 @@
 name = "pipelock-verifier-rs"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.95"
 license = "Apache-2.0"
-publish = false
+description = "Reference Rust verifier for Pipelock signed agent-egress receipts (Audit Packet v0, ActionReceipt v1, EvidenceReceipt v2)."
+repository = "https://github.com/luckyPipewrench/pipelock"
+homepage = "https://pipelab.org/learn/action-receipt-spec/"
+documentation = "https://docs.rs/pipelock-verifier-rs"
+readme = "README.md"
+keywords = ["pipelock", "verifier", "ed25519", "receipt", "attestation"]
+categories = ["command-line-utilities", "cryptography"]
+# Restrict publishing to crates.io only (was `publish = false` while in-repo;
+# now an explicit allowlist so a stray `cargo publish` can't target a wrong registry).
+publish = ["crates-io"]
 build = "build.rs"
 
 [[bin]]

@@ -3,7 +3,13 @@ use jsonschema::{Draft, JSONSchema};
 use serde_json::Value;
 use std::sync::LazyLock;
 
-static SCHEMA: &str = include_str!("../../../audit-packet/v0.json");
+// Embedded at compile time from the in-crate vendored copy of the canonical
+// Audit Packet v0 schema. The crate must be self-contained for `cargo publish`
+// (cargo only packages files inside the crate root), so the schema lives here
+// rather than at sdk/audit-packet/v0.json. The vendored copy is kept
+// byte-identical to the canonical source by the drift guard in verifiers.yaml
+// (re-vendor with: cp sdk/audit-packet/v0.json sdk/verifiers/rust/audit-packet-v0.json).
+static SCHEMA: &str = include_str!("../audit-packet-v0.json");
 static COMPILED_SCHEMA: LazyLock<JSONSchema> = LazyLock::new(|| {
     let schema: Value = serde_json::from_str(SCHEMA).expect("embedded schema parses");
     JSONSchema::options()

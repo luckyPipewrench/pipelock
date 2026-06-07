@@ -6,6 +6,23 @@ fixture.
 
 ## Install
 
+From npm (published as [`@pipelock/verifier-ts`](https://www.npmjs.com/package/@pipelock/verifier-ts)):
+
+```bash
+# Global CLI:
+npm install -g @pipelock/verifier-ts
+pipelock-verifier-ts receipt receipt.json --key <hex>
+
+# Or as a project dependency (CLI available via npx):
+npm install @pipelock/verifier-ts
+npx pipelock-verifier-ts receipt receipt.json --key <hex>
+```
+
+The Audit Packet v0 schema is bundled in the package, so verification works
+fully offline with no network access.
+
+### Build from source
+
 ```bash
 npm install
 npm run build

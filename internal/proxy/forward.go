@@ -949,6 +949,26 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if gitPush := evaluateGitPushAllowlist(cfg.GitProtection, r.URL); gitPush.Block {
+		p.logger.LogBlocked(actx, "git_protection", gitPush.Reason)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     "git_protection",
+			Pattern:   gitPush.Reason,
+			Transport: "forward",
+			Method:    r.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		p.metrics.RecordBlocked(r.URL.Hostname(), "git_protection", time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.RequestPolicyDeny, "git_protection"),
+			"blocked: "+gitPush.Reason, http.StatusForbidden)
+		return
+	}
+
 	if forwardTaint.Result.Decision == session.PolicyAsk || forwardTaint.Result.Decision == session.PolicyBlock {
 		p.logger.LogTaintDecision(
 			actx,

@@ -281,9 +281,33 @@ func workspaceACLCommands(workspace, agentUser, mode string) []workspaceCommand 
 	}
 	commands = append(commands,
 		workspaceCommand{name: "setfacl", args: []string{"-R", "-m", "u:" + agentUser + ":" + perms, workspace}},
-		workspaceCommand{name: "find", args: []string{workspace, "-type", "d", "-exec", "setfacl", "-m", "d:u:" + agentUser + ":" + perms, "{}", "+"}},
+		workspaceCommand{name: "find", args: []string{workspace, "-mindepth", "1", "-type", "d", "-exec", "setfacl", "-m", "d:u:" + agentUser + ":" + perms, "{}", "+"}},
 	)
+	commands = append(commands, credentialLockCommands(workspace, agentUser)...)
 	return commands
+}
+
+func credentialLockCommands(root, agentUser string) []workspaceCommand {
+	matchArgs := credentialFindMatchArgs()
+	findSetfacl := append([]string{root, "-type", "f"}, matchArgs...)
+	findSetfacl = append(findSetfacl, "-exec", "setfacl", "-x", "u:"+agentUser, "{}", "+")
+	findChmod := append([]string{root, "-type", "f"}, matchArgs...)
+	findChmod = append(findChmod, "-exec", "chmod", "0600", "{}", "+")
+	return []workspaceCommand{
+		{name: "find", args: findSetfacl},
+		{name: "find", args: findChmod},
+	}
+}
+
+func credentialFindMatchArgs() []string {
+	return []string{
+		"(",
+		"-name", "auth.json",
+		"-o", "-name", ".claude.json",
+		"-o", "-name", ".credentials.json",
+		"-o", "-name", "*.token",
+		")",
+	}
 }
 
 func workspaceRevokeCommands(workspace, agentUser string, keepAncestors map[string]bool, workspaceExists bool) []workspaceCommand {

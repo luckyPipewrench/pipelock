@@ -752,3 +752,77 @@ func TestActionRemoveNFTRules_DropsAndCleans(t *testing.T) {
 		t.Errorf("bak not removed")
 	}
 }
+
+func TestRenderCredentialGuardScriptLocksCredentialNames(t *testing.T) {
+	body := renderCredentialGuardScript("pipelock-agent", "/home/operator")
+	for _, want := range []string{
+		"AGENT_USER='pipelock-agent'",
+		"lock_home_root '/home/operator'",
+		"lock_matches \"$1\" -maxdepth 1",
+		"setfacl -m \"u:${AGENT_USER}:--x\" \"$root\"",
+		"-name auth.json",
+		"-name .claude.json",
+		"-name .credentials.json",
+		"-name '*.token'",
+		"setfacl -x \"u:${AGENT_USER}\"",
+		"chmod 0600",
+		"lock_config_root '/home/operator/.codex'",
+	} {
+		want := want
+		t.Run(want, func(t *testing.T) {
+			if !strings.Contains(body, want) {
+				t.Fatalf("credential guard script missing %q:\n%s", want, body)
+			}
+		})
+	}
+}
+
+func TestStepWriteCredentialGuardWritesAndEnablesPathUnit(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	step := stepWriteCredentialGuard()
+	changed, err := step.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply credential guard: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected credential guard apply to report changed")
+	}
+	for _, path := range []string{env.guardScriptPath, env.guardServiceUnit, env.guardPathUnit} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s written: %v", path, err)
+		}
+	}
+	pathUnit, err := os.ReadFile(env.guardPathUnit)
+	if err != nil {
+		t.Fatalf("read path unit: %v", err)
+	}
+	for _, want := range []string{
+		"PathChanged=/home/operator",
+		"PathModified=/home/operator/.claude.json",
+		"PathExistsGlob=/home/operator/*.token",
+		"PathChanged=/home/operator/.codex",
+	} {
+		want := want
+		t.Run(want, func(t *testing.T) {
+			if !strings.Contains(string(pathUnit), want) {
+				t.Fatalf("path unit missing %q:\n%s", want, string(pathUnit))
+			}
+		})
+	}
+	if len(runner.calls) < 3 {
+		t.Fatalf("credential guard calls = %v, want guard run, daemon-reload, and enable", runner.calls)
+	}
+	if runner.calls[len(runner.calls)-3].name != env.guardScriptPath {
+		t.Fatalf("missing initial credential guard run: %+v", runner.calls)
+	}
+	if runner.calls[len(runner.calls)-2].name != testSystemctl ||
+		!containsArg(runner.calls[len(runner.calls)-2].args, "daemon-reload") {
+		t.Fatalf("missing daemon-reload call: %+v", runner.calls)
+	}
+	if runner.calls[len(runner.calls)-1].name != testSystemctl ||
+		!containsArg(runner.calls[len(runner.calls)-1].args, "enable") ||
+		!containsArg(runner.calls[len(runner.calls)-1].args, "--now") ||
+		!containsArg(runner.calls[len(runner.calls)-1].args, "pipelock-cred-guard.path") {
+		t.Fatalf("missing enable --now path unit call: %+v", runner.calls)
+	}
+}

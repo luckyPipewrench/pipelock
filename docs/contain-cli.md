@@ -221,6 +221,10 @@ sudo pipelock contain grant-workspace /home/alice/src/my-project --mode read-wri
 
 The command resolves symlinks, requires the target to be an existing directory, rejects protected system prefixes such as `/`, `/etc`, `/usr`, `/var`, `/proc`, `/sys`, and `/root` by default, and records the grant in `/etc/pipelock/contain/workspaces.json` so later revocation knows which parent traversal ACLs are still needed.
 
+Default ACLs are applied only below the granted directory, not on the directory root. That keeps config roots such as `~/.codex` or `~/.claude` traversable without making future root-level credential files inherit agent-read. During every grant, credential-shaped files named `auth.json`, `.claude.json`, `.credentials.json`, or `*.token` are stripped of the contained agent ACL and chmodded to `0600`.
+
+`pipelock contain install` also installs a root-managed credential guard (`pipelock-cred-guard.path` / `.service`) that watches the operator's home directory, `.claude`, `.claude-cc2`, and `.codex` roots and re-applies the same credential lock if a later tool recreates or widens those files. The home-directory pass is depth-limited to top-level credential files such as `~/.claude.json`.
+
 Flags:
 
 | Flag | Default | Purpose |

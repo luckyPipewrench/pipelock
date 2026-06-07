@@ -65,6 +65,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("license key: %w", err)
 	}
 	cfg.resolveLicenseIntermediate(filepath.Dir(path))
+	cfg.resolveLicenseRuntimeVerification()
 
 	// Soft-gate premium features: disable agents section if no license key.
 	if EnforceLicenseGateFunc != nil {
@@ -156,6 +157,25 @@ func (c *Config) resolveLicenseIntermediate(configDir string) {
 	c.LicenseIntermediateFile = p
 	c.LicenseIntermediateCert = data
 	c.LicenseIntermediateLoadError = ""
+}
+
+// resolveLicenseRuntimeVerification folds the env-provided CRL path and verifier
+// public key into the Config when not set inline, mirroring the fallbacks that
+// VerifyFleetWithIntermediate / checkAssessLicense already apply at startup. This
+// keeps runtime license enforcement (CRL watcher, expiry timer, reload
+// re-verification — all of which read the resolved Config, not the env) in sync
+// with startup verification. Inline config values win; env is a fallback only.
+func (c *Config) resolveLicenseRuntimeVerification() {
+	if c.LicenseCRLFile == "" {
+		if env := strings.TrimSpace(os.Getenv(EnvLicenseCRLFile)); env != "" {
+			c.LicenseCRLFile = env
+		}
+	}
+	if c.LicensePublicKey == "" {
+		if env := strings.TrimSpace(os.Getenv(EnvLicensePublicKey)); env != "" {
+			c.LicensePublicKey = env
+		}
+	}
 }
 
 // resolveLicenseKey populates LicenseKey from the highest-priority source:

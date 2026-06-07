@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -114,7 +115,22 @@ type Server struct {
 	conductorRemoteKill conductorRunner
 	conductorBundle     conductorRunner
 	conductorProducer   conductorCloser
-	approver            *hitl.Approver
+
+	// conductorLifeMu guards conductorCancel. teardownConductor may be
+	// invoked concurrently from the runtime CRL watcher and the config
+	// reload path, so the cancel func is published and read under the lock.
+	conductorLifeMu sync.Mutex
+	conductorCancel context.CancelFunc
+	// conductorDown is set by teardownConductor when a runtime fleet-license
+	// revocation, expiry, or downgrade stops the follower-side Conductor
+	// runtime. It gates ApplyConductorPolicyBundle (no further policy bundles
+	// apply once down) and makes teardown idempotent. Losing the paid fleet
+	// entitlement stops Conductor but never the proxy/detection path.
+	// Conductor stays down until process restart, matching the restart-only
+	// conductor invariant (a reload cannot re-activate it).
+	conductorDown atomic.Bool
+
+	approver *hitl.Approver
 
 	// lastReloadHash / lastReloadAt dedup fsnotify + SIGHUP stacking
 	// inside Reload. Two stacked Changes() events with the same hash

@@ -13,6 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -162,6 +163,23 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			!bytes.Equal(oldCfg.LicenseIntermediateCert, newCfg.LicenseIntermediateCert) ||
 			oldCfg.LicenseIntermediateLoadError != newCfg.LicenseIntermediateLoadError
 
+		// Parity with agents: re-verify the fleet entitlement on a
+		// license-input reload. EnforceLicenseGate (run during Load) strips
+		// agents when the new license is invalid, but it never touches the
+		// follower-side Conductor runtime. Without this, a reload pointing at a
+		// revoked, expired, or fleet-downgraded license would leave a running
+		// Conductor follower participating until restart. Evaluate against the
+		// NEW license inputs here, BEFORE the branch below preserves the old
+		// values as restart-only; tear down after the branch runs.
+		conductorFleetLost := false
+		if oldCfg.Conductor.Enabled && (agentsRevokedByLicense || licenseInputsChanged) {
+			if _, ferr := license.VerifyFleetWithIntermediate(
+				newCfg.LicenseKey, newCfg.LicensePublicKey, newCfg.LicenseCRLFile, newCfg.LicenseIntermediateFile,
+			); ferr != nil {
+				conductorFleetLost = true
+			}
+		}
+
 		if agentsRevokedByLicense {
 			// License gate disabled agents on reload. Shut down
 			// already-bound listener servers so the agent ports
@@ -189,6 +207,12 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		} else if AgentListenersChanged(oldCfg, newCfg) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
 			PreserveAgentListeners(oldCfg, newCfg)
+		}
+		if conductorFleetLost {
+			// New license inputs no longer carry a valid fleet entitlement:
+			// stop the running Conductor follower fail-closed. Detection keeps
+			// running; Conductor stays down until restart.
+			s.teardownConductor("reload revoked fleet entitlement")
 		}
 		// Carry forward runtime-derived license expiry.
 		// LicenseExpiresAt is set by EnforceLicenseGate at startup,

@@ -1,7 +1,9 @@
 # Tier Gating Audit Matrix
 
 This matrix records the v2.7 runtime entitlement audit for paid Pipelock
-surfaces. It was audited against local `origin/main` at `521cdbbd`.
+surfaces. Originally audited at `521cdbbd`; the follower-side Conductor
+revocation parity gap described in "v2.7 update: Conductor live revocation"
+(below) was closed during the 2026-06-07 v2.7 release-hardening pass.
 
 Rule: detection, blocking, scanning, verification, and single-agent enforcement
 stay free. Paid code must fail closed at runtime with `License.HasFeature`, not
@@ -45,3 +47,42 @@ Free assessment summary artifacts are intentionally ungated: unlicensed or
 under-tiered users receive `summary.json`/`summary.html` without a paid signed
 assessment artifact. This is tested by `TestAssessFinalize_Unlicensed_Summary`
 and `TestAssess_EndToEnd_Unlicensed`.
+
+## v2.7 update: Conductor live revocation (parity with agents)
+
+The original audit recorded the follower-side Conductor runtime (Enterprise
+`fleet` feature) as start-gated and restart-only: the fleet license was verified
+at startup, and a config reload could not activate Conductor, but a license
+revoked/expired/downgraded at runtime left an already-running follower
+participating until process restart. Agent listeners (`agents` feature) did not
+have this gap — they are torn down live by `EnforceLicenseGate` on a revocation
+reload and by the runtime CRL watcher. v2.7 closes the asymmetry so the fleet
+feature enforces revocation at runtime exactly like agents do:
+
+- The runtime CRL watcher now starts when `conductor.enabled` (not only when
+  agent listeners exist) and, on a fail-closed CRL result, tears down the
+  Conductor runtime as well as agent listeners.
+- Config load now folds the env-provided CRL path and verifier public key
+  (`PIPELOCK_LICENSE_CRL_FILE`, `PIPELOCK_LICENSE_PUBLIC_KEY`) into the resolved
+  config (inline values still win), so an env-supplied CRL is enforced at
+  runtime by the watcher, not only at startup by `VerifyFleet`. This closes a
+  pre-existing env-CRL fail-open that affected agent listeners too.
+- The config reload path re-verifies the fleet entitlement on a license-input
+  change and tears down Conductor when the new license is revoked, expired, or
+  no longer carries `fleet`.
+- The license-expiry timer stops the Conductor runtime on expiry.
+- Teardown cancels the follower pollers, detaches the durable-audit observer,
+  closes the audit producer, and blocks further `ApplyConductorPolicyBundle`
+  calls — while leaving the proxy/detection path running (losing a paid fleet
+  entitlement never disables free detection). Conductor stays down until
+  restart; a reload still cannot re-activate it.
+
+Tests: `TestRefreshLicenseCRL_RevokedTearsDownConductor`,
+`TestReload_FleetDowngradeTearsDownConductor`,
+`TestExpireLicensedRuntime_TearsDownConductor`,
+`TestTeardownConductor_StopsRuntimeAndIsIdempotent`,
+`TestTeardownConductor_NoopWhenNotRunning`,
+`TestApplyConductorPolicyBundle_FailsAfterTeardown`,
+`TestTeardownConductor_BeforeCancelPublishedFailsClosed`, the env-CRL fold
+`TestLicenseRuntimeVerificationFromEnv`, and the negative control
+`TestReload_NoLicenseChangeKeepsConductor`.

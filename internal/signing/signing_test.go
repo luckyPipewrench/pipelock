@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -185,6 +186,9 @@ func TestSaveLoadSignature_RoundTrip(t *testing.T) {
 }
 
 func TestSaveSignature_Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666")
+	}
 	dir := t.TempDir()
 	sigPath := filepath.Join(dir, "test.sig")
 
@@ -326,6 +330,9 @@ func TestSaveLoadPrivateKeyFile_RoundTrip(t *testing.T) {
 }
 
 func TestSavePrivateKeyFile_Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666")
+	}
 	_, priv, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -345,6 +352,9 @@ func TestSavePrivateKeyFile_Permissions(t *testing.T) {
 }
 
 func TestSavePublicKeyFile_Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666")
+	}
 	pub, _, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -400,7 +410,9 @@ func TestAtomicWrite_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o644 {
+	// Mode-bit assertion is meaningless on Windows; the content
+	// round-trip above still verifies cross-platform behavior.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o644 {
 		t.Errorf("permissions = %04o, want 0644", info.Mode().Perm())
 	}
 }
@@ -424,7 +436,9 @@ func TestAtomicWrite_OverwritesExisting(t *testing.T) {
 		t.Fatalf("expected 'second', got %q", got)
 	}
 	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
+	// Mode-bit assertion is meaningless on Windows; overwrite content
+	// correctness above still covers cross-platform behavior.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("permissions = %04o, want 0600", info.Mode().Perm())
 	}
 }
@@ -462,6 +476,9 @@ func TestLoadSignature_WrongLength(t *testing.T) {
 }
 
 func TestLoadPrivateKeyFile_FailsOnLoosePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("LoadPrivateKeyFile's permission check uses Unix mode bits; Windows NTFS ACLs are not exercised by os.Chmod")
+	}
 	_, priv, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -488,6 +505,9 @@ func TestLoadPrivateKeyFile_FailsOnLoosePermissions(t *testing.T) {
 }
 
 func TestLoadPrivateKeyFile_GoodPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("LoadPrivateKeyFile's permission check uses Unix mode bits; Windows NTFS ACLs are not exercised by os.Chmod")
+	}
 	_, priv, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -545,6 +565,9 @@ func TestLoadPrivateKeyFile_GroupReadAllowed(t *testing.T) {
 // TestLoadPrivateKeyFile_GroupWriteRejected verifies that group-write
 // is still rejected even though group-read is allowed.
 func TestLoadPrivateKeyFile_GroupWriteRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("LoadPrivateKeyFile's group-write rejection uses Unix mode bits; Windows has no equivalent")
+	}
 	_, priv, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -567,6 +590,9 @@ func TestLoadPrivateKeyFile_GroupWriteRejected(t *testing.T) {
 // TestLoadPrivateKeyFile_GroupExecuteRejected verifies that group-execute
 // is rejected. Group-execute on a key file is dangerous.
 func TestLoadPrivateKeyFile_GroupExecuteRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("LoadPrivateKeyFile's group-execute rejection uses Unix mode bits; Windows has no equivalent")
+	}
 	_, priv, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -590,6 +616,9 @@ func TestLoadPrivateKeyFile_GroupExecuteRejected(t *testing.T) {
 // properly-permissioned key files are resolved and loaded. K8s Secret
 // volumes mount all files as symlinks.
 func TestLoadPrivateKeyFile_SymlinkAllowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege which non-admin shells lack")
+	}
 	_, priv, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -616,6 +645,9 @@ func TestLoadPrivateKeyFile_SymlinkAllowed(t *testing.T) {
 // even though symlinks are followed, the resolved file must still
 // have proper permissions.
 func TestLoadPrivateKeyFile_SymlinkToLoosePermsRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege; the loose-permission check also uses Unix mode bits")
+	}
 	_, priv, _ := GenerateKeyPair()
 
 	dir := t.TempDir()
@@ -660,6 +692,9 @@ func TestSaveSignature_BadDirectory(t *testing.T) {
 }
 
 func TestLoadPrivateKeyFile_StatOKButUnreadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod 0o000 does not block reads on Windows (NTFS ACLs, not Unix mode bits)")
+	}
 	// Save a valid key, then remove read permission.
 	// os.Stat succeeds (doesn't need read perm), but os.ReadFile fails.
 	_, priv, _ := GenerateKeyPair()
@@ -686,6 +721,9 @@ func TestLoadPrivateKeyFile_StatOKButUnreadable(t *testing.T) {
 }
 
 func TestAtomicWrite_ReadOnlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod 0o500 does not block directory writes on Windows (NTFS ACLs, not Unix mode bits)")
+	}
 	dir := t.TempDir()
 	subdir := filepath.Join(dir, "readonly")
 	if err := os.MkdirAll(subdir, 0o700); err != nil {

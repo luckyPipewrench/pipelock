@@ -49,6 +49,19 @@ func TestDefaultInstallEnvWiresContainmentDefaults(t *testing.T) {
 	}
 }
 
+func TestRenderNFTRulesAddsClassedRawEgressLogs(t *testing.T) {
+	body := renderNFTRules(1000, 1001, 1002, 8888, defaultNFTTable, defaultNFTChain)
+	for _, want := range []string{
+		`udp dport 53 counter log prefix "pipelock-contain class=direct_dns_blocked " drop`,
+		`tcp dport 53 counter log prefix "pipelock-contain class=direct_dns_blocked " drop`,
+		`counter log prefix "pipelock-contain class=not_routing_through_pipelock " drop`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("nft rules missing %q:\n%s", want, body)
+		}
+	}
+}
+
 const containInstallOperatorUser = "operator"
 
 // fakeCall records one invocation through env.runCmd.
@@ -855,7 +868,7 @@ func TestRenderNFTRules_ContainsExpectedRules(t *testing.T) {
 		"meta skuid 1000 accept",
 		"meta skuid 988 accept",
 		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
-		"meta skuid 987 drop",
+		`meta skuid 987 counter log prefix "pipelock-contain class=not_routing_through_pipelock " drop`,
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(body, s) {

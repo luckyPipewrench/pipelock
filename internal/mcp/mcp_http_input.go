@@ -394,6 +394,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			Request: capture.CaptureRequest{
 				ToolName:  toolName,
 				MCPMethod: methodToolsCall,
+				RPCID:     captureRPCID(verdict.ID),
 			},
 			RawFindings: []capture.Finding{{
 				Kind:       capture.KindSessionBinding,
@@ -437,6 +438,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
 				ActionClass:       captureActionClass,
+				Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,
@@ -585,6 +587,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			ConfigHash:        opts.captureConfigHash(),
 			Profile:           opts.captureProfile(),
 			ActionClass:       captureActionClass,
+			Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
 			TransformKind:     capture.TransformJoinedFields,
 			RawFindings:       rawFindings,
 			EffectiveAction:   effectiveAction,
@@ -618,6 +621,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ToolName:     toolName,
 				ToolArgsJSON: string(frame.Args),
 				MCPMethod:    verdict.Method,
+				RPCID:        captureRPCID(verdict.ID),
 			},
 			RawFindings:     policyFindings,
 			EffectiveAction: effectiveAction,
@@ -787,6 +791,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
 				ActionClass:       captureActionClass,
+				Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,

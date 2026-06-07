@@ -6,6 +6,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -17,6 +18,9 @@ import (
 // handling for install must treat symlinks as an error, not a hint to
 // follow.
 func TestInstall_RejectsSymlinkDest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege which non-admin shells lack; symlink rejection is verified on Unix CI")
+	}
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -81,6 +85,9 @@ func TestInstall_RejectsNonRegularDest(t *testing.T) {
 // branch, install would silently swallow a meaningful filesystem
 // signal.
 func TestInstall_StatErrorSurfaces(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows mkdir returns 'cannot find path' before install reaches its stat-destination check; this test asserts POSIX ENOTDIR-specific error ordering")
+	}
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -127,7 +134,11 @@ func TestInstall_HappyPath(t *testing.T) {
 	if !info.Mode().IsRegular() {
 		t.Errorf("dest mode = %v, want regular file", info.Mode())
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	// Windows files don't carry an executable bit (executability is inferred
+	// from extension), so the x-bit assertion is meaningless. The regular-file
+	// and non-empty-size assertions still cover the install correctness on
+	// both platforms.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("dest mode = %v, want executable bit set", info.Mode())
 	}
 

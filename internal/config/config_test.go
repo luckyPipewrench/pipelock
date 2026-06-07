@@ -410,6 +410,30 @@ func TestValidate_ResponseScanningExemptDomainsNormalization(t *testing.T) {
 	}
 }
 
+func TestValidate_ResponseScanningSizeExemptDomainsValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com", "*.artifacts.example"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ResponseScanningSizeExemptDomainsURL(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"https://downloads.example.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for URL in size_exempt_domains")
+	}
+}
+
+func TestValidate_ResponseScanningSizeExemptDomainsBroadWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"*.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for overly broad wildcard *.com in size_exempt_domains")
+	}
+}
+
 func TestValidate_ExemptDomainsValidatedWhenDisabled(t *testing.T) {
 	// exempt_domains must be validated even when the parent section is disabled.
 	// Prevents dormant bad config from activating silently on reload.
@@ -8272,6 +8296,52 @@ func TestLicenseKeyFromEnvVar(t *testing.T) {
 	if cfg.LicenseKey != "env-license-token" {
 		t.Errorf("license_key = %q, want env-license-token", cfg.LicenseKey)
 	}
+}
+
+func TestLicenseRuntimeVerificationFromEnv(t *testing.T) {
+	// CRL path and public key from env must be folded into the resolved Config so
+	// the runtime CRL watcher / expiry timer (which read Config, not env) enforce
+	// revocation at runtime, not only at startup. Inline config values win.
+	t.Run("env fills empty fields", func(t *testing.T) {
+		t.Setenv(EnvLicenseCRLFile, "/etc/pipelock/license.crl.json")
+		t.Setenv(EnvLicensePublicKey, "deadbeef")
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LicenseCRLFile != "/etc/pipelock/license.crl.json" {
+			t.Errorf("license_crl_file = %q, want env value", cfg.LicenseCRLFile)
+		}
+		if cfg.LicensePublicKey != "deadbeef" {
+			t.Errorf("license_public_key = %q, want env value", cfg.LicensePublicKey)
+		}
+	})
+
+	t.Run("inline config wins over env", func(t *testing.T) {
+		t.Setenv(EnvLicenseCRLFile, "/env/path.crl.json")
+		t.Setenv(EnvLicensePublicKey, "envkey")
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		yaml := "mode: balanced\nlicense_crl_file: /inline/path.crl.json\nlicense_public_key: inlinekey\n"
+		if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LicenseCRLFile != "/inline/path.crl.json" {
+			t.Errorf("license_crl_file = %q, want inline value", cfg.LicenseCRLFile)
+		}
+		if cfg.LicensePublicKey != "inlinekey" {
+			t.Errorf("license_public_key = %q, want inline value", cfg.LicensePublicKey)
+		}
+	})
 }
 
 func TestLicenseKeyFromEnvVarTrimsWhitespace(t *testing.T) {

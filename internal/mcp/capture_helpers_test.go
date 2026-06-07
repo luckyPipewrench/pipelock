@@ -3,7 +3,13 @@
 
 package mcp
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/capture"
+)
 
 const (
 	testActionRead  = "read"
@@ -29,5 +35,45 @@ func TestCaptureMCPFrameActionClass_SecretFallsBackToToolVerb(t *testing.T) {
 	}
 	if got := captureMCPFrameActionClass("read_file", methodToolsCall, `{"path":"/etc/shadow"}`); got != testActionRead {
 		t.Fatalf("secret read action_class = %q, want read", got)
+	}
+}
+
+func TestCaptureRPCID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   json.RawMessage
+		want json.RawMessage
+	}{
+		{"numeric id", json.RawMessage("1"), json.RawMessage("1")},
+		{"string id", json.RawMessage(`"abc"`), json.RawMessage(`"abc"`)},
+		{"notification (nil)", nil, nil},
+		{"notification (empty)", json.RawMessage(""), nil},
+		{"literal null", json.RawMessage("null"), nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := captureRPCID(tc.in)
+			if string(got) != string(tc.want) {
+				t.Errorf("captureRPCID(%q) = %q, want %q", string(tc.in), string(got), string(tc.want))
+			}
+		})
+	}
+}
+
+func TestCaptureRPCID_DropsOverlength(t *testing.T) {
+	t.Parallel()
+
+	// A client-controlled id over MaxRPCIDLen must be dropped so it can't smuggle
+	// a large blob into the cleartext summary.
+	big := json.RawMessage(`"` + strings.Repeat("a", capture.MaxRPCIDLen) + `"`)
+	if got := captureRPCID(big); got != nil {
+		t.Fatalf("overlength id was retained (len=%d, cap=%d)", len(big), capture.MaxRPCIDLen)
+	}
+	// Exactly at the cap is retained.
+	atCap := json.RawMessage(`"` + strings.Repeat("a", capture.MaxRPCIDLen-2) + `"`)
+	if got := captureRPCID(atCap); string(got) != string(atCap) {
+		t.Fatalf("at-cap id should be retained")
 	}
 }

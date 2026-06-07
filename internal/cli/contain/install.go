@@ -1444,11 +1444,16 @@ func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain
 	        meta skuid %d accept
 
 	        meta skuid %d ip daddr 127.0.0.1 tcp dport %d accept
-	        meta skuid %d drop
+	        meta skuid %d udp dport 53 counter log prefix "%s " drop
+	        meta skuid %d tcp dport 53 counter log prefix "%s " drop
+	        meta skuid %d counter log prefix "%s " drop
 	    }
 	}
 	`, operatorUID, proxyUID, agentUID, proxyPort, table, chain,
-		operatorUID, proxyUID, agentUID, proxyPort, agentUID)
+		operatorUID, proxyUID, agentUID, proxyPort,
+		agentUID, nftLogPrefix(EgressClassDirectDNS),
+		agentUID, nftLogPrefix(EgressClassDirectDNS),
+		agentUID, nftLogPrefix(EgressClassNotRoutingThroughPipelock))
 }
 
 // ---------------------------------------------------------------------------

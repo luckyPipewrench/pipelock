@@ -128,6 +128,16 @@ const (
 	// Takes highest priority over license_file and license_key config fields.
 	EnvLicenseKey = "PIPELOCK_LICENSE_KEY"
 
+	// EnvLicenseCRLFile and EnvLicensePublicKey mirror the license verification
+	// fallbacks used at startup so runtime license enforcement (the CRL watcher,
+	// expiry timer, and reload re-verification, which all read the resolved
+	// Config) sees the same revocation list and verifier key. Without folding
+	// these in, an env-provided CRL / public key would be honored at startup but
+	// invisible to the runtime watcher, leaving a revoked license enforced only
+	// until the next restart. Used as a fallback: an inline config value wins.
+	EnvLicenseCRLFile   = "PIPELOCK_LICENSE_CRL_FILE"
+	EnvLicensePublicKey = "PIPELOCK_LICENSE_PUBLIC_KEY"
+
 	// EnvKillSwitchAPIToken is the environment variable for admin API bearer
 	// token override. Takes priority over kill_switch.api_token.
 	EnvKillSwitchAPIToken = "PIPELOCK_KILLSWITCH_API_TOKEN" //nolint:gosec // env var name, not a credential
@@ -529,8 +539,9 @@ type ResponseScanning struct {
 	AskTimeoutSeconds int                   `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
 	IncludeDefaults   *bool                 `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns          []ResponseScanPattern `yaml:"patterns"`
-	ExemptDomains     []string              `yaml:"exempt_domains"` // responses from these hosts skip injection scanning (DLP still applies)
-	SSEStreaming      GenericSSEScanning    `yaml:"sse_streaming"`  // generic text/event-stream inline scanning (LLM SSE)
+	ExemptDomains     []string              `yaml:"exempt_domains"`      // responses from these hosts skip injection scanning (DLP still applies)
+	SizeExemptDomains []string              `yaml:"size_exempt_domains"` // trusted hosts whose oversized responses may stream through instead of failing the scan cap
+	SSEStreaming      GenericSSEScanning    `yaml:"sse_streaming"`       // generic text/event-stream inline scanning (LLM SSE)
 }
 
 // GenericSSEScanning configures inline body scanning of non-A2A

@@ -203,6 +203,7 @@ func (c *Config) policySemanticView() Config {
 	view.Internal = sortedCopy(view.Internal)
 	view.TrustedDomains = sortedCopy(view.TrustedDomains)
 	view.A2AScanning.TrustedAgentCardKeys = canonicalA2ATrustedCardKeys(view.A2AScanning.TrustedAgentCardKeys)
+	view.ResponseScanning.SizeExemptDomains = sortedCopy(view.ResponseScanning.SizeExemptDomains)
 	if view.Redaction.Enabled {
 		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
 	} else {

@@ -1,0 +1,137 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"sync/atomic"
+)
+
+// reloadCompletedHook is a test-only seam invoked after every config reload
+// cycle (see the reloader consumer loop in Start). Reload tests block on it so
+// they wait for the actual reload EVENT rather than polling stderr against a
+// wall-clock deadline: under CI load fsnotify delivery latency made a fixed poll
+// deadline the gating factor and the reload-test family flaky. nil in
+// production, so this adds one nil-load per reload and nothing else.
+var reloadCompletedHook atomic.Pointer[func()]
+
+// SetReloadCompletedHookForTest installs fn to be called once per completed
+// config reload cycle, returning a restore func. Pass nil to clear. Test-only;
+// not safe for concurrent (t.Parallel) reload tests because the hook is process
+// global.
+func SetReloadCompletedHookForTest(fn func()) (restore func()) {
+	prev := reloadCompletedHook.Load()
+	if fn == nil {
+		reloadCompletedHook.Store(nil)
+	} else {
+		reloadCompletedHook.Store(&fn)
+	}
+	return func() { reloadCompletedHook.Store(prev) }
+}
+
+func fireReloadCompletedHook() {
+	if p := reloadCompletedHook.Load(); p != nil {
+		(*p)()
+	}
+}
+
+// setConductorCancel publishes the cancel func for the follower-side Conductor
+// sub-context so teardownConductor can stop the pollers on a runtime
+// fleet-license revocation. Called from Start before the pollers launch. Lives
+// in the untagged file because runtime license enforcement (CRL watcher, expiry
+// timer, reload path) must compile on both the Apache-only core and the
+// enterprise build; the conductor handles are nil on core, so teardown is a
+// no-op there.
+func (s *Server) setConductorCancel(cancel context.CancelFunc) {
+	if s == nil {
+		return
+	}
+	s.conductorLifeMu.Lock()
+	s.conductorCancel = cancel
+	cancelNow := s.conductorDown.Load()
+	s.conductorLifeMu.Unlock()
+	if cancelNow && cancel != nil {
+		cancel()
+	}
+}
+
+// teardownConductor fail-closes the follower-side Conductor runtime when its
+// fleet entitlement is revoked, expires, or is downgraded at runtime. It cancels
+// the poller goroutines, detaches the durable-audit observer, and closes the
+// audit producer. The proxy/detection path is deliberately left running: losing
+// a paid fleet entitlement must never take down free detection (the product rule
+// is "sell coordination, not detection"). Idempotent and safe to call
+// concurrently from the runtime CRL watcher, the expiry timer, and the config
+// reload path. Conductor stays down until process restart, matching the
+// restart-only conductor invariant.
+func (s *Server) teardownConductor(reason string) {
+	if s == nil {
+		return
+	}
+	s.conductorLifeMu.Lock()
+	// If no Conductor handles or cancel func exist, the follower runtime never
+	// launched (e.g. conductor disabled, or the Apache-only core build); there
+	// is nothing to tear down. conductorDown already set means a prior teardown
+	// won the race.
+	if s.conductorDown.Load() || (s.conductorCancel == nil && !s.hasConductorRuntime()) {
+		s.conductorLifeMu.Unlock()
+		return
+	}
+	s.conductorDown.Store(true)
+	cancel := s.conductorCancel
+	// Take ownership of the producer under the lock and clear the field so it is
+	// closed exactly once and never reused after teardown. conductorDown is
+	// already set, so a racing teardown bails at the guard above and a later
+	// hasConductorRuntime() check never sees the closed handle.
+	producer := s.conductorProducer
+	s.conductorProducer = nil
+	s.conductorLifeMu.Unlock()
+
+	// Stop the follower pollers. Their Run loops return context.Canceled, which
+	// the Start error branches treat as a clean stop (no process-wide cancel).
+	if cancel != nil {
+		cancel()
+	}
+	// Detach the durable-audit observer BEFORE closing the producer. SetObserver
+	// synchronizes on the recorder mutex, so once it returns no in-flight Record
+	// can still call the producer, making Close race-free. The recorder keeps
+	// recording locally; only the Conductor audit fan-out stops.
+	if s.recorder != nil {
+		s.recorder.SetObserver(nil)
+	}
+	if producer != nil {
+		_ = producer.Close()
+	}
+	if s.opts.Stderr != nil {
+		_, _ = fmt.Fprintf(s.opts.Stderr,
+			"pipelock: fleet license %s; Conductor runtime stopped, detection continues\n", reason)
+	}
+}
+
+func (s *Server) hasConductorRuntime() bool {
+	return s.conductorApply != nil ||
+		s.conductorAuditQueue != nil ||
+		s.conductorAudit != nil ||
+		s.conductorRemoteKill != nil ||
+		s.conductorBundle != nil ||
+		s.conductorProducer != nil
+}
+
+// expireLicensedRuntime tears down every license-gated runtime surface when the
+// license expires: agent listeners (Pro) and the follower-side Conductor runtime
+// (Enterprise). Both teardowns are safe no-ops when the corresponding surface is
+// not running, so the expiry timer can call this unconditionally.
+func (s *Server) expireLicensedRuntime() {
+	if s == nil {
+		return
+	}
+	if s.proxy != nil {
+		s.proxy.ShutdownAgentServers()
+	}
+	s.teardownConductor("expired")
+	if s.opts.Stderr != nil {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: license expired, licensed runtime surfaces stopped\n")
+	}
+}

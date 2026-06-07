@@ -140,6 +140,31 @@ fetch_proxy:
       - "examplebucket.s3.amazonaws.com"
 ```
 
+**Path entropy and governed API routes.** Path entropy is *also* skipped
+automatically on any path you already govern with a [`request_policy`](#request-policy)
+route that names **both** a host **and** path constraints (`path_patterns` or
+`path_prefixes`). The reasoning: if you wrote explicit path rules for a host, the
+blunt entropy heuristic is redundant on those exact paths, and it otherwise
+false-positives on legitimate high-entropy REST resource ids (an opaque id
+segment in `/v1/messages/{id}` reads as a "high entropy path segment"). This is
+the recommended way to run an agent against a TLS-intercepted REST API whose URLs
+carry opaque ids.
+
+This exemption is deliberately narrow:
+
+- It is **path-only**. Subdomain entropy, query entropy, DLP, and SSRF stay fully
+  active on the same request.
+- It applies **only to paths your route matches**. Other paths on the same host
+  still get path entropy.
+- A route with **no host**, or with **no path constraints**, never exempts
+  anything (a hostless route would otherwise match every host).
+- Shadow rules never exempt, because they do not enforce `request_policy`.
+
+> **Operator note:** the skip covers exactly the paths your route patterns match.
+> If your agent calls API paths your `request_policy` route does not cover, widen
+> the route's `path_patterns`/`path_prefixes` to include them (or add the host to
+> `subdomain_entropy_exclusions`), otherwise those paths still get path entropy.
+
 ## Forward Proxy
 
 Standard HTTP CONNECT tunneling. Agents set `HTTPS_PROXY=http://127.0.0.1:8888`, and HTTP clients that honor proxy settings flow through pipelock. Pair this with containment, sandboxing, or deployment policy when non-cooperative tools are in scope.

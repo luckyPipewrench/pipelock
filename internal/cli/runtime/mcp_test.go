@@ -34,6 +34,21 @@ import (
 // connects runtime commands to the root command. Only self-contained tests
 // are included in this file.
 
+const (
+	// mcpProxyRunHangBackstop bounds an in-process MCP proxy test run. The run is
+	// input-bounded and completes naturally on stdin EOF in well under a second;
+	// this ceiling only converts a genuinely stuck run into a fast, clear failure
+	// instead of letting it ride out the whole-suite test deadline. It is a hang
+	// guard, not a synchronization primitive — it is intentionally generous so
+	// heavy -race CI load never trips it on a healthy run.
+	mcpProxyRunHangBackstop = 60 * time.Second
+
+	// mcpProxyCancelGrace bounds cleanup after the hang guard cancels the
+	// command. If Execute does not observe cancellation, the test must still
+	// fail fast instead of blocking forever while waiting for done.
+	mcpProxyCancelGrace = 5 * time.Second
+)
+
 func TestSafeWriter(t *testing.T) {
 	var buf bytes.Buffer
 	sw := &safeWriter{w: &buf}
@@ -925,7 +940,16 @@ func runMCPProxyCommand(t *testing.T, configPath string) (string, string, error)
 func runMCPProxyCommandWithArgs(t *testing.T, args []string) (string, string, error) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The proxy run is input-bounded: it completes on its own once the
+	// supplied stdin reaches EOF — the stdin forwarder closes the wrapped
+	// server's pipe, the server exits, the response scanner drains its stdout
+	// to EOF, and Execute returns. Drive the test off that natural completion
+	// signal rather than a tight wall-clock deadline. A deadline used as the
+	// run bound (the old 10s ctx) can fire mid-stream under heavy -race CI
+	// load and SIGKILL the wrapped server before its response is scanned,
+	// truncating stdout and flaking the assertions. ctx here is cancel-only;
+	// mcpProxyRunHangBackstop below is the hang guard.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	cmd := McpCmd()
@@ -940,8 +964,28 @@ func runMCPProxyCommandWithArgs(t *testing.T, args []string) (string, string, er
 	}, "\n") + "\n"))
 	cmd.SetArgs(args)
 
-	err := cmd.Execute()
-	return stdout.String(), stderr.String(), err
+	done := make(chan error, 1)
+	go func() { done <- cmd.Execute() }()
+
+	select {
+	case err := <-done:
+		// Execute returned: all writes to the buffers are complete, so
+		// reading them here is race-free.
+		return stdout.String(), stderr.String(), err
+	case <-time.After(mcpProxyRunHangBackstop):
+		// A genuinely stuck run: cancel so Execute observes cancellation and
+		// returns, then fail fast rather than hanging the whole-suite deadline.
+		cancel()
+		select {
+		case err := <-done:
+			t.Fatalf("mcp proxy command did not complete within %s (hang backstop); Execute returned after cancellation with: %v",
+				mcpProxyRunHangBackstop, err)
+		case <-time.After(mcpProxyCancelGrace):
+			t.Fatalf("mcp proxy command did not complete within %s and did not stop within %s after cancellation",
+				mcpProxyRunHangBackstop, mcpProxyCancelGrace)
+		}
+		return "", "", nil // unreachable; t.Fatalf stops the test
+	}
 }
 
 func writeReceiptSigningKey(t *testing.T) (string, string) {

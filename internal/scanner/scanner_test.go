@@ -5388,3 +5388,176 @@ func TestScan_SeedPhraseBase64InPathSegment(t *testing.T) {
 		t.Error("expected base64 seed phrase in path segment to be blocked")
 	}
 }
+
+// TestScan_RequestPolicyPathExemption covers the path-entropy suppression on
+// operator-governed routes: when request_policy names a host AND path
+// constraints, the blunt path-entropy gate is skipped on those exact paths
+// (legitimate high-entropy REST resource ids) while staying fully active
+// everywhere else. DLP, query entropy, and subdomain entropy are unaffected.
+func TestScan_RequestPolicyPathExemption(t *testing.T) {
+	const (
+		host  = "api.vendor.example"
+		idSeg = "Xp9Qn0vM6Kf2Tz8Lr4Wd1aB3xK9mZ2" // 31 chars, entropy > 4.5
+	)
+	govPath := "/v1/messages/" + idSeg
+	ungovPath := "/v1/other/" + idSeg
+
+	policyCfg := func(enabled bool) config.RequestPolicy {
+		return config.RequestPolicy{
+			Enabled: enabled,
+			Rules: []config.RequestPolicyRule{{
+				Name:   "gov-messages",
+				Action: config.ActionBlock,
+				Route: config.RequestPolicyRoute{
+					Hosts:        []string{host},
+					PathPatterns: []string{`^/v1/messages/`},
+				},
+			}},
+		}
+	}
+	baseCfg := func() *config.Config {
+		cfg := testConfig()
+		cfg.DLP.Patterns = nil
+		cfg.FetchProxy.Monitoring.Blocklist = nil
+		return cfg
+	}
+
+	t.Run("governed host and path is exempt", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.RequestPolicy = policyCfg(true)
+		s := New(cfg)
+		defer s.Close()
+		r := s.Scan(context.Background(), "https://"+host+govPath)
+		if !r.Allowed {
+			t.Errorf("governed host+path should be allowed, got blocked: scanner=%s reason=%s", r.Scanner, r.Reason)
+		}
+	})
+
+	t.Run("governed host but ungoverned path still blocks", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.RequestPolicy = policyCfg(true)
+		s := New(cfg)
+		defer s.Close()
+		r := s.Scan(context.Background(), "https://"+host+ungovPath)
+		if r.Allowed || r.Scanner != ScannerEntropy {
+			t.Errorf("ungoverned path should still get path entropy, got allowed=%v scanner=%s", r.Allowed, r.Scanner)
+		}
+	})
+
+	t.Run("ungoverned host still blocks", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.RequestPolicy = policyCfg(true)
+		s := New(cfg)
+		defer s.Close()
+		r := s.Scan(context.Background(), "https://other.example"+govPath)
+		if r.Allowed || r.Scanner != ScannerEntropy {
+			t.Errorf("ungoverned host should still get path entropy, got allowed=%v scanner=%s", r.Allowed, r.Scanner)
+		}
+	})
+
+	t.Run("path exemption does not disable query entropy", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.RequestPolicy = policyCfg(true)
+		s := New(cfg)
+		defer s.Close()
+		// Governed path (path entropy skipped) plus a high-entropy query value
+		// that must still be caught: the exemption is path-only.
+		r := s.Scan(context.Background(), "https://"+host+govPath+"?blob="+idSeg)
+		if r.Allowed || r.Scanner != ScannerEntropy {
+			t.Errorf("query entropy should still fire under a path exemption, got allowed=%v scanner=%s", r.Allowed, r.Scanner)
+		}
+	})
+
+	t.Run("path exemption does not disable subdomain entropy", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 3.5
+		cfg.RequestPolicy = config.RequestPolicy{
+			Enabled: true,
+			Rules: []config.RequestPolicyRule{{
+				Name:   "gov-wild",
+				Action: config.ActionBlock,
+				Route: config.RequestPolicyRoute{
+					Hosts:        []string{"*.vendor.example"},
+					PathPatterns: []string{`^/v1/messages/`},
+				},
+			}},
+		}
+		s := New(cfg)
+		defer s.Close()
+		// High-entropy subdomain label under the wildcard-governed host on a
+		// governed path: path entropy is exempt, subdomain entropy must not be.
+		r := s.Scan(context.Background(), "https://aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t.vendor.example"+govPath)
+		if r.Allowed {
+			t.Errorf("subdomain entropy should still fire under a path exemption, got allowed (reason=%s)", r.Reason)
+		}
+	})
+
+	t.Run("disabled request_policy does not exempt", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.RequestPolicy = policyCfg(false)
+		s := New(cfg)
+		defer s.Close()
+		r := s.Scan(context.Background(), "https://"+host+govPath)
+		if r.Allowed || r.Scanner != ScannerEntropy {
+			t.Errorf("disabled request_policy should not exempt, got allowed=%v scanner=%s", r.Allowed, r.Scanner)
+		}
+	})
+
+	t.Run("shadow request_policy does not exempt", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.RequestPolicy = policyCfg(true)
+		cfg.RequestPolicy.Rules[0].Shadow = true
+		s := New(cfg)
+		defer s.Close()
+		r := s.Scan(context.Background(), "https://"+host+govPath)
+		if r.Allowed || r.Scanner != ScannerEntropy {
+			t.Errorf("shadow request_policy should not exempt, got allowed=%v scanner=%s", r.Allowed, r.Scanner)
+		}
+	})
+
+	// An invalid path_pattern would normally be rejected by config validation
+	// before New runs; if one reaches the scanner anyway, the exemption view
+	// must fail secure (no exemption -> path entropy stays active), never panic
+	// and never fail open.
+	t.Run("invalid policy pattern fails secure", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.RequestPolicy = config.RequestPolicy{
+			Enabled: true,
+			Rules: []config.RequestPolicyRule{{
+				Name:   "bad-regex",
+				Action: config.ActionBlock,
+				Route: config.RequestPolicyRoute{
+					Hosts:        []string{host},
+					PathPatterns: []string{"("}, // invalid RE2: unclosed group
+				},
+			}},
+		}
+		s := New(cfg) // must not panic
+		defer s.Close()
+		r := s.Scan(context.Background(), "https://"+host+govPath)
+		if r.Allowed || r.Scanner != ScannerEntropy {
+			t.Errorf("invalid policy pattern must fail secure (entropy active), got allowed=%v scanner=%s", r.Allowed, r.Scanner)
+		}
+	})
+
+	// Rebuild property a hot reload relies on: a scanner built from a config
+	// WITH the governing policy exempts; one built WITHOUT it does not. The
+	// proxy rebuilds the scanner from the new config on reload, so this is the
+	// reload behavior at the scanner boundary.
+	t.Run("exemption tracks the config the scanner was built from", func(t *testing.T) {
+		on := baseCfg()
+		on.RequestPolicy = policyCfg(true)
+		sOn := New(on)
+		defer sOn.Close()
+		if r := sOn.Scan(context.Background(), "https://"+host+govPath); !r.Allowed {
+			t.Errorf("policy-on scanner should exempt, got blocked: %s", r.Reason)
+		}
+		off := baseCfg()
+		off.RequestPolicy = policyCfg(false)
+		sOff := New(off)
+		defer sOff.Close()
+		if r := sOff.Scan(context.Background(), "https://"+host+govPath); r.Allowed {
+			t.Error("policy-off scanner should not exempt")
+		}
+	})
+}

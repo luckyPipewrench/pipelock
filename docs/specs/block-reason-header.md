@@ -56,6 +56,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `url_length` | URL length exceeded configured ceiling. | `warn` | `policy` |
 | `rate_limit` | Per-session or per-host rate limit exceeded. | `warn` | `transient` |
 | `data_budget` | Per-session data budget exceeded. | `warn` | `policy` |
+| `response_size` | Response exceeded the configured scan ceiling. Raise the named size knob or add a trusted host to `response_scanning.size_exempt_domains`. | `warn` | `policy` |
 
 ### Content / payload layer
 

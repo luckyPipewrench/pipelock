@@ -789,6 +789,8 @@ response_scanning:
   exempt_domains:               # skip injection scanning for these hosts
     - "api.openai.com"
     - "*.anthropic.com"
+  size_exempt_domains:          # trusted large-download hosts; scan cap only
+    - "downloads.example.com"
   patterns:
     - name: "Custom Injection"
       regex: 'override system prompt'
@@ -801,6 +803,7 @@ response_scanning:
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
 | `include_defaults` | `true` | Merge with 29 built-in patterns |
 | `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
+| `size_exempt_domains` | `[]` | Trusted hosts whose oversized forward-proxy or TLS-intercepted responses may stream through instead of failing the scan ceiling. Request-side scanning and budget accounting still run. |
 | `patterns` | 29 built-in | Injection and state/control poisoning patterns |
 
 **Built-in patterns (29):** Prompt-injection and state/control poisoning coverage includes jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation, credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, covert-action directives, silent credential handling, and CJK-language override patterns. All patterns use DOTALL mode to match across newlines in multiline tool output.
@@ -815,7 +818,9 @@ response_scanning:
 
 For forward-proxy and TLS-intercepted traffic, an exempt host's response streams through untouched when `response_scanning.enabled` is true: no buffering, response scan-cap block, media metadata strip, Browser Shield rewrite, or injection scan is applied to that trusted response. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. If a host needs full byte-preserving passthrough without MITM, prefer `tls_interception.passthrough_domains`.
 
-Non-exempt responses that must be buffered for response scanning, Browser Shield, or media policy block fail-closed if they exceed the configured scan cap (`fetch_proxy.max_response_mb` or `tls_interception.max_response_bytes`). Data-budget truncation is separate and remains an explicit budget policy.
+Non-exempt responses that must be buffered for response scanning, Browser Shield, or media policy block fail-closed if they exceed the configured scan cap (`fetch_proxy.max_response_mb` or `tls_interception.max_response_bytes`). The block uses reason code `response_size` and names the host, observed size, scan ceiling, and the knob to raise. Data-budget truncation is separate and remains an explicit budget policy.
+
+Use `size_exempt_domains` for trusted large-download hosts when the default fail-closed scan ceiling blocks legitimate artifacts such as package headers, signed binaries, or model weights. This exemption is narrower than `exempt_domains`: it only takes effect after the response exceeds the scan cap. Smaller responses from the same host still take the normal buffered scanning path. The exemption applies only to the forward proxy and TLS interception; reverse-proxy / MCP-HTTP responses and compressed (`Content-Encoding`) responses still fail closed when they cannot be fully scanned, regardless of this list.
 
 ### Generic SSE streaming (`response_scanning.sse_streaming`)
 

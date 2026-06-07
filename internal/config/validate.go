@@ -734,6 +734,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	if err := ValidateTrustedDomains(c.ResponseScanning.ExemptDomains, "response_scanning.exempt_domains"); err != nil {
 		return err
 	}
+	if err := ValidateTrustedDomains(c.ResponseScanning.SizeExemptDomains, "response_scanning.size_exempt_domains"); err != nil {
+		return err
+	}
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {
 		*warnings = append(*warnings, Warning{
 			Field:   "response_scanning.exempt_domains",

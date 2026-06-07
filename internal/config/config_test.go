@@ -410,6 +410,30 @@ func TestValidate_ResponseScanningExemptDomainsNormalization(t *testing.T) {
 	}
 }
 
+func TestValidate_ResponseScanningSizeExemptDomainsValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com", "*.artifacts.example"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ResponseScanningSizeExemptDomainsURL(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"https://downloads.example.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for URL in size_exempt_domains")
+	}
+}
+
+func TestValidate_ResponseScanningSizeExemptDomainsBroadWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"*.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for overly broad wildcard *.com in size_exempt_domains")
+	}
+}
+
 func TestValidate_ExemptDomainsValidatedWhenDisabled(t *testing.T) {
 	// exempt_domains must be validated even when the parent section is disabled.
 	// Prevents dormant bad config from activating silently on reload.

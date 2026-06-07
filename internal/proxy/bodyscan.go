@@ -127,6 +127,13 @@ func isResponseScanExempt(hostname string, exemptDomains []string) bool {
 	return isDomainExempt(hostname, exemptDomains)
 }
 
+// isResponseSizeExempt checks if a hostname matches the response-size
+// allowance list. Matching hosts may stream responses that exceed the buffered
+// scan ceiling; request-side scanning and cumulative data budgets still apply.
+func isResponseSizeExempt(hostname string, exemptDomains []string) bool {
+	return isDomainExempt(hostname, exemptDomains)
+}
+
 // shouldHardBlockBodyPromptInjection returns true when a prompt-injection
 // match appears in an outbound request body to a non-provider destination.
 // Prompts sent to the configured response-scan exemption set can naturally

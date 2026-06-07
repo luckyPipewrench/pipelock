@@ -152,7 +152,9 @@ const (
 	// Re-bumped for A2A Agent Card signature verification: a2a_scanning gained
 	// the require_signed_agent_cards and trusted_agent_card_keys policy fields,
 	// which are enforcement-relevant and so belong in the canonical policy hash.
-	goldenHashDefaults = "5a09097c241be07f591ed6bfd822cf697b95759d2c5c057177f8a789f1fc99e7"
+	// Re-bumped for response_scanning.size_exempt_domains: trusted per-host
+	// oversize response passthrough changes response-size enforcement.
+	goldenHashDefaults = "54c8e860a01e979c921bdbd5131087c1a4429ff6f4af9bbff8ae70a3789ae0cc"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -228,7 +230,9 @@ const (
 	// Re-bumped for the Twilio + Mailgun DLP boundary tightening and again for
 	// the secret-pattern expansion: see goldenHashDefaults note above. The rich
 	// fixture inherits the default DLP pattern set, so the hash shifts in lockstep.
-	goldenHashRichConfig = "8f23eec150093d1b246cdfe54336faa5ec652602d4c63f6db80aadce1b1af22b"
+	// Re-bumped for response_scanning.size_exempt_domains: see the
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "768fdc776630b0720e4dae1ea2ce8d388947fd1ad2d03b7a48e32598910fa7ff"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

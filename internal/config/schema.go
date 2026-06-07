@@ -529,8 +529,9 @@ type ResponseScanning struct {
 	AskTimeoutSeconds int                   `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
 	IncludeDefaults   *bool                 `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns          []ResponseScanPattern `yaml:"patterns"`
-	ExemptDomains     []string              `yaml:"exempt_domains"` // responses from these hosts skip injection scanning (DLP still applies)
-	SSEStreaming      GenericSSEScanning    `yaml:"sse_streaming"`  // generic text/event-stream inline scanning (LLM SSE)
+	ExemptDomains     []string              `yaml:"exempt_domains"`      // responses from these hosts skip injection scanning (DLP still applies)
+	SizeExemptDomains []string              `yaml:"size_exempt_domains"` // trusted hosts whose oversized responses may stream through instead of failing the scan cap
+	SSEStreaming      GenericSSEScanning    `yaml:"sse_streaming"`       // generic text/event-stream inline scanning (LLM SSE)
 }
 
 // GenericSSEScanning configures inline body scanning of non-A2A

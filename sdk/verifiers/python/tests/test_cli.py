@@ -207,3 +207,25 @@ def test_trusted_key_not_string(tmp_path: Path):
     rc, _, err = run(["aarp", str(_G01), "--trust", str(bad)])
     assert rc == EXIT_CONFIG
     assert "not a string" in err
+
+
+def test_overclaim_risk_sentence_maps_known_codes_and_falls_back():
+    """The human view renders an explanatory sentence per risk code (matching the
+    Go CLI), and falls back to the bare code for an unknown one so a verifier
+    ahead of this CLI never drops a warning silently.
+    """
+    from pipelock_aarp_verify.appraise import (
+        RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN,
+        RISK_SIGNATURE_VALID_NOT_TRANSPARENCY,
+        RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS,
+    )
+    from pipelock_aarp_verify.cli import _overclaim_risk_sentence
+
+    for code in (
+        RISK_SIGNATURE_VALID_NOT_TRANSPARENCY,
+        RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS,
+        RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN,
+    ):
+        sentence = _overclaim_risk_sentence(code)
+        assert sentence and sentence != code
+    assert _overclaim_risk_sentence("some_future_risk_code") == "some_future_risk_code"

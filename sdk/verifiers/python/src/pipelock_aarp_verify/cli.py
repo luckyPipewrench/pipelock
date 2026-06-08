@@ -24,6 +24,9 @@ import sys
 from typing import IO, Any
 
 from .appraise import (
+    RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN,
+    RISK_SIGNATURE_VALID_NOT_TRANSPARENCY,
+    RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS,
     TrustEntry,
     VerifyOptions,
     comparable_appraisal,
@@ -228,6 +231,29 @@ def _run_aarp(
 _TOTAL_AXES = 6
 
 
+def _overclaim_risk_sentence(code: str) -> str:
+    """Map a stable overclaim-risk code to a one-line explanation, mirroring the
+    Go CLI's overclaimRiskSentence. An unmapped code (a verifier ahead of this
+    CLI) falls back to the bare code so the warning is never silently dropped.
+    """
+    if code == RISK_SIGNATURE_VALID_NOT_TRANSPARENCY:
+        return (
+            "a valid signature is integrity over the assertion bytes, not proof "
+            "the receipt was witnessed by an external transparency log"
+        )
+    if code == RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS:
+        return (
+            "a verified signing-workload identity does not prove the deployment "
+            "forced the workload's traffic through the mediator"
+        )
+    if code == RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN:
+        return (
+            "a present chain link is a single position, not a verified contiguous "
+            "stream (verify the stream with --chain)"
+        )
+    return code
+
+
 def _emit_human(stdout: IO[str], ap: Any) -> None:
     """Render the appraisal LIMITATIONS-first: does_not_assert and overclaim_risks
     lead, before the verified claims, so the first thing a reader sees is what the
@@ -243,7 +269,7 @@ def _emit_human(stdout: IO[str], ap: Any) -> None:
             "  overclaim_risks (do not read more into the evidence than this):\n"
         )
         for r in sorted(ap.overclaim_risks):
-            stdout.write(f"    - {r}\n")
+            stdout.write(f"    - {r}: {_overclaim_risk_sentence(r)}\n")
     stdout.write("  --- what the evidence mechanically supports ---\n")
     stdout.write(f"  verified_claims:    {ap.verified_claims}\n")
     stdout.write(f"  claimed_unverified: {ap.claimed_unverified}\n")

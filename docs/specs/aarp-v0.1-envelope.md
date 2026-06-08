@@ -251,14 +251,15 @@ The verifier confirms, all offline and fail-closed:
 
 On success the verifier adds `signing_workload_svid_chain_validated` and
 `signing_workload_svid_bound` to the **identity** axis and
-`signing_workload_svid_valid_at_action_time` to the **freshness** axis, and (since
-an SVID identity is not a containment proof) adds the paired negatives
+`signing_workload_svid_valid_at_action_time` to the **freshness** axis. Because an
+SVID identity is not a containment proof, it also adds the paired negatives
 `does_not_assert_network_non_bypass_from_identity` and
-`does_not_assert_deployment_enforcement_from_identity` to `does_not_assert`.
-Attestation is only considered on a **signed** assertion (the binding ties to the
-signed assertion digest); an SVID that fails any check never removes a core claim
-and never adds an attestation one — the producer's workload-identity claim is
-reported claimed-but-unverified, with a warning.
+`does_not_assert_deployment_enforcement_from_identity` to `does_not_assert`, and
+emits the `svid_identity_is_not_deployment_non_bypass` overclaim risk. Attestation
+is only considered on a **signed** assertion (the binding ties to the signed
+assertion digest). An SVID that fails any check never removes a core claim and
+never adds an attestation one; the producer's workload-identity claim is reported
+claimed-but-unverified, with a warning.
 
 ## Appraisal vocabulary
 

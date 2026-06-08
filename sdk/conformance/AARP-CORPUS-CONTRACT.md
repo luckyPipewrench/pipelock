@@ -140,9 +140,10 @@ fact confirmed, never a property a relying party might over-read:
 | `mediator_key_pinned` | identity | a verifying signature's key id is bound by a trust entry to the asserted mediator (role/domain-scoped) |
 | `receipt_timestamp_monotonic_chain_present` | integrity | the envelope carries a well-formed Rung-1 chain link (a monotonic position, NOT a verified contiguous stream and NOT freshness) |
 
-Producer claim → required verified claims (all must be present to be confirmed;
-otherwise the producer claim is reported in `claimed_unverified`). The producer's
-INPUT claim vocabulary is stable and distinct from the renamed verifier OUTPUT:
+Producer claim → required verified-claim set (every member must be present to be
+confirmed; otherwise the producer claim is reported in `claimed_unverified`). The
+producer's INPUT claim vocabulary is stable and distinct from the renamed verifier
+OUTPUT:
 
 - `mediated` → `mediator_key_pinned`
 - `complete-mediation` / `complete_mediation` → (never verifiable; always unverified)

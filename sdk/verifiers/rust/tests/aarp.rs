@@ -18,7 +18,13 @@ use pipelock_verifier_rs::aarp::envelope::{
 use pipelock_verifier_rs::aarp::jcs::{
     canonicalize_tree, enforce_safe_numbers, parse_strict, JcsError, Json,
 };
-use pipelock_verifier_rs::aarp::verify::{comparable_appraisal, verify, TrustEntry, VerifyOptions};
+use pipelock_verifier_rs::aarp::verify::{
+    comparable_appraisal, verify, Appraisal, AssuranceSummary, TrustEntry, VerifyOptions,
+    AXIS_AUTHORITY, AXIS_DEPLOYMENT, AXIS_IDENTITY, AXIS_INTEGRITY, AXIS_TRANSPARENCY,
+    CLAIM_RECEIPT_SIGNATURE_VALID, CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT,
+    CLAIM_SIGNING_WORKLOAD_SVID_BOUND, RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN,
+    RISK_SIGNATURE_VALID_NOT_TRANSPARENCY, RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS,
+};
 
 const CORPUS: &str = "../../conformance/testdata/aarp-corpus";
 
@@ -218,9 +224,9 @@ fn svid_omitted_yields_plain_envelope_appraisal() {
         .and_then(|v| v.as_array())
         .expect("verified_claims array");
     for claim in [
-        "workload_identity_verified",
-        "x509_svid_bound",
-        "svid_valid_at_action_time",
+        "signing_workload_svid_chain_validated",
+        "signing_workload_svid_bound",
+        "signing_workload_svid_valid_at_action_time",
     ] {
         assert!(
             !verified.iter().any(|c| c.as_str() == Some(claim)),
@@ -664,7 +670,7 @@ fn verify_pinned_mediator_confirms_both_claims() {
         .contains(&"mediator_key_pinned".to_string()));
     assert!(ap
         .verified_claims
-        .contains(&"assertion_signature_valid".to_string()));
+        .contains(&"receipt_signature_valid".to_string()));
     assert!(ap.claimed_unverified.is_empty());
 }
 
@@ -882,4 +888,111 @@ fn surrogate_high_then_non_low_is_non_greedy() {
     let got = canonicalize_tree(&parse_strict(r#"{"x":"\ud800A"}"#).unwrap()).unwrap();
     let want = canonicalize_tree(&parse_strict("{\"x\":\"\u{FFFD}A\"}").unwrap()).unwrap();
     assert_eq!(got, want);
+}
+
+// ---- appraiser honesty mechanics (overclaim_risks + assurance) ----
+//
+// The cross-language corpus gate proves parity on the live paths; these lock the
+// branches the corpus cannot reach in v2.7 — chiefly auto-suppression of a risk
+// once its stronger sibling axis is populated (a v2.8 transparency/deployment
+// claim), which no v2.7 fixture exercises.
+
+fn empty_appraisal() -> Appraisal {
+    Appraisal {
+        profile: "aarp/v0.1".to_string(),
+        assertion_signed: false,
+        signatures: Vec::new(),
+        assurance_claimed: Vec::new(),
+        verified_claims: Vec::new(),
+        claimed_unverified: Vec::new(),
+        axes: std::collections::BTreeMap::new(),
+        does_not_assert: Vec::new(),
+        overclaim_risks: Vec::new(),
+        assurance: AssuranceSummary::default(),
+    }
+}
+
+#[test]
+fn overclaim_signature_only_fires_transparency_risk() {
+    let mut ap = empty_appraisal();
+    ap.add_verified(CLAIM_RECEIPT_SIGNATURE_VALID, AXIS_INTEGRITY);
+    ap.finalize();
+    assert_eq!(
+        ap.overclaim_risks,
+        vec![RISK_SIGNATURE_VALID_NOT_TRANSPARENCY]
+    );
+    assert_eq!(ap.assurance.axes_with_verified_claims, vec![AXIS_INTEGRITY]);
+}
+
+#[test]
+fn overclaim_chain_and_svid_bound_fire_sorted() {
+    let mut ap = empty_appraisal();
+    ap.add_verified(CLAIM_RECEIPT_SIGNATURE_VALID, AXIS_INTEGRITY);
+    ap.add_verified(
+        CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT,
+        AXIS_INTEGRITY,
+    );
+    ap.add_verified(CLAIM_SIGNING_WORKLOAD_SVID_BOUND, AXIS_IDENTITY);
+    ap.finalize();
+    assert_eq!(
+        ap.overclaim_risks,
+        vec![
+            RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN,
+            RISK_SIGNATURE_VALID_NOT_TRANSPARENCY,
+            RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS,
+        ]
+    );
+}
+
+#[test]
+fn overclaim_populated_transparency_axis_suppresses_risk() {
+    let mut ap = empty_appraisal();
+    ap.add_verified(CLAIM_RECEIPT_SIGNATURE_VALID, AXIS_INTEGRITY);
+    ap.add_verified(
+        "external_witness_checkpoint_signature_valid",
+        AXIS_TRANSPARENCY,
+    );
+    ap.finalize();
+    assert!(!ap
+        .overclaim_risks
+        .iter()
+        .any(|r| r == RISK_SIGNATURE_VALID_NOT_TRANSPARENCY));
+}
+
+#[test]
+fn overclaim_populated_deployment_axis_suppresses_svid_risk() {
+    let mut ap = empty_appraisal();
+    ap.add_verified(CLAIM_SIGNING_WORKLOAD_SVID_BOUND, AXIS_IDENTITY);
+    ap.add_verified("k8s_pod_spec_proxy_injection_observed", AXIS_DEPLOYMENT);
+    ap.finalize();
+    assert!(!ap
+        .overclaim_risks
+        .iter()
+        .any(|r| r == RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS));
+}
+
+#[test]
+fn overclaim_populated_authority_axis_suppresses_chain_risk() {
+    let mut ap = empty_appraisal();
+    ap.add_verified(
+        CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT,
+        AXIS_INTEGRITY,
+    );
+    ap.add_verified(
+        "receipt_timestamp_contiguous_chain_verified",
+        AXIS_AUTHORITY,
+    );
+    ap.finalize();
+    assert!(!ap
+        .overclaim_risks
+        .iter()
+        .any(|r| r == RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN));
+}
+
+#[test]
+fn overclaim_no_claims_yields_nothing() {
+    let mut ap = empty_appraisal();
+    ap.finalize();
+    assert!(ap.overclaim_risks.is_empty());
+    assert!(ap.assurance.axes_with_verified_claims.is_empty());
 }

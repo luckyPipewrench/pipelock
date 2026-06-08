@@ -27,28 +27,56 @@ import {
   knownSignerRoles,
 } from "./suite.js";
 
-// Axis names group verified claims by the kind of proof they rest on.
+// Axis names group verified claims by the kind of proof they rest on. Mirror
+// Go's Axis* constants.
 export const AXIS_IDENTITY = "identity";
+export const AXIS_AUTHORITY = "authority";
 export const AXIS_INTEGRITY = "integrity";
 // AXIS_FRESHNESS groups claims resting on point-in-time validity proof.
 export const AXIS_FRESHNESS = "freshness";
+// AXIS_TRANSPARENCY, AXIS_DEPLOYMENT, and AXIS_AUTHORITY are never populated in
+// v2.7 (held for v2.8), but the overclaim-risk logic checks them so a future
+// external-witness, attestor, or stream-authority claim auto-suppresses the
+// matching "you might over-read this" warning.
+export const AXIS_TRANSPARENCY = "transparency";
+export const AXIS_DEPLOYMENT = "deployment";
 
-// Verified-claim names.
-export const CLAIM_ASSERTION_SIGNATURE_VALID = "assertion_signature_valid";
+// Verified-claim names. Deliberately literal: each names the exact mechanical
+// fact the verifier confirmed, never a property a relying party might over-read.
+// They are the stable public claim dictionary; mirror Go's Claim* constants.
+export const CLAIM_RECEIPT_SIGNATURE_VALID = "receipt_signature_valid";
 export const CLAIM_MEDIATOR_KEY_PINNED = "mediator_key_pinned";
-// A signed, well-formed Rung-1 chain link is present on the envelope (its
-// position is authenticated by the verified signature). Mirrors Go's
-// ClaimChainLinkPresent = "chain_link_present". This is the single-envelope
-// appraisal claim; the cross-envelope stream linkage ("chain_linked") is a
-// separate concept reported by verifyChain/comparableChain.
-export const CLAIM_CHAIN_LINK_PRESENT = "chain_link_present";
+// A signed, well-formed Rung-1 chain link (sequence + prior hash) is present on
+// the envelope. NOT "freshness" and NOT "chain linked": a single envelope cannot
+// prove the stream is contiguous (verifyChain over the stream is the authority).
+export const CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT =
+  "receipt_timestamp_monotonic_chain_present";
 
 // SVID workload-identity attestation claims (added only by the SVID layer in
-// svid.ts, never by core appraisal). Mirror Go's ClaimWorkloadIdentityVerified
-// / ClaimX509SVIDBound / ClaimSVIDValidAtActionTime.
-export const CLAIM_WORKLOAD_IDENTITY_VERIFIED = "workload_identity_verified";
-export const CLAIM_X509_SVID_BOUND = "x509_svid_bound";
-export const CLAIM_SVID_VALID_AT_ACTION_TIME = "svid_valid_at_action_time";
+// svid.ts, never by core appraisal). Mirror Go's renamed Claim* constants.
+export const CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED = "signing_workload_svid_chain_validated";
+export const CLAIM_SIGNING_WORKLOAD_SVID_BOUND = "signing_workload_svid_bound";
+export const CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME =
+  "signing_workload_svid_valid_at_action_time";
+
+// CLAIM_POLICY_HASH_BOUND is RESERVED, not yet emitted. It lands when the
+// envelope-level policy_hash field ships (v2.7 PR1); the name is reserved here so
+// the public claim dictionary is stable when PR1 wires it.
+export const CLAIM_POLICY_HASH_BOUND = "policy_hash_bound";
+
+// Paired does_not_assert negatives, added when their SVID claim is present.
+export const DNA_NETWORK_NON_BYPASS_FROM_IDENTITY =
+  "does_not_assert_network_non_bypass_from_identity";
+export const DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY =
+  "does_not_assert_deployment_enforcement_from_identity";
+
+// Overclaim-risk codes: the active "you might be about to over-read X" warnings.
+export const RISK_SIGNATURE_VALID_NOT_TRANSPARENCY =
+  "signature_valid_is_not_transparency_inclusion";
+export const RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS =
+  "svid_identity_is_not_deployment_non_bypass";
+export const RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN =
+  "chain_link_present_is_not_verified_contiguous_chain";
 
 // docsNotAsserted is the fixed set of properties an AARP appraisal never asserts.
 const docsNotAsserted = [
@@ -56,7 +84,14 @@ const docsNotAsserted = [
   "absence_of_bypass",
   "complete_mediation",
   "policy_correctness",
+  "intent_correctness",
   "action_safety",
+  "all_tools_discovered",
+  "delegated_actions_mediated",
+  "hosted_saas_actions_mediated",
+  "local_side_effects_mediated",
+  "key_non_compromise",
+  "semantic_equivalence_after_modify",
 ];
 
 // SignatureStatus is the per-signature appraisal outcome.
@@ -76,6 +111,14 @@ export interface SignatureResult {
   reason?: string;
 }
 
+// AssuranceSummary is a computed, never-asserted descriptor of evidence breadth:
+// the set of axes that hold at least one verified claim. The redundant axis count
+// is intentionally omitted (derived as the array length) so the comparable JSON
+// surface stays free of raw numbers.
+export interface AssuranceSummary {
+  axes_with_verified_claims: string[];
+}
+
 export interface Appraisal {
   profile: string;
   assertion_signed: boolean;
@@ -85,6 +128,8 @@ export interface Appraisal {
   claimed_unverified: string[];
   axes: Record<string, string[]>;
   does_not_assert: string[];
+  overclaim_risks: string[];
+  assurance: AssuranceSummary;
   warnings: string[];
 }
 
@@ -103,15 +148,18 @@ export interface VerifyOptions {
 
 // claimVerifiedBy maps each producer claim to the verified claims required for it
 // to count as confirmed. An empty list means structurally claim-only.
+// The KEYS are the producer's input claim vocabulary (stable); the VALUES are the
+// verifier's renamed output claim names. A producer that still claims the legacy
+// "workload_identity_verified" is confirmed by the renamed verified claim the SVID
+// layer adds. Mirror Go's claimVerifiedBy.
 const claimVerifiedBy: Record<string, string[]> = {
   mediated: [CLAIM_MEDIATOR_KEY_PINNED],
   "complete-mediation": [],
   complete_mediation: [],
   transparency_inclusion: [],
-  // A producer that claims workload_identity_verified only has it confirmed when
-  // the SVID binding actually verified (svid.ts adds the verified claim). Without
-  // a verifying binding it is reported claimed-but-unverified, never inflated.
-  [CLAIM_WORKLOAD_IDENTITY_VERIFIED]: [CLAIM_WORKLOAD_IDENTITY_VERIFIED],
+  workload_identity_verified: [CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED],
+  x509_svid_bound: [CLAIM_SIGNING_WORKLOAD_SVID_BOUND],
+  svid_valid_at_action_time: [CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME],
 };
 
 interface VerifiedSigner {
@@ -281,6 +329,8 @@ function newAppraisal(): Appraisal {
     claimed_unverified: [],
     axes: {},
     does_not_assert: [...docsNotAsserted],
+    overclaim_risks: [],
+    assurance: { axes_with_verified_claims: [] },
     warnings: [],
   };
 }
@@ -293,6 +343,53 @@ export function addVerified(ap: Appraisal, claim: string, axis: string): void {
   ap.verified_claims.push(claim);
   if (ap.axes[axis] === undefined) ap.axes[axis] = [];
   (ap.axes[axis] as string[]).push(claim);
+}
+
+// addDoesNotAssert appends paired negatives, skipping any already present so the
+// list never carries a duplicate. Exported for the SVID layer.
+export function addDoesNotAssert(ap: Appraisal, ...items: string[]): void {
+  for (const it of items) {
+    if (!ap.does_not_assert.includes(it)) ap.does_not_assert.push(it);
+  }
+}
+
+// finalize computes the derived honesty outputs (overclaim risks + the assurance
+// axis-set descriptor). It must run AFTER classifyClaims and after any
+// attestation claims are added. Exported so the SVID layer runs it last.
+export function finalize(ap: Appraisal): void {
+  ap.overclaim_risks = computeOverclaimRisks(ap);
+  ap.assurance = { axes_with_verified_claims: axesWithVerifiedClaims(ap) };
+}
+
+// computeOverclaimRisks returns the sorted, de-duplicated overclaim-risk codes. A
+// risk fires only when its trigger claim is present AND the stronger sibling axis
+// is absent, so it auto-suppresses once that axis is populated.
+function computeOverclaimRisks(ap: Appraisal): string[] {
+  const verified = new Set(ap.verified_claims);
+  const risks = new Set<string>();
+  const authorityEmpty = (ap.axes[AXIS_AUTHORITY] ?? []).length === 0;
+  const transparencyEmpty = (ap.axes[AXIS_TRANSPARENCY] ?? []).length === 0;
+  const deploymentEmpty = (ap.axes[AXIS_DEPLOYMENT] ?? []).length === 0;
+  if (verified.has(CLAIM_RECEIPT_SIGNATURE_VALID) && transparencyEmpty) {
+    risks.add(RISK_SIGNATURE_VALID_NOT_TRANSPARENCY);
+  }
+  if (verified.has(CLAIM_SIGNING_WORKLOAD_SVID_BOUND) && deploymentEmpty) {
+    risks.add(RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS);
+  }
+  if (verified.has(CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT) && authorityEmpty) {
+    risks.add(RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN);
+  }
+  return [...risks].sort();
+}
+
+// axesWithVerifiedClaims returns the sorted axis names that hold a verified claim.
+function axesWithVerifiedClaims(ap: Appraisal): string[] {
+  const out: string[] = [];
+  for (const [axis, claims] of Object.entries(ap.axes)) {
+    if (claims.length > 0) out.push(axis);
+  }
+  out.sort();
+  return out;
 }
 
 // classifyClaims fills claimed_unverified from the producer claims the verified
@@ -346,12 +443,12 @@ export function appraiseCore(e: Envelope, opts: VerifyOptions): Appraisal {
 
   if (verified.length > 0) {
     ap.assertion_signed = true;
-    addVerified(ap, CLAIM_ASSERTION_SIGNATURE_VALID, AXIS_INTEGRITY);
+    addVerified(ap, CLAIM_RECEIPT_SIGNATURE_VALID, AXIS_INTEGRITY);
     if (mediatorKeyPinned(e.assertion, verified, opts.trust)) {
       addVerified(ap, CLAIM_MEDIATOR_KEY_PINNED, AXIS_IDENTITY);
     }
     if (e.chain !== undefined) {
-      addVerified(ap, CLAIM_CHAIN_LINK_PRESENT, AXIS_INTEGRITY);
+      addVerified(ap, CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT, AXIS_INTEGRITY);
     }
   } else {
     ap.warnings.push(
@@ -368,6 +465,7 @@ export function appraiseCore(e: Envelope, opts: VerifyOptions): Appraisal {
 export function verify(e: Envelope, opts: VerifyOptions): Appraisal {
   const ap = appraiseCore(e, opts);
   classifyClaims(ap);
+  finalize(ap);
   return ap;
 }
 
@@ -409,6 +507,12 @@ export function comparableAppraisal(ap: Appraisal): string {
     claimed_unverified: sortedUnique(ap.claimed_unverified),
     axes,
     does_not_assert: sortedUnique(ap.does_not_assert),
+    overclaim_risks: sortedUnique(ap.overclaim_risks),
+    // assurance carries only the axis-set descriptor; the redundant count is
+    // omitted so the comparable surface stays free of raw JSON numbers.
+    assurance: {
+      axes_with_verified_claims: sortedUnique(ap.assurance.axes_with_verified_claims),
+    },
   };
   return canonicalize(obj);
 }

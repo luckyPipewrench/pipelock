@@ -373,7 +373,7 @@ func (g *aarpGen) goldenFixtures() []aarpFixture {
 	}
 
 	// g06: no claims at all — a signed assertion that claims nothing still
-	// reports assertion_signature_valid and an empty claimed_unverified.
+	// reports receipt_signature_valid and an empty claimed_unverified.
 	{
 		e := aarp.Envelope{Subject: g.baseSubject("g06"), Assertion: baseAssertion("noclaims")}
 		e.Assertion.Claimed = []string{}
@@ -412,7 +412,7 @@ func (g *aarpGen) goldenFixtures() []aarpFixture {
 	// surrogate (instead of only UNPAIRED ones) would mangle the astral char to
 	// two U+FFFD, compute a different payload digest, and fail the signature while
 	// the others verify -- a cross-language differential. Signed by k-issuer (no
-	// trust entry), so the astral effect is isolated to assertion_signature_valid.
+	// trust entry), so the astral effect is isolated to receipt_signature_valid.
 	{
 		astralMediator := "\U0001F600mediator.example"
 		e := aarp.Envelope{

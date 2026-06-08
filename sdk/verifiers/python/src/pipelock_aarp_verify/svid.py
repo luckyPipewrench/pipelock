@@ -8,8 +8,9 @@ This module appraises an X.509-SVID workload-identity **proof-of-possession
 binding** on top of the envelope appraisal. It is additive: it never changes the
 envelope contract, never makes an envelope fatal, and never removes a core claim.
 When ALL nine validation steps pass on a signed assertion, exactly three claims
-are added (``workload_identity_verified``, ``x509_svid_bound``,
-``svid_valid_at_action_time``); a single failure withholds all three and the
+are added (``signing_workload_svid_chain_validated``,
+``signing_workload_svid_bound``, ``signing_workload_svid_valid_at_action_time``);
+a single failure withholds all three and the
 envelope appraisal is untouched.
 
 Two distinct trust surfaces meet here:
@@ -48,9 +49,11 @@ from cryptography.x509.oid import ExtensionOID
 from .appraise import (
     AXIS_FRESHNESS,
     AXIS_IDENTITY,
-    CLAIM_SVID_VALID_AT_ACTION_TIME,
-    CLAIM_WORKLOAD_IDENTITY_VERIFIED,
-    CLAIM_X509_SVID_BOUND,
+    CLAIM_SIGNING_WORKLOAD_SVID_BOUND,
+    CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED,
+    CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME,
+    DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY,
+    DNA_NETWORK_NON_BYPASS_FROM_IDENTITY,
     Appraisal,
     VerifyOptions,
     _appraise_core,
@@ -836,9 +839,14 @@ def add_svid_claims(
         # a parser/crypto surprise being weaponized into an envelope rejection.
         ap.warnings.append("SVID attestation did not verify: " + str(exc))
         return
-    ap.add_verified(CLAIM_WORKLOAD_IDENTITY_VERIFIED, AXIS_IDENTITY)
-    ap.add_verified(CLAIM_X509_SVID_BOUND, AXIS_IDENTITY)
-    ap.add_verified(CLAIM_SVID_VALID_AT_ACTION_TIME, AXIS_FRESHNESS)
+    ap.add_verified(CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED, AXIS_IDENTITY)
+    ap.add_verified(CLAIM_SIGNING_WORKLOAD_SVID_BOUND, AXIS_IDENTITY)
+    ap.add_verified(CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME, AXIS_FRESHNESS)
+    # A verified signing-workload identity is NOT a deployment or non-bypass proof.
+    ap.add_does_not_assert(
+        DNA_NETWORK_NON_BYPASS_FROM_IDENTITY,
+        DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY,
+    )
 
 
 def appraise_with_svid(
@@ -857,6 +865,7 @@ def appraise_with_svid(
     ap = _appraise_core(env, opts)
     add_svid_claims(ap, env, ev, svid_opts)
     _classify_claims(ap)
+    ap.finalize()
     return ap
 
 

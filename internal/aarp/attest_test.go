@@ -165,16 +165,16 @@ func TestSVID_ValidBindingVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppraiseWithSVID: %v", err)
 	}
-	for _, want := range []string{ClaimWorkloadIdentityVerified, ClaimX509SVIDBound, ClaimSVIDValidAtActionTime} {
+	for _, want := range []string{ClaimSigningWorkloadSVIDChainValidated, ClaimSigningWorkloadSVIDBound, ClaimSigningWorkloadSVIDValidAtActionTime} {
 		if !contains(ap.VerifiedClaims, want) {
 			t.Errorf("missing verified claim %q in %v", want, ap.VerifiedClaims)
 		}
 	}
-	if !contains(ap.Axes[AxisIdentity], ClaimWorkloadIdentityVerified) {
-		t.Error("workload_identity_verified not on identity axis")
+	if !contains(ap.Axes[AxisIdentity], ClaimSigningWorkloadSVIDChainValidated) {
+		t.Error("signing_workload_svid_chain_validated not on identity axis")
 	}
-	if !contains(ap.Axes[AxisFreshness], ClaimSVIDValidAtActionTime) {
-		t.Error("svid_valid_at_action_time not on freshness axis")
+	if !contains(ap.Axes[AxisFreshness], ClaimSigningWorkloadSVIDValidAtActionTime) {
+		t.Error("signing_workload_svid_valid_at_action_time not on freshness axis")
 	}
 }
 
@@ -303,7 +303,7 @@ func TestAppraiseWithSVID_UnsignedAssertionClaimOnly(t *testing.T) {
 	if ap.AssertionSigned {
 		t.Fatal("AssertionSigned true with empty trust set")
 	}
-	if contains(ap.VerifiedClaims, ClaimWorkloadIdentityVerified) {
+	if contains(ap.VerifiedClaims, ClaimSigningWorkloadSVIDChainValidated) {
 		t.Error("workload identity verified on an unsigned assertion")
 	}
 }
@@ -314,7 +314,7 @@ func TestAppraiseWithSVID_NilEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppraiseWithSVID(nil): %v", err)
 	}
-	if contains(ap.VerifiedClaims, ClaimWorkloadIdentityVerified) {
+	if contains(ap.VerifiedClaims, ClaimSigningWorkloadSVIDChainValidated) {
 		t.Error("workload identity verified with nil evidence")
 	}
 }

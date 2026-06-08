@@ -47,13 +47,24 @@ var (
 // "starts with spiffe://" check would accept it and inflate the identity claims.
 const svidIDMalformedPath = "spiffe://example.org/workload/../imposter"
 
+// producerClaimWorkloadIdentityVerified is the producer's INPUT claim string.
+// The verifier renamed its output claim to signing_workload_svid_chain_validated,
+// but the producer-input vocabulary (the keys of claimVerifiedBy) is unchanged,
+// so fixtures keep emitting this literal to exercise the claim-classification map.
+const producerClaimWorkloadIdentityVerified = "workload_identity_verified"
+
 // svidEnvelope builds and signs a base SVID receipt envelope: claims mediated +
 // workload_identity_verified, carries the trust domain (required with a binding),
 // signed by the given key/role.
 func (g *aarpGen) svidEnvelope(label, trustDomain, keyID string, priv ed25519.PrivateKey) aarp.Envelope {
 	e := aarp.Envelope{
-		Subject:   g.baseSubject(label),
-		Assertion: baseAssertion("mediated", aarp.ClaimWorkloadIdentityVerified),
+		Subject: g.baseSubject(label),
+		// The producer's input claim vocabulary is stable and distinct from the
+		// verifier's renamed output names: a producer still claims the literal
+		// "workload_identity_verified", which classifyClaims maps to the renamed
+		// verified claim. Using the producer string here (not the output constant)
+		// keeps the fixture exercising the producer-claim path.
+		Assertion: baseAssertion("mediated", producerClaimWorkloadIdentityVerified),
 	}
 	e.Assertion.TrustDomain = trustDomain
 	return g.signEd(e, keyID, roleMediator, priv)

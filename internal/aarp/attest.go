@@ -157,8 +157,8 @@ func bindingCanonical(e Envelope, ev SVIDEvidence) ([]byte, error) {
 // proof-of-possession signature returns an error and confirms nothing.
 //
 // On success it returns the validated SPIFFE ID. The caller maps that to the
-// workload_identity_verified / x509_svid_bound / svid_valid_at_action_time
-// claims via AppraiseWithSVID.
+// signing_workload_svid_chain_validated / signing_workload_svid_bound /
+// signing_workload_svid_valid_at_action_time claims via AppraiseWithSVID.
 func VerifySVIDBinding(e Envelope, ev SVIDEvidence, opts SVIDVerifyOptions) (string, error) {
 	if ev.Type != "x509" {
 		return "", fmt.Errorf("%w: evidence type %q (only x509 counts as verified attestation)", ErrSVIDEvidence, ev.Type)
@@ -336,6 +336,7 @@ func AppraiseWithSVID(e Envelope, ev *SVIDEvidence, opts VerifyOptions, svidOpts
 		addSVIDClaims(ap, e, *ev, svidOpts)
 	}
 	classifyClaims(ap)
+	ap.finalize()
 	return ap, nil
 }
 
@@ -348,7 +349,12 @@ func addSVIDClaims(ap *Appraisal, e Envelope, ev SVIDEvidence, svidOpts SVIDVeri
 		ap.Warnings = append(ap.Warnings, "SVID attestation did not verify: "+err.Error())
 		return
 	}
-	ap.addVerified(ClaimWorkloadIdentityVerified, AxisIdentity)
-	ap.addVerified(ClaimX509SVIDBound, AxisIdentity)
-	ap.addVerified(ClaimSVIDValidAtActionTime, AxisFreshness)
+	ap.addVerified(ClaimSigningWorkloadSVIDChainValidated, AxisIdentity)
+	ap.addVerified(ClaimSigningWorkloadSVIDBound, AxisIdentity)
+	ap.addVerified(ClaimSigningWorkloadSVIDValidAtActionTime, AxisFreshness)
+	// A verified signing-workload identity is NOT a deployment or non-bypass
+	// proof: it says who signed, never that the deployment forces the workload's
+	// traffic through the mediator. State both negatives explicitly so the SVID
+	// binding can never be over-read as containment.
+	ap.addDoesNotAssert(DNAssertNetworkNonBypassFromIdentity, DNAssertDeploymentEnforcementFromIdentity)
 }

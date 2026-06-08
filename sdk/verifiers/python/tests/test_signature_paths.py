@@ -167,6 +167,15 @@ def test_malformed_wire_bad_base64():
     assert ap.signatures[0].status == "malformed"
 
 
+def test_malformed_wire_base64_junk_after_valid_signature():
+    obj = _base_envelope()
+    obj["signatures"][0]["sig"] += "!"
+    env = unmarshal(json.dumps(obj).encode("utf-8"))
+    ap = verify(env, _trust_with())
+    assert ap.signatures[0].status == "malformed"
+    assert ap.assertion_signed is False
+
+
 def test_wrong_signature_length_is_failed():
     obj = _base_envelope()
     # 4-byte signature: decodes fine but is not 64 bytes -> failed.

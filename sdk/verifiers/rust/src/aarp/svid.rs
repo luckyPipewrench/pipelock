@@ -9,8 +9,9 @@
 //! an envelope fatal, and never removes a core claim. When a `--svid` sidecar is
 //! supplied AND the X.509-SVID proof-of-possession binding verifies against the
 //! operator-pinned trust bundle on a signed assertion, it adds exactly three
-//! verified claims (`workload_identity_verified`, `x509_svid_bound`,
-//! `svid_valid_at_action_time`). Any failure withholds all three and never
+//! verified claims (`signing_workload_svid_chain_validated`,
+//! `signing_workload_svid_bound`, `signing_workload_svid_valid_at_action_time`).
+//! Any failure withholds all three and never
 //! errors the envelope.
 //!
 //! Two trust boundaries are kept strictly apart:
@@ -41,7 +42,11 @@ use x509_parser::prelude::*;
 
 use super::envelope::{validate_timestamp, Envelope};
 use super::jcs::{canonicalize_tree, Json};
-use super::verify::{Appraisal, AXIS_FRESHNESS, AXIS_IDENTITY};
+use super::verify::{
+    Appraisal, AXIS_FRESHNESS, AXIS_IDENTITY, CLAIM_SIGNING_WORKLOAD_SVID_BOUND,
+    CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED, CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME,
+    DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY, DNA_NETWORK_NON_BYPASS_FROM_IDENTITY,
+};
 
 /// Domain separator for the SVID proof-of-possession binding. Mirrors
 /// `aarp.ContextSVIDBinding`.
@@ -58,10 +63,9 @@ const MIN_NONCE_BYTES: usize = 16;
 const BINDING_ALG_ECDSA_P256_SHA256: &str = "ecdsa-p256-sha256";
 const BINDING_ALG_ED25519: &str = "ed25519";
 
-/// The three SVID verified-claim names. Mirror the Go constants in appraise.go.
-const CLAIM_WORKLOAD_IDENTITY_VERIFIED: &str = "workload_identity_verified";
-const CLAIM_X509_SVID_BOUND: &str = "x509_svid_bound";
-const CLAIM_SVID_VALID_AT_ACTION_TIME: &str = "svid_valid_at_action_time";
+// The SVID verified-claim names and the paired negatives live in verify.rs
+// (mirroring Go's appraise.go single-file layout) so the overclaim-risk logic can
+// reference the "bound" claim. They are imported at the top of this file.
 
 // ---- sidecar wire shape (cmd/pipelock-verifier/aarp_svid.go) ----
 
@@ -316,9 +320,17 @@ pub fn add_svid_claims(ap: &mut Appraisal, env: &Envelope, ev: &SvidEvidence, tr
         // Fail-closed: no claim, no envelope error.
         return;
     }
-    ap.add_verified(CLAIM_WORKLOAD_IDENTITY_VERIFIED, AXIS_IDENTITY);
-    ap.add_verified(CLAIM_X509_SVID_BOUND, AXIS_IDENTITY);
-    ap.add_verified(CLAIM_SVID_VALID_AT_ACTION_TIME, AXIS_FRESHNESS);
+    ap.add_verified(CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED, AXIS_IDENTITY);
+    ap.add_verified(CLAIM_SIGNING_WORKLOAD_SVID_BOUND, AXIS_IDENTITY);
+    ap.add_verified(
+        CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME,
+        AXIS_FRESHNESS,
+    );
+    // A verified signing-workload identity is NOT a deployment or non-bypass proof.
+    ap.add_does_not_assert(&[
+        DNA_NETWORK_NON_BYPASS_FROM_IDENTITY,
+        DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY,
+    ]);
 }
 
 // ---- the 9-step binding verification (attest.go VerifySVIDBinding) ----

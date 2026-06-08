@@ -235,7 +235,7 @@ func TestRunAARP_SVIDAppraises(t *testing.T) {
 	if !bytes.Contains(out.Bytes(), []byte(`"assertion_signed":true`)) {
 		t.Fatalf("expected an appraisal, got: %s", out.String())
 	}
-	if bytes.Contains(out.Bytes(), []byte("workload_identity_verified")) {
+	if bytes.Contains(out.Bytes(), []byte("signing_workload_svid_bound")) {
 		t.Fatalf("dummy binding must not inflate workload identity: %s", out.String())
 	}
 }

@@ -13,15 +13,51 @@ use ed25519_dalek::{Signature as DalekSignature, VerifyingKey};
 
 use super::envelope::{classify_critical_extensions, CritError, Envelope, CANON_ID, PROFILE};
 
-// Axis names.
+// Axis names. Mirror Go's Axis* constants.
 pub const AXIS_IDENTITY: &str = "identity";
+pub const AXIS_AUTHORITY: &str = "authority";
 pub const AXIS_INTEGRITY: &str = "integrity";
 pub const AXIS_FRESHNESS: &str = "freshness";
+// AXIS_TRANSPARENCY, AXIS_DEPLOYMENT, and AXIS_AUTHORITY are never populated in
+// v2.7 (held for v2.8), but the overclaim-risk logic checks them so a future
+// external-witness, attestor, or stream-authority claim auto-suppresses the
+// matching warning.
+pub const AXIS_TRANSPARENCY: &str = "transparency";
+pub const AXIS_DEPLOYMENT: &str = "deployment";
 
-// Verified-claim names.
-pub const CLAIM_ASSERTION_SIGNATURE_VALID: &str = "assertion_signature_valid";
+// Verified-claim names. Deliberately literal; the stable public claim dictionary.
+// Mirror Go's renamed Claim* constants.
+pub const CLAIM_RECEIPT_SIGNATURE_VALID: &str = "receipt_signature_valid";
 pub const CLAIM_MEDIATOR_KEY_PINNED: &str = "mediator_key_pinned";
-pub const CLAIM_CHAIN_LINK_PRESENT: &str = "chain_link_present";
+pub const CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT: &str =
+    "receipt_timestamp_monotonic_chain_present";
+
+// SVID workload-identity attestation claims (added only by the SVID layer in
+// svid.rs, never by core appraisal). Mirror Go's renamed Claim* constants.
+pub const CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED: &str =
+    "signing_workload_svid_chain_validated";
+pub const CLAIM_SIGNING_WORKLOAD_SVID_BOUND: &str = "signing_workload_svid_bound";
+pub const CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME: &str =
+    "signing_workload_svid_valid_at_action_time";
+
+// CLAIM_POLICY_HASH_BOUND is RESERVED, not yet emitted: it lands when the
+// envelope-level policy_hash field ships (v2.7 PR1). Reserved so the public claim
+// dictionary is stable when PR1 wires it.
+pub const CLAIM_POLICY_HASH_BOUND: &str = "policy_hash_bound";
+
+// Paired does_not_assert negatives, added when their SVID claim is present.
+pub const DNA_NETWORK_NON_BYPASS_FROM_IDENTITY: &str =
+    "does_not_assert_network_non_bypass_from_identity";
+pub const DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY: &str =
+    "does_not_assert_deployment_enforcement_from_identity";
+
+// Overclaim-risk codes: the active "you might be about to over-read X" warnings.
+pub const RISK_SIGNATURE_VALID_NOT_TRANSPARENCY: &str =
+    "signature_valid_is_not_transparency_inclusion";
+pub const RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS: &str =
+    "svid_identity_is_not_deployment_non_bypass";
+pub const RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN: &str =
+    "chain_link_present_is_not_verified_contiguous_chain";
 
 // Per-signature status enum values.
 pub const SIG_VERIFIED: &str = "verified";
@@ -39,7 +75,14 @@ const DOES_NOT_ASSERT: &[&str] = &[
     "absence_of_bypass",
     "complete_mediation",
     "policy_correctness",
+    "intent_correctness",
     "action_safety",
+    "all_tools_discovered",
+    "delegated_actions_mediated",
+    "hosted_saas_actions_mediated",
+    "local_side_effects_mediated",
+    "key_non_compromise",
+    "semantic_equivalence_after_modify",
 ];
 
 const KNOWN_SIGNER_ROLES: &[&str] = &["mediator", "issuer", "countersig"];
@@ -84,6 +127,15 @@ pub struct SignatureResult {
     pub status: String,
 }
 
+/// AssuranceSummary is a computed, never-asserted descriptor of evidence breadth:
+/// the set of axes that hold at least one verified claim. The redundant axis
+/// count is intentionally omitted (derived as the array length) so the comparable
+/// JSON surface stays free of raw numbers.
+#[derive(Debug, Clone, Default)]
+pub struct AssuranceSummary {
+    pub axes_with_verified_claims: Vec<String>,
+}
+
 /// Appraisal is the AARP verifier result. It never carries a "trusted"/"safe"
 /// boolean.
 #[derive(Debug, Clone)]
@@ -96,6 +148,8 @@ pub struct Appraisal {
     pub claimed_unverified: Vec<String>,
     pub axes: BTreeMap<String, Vec<String>>,
     pub does_not_assert: Vec<String>,
+    pub overclaim_risks: Vec<String>,
+    pub assurance: AssuranceSummary,
 }
 
 impl Appraisal {
@@ -109,6 +163,8 @@ impl Appraisal {
             claimed_unverified: Vec::new(),
             axes: BTreeMap::new(),
             does_not_assert: DOES_NOT_ASSERT.iter().map(|s| s.to_string()).collect(),
+            overclaim_risks: Vec::new(),
+            assurance: AssuranceSummary::default(),
         }
     }
 
@@ -118,6 +174,65 @@ impl Appraisal {
             .entry(axis.to_string())
             .or_default()
             .push(claim.to_string());
+    }
+
+    /// add_does_not_assert appends paired negatives, skipping any already present.
+    pub fn add_does_not_assert(&mut self, items: &[&str]) {
+        for it in items {
+            if !self.does_not_assert.iter().any(|d| d == it) {
+                self.does_not_assert.push((*it).to_string());
+            }
+        }
+    }
+
+    /// finalize computes the derived honesty outputs (overclaim risks + the
+    /// assurance axis-set descriptor). It must run AFTER claim classification and
+    /// after any attestation claims are added.
+    pub fn finalize(&mut self) {
+        self.overclaim_risks = self.compute_overclaim_risks();
+        self.assurance = AssuranceSummary {
+            axes_with_verified_claims: self.axes_with_verified_claims(),
+        };
+    }
+
+    /// compute_overclaim_risks returns the sorted, de-duplicated risk codes. A
+    /// risk fires only when its trigger claim is present AND the stronger sibling
+    /// axis is absent, so it auto-suppresses once that axis is populated.
+    fn compute_overclaim_risks(&self) -> Vec<String> {
+        let verified: std::collections::HashSet<&str> =
+            self.verified_claims.iter().map(String::as_str).collect();
+        let axis_empty = |axis: &str| self.axes.get(axis).is_none_or(|c| c.is_empty());
+        let mut risks: Vec<String> = Vec::new();
+        let mut add = |code: &str| {
+            if !risks.iter().any(|r| r == code) {
+                risks.push(code.to_string());
+            }
+        };
+        if verified.contains(CLAIM_RECEIPT_SIGNATURE_VALID) && axis_empty(AXIS_TRANSPARENCY) {
+            add(RISK_SIGNATURE_VALID_NOT_TRANSPARENCY);
+        }
+        if verified.contains(CLAIM_SIGNING_WORKLOAD_SVID_BOUND) && axis_empty(AXIS_DEPLOYMENT) {
+            add(RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS);
+        }
+        if verified.contains(CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT)
+            && axis_empty(AXIS_AUTHORITY)
+        {
+            add(RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN);
+        }
+        risks.sort();
+        risks
+    }
+
+    /// axes_with_verified_claims returns the sorted axis names holding a claim.
+    fn axes_with_verified_claims(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .axes
+            .iter()
+            .filter(|(_, claims)| !claims.is_empty())
+            .map(|(axis, _)| axis.clone())
+            .collect();
+        out.sort();
+        out
     }
 }
 
@@ -151,16 +266,20 @@ pub fn verify(env: &Envelope, opts: &VerifyOptions) -> Result<Appraisal, String>
 
     if !verified.is_empty() {
         ap.assertion_signed = true;
-        ap.add_verified(CLAIM_ASSERTION_SIGNATURE_VALID, AXIS_INTEGRITY);
+        ap.add_verified(CLAIM_RECEIPT_SIGNATURE_VALID, AXIS_INTEGRITY);
         if mediator_key_pinned(env, &verified, &opts.trust) {
             ap.add_verified(CLAIM_MEDIATOR_KEY_PINNED, AXIS_IDENTITY);
         }
         if env.chain.is_some() {
-            ap.add_verified(CLAIM_CHAIN_LINK_PRESENT, AXIS_INTEGRITY);
+            ap.add_verified(
+                CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT,
+                AXIS_INTEGRITY,
+            );
         }
     }
 
     classify_claims(&mut ap);
+    ap.finalize();
     Ok(ap)
 }
 
@@ -299,13 +418,15 @@ fn mediator_key_pinned(
 /// `Some(&[])` means a known claim that is structurally never verifiable in
 /// v0.1; `None` means an unknown claim (reported claim-only).
 fn claim_required(claim: &str) -> Option<&'static [&'static str]> {
+    // The match arms are the producer's INPUT claim vocabulary (stable); the
+    // returned slices are the verifier's renamed output claim names.
     match claim {
         "mediated" => Some(&[CLAIM_MEDIATOR_KEY_PINNED]),
         "complete-mediation" | "complete_mediation" => Some(&[]),
         "transparency_inclusion" => Some(&[]),
-        "workload_identity_verified" => Some(&["workload_identity_verified"]),
-        "x509_svid_bound" => Some(&["x509_svid_bound"]),
-        "svid_valid_at_action_time" => Some(&["svid_valid_at_action_time"]),
+        "workload_identity_verified" => Some(&[CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED]),
+        "x509_svid_bound" => Some(&[CLAIM_SIGNING_WORKLOAD_SVID_BOUND]),
+        "svid_valid_at_action_time" => Some(&[CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME]),
         _ => None,
     }
 }
@@ -318,6 +439,9 @@ fn claim_required(claim: &str) -> Option<&'static [&'static str]> {
 pub fn reclassify_claims(ap: &mut Appraisal) {
     ap.claimed_unverified.clear();
     classify_claims(ap);
+    // The SVID layer added claims and may have appended paired negatives, so the
+    // derived honesty outputs must be recomputed over the final verified set.
+    ap.finalize();
 }
 
 /// classify_claims fills claimed_unverified from the producer claims the
@@ -392,6 +516,18 @@ pub fn comparable_appraisal(ap: &Appraisal) -> Result<Vec<u8>, String> {
         "does_not_assert".to_string(),
         sorted_unique(&ap.does_not_assert),
     );
+    obj.insert(
+        "overclaim_risks".to_string(),
+        sorted_unique(&ap.overclaim_risks),
+    );
+    // assurance carries only the axis-set descriptor; the redundant count is
+    // omitted so the comparable surface stays free of raw JSON numbers.
+    let mut assurance: BTreeMap<String, Json> = BTreeMap::new();
+    assurance.insert(
+        "axes_with_verified_claims".to_string(),
+        sorted_unique(&ap.assurance.axes_with_verified_claims),
+    );
+    obj.insert("assurance".to_string(), Json::Object(assurance));
 
     canonicalize_value(&Json::Object(obj)).map_err(|err| err.to_string())
 }

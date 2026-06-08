@@ -113,7 +113,7 @@ func TestSVID_AssertionTrustDomainMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppraiseWithSVID: %v", err)
 	}
-	if contains(ap.VerifiedClaims, ClaimWorkloadIdentityVerified) {
+	if contains(ap.VerifiedClaims, ClaimSigningWorkloadSVIDChainValidated) {
 		t.Fatal("workload_identity_verified despite trust-domain confusion")
 	}
 }
@@ -285,7 +285,7 @@ func TestAppraiseWithSVID_FailedBindingWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppraiseWithSVID: %v", err)
 	}
-	if contains(ap.VerifiedClaims, ClaimWorkloadIdentityVerified) {
+	if contains(ap.VerifiedClaims, ClaimSigningWorkloadSVIDChainValidated) {
 		t.Error("workload identity verified despite failed binding")
 	}
 	var warned bool

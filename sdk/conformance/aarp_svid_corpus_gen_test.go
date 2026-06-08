@@ -42,7 +42,7 @@ import (
 //
 // An SVID attack is NEVER envelope-fatal. Every SVID fixture is verdictAppraise:
 // a failed/absent binding simply withholds the three workload-identity claims
-// (workload_identity_verified, x509_svid_bound, svid_valid_at_action_time) and
+// (signing_workload_svid_chain_validated, signing_workload_svid_bound, signing_workload_svid_valid_at_action_time) and
 // surfaces the producer's workload_identity_verified claim as claimed-unverified.
 // The gate's appraise path (four-way byte equality + match to the committed
 // baseline) is what catches any verifier that inflates a claim the others reject.

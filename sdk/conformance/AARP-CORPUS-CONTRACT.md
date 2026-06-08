@@ -78,9 +78,11 @@ integer-only numbers), followed by a single `\n`:
 ```jsonc
 {
   "assertion_signed": <bool>,
+  "assurance": { "axes_with_verified_claims": ["<sorted axes holding ≥1 verified claim>"] },
   "axes": { "<axis>": ["<sorted claim names>"] },   // only non-empty axes
   "claimed_unverified": ["<sorted, deduped producer claims not confirmed>"],
-  "does_not_assert": ["<sorted fixed list>"],
+  "does_not_assert": ["<sorted list: fixed general set + any paired negatives>"],
+  "overclaim_risks": ["<sorted, deduped over-read warning codes>"],
   "profile": "aarp/v0.1",
   "signatures": [                                    // ENVELOPE ORDER (not sorted)
     { "alg": "...", "key_id": "...", "signer_role": "...", "status": "..." }
@@ -88,6 +90,13 @@ integer-only numbers), followed by a single `\n`:
   "verified_claims": ["<sorted, deduped confirmed claim names>"]
 }
 ```
+
+`assurance` carries only the axis-set descriptor (which axes hold verified
+claims), never a grade or score. The redundant axis count is intentionally
+omitted so the comparable surface stays free of raw JSON numbers; readers derive
+it as the array length. `overclaim_risks` lists active "you might be about to
+over-read X" warnings (codes below). The default human (`--json`-off) view leads
+with `does_not_assert` + `overclaim_risks` BEFORE the verified claims.
 
 A **chain** that links prints:
 
@@ -122,22 +131,38 @@ the signature unverified.
 
 ## Verified-claim & axis vocabulary
 
+Verified-claim names are deliberately literal — each names the exact mechanical
+fact confirmed, never a property a relying party might over-read:
+
 | Claim | Axis | Confirmed when |
 |-------|------|----------------|
-| `assertion_signature_valid` | integrity | ≥1 parallel signature verified under a trusted key over the canonical payload |
+| `receipt_signature_valid` | integrity | ≥1 parallel signature verified under a trusted key over the canonical payload |
 | `mediator_key_pinned` | identity | a verifying signature's key id is bound by a trust entry to the asserted mediator (role/domain-scoped) |
-| `chain_link_present` | integrity | the envelope carries a well-formed Rung-1 chain link |
+| `receipt_timestamp_monotonic_chain_present` | integrity | the envelope carries a well-formed Rung-1 chain link (a monotonic position, NOT a verified contiguous stream and NOT freshness) |
 
 Producer claim → required verified claims (all must be present to be confirmed;
-otherwise the producer claim is reported in `claimed_unverified`):
+otherwise the producer claim is reported in `claimed_unverified`). The producer's
+INPUT claim vocabulary is stable and distinct from the renamed verifier OUTPUT:
 
 - `mediated` → `mediator_key_pinned`
 - `complete-mediation` / `complete_mediation` → (never verifiable; always unverified)
 - `transparency_inclusion` → (never verifiable in v0.1)
 - any unknown claim → reported claim-only (unverified)
 
-`does_not_assert` is the fixed list: `absence_of_bypass`, `action_safety`,
-`complete_mediation`, `efficacy`, `policy_correctness`.
+`does_not_assert` fixed general list (sorted in output): `absence_of_bypass`,
+`action_safety`, `all_tools_discovered`, `complete_mediation`,
+`delegated_actions_mediated`, `efficacy`, `hosted_saas_actions_mediated`,
+`intent_correctness`, `key_non_compromise`, `local_side_effects_mediated`,
+`policy_correctness`, `semantic_equivalence_after_modify`. When an SVID claim is
+present, the paired negatives `does_not_assert_network_non_bypass_from_identity`
+and `does_not_assert_deployment_enforcement_from_identity` are also added.
+
+`overclaim_risks` codes: `signature_valid_is_not_transparency_inclusion` (a valid
+signature is integrity, not transparency-log inclusion),
+`svid_identity_is_not_deployment_non_bypass` (a bound signing-workload identity is
+not a deployment/non-bypass proof), and
+`chain_link_present_is_not_verified_contiguous_chain` (a single chain link is not
+a verified contiguous stream).
 
 ## Canonicalization & number-safety rules (must match Go exactly)
 
@@ -298,14 +323,21 @@ assertion):
 
 | Claim | Axis | Confirmed when |
 |-------|------|----------------|
-| `workload_identity_verified` | identity | the X.509-SVID PoP binding verified against the pinned bundle |
-| `x509_svid_bound` | identity | the SVID leaf key signed the receipt/assertion binding |
-| `svid_valid_at_action_time` | freshness | the SVID validated point-in-time at the action time |
+| `signing_workload_svid_chain_validated` | identity | the X.509-SVID leaf chain validated against the pinned bundle and the SPIFFE ID is permitted |
+| `signing_workload_svid_bound` | identity | the SVID leaf key signed the receipt/assertion binding (proof of possession) — an identity binding, NOT a deployment attestation |
+| `signing_workload_svid_valid_at_action_time` | freshness | the SVID validated point-in-time at the action time |
 
-Producer claim → required verified claims: `workload_identity_verified` →
-`workload_identity_verified`. A producer that claims it without a verifying binding
-has it reported in `claimed_unverified` (no inflation). The comparable-output
-shape is unchanged; these claims simply appear in `verified_claims` and `axes`.
+Producer claim → required verified claims: the stable INPUT claim
+`workload_identity_verified` → the renamed OUTPUT claim
+`signing_workload_svid_chain_validated` (likewise `x509_svid_bound` →
+`signing_workload_svid_bound`, `svid_valid_at_action_time` →
+`signing_workload_svid_valid_at_action_time`). A producer that claims it without a
+verifying binding has it reported in `claimed_unverified` (no inflation). When the
+binding verifies, the paired negatives
+`does_not_assert_network_non_bypass_from_identity` and
+`does_not_assert_deployment_enforcement_from_identity` are added to
+`does_not_assert`, and `overclaim_risks` gains
+`svid_identity_is_not_deployment_non_bypass`.
 
 ### Corpus scope
 

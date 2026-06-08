@@ -187,8 +187,8 @@ def test_comparable_excludes_warnings_and_reason():
         )
     ]
     ap.warnings = ["should not appear"]
-    ap.verified_claims = ["assertion_signature_valid"]
-    ap.axes = {"integrity": ["assertion_signature_valid"]}
+    ap.verified_claims = ["receipt_signature_valid"]
+    ap.axes = {"integrity": ["receipt_signature_valid"]}
     out = comparable_appraisal(ap).decode("utf-8")
     assert "secret prose" not in out
     assert "should not appear" not in out
@@ -217,7 +217,7 @@ def test_chain_link_present_adds_chain_link_present_claim():
     )
     env = unmarshal(_dump(obj))
     ap = verify(env, _trust())
-    assert "chain_link_present" in ap.verified_claims
+    assert "receipt_timestamp_monotonic_chain_present" in ap.verified_claims
 
 
 def test_copy_independence():

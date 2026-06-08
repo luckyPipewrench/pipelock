@@ -37,18 +37,55 @@ from .suite import (
 ED25519_PUBLIC_KEY_SIZE = 32
 ED25519_SIGNATURE_SIZE = 64
 
-# Axis names grouping verified claims by the kind of proof they rest on.
+# Axis names grouping verified claims by the kind of proof they rest on. Mirror
+# Go's Axis* constants.
 AXIS_IDENTITY = "identity"
+AXIS_AUTHORITY = "authority"
 AXIS_INTEGRITY = "integrity"
 AXIS_FRESHNESS = "freshness"
+# AXIS_TRANSPARENCY, AXIS_DEPLOYMENT, and AXIS_AUTHORITY are never populated in
+# v2.7 (held for v2.8), but the overclaim-risk logic checks them so a future
+# external-witness, attestor, or stream-authority claim auto-suppresses the
+# matching warning.
+AXIS_TRANSPARENCY = "transparency"
+AXIS_DEPLOYMENT = "deployment"
 
-# Verified-claim names.
-CLAIM_ASSERTION_SIGNATURE_VALID = "assertion_signature_valid"
+# Verified-claim names. Deliberately literal; the stable public claim dictionary.
+# Mirror Go's renamed Claim* constants.
+CLAIM_RECEIPT_SIGNATURE_VALID = "receipt_signature_valid"
 CLAIM_MEDIATOR_KEY_PINNED = "mediator_key_pinned"
-CLAIM_CHAIN_LINK_PRESENT = "chain_link_present"
-CLAIM_WORKLOAD_IDENTITY_VERIFIED = "workload_identity_verified"
-CLAIM_X509_SVID_BOUND = "x509_svid_bound"
-CLAIM_SVID_VALID_AT_ACTION_TIME = "svid_valid_at_action_time"
+CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT = (
+    "receipt_timestamp_monotonic_chain_present"
+)
+CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED = "signing_workload_svid_chain_validated"
+CLAIM_SIGNING_WORKLOAD_SVID_BOUND = "signing_workload_svid_bound"
+CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME = (
+    "signing_workload_svid_valid_at_action_time"
+)
+
+# CLAIM_POLICY_HASH_BOUND is RESERVED, not yet emitted: it lands when the
+# envelope-level policy_hash field ships (v2.7 PR1). Reserved so the public claim
+# dictionary is stable when PR1 wires it.
+CLAIM_POLICY_HASH_BOUND = "policy_hash_bound"
+
+# Paired does_not_assert negatives, added when their SVID claim is present.
+DNA_NETWORK_NON_BYPASS_FROM_IDENTITY = (
+    "does_not_assert_network_non_bypass_from_identity"
+)
+DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY = (
+    "does_not_assert_deployment_enforcement_from_identity"
+)
+
+# Overclaim-risk codes: the active "you might be about to over-read X" warnings.
+RISK_SIGNATURE_VALID_NOT_TRANSPARENCY = (
+    "signature_valid_is_not_transparency_inclusion"
+)
+RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS = (
+    "svid_identity_is_not_deployment_non_bypass"
+)
+RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN = (
+    "chain_link_present_is_not_verified_contiguous_chain"
+)
 
 # Per-signature status enum.
 SIG_VERIFIED = "verified"
@@ -64,18 +101,28 @@ DOES_NOT_ASSERT = [
     "absence_of_bypass",
     "complete_mediation",
     "policy_correctness",
+    "intent_correctness",
     "action_safety",
+    "all_tools_discovered",
+    "delegated_actions_mediated",
+    "hosted_saas_actions_mediated",
+    "local_side_effects_mediated",
+    "key_non_compromise",
+    "semantic_equivalence_after_modify",
 ]
 
 # Producer claim -> required verified claims (all must be present to confirm).
-# None means structurally claim-only in v0.1 (never verifiable).
+# None means structurally claim-only in v0.1 (never verifiable). The KEYS are the
+# producer's stable input vocabulary; the VALUES are the verifier's renamed output
+# claim names, so a producer that still claims the legacy "workload_identity_verified"
+# is confirmed by the renamed verified claim. Mirror Go's claimVerifiedBy.
 CLAIM_VERIFIED_BY: dict[str, list[str] | None] = {
     "mediated": [CLAIM_MEDIATOR_KEY_PINNED],
     "complete-mediation": None,
     "complete_mediation": None,
-    CLAIM_WORKLOAD_IDENTITY_VERIFIED: [CLAIM_WORKLOAD_IDENTITY_VERIFIED],
-    CLAIM_X509_SVID_BOUND: [CLAIM_X509_SVID_BOUND],
-    CLAIM_SVID_VALID_AT_ACTION_TIME: [CLAIM_SVID_VALID_AT_ACTION_TIME],
+    "workload_identity_verified": [CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED],
+    "x509_svid_bound": [CLAIM_SIGNING_WORKLOAD_SVID_BOUND],
+    "svid_valid_at_action_time": [CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME],
     "transparency_inclusion": None,
 }
 
@@ -109,6 +156,16 @@ class SignatureResult:
 
 
 @dataclass
+class AssuranceSummary:
+    """A computed, never-asserted descriptor of evidence breadth: the axes that
+    hold at least one verified claim. The redundant axis count is omitted (derived
+    as the list length) so the comparable JSON surface stays free of raw numbers.
+    """
+
+    axes_with_verified_claims: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Appraisal:
     """The AARP verifier result."""
 
@@ -120,11 +177,57 @@ class Appraisal:
     claimed_unverified: list[str] = field(default_factory=list)
     axes: dict[str, list[str]] = field(default_factory=dict)
     does_not_assert: list[str] = field(default_factory=lambda: list(DOES_NOT_ASSERT))
+    overclaim_risks: list[str] = field(default_factory=list)
+    assurance: AssuranceSummary = field(default_factory=AssuranceSummary)
     warnings: list[str] = field(default_factory=list)
 
     def add_verified(self, claim: str, axis: str) -> None:
         self.verified_claims.append(claim)
         self.axes.setdefault(axis, []).append(claim)
+
+    def add_does_not_assert(self, *items: str) -> None:
+        """Append paired negatives, skipping any already present."""
+        for it in items:
+            if it not in self.does_not_assert:
+                self.does_not_assert.append(it)
+
+    def finalize(self) -> None:
+        """Compute the derived honesty outputs (overclaim risks + the assurance
+        axis-set descriptor). Must run AFTER classification and after any
+        attestation claims are added.
+        """
+        self.overclaim_risks = self._compute_overclaim_risks()
+        self.assurance = AssuranceSummary(
+            axes_with_verified_claims=self._axes_with_verified_claims()
+        )
+
+    def _compute_overclaim_risks(self) -> list[str]:
+        """Sorted, de-duplicated risk codes. A risk fires only when its trigger
+        claim is present AND the stronger sibling axis is absent, so it
+        auto-suppresses once that axis is populated.
+        """
+        verified = set(self.verified_claims)
+        risks: set[str] = set()
+        if (
+            CLAIM_RECEIPT_SIGNATURE_VALID in verified
+            and not self.axes.get(AXIS_TRANSPARENCY)
+        ):
+            risks.add(RISK_SIGNATURE_VALID_NOT_TRANSPARENCY)
+        if (
+            CLAIM_SIGNING_WORKLOAD_SVID_BOUND in verified
+            and not self.axes.get(AXIS_DEPLOYMENT)
+        ):
+            risks.add(RISK_SVID_IDENTITY_NOT_DEPLOYMENT_NON_BYPASS)
+        if (
+            CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT in verified
+            and not self.axes.get(AXIS_AUTHORITY)
+        ):
+            risks.add(RISK_CHAIN_LINK_NOT_CONTIGUOUS_CHAIN)
+        return sorted(risks)
+
+    def _axes_with_verified_claims(self) -> list[str]:
+        """Sorted axis names that hold a verified claim."""
+        return sorted(axis for axis, claims in self.axes.items() if claims)
 
 
 class EnvelopeFatalError(Exception):
@@ -162,6 +265,7 @@ def verify(env: Envelope, opts: VerifyOptions) -> Appraisal:
     """
     ap = _appraise_core(env, opts)
     _classify_claims(ap)
+    ap.finalize()
     return ap
 
 
@@ -181,11 +285,13 @@ def _appraise_core(env: Envelope, opts: VerifyOptions) -> Appraisal:
 
     if verified:
         ap.assertion_signed = True
-        ap.add_verified(CLAIM_ASSERTION_SIGNATURE_VALID, AXIS_INTEGRITY)
+        ap.add_verified(CLAIM_RECEIPT_SIGNATURE_VALID, AXIS_INTEGRITY)
         if _mediator_key_pinned(env.assertion, verified, opts.trust):
             ap.add_verified(CLAIM_MEDIATOR_KEY_PINNED, AXIS_IDENTITY)
         if env.chain is not None:
-            ap.add_verified(CLAIM_CHAIN_LINK_PRESENT, AXIS_INTEGRITY)
+            ap.add_verified(
+                CLAIM_RECEIPT_TIMESTAMP_MONOTONIC_CHAIN_PRESENT, AXIS_INTEGRITY
+            )
     else:
         ap.warnings.append(
             "no signature verified under a trusted key; all assurance claims "
@@ -290,7 +396,7 @@ def _decode_sig_wire(alg: str, wire: str) -> bytes | None:
     if not wire.startswith(prefix):
         return None
     try:
-        return base64.standard_b64decode(wire[len(prefix) :])
+        return base64.b64decode(wire[len(prefix) :], validate=True)
     except (binascii.Error, ValueError):
         return None
 
@@ -369,6 +475,14 @@ def comparable_appraisal(ap: Appraisal) -> bytes:
         "claimed_unverified": _sorted_unique(ap.claimed_unverified),
         "axes": axes,
         "does_not_assert": _sorted_unique(ap.does_not_assert),
+        "overclaim_risks": _sorted_unique(ap.overclaim_risks),
+        # assurance carries only the axis-set descriptor; the redundant count is
+        # omitted so the comparable surface stays free of raw JSON numbers.
+        "assurance": {
+            "axes_with_verified_claims": _sorted_unique(
+                ap.assurance.axes_with_verified_claims
+            ),
+        },
     }
     return canonicalize(obj)
 

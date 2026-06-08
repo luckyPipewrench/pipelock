@@ -57,6 +57,16 @@ func ComparableAppraisal(ap *Appraisal) ([]byte, error) {
 		"claimed_unverified": sortedUnique(ap.ClaimedUnverified),
 		"axes":               axes,
 		"does_not_assert":    sortedUnique(ap.DoesNotAssert),
+		"overclaim_risks":    sortedUnique(ap.OverclaimRisks),
+		// assurance is the axis-set descriptor (which axes hold verified claims),
+		// never a grade. The redundant axis count is intentionally omitted from the
+		// comparable surface so it stays free of raw JSON numbers — every verifier
+		// already agrees on string arrays, but a bare integer's canonicalization is
+		// an avoidable cross-language hazard. Readers derive the count as the
+		// array length.
+		"assurance": map[string]any{
+			"axes_with_verified_claims": sortedUnique(ap.Assurance.AxesWithVerifiedClaims),
+		},
 	}
 
 	// Canonicalize sorts object keys and arrays-of-strings stay in the (already

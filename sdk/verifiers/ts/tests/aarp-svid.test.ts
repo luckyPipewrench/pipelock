@@ -41,17 +41,19 @@ function assertWithholds(base: string): Appraisal {
   const svid = loadSVIDFile(`${corpus}/svid/${base}.svid.json`);
   const ap = appraiseWithSVID(env, svid.evidence, opts, svid.opts);
   assert.ok(
-    !ap.verified_claims.includes("workload_identity_verified"),
-    `${base}: must not verify workload_identity_verified`,
+    !ap.verified_claims.includes("signing_workload_svid_chain_validated"),
+    `${base}: must not verify signing_workload_svid_chain_validated`,
   );
   assert.ok(
-    !ap.verified_claims.includes("x509_svid_bound"),
-    `${base}: must not verify x509_svid_bound`,
+    !ap.verified_claims.includes("signing_workload_svid_bound"),
+    `${base}: must not verify signing_workload_svid_bound`,
   );
   assert.ok(
-    !ap.verified_claims.includes("svid_valid_at_action_time"),
-    `${base}: must not verify svid_valid_at_action_time`,
+    !ap.verified_claims.includes("signing_workload_svid_valid_at_action_time"),
+    `${base}: must not verify signing_workload_svid_valid_at_action_time`,
   );
+  // The producer's INPUT claim string is unchanged ("workload_identity_verified");
+  // it is reported claimed-unverified when the binding does not verify.
   assert.ok(
     ap.claimed_unverified.includes("workload_identity_verified"),
     `${base}: workload_identity_verified must be claimed-unverified`,
@@ -123,14 +125,22 @@ test("svid L4: addSVIDClaims withholds (never rethrows) on an unexpected error",
     claimed_unverified: [],
     axes: {},
     does_not_assert: [],
+    overclaim_risks: [],
+    assurance: { axes_with_verified_claims: [] },
     warnings: [],
   };
 
   const opts: SVIDVerifyOptions = valid.opts;
   assert.doesNotThrow(() => addSVIDClaims(ap, env as Envelope, ev, opts));
-  assert.ok(!ap.verified_claims.includes("workload_identity_verified"), "claim withheld");
-  assert.ok(!ap.verified_claims.includes("x509_svid_bound"), "claim withheld");
-  assert.ok(!ap.verified_claims.includes("svid_valid_at_action_time"), "claim withheld");
+  assert.ok(
+    !ap.verified_claims.includes("signing_workload_svid_chain_validated"),
+    "claim withheld",
+  );
+  assert.ok(!ap.verified_claims.includes("signing_workload_svid_bound"), "claim withheld");
+  assert.ok(
+    !ap.verified_claims.includes("signing_workload_svid_valid_at_action_time"),
+    "claim withheld",
+  );
   assert.ok(
     ap.warnings.some((w) => w.includes("SVID attestation did not verify")),
     "L4 should record a withholding warning",

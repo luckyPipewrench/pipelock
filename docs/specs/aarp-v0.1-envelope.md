@@ -249,12 +249,16 @@ The verifier confirms, all offline and fail-closed:
   or Ed25519; a declared algorithm that disagrees with the leaf key type fails
   closed).
 
-On success the verifier adds `workload_identity_verified` and `x509_svid_bound`
-to the **identity** axis and `svid_valid_at_action_time` to the **freshness**
-axis. Attestation is only considered on a **signed** assertion (the binding ties
-to the signed assertion digest); an SVID that fails any check never removes a
-core claim and never adds an attestation one — the producer's workload-identity
-claim is reported claimed-but-unverified, with a warning.
+On success the verifier adds `signing_workload_svid_chain_validated` and
+`signing_workload_svid_bound` to the **identity** axis and
+`signing_workload_svid_valid_at_action_time` to the **freshness** axis, and (since
+an SVID identity is not a containment proof) adds the paired negatives
+`does_not_assert_network_non_bypass_from_identity` and
+`does_not_assert_deployment_enforcement_from_identity` to `does_not_assert`.
+Attestation is only considered on a **signed** assertion (the binding ties to the
+signed assertion digest); an SVID that fails any check never removes a core claim
+and never adds an attestation one — the producer's workload-identity claim is
+reported claimed-but-unverified, with a warning.
 
 ## Appraisal vocabulary
 
@@ -264,9 +268,13 @@ trust score, because the axes rest on orthogonal kinds of proof. "An appraisal
 was made" never implies "action allowed", "policy passed", or "human approved".
 
 The fixed `does_not_assert` list is reported verbatim on every appraisal:
-`efficacy`, `absence_of_bypass`, `complete_mediation`, `policy_correctness`,
-`action_safety`. Complete mediation is **always** claim-only in v0.1: there is
-no local evidence that proves the absence of an out-of-band path.
+`absence_of_bypass`, `action_safety`, `all_tools_discovered`,
+`complete_mediation`, `delegated_actions_mediated`, `efficacy`,
+`hosted_saas_actions_mediated`, `intent_correctness`, `key_non_compromise`,
+`local_side_effects_mediated`, `policy_correctness`, and
+`semantic_equivalence_after_modify`. Complete mediation is **always** claim-only
+in v0.1: there is no local evidence that proves the absence of an out-of-band
+path.
 
 Token spelling, to avoid confusion: the producer claim string placed in
 `assertion.claimed` is the hyphenated `complete-mediation`; the snake_case
@@ -341,16 +349,24 @@ operate a log.
   "assertion_signed": true,
   "signatures": [ { "key_id": "...", "alg": "ed25519", "signer_role": "mediator", "status": "verified" } ],
   "assurance_claimed": ["mediated", "complete-mediation"],
-  "verified_claims": ["assertion_signature_valid", "mediator_key_pinned"],
+  "verified_claims": ["receipt_signature_valid", "mediator_key_pinned"],
   "claimed_unverified": ["complete-mediation"],
   "axes": {
     "identity": ["mediator_key_pinned"],
-    "integrity": ["assertion_signature_valid"]
+    "integrity": ["receipt_signature_valid"]
   },
-  "does_not_assert": ["efficacy", "absence_of_bypass", "complete_mediation", "policy_correctness", "action_safety"],
+  "does_not_assert": ["absence_of_bypass", "action_safety", "all_tools_discovered", "complete_mediation", "delegated_actions_mediated", "efficacy", "hosted_saas_actions_mediated", "intent_correctness", "key_non_compromise", "local_side_effects_mediated", "policy_correctness", "semantic_equivalence_after_modify"],
+  "overclaim_risks": ["signature_valid_is_not_transparency_inclusion"],
+  "assurance": { "axes_with_verified_claims": ["identity", "integrity"] },
   "warnings": []
 }
 ```
+
+The default human (`--json`-off) view leads with `does_not_assert` and
+`overclaim_risks` BEFORE the verified claims: the first thing a reader sees is
+what the evidence does NOT prove. `assurance.axes_with_verified_claims` is a
+computed descriptor of evidence breadth (which of the six axes hold a verified
+claim), never a grade or score.
 
 `assertion_signed` is the single cryptographic gate: true only when at least one
 parallel signature verified under a trusted key. A relying party applies its own

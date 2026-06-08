@@ -39,14 +39,20 @@ type VerifyOptions struct {
 // names that must all be present for the producer claim to count as confirmed.
 // A nil value means the claim is structurally claim-only in v0.1 (never
 // verifiable), so it is always reported unverified.
+//
+// The KEYS are the producer's input claim vocabulary (what a producer writes in
+// assertion.claimed); they are part of the receipt input and stay stable. The
+// VALUES are the verifier's literal output claim names, which this PR renamed —
+// so a producer that still claims the legacy "workload_identity_verified" string
+// is confirmed by the renamed verified claim it now maps to.
 var claimVerifiedBy = map[string][]string{
-	"mediated":                    {ClaimMediatorKeyPinned},
-	"complete-mediation":          nil,
-	"complete_mediation":          nil,
-	ClaimWorkloadIdentityVerified: {ClaimWorkloadIdentityVerified},
-	ClaimX509SVIDBound:            {ClaimX509SVIDBound},
-	ClaimSVIDValidAtActionTime:    {ClaimSVIDValidAtActionTime},
-	"transparency_inclusion":      nil,
+	"mediated":                   {ClaimMediatorKeyPinned},
+	"complete-mediation":         nil,
+	"complete_mediation":         nil,
+	"workload_identity_verified": {ClaimSigningWorkloadSVIDChainValidated},
+	"x509_svid_bound":            {ClaimSigningWorkloadSVIDBound},
+	"svid_valid_at_action_time":  {ClaimSigningWorkloadSVIDValidAtActionTime},
+	"transparency_inclusion":     nil,
 }
 
 // Verify appraises an AARP envelope and returns a structured result. It rejects
@@ -64,6 +70,7 @@ func Verify(e Envelope, opts VerifyOptions) (*Appraisal, error) {
 		return nil, err
 	}
 	classifyClaims(ap)
+	ap.finalize()
 	return ap, nil
 }
 
@@ -95,7 +102,7 @@ func appraiseCore(e Envelope, opts VerifyOptions) (*Appraisal, error) {
 
 	if len(verified) > 0 {
 		ap.AssertionSigned = true
-		ap.addVerified(ClaimAssertionSignatureValid, AxisIntegrity)
+		ap.addVerified(ClaimReceiptSignatureValid, AxisIntegrity)
 		if mediatorKeyPinned(e.Assertion, verified, opts.Trust) {
 			ap.addVerified(ClaimMediatorKeyPinned, AxisIdentity)
 		}
@@ -103,7 +110,7 @@ func appraiseCore(e Envelope, opts VerifyOptions) (*Appraisal, error) {
 			// A signed chain link is present (its position is authenticated by
 			// the verified signature). Stream continuity is NOT asserted here;
 			// VerifyChain over the stream is the authority for that.
-			ap.addVerified(ClaimChainLinkPresent, AxisIntegrity)
+			ap.addVerified(ClaimReceiptTimestampMonotonicChainPresent, AxisIntegrity)
 		}
 	} else {
 		// Without any verified signature, every producer claim is untrusted

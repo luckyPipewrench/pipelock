@@ -533,7 +533,7 @@ test("appraise: full crypto-verify success path confirms claims", () => {
   const opts = loadTrustFile(`${corpus}/trust.json`);
   const ap = verify(env, opts);
   assert.equal(ap.assertion_signed, true);
-  assert.ok(ap.verified_claims.includes("assertion_signature_valid"));
+  assert.ok(ap.verified_claims.includes("receipt_signature_valid"));
   assert.ok(ap.verified_claims.includes("mediator_key_pinned"));
   assert.equal(ap.signatures[0]!.status, "verified");
 });

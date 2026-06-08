@@ -25,13 +25,17 @@ import {
   AXIS_FRESHNESS,
   AXIS_IDENTITY,
   Appraisal,
-  CLAIM_SVID_VALID_AT_ACTION_TIME,
-  CLAIM_WORKLOAD_IDENTITY_VERIFIED,
-  CLAIM_X509_SVID_BOUND,
+  CLAIM_SIGNING_WORKLOAD_SVID_BOUND,
+  CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED,
+  CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME,
+  DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY,
+  DNA_NETWORK_NON_BYPASS_FROM_IDENTITY,
   VerifyOptions,
+  addDoesNotAssert,
   addVerified,
   appraiseCore,
   classifyClaims,
+  finalize,
 } from "./appraise.js";
 import { canonicalize } from "./canonical.js";
 import { Envelope, payloadDigest } from "./envelope.js";
@@ -893,9 +897,15 @@ export function addSVIDClaims(
     ap.warnings.push(`SVID attestation did not verify: ${message}`);
     return;
   }
-  addVerified(ap, CLAIM_WORKLOAD_IDENTITY_VERIFIED, AXIS_IDENTITY);
-  addVerified(ap, CLAIM_X509_SVID_BOUND, AXIS_IDENTITY);
-  addVerified(ap, CLAIM_SVID_VALID_AT_ACTION_TIME, AXIS_FRESHNESS);
+  addVerified(ap, CLAIM_SIGNING_WORKLOAD_SVID_CHAIN_VALIDATED, AXIS_IDENTITY);
+  addVerified(ap, CLAIM_SIGNING_WORKLOAD_SVID_BOUND, AXIS_IDENTITY);
+  addVerified(ap, CLAIM_SIGNING_WORKLOAD_SVID_VALID_AT_ACTION_TIME, AXIS_FRESHNESS);
+  // A verified signing-workload identity is NOT a deployment or non-bypass proof.
+  addDoesNotAssert(
+    ap,
+    DNA_NETWORK_NON_BYPASS_FROM_IDENTITY,
+    DNA_DEPLOYMENT_ENFORCEMENT_FROM_IDENTITY,
+  );
 }
 
 // appraiseWithSVID runs the core appraisal and, when SVID evidence verifies on a
@@ -911,5 +921,6 @@ export function appraiseWithSVID(
   const ap = appraiseCore(e, opts);
   addSVIDClaims(ap, e, ev, svidOpts);
   classifyClaims(ap);
+  finalize(ap);
   return ap;
 }

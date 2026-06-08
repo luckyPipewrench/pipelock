@@ -21,8 +21,8 @@ func TestSignVerify_RoundTrip(t *testing.T) {
 	if !ap.AssertionSigned {
 		t.Fatal("AssertionSigned = false, want true")
 	}
-	if !contains(ap.VerifiedClaims, ClaimAssertionSignatureValid) {
-		t.Errorf("missing %s in %v", ClaimAssertionSignatureValid, ap.VerifiedClaims)
+	if !contains(ap.VerifiedClaims, ClaimReceiptSignatureValid) {
+		t.Errorf("missing %s in %v", ClaimReceiptSignatureValid, ap.VerifiedClaims)
 	}
 	if !contains(ap.VerifiedClaims, ClaimMediatorKeyPinned) {
 		t.Errorf("missing %s in %v", ClaimMediatorKeyPinned, ap.VerifiedClaims)

@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -204,15 +206,71 @@ func emitFatal(stdout, stderr io.Writer, jsonMode bool, cause error) error {
 	return cliutil.ExitCodeError(cliutil.ExitGeneral, cause)
 }
 
+// aarpTotalAxes is the number of axes AARP defines (identity, authority,
+// integrity, freshness, transparency, deployment). The human view reports
+// covered axes against this denominator so a reader sees how narrow the evidence
+// is, never just how broad.
+const aarpTotalAxes = 6
+
+// emitAARPHuman renders the appraisal so a reader sees the LIMITATIONS first: the
+// does_not_assert list and any overclaim risks lead, before the verified claims.
+// The default human view is deliberately self-incriminating — the first thing a
+// reader sees is what the evidence does NOT prove, including on a real Pipelock
+// receipt. The machine form (--json) carries the same outcomes for tooling.
 func emitAARPHuman(stdout io.Writer, ap *aarp.Appraisal) {
 	_, _ = fmt.Fprintf(stdout, "AARP appraisal (%s)\n", ap.Profile)
-	_, _ = fmt.Fprintf(stdout, "  assertion_signed:   %t\n", ap.AssertionSigned)
+	_, _ = fmt.Fprintf(stdout, "  assertion_signed: %t\n", ap.AssertionSigned)
+
+	_, _ = fmt.Fprintln(stdout, "  does_not_assert (this appraisal never proves):")
+	for _, d := range sortedCopy(ap.DoesNotAssert) {
+		_, _ = fmt.Fprintf(stdout, "    - %s\n", d)
+	}
+
+	if len(ap.OverclaimRisks) > 0 {
+		_, _ = fmt.Fprintln(stdout, "  overclaim_risks (do not read more into the evidence than this):")
+		for _, r := range sortedCopy(ap.OverclaimRisks) {
+			_, _ = fmt.Fprintf(stdout, "    - %s: %s\n", r, overclaimRiskSentence(r))
+		}
+	}
+
+	_, _ = fmt.Fprintln(stdout, "  --- what the evidence mechanically supports ---")
 	_, _ = fmt.Fprintf(stdout, "  verified_claims:    %v\n", ap.VerifiedClaims)
 	_, _ = fmt.Fprintf(stdout, "  claimed_unverified: %v\n", ap.ClaimedUnverified)
+
+	axes := ap.Assurance.AxesWithVerifiedClaims
+	covered := "(none)"
+	if len(axes) > 0 {
+		covered = strings.Join(axes, ", ")
+	}
+	_, _ = fmt.Fprintf(stdout, "  evidence covers axes: %s (%d of %d)\n", covered, len(axes), aarpTotalAxes)
+
 	for _, s := range ap.Signatures {
 		_, _ = fmt.Fprintf(stdout, "  signature %s/%s: %s\n", s.KeyID, s.Alg, s.Status)
 	}
-	_, _ = fmt.Fprintf(stdout, "  does_not_assert:    %v\n", ap.DoesNotAssert)
+}
+
+// overclaimRiskSentence maps a stable overclaim-risk code to a one-line
+// explanation for the human view. An unmapped code (a verifier ahead of this CLI)
+// falls back to the bare code so the warning is never silently dropped.
+func overclaimRiskSentence(code string) string {
+	switch code {
+	case aarp.RiskSignatureValidNotTransparency:
+		return "a valid signature is integrity over the assertion bytes, not proof the receipt was witnessed by an external transparency log"
+	case aarp.RiskSVIDIdentityNotDeploymentNonBypass:
+		return "a verified signing-workload identity does not prove the deployment forced the workload's traffic through the mediator"
+	case aarp.RiskChainLinkNotContiguousChain:
+		return "a present chain link is a single position, not a verified contiguous stream (verify the stream with --chain)"
+	default:
+		return code
+	}
+}
+
+// sortedCopy returns a sorted copy of in, leaving the input untouched so the
+// display order never mutates the appraisal.
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }
 
 // loadTrustFile reads the pinned trust JSON into VerifyOptions. A missing path

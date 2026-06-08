@@ -38,10 +38,10 @@ func TestComparableAppraisal_SignedMediated(t *testing.T) {
 		t.Errorf("profile = %v, want %q", m["profile"], Profile)
 	}
 	vc := toStrings(m["verified_claims"])
-	if !contains(vc, ClaimAssertionSignatureValid) || !contains(vc, ClaimMediatorKeyPinned) {
+	if !contains(vc, ClaimReceiptSignatureValid) || !contains(vc, ClaimMediatorKeyPinned) {
 		t.Errorf("verified_claims = %v, want both signature_valid and mediator_key_pinned", vc)
 	}
-	// does_not_assert is the fixed five-element list, sorted.
+	// does_not_assert is the fixed general list, sorted.
 	dna := toStrings(m["does_not_assert"])
 	if len(dna) != len(docsNotAsserted) {
 		t.Errorf("does_not_assert len = %d, want %d", len(dna), len(docsNotAsserted))

@@ -132,13 +132,16 @@ type Decision struct {
 
 // EmitterConfig configures live proxy_decision emission.
 type EmitterConfig struct {
-	Recorder  Recorder
-	Signer    Signer
-	Sanitize  SanitizeFunc
-	Principal string
-	Actor     string
-	Clock     func() time.Time
-	EventID   func() (string, error)
+	Recorder Recorder
+	Signer   Signer
+	Sanitize SanitizeFunc
+	// PolicyHash is Config.CanonicalPolicyHash() for the resolved runtime
+	// config that produced emitted decisions.
+	PolicyHash string
+	Principal  string
+	Actor      string
+	Clock      func() time.Time
+	EventID    func() (string, error)
 
 	// ResumeSeq / ResumePrevHash carry the chain head forward across a hot
 	// reload so the v2 chain stays continuous within a process when the
@@ -150,13 +153,14 @@ type EmitterConfig struct {
 
 // Emitter signs proxy_decision receipts and records them.
 type Emitter struct {
-	recorder  Recorder
-	signer    Signer
-	sanitize  SanitizeFunc
-	principal string
-	actor     string
-	clock     func() time.Time
-	eventID   func() (string, error)
+	recorder   Recorder
+	signer     Signer
+	sanitize   SanitizeFunc
+	policyHash string
+	principal  string
+	actor      string
+	clock      func() time.Time
+	eventID    func() (string, error)
 
 	mu            sync.Mutex
 	chainSeq      uint64
@@ -186,6 +190,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		recorder:      cfg.Recorder,
 		signer:        cfg.Signer,
 		sanitize:      cfg.Sanitize,
+		policyHash:    contractreceipt.NormalizePolicyHash(cfg.PolicyHash),
 		principal:     cfg.Principal,
 		actor:         cfg.Actor,
 		clock:         clock,
@@ -253,6 +258,7 @@ func (e *Emitter) Emit(d Decision) error {
 		ActionType:    d.ActionType,
 		Target:        target,
 		Transport:     d.Transport,
+		PolicyHash:    e.policyHash,
 		EventID:       eventID,
 		Timestamp:     e.clock().UTC(),
 		Principal:     e.principal,

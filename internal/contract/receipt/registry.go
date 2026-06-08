@@ -32,6 +32,9 @@ var (
 	ErrUnsupportedRecordType = errors.New("unsupported record_type for v2 verifier")
 	// ErrWrongReceiptVersion is returned when receipt_version is not 2.
 	ErrWrongReceiptVersion = errors.New("EvidenceReceipt requires receipt_version=2")
+	// ErrPayloadKindNotImplemented is returned for reserved payload kinds that
+	// are known to the schema but intentionally not accepted yet.
+	ErrPayloadKindNotImplemented = errors.New("payload_kind known but not implemented")
 )
 
 // decodeStrict unmarshals raw into target with strict semantics:
@@ -74,6 +77,8 @@ var payloadValidators = map[PayloadKind]func(json.RawMessage) error{
 	PayloadOpportunityMissing:         validateOpportunityMissing,
 	PayloadKeyRotation:                validateKeyRotation,
 	PayloadContractRedactionRequest:   validateContractRedactionRequest,
+	PayloadDeferOpened:                validateNotImplemented,
+	PayloadDeferResolved:              validateNotImplemented,
 }
 
 // requireNonEmpty returns ErrPayloadMissingField if val is empty.
@@ -82,6 +87,51 @@ func requireNonEmpty(fieldName, val string) error {
 		return fmt.Errorf("%w: %s", ErrPayloadMissingField, fieldName)
 	}
 	return nil
+}
+
+func requirePolicyHash(fieldName, val string) error {
+	if val == "" {
+		return fmt.Errorf("%w: %s", ErrPayloadMissingField, fieldName)
+	}
+	const digestPrefix = "sha256:"
+	if !strings.HasPrefix(val, digestPrefix) {
+		return fmt.Errorf("%w: %s", ErrPayloadInvalidEnum, fieldName)
+	}
+	digest := strings.TrimPrefix(val, digestPrefix)
+	if len(digest) != sha256.Size*2 {
+		return fmt.Errorf("%w: %s length", ErrPayloadInvalidEnum, fieldName)
+	}
+	for _, r := range digest {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return fmt.Errorf("%w: %s hex", ErrPayloadInvalidEnum, fieldName)
+		}
+	}
+	return nil
+}
+
+// ValidatePolicyHash checks the envelope policy_hash grammar used by decision
+// receipts and source-span policy commitments.
+func ValidatePolicyHash(val string) error {
+	return requirePolicyHash("policy_hash", val)
+}
+
+// NormalizePolicyHash converts a raw 64-character lowercase SHA-256 hex digest
+// to the explicit wire form used by EvidenceReceipt policy_hash. Values already
+// in wire form, malformed values, and uppercase hex are returned unchanged so
+// callers still fail closed through ValidatePolicyHash.
+func NormalizePolicyHash(val string) string {
+	if strings.HasPrefix(val, "sha256:") {
+		return val
+	}
+	if len(val) != sha256.Size*2 {
+		return val
+	}
+	for _, r := range val {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return val
+		}
+	}
+	return "sha256:" + val
 }
 
 // requireNonEmptySlice returns ErrPayloadMissingField if s is empty or nil.
@@ -240,7 +290,7 @@ func ValidateSourceSpan(span SourceSpan) error {
 	if err := validateSHA256Digest("rules_bundle_digest", span.RulesBundleDigest); err != nil {
 		return err
 	}
-	if err := validateSHA256Digest("policy_hash", span.PolicyHash); err != nil {
+	if err := requirePolicyHash("policy_hash", span.PolicyHash); err != nil {
 		return err
 	}
 	if !validTransformProfile(span.TransformProfile) {
@@ -343,6 +393,10 @@ func validateHMACMatchHash(val string) error {
 		return fmt.Errorf("%w: match_hash hex: %w", ErrPayloadInvalidEnum, err)
 	}
 	return nil
+}
+
+func validateNotImplemented(json.RawMessage) error {
+	return ErrPayloadKindNotImplemented
 }
 
 // SourceSpanMatchHash computes the signer-keyed match_hash for a span. eventID

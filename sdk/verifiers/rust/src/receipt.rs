@@ -39,6 +39,7 @@ pub fn run_receipt(pathname: &str, signer_key: &str) -> Result<ReceiptReport> {
         report.verdict = string_at(&receipt, &["payload", "verdict"]).map(str::to_string);
         report.transport = string_at(&receipt, &["payload", "transport"]).map(str::to_string);
         report.signer_key = Some(key_hex.clone());
+        report.policy_hash = string_at(&receipt, &["policy_hash"]).map(str::to_string);
         report.chain_seq = u64_at(&receipt, &["chain_seq"]);
     } else {
         report.action_id = string_at(&receipt, &["action_record", "action_id"]).map(str::to_string);

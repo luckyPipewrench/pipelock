@@ -48,11 +48,12 @@ func newTestEmitter(t *testing.T, rec Recorder, sanitize SanitizeFunc) (*Emitter
 	}
 	signer := NewKeyedSigner(priv)
 	em := NewEmitter(EmitterConfig{
-		Recorder:  rec,
-		Signer:    signer,
-		Sanitize:  sanitize,
-		Principal: "local",
-		Actor:     "pipelock",
+		Recorder:   rec,
+		Signer:     signer,
+		Sanitize:   sanitize,
+		PolicyHash: testSpanDigest,
+		Principal:  "local",
+		Actor:      "pipelock",
 	})
 	if em == nil {
 		t.Fatal("NewEmitter returned nil for a valid config")
@@ -537,7 +538,7 @@ func TestEmit_ResumeContinuity(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := NewKeyedSigner(priv)
 	em2 := NewEmitter(EmitterConfig{
-		Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
+		Recorder: rec, Signer: signer, PolicyHash: testSpanDigest, Principal: "local", Actor: "pipelock",
 		ResumeSeq: seq, ResumePrevHash: head,
 	})
 	if err := em2.Emit(base); err != nil {
@@ -670,7 +671,7 @@ func TestEmit_UsesInjectedClock(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer := NewKeyedSigner(priv)
 	em := NewEmitter(EmitterConfig{
-		Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
+		Recorder: rec, Signer: signer, PolicyHash: testSpanDigest, Principal: "local", Actor: "pipelock",
 		Clock: newDeterministicClock(),
 	})
 	if err := em.Emit(Decision{

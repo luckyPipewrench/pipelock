@@ -13,6 +13,8 @@ const validSpannedV2 =
 const validPlainV2 =
   "../../../internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json";
 const v2GoldenPublicKey = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+const v2GoldenPolicyHash =
+  "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 test("receipt command accepts a valid Go-generated receipt", async () => {
   const report = await runReceipt(validSingle, "");
@@ -58,6 +60,47 @@ test("receipt command accepts a valid EvidenceReceipt v2 spanned proxy decision"
   assert.equal(report.verdict, "block");
   assert.equal(report.transport, "forward");
   assert.equal(report.signer_key, v2GoldenPublicKey);
+  assert.equal(report.policy_hash, v2GoldenPolicyHash);
+});
+
+test("receipt command accepts a valid EvidenceReceipt v2 plain proxy decision", async () => {
+  const report = await runReceipt(validPlainV2, v2GoldenPublicKey);
+  assert.equal(report.valid, true, report.error);
+  assert.equal(report.policy_hash, v2GoldenPolicyHash);
+});
+
+test("receipt command rejects EvidenceReceipt v2 decisions missing policy_hash", async () => {
+  const pathname = join(
+    process.env["TMPDIR"] ?? "/tmp",
+    `pipelock-verifier-ts-v2-missing-policy-${process.pid}.json`,
+  );
+  const receipt = JSON.parse(readFileSync(validPlainV2, "utf8")) as Record<string, unknown>;
+  delete receipt["policy_hash"];
+  writeFileSync(pathname, JSON.stringify(receipt), { mode: 0o600 });
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /policy_hash/u);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
+});
+
+test("receipt command rejects reserved EvidenceReceipt v2 defer payload kinds", async () => {
+  const pathname = join(
+    process.env["TMPDIR"] ?? "/tmp",
+    `pipelock-verifier-ts-v2-defer-${process.pid}.json`,
+  );
+  const receipt = JSON.parse(readFileSync(validPlainV2, "utf8")) as Record<string, unknown>;
+  receipt["payload_kind"] = "defer_opened";
+  writeFileSync(pathname, JSON.stringify(receipt), { mode: 0o600 });
+  try {
+    const report = await runReceipt(pathname, v2GoldenPublicKey);
+    assert.equal(report.valid, false);
+    assert.match(report.error ?? "", /known but not implemented/u);
+  } finally {
+    rmSync(pathname, { force: true });
+  }
 });
 
 test("receipt command rejects a tampered EvidenceReceipt v2 span", async () => {

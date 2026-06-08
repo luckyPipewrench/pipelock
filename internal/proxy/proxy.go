@@ -1056,6 +1056,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 			Recorder:       p.recorder,
 			Signer:         proxydecision.NewKeyedSigner(privKey),
 			Sanitize:       proxydecision.SanitizeFromRedactor(p.recorder.ReceiptRedactor()),
+			PolicyHash:     cfg.CanonicalPolicyHash(),
 			Principal:      "local",
 			Actor:          "pipelock",
 			ResumeSeq:      resumeSeq,

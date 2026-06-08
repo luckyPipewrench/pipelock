@@ -22,7 +22,10 @@ const receiptTestPrivateSeedHex = "" +
 	"9d61b19d" + "effd5a60" + "ba844af4" + "92ec2cc4" +
 	"4449c569" + "7b326919" + "703bac03" + "1cae7f60"
 
-const goldenSpanDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const (
+	goldenSpanDigest        = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	receiptGoldenPolicyHash = goldenSpanDigest
+)
 
 const (
 	goldenSpanRedactedValue = "[redacted-value]"
@@ -50,6 +53,7 @@ func TestGolden_EvidenceReceiptProxyDecision(t *testing.T) {
 		Timestamp:        time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
 		ChainSeq:         1,
 		ChainPrevHash:    "sha256:0",
+		PolicyHash:       receiptGoldenPolicyHash,
 		Payload:          payload,
 	}
 	preimage, err := r.SignablePreimage()
@@ -117,6 +121,7 @@ func TestGolden_EvidenceReceiptProxyDecisionWithSpans(t *testing.T) {
 		Timestamp:        time.Date(2026, 6, 6, 18, 0, 0, 0, time.UTC),
 		ChainSeq:         1,
 		ChainPrevHash:    "sha256:0",
+		PolicyHash:       receiptGoldenPolicyHash,
 		Payload:          json.RawMessage(payloadBody),
 	}
 	preimage, err := r.SignablePreimage()

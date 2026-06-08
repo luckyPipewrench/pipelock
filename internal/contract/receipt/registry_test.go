@@ -27,9 +27,11 @@ var allPayloadKinds = []receipt.PayloadKind{
 	receipt.PayloadOpportunityMissing,
 	receipt.PayloadKeyRotation,
 	receipt.PayloadContractRedactionRequest,
+	receipt.PayloadDeferOpened,
+	receipt.PayloadDeferResolved,
 }
 
-func TestRegistry_HasAll14PayloadKinds(t *testing.T) {
+func TestRegistry_HasAll16PayloadKinds(t *testing.T) {
 	expectedKinds := []receipt.PayloadKind{
 		receipt.PayloadProxyDecision,
 		receipt.PayloadProxyDecisionWithSpans,
@@ -45,6 +47,8 @@ func TestRegistry_HasAll14PayloadKinds(t *testing.T) {
 		receipt.PayloadOpportunityMissing,
 		receipt.PayloadKeyRotation,
 		receipt.PayloadContractRedactionRequest,
+		receipt.PayloadDeferOpened,
+		receipt.PayloadDeferResolved,
 	}
 	if len(allPayloadKinds) != len(expectedKinds) {
 		t.Fatalf("expected %d payload kinds in test table, got %d", len(expectedKinds), len(allPayloadKinds))
@@ -108,6 +112,22 @@ func TestRegistry_UnknownKindReturnsError(t *testing.T) {
 	}
 }
 
+func TestRegistry_ReservedDeferKindsAreKnownButNotImplemented(t *testing.T) {
+	for _, kind := range []receipt.PayloadKind{receipt.PayloadDeferOpened, receipt.PayloadDeferResolved} {
+		kind := kind
+		t.Run(string(kind), func(t *testing.T) {
+			r := validRegistryEnvelope(kind, []byte(`{}`))
+			err := r.Validate()
+			if !errors.Is(err, receipt.ErrPayloadKindNotImplemented) {
+				t.Fatalf("expected ErrPayloadKindNotImplemented, got: %v", err)
+			}
+			if errors.Is(err, receipt.ErrUnknownPayloadKind) {
+				t.Fatalf("reserved kind %q must not be classified as unknown", kind)
+			}
+		})
+	}
+}
+
 func validRegistryEnvelope(kind receipt.PayloadKind, payload []byte) receipt.EvidenceReceipt {
 	return receipt.EvidenceReceipt{
 		RecordType:       receipt.RecordTypeEvidenceV2,
@@ -117,6 +137,7 @@ func validRegistryEnvelope(kind receipt.PayloadKind, payload []byte) receipt.Evi
 		Crit:             receipt.CritForPayloadKind(kind),
 		EventID:          "01900000-0000-7000-8000-000000000002",
 		Timestamp:        time.Now(),
+		PolicyHash:       validPolicyHash,
 		Payload:          payload,
 		Signature: receipt.SignatureProof{
 			SignerKeyID: "receipt-key",

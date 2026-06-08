@@ -158,6 +158,7 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 		PayloadKind:        string(r.PayloadKind),
 		ContractHash:       r.ContractHash,
 		ActiveManifestHash: r.ActiveManifestHash,
+		PolicyHash:         r.PolicyHash,
 		ChainSeq:           r.ChainSeq,
 	}
 	sigVerified, err := verifyEvidenceReceipt(r, keyHex, opts.evidenceBindingOptions)

@@ -19,6 +19,7 @@ import (
 const validReceiptSignature = "ed25519:" +
 	"0000000000000000000000000000000000000000000000000000000000000000" +
 	"0000000000000000000000000000000000000000000000000000000000000000"
+const validPolicyHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // minimalProxyDecisionPayload returns a valid proxy_decision payload as raw JSON.
 func minimalProxyDecisionPayload() json.RawMessage {
@@ -41,6 +42,7 @@ func validReceipt() receipt.EvidenceReceipt {
 		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
 		EventID:          "01900000-0000-7000-8000-000000000001",
 		Timestamp:        time.Now(),
+		PolicyHash:       validPolicyHash,
 		Payload:          minimalProxyDecisionPayload(),
 		Signature: receipt.SignatureProof{
 			SignerKeyID: "receipt-key",
@@ -127,6 +129,45 @@ func TestEvidenceReceipt_Validate_AcceptsValidProxyDecision(t *testing.T) {
 	r := validReceipt()
 	if err := r.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsDecisionMissingPolicyHash(t *testing.T) {
+	r := validReceipt()
+	r.PolicyHash = ""
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadMissingField) {
+		t.Fatalf("expected ErrPayloadMissingField, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsDecisionMalformedPolicyHash(t *testing.T) {
+	r := validReceipt()
+	r.PolicyHash = "sha256:ABCDEF"
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_AllowsLifecycleWithoutPolicyHash(t *testing.T) {
+	r := validReceipt()
+	r.PayloadKind = receipt.PayloadContractPromoteCommitted
+	r.Crit = receipt.CritForPayloadKind(receipt.PayloadContractPromoteCommitted)
+	r.PolicyHash = ""
+	r.Payload = json.RawMessage(`{"target_manifest_hash":"sha256:target","prior_manifest_hash":"sha256:prior","intent_id":"intent-1","validation_outcome":"accepted"}`)
+	if err := r.Validate(); err != nil {
+		t.Fatalf("unexpected lifecycle validation error: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_ReservedDeferKindFailsClosed(t *testing.T) {
+	r := validReceipt()
+	r.PayloadKind = receipt.PayloadDeferOpened
+	r.Crit = receipt.CritForPayloadKind(receipt.PayloadDeferOpened)
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadKindNotImplemented) {
+		t.Fatalf("expected ErrPayloadKindNotImplemented, got: %v", err)
 	}
 }
 
@@ -377,6 +418,7 @@ func signedSpannedReceipt(t *testing.T) (receipt.EvidenceReceipt, ed25519.Public
 		EventID:          eventID,
 		Timestamp:        time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
 		ChainPrevHash:    "sha256:0",
+		PolicyHash:       validPolicyHash,
 		Payload:          body,
 	}
 	preimage, err := r.SignablePreimage()

@@ -21,6 +21,7 @@ VALID_PLAIN_V2 = (
     / "valid_evidence_receipt_proxy_decision.json"
 )
 V2_GOLDEN_PUBLIC_KEY = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+V2_GOLDEN_POLICY_HASH = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 
 def test_valid_spanned_v2_receipt_verifies() -> None:
@@ -30,6 +31,35 @@ def test_valid_spanned_v2_receipt_verifies() -> None:
     assert report["verdict"] == "block"
     assert report["transport"] == "forward"
     assert report["signer_key"] == V2_GOLDEN_PUBLIC_KEY
+    assert report["policy_hash"] == V2_GOLDEN_POLICY_HASH
+
+
+def test_valid_plain_v2_receipt_verifies() -> None:
+    report = verify_receipt_file(VALID_PLAIN_V2, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is True, report.get("error")
+    assert report["policy_hash"] == V2_GOLDEN_POLICY_HASH
+
+
+def test_missing_v2_policy_hash_rejects(tmp_path: Path) -> None:
+    receipt = json.loads(VALID_PLAIN_V2.read_text())
+    del receipt["policy_hash"]
+    path = tmp_path / "missing-policy-hash.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "policy_hash" in report["error"]
+
+
+def test_reserved_defer_v2_payload_kind_rejects(tmp_path: Path) -> None:
+    receipt = json.loads(VALID_PLAIN_V2.read_text())
+    receipt["payload_kind"] = "defer_opened"
+    path = tmp_path / "reserved-defer.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+    assert report["valid"] is False
+    assert "known but not implemented" in report["error"]
 
 
 def test_tampered_spanned_v2_receipt_rejects(tmp_path: Path) -> None:

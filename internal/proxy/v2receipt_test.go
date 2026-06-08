@@ -211,8 +211,9 @@ func newDualEmitFixture(t *testing.T, redact bool) *dualEmitFixture {
 	signer := proxydecision.NewKeyedSigner(priv)
 	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
 		Recorder: rec, Signer: signer,
-		Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
-		Principal: "local", Actor: "pipelock",
+		Sanitize:   proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
+		PolicyHash: cfg.CanonicalPolicyHash(),
+		Principal:  "local", Actor: "pipelock",
 	})
 	if v1 == nil || v2 == nil {
 		t.Fatal("emitter construction returned nil")
@@ -361,7 +362,7 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 	v1 := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, Principal: "local", Actor: "pipelock"})
 	signer := proxydecision.NewKeyedSigner(priv)
 	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
-		Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
+		Recorder: rec, Signer: signer, PolicyHash: cfg.CanonicalPolicyHash(), Principal: "local", Actor: "pipelock",
 	})
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New(),
 		WithRecorder(rec), WithReceiptEmitter(v1), WithV2ReceiptEmitter(v2),

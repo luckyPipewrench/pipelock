@@ -31,6 +31,7 @@ const tamperedSentinel = "tampered"
 
 const testSpanDigest = "sha256:" +
 	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const testRawPolicyHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 const (
 	testSpanRedactedValue = "[redacted-value]"
@@ -71,6 +72,7 @@ func TestBuildProxyDecisionReceipt_ContractAllowHappyPath(t *testing.T) {
 		ActionType:       testHTTPRequest,
 		Target:           "https://api.example.com/v1/users",
 		Transport:        testForward,
+		PolicyHash:       testSpanDigest,
 		EventID:          "01900000-0000-7000-8000-000000000001",
 		Timestamp:        time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC),
 	}
@@ -98,6 +100,9 @@ func TestBuildProxyDecisionReceipt_ContractAllowHappyPath(t *testing.T) {
 	}
 	if got.ContractGeneration != rc.ContractGeneration {
 		t.Fatalf("ContractGeneration = %d, want %d", got.ContractGeneration, rc.ContractGeneration)
+	}
+	if got.PolicyHash != testSpanDigest {
+		t.Fatalf("PolicyHash = %q, want %q", got.PolicyHash, testSpanDigest)
 	}
 
 	var payload contractreceipt.PayloadProxyDecisionStruct
@@ -154,6 +159,7 @@ func TestBuildProxyDecisionReceipt_ShadowModeSurfacesLiveVerdict(t *testing.T) {
 		ActionType:       testHTTPRequest,
 		Target:           "https://api.example.com/v1/admin",
 		Transport:        testForward,
+		PolicyHash:       testSpanDigest,
 		EventID:          "01900000-0000-7000-8000-000000000002",
 		Timestamp:        time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC),
 	}
@@ -202,6 +208,7 @@ func TestBuildProxyDecisionReceipt_NoContractPin(t *testing.T) {
 		ActionType:       testHTTPRequest,
 		Target:           "https://malicious.example.com/",
 		Transport:        testForward,
+		PolicyHash:       testRawPolicyHash,
 	}
 	got, err := BuildProxyDecisionReceipt(in)
 	if err != nil {
@@ -215,6 +222,9 @@ func TestBuildProxyDecisionReceipt_NoContractPin(t *testing.T) {
 	}
 	if got.ContractGeneration != 0 {
 		t.Fatalf("ContractGeneration = %d, want 0 (no pin)", got.ContractGeneration)
+	}
+	if got.PolicyHash != testSpanDigest {
+		t.Fatalf("PolicyHash = %q, want normalized %q", got.PolicyHash, testSpanDigest)
 	}
 }
 
@@ -234,12 +244,23 @@ func TestBuildProxyDecisionReceipt_ValidationErrors(t *testing.T) {
 		ActionType: testHTTPRequest,
 		Target:     testExampleHTTPSURL,
 		Transport:  testForward,
+		PolicyHash: testSpanDigest,
 	}
 	cases := []struct {
 		name   string
 		mutate func(*ProxyDecisionInput)
 		want   string
 	}{
+		{
+			name:   "missing policy_hash",
+			mutate: func(in *ProxyDecisionInput) { in.PolicyHash = "" },
+			want:   "policy_hash",
+		},
+		{
+			name:   "malformed policy_hash",
+			mutate: func(in *ProxyDecisionInput) { in.PolicyHash = "sha256:ABCDEF" },
+			want:   "policy_hash",
+		},
 		{
 			name:   "missing action_type",
 			mutate: func(in *ProxyDecisionInput) { in.ActionType = "" },
@@ -303,6 +324,7 @@ func TestBuildProxyDecisionReceipt_DelegationChainIsolation(t *testing.T) {
 		ActionType:      testHTTPRequest,
 		Target:          testExampleHTTPSURL,
 		Transport:       testForward,
+		PolicyHash:      testSpanDigest,
 		DelegationChain: chain,
 	}
 	got, err := BuildProxyDecisionReceipt(in)
@@ -334,6 +356,7 @@ func TestBuildProxyDecisionReceipt_PolicySourcesIsolation(t *testing.T) {
 		ActionType: testHTTPRequest,
 		Target:     testExampleHTTPSURL,
 		Transport:  testForward,
+		PolicyHash: testSpanDigest,
 	}
 	got, err := BuildProxyDecisionReceipt(in)
 	if err != nil {
@@ -368,6 +391,7 @@ func TestBuildProxyDecisionReceipt_LeavesSignatureZero(t *testing.T) {
 		ActionType: testHTTPRequest,
 		Target:     testExampleHTTPSURL,
 		Transport:  testForward,
+		PolicyHash: testSpanDigest,
 	}
 	got, err := BuildProxyDecisionReceipt(in)
 	if err != nil {
@@ -394,6 +418,7 @@ func TestBuildProxyDecisionWithSpansReceipt_HappyPath(t *testing.T) {
 		ActionType:       testHTTPRequest,
 		Target:           "https://api.example.com/" + testSpanRedactedValue,
 		Transport:        testForward,
+		PolicyHash:       testSpanDigest,
 		EventID:          testSpannedEventID,
 		Timestamp:        time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
 	}
@@ -452,6 +477,7 @@ func TestBuildProxyDecisionWithSpansReceipt_RequiresSpans(t *testing.T) {
 		ActionType: testHTTPRequest,
 		Target:     "https://api.example.com/" + testSpanRedactedValue,
 		Transport:  testForward,
+		PolicyHash: testSpanDigest,
 		EventID:    testSpannedEventID,
 	}
 	_, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), nil)
@@ -471,6 +497,7 @@ func TestBuildProxyDecisionWithSpansReceipt_RequiresEventID(t *testing.T) {
 		ActionType: testHTTPRequest,
 		Target:     "https://api.example.com/" + testSpanRedactedValue,
 		Transport:  testForward,
+		PolicyHash: testSpanDigest,
 	}
 	_, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), []SourceSpanEvidence{runtimeSourceSpanEvidence(t)})
 	if !errors.Is(err, ErrInvalidProxyDecisionInput) {
@@ -489,6 +516,7 @@ func TestBuildProxyDecisionWithSpansReceipt_RequiresMatchValue(t *testing.T) {
 		ActionType: testHTTPRequest,
 		Target:     "https://api.example.com/" + testSpanRedactedValue,
 		Transport:  testForward,
+		PolicyHash: testSpanDigest,
 		EventID:    testSpannedEventID,
 	}
 	evidence := runtimeSourceSpanEvidence(t)
@@ -510,6 +538,7 @@ func TestBuildProxyDecisionWithSpansReceipt_RequiresHMACKey(t *testing.T) {
 		ActionType: testHTTPRequest,
 		Target:     "https://api.example.com/" + testSpanRedactedValue,
 		Transport:  testForward,
+		PolicyHash: testSpanDigest,
 		EventID:    testSpannedEventID,
 	}
 	_, err := BuildProxyDecisionWithSpansReceipt(in, nil, []SourceSpanEvidence{runtimeSourceSpanEvidence(t)})
@@ -532,6 +561,7 @@ func TestBuildProxyDecisionWithSpansReceipt_RejectsMalformedSpanAtBuildTime(t *t
 		ActionType: testHTTPRequest,
 		Target:     "https://api.example.com/" + testSpanRedactedValue,
 		Transport:  testForward,
+		PolicyHash: testSpanDigest,
 		EventID:    testSpannedEventID,
 	}
 	evidence := runtimeSourceSpanEvidence(t)

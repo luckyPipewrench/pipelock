@@ -42,6 +42,7 @@ func TestEvidenceReceipt_Validate_RejectsBadSignatureHex(t *testing.T) {
 		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
 		EventID:          "01900000-0000-7000-8000-000000000001",
 		Timestamp:        time.Now(),
+		PolicyHash:       validPolicyHash,
 		Payload: json.RawMessage(`{"action_type":"connect","target":"x.com","verdict":"allow",
 			"transport":"forward","policy_sources":["a"],"winning_source":"a"}`),
 		Signature: receipt.SignatureProof{
@@ -66,6 +67,7 @@ func TestEvidenceReceipt_Validate_RejectsShortSignature(t *testing.T) {
 		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
 		EventID:          "01900000-0000-7000-8000-000000000001",
 		Timestamp:        time.Now(),
+		PolicyHash:       validPolicyHash,
 		Payload: json.RawMessage(`{"action_type":"connect","target":"x.com","verdict":"allow",
 			"transport":"forward","policy_sources":["a"],"winning_source":"a"}`),
 		Signature: receipt.SignatureProof{
@@ -90,6 +92,7 @@ func TestEvidenceReceipt_Validate_RejectsMissingSignerKeyID(t *testing.T) {
 		Crit:             receipt.CritForPayloadKind(receipt.PayloadProxyDecision),
 		EventID:          "01900000-0000-7000-8000-000000000001",
 		Timestamp:        time.Now(),
+		PolicyHash:       validPolicyHash,
 		Payload: json.RawMessage(`{"action_type":"connect","target":"x.com","verdict":"allow",
 			"transport":"forward","policy_sources":["a"],"winning_source":"a"}`),
 		Signature: receipt.SignatureProof{

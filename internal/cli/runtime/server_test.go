@@ -840,19 +840,24 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 
 func TestServer_ReloadLicenseRevocationStripsAgents(t *testing.T) {
 	s, buf := newTestServer(t, nil)
+	// A genuine revoked token: the reload path must CONFIRM the revocation by
+	// re-verifying the inputs (ProvesLoss), not just trust that the agents were
+	// stripped, before shutting the listeners down. Fake placeholder tokens
+	// would classify as unverifiable and be preserved restart-only instead.
+	tok, pubHex, crlPath := realRevokedAgentsLicense(t)
 	oldCfg := s.proxy.CurrentConfig()
 	oldCfg.Agents = map[string]config.AgentProfile{
 		"agent-a": {Mode: config.ModeStrict},
 	}
-	oldCfg.LicenseKey = "old-agents-token"
-	oldCfg.LicensePublicKey = "old-public-key"
+	oldCfg.LicenseKey = tok
+	oldCfg.LicensePublicKey = pubHex
+	oldCfg.LicenseCRLFile = crlPath
 	oldCfg.LicenseExpiresAt = time.Now().Add(time.Hour).Unix()
 
+	// Simulate EnforceLicenseGate's strip at reload-Load (the revoked token left
+	// no named agents); the license inputs are otherwise unchanged.
 	newCfg := oldCfg.Clone()
 	newCfg.Agents = nil
-	newCfg.LicenseKey = "revoked-agents-token"
-	newCfg.LicenseRevoked = true
-	newCfg.LicenseRevocationReason = "test revocation"
 
 	if err := s.Reload(newCfg); err != nil {
 		t.Fatalf("Reload: %v", err)

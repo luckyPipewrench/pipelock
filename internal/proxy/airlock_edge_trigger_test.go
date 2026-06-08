@@ -60,10 +60,11 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 
 	sm := p.sessionMgrPtr.Load()
 	sess := sm.GetOrCreate(testClientIP)
-	if got := sess.EscalationLevel(); got < 3 {
-		t.Fatalf("pre-condition failed: expected session to reach critical (level >= 3), got level %d", got)
+	scope := adaptiveScopeForHost("evil.example")
+	if got := sess.ScopedEscalationLevel(scope); got < 3 {
+		t.Fatalf("pre-condition failed: expected scoped session to reach critical (level >= 3), got level %d", got)
 	}
-	if got := sess.Airlock().Tier(); got != config.AirlockTierDrain {
+	if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierDrain {
 		t.Fatalf("pre-condition failed: expected airlock at %q after escalation to critical, got %q",
 			config.AirlockTierDrain, got)
 	}
@@ -72,15 +73,15 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 	// upward-only SetTier rule; it exists for exactly this kind of admin /
 	// timer path. The production timer path in sweepDeescalation ends up in
 	// the same state, so this is a faithful proxy for it.
-	if changed, _, _ := sess.Airlock().ForceSetTier(config.AirlockTierHard); !changed {
+	if changed, _, _ := sess.AirlockForScope(scope).ForceSetTier(config.AirlockTierHard); !changed {
 		t.Fatal("ForceSetTier(hard) unexpectedly returned changed=false")
 	}
-	if got := sess.Airlock().Tier(); got != config.AirlockTierHard {
+	if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierHard {
 		t.Fatalf("post-ForceSetTier state wrong: expected %q, got %q", config.AirlockTierHard, got)
 	}
 	// Adaptive level is still at critical - that's the plateau condition
 	// the bug exploited. Sanity-check it explicitly.
-	if got := sess.EscalationLevel(); got < 3 {
+	if got := sess.ScopedEscalationLevel(scope); got < 3 {
 		t.Fatalf("plateau precondition failed: expected level still >= 3 (critical), got %d", got)
 	}
 
@@ -88,9 +89,9 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 	// (escalated=false). Under the fix, edge-triggered airlock must NOT
 	// re-arm drain even though the session is still at critical level.
 	clean := scanner.Result{Allowed: true}
-	p.recordSessionActivity(testClientIP, agentAnonymous, "docs.example", "req-post-recovery-clean", clean, cfg, logger, false)
+	p.recordSessionActivity(testClientIP, agentAnonymous, "evil.example", "req-post-recovery-clean", clean, cfg, logger, false)
 
-	if got := sess.Airlock().Tier(); got != config.AirlockTierHard {
+	if got := sess.AirlockForScope(scope).Tier(); got != config.AirlockTierHard {
 		t.Fatalf("edge-trigger regression: expected airlock to STAY at %q after a clean plateau request, got %q (drain->hard->drain loop returned)",
 			config.AirlockTierHard, got)
 	}
@@ -100,13 +101,13 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 	// able to re-arm drain. Edge-triggering narrows the trigger, it does
 	// not disable it.
 	for i := 0; i < 20; i++ {
-		p.recordSessionActivity(testClientIP, agentAnonymous, "evil2.example", "req-post-recovery-bad", blocked, cfg, logger, false)
-		if sess.Airlock().Tier() == config.AirlockTierDrain {
+		p.recordSessionActivity(testClientIP, agentAnonymous, "evil.example", "req-post-recovery-bad", blocked, cfg, logger, false)
+		if sess.AirlockForScope(scope).Tier() == config.AirlockTierDrain {
 			return
 		}
 	}
 	t.Fatalf("control case failed: blocked-result retries should eventually escalate and re-arm drain, ended at tier %q level %d",
-		sess.Airlock().Tier(), sess.EscalationLevel())
+		sess.AirlockForScope(scope).Tier(), sess.ScopedEscalationLevel(scope))
 }
 
 // TestSessionManager_SweepDeescalation_DrainToHardAfterTimeout verifies that

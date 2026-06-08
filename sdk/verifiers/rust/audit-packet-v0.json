@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pipelab.org/schemas/audit-packet-v0.schema.json",
+  "title": "Pipelock Audit Packet v0",
+  "description": "Procurement-ready evidence bundle emitted after a Pipelock-mediated agent run. Pairs a verdict from a signed receipt chain with the enforcement posture claims that produced it. Versioned independently from pipelock binary releases.",
+  "$defs": {
+    "artifact_path": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        { "not": { "const": "." } },
+        { "not": { "pattern": "^/" } },
+        { "not": { "pattern": ":" } },
+        { "not": { "pattern": "\\\\" } },
+        { "not": { "pattern": "(^|/)\\.\\.(/|$)" } }
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "run",
+    "policy",
+    "summary",
+    "verifier",
+    "posture",
+    "artifacts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "pipelock.audit_packet.v0",
+      "description": "Locked identifier for this packet shape. Producers MUST emit exactly this string."
+    },
+    "packet_id": {
+      "type": "string",
+      "description": "Optional opaque identifier for this packet. When omitted, consumers correlate by run.repository + run.sha + run.started_at."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp recorded when the packet was assembled."
+    },
+    "run": {
+      "type": "object",
+      "description": "Identity of the agent run that produced the receipts. v0 targets GitHub Actions; future schema versions may add other providers.",
+      "required": ["provider", "agent_identity", "started_at"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["github_actions", "self_hosted", "local"],
+          "description": "Where the run executed. Other providers are accepted by registering a new enum value in a future schema version."
+        },
+        "repository": {
+          "type": "string",
+          "description": "Repository identifier from the provider (owner/name on GitHub). Optional for local runs."
+        },
+        "workflow": {
+          "type": "string",
+          "description": "Provider workflow name when applicable."
+        },
+        "run_id": {
+          "type": "string",
+          "description": "Provider run identifier when applicable."
+        },
+        "run_attempt": {
+          "type": "string",
+          "description": "Provider run attempt counter when applicable."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Git ref at run start (refs/heads/main, refs/pull/N/merge, etc.)."
+        },
+        "sha": {
+          "type": "string",
+          "description": "Git commit SHA at run start."
+        },
+        "agent_identity": {
+          "type": "string",
+          "description": "Caller-supplied identity stamped into every receipt and the packet metadata. Maps to the action's agent-identity input."
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 UTC timestamp recorded when the agent command started."
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 UTC timestamp recorded when the agent command exited (before verifier or packet assembly)."
+        },
+        "agent_exit_code": {
+          "type": "integer",
+          "description": "Exit code of the agent command. Captured even when receipt verification later fails."
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "description": "Pipelock policy state observed during the run. policy_hashes is plural because hot-reload across the run can produce multiple distinct hashes; the action records every hash that signed at least one receipt.",
+      "required": ["policy_hashes"],
+      "additionalProperties": false,
+      "properties": {
+        "policy_hashes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Sorted unique policy hashes observed across receipts. Empty array means no receipts carried a policy_hash, which is itself a signal."
+        },
+        "config_path": {
+          "type": "string",
+          "description": "Path on the runner to the user-supplied pipelock config file."
+        },
+        "runtime_config_path": {
+          "type": "string",
+          "description": "Path on the runner to the materialized runtime config (after action-owned overrides)."
+        },
+        "config_snapshot_sha256": {
+          "type": "string",
+          "description": "Optional SHA-256 of the runtime config file as fed to pipelock. Lets verifiers prove which config produced the receipts."
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Aggregated counts derived from the receipt chain. Counts are point-in-time: editing evidence.jsonl after the fact will not change them.",
+      "required": ["receipt_count", "totals"],
+      "additionalProperties": false,
+      "properties": {
+        "receipt_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of action_receipt entries in evidence.jsonl."
+        },
+        "totals": {
+          "type": "object",
+          "description": "One bucket per pipelock verdict. The eight buckets correspond to the seven config.Action* constants plus an other bucket for unrecognized verdicts. Producers MUST emit all eight keys, even when zero, so consumers can sum without nil-checks.",
+          "required": ["allow", "block", "warn", "ask", "strip", "forward", "redirect", "other"],
+          "additionalProperties": false,
+          "properties": {
+            "allow":    { "type": "integer", "minimum": 0 },
+            "block":    { "type": "integer", "minimum": 0 },
+            "warn":     { "type": "integer", "minimum": 0 },
+            "ask":      { "type": "integer", "minimum": 0 },
+            "strip":    { "type": "integer", "minimum": 0 },
+            "forward":  { "type": "integer", "minimum": 0 },
+            "redirect": { "type": "integer", "minimum": 0 },
+            "other":    { "type": "integer", "minimum": 0 }
+          }
+        },
+        "transports": {
+          "type": "object",
+          "description": "Counts of receipts grouped by transport label (https, http, ws, mcp_stdio, mcp_http, etc.). Keys are open-ended.",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "layers": {
+          "type": "object",
+          "description": "Counts of blocked receipts grouped by detection layer label. Optional in v0; producers MAY omit when no layer telemetry is captured.",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "domains_touched": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional sorted unique list of destination hosts seen in receipts. Producers MAY redact, omit, or hash entries; consumers MUST treat absence as no claim, not as zero hosts."
+        }
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "description": "Verdict from the receipt chain verifier. The verdict alone is not the proof; consumers MUST cross-reference posture claims and the signer key when assigning trust.",
+      "required": ["verdict", "trusted"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["trusted"],
+            "properties": { "trusted": { "const": true } }
+          },
+          "then": {
+            "required": ["signer_key"],
+            "properties": { "verdict": { "const": "valid" } }
+          }
+        },
+        {
+          "if": {
+            "required": ["verdict"],
+            "properties": { "verdict": { "const": "valid" } }
+          },
+          "then": {
+            "required": ["signer_key"],
+            "properties": { "trusted": { "const": true } }
+          }
+        }
+      ],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["valid", "invalid", "error", "not_run", "self_consistent_only"],
+          "description": "valid: chain verified against a pinned signer key. invalid: chain rejected. error: verifier could not run (config failure or empty chain). not_run: verifier was deliberately skipped. self_consistent_only: chain hashes are consistent but no signer key was pinned, so the chain proves internal consistency only, not Pipelock provenance."
+        },
+        "trusted": {
+          "type": "boolean",
+          "description": "true only when verdict is valid and a long-lived signer public key was pinned at verification time. self_consistent_only and not_run MUST set this to false."
+        },
+        "receipt_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Receipts the verifier examined. May differ from summary.receipt_count if the verifier filtered entries; producers SHOULD flag the divergence in verifier.error when it happens."
+        },
+        "root_hash": {
+          "type": "string",
+          "description": "Hash of the final receipt in the chain (sha256:hex), used by relying parties to anchor the chain in external transparency logs."
+        },
+        "final_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sequence number of the final receipt examined."
+        },
+        "signer_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Signer public key in pipelock public-key text form. Omitted when no key was pinned."
+        },
+        "output_file": {
+          "type": "string",
+          "description": "Relative path inside the audit packet directory to the verifier's raw stdout/stderr capture. Defaults to verifier.txt."
+        },
+        "error": {
+          "type": "string",
+          "description": "Human-readable failure reason when verdict is error or invalid."
+        }
+      }
+    },
+    "receipts": {
+      "type": "array",
+      "description": "Optional inline copy of the receipt chain. Producers MAY omit and reference artifacts.evidence_jsonl instead. Consumers SHOULD prefer evidence.jsonl when present because it is the byte-for-byte signed input to the verifier.",
+      "items": {
+        "type": "object",
+        "required": ["action_id", "receipt_hash", "chain_seq", "chain_prev_hash", "verdict", "policy_hash"],
+        "additionalProperties": true,
+        "properties": {
+          "action_id":      { "type": "string" },
+          "receipt_hash":   { "type": "string" },
+          "chain_seq":      { "type": "integer", "minimum": 0 },
+          "chain_prev_hash": { "type": "string" },
+          "timestamp":      { "type": "string", "format": "date-time" },
+          "action_type":    { "type": "string" },
+          "verdict":        { "type": "string" },
+          "transport":      { "type": "string" },
+          "method":         { "type": "string" },
+          "target_redacted": { "type": "string" },
+          "layer":          { "type": "string" },
+          "pattern":        { "type": "string" },
+          "severity":       { "type": "string" },
+          "policy_hash":    { "type": "string" },
+          "signer_key":     { "type": "string" },
+          "source_spans": {
+            "type": "array",
+            "description": "Optional display copy of EvidenceReceipt v2 source_spans. The signed receipt remains the authoritative proof.",
+            "items": {
+              "type": "object",
+              "required": [
+                "source_id",
+                "source_kind",
+                "normalized_view",
+                "pipelock_binary_digest",
+                "rules_bundle_digest",
+                "transform_profile",
+                "policy_hash",
+                "rule_id",
+                "match_hash",
+                "match_hash_alg",
+                "match_class"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "source_id": { "type": "string" },
+                "source_kind": {
+                  "type": "string",
+                  "enum": ["http_request_url", "http_response", "mcp_tool_result", "mcp_tool_args"]
+                },
+                "normalized_view": { "type": "string" },
+                "pipelock_binary_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+                "rules_bundle_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+                "transform_profile": { "type": "string" },
+                "policy_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+                "rule_id": { "type": "string" },
+                "bundle": { "type": "string" },
+                "bundle_version": { "type": "string" },
+                "char_offset": { "type": "integer", "minimum": 0 },
+                "char_length": { "type": "integer", "minimum": 1 },
+                "match_hash": { "type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$" },
+                "match_hash_alg": { "const": "hmac-sha256" },
+                "match_class": { "type": "string" },
+                "redacted_sample": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "scanner_config_snapshot": {
+      "type": "object",
+      "description": "Optional summary of the pipelock config that produced the receipts. Producers MAY omit when no snapshot is available; consumers MUST NOT treat absence as a claim that scanning was disabled.",
+      "additionalProperties": false,
+      "properties": {
+        "mode":                    { "type": "string" },
+        "dlp_patterns_count":      { "type": "integer", "minimum": 0 },
+        "response_patterns_count": { "type": "integer", "minimum": 0 },
+        "ssrf_enabled":            { "type": "boolean" },
+        "redaction_enabled":       { "type": "boolean" },
+        "flight_recorder_enabled": { "type": "boolean" }
+      }
+    },
+    "posture": {
+      "type": "object",
+      "description": "Enforcement posture claimed by the producer. These fields document WHAT was enforced; the receipts in evidence.jsonl prove what happened under that posture. Both sides matter: a clean receipt chain under a posture that admits unsupported paths is weaker evidence than the same chain under stricter posture.",
+      "required": [
+        "enforcement_mode",
+        "runner_os",
+        "raw_socket_status",
+        "docker_socket_status",
+        "dns_udp_status",
+        "browser_proxy_status",
+        "websocket_frame_scanning",
+        "unsupported_paths"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enforcement_mode": {
+          "type": "string",
+          "description": "Free-form identifier for the enforcement architecture. The action repo emits linux_netns_iptables_setpriv. Future modes (docker_container, host_proxy_only, self_hosted_runner) extend this enum."
+        },
+        "runner_os":   { "type": "string" },
+        "runner_arch": { "type": "string" },
+        "raw_socket_status": {
+          "type": "string",
+          "enum": ["denied", "allowed", "unknown"],
+          "description": "denied: agent could not open raw sockets. allowed: agent could (e.g., self-hosted runner with broader caps). unknown: producer did not probe."
+        },
+        "docker_socket_status": {
+          "type": "string",
+          "enum": ["denied", "masked", "allowed", "absent", "unknown"],
+          "description": "denied: explicit deny. masked: socket bind-mounted to /dev/null inside the boundary. allowed: agent had socket access. absent: socket not present on the runner. unknown: producer did not probe."
+        },
+        "dns_udp_status": {
+          "type": "string",
+          "enum": ["denied", "proxied", "allowed", "unknown"],
+          "description": "denied: agent UDP/53 dropped. proxied: DNS routed through pipelock. allowed: agent could resolve directly. unknown: producer did not probe."
+        },
+        "browser_proxy_status": {
+          "type": "string",
+          "enum": ["forced", "advisory", "absent", "unknown"],
+          "description": "forced: HTTPS_PROXY env var is set inside the boundary AND no path bypasses it. advisory: env var set but bypassable. absent: no browser-class workload. unknown: not probed."
+        },
+        "websocket_frame_scanning": {
+          "type": "string",
+          "enum": ["explicit_ws_proxy_path_required", "always_on", "off"],
+          "description": "Frame-level scanning is automatic for /ws?url= proxy path; for arbitrary wss:// destinations the boundary contains the destination but does not scan frames unless the agent uses the proxy path."
+        },
+        "network_namespace": { "type": "string" },
+        "agent_user":        { "type": "string", "description": "Linux UNIX user the agent command ran as (NOT the AI agent identity; see run.agent_identity for that)." },
+        "agent_uid":         { "type": "integer" },
+        "host_user":         { "type": "string" },
+        "host_uid":          { "type": "integer" },
+        "host_ip":           { "type": "string" },
+        "agent_ip":          { "type": "string" },
+        "proxy_url":         { "type": "string" },
+        "script_basename":   { "type": "string" },
+        "script_arg_count":  { "type": "integer", "minimum": 0 },
+        "unsupported_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Egress vectors the producer explicitly does not enforce in this mode (e.g., nested-docker, ssh-egress). Honest disclosure is part of the proof."
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "Relative paths to sibling files in the audit packet directory. All paths are relative to the directory holding packet.json.",
+      "required": ["packet", "evidence", "verifier"],
+      "additionalProperties": false,
+      "properties": {
+        "packet": {
+          "$ref": "#/$defs/artifact_path",
+          "description": "Relative path to this packet.json."
+        },
+        "summary": {
+          "$ref": "#/$defs/artifact_path",
+          "description": "Relative path to the human-readable summary.md."
+        },
+        "evidence": {
+          "$ref": "#/$defs/artifact_path",
+          "description": "Relative path to evidence.jsonl, the byte-for-byte signed receipt chain."
+        },
+        "verifier": {
+          "$ref": "#/$defs/artifact_path",
+          "description": "Relative path to verifier.txt, the verifier's raw output."
+        }
+      }
+    }
+  }
+}

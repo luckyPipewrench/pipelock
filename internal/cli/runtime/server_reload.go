@@ -163,56 +163,71 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			!bytes.Equal(oldCfg.LicenseIntermediateCert, newCfg.LicenseIntermediateCert) ||
 			oldCfg.LicenseIntermediateLoadError != newCfg.LicenseIntermediateLoadError
 
-		// Parity with agents: re-verify the fleet entitlement on a
-		// license-input reload. EnforceLicenseGate (run during Load) strips
-		// agents when the new license is invalid, but it never touches the
-		// follower-side Conductor runtime. Without this, a reload pointing at a
-		// revoked, expired, or fleet-downgraded license would leave a running
-		// Conductor follower participating until restart. Evaluate against the
-		// NEW license inputs here, BEFORE the branch below preserves the old
-		// values as restart-only; tear down after the branch runs.
-		conductorFleetLost := false
-		if oldCfg.Conductor.Enabled && (agentsRevokedByLicense || licenseInputsChanged) {
-			if _, ferr := license.VerifyFleetWithIntermediate(
-				newCfg.LicenseKey, newCfg.LicensePublicKey, newCfg.LicenseCRLFile, newCfg.LicenseIntermediateFile,
-			); ferr != nil {
-				conductorFleetLost = true
-			}
+		// Re-verify the NEW license inputs ONCE and classify the result so both
+		// paid surfaces — agent listeners and the Conductor follower — make the
+		// SAME decision. License inputs are restart-only: a reload never
+		// activates a new license. So an UNVERIFIABLE new input (unreadable or
+		// malformed CRL, intermediate, public key, or token) leaves the effective
+		// entitlement intact and must NOT tear down a running surface — that would
+		// be a denial-of-service on an operator typo, not fail-closed security.
+		// Only PROVEN loss (revoked, expired, or a cleanly-verified token that no
+		// longer carries the feature) tears a surface down. Genuine runtime
+		// revocation/expiry of the ACTIVE license is still enforced independently
+		// by the CRL watcher and the expiry timer, against the effective license
+		// state. EnforceLicenseGate (run during Load) stays strictly fail-closed
+		// because at startup there is no prior entitlement to preserve; this
+		// reload-only precision is the only place an old-vs-new baseline exists.
+		reloadLicenseChecked := agentsRevokedByLicense || licenseInputsChanged
+		var (
+			reloadLic   license.License
+			reloadClass = license.ReloadVerified
+		)
+		if reloadLicenseChecked {
+			reloadLic, reloadClass = license.ClassifyReload(
+				newCfg.LicenseKey, newCfg.LicensePublicKey, newCfg.LicenseCRLFile, newCfg.LicenseIntermediateFile)
 		}
+		conductorFleetLost := oldCfg.Conductor.Enabled && reloadLicenseChecked &&
+			reloadClass.ProvesLoss(reloadLic, license.FeatureFleet)
 
-		if agentsRevokedByLicense {
-			// License gate disabled agents on reload. Shut down
-			// already-bound listener servers so the agent ports
-			// stop accepting traffic.
+		switch {
+		case agentsRevokedByLicense && reloadClass.ProvesLoss(reloadLic, license.FeatureAgents):
+			// License gate disabled agents on reload and the loss is PROVEN
+			// (revoked / expired / downgraded). Shut down already-bound listener
+			// servers so the agent ports stop accepting traffic.
 			s.proxy.ShutdownAgentServers()
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: license revoked agents, shutting down agent listeners\n")
-		} else if licenseInputsChanged {
-			// License inputs changed but agents were not revoked.
-			// Preserve ALL old license state so a reload cannot
-			// activate licensed features without a restart. We
-			// must also preserve the old license input fields
-			// themselves; otherwise the new values get committed
-			// to the live config and a subsequent unrelated reload
-			// would see no diff, silently applying the staged
+		case agentsRevokedByLicense || licenseInputsChanged:
+			// Either the new license inputs are UNVERIFIABLE (agents were stripped
+			// at Load but the effective entitlement is unchanged — a fat-fingered
+			// path must not DoS a licensed surface) or the inputs simply changed.
+			// Both are restart-only: preserve ALL old license state and the old
+			// agents so a reload can neither activate nor deactivate licensed
+			// features without a restart. Preserving the input fields themselves is
+			// mandatory; otherwise the new values commit to the live config and a
+			// later unrelated reload sees no diff and silently applies the staged
 			// license.
-			newCfg.Agents = oldCfg.Agents
-			newCfg.LicenseKey = oldCfg.LicenseKey
-			newCfg.LicenseFile = oldCfg.LicenseFile
-			newCfg.LicenseCRLFile = oldCfg.LicenseCRLFile
-			newCfg.LicenseIntermediateFile = oldCfg.LicenseIntermediateFile
-			newCfg.LicenseIntermediateCert = append([]byte(nil), oldCfg.LicenseIntermediateCert...)
-			newCfg.LicenseIntermediateLoadError = oldCfg.LicenseIntermediateLoadError
-			newCfg.LicensePublicKey = oldCfg.LicensePublicKey
-			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: license key inputs changed (license_key, license_file, license_crl_file, license_intermediate_file, or license_public_key) - requires restart for license re-verification\n")
-		} else if AgentListenersChanged(oldCfg, newCfg) {
+			preserveLicenseInputsRestartOnly(newCfg, oldCfg)
+			if agentsRevokedByLicense {
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: new license inputs could not be verified (unreadable/malformed CRL, intermediate, or token); effective license unchanged, preserving licensed surfaces — requires restart for license re-verification\n")
+			} else {
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: license key inputs changed (license_key, license_file, license_crl_file, license_intermediate_file, or license_public_key) - requires restart for license re-verification\n")
+			}
+		case AgentListenersChanged(oldCfg, newCfg):
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
 			PreserveAgentListeners(oldCfg, newCfg)
 		}
+
 		if conductorFleetLost {
-			// New license inputs no longer carry a valid fleet entitlement:
-			// stop the running Conductor follower fail-closed. Detection keeps
-			// running; Conductor stays down until restart.
+			// New license inputs PROVE the fleet entitlement is gone: stop the
+			// running Conductor follower fail-closed. Detection keeps running;
+			// Conductor stays down until restart.
 			s.teardownConductor("reload revoked fleet entitlement")
+		} else if oldCfg.Conductor.Enabled && reloadLicenseChecked && reloadClass == license.ReloadUnverifiable {
+			// Conductor stays up: unverifiable new inputs cannot PROVE the fleet
+			// entitlement was lost, so tearing the follower down here would be a
+			// DoS on an operator typo. Warn for SOC visibility — the conductor
+			// analogue of the agents preserve path above.
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: new license inputs could not be verified; Conductor fleet entitlement unchanged, follower stays running — requires restart for license re-verification\n")
 		}
 		// Carry forward runtime-derived license expiry.
 		// LicenseExpiresAt is set by EnforceLicenseGate at startup,
@@ -311,6 +326,23 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
 	s.recordReloadSuccess(reloadHash)
 	return nil
+}
+
+// preserveLicenseInputsRestartOnly copies the old license inputs and agent
+// profiles onto newCfg so a reload cannot activate OR deactivate licensed
+// surfaces without a restart. Used for both a plain license-input change and an
+// unverifiable new input: in both cases the effective entitlement is the old,
+// already-verified one, and committing the new input fields would let a later
+// unrelated reload see no diff and silently apply the staged license.
+func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
+	newCfg.Agents = oldCfg.Agents
+	newCfg.LicenseKey = oldCfg.LicenseKey
+	newCfg.LicenseFile = oldCfg.LicenseFile
+	newCfg.LicenseCRLFile = oldCfg.LicenseCRLFile
+	newCfg.LicenseIntermediateFile = oldCfg.LicenseIntermediateFile
+	newCfg.LicenseIntermediateCert = append([]byte(nil), oldCfg.LicenseIntermediateCert...)
+	newCfg.LicenseIntermediateLoadError = oldCfg.LicenseIntermediateLoadError
+	newCfg.LicensePublicKey = oldCfg.LicensePublicKey
 }
 
 // cleanup closes all owned resources. Safe to call multiple times: each

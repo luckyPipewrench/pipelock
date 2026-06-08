@@ -110,6 +110,13 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 		LocalVersion: cliutil.Version,
 		LoadConfig:   config.Load,
 		Reload:       s.Reload,
+		// Close the in-flight apply window: teardownConductor sets conductorDown
+		// without taking conductorApplyMu (that would deadlock the poller's own
+		// apply -> reload -> teardown path), so a bundle already past the
+		// under-lock conductorDown re-check could otherwise complete its Reload
+		// after a concurrent revocation/expiry teardown. Re-checking right before
+		// the boundary's live-config swap aborts that last bundle fail-closed.
+		StillEntitled: func() bool { return !s.conductorDown.Load() },
 	}
 	return boundary.Apply(bundle, applycache.ApplyOptions{
 		Rollback:      opts.Rollback,

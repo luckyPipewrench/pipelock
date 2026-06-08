@@ -4319,6 +4319,9 @@ func (p *Proxy) filterAndActOnResponseScan(
 	exempt bool,
 ) (blocked bool, out string, found bool) {
 	out = content
+	emitResponseReceipt := func(opts receipt.EmitOpts) {
+		p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+	}
 
 	// Suppress filter: serves both the main response scan path (where the caller's
 	// inline loop already stripped suppressed matches before the capture observer) and
@@ -4394,7 +4397,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 		log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
-		p.emitReceipt(receipt.EmitOpts{
+		emitResponseReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     "response_scan",
@@ -4415,7 +4418,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
 			log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
-			p.emitReceipt(receipt.EmitOpts{
+			emitResponseReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "response_scan",
@@ -4453,7 +4456,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
 			log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
-			p.emitReceipt(receipt.EmitOpts{
+			emitResponseReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "response_scan",

@@ -80,6 +80,28 @@ type SessionEvent struct {
 	Score    float64   `json:"score"`          // scanner score at time of event (0 when N/A)
 }
 
+// AdaptiveScopeSnapshot is an operator-facing view of one scoped adaptive
+// lane. HTTP transports use destination scopes so an airlock on one upstream
+// does not blackhole unrelated control-plane or send-path traffic.
+type AdaptiveScopeSnapshot struct {
+	Scope              string    `json:"scope"`
+	ThreatScore        float64   `json:"threat_score"`
+	EscalationLevel    string    `json:"escalation_level"`
+	EscalationLevelInt int       `json:"escalation_level_int"`
+	BlockAll           bool      `json:"block_all"`
+	AirlockTier        string    `json:"airlock_tier"`
+	AirlockEnteredAt   time.Time `json:"airlock_entered_at,omitempty"`
+}
+
+type adaptiveScopeState struct {
+	threatScore      float64
+	escalationLevel  int
+	currentThreshold float64
+	lastEscalation   time.Time
+	atBlockAll       bool
+	airlock          AirlockState
+}
+
 // SessionState tracks behavioral state for a single agent session.
 type SessionState struct {
 	mu           sync.Mutex
@@ -93,11 +115,13 @@ type SessionState struct {
 	lastBurstAt   time.Time // cooldown: fire burst anomaly once per window
 
 	// Adaptive enforcement
-	threatScore      float64
-	escalationLevel  int // 0=normal, 1=first escalation, etc.
-	currentThreshold float64
-	lastEscalation   time.Time // when the current level was reached
-	atBlockAll       bool      // true when current level has block_all=true
+	threatScore                float64
+	escalationLevel            int // 0=normal, 1=first escalation, etc.
+	currentThreshold           float64
+	lastEscalation             time.Time // when the current level was reached
+	atBlockAll                 bool      // true when current level has block_all=true
+	globalSignalsAuthoritative bool
+	scopes                     map[string]*adaptiveScopeState
 
 	// Behavioral baseline accumulation - collected per-session for
 	// baseline learning and deviation checking.
@@ -136,6 +160,65 @@ func (s *SessionState) IsResettable() bool {
 // and transitions. The returned pointer is stable for the session's lifetime.
 func (s *SessionState) Airlock() *AirlockState {
 	return &s.airlock
+}
+
+// maxAdaptiveScopes bounds the per-session destination-scope cardinality.
+// Each scope holds its own adaptive lane and airlock (mutex + cancel slice),
+// so an agent that touches an unbounded number of distinct hosts must not be
+// able to grow this map without limit. Past the cap, new destinations fall
+// back to the session-wide (global) lane, which is stricter — fail-safe.
+// Mirrors the 10,000-tool MCP baseline cap in spirit.
+const maxAdaptiveScopes = 1024
+
+func (s *SessionState) getOrCreateScopeLocked(scope string) *adaptiveScopeState {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		return nil
+	}
+	if s.scopes == nil {
+		s.scopes = make(map[string]*adaptiveScopeState)
+	}
+	st := s.scopes[scope]
+	if st == nil {
+		if len(s.scopes) >= maxAdaptiveScopes {
+			// At cap: signal the caller to use the session-wide lane rather
+			// than allocate another scope. nil never reaches a deref because
+			// every caller guards it.
+			return nil
+		}
+		st = &adaptiveScopeState{airlock: AirlockState{tier: config.AirlockTierNone}}
+		s.scopes[scope] = st
+	}
+	return st
+}
+
+func normalizeAdaptiveScope(scope string) string {
+	return strings.ToLower(strings.TrimSpace(scope))
+}
+
+func adaptiveScopeForHost(host string) string {
+	host = normalizeAdaptiveScope(host)
+	if host == "" {
+		return ""
+	}
+	return "destination:" + host
+}
+
+// AirlockForScope returns the scoped airlock state for scope, creating it when
+// needed. An empty scope falls back to the legacy session-wide airlock.
+func (s *SessionState) AirlockForScope(scope string) *AirlockState {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		return &s.airlock
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.getOrCreateScopeLocked(scope)
+	if st == nil {
+		// Scope cap reached: fall back to the session-wide airlock.
+		return &s.airlock
+	}
+	return &st.airlock
 }
 
 type domainEntry struct {
@@ -242,28 +325,79 @@ const deescalationCheckInterval = 30 * time.Second
 func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (bool, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.globalSignalsAuthoritative = true
 
-	points := session.SignalPoints[sig]
-	s.threatScore += points
+	escalated, from, to := recordAdaptiveSignalFields(
+		&s.threatScore,
+		&s.escalationLevel,
+		&s.currentThreshold,
+		&s.lastEscalation,
+		sig,
+		threshold,
+	)
+	return escalated, from, to
+}
 
-	// Initialize threshold on first use
-	if s.currentThreshold == 0 && threshold > 0 {
-		s.currentThreshold = threshold
+// RecordScopedSignal adds a threat signal to one adaptive scope. It also
+// mirrors the signal into the session-wide score without updating the
+// session-wide block_all latch; HTTP enforcement uses the scoped return value
+// for quarantine decisions while the aggregate score remains visible to
+// operators and keeps cross-destination activity from disappearing.
+func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, threshold float64) (bool, string, string) {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		return s.RecordSignal(sig, threshold)
 	}
 
-	if s.currentThreshold > 0 && s.threatScore >= s.currentThreshold {
-		oldLevel := s.escalationLevel
-		s.escalationLevel++
-		s.lastEscalation = time.Now()
-		// Double the threshold to prevent oscillation
-		s.currentThreshold *= 2
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-		from := session.EscalationLabel(oldLevel)
-		to := session.EscalationLabel(s.escalationLevel)
-		return true, from, to
+	st := s.getOrCreateScopeLocked(scope)
+	if st == nil {
+		// Scope cap reached: record against the session-wide lane and make it
+		// authoritative, matching the empty-scope (global) fallback above.
+		s.globalSignalsAuthoritative = true
+		return recordAdaptiveSignalFields(
+			&s.threatScore,
+			&s.escalationLevel,
+			&s.currentThreshold,
+			&s.lastEscalation,
+			sig,
+			threshold,
+		)
 	}
+	escalated, from, to := recordAdaptiveSignalFields(
+		&st.threatScore,
+		&st.escalationLevel,
+		&st.currentThreshold,
+		&st.lastEscalation,
+		sig,
+		threshold,
+	)
+	_, _, _ = recordAdaptiveSignalFields(
+		&s.threatScore,
+		&s.escalationLevel,
+		&s.currentThreshold,
+		&s.lastEscalation,
+		sig,
+		threshold,
+	)
+	return escalated, from, to
+}
 
-	return false, "", ""
+func recordAdaptiveSignalFields(score *float64, level *int, threshold *float64, lastEscalation *time.Time, sig session.SignalType, initialThreshold float64) (bool, string, string) {
+	*score += session.SignalPoints[sig]
+	if *threshold == 0 && initialThreshold > 0 {
+		*threshold = initialThreshold
+	}
+	if *threshold <= 0 || *score < *threshold {
+		return false, "", ""
+	}
+	oldLevel := *level
+	*level++
+	*lastEscalation = time.Now()
+	*threshold *= 2
+	return true, session.EscalationLabel(oldLevel), session.EscalationLabel(*level)
 }
 
 // RecordClean decays the threat score for a clean request (no signals).
@@ -271,9 +405,33 @@ func (s *SessionState) RecordClean(decayRate float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.threatScore -= decayRate
-	if s.threatScore < 0 {
-		s.threatScore = 0
+	decayAdaptiveScore(&s.threatScore, decayRate)
+}
+
+// RecordScopedClean decays both the scoped and aggregate scores for a clean
+// request in that destination lane.
+func (s *SessionState) RecordScopedClean(scope string, decayRate float64) {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		s.RecordClean(decayRate)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A clean request to a destination that never raised a signal has nothing
+	// to decay; do not allocate a scope lane for it. This keeps the scope-map
+	// budget spent on destinations that actually accrued threat, so ordinary
+	// broad browsing cannot fill the cap with zero-score entries.
+	if st := s.scopes[scope]; st != nil {
+		decayAdaptiveScore(&st.threatScore, decayRate)
+	}
+	decayAdaptiveScore(&s.threatScore, decayRate)
+}
+
+func decayAdaptiveScore(score *float64, decayRate float64) {
+	*score -= decayRate
+	if *score < 0 {
+		*score = 0
 	}
 }
 
@@ -287,11 +445,80 @@ func (s *SessionState) SetBlockAll(blocked bool) {
 	s.atBlockAll = blocked
 }
 
+// SetScopedBlockAll sets the block_all latch for one adaptive scope. Empty
+// scope falls back to the legacy session-wide latch.
+func (s *SessionState) SetScopedBlockAll(scope string, blocked bool) {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		s.SetBlockAll(blocked)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.getOrCreateScopeLocked(scope)
+	if st == nil {
+		// Scope cap reached: latch on the session-wide lane instead.
+		s.atBlockAll = blocked
+		return
+	}
+	st.atBlockAll = blocked
+}
+
 // BlockAll returns whether the session is at a block_all escalation level (thread-safe).
 func (s *SessionState) BlockAll() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.atBlockAll
+}
+
+func (s *SessionState) ScopedEscalationLevel(scope string) int {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		return s.EscalationLevel()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.scopes[scope]; st != nil {
+		return st.escalationLevel
+	}
+	return 0
+}
+
+// EffectiveEscalationLevel returns the escalation level that should apply to
+// a request in scope. Destination-scoped HTTP signals do not make the aggregate
+// session level globally authoritative; explicit global signals from non-HTTP
+// paths still apply everywhere.
+func (s *SessionState) EffectiveEscalationLevel(scope string) int {
+	scope = normalizeAdaptiveScope(scope)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	level := 0
+	if st := s.scopes[scope]; st != nil {
+		level = st.escalationLevel
+	}
+	if s.globalSignalsAuthoritative && s.escalationLevel > level {
+		level = s.escalationLevel
+	}
+	return level
+}
+
+func (s *SessionState) ScopedThreatScore(scope string) float64 {
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		return s.ThreatScore()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.scopes[scope]; st != nil {
+		return st.threatScore
+	}
+	return 0
+}
+
+func (s *SessionState) ScopedSnapshots() []AdaptiveScopeSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return scopedSnapshotsLocked(s.scopes)
 }
 
 // TryAutoRecover checks whether the session has been at its current
@@ -324,6 +551,53 @@ func (s *SessionState) TryAutoRecover(blockAllCheck func(int) bool) (bool, int, 
 	s.atBlockAll = blockAllCheck(s.escalationLevel)
 
 	return true, from, s.escalationLevel
+}
+
+// TryAutoRecoverScopes applies the same time-based recovery as TryAutoRecover
+// to each scoped adaptive lane.
+func (s *SessionState) TryAutoRecoverScopes(blockAllCheck func(int) bool) []scopedLevelTransition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.scopes) == 0 {
+		return nil
+	}
+	changes := make([]scopedLevelTransition, 0)
+	now := time.Now()
+	for scope, st := range s.scopes {
+		if st.escalationLevel <= 0 || st.lastEscalation.IsZero() {
+			continue
+		}
+		if now.Sub(st.lastEscalation) <= maxLevelDuration {
+			continue
+		}
+		from := st.escalationLevel
+		st.escalationLevel--
+		st.lastEscalation = now
+		if st.currentThreshold > 0 {
+			st.currentThreshold /= 2
+		}
+		st.threatScore = st.currentThreshold / 2
+		st.atBlockAll = blockAllCheck(st.escalationLevel)
+		changes = append(changes, scopedLevelTransition{scope: scope, from: from, to: st.escalationLevel})
+	}
+	return changes
+}
+
+// TryDeescalateScopedAirlocks applies airlock timers to scoped destination
+// lanes. The session-wide airlock is handled separately in sweepDeescalation.
+func (s *SessionState) TryDeescalateScopedAirlocks(timers *config.AirlockTimers) []scopedAirlockTransition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	changes := make([]scopedAirlockTransition, 0)
+	for scope, st := range s.scopes {
+		changed, from, to := st.airlock.TryDeescalate(timers)
+		if changed {
+			changes = append(changes, scopedAirlockTransition{scope: scope, from: from, to: to})
+		}
+	}
+	return changes
 }
 
 // ThreatScore returns the current threat score (thread-safe).
@@ -410,6 +684,13 @@ func (s *SessionState) resetWhileLocked() (prevScore float64, prevLevel int) {
 	s.currentThreshold = 0
 	s.lastEscalation = time.Time{}
 	s.atBlockAll = false
+	s.globalSignalsAuthoritative = false
+	for _, scoped := range s.scopes {
+		scoped.airlock.mu.Lock()
+		scoped.airlock.callCancelFuncsLocked()
+		scoped.airlock.mu.Unlock()
+	}
+	s.scopes = nil
 	s.domainWindows = nil
 	s.lastBurstAt = time.Time{}
 	s.lastActivity = time.Now()
@@ -604,6 +885,18 @@ type AdaptiveFlushResult struct {
 	IPDomainStateCleared bool `json:"ip_domain_state_cleared"`
 }
 
+type scopedLevelTransition struct {
+	scope string
+	from  int
+	to    int
+}
+
+type scopedAirlockTransition struct {
+	scope string
+	from  string
+	to    string
+}
+
 type AdaptiveWhoami struct {
 	ClientIP           string  `json:"client_ip"`
 	Agent              string  `json:"agent,omitempty"`
@@ -630,6 +923,7 @@ type sessionAdminSnapshot struct {
 	AirlockTrigger       string
 	AirlockTriggerSource string
 	RecentEvents         []SessionEvent
+	AdaptiveScopes       []AdaptiveScopeSnapshot
 }
 
 // classifySessionKey determines whether a key is an identity key or an
@@ -917,13 +1211,25 @@ func (sm *SessionManager) UpdateConfig(cfg *config.SessionProfiling, adaptiveCfg
 	for _, sess := range sm.sessions {
 		if adaptiveCfg == nil || !adaptiveCfg.Enabled {
 			sess.SetBlockAll(false)
+			sess.recomputeScopedBlockAll(nil)
 		} else {
 			level := sess.EscalationLevel()
 			isBlockAll := decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock
 			sess.SetBlockAll(isBlockAll)
+			sess.recomputeScopedBlockAll(adaptiveCfg)
 		}
 	}
 	sm.mu.RUnlock()
+}
+
+func (s *SessionState) recomputeScopedBlockAll(adaptiveCfg *config.AdaptiveEnforcement) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, scoped := range s.scopes {
+		scoped.atBlockAll = adaptiveCfg != nil &&
+			adaptiveCfg.Enabled &&
+			decide.UpgradeAction("", scoped.escalationLevel, adaptiveCfg) == config.ActionBlock
+	}
 }
 
 // Close stops the cleanup goroutine.
@@ -1520,8 +1826,36 @@ func (sm *SessionManager) AdminSnapshotByKey(key string) (sessionAdminSnapshot, 
 	}
 	snap.RecentEvents = make([]SessionEvent, len(sess.recentEvents))
 	copy(snap.RecentEvents, sess.recentEvents)
+	snap.AdaptiveScopes = scopedSnapshotsLocked(sess.scopes)
 
 	return snap, true
+}
+
+func scopedSnapshotsLocked(scopes map[string]*adaptiveScopeState) []AdaptiveScopeSnapshot {
+	if len(scopes) == 0 {
+		return []AdaptiveScopeSnapshot{}
+	}
+	out := make([]AdaptiveScopeSnapshot, 0, len(scopes))
+	for scope, st := range scopes {
+		st.airlock.mu.Lock()
+		tier := st.airlock.tier
+		enteredAt := st.airlock.enteredAt
+		st.airlock.mu.Unlock()
+		if tier == "" {
+			tier = config.AirlockTierNone
+		}
+		out = append(out, AdaptiveScopeSnapshot{
+			Scope:              scope,
+			ThreatScore:        st.threatScore,
+			EscalationLevel:    session.EscalationLabel(st.escalationLevel),
+			EscalationLevelInt: st.escalationLevel,
+			BlockAll:           st.atBlockAll,
+			AirlockTier:        tier,
+			AirlockEnteredAt:   enteredAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Scope < out[j].Scope })
+	return out
 }
 
 // AirlockConfig returns the current airlock config pointer, or nil when
@@ -1704,6 +2038,30 @@ func (sm *SessionManager) sweepDeescalation() {
 				}
 			}
 		}
+		for _, scoped := range sess.TryAutoRecoverScopes(blockAllCheck) {
+			fromLabel := session.EscalationLabel(scoped.from)
+			toLabel := session.EscalationLabel(scoped.to)
+			sm.mu.RLock()
+			_, stillLive := sm.sessions[sess.key]
+			sm.mu.RUnlock()
+			if stillLive && sm.metrics != nil {
+				sm.metrics.RecordSessionAutoDeescalation(fromLabel, toLabel)
+				if scoped.from > 0 {
+					sm.metrics.SetAdaptiveSessionLevel(fromLabel, -1)
+				}
+				if scoped.to > 0 {
+					sm.metrics.SetAdaptiveSessionLevel(toLabel, 1)
+				}
+			}
+			if stillLive {
+				sess.RecordEvent(SessionEvent{
+					Kind:     "adaptive_deescalate",
+					Target:   scoped.scope,
+					Detail:   fromLabel + "->" + toLabel,
+					Severity: "info",
+				})
+			}
+		}
 
 		// Airlock timer-based de-escalation.
 		if airlockCfg := sm.airlockCfgPtr.Load(); airlockCfg != nil && airlockCfg.Enabled {
@@ -1720,6 +2078,20 @@ func (sm *SessionManager) sweepDeescalation() {
 				}
 				if sm.logger != nil {
 					sm.logger.LogAirlockDeescalate(sess.key, airlockFrom, airlockTo, "", "")
+				}
+			}
+			for _, scoped := range sess.TryDeescalateScopedAirlocks(&airlockCfg.Timers) {
+				sess.RecordEvent(SessionEvent{
+					Kind:     "airlock_deescalate",
+					Target:   scoped.scope,
+					Detail:   scoped.from + "->" + scoped.to,
+					Severity: "info",
+				})
+				if sm.metrics != nil {
+					sm.metrics.RecordAirlockTransition(scoped.from, scoped.to, "timer")
+				}
+				if sm.logger != nil {
+					sm.logger.LogAirlockDeescalate(sess.key, scoped.from, scoped.to, "", "")
 				}
 			}
 		}

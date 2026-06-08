@@ -2114,6 +2114,7 @@ type sessionActivityOptions struct {
 	ClientIP   string
 	Agent      string
 	Hostname   string
+	Scope      string
 	RequestID  string
 	UserAgent  string
 	Result     scanner.Result
@@ -2129,6 +2130,10 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	clientIP := opts.ClientIP
 	agent := opts.Agent
 	hostname := opts.Hostname
+	scope := normalizeAdaptiveScope(opts.Scope)
+	if scope == "" {
+		scope = adaptiveScopeForHost(hostname)
+	}
 	requestID := opts.RequestID
 	userAgent := opts.UserAgent
 	result := opts.Result
@@ -2193,26 +2198,26 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			// allowlisted domain) are not real attacks, but repeated
 			// probing should still accumulate a weak signal so the
 			// session isn't completely invisible to adaptive scoring.
-			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
+			if recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, ep) {
 				escalated = true
-				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
+				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !result.Allowed {
-			if decide.RecordSignal(sess, session.SignalBlock, ep) {
+			if recordScopedAdaptiveSignal(sess, scope, session.SignalBlock, ep) {
 				escalated = true
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
-				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
+				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if result.Score > 0 {
-			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
+			if recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, ep) {
 				escalated = true
-				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
+				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !deferClean {
 			// Skip RecordClean when the caller defers it to the end of the
 			// request lifecycle (fetch), so that later scanning stages (header
 			// DLP, CEE, response) can still raise a finding before decay fires.
-			sess.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+			sess.RecordScopedClean(scope, adaptiveCfg.DecayPerCleanRequest)
 		}
 	}
 
@@ -2223,14 +2228,14 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			if !ok || a.Score <= 0 {
 				continue
 			}
-			if decide.RecordSignal(sess, sig, ep) {
+			if recordScopedAdaptiveSignal(sess, scope, sig, ep) {
 				escalated = true
-				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
+				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		}
 	}
 
-	level := sess.EscalationLevel()
+	level := sess.EffectiveEscalationLevel(scope)
 
 	// Airlock auto-triggers fire on adaptive escalation EDGES only, not on
 	// every request that happens to observe a session at a trigger level.
@@ -2250,13 +2255,13 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			trigger = airlockTriggerOnCritical
 		}
 		if targetTier != "" && targetTier != config.AirlockTierNone {
-			if changed, from, to := sess.Airlock().SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers); changed {
+			if changed, from, to := sess.AirlockForScope(scope).SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers); changed {
 				sess.RecordEvent(SessionEvent{
 					Kind:     "airlock_enter",
-					Target:   to,
+					Target:   scope,
 					Detail:   from + "->" + to,
 					Severity: "warn",
-					Score:    sess.ThreatScore(),
+					Score:    sess.ScopedThreatScore(scope),
 				})
 				if log != nil {
 					log.LogAirlockEnter(key, to, "adaptive_"+session.EscalationLabel(level), clientIP, requestID)
@@ -2301,6 +2306,70 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	}
 
 	return SessionResult{Level: level}
+}
+
+func recordScopedAdaptiveSignal(sess *SessionState, scope string, sig session.SignalType, ep decide.EscalationParams) bool {
+	if sess == nil {
+		return false
+	}
+	scope = normalizeAdaptiveScope(scope)
+	if scope == "" {
+		return decide.RecordSignal(sess, sig, ep)
+	}
+	escalated, from, to := sess.RecordScopedSignal(scope, sig, ep.Threshold)
+	if !escalated {
+		return false
+	}
+	score := sess.ScopedThreatScore(scope)
+	if ep.ConsoleWriter != nil {
+		_, _ = fmt.Fprintf(ep.ConsoleWriter, "pipelock: session escalated %s -> %s (scope=%s score=%.1f)\n", from, to, scope, score)
+	}
+	if ep.Logger != nil {
+		ep.Logger.LogAdaptiveEscalation(ep.Session+" "+scope, from, to, ep.ClientIP, ep.RequestID, score)
+	}
+	if ep.Metrics != nil {
+		ep.Metrics.RecordSessionEscalation(from, to)
+		if from != session.EscalationLabel(0) {
+			ep.Metrics.SetAdaptiveSessionLevel(from, -1)
+		}
+		ep.Metrics.SetAdaptiveSessionLevel(to, 1)
+	}
+	return true
+}
+
+func recordAdaptiveSignalForScope(rec session.Recorder, scope string, sig session.SignalType, adaptiveCfg *config.AdaptiveEnforcement, ep decide.EscalationParams) {
+	if sess, ok := rec.(*SessionState); ok && sess != nil {
+		scope = normalizeAdaptiveScope(scope)
+		escalated := recordScopedAdaptiveSignal(sess, scope, sig, ep)
+		if escalated && adaptiveCfg != nil {
+			level := sess.EffectiveEscalationLevel(scope)
+			sess.SetScopedBlockAll(scope, decide.UpgradeAction("", level, adaptiveCfg) == config.ActionBlock)
+		}
+		return
+	}
+	decide.RecordSignal(rec, sig, ep)
+}
+
+func recordCleanForAdaptiveScope(rec session.Recorder, scope string, decayRate float64) {
+	if rec == nil {
+		return
+	}
+	if sess, ok := rec.(*SessionState); ok {
+		sess.RecordScopedClean(scope, decayRate)
+		return
+	}
+	rec.RecordClean(decayRate)
+}
+
+func airlockTierForScope(sess *SessionState, scope string) string {
+	if sess == nil {
+		return config.AirlockTierNone
+	}
+	tier := sess.AirlockForScope(scope).Tier()
+	if tier == "" {
+		return config.AirlockTierNone
+	}
+	return tier
 }
 
 // applyShield runs Browser Shield rewriting on a response body when enabled
@@ -2530,16 +2599,14 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 	sessionKey := sessionKeyFor(actx.Agent(), clientIP)
 	sess := sm.GetOrCreate(sessionKey)
 	for i := 0; i < signals; i++ {
-		if decide.RecordSignal(sess, session.SignalShieldRewrite, decide.EscalationParams{
+		recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(hostname), session.SignalShieldRewrite, &cfg.AdaptiveEnforcement, decide.EscalationParams{
 			Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 			Logger:    p.logger,
 			Metrics:   p.metrics,
 			Session:   sessionKey,
 			ClientIP:  clientIP,
 			RequestID: requestID,
-		}) {
-			sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock)
-		}
+		})
 	}
 }
 
@@ -2924,8 +2991,8 @@ func (p *Proxy) Start(ctx context.Context) error {
 	// the same listener. Those endpoints remain protected by: the
 	// http.Client.Timeout on outbound fetches, the ReadHeaderTimeout
 	// (slowloris), and the response size cap (MaxResponseMB). Per-connection
-	// lifetime is enforced by max_tunnel_seconds / max_connection_seconds and
-	// idle_timeout_seconds.
+	// liveness is enforced by CONNECT/WebSocket idle timeouts; CONNECT
+	// max_tunnel_seconds only bounds setup before the tunnel is established.
 	writeTimeout := time.Duration(cfg.FetchProxy.TimeoutSeconds+10) * time.Second
 	if cfg.ForwardProxy.Enabled || cfg.WebSocketProxy.Enabled {
 		writeTimeout = 0
@@ -3177,7 +3244,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Airlock check: drain tier blocks all traffic including fetch.
 	if fetchSess, ok := fetchRec.(*SessionState); ok && fetchSess != nil {
-		tier := fetchSess.Airlock().Tier()
+		tier := airlockTierForScope(fetchSess, adaptiveScopeForHost(parsed.Hostname()))
 		if tier == config.AirlockTierDrain {
 			p.logger.LogAirlockDeny(fetchSess.key, tier, TransportFetch, r.Method, clientIP, requestID)
 			p.metrics.RecordAirlockDenial(tier, TransportFetch, "read")
@@ -3409,7 +3476,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if headerBlocked {
 				headerSignal = session.SignalBlock
 			}
-			decide.RecordSignal(fetchRec, headerSignal, decide.EscalationParams{
+			recordAdaptiveSignalForScope(fetchRec, adaptiveScopeForHost(parsed.Hostname()), headerSignal, &cfg.AdaptiveEnforcement, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    log,
 				Metrics:   p.metrics,
@@ -3451,15 +3518,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Re-check block_all after header DLP near-miss may have escalated the session.
+	fetchLevel := recEscalationLevel(fetchRec)
+	if fetchSess, ok := fetchRec.(*SessionState); ok && fetchSess != nil {
+		fetchLevel = fetchSess.EffectiveEscalationLevel(adaptiveScopeForHost(parsed.Hostname()))
+	}
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled &&
-		decide.UpgradeAction("", fetchRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
+		decide.UpgradeAction("", fetchLevel, &cfg.AdaptiveEnforcement) == config.ActionBlock {
 		headerSessionKey := CeeSessionKey(agent, clientIP)
-		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: headerSessionKey, Level: session.EscalationLabel(fetchRec.EscalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: headerSessionKey, Level: session.EscalationLabel(fetchLevel), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:            receipt.NewActionID(),
 			Verdict:             config.ActionBlock,
 			Layer:               "session_deny",
-			Pattern:             "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
+			Pattern:             "session escalation level " + session.EscalationLabel(fetchLevel),
 			Transport:           "fetch",
 			Method:              http.MethodGet,
 			Target:              displayURL,
@@ -3481,7 +3552,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
+				BlockReason: "session escalation level " + session.EscalationLabel(fetchLevel),
 			})
 		return
 	}
@@ -4175,7 +4246,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// during the entire fetch lifecycle (URL, header DLP, CEE, response scan).
 	// This ensures warn/near-miss findings do not inadvertently decay score.
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-		fetchRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		recordCleanForAdaptiveScope(fetchRec, adaptiveScopeForHost(parsed.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 
 	// Record response size for per-domain data budget tracking
@@ -4290,6 +4361,10 @@ func (p *Proxy) filterAndActOnResponseScan(
 	// recordResponseSignal records an adaptive enforcement signal for the
 	// response scan result. Exempt domains skip scoring - their findings
 	// are logged but don't contribute to session escalation.
+	responseScope := ""
+	if parsedDisplayURL, err := url.Parse(displayURL); err == nil {
+		responseScope = adaptiveScopeForHost(parsedDisplayURL.Hostname())
+	}
 	recordResponseSignal := func(sig session.SignalType) {
 		if exempt {
 			return
@@ -4297,7 +4372,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 			sessionKey := sessionKeyFor(agent, clientIP)
 			sess := sm.GetOrCreate(sessionKey)
-			decide.RecordSignal(sess, sig, decide.EscalationParams{
+			recordAdaptiveSignalForScope(sess, responseScope, sig, &cfg.AdaptiveEnforcement, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    log,
 				Metrics:   p.metrics,

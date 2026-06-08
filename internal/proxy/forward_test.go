@@ -2285,6 +2285,26 @@ func TestBidirectionalCopy(t *testing.T) {
 	}
 }
 
+func TestBidirectionalCopy_ZeroDeadlineUsesIdleTimeoutOnly(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	start := time.Now()
+	total := bidirectionalCopy(client, server, 75*time.Millisecond, time.Time{}, nil)
+	elapsed := time.Since(start)
+
+	if total != 0 {
+		t.Errorf("expected 0 bytes, got %d", total)
+	}
+	if elapsed < 40*time.Millisecond {
+		t.Errorf("bidirectionalCopy returned before idle timeout: %v", elapsed)
+	}
+	if elapsed > time.Second {
+		t.Errorf("bidirectionalCopy took %v, expected idle-timeout close", elapsed)
+	}
+}
+
 func TestConnectCEEEntropyBlocked(t *testing.T) {
 	// After removing CONNECT hostname from the CEE entropy budget, repeated
 	// CONNECT requests must NOT trigger entropy budget exceeded. The hostname

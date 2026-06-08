@@ -145,6 +145,11 @@ func wsInjectionServer(t *testing.T) (string, func()) {
 
 // setupWSProxy creates a running pipelock proxy with websocket_proxy enabled.
 func setupWSProxy(t *testing.T, cfgMod func(*config.Config)) (string, func()) {
+	proxyAddr, _, cancel := setupWSProxyDefaultWithProxy(t, cfgMod)
+	return proxyAddr, cancel
+}
+
+func setupWSProxyDefaultWithProxy(t *testing.T, cfgMod func(*config.Config)) (string, *Proxy, func()) {
 	t.Helper()
 
 	cfg := config.Defaults()
@@ -205,7 +210,7 @@ func setupWSProxy(t *testing.T, cfgMod func(*config.Config)) (string, func()) {
 	}()
 
 	proxyAddr := ln.Addr().String()
-	return proxyAddr, cancel
+	return proxyAddr, p, cancel
 }
 
 // dialWSConn connects to the proxy /ws endpoint and returns the raw connection.
@@ -235,6 +240,38 @@ func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 		t.Fatalf("ws dial: %v", err)
 	}
 	return conn
+}
+
+func TestWebSocket_ScopedAirlockDoesNotBlockUnrelatedHost(t *testing.T) {
+	backendAddr, stopBackend := wsAckServer(t)
+	defer stopBackend()
+	proxyAddr, p, stopProxy := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.SessionProfiling.Enabled = true
+	})
+	defer stopProxy()
+
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("session manager not initialized")
+	}
+	sess := sm.GetOrCreate(testLoopbackIP)
+	if changed, _, _ := sess.AirlockForScope(adaptiveScopeForHost("blocked.example")).ForceSetTier(config.AirlockTierHard); !changed {
+		t.Fatal("ForceSetTier(hard) unexpectedly returned changed=false")
+	}
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
+		t.Fatalf("write ws message: %v", err)
+	}
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read ws reply: %v", err)
+	}
+	if string(reply) != "ok" {
+		t.Fatalf("reply = %q, want ok", reply)
+	}
 }
 
 func writeMaskedClientFrame(t *testing.T, conn net.Conn, fin bool, opcode ws.OpCode, payload []byte) {

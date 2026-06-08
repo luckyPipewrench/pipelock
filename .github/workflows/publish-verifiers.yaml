@@ -1,0 +1,198 @@
+name: Publish verifiers
+
+# Auto-publishes the TypeScript verifier (npm: @pipelock/verifier-ts) and the
+# Rust verifier (crates.io: pipelock-verifier-rs) when a `verifier-v*` tag is
+# pushed (e.g. `verifier-v0.1.1`). The verifiers version independently of
+# pipelock, so a pipelock `v*` release tag does NOT trigger this workflow.
+#
+# Authentication is OIDC trusted publishing on both registries: no npm or
+# crates.io tokens are stored in the repository. A one-time trusted-publisher
+# configuration on each registry must point at THIS repo and THIS workflow file
+# (publish-verifiers.yaml); see sdk/verifiers/PUBLISHING.md.
+#
+# Supply-chain isolation: ALL third-party code (dependency install scripts, the
+# test suites, the TypeScript build, the Rust verification build) runs in the
+# UNPRIVILEGED `build` job, which has NO `id-token` and therefore cannot mint a
+# publish credential. The `id-token: write` publish jobs run no dependency or
+# build code: `publish-npm` publishes the tarball already packed by `build`
+# (npm only uploads, no install / no prepack), and `publish-crates` uses
+# `cargo publish --no-verify` (no dependency or build-script compilation). Both
+# publish jobs run in the `verifier-release` environment so a required reviewer
+# can gate every real publish.
+#
+# workflow_dispatch runs the build/verify path only (a dry run) by default; set
+# dry_run=false (or push a `verifier-v*` tag) to publish for real.
+#
+# Security note: no run: step consumes untrusted github.event.* input; the only
+# expression-derived values used in shell are passed through env and quoted.
+
+on:
+  push:
+    tags:
+      - 'verifier-v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run only (build + verify, do not publish)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-verifiers-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Unprivileged: runs every piece of third-party code (dep install scripts,
+  # tests, the TS build, the Rust verification build) and produces the exact npm
+  # tarball that will be published. Has NO id-token, so nothing here can mint a
+  # publish credential even if a dependency is compromised.
+  build:
+    name: Build + verify verifiers
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: sdk/verifiers/ts/package-lock.json
+
+      - name: Build + test + pack TS verifier
+        working-directory: sdk/verifiers/ts
+        run: |
+          npm ci
+          npm test
+          # Pack to a clean dedicated dir so the uploaded artifact contains only
+          # the tarball at its root (avoids upload-artifact preserving the source
+          # path, which would nest the .tgz and break the publish glob).
+          mkdir -p "$RUNNER_TEMP/npmpkg"
+          npm pack --pack-destination "$RUNNER_TEMP/npmpkg"
+
+      - name: Upload npm tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/npmpkg/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Schema vendor drift guard
+        working-directory: sdk/verifiers/rust
+        run: |
+          if ! cmp -s audit-packet-v0.json ../../audit-packet/v0.json; then
+            echo "::error::sdk/verifiers/rust/audit-packet-v0.json drifted from sdk/audit-packet/v0.json"
+            exit 1
+          fi
+
+      - name: Test + package Rust verifier
+        working-directory: sdk/verifiers/rust
+        run: |
+          cargo test --release --locked
+          cargo package --locked
+
+  # Privileged, no build: publishes the tarball produced by `build`. The only
+  # code that runs under id-token is npm uploading a pre-built artifact (no
+  # `npm ci`, no `prepack`, no third-party build). npm authenticates via OIDC
+  # (no NODE_AUTH_TOKEN) and generates provenance where supported.
+  publish-npm:
+    name: Publish TS verifier to npm
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/verifier-v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: verifier-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      # OIDC trusted publishing needs npm >= 11.5.1. Fail closed (no global
+      # install of third-party tooling in this privileged job) if the runner's
+      # bundled npm is too old; bump the Node version if this ever fires.
+      - name: Assert OIDC-capable npm
+        run: |
+          ver="$(npm --version)"
+          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::cannot parse npm version '$ver'"
+            exit 1
+          fi
+          IFS=. read -r maj min patch _ <<< "$ver"
+          # Need >= 11.5.1 for OIDC trusted publishing.
+          if [ "$maj" -lt 11 ] \
+            || { [ "$maj" -eq 11 ] && [ "$min" -lt 5 ]; } \
+            || { [ "$maj" -eq 11 ] && [ "$min" -eq 5 ] && [ "$patch" -lt 1 ]; }; then
+            echo "::error::npm $ver is too old for OIDC trusted publishing (need >= 11.5.1); bump node-version"
+            exit 1
+          fi
+          echo "npm $ver supports OIDC trusted publishing"
+
+      - name: Download npm tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-tarball
+          path: pkg
+
+      - name: Publish tarball to npm
+        # The ./ prefix is required: npm parses a bare `pkg/foo.tgz` as a git
+        # shortcut, while `./pkg/foo.tgz` is a local tarball file spec.
+        run: npm publish ./pkg/*.tgz
+
+  # Privileged, no build: cargo publish --no-verify skips the verification build
+  # (the build job already ran it), so no dependency or build-script code
+  # compiles here. The crates token is minted from OIDC at run time, not stored.
+  publish-crates:
+    name: Publish Rust verifier to crates.io
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/verifier-v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: verifier-release
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: sdk/verifiers/rust
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Schema vendor drift guard
+        run: |
+          if ! cmp -s audit-packet-v0.json ../../audit-packet/v0.json; then
+            echo "::error::sdk/verifiers/rust/audit-packet-v0.json drifted from sdk/audit-packet/v0.json"
+            exit 1
+          fi
+
+      - name: Authenticate to crates.io (trusted publishing)
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+        id: auth
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked --no-verify

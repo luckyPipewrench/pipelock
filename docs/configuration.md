@@ -181,8 +181,8 @@ forward_proxy:
 | Field | Default | Restart? | Description |
 |-------|---------|----------|-------------|
 | `enabled` | `false` | **Yes** | Enable CONNECT tunnel proxy |
-| `max_tunnel_seconds` | `300` | No | Max tunnel lifetime |
-| `idle_timeout_seconds` | `120` | No | Kill idle tunnels |
+| `max_tunnel_seconds` | `300` | No | CONNECT setup/dial deadline before the tunnel is established |
+| `idle_timeout_seconds` | `120` | No | Kill established tunnels after this much inactivity |
 | `sni_verification` | `true` | No | Verify TLS ClientHello SNI matches the CONNECT target hostname. Blocks domain fronting (MITRE T1090.004). Set to `false` to disable. |
 | `redirect_websocket_hosts` | `[]` | No | Redirect matching hosts to /ws |
 
@@ -552,8 +552,8 @@ websocket_proxy:
 | `scan_text_frames` | `true` | No | DLP + injection on text frames |
 | `allow_binary_frames` | `false` | No | Allow binary frames (not scanned) |
 | `strip_compression` | `true` | No | Force uncompressed (required for scanning) |
-| `max_connection_seconds` | `3600` | No | Max connection lifetime |
-| `idle_timeout_seconds` | `300` | No | Idle timeout |
+| `max_connection_seconds` | `3600` | No | Upstream WebSocket setup/dial deadline |
+| `idle_timeout_seconds` | `300` | No | Close established connections after this much inactivity |
 | `origin_policy` | `"rewrite"` | No | Origin header: rewrite, forward, or strip |
 | `forward_cookies` | `false` | No | Forward client Cookie headers to upstream |
 

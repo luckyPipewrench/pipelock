@@ -81,10 +81,13 @@ type wsRelay struct {
 // escalationLevel returns the live escalation level from the session recorder.
 // Returns 0 (normal) when the recorder is nil (profiling disabled).
 func (r *wsRelay) escalationLevel() int {
-	if r.rec != nil {
-		return r.rec.EscalationLevel()
+	if sess, ok := r.rec.(*SessionState); ok && sess != nil {
+		return sess.EffectiveEscalationLevel(adaptiveScopeForHost(r.hostname))
 	}
-	return 0
+	if r.rec == nil {
+		return 0
+	}
+	return r.rec.EscalationLevel()
 }
 
 // recordSignal records an adaptive enforcement signal on the relay's session
@@ -94,7 +97,7 @@ func (r *wsRelay) recordSignal(sig session.SignalType, log *audit.Logger) {
 		return
 	}
 	sessionKey := sessionKeyFor(r.agent, r.clientIP)
-	decide.RecordSignal(r.rec, sig, decide.EscalationParams{
+	recordAdaptiveSignalForScope(r.rec, adaptiveScopeForHost(r.hostname), sig, &r.cfg.AdaptiveEnforcement, decide.EscalationParams{
 		Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
 		Logger:    log,
 		Metrics:   r.proxy.metrics,
@@ -560,12 +563,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		sessionKey := sessionKeyFor(agent, clientIP)
 		wsRec = sm.GetOrCreate(sessionKey)
 	}
+	wsScope := adaptiveScopeForHost(parsed.Hostname())
 
 	// Airlock admission check: deny new WebSocket connections to sessions
 	// already in hard/drain tier. Existing connections are torn down via
 	// RegisterCancel; this blocks new ones from being established.
 	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
-		tier := wsSess.Airlock().Tier()
+		tier := airlockTierForScope(wsSess, wsScope)
 		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
 			log.LogAirlockDeny(wsSess.key, tier, TransportWS, http.MethodGet, clientIP, requestID)
 			p.metrics.RecordAirlockDenial(tier, TransportWS, http.MethodGet)
@@ -682,7 +686,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
 		// Register airlock cancel for WebSocket connections. When the session
 		// escalates to hard/drain, closing both ends terminates the relay.
-		wsSess.Airlock().RegisterCancel(func() {
+		wsSess.AirlockForScope(wsScope).RegisterCancel(func() {
 			safeClose(clientConn, "airlock.ws.clientConn", log)
 			safeClose(upstreamConn, "airlock.ws.upstreamConn", log)
 		})
@@ -697,7 +701,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// (no URL scan hit, no header DLP hit). This prevents same-handshake
 	// raise+decay when a header carries a secret but the URL is clean.
 	if wsRec != nil && cfg.AdaptiveEnforcement.Enabled && !wsHasFinding {
-		wsRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		recordCleanForAdaptiveScope(wsRec, wsScope, cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 
 	relay := &wsRelay{
@@ -908,10 +912,9 @@ func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders
 
 // run starts bidirectional frame relay. Returns stats when both directions complete.
 func (r *wsRelay) run(ctx context.Context) wsRelayStats {
-	maxDuration := time.Duration(r.cfg.WebSocketProxy.MaxConnectionSeconds) * time.Second
 	idleTimeout := time.Duration(r.cfg.WebSocketProxy.IdleTimeoutSeconds) * time.Second
 
-	ctx, cancel := context.WithTimeout(ctx, maxDuration)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Use separate per-direction counters to avoid data races. The goroutine
@@ -1578,12 +1581,10 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	for {
 		select {
 		case <-ctx.Done():
-			// ctx is canceled for two reasons: the max-connection deadline
-			// expired (real timeout - block) or the sibling relay goroutine
-			// returned and its defer cancel() fired (clean close - exit).
-			// Only the first should mark blocked and write a close frame;
-			// otherwise clean closes race into the blocked metric and turn
-			// session_close receipts into bogus "block" verdicts.
+			// ctx is canceled when the sibling relay goroutine returns, an
+			// airlock cancel fires, or the parent request is canceled. Idle
+			// timeouts happen through per-read deadlines below; do not turn a
+			// cooperative cancel into a blocked metric.
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "connection timeout")
 				blocked = true
@@ -1940,9 +1941,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 	for {
 		select {
 		case <-ctx.Done():
-			// See clientToUpstream: distinguish real deadline expiry from
-			// sibling-triggered cancel so clean closes do not inflate the
-			// blocked metric.
+			// See clientToUpstream: cooperative cancellation is not a
+			// WebSocket policy block. Idle timeouts are enforced by read
+			// deadlines in the relay loops.
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
 				blocked = true
@@ -2218,18 +2219,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						// Record SignalStrip for adaptive enforcement scoring.
 						// Exempt domains skip scoring - findings are logged but don't escalate.
 						if !wsRespExempt {
-							if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {
-								sessionKey := sessionKeyFor(r.agent, r.clientIP)
-								sess := sm.GetOrCreate(sessionKey)
-								decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
-									Threshold: r.cfg.AdaptiveEnforcement.EscalationThreshold,
-									Logger:    log,
-									Metrics:   r.proxy.metrics,
-									Session:   sessionKey,
-									ClientIP:  r.clientIP,
-									RequestID: r.requestID,
-								})
-							}
+							r.recordSignal(session.SignalStrip, log)
 						}
 						if scanResult.TransformedContent != "" {
 							msg = []byte(scanResult.TransformedContent)

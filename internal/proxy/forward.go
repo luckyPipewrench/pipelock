@@ -218,7 +218,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// headers to trusted services are expected and should not feed
 		// escalation. Uses exempt_domains (trust), not api_allowlist (reachability).
 		if !isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
-			decide.RecordSignal(connectRec, session.SignalNearMiss, decide.EscalationParams{
+			recordAdaptiveSignalForScope(connectRec, adaptiveScopeForHost(host), session.SignalNearMiss, &cfg.AdaptiveEnforcement, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 				Logger:    p.logger,
 				Metrics:   p.metrics,
@@ -406,12 +406,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Use the live recorder for an up-to-date escalation level.
 	if cfg.AdaptiveEnforcement.Enabled {
 		if connectRec != nil {
-			if decide.UpgradeAction("", connectRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
-				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: connectSessionKey, Level: session.EscalationLabel(connectRec.EscalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+			level := connectRec.EscalationLevel()
+			if decide.UpgradeAction("", level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
+				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: connectSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
 				p.metrics.RecordTunnelBlocked(agentLabel)
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-					"CONNECT blocked: session escalation level "+session.EscalationLabel(connectRec.EscalationLevel()), http.StatusForbidden)
+					"CONNECT blocked: session escalation level "+session.EscalationLabel(level), http.StatusForbidden)
 				return
 			}
 		}
@@ -478,7 +479,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if connectRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-		connectRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		recordCleanForAdaptiveScope(connectRec, adaptiveScopeForHost(host), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 
 	// WebSocket redirect hint: if the target host matches the redirect list
@@ -509,7 +510,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	shouldIntercept := cfg.TLSInterception.Enabled && !isPassthrough(host, cfg.TLSInterception.PassthroughDomains)
 	if !shouldIntercept {
 		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
-			tier := connectSess.Airlock().Tier()
+			tier := airlockTierForScope(connectSess, adaptiveScopeForHost(host))
 			if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
 				p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
@@ -522,11 +523,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Compute absolute deadline once from start. This covers both dial and
-	// relay so the total tunnel lifetime never exceeds max_tunnel_seconds.
+	// Bound the outbound dial, then let the established tunnel live until it
+	// goes idle. Long-poll, SSE, and WebSocket control-plane streams must not
+	// be cut by a fixed wall-clock lifetime while bytes are still flowing.
 	maxDuration := time.Duration(cfg.ForwardProxy.MaxTunnelSeconds) * time.Second
-	deadline := start.Add(maxDuration)
-	dialCtx, dialCancel := context.WithDeadline(r.Context(), deadline)
+	dialCtx, dialCancel := context.WithTimeout(r.Context(), maxDuration)
 	defer dialCancel()
 
 	targetConn, err := p.ssrfSafeDialContext(dialCtx, "tcp", target)
@@ -598,12 +599,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Wrap clientConn with buffered reader so any bytes peeked during
 		// SNI verification (ClientHello) are available to the TLS server.
 		interceptConn := wrapBuffered(clientConn, clientReader)
-		interceptCtx, interceptCancel := context.WithDeadline(r.Context(), deadline)
+		interceptCtx, interceptCancel := context.WithCancel(r.Context())
 		defer interceptCancel()
 		// Register airlock cancel for intercepted tunnels so escalation to
 		// hard/drain terminates the inner-request http.Server via context.
 		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
-			connectSess.Airlock().RegisterCancel(interceptCancel)
+			connectSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(interceptCancel)
 		}
 		// Obtain a live session recorder for the tunnel. This provides live
 		// escalation level lookups instead of a stale snapshot from sr.Level.
@@ -651,7 +652,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Register airlock cancel for raw CONNECT tunnels. When the session
 	// escalates to hard/drain, closing both ends terminates the relay.
 	if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
-		connectSess.Airlock().RegisterCancel(func() {
+		connectSess.AirlockForScope(adaptiveScopeForHost(host)).RegisterCancel(func() {
 			safeClose(clientConn, "airlock.clientConn", p.logger)
 			safeClose(targetConn, "airlock.targetConn", p.logger)
 		})
@@ -662,7 +663,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
-	totalBytes := bidirectionalCopy(clientConn, targetConn, idleTimeout, deadline, p.ks)
+	totalBytes := bidirectionalCopy(clientConn, targetConn, idleTimeout, time.Time{}, p.ks)
 
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
@@ -870,7 +871,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Airlock action classification for forward proxy.
 	if forwardSess, ok := forwardRec.(*SessionState); ok && forwardSess != nil {
-		tier := forwardSess.Airlock().Tier()
+		tier := airlockTierForScope(forwardSess, adaptiveScopeForHost(r.URL.Hostname()))
 		if tier != config.AirlockTierNone {
 			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
 			if !allowed {
@@ -1340,7 +1341,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if forwardHeaderBlocked {
 			headerSignal = session.SignalBlock
 		}
-		decide.RecordSignal(forwardRec, headerSignal, decide.EscalationParams{
+		recordAdaptiveSignalForScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), headerSignal, &cfg.AdaptiveEnforcement, decide.EscalationParams{
 			Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 			Logger:    p.logger,
 			Metrics:   p.metrics,
@@ -1359,11 +1360,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Re-check block_all after header DLP near-miss may have escalated the session.
 	if forwardHeaderHadFinding && cfg.AdaptiveEnforcement.Enabled {
 		if forwardRec != nil {
-			if decide.UpgradeAction("", forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
-				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: forwardSessionKey, Level: session.EscalationLabel(forwardRec.EscalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+			level := forwardRec.EscalationLevel()
+			if forwardSess, ok := forwardRec.(*SessionState); ok && forwardSess != nil {
+				level = forwardSess.EffectiveEscalationLevel(adaptiveScopeForHost(r.URL.Hostname()))
+			}
+			if decide.UpgradeAction("", level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
+				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: forwardSessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-					"blocked: session escalation level "+session.EscalationLabel(forwardRec.EscalationLevel()), http.StatusForbidden)
+					"blocked: session escalation level "+session.EscalationLabel(level), http.StatusForbidden)
 				return
 			}
 		}
@@ -1810,7 +1815,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}))
 			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-				forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+				recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 			}
 		}
 		return
@@ -1882,7 +1887,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}))
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-			forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
 		return
 	}
@@ -2217,7 +2222,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 							sessionKey := sessionKeyFor(agent, clientIP)
 							sess := sm.GetOrCreate(sessionKey)
-							decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
+							recordAdaptiveSignalForScope(sess, adaptiveScopeForHost(r.URL.Hostname()), session.SignalStrip, &cfg.AdaptiveEnforcement, decide.EscalationParams{
 								Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 								Logger:    p.logger,
 								Metrics:   p.metrics,
@@ -2285,7 +2290,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}))
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-			forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
 		return
 	}
@@ -2336,7 +2341,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}))
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-		forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}
 }
 

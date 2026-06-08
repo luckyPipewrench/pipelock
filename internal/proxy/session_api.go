@@ -489,10 +489,11 @@ type airlockResponse struct {
 // in-flight gauge, numeric escalation level, and the recent event buffer.
 type SessionDetail struct {
 	SessionSnapshot
-	AirlockEnteredAt   time.Time      `json:"airlock_entered_at"`
-	InFlight           int64          `json:"in_flight"`
-	EscalationLevelInt int            `json:"escalation_level_int"`
-	RecentEvents       []SessionEvent `json:"recent_events"`
+	AirlockEnteredAt   time.Time               `json:"airlock_entered_at"`
+	InFlight           int64                   `json:"in_flight"`
+	EscalationLevelInt int                     `json:"escalation_level_int"`
+	AdaptiveScopes     []AdaptiveScopeSnapshot `json:"adaptive_scopes"`
+	RecentEvents       []SessionEvent          `json:"recent_events"`
 }
 
 // SessionExplanation is the response shape for GET
@@ -867,7 +868,11 @@ func (h *SessionAPIHandler) HandleInspect(w http.ResponseWriter, r *http.Request
 		AirlockEnteredAt:   adminSnap.AirlockEnteredAt,
 		InFlight:           adminSnap.InFlight,
 		EscalationLevelInt: adminSnap.EscalationLevelInt,
+		AdaptiveScopes:     adminSnap.AdaptiveScopes,
 		RecentEvents:       adminSnap.RecentEvents,
+	}
+	if detail.AdaptiveScopes == nil {
+		detail.AdaptiveScopes = []AdaptiveScopeSnapshot{}
 	}
 	if detail.RecentEvents == nil {
 		detail.RecentEvents = []SessionEvent{}

@@ -67,6 +67,79 @@ func TestScanTextForDLP(t *testing.T) {
 			wantPattern: "AWS Secret Key",
 		},
 		{
+			// Real env-var assignment with a secret value still blocks.
+			name:        "env var secret - real value blocks",
+			text:        "PROVIDER_TOKEN=" + "tok" + "_" + strings.Repeat("A", 36),
+			wantClean:   false,
+			wantPattern: "Environment Variable Secret",
+		},
+		{
+			// Space-split evasion: the value delimiter is only removed by the
+			// whitespace-collapsed DLP view, so this asserts the env-var pattern
+			// still fires THROUGH that view (Encoded == "whitespace") because the
+			// collapsed value begins with a secret-plausible char.
+			name:        "env var secret - space-split evasion blocks via whitespace view",
+			text:        "PROVIDER _ TOKEN = " + "tok" + "_" + strings.Repeat("A", 36),
+			wantClean:   false,
+			wantPattern: "Environment Variable Secret",
+			wantEncoded: "whitespace",
+		},
+		{
+			// Regression: env-var NAME referenced in a shell guard (no value).
+			// Previously the collapsed view turned the trailing document into a
+			// giant \S run and matched "Environment Variable Secret".
+			name:      "env var secret FP - name reference in shell guard",
+			text:      `if [ -z "$PROVIDER_TOKEN" ]; then echo "set PROVIDER_TOKEN first"; fi`,
+			wantClean: true,
+		},
+		{
+			// Regression: assignment from command substitution, not a real value.
+			name:      "env var secret FP - command substitution assignment",
+			text:      `PROVIDER_TOKEN=$(grep "^PROVIDER_TOKEN=" ~/.config/app/.env | head -1 | cut -d= -f2)`,
+			wantClean: true,
+		},
+		{
+			// Regression: backtick command substitution, not a real value.
+			name:      "env var secret FP - backtick assignment",
+			text:      "PROVIDER_TOKEN=`security find-generic-password -w -s provider-token`",
+			wantClean: true,
+		},
+		{
+			// Regression: shell variable expansion, not a real value.
+			name:      "credential in url FP - braced variable expansion after delimiter",
+			text:      "run: deploy; token=${PROVIDER_TOKEN} && curl https://api.example/x",
+			wantClean: true,
+		},
+		{
+			// Regression: the ';' param separator must not extend the captured
+			// credential value, so a short token followed by ';next=...' params
+			// is not a secret (the prefix already treats ';' as a delimiter).
+			name:      "credential in url FP - semicolon-separated params",
+			text:      "GET /p?token=a;page=2;sort=asc",
+			wantClean: true,
+		},
+		{
+			// Detection preserved: a long credential value that is followed by a
+			// ';' param still blocks; only the bleed past ';' is removed.
+			name:        "credential in url - long value before semicolon blocks",
+			text:        "GET /p?token=abcdef123456;page=2",
+			wantClean:   false,
+			wantPattern: "Credential in URL",
+		},
+		{
+			// Regression: Authorization header template referencing an env var.
+			name:      "env var secret FP - authorization header template",
+			text:      `curl -H "Authorization: Bearer $PROVIDER_TOKEN" https://api.vendor.example/user`,
+			wantClean: true,
+		},
+		{
+			// Regression: Credential-in-URL sibling must not fire on a shell
+			// command-substitution token assignment after a ';' delimiter.
+			name:      "credential in url FP - command substitution after delimiter",
+			text:      "run: deploy; token=$(get_token) && curl https://api.example/x",
+			wantClean: true,
+		},
+		{
 			name:        "raw DLP pattern match - AWS Secret Key JSON format",
 			text:        `"SecretAccessKey": "` + "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CYEXAMPLEKEY" + `"`,
 			wantClean:   false,
@@ -952,6 +1025,81 @@ func TestScanTextForDLP_AllowsOfficialAWSExampleCredentialDocs(t *testing.T) {
 	leak := "exfil key " + key
 	if result := s.ScanTextForDLP(context.Background(), leak); result.Clean {
 		t.Fatal("expected bare AWS example access key outside docs context to be detected")
+	}
+}
+
+// TestEnvVarSecret_WhitespaceViewMechanism locks the exact path that fired in
+// production. A wrapped tool RESULT and a wrapped first-party MCP tool's
+// security-review input both blocked on "Environment Variable Secret" because
+// the whitespace-collapsed DLP view (compactTextDLPWhitespace) deleted the
+// value delimiter, letting the value run absorb the rest of the document. The
+// value sub-pattern now requires a secret-plausible leading char, so the
+// collapsed view no longer matches benign env-var references while real
+// space-split assignments still do. Asserting against the collapsed view
+// directly (not raw text) covers the real mechanism.
+func TestEnvVarSecret_WhitespaceViewMechanism(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	const envVarPattern = "Environment Variable Secret"
+
+	fps := []struct{ name, text string }{
+		{"name reference in guard", `if [ -z "$PROVIDER_TOKEN" ]; then echo "set PROVIDER_TOKEN first"; fi`},
+		{"command substitution", `PROVIDER_TOKEN=$(grep "^PROVIDER_TOKEN=" ~/.config/app/.env | cut -d= -f2)`},
+		{"backtick command substitution", "PROVIDER_TOKEN=`security find-generic-password -w -s provider-token`"},
+		{"authorization template", `curl -H "Authorization: Bearer $PROVIDER_TOKEN" https://api.vendor.example/user`},
+		{"credential-in-url command sub", `run: deploy; token=$(get_token) && push origin main`},
+		{"credential-in-url braced var", `run: deploy; token=${PROVIDER_TOKEN} && push origin main`},
+	}
+	for _, tt := range fps {
+		t.Run("fp/"+tt.name, func(t *testing.T) {
+			compacted := compactTextDLPWhitespace(tt.text)
+			for _, m := range s.matchDLPPatterns(compacted, "whitespace") {
+				if m.PatternName == envVarPattern || m.PatternName == "Credential in URL" {
+					t.Errorf("collapsed-view FP: %q matched on %q", m.PatternName, tt.text)
+				}
+			}
+		})
+	}
+
+	// A real space-split env-var assignment must STILL be caught by the
+	// collapsed view (detection preserved for the evasion case).
+	realSecret := "tok" + "_" + strings.Repeat("A", 36)
+	compacted := compactTextDLPWhitespace("PROVIDER _ TOKEN = " + realSecret)
+	if !hasTextDLPMatch(s.matchDLPPatterns(compacted, "whitespace"), envVarPattern, "whitespace") {
+		t.Error("collapsed view must still catch a space-split env-var secret assignment")
+	}
+}
+
+// TestEnvVarSecret_BothDirections proves the env-var-secret precision fix holds
+// on both the outbound (agent->tool / request) and inbound (tool result /
+// response) DLP scanning entry points, since both run the same shared pattern
+// set. The shell-example false positive must be clean and a real leaked value
+// must still block in each direction.
+func TestEnvVarSecret_BothDirections(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	shellExample := `PROVIDER_TOKEN=$(grep "^PROVIDER_TOKEN=" ~/.config/app/.env | cut -d= -f2)` +
+		"\n" + `curl -H "Authorization: Bearer $PROVIDER_TOKEN" https://api.vendor.example/user`
+	realLeak := "PROVIDER_TOKEN=" + "tok" + "_" + strings.Repeat("B", 36)
+
+	directions := []struct {
+		name string
+		scan func(string) TextDLPResult
+	}{
+		{"outbound", func(text string) TextDLPResult { return s.ScanTextForDLP(context.Background(), text) }},
+		{"inbound", func(text string) TextDLPResult { return s.ScanTextForDLPInbound(context.Background(), text) }},
+	}
+	for _, d := range directions {
+		t.Run(d.name, func(t *testing.T) {
+			if res := d.scan(shellExample); !res.Clean {
+				t.Errorf("shell example should be clean, got matches: %v", res.Matches)
+			}
+			if res := d.scan(realLeak); res.Clean {
+				t.Error("real leaked env-var secret must still block")
+			}
+		})
 	}
 }
 
@@ -2500,7 +2648,7 @@ func TestScanTextForDLP_BlocksEncodedExfilHostname(t *testing.T) {
 		name string
 		text string
 	}{
-		{"benign api url", "https://api.github.com/v2/status"},
+		{"benign api url", "https://api.vendor.example/v2/status"},
 		{"benign cdn url in text", "load it from https://cdnjs.cloudflare.com/ajax/libs/x.js please"},
 		{"deep dictionary url in text", "fetch https://customer-production.us-east-1.api.example.com/v1/status"},
 		{"two short hash labels", "fetch https://deadbeef.cafebabe.preview.example.com/build"},

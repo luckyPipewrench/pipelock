@@ -286,7 +286,14 @@ func Defaults() *Config {
 				// (show-password) are still protected because the delimiter
 				// is always explicit.
 				// Case-insensitive matching is added automatically by scanner.New() via (?i) prefix.
-				{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
+				// The value must begin with a credential-plausible character
+				// ([A-Za-z0-9_+/=~%.-], covering common base64/base64url/hex/JWT
+				// and URL-encoded token forms). This rejects shell/template forms
+				// that the whitespace-collapsed DLP view (text_dlp.go) would
+				// otherwise turn into a spurious match by deleting the value's
+				// natural delimiter: command substitution (token=$(...)),
+				// backticks, and quoted variable refs (password="$VAR").
+				{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,}`, Severity: "high"},
 				// Environment variable credential patterns: catches env var dumps
 				// where the secret-bearing keyword is the terminal segment of an
 				// UPPER_CASE name (e.g., AWS_SECRET_ACCESS_KEY=..., STRIPE_SECRET_KEY=...,
@@ -297,8 +304,20 @@ func Defaults() *Config {
 				// name prefix - env vars are UPPER_CASE by convention, URL params
 				// are lower_case (next_token, csrf_token_id). This avoids FP on
 				// URL params while catching env var dumps.
-				// Min value length of 8 prevents FP on short config values.
-				{Name: "Environment Variable Secret", Regex: `(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*\S{8,}`, Severity: "high"},
+				// Min value length of 8 prevents FP on short config values. The
+				// value must begin with a secret-plausible character
+				// ([A-Za-z0-9_+/=~.-], covering common base64/base64url/hex/JWT
+				// token forms) followed by 7+ non-whitespace chars. The
+				// leading-character class is what makes this safe under the
+				// whitespace-collapsed DLP view (text_dlp.go), which strips all
+				// whitespace and would otherwise let the \S run absorb the rest of
+				// the document when a benign env-var NAME is followed by a shell
+				// example rather than a real value. It rejects command substitution
+				// (TOKEN=$(...)), backticks, quoted refs (TOKEN="$VAR"), and
+				// Authorization templates while still matching common real
+				// assignments and space-split evasions (PROVIDER _ TOKEN =
+				// realsecret).
+				{Name: "Environment Variable Secret", Regex: `(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*[A-Za-z0-9_+/=~.-]\S{7,}`, Severity: "high"},
 
 				// Financial identifiers - validated with post-match checksums to minimize
 				// false positives. Credit card regex is intentionally broad (any 15-19

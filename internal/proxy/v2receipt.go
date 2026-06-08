@@ -44,6 +44,7 @@ func v2DecisionFromOpts(opts receipt.EmitOpts) (proxydecision.Decision, bool) {
 		Transport:  opts.Transport,
 		Target:     opts.Target, // raw; the emitter sanitizes before signing (#676)
 		Verdict:    receipt.NormalizeVerdict(opts.Verdict),
+		PolicyHash: opts.PolicyHash,
 	}
 
 	switch {
@@ -69,6 +70,13 @@ func v2DecisionFromOpts(opts receipt.EmitOpts) (proxydecision.Decision, bool) {
 		d.RuleID = opts.Pattern
 	}
 	return d, true
+}
+
+func withReceiptPolicyHash(opts receipt.EmitOpts, canonicalHash string) receipt.EmitOpts {
+	if opts.PolicyHash == "" {
+		opts.PolicyHash = canonicalHash
+	}
+	return opts
 }
 
 // killSwitchLayer is the EmitOpts.Layer label used by kill-switch block sites

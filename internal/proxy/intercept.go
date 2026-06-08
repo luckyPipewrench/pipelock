@@ -169,6 +169,9 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) {
 	if ic.Proxy == nil {
 		return
 	}
+	if ic.Config != nil {
+		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
+	}
 	ic.Proxy.reloadMu.RLock()
 	e := ic.Proxy.receiptEmitterPtr.Load()
 	ic.Proxy.reloadMu.RUnlock()

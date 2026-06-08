@@ -242,6 +242,11 @@ func (rp *ReverseProxyHandler) SetRequestPolicyPrepareFn(fn func(*http.Request, 
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested. Plain RequestID alone is too thin for that.
 func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
+	if rp.cfgPtr != nil {
+		if cfg := rp.cfgPtr.Load(); cfg != nil {
+			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		}
+	}
 	if rp.receiptEmitterPtr != nil {
 		if e := rp.receiptEmitterPtr.Load(); e != nil {
 			if err := e.Emit(opts); err != nil {

@@ -466,6 +466,49 @@ func TestBuildProxyDecisionWithSpansReceipt_HappyPath(t *testing.T) {
 	}
 }
 
+func TestBuildProxyDecisionWithSpansReceipt_PolicyHashValidation(t *testing.T) {
+	t.Parallel()
+	base := ProxyDecisionInput{
+		Decision: Decision{
+			Verdict:       config.ActionBlock,
+			PolicySources: []string{PolicySourceScanner},
+			WinningSource: WinningSourceScanner,
+		},
+		ActionType: testHTTPRequest,
+		Target:     "https://api.example.com/" + testSpanRedactedValue,
+		Transport:  testForward,
+		PolicyHash: testRawPolicyHash,
+		EventID:    testSpannedEventID,
+	}
+	got, err := BuildProxyDecisionWithSpansReceipt(base, []byte(testSpanMACKey), []SourceSpanEvidence{runtimeSourceSpanEvidence(t)})
+	if err != nil {
+		t.Fatalf("raw policy hash should normalize: %v", err)
+	}
+	if got.PolicyHash != testSpanDigest {
+		t.Fatalf("PolicyHash = %q, want normalized %q", got.PolicyHash, testSpanDigest)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		policyHash string
+	}{
+		{name: "missing", policyHash: ""},
+		{name: "malformed", policyHash: "sha256:ABCDEF"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base
+			in.PolicyHash = tc.policyHash
+			_, err := BuildProxyDecisionWithSpansReceipt(in, []byte(testSpanMACKey), []SourceSpanEvidence{runtimeSourceSpanEvidence(t)})
+			if !errors.Is(err, ErrInvalidProxyDecisionInput) {
+				t.Fatalf("err = %v, want wrap of ErrInvalidProxyDecisionInput", err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "policy_hash") {
+				t.Fatalf("err = %v, want policy_hash detail", err)
+			}
+		})
+	}
+}
+
 func TestBuildProxyDecisionWithSpansReceipt_RequiresSpans(t *testing.T) {
 	t.Parallel()
 	in := ProxyDecisionInput{

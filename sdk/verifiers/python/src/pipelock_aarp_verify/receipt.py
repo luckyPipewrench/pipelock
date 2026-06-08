@@ -33,6 +33,10 @@ _PAYLOAD_KINDS = {
     "proxy_decision",
     "proxy_decision_with_spans",
 }
+_POLICY_HASH_PAYLOAD_KINDS = {
+    "proxy_decision",
+    "proxy_decision_with_spans",
+}
 _RESERVED_PAYLOAD_KINDS = {
     "defer_opened",
     "defer_resolved",
@@ -208,7 +212,8 @@ def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
     _require_string(receipt.get("timestamp"), "timestamp")
     _require_non_negative_int(receipt.get("chain_seq"), "chain_seq")
     _require_string(receipt.get("chain_prev_hash"), "chain_prev_hash")
-    _require_policy_hash(receipt.get("policy_hash"), "policy_hash")
+    if payload_kind in _POLICY_HASH_PAYLOAD_KINDS:
+        _require_policy_hash(receipt.get("policy_hash"), "policy_hash")
     _validate_signature(receipt, payload_kind)
     payload = _require_object(receipt.get("payload"), "payload")
     if payload_kind == "proxy_decision":

@@ -132,6 +132,23 @@ func TestEnsureSource(t *testing.T) {
 	}
 }
 
+func TestV2DecisionFromOpts_CarriesPolicyHash(t *testing.T) {
+	t.Parallel()
+	want := "sha256:" + strings.Repeat("a", 64)
+	d, ok := v2DecisionFromOpts(receipt.EmitOpts{
+		Transport:  TransportFetch,
+		Target:     "https://x.example/a",
+		Verdict:    "block",
+		PolicyHash: want,
+	})
+	if !ok {
+		t.Fatal("v2DecisionFromOpts returned ok=false")
+	}
+	if d.PolicyHash != want {
+		t.Fatalf("PolicyHash = %q, want %q", d.PolicyHash, want)
+	}
+}
+
 // --- Integration: dual-emit through a real recorder ---
 
 // v2Entry is a minimal view of a recorder JSONL line for v2 assertions.
@@ -211,9 +228,8 @@ func newDualEmitFixture(t *testing.T, redact bool) *dualEmitFixture {
 	signer := proxydecision.NewKeyedSigner(priv)
 	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
 		Recorder: rec, Signer: signer,
-		Sanitize:   proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
-		PolicyHash: cfg.CanonicalPolicyHash(),
-		Principal:  "local", Actor: "pipelock",
+		Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
+		Principal: "local", Actor: "pipelock",
 	})
 	if v1 == nil || v2 == nil {
 		t.Fatal("emitter construction returned nil")
@@ -279,6 +295,11 @@ func TestDualEmit_ProducesVerifiableV2AlongsideV1(t *testing.T) {
 	}
 	if p.WinningSource != proxydecision.SourceScanner {
 		t.Errorf("winning_source = %q, want scanner", p.WinningSource)
+	}
+	wantPolicyHash := contractreceipt.NormalizePolicyHash(f.p.cfgPtr.Load().CanonicalPolicyHash())
+	if rcpt.PolicyHash != wantPolicyHash {
+		t.Errorf("policy_hash = %q, want active proxy config hash %q",
+			rcpt.PolicyHash, wantPolicyHash)
 	}
 }
 
@@ -362,7 +383,7 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 	v1 := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, Principal: "local", Actor: "pipelock"})
 	signer := proxydecision.NewKeyedSigner(priv)
 	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
-		Recorder: rec, Signer: signer, PolicyHash: cfg.CanonicalPolicyHash(), Principal: "local", Actor: "pipelock",
+		Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
 	})
 	p, err := New(cfg, audit.NewNop(), sc, metrics.New(),
 		WithRecorder(rec), WithReceiptEmitter(v1), WithV2ReceiptEmitter(v2),

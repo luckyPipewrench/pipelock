@@ -462,12 +462,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			// gated on the same receipt intent (no separate flag). Sanitizes
 			// targets with the recorder's redactor (#676) before signing.
 			if v2Emitter := proxydecision.NewEmitter(proxydecision.EmitterConfig{
-				Recorder:   rec,
-				Signer:     proxydecision.NewKeyedSigner(recPrivKey),
-				Sanitize:   proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
-				PolicyHash: cfg.CanonicalPolicyHash(),
-				Principal:  "local",
-				Actor:      "pipelock",
+				Recorder:  rec,
+				Signer:    proxydecision.NewKeyedSigner(recPrivKey),
+				Sanitize:  proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()),
+				Principal: "local",
+				Actor:     "pipelock",
 			}); v2Emitter != nil {
 				proxyOpts = append(proxyOpts, proxy.WithV2ReceiptEmitter(v2Emitter))
 				_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: v2 proxy_decision dual-emit enabled\n")

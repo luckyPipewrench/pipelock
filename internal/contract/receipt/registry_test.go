@@ -5,6 +5,7 @@ package receipt_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,59 @@ func TestRegistry_ReservedDeferKindsAreKnownButNotImplemented(t *testing.T) {
 			}
 			if errors.Is(err, receipt.ErrUnknownPayloadKind) {
 				t.Fatalf("reserved kind %q must not be classified as unknown", kind)
+			}
+		})
+	}
+}
+
+func TestValidatePolicyHashGrammar(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		value   string
+		wantErr error
+	}{
+		{name: "valid", value: validPolicyHash},
+		{name: "missing", value: "", wantErr: receipt.ErrPayloadMissingField},
+		{name: "missing prefix", value: strings.TrimPrefix(validPolicyHash, "sha256:"), wantErr: receipt.ErrPayloadInvalidEnum},
+		{name: "short digest", value: "sha256:abc123", wantErr: receipt.ErrPayloadInvalidEnum},
+		{name: "uppercase digest", value: "sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789", wantErr: receipt.ErrPayloadInvalidEnum},
+		{name: "non hex", value: "sha256:" + strings.Repeat("g", 64), wantErr: receipt.ErrPayloadInvalidEnum},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := receipt.ValidatePolicyHash(tc.value)
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("ValidatePolicyHash(%q) error = %v", tc.value, err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ValidatePolicyHash(%q) error = %v, want %v", tc.value, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestNormalizePolicyHash(t *testing.T) {
+	t.Parallel()
+	raw := strings.TrimPrefix(validPolicyHash, "sha256:")
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "wire form unchanged", value: validPolicyHash, want: validPolicyHash},
+		{name: "raw lowercase promoted", value: raw, want: validPolicyHash},
+		{name: "raw uppercase unchanged", value: strings.ToUpper(raw), want: strings.ToUpper(raw)},
+		{name: "wrong length unchanged", value: "abc123", want: "abc123"},
+		{name: "raw non hex unchanged", value: strings.Repeat("g", 64), want: strings.Repeat("g", 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := receipt.NormalizePolicyHash(tc.value); got != tc.want {
+				t.Fatalf("NormalizePolicyHash(%q) = %q, want %q", tc.value, got, tc.want)
 			}
 		})
 	}

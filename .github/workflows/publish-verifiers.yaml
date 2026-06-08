@@ -130,7 +130,7 @@ jobs:
       - name: Assert OIDC-capable npm
         run: |
           ver="$(npm --version)"
-          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::cannot parse npm version '$ver'"
             exit 1
           fi

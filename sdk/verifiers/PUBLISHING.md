@@ -98,31 +98,62 @@ The README install lines (`npm install -g …` / `cargo install …`) only becom
 true once the publish succeeds. Publish first, then merge / release the docs that
 point at the published packages, so the public docs are never ahead of reality.
 
-## Automating publish on release tag (recommended next step)
+## Auto-publish on release tag
 
-Once both names exist (from the first manual publish above), wire publishing into
-the release flow so a version tag ships the verifiers automatically:
+`.github/workflows/publish-verifiers.yaml` publishes both verifiers automatically
+when a `verifier-v*` tag is pushed (e.g. `verifier-v0.1.1`). The verifiers version
+independently of pipelock, so a pipelock `v*` release tag does NOT trigger it.
+Authentication is OIDC trusted publishing on both registries: no npm or crates.io
+tokens are stored in the repository. `workflow_dispatch` runs the build/verify path
+only (a dry run) by default; pushing a `verifier-v*` tag (or dispatching with "Dry
+run" unchecked) publishes for real.
 
-- **crates.io:** configure Trusted Publishing for `pipelock-verifier-rs` (GitHub
-  OIDC) so a release workflow with `id-token: write` publishes with no stored
-  token.
-- **npm:** configure the trusted publisher for `@pipelock/verifier-ts` and
-  publish with `npm publish --provenance` (signed provenance, no stored token).
+### One-time setup
 
-Gate the publish job on the `Verifiers` conformance workflow being green for the
-tagged commit. This keeps "tag a release → verifiers ship" hands-off and
-secret-free.
+Do this once, after the first manual publish. A trusted publisher can only be
+configured on a package/crate that already exists.
 
-**Release hardening (do this when wiring the workflow):**
+GitHub environment (gates real publishes behind a human approval): repo Settings,
+Environments, create `verifier-release`, add yourself as a Required reviewer. The
+two publish jobs already declare `environment: verifier-release`, so each real
+publish waits for your approval. Without a reviewer the environment exists but does
+not gate.
 
-- Bind the trusted publisher to the **exact** repo + workflow file + ref pattern
-  (`refs/tags/v*`); don't trust the whole repo or arbitrary branches.
-- Grant `permissions: id-token: write` **only** on the publish job, not workflow-wide.
-- Restrict who can push `v*` tags (protected tags / ruleset) — a tag is the trigger.
-- Use a GitHub **Environment** with a required reviewer for the publish job, at
-  least for the first few releases, so a tag can't auto-ship unreviewed.
-- npm: publish with `--provenance` so each release carries a signed build
-  attestation tied to the workflow.
+npm (`@pipelock/verifier-ts`): package page, Settings, Trusted Publisher, add a
+GitHub Actions publisher with:
+
+- Organization or user: `luckyPipewrench`
+- Repository: `pipelock`
+- Workflow filename: `publish-verifiers.yaml` (filename only, not a path)
+- Environment: `verifier-release`
+- Allowed actions: `npm publish`
+
+crates.io (`pipelock-verifier-rs`): crate page, Settings, Trusted Publishing, add
+a GitHub publisher with:
+
+- Repository owner: `luckyPipewrench`
+- Repository name: `pipelock`
+- Workflow filename: `publish-verifiers.yaml`
+- Environment: `verifier-release`
+
+### Cutting a release
+
+1. Bump the version in `sdk/verifiers/ts/package.json` and `sdk/verifiers/rust/Cargo.toml` (keep them in lockstep; re-vendor the schema if the canonical one changed) and merge it.
+2. Tag and push: `git tag verifier-v0.1.1 && git push origin verifier-v0.1.1`.
+3. The `build` job runs the tests and verification builds, then the two publish jobs wait for your environment approval and publish both packages. No tokens.
+
+Try it first with the `workflow_dispatch` dry run (Actions, Publish verifiers, Run
+workflow, leave "Dry run" checked): it runs only the unprivileged `build` job (tests
+plus `npm pack` and `cargo package`), so the path is exercised without publishing or
+minting any registry credential.
+
+### Hardening (built into the workflow)
+
+- OIDC only; no `CARGO_REGISTRY_TOKEN` / `NODE_AUTH_TOKEN` stored. npm emits build provenance where supported for a public repo + public package.
+- All third-party code (dependency install scripts, test suites, the TS build, the Rust verification build) runs in the unprivileged `build` job, which has no `id-token` and cannot mint a publish credential. The `id-token: write` publish jobs run no dependency or build code: `publish-npm` uploads the tarball already packed by `build` (no `npm ci`, no prepack), and `publish-crates` uses `cargo publish --no-verify` (no dependency or build-script compilation).
+- Both publish jobs run in the `verifier-release` environment, so a required reviewer gates every real publish.
+- The crates publish job re-checks schema drift before publishing.
+- Recommended: restrict who can push `verifier-v*` tags (protected tags / ruleset). The tag is the trigger.
 
 ## Related: GitHub Action `verify` mode
 

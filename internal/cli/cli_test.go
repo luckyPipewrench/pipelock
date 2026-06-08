@@ -1940,8 +1940,8 @@ fetch_proxy:
 			"--mcp-upstream", "http://localhost:19999",
 		})
 		cmd.SetOut(io.Discard)
-		var stderr bytes.Buffer
-		cmd.SetErr(&stderr)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -1957,6 +1957,8 @@ fetch_proxy:
 			return err
 		}
 
+		reloaded := installReloadWaiter(t)
+
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: strict
 api_allowlist:
@@ -1969,11 +1971,12 @@ fetch_proxy:
 			t.Fatal(err)
 		}
 
-		waitForRunHTTPWithin(t, 15*time.Second, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+		awaitReloadCycle(t, reloaded, stderr, errCh, cancel)
+		waitForRunHTTPWithin(t, reloadWaitBackstop, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeStrict
-		}, "strict mode after hot reload")
+		}, "%s", "strict mode after hot reload")
 
 		cancel()
 		select {

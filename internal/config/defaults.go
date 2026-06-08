@@ -293,7 +293,7 @@ func Defaults() *Config {
 				// otherwise turn into a spurious match by deleting the value's
 				// natural delimiter: command substitution (token=$(...)),
 				// backticks, and quoted variable refs (password="$VAR").
-				{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&]{3,}`, Severity: "high"},
+				{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,}`, Severity: "high"},
 				// Environment variable credential patterns: catches env var dumps
 				// where the secret-bearing keyword is the terminal segment of an
 				// UPPER_CASE name (e.g., AWS_SECRET_ACCESS_KEY=..., STRIPE_SECRET_KEY=...,

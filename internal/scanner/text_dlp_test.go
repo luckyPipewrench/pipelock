@@ -111,6 +111,22 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean: true,
 		},
 		{
+			// Regression: the ';' param separator must not extend the captured
+			// credential value, so a short token followed by ';next=...' params
+			// is not a secret (the prefix already treats ';' as a delimiter).
+			name:      "credential in url FP - semicolon-separated params",
+			text:      "GET /p?token=a;page=2;sort=asc",
+			wantClean: true,
+		},
+		{
+			// Detection preserved: a long credential value that is followed by a
+			// ';' param still blocks; only the bleed past ';' is removed.
+			name:        "credential in url - long value before semicolon blocks",
+			text:        "GET /p?token=abcdef123456;page=2",
+			wantClean:   false,
+			wantPattern: "Credential in URL",
+		},
+		{
 			// Regression: Authorization header template referencing an env var.
 			name:      "env var secret FP - authorization header template",
 			text:      `curl -H "Authorization: Bearer $PROVIDER_TOKEN" https://api.vendor.example/user`,

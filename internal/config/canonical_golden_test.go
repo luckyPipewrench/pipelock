@@ -160,8 +160,10 @@ const (
 	// Re-bumped for DLP precision: the "Environment Variable Secret" and
 	// "Credential in URL" default patterns now require a secret-plausible
 	// leading value character so the whitespace-collapsed DLP view cannot
-	// over-match benign shell env-var references. Detection-relevant change.
-	goldenHashDefaults = "a18a5af7d4b59fcd5ba9fff26dd01934b4ec56a65242d586f24a462c4f17999c"
+	// over-match benign shell env-var references; the "Credential in URL"
+	// value tail additionally excludes ';' so a semicolon-separated param
+	// does not bleed into the captured credential. Detection-relevant change.
+	goldenHashDefaults = "1b3034ef2fe75b621c1cde30aaad593a18a4e54a0c0505a8e8814d06f6b4aeba"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -244,7 +246,7 @@ const (
 	// still part of the canonical policy view.
 	// Re-bumped for DLP precision on the env-var-secret / credential-in-URL
 	// patterns: see goldenHashDefaults note above.
-	goldenHashRichConfig = "5540709ddd97410e9d51f09882b9e67d9f78df9b4ea1ad998f9d41c8bdcce5a9"
+	goldenHashRichConfig = "fdb19355c9ddcfe952f1652a882f495c56981501c8c794a8872669a50d44e653"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -71,6 +71,7 @@ const (
 	URLLength        Reason = "url_length"
 	RateLimit        Reason = "rate_limit"
 	DataBudget       Reason = "data_budget"
+	ResponseSize     Reason = "response_size"
 
 	// Content / payload layer.
 	DLPMatch         Reason = "dlp_match"
@@ -146,6 +147,7 @@ var validReasons = map[Reason]struct{}{
 	URLLength:              {},
 	RateLimit:              {},
 	DataBudget:             {},
+	ResponseSize:           {},
 	DLPMatch:               {},
 	PromptInjection:        {},
 	RedactionFailure:       {},
@@ -528,6 +530,7 @@ func SeverityFor(reason Reason) Severity {
 		URLLength,
 		RateLimit,
 		DataBudget,
+		ResponseSize,
 		MediaPolicy,
 		ParseError,
 		Timeout,
@@ -566,6 +569,7 @@ func RetryFor(reason Reason) Retry {
 		SubdomainEntropy,
 		URLLength,
 		DataBudget,
+		ResponseSize,
 		MediaPolicy,
 		ToolPolicyDeny,
 		SessionBinding,

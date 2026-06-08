@@ -156,6 +156,8 @@ func constNameForReason(r blockreason.Reason) string {
 		return "RateLimit"
 	case blockreason.DataBudget:
 		return "DataBudget"
+	case blockreason.ResponseSize:
+		return "ResponseSize"
 	case blockreason.DLPMatch:
 		return "DLPMatch"
 	case blockreason.PromptInjection:

@@ -21,6 +21,7 @@ type mcpCaptureMetadataObserver struct {
 }
 
 func (o *mcpCaptureMetadataObserver) ObserveURLVerdict(context.Context, *capture.URLVerdictRecord) {}
+
 func (o *mcpCaptureMetadataObserver) ObserveResponseVerdict(context.Context, *capture.ResponseVerdictRecord) {
 }
 func (o *mcpCaptureMetadataObserver) ObserveCEEVerdict(context.Context, *capture.CEERecord) {}
@@ -80,6 +81,9 @@ func TestCaptureMetadata_MCPHTTPInputTransport(t *testing.T) {
 		}
 		if rec.Outcome != capture.OutcomeBlocked {
 			t.Fatalf("outcome = %q, want blocked", rec.Outcome)
+		}
+		if string(rec.Request.RPCID) != "1" {
+			t.Fatalf("rpc_id = %q, want %q (request-side join key from id=1)", string(rec.Request.RPCID), "1")
 		}
 	default:
 		t.Fatal("expected DLP capture record")
@@ -157,6 +161,9 @@ func TestCaptureMetadata_MCPStdioInputTransport(t *testing.T) {
 		}
 		if rec.Outcome != capture.OutcomeBlocked {
 			t.Fatalf("outcome = %q, want blocked", rec.Outcome)
+		}
+		if string(rec.Request.RPCID) != "1" {
+			t.Fatalf("rpc_id = %q, want %q (request-side join key from id=1)", string(rec.Request.RPCID), "1")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected DLP capture record on stdio block path")

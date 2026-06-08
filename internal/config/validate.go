@@ -734,6 +734,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	if err := ValidateTrustedDomains(c.ResponseScanning.ExemptDomains, "response_scanning.exempt_domains"); err != nil {
 		return err
 	}
+	if err := ValidateTrustedDomains(c.ResponseScanning.SizeExemptDomains, "response_scanning.size_exempt_domains"); err != nil {
+		return err
+	}
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {
 		*warnings = append(*warnings, Warning{
 			Field:   "response_scanning.exempt_domains",
@@ -1132,6 +1135,24 @@ func (c *Config) validateGitProtection() error {
 	for _, cmd := range c.GitProtection.BlockedCommands {
 		if cmd == "" {
 			return fmt.Errorf("empty blocked_commands entry")
+		}
+	}
+	for _, rawRepo := range c.GitProtection.AllowedPushRepos {
+		repo := strings.TrimSpace(rawRepo)
+		if repo == "" {
+			return fmt.Errorf("empty allowed_push_repos entry")
+		}
+		parts := strings.Split(repo, "/")
+		if len(parts) != 3 {
+			return fmt.Errorf("allowed_push_repos entry %q must be host/owner/repo", rawRepo)
+		}
+		for _, part := range parts {
+			if part == "" {
+				return fmt.Errorf("allowed_push_repos entry %q must be host/owner/repo with no empty segments", rawRepo)
+			}
+		}
+		if _, err := filepath.Match(repo, "github.com/acme/project"); err != nil {
+			return fmt.Errorf("invalid allowed_push_repos glob pattern %q: %w", repo, err)
 		}
 	}
 	return nil

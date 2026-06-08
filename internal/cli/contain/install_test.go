@@ -49,6 +49,19 @@ func TestDefaultInstallEnvWiresContainmentDefaults(t *testing.T) {
 	}
 }
 
+func TestRenderNFTRulesAddsClassedRawEgressLogs(t *testing.T) {
+	body := renderNFTRules(1000, 1001, 1002, 8888, defaultNFTTable, defaultNFTChain)
+	for _, want := range []string{
+		`udp dport 53 counter log prefix "pipelock-contain class=direct_dns_blocked " drop`,
+		`tcp dport 53 counter log prefix "pipelock-contain class=direct_dns_blocked " drop`,
+		`counter log prefix "pipelock-contain class=not_routing_through_pipelock " drop`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("nft rules missing %q:\n%s", want, body)
+		}
+	}
+}
+
 const containInstallOperatorUser = "operator"
 
 // fakeCall records one invocation through env.runCmd.
@@ -176,6 +189,9 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		wrapperInvPath:    filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
 		toolsListPath:     filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
 		workspaceInvPath:  filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		guardScriptPath:   filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
+		guardServiceUnit:  filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
+		guardPathUnit:     filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
 		undiciShimPath:    filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
 		profileScriptPath: filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
 		agentHome:         filepath.Join(root, "home", "pipelock-agent"),
@@ -852,7 +868,7 @@ func TestRenderNFTRules_ContainsExpectedRules(t *testing.T) {
 		"meta skuid 1000 accept",
 		"meta skuid 988 accept",
 		"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
-		"meta skuid 987 drop",
+		`meta skuid 987 counter log prefix "pipelock-contain class=not_routing_through_pipelock " drop`,
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(body, s) {
@@ -1500,12 +1516,12 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 22 steps total (20 install + 1 tools.list
-	// allow-list + 1 meta-wrapper). Changing this count is a documented
-	// breaking change for the dry-run / verify probe-4 inventory.
+	// Sanity: the install flow has 27 steps total after combining the runtime
+	// contract steps with the credential guard. Changing this count is a
+	// documented breaking change for the dry-run / verify probe-4 inventory.
 	steps := installSteps(installOpts{})
-	if len(steps) != 26 {
-		t.Errorf("installSteps count: got %d, want 26", len(steps))
+	if len(steps) != 27 {
+		t.Errorf("installSteps count: got %d, want 27", len(steps))
 	}
 }
 

@@ -403,6 +403,7 @@ func ForwardScannedInput(
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: methodToolsCall,
+					RPCID:     captureRPCID(verdict.ID),
 				},
 				RawFindings: []capture.Finding{{
 					Kind:       capture.KindSessionBinding,
@@ -437,6 +438,7 @@ func ForwardScannedInput(
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: methodToolsCall,
+					RPCID:     captureRPCID(verdict.ID),
 				},
 				RawFindings: []capture.Finding{{
 					Kind:     capture.KindChainDetection,
@@ -635,6 +637,7 @@ func ForwardScannedInput(
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
 					ActionClass:       captureActionClass,
+					Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -855,6 +858,7 @@ func ForwardScannedInput(
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
 					ActionClass:       captureActionClass,
+					Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
 					TransformKind:     capture.TransformRedirectOutput,
 					WirePayload:       result.Response,
 					RawFindings:       responseMatchesToFindings(scanVerdict.Matches, config.ActionBlock),
@@ -943,6 +947,7 @@ func ForwardScannedInput(
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
 					ActionClass:       captureActionClass,
+					Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -1052,6 +1057,7 @@ func ForwardScannedInput(
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
 				ActionClass:       captureActionClass,
+				Request:           capture.CaptureRequest{RPCID: captureRPCID(verdict.ID)},
 				TransformKind:     capture.TransformJoinedFields,
 				RawFindings:       rawFindings,
 				EffectiveAction:   effectiveAction,
@@ -1080,6 +1086,7 @@ func ForwardScannedInput(
 					ToolName:     toolCallName,
 					ToolArgsJSON: string(frame.Args),
 					MCPMethod:    verdict.Method,
+					RPCID:        captureRPCID(verdict.ID),
 				},
 				RawFindings:     policyFindings,
 				EffectiveAction: effectiveAction,

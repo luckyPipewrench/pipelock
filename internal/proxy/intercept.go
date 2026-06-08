@@ -660,6 +660,26 @@ func newInterceptHandler(
 			ic.Logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)
 		}
 
+		if gitPush := evaluateGitPushAllowlist(ic.Config.GitProtection, r.URL); gitPush.Block {
+			ic.Logger.LogBlocked(actx, "git_protection", gitPush.Reason)
+			ic.Metrics.RecordTLSRequestBlocked("git_protection")
+			interceptEmitReceipt(ic, receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     "git_protection",
+				Pattern:   gitPush.Reason,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			})
+			writeBlockedError(w,
+				blockInfoFor(blockreason.RequestPolicyDeny, "git_protection"),
+				"blocked: "+gitPush.Reason, http.StatusForbidden)
+			return
+		}
+
 		// A2A protocol detection: check path and Content-Type for A2A traffic.
 		// When detected, field-aware scanning replaces generic body DLP with
 		// protocol-specific classification (URL/text/secret/opaque per leaf).
@@ -1545,13 +1565,39 @@ func newInterceptHandler(
 			return
 		}
 		if int64(len(respBody)) > maxResp {
-			ic.Logger.LogBlocked(actx, "tls_response_blocked", "response too large for scanning")
+			if isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains) {
+				for k, vv := range resp.Header {
+					for _, v := range vv {
+						w.Header().Add(k, v)
+					}
+				}
+				w.Header().Del("Content-Length")
+				removeHopByHopHeaders(w.Header())
+				w.WriteHeader(resp.StatusCode)
+				written, _ := w.Write(respBody)
+				copied, _ := io.Copy(w, resp.Body)
+				totalWritten := int64(written) + copied
+				ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(totalWritten))
+				ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
+				interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionAllow,
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				}))
+				return
+			}
+			reason := responseSizeBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes")
+			ic.Logger.LogBlocked(actx, "tls_response_blocked", reason)
 			ic.Metrics.RecordTLSResponseBlocked("oversized")
 			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "tls_response_blocked",
-				Pattern:   "response too large for scanning",
+				Pattern:   reason,
 				Transport: "intercept",
 				Method:    r.Method,
 				Target:    targetURL,
@@ -1559,8 +1605,8 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			}))
 			writeBlockedError(w,
-				blockInfoFor(blockreason.DataBudget, "tls_response_blocked"),
-				"blocked: response too large for scanning", http.StatusForbidden)
+				blockInfoFor(blockreason.ResponseSize, "tls_response_blocked"),
+				"blocked: "+reason, http.StatusForbidden)
 			return
 		}
 

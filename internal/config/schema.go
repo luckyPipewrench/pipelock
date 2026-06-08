@@ -543,8 +543,9 @@ type ResponseScanning struct {
 	AskTimeoutSeconds int                   `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
 	IncludeDefaults   *bool                 `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns          []ResponseScanPattern `yaml:"patterns"`
-	ExemptDomains     []string              `yaml:"exempt_domains"` // responses from these hosts skip injection scanning (DLP still applies)
-	SSEStreaming      GenericSSEScanning    `yaml:"sse_streaming"`  // generic text/event-stream inline scanning (LLM SSE)
+	ExemptDomains     []string              `yaml:"exempt_domains"`      // responses from these hosts skip injection scanning (DLP still applies)
+	SizeExemptDomains []string              `yaml:"size_exempt_domains"` // trusted hosts whose oversized responses may stream through instead of failing the scan cap
+	SSEStreaming      GenericSSEScanning    `yaml:"sse_streaming"`       // generic text/event-stream inline scanning (LLM SSE)
 }
 
 // GenericSSEScanning configures inline body scanning of non-A2A
@@ -682,10 +683,11 @@ type ReverseProxyTrustedUpstream struct {
 
 // GitProtection configures git-aware security features.
 type GitProtection struct {
-	Enabled         bool     `yaml:"enabled"`
-	AllowedBranches []string `yaml:"allowed_branches"`
-	BlockedCommands []string `yaml:"blocked_commands"`
-	PrePushScan     bool     `yaml:"pre_push_scan"`
+	Enabled          bool     `yaml:"enabled"`
+	AllowedBranches  []string `yaml:"allowed_branches"`
+	BlockedCommands  []string `yaml:"blocked_commands"`
+	AllowedPushRepos []string `yaml:"allowed_push_repos"`
+	PrePushScan      bool     `yaml:"pre_push_scan"`
 }
 
 // FetchProxy configures the unprivileged fetch proxy.

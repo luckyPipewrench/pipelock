@@ -512,6 +512,7 @@ var specCanonicalPairs = map[Reason]struct {
 	URLLength:        {SeverityWarn, RetryPolicy},
 	RateLimit:        {SeverityWarn, RetryTransient},
 	DataBudget:       {SeverityWarn, RetryPolicy},
+	ResponseSize:     {SeverityWarn, RetryPolicy},
 
 	// Content / payload layer.
 	DLPMatch:         {SeverityCritical, RetryNone},

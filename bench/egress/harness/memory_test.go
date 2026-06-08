@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,9 @@ func TestPercentileKB_Empty(t *testing.T) {
 }
 
 func TestReadProcStatus_Self(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("readProcStatus reads /proc/<pid>/status which only exists on Linux")
+	}
 	t.Parallel()
 	// Reading our own /proc/<pid>/status must succeed and report nonzero RSS.
 	got, err := readProcStatus(os.Getpid())

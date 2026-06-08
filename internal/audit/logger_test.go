@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -81,9 +82,14 @@ func TestNew_FileOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("log file not created: %v", err)
 	}
-	perm := info.Mode().Perm()
-	if perm != 0o600 {
-		t.Errorf("expected file permissions 0600, got %o", perm)
+	// Windows reports a synthesized 0o666 mode for any user-readable+writable
+	// file regardless of the mode passed to OpenFile. Skip the perm assertion
+	// there; file creation itself is still verified above.
+	if runtime.GOOS != "windows" {
+		perm := info.Mode().Perm()
+		if perm != 0o600 {
+			t.Errorf("expected file permissions 0600, got %o", perm)
+		}
 	}
 }
 
@@ -559,6 +565,9 @@ func TestNewNop_CloseIsSafe(_ *testing.T) {
 }
 
 func TestLogger_FilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secure.log")
 

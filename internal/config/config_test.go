@@ -410,6 +410,30 @@ func TestValidate_ResponseScanningExemptDomainsNormalization(t *testing.T) {
 	}
 }
 
+func TestValidate_ResponseScanningSizeExemptDomainsValid(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com", "*.artifacts.example"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ResponseScanningSizeExemptDomainsURL(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"https://downloads.example.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for URL in size_exempt_domains")
+	}
+}
+
+func TestValidate_ResponseScanningSizeExemptDomainsBroadWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"*.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for overly broad wildcard *.com in size_exempt_domains")
+	}
+}
+
 func TestValidate_ExemptDomainsValidatedWhenDisabled(t *testing.T) {
 	// exempt_domains must be validated even when the parent section is disabled.
 	// Prevents dormant bad config from activating silently on reload.
@@ -3118,6 +3142,7 @@ func TestValidate_GitProtectionEnabled(t *testing.T) {
 	cfg.GitProtection.Enabled = true
 	cfg.GitProtection.AllowedBranches = []string{"main", "feature/*"}
 	cfg.GitProtection.BlockedCommands = []string{"push --force"}
+	cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/*", "gitlab.com/group/project"}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid git protection config should validate, got: %v", err)
 	}
@@ -3151,11 +3176,63 @@ func TestValidate_GitProtectionEmptyBlockedCommand(t *testing.T) {
 	}
 }
 
+func TestValidate_GitProtectionEmptyAllowedPushRepo(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"main"}
+	cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/project", " "}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty allowed_push_repos entry")
+	}
+}
+
+func TestValidate_GitProtectionAllowedPushRepoRequiresHost(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"main"}
+	cfg.GitProtection.AllowedPushRepos = []string{"acme/project"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for allowed_push_repos entry without host")
+	}
+}
+
+func TestValidate_GitProtectionAllowedPushRepoRejectsEmptySegments(t *testing.T) {
+	tests := []string{
+		"/acme/project",
+		"github.com//project",
+		"github.com/acme/",
+		"github.com/acme/team/project",
+	}
+	for _, repo := range tests {
+		repo := repo
+		t.Run(repo, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.GitProtection.Enabled = true
+			cfg.GitProtection.AllowedBranches = []string{"main"}
+			cfg.GitProtection.AllowedPushRepos = []string{repo}
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected error for malformed allowed_push_repos entry %q", repo)
+			}
+		})
+	}
+}
+
+func TestValidate_GitProtectionInvalidAllowedPushRepoGlob(t *testing.T) {
+	cfg := Defaults()
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedBranches = []string{"main"}
+	cfg.GitProtection.AllowedPushRepos = []string{"github.com/[bad"}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid allowed_push_repos glob pattern")
+	}
+}
+
 func TestValidate_GitProtectionDisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.GitProtection.Enabled = false
 	cfg.GitProtection.AllowedBranches = []string{"[invalid"}
 	cfg.GitProtection.BlockedCommands = []string{""}
+	cfg.GitProtection.AllowedPushRepos = []string{""}
 	// When disabled, validation should be skipped
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("disabled git protection should skip validation, got: %v", err)

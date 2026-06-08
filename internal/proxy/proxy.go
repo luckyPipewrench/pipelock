@@ -3916,7 +3916,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if remaining < 0 || configMaxBytes <= remaining {
 			// Config max_response_mb was the limiter, not budget.
 			// Return 502 (response too large) without recording against budget.
-			reason := fmt.Sprintf("response size %d exceeds max_response_mb %d", len(body), configMaxBytes)
+			reason := responseSizeBlockReason(parsed.Hostname(), int64(len(body)), configMaxBytes, "fetch_proxy.max_response_mb")
 			log.LogBlocked(actx, "response_size", reason)
 			p.metrics.RecordBlocked(parsed.Hostname(), "response_size", time.Since(start), agentLabel)
 			p.emitReceipt(receipt.EmitOpts{
@@ -3931,7 +3931,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.DataBudget, "response_size"),
+				blockInfoFor(blockreason.ResponseSize, "response_size"),
 				http.StatusBadGateway, FetchResponse{
 					URL:         displayURL,
 					Agent:       agent,

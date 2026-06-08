@@ -7,11 +7,21 @@
 // recorder.Entry.Detail values in the evidence log.
 package capture
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // CaptureSchemaV1 is the current CaptureSummary schema version.
 // Replay engines must reject summaries with unknown versions.
 const CaptureSchemaV1 = 1
+
+// MaxRPCIDLen bounds the byte length of CaptureRequest.RPCID. The JSON-RPC id
+// is client-controlled and the field is retained outside the redaction sweep
+// so consumers can join request and response captures on the byte-identical
+// wire form. A cap stops a malicious client from smuggling a large blob into
+// the cleartext summary via an oversized id.
+const MaxRPCIDLen = 128
 
 // MaxSessionKeyLen bounds the length of an on-disk session directory name.
 // Most filesystems cap a single path component at 255 bytes (NAME_MAX); the
@@ -219,6 +229,15 @@ type CaptureRequest struct {
 	ToolArgsJSON string `json:"tool_args_json,omitempty"`
 	// MCPMethod is the JSON-RPC method (e.g. "tools/call", "tools/list").
 	MCPMethod string `json:"mcp_method,omitempty"`
+	// RPCID is the JSON-RPC id of the request, preserved in raw wire form so
+	// "1" stays distinct from 1 and consumers get a byte-identical join key.
+	// Omitted for notifications (no id, or literal null) and for ids exceeding
+	// MaxRPCIDLen. JSON-RPC allows the id to be a string or a number; both
+	// shapes are passed through unmodified. Retained outside the redaction
+	// sweep so correlation survives redacted captures; capped because the id
+	// is client-controlled. Consumers should join on session + transport +
+	// rpc_id rather than the id alone, since ids get reused within a session.
+	RPCID json.RawMessage `json:"rpc_id,omitempty"`
 }
 
 // Finding is a single scanner detection result. Not all fields apply to every

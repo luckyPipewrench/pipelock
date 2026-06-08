@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -262,6 +263,9 @@ func TestKeystoreListTrusted(t *testing.T) {
 }
 
 func TestKeystoreDirectoryPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses NTFS ACLs not Unix mode bits; the dirPermission assertion is meaningless here")
+	}
 	base := t.TempDir()
 	ks := NewKeystore(base)
 
@@ -442,6 +446,9 @@ func TestKeystoreResolvePublicKey_NotFound(t *testing.T) {
 }
 
 func TestKeystoreListAgents_ReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod 0o000 does not block directory reads on Windows (NTFS ACLs, not Unix mode bits)")
+	}
 	base := t.TempDir()
 	ks := NewKeystore(base)
 
@@ -488,6 +495,9 @@ func TestKeystoreListAgents_NonDirEntries(t *testing.T) {
 }
 
 func TestKeystoreGenerateAgent_ReadOnlyBaseDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod 0o500 does not block directory writes on Windows (NTFS ACLs, not Unix mode bits)")
+	}
 	base := t.TempDir()
 	ks := NewKeystore(base)
 
@@ -504,6 +514,9 @@ func TestKeystoreGenerateAgent_ReadOnlyBaseDir(t *testing.T) {
 }
 
 func TestKeystoreListTrusted_ReadError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod 0o000 does not block directory reads on Windows (NTFS ACLs, not Unix mode bits)")
+	}
 	base := t.TempDir()
 	ks := NewKeystore(base)
 
@@ -557,6 +570,9 @@ func TestKeystoreListTrusted_NonPubEntries(t *testing.T) {
 }
 
 func TestKeystoreGenerateAgent_MkdirError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod 0o500 does not block directory writes on Windows (NTFS ACLs, not Unix mode bits)")
+	}
 	// Make the base dir unwritable so MkdirAll fails inside generateAgent.
 	base := t.TempDir()
 	if err := os.Chmod(base, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
@@ -624,6 +640,9 @@ func TestKeystoreTrustKey_MissingFile(t *testing.T) {
 }
 
 func TestKeystoreTrustKey_ReadOnlyBase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod does not block directory writes on Windows (NTFS ACLs, not Unix mode bits)")
+	}
 	// TrustKey should fail when the keystore base dir is read-only
 	// (MkdirAll for trusted/ subdir fails).
 	base := t.TempDir()
@@ -652,6 +671,9 @@ func TestKeystoreTrustKey_ReadOnlyBase(t *testing.T) {
 }
 
 func TestKeystoreGenerateAgent_SymlinkContainment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege which non-admin shells lack")
+	}
 	base := t.TempDir()
 	outside := t.TempDir()
 	ks := NewKeystore(base)
@@ -687,6 +709,9 @@ func TestKeystoreGenerateAgent_SymlinkContainment(t *testing.T) {
 }
 
 func TestKeystoreLoadPrivateKey_SymlinkContainment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege which non-admin shells lack")
+	}
 	base := t.TempDir()
 	outside := t.TempDir()
 	ks := NewKeystore(base)
@@ -710,6 +735,9 @@ func TestKeystoreLoadPrivateKey_SymlinkContainment(t *testing.T) {
 }
 
 func TestKeystoreGenerateAgent_SymlinkedParentContainment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Symlink on Windows requires SeCreateSymbolicLinkPrivilege which non-admin shells lack")
+	}
 	base := t.TempDir()
 	outside := t.TempDir()
 	ks := NewKeystore(base)

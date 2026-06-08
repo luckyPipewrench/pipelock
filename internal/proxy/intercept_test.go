@@ -1072,6 +1072,67 @@ func TestInterceptTunnel_OversizedResponseBlocked(t *testing.T) {
 	}
 }
 
+// TestInterceptTunnel_SizeExemptDomainStreamsOversize proves transport parity
+// with the forward proxy: a host in response_scanning.size_exempt_domains may
+// stream a response larger than the TLS scan cap, byte-intact, instead of
+// failing closed.
+func TestInterceptTunnel_SizeExemptDomainStreamsOversize(t *testing.T) {
+	const bodyLen = 4096 // > MaxResponseBytes below, so it overruns the scan cap
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, bodyLen))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.TLSInterception.MaxResponseBytes = 1024
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	cfg.ResponseScanning.SizeExemptDomains = []string{host}
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/large", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (size-exempt oversize should stream)", resp.StatusCode)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	// Length check catches both truncation (< bodyLen) and the double-write
+	// hazard of writing respBody then io.Copy'ing an already-drained reader.
+	if len(got) != bodyLen {
+		t.Fatalf("streamed body = %d bytes, want %d", len(got), bodyLen)
+	}
+}
+
+// TestInterceptTunnel_SizeExemptScopedToHost proves the exemption is host-scoped:
+// with a populated size_exempt_domains list, an oversized response from a host
+// NOT on the list still fails closed.
+func TestInterceptTunnel_SizeExemptScopedToHost(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, 2048))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.TLSInterception.MaxResponseBytes = 1024
+	// A different host is exempt; the upstream is not, so it must still block.
+	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/large", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (non-exempt host must still fail closed)", resp.StatusCode)
+	}
+}
+
 func TestInterceptTunnel_HeaderDLPBlocked(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -3584,5 +3645,77 @@ func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.
 	}
 	if resp.ContentLength != int64(len(got)) {
 		t.Fatalf("Content-Length = %d, want rewritten body length %d", resp.ContentLength, len(got))
+	}
+}
+
+// TestInterceptBlocksNonAllowlistedGitPush proves transport parity for the
+// TLS-intercepted path: a git-receive-pack push to a repo outside
+// allowed_push_repos is blocked at the inner request, matching the forward
+// absolute-URI path (TestForwardHTTPBlocksNonAllowlistedGitPush). This guards
+// the wiring that depends on r.URL.Host being reconstructed from the CONNECT
+// target before evaluateGitPushAllowlist runs.
+func TestInterceptBlocksNonAllowlistedGitPush(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream reached for blocked git push")
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
+	proxy := interceptLiveLockProxy(emptyContractLoader(t), nil, m)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://github.com/acme/public.git/git-receive-pack", strings.NewReader("0000"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"github.com", req, proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "non-allowlisted repo") {
+		t.Fatalf("body missing git allowlist reason: %s", string(body))
+	}
+}
+
+// TestInterceptAllowsAllowlistedGitPush is the positive half of the parity
+// proof: a push to an allowlisted repo is not blocked by the git guard and
+// reaches the upstream.
+func TestInterceptAllowsAllowlistedGitPush(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/private"}
+	proxy := interceptLiveLockProxy(emptyContractLoader(t), nil, m)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://github.com/acme/private.git/git-receive-pack", strings.NewReader("0000"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"github.com", req, proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, string(body))
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
 	}
 }

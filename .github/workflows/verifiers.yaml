@@ -75,6 +75,15 @@ jobs:
       - name: Test
         run: npm test
 
+      # Regression guard for the publish path: assert the npm tarball actually
+      # contains the CLI entrypoint and the bundled Audit Packet v0 schema, so a
+      # consumer's `npm install` yields a working offline verifier.
+      - name: Verify npm package contents
+        run: |
+          npm pack --dry-run --json > pack-manifest.json
+          node -e "const pkg=require('./package.json'); const m=require('./pack-manifest.json')[0].files.map(f=>f.path); for (const need of ['dist/src/cli.js','dist/src/v0.schema.json']) { if(!m.includes(need)){ console.error('MISSING from npm package:',need); process.exit(1);} } if(pkg.bin?.['pipelock-verifier-ts']!=='dist/src/cli.js'){ console.error('bad bin mapping (npm strips a leading ./):',JSON.stringify(pkg.bin)); process.exit(1);} console.log('npm package contains CLI + bundled schema + valid bin');"
+          rm -f pack-manifest.json
+
   rust:
     name: Rust verifier
     runs-on: ubuntu-latest
@@ -107,6 +116,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # The crate embeds the Audit Packet v0 schema at compile time and must be
+      # self-contained for `cargo publish` (cargo only packages files inside the
+      # crate root). The schema is therefore vendored at sdk/verifiers/rust/
+      # audit-packet-v0.json. Fail if it drifts from the canonical source so the
+      # published crate can never verify against a stale schema.
+      - name: Schema vendor drift guard
+        run: |
+          if ! cmp -s audit-packet-v0.json ../../audit-packet/v0.json; then
+            echo "::error::sdk/verifiers/rust/audit-packet-v0.json drifted from sdk/audit-packet/v0.json"
+            echo "Re-vendor with: cp sdk/audit-packet/v0.json sdk/verifiers/rust/audit-packet-v0.json"
+            diff -u ../../audit-packet/v0.json audit-packet-v0.json || true
+            exit 1
+          fi
+
       - name: cargo fmt
         run: cargo fmt --check
 
@@ -118,6 +141,12 @@ jobs:
 
       - name: cargo build
         run: cargo build --release
+
+      # Regression guard for the publish path: `cargo package` builds the crate
+      # from the packaged tarball in isolation, proving it is self-contained for
+      # `cargo install` (would have caught the out-of-crate schema include_str!).
+      - name: cargo package (verify crate is publishable + self-contained)
+        run: cargo package --locked
 
   # Cross-language conformance gate: builds all four reference verifiers (Go,
   # TypeScript, Rust, Python) and runs them over the vendored conformance corpus

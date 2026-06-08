@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -118,13 +119,20 @@ func TestForwardHTTP_Adaptive_BlockAll(t *testing.T) {
 	}
 	defer p.Close()
 
-	// Pre-escalate the session to elevated (level 1, which has block_all=true).
+	// Pre-escalate the destination lane to elevated (level 1, which has block_all=true).
 	sm := p.sessionMgrPtr.Load()
 	if sm == nil {
 		t.Fatal("session manager not initialized")
 	}
 	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
-	escalateRec(rec, 1)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	scope := adaptiveScopeForHost(upstreamURL.Hostname())
+	for rec.ScopedEscalationLevel(scope) < 1 {
+		rec.RecordScopedSignal(scope, session.SignalBlock, adaptiveTestThreshold)
+	}
 
 	// Send a clean absolute-URI forward request.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/ok", nil)

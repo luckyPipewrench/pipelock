@@ -44,6 +44,23 @@ func recEscalationLevel(rec session.Recorder) int {
 	return 0
 }
 
+func interceptAdaptiveScope(ic *InterceptContext) string {
+	if ic == nil {
+		return ""
+	}
+	return adaptiveScopeForHost(ic.TargetHost)
+}
+
+func interceptEscalationLevel(ic *InterceptContext) int {
+	if ic == nil || ic.Recorder == nil {
+		return 0
+	}
+	if sess, ok := ic.Recorder.(*SessionState); ok && sess != nil {
+		return sess.EffectiveEscalationLevel(interceptAdaptiveScope(ic))
+	}
+	return ic.Recorder.EscalationLevel()
+}
+
 func interceptContractLoader(ic *InterceptContext) *contractruntime.Loader {
 	if ic == nil || ic.Proxy == nil {
 		return nil
@@ -125,7 +142,17 @@ func interceptRecordSignal(ic *InterceptContext, sig session.SignalType) {
 	if ic.Proxy != nil {
 		m = ic.Proxy.metrics
 	}
-	decide.RecordSignal(ic.Recorder, sig, decide.EscalationParams{
+	rec := ic.Recorder
+	if rec == nil {
+		sm := ic.SessionMgr
+		if ic.Proxy != nil {
+			sm = ic.Proxy.sessionMgrPtr.Load()
+		}
+		if sm != nil {
+			rec = sm.GetOrCreate(sessionKey)
+		}
+	}
+	recordAdaptiveSignalForScope(rec, interceptAdaptiveScope(ic), sig, &ic.Config.AdaptiveEnforcement, decide.EscalationParams{
 		Threshold: ic.Config.AdaptiveEnforcement.EscalationThreshold,
 		Logger:    ic.Logger,
 		Metrics:   m,
@@ -617,14 +644,15 @@ func newInterceptHandler(
 			}
 			// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
 			baseAction := config.ActionWarn
-			effectiveAction := decide.UpgradeAction(baseAction, recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement)
+			level := interceptEscalationLevel(ic)
+			effectiveAction := decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
 			if effectiveAction == config.ActionBlock {
 				sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 				var m *metrics.Metrics
 				if ic.Proxy != nil {
 					m = ic.Proxy.metrics
 				}
-				recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(recEscalationLevel(ic.Recorder)), FromAction: baseAction, ToAction: effectiveAction, Scanner: urlResult.Scanner, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+				recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: baseAction, ToAction: effectiveAction, Scanner: urlResult.Scanner, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				switch {
 				case urlResult.IsInfrastructureError():
 					// Score-neutral: see scan path above for rationale.
@@ -864,8 +892,9 @@ func newInterceptHandler(
 				// Skip upgrade for DLP-exempt destinations - prevents
 				// legitimate LLM traffic from cascading into session blocks.
 				originalBodyAction := action
+				level := interceptEscalationLevel(ic)
 				if !dlpExempt {
-					action = decide.UpgradeAction(action, recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement)
+					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalBodyAction {
 					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
@@ -873,7 +902,7 @@ func newInterceptHandler(
 					if ic.Proxy != nil {
 						m = ic.Proxy.metrics
 					}
-					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(recEscalationLevel(ic.Recorder)), FromAction: originalBodyAction, ToAction: action, Scanner: scannerLabel, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: originalBodyAction, ToAction: action, Scanner: scannerLabel, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				}
 
 				// Fail-closed transport errors (consumed-but-unreplayable body)
@@ -1178,19 +1207,20 @@ func newInterceptHandler(
 
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
-		if ic.Recorder != nil && decide.UpgradeAction("", recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement) == config.ActionBlock {
+		level := interceptEscalationLevel(ic)
+		if ic.Recorder != nil && decide.UpgradeAction("", level, &ic.Config.AdaptiveEnforcement) == config.ActionBlock {
 			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 			var m *metrics.Metrics
 			if ic.Proxy != nil {
 				m = ic.Proxy.metrics
 			}
-			recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(recEscalationLevel(ic.Recorder)), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+			recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 			ic.Metrics.RecordTLSRequestBlocked("session_deny")
 			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "session_deny",
-				Pattern:   "session escalation level " + session.EscalationLabel(recEscalationLevel(ic.Recorder)),
+				Pattern:   "session escalation level " + session.EscalationLabel(level),
 				Transport: "intercept",
 				Method:    r.Method,
 				Target:    targetURL,
@@ -1199,7 +1229,7 @@ func newInterceptHandler(
 			}))
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-				"blocked: session escalation level "+session.EscalationLabel(recEscalationLevel(ic.Recorder)),
+				"blocked: session escalation level "+session.EscalationLabel(level),
 				http.StatusForbidden)
 			return
 		}
@@ -1825,8 +1855,9 @@ func newInterceptHandler(
 				// Adaptive enforcement: upgrade the response action before the switch.
 				// Exempt domains skip upgrade - operator's trust decision overrides escalation.
 				originalAction := action
+				level := interceptEscalationLevel(ic)
 				if !interceptRespExempt {
-					action = decide.UpgradeAction(action, recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement)
+					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalAction {
 					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
@@ -1834,7 +1865,7 @@ func newInterceptHandler(
 					if ic.Proxy != nil {
 						m = ic.Proxy.metrics
 					}
-					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(recEscalationLevel(ic.Recorder)), FromAction: originalAction, ToAction: action, Scanner: "response_scan", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: originalAction, ToAction: action, Scanner: "response_scan", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				}
 				patternNames := make([]string, len(scanResult.Matches))
 				for i, match := range scanResult.Matches {
@@ -1870,27 +1901,8 @@ func newInterceptHandler(
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.
 					// Exempt domains skip scoring - findings are logged but don't escalate.
-					if !interceptRespExempt && ic.SessionMgr != nil && ic.Config.AdaptiveEnforcement.Enabled {
-						ceeSM := ic.SessionMgr
-						if ic.Proxy != nil {
-							ceeSM = ic.Proxy.sessionMgrPtr.Load()
-						}
-						if ceeSM != nil {
-							sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
-							sess := ceeSM.GetOrCreate(sessionKey)
-							var stripMetrics *metrics.Metrics
-							if ic.Proxy != nil {
-								stripMetrics = ic.Proxy.metrics
-							}
-							decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
-								Threshold: ic.Config.AdaptiveEnforcement.EscalationThreshold,
-								Logger:    ic.Logger,
-								Metrics:   stripMetrics,
-								Session:   sessionKey,
-								ClientIP:  ic.ClientIP,
-								RequestID: ic.RequestID,
-							})
-						}
+					if !interceptRespExempt {
+						interceptRecordSignal(ic, session.SignalStrip)
 					}
 					respBody = []byte(scanResult.TransformedContent)
 					// Update Content-Length to match stripped body; prevents HTTP/1.1

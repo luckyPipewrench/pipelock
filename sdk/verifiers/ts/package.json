@@ -1,10 +1,27 @@
 {
   "name": "@pipelock/verifier-ts",
   "version": "0.1.0",
-  "description": "TypeScript reference verifier for Pipelock Audit Packet v0 receipts and chains.",
+  "description": "TypeScript reference verifier for Pipelock signed agent-egress receipts (Audit Packet v0, ActionReceipt v1, EvidenceReceipt v2).",
+  "license": "Apache-2.0",
+  "author": "Pipelab",
+  "homepage": "https://pipelab.org/learn/action-receipt-spec/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luckyPipewrench/pipelock.git",
+    "directory": "sdk/verifiers/ts"
+  },
+  "bugs": "https://github.com/luckyPipewrench/pipelock/issues",
+  "keywords": [
+    "pipelock",
+    "verifier",
+    "ed25519",
+    "receipt",
+    "attestation",
+    "agent-security"
+  ],
   "type": "module",
   "bin": {
-    "pipelock-verifier-ts": "./dist/src/cli.js"
+    "pipelock-verifier-ts": "dist/src/cli.js"
   },
   "scripts": {
     "build": "tsc && node scripts/copy-schema.mjs",
@@ -27,10 +44,12 @@
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
-    "dist",
+    "dist/src",
     "README.md",
-    "package.json",
-    "package-lock.json"
+    "package.json"
   ]
 }

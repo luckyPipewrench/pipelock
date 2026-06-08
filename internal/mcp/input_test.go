@@ -4230,3 +4230,26 @@ func TestForwardScannedInput_NoEnvelopeOnNonToolCall(t *testing.T) {
 		t.Errorf("tools/list should not get mediation envelope, got: %s", output)
 	}
 }
+
+// TestScanRequest_EnvVarSecretShellExampleFP is the MCP-input (outbound,
+// agent->tool) regression for the env-var-secret precision fix. A wrapped
+// first-party tool (e.g. a code-assistant MCP) receiving a security-dense prompt that
+// quotes shell env-var usage must not be hard-blocked by the shared
+// "Environment Variable Secret" / "Credential in URL" DLP patterns, while a
+// real leaked secret in the same arg position must still block.
+func TestScanRequest_EnvVarSecretShellExampleFP(t *testing.T) {
+	sc := testInputScanner(t)
+
+	shellExample := `Review this snippet: PROVIDER_TOKEN=$(grep "^PROVIDER_TOKEN=" ~/.config/app/.env | cut -d= -f2); ` +
+		`curl -H "Authorization: Bearer $PROVIDER_TOKEN" https://api.vendor.example/user`
+	fpLine := makeRequest(1, "tools/call", map[string]string{"prompt": shellExample})
+	if v := ScanRequest(context.Background(), []byte(fpLine), sc, config.ActionBlock, config.ActionBlock); !v.Clean {
+		t.Errorf("security-review shell example must not be input-blocked, got: %v", v.Matches)
+	}
+
+	realLeak := "PROVIDER_TOKEN=" + "tok" + "_" + strings.Repeat("C", 36)
+	leakLine := makeRequest(2, "tools/call", map[string]string{"prompt": realLeak})
+	if v := ScanRequest(context.Background(), []byte(leakLine), sc, config.ActionBlock, config.ActionBlock); v.Clean {
+		t.Error("real leaked env-var secret in tool args must still block")
+	}
+}

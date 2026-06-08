@@ -157,7 +157,11 @@ const (
 	// Re-bumped for git_protection.allowed_push_repos. The field is
 	// policy-semantic because it changes whether visible git-receive-pack
 	// pushes are allowed at the proxy.
-	goldenHashDefaults = "f7e3ab7acc9d826a78f7a37fa8632cf4b65487953da6fa86fe112936d17ac8f4"
+	// Re-bumped for DLP precision: the "Environment Variable Secret" and
+	// "Credential in URL" default patterns now require a secret-plausible
+	// leading value character so the whitespace-collapsed DLP view cannot
+	// over-match benign shell env-var references. Detection-relevant change.
+	goldenHashDefaults = "a18a5af7d4b59fcd5ba9fff26dd01934b4ec56a65242d586f24a462c4f17999c"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -238,7 +242,9 @@ const (
 	// Re-bumped for git_protection.allowed_push_repos: see goldenHashDefaults
 	// note above. The rich fixture omits the field, but the empty allowlist is
 	// still part of the canonical policy view.
-	goldenHashRichConfig = "beaad218a234855e54ed273bce0bf674f9417f92c990319207bd0e37c62268c8"
+	// Re-bumped for DLP precision on the env-var-secret / credential-in-URL
+	// patterns: see goldenHashDefaults note above.
+	goldenHashRichConfig = "5540709ddd97410e9d51f09882b9e67d9f78df9b4ea1ad998f9d41c8bdcce5a9"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

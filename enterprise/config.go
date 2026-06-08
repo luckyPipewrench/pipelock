@@ -314,6 +314,7 @@ func EnforceLicenseGate(c *config.Config) {
 	// Store expiry for runtime enforcement. Zero means perpetual.
 	c.LicenseExpiresAt = lic.ExpiresAt
 	c.LicenseID = lic.ID
+	c.LicenseAgentsFeature = true
 	if crlLoaded {
 		c.LicenseCRLExpiresAt = crl.Payload.ExpiresAt
 		c.LicenseCRLSHA256 = crl.SHA256
@@ -335,6 +336,7 @@ func loadLicenseCRL(c *config.Config, pubKey ed25519.PublicKey) (*license.CRL, b
 // The _default profile provides single-agent protection (free tier)
 // and must survive license gate rejection.
 func stripNamedAgents(c *config.Config) {
+	c.LicenseAgentsFeature = false
 	def, hasDefault := c.Agents["_default"]
 	if hasDefault {
 		c.Agents = map[string]config.AgentProfile{"_default": def}
@@ -518,5 +520,10 @@ func deepCopyConfig(cfg *config.Config) (*config.Config, error) {
 	}
 	out.LicenseIntermediateCert = licenseIntermediateCert
 	out.LicenseIntermediateLoadError = licenseIntermediateLoadError
+	// LicenseAgentsFeature is a runtime-derived bit (yaml:"-"), so the
+	// marshal/unmarshal round-trip above drops it. It must be preserved or the
+	// per-agent scanner built from the merged config would treat a licensed
+	// named agent as unlicensed and silently ignore its allowed_addresses.
+	out.LicenseAgentsFeature = cfg.LicenseAgentsFeature
 	return &out, nil
 }

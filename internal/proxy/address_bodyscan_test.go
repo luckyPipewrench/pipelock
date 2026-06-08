@@ -140,6 +140,7 @@ func TestScanRequestBody_AddressWithAgentID(t *testing.T) {
 			},
 		},
 	}
+	cfg.LicenseAgentsFeature = true
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
 	sc := scanner.New(cfg)

@@ -409,6 +409,10 @@ type Config struct {
 	LicenseCRLSHA256        string `yaml:"-" json:"-"`
 	LicenseRevoked          bool   `yaml:"-" json:"-"`
 	LicenseRevocationReason string `yaml:"-" json:"-"`
+	// LicenseAgentsFeature is true only after runtime license verification
+	// accepted FeatureAgents. Core code uses this to avoid applying named-agent
+	// paid overrides when enterprise license hooks are absent.
+	LicenseAgentsFeature    bool   `yaml:"-" json:"-"`
 	LicenseIntermediateCert []byte `yaml:"-" json:"-"`
 	// LicenseIntermediateLoadError records a configured cert file that could
 	// not be loaded. LicenseIntermediateCert stays non-empty in that state so

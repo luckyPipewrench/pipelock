@@ -842,14 +842,18 @@ func TestServer_ReloadLicenseRevocationStripsAgents(t *testing.T) {
 	s, buf := newTestServer(t, nil)
 	oldCfg := s.proxy.CurrentConfig()
 	oldCfg.Agents = map[string]config.AgentProfile{
-		"agent-a": {Mode: config.ModeStrict},
+		"_default": {Mode: config.ModeBalanced},
+		"agent-a":  {Mode: config.ModeStrict},
 	}
 	oldCfg.LicenseKey = "old-agents-token"
 	oldCfg.LicensePublicKey = "old-public-key"
 	oldCfg.LicenseExpiresAt = time.Now().Add(time.Hour).Unix()
+	oldCfg.LicenseAgentsFeature = true
 
 	newCfg := oldCfg.Clone()
-	newCfg.Agents = nil
+	newCfg.Agents = map[string]config.AgentProfile{
+		"_default": {Mode: config.ModeBalanced},
+	}
 	newCfg.LicenseKey = "revoked-agents-token"
 	newCfg.LicenseRevoked = true
 	newCfg.LicenseRevocationReason = "test revocation"
@@ -858,8 +862,14 @@ func TestServer_ReloadLicenseRevocationStripsAgents(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 	live := s.proxy.CurrentConfig()
-	if live.Agents != nil {
-		t.Fatalf("agents survived license revocation reload: %+v", live.Agents)
+	if _, ok := live.Agents["agent-a"]; ok {
+		t.Fatalf("named agent survived license revocation reload: %+v", live.Agents)
+	}
+	if _, ok := live.Agents["_default"]; !ok {
+		t.Fatalf("_default did not survive license revocation reload: %+v", live.Agents)
+	}
+	if live.LicenseAgentsFeature {
+		t.Fatal("LicenseAgentsFeature stayed true after named agents were stripped")
 	}
 	if !buf.contains("license revoked agents, shutting down agent listeners") {
 		t.Fatalf("stderr missing agents revocation warning:\n%s", buf.String())

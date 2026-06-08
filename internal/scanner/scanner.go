@@ -568,6 +568,9 @@ func New(cfg *config.Config) *Scanner {
 	if cfg.AddressProtection.Enabled {
 		agentAddrs := make(map[string][]string)
 		for name, agent := range cfg.Agents {
+			if name != "_default" && !cfg.LicenseAgentsFeature {
+				continue
+			}
 			if len(agent.AllowedAddresses) > 0 {
 				agentAddrs[name] = agent.AllowedAddresses
 			}

@@ -164,6 +164,7 @@ func (c *Config) policySemanticView() Config {
 	view.LicenseCRLSHA256 = ""
 	view.LicenseRevoked = false
 	view.LicenseRevocationReason = ""
+	view.LicenseAgentsFeature = false
 
 	// Envelope signing key path - infrastructure, not policy. The key
 	// material itself is never read here (we only hold a path), but

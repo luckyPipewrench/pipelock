@@ -597,3 +597,51 @@ func TestAgentRegistryNoBudget(t *testing.T) {
 		t.Errorf("expected NoopBudget when no budget config, got %T", agent.Budget)
 	}
 }
+
+// TestAgentRegistryNamedAgentAddressAllowlistSurvivesMerge proves that a
+// licensed named agent's allowed_addresses survive MergeAgentProfile's
+// deep copy. LicenseAgentsFeature is a runtime-only (yaml:"-") bit, so the
+// deep-copy round-trip drops it unless explicitly preserved; without that
+// preservation the per-agent scanner treats the licensed agent as unlicensed
+// and silently disables the paid address-protection allowlist.
+func TestAgentRegistryNamedAgentAddressAllowlistSurvivesMerge(t *testing.T) {
+	cfg := testConfig()
+	cfg.LicenseAgentsFeature = true
+	cfg.AddressProtection.Enabled = true
+	cfg.AddressProtection.Action = config.ActionBlock
+	cfg.AddressProtection.UnknownAction = config.ActionAllow
+	cfg.AddressProtection.Similarity.PrefixLength = 4
+	cfg.AddressProtection.Similarity.SuffixLength = 4
+	eth := true
+	off := false
+	cfg.AddressProtection.Chains.ETH = &eth
+	cfg.AddressProtection.Chains.BTC = &off
+	cfg.AddressProtection.Chains.SOL = &off
+	cfg.AddressProtection.Chains.BNB = &off
+	cfg.Agents = map[string]config.AgentProfile{
+		"trader": {
+			AllowedAddresses: []string{"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"},
+		},
+	}
+
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	agent := reg.Lookup("trader")
+	if agent == nil || agent.Scanner == nil {
+		t.Fatal("expected resolved scanner for trader")
+	}
+	ck := agent.Scanner.AddressChecker()
+	if ck == nil {
+		t.Fatal("expected non-nil address checker")
+	}
+	// Lookalike of the allowlisted address (same prefix/suffix, swapped middle):
+	// the canonical address-substitution attack the allowlist defends against.
+	body := `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}`
+	if res := ck.CheckText(body, "trader"); len(res.Findings) == 0 {
+		t.Fatal("licensed named-agent allowed_addresses was dropped by merge: no lookalike finding")
+	}
+}

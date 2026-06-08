@@ -110,7 +110,7 @@ jobs:
   publish-npm:
     name: Publish TS verifier to npm
     needs: build
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/verifier-v')) || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    if: ${{ startsWith(github.ref, 'refs/tags/verifier-v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: verifier-release
@@ -161,7 +161,7 @@ jobs:
   publish-crates:
     name: Publish Rust verifier to crates.io
     needs: build
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/verifier-v')) || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    if: ${{ startsWith(github.ref, 'refs/tags/verifier-v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: verifier-release

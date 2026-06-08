@@ -105,8 +105,10 @@ when a `verifier-v*` tag is pushed (e.g. `verifier-v0.1.1`). The verifiers versi
 independently of pipelock, so a pipelock `v*` release tag does NOT trigger it.
 Authentication is OIDC trusted publishing on both registries: no npm or crates.io
 tokens are stored in the repository. `workflow_dispatch` runs the build/verify path
-only (a dry run) by default; pushing a `verifier-v*` tag (or dispatching with "Dry
-run" unchecked) publishes for real.
+only (a dry run) by default. Real publishes always require an immutable
+`verifier-v*` tag: pushing the tag publishes, and a manual dispatch only publishes
+when it is run from a `verifier-v*` tag with "Dry run" unchecked (a dispatch from a
+branch only ever runs the build/verify job).
 
 ### One-time setup
 

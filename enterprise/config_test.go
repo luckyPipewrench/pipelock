@@ -622,6 +622,9 @@ func TestEnforceLicenseGate_NoLicenseKey(t *testing.T) {
 	if len(cfg.Agents) != 0 {
 		t.Error("expected named agents disabled when no license key")
 	}
+	if cfg.LicenseAgentsFeature {
+		t.Error("LicenseAgentsFeature should stay false when no license key")
+	}
 }
 
 func TestEnforceLicenseGate_NoLicenseKey_PreservesDefault(t *testing.T) {
@@ -662,6 +665,9 @@ func TestEnforceLicenseGate_ValidLicense(t *testing.T) {
 	}
 	if cfg.LicenseExpiresAt == 0 {
 		t.Error("expected non-zero LicenseExpiresAt after valid license")
+	}
+	if !cfg.LicenseAgentsFeature {
+		t.Error("expected LicenseAgentsFeature=true after valid agents license")
 	}
 }
 
@@ -909,6 +915,9 @@ func TestEnforceLicenseGate_MissingFeature(t *testing.T) {
 	EnforceLicenseGate(cfg)
 	if cfg.Agents != nil {
 		t.Error("expected agents disabled when license lacks 'agents' feature")
+	}
+	if cfg.LicenseAgentsFeature {
+		t.Error("LicenseAgentsFeature should stay false when license lacks 'agents' feature")
 	}
 }
 
@@ -1281,6 +1290,7 @@ func TestDeepCopyConfig(t *testing.T) {
 	cfg.Mode = config.ModeStrict
 	cfg.LicenseIntermediateCert = []byte("intermediate-cert")
 	cfg.LicenseIntermediateLoadError = "load failed"
+	cfg.LicenseAgentsFeature = true
 
 	cloned, err := deepCopyConfig(cfg)
 	if err != nil {
@@ -1295,6 +1305,9 @@ func TestDeepCopyConfig(t *testing.T) {
 	}
 	if cloned.LicenseIntermediateLoadError != "load failed" {
 		t.Fatalf("runtime intermediate load error = %q", cloned.LicenseIntermediateLoadError)
+	}
+	if !cloned.LicenseAgentsFeature {
+		t.Fatal("runtime agents feature bit was not preserved")
 	}
 	cloned.LicenseIntermediateCert[0] = 'X'
 	if string(cfg.LicenseIntermediateCert) != "intermediate-cert" {

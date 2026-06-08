@@ -154,7 +154,10 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// Respect the license gate: if EnforceLicenseGate disabled
 		// agents on reload, do not re-add them via listener
 		// preservation.
-		agentsRevokedByLicense := oldCfg.Agents != nil && newCfg.Agents == nil
+		// EnforceLicenseGate strips named agents but intentionally preserves
+		// _default. Detect loss of non-default profiles instead of a nil agents
+		// map so reload cannot re-add stripped named agents when _default remains.
+		agentsRevokedByLicense := hasNamedAgentProfiles(oldCfg.Agents) && !hasNamedAgentProfiles(newCfg.Agents)
 		licenseInputsChanged := oldCfg.LicenseKey != newCfg.LicenseKey ||
 			oldCfg.LicensePublicKey != newCfg.LicensePublicKey ||
 			oldCfg.LicenseFile != newCfg.LicenseFile ||
@@ -239,6 +242,10 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		newCfg.LicenseCRLSHA256 = oldCfg.LicenseCRLSHA256
 		newCfg.LicenseRevoked = oldCfg.LicenseRevoked
 		newCfg.LicenseRevocationReason = oldCfg.LicenseRevocationReason
+		newCfg.LicenseAgentsFeature = oldCfg.LicenseAgentsFeature
+		if !hasNamedAgentProfiles(newCfg.Agents) {
+			newCfg.LicenseAgentsFeature = false
+		}
 	}
 
 	// Surface advisory warnings on reload the same way NewServer does at
@@ -326,6 +333,15 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
 	s.recordReloadSuccess(reloadHash)
 	return nil
+}
+
+func hasNamedAgentProfiles(agents map[string]config.AgentProfile) bool {
+	for name := range agents {
+		if name != "_default" {
+			return true
+		}
+	}
+	return false
 }
 
 // preserveLicenseInputsRestartOnly copies the old license inputs and agent

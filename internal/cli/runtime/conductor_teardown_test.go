@@ -35,6 +35,20 @@ func (c *countingCloser) Close() error {
 	return nil
 }
 
+type orderedQueueCloser struct {
+	closes           atomic.Int32
+	waitDone         *atomic.Bool
+	closedBeforeWait atomic.Bool
+}
+
+func (c *orderedQueueCloser) Close() error {
+	c.closes.Add(1)
+	if c.waitDone != nil && !c.waitDone.Load() {
+		c.closedBeforeWait.Store(true)
+	}
+	return nil
+}
+
 // TestTeardownConductor_StopsRuntimeAndIsIdempotent locks in the core teardown
 // contract: cancel the poller sub-context, close the audit producer, flip the
 // conductorDown gate, and do all of it exactly once even under repeated calls
@@ -67,6 +81,47 @@ func TestTeardownConductor_StopsRuntimeAndIsIdempotent(t *testing.T) {
 	s.teardownConductor("test revoke again")
 	if got := closer.closes.Load(); got != 1 {
 		t.Fatalf("producer Close count after 2nd teardown = %d, want 1", got)
+	}
+}
+
+func TestTeardownConductor_WaitsBeforeClosingAuditQueue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var waitDone atomic.Bool
+	queue := &orderedQueueCloser{waitDone: &waitDone}
+	s := &Server{conductorAuditQueue: queue}
+	s.setConductorCancel(cancel)
+	s.setConductorWait(func() {
+		if ctx.Err() == nil {
+			t.Fatal("conductor wait ran before teardown cancelled the context")
+		}
+		waitDone.Store(true)
+	})
+
+	s.teardownConductor("test revoke")
+
+	if !waitDone.Load() {
+		t.Fatal("teardown must wait for conductor goroutines before closing the queue")
+	}
+	if got := queue.closes.Load(); got != 1 {
+		t.Fatalf("queue Close count = %d, want 1", got)
+	}
+	if queue.closedBeforeWait.Load() {
+		t.Fatal("queue lock was released before conductor goroutines stopped")
+	}
+}
+
+func TestCleanupClosesConductorAuditQueue(t *testing.T) {
+	queue := &countingCloser{}
+	s := &Server{conductorAuditQueue: queue}
+
+	s.cleanup()
+	s.cleanup()
+
+	if got := queue.closes.Load(); got != 1 {
+		t.Fatalf("queue Close count = %d, want 1", got)
+	}
+	if s.conductorAuditQueue != nil {
+		t.Fatalf("conductorAuditQueue = %T, want nil after cleanup", s.conductorAuditQueue)
 	}
 }
 

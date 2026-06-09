@@ -159,6 +159,47 @@ func TestQueueCloseReleasesLock(t *testing.T) {
 	defer func() { _ = reopened.Close() }()
 }
 
+func TestQueueOperationsFailAfterClose(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	q := openTestQueue(t, Config{})
+	id, err := q.Enqueue(signedTestBatch(t, "batch-closed", priv))
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	if _, err := q.Claim(); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	batch := signedTestBatch(t, "batch-closed-new", priv)
+	if _, err := q.Enqueue(batch); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Enqueue(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if _, err := q.Claim(); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Claim(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if err := q.Ack(id); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Ack(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if err := q.Release(id); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Release(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if err := q.ReleaseWithRetry(id, "retry"); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("ReleaseWithRetry(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if err := q.Drop(id, "drop"); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Drop(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if _, err := q.Stats(); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Stats(after Close) = %v, want ErrQueueClosed", err)
+	}
+}
+
 // TestQueueLockFileNotTreatedAsRecord proves the .lock file lives under the
 // queue root but is invisible to Claim/Stats (it is not a .json record) and is
 // not swept as a stale temp.
@@ -1167,6 +1208,7 @@ func openTestQueue(t *testing.T, cfg Config) *Queue {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
+	t.Cleanup(func() { _ = q.Close() })
 	return q
 }
 

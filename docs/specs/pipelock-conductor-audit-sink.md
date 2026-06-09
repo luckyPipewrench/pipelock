@@ -825,6 +825,13 @@ When `conductor.enabled` is true, the flight recorder must be enabled with
 signed checkpoints and a configured signing key. `audit_signing_key_id` and
 `recorder_key_id` default to `instance_id` when omitted.
 
+`durable_audit_queue_dir` is a single-writer directory. Pipelock takes an
+advisory lock to prevent two writers in one host / local-filesystem scope from
+opening the same queue at the same time. That lock is not a distributed lock.
+Cross-host single-writer safety on shared RWX, network, or overlay PVCs is a
+deployment responsibility: use ReadWriteOnce storage, Kubernetes leader
+election, or give each pod its own durable audit queue.
+
 Upgrade note: `honor_remote_kill_switch` defaults to true. Existing
 Conductor-enabled followers that only use audit batching must either set
 `trust_roster_root_fingerprint` and ship a roster containing

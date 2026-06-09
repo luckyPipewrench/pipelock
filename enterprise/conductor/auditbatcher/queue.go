@@ -10,12 +10,11 @@
 // Concurrency model: a Queue is SINGLE-PROCESS per directory. The mutex
 // serializes access within one process; an exclusive advisory flock on a
 // .lock file under the queue root (taken at Open, released at Close or on
-// process death) enforces single-writer ACROSS processes. A second Open on the
-// same dir fails closed with ErrQueueLocked rather than interleaving
-// Enqueue/Claim/Drop across two independent mutexes on a shared volume.
-// Operators should still scope one writer per durable_audit_queue_dir, but a
-// botched rollout that briefly runs two pods now fails closed instead of
-// corrupting the queue.
+// process death) enforces single-writer across processes on one host / local
+// filesystem. This is not a distributed lock: cross-host single-writer on a
+// shared RWX/network/overlay PVC is a deployment responsibility. Use a RWO
+// volume, leader election, or one durable_audit_queue_dir per pod for that
+// shape.
 package auditbatcher
 
 import (
@@ -55,6 +54,7 @@ var (
 	ErrQueueFull     = errors.New("auditbatcher: queue full")
 	ErrCorruptRecord = errors.New("auditbatcher: corrupt record")
 	ErrQueueLocked   = errors.New("auditbatcher: queue already locked by another process")
+	ErrQueueClosed   = errors.New("auditbatcher: queue closed")
 )
 
 type Config struct {
@@ -93,6 +93,7 @@ type Queue struct {
 	maxPayloadBytes uint64
 	now             func() time.Time
 	mu              sync.Mutex
+	closed          bool
 	// lockFile holds the exclusive advisory lock on the queue root for the
 	// Queue's lifetime. The OS releases the flock automatically when this fd is
 	// closed OR when the owning process dies, so a crashed prior owner never
@@ -168,11 +169,12 @@ func Open(cfg Config) (*Queue, error) {
 }
 
 // acquireQueueLock takes an exclusive, non-blocking advisory lock on a .lock
-// file under the queue root. A second process opening the same dir fails closed
-// with ErrQueueLocked rather than silently interleaving Enqueue/Claim/Drop
-// across two independent in-process mutexes (which loses or duplicates audit
-// batches on a shared volume). The flock is released when the fd is closed
-// (Close) or when the holding process dies, so a crash never deadlocks.
+// file under the queue root. A second process on the same host / local
+// filesystem opening the same dir fails closed with ErrQueueLocked rather than
+// silently interleaving Enqueue/Claim/Drop across two independent in-process
+// mutexes. This is not a distributed lock for cross-host shared PVCs. The flock
+// is released when the fd is closed (Close) or when the holding process dies, so
+// a crash never deadlocks.
 func acquireQueueLock(dir string) (*os.File, error) {
 	path := filepath.Join(filepath.Clean(dir), lockFileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, fileMode)
@@ -189,16 +191,27 @@ func acquireQueueLock(dir string) (*os.File, error) {
 	return f, nil
 }
 
-// Close releases the exclusive queue lock so another process may Open the same
-// directory. It is safe to call once; subsequent calls are no-ops. In-flight
-// callers must stop using the Queue before Close.
+// Close marks the queue closed and releases the exclusive queue lock so another
+// process may Open the same directory. It is safe to call multiple times.
+// Subsequent queue operations fail closed with ErrQueueClosed.
 func (q *Queue) Close() error {
 	if q == nil {
 		return errors.New("auditbatcher: nil queue")
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.closed = true
 	return q.releaseLock()
+}
+
+func (q *Queue) checkOpenLocked() error {
+	if q.closed {
+		return ErrQueueClosed
+	}
+	if q.lockFile == nil {
+		return ErrQueueClosed
+	}
+	return nil
 }
 
 func (q *Queue) releaseLock() error {
@@ -225,6 +238,9 @@ func (q *Queue) Enqueue(batch Batch) (string, error) {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.checkOpenLocked(); err != nil {
+		return "", err
+	}
 
 	pending, err := listRecordFiles(q.pendingDir)
 	if err != nil {
@@ -260,6 +276,9 @@ func (q *Queue) Claim() (*Lease, error) {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.checkOpenLocked(); err != nil {
+		return nil, err
+	}
 
 	for {
 		files, err := listRecordFiles(q.pendingDir)
@@ -311,6 +330,9 @@ func (q *Queue) Ack(id string) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.checkOpenLocked(); err != nil {
+		return err
+	}
 	if err := os.Remove(filepath.Join(q.inflightDir, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("auditbatcher: ack %s: %w", id, err)
 	}
@@ -326,6 +348,9 @@ func (q *Queue) Release(id string) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.checkOpenLocked(); err != nil {
+		return err
+	}
 	return q.releaseLocked(id)
 }
 
@@ -342,6 +367,9 @@ func (q *Queue) ReleaseWithRetry(id, reason string) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.checkOpenLocked(); err != nil {
+		return err
+	}
 	if err := q.updateInflightRecordLocked(id, func(record *diskRecord) {
 		now := q.now().UTC()
 		record.RetryCount++
@@ -364,6 +392,9 @@ func (q *Queue) Drop(id, reason string) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.checkOpenLocked(); err != nil {
+		return err
+	}
 	if err := q.updateInflightRecordLocked(id, func(record *diskRecord) {
 		now := q.now().UTC()
 		record.DroppedAt = &now
@@ -403,6 +434,9 @@ func (q *Queue) Stats() (Stats, error) {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if err := q.checkOpenLocked(); err != nil {
+		return Stats{}, err
+	}
 	pending, err := listRecordFiles(q.pendingDir)
 	if err != nil {
 		return Stats{}, err

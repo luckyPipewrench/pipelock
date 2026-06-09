@@ -116,11 +116,13 @@ type Server struct {
 	conductorBundle     conductorRunner
 	conductorProducer   conductorCloser
 
-	// conductorLifeMu guards conductorCancel. teardownConductor may be
-	// invoked concurrently from the runtime CRL watcher and the config
-	// reload path, so the cancel func is published and read under the lock.
+	// conductorLifeMu guards conductorCancel and conductorWait.
+	// teardownConductor may be invoked concurrently from the runtime CRL watcher
+	// and the config reload path, so lifecycle handles are published and read
+	// under the lock.
 	conductorLifeMu sync.Mutex
 	conductorCancel context.CancelFunc
+	conductorWait   func()
 	// conductorDown is set by teardownConductor when a runtime fleet-license
 	// revocation, expiry, or downgrade stops the follower-side Conductor
 	// runtime. It gates ApplyConductorPolicyBundle (no further policy bundles

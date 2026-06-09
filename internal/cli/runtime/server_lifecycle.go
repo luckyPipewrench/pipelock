@@ -262,10 +262,19 @@ func (s *Server) Start(ctx context.Context) error {
 		var conductorCancel context.CancelFunc
 		conductorCtx, conductorCancel = context.WithCancel(ctx)
 		s.setConductorCancel(conductorCancel)
+		if s.conductorRemoteKill != nil {
+			conductorWG.Add(1)
+		}
+		if s.conductorAudit != nil {
+			conductorWG.Add(1)
+		}
+		if s.conductorBundle != nil {
+			conductorWG.Add(1)
+		}
+		s.setConductorWait(conductorWG.Wait)
 	}
 	if s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil {
 		if s.conductorRemoteKill != nil {
-			conductorWG.Add(1)
 			go func() {
 				defer conductorWG.Done()
 				defer func() {
@@ -283,7 +292,6 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 	if s.conductorAudit != nil {
-		conductorWG.Add(1)
 		go func() {
 			defer conductorWG.Done()
 			defer func() {
@@ -298,7 +306,6 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 	if s.conductorBundle != nil {
-		conductorWG.Add(1)
 		go func() {
 			defer conductorWG.Done()
 			defer func() {

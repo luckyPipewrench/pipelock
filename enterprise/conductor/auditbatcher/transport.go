@@ -187,13 +187,19 @@ func (t *Transport) DeliverOnce(ctx context.Context) error {
 		// that number reaches the ceiling the batch is exhausted: escalate to
 		// the dead-letter directory instead of releasing it for another retry,
 		// so a permanently-failing poison batch cannot starve the FIFO head.
-		// ctx cancellation is not a delivery failure - never burn an attempt on
-		// shutdown, always release so the record survives.
-		if ctx.Err() == nil && lease.RetryCount+1 >= t.maxAttempts {
+		// Compare without RetryCount+1 to avoid overflow if a corrupt on-disk
+		// record carries retry_count=MaxUint64. ctx cancellation is not a
+		// delivery failure - never burn an attempt on shutdown, always release
+		// so the record survives.
+		if ctx.Err() == nil && t.maxAttempts > 0 && lease.RetryCount >= t.maxAttempts-1 {
+			attempts := lease.RetryCount
+			if attempts < ^uint64(0) {
+				attempts++
+			}
 			result = deliveryResult{
 				outcome: deliveryOutcomeDrop,
 				reason:  dropReasonMaxRetries,
-				err:     fmt.Errorf("auditbatcher: dropping batch after %d delivery attempts: %w", lease.RetryCount+1, result.err),
+				err:     fmt.Errorf("auditbatcher: dropping batch after %d delivery attempts: %w", attempts, result.err),
 			}
 			if err := t.queue.Drop(lease.ID, result.reason); err != nil {
 				return err

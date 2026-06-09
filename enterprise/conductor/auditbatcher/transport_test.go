@@ -457,6 +457,57 @@ func TestTransportDeliverOnceTransientRecoversBeforeCeiling(t *testing.T) {
 	}
 }
 
+func TestTransportDeliverOnceDropsCorruptMaxRetryCountWithoutOverflow(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	q := openTestQueue(t, Config{})
+	id, err := q.Enqueue(signedTestBatch(t, "batch-max-retry-corrupt", priv))
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	path := filepath.Join(q.pendingDir, id)
+	record, err := readRecord(path, q.maxPayloadBytes)
+	if err != nil {
+		t.Fatalf("readRecord() error = %v", err)
+	}
+	record.RetryCount = ^uint64(0)
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("Marshal(record) error = %v", err)
+	}
+	if err := durableWrite(path, data); err != nil {
+		t.Fatalf("durableWrite(record) error = %v", err)
+	}
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	tr, err := NewTransport(TransportConfig{
+		BaseURL:             srv.URL,
+		Client:              srv.Client(),
+		Queue:               q,
+		MaxDeliveryAttempts: 10,
+	})
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	if err := tr.DeliverOnce(t.Context()); err == nil {
+		t.Fatal("DeliverOnce() error = nil, want drop error")
+	}
+	assertStats(t, q, Stats{Dead: 1})
+	deadRecord, err := readRecord(filepath.Join(q.deadDir, id), q.maxPayloadBytes)
+	if err != nil {
+		t.Fatalf("readRecord(dead) error = %v", err)
+	}
+	if deadRecord.DroppedReason != dropReasonMaxRetries {
+		t.Fatalf("DroppedReason = %q, want %q", deadRecord.DroppedReason, dropReasonMaxRetries)
+	}
+}
+
 func TestTransportRunRejectsNilContext(t *testing.T) {
 	q := openTestQueue(t, Config{})
 	tr, err := NewTransport(TransportConfig{BaseURL: "https://conductor.example", Client: http.DefaultClient, Queue: q})

@@ -112,11 +112,15 @@ func inputVerdictEffectiveAction(verdict InputVerdict, configuredAction string) 
 // DLP patterns, injection patterns, and env secret leaks. Fail-closed
 // on parse errors (configurable via onParseError).
 func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, onParseError string) InputVerdict {
+	return scanRequestForAgent(ctx, line, sc, action, onParseError, "")
+}
+
+func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, action, onParseError, agentID string) InputVerdict {
 	// Detect batch request (JSON array).
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		ctx = withMCPRequestWarnContext(ctx, "batch")
-		return scanRequestBatch(ctx, trimmed, sc, action, onParseError)
+		return scanRequestBatch(ctx, trimmed, sc, action, onParseError, agentID)
 	}
 
 	// Fail closed on duplicate envelope keys before json.Unmarshal would
@@ -213,10 +217,10 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 			}
 		}
 
-		// Address poisoning detection (agentID="" for stdio).
+		// Address poisoning detection. Empty agentID means global allowlist only.
 		var addrFindings []addressprotect.Finding
 		if checker := sc.AddressChecker(); checker != nil {
-			addrResult := checker.CheckText(joined, "")
+			addrResult := checker.CheckText(joined, agentID)
 			if len(addrResult.Findings) > 0 {
 				addrFindings = addrResult.Findings
 			}
@@ -316,10 +320,9 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 	}
 
 	// Run address poisoning detection alongside DLP.
-	// agentID="" for MCP stdio (one agent per process, global allowlist only).
 	var addrFindings []addressprotect.Finding
 	if checker := sc.AddressChecker(); checker != nil {
-		addrResult := checker.CheckText(joined, "")
+		addrResult := checker.CheckText(joined, agentID)
 		if len(addrResult.Findings) > 0 {
 			addrFindings = addrResult.Findings
 		}
@@ -431,7 +434,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 }
 
 // scanRequestBatch scans a JSON-RPC 2.0 batch request (array of requests).
-func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, action, onParseError string) InputVerdict {
+func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, action, onParseError, agentID string) InputVerdict {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
 		if onParseError == config.ActionForward {
@@ -452,7 +455,7 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 	var batchAction string // track strictest action across batch elements
 
 	for _, elem := range batch {
-		v := ScanRequest(ctx, elem, sc, action, onParseError)
+		v := scanRequestForAgent(ctx, elem, sc, action, onParseError, agentID)
 		if firstID == nil && len(v.ID) > 0 {
 			firstID = v.ID
 		}

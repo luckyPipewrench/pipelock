@@ -209,7 +209,7 @@ func EvaluateMCPInputGates(
 
 	// content scan.
 	if scanEnabled {
-		eval.ContentVerdict = ScanRequest(ctx, msg, sc, scanAction, onParseError)
+		eval.ContentVerdict = scanRequestForAgent(ctx, msg, sc, scanAction, onParseError, opts.addressProtectionAgent())
 	} else {
 		eval.ContentVerdict = InputVerdict{Clean: true}
 		// Always backfill ID / Method from the frame so downstream
@@ -446,7 +446,7 @@ func EvaluateMCPInputGatesStdio(
 	// content scan. Always runs on stdio (inputCfg is not
 	// consulted at this layer -- the caller gates enablement via
 	// the scanAction / onParseError it passes in).
-	eval.ContentVerdict = ScanRequest(ctx, msg, sc, scanAction, onParseError)
+	eval.ContentVerdict = scanRequestForAgent(ctx, msg, sc, scanAction, onParseError, opts.addressProtectionAgent())
 	if errors.Is(frame.ParseErr, ErrInvalidMethodType) {
 		eval.ContentVerdict.ID = frame.ID
 		eval.ContentVerdict.Method = frame.Method

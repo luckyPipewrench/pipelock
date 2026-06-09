@@ -171,7 +171,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		actionID = receipt.NewActionID()
 	}
 	if scanEnabled && redactionCfg.Matcher != nil {
-		originalVerdict := ScanRequest(inputScanCtx, msg, sc, action, onParseError)
+		originalVerdict := scanRequestForAgent(inputScanCtx, msg, sc, action, onParseError, opts.addressProtectionAgent())
 		if !originalVerdict.Clean && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
 			receiptLayer, receiptPattern, receiptSeverity = contentScanAttribution(originalVerdict)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinInputVerdictReasons(originalVerdict))

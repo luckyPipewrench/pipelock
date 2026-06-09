@@ -19,6 +19,35 @@ const (
 	testLoopbackV6 = "::1/128"
 )
 
+func newMCPAgentAddressProtectionScanner(t *testing.T) *scanner.Scanner {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{testLoopbackV4, testLoopbackV6}
+
+	eth := true
+	f := false
+	cfg.AddressProtection.Enabled = true
+	cfg.AddressProtection.Action = config.ActionBlock
+	cfg.AddressProtection.UnknownAction = testUnknownActionAllow
+	cfg.AddressProtection.Chains.ETH = &eth
+	cfg.AddressProtection.Chains.BTC = &f
+	cfg.AddressProtection.Chains.SOL = &f
+	cfg.AddressProtection.Chains.BNB = &f
+	cfg.AddressProtection.Similarity.PrefixLength = 4
+	cfg.AddressProtection.Similarity.SuffixLength = 4
+	cfg.LicenseAgentsFeature = true
+	cfg.Agents = map[string]config.AgentProfile{
+		"trader": {
+			AllowedAddresses: []string{
+				"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e",
+			},
+		},
+	}
+
+	return scanner.New(cfg)
+}
+
 func TestScanRequestAddressPoisoning(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -171,5 +200,54 @@ func TestScanRequestNoParamsAddressPolicyAction(t *testing.T) {
 	// The effective action must be "block" (from address_protection), not "warn" (from MCP input).
 	if verdict.Action != config.ActionBlock {
 		t.Errorf("no-params path: Action should be %q (address protection), got %q", config.ActionBlock, verdict.Action)
+	}
+}
+
+func TestScanRequestAddressProtectionUsesNamedMCPAgentAllowlist(t *testing.T) {
+	sc := newMCPAgentAddressProtectionScanner(t)
+	defer sc.Close()
+
+	line := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"transfer","arguments":{"to":"0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}}}`
+
+	globalOnly := ScanRequest(context.Background(), []byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if !globalOnly.Clean {
+		t.Fatalf("global-only MCP scan should ignore named-agent allowlist, got %+v", globalOnly)
+	}
+
+	namedAgent := scanRequestForAgent(context.Background(), []byte(line), sc, config.ActionBlock, config.ActionBlock, "trader")
+	if namedAgent.Clean {
+		t.Fatal("named MCP agent scan should consult per-agent allowed_addresses")
+	}
+	if len(namedAgent.AddressFindings) == 0 {
+		t.Fatal("named MCP agent scan should produce address findings")
+	}
+	if namedAgent.Action != config.ActionBlock {
+		t.Fatalf("named MCP agent scan action = %q, want %q", namedAgent.Action, config.ActionBlock)
+	}
+}
+
+func TestMCPInputGatesAddressProtectionUsesOptsAgent(t *testing.T) {
+	sc := newMCPAgentAddressProtectionScanner(t)
+	defer sc.Close()
+
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"transfer","arguments":{"to":"0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}}}`)
+	frame := ParseMCPFrame(msg)
+
+	withoutAgent := EvaluateMCPInputGates(context.Background(), frame, msg, "sess", MCPProxyOpts{
+		Scanner: sc,
+	}, config.ActionBlock, config.ActionBlock, true)
+	if !withoutAgent.ContentVerdict.Clean {
+		t.Fatalf("gate without MCP agent should not use named allowlist: %+v", withoutAgent.ContentVerdict)
+	}
+
+	withAgent := EvaluateMCPInputGates(context.Background(), frame, msg, "sess", MCPProxyOpts{
+		Scanner:                sc,
+		AddressProtectionAgent: "trader",
+	}, config.ActionBlock, config.ActionBlock, true)
+	if withAgent.ContentVerdict.Clean {
+		t.Fatal("gate with MCP agent should use named allowlist")
+	}
+	if len(withAgent.ContentVerdict.AddressFindings) == 0 {
+		t.Fatal("gate with MCP agent should produce address findings")
 	}
 }

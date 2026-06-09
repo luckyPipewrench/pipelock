@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -133,6 +134,11 @@ type MCPProxyOpts struct {
 	ConfigHashFn func() string
 	Profile      string
 	ProfileFn    func() string
+	// AddressProtectionAgent is the resolved agent/profile name used when MCP
+	// request scanning consults per-agent address_protection allowlists.
+	// Empty preserves global-only behavior for direct callers.
+	AddressProtectionAgent   string
+	AddressProtectionAgentFn func() string
 
 	// Transport identifies the MCP transport for capture records.
 	// Set by each proxy surface, for example "mcp_stdio", "mcp_http_upstream",
@@ -204,6 +210,15 @@ func (o MCPProxyOpts) captureProfile() string {
 		}
 	}
 	return o.Profile
+}
+
+func (o MCPProxyOpts) addressProtectionAgent() string {
+	if o.AddressProtectionAgentFn != nil {
+		if v := strings.TrimSpace(o.AddressProtectionAgentFn()); v != "" {
+			return v
+		}
+	}
+	return strings.TrimSpace(o.AddressProtectionAgent)
 }
 
 func (o MCPProxyOpts) warnContext() context.Context {

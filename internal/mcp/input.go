@@ -278,7 +278,7 @@ func ForwardScannedInput(
 		warnCtx.Transport = transportMCPStdio
 		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
 		if redactionCfg.Matcher != nil {
-			originalVerdict := ScanRequest(stdioInputCtx, line, sc, action, onParseError)
+			originalVerdict := scanRequestForAgent(stdioInputCtx, line, sc, action, onParseError, opts.addressProtectionAgent())
 			if !originalVerdict.Clean && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
 				recordAdaptiveSignal(session.SignalBlock)

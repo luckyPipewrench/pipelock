@@ -111,6 +111,10 @@ type EmitOpts struct {
 	ContractHash          string
 	ContractSelectorID    string
 	ContractGeneration    uint64
+	// PolicyHash is the canonical policy hash for the resolved runtime config
+	// that produced this decision. V2 EvidenceReceipt emission consumes this;
+	// v1 action receipts keep using the emitter's config hash snapshot.
+	PolicyHash string
 
 	// MCP-specific fields
 	ToolName  string

@@ -134,6 +134,7 @@ pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), 
             "chain_prev_hash",
             "active_manifest_hash",
             "contract_hash",
+            "policy_hash",
             "selector_id",
             "contract_generation",
             "payload",
@@ -151,6 +152,11 @@ pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), 
         return Err("EvidenceReceipt requires receipt_version=2".to_string());
     }
     let payload_kind = require_string(receipt.get("payload_kind"), "payload_kind")?;
+    if reserved_payload_kind(payload_kind) {
+        return Err(format!(
+            "payload_kind {payload_kind} is known but not implemented"
+        ));
+    }
     if !valid_payload_kind(payload_kind) {
         return Err(format!("unknown payload_kind {payload_kind}"));
     }
@@ -160,6 +166,7 @@ pub fn normalize_evidence_receipt(receipt: &Receipt) -> std::result::Result<(), 
     require_string(receipt.get("timestamp"), "timestamp")?;
     require_non_negative_integer(receipt.get("chain_seq"), "chain_seq")?;
     require_string(receipt.get("chain_prev_hash"), "chain_prev_hash")?;
+    require_policy_hash(receipt.get("policy_hash"), "policy_hash")?;
     validate_v2_signature(receipt, payload_kind)?;
     let payload = receipt
         .get("payload")
@@ -434,6 +441,10 @@ fn valid_payload_kind(kind: &str) -> bool {
     matches!(kind, "proxy_decision" | "proxy_decision_with_spans")
 }
 
+fn reserved_payload_kind(kind: &str) -> bool {
+    matches!(kind, "defer_opened" | "defer_resolved")
+}
+
 fn validate_proxy_decision_payload(payload: &serde_json::Value) -> std::result::Result<(), String> {
     reject_unknown_fields(
         payload,
@@ -550,7 +561,7 @@ fn validate_source_span(span: &serde_json::Value, index: usize) -> std::result::
         span.get("transform_profile"),
         &format!("source_spans[{index}].transform_profile"),
     )?;
-    require_sha256_digest(
+    require_policy_hash(
         span.get("policy_hash"),
         &format!("source_spans[{index}].policy_hash"),
     )?;
@@ -633,6 +644,24 @@ fn require_sha256_digest(
     };
     if hex.len() != 64 || hex::decode(hex).is_err() {
         return Err(format!("{name} must be sha256:<64 hex>"));
+    }
+    Ok(())
+}
+
+fn require_policy_hash(
+    value: Option<&serde_json::Value>,
+    name: &str,
+) -> std::result::Result<(), String> {
+    let digest = require_string(value, name)?;
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return Err(format!("{name} must be sha256:<64 lowercase hex>"));
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!("{name} must be sha256:<64 lowercase hex>"));
     }
     Ok(())
 }

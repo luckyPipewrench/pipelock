@@ -20,10 +20,11 @@
     "signer_key_id": "receipt-signing-test",
     "key_purpose": "receipt-signing",
     "algorithm": "ed25519",
-    "signature": "ed25519:9fe6d73e5446a2bff573750d6217ad347f5400e68d521b32e3092ef1a184562c429542aa179bbfffe478ab3d2cebf14e9cce0020eb1885167422e66fcee9d506"
+    "signature": "ed25519:6cd1df06549a9532218d60aa556d52755a525d084ce0ca766591cad98722d21297b09d01e218b2d515c185867ff2fb861a7e8699b3072cb5864760fb50f86e0b"
   },
   "chain_seq": 1,
   "chain_prev_hash": "sha256:0",
+  "policy_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "payload": {
     "action_type": "connect",
     "target": "example.com",

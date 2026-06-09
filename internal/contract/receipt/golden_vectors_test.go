@@ -50,6 +50,7 @@ func TestGolden_EvidenceReceiptProxyDecision(t *testing.T) {
 		Timestamp:        time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
 		ChainSeq:         1,
 		ChainPrevHash:    "sha256:0",
+		PolicyHash:       goldenSpanDigest,
 		Payload:          payload,
 	}
 	preimage, err := r.SignablePreimage()
@@ -117,6 +118,7 @@ func TestGolden_EvidenceReceiptProxyDecisionWithSpans(t *testing.T) {
 		Timestamp:        time.Date(2026, 6, 6, 18, 0, 0, 0, time.UTC),
 		ChainSeq:         1,
 		ChainPrevHash:    "sha256:0",
+		PolicyHash:       goldenSpanDigest,
 		Payload:          json.RawMessage(payloadBody),
 	}
 	preimage, err := r.SignablePreimage()

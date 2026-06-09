@@ -1657,6 +1657,7 @@ func callValidator(t *testing.T, kind receipt.PayloadKind, raw json.RawMessage) 
 		Crit:             receipt.CritForPayloadKind(kind),
 		EventID:          "01900000-0000-7000-8000-000000000001",
 		Timestamp:        time.Now(),
+		PolicyHash:       testSHA256Digest,
 		Payload:          raw,
 		Signature: receipt.SignatureProof{
 			SignerKeyID: "test-key",

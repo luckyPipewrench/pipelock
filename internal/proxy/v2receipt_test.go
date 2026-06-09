@@ -132,6 +132,23 @@ func TestEnsureSource(t *testing.T) {
 	}
 }
 
+func TestV2DecisionFromOpts_CarriesPolicyHash(t *testing.T) {
+	t.Parallel()
+	want := "sha256:" + strings.Repeat("a", 64)
+	d, ok := v2DecisionFromOpts(receipt.EmitOpts{
+		Transport:  TransportFetch,
+		Target:     "https://x.example/a",
+		Verdict:    "block",
+		PolicyHash: want,
+	})
+	if !ok {
+		t.Fatal("v2DecisionFromOpts returned ok=false")
+	}
+	if d.PolicyHash != want {
+		t.Fatalf("PolicyHash = %q, want %q", d.PolicyHash, want)
+	}
+}
+
 // --- Integration: dual-emit through a real recorder ---
 
 // v2Entry is a minimal view of a recorder JSONL line for v2 assertions.
@@ -278,6 +295,11 @@ func TestDualEmit_ProducesVerifiableV2AlongsideV1(t *testing.T) {
 	}
 	if p.WinningSource != proxydecision.SourceScanner {
 		t.Errorf("winning_source = %q, want scanner", p.WinningSource)
+	}
+	wantPolicyHash := contractreceipt.NormalizePolicyHash(f.p.cfgPtr.Load().CanonicalPolicyHash())
+	if rcpt.PolicyHash != wantPolicyHash {
+		t.Errorf("policy_hash = %q, want active proxy config hash %q",
+			rcpt.PolicyHash, wantPolicyHash)
 	}
 }
 

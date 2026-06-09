@@ -133,10 +133,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
+		p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		pattern := inboundEnvelopeFailurePattern(err)
 		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportWS, requestID)
-		p.emitReceipt(receipt.EmitOpts{
+		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
@@ -160,7 +163,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if !scOK {
 		_, requestID := requestMeta(r)
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportWS, requestID)
-		p.emitReceipt(receipt.EmitOpts{
+		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     scannerLabelUnavailable,
@@ -278,7 +281,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.metrics.RecordWSBlocked()
-			p.emitReceipt(receipt.EmitOpts{
+			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     result.Scanner,
@@ -304,7 +307,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordWSBlocked()
-			p.emitReceipt(receipt.EmitOpts{
+			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     result.Scanner,
@@ -324,7 +327,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
-		p.emitReceipt(receipt.EmitOpts{
+		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     "session_profiling",
@@ -347,7 +350,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		sessionKey := sessionKeyFor(agent, clientIP)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
 		p.metrics.RecordWSBlocked()
-		p.emitReceipt(receipt.EmitOpts{
+		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     "session_deny",
@@ -370,7 +373,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		reason := err.Error()
 		log.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordWSBlocked()
-		p.emitReceipt(receipt.EmitOpts{
+		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     "budget",
@@ -438,7 +441,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if hardBlock || cfg.EnforceEnabled() {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()
-			p.emitReceipt(receipt.EmitOpts{
+			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "dlp_header",
@@ -461,7 +464,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			sessionKey := sessionKeyFor(agent, clientIP)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(headerSR.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
 			p.metrics.RecordWSBlocked()
-			p.emitReceipt(receipt.EmitOpts{
+			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "session_deny",
@@ -497,7 +500,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		RequestID:          requestID,
 		Agent:              agent,
 		AuditCtx:           actx,
-		Emit:               p.emitReceipt,
+		Emit:               emitWebSocketReceipt,
 		DeferBodyPredicate: true,
 	}); rpRes.Block {
 		p.metrics.RecordWSBlocked()
@@ -528,7 +531,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		reason := gateBlockReason(gate)
 		log.LogBlocked(actx, blockLayerContract, reason)
 		p.metrics.RecordWSBlocked()
-		p.emitReceipt(withContractReceipt(gate, receipt.EmitOpts{
+		emitWebSocketReceipt(withContractReceipt(gate, receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerContract,
@@ -574,7 +577,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			log.LogAirlockDeny(wsSess.key, tier, TransportWS, http.MethodGet, clientIP, requestID)
 			p.metrics.RecordAirlockDenial(tier, TransportWS, http.MethodGet)
 			p.metrics.RecordWSBlocked()
-			p.emitReceipt(receipt.EmitOpts{
+			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "airlock",
@@ -624,7 +627,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// land in the audit chain. The CONNECT path already does
 			// this; WebSocket parity matters because operators lose
 			// visibility into sign failures otherwise.
-			p.emitReceipt(receipt.EmitOpts{
+			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     blockedErr.layer,
@@ -657,7 +660,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			blockedErr := newEnvelopeBlockedRequest(envErr)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
-			p.emitReceipt(receipt.EmitOpts{
+			emitWebSocketReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     blockedErr.layer,
@@ -775,7 +778,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsGate.HasContractContext() {
 		closeReceipt = withContractReceipt(wsGate, closeReceipt)
 	}
-	p.emitReceipt(closeReceipt)
+	emitWebSocketReceipt(closeReceipt)
 
 	sc.RecordRequest(relay.hostname, int(stats.clientToServer+stats.serverToClient))
 

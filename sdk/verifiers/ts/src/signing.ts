@@ -21,6 +21,7 @@ const critCanonicalization = "canonicalization";
 const critSourceSpans = "source_spans";
 
 const v2PayloadKinds = new Set(["proxy_decision", "proxy_decision_with_spans"]);
+const reservedV2PayloadKinds = new Set(["defer_opened", "defer_resolved"]);
 
 const envelopeFields = new Set([
   "record_type",
@@ -38,6 +39,7 @@ const envelopeFields = new Set([
   "chain_prev_hash",
   "active_manifest_hash",
   "contract_hash",
+  "policy_hash",
   "selector_id",
   "contract_generation",
   "payload",
@@ -333,6 +335,9 @@ export function normalizeEvidenceReceipt(receipt: Receipt): Receipt {
     throw new Error(`unsupported receipt_version ${String(receipt.receipt_version)} (expected 2)`);
   }
   const payloadKind = requireString(receipt.payload_kind, "payload_kind");
+  if (reservedV2PayloadKinds.has(payloadKind)) {
+    throw new Error(`payload_kind ${payloadKind} is known but not implemented`);
+  }
   if (!v2PayloadKinds.has(payloadKind)) throw new Error(`unknown payload_kind ${payloadKind}`);
   validateCanonicalization(receipt.canonicalization);
   validateCrit(receipt.crit, payloadKind);
@@ -340,6 +345,7 @@ export function normalizeEvidenceReceipt(receipt: Receipt): Receipt {
   requireString(receipt.timestamp, "timestamp");
   requireNumber(receipt.chain_seq, "chain_seq");
   requireString(receipt.chain_prev_hash, "chain_prev_hash");
+  requireSHA256Digest(receipt.policy_hash, "policy_hash");
   const signature = requireObject(receipt.signature, "signature");
   rejectUnknownFields(signature, signatureFields, "signature");
   requireString(signature["signer_key_id"], "signature.signer_key_id");

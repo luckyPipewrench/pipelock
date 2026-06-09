@@ -242,6 +242,11 @@ func (rp *ReverseProxyHandler) SetRequestPolicyPrepareFn(fn func(*http.Request, 
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested. Plain RequestID alone is too thin for that.
 func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
+	if rp.cfgPtr != nil {
+		if cfg := rp.cfgPtr.Load(); cfg != nil {
+			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		}
+	}
 	if rp.receiptEmitterPtr != nil {
 		if e := rp.receiptEmitterPtr.Load(); e != nil {
 			if err := e.Emit(opts); err != nil {
@@ -373,6 +378,12 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	snap, releaseScanner, scOK := rp.snapshotAndAcquire()
 	defer releaseScanner()
+	emitReverseReceipt := func(opts receipt.EmitOpts) {
+		if snap.cfg != nil {
+			opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
+		}
+		rp.emitReceipt(opts)
+	}
 	if !scOK {
 		// Reload thrash or no live scanner. Fail closed at the request
 		// level rather than scan on an unpinned, possibly-closed scanner.
@@ -381,7 +392,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		_, requestID := requestMeta(r)
 		agent, _ := r.Context().Value(ctxKeyAgent).(string)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
-		rp.emitReceipt(receipt.EmitOpts{
+		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     scannerLabelUnavailable,
@@ -434,7 +445,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		pattern := inboundEnvelopeFailurePattern(err)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerMediationEnvelope)
-		rp.emitReceipt(receipt.EmitOpts{
+		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
@@ -480,7 +491,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerContract)
 			rp.metrics.RecordKillSwitchDenial("reverse_proxy", r.URL.Path)
-			rp.emitReceipt(withReverseContractReceipt(receipt.EmitOpts{
+			emitReverseReceipt(withReverseContractReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     blockLayerContract,
@@ -697,7 +708,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			RequestID:   requestID,
 			Agent:       agent,
 			AuditCtx:    newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent),
-			Emit:        rp.emitReceipt,
+			Emit:        emitReverseReceipt,
 		}
 		if rp.reqPolicyPrepareFn != nil {
 			if rpRes := rp.reqPolicyPrepareFn(r, &rpInput); rpRes.Block {
@@ -730,7 +741,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		rp.logger.LogBlocked(newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent), blockLayerContract, gateErr.Error())
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerContract)
-		rp.emitReceipt(withReverseContractReceipt(receipt.EmitOpts{
+		emitReverseReceipt(withReverseContractReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerContract,
@@ -759,7 +770,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		rp.logger.LogBlocked(newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent), blockLayerContract, reason)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerContract)
-		rp.emitReceipt(withReverseContractReceipt(receipt.EmitOpts{
+		emitReverseReceipt(withReverseContractReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerContract,
@@ -868,6 +879,13 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 // envelope signer via ctxKeyReverseEnvelopeBody so the signing
 // RoundTripper can compute content-digest without a second drain.
 func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime, receiptInput reverseBlockReceiptInput) (blocked bool, verdict string, body []byte, finding bool) {
+	emitReverseReceipt := func(opts receipt.EmitOpts) {
+		if cfg != nil {
+			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		}
+		rp.emitReceipt(opts)
+	}
+
 	// Skip binary content types - no secrets to scan in images/video.
 	if isBinaryMIME(r.Header.Get("Content-Type")) && redaction == nil {
 		return false, "", nil, false
@@ -993,7 +1011,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
-		rp.emitReceipt(receipt.EmitOpts{
+		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     layer,
@@ -1013,7 +1031,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
-		rp.emitReceipt(receipt.EmitOpts{
+		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     layer,
@@ -1053,6 +1071,12 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		if sc == nil {
 			sc = snap.sc
 		}
+	}
+	emitReverseReceipt := func(opts receipt.EmitOpts) {
+		if cfg != nil {
+			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		}
+		rp.emitReceipt(opts)
 	}
 	clientIP, _ := resp.Request.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := resp.Request.Context().Value(ctxKeyRequestID).(string)
@@ -1226,7 +1250,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		// error block paths below. Adding them would require plumbing
 		// a session manager through ReverseProxyHandler, which is out
 		// of scope for this fix (parity for the existing block paths).
-		rp.emitReceipt(receipt.EmitOpts{
+		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     LayerReverseResponseBlocked,
@@ -1286,7 +1310,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// downstream chain analysis sees a coherent decision graph.
 			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{sseLayer + ": " + err.Error()}, nil)
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, sseLayer)
-			rp.emitReceipt(receipt.EmitOpts{
+			emitReverseReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     sseLayer,
@@ -1320,7 +1344,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "read_error")
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"response_read_error"}, nil)
-		rp.emitReceipt(receipt.EmitOpts{
+		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     LayerReverseResponseBlocked,
@@ -1345,7 +1369,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "oversized")
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"oversized_response"}, nil)
-		rp.emitReceipt(receipt.EmitOpts{
+		emitReverseReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     LayerReverseResponseBlocked,
@@ -1390,7 +1414,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					// records zero adaptive signals.
 					summary.AdaptiveSignalsRecorded = 0
 					summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
-					rp.emitReceipt(receipt.EmitOpts{
+					emitReverseReceipt(receipt.EmitOpts{
 						ActionID:       receipt.NewActionID(),
 						ParentActionID: actionID,
 						Verdict:        config.ActionAllow,

@@ -72,6 +72,8 @@ const (
 	PayloadOpportunityMissing         PayloadKind = "opportunity_missing"
 	PayloadKeyRotation                PayloadKind = "key_rotation"
 	PayloadContractRedactionRequest   PayloadKind = "contract_redaction_request"
+	PayloadDeferOpened                PayloadKind = "defer_opened"
+	PayloadDeferResolved              PayloadKind = "defer_resolved"
 )
 
 // SignatureProof is the detached Ed25519 signature proof attached to an EvidenceReceipt.
@@ -147,6 +149,14 @@ type EvidenceReceipt struct {
 
 	ActiveManifestHash string `json:"active_manifest_hash,omitempty"`
 	ContractHash       string `json:"contract_hash,omitempty"`
+	// PolicyHash is the canonical hash of the resolved policy inputs this
+	// decision was actually computed against, encoded as
+	// "sha256:<64 lowercase hex>". For proxy_decision payload kinds this is
+	// SHA-256 over the JCS-canonical JSON bytes of the effective policy-input
+	// set, e.g. Config.CanonicalPolicyHash() for the resolved per-agent
+	// runtime config. It is distinct from active_manifest_hash, contract_hash,
+	// and matched rule IDs.
+	PolicyHash         string `json:"policy_hash,omitempty"`
 	SelectorID         string `json:"selector_id,omitempty"`
 	ContractGeneration uint64 `json:"contract_generation,omitempty"`
 
@@ -183,7 +193,19 @@ func (r EvidenceReceipt) Validate() error {
 	if err := v(r.Payload); err != nil {
 		return err
 	}
+	if err := r.validatePolicyHash(); err != nil {
+		return err
+	}
 	return r.validateSignatureProof()
+}
+
+func (r EvidenceReceipt) validatePolicyHash() error {
+	switch r.PayloadKind {
+	case PayloadProxyDecision, PayloadProxyDecisionWithSpans:
+		return requirePolicyHash("policy_hash", r.PolicyHash)
+	default:
+		return nil
+	}
 }
 
 func (r EvidenceReceipt) validateCanonicalization() error {

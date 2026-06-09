@@ -1,0 +1,484 @@
+{
+  "schema_version": "aarp-claims-dictionary/v0.1",
+  "profile": "aarp/v0.1",
+  "entries": [
+    {
+      "claim": "receipt_signature_valid",
+      "kind": "verified_claim",
+      "axis": "integrity",
+      "status": "emitted",
+      "proves": "At least one parallel AARP signature verified under a trusted key over the canonical signed assertion payload.",
+      "does_not_prove": [
+        "transparency-log inclusion",
+        "policy correctness",
+        "action safety",
+        "complete mediation"
+      ],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "mediator_key_pinned",
+      "kind": "verified_claim",
+      "axis": "identity",
+      "status": "emitted",
+      "proves": "A verifying signature's key id is bound by a verifier-side trust entry to the asserted mediator identity, role, and trust domain when scoped.",
+      "does_not_prove": [
+        "that the mediator made a correct decision",
+        "that all traffic was forced through the mediator",
+        "that the key was never compromised"
+      ],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "receipt_timestamp_monotonic_chain_present",
+      "kind": "verified_claim",
+      "axis": "integrity",
+      "status": "emitted",
+      "proves": "The signed assertion carries a well-formed Rung-1 chain link with a sequence number and prior payload hash.",
+      "does_not_prove": [
+        "that the whole stream was verified as contiguous",
+        "wall-clock freshness",
+        "absence of omitted actions"
+      ],
+      "tested_by": "g03-chain-genesis-linked"
+    },
+    {
+      "claim": "signing_workload_svid_chain_validated",
+      "kind": "verified_claim",
+      "axis": "identity",
+      "status": "emitted",
+      "proves": "The X.509-SVID leaf chain validated offline against the pinned bundle at action time and the SPIFFE ID was permitted.",
+      "does_not_prove": [
+        "that the workload's egress was non-bypassable",
+        "that deployment policy was enforced",
+        "that JWT-SVID evidence is equivalent"
+      ],
+      "tested_by": "s01-valid-ecdsa-p256-baseline"
+    },
+    {
+      "claim": "signing_workload_svid_bound",
+      "kind": "verified_claim",
+      "axis": "identity",
+      "status": "emitted",
+      "proves": "The SVID leaf key signed the receipt and assertion binding, proving possession by the signing workload identity.",
+      "does_not_prove": [
+        "deployment attestation",
+        "network non-bypass",
+        "that local side effects were mediated"
+      ],
+      "tested_by": "s01-valid-ecdsa-p256-baseline"
+    },
+    {
+      "claim": "signing_workload_svid_valid_at_action_time",
+      "kind": "verified_claim",
+      "axis": "freshness",
+      "status": "emitted",
+      "proves": "The X.509-SVID was valid at the action time under the pinned historical bundle.",
+      "does_not_prove": [
+        "that the assertion was published promptly",
+        "that the key remained uncompromised later",
+        "that the chain was witnessed externally"
+      ],
+      "tested_by": "s01-valid-ecdsa-p256-baseline"
+    },
+    {
+      "claim": "policy_hash_bound",
+      "kind": "verified_claim",
+      "axis": "authority",
+      "status": "reserved",
+      "proves": "Reserved for the claim that the decision policy hash is bound into the signed assertion.",
+      "does_not_prove": [
+        "that the policy was correct",
+        "that the policy was enforced across unmediated traffic",
+        "that every evaluator used the same policy"
+      ],
+      "tested_by": "reserved-policy-hash-bound"
+    },
+    {
+      "claim": "receipt_timestamp_contiguous_chain_verified",
+      "kind": "verified_claim",
+      "axis": "authority",
+      "status": "reserved",
+      "proves": "Reserved for stream-level verification that an issuer chain is contiguous for the checked range.",
+      "does_not_prove": [
+        "external witnessing",
+        "complete action-stream submission",
+        "absence of records before or after the checked range"
+      ],
+      "tested_by": "reserved-contiguous-chain-verification"
+    },
+    {
+      "claim": "external_witness_checkpoint_signature_valid",
+      "kind": "verified_claim",
+      "axis": "transparency",
+      "status": "reserved",
+      "proves": "Reserved for verification that an external witness signed the checkpoint being checked.",
+      "does_not_prove": [
+        "that all receipts were submitted to the witness",
+        "that the witness showed the same view to every verifier",
+        "that the checkpoint covers a specific action"
+      ],
+      "tested_by": "reserved-external-witness-checkpoint-signature"
+    },
+    {
+      "claim": "receipt_chain_root_matches_witnessed_checkpoint",
+      "kind": "verified_claim",
+      "axis": "transparency",
+      "status": "reserved",
+      "proves": "Reserved for verification that the receipt-chain root matches the externally witnessed checkpoint root.",
+      "does_not_prove": [
+        "that omitted receipts do not exist",
+        "that the witness is globally consistent",
+        "that every action stream was submitted"
+      ],
+      "tested_by": "reserved-chain-root-witness-match"
+    },
+    {
+      "claim": "witness_checkpoint_covers_chain_seq_range",
+      "kind": "verified_claim",
+      "axis": "transparency",
+      "status": "reserved",
+      "proves": "Reserved for verification that a witnessed checkpoint covers the asserted issuer chain sequence range.",
+      "does_not_prove": [
+        "that all receipts before the range were submitted",
+        "that actions outside the range were mediated",
+        "absence of split-view without gossip"
+      ],
+      "tested_by": "reserved-witness-checkpoint-range"
+    },
+    {
+      "claim": "witness_checkpoint_observed_at_time",
+      "kind": "verified_claim",
+      "axis": "transparency",
+      "status": "reserved",
+      "proves": "Reserved for verification that the external witness observation time for a checkpoint was recorded and validated.",
+      "does_not_prove": [
+        "wall-clock correctness beyond the witness evidence",
+        "that the receipt was emitted at that time",
+        "that no later omission occurred"
+      ],
+      "tested_by": "reserved-witness-checkpoint-observed-time"
+    },
+    {
+      "claim": "witness_checkpoint_gap_bounded_observed",
+      "kind": "verified_claim",
+      "axis": "transparency",
+      "status": "reserved",
+      "proves": "Reserved for observing that the witness-silence interval after the last witnessed checkpoint stayed within the configured bound, assuming process, clock, witness path, and deployment boundary were operating.",
+      "does_not_prove": [
+        "absence of omitted actions",
+        "that every receipt was submitted to the witness",
+        "that the deployment boundary was non-bypassable"
+      ],
+      "tested_by": "reserved-witness-checkpoint-gap-bounded"
+    },
+    {
+      "claim": "k8s_namespace_egress_policy_restricts_workload_to_mediator_observed",
+      "kind": "verified_claim",
+      "axis": "deployment",
+      "status": "reserved",
+      "proves": "Reserved for attested observation that a Kubernetes namespace egress policy restricts the workload to the mediator path.",
+      "does_not_prove": [
+        "that a cluster administrator cannot bypass it",
+        "that CNI enforcement is correct",
+        "that workloads outside the observed scope are covered"
+      ],
+      "tested_by": "reserved-k8s-namespace-egress-policy"
+    },
+    {
+      "claim": "k8s_pod_spec_proxy_injection_observed",
+      "kind": "verified_claim",
+      "axis": "deployment",
+      "status": "reserved",
+      "proves": "Reserved for attested observation that the workload pod spec contains the expected Pipelock proxy injection.",
+      "does_not_prove": [
+        "that the running pod state still matches after snapshot or mutation",
+        "that node root cannot bypass the proxy",
+        "that hosted SaaS side actions were mediated"
+      ],
+      "tested_by": "reserved-k8s-pod-spec-proxy-injection"
+    },
+    {
+      "claim": "k8s_workload_identity_bound_to_mediator_policy",
+      "kind": "verified_claim",
+      "axis": "deployment",
+      "status": "reserved",
+      "proves": "Reserved for attested observation that the Kubernetes workload identity is bound to the mediator policy under review.",
+      "does_not_prove": [
+        "that the workload identity key was never compromised",
+        "that all namespaces are covered",
+        "that direct node-level egress is impossible"
+      ],
+      "tested_by": "reserved-k8s-workload-identity-policy-binding"
+    },
+    {
+      "claim": "k8s_admission_policy_hash_bound",
+      "kind": "verified_claim",
+      "axis": "deployment",
+      "status": "reserved",
+      "proves": "Reserved for attested observation that the Kubernetes admission policy hash is bound to the appraisal evidence.",
+      "does_not_prove": [
+        "that admission policy is semantically correct",
+        "that runtime state stayed unchanged",
+        "that cluster administrators cannot bypass admission"
+      ],
+      "tested_by": "reserved-k8s-admission-policy-hash"
+    },
+    {
+      "claim": "linux_process_egress_owner_rule_observed",
+      "kind": "verified_claim",
+      "axis": "deployment",
+      "status": "reserved",
+      "proves": "Reserved for attested observation that a Linux process-owner egress rule was present for the mediated workload.",
+      "does_not_prove": [
+        "that root cannot bypass the rule",
+        "that all descendant processes are covered",
+        "that non-Linux deployments are covered"
+      ],
+      "tested_by": "reserved-linux-process-egress-owner-rule"
+    },
+    {
+      "claim": "absence_of_bypass",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that no bypass path existed.",
+      "does_not_prove": ["complete mediation", "network non-bypass", "deployment enforcement"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "action_safety",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that the action was safe.",
+      "does_not_prove": ["policy correctness", "intent correctness", "absence of harm"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "all_tools_discovered",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that every tool or action surface was discovered.",
+      "does_not_prove": ["coverage of unobserved tools", "hosted SaaS side actions", "local side effects"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "complete_mediation",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert complete mediation.",
+      "does_not_prove": ["absence of bypass", "delegated action mediation", "out-of-band traffic coverage"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "delegated_actions_mediated",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that delegated actions were mediated.",
+      "does_not_prove": ["coverage of downstream actors", "coverage of tool-created actions", "complete mediation"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "efficacy",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that the policy or control was effective.",
+      "does_not_prove": ["attack prevention", "false-negative absence", "business outcome correctness"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "hosted_saas_actions_mediated",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that hosted SaaS side actions were mediated.",
+      "does_not_prove": ["third-party control-plane coverage", "browser-side action coverage", "complete mediation"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "intent_correctness",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that the action matched user intent.",
+      "does_not_prove": ["semantic correctness", "authorization correctness", "action safety"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "key_non_compromise",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that any signing key was never compromised.",
+      "does_not_prove": ["future key safety", "historical key custody", "operator trustworthiness"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "local_side_effects_mediated",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that local side effects were mediated.",
+      "does_not_prove": ["filesystem side-effect coverage", "process side-effect coverage", "complete mediation"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "policy_correctness",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert that the policy was correct.",
+      "does_not_prove": ["authorization correctness", "compliance correctness", "semantic equivalence after modify"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "semantic_equivalence_after_modify",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly does not assert semantic equivalence after any modifying step.",
+      "does_not_prove": ["unchanged request meaning", "unchanged response meaning", "policy correctness"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "does_not_assert_network_non_bypass_from_identity",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly states that a verified workload identity does not prove network non-bypass.",
+      "does_not_prove": ["deployment enforcement", "complete mediation", "direct egress absence"],
+      "tested_by": "s01-valid-ecdsa-p256-baseline"
+    },
+    {
+      "claim": "does_not_assert_deployment_enforcement_from_identity",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "emitted",
+      "proves": "The appraisal explicitly states that a verified workload identity does not prove deployment enforcement.",
+      "does_not_prove": ["network policy correctness", "admission policy correctness", "complete mediation"],
+      "tested_by": "s01-valid-ecdsa-p256-baseline"
+    },
+    {
+      "claim": "does_not_assert_all_receipts_submitted_to_witness",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that witness evidence does not assert all receipts were submitted to the witness.",
+      "does_not_prove": ["complete stream submission", "absence of omitted actions", "global transparency"],
+      "tested_by": "reserved-transparency-negatives"
+    },
+    {
+      "claim": "does_not_assert_pre_witness_omission_absence",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that witness evidence does not assert absence of omissions before the witnessed checkpoint.",
+      "does_not_prove": ["pre-checkpoint completeness", "historical action-stream completeness", "absence of omitted actions"],
+      "tested_by": "reserved-transparency-negatives"
+    },
+    {
+      "claim": "does_not_assert_no_split_view_without_gossip",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that witness evidence without gossip does not assert absence of split view.",
+      "does_not_prove": ["global log consistency", "witness non-equivocation", "all-verifier consistency"],
+      "tested_by": "reserved-transparency-negatives"
+    },
+    {
+      "claim": "does_not_assert_action_stream_completeness",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that witness evidence does not assert action-stream completeness.",
+      "does_not_prove": ["all actions recorded", "all receipts submitted", "complete mediation"],
+      "tested_by": "reserved-transparency-negatives"
+    },
+    {
+      "claim": "does_not_assert_cluster_admin_cannot_bypass",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that deployment evidence does not assert a cluster administrator cannot bypass controls.",
+      "does_not_prove": ["administrator non-bypass", "root-of-trust independence", "complete mediation"],
+      "tested_by": "reserved-deployment-negatives"
+    },
+    {
+      "claim": "does_not_assert_node_root_cannot_bypass",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that deployment evidence does not assert node root cannot bypass controls.",
+      "does_not_prove": ["node-root non-bypass", "host firewall immutability", "complete mediation"],
+      "tested_by": "reserved-deployment-negatives"
+    },
+    {
+      "claim": "does_not_assert_cni_enforcement_correctness",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that deployment evidence does not assert CNI enforcement correctness.",
+      "does_not_prove": ["network plugin correctness", "runtime packet enforcement", "policy semantic correctness"],
+      "tested_by": "reserved-deployment-negatives"
+    },
+    {
+      "claim": "does_not_assert_saas_side_actions_mediated",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that deployment evidence does not assert hosted SaaS side actions were mediated.",
+      "does_not_prove": ["third-party SaaS action coverage", "browser action coverage", "complete mediation"],
+      "tested_by": "reserved-deployment-negatives"
+    },
+    {
+      "claim": "does_not_assert_runtime_state_unchanged_after_snapshot",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that deployment evidence does not assert runtime state stayed unchanged after snapshot or restore.",
+      "does_not_prove": ["post-snapshot policy continuity", "runtime immutability", "fresh deployment state"],
+      "tested_by": "reserved-deployment-negatives"
+    },
+    {
+      "claim": "does_not_assert_all_namespaces_or_workloads_covered",
+      "kind": "does_not_assert",
+      "axis": "limitation",
+      "status": "reserved",
+      "proves": "Reserved limitation stating that deployment evidence does not assert all namespaces or workloads are covered.",
+      "does_not_prove": ["cluster-wide coverage", "all workload coverage", "complete mediation"],
+      "tested_by": "reserved-deployment-negatives"
+    },
+    {
+      "claim": "signature_valid_is_not_transparency_inclusion",
+      "kind": "overclaim_risk",
+      "axis": "risk",
+      "status": "emitted",
+      "proves": "The appraisal warns that a valid signature is being reported without a transparency-axis proof.",
+      "does_not_prove": ["external witness inclusion", "global transparency", "absence of omitted receipts"],
+      "tested_by": "g01-single-ed25519-mediated"
+    },
+    {
+      "claim": "svid_identity_is_not_deployment_non_bypass",
+      "kind": "overclaim_risk",
+      "axis": "risk",
+      "status": "emitted",
+      "proves": "The appraisal warns that a bound SVID identity is being reported without a deployment-axis non-bypass proof.",
+      "does_not_prove": ["network non-bypass", "deployment enforcement", "complete mediation"],
+      "tested_by": "s01-valid-ecdsa-p256-baseline"
+    },
+    {
+      "claim": "chain_link_present_is_not_verified_contiguous_chain",
+      "kind": "overclaim_risk",
+      "axis": "risk",
+      "status": "emitted",
+      "proves": "The appraisal warns that a single signed chain link is being reported without stream-level contiguous-chain verification.",
+      "does_not_prove": ["stream continuity", "absence of missing links", "external witnessing"],
+      "tested_by": "g03-chain-genesis-linked"
+    }
+  ]
+}

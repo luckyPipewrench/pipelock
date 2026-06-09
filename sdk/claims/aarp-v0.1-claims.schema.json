@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pipelab.org/schemas/aarp-v0.1-claims.schema.json",
+  "title": "AARP v0.1 claim dictionary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "entries"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "aarp-claims-dictionary/v0.1"
+    },
+    "profile": {
+      "type": "string",
+      "const": "aarp/v0.1"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim",
+          "kind",
+          "axis",
+          "status",
+          "proves",
+          "does_not_prove",
+          "tested_by"
+        ],
+        "properties": {
+          "claim": {
+            "type": "string",
+            "pattern": "^[a-z0-9_\\-]+$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["verified_claim", "does_not_assert", "overclaim_risk"]
+          },
+          "axis": {
+            "type": "string",
+            "enum": [
+              "identity",
+              "authority",
+              "integrity",
+              "freshness",
+              "transparency",
+              "deployment",
+              "limitation",
+              "risk"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["emitted", "reserved"]
+          },
+          "proves": {
+            "type": "string",
+            "minLength": 1
+          },
+          "does_not_prove": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "tested_by": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

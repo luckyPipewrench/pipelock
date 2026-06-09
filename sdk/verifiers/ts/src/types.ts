@@ -22,6 +22,7 @@ export interface Receipt {
   timestamp?: string;
   chain_seq?: number;
   chain_prev_hash?: string;
+  policy_hash?: string;
   payload?: unknown;
   [key: string]: unknown;
 }

@@ -40,6 +40,7 @@ export async function runReceipt(pathname: string, signerKey: string): Promise<R
     report.verdict = payload?.verdict;
     report.transport = payload?.transport;
     report.signer_key = keyHex;
+    report.policy_hash = receipt.policy_hash;
     report.chain_seq = receipt.chain_seq;
   } else {
     report.action_id = receipt.action_record?.action_id;

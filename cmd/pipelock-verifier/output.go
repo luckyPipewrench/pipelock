@@ -119,6 +119,9 @@ func emitReceiptReport(stdout, stderr io.Writer, r receiptReport, jsonMode bool)
 			if r.ActiveManifestHash != "" {
 				_, _ = fmt.Fprintf(stdout, "  manifest:     %s\n", r.ActiveManifestHash)
 			}
+			if r.PolicyHash != "" {
+				_, _ = fmt.Fprintf(stdout, "  policy_hash:  %s\n", r.PolicyHash)
+			}
 			if r.SignaturesVerified {
 				_, _ = fmt.Fprintln(stdout, "  signature:    verified")
 			} else {

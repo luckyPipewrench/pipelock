@@ -8,6 +8,8 @@ use std::process::Command;
 
 const V2_GOLDEN_PUBLIC_KEY: &str =
     "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+const V2_GOLDEN_POLICY_HASH: &str =
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[test]
 fn valid_single_receipt_verifies_with_shared_key() {
@@ -142,6 +144,65 @@ fn valid_spanned_v2_receipt_verifies_with_shared_key() {
     assert_eq!(report.verdict.as_deref(), Some("block"));
     assert_eq!(report.transport.as_deref(), Some("forward"));
     assert_eq!(report.signer_key.as_deref(), Some(V2_GOLDEN_PUBLIC_KEY));
+    assert_eq!(report.policy_hash.as_deref(), Some(V2_GOLDEN_POLICY_HASH));
+}
+
+#[test]
+fn valid_plain_v2_receipt_verifies_with_shared_key() {
+    let root = common::repo_root();
+    let report = run_receipt(
+        root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json")
+            .to_str()
+            .unwrap(),
+        V2_GOLDEN_PUBLIC_KEY,
+    )
+    .unwrap();
+    assert!(report.valid, "{:?}", report.error);
+    assert_eq!(report.policy_hash.as_deref(), Some(V2_GOLDEN_POLICY_HASH));
+}
+
+#[test]
+fn missing_v2_policy_hash_is_rejected() {
+    let root = common::repo_root();
+    let source =
+        root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json");
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt.as_object_mut().unwrap().remove("policy_hash");
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-missing-policy-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("policy_hash"));
+}
+
+#[test]
+fn reserved_defer_v2_payload_kind_is_rejected() {
+    let root = common::repo_root();
+    let source =
+        root.join("internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json");
+    let mut receipt: Value = serde_json::from_str(&fs::read_to_string(source).unwrap()).unwrap();
+    receipt["payload_kind"] = Value::String("defer_opened".to_string());
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-v2-defer-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("known but not implemented"));
 }
 
 #[test]

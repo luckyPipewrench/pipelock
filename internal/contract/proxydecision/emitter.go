@@ -113,6 +113,9 @@ type Decision struct {
 	// RuleID is the RAW matched rule / pattern label. It is sanitized before
 	// signing because a scanner pattern can echo matched bytes.
 	RuleID string
+	// PolicyHash is Config.CanonicalPolicyHash() for the resolved runtime
+	// config that produced this decision.
+	PolicyHash string
 
 	// Contract envelope fields, populated ONLY when a real resolved contract
 	// existed for this request. Empty for pure scanner / kill-switch decisions,
@@ -253,6 +256,7 @@ func (e *Emitter) Emit(d Decision) error {
 		ActionType:    d.ActionType,
 		Target:        target,
 		Transport:     d.Transport,
+		PolicyHash:    d.PolicyHash,
 		EventID:       eventID,
 		Timestamp:     e.clock().UTC(),
 		Principal:     e.principal,

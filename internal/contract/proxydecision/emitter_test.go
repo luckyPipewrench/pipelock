@@ -127,6 +127,7 @@ func TestEmit_BuildsVerifiableReceipt(t *testing.T) {
 		WinningSource: SourceScanner,
 		PolicySources: []string{SourceScanner},
 		RuleID:        "prompt_injection",
+		PolicyHash:    testSpanDigest,
 	})
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -155,6 +156,9 @@ func TestEmit_BuildsVerifiableReceipt(t *testing.T) {
 	}
 	if rcpt.PayloadKind != contractreceipt.PayloadProxyDecision {
 		t.Errorf("PayloadKind = %q", rcpt.PayloadKind)
+	}
+	if rcpt.PolicyHash != testSpanDigest {
+		t.Errorf("PolicyHash = %q, want %q", rcpt.PolicyHash, testSpanDigest)
 	}
 	if rcpt.ChainSeq != 0 {
 		t.Errorf("ChainSeq = %d, want 0", rcpt.ChainSeq)
@@ -189,6 +193,7 @@ func TestEmit_WithSpansBuildsVerifiableReceipt(t *testing.T) {
 		WinningSource:      SourceScanner,
 		PolicySources:      []string{SourceScanner},
 		RuleID:             "aws_access_key",
+		PolicyHash:         testSpanDigest,
 		SpanHMACKey:        []byte(testSpanHMACKey),
 		SourceSpanEvidence: evidence,
 	})
@@ -209,6 +214,9 @@ func TestEmit_WithSpansBuildsVerifiableReceipt(t *testing.T) {
 	rcpt := decodeReceipt(t, entry)
 	if rcpt.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans {
 		t.Fatalf("PayloadKind = %q, want %q", rcpt.PayloadKind, contractreceipt.PayloadProxyDecisionWithSpans)
+	}
+	if rcpt.PolicyHash != testSpanDigest {
+		t.Errorf("PolicyHash = %q, want %q", rcpt.PolicyHash, testSpanDigest)
 	}
 	if err := contractreceipt.VerifyWithKey(rcpt, pub, keyID); err != nil {
 		t.Fatalf("VerifyWithKey: %v", err)
@@ -244,6 +252,7 @@ func TestEmit_WithSpansRejectsMalformedEvidenceBeforeRecording(t *testing.T) {
 		WinningSource:      SourceScanner,
 		PolicySources:      []string{SourceScanner},
 		RuleID:             "aws_access_key",
+		PolicyHash:         testSpanDigest,
 		SpanHMACKey:        []byte(testSpanHMACKey),
 		SourceSpanEvidence: evidence,
 	})
@@ -283,6 +292,7 @@ func TestEmit_WithSpansSanitizesSpanFieldsBeforeSigning(t *testing.T) {
 		WinningSource:      SourceScanner,
 		PolicySources:      []string{SourceScanner},
 		RuleID:             "aws_access_key",
+		PolicyHash:         testSpanDigest,
 		SpanHMACKey:        []byte(testSpanHMACKey),
 		SourceSpanEvidence: evidence,
 	})
@@ -350,6 +360,7 @@ func TestEmit_WithSpansRejectsMissingHMACKey(t *testing.T) {
 		WinningSource:      SourceScanner,
 		PolicySources:      []string{SourceScanner},
 		RuleID:             "aws_access_key",
+		PolicyHash:         testSpanDigest,
 		SpanHMACKey:        nil, // evidence present but no key
 		SourceSpanEvidence: spannedEvidenceFixture(),
 	})
@@ -382,6 +393,7 @@ func TestEmit_SanitizesTargetBeforeSigning(t *testing.T) {
 		WinningSource: SourceScanner,
 		PolicySources: []string{SourceScanner},
 		RuleID:        "dlp:" + secret, // rule label echoing the matched bytes
+		PolicyHash:    testSpanDigest,
 	})
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
@@ -417,7 +429,7 @@ func TestEmit_ProvenanceShapes(t *testing.T) {
 			decision: Decision{
 				ActionType: "http_request", Transport: "fetch", Target: "https://x.example/a",
 				Verdict: "block", WinningSource: SourceScanner, PolicySources: []string{SourceScanner},
-				RuleID: "ssrf",
+				RuleID: "ssrf", PolicyHash: testSpanDigest,
 			},
 			wantWinning: SourceScanner, wantSources: []string{SourceScanner}, wantStamped: false,
 		},
@@ -426,7 +438,7 @@ func TestEmit_ProvenanceShapes(t *testing.T) {
 			decision: Decision{
 				ActionType: "http_request", Transport: "intercept", Target: "https://x.example/b",
 				Verdict: "block", WinningSource: SourceKillSwitch, PolicySources: []string{SourceKillSwitch},
-				RuleID: "kill_switch_active",
+				RuleID: "kill_switch_active", PolicyHash: testSpanDigest,
 			},
 			wantWinning: SourceKillSwitch, wantSources: []string{SourceKillSwitch}, wantStamped: false,
 		},
@@ -437,6 +449,7 @@ func TestEmit_ProvenanceShapes(t *testing.T) {
 				Verdict: "block", WinningSource: SourceContract,
 				PolicySources:      []string{"observation", SourceContract},
 				RuleID:             "rule-42",
+				PolicyHash:         testSpanDigest,
 				ActiveManifestHash: "sha256:manifest", ContractHash: "sha256:contract",
 				SelectorID: "sel-1", ContractGeneration: 7,
 			},
@@ -486,6 +499,7 @@ func TestEmit_ChainAdvancesAndLinks(t *testing.T) {
 	base := Decision{
 		ActionType: "http_request", Transport: "forward", Target: "https://x.example/a",
 		Verdict: "allow", WinningSource: SourceScanner, PolicySources: []string{SourceScanner},
+		PolicyHash: testSpanDigest,
 	}
 	for i := 0; i < 3; i++ {
 		if err := em.Emit(base); err != nil {
@@ -528,6 +542,7 @@ func TestEmit_ResumeContinuity(t *testing.T) {
 	base := Decision{
 		ActionType: "http_request", Transport: "forward", Target: "https://x.example/a",
 		Verdict: "allow", WinningSource: SourceScanner, PolicySources: []string{SourceScanner},
+		PolicyHash: testSpanDigest,
 	}
 	if err := em1.Emit(base); err != nil {
 		t.Fatalf("Emit em1: %v", err)
@@ -561,6 +576,7 @@ func TestEmit_TamperBreaksSignature(t *testing.T) {
 	if err := em.Emit(Decision{
 		ActionType: "http_request", Transport: "forward", Target: "https://x.example/a",
 		Verdict: "allow", WinningSource: SourceScanner, PolicySources: []string{SourceScanner},
+		PolicyHash: testSpanDigest,
 	}); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
@@ -604,7 +620,8 @@ func TestEmit_InvalidProvenanceFailsFast(t *testing.T) {
 	em, _, _ := newTestEmitter(t, rec, nil)
 	err := em.Emit(Decision{
 		ActionType: "http_request", Transport: "forward", Target: "https://x.example/a",
-		Verdict: "block", // no WinningSource / PolicySources
+		Verdict:    "block", // no WinningSource / PolicySources
+		PolicyHash: testSpanDigest,
 	})
 	if err == nil {
 		t.Fatal("Emit with empty provenance succeeded; want build error")
@@ -644,6 +661,7 @@ func TestEmit_RecorderErrorPropagates(t *testing.T) {
 	err := em.Emit(Decision{
 		ActionType: "http_request", Transport: "forward", Target: "https://x.example/a",
 		Verdict: "allow", WinningSource: SourceScanner, PolicySources: []string{SourceScanner},
+		PolicyHash: testSpanDigest,
 	})
 	if err == nil {
 		t.Fatal("Emit succeeded despite recorder error")
@@ -676,6 +694,7 @@ func TestEmit_UsesInjectedClock(t *testing.T) {
 	if err := em.Emit(Decision{
 		ActionType: "http_request", Transport: "forward", Target: "https://x.example/a",
 		Verdict: "allow", WinningSource: SourceScanner, PolicySources: []string{SourceScanner},
+		PolicyHash: testSpanDigest,
 	}); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}

@@ -89,11 +89,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
+	emitConnectReceipt := func(opts receipt.EmitOpts) {
+		p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+	}
 
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		pattern := inboundEnvelopeFailurePattern(err)
 		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportConnect, requestID)
-		p.emitReceipt(receipt.EmitOpts{
+		emitConnectReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
@@ -122,7 +125,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// enforcement timeline from receipts sees the request resolved
 		// to a verdict rather than vanishing.
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportConnect, requestID)
-		p.emitReceipt(receipt.EmitOpts{
+		emitConnectReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     scannerLabelUnavailable,
@@ -294,7 +297,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason, auditDetailFromResult(result))
-			p.emitReceipt(receipt.EmitOpts{
+			emitConnectReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     result.Scanner,
@@ -432,7 +435,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		RequestID:   requestID,
 		Agent:       agent,
 		AuditCtx:    targetCtx,
-		Emit:        p.emitReceipt,
+		Emit:        emitConnectReceipt,
 	}
 	if rp := p.applyRequestPolicy(connectRPInput); rp.Block {
 		p.metrics.RecordTunnelBlocked(agentLabel)
@@ -462,7 +465,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if gate.Verdict == config.ActionBlock {
 		reason := gateBlockReason(gate)
 		p.logger.LogBlocked(targetCtx, blockLayerContract, reason)
-		p.emitReceipt(withContractReceipt(gate, receipt.EmitOpts{
+		emitConnectReceipt(withContractReceipt(gate, receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerContract,
@@ -682,7 +685,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if connectGate.HasContractContext() {
 		allowReceipt = withContractReceipt(connectGate, allowReceipt)
 	}
-	p.emitReceipt(allowReceipt)
+	emitConnectReceipt(allowReceipt)
 	p.logger.LogTunnelClose(targetCtx, totalBytes, duration)
 
 	// Record data budget for the target domain
@@ -717,10 +720,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	emitForwardReceipt := func(opts receipt.EmitOpts) {
+		p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		pattern := inboundEnvelopeFailurePattern(err)
 		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportForward, requestID)
-		p.emitReceipt(receipt.EmitOpts{
+		emitForwardReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
@@ -744,7 +750,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	defer releaseScanner()
 	if !scOK {
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportForward, requestID)
-		p.emitReceipt(receipt.EmitOpts{
+		emitForwardReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     scannerLabelUnavailable,
@@ -801,7 +807,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if action == config.ActionBlock {
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_header", time.Since(start), agentLabel)
 				// Taint fields omitted: forwardTaint is computed after A2A header scanning.
-				p.emitReceipt(receipt.EmitOpts{
+				emitForwardReceipt(receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
 					Layer:     "a2a_header",
@@ -894,7 +900,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if cfg.EnforceEnabled() {
 			p.logger.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
-			p.emitReceipt(receipt.EmitOpts{
+			emitForwardReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     result.Scanner,
@@ -952,7 +958,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if gitPush := evaluateGitPushAllowlist(cfg.GitProtection, r.URL); gitPush.Block {
 		p.logger.LogBlocked(actx, "git_protection", gitPush.Reason)
-		p.emitReceipt(receipt.EmitOpts{
+		emitForwardReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     "git_protection",
@@ -987,7 +993,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch forwardTaint.Result.Decision {
 	case session.PolicyBlock:
-		p.emitReceipt(receipt.EmitOpts{
+		emitForwardReceipt(receipt.EmitOpts{
 			ActionID:            actionID,
 			Verdict:             config.ActionBlock,
 			Layer:               "taint_policy",
@@ -1024,7 +1030,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		if decision != hitl.DecisionAllow {
-			p.emitReceipt(receipt.EmitOpts{
+			emitForwardReceipt(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               "taint_policy",
@@ -1191,7 +1197,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// failed closed, never forward the partially-consumed request.
 			if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(bodyResult, buf) {
 				p.logger.LogBlocked(actx, scannerLabel, reason)
-				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+				emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               scannerLabel,
@@ -1232,7 +1238,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
-				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+				emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               scannerLabel,
@@ -1260,7 +1266,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			// Escalation can upgrade to block even in audit mode.
 			if action == config.ActionBlock && !cfg.EnforceEnabled() {
-				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+				emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               scannerLabel,
@@ -1461,7 +1467,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		RequestID:   requestID,
 		Agent:       agent,
 		AuditCtx:    actx,
-		Emit:        p.emitReceipt,
+		Emit:        emitForwardReceipt,
 	}
 	if rp := p.prepareRequestPolicyBody(r, &rpInput); rp.Block {
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
@@ -1495,7 +1501,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// in the evidence chain. Without this, a fail-closed contract
 		// runtime error is the one terminal deny in this handler that
 		// disappears from the audit trail.
-		p.emitReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 			ActionID:  actionID,
 			RequestID: requestID,
 			Agent:     agent,
@@ -1518,7 +1524,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			reason = gate.WinningSource
 		}
 		p.logger.LogBlocked(actx, blockLayerContract, reason)
-		p.emitReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 			ActionID:  actionID,
 			RequestID: requestID,
 			Agent:     agent,
@@ -1576,7 +1582,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}); envErr != nil {
 			blockedErr := newEnvelopeBlockedRequest(envErr)
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               blockedErr.layer,
@@ -1608,7 +1614,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if blockedErr, ok := blockedRequestErrorFrom(err); ok {
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               blockedErr.layer,
@@ -1724,7 +1730,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			msg := "compressed " + sseLayer + " response cannot be scanned"
 			p.logger.LogBlocked(actx, sseLayer, msg)
 			p.metrics.RecordBlocked(r.URL.Hostname(), sseLayer, time.Since(start), agentLabel)
-			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               sseLayer,
@@ -1771,7 +1777,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				p.logger.LogBlocked(actx, sseLayer, err.Error())
 				p.metrics.RecordBlocked(r.URL.Hostname(), sseLayer, time.Since(start), agentLabel)
-				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+				emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               sseLayer,
@@ -1795,7 +1801,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			duration := time.Since(start)
 			p.metrics.RecordAllowed(duration, agentLabel)
-			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionAllow,
 				Transport:           "forward",
@@ -1867,7 +1873,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			EffectiveAction:   config.ActionAllow,
 			Outcome:           captureOutcome(config.ActionAllow, true),
 		})
-		p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 			ActionID:            actionID,
 			Verdict:             config.ActionAllow,
 			Transport:           "forward",
@@ -1956,7 +1962,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					_ = resolved.Budget.RecordBytes(totalWritten)
 					duration := time.Since(start)
 					p.metrics.RecordAllowed(duration, agentLabel)
-					p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+					emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 						ActionID:            actionID,
 						Verdict:             config.ActionAllow,
 						Transport:           "forward",
@@ -1982,7 +1988,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				reason := responseSizeBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb")
 				p.logger.LogBlocked(actx, "response_scan", reason)
-				p.emitReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+				emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
 					ActionID:  actionID,
 					RequestID: requestID,
 					Agent:     agent,
@@ -2070,7 +2076,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if cardResult.SignatureVerified {
 					pattern := "verified key_id=" + cardResult.SignatureKeyID
 					p.logger.LogAnomaly(actx, scannerLabelA2ACardSignature, pattern, 0)
-					p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+					emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionAllow,
 						Layer:     scannerLabelA2ACardSignature,
@@ -2099,7 +2105,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogAnomaly(actx, "a2a_response", a2aReason, 0)
 				if a2aAction == config.ActionBlock {
 					p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_response", time.Since(start), agentLabel)
-					p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+					emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 						ActionID:            actionID,
 						Verdict:             config.ActionBlock,
 						Layer:               "a2a_response",
@@ -2270,7 +2276,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
-		p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 			ActionID:            actionID,
 			Verdict:             config.ActionAllow,
 			Transport:           "forward",
@@ -2321,7 +2327,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
-	p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+	emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
 		ActionID:            actionID,
 		Verdict:             config.ActionAllow,
 		Transport:           "forward",

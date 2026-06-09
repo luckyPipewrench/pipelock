@@ -50,6 +50,13 @@ type ProxyDecisionInput struct {
 	// "websocket". Must be non-empty.
 	Transport string
 
+	// PolicyHash is the canonical hash of the resolved policy inputs this
+	// decision was computed against, using Config.CanonicalPolicyHash() for
+	// the resolved per-agent runtime config. Accepts either the explicit
+	// "sha256:<64 lowercase hex>" wire form or a raw lowercase 64-hex digest.
+	// Decision receipts require it even when no contract pin is active.
+	PolicyHash string
+
 	// Identity fields are optional at build time; the receipt signer or
 	// flight recorder fills them before signing. Leaving them zero is
 	// allowed because the signer's outer Validate() catches a missing
@@ -99,6 +106,10 @@ type SourceSpanEvidence struct {
 // receipt signer (which knows the active key, key purpose, and chain
 // position) and writes the signed result to the flight recorder.
 func BuildProxyDecisionReceipt(in ProxyDecisionInput) (contractreceipt.EvidenceReceipt, error) {
+	policyHash, err := normalizeProxyDecisionPolicyHash(in.PolicyHash)
+	if err != nil {
+		return contractreceipt.EvidenceReceipt{}, err
+	}
 	payload := ProxyDecisionPayload(in.Decision, in.ActionType, in.Target, in.Transport)
 	if err := validateProxyDecisionFields(payload); err != nil {
 		return contractreceipt.EvidenceReceipt{}, err
@@ -113,7 +124,7 @@ func BuildProxyDecisionReceipt(in ProxyDecisionInput) (contractreceipt.EvidenceR
 		return contractreceipt.EvidenceReceipt{}, fmt.Errorf("%w: marshal payload: %w", ErrInvalidProxyDecisionInput, err)
 	}
 
-	return buildEvidenceReceiptEnvelope(in, contractreceipt.PayloadProxyDecision, body), nil
+	return buildEvidenceReceiptEnvelope(in, contractreceipt.PayloadProxyDecision, policyHash, body), nil
 }
 
 // BuildProxyDecisionWithSpansReceipt turns a runtime Decision plus
@@ -124,6 +135,10 @@ func BuildProxyDecisionWithSpansReceipt(
 	spanHMACKey []byte,
 	evidence []SourceSpanEvidence,
 ) (contractreceipt.EvidenceReceipt, error) {
+	policyHash, err := normalizeProxyDecisionPolicyHash(in.PolicyHash)
+	if err != nil {
+		return contractreceipt.EvidenceReceipt{}, err
+	}
 	spans, err := buildCommittedSourceSpans(in.EventID, spanHMACKey, evidence)
 	if err != nil {
 		return contractreceipt.EvidenceReceipt{}, err
@@ -137,12 +152,21 @@ func BuildProxyDecisionWithSpansReceipt(
 		return contractreceipt.EvidenceReceipt{}, fmt.Errorf("%w: marshal payload: %w", ErrInvalidProxyDecisionInput, err)
 	}
 
-	return buildEvidenceReceiptEnvelope(in, contractreceipt.PayloadProxyDecisionWithSpans, body), nil
+	return buildEvidenceReceiptEnvelope(in, contractreceipt.PayloadProxyDecisionWithSpans, policyHash, body), nil
+}
+
+func normalizeProxyDecisionPolicyHash(policyHash string) (string, error) {
+	normalized := contractreceipt.NormalizePolicyHash(policyHash)
+	if err := contractreceipt.ValidatePolicyHash(normalized); err != nil {
+		return "", fmt.Errorf("%w: policy_hash: %w", ErrInvalidProxyDecisionInput, err)
+	}
+	return normalized, nil
 }
 
 func buildEvidenceReceiptEnvelope(
 	in ProxyDecisionInput,
 	kind contractreceipt.PayloadKind,
+	policyHash string,
 	body []byte,
 ) contractreceipt.EvidenceReceipt {
 	receipt := contractreceipt.EvidenceReceipt{
@@ -158,6 +182,7 @@ func buildEvidenceReceiptEnvelope(
 		DelegationChain:  append([]string(nil), in.DelegationChain...),
 		ChainSeq:         in.ChainSeq,
 		ChainPrevHash:    in.ChainPrevHash,
+		PolicyHash:       policyHash,
 		Payload:          json.RawMessage(body),
 	}
 	if in.ResolvedContract != nil {

@@ -33,6 +33,14 @@ _PAYLOAD_KINDS = {
     "proxy_decision",
     "proxy_decision_with_spans",
 }
+_POLICY_HASH_PAYLOAD_KINDS = {
+    "proxy_decision",
+    "proxy_decision_with_spans",
+}
+_RESERVED_PAYLOAD_KINDS = {
+    "defer_opened",
+    "defer_resolved",
+}
 
 _ENVELOPE_FIELDS = {
     "record_type",
@@ -50,6 +58,7 @@ _ENVELOPE_FIELDS = {
     "chain_prev_hash",
     "active_manifest_hash",
     "contract_hash",
+    "policy_hash",
     "selector_id",
     "contract_generation",
     "payload",
@@ -155,6 +164,7 @@ def verify_receipt_file(path: str | Path, key_hex: str = "") -> dict[str, Any]:
             report["verdict"] = payload.get("verdict")
             report["transport"] = payload.get("transport")
         report["signer_key"] = key_hex
+        report["policy_hash"] = receipt.get("policy_hash")
         report["chain_seq"] = receipt.get("chain_seq")
         verify_evidence_receipt(receipt, key_hex)
         report["valid"] = True
@@ -192,6 +202,8 @@ def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
     if receipt.get("receipt_version") != 2:
         raise ReceiptError("EvidenceReceipt requires receipt_version=2")
     payload_kind = _require_string(receipt.get("payload_kind"), "payload_kind")
+    if payload_kind in _RESERVED_PAYLOAD_KINDS:
+        raise ReceiptError(f"payload_kind {payload_kind} is known but not implemented")
     if payload_kind not in _PAYLOAD_KINDS:
         raise ReceiptError(f"unknown payload_kind {payload_kind}")
     _validate_canonicalization(receipt.get("canonicalization"))
@@ -200,6 +212,8 @@ def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
     _require_string(receipt.get("timestamp"), "timestamp")
     _require_non_negative_int(receipt.get("chain_seq"), "chain_seq")
     _require_string(receipt.get("chain_prev_hash"), "chain_prev_hash")
+    if payload_kind in _POLICY_HASH_PAYLOAD_KINDS:
+        _require_policy_hash(receipt.get("policy_hash"), "policy_hash")
     _validate_signature(receipt, payload_kind)
     payload = _require_object(receipt.get("payload"), "payload")
     if payload_kind == "proxy_decision":
@@ -318,7 +332,7 @@ def _validate_source_span(value: Any, index: int) -> None:
         span.get("transform_profile"),
         f"source_spans[{index}].transform_profile",
     )
-    _require_sha256(span.get("policy_hash"), f"source_spans[{index}].policy_hash")
+    _require_policy_hash(span.get("policy_hash"), f"source_spans[{index}].policy_hash")
     _require_string(span.get("rule_id"), f"source_spans[{index}].rule_id")
     _require_optional_string(span.get("bundle"), f"source_spans[{index}].bundle")
     _require_optional_string(span.get("bundle_version"), f"source_spans[{index}].bundle_version")
@@ -400,6 +414,15 @@ def _require_sha256(value: Any, name: str) -> None:
     if not digest.startswith("sha256:"):
         raise ReceiptError(f"{name} must be sha256:<64 hex>")
     _require_hex(digest[len("sha256:") :], 32, name)
+
+
+def _require_policy_hash(value: Any, name: str) -> None:
+    digest = _require_string(value, name)
+    if not digest.startswith("sha256:"):
+        raise ReceiptError(f"{name} must be sha256:<64 lowercase hex>")
+    raw = digest[len("sha256:") :]
+    if len(raw) != 64 or any(ch not in "0123456789abcdef" for ch in raw):
+        raise ReceiptError(f"{name} must be sha256:<64 lowercase hex>")
 
 
 def _require_hmac_hash(value: Any, name: str) -> None:

@@ -450,8 +450,13 @@ func TestForwardScannedInput_PreRedactionDLPBlocksToolCall(t *testing.T) {
 
 	var serverBuf, logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 1)
+	h := newMCPDecisionReceiptHarness(t)
 	opts := buildTestOpts(sc, withRedaction(testRedactionMatcher()))
 	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}
+	opts.ReceiptEmitter = h.v1
+	opts.V2ReceiptEmitter = h.v2
+	opts.PolicyHash = mcpTestPolicyHash
+	opts.Transport = transportMCPStdio
 
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(msg)),
@@ -478,11 +483,18 @@ func TestForwardScannedInput_PreRedactionDLPBlocksToolCall(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "AWS Access ID") {
 		t.Fatalf("expected AWS Access ID in block log, got: %s", logBuf.String())
 	}
+	v2s := mcpV2Receipts(t, h)
+	if len(v2s) != 1 {
+		t.Fatalf("got %d v2 receipts, want 1", len(v2s))
+	}
+	if v2s[0].PolicyHash != mcpTestPolicyHash {
+		t.Fatalf("policy_hash = %q, want %q", v2s[0].PolicyHash, mcpTestPolicyHash)
+	}
 }
 
 func TestForwardScannedInput_BlocksToolCallRedactionFailure(t *testing.T) {
 	sc := testInputScanner(t)
-	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"oops"}`
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"one"},"arguments":{"prompt":"two"}}}`
 
 	var serverBuf, logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 1)

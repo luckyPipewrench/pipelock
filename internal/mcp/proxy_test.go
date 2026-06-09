@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -360,6 +361,24 @@ func TestForwardScanned_BlockAction_DualEmitsV2PolicyHash(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected injection detected")
+	}
+
+	v1s := decisionReceiptLogFor(t, h.dir)
+	if len(v1s) != 1 {
+		t.Fatalf("got %d v1 receipts, want 1", len(v1s))
+	}
+	if err := receipt.VerifyWithKey(v1s[0], hex.EncodeToString(h.pub)); err != nil {
+		t.Fatalf("v1 receipt verify: %v", err)
+	}
+	ar := v1s[0].ActionRecord
+	if ar.Verdict != config.ActionBlock {
+		t.Fatalf("v1 verdict = %q, want %q", ar.Verdict, config.ActionBlock)
+	}
+	if ar.Transport != transportMCPStdio {
+		t.Fatalf("v1 transport = %q, want %q", ar.Transport, transportMCPStdio)
+	}
+	if ar.Target != "response:42" {
+		t.Fatalf("v1 target = %q, want response:42", ar.Target)
 	}
 
 	v2s := mcpV2Receipts(t, h)

@@ -25,16 +25,33 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-type startMCPSandboxBridgeFunc func(
-	context.Context,
-	*config.Config,
-	*killswitch.Controller,
-	*audit.Logger,
-	*metrics.Metrics,
-	*receipt.Emitter,
-	*proxydecision.Emitter,
-	*envelope.Emitter,
-) (*mcpSandboxBridge, error)
+type mcpSandboxBridgeStartOptions struct {
+	Context          context.Context
+	Config           *config.Config
+	KillSwitch       *killswitch.Controller
+	AuditLogger      *audit.Logger
+	Metrics          *metrics.Metrics
+	ReceiptEmitter   *receipt.Emitter
+	V2ReceiptEmitter *proxydecision.Emitter
+	EnvelopeEmitter  *envelope.Emitter
+}
+
+type startMCPSandboxBridgeFunc func(mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error)
+
+type mcpSandboxBridgeSetupOptions struct {
+	Context          context.Context
+	GOOS             string
+	Config           *config.Config
+	KillSwitch       *killswitch.Controller
+	AuditLogger      *audit.Logger
+	Metrics          *metrics.Metrics
+	ReceiptEmitter   *receipt.Emitter
+	V2ReceiptEmitter *proxydecision.Emitter
+	EnvelopeEmitter  *envelope.Emitter
+	Stderr           io.Writer
+	LaunchConfig     *sandbox.LaunchConfig
+	StartBridge      startMCPSandboxBridgeFunc
+}
 
 type mcpSandboxBridge struct {
 	dir        string
@@ -49,48 +66,35 @@ type mcpSandboxBridge struct {
 	closed     bool
 }
 
-func setupMCPSandboxBridge(
-	ctx context.Context,
-	goos string,
-	cfg *config.Config,
-	ks *killswitch.Controller,
-	log *audit.Logger,
-	m *metrics.Metrics,
-	receiptEmitter *receipt.Emitter,
-	v2ReceiptEmitter *proxydecision.Emitter,
-	envEmitter *envelope.Emitter,
-	stderr io.Writer,
-	launchCfg *sandbox.LaunchConfig,
-	startBridge startMCPSandboxBridgeFunc,
-) (func(), error) {
-	if goos != "linux" {
-		_, _ = fmt.Fprintf(stderr,
+func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
+	if opts.GOOS != "linux" {
+		_, _ = fmt.Fprintf(opts.Stderr,
 			"pipelock: WARNING: MCP sandbox egress bridge is Linux-only; bridge-style MCP servers on %s may need separate egress controls to ensure upstream HTTP(S) traverses pipelock. "+
 				"Configure the MCP server to use pipelock's forward proxy listener via HTTPS_PROXY and disable any built-in proxy bypass.\n",
-			goos)
+			opts.GOOS)
 		return func() {}, nil
 	}
 
-	bridge, err := startBridge(ctx, cfg, ks, log, m, receiptEmitter, v2ReceiptEmitter, envEmitter)
+	bridge, err := opts.StartBridge(mcpSandboxBridgeStartOptions{
+		Context:          opts.Context,
+		Config:           opts.Config,
+		KillSwitch:       opts.KillSwitch,
+		AuditLogger:      opts.AuditLogger,
+		Metrics:          opts.Metrics,
+		ReceiptEmitter:   opts.ReceiptEmitter,
+		V2ReceiptEmitter: opts.V2ReceiptEmitter,
+		EnvelopeEmitter:  opts.EnvelopeEmitter,
+	})
 	if err != nil {
 		return nil, err
 	}
-	launchCfg.BridgeSocketPath = bridge.SocketPath()
-	_, _ = fmt.Fprintf(stderr,
+	opts.LaunchConfig.BridgeSocketPath = bridge.SocketPath()
+	_, _ = fmt.Fprintf(opts.Stderr,
 		"pipelock: MCP sandbox egress bridge enabled; forward_proxy forced on for sandboxed MCP egress (child loopback -> parent scanner)\n")
 	return bridge.Close, nil
 }
 
-func startMCPSandboxBridge(
-	ctx context.Context,
-	cfg *config.Config,
-	ks *killswitch.Controller,
-	log *audit.Logger,
-	m *metrics.Metrics,
-	receiptEmitter *receipt.Emitter,
-	v2ReceiptEmitter *proxydecision.Emitter,
-	envEmitter *envelope.Emitter,
-) (*mcpSandboxBridge, error) {
+func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error) {
 	dir, err := os.MkdirTemp("", "pl-mcp-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating MCP sandbox bridge dir: %w", err)
@@ -99,7 +103,7 @@ func startMCPSandboxBridge(
 	bridge := &mcpSandboxBridge{dir: dir}
 	bridge.socketPath = sandbox.ProxySocketPath(dir)
 
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "unix", bridge.socketPath)
+	ln, err := (&net.ListenConfig{}).Listen(opts.Context, "unix", bridge.socketPath)
 	if err != nil {
 		bridge.Close()
 		return nil, fmt.Errorf("MCP sandbox bridge listen: %w", err)
@@ -111,25 +115,25 @@ func startMCPSandboxBridge(
 		return nil, fmt.Errorf("MCP sandbox bridge socket permissions: %w", err)
 	}
 
-	egressCfg := cfg.Clone()
+	egressCfg := opts.Config.Clone()
 	egressCfg.ForwardProxy.Enabled = true
 	bridge.scanner = scanner.New(egressCfg)
-	if m == nil {
-		m = metrics.New()
+	if opts.Metrics == nil {
+		opts.Metrics = metrics.New()
 	}
 	bridge.scanner.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
-		emitDLPWarn(log, m, receiptEmitter, ctx, patternName, severity)
+		emitDLPWarn(opts.AuditLogger, opts.Metrics, opts.ReceiptEmitter, ctx, patternName, severity)
 	})
 
 	p, err := proxy.New(
 		egressCfg,
-		log,
+		opts.AuditLogger,
 		bridge.scanner,
-		m,
-		proxy.WithKillSwitch(ks),
-		proxy.WithReceiptEmitter(receiptEmitter),
-		proxy.WithV2ReceiptEmitter(v2ReceiptEmitter),
-		proxy.WithEnvelopeEmitter(envEmitter),
+		opts.Metrics,
+		proxy.WithKillSwitch(opts.KillSwitch),
+		proxy.WithReceiptEmitter(opts.ReceiptEmitter),
+		proxy.WithV2ReceiptEmitter(opts.V2ReceiptEmitter),
+		proxy.WithEnvelopeEmitter(opts.EnvelopeEmitter),
 	)
 	if err != nil {
 		bridge.Close()
@@ -140,7 +144,7 @@ func startMCPSandboxBridge(
 
 	bridge.acceptDone = make(chan struct{})
 	go func() {
-		<-ctx.Done()
+		<-opts.Context.Done()
 		bridge.Close()
 	}()
 	go func() {

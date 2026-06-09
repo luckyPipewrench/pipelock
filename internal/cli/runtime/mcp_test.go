@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -63,6 +64,29 @@ func TestSafeWriter(t *testing.T) {
 	}
 	if buf.String() != string(data) {
 		t.Errorf("expected %q, got %q", string(data), buf.String())
+	}
+}
+
+func TestMCPReceiptParityOpts(t *testing.T) {
+	r := &receipt.Emitter{}
+	v2 := &proxydecision.Emitter{}
+
+	opts := mcpReceiptParityOpts(mcp.MCPProxyOpts{
+		ConfigHash: "config-hash",
+		PolicyHash: "old-policy-hash",
+	}, r, v2, "policy-hash")
+
+	if opts.ReceiptEmitter != r {
+		t.Fatal("receipt emitter not threaded")
+	}
+	if opts.V2ReceiptEmitter != v2 {
+		t.Fatal("v2 receipt emitter not threaded")
+	}
+	if opts.PolicyHash != "policy-hash" {
+		t.Fatalf("PolicyHash = %q, want policy-hash", opts.PolicyHash)
+	}
+	if opts.ConfigHash != "config-hash" {
+		t.Fatalf("ConfigHash = %q, want config-hash", opts.ConfigHash)
 	}
 }
 

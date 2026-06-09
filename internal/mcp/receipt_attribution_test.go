@@ -4,11 +4,16 @@
 package mcp
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -270,6 +275,41 @@ func TestEmitMCPToolReceiptIncludesAttribution(t *testing.T) {
 	}
 	if record.Severity != config.SeverityHigh {
 		t.Fatalf("severity = %q, want %q", record.Severity, config.SeverityHigh)
+	}
+}
+
+func TestEmitMCPToolReceiptLogsV2EmitError(t *testing.T) {
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: failingMCPV2Recorder{},
+		Signer:   proxydecision.NewKeyedSigner(priv),
+	})
+	if v2 == nil {
+		t.Fatal("expected v2 emitter")
+	}
+
+	var log bytes.Buffer
+	emitMCPToolReceipt(mcpToolReceiptOpts{
+		Emitter:    emitter,
+		V2Emitter:  v2,
+		Log:        &log,
+		Transport:  transportMCPStdio,
+		ActionID:   "mcp-tool-v2-error",
+		MCPMethod:  methodToolsCall,
+		ToolName:   "shell",
+		Verdict:    config.ActionBlock,
+		Layer:      mcpReceiptLayerPolicy,
+		Pattern:    "dangerous-shell",
+		Severity:   config.SeverityHigh,
+		PolicyHash: mcpTestPolicyHash,
+	})
+	if !strings.Contains(log.String(), "receipt emission failed") ||
+		!strings.Contains(log.String(), "v2 record failed") {
+		t.Fatalf("log = %q, want v2 receipt failure", log.String())
 	}
 }
 

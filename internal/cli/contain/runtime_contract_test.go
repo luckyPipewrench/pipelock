@@ -528,6 +528,39 @@ func TestStepWriteAgentToolConfigs_RejectsFileSymlinkSwapBeforeChown(t *testing.
 	}
 }
 
+func TestChownAgentConfigFile_SecurityBranches(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "config")
+	if err := os.WriteFile(file, []byte("config"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Run("lchown error surfaces", func(t *testing.T) {
+		env2 := *env
+		env2.lchown = func(string, int, int) error { return errAnyChown() }
+		if err := chownAgentConfigFile(&env2, file, 988, 988); err == nil || !strings.Contains(err.Error(), "operation not permitted") {
+			t.Fatalf("expected lchown error, got %v", err)
+		}
+	})
+
+	t.Run("missing leaf surfaces stat error", func(t *testing.T) {
+		if err := chownAgentConfigFile(env, filepath.Join(dir, "missing"), 988, 988); err == nil || !strings.Contains(err.Error(), "stat") {
+			t.Fatalf("expected stat error, got %v", err)
+		}
+	})
+
+	t.Run("non-regular leaf rejected", func(t *testing.T) {
+		subdir := filepath.Join(dir, "subdir")
+		if err := os.Mkdir(subdir, 0o700); err != nil {
+			t.Fatalf("mkdir subdir: %v", err)
+		}
+		if err := chownAgentConfigFile(env, subdir, 988, 988); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("expected non-regular rejection, got %v", err)
+		}
+	})
+}
+
 func TestEnsureAgentConfigDir_RejectsSymlinkParent(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	if err := os.MkdirAll(env.agentHome, 0o750); err != nil {

@@ -7,11 +7,13 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -92,6 +94,7 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 	mediaPolicy := &config.MediaPolicy{Enabled: &mediaEnabled}
 	redactionCfg := MCPRedactionConfig{Required: true, Profile: "strict"}
 	staleMediaEnabled := false
+	v2Emitter := &proxydecision.Emitter{}
 
 	opts := MCPProxyOpts{
 		Scanner:  staleSc,
@@ -100,17 +103,19 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 			Enabled: false,
 			Action:  config.ActionBlock,
 		},
-		ToolCfg:       &tools.ToolScanConfig{Action: config.ActionBlock},
-		PolicyCfg:     &policy.Config{Action: config.ActionWarn},
-		ChainMatcher:  chains.New(&staleCfg.ToolChainDetection),
-		AdaptiveCfg:   &config.AdaptiveEnforcement{Enabled: false},
-		TaintCfg:      &config.TaintConfig{Enabled: false},
-		CEE:           &CEEDeps{Config: &staleCfg.CrossRequestDetection},
-		RedirectRT:    &RedirectRuntime{FetchEndpoint: "http://127.0.0.1:9999/fetch"},
-		ProvenanceCfg: &config.MCPToolProvenance{Enabled: false},
-		A2ACfg:        &config.A2AScanning{Enabled: false},
-		MediaPolicy:   &config.MediaPolicy{Enabled: &staleMediaEnabled},
-		RedactProfile: "stale",
+		ToolCfg:          &tools.ToolScanConfig{Action: config.ActionBlock},
+		PolicyCfg:        &policy.Config{Action: config.ActionWarn},
+		ChainMatcher:     chains.New(&staleCfg.ToolChainDetection),
+		AdaptiveCfg:      &config.AdaptiveEnforcement{Enabled: false},
+		TaintCfg:         &config.TaintConfig{Enabled: false},
+		CEE:              &CEEDeps{Config: &staleCfg.CrossRequestDetection},
+		RedirectRT:       &RedirectRuntime{FetchEndpoint: "http://127.0.0.1:9999/fetch"},
+		ProvenanceCfg:    &config.MCPToolProvenance{Enabled: false},
+		A2ACfg:           &config.A2AScanning{Enabled: false},
+		MediaPolicy:      &config.MediaPolicy{Enabled: &staleMediaEnabled},
+		RedactProfile:    "stale",
+		V2ReceiptEmitter: &proxydecision.Emitter{},
+		PolicyHash:       "stale-policy-hash",
 
 		ScannerFn:       func() *scanner.Scanner { return sc },
 		InputCfgFn:      func() *InputScanConfig { return inputCfg },
@@ -126,6 +131,10 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 		A2ACfgFn:        func() *config.A2AScanning { return a2aCfg },
 		MediaPolicyFn:   func() *config.MediaPolicy { return mediaPolicy },
 		RedactionCfgFn:  func() MCPRedactionConfig { return redactionCfg },
+		V2ReceiptEmitterFn: func() *proxydecision.Emitter {
+			return v2Emitter
+		},
+		PolicyHashFn: func() string { return "live-policy-hash" },
 	}
 
 	if opts.scanner() != sc {
@@ -170,6 +179,12 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 	if got := opts.redactionConfig(); got != redactionCfg {
 		t.Fatalf("redaction resolver = %+v, want %+v", got, redactionCfg)
 	}
+	if opts.v2ReceiptEmitter() != v2Emitter {
+		t.Fatal("v2 receipt resolver did not use V2ReceiptEmitterFn")
+	}
+	if got := opts.receiptPolicyHash(); got != "live-policy-hash" {
+		t.Fatalf("policy hash resolver = %q, want live-policy-hash", got)
+	}
 }
 
 func TestMCPProxyOptsResolversFallbackToStaticValues(t *testing.T) {
@@ -194,23 +209,26 @@ func TestMCPProxyOptsResolversFallbackToStaticValues(t *testing.T) {
 	redactMatcher := redact.NewDefaultMatcher()
 	redactLimits := redact.DefaultLimits().ToLimits()
 	redactProfile := "strict"
+	v2Emitter := &proxydecision.Emitter{}
 	opts := MCPProxyOpts{
-		Scanner:        sc,
-		InputCfg:       inputCfg,
-		RequestBodyCfg: requestBodyCfg,
-		ToolCfg:        toolCfg,
-		PolicyCfg:      policyCfg,
-		ChainMatcher:   chainMatcher,
-		AdaptiveCfg:    adaptiveCfg,
-		TaintCfg:       taintCfg,
-		CEE:            cee,
-		RedirectRT:     redirectRT,
-		ProvenanceCfg:  provenanceCfg,
-		A2ACfg:         a2aCfg,
-		MediaPolicy:    mediaPolicy,
-		RedactMatcher:  redactMatcher,
-		RedactLimits:   redactLimits,
-		RedactProfile:  redactProfile,
+		Scanner:          sc,
+		InputCfg:         inputCfg,
+		RequestBodyCfg:   requestBodyCfg,
+		ToolCfg:          toolCfg,
+		PolicyCfg:        policyCfg,
+		ChainMatcher:     chainMatcher,
+		AdaptiveCfg:      adaptiveCfg,
+		TaintCfg:         taintCfg,
+		CEE:              cee,
+		RedirectRT:       redirectRT,
+		ProvenanceCfg:    provenanceCfg,
+		A2ACfg:           a2aCfg,
+		MediaPolicy:      mediaPolicy,
+		RedactMatcher:    redactMatcher,
+		RedactLimits:     redactLimits,
+		RedactProfile:    redactProfile,
+		V2ReceiptEmitter: v2Emitter,
+		PolicyHash:       "static-policy-hash",
 	}
 
 	if opts.scanner() != sc || opts.inputCfg() != inputCfg || opts.toolCfg() != toolCfg ||
@@ -224,5 +242,19 @@ func TestMCPProxyOptsResolversFallbackToStaticValues(t *testing.T) {
 	if got := opts.redactionConfig(); got.Matcher != redactMatcher || got.Limits != redactLimits || got.Profile != redactProfile {
 		t.Fatalf("redaction fallback = %+v, want matcher=%p limits=%+v profile=%q",
 			got, redactMatcher, redactLimits, redactProfile)
+	}
+	if opts.v2ReceiptEmitter() != v2Emitter {
+		t.Fatal("v2 receipt fallback returned unexpected value")
+	}
+	if got := opts.receiptPolicyHash(); got != "static-policy-hash" {
+		t.Fatalf("policy hash fallback = %q, want static-policy-hash", got)
+	}
+	stamped := opts.withReceiptPolicyHash(receipt.EmitOpts{Target: "tool"})
+	if stamped.PolicyHash != "static-policy-hash" {
+		t.Fatalf("withReceiptPolicyHash = %q, want static-policy-hash", stamped.PolicyHash)
+	}
+	preserved := opts.withReceiptPolicyHash(receipt.EmitOpts{PolicyHash: "pre-set"})
+	if preserved.PolicyHash != "pre-set" {
+		t.Fatalf("withReceiptPolicyHash overwrote existing hash: %q", preserved.PolicyHash)
 	}
 }

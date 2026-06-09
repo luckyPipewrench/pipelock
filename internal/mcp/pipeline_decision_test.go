@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +116,12 @@ func mcpV2Receipts(t *testing.T, h *mcpDecisionReceiptHarness) []contractreceipt
 		}
 	}
 	return out
+}
+
+type failingMCPV2Recorder struct{}
+
+func (failingMCPV2Recorder) Record(recorder.Entry) error {
+	return errors.New("v2 record failed")
 }
 
 func TestEmitMCPDecision_NilEmittersNoOp(t *testing.T) {
@@ -339,6 +346,34 @@ func TestEmitMCPDecision_DualEmitsV2WithPolicyHash(t *testing.T) {
 	}
 }
 
+func TestEmitMCPDecision_V2EmitErrorSurfacesAfterV1(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: failingMCPV2Recorder{},
+		Signer:   proxydecision.NewKeyedSigner(priv),
+	})
+	if v2 == nil {
+		t.Fatal("expected v2 emitter")
+	}
+
+	_, err = EmitMCPDecision(h.v1, v2, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:   "mcp-v2-error",
+			Verdict:    config.ActionBlock,
+			Transport:  transportMCPStdio,
+			Target:     "response:2",
+			PolicyHash: mcpTestPolicyHash,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "v2 record failed") {
+		t.Fatalf("EmitMCPDecision error = %v, want v2 record failure", err)
+	}
+}
+
 // TestMCPV2DecisionFromReceipt_SkipsEmptyTarget proves the helper refuses to
 // build a v2 payload without a target, mirroring the forward proxy's
 // v2DecisionFromOpts. The v2 emitter's validator requires a non-empty target,
@@ -362,5 +397,70 @@ func TestMCPV2DecisionFromReceipt_SkipsEmptyTarget(t *testing.T) {
 	}
 	if d.Target != "fetch_url" {
 		t.Fatalf("target = %q, want fetch_url", d.Target)
+	}
+}
+
+func TestMCPV2DecisionFromReceipt_ProvenanceBranches(t *testing.T) {
+	kill, ok := mcpV2DecisionFromReceipt(receipt.EmitOpts{
+		Target:  "tool",
+		Verdict: config.ActionBlock,
+		Layer:   "kill_switch",
+		Pattern: "kill",
+	})
+	if !ok {
+		t.Fatal("expected kill-switch decision")
+	}
+	if kill.WinningSource != proxydecision.SourceKillSwitch {
+		t.Fatalf("kill winning_source = %q, want kill_switch", kill.WinningSource)
+	}
+	if strings.Join(kill.PolicySources, ",") != proxydecision.SourceKillSwitch {
+		t.Fatalf("kill policy_sources = %v, want kill_switch", kill.PolicySources)
+	}
+	if kill.RuleID != "kill" {
+		t.Fatalf("kill RuleID = %q, want kill", kill.RuleID)
+	}
+
+	contractDecision, ok := mcpV2DecisionFromReceipt(receipt.EmitOpts{
+		Target:                "tool",
+		Verdict:               config.ActionBlock,
+		ContractLiveVerdict:   config.ActionAllow,
+		ContractPolicySources: []string{"manifest"},
+		ContractRuleID:        "rule-1",
+		ActiveManifestHash:    "manifest-hash",
+		ContractHash:          "contract-hash",
+		ContractSelectorID:    "selector",
+		ContractGeneration:    7,
+	})
+	if !ok {
+		t.Fatal("expected contract decision")
+	}
+	if contractDecision.WinningSource != proxydecision.SourceContract {
+		t.Fatalf("contract winning_source = %q, want contract", contractDecision.WinningSource)
+	}
+	if !stringSliceContains(contractDecision.PolicySources, "manifest") ||
+		!stringSliceContains(contractDecision.PolicySources, proxydecision.SourceContract) {
+		t.Fatalf("contract policy_sources = %v, want manifest and contract", contractDecision.PolicySources)
+	}
+	if contractDecision.RuleID != "rule-1" || contractDecision.LiveVerdict != config.ActionAllow {
+		t.Fatalf("contract rule/live = %q/%q, want rule-1/allow", contractDecision.RuleID, contractDecision.LiveVerdict)
+	}
+	if contractDecision.ActiveManifestHash != "manifest-hash" ||
+		contractDecision.ContractHash != "contract-hash" ||
+		contractDecision.SelectorID != "selector" ||
+		contractDecision.ContractGeneration != 7 {
+		t.Fatalf("contract envelope not preserved: %+v", contractDecision)
+	}
+
+	withContractSource, ok := mcpV2DecisionFromReceipt(receipt.EmitOpts{
+		Target:                "tool",
+		Verdict:               config.ActionBlock,
+		ContractWinningSource: proxydecision.SourceContract,
+		ContractPolicySources: []string{proxydecision.SourceContract},
+	})
+	if !ok {
+		t.Fatal("expected contract-source decision")
+	}
+	if len(withContractSource.PolicySources) != 1 {
+		t.Fatalf("contract source duplicated: %v", withContractSource.PolicySources)
 	}
 }

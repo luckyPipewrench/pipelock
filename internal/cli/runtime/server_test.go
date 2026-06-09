@@ -494,6 +494,9 @@ func TestServer_RuntimeHelperFallbacksAndCopies(t *testing.T) {
 	if got := s.liveReceiptEmitter(); got != nil {
 		t.Fatalf("liveReceiptEmitter without proxy = %p, want nil", got)
 	}
+	if got := s.liveV2ReceiptEmitter(); got != nil {
+		t.Fatalf("liveV2ReceiptEmitter without proxy = %p, want nil", got)
+	}
 	if got := s.liveEnvelopeEmitter(); got != nil {
 		t.Fatalf("liveEnvelopeEmitter without proxy = %p, want nil", got)
 	}

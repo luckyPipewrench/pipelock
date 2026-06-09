@@ -1354,7 +1354,7 @@ git_protection:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable git protection |
 | `allowed_branches` | `["feature/*", "fix/*", "main", "master"]` | Branch name patterns |
-| `allowed_push_repos` | `[]` | Optional proxy-enforced allowlist for visible Git smart-HTTP pushes (`git-receive-pack`). Entries must be host-qualified `host/owner/repo` values or globs such as `github.com/acme/*`; host-wide `host/*` entries such as `gitlab.com/*` allow every visible repo path on that host. Bare `owner/repo` entries are rejected. Matching is case-insensitive. When `git_protection.enabled` is true, an empty repo allowlist blocks visible pushes fail-closed; keep `git_protection.enabled` false to disable repo push gating. Non-intercepted HTTPS CONNECT exposes only the host; enable TLS interception for HTTPS repo-path enforcement. SSH pushes are opaque to the proxy and are not gated. |
+| `allowed_push_repos` | `[]` | Optional proxy-enforced allowlist for visible Git smart-HTTP pushes (`git-receive-pack`). Supported patterns include exact repos (`host/owner/repo`), owner globs (`github.com/acme/*`), and host-wide allowlists (`gitlab.com/*`). Bare `owner/repo` entries are rejected. Matching is case-insensitive. When `git_protection.enabled` is true and the allowlist is empty, visible pushes are blocked (fail-closed). Non-intercepted HTTPS CONNECT exposes only the host; enable TLS interception for repo-path enforcement. SSH pushes are opaque to the proxy and are not gated. |
 | `pre_push_scan` | `true` | Scan diffs before push |
 
 ## Logging

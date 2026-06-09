@@ -848,7 +848,19 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err)
 	case errors.Is(err, conductor.ErrPayloadTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, err)
-	case errors.Is(err, conductor.ErrExpired):
+	case errors.Is(err, conductor.ErrUnsupportedSchemaVersion), errors.Is(err, conductor.ErrInvalidHash),
+		errors.Is(err, conductor.ErrInvalidSequenceRange), errors.Is(err, conductor.ErrInvalidDroppedAccounting),
+		errors.Is(err, conductor.ErrInvalidMinVersion):
+		// Client-input validation sentinels for a malformed-but-well-formed
+		// bundle structure. PolicyBundle.Validate produces these on publish;
+		// they are caller faults, not internal errors. Mirrors the
+		// audit-ingest path (writeAuditIngestError) which maps the same
+		// structural sentinels to 400.
+		writeError(w, http.StatusBadRequest, err)
+	case errors.Is(err, conductor.ErrExpired), errors.Is(err, conductor.ErrHashMismatch):
+		// Semantically invalid but well-formed: an expired window or a hash
+		// that does not match the supplied payload. Mirrors the audit-ingest
+		// path which maps ErrHashMismatch to 422.
 		writeError(w, http.StatusUnprocessableEntity, err)
 	case errors.Is(err, conductor.ErrInvalidRollback), errors.Is(err, conductor.ErrInvalidState),
 		errors.Is(err, conductor.ErrInvalidAudience), errors.Is(err, conductor.ErrMissingField),

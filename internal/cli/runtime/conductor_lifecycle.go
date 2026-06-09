@@ -87,6 +87,13 @@ func (s *Server) teardownConductor(reason string) {
 	// hasConductorRuntime() check never sees the closed handle.
 	producer := s.conductorProducer
 	s.conductorProducer = nil
+	// Take ownership of the audit queue too so its single-writer lock is
+	// released on teardown (and only once). On the Apache-only core build the
+	// field is always nil; on enterprise it holds an *auditbatcher.Queue, which
+	// satisfies io.Closer. Asserting the interface keeps this untagged file free
+	// of an enterprise import.
+	auditQueue := s.conductorAuditQueue
+	s.conductorAuditQueue = nil
 	s.conductorLifeMu.Unlock()
 
 	// Stop the follower pollers. Their Run loops return context.Canceled, which
@@ -103,6 +110,11 @@ func (s *Server) teardownConductor(reason string) {
 	}
 	if producer != nil {
 		_ = producer.Close()
+	}
+	// Release the durable audit queue's single-writer lock after the producer
+	// stops writing to it.
+	if closer, ok := auditQueue.(interface{ Close() error }); ok && closer != nil {
+		_ = closer.Close()
 	}
 	if s.opts.Stderr != nil {
 		_, _ = fmt.Fprintf(s.opts.Stderr,

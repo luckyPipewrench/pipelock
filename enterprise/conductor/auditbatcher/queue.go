@@ -8,10 +8,14 @@
 // being fire-and-forget.
 //
 // Concurrency model: a Queue is SINGLE-PROCESS per directory. The mutex
-// serializes access within one process; nothing prevents a second pipelock
-// process from opening the same dir and corrupting the queue via concurrent
-// renames. Operators must enforce one writer per durable_audit_queue_dir via
-// systemd, k8s leadership election, or simple deployment discipline.
+// serializes access within one process; an exclusive advisory flock on a
+// .lock file under the queue root (taken at Open, released at Close or on
+// process death) enforces single-writer ACROSS processes. A second Open on the
+// same dir fails closed with ErrQueueLocked rather than interleaving
+// Enqueue/Claim/Drop across two independent mutexes on a shared volume.
+// Operators should still scope one writer per durable_audit_queue_dir, but a
+// botched rollout that briefly runs two pods now fails closed instead of
+// corrupting the queue.
 package auditbatcher
 
 import (
@@ -44,10 +48,13 @@ const (
 	recordExt              = ".json"
 )
 
+const lockFileName = ".lock"
+
 var (
 	ErrQueueEmpty    = errors.New("auditbatcher: queue empty")
 	ErrQueueFull     = errors.New("auditbatcher: queue full")
 	ErrCorruptRecord = errors.New("auditbatcher: corrupt record")
+	ErrQueueLocked   = errors.New("auditbatcher: queue already locked by another process")
 )
 
 type Config struct {
@@ -64,6 +71,11 @@ type Batch struct {
 type Lease struct {
 	ID    string
 	Batch Batch
+	// RetryCount is the number of prior delivery attempts that released this
+	// record back to pending. A freshly enqueued record leases with 0. The
+	// transport uses it to enforce a max-delivery-attempts ceiling before
+	// dead-lettering a poison batch.
+	RetryCount uint64
 }
 
 type Stats struct {
@@ -81,6 +93,11 @@ type Queue struct {
 	maxPayloadBytes uint64
 	now             func() time.Time
 	mu              sync.Mutex
+	// lockFile holds the exclusive advisory lock on the queue root for the
+	// Queue's lifetime. The OS releases the flock automatically when this fd is
+	// closed OR when the owning process dies, so a crashed prior owner never
+	// deadlocks a fresh Open.
+	lockFile *os.File
 }
 
 type diskRecord struct {
@@ -110,6 +127,10 @@ func Open(cfg Config) (*Queue, error) {
 	if err != nil {
 		return nil, err
 	}
+	lockFile, err := acquireQueueLock(dir)
+	if err != nil {
+		return nil, err
+	}
 	q := &Queue{
 		dir:             dir,
 		pendingDir:      pendingDir,
@@ -118,7 +139,16 @@ func Open(cfg Config) (*Queue, error) {
 		maxPending:      cfg.MaxPending,
 		maxPayloadBytes: cfg.MaxPayloadBytes,
 		now:             func() time.Time { return time.Now().UTC() },
+		lockFile:        lockFile,
 	}
+	// Any failure after the lock is held must release it, otherwise a failed
+	// Open leaves the queue dir locked until process exit.
+	opened := false
+	defer func() {
+		if !opened {
+			_ = q.releaseLock()
+		}
+	}()
 	// Sweep .tmp-* debris from any prior crash mid-write. Live writes use
 	// CreateTemp+rename; only crashes leave .tmp-* files behind, and they
 	// otherwise accumulate forever (listRecordFiles correctly ignores them,
@@ -133,7 +163,57 @@ func Open(cfg Config) (*Queue, error) {
 	if err := q.recoverInflightLocked(); err != nil {
 		return nil, err
 	}
+	opened = true
 	return q, nil
+}
+
+// acquireQueueLock takes an exclusive, non-blocking advisory lock on a .lock
+// file under the queue root. A second process opening the same dir fails closed
+// with ErrQueueLocked rather than silently interleaving Enqueue/Claim/Drop
+// across two independent in-process mutexes (which loses or duplicates audit
+// batches on a shared volume). The flock is released when the fd is closed
+// (Close) or when the holding process dies, so a crash never deadlocks.
+func acquireQueueLock(dir string) (*os.File, error) {
+	path := filepath.Join(filepath.Clean(dir), lockFileName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, fileMode)
+	if err != nil {
+		return nil, fmt.Errorf("auditbatcher: open queue lock %s: %w", path, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("%w: %s", ErrQueueLocked, path)
+		}
+		return nil, fmt.Errorf("auditbatcher: lock queue %s: %w", path, err)
+	}
+	return f, nil
+}
+
+// Close releases the exclusive queue lock so another process may Open the same
+// directory. It is safe to call once; subsequent calls are no-ops. In-flight
+// callers must stop using the Queue before Close.
+func (q *Queue) Close() error {
+	if q == nil {
+		return errors.New("auditbatcher: nil queue")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.releaseLock()
+}
+
+func (q *Queue) releaseLock() error {
+	if q.lockFile == nil {
+		return nil
+	}
+	f := q.lockFile
+	q.lockFile = nil
+	// Closing the fd implicitly releases the flock; an explicit Flock(LOCK_UN)
+	// first makes the release deterministic even if the fd is later dup'd.
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("auditbatcher: close queue lock: %w", err)
+	}
+	return nil
 }
 
 func (q *Queue) Enqueue(batch Batch) (string, error) {
@@ -218,7 +298,7 @@ func (q *Queue) Claim() (*Lease, error) {
 			}
 			continue
 		}
-		return &Lease{ID: id, Batch: Batch{Envelope: record.Envelope, Payload: record.Payload}}, nil
+		return &Lease{ID: id, Batch: Batch{Envelope: record.Envelope, Payload: record.Payload}, RetryCount: record.RetryCount}, nil
 	}
 }
 

@@ -116,6 +116,15 @@ func TestHandlerMapsStoreErrors(t *testing.T) {
 		{name: "rollback", err: ErrUnsupportedRollback, code: http.StatusConflict},
 		{name: "too-large", err: conductor.ErrPayloadTooLarge, code: http.StatusRequestEntityTooLarge},
 		{name: "expired", err: conductor.ErrExpired, code: http.StatusUnprocessableEntity},
+		// Client-input validation sentinels produced by PolicyBundle.Validate
+		// must map to 4xx, never fall through to 500. Mirrors the audit-ingest
+		// path's choices: malformed structure -> 400, hash mismatch -> 422.
+		{name: "schema-version", err: conductor.ErrUnsupportedSchemaVersion, code: http.StatusBadRequest, body: conductor.ErrUnsupportedSchemaVersion.Error()},
+		{name: "invalid-hash", err: conductor.ErrInvalidHash, code: http.StatusBadRequest, body: conductor.ErrInvalidHash.Error()},
+		{name: "invalid-sequence-range", err: conductor.ErrInvalidSequenceRange, code: http.StatusBadRequest, body: conductor.ErrInvalidSequenceRange.Error()},
+		{name: "invalid-dropped-accounting", err: conductor.ErrInvalidDroppedAccounting, code: http.StatusBadRequest, body: conductor.ErrInvalidDroppedAccounting.Error()},
+		{name: "invalid-min-version", err: conductor.ErrInvalidMinVersion, code: http.StatusBadRequest, body: conductor.ErrInvalidMinVersion.Error()},
+		{name: "hash-mismatch", err: conductor.ErrHashMismatch, code: http.StatusUnprocessableEntity, body: conductor.ErrHashMismatch.Error()},
 		{name: "internal", err: internalErr, code: http.StatusInternalServerError, body: "internal server error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -305,6 +305,10 @@ func produceSignedBatch(ctx context.Context, queueDir, recorderDir string, opts 
 	if err != nil {
 		return auditbatcher.Batch{}, fmt.Errorf("open audit queue: %w", err)
 	}
+	// Release the queue's single-writer lock when the bootstrap proof completes,
+	// so a repeated bootstrap (same process, same queue dir) does not fail with
+	// ErrQueueLocked.
+	defer func() { _ = queue.Close() }()
 	producer, err := auditbatcher.NewProducer(auditbatcher.ProducerConfig{
 		Queue:             queue,
 		OrgID:             identity.OrgID,

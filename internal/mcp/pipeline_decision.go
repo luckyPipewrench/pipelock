@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -76,16 +77,26 @@ type MCPDecision struct {
 // leave Envelope nil when injection should skip.
 func EmitMCPDecision(
 	receiptEmitter *receipt.Emitter,
+	v2Emitter *proxydecision.Emitter,
 	envelopeEmitter *envelope.Emitter,
 	d MCPDecision,
 ) (outbound []byte, err error) {
 	outbound = d.InboundMsg
 
+	v1Emitted := false
 	if receiptEmitter != nil && d.Receipt.ActionID != "" {
 		err = receiptEmitter.Emit(d.Receipt)
+		v1Emitted = err == nil
 		// Intentional: continue to envelope injection even on receipt
 		// error. The two stages are independent at today's callsites
 		// and coupling them here would break parity.
+	}
+	if v1Emitted && v2Emitter != nil {
+		if v2Decision, ok := mcpV2DecisionFromReceipt(d.Receipt); ok {
+			if v2Err := v2Emitter.Emit(v2Decision); v2Err != nil && err == nil {
+				err = v2Err
+			}
+		}
 	}
 
 	if envelopeEmitter != nil && d.Envelope != nil && d.InboundMsg != nil {
@@ -97,4 +108,62 @@ func EmitMCPDecision(
 	}
 
 	return outbound, err
+}
+
+// mcpV2DecisionFromReceipt derives the v2 proxy_decision input from the v1
+// EmitOpts. The returned bool is false when the decision cannot form a valid v2
+// payload (empty target), so the caller skips emission rather than letting the
+// emitter's validator reject a malformed receipt. This mirrors the forward
+// proxy's v2DecisionFromOpts and keeps the v2 stream free of validation churn
+// for tool calls that arrive without a tool name.
+func mcpV2DecisionFromReceipt(opts receipt.EmitOpts) (proxydecision.Decision, bool) {
+	if opts.Target == "" {
+		return proxydecision.Decision{}, false
+	}
+	d := proxydecision.Decision{
+		ActionType: "mcp_tool_call",
+		Transport:  opts.Transport,
+		Target:     opts.Target,
+		Verdict:    receipt.NormalizeVerdict(opts.Verdict),
+		PolicyHash: opts.PolicyHash,
+		RuleID:     opts.Pattern,
+		PolicySources: []string{
+			proxydecision.SourceScanner,
+		},
+		WinningSource: proxydecision.SourceScanner,
+	}
+	if opts.Layer == "kill_switch" {
+		d.PolicySources = []string{proxydecision.SourceKillSwitch}
+		d.WinningSource = proxydecision.SourceKillSwitch
+	}
+	if opts.ContractWinningSource != "" ||
+		len(opts.ContractPolicySources) > 0 ||
+		opts.ActiveManifestHash != "" ||
+		opts.ContractHash != "" ||
+		opts.ContractSelectorID != "" {
+		d.WinningSource = opts.ContractWinningSource
+		if d.WinningSource == "" {
+			d.WinningSource = proxydecision.SourceContract
+		}
+		d.PolicySources = append([]string{}, opts.ContractPolicySources...)
+		if !stringSliceContains(d.PolicySources, proxydecision.SourceContract) {
+			d.PolicySources = append(d.PolicySources, proxydecision.SourceContract)
+		}
+		d.RuleID = opts.ContractRuleID
+		d.LiveVerdict = receipt.NormalizeVerdict(opts.ContractLiveVerdict)
+		d.ActiveManifestHash = opts.ActiveManifestHash
+		d.ContractHash = opts.ContractHash
+		d.SelectorID = opts.ContractSelectorID
+		d.ContractGeneration = opts.ContractGeneration
+	}
+	return d, true
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

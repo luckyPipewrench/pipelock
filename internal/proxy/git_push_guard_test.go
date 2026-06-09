@@ -57,7 +57,7 @@ func TestGitPushRepoFromURL(t *testing.T) {
 func TestEvaluateGitPushAllowlist(t *testing.T) {
 	cfg := config.GitProtection{
 		Enabled:          true,
-		AllowedPushRepos: []string{"github.com/acme/private", "gitlab.com/group/*"},
+		AllowedPushRepos: []string{"github.com/acme/private", "gitlab.com/group/*", "example.com/*"},
 	}
 	blockedURL, err := url.Parse("https://github.com/acme/public.git/git-receive-pack")
 	if err != nil {
@@ -72,6 +72,30 @@ func TestEvaluateGitPushAllowlist(t *testing.T) {
 	}
 	if got := evaluateGitPushAllowlist(cfg, allowedURL); got.Block {
 		t.Fatalf("expected allowlisted push to pass, got %+v", got)
+	}
+	hostWideURL, err := url.Parse("https://example.com/acme/project.git/git-receive-pack")
+	if err != nil {
+		t.Fatalf("parse host-wide URL: %v", err)
+	}
+	if got := evaluateGitPushAllowlist(cfg, hostWideURL); got.Block {
+		t.Fatalf("expected host-wide allowlisted push to pass, got %+v", got)
+	}
+	nestedGroupURL, err := url.Parse("https://gitlab.com/group/subgroup/project.git/git-receive-pack")
+	if err != nil {
+		t.Fatalf("parse nested group URL: %v", err)
+	}
+	if got := evaluateGitPushAllowlist(cfg, nestedGroupURL); !got.Block {
+		t.Fatalf("owner-level allowlist must not match nested group path, got %+v", got)
+	}
+	// host/* must match on a path-segment boundary, never a host-prefix
+	// substring: example.com/* must not allow a look-alike host that merely
+	// starts with the allowed host string (example.com.attacker.test).
+	lookalikeHostURL, err := url.Parse("https://example.com.attacker.test/acme/project.git/git-receive-pack")
+	if err != nil {
+		t.Fatalf("parse look-alike host URL: %v", err)
+	}
+	if got := evaluateGitPushAllowlist(cfg, lookalikeHostURL); !got.Block {
+		t.Fatalf("host/* must not match a look-alike host prefix, got %+v", got)
 	}
 	disabled := cfg
 	disabled.Enabled = false

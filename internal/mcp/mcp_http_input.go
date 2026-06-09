@@ -60,6 +60,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	obs := opts.captureObserver()
 	redactionCfg := opts.redactionConfig()
 	receiptEmitter := opts.receiptEmitter()
+	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	envelopeEmitter := opts.envelopeEmitter()
 	redirectRT := opts.redirectRT()
 	result := httpInputDecision{ForwardMessage: msg}
@@ -79,6 +80,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	defer func() {
 		receiptOpts := mcpToolReceiptOpts{
 			Emitter:          receiptEmitter,
+			V2Emitter:        v2ReceiptEmitter,
+			PolicyHash:       opts.receiptPolicyHash(),
+			Log:              logW,
 			Transport:        opts.Transport,
 			RedactionProfile: redactionCfg.Profile,
 			ActionID:         actionID,

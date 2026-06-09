@@ -57,6 +57,9 @@ func TestRuntimeContractVars_CoversAllSurfaces(t *testing.T) {
 	if want := "--require " + env.undiciShimPath; m["NODE_OPTIONS"] != want {
 		t.Errorf("NODE_OPTIONS = %q, want %q", m["NODE_OPTIONS"], want)
 	}
+	if m["NODE_USE_ENV_PROXY"] != "1" {
+		t.Errorf("NODE_USE_ENV_PROXY = %q, want 1", m["NODE_USE_ENV_PROXY"])
+	}
 }
 
 func TestRuntimeContractVars_UppercaseNoProxyPrecedesLowercase(t *testing.T) {
@@ -124,6 +127,7 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 		`PATH="$AGENT_PATH"`,
 		`"$TARGET" "$@"`,
 		"NODE_OPTIONS='--require " + env.undiciShimPath + "'",
+		"NODE_USE_ENV_PROXY=1",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("launch exec env missing %q", want)
@@ -145,6 +149,7 @@ func TestRenderProfileScript_ParsesUnderBashAndExports(t *testing.T) {
 		"export HTTPS_PROXY=",
 		"export NO_PROXY=",
 		"export NODE_OPTIONS=",
+		"export NODE_USE_ENV_PROXY=",
 		"export PATH",
 	} {
 		if !strings.Contains(body, want) {
@@ -165,11 +170,11 @@ func TestRenderProfileScript_DoesNotAffectNonAgentLoginShell(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	tmp := filepath.Join(t.TempDir(), "pipelock-contain.sh")
 	writeScriptFixture(t, tmp, renderProfileScript(env))
-	res := execRealCommand(t, "/bin/bash", "-c", "unset HTTPS_PROXY NODE_OPTIONS; source "+shellQuote(tmp)+"; printf '%s|%s' \"${HTTPS_PROXY:-}\" \"${NODE_OPTIONS:-}\"")
+	res := execRealCommand(t, "/bin/bash", "-c", "unset HTTPS_PROXY NODE_OPTIONS NODE_USE_ENV_PROXY; source "+shellQuote(tmp)+"; printf '%s|%s|%s' \"${HTTPS_PROXY:-}\" \"${NODE_OPTIONS:-}\" \"${NODE_USE_ENV_PROXY:-}\"")
 	if res.exit != 0 {
 		t.Fatalf("source profile script: %s", res.output)
 	}
-	if got := strings.TrimSpace(res.output); got != "|" {
+	if got := strings.TrimSpace(res.output); got != "||" {
 		t.Fatalf("non-agent shell inherited contract: %q", got)
 	}
 }
@@ -184,13 +189,13 @@ func TestRenderProfileScript_AppliesToAgentLoginShell(t *testing.T) {
 	tmp := filepath.Join(dir, "pipelock-contain.sh")
 	writeScriptFixture(t, tmp, renderProfileScript(env))
 
-	script := "PATH=" + shellQuote(dir+":/usr/bin:/bin") + "; unset HTTPS_PROXY NODE_OPTIONS; source " + shellQuote(tmp) + "; printf '%s|%s|%s' \"$HTTPS_PROXY\" \"$NODE_OPTIONS\" \"$PATH\""
+	script := "PATH=" + shellQuote(dir+":/usr/bin:/bin") + "; unset HTTPS_PROXY NODE_OPTIONS NODE_USE_ENV_PROXY; source " + shellQuote(tmp) + "; printf '%s|%s|%s|%s' \"$HTTPS_PROXY\" \"$NODE_OPTIONS\" \"$NODE_USE_ENV_PROXY\" \"$PATH\""
 	res := execRealCommand(t, "/bin/bash", "-c", script)
 	if res.exit != 0 {
 		t.Fatalf("source profile script: %s", res.output)
 	}
 	out := strings.TrimSpace(res.output)
-	if !strings.Contains(out, "http://127.0.0.1:8888|--require "+env.undiciShimPath+"|"+agentExecPath(env.agentUserName)) {
+	if !strings.Contains(out, "http://127.0.0.1:8888|--require "+env.undiciShimPath+"|1|"+agentExecPath(env.agentUserName)) {
 		t.Fatalf("agent shell did not inherit expected contract: %q", out)
 	}
 }
@@ -404,9 +409,9 @@ func TestRuntimeSteps_RerunChmodErrorsSurface(t *testing.T) {
 		if _, err := s.apply(context.Background(), env); err != nil {
 			t.Fatalf("first apply: %v", err)
 		}
-		env.chmod = failChmod
+		env.lchown = func(string, int, int) error { return errors.New("ro fs") }
 		if _, err := s.apply(context.Background(), env); err == nil {
-			t.Fatalf("expected idempotent chmod error")
+			t.Fatalf("expected idempotent lchown error")
 		}
 	})
 }
@@ -439,9 +444,13 @@ func TestStepWriteUtilityWrappers_WritesAllThree(t *testing.T) {
 
 func TestStepWriteAgentToolConfigs_WritesAndChowns(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
-	var chowned []string
 	env.chown = func(path string, _, _ int) error {
-		chowned = append(chowned, filepath.Clean(path))
+		t.Fatalf("agent config path used symlink-following chown: %s", path)
+		return nil
+	}
+	var lchowned []string
+	env.lchown = func(path string, _, _ int) error {
+		lchowned = append(lchowned, filepath.Clean(path))
 		return nil
 	}
 
@@ -456,8 +465,8 @@ func TestStepWriteAgentToolConfigs_WritesAndChowns(t *testing.T) {
 			t.Errorf("config %s not written: %v", cfg.rel, err)
 		}
 	}
-	if len(chowned) == 0 {
-		t.Errorf("expected chown calls for agent-owned configs")
+	if len(lchowned) == 0 {
+		t.Errorf("expected lchown calls for agent-owned configs")
 	}
 	for _, want := range []string{
 		env.agentHome,
@@ -465,14 +474,57 @@ func TestStepWriteAgentToolConfigs_WritesAndChowns(t *testing.T) {
 		filepath.Join(env.agentHome, ".config", "pip"),
 		filepath.Join(env.agentHome, ".cargo"),
 	} {
-		if !slices.Contains(chowned, filepath.Clean(want)) {
-			t.Errorf("expected chown for %s; got %v", want, chowned)
+		if !slices.Contains(lchowned, filepath.Clean(want)) {
+			t.Errorf("expected lchown for %s; got %v", want, lchowned)
+		}
+	}
+	for _, cfg := range agentToolConfigs() {
+		want := filepath.Join(env.agentHome, cfg.rel)
+		if !slices.Contains(lchowned, filepath.Clean(want)) {
+			t.Errorf("expected lchown for %s; got %v", want, lchowned)
 		}
 	}
 	// Re-apply is a no-op (files unchanged), but still chowns existing files.
 	applied, err = s.apply(context.Background(), env)
 	if err != nil || applied {
 		t.Fatalf("idempotent apply: applied=%v err=%v", applied, err)
+	}
+}
+
+func TestStepWriteAgentToolConfigs_RejectsFileSymlinkSwapBeforeChown(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("do not chown"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	realWrite := env.writeFile
+	swapped := false
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if err := realWrite(path, contents, mode); err != nil {
+			return err
+		}
+		if !swapped && strings.HasSuffix(filepath.Clean(path), ".gitconfig") {
+			swapped = true
+			if err := os.Remove(path); err != nil {
+				t.Fatalf("remove written config: %v", err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+		}
+		return nil
+	}
+	env.chown = func(path string, _, _ int) error {
+		t.Fatalf("agent config path used symlink-following chown: %s", path)
+		return nil
+	}
+
+	s := stepWriteAgentToolConfigs()
+	if _, err := s.apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink-swap rejection, got %v", err)
+	}
+	if !swapped {
+		t.Fatal("test did not exercise symlink swap")
 	}
 }
 
@@ -542,13 +594,35 @@ func TestChownAgentConfigDir_SecurityBranches(t *testing.T) {
 	})
 	t.Run("chown error surfaces", func(t *testing.T) {
 		env2, _, _ := newFakeEnv(t)
-		env2.chown = func(string, int, int) error { return errAnyChown() }
+		env2.lchown = func(string, int, int) error { return errAnyChown() }
 		dir := filepath.Join(base, "ok")
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
 		if err := chownAgentConfigDir(env2, dir, 988, 988); err == nil || !strings.Contains(err.Error(), "chown") {
 			t.Fatalf("expected chown error, got %v", err)
+		}
+	})
+	t.Run("uses no-follow chown hook", func(t *testing.T) {
+		env2, _, _ := newFakeEnv(t)
+		dir := filepath.Join(base, "nofollow")
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		env2.chown = func(string, int, int) error {
+			t.Fatal("chown follows symlinks and must not be used for agent config dirs")
+			return nil
+		}
+		var lchowned []string
+		env2.lchown = func(path string, _, _ int) error {
+			lchowned = append(lchowned, filepath.Clean(path))
+			return nil
+		}
+		if err := chownAgentConfigDir(env2, dir, 988, 988); err != nil {
+			t.Fatalf("chownAgentConfigDir: %v", err)
+		}
+		if !slices.Contains(lchowned, filepath.Clean(dir)) {
+			t.Fatalf("expected lchown on %s, got %v", dir, lchowned)
 		}
 	})
 }
@@ -584,7 +658,7 @@ func TestStepWriteAgentToolConfigs_WriteErrorRollsBack(t *testing.T) {
 
 func TestStepWriteAgentToolConfigs_ChownErrorFails(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
-	env.chown = func(string, int, int) error { return errors.New("not permitted") }
+	env.lchown = func(string, int, int) error { return errors.New("not permitted") }
 	s := stepWriteAgentToolConfigs()
 	if _, err := s.apply(context.Background(), env); err == nil {
 		t.Fatalf("expected chown error to surface")

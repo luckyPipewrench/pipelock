@@ -6,11 +6,13 @@ package mcp
 import (
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -253,6 +255,9 @@ func taintApprovalReason(decision taintDecision) string {
 
 type mcpToolReceiptOpts struct {
 	Emitter          *receipt.Emitter
+	V2Emitter        *proxydecision.Emitter
+	PolicyHash       string
+	Log              io.Writer
 	Transport        string
 	RedactionProfile string
 	ActionID         string
@@ -297,13 +302,16 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) {
 		TaintDecision:       opts.Decision.Result.Decision.String(),
 		TaintDecisionReason: opts.Decision.Result.Reason,
 		TaskOverrideApplied: opts.Decision.TaskOverrideApplied,
+		PolicyHash:          opts.PolicyHash,
 	}
 	if opts.ContractGate != nil {
 		emitOpts = mcpWithContractReceipt(emitOpts, *opts.ContractGate)
 	}
-	_, _ = EmitMCPDecision(opts.Emitter, nil, MCPDecision{
+	if _, err := EmitMCPDecision(opts.Emitter, opts.V2Emitter, nil, MCPDecision{
 		Receipt: emitOpts,
-	})
+	}); err != nil && opts.Log != nil {
+		_, _ = fmt.Fprintf(opts.Log, "pipelock: receipt emission failed: %v\n", err)
+	}
 }
 
 // pickAttribution derives the receipt Layer / Pattern / Severity for a
@@ -427,7 +435,7 @@ func decorateMCPToolMessage(msg []byte, emitter *envelope.Emitter, actionID, mcp
 		AuthorityKind:  decision.Authority.String(),
 		RequiresReauth: decision.RequiresReauth,
 	}
-	out, err := EmitMCPDecision(nil, emitter, MCPDecision{
+	out, err := EmitMCPDecision(nil, nil, emitter, MCPDecision{
 		Envelope:   &buildOpts,
 		InboundMsg: msg,
 	})

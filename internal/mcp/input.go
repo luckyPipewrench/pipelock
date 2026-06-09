@@ -174,6 +174,8 @@ func ForwardScannedInput(
 	obs := opts.captureObserver()
 	redactionCfg := opts.redactionConfig()
 	receiptEmitter := opts.receiptEmitter()
+	v2ReceiptEmitter := opts.v2ReceiptEmitter()
+	policyHash := opts.receiptPolicyHash()
 	envelopeEmitter := opts.envelopeEmitter()
 	redirectRT := opts.redirectRT()
 
@@ -282,8 +284,8 @@ func ForwardScannedInput(
 				recordAdaptiveSignal(session.SignalBlock)
 				if pendingActionID != "" && receiptEmitter != nil {
 					layer, pattern, severity := contentScanAttribution(originalVerdict)
-					_, _ = EmitMCPDecision(receiptEmitter, nil, MCPDecision{
-						Receipt: receipt.EmitOpts{
+					if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+						Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 							ActionID:  pendingActionID,
 							Verdict:   config.ActionBlock,
 							Layer:     layer,
@@ -293,8 +295,10 @@ func ForwardScannedInput(
 							Target:    pendingToolCallName,
 							MCPMethod: methodToolsCall,
 							ToolName:  pendingToolCallName,
-						},
-					})
+						}),
+					}); emitErr != nil {
+						_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
+					}
 				}
 				blockedCh <- BlockedRequest{
 					ID:             originalVerdict.ID,
@@ -318,8 +322,8 @@ func ForwardScannedInput(
 			recordAdaptiveSignal(session.SignalBlock)
 			if pendingActionID != "" && receiptEmitter != nil {
 				layer, pattern, severity := redactionBlockAttribution(redactErr)
-				_, _ = EmitMCPDecision(receiptEmitter, nil, MCPDecision{
-					Receipt: receipt.EmitOpts{
+				if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+					Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 						ActionID:         pendingActionID,
 						Verdict:          config.ActionBlock,
 						Layer:            layer,
@@ -330,8 +334,10 @@ func ForwardScannedInput(
 						Target:           pendingToolCallName,
 						MCPMethod:        methodToolsCall,
 						ToolName:         pendingToolCallName,
-					},
-				})
+					}),
+				}); emitErr != nil {
+					_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
+				}
 			}
 			blockedCh <- BlockedRequest{
 				ID:             rpcID,
@@ -468,6 +474,9 @@ func ForwardScannedInput(
 			layer, pattern, severity := pickAttribution(eval)
 			receiptOpts := mcpToolReceiptOpts{
 				Emitter:          receiptEmitter,
+				V2Emitter:        v2ReceiptEmitter,
+				PolicyHash:       policyHash,
+				Log:              logW,
 				Transport:        opts.Transport,
 				RedactionProfile: redactionCfg.Profile,
 				ActionID:         actionID,
@@ -689,7 +698,7 @@ func ForwardScannedInput(
 					RequiresReauth: taintDecision.RequiresReauth,
 				}
 				var emitErr error
-				fwdLine, emitErr = EmitMCPDecision(nil, envelopeEmitter, MCPDecision{
+				fwdLine, emitErr = EmitMCPDecision(nil, nil, envelopeEmitter, MCPDecision{
 					Envelope:   &buildOpts,
 					InboundMsg: line,
 				})
@@ -999,7 +1008,7 @@ func ForwardScannedInput(
 					RequiresReauth: taintDecision.RequiresReauth,
 				}
 				var emitErr error
-				fwdLine, emitErr = EmitMCPDecision(nil, envelopeEmitter, MCPDecision{
+				fwdLine, emitErr = EmitMCPDecision(nil, nil, envelopeEmitter, MCPDecision{
 					Envelope:   &buildOpts,
 					InboundMsg: line,
 				})

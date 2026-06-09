@@ -117,7 +117,8 @@ func profileScriptPathOrDefault(env *installEnv) string {
 //   - cargo via CARGO_HTTP_CAINFO / CARGO_HTTP_PROXY
 //   - pip via PIP_CERT
 //   - node http/https modules via *_PROXY + NODE_EXTRA_CA_CERTS, and node's
-//     built-in fetch()/undici via the NODE_OPTIONS require shim.
+//     built-in fetch()/undici via NODE_USE_ENV_PROXY on node versions that
+//     support it, plus the NODE_OPTIONS require shim fallback.
 func runtimeContractVars(env *installEnv) []contractVar {
 	proxy := proxyURLFor(env.proxyPort)
 	caBundle := env.caBundlePath
@@ -143,9 +144,11 @@ func runtimeContractVars(env *installEnv) []contractVar {
 		{"PIP_CERT", caBundle},
 		// node trusts an APPENDED CA file (not a replacement bundle).
 		{"NODE_EXTRA_CA_CERTS", nodeCA},
-		// node fetch()/undici ignores *_PROXY unless a global dispatcher is
-		// installed; the shim does that at startup.
+		// Older node fetch()/undici ignores *_PROXY unless a global dispatcher
+		// is installed; the shim does that at startup when undici is available.
 		{"NODE_OPTIONS", "--require " + shim},
+		// Newer node fetch()/undici honors *_PROXY natively when this flag exists.
+		{"NODE_USE_ENV_PROXY", "1"},
 	}
 }
 
@@ -546,12 +549,8 @@ func stepWriteAgentToolConfigs() step {
 				}
 				body := cfg.render(env)
 				if existing, err := env.readFile(path); err == nil && string(existing) == body {
-					// Re-assert mode + ownership on rerun so an unchanged config
-					// can't drift broader than intended.
-					if cerr := env.chmod(path, modeAgentConfig); cerr != nil {
-						return restore(fmt.Errorf("chmod %s: %w", path, cerr))
-					}
-					if cerr := env.chown(path, uid, gid); cerr != nil {
+					// Re-assert ownership without following a swapped symlink.
+					if cerr := chownAgentConfigFile(env, path, uid, gid); cerr != nil {
 						return restore(fmt.Errorf("chown %s: %w", path, cerr))
 					}
 					continue
@@ -559,7 +558,7 @@ func stepWriteAgentToolConfigs() step {
 				if err := backupAndWrite(env, path, []byte(body), modeAgentConfig); err != nil {
 					return restore(fmt.Errorf("write %s: %w", path, err))
 				}
-				if err := env.chown(path, uid, gid); err != nil {
+				if err := chownAgentConfigFile(env, path, uid, gid); err != nil {
 					return restore(fmt.Errorf("chown %s: %w", path, err))
 				}
 				touched = append(touched, path)
@@ -576,6 +575,31 @@ func stepWriteAgentToolConfigs() step {
 			return errors.Join(errs...)
 		},
 	}
+}
+
+func chownAgentConfigFile(env *installEnv, path string, uid, gid int) error {
+	clean := filepath.Clean(path)
+	if err := ensureAgentConfigLeaf(env, clean); err != nil {
+		return err
+	}
+	if err := env.lchown(clean, uid, gid); err != nil {
+		return err
+	}
+	return ensureAgentConfigLeaf(env, clean)
+}
+
+func ensureAgentConfigLeaf(env *installEnv, path string) error {
+	info, err := env.lstat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing privileged chown", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s exists and is not a regular file", path)
+	}
+	return nil
 }
 
 func ensureAgentConfigDir(env *installEnv, dir string, uid, gid int) error {
@@ -622,7 +646,7 @@ func chownAgentConfigDir(env *installEnv, dir string, uid, gid int) error {
 	if !info.IsDir() {
 		return fmt.Errorf("%s exists and is not a directory", dir)
 	}
-	if err := env.chown(dir, uid, gid); err != nil {
+	if err := env.lchown(dir, uid, gid); err != nil {
 		return fmt.Errorf("chown %s: %w", dir, err)
 	}
 	return nil

@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -31,6 +32,7 @@ type startMCPSandboxBridgeFunc func(
 	*audit.Logger,
 	*metrics.Metrics,
 	*receipt.Emitter,
+	*proxydecision.Emitter,
 	*envelope.Emitter,
 ) (*mcpSandboxBridge, error)
 
@@ -55,6 +57,7 @@ func setupMCPSandboxBridge(
 	log *audit.Logger,
 	m *metrics.Metrics,
 	receiptEmitter *receipt.Emitter,
+	v2ReceiptEmitter *proxydecision.Emitter,
 	envEmitter *envelope.Emitter,
 	stderr io.Writer,
 	launchCfg *sandbox.LaunchConfig,
@@ -68,7 +71,7 @@ func setupMCPSandboxBridge(
 		return func() {}, nil
 	}
 
-	bridge, err := startBridge(ctx, cfg, ks, log, m, receiptEmitter, envEmitter)
+	bridge, err := startBridge(ctx, cfg, ks, log, m, receiptEmitter, v2ReceiptEmitter, envEmitter)
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +88,7 @@ func startMCPSandboxBridge(
 	log *audit.Logger,
 	m *metrics.Metrics,
 	receiptEmitter *receipt.Emitter,
+	v2ReceiptEmitter *proxydecision.Emitter,
 	envEmitter *envelope.Emitter,
 ) (*mcpSandboxBridge, error) {
 	dir, err := os.MkdirTemp("", "pl-mcp-*")
@@ -124,6 +128,7 @@ func startMCPSandboxBridge(
 		m,
 		proxy.WithKillSwitch(ks),
 		proxy.WithReceiptEmitter(receiptEmitter),
+		proxy.WithV2ReceiptEmitter(v2ReceiptEmitter),
 		proxy.WithEnvelopeEmitter(envEmitter),
 	)
 	if err != nil {

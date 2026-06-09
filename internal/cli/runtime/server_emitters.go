@@ -6,6 +6,7 @@ package runtime
 import (
 	"context"
 
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -33,6 +34,13 @@ func (s *Server) liveReceiptEmitter() *receipt.Emitter {
 		return s.proxy.ReceiptEmitterPtr().Load()
 	}
 	return s.receiptEmitter
+}
+
+func (s *Server) liveV2ReceiptEmitter() *proxydecision.Emitter {
+	if s.proxy != nil {
+		return s.proxy.V2EmitterPtr().Load()
+	}
+	return nil
 }
 
 func (s *Server) liveEnvelopeEmitter() *envelope.Emitter {

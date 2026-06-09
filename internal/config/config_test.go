@@ -3142,7 +3142,7 @@ func TestValidate_GitProtectionEnabled(t *testing.T) {
 	cfg.GitProtection.Enabled = true
 	cfg.GitProtection.AllowedBranches = []string{"main", "feature/*"}
 	cfg.GitProtection.BlockedCommands = []string{"push --force"}
-	cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/*", "gitlab.com/group/project"}
+	cfg.GitProtection.AllowedPushRepos = []string{"github.com/acme/*", "gitlab.com/group/project", "example.com/*"}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid git protection config should validate, got: %v", err)
 	}
@@ -3193,6 +3193,8 @@ func TestValidate_GitProtectionAllowedPushRepoRequiresHost(t *testing.T) {
 	cfg.GitProtection.AllowedPushRepos = []string{"acme/project"}
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for allowed_push_repos entry without host")
+	} else if !strings.Contains(err.Error(), "host/owner/repo or host/*") {
+		t.Fatalf("error = %q, want host/* guidance", err)
 	}
 }
 

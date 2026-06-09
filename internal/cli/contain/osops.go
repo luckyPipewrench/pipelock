@@ -41,6 +41,7 @@ type installEnv struct {
 	removeFile func(path string) error
 	mkdirAll   func(path string, mode os.FileMode) error
 	chown      func(path string, uid, gid int) error
+	lchown     func(path string, uid, gid int) error
 	rename     func(oldPath, newPath string) error
 	chmod      func(path string, mode os.FileMode) error
 	symlink    func(target, linkPath string) error
@@ -114,6 +115,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		removeFile:        os.Remove,
 		mkdirAll:          os.MkdirAll,
 		chown:             os.Chown,
+		lchown:            os.Lchown,
 		rename:            os.Rename,
 		chmod:             os.Chmod,
 		symlink:           os.Symlink,

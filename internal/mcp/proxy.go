@@ -127,6 +127,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	obs := opts.captureObserver()
 	mediaPolicy := opts.mediaPolicy()
 	receiptEmitter := opts.receiptEmitter()
+	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	provenanceCfg := opts.provenanceCfg()
 	taintOpts := opts
 	taintOpts.TaintCfg = opts.taintCfg()
@@ -274,8 +275,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				m.RecordBlocked("mcp", "media_policy", 0, "")
 			}
 			if receiptEmitter != nil {
-				if _, emitErr := EmitMCPDecision(receiptEmitter, nil, MCPDecision{
-					Receipt: receipt.EmitOpts{
+				if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+					Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 						ActionID:  receipt.NewActionID(),
 						Verdict:   config.ActionBlock,
 						Transport: opts.Transport,
@@ -284,7 +285,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						Layer:     "media_policy",
 						Pattern:   mediaResult.BlockReason,
 						Severity:  config.SeverityHigh,
-					},
+					}),
 				}); emitErr != nil {
 					_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
 				}
@@ -576,8 +577,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if len(names) > 0 {
 				pattern = names[0]
 			}
-			if _, emitErr := EmitMCPDecision(receiptEmitter, nil, MCPDecision{
-				Receipt: receipt.EmitOpts{
+			if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+				Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   effectiveAction,
 					Transport: opts.Transport,
@@ -586,7 +587,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					Layer:     "mcp_response_scan",
 					Pattern:   pattern,
 					Severity:  config.SeverityHigh,
-				},
+				}),
 			}); emitErr != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
 			}

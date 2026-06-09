@@ -143,10 +143,11 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 			return err
 		},
 		mkdirAll: os.MkdirAll,
-		// chown can't really run under non-root tests; record the call and
-		// no-op so the orchestration progresses. Tests that need to assert
-		// the chown happened can substitute their own hook.
+		// chown/lchown can't really run under non-root tests; no-op so the
+		// orchestration progresses. Tests that need to assert ownership calls
+		// can substitute their own hooks.
 		chown:   func(string, int, int) error { return nil },
+		lchown:  func(string, int, int) error { return nil },
 		rename:  os.Rename,
 		chmod:   os.Chmod,
 		symlink: os.Symlink,

@@ -7,6 +7,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
@@ -146,6 +147,12 @@ type MCPProxyOpts struct {
 	// Nil-safe (no-op when nil).
 	ReceiptEmitter   *receipt.Emitter
 	ReceiptEmitterFn func() *receipt.Emitter
+	// V2ReceiptEmitter emits EvidenceReceipt v2 proxy_decision records in
+	// parity with ReceiptEmitter. Nil-safe (no-op when nil).
+	V2ReceiptEmitter   *proxydecision.Emitter
+	V2ReceiptEmitterFn func() *proxydecision.Emitter
+	PolicyHash         string
+	PolicyHashFn       func() string
 
 	// Learn-lock contract enforcement for MCP transports. HTTP listener and
 	// stdio-to-HTTP modes gate the configured upstream URL; every transport
@@ -313,6 +320,32 @@ func (o MCPProxyOpts) receiptEmitter() *receipt.Emitter {
 		return o.ReceiptEmitterFn()
 	}
 	return o.ReceiptEmitter
+}
+
+func (o MCPProxyOpts) v2ReceiptEmitter() *proxydecision.Emitter {
+	if o.V2ReceiptEmitterFn != nil {
+		return o.V2ReceiptEmitterFn()
+	}
+	return o.V2ReceiptEmitter
+}
+
+func (o MCPProxyOpts) receiptPolicyHash() string {
+	if o.PolicyHashFn != nil {
+		if v := o.PolicyHashFn(); v != "" {
+			return v
+		}
+	}
+	if o.PolicyHash != "" {
+		return o.PolicyHash
+	}
+	return o.captureConfigHash()
+}
+
+func (o MCPProxyOpts) withReceiptPolicyHash(opts receipt.EmitOpts) receipt.EmitOpts {
+	if opts.PolicyHash == "" {
+		opts.PolicyHash = o.receiptPolicyHash()
+	}
+	return opts
 }
 
 func (o MCPProxyOpts) contractLoader() *contractruntime.Loader {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -44,9 +45,10 @@ func TestSetupMCPSandboxBridge_LinuxStartsBridge(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&stderr,
 		&launchCfg,
-		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
+		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *proxydecision.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
 			started = true
 			return &mcpSandboxBridge{socketPath: "/tmp/pl-mcp-test/proxy.sock"}, nil
 		},
@@ -82,9 +84,10 @@ func TestSetupMCPSandboxBridge_StartError(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		io.Discard,
 		&launchCfg,
-		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
+		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *proxydecision.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
 			return nil, wantErr
 		},
 	)
@@ -116,9 +119,10 @@ func TestSetupMCPSandboxBridge_NonLinuxWarns(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		&stderr,
 		&launchCfg,
-		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
+		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *proxydecision.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
 			started = true
 			return nil, nil
 		},
@@ -181,7 +185,7 @@ func TestStartMCPSandboxBridge_ForcesForwardProxyIntoScanner(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	bridge, err := startMCPSandboxBridge(ctx, cfg, killswitch.New(cfg), audit.NewNop(), nil, nil, nil)
+	bridge, err := startMCPSandboxBridge(ctx, cfg, killswitch.New(cfg), audit.NewNop(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startMCPSandboxBridge: %v", err)
 	}
@@ -246,7 +250,7 @@ func TestStartMCPSandboxBridge_CONNECTThroughScanner(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
 	cfg.ForwardProxy.Enabled = false
 
-	bridge, err := startMCPSandboxBridge(ctx, cfg, killswitch.New(cfg), audit.NewNop(), nil, nil, nil)
+	bridge, err := startMCPSandboxBridge(ctx, cfg, killswitch.New(cfg), audit.NewNop(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startMCPSandboxBridge: %v", err)
 	}
@@ -315,7 +319,7 @@ func TestStartMCPSandboxBridge_ContextCancelClosesTunnel(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
 	cfg.ForwardProxy.Enabled = false
 
-	bridge, err := startMCPSandboxBridge(ctx, cfg, killswitch.New(cfg), audit.NewNop(), nil, nil, nil)
+	bridge, err := startMCPSandboxBridge(ctx, cfg, killswitch.New(cfg), audit.NewNop(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startMCPSandboxBridge: %v", err)
 	}
@@ -370,7 +374,7 @@ func TestStartMCPSandboxBridge_KillSwitchBlocks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	bridge, err := startMCPSandboxBridge(ctx, cfg, killswitch.New(cfg), audit.NewNop(), nil, nil, nil)
+	bridge, err := startMCPSandboxBridge(ctx, cfg, killswitch.New(cfg), audit.NewNop(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startMCPSandboxBridge: %v", err)
 	}

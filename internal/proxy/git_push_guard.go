@@ -88,6 +88,10 @@ func gitPushRepoPatternMatch(pattern, value string) bool {
 	if pattern == value {
 		return true
 	}
+	parts := strings.Split(pattern, "/")
+	if len(parts) == 2 && parts[1] == "*" && strings.HasPrefix(value, parts[0]+"/") {
+		return true
+	}
 	ok, err := filepath.Match(pattern, value)
 	return err == nil && ok
 }

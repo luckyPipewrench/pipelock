@@ -648,6 +648,8 @@ func (s *Server) Start(ctx context.Context) error {
 				Profile:             edition.ProfileDefault,
 				ProvenanceCfgFn:     mcpProvenanceCfgFn,
 				ReceiptEmitterFn:    s.liveReceiptEmitter,
+				V2ReceiptEmitterFn:  s.liveV2ReceiptEmitter,
+				PolicyHashFn:        mcpConfigHashFn,
 				EnvelopeEmitterFn:   s.liveEnvelopeEmitter,
 				RedactionCfgFn:      mcpRedactionCfgFn,
 				TaintCfgFn:          mcpTaintCfgFn,

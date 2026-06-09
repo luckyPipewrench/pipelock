@@ -372,6 +372,13 @@ func TestEmitMCPDecision_V2EmitErrorSurfacesAfterV1(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "v2 record failed") {
 		t.Fatalf("EmitMCPDecision error = %v, want v2 record failure", err)
 	}
+	receipts := decisionReceiptLogFor(t, h.dir)
+	if len(receipts) != 1 {
+		t.Fatalf("got %d v1 receipts, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.ActionID != "mcp-v2-error" {
+		t.Fatalf("v1 action_id = %q, want mcp-v2-error", receipts[0].ActionRecord.ActionID)
+	}
 }
 
 // TestMCPV2DecisionFromReceipt_SkipsEmptyTarget proves the helper refuses to

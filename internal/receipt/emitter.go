@@ -29,6 +29,32 @@ const recorderEntryType = "action_receipt"
 // The recorder pins to the first session ID it sees, so all entries must use the same value.
 const recorderSessionID = "proxy"
 
+// MetricsSink receives receipt-emission observability signals. The proxy's
+// metrics package implements it; tests can supply a stub. A nil sink is a
+// no-op so the emitter never depends on metrics being wired.
+type MetricsSink interface {
+	// RecordEmitFailure increments the receipt-emit-failure counter, labeled
+	// by a bounded-cardinality reason string.
+	RecordEmitFailure(reason string)
+}
+
+// Emit-failure reason labels. Closed domain to keep metric cardinality bounded.
+const (
+	// FailReasonChainInit is the reason for failures that originate from a
+	// chain that could not be initialized or resumed at construction time.
+	FailReasonChainInit = "chain_init"
+	// FailReasonSign is a signing failure.
+	FailReasonSign = "sign"
+	// FailReasonHash is a receipt-hash computation failure.
+	FailReasonHash = "hash"
+	// FailReasonMarshal is a receipt-marshal failure.
+	FailReasonMarshal = "marshal"
+	// FailReasonRecord is a recorder-write failure.
+	FailReasonRecord = "record"
+	// FailReasonSealed is an emit attempt after the transcript root was emitted.
+	FailReasonSealed = "sealed"
+)
+
 // Emitter produces signed action receipts and writes them to the flight recorder.
 // It is safe for concurrent use - the underlying recorder handles its own locking.
 type Emitter struct {
@@ -37,6 +63,7 @@ type Emitter struct {
 	configHash atomic.Value // stores string; updated on hot reload
 	principal  string
 	actor      string
+	metrics    MetricsSink
 	initErr    error
 
 	// Chain state - mutex-protected, updated on each Emit.
@@ -46,6 +73,13 @@ type Emitter struct {
 	chainStart    time.Time // timestamp of first receipt
 	chainEnd      time.Time // timestamp of most recent receipt
 	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
+
+	// pendingTransition is set by resumeChain when the on-disk tail was
+	// signed by a DIFFERENT (but self-valid) key, meaning a legitimate key
+	// rotation occurred. It is stamped onto the first receipt of the new
+	// segment by the next Emit, then cleared. nil when there is no pending
+	// segment boundary.
+	pendingTransition *KeyTransition
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
@@ -55,6 +89,8 @@ type EmitterConfig struct {
 	ConfigHash string
 	Principal  string
 	Actor      string
+	// Metrics, when non-nil, receives emit-failure observability signals.
+	Metrics MetricsSink
 }
 
 // NewEmitter creates a receipt emitter. Returns nil if the recorder is nil
@@ -71,11 +107,24 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		privKey:       cfg.PrivKey,
 		principal:     cfg.Principal,
 		actor:         cfg.Actor,
+		metrics:       cfg.Metrics,
 		chainPrevHash: GenesisHash,
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	e.initErr = e.resumeChain()
 	return e
+}
+
+// InitError returns the error (if any) that occurred while resuming the chain
+// at construction time. A non-nil result means receipt emission is bricked for
+// this emitter and Emit will return the wrapped error on every call. Callers
+// should log this loudly once at startup with remediation guidance. Safe on a
+// nil emitter.
+func (e *Emitter) InitError() error {
+	if e == nil {
+		return nil
+	}
+	return e.initErr
 }
 
 // EmitOpts holds the per-decision context for emitting a receipt.
@@ -130,6 +179,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		return nil
 	}
 	if e.initErr != nil {
+		e.recordFailure(FailReasonChainInit)
 		return fmt.Errorf("resume receipt chain: %w", e.initErr)
 	}
 
@@ -152,6 +202,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	defer e.chainMu.Unlock()
 
 	if e.rootEmitted {
+		e.recordFailure(FailReasonSealed)
 		return ErrChainSealed
 	}
 
@@ -213,20 +264,28 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		RequestID:             opts.RequestID,
 		ChainPrevHash:         e.chainPrevHash,
 		ChainSeq:              e.chainSeq,
+		// pendingTransition is non-nil only on the first receipt of a new
+		// segment opened by resumeChain after a legitimate key rotation. It
+		// is bound into the signed record so the segment boundary is provable
+		// from this receipt alone, then cleared after a successful write.
+		KeyTransition: e.pendingTransition,
 	}
 
 	rcpt, err := Sign(ar, e.privKey)
 	if err != nil {
+		e.recordFailure(FailReasonSign)
 		return fmt.Errorf("signing receipt: %w", err)
 	}
 
 	receiptHash, err := ReceiptHash(rcpt)
 	if err != nil {
+		e.recordFailure(FailReasonHash)
 		return fmt.Errorf("hashing receipt: %w", err)
 	}
 
 	receiptJSON, err := Marshal(rcpt)
 	if err != nil {
+		e.recordFailure(FailReasonMarshal)
 		return fmt.Errorf("marshaling receipt: %w", err)
 	}
 
@@ -242,6 +301,11 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	}
 	e.chainEnd = ar.Timestamp
 	e.chainSeq++
+	// The transition marker was bound into the receipt just signed; clear it
+	// so it is never re-stamped onto a later receipt (which would falsely
+	// claim a second segment boundary). Cleared with the rest of the
+	// advance-before-persist state for the same fork-avoidance reason.
+	e.pendingTransition = nil
 
 	if err := e.recorder.Record(recorder.Entry{
 		SessionID: recorderSessionID,
@@ -251,10 +315,20 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Transport),
 		Detail:    json.RawMessage(receiptJSON),
 	}); err != nil {
+		e.recordFailure(FailReasonRecord)
 		return fmt.Errorf("recording receipt: %w", err)
 	}
 
 	return nil
+}
+
+// recordFailure increments the emit-failure metric for reason when a sink is
+// wired. Safe with a nil sink.
+func (e *Emitter) recordFailure(reason string) {
+	if e == nil || e.metrics == nil {
+		return
+	}
+	e.metrics.RecordEmitFailure(reason)
 }
 
 // UpdateConfigHash sets the config hash for new receipts. Called on hot reload.
@@ -321,6 +395,7 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 		return nil
 	}
 	if e.initErr != nil {
+		e.recordFailure(FailReasonChainInit)
 		return fmt.Errorf("resume receipt chain: %w", e.initErr)
 	}
 
@@ -453,15 +528,62 @@ func (e *Emitter) resumeChain() error {
 		}
 	}
 
-	// Verify the tail receipt's signature before trusting its chain state.
-	// A tampered or partial evidence file must not silently corrupt the chain.
+	// Trust model for resuming an on-disk chain across a possible signing-key
+	// change. Three cases, distinguished by verifying the tail BEFORE
+	// trusting its chain state:
+	//
+	//  1. Tail signed by the CURRENT key, signature valid  -> resume the
+	//     same chain segment (the common case).
+	//  2. Tail signed by a DIFFERENT key, but self-valid under its OWN
+	//     embedded signer_key -> a legitimate signing-key rotation. The
+	//     operator regenerated the key (e.g. `contain install`); the prior
+	//     chain is intact, it is simply sealed under the old key. Open a NEW
+	//     segment anchored to the prior tail's hash and stamp a transition
+	//     marker on the next receipt, instead of bricking emission forever.
+	//  3. Tail's OWN signature is INVALID (corrupt / tampered, regardless of
+	//     key) -> FAIL CLOSED. This is the tamper case and must never be
+	//     weakened into a silent reset.
+	//
+	// Why case 2 is safe: we require the tail to be self-consistently signed
+	// by the key embedded in it (Verify). An attacker who can only write a
+	// forged tail with a bad signature lands in case 3 and is rejected, so a
+	// forged tail cannot force a silent segment reset that hides history. A
+	// rotation reset preserves continuity two ways: the new segment's first
+	// receipt carries the prior tail's hash as its ChainPrevHash plus an
+	// explicit KeyTransition marker (prior signer key + prior seq + prior
+	// hash), and the recorder's outer hash chain still spans every entry on
+	// disk and remains the authoritative cross-segment tamper-evidence
+	// layer. This mirrors the v2 proxy_decision emitter, which restarts at
+	// genesis across process restarts and likewise leans on the recorder's
+	// outer chain for cross-segment evidence.
 	if e.privKey != nil {
-		keyHex := fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey))
-		if verifyErr := VerifyWithKey(*lastReceipt, keyHex); verifyErr != nil {
+		// Case 3 first: self-signature must be valid no matter the key.
+		if verifyErr := Verify(*lastReceipt); verifyErr != nil {
 			return fmt.Errorf("tail receipt signature invalid (seq %d): %w", lastReceipt.ActionRecord.ChainSeq, verifyErr)
+		}
+
+		currentKeyHex := fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey))
+		if lastReceipt.SignerKey != currentKeyHex {
+			// Case 2: legitimate rotation. Open a new segment.
+			hash, err := ReceiptHash(*lastReceipt)
+			if err != nil {
+				return fmt.Errorf("hashing prior segment tail: %w", err)
+			}
+			e.chainSeq = 0
+			e.chainPrevHash = hash
+			e.pendingTransition = &KeyTransition{
+				PriorSignerKey: lastReceipt.SignerKey,
+				PriorChainSeq:  lastReceipt.ActionRecord.ChainSeq,
+				PriorChainHash: hash,
+			}
+			// Carry the prior segment's start timestamp forward only if the
+			// new segment has no receipts yet (it does not). chainStart is
+			// set on the first Emit of the new segment, so leave it zero.
+			return nil
 		}
 	}
 
+	// Case 1: same key (or no key configured) - resume the same segment.
 	hash, err := ReceiptHash(*lastReceipt)
 	if err != nil {
 		return fmt.Errorf("hashing existing receipt chain: %w", err)

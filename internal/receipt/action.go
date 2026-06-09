@@ -168,6 +168,17 @@ type ActionRecord struct {
 	ChainPrevHash string `json:"chain_prev_hash"`
 	ChainSeq      uint64 `json:"chain_seq"`
 
+	// KeyTransition is present ONLY on the first receipt of a new chain
+	// segment that begins after a legitimate signing-key rotation. It binds
+	// the new segment to the prior segment's tail (prior signer key, final
+	// seq, and tail hash) so the segment boundary is auditable and the
+	// transition is provable from the evidence file alone. Absent (nil) on
+	// every other receipt. See receipt/emitter.go resumeChain for the trust
+	// model: the new segment's ChainPrevHash equals the prior tail's hash,
+	// and the recorder's outer hash chain remains the cross-segment
+	// tamper-evidence layer.
+	KeyTransition *KeyTransition `json:"key_transition,omitempty"`
+
 	// Jurisdictional fields - present in schema for forward compatibility.
 	// Empty in v1; populated when jurisdiction engine ships.
 	Venue              string   `json:"venue,omitempty"`
@@ -176,6 +187,26 @@ type ActionRecord struct {
 	RemedyClass        string   `json:"remedy_class,omitempty"`
 	ContestationWindow string   `json:"contestation_window,omitempty"`
 	PrecedentRefs      []string `json:"precedent_refs,omitempty"`
+}
+
+// KeyTransition records the boundary between two chain segments signed by
+// different keys. It is stamped on the first receipt of the new segment after a
+// legitimate signing-key rotation, binding that segment to the prior segment's
+// tail. A verifier walking the segments can confirm the new segment was
+// intentionally anchored to the prior tail (PriorChainHash) rather than forked.
+// The signing key itself rotates as an operator action; this marker makes the
+// rotation visible in-band, while the recorder's outer hash chain provides the
+// authoritative cross-segment tamper-evidence.
+type KeyTransition struct {
+	// PriorSignerKey is the hex-encoded public key that signed the prior
+	// segment's tail receipt.
+	PriorSignerKey string `json:"prior_signer_key"`
+	// PriorChainSeq is the chain_seq of the prior segment's tail receipt.
+	PriorChainSeq uint64 `json:"prior_chain_seq"`
+	// PriorChainHash is the receipt hash of the prior segment's tail. This
+	// equals the new segment's first-receipt ChainPrevHash, linking the two
+	// segments.
+	PriorChainHash string `json:"prior_chain_hash"`
 }
 
 // RedactionSummary captures the request-side redaction outcome for a mediated

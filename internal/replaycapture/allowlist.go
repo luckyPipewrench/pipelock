@@ -201,6 +201,12 @@ func validateDisallowedEmpty(ar receipt.ActionRecord) error {
 		{"contract_generation", ar.ContractGeneration != 0},
 		{"redaction", ar.Redaction != nil},
 		{"shield", ar.Shield != nil},
+		// key_transition is stamped only on a chain segment boundary after a
+		// signing-key rotation. The synthetic lab captures clean genesis
+		// chains under a single key and never rotates mid-capture, so a
+		// populated marker means an unexpected rotation path leaked into a
+		// published packet. Fail closed.
+		{"key_transition", ar.KeyTransition != nil},
 		{"venue", ar.Venue != ""},
 		{"jurisdiction", ar.Jurisdiction != ""},
 		{"rulebook_id", ar.RulebookID != ""},

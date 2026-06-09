@@ -730,15 +730,28 @@ Key-free evidence capture:
 				// refactor: the resolved cfg carries the original rawBytes
 				// so Hash() still reflects the on-disk YAML even after
 				// bundle merge and auto-enable.
+				// mcpMetrics is non-nil only when session profiling is on; a
+				// nil MetricsSink is a safe no-op in the emitter, so emit-
+				// failure counters are wired opportunistically here.
 				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
 					Recorder:   rec,
 					PrivKey:    recPrivKey,
 					ConfigHash: cfg.Hash(),
 					Principal:  "local",
 					Actor:      "pipelock",
+					Metrics:    mcpMetrics,
 				})
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+				// Loud, one-time startup signal when the chain could not be
+				// resumed (corrupt/tampered tail or an evidence read error).
+				// A legitimate key rotation no longer lands here - it opens a
+				// new chain segment instead of failing.
+				if initErr := receiptEmitter.InitError(); initErr != nil {
+					cmd.PrintErrf("  Receipts: ERROR - chain could not be resumed: %v\n"+
+						"            Receipt emission is DISABLED until resolved. Inspect the evidence\n"+
+						"            directory and flight_recorder.signing_key_path.\n", initErr)
+				}
 				// receipt.NewEmitter returns nil when no signing key is
 				// configured. Receipts must be signed - there is no
 				// "unsigned receipt" mode - so report the operator-facing

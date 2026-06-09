@@ -133,6 +133,9 @@ type Metrics struct {
 	// Mediation envelope verification (envelope.go).
 	envelopeVerifyTotal *prometheus.CounterVec
 
+	// Signed action-receipt emission (receipt.go).
+	receiptEmitFailures *prometheus.CounterVec
+
 	// Stats endpoint state (stats_handler.go).
 	mu                     sync.Mutex
 	startTime              time.Time
@@ -195,6 +198,7 @@ func New() *Metrics {
 	m.registerConductorMetrics(reg)
 	m.registerLearnMetrics(reg)
 	m.registerEnvelopeMetrics(reg)
+	m.registerReceiptMetrics(reg)
 
 	// Built-in Go runtime + process collectors. These expose
 	// go_memstats_heap_alloc_bytes, go_goroutines, process_resident_memory_bytes,

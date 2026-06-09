@@ -4,6 +4,8 @@
 package conformance_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -158,7 +160,14 @@ func appraiseKillSuiteFixture(t *testing.T, dir, base string, opts aarp.VerifyOp
 	}
 
 	sidecarPath := filepath.Join(dir, base+killSuiteSVIDSuffix)
-	if _, statErr := os.Stat(sidecarPath); statErr == nil {
+	_, statErr := os.Stat(sidecarPath)
+	// A real filesystem error (e.g. permissions) must fail loudly, not be silently
+	// treated as "no sidecar" and fall through to the envelope path — that would
+	// drop the SVID claims and could mask a downgrade the fixture exists to prove.
+	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("stat svid sidecar %s: %v", sidecarPath, statErr)
+	}
+	if statErr == nil {
 		sc, err := svidsidecar.Parse(readFixture(t, sidecarPath))
 		if err != nil {
 			t.Fatalf("parse svid sidecar %s: %v", base, err)

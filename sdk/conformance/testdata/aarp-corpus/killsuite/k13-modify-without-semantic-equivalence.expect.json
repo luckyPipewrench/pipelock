@@ -1,0 +1,20 @@
+{
+  "attack_class": "modify-without-equivalence",
+  "category": "killsuite",
+  "description": "a claim that a modification preserved meaning: semantic equivalence after modify is a fixed non-assertion, so the claim is not confirmed",
+  "expected_does_not_assert": [
+    "semantic_equivalence_after_modify"
+  ],
+  "fixture_id": "k13-modify-without-semantic-equivalence",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "modification_semantically_equivalent"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "the proxy modified the payload but the modification is semantically equivalent",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

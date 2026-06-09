@@ -51,7 +51,7 @@ func TestAARPCorpus(t *testing.T) {
 	opts := aarpCorpusVerifyOptions()
 
 	var checked int
-	for _, category := range []string{catGolden, catMalicious, catEdge, catChain, catSVID} {
+	for _, category := range []string{catGolden, catMalicious, catEdge, catChain, catSVID, catKillSuite} {
 		dir := filepath.Join(aarpCorpusDir, category)
 		entries, err := os.ReadDir(dir)
 		if err != nil {

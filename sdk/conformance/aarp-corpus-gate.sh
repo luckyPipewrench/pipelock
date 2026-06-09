@@ -78,7 +78,7 @@ smoke Python $PY_AARP
 fails=0
 checked=0
 printf "%-42s %-9s %-4s %-4s %-4s %-4s %s\n" FIXTURE VERDICT GO TS RUST PY RESULT
-categories=(golden malicious edge chain)
+categories=(golden malicious edge chain killsuite)
 if [ "${AARP_GATE_INCLUDE_SVID:-1}" = "1" ]; then
   categories+=(svid)
 fi

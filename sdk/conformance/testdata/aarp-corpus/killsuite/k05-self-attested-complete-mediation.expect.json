@@ -1,0 +1,20 @@
+{
+  "attack_class": "self-attestation",
+  "category": "killsuite",
+  "description": "the producer sets its own complete-mediation flag to true and claims it: a self-asserted boolean is not evidence and is never promoted to a verified claim",
+  "expected_does_not_assert": [
+    "complete_mediation"
+  ],
+  "fixture_id": "k05-self-attested-complete-mediation",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "complete_mediation"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "the receipt's complete_mediation flag is set, so mediation was complete",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

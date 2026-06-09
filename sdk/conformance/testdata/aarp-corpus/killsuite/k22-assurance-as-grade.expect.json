@@ -1,0 +1,17 @@
+{
+  "attack_class": "assurance-as-grade",
+  "category": "killsuite",
+  "description": "a 'high assurance certified' grade claim: the assurance output is an axis-set descriptor, never a grade, so the grade claim is not confirmed",
+  "fixture_id": "k22-assurance-as-grade",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "high_assurance_certified"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "this receipt is certified high-assurance",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

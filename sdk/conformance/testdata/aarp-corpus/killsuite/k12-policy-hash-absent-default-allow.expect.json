@@ -1,0 +1,17 @@
+{
+  "attack_class": "policy-hash-absent",
+  "category": "killsuite",
+  "description": "a decision claiming policy_hash binding with no policy_hash present: the claim is not confirmed, so a default-allow is not shown to be policy-bound",
+  "fixture_id": "k12-policy-hash-absent-default-allow",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "policy_hash_bound"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "this allow decision was evaluated against a bound, hashed policy",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

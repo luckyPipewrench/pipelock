@@ -1,0 +1,21 @@
+{
+  "attack_class": "chain-missing-start",
+  "category": "killsuite",
+  "description": "a single mid-stream chain link claiming a complete session from genesis: the link position is present, but single-envelope appraisal cannot prove a contiguous chain, so the contiguous-chain risk is raised",
+  "expected_overclaim_risks": [
+    "chain_link_present_is_not_verified_contiguous_chain"
+  ],
+  "fixture_id": "k14-chain-link-missing-session-start",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "session_complete_from_genesis"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned",
+    "receipt_timestamp_monotonic_chain_present"
+  ],
+  "overclaim_narrative": "this chain link proves the full session is recorded contiguously from its start",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

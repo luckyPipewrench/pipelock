@@ -1,0 +1,18 @@
+{
+  "attack_class": "evidence-bundling",
+  "category": "killsuite",
+  "description": "a valid signed assertion bundled with claims about other unverifiable receipts: the verified narrow claim does not transfer credibility to the bundle",
+  "fixture_id": "k08-evidence-bundling",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "bundled_receipts_all_valid",
+    "downstream_actions_attested"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "this signed receipt proves the whole bundle of attached receipts is valid",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

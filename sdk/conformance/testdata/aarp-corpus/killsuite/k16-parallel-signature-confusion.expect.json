@@ -1,0 +1,17 @@
+{
+  "attack_class": "parallel-signature-confusion",
+  "category": "killsuite",
+  "description": "a valid pinned signature beside a valid-but-untrusted second signature: the untrusted signature is unknown_key and stacks no assurance; only the pinned claims hold",
+  "fixture_id": "k16-parallel-signature-confusion",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "dual_signed_high_assurance"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "two signatures cover this receipt, so it is dual-signed and higher assurance",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

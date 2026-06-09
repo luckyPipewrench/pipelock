@@ -1,0 +1,19 @@
+{
+  "attack_class": "forged-svid-binding",
+  "category": "killsuite",
+  "description": "a Pipelock receipt with a tampered SVID proof-of-possession: the envelope signature verifies but the workload-identity binding does not, so the three identity claims are withheld",
+  "fixture_id": "k19-forged-svid-binding",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "signing_workload_svid_chain_validated",
+    "signing_workload_svid_bound",
+    "signing_workload_svid_valid_at_action_time"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "the receipt carries an SVID, so the signing workload's identity is verified",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

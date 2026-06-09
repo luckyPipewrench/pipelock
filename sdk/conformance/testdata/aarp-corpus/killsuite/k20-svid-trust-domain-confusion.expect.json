@@ -1,0 +1,17 @@
+{
+  "attack_class": "svid-trust-domain-confusion",
+  "category": "killsuite",
+  "description": "a valid SVID from one trust domain backing an assertion that declares another: the binding's domain must equal the assertion's, so the workload-identity claims are withheld",
+  "fixture_id": "k20-svid-trust-domain-confusion",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "signing_workload_svid_chain_validated"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "a valid workload-identity SVID is attached, so this assertion's domain identity is verified",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

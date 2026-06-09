@@ -1,0 +1,18 @@
+{
+  "attack_class": "scope-smuggling",
+  "category": "killsuite",
+  "description": "a single-action receipt claiming org-wide egress coverage: the narrow mediated claim pins, the broad-scope claim is not confirmed",
+  "fixture_id": "k07-scope-smuggling",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "all_agent_egress_mediated_org_wide",
+    "complete_mediation"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "every agent's egress across the whole organization is mediated",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

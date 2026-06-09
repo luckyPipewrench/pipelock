@@ -1,0 +1,26 @@
+{
+  "attack_class": "baseline",
+  "category": "killsuite",
+  "description": "a genuine Pipelock receipt verifies its signature and mediator pinning; the appraiser confirms exactly those narrow claims and still names what it cannot prove",
+  "expected_does_not_assert": [
+    "complete_mediation",
+    "absence_of_bypass"
+  ],
+  "expected_overclaim_risks": [
+    "signature_valid_is_not_transparency_inclusion"
+  ],
+  "fixture_id": "k01-valid-pipelock-baseline",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "complete_mediation",
+    "absence_of_bypass",
+    "k8s_namespace_egress_policy_restricts_workload_to_mediator_observed"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "control: a real Pipelock receipt proves its signature and mediator identity and asserts nothing broader",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

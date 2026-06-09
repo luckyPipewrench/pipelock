@@ -1,0 +1,18 @@
+{
+  "attack_class": "deployment-without-scope",
+  "category": "killsuite",
+  "description": "deployment-control claims with no attestor or SVID: there is no deployment-axis evidence, so the deployment claims are not confirmed",
+  "fixture_id": "k11-deployment-claim-without-scope",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "k8s_namespace_egress_policy_restricts_workload_to_mediator_observed",
+    "k8s_pod_spec_proxy_injection_observed"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "the workload's egress policy and proxy injection are enforced at deployment",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

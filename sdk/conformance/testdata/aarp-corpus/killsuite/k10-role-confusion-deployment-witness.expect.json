@@ -1,0 +1,18 @@
+{
+  "attack_class": "role-confusion",
+  "category": "killsuite",
+  "description": "a receipt-signing key asserting deployment and witness claims: the signature and mediator pinning verify, but the key cannot speak for deployment or transparency-witness properties",
+  "fixture_id": "k10-role-confusion-deployment-witness",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "k8s_namespace_egress_policy_restricts_workload_to_mediator_observed",
+    "external_witness_checkpoint_signature_valid"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "because the mediator signed it, the deployment egress policy and external witness checkpoint are proven",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

@@ -1,0 +1,18 @@
+{
+  "attack_class": "svid-replay",
+  "category": "killsuite",
+  "description": "an SVID binding minted for one receipt replayed onto another: the recomputed binding digest differs, the proof-of-possession fails, and the identity claims are withheld",
+  "fixture_id": "k21-svid-replay-across-actions",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "signing_workload_svid_chain_validated",
+    "signing_workload_svid_bound"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "a valid SVID proof-of-possession is attached, so this action's signing workload is identity-verified",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

@@ -1,0 +1,22 @@
+{
+  "attack_class": "omitted-action",
+  "category": "killsuite",
+  "description": "a genuine receipt for one mediated action, claiming complete mediation: the signature verifies but delegated/local/other actions are not covered, so complete mediation is not confirmed",
+  "expected_does_not_assert": [
+    "complete_mediation",
+    "delegated_actions_mediated",
+    "local_side_effects_mediated"
+  ],
+  "fixture_id": "k04-valid-sig-omitted-action",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "complete_mediation"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "this receipt proves every action the agent took was mediated",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

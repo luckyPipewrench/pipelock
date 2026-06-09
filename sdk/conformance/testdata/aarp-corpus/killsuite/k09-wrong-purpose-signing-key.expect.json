@@ -1,0 +1,16 @@
+{
+  "attack_class": "wrong-purpose-key",
+  "category": "killsuite",
+  "description": "the mediator key signs under the countersig role: the signature verifies but the role scope does not match, so mediator pinning is withheld",
+  "fixture_id": "k09-wrong-purpose-signing-key",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "mediator_key_pinned"
+  ],
+  "must_verify": [
+    "receipt_signature_valid"
+  ],
+  "overclaim_narrative": "the mediator signed this, so the mediator identity is pinned",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

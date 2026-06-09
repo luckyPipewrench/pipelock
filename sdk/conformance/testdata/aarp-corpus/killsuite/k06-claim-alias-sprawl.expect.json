@@ -1,0 +1,19 @@
+{
+  "attack_class": "claim-alias-sprawl",
+  "category": "killsuite",
+  "description": "many broad-mediation synonyms in the claim list: only the mapped 'mediated' claim pins; the aliases are not promoted and stay claimed_unverified",
+  "fixture_id": "k06-claim-alias-sprawl",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "fully_mediated",
+    "all_traffic_mediated",
+    "complete_mediation"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "the receipt is fully mediated, all traffic mediated, completely mediated",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

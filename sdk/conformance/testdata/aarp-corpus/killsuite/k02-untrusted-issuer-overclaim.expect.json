@@ -1,0 +1,15 @@
+{
+  "attack_class": "trust-file-substitution",
+  "category": "killsuite",
+  "description": "a maximal claim list under a real signature whose key is untrusted: every signature is unknown_key, the assertion is unsigned, and no claim verifies",
+  "fixture_id": "k02-untrusted-issuer-overclaim",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned",
+    "complete_mediation",
+    "transparency_inclusion"
+  ],
+  "overclaim_narrative": "this receipt is signed by the mediator and proves mediation, transparency-log inclusion, and complete mediation",
+  "verdict": "appraise"
+}

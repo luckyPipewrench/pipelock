@@ -49,6 +49,7 @@ const (
 	catEdge      = "edge"
 	catChain     = "chain"
 	catSVID      = "svid"
+	catKillSuite = "killsuite"
 )
 
 // Deterministic test-key seed phrases. Obviously test keys; never production.
@@ -101,6 +102,38 @@ type aarpFixture struct {
 	// always verdictAppraise: an SVID attack is never envelope-fatal, it merely
 	// withholds the workload-identity claims (no inflation).
 	svid *svidsidecar.Sidecar
+
+	// The fields below are the Evidence Theater Kill Suite gate annotations. They
+	// are hand-authored (NOT derived from the verifier), so the kill-suite gate is
+	// independent of the generated .appraisal.json golden: regenerating the golden
+	// cannot launder an over-broad verified claim past a hand-written expectation.
+	// They are emitted into <name>.expect.json and asserted live by
+	// TestKillSuiteOverclaimGate. Non-kill-suite fixtures leave them empty.
+
+	// overclaimNarrative is plain prose naming the broad property a naive relying
+	// party might read into this packet (e.g. "the agent's egress is fully
+	// mediated and cannot be bypassed"). It documents the attack the fixture kills.
+	overclaimNarrative string
+	// mustVerify lists narrow claim names that MUST be present in verified_claims:
+	// the genuine, supported facts the evidence DOES prove. Pairing it with
+	// mustNotVerify makes each downgrade fixture self-contained — it asserts both
+	// halves of "valid narrow evidence present, broad reading refused", so a
+	// regression that simply stopped verifying anything (which would trivially
+	// satisfy mustNotVerify) is caught here instead of passing silently.
+	mustVerify []string
+	// mustNotVerify lists claim names that MUST be absent from verified_claims: the
+	// over-broad claims the evidence does not mechanically support. The gate fails
+	// if the appraiser emits any of them.
+	mustNotVerify []string
+	// expectRisks lists overclaim-risk codes that MUST be present in
+	// overclaim_risks (the appraiser actively naming what is being over-read).
+	expectRisks []string
+	// expectNegatives lists does_not_assert entries that MUST be present.
+	expectNegatives []string
+	// pipelockShaped marks a fixture whose evidence is Pipelock-shaped (a genuine,
+	// validly-signed Pipelock receipt or SVID binding) yet still downgraded. At
+	// least five of these prove Pipelock downgrades its own strongest evidence.
+	pipelockShaped bool
 }
 
 // TestGenerateAARPCorpus writes the full hostile corpus when run with
@@ -301,6 +334,7 @@ func (g *aarpGen) allFixtures() []aarpFixture {
 	out = append(out, g.parserFixtures()...)
 	out = append(out, g.chainFixtures()...)
 	out = append(out, g.svidFixtures()...)
+	out = append(out, g.killsuiteFixtures()...)
 	return out
 }
 
@@ -902,6 +936,27 @@ func (g *aarpGen) writeFixture(f aarpFixture) {
 		"input_format": map[bool]string{true: "chain", false: "envelope"}[f.isChain],
 		"verdict":      f.verdict,
 		"description":  f.description,
+	}
+	// Kill-suite fixtures carry the hand-authored overclaim gate annotations. They
+	// are only emitted when present, so the existing corpus expect files are
+	// unchanged and the driver's aarpExpect struct keeps ignoring them.
+	if f.overclaimNarrative != "" {
+		expect["overclaim_narrative"] = f.overclaimNarrative
+	}
+	if len(f.mustVerify) > 0 {
+		expect["must_verify"] = f.mustVerify
+	}
+	if len(f.mustNotVerify) > 0 {
+		expect["must_not_verify"] = f.mustNotVerify
+	}
+	if len(f.expectRisks) > 0 {
+		expect["expected_overclaim_risks"] = f.expectRisks
+	}
+	if len(f.expectNegatives) > 0 {
+		expect["expected_does_not_assert"] = f.expectNegatives
+	}
+	if f.pipelockShaped {
+		expect["pipelock_shaped"] = true
 	}
 	g.writeJSONAt(filepath.Join(dir, f.name+".expect.json"), expect)
 

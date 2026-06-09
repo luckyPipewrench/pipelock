@@ -1,0 +1,21 @@
+{
+  "attack_class": "transparency-omission",
+  "category": "killsuite",
+  "description": "claims of external-witness transparency inclusion with no witness root: the transparency claims are not confirmed and the signature-is-not-transparency risk is raised",
+  "expected_overclaim_risks": [
+    "signature_valid_is_not_transparency_inclusion"
+  ],
+  "fixture_id": "k15-witnessed-checkpoint-pre-witness-omission",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "transparency_inclusion",
+    "external_witness_checkpoint_signature_valid"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "the receipt was submitted to and witnessed by an external transparency log, so no pre-witness receipts were omitted",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

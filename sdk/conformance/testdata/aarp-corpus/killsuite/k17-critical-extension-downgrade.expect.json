@@ -1,0 +1,13 @@
+{
+  "attack_class": "critical-extension-downgrade",
+  "category": "killsuite",
+  "description": "a signature with an unknown critical extension: an honest verifier cannot process it, reports unknown_suite, and never verifies; a verifier that ignored the critical flag would inflate the claim",
+  "fixture_id": "k17-critical-extension-downgrade",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned"
+  ],
+  "overclaim_narrative": "the signature is valid, so the assertion is signed and the mediator is pinned",
+  "verdict": "appraise"
+}

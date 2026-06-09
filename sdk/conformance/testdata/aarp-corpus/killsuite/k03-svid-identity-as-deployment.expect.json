@@ -1,0 +1,29 @@
+{
+  "attack_class": "axis-laundering",
+  "category": "killsuite",
+  "description": "a genuine Pipelock receipt with a valid signature and a valid workload-identity SVID, whose producer claims deployment non-bypass and complete mediation: the appraiser confirms identity and freshness but downgrades the deployment reading, naming svid_identity_is_not_deployment_non_bypass",
+  "expected_does_not_assert": [
+    "does_not_assert_network_non_bypass_from_identity",
+    "does_not_assert_deployment_enforcement_from_identity"
+  ],
+  "expected_overclaim_risks": [
+    "svid_identity_is_not_deployment_non_bypass"
+  ],
+  "fixture_id": "k03-svid-identity-as-deployment",
+  "input_format": "envelope",
+  "must_not_verify": [
+    "k8s_namespace_egress_policy_restricts_workload_to_mediator_observed",
+    "complete_mediation",
+    "absence_of_bypass"
+  ],
+  "must_verify": [
+    "receipt_signature_valid",
+    "mediator_key_pinned",
+    "signing_workload_svid_chain_validated",
+    "signing_workload_svid_bound",
+    "signing_workload_svid_valid_at_action_time"
+  ],
+  "overclaim_narrative": "the agent runs under a verified workload identity, so its egress is forced through Pipelock and cannot be bypassed",
+  "pipelock_shaped": true,
+  "verdict": "appraise"
+}

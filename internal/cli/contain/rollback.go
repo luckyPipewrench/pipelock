@@ -122,6 +122,10 @@ func rollbackActions(opts rollbackOpts) []step {
 		// inventory file. List position controls reverse-walk priority,
 		// so revoke sits at a higher index than both blockers.
 		actionRevokeWorkspaceACLs(opts),
+		// Revoke operator evidence ACLs before the config dir removal wipes the
+		// inventory and before the data dir removal deletes the targets. Higher
+		// list index than both removals so the reverse walk runs it first.
+		actionRevokeEvidenceACLs(opts),
 		actionPreserve("pipelock.yaml (kept with --keep-data)"),
 		actionPreserve("config chown (resolved by dir removal)"),
 		actionPreserve("data chown (resolved by dir removal)"),
@@ -179,6 +183,20 @@ func actionRevokeWorkspaceACLs(opts rollbackOpts) step {
 			}
 			_ = env.removeFile(env.workspaceInvPath + ".bak")
 			return nil
+		},
+	}
+}
+
+// actionRevokeEvidenceACLs removes the operator read+traverse evidence ACL
+// granted at install time, tracked in /etc/pipelock/contain/evidence-acls.json.
+// It mirrors actionRevokeWorkspaceACLs: best-effort, idempotent, and preserves
+// the inventory file when --keep-data is set so a re-install can rebuild it.
+func actionRevokeEvidenceACLs(opts rollbackOpts) step {
+	return step{
+		name: "revoke-evidence-acls",
+		desc: "revoke operator evidence ACLs tracked in /etc/pipelock/contain/evidence-acls.json",
+		undo: func(ctx context.Context, env *installEnv) error {
+			return revokeEvidenceACLs(ctx, env, opts.keepData)
 		},
 	}
 }

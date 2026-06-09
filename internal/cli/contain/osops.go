@@ -67,32 +67,33 @@ type installEnv struct {
 	// Static configuration. These mirror the constants in verify.go so the
 	// two subsystems agree on filesystem layout. Made fields rather than
 	// constants so the install subcommand can accept flag overrides.
-	operatorUser      string
-	proxyUserName     string
-	agentUserName     string
-	configDir         string
-	dataDir           string
-	wrapperDir        string
-	systemUnitPath    string
-	nftRulesPath      string
-	nftMainPath       string
-	sudoersPath       string
-	caBundlePath      string
-	caExportPath      string
-	integrityDir      string
-	integrityPin      string
-	wrapperInvPath    string
-	toolsListPath     string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
-	workspaceInvPath  string
-	guardScriptPath   string
-	guardServiceUnit  string
-	guardPathUnit     string
-	undiciShimPath    string // node undici proxy shim loaded via NODE_OPTIONS
-	profileScriptPath string // /etc/profile.d login-shell runtime contract
-	agentHome         string // contained agent home (per-tool config destination)
-	pipelockBinary    string // source binary path passed to --pipelock-binary
-	pipelockTarget    string // destination, default /usr/local/bin/pipelock
-	proxyPort         int
+	operatorUser       string
+	proxyUserName      string
+	agentUserName      string
+	configDir          string
+	dataDir            string
+	wrapperDir         string
+	systemUnitPath     string
+	nftRulesPath       string
+	nftMainPath        string
+	sudoersPath        string
+	caBundlePath       string
+	caExportPath       string
+	integrityDir       string
+	integrityPin       string
+	wrapperInvPath     string
+	toolsListPath      string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
+	workspaceInvPath   string
+	evidenceACLInvPath string // operator evidence-read ACL inventory
+	guardScriptPath    string
+	guardServiceUnit   string
+	guardPathUnit      string
+	undiciShimPath     string // node undici proxy shim loaded via NODE_OPTIONS
+	profileScriptPath  string // /etc/profile.d login-shell runtime contract
+	agentHome          string // contained agent home (per-tool config destination)
+	pipelockBinary     string // source binary path passed to --pipelock-binary
+	pipelockTarget     string // destination, default /usr/local/bin/pipelock
+	proxyPort          int
 
 	prevNFTTableDump       string
 	prevNftablesEnabled    bool
@@ -107,48 +108,49 @@ type installEnv struct {
 // sudo (where $SUDO_USER is empty) and -- no override flag was passed.
 func defaultInstallEnv(out io.Writer) *installEnv {
 	return &installEnv{
-		runCmd:            realRunCommand,
-		stat:              os.Stat,
-		lstat:             os.Lstat,
-		readFile:          os.ReadFile,
-		writeFile:         writeFileAtomic,
-		removeFile:        os.Remove,
-		mkdirAll:          os.MkdirAll,
-		chown:             os.Chown,
-		lchown:            os.Lchown,
-		rename:            os.Rename,
-		chmod:             os.Chmod,
-		symlink:           os.Symlink,
-		lookupUser:        user.Lookup,
-		selfPath:          os.Executable,
-		hashFile:          sha256HexOfFile,
-		out:               out,
-		errOut:            os.Stderr,
-		operatorUser:      os.Getenv("SUDO_USER"),
-		proxyUserName:     defaultProxyUser,
-		agentUserName:     defaultAgentUser,
-		configDir:         defaultConfigDir,
-		dataDir:           defaultDataDir,
-		wrapperDir:        defaultWrapperDir,
-		systemUnitPath:    defaultSystemUnitPath,
-		nftRulesPath:      defaultNFTRulesPath,
-		nftMainPath:       defaultNFTMainConfigPath,
-		sudoersPath:       defaultSudoersPath,
-		caBundlePath:      defaultCABundlePath,
-		caExportPath:      defaultCAExportPath,
-		integrityDir:      defaultIntegrityDir,
-		integrityPin:      defaultIntegrityPin,
-		wrapperInvPath:    defaultWrapperInvPath,
-		toolsListPath:     defaultToolsListPath,
-		workspaceInvPath:  defaultWorkspaceInvPath,
-		guardScriptPath:   defaultGuardScriptPath,
-		guardServiceUnit:  defaultGuardServiceUnit,
-		guardPathUnit:     defaultGuardPathUnit,
-		undiciShimPath:    defaultUndiciShimPath,
-		profileScriptPath: defaultProfileScriptPath,
-		agentHome:         "/home/" + defaultAgentUser,
-		pipelockTarget:    defaultPipelockTarget,
-		proxyPort:         defaultProxyPort,
+		runCmd:             realRunCommand,
+		stat:               os.Stat,
+		lstat:              os.Lstat,
+		readFile:           os.ReadFile,
+		writeFile:          writeFileAtomic,
+		removeFile:         os.Remove,
+		mkdirAll:           os.MkdirAll,
+		chown:              os.Chown,
+		lchown:             os.Lchown,
+		rename:             os.Rename,
+		chmod:              os.Chmod,
+		symlink:            os.Symlink,
+		lookupUser:         user.Lookup,
+		selfPath:           os.Executable,
+		hashFile:           sha256HexOfFile,
+		out:                out,
+		errOut:             os.Stderr,
+		operatorUser:       os.Getenv("SUDO_USER"),
+		proxyUserName:      defaultProxyUser,
+		agentUserName:      defaultAgentUser,
+		configDir:          defaultConfigDir,
+		dataDir:            defaultDataDir,
+		wrapperDir:         defaultWrapperDir,
+		systemUnitPath:     defaultSystemUnitPath,
+		nftRulesPath:       defaultNFTRulesPath,
+		nftMainPath:        defaultNFTMainConfigPath,
+		sudoersPath:        defaultSudoersPath,
+		caBundlePath:       defaultCABundlePath,
+		caExportPath:       defaultCAExportPath,
+		integrityDir:       defaultIntegrityDir,
+		integrityPin:       defaultIntegrityPin,
+		wrapperInvPath:     defaultWrapperInvPath,
+		toolsListPath:      defaultToolsListPath,
+		workspaceInvPath:   defaultWorkspaceInvPath,
+		evidenceACLInvPath: defaultEvidenceACLInvPath,
+		guardScriptPath:    defaultGuardScriptPath,
+		guardServiceUnit:   defaultGuardServiceUnit,
+		guardPathUnit:      defaultGuardPathUnit,
+		undiciShimPath:     defaultUndiciShimPath,
+		profileScriptPath:  defaultProfileScriptPath,
+		agentHome:          "/home/" + defaultAgentUser,
+		pipelockTarget:     defaultPipelockTarget,
+		proxyPort:          defaultProxyPort,
 	}
 }
 
@@ -156,23 +158,24 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 // so the two subsystems agree on filesystem layout. Names are picked to
 // avoid collision with verify.go constants.
 const (
-	defaultConfigDir         = "/etc/pipelock"
-	defaultDataDir           = "/var/lib/pipelock"
-	defaultSystemUnitPath    = "/etc/systemd/system/pipelock.service"
-	defaultNFTRulesPath      = "/etc/nftables.d/50-pipelock-containment.nft"
-	defaultNFTMainConfigPath = "/etc/sysconfig/nftables.conf"
-	defaultSudoersPath       = "/etc/sudoers.d/50-pipelock-agent"
-	defaultCAExportPath      = "/etc/pipelock/ca.pem"
-	defaultIntegrityDir      = "/etc/pipelock/integrity"
-	defaultIntegrityPin      = "/etc/pipelock/integrity/binary-pin.sha256"
-	defaultWrapperInvPath    = "/etc/pipelock/contain/wrappers.json"
-	defaultToolsListPath     = "/etc/pipelock/contain/tools.list"
-	defaultWorkspaceInvPath  = "/etc/pipelock/contain/workspaces.json"
-	defaultGuardScriptPath   = "/usr/local/bin/plk-cred-guard"                   //nolint:gosec // G101: executable filename, not a credential value.
-	defaultGuardServiceUnit  = "/etc/systemd/system/pipelock-cred-guard.service" //nolint:gosec // G101: unit filename, not a credential value.
-	defaultGuardPathUnit     = "/etc/systemd/system/pipelock-cred-guard.path"    //nolint:gosec // G101: unit filename, not a credential value.
-	defaultPipelockTarget    = "/usr/local/bin/pipelock"
-	defaultSystemCABundle    = "/etc/ssl/certs/ca-bundle.crt"
+	defaultConfigDir          = "/etc/pipelock"
+	defaultDataDir            = "/var/lib/pipelock"
+	defaultSystemUnitPath     = "/etc/systemd/system/pipelock.service"
+	defaultNFTRulesPath       = "/etc/nftables.d/50-pipelock-containment.nft"
+	defaultNFTMainConfigPath  = "/etc/sysconfig/nftables.conf"
+	defaultSudoersPath        = "/etc/sudoers.d/50-pipelock-agent"
+	defaultCAExportPath       = "/etc/pipelock/ca.pem"
+	defaultIntegrityDir       = "/etc/pipelock/integrity"
+	defaultIntegrityPin       = "/etc/pipelock/integrity/binary-pin.sha256"
+	defaultWrapperInvPath     = "/etc/pipelock/contain/wrappers.json"
+	defaultToolsListPath      = "/etc/pipelock/contain/tools.list"
+	defaultWorkspaceInvPath   = "/etc/pipelock/contain/workspaces.json"
+	defaultEvidenceACLInvPath = "/etc/pipelock/contain/evidence-acls.json"
+	defaultGuardScriptPath    = "/usr/local/bin/plk-cred-guard"                   //nolint:gosec // G101: executable filename, not a credential value.
+	defaultGuardServiceUnit   = "/etc/systemd/system/pipelock-cred-guard.service" //nolint:gosec // G101: unit filename, not a credential value.
+	defaultGuardPathUnit      = "/etc/systemd/system/pipelock-cred-guard.path"    //nolint:gosec // G101: unit filename, not a credential value.
+	defaultPipelockTarget     = "/usr/local/bin/pipelock"
+	defaultSystemCABundle     = "/etc/ssl/certs/ca-bundle.crt"
 
 	// File modes. The model is "pipelock-agent UID must be able to read every
 	// non-secret file the wrappers depend on at runtime, but cannot read

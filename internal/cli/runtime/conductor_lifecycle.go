@@ -132,12 +132,16 @@ func (s *Server) teardownConductor(reason string) {
 	}
 	// Release the durable audit queue's single-writer lock after producers and
 	// transports have stopped touching it.
-	if closer, ok := auditQueue.(interface{ Close() error }); ok && closer != nil {
-		_ = closer.Close()
-	}
+	closeConductorAuditQueue(auditQueue)
 	if s.opts.Stderr != nil {
 		_, _ = fmt.Fprintf(s.opts.Stderr,
 			"pipelock: fleet license %s; Conductor runtime stopped, detection continues\n", reason)
+	}
+}
+
+func closeConductorAuditQueue(auditQueue any) {
+	if closer, ok := auditQueue.(interface{ Close() error }); ok && closer != nil {
+		_ = closer.Close()
 	}
 }
 

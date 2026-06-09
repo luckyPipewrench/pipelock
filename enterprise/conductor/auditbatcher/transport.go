@@ -191,7 +191,13 @@ func (t *Transport) DeliverOnce(ctx context.Context) error {
 		// record carries retry_count=MaxUint64. ctx cancellation is not a
 		// delivery failure - never burn an attempt on shutdown, always release
 		// so the record survives.
-		if ctx.Err() == nil && t.maxAttempts > 0 && lease.RetryCount >= t.maxAttempts-1 {
+		if ctx.Err() != nil {
+			if err := t.queue.Release(lease.ID); err != nil {
+				return err
+			}
+			break
+		}
+		if t.maxAttempts > 0 && lease.RetryCount >= t.maxAttempts-1 {
 			attempts := lease.RetryCount
 			if attempts < ^uint64(0) {
 				attempts++

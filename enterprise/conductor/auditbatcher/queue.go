@@ -30,7 +30,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -168,29 +167,6 @@ func Open(cfg Config) (*Queue, error) {
 	return q, nil
 }
 
-// acquireQueueLock takes an exclusive, non-blocking advisory lock on a .lock
-// file under the queue root. A second process on the same host / local
-// filesystem opening the same dir fails closed with ErrQueueLocked rather than
-// silently interleaving Enqueue/Claim/Drop across two independent in-process
-// mutexes. This is not a distributed lock for cross-host shared PVCs. The flock
-// is released when the fd is closed (Close) or when the holding process dies, so
-// a crash never deadlocks.
-func acquireQueueLock(dir string) (*os.File, error) {
-	path := filepath.Join(filepath.Clean(dir), lockFileName)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, fileMode)
-	if err != nil {
-		return nil, fmt.Errorf("auditbatcher: open queue lock %s: %w", path, err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("%w: %s", ErrQueueLocked, path)
-		}
-		return nil, fmt.Errorf("auditbatcher: lock queue %s: %w", path, err)
-	}
-	return f, nil
-}
-
 // Close marks the queue closed and releases the exclusive queue lock so another
 // process may Open the same directory. It is safe to call multiple times.
 // Subsequent queue operations fail closed with ErrQueueClosed.
@@ -214,31 +190,16 @@ func (q *Queue) checkOpenLocked() error {
 	return nil
 }
 
-func (q *Queue) releaseLock() error {
-	if q.lockFile == nil {
-		return nil
-	}
-	f := q.lockFile
-	q.lockFile = nil
-	// Closing the fd implicitly releases the flock; an explicit Flock(LOCK_UN)
-	// first makes the release deterministic even if the fd is later dup'd.
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("auditbatcher: close queue lock: %w", err)
-	}
-	return nil
-}
-
 func (q *Queue) Enqueue(batch Batch) (string, error) {
 	if q == nil {
 		return "", errors.New("auditbatcher: nil queue")
 	}
-	if err := validateBatch(batch, q.maxPayloadBytes); err != nil {
-		return "", err
-	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if err := q.checkOpenLocked(); err != nil {
+		return "", err
+	}
+	if err := validateBatch(batch, q.maxPayloadBytes); err != nil {
 		return "", err
 	}
 
@@ -886,7 +847,7 @@ func fsyncDir(dir string) error {
 	}
 	defer func() { _ = f.Close() }()
 	if err := f.Sync(); err != nil {
-		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+		if ignoreDirSyncError(err) {
 			return nil
 		}
 		return fmt.Errorf("auditbatcher: fsync dir %s: %w", dir, err)

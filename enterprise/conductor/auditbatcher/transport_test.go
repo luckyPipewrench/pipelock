@@ -19,8 +19,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestTransportDeliverOnceSuccessAcksRecord(t *testing.T) {
@@ -248,23 +246,30 @@ func TestTransportWireFormat_StableContract(t *testing.T) {
 	}
 }
 
-// TestTransportRun_GracefulShutdown spins Run on a server that returns 503
-// (forcing the retry path), cancels ctx, and asserts Run returns ctx.Err()
-// within a bounded window. Without this, a stuck transport could hang
-// pipelock shutdown indefinitely.
+// TestTransportRun_GracefulShutdown spins Run on a server that holds the
+// delivery request open until ctx cancellation, then asserts Run returns
+// ctx.Err() within a bounded window without burning a retry attempt. Without
+// this, a stuck transport could hang pipelock shutdown indefinitely or make
+// restarts consume retry budget.
 func TestTransportRun_GracefulShutdown(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
 	q := openTestQueue(t, Config{})
-	if _, err := q.Enqueue(signedTestBatch(t, "batch-shutdown", priv)); err != nil {
+	id, err := q.Enqueue(signedTestBatch(t, "batch-shutdown", priv))
+	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
-	var attempts atomic.Int64
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		attempts.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
+	attempted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	var attemptedOnce sync.Once
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		attemptedOnce.Do(func() { close(attempted) })
+		select {
+		case <-releaseHandler:
+		case <-r.Context().Done():
+		}
 	}))
 	defer srv.Close()
 
@@ -274,8 +279,9 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 		Queue:      q,
 		RetryDelay: 10 * time.Millisecond,
 		EmptyDelay: 10 * time.Millisecond,
-		// High ceiling so the retry-loop-until-cancel path is exercised without
-		// the dead-letter escalation firing - this test asserts Dead == 0.
+		// High ceiling so any accidental retry-loop-until-cancel path is
+		// exercised without the dead-letter escalation firing - this test
+		// asserts Dead == 0 and RetryCount == 0.
 		MaxDeliveryAttempts: 1_000_000,
 	})
 	if err != nil {
@@ -291,13 +297,13 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 		runErrCh <- tr.Run(ctx)
 	}()
 
-	// Wait until the transport has actually attempted a send (and hit the 503
-	// retry path) before cancelling, so the shutdown-mid-retry path is
-	// exercised deterministically instead of via a timing guess.
-	testwait.For(t, time.Second, func() bool {
-		return attempts.Load() >= 1
-	}, "transport to attempt at least one send before cancel")
+	select {
+	case <-attempted:
+	case <-time.After(time.Second):
+		t.Fatal("transport did not attempt send within 1s")
+	}
 	cancel()
+	close(releaseHandler)
 
 	select {
 	case err := <-runErrCh:
@@ -320,6 +326,22 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 	}
 	if stats.Dead != 0 {
 		t.Fatalf("dead=%d, want 0 (5xx is retry, not dead-letter)", stats.Dead)
+	}
+	var recordPath string
+	switch {
+	case stats.Pending == 1:
+		recordPath = filepath.Join(q.pendingDir, id)
+	case stats.Inflight == 1:
+		recordPath = filepath.Join(q.inflightDir, id)
+	default:
+		t.Fatalf("stats=%+v, want one pending or inflight record", stats)
+	}
+	record, err := readRecord(recordPath, q.maxPayloadBytes)
+	if err != nil {
+		t.Fatalf("readRecord(%s) error = %v", recordPath, err)
+	}
+	if record.RetryCount != 0 {
+		t.Fatalf("retry_count after cancellation = %d, want 0", record.RetryCount)
 	}
 }
 

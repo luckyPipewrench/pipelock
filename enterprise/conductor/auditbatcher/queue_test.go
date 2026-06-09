@@ -180,6 +180,9 @@ func TestQueueOperationsFailAfterClose(t *testing.T) {
 	if _, err := q.Enqueue(batch); !errors.Is(err, ErrQueueClosed) {
 		t.Fatalf("Enqueue(after Close) = %v, want ErrQueueClosed", err)
 	}
+	if _, err := q.Enqueue(Batch{}); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Enqueue(invalid batch after Close) = %v, want ErrQueueClosed", err)
+	}
 	if _, err := q.Claim(); !errors.Is(err, ErrQueueClosed) {
 		t.Fatalf("Claim(after Close) = %v, want ErrQueueClosed", err)
 	}

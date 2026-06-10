@@ -217,7 +217,8 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **Adaptive Operator CLI** (v2.5) | `pipelock adaptive status / flush / whoami` exposes runtime adaptive state through the authenticated admin API. See [`docs/cli/adaptive.md`](docs/cli/adaptive.md). |
 | **Finding Suppression** | Silence known false positives via config rules or inline `pipelock:ignore` comments |
 | **Multi-Agent Support** | Agent identification via `X-Pipelock-Agent` header for per-agent filtering |
-| **Fleet Monitoring** | Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json) |
+| **Fleet Monitoring** | Per-instance Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json). (Free; monitors a single instance — distinct from the Conductor fleet control plane below.) |
+| **Conductor — fleet control plane** (v2.7, Enterprise) | The Enterprise control plane for a fleet of Pipelock instances: signed policy-bundle distribution to followers, a signed-evidence audit sink (`pipelock fleet-sink`) namespaced per org/fleet/instance, and fleet-wide enrollment, remote kill, and policy rollback over mTLS/SPIFFE. Followers enforce locally and stay fail-closed; Conductor holds no agent secrets. Gated by the `fleet` license feature, fail-closed. See the [Conductor guide](docs/guides/conductor.md). |
 | **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, session smuggling prevention for Google's Agent-to-Agent protocol |
 | **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, flags deviations after ratification. |
 | **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. Catches loop storms and amplification attacks. |
@@ -500,9 +501,19 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Host Containment](docs/contain-cli.md) | `pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` for 3-UID kernel-enforced agent containment (v2.5) |
 | [MCP Integrity Manifests](docs/cli/mcp-integrity.md) | Generate, verify, sign, and require trusted MCP binary-integrity manifests (v2.5) |
 | [Adaptive CLI](docs/cli/adaptive.md) | Inspect and flush adaptive-enforcement runtime state through the admin API (v2.5) |
+| [Conductor](docs/guides/conductor.md) | The Enterprise fleet control plane: policy distribution, audit sink, remote kill, rollback, mTLS/SPIFFE trust, licensing (v2.7, GA) |
+| [Conductor Operator Runbook](docs/guides/conductor-operator-runbook.md) | Hands-on local fleet walkthrough: bootstrap, serve, sign a batch, verify offline |
+| [`pipelock license`](docs/cli/license.md) | Install, inspect, and check the license that unlocks paid features (Pro `agents`, Enterprise `fleet`) |
 | [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots, `posture verify` CLI, CI gate, scoring model |
 | [`pipelock init sidecar`](docs/cli/init-sidecar.md) | Generate enforced Kubernetes companion-proxy manifests and MCP launcher contracts (strategic-merge, Kustomize, Helm values) |
 | [`pipelock session`](docs/cli/session.md) | Operator CLI for airlock inspection and recovery (list, inspect, explain, release, terminate, recover) |
+| [Flight Recorder](docs/guides/flight-recorder.md) | Hash-chained signed evidence log: default-on behavior, transcript-root seal, redaction, escrow, key rotation |
+| [TLS Interception](docs/guides/tls-interception.md) | CONNECT-tunnel MITM: CA setup, body/header/response scanning, passthrough domains |
+| [Canary Tokens](docs/guides/canary-tokens.md) | Synthetic secrets that trip an alert the moment an agent tries to exfiltrate one |
+| [Detection Integration](docs/guides/detection-integration.md) | Feed Pipelock decisions and evidence into external detection / SIEM pipelines |
+| [Playground Replay Capture](docs/guides/playground-replay-capture.md) | Drive controlled synthetic attack scenarios and capture the evidence |
+| [PR Review](docs/guides/pr-review.md) | Manual-trigger AI security review for pull requests (`/review` comment) |
+| [MCP Inspector Front](docs/guides/mcp-inspector-front.md) | Front MCP dev tools (Inspector, test servers) through Pipelock scanning |
 | [Badges](docs/badges.md) | Drop-in Markdown for the `scanned by pipelock` badge on downstream projects |
 
 ## Project Structure

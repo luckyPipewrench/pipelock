@@ -1,6 +1,8 @@
 # Pipelock Conductor and Audit Sink Design
 
-**Status:** Design preview, not GA in v2.6
+**Status:** GA as of v2.7 — the core control plane, audit sink, and coordination
+plane ship and are documented in the [Conductor guide](../guides/conductor.md).
+Advanced slices explicitly marked as later work below remain roadmap.
 **Version:** 0.1.0
 **Date:** 2026-05-23
 

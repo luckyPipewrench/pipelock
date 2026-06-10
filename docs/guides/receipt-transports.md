@@ -50,9 +50,13 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 | `mcp_stdio` | Response scan | `mcp_response_scan` | Prompt injection in tool result |
 | `mcp_http_upstream` | All of the above | same as stdio | Stdio client bridged to an upstream HTTP / SSE MCP server |
 | `mcp_http_listener` | All of the above | same as stdio | Listener-bound HTTP / SSE MCP proxy variant |
+| `mcp_http_listener` | A2A header block | `mcp_a2a_scanning` | A2A-Extensions header URI rejected by the URL scanner |
+| `mcp_http_listener` | A2A body block | `mcp_a2a_scanning` | A2A method body blocked by the A2A field scan or general content/DLP scan |
 | `mcp_ws` | All of the above | same as stdio | WebSocket MCP proxy variant |
 
 MCP response transports (`mcp_stdio`, `mcp_http`, `mcp_http_listener`, `mcp_ws`) emit `mcp_response_scan` for prompt-injection findings and `media_policy` when a tool result carries blocked base64 media in `content[].data`, `content[].blob`, or `content[].raw`.
+
+On the MCP HTTP listener, agent-to-agent (A2A) decision points — the A2A-Extensions header block and A2A method body blocks — now emit a policy-hash-bearing block receipt in the `mcp_a2a_scanning` layer, closing a parity gap where a blocked A2A action left no evidence while the forward proxy already recorded its A2A blocks. A synthetic action ID is minted only when an A2A request is actually blocked, so clean/allowed A2A and ordinary `tools/call` traffic emit exactly as before.
 
 ## Receipt Fields
 
@@ -95,7 +99,7 @@ When request-side redaction succeeds, the receipt keeps the underlying transport
 
 All receipts from a single proxy instance share a hash chain. The first receipt has `chain_prev_hash: "genesis"`. Each subsequent receipt's `chain_prev_hash` is the SHA-256 of the previous receipt's canonical JSON. `chain_seq` increments by 1 for each receipt.
 
-Verify a single file with `pipelock verify-receipt evidence-proxy-0.jsonl`. Verify chain integrity across rotated or restarted evidence files with `pipelock verify-receipt --chain <evidence-dir>`.
+Verify a single file with `pipelock verify-receipt evidence-proxy-0.jsonl --key <signer.pub>`. Verification is safe by default: an unpinned run (no `--key`) is structural-only and exits non-zero unless you pass `--allow-unpinned`. Verify chain integrity across restarted or rotated evidence files with `pipelock verify-receipt --chain <evidence-dir> --key <signer.pub>`; for a chain whose signing key rotated, pass `--key` once per trusted segment key. See the [receipt verification guide](receipt-verification.md) for the full flow.
 
 ## Emit Failure Behavior
 

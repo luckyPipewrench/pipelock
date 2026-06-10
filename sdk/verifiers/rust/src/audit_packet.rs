@@ -1,4 +1,4 @@
-use crate::chain::{compute_totals, verify_chain};
+use crate::chain::{compute_totals, verify_chain_with_options};
 use crate::recorder::extract_receipts;
 use crate::schema::validate_audit_packet;
 use crate::types::{
@@ -96,7 +96,7 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
             return Ok(report);
         }
     };
-    let chain = verify_chain(&receipts, &key_hex);
+    let chain = verify_chain_with_options(&receipts, &key_hex, opts.allow_self_consistent_only);
     report.chain_check = if chain.valid { "pass" } else { "fail" }.to_string();
     if !chain.valid {
         push_error(

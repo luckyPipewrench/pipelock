@@ -4,6 +4,7 @@ import type { Receipt, RecorderEntry } from "./types.js";
 import { RuntimeError, parseJSON, rejectDuplicateKeys } from "./util.js";
 
 const actionReceiptType = "action_receipt";
+const evidenceReceiptType = "evidence_receipt";
 
 export function readEntries(file: string): RecorderEntry[] {
   const text = readFileSync(path.normalize(file), "utf8");
@@ -26,7 +27,7 @@ export function readEntries(file: string): RecorderEntry[] {
 
 export function extractReceipts(file: string): Receipt[] {
   return readEntries(file)
-    .filter((entry) => entry.type === actionReceiptType)
+    .filter((entry) => entry.type === actionReceiptType || entry.type === evidenceReceiptType)
     .map((entry) => {
       if (typeof entry.detail !== "object" || entry.detail === null) {
         throw new RuntimeError(`entry seq ${String(entry.seq)}: receipt detail is not an object`);

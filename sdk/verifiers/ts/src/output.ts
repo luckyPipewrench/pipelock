@@ -40,13 +40,19 @@ export function emitReceipt(report: ReceiptReport, json: boolean): void {
     return;
   }
   if (report.valid) {
-    process.stdout.write(`RECEIPT VALID: ${report.path}\n`);
+    process.stdout.write(`RECEIPT ${report.unpinned ? "UNPINNED" : "VALID"}: ${report.path}\n`);
+    if (report.unpinned && report.error) process.stdout.write(`  warning:      ${report.error}\n`);
     process.stdout.write(`  action_id:    ${report.action_id ?? ""}\n`);
     process.stdout.write(`  verdict:      ${report.verdict ?? ""}\n`);
     process.stdout.write(`  transport:    ${report.transport ?? ""}\n`);
     process.stdout.write(`  signer:       ${report.signer_key ?? ""}\n`);
     process.stdout.write(`  policy_hash:  ${report.policy_hash ?? ""}\n`);
     process.stdout.write(`  chain_seq:    ${report.chain_seq ?? 0}\n`);
+    return;
+  }
+  if (report.unpinned) {
+    process.stderr.write(`RECEIPT UNPINNED: ${report.path}\n`);
+    if (report.error) process.stderr.write(`  warning: ${report.error}\n`);
     return;
   }
   process.stderr.write(`RECEIPT INVALID: ${report.path}\n`);
@@ -59,10 +65,16 @@ export function emitChain(report: ChainCommandReport, json: boolean): void {
     return;
   }
   if (report.valid) {
-    process.stdout.write(`CHAIN VALID: ${report.path}\n`);
+    process.stdout.write(`CHAIN ${report.unpinned ? "UNPINNED" : "VALID"}: ${report.path}\n`);
+    if (report.unpinned && report.error) process.stdout.write(`  warning:    ${report.error}\n`);
     process.stdout.write(`  receipts:   ${report.receipt_count}\n`);
     process.stdout.write(`  final seq:  ${report.final_seq}\n`);
     process.stdout.write(`  root hash:  ${report.root_hash}\n`);
+    return;
+  }
+  if (report.unpinned) {
+    process.stderr.write(`CHAIN UNPINNED: ${report.path}\n`);
+    if (report.error) process.stderr.write(`  warning:    ${report.error}\n`);
     return;
   }
   process.stderr.write(`CHAIN BROKEN: ${report.path}\n`);

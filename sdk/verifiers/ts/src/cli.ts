@@ -13,6 +13,7 @@ import { RuntimeError, UsageError, errorMessage, resolveSignerKey } from "./util
 export interface ChainCommandReport {
   path: string;
   valid: boolean;
+  unpinned?: boolean;
   receipt_count: number;
   final_seq: number;
   root_hash?: string;
@@ -25,10 +26,10 @@ function usage(command?: string): string {
     return "Usage: pipelock-verifier-ts audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]";
   }
   if (command === "chain") {
-    return "Usage: pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE] [--dir] [--session-id ID]";
+    return "Usage: pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned] [--dir] [--session-id ID]";
   }
   if (command === "receipt") {
-    return "Usage: pipelock-verifier-ts receipt PATH [--json] [--key HEX_OR_FILE]";
+    return "Usage: pipelock-verifier-ts receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]";
   }
   if (command === "aarp") {
     return "Usage: pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--chain] [--json]";
@@ -74,6 +75,7 @@ async function runChainCommand(args: string[]): Promise<number> {
     options: {
       json: { type: "boolean", default: false },
       key: { type: "string", default: "" },
+      "allow-unpinned": { type: "boolean", default: false },
       dir: { type: "boolean", default: false },
       "session-id": { type: "string", default: "proxy" },
     },
@@ -113,10 +115,12 @@ async function runChainCommand(args: string[]): Promise<number> {
     emitChain(report, parsed.values.json === true);
     return 1;
   }
-  const result = await verifyChain(receipts, keyHex);
+  const allowUnpinned = parsed.values["allow-unpinned"] === true;
+  const result = await verifyChain(receipts, keyHex, { allowUnpinned });
   const report: ChainCommandReport = {
     path: label,
     valid: result.valid,
+    unpinned: keyHex === "" && (result.valid || result.error?.includes("UNPINNED")),
     receipt_count: result.receipt_count,
     final_seq: result.final_seq,
     root_hash: result.root_hash || undefined,
@@ -134,10 +138,15 @@ async function runReceiptCommand(args: string[]): Promise<number> {
     options: {
       json: { type: "boolean", default: false },
       key: { type: "string", default: "" },
+      "allow-unpinned": { type: "boolean", default: false },
     },
   });
   const target = requireOneArg(parsed.positionals, "receipt");
-  const report = await runReceipt(target, parsed.values.key ?? "");
+  const report = await runReceipt(
+    target,
+    parsed.values.key ?? "",
+    parsed.values["allow-unpinned"] === true,
+  );
   emitReceipt(report, parsed.values.json === true);
   return report.valid ? 0 : 1;
 }

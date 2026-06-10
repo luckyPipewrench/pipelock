@@ -67,7 +67,14 @@ pub fn emit_receipt(report: &ReceiptReport, json: bool) -> Result<()> {
         return write_json(report);
     }
     if report.valid {
-        println!("RECEIPT VALID: {}", report.path);
+        if report.unpinned == Some(true) {
+            println!("RECEIPT UNPINNED: {}", report.path);
+            if let Some(error) = &report.error {
+                println!("  warning:      {error}");
+            }
+        } else {
+            println!("RECEIPT VALID: {}", report.path);
+        }
         println!(
             "  action_id:    {}",
             report.action_id.as_deref().unwrap_or("")
@@ -91,6 +98,13 @@ pub fn emit_receipt(report: &ReceiptReport, json: bool) -> Result<()> {
         println!("  chain_seq:    {}", report.chain_seq.unwrap_or(0));
         return Ok(());
     }
+    if report.unpinned == Some(true) {
+        eprintln!("RECEIPT UNPINNED: {}", report.path);
+        if let Some(error) = &report.error {
+            eprintln!("  warning: {error}");
+        }
+        return Ok(());
+    }
     eprintln!("RECEIPT INVALID: {}", report.path);
     if let Some(error) = &report.error {
         eprintln!("  error: {error}");
@@ -103,13 +117,27 @@ pub fn emit_chain(report: &ChainCommandReport, json: bool) -> Result<()> {
         return write_json(report);
     }
     if report.valid {
-        println!("CHAIN VALID: {}", report.path);
+        if report.unpinned == Some(true) {
+            println!("CHAIN UNPINNED: {}", report.path);
+            if let Some(error) = &report.error {
+                println!("  warning:    {error}");
+            }
+        } else {
+            println!("CHAIN VALID: {}", report.path);
+        }
         println!("  receipts:   {}", report.receipt_count);
         println!("  final seq:  {}", report.final_seq);
         println!(
             "  root hash:  {}",
             report.root_hash.as_deref().unwrap_or("")
         );
+        return Ok(());
+    }
+    if report.unpinned == Some(true) {
+        eprintln!("CHAIN UNPINNED: {}", report.path);
+        if let Some(error) = &report.error {
+            eprintln!("  warning:    {error}");
+        }
         return Ok(());
     }
     eprintln!("CHAIN BROKEN: {}", report.path);

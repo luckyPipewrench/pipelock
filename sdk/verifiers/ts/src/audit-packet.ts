@@ -149,7 +149,9 @@ export async function verifyAuditPacket(
     receipts = extractReceipts(evidencePath);
     const keyInput =
       opts.signerKey.trim() === "" ? (packet.verifier?.signer_key ?? "") : opts.signerKey;
-    chain = await verifyChain(receipts, resolveSignerKey(keyInput));
+    chain = await verifyChain(receipts, resolveSignerKey(keyInput), {
+      allowUnpinned: opts.allowSelfConsistentOnly,
+    });
   } catch (err) {
     report.chain_check = "fail";
     pushError(report, `chain: ${(err as Error).message}`);

@@ -23,8 +23,9 @@ type chainOptions struct {
 	signerKey string
 	sessionID string
 	evidenceBindingOptions
-	jsonOutput bool
-	asDir      bool
+	jsonOutput    bool
+	asDir         bool
+	allowUnpinned bool
 }
 
 func newChainCmd() *cobra.Command {
@@ -37,15 +38,9 @@ func newChainCmd() *cobra.Command {
 		Long: `Verifies the hash linkage of a Pipelock receipt chain. PATH may be a
 single .jsonl evidence file or a session directory when --dir is set.
 
-Legacy ActionReceipt v1 chains verify signatures against the embedded signer
-key unless --key is supplied. EvidenceReceipt v2 chains do not embed a public
-key, so without --key the verifier checks structure, signer-id consistency,
-seq monotonicity, and hash linkage only; with --key it verifies every Ed25519
-signature against the pinned key.
-
-Without --key the verifier confirms self-consistency: every receipt's
-signer must match the first receipt's signer, and prev-hash linkage must
-hold. Self-consistency does not prove provenance.
+Legacy ActionReceipt v1 and EvidenceReceipt v2 chains require --key for
+trusted provenance. Pass --allow-unpinned for loud structural-only
+verification. Self-consistency does not prove provenance.
 
 With --key the verifier requires every receipt to be signed by the named
 key.`,
@@ -66,6 +61,7 @@ key.`,
 	cmd.Flags().StringVar(&opts.expectPayloadKind, "expect-payload-kind", "", "EvidenceReceipt v2: require payload_kind")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single file")
+	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 
 	return cmd
 }
@@ -80,6 +76,7 @@ type chainReport struct {
 	FinalSeq           uint64 `json:"final_seq"`
 	RootHash           string `json:"root_hash,omitempty"`
 	SignaturesVerified bool   `json:"signatures_verified"`
+	Unpinned           bool   `json:"unpinned,omitempty"`
 	SignerKeyID        string `json:"signer_key_id,omitempty"`
 	Error              string `json:"error,omitempty"`
 	BrokenAtSeq        uint64 `json:"broken_at_seq,omitempty"`
@@ -145,12 +142,20 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 		// Provenance only when an out-of-band key is pinned AND every
 		// signature verified; an empty key is self-consistency only.
 		SignaturesVerified: res.Valid && keyHex != "",
+		Unpinned:           res.Valid && keyHex == "",
 		Error:              res.Error,
 		BrokenAtSeq:        res.BrokenAtSeq,
+	}
+	if res.Valid && keyHex == "" {
+		report.Error = unpinnedReceiptBanner
+		report.Valid = opts.allowUnpinned
 	}
 	emitChainReport(stdout, stderr, report, opts.jsonOutput)
 	if !res.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
+	}
+	if keyHex == "" && !opts.allowUnpinned {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain verification unpinned"))
 	}
 	return nil
 }
@@ -196,13 +201,21 @@ func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []cont
 		FinalSeq:           res.FinalSeq,
 		RootHash:           res.RootHash,
 		SignaturesVerified: res.SignaturesVerified,
+		Unpinned:           res.Valid && !res.SignaturesVerified,
 		SignerKeyID:        res.SignerKeyID,
 		Error:              res.Error,
 		BrokenAtSeq:        res.BrokenAtSeq,
 	}
+	if res.Valid && !res.SignaturesVerified {
+		report.Error = unpinnedReceiptBanner
+		report.Valid = opts.allowUnpinned
+	}
 	emitChainReport(stdout, stderr, report, opts.jsonOutput)
 	if !res.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("evidence chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
+	}
+	if !res.SignaturesVerified && !opts.allowUnpinned {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("evidence chain verification unpinned"))
 	}
 	return nil
 }

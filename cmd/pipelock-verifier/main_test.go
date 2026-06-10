@@ -581,7 +581,7 @@ func TestChain_Valid(t *testing.T) {
 	_ = pkt
 	evidence := filepath.Join(dir, "evidence.jsonl")
 
-	stdout, _, code := runRoot(t, "chain", evidence)
+	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid chain should pass, stdout=%q", stdout)
 	}
@@ -626,7 +626,7 @@ func TestChain_JSONOutput(t *testing.T) {
 	fix.writePacketDir(t, dir, nil)
 	evidence := filepath.Join(dir, "evidence.jsonl")
 
-	stdout, _, code := runRoot(t, "chain", "--json", evidence)
+	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, "--json", evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid chain --json should pass")
 	}
@@ -669,7 +669,7 @@ func TestReceipt_Valid(t *testing.T) {
 		t.Fatalf("write receipt: %v", err)
 	}
 
-	stdout, _, code := runRoot(t, "receipt", rPath)
+	stdout, _, code := runRoot(t, "receipt", "--key", fix.keyHex, rPath)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid receipt should pass, stdout=%q", stdout)
 	}
@@ -690,7 +690,7 @@ func TestReceipt_TamperedSignature(t *testing.T) {
 		t.Fatalf("write tampered: %v", err)
 	}
 
-	_, stderr, code := runRoot(t, "receipt", rPath)
+	_, stderr, code := runRoot(t, "receipt", "--allow-unpinned", rPath)
 	if code == cliutil.ExitOK {
 		t.Fatalf("tampered receipt should fail, stderr=%q", stderr)
 	}
@@ -709,7 +709,7 @@ func TestReceipt_JSONOutput(t *testing.T) {
 		t.Fatalf("write receipt: %v", err)
 	}
 
-	stdout, _, code := runRoot(t, "receipt", "--json", rPath)
+	stdout, _, code := runRoot(t, "receipt", "--key", fix.keyHex, "--json", rPath)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid receipt --json should pass")
 	}
@@ -736,15 +736,18 @@ func TestReceipt_V1WithoutKeyIsNotProvenance(t *testing.T) {
 	}
 
 	stdout, _, code := runRoot(t, "receipt", "--json", rPath)
-	if code != cliutil.ExitOK {
-		t.Fatalf("valid v1 receipt should pass without a key")
+	if code == cliutil.ExitOK {
+		t.Fatalf("unpinned v1 receipt should exit non-zero")
 	}
 	var rpt receiptReport
 	if err := json.Unmarshal([]byte(stdout), &rpt); err != nil {
 		t.Fatalf("parse json: %v", err)
 	}
-	if !rpt.Valid {
-		t.Fatalf("expected valid=true, got %+v", rpt)
+	if rpt.Valid {
+		t.Fatalf("expected valid=false, got %+v", rpt)
+	}
+	if !rpt.Unpinned {
+		t.Fatalf("expected unpinned=true, got %+v", rpt)
 	}
 	// Without a pinned --key, v1 verifies against the embedded signer key
 	// (self-consistency), which is not provenance — mirror the v2 contract.
@@ -795,11 +798,11 @@ func TestReceipt_EvidenceV2WithoutKeyIsNotProvenance(t *testing.T) {
 	}
 
 	stdout, stderr, code := runRoot(t, "receipt", rPath)
-	if code != cliutil.ExitOK {
-		t.Fatalf("v2 receipt structure check should pass, stdout=%q stderr=%q", stdout, stderr)
+	if code == cliutil.ExitOK {
+		t.Fatalf("v2 receipt without key should exit non-zero, stdout=%q stderr=%q", stdout, stderr)
 	}
-	if !strings.Contains(stdout, "not checked") {
-		t.Fatalf("stdout = %q, want not checked trust boundary", stdout)
+	if !strings.Contains(stderr, "RECEIPT UNPINNED") {
+		t.Fatalf("stderr = %q, want unpinned trust boundary", stderr)
 	}
 }
 
@@ -1183,7 +1186,7 @@ func TestChain_DirMode(t *testing.T) {
 	if err := os.Rename(src, dst); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	stdout, _, code := runRoot(t, "chain", "--dir", dir)
+	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, "--dir", dir)
 	if code != cliutil.ExitOK {
 		t.Fatalf("--dir mode should pass, stdout=%q", stdout)
 	}

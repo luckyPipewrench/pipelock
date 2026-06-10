@@ -5,6 +5,8 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 const SIGNATURE_PREFIX: &str = "ed25519:";
+pub const UNPINNED_RECEIPT_BANNER: &str =
+    "UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key";
 const V2_RECORD_TYPE: &str = "evidence_receipt_v2";
 const V2_SIGNATURE_ALGORITHM: &str = "ed25519";
 const V2_KEY_PURPOSE: &str = "receipt-signing";
@@ -33,6 +35,14 @@ pub fn verify_receipt(
     receipt: &Receipt,
     expected_key_hex: &str,
 ) -> std::result::Result<(), String> {
+    verify_receipt_with_options(receipt, expected_key_hex, false)
+}
+
+pub fn verify_receipt_with_options(
+    receipt: &Receipt,
+    expected_key_hex: &str,
+    allow_unpinned: bool,
+) -> std::result::Result<(), String> {
     if receipt.get("record_type").and_then(|value| value.as_str()) == Some(V2_RECORD_TYPE) {
         return verify_evidence_receipt(receipt, expected_key_hex);
     }
@@ -43,6 +53,9 @@ pub fn verify_receipt(
         .unwrap_or("")
         .to_ascii_lowercase();
     let expected = expected_key_hex.to_ascii_lowercase();
+    if expected.is_empty() && !allow_unpinned {
+        return Err(UNPINNED_RECEIPT_BANNER.to_string());
+    }
     let key_hex = if expected.is_empty() {
         signer_key.as_str()
     } else {

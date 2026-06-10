@@ -18,11 +18,14 @@ import (
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+const unpinnedReceiptBanner = "UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key"
+
 // VerifyReceiptCmd returns the "verify-receipt" cobra command.
 func VerifyReceiptCmd() *cobra.Command {
 	var expectedKey string
 	var chainDir string
 	var sessionID string
+	var allowUnpinned bool
 
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
@@ -51,28 +54,29 @@ Examples:
 				return fmt.Errorf("loading public key: %w", err)
 			}
 			if chainDir != "" {
-				return verifyChainFromSessionDir(out, chainDir, sessionID, resolvedKey)
+				return verifyChainFromSessionDirWithOptions(out, chainDir, sessionID, resolvedKey, allowUnpinned)
 			}
 
 			path := args[0]
 
 			// JSONL files: extract receipts and verify the full chain.
 			if strings.HasSuffix(path, ".jsonl") {
-				return verifyChainFromFile(out, path, resolvedKey)
+				return verifyChainFromFileWithOptions(out, path, resolvedKey, allowUnpinned)
 			}
 
 			// Single receipt JSON file.
-			return verifySingleReceipt(out, path, resolvedKey)
+			return verifySingleReceiptWithOptions(out, path, resolvedKey, allowUnpinned)
 		},
 	}
 
 	cmd.Flags().StringVar(&expectedKey, "key", "", "expected signer public key (hex or file path)")
 	cmd.Flags().StringVar(&chainDir, "chain", "", "verify the full receipt chain from an evidence directory")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
+	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 	return cmd
 }
 
-func verifySingleReceipt(out io.Writer, path, expectedKey string) error {
+func verifySingleReceiptWithOptions(out io.Writer, path, expectedKey string, allowUnpinned bool) error {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("reading receipt: %w", err)
@@ -88,29 +92,46 @@ func verifySingleReceipt(out io.Writer, path, expectedKey string) error {
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(out, "OK: %s\n", path)
+	if expectedKey == "" {
+		_, _ = fmt.Fprintf(out, "UNPINNED: %s\n", path)
+		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
+		if !allowUnpinned {
+			printReceiptDetails(out, r)
+			return fmt.Errorf("verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
+		}
+	} else {
+		_, _ = fmt.Fprintf(out, "OK: %s\n", path)
+	}
 	printReceiptDetails(out, r)
 	return nil
 }
 
 func verifyChainFromFile(out io.Writer, path, expectedKey string) error {
+	return verifyChainFromFileWithOptions(out, path, expectedKey, false)
+}
+
+func verifyChainFromFileWithOptions(out io.Writer, path, expectedKey string, allowUnpinned bool) error {
 	receipts, err := receipt.ExtractReceipts(path)
 	if err != nil {
 		return fmt.Errorf("extracting receipts: %w", err)
 	}
-	return verifyChain(out, path, receipts, expectedKey)
+	return verifyChainWithOptions(out, path, receipts, expectedKey, allowUnpinned)
 }
 
-func verifyChainFromSessionDir(out io.Writer, dir, sessionID, expectedKey string) error {
+func verifyChainFromSessionDirWithOptions(out io.Writer, dir, sessionID, expectedKey string, allowUnpinned bool) error {
 	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, sessionID)
 	if err != nil {
 		return fmt.Errorf("extracting session receipts: %w", err)
 	}
 	label := fmt.Sprintf("%s (session %s)", dir, sessionID)
-	return verifyChain(out, label, receipts, expectedKey)
+	return verifyChainWithOptions(out, label, receipts, expectedKey, allowUnpinned)
 }
 
 func verifyChain(out io.Writer, label string, receipts []receipt.Receipt, expectedKey string) error {
+	return verifyChainWithOptions(out, label, receipts, expectedKey, false)
+}
+
+func verifyChainWithOptions(out io.Writer, label string, receipts []receipt.Receipt, expectedKey string, allowUnpinned bool) error {
 	if len(receipts) == 0 {
 		_, _ = fmt.Fprintf(out, "No receipts found in %s\n", label)
 		return fmt.Errorf("no receipts in %s", label)
@@ -124,12 +145,22 @@ func verifyChain(out io.Writer, label string, receipts []receipt.Receipt, expect
 		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
 	}
 
-	_, _ = fmt.Fprintf(out, "CHAIN VALID: %s\n", label)
+	if expectedKey == "" {
+		_, _ = fmt.Fprintf(out, "CHAIN UNPINNED: %s\n", label)
+	} else {
+		_, _ = fmt.Fprintf(out, "CHAIN VALID: %s\n", label)
+	}
 	_, _ = fmt.Fprintf(out, "  Receipts:  %d\n", result.ReceiptCount)
 	_, _ = fmt.Fprintf(out, "  Final seq: %d\n", result.FinalSeq)
 	_, _ = fmt.Fprintf(out, "  Root hash: %s\n", result.RootHash)
 	_, _ = fmt.Fprintf(out, "  Start:     %s\n", result.StartTime.Format("2006-01-02T15:04:05Z"))
 	_, _ = fmt.Fprintf(out, "  End:       %s\n", result.EndTime.Format("2006-01-02T15:04:05Z"))
+	if expectedKey == "" {
+		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
+		if !allowUnpinned {
+			return fmt.Errorf("chain verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
+		}
+	}
 	return nil
 }
 

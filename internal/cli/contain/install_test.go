@@ -171,33 +171,34 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 			h := sha256.Sum256(data)
 			return hex.EncodeToString(h[:]), nil
 		},
-		out:               out,
-		errOut:            out,
-		operatorUser:      containInstallOperatorUser,
-		proxyUserName:     "pipelock-proxy",
-		agentUserName:     "pipelock-agent",
-		configDir:         filepath.Join(root, "etc", "pipelock"),
-		dataDir:           filepath.Join(root, "var", "lib", "pipelock"),
-		wrapperDir:        filepath.Join(root, "usr", "local", "bin"),
-		systemUnitPath:    filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
-		nftRulesPath:      filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
-		nftMainPath:       filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
-		sudoersPath:       filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
-		caBundlePath:      filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
-		caExportPath:      filepath.Join(root, "etc", "pipelock", "ca.pem"),
-		integrityDir:      filepath.Join(root, "etc", "pipelock", "integrity"),
-		integrityPin:      filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
-		wrapperInvPath:    filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
-		toolsListPath:     filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
-		workspaceInvPath:  filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
-		guardScriptPath:   filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
-		guardServiceUnit:  filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
-		guardPathUnit:     filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
-		undiciShimPath:    filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
-		profileScriptPath: filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
-		agentHome:         filepath.Join(root, "home", "pipelock-agent"),
-		pipelockTarget:    filepath.Join(root, "usr", "local", "bin", "pipelock"),
-		proxyPort:         8888,
+		out:                out,
+		errOut:             out,
+		operatorUser:       containInstallOperatorUser,
+		proxyUserName:      "pipelock-proxy",
+		agentUserName:      "pipelock-agent",
+		configDir:          filepath.Join(root, "etc", "pipelock"),
+		dataDir:            filepath.Join(root, "var", "lib", "pipelock"),
+		wrapperDir:         filepath.Join(root, "usr", "local", "bin"),
+		systemUnitPath:     filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
+		nftRulesPath:       filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
+		nftMainPath:        filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
+		sudoersPath:        filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
+		caBundlePath:       filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
+		caExportPath:       filepath.Join(root, "etc", "pipelock", "ca.pem"),
+		integrityDir:       filepath.Join(root, "etc", "pipelock", "integrity"),
+		integrityPin:       filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
+		wrapperInvPath:     filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
+		toolsListPath:      filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
+		workspaceInvPath:   filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		evidenceACLInvPath: filepath.Join(root, "etc", "pipelock", "contain", "evidence-acls.json"),
+		guardScriptPath:    filepath.Join(root, "usr", "local", "bin", "plk-cred-guard"),
+		guardServiceUnit:   filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.service"),
+		guardPathUnit:      filepath.Join(root, "etc", "systemd", "system", "pipelock-cred-guard.path"),
+		undiciShimPath:     filepath.Join(root, "etc", "pipelock", "contain", "undici-shim.cjs"),
+		profileScriptPath:  filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
+		agentHome:          filepath.Join(root, "home", "pipelock-agent"),
+		pipelockTarget:     filepath.Join(root, "usr", "local", "bin", "pipelock"),
+		proxyPort:          8888,
 	}
 
 	// Plant the source binary the install will copy.
@@ -1517,12 +1518,13 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 27 steps total after combining the runtime
-	// contract steps with the credential guard. Changing this count is a
-	// documented breaking change for the dry-run / verify probe-4 inventory.
+	// Sanity: the install flow has 28 steps total after combining the runtime
+	// contract steps with the credential guard and the operator evidence ACL
+	// step. Changing this count is a documented breaking change for the
+	// dry-run / verify probe-4 inventory.
 	steps := installSteps(installOpts{})
-	if len(steps) != 27 {
-		t.Errorf("installSteps count: got %d, want 27", len(steps))
+	if len(steps) != 28 {
+		t.Errorf("installSteps count: got %d, want 28", len(steps))
 	}
 }
 

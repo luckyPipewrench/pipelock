@@ -1,7 +1,7 @@
 import type { ActionRecord, Receipt, JSONValue } from "./types.js";
 
 type FieldSpec = readonly [name: string, omitempty: boolean, nested?: NestedKind];
-type NestedKind = "action_record" | "redaction" | "shield" | "taint_source";
+type NestedKind = "action_record" | "redaction" | "shield" | "taint_source" | "key_transition";
 
 const actionRecordFields: readonly FieldSpec[] = [
   ["version", false],
@@ -47,6 +47,7 @@ const actionRecordFields: readonly FieldSpec[] = [
   ["request_id", true],
   ["chain_prev_hash", false],
   ["chain_seq", false],
+  ["key_transition", true, "key_transition"],
   ["venue", true],
   ["jurisdiction", true],
   ["rulebook_id", true],
@@ -103,6 +104,18 @@ const taintSourceFields: readonly FieldSpec[] = [
   ["match_reason", true],
 ];
 
+// keyTransitionFields mirrors receipt.KeyTransition in Go struct-declaration
+// order. Stamped on a segment-genesis receipt after a signing-key rotation; the
+// nested object MUST be reordered to this exact order before serialization or a
+// rotated-segment receipt recomputes a different signing hash than the Go signer
+// produced. All three fields are required (no omitempty) - the marker is only
+// present as a whole when a rotation occurred.
+const keyTransitionFields: readonly FieldSpec[] = [
+  ["prior_signer_key", false],
+  ["prior_chain_seq", false],
+  ["prior_chain_hash", false],
+];
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -128,7 +141,6 @@ function orderStruct(
       if (omitempty) continue;
       fieldValue = zeroValue(name, nested);
     }
-    if (omitempty && isGoZero(fieldValue)) continue;
     if (nested === "action_record" && isPlainObject(fieldValue)) {
       fieldValue = orderStruct(fieldValue, actionRecordFields);
     } else if (nested === "redaction" && isPlainObject(fieldValue)) {
@@ -139,9 +151,12 @@ function orderStruct(
       fieldValue = fieldValue.map((item) =>
         isPlainObject(item) ? orderStruct(item, taintSourceFields) : item,
       );
+    } else if (nested === "key_transition" && isPlainObject(fieldValue)) {
+      fieldValue = orderStruct(fieldValue, keyTransitionFields);
     } else {
       fieldValue = normalizeMaps(fieldValue);
     }
+    if (omitempty && isGoZero(fieldValue)) continue;
     out[name] = fieldValue;
   }
   return out;
@@ -149,7 +164,8 @@ function orderStruct(
 
 function zeroValue(name: string, nested?: NestedKind): unknown {
   if (nested === "action_record") return {};
-  if (name === "version" || name === "chain_seq" || name === "level") return 0;
+  if (name === "version" || name === "chain_seq" || name === "level" || name === "prior_chain_seq")
+    return 0;
   if (name === "delegation_chain") return null;
   if (name === "timestamp") return "0001-01-01T00:00:00Z";
   return "";

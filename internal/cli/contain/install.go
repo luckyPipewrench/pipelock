@@ -208,6 +208,12 @@ func installSteps(opts installOpts) []step {
 		stepWritePipelockConfig(opts),
 		stepChownToProxy("config", func(e *installEnv) string { return e.configDir }),
 		stepChownToProxy("data", func(e *installEnv) string { return e.dataDir }),
+		// Grant the human operator a user-scoped read+traverse ACL on the
+		// evidence dirs (logs + recorder) so they can verify the audit log and
+		// signed receipt chain offline without sudo. Runs after the data dir is
+		// created and proxy-owned. Fail-closed (skips) if the operator cannot
+		// be resolved; never grants a group/world ACL.
+		stepGrantEvidenceACLs(),
 		stepInstallPipelockBinary(),
 		stepWriteIntegrityPin(),
 		stepStopUserService(),

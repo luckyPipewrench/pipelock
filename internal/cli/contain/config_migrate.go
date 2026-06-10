@@ -182,7 +182,21 @@ func migrateFlightRecorderSigningKey(ctx *configMigrationContext, root *yaml.Nod
 		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("migrate %s: %w", field, err)
 		}
-		if err := ensureFlightRecorderSigningKey(ctx, dest); err != nil {
+		// The configured source key was not found at the resolved migratable
+		// path. Do NOT immediately generate a fresh key: regenerating churns
+		// the flight-recorder signing key, which orphans any existing receipt
+		// chain (the prior chain stays sealed under the old key and live
+		// emission opens a new segment). Prefer preserving the operator's
+		// existing key. ensureFlightRecorderSigningKeyWithRecovery reuses a
+		// valid key already at dest (e.g. from a prior install), else recovers
+		// the configured key resolved directly (recoverSrc) when it exists and
+		// is a valid key, and only generates fresh when there is genuinely no
+		// pre-existing key anywhere. recoverSrc is the original configured path
+		// resolved without the migratable-root restriction, so an operator key
+		// that lives outside the migratable root is still recovered rather than
+		// replaced.
+		recoverSrc := ctx.resolveExistingKeyPath(n.Value)
+		if err := ensureFlightRecorderSigningKeyWithRecovery(ctx, dest, recoverSrc); err != nil {
 			return fmt.Errorf("migrate %s: %w", field, err)
 		}
 	} else if _, err := signing.LoadPrivateKeyFile(dest); err != nil {
@@ -192,7 +206,24 @@ func migrateFlightRecorderSigningKey(ctx *configMigrationContext, root *yaml.Nod
 	return nil
 }
 
+// ensureFlightRecorderSigningKey makes dest hold a usable flight-recorder
+// signing key without needlessly rotating it. Preference order, to preserve any
+// existing receipt chain:
+//
+//  1. A valid key already at dest is reused as-is (re-permed only).
+//  2. recoverSrc, when non-empty and pointing at a valid existing key, is
+//     copied to dest. This recovers the operator's prior key when the migration
+//     source resolved to a different path than where the key actually lives.
+//  3. Only when neither exists is a fresh key generated.
+//
+// Generating a fresh key changes signer_key, which orphans the existing
+// chain; the live v1 emitter then opens a new chain segment rather than
+// resuming. So a fresh key is the last resort, not the default.
 func ensureFlightRecorderSigningKey(ctx *configMigrationContext, dest string) error {
+	return ensureFlightRecorderSigningKeyWithRecovery(ctx, dest, "")
+}
+
+func ensureFlightRecorderSigningKeyWithRecovery(ctx *configMigrationContext, dest, recoverSrc string) error {
 	if info, err := ctx.env.lstat(dest); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("existing target %s is a symlink; refusing to use as signing key", dest)
@@ -211,6 +242,17 @@ func ensureFlightRecorderSigningKey(ctx *configMigrationContext, dest string) er
 		return fmt.Errorf("stat existing target %s: %w", dest, err)
 	}
 
+	// No key at dest. Try to recover the operator's existing key before
+	// generating a new one, so re-running install does not churn the signing
+	// key and orphan the chain.
+	if recoverSrc != "" && recoverSrc != dest {
+		if recovered, err := recoverExistingSigningKey(ctx, recoverSrc, dest); err != nil {
+			return err
+		} else if recovered {
+			return nil
+		}
+	}
+
 	if err := ensureMigratedDir(ctx, filepath.Dir(dest), migrationDirMode(ctx.env, filepath.Dir(dest))); err != nil {
 		return err
 	}
@@ -224,6 +266,42 @@ func ensureFlightRecorderSigningKey(ctx *configMigrationContext, dest string) er
 		ctx.artifacts = append(ctx.artifacts, migratedConfigArtifact{path: dest})
 	}
 	return nil
+}
+
+// recoverExistingSigningKey copies a pre-existing valid signing key from src to
+// dest when src is a regular, non-symlink file holding a parseable key. It
+// reports (true, nil) on a successful recovery, (false, nil) when src is absent
+// or not a usable key (caller falls back to fresh generation), and a non-nil
+// error only for hard failures (bad symlink, write error). Recovering rather
+// than regenerating keeps the receipt chain's signer_key stable.
+func recoverExistingSigningKey(ctx *configMigrationContext, src, dest string) (bool, error) {
+	info, err := ctx.env.lstat(src)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat recovery source %s: %w", src, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("recovery source %s is a symlink; refusing to copy as root", src)
+	}
+	if !info.Mode().IsRegular() {
+		// Not a regular file (directory, device, ...). Not recoverable; let
+		// the caller generate a fresh key.
+		return false, nil
+	}
+	// Validate it is a real signing key before adopting it. A non-key file at
+	// the old path must not be copied in and then fail to load at runtime.
+	if _, err := signing.LoadPrivateKeyFile(src); err != nil {
+		return false, nil
+	}
+	if err := copyConfigFile(ctx, src, dest, modePinSecret); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("recover signing key from %s: %w", src, err)
+	}
+	return true, nil
 }
 
 func migrateScalarDir(ctx *configMigrationContext, root *yaml.Node, path []string, dest string) error {
@@ -345,6 +423,36 @@ func migrateRedirectProfiles(ctx *configMigrationContext, root *yaml.Node) {
 			first.Value = ctx.env.pipelockTarget
 		}
 	}
+}
+
+// resolveExistingKeyPath resolves a configured path to a cleaned absolute path
+// for read-only recovery, WITHOUT the migratable-root containment check that
+// resolveMigratablePath enforces. It is used only to locate an operator's
+// pre-existing signing key so it can be copied (preserving signer_key) instead
+// of regenerated. Returns "" when the path cannot be resolved. The caller still
+// validates the file (regular, non-symlink, parseable key) before adopting it.
+func (ctx *configMigrationContext) resolveExistingKeyPath(raw string) string {
+	raw = strings.TrimSpace(strings.Trim(raw, `"`))
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "~") {
+		if ctx.operatorHome == "" {
+			return ""
+		}
+		switch {
+		case raw == "~":
+			raw = ctx.operatorHome
+		case strings.HasPrefix(raw, "~/"):
+			raw = filepath.Join(ctx.operatorHome, strings.TrimPrefix(raw, "~/"))
+		default:
+			return ""
+		}
+	}
+	if !filepath.IsAbs(raw) {
+		raw = filepath.Join(ctx.configDir, raw)
+	}
+	return filepath.Clean(raw)
 }
 
 func (ctx *configMigrationContext) resolveMigratablePath(raw string) (string, bool) {

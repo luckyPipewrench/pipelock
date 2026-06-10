@@ -451,13 +451,29 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			ConfigHash: cfg.Hash(),
 			Principal:  "local",
 			Actor:      "pipelock",
+			Metrics:    m,
 		})
 		if s.receiptEmitter != nil {
 			proxyOpts = append(proxyOpts, proxy.WithReceiptEmitter(s.receiptEmitter))
 			if cfg.FlightRecorder.SigningKeyPath != "" {
 				proxyOpts = append(proxyOpts, proxy.WithReceiptKeyPath(cfg.FlightRecorder.SigningKeyPath))
 			}
-			_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: enabled (action receipts signed)\n")
+			// Loud, one-time startup signal when the chain could not be
+			// resumed. Without this an init failure was only an error log on
+			// each Emit (to a formerly root-only file), silent to operators.
+			// A non-nil InitError means every Emit will fail until resolved,
+			// so name the cause and the remediation here.
+			if initErr := s.receiptEmitter.InitError(); initErr != nil {
+				_, _ = fmt.Fprintf(opts.Stderr,
+					"  Receipts: ERROR - chain could not be resumed: %v\n"+
+						"            Receipt emission is DISABLED until resolved. If the flight-recorder\n"+
+						"            signing key was rotated, the prior chain is sealed under the old key;\n"+
+						"            a corrupt or tampered evidence tail fails closed. Inspect the evidence\n"+
+						"            directory and the configured signing_key_path.\n",
+					initErr)
+			} else {
+				_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: enabled (action receipts signed)\n")
+			}
 
 			// v2 proxy_decision emitter: dual-emitted alongside the v1 action
 			// receipt on every proxy decision, signed with the same key and

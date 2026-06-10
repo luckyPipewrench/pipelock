@@ -703,7 +703,7 @@ func TestVerifyChainFromFile_ValidChain(t *testing.T) {
 	keyHex := hex.EncodeToString(pubKey)
 
 	var buf bytes.Buffer
-	err := verifyChainFromFile(&buf, path, keyHex)
+	err := verifyChainFromFile(&buf, path, []string{keyHex})
 	if err != nil {
 		t.Fatalf("verifyChainFromFile: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestVerifyChainFromFile_BadSignature(t *testing.T) {
 	wrongKeyHex := hex.EncodeToString(otherPub)
 
 	var buf bytes.Buffer
-	err = verifyChainFromFile(&buf, path, wrongKeyHex)
+	err = verifyChainFromFile(&buf, path, []string{wrongKeyHex})
 	if err == nil {
 		t.Fatal("expected error for wrong key")
 	}
@@ -747,7 +747,7 @@ func TestVerifyChainFromFile_EmptyFile(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := verifyChainFromFile(&buf, emptyPath, "")
+	err := verifyChainFromFile(&buf, emptyPath, nil)
 	if err == nil {
 		t.Fatal("expected error for empty file")
 	}
@@ -766,7 +766,7 @@ func TestVerifyChain_ValidReceiptsNoKey(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err = verifyChain(&buf, "test-chain", receipts, "")
+	err = verifyChain(&buf, "test-chain", receipts, nil)
 	if err == nil {
 		t.Fatal("expected unpinned chain verification to fail closed")
 	}
@@ -778,7 +778,7 @@ func TestVerifyChain_ValidReceiptsNoKey(t *testing.T) {
 	}
 
 	buf.Reset()
-	err = verifyChainWithOptions(&buf, "test-chain", receipts, "", true)
+	err = verifyChainWithOptions(&buf, "test-chain", receipts, nil, true)
 	if err != nil {
 		t.Fatalf("verifyChainWithOptions allow unpinned: %v", err)
 	}
@@ -791,7 +791,7 @@ func TestVerifyChain_EmptySlice(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	err := verifyChain(&buf, "empty-chain", nil, "")
+	err := verifyChain(&buf, "empty-chain", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for empty receipt slice")
 	}
@@ -804,7 +804,7 @@ func TestVerifyChainFromFile_NonexistentFile(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	err := verifyChainFromFile(&buf, "/nonexistent/path/receipt.jsonl", "")
+	err := verifyChainFromFile(&buf, "/nonexistent/path/receipt.jsonl", nil)
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
@@ -829,7 +829,7 @@ func TestVerifyChain_WrongKeyBreaksChain(t *testing.T) {
 	wrongKeyHex := hex.EncodeToString(otherPub)
 
 	var buf bytes.Buffer
-	err = verifyChain(&buf, "wrong-key-chain", receipts, wrongKeyHex)
+	err = verifyChain(&buf, "wrong-key-chain", receipts, []string{wrongKeyHex})
 	if err == nil {
 		t.Fatal("expected error for wrong key")
 	}

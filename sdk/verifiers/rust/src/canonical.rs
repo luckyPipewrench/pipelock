@@ -7,6 +7,7 @@ enum NestedKind {
     Redaction,
     Shield,
     TaintSource,
+    KeyTransition,
 }
 
 #[derive(Clone, Copy)]
@@ -60,6 +61,7 @@ const ACTION_RECORD_FIELDS: &[FieldSpec] = &[
     field("request_id", true),
     field("chain_prev_hash", false),
     field("chain_seq", false),
+    nested_field("key_transition", true, NestedKind::KeyTransition),
     field("venue", true),
     field("jurisdiction", true),
     field("rulebook_id", true),
@@ -115,6 +117,16 @@ const TAINT_SOURCE_FIELDS: &[FieldSpec] = &[
     field("match_reason", true),
 ];
 
+// KEY_TRANSITION_FIELDS mirrors receipt.KeyTransition in Go struct-declaration
+// order. Stamped on a segment-genesis receipt after a signing-key rotation; the
+// nested object MUST be reordered to this exact order or a rotated-segment
+// receipt recomputes a different signing hash than the Go signer produced.
+const KEY_TRANSITION_FIELDS: &[FieldSpec] = &[
+    field("prior_signer_key", false),
+    field("prior_chain_seq", false),
+    field("prior_chain_hash", false),
+];
+
 const fn field(name: &'static str, omitempty: bool) -> FieldSpec {
     FieldSpec {
         name,
@@ -165,9 +177,6 @@ fn order_struct(value: &Value, fields: &[FieldSpec]) -> Value {
             field_value = Some(zero_value(spec.name, spec.nested));
         }
         let mut field_value = field_value.expect("field value set");
-        if spec.omitempty && is_go_zero(&field_value) {
-            continue;
-        }
         field_value = match spec.nested {
             Some(NestedKind::ActionRecord) if field_value.is_object() => {
                 order_struct(&field_value, ACTION_RECORD_FIELDS)
@@ -192,8 +201,14 @@ fn order_struct(value: &Value, fields: &[FieldSpec]) -> Value {
                     })
                     .collect(),
             ),
+            Some(NestedKind::KeyTransition) if field_value.is_object() => {
+                order_struct(&field_value, KEY_TRANSITION_FIELDS)
+            }
             _ => normalize_maps(&field_value),
         };
+        if spec.omitempty && is_go_zero(&field_value) {
+            continue;
+        }
         out.insert(spec.name.to_string(), field_value);
     }
     Value::Object(out)
@@ -204,7 +219,7 @@ fn zero_value(name: &str, nested: Option<NestedKind>) -> Value {
         return Value::Object(Map::new());
     }
     match name {
-        "version" | "chain_seq" | "level" => Value::Number(Number::from(0)),
+        "version" | "chain_seq" | "level" | "prior_chain_seq" => Value::Number(Number::from(0)),
         "delegation_chain" => Value::Null,
         "timestamp" => Value::String("0001-01-01T00:00:00Z".to_string()),
         _ => Value::String(String::new()),

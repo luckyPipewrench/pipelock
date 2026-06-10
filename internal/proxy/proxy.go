@@ -1054,6 +1054,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 			ConfigHash: cfg.Hash(),
 			Principal:  "local",
 			Actor:      "pipelock",
+			Metrics:    p.metrics,
 		}),
 		v2: proxydecision.NewEmitter(proxydecision.EmitterConfig{
 			Recorder:       p.recorder,

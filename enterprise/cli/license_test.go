@@ -201,6 +201,40 @@ func TestLicenseStatusEnvFallbackDoesNotOverrideConfig(t *testing.T) {
 	}
 }
 
+// TestLicenseStatusConfigFileEnvIntermediateFallback covers the config-file
+// path: config.Load never reads PIPELOCK_LICENSE_INTERMEDIATE_FILE (the
+// runtime fleet gate does), so status must apply the same env fallback after
+// Load or it diverges from runtime verification.
+func TestLicenseStatusConfigFileEnvIntermediateFallback(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	intermediatePath := filepath.Join(dir, "intermediate.json")
+	if err := os.WriteFile(intermediatePath, []byte(`{"payload":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvLicenseKey, "")
+	t.Setenv(config.EnvLicensePublicKey, "")
+	t.Setenv(config.EnvLicenseCRLFile, "")
+	t.Setenv(license.EnvLicenseIntermediateFile, intermediatePath)
+
+	cfg, err := loadLicenseStatusConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadLicenseStatusConfig: %v", err)
+	}
+	if cfg.LicenseIntermediateFile != intermediatePath {
+		t.Fatalf("LicenseIntermediateFile = %q, want env path %q", cfg.LicenseIntermediateFile, intermediatePath)
+	}
+	if cfg.LicenseIntermediateLoadError != "" {
+		t.Fatalf("LicenseIntermediateLoadError = %q, want empty", cfg.LicenseIntermediateLoadError)
+	}
+	if string(cfg.LicenseIntermediateCert) != `{"payload":"test"}` {
+		t.Fatalf("LicenseIntermediateCert = %q, want env file contents", cfg.LicenseIntermediateCert)
+	}
+}
+
 func TestLicenseStatusCommandOutputs(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

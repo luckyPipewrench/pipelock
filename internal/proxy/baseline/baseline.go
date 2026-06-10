@@ -339,10 +339,7 @@ func (m *Manager) GetAgentProfile(agentKey string) (Profile, bool) {
 			State:    as.state,
 		}, true
 	}
-	cp := *as.profile
-	cp.AgentKey = agentKey
-	cp.State = as.state
-	return cp, true
+	return cloneProfileSnapshot(as.profile, agentKey, as.state), true
 }
 
 // GetState returns the current state for an agent.
@@ -462,12 +459,20 @@ func (m *Manager) ListProfiles() []Profile {
 			})
 			continue
 		}
-		cp := *as.profile
-		cp.AgentKey = key
-		cp.State = as.state
-		profiles = append(profiles, cp)
+		profiles = append(profiles, cloneProfileSnapshot(as.profile, key, as.state))
 	}
 	return profiles
+}
+
+func cloneProfileSnapshot(profile *Profile, agentKey string, state ProfileState) Profile {
+	cp := *profile
+	cp.AgentKey = agentKey
+	cp.State = state
+	if cp.RatifiedAt != nil {
+		ratifiedAt := *cp.RatifiedAt
+		cp.RatifiedAt = &ratifiedAt
+	}
+	return cp
 }
 
 // buildProfile computes a statistical profile from session metrics.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const testAgent = "agent-1"
@@ -135,6 +136,80 @@ func TestBaseline_StateTransitions(t *testing.T) {
 	}
 	if profile.RatifiedAt == nil {
 		t.Error("ratified_at should be set")
+	}
+}
+
+func TestBaseline_ProfileSnapshotsDeepCopyRatifiedAt(t *testing.T) {
+	cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: t.TempDir()}
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+	if err := mgr.Ratify(testAgent); err != nil {
+		t.Fatalf("Ratify: %v", err)
+	}
+
+	profile, ok := mgr.GetAgentProfile(testAgent)
+	if !ok {
+		t.Fatal("GetAgentProfile should find learned profile")
+	}
+	if profile.RatifiedAt == nil {
+		t.Fatal("ratified snapshot should include RatifiedAt")
+	}
+	original := *profile.RatifiedAt
+	*profile.RatifiedAt = time.Unix(0, 0).UTC()
+
+	again, ok := mgr.GetAgentProfile(testAgent)
+	if !ok {
+		t.Fatal("GetAgentProfile should still find learned profile")
+	}
+	if again.RatifiedAt == nil || !again.RatifiedAt.Equal(original) {
+		t.Fatalf("GetAgentProfile leaked mutable RatifiedAt pointer: got %v want %v", again.RatifiedAt, original)
+	}
+
+	list := mgr.ListProfiles()
+	if len(list) != 1 || list[0].RatifiedAt == nil {
+		t.Fatalf("ListProfiles should include ratified profile snapshot: %+v", list)
+	}
+	*list[0].RatifiedAt = time.Unix(1, 0).UTC()
+	again, ok = mgr.GetAgentProfile(testAgent)
+	if !ok {
+		t.Fatal("GetAgentProfile should still find learned profile after list mutation")
+	}
+	if again.RatifiedAt == nil || !again.RatifiedAt.Equal(original) {
+		t.Fatalf("ListProfiles leaked mutable RatifiedAt pointer: got %v want %v", again.RatifiedAt, original)
+	}
+}
+
+func TestBaseline_ProfileSnapshotsIncludeLearningAgents(t *testing.T) {
+	cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: t.TempDir()}
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	mgr.RecordSession(testAgent, normalMetrics())
+
+	if _, ok := mgr.GetAgentProfile("missing-agent"); ok {
+		t.Fatal("GetAgentProfile should not find unknown agents")
+	}
+
+	profile, ok := mgr.GetAgentProfile(testAgent)
+	if !ok {
+		t.Fatal("GetAgentProfile should include learning agent")
+	}
+	if profile.AgentKey != testAgent || profile.State != StateObserve || profile.SessionCount != 0 {
+		t.Fatalf("unexpected learning snapshot: %+v", profile)
+	}
+
+	profiles := mgr.ListProfiles()
+	if len(profiles) != 1 {
+		t.Fatalf("ListProfiles count = %d, want 1: %+v", len(profiles), profiles)
+	}
+	if profiles[0].AgentKey != testAgent || profiles[0].State != StateObserve || profiles[0].SessionCount != 0 {
+		t.Fatalf("unexpected learning list snapshot: %+v", profiles[0])
 	}
 }
 

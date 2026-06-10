@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -39,10 +40,10 @@ func setupBaselineAPITestManager(t *testing.T) (*SessionManager, string, func())
 	return sm, profileDir, cleanup
 }
 
-func seedRatifyProfile(t *testing.T, mgr *baseline.Manager, agent string) {
+func seedRatifyProfile(t *testing.T, mgr *baseline.Manager) {
 	t.Helper()
 	for range 3 {
-		mgr.RecordSession(agent, baseline.SessionMetrics{
+		mgr.RecordSession(baselineAPIAgent, baseline.SessionMetrics{
 			ToolCalls:   4,
 			UniqueTools: 2,
 			Domains:     2,
@@ -51,7 +52,7 @@ func seedRatifyProfile(t *testing.T, mgr *baseline.Manager, agent string) {
 			Requests:    5,
 		})
 	}
-	if got := mgr.GetState(agent); got != baseline.StateRatify {
+	if got := mgr.GetState(baselineAPIAgent); got != baseline.StateRatify {
 		t.Fatalf("state after seed = %q, want %q", got, baseline.StateRatify)
 	}
 }
@@ -62,11 +63,17 @@ func baselineAdminRequest(method, path string) *http.Request {
 	return req
 }
 
+func baselineAdminRequestWithBody(method, path, body string) *http.Request {
+	req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	return req
+}
+
 func TestSessionAPI_BaselineRoundTrip_ListShowRatifyForget(t *testing.T) {
 	sm, profileDir, cleanup := setupBaselineAPITestManager(t)
 	defer cleanup()
 	mgr := sm.BaselineManager()
-	seedRatifyProfile(t, mgr, baselineAPIAgent)
+	seedRatifyProfile(t, mgr)
 
 	handler := newTestSessionAPIHandler(t, sm)
 
@@ -122,6 +129,19 @@ func TestSessionAPI_BaselineRoundTrip_ListShowRatifyForget(t *testing.T) {
 	if devs := mgr.Check(baselineAPIAgent, deviant); len(devs) == 0 {
 		t.Fatal("locked profile did not enforce after ratify")
 	}
+	lockedListReq := baselineAdminRequest(http.MethodGet, "/api/v1/baseline")
+	lockedListW := httptest.NewRecorder()
+	handler.HandleBaselineList(lockedListW, lockedListReq)
+	if lockedListW.Code != http.StatusOK {
+		t.Fatalf("locked list status = %d body=%s", lockedListW.Code, lockedListW.Body.String())
+	}
+	var lockedListResp BaselineListResponse
+	if err := json.NewDecoder(lockedListW.Body).Decode(&lockedListResp); err != nil {
+		t.Fatalf("decode locked list: %v", err)
+	}
+	if lockedListResp.Locked != 1 || lockedListResp.PendingRatify != 0 {
+		t.Fatalf("unexpected locked list response: %+v", lockedListResp)
+	}
 
 	profilePath := filepath.Clean(filepath.Join(profileDir, baselineAPIAgent+".json"))
 	raw, err := os.ReadFile(profilePath)
@@ -157,7 +177,7 @@ func TestSessionAPI_BaselineRatifyRejectsUnknownAndWrongState(t *testing.T) {
 	sm, _, cleanup := setupBaselineAPITestManager(t)
 	defer cleanup()
 	mgr := sm.BaselineManager()
-	seedRatifyProfile(t, mgr, baselineAPIAgent)
+	seedRatifyProfile(t, mgr)
 	if err := mgr.Ratify(baselineAPIAgent); err != nil {
 		t.Fatalf("Ratify: %v", err)
 	}
@@ -179,11 +199,241 @@ func TestSessionAPI_BaselineRatifyRejectsUnknownAndWrongState(t *testing.T) {
 	}
 }
 
+func TestSessionAPI_BaselineProfileDefensiveBranches(t *testing.T) {
+	sm, _, cleanup := setupBaselineAPITestManager(t)
+	defer cleanup()
+	mgr := sm.BaselineManager()
+	seedRatifyProfile(t, mgr)
+	handler := newTestSessionAPIHandler(t, sm)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		call   func(http.ResponseWriter, *http.Request)
+		want   int
+	}{
+		{
+			name:   "list rejects wrong method",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline",
+			call:   handler.HandleBaselineList,
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			name:   "profile router rejects wrong method",
+			method: http.MethodDelete,
+			path:   "/api/v1/baseline/" + baselineAPIAgent,
+			call:   handler.HandleBaselineProfile,
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			name:   "profile router rejects unknown action",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/" + baselineAPIAgent + "/archive",
+			call:   handler.HandleBaselineProfile,
+			want:   http.StatusNotFound,
+		},
+		{
+			name:   "show rejects wrong method",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/" + baselineAPIAgent,
+			call:   handler.HandleBaselineShow,
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			name:   "show rejects action path",
+			method: http.MethodGet,
+			path:   "/api/v1/baseline/" + baselineAPIAgent + "/ratify",
+			call:   handler.HandleBaselineProfile,
+			want:   http.StatusBadRequest,
+		},
+		{
+			name:   "show returns not found",
+			method: http.MethodGet,
+			path:   "/api/v1/baseline/missing-agent",
+			call:   handler.HandleBaselineShow,
+			want:   http.StatusNotFound,
+		},
+		{
+			name:   "ratify rejects wrong method",
+			method: http.MethodGet,
+			path:   "/api/v1/baseline/" + baselineAPIAgent + "/ratify",
+			call:   handler.HandleBaselineRatify,
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			name:   "ratify rejects bad body",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/" + baselineAPIAgent + "/ratify",
+			body:   `{"unexpected":true}`,
+			call:   handler.HandleBaselineRatify,
+			want:   http.StatusBadRequest,
+		},
+		{
+			name:   "ratify rejects invalid path",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/bad%2Fagent/ratify",
+			call:   handler.HandleBaselineRatify,
+			want:   http.StatusBadRequest,
+		},
+		{
+			name:   "forget rejects wrong method",
+			method: http.MethodGet,
+			path:   "/api/v1/baseline/" + baselineAPIAgent + "/forget",
+			call:   handler.HandleBaselineForget,
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			name:   "forget rejects bad body",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/" + baselineAPIAgent + "/forget",
+			body:   `{"unexpected":true}`,
+			call:   handler.HandleBaselineForget,
+			want:   http.StatusBadRequest,
+		},
+		{
+			name:   "forget rejects invalid path",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/bad%2Fagent/forget",
+			call:   handler.HandleBaselineForget,
+			want:   http.StatusBadRequest,
+		},
+		{
+			name:   "forget returns not found",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/missing-agent/forget",
+			call:   handler.HandleBaselineForget,
+			want:   http.StatusNotFound,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := baselineAdminRequest(tt.method, tt.path)
+			if tt.body != "" {
+				req = baselineAdminRequestWithBody(tt.method, tt.path, tt.body)
+			}
+			w := httptest.NewRecorder()
+			tt.call(w, req)
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d body=%s", w.Code, tt.want, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestSessionAPI_BaselineAuthHidesProfileEndpoints(t *testing.T) {
+	sm, _, cleanup := setupBaselineAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		call   func(http.ResponseWriter, *http.Request)
+	}{
+		{
+			name:   "show",
+			method: http.MethodGet,
+			path:   "/api/v1/baseline/" + baselineAPIAgent,
+			call:   handler.HandleBaselineShow,
+		},
+		{
+			name:   "ratify",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/" + baselineAPIAgent + "/ratify",
+			call:   handler.HandleBaselineRatify,
+		},
+		{
+			name:   "forget",
+			method: http.MethodPost,
+			path:   "/api/v1/baseline/" + baselineAPIAgent + "/forget",
+			call:   handler.HandleBaselineForget,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil)
+			w := httptest.NewRecorder()
+			tt.call(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401 body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestSessionAPI_BaselineUnavailableAndRateLimited(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	disabled := newTestSessionAPIHandler(t, sm)
+
+	disabledCases := []struct {
+		name string
+		req  *http.Request
+		call func(http.ResponseWriter, *http.Request)
+	}{
+		{
+			name: "show",
+			req:  baselineAdminRequest(http.MethodGet, "/api/v1/baseline/"+baselineAPIAgent),
+			call: disabled.HandleBaselineShow,
+		},
+		{
+			name: "ratify",
+			req:  baselineAdminRequest(http.MethodPost, "/api/v1/baseline/"+baselineAPIAgent+"/ratify"),
+			call: disabled.HandleBaselineRatify,
+		},
+		{
+			name: "forget",
+			req:  baselineAdminRequest(http.MethodPost, "/api/v1/baseline/"+baselineAPIAgent+"/forget"),
+			call: disabled.HandleBaselineForget,
+		},
+	}
+	for _, tc := range disabledCases {
+		t.Run("disabled "+tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			tc.call(w, tc.req)
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503 body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+
+	enabledSM, _, enabledCleanup := setupBaselineAPITestManager(t)
+	defer enabledCleanup()
+	limited := newTestSessionAPIHandler(t, enabledSM)
+	limited.limitMu.Lock()
+	limited.limiters[sessionAPIActionBaseline].windowStart = time.Now()
+	limited.limiters[sessionAPIActionBaseline].reqCount = sessionAPIRateLimitMax
+	limited.limitMu.Unlock()
+
+	ratifyReq := baselineAdminRequest(http.MethodPost, "/api/v1/baseline/"+baselineAPIAgent+"/ratify")
+	ratifyW := httptest.NewRecorder()
+	limited.HandleBaselineRatify(ratifyW, ratifyReq)
+	if ratifyW.Code != http.StatusTooManyRequests {
+		t.Fatalf("ratify status = %d, want 429 body=%s", ratifyW.Code, ratifyW.Body.String())
+	}
+
+	limited.limitMu.Lock()
+	limited.limiters[sessionAPIActionBaseline].windowStart = time.Now()
+	limited.limiters[sessionAPIActionBaseline].reqCount = sessionAPIRateLimitMax
+	limited.limitMu.Unlock()
+
+	forgetReq := baselineAdminRequest(http.MethodPost, "/api/v1/baseline/"+baselineAPIAgent+"/forget")
+	forgetW := httptest.NewRecorder()
+	limited.HandleBaselineForget(forgetW, forgetReq)
+	if forgetW.Code != http.StatusTooManyRequests {
+		t.Fatalf("forget status = %d, want 429 body=%s", forgetW.Code, forgetW.Body.String())
+	}
+}
+
 func TestSessionAPI_BaselineForgetFailsClosedWhenProfileRemovalFails(t *testing.T) {
 	sm, profileDir, cleanup := setupBaselineAPITestManager(t)
 	defer cleanup()
 	mgr := sm.BaselineManager()
-	seedRatifyProfile(t, mgr, baselineAPIAgent)
+	seedRatifyProfile(t, mgr)
 	if err := mgr.Ratify(baselineAPIAgent); err != nil {
 		t.Fatalf("Ratify: %v", err)
 	}

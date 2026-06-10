@@ -103,3 +103,36 @@ fn full_field_receipt_signature_verifies() {
     let receipt = full_receipt();
     verify_receipt(&receipt, "").expect("signature verifies");
 }
+
+// A segment-genesis receipt after a signing-key rotation carries a
+// key_transition marker that the Go signer includes in the canonical preimage
+// (after chain_seq, before venue). The verifier MUST reproduce it byte-for-byte
+// or a rotated receipt fails to verify. Pinned to the Go-produced hash.
+#[test]
+fn canonical_action_record_with_key_transition_matches_go_hash() {
+    let record = json!({
+        "version": 1,
+        "action_id": "ts-kt-0001",
+        "action_type": "read",
+        "timestamp": "2026-05-10T12:34:56.789Z",
+        "principal": "org:test",
+        "actor": "agent:test",
+        "target": "https://example.com/x",
+        "side_effect_class": "external_read",
+        "reversibility": "full",
+        "policy_hash": "sha256:abc",
+        "verdict": "allow",
+        "transport": "fetch",
+        "chain_prev_hash": "priortail",
+        "chain_seq": 0,
+        "key_transition": {
+            "prior_signer_key": "7de2d117b21faaa0f1d9d3d02fcba13838bef0c75caddf71de376f0bb837bfbc",
+            "prior_chain_seq": 41,
+            "prior_chain_hash": "priortail"
+        }
+    });
+    assert_eq!(
+        sha256(&canonicalize_action_record(&record)),
+        "e50a5512f6571afdd0196315580707451ec81e9637e9fb51d988bb6c175b1b40"
+    );
+}

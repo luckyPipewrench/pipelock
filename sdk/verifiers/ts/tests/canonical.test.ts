@@ -98,3 +98,37 @@ test("canonical Receipt envelope matches Go hash", () => {
 test("full-field receipt signature verifies", async () => {
   await assert.doesNotReject(verifyReceipt(fullReceipt));
 });
+
+// A segment-genesis receipt after a signing-key rotation carries a
+// key_transition marker. The Go signer includes it in the canonical preimage
+// (json.Marshal struct order, after chain_seq, before venue), so the verifier's
+// reconstructed preimage MUST include it byte-for-byte or a rotated receipt
+// fails to verify. This pins the canonical hash to the Go-produced value.
+const keyTransitionRecord = {
+  version: 1,
+  action_id: "ts-kt-0001",
+  action_type: "read",
+  timestamp: "2026-05-10T12:34:56.789Z",
+  principal: "org:test",
+  actor: "agent:test",
+  target: "https://example.com/x",
+  side_effect_class: "external_read",
+  reversibility: "full",
+  policy_hash: "sha256:abc",
+  verdict: "allow",
+  transport: "fetch",
+  chain_prev_hash: "priortail",
+  chain_seq: 0,
+  key_transition: {
+    prior_signer_key: "7de2d117b21faaa0f1d9d3d02fcba13838bef0c75caddf71de376f0bb837bfbc",
+    prior_chain_seq: 41,
+    prior_chain_hash: "priortail",
+  },
+} as unknown as NonNullable<Receipt["action_record"]>;
+
+test("canonical ActionRecord with key_transition matches Go hash", () => {
+  assert.equal(
+    sha256(canonicalizeActionRecord(keyTransitionRecord)),
+    "e50a5512f6571afdd0196315580707451ec81e9637e9fb51d988bb6c175b1b40",
+  );
+});

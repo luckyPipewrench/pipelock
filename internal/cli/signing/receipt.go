@@ -20,7 +20,7 @@ import (
 
 // VerifyReceiptCmd returns the "verify-receipt" cobra command.
 func VerifyReceiptCmd() *cobra.Command {
-	var expectedKey string
+	var expectedKeys []string
 	var chainDir string
 	var sessionID string
 
@@ -34,42 +34,57 @@ For a flight recorder JSONL file: extracts all receipts and verifies the
 full hash chain (prev_hash linkage, seq continuity, signatures). For a
 multi-file chain spanning restarts or rotations, pass --chain DIR.
 
+Signing-key rotation: a chain that rotated its signing key splits into
+segments. Each segment's key must be trusted. Pass --key once per trusted
+key to verify across a rotation; the offending key is named if a segment is
+signed by an untrusted key. With no --key, the first segment's key is trusted
+on first use and any rotation is flagged for you to confirm.
+
 Exit 0 = valid, exit 1 = invalid or malformed.
 
 Examples:
   pipelock verify-receipt receipt.json
   pipelock verify-receipt evidence-proxy-0.jsonl
   pipelock verify-receipt --chain /var/lib/pipelock/evidence
-  pipelock verify-receipt receipt.json --key 70b991eb...`,
+  pipelock verify-receipt receipt.json --key 70b991eb...
+  pipelock verify-receipt --chain DIR --key old.key --key new.key`,
 		Args: func(_ *cobra.Command, args []string) error {
 			return validateReceiptSourceArgs(args, chainDir)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
-			resolvedKey, err := resolveExpectedKeyHex(expectedKey)
+			trustedKeys, err := resolveExpectedKeyHexes(expectedKeys)
 			if err != nil {
 				return fmt.Errorf("loading public key: %w", err)
 			}
 			if chainDir != "" {
-				return verifyChainFromSessionDir(out, chainDir, sessionID, resolvedKey)
+				return verifyChainFromSessionDir(out, chainDir, sessionID, trustedKeys)
 			}
 
 			path := args[0]
 
 			// JSONL files: extract receipts and verify the full chain.
 			if strings.HasSuffix(path, ".jsonl") {
-				return verifyChainFromFile(out, path, resolvedKey)
+				return verifyChainFromFile(out, path, trustedKeys)
 			}
 
-			// Single receipt JSON file.
-			return verifySingleReceipt(out, path, resolvedKey)
+			// Single receipt JSON file: a lone receipt has no chain to walk,
+			// so it verifies against the first supplied key (or its own).
+			return verifySingleReceipt(out, path, firstOrEmpty(trustedKeys))
 		},
 	}
 
-	cmd.Flags().StringVar(&expectedKey, "key", "", "expected signer public key (hex or file path)")
+	cmd.Flags().StringArrayVar(&expectedKeys, "key", nil, "trusted signer public key (hex or file path); repeat for rotated chains")
 	cmd.Flags().StringVar(&chainDir, "chain", "", "verify the full receipt chain from an evidence directory")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	return cmd
+}
+
+func firstOrEmpty(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	return keys[0]
 }
 
 func verifySingleReceipt(out io.Writer, path, expectedKey string) error {
@@ -93,34 +108,38 @@ func verifySingleReceipt(out io.Writer, path, expectedKey string) error {
 	return nil
 }
 
-func verifyChainFromFile(out io.Writer, path, expectedKey string) error {
+func verifyChainFromFile(out io.Writer, path string, trustedKeys []string) error {
 	receipts, err := receipt.ExtractReceipts(path)
 	if err != nil {
 		return fmt.Errorf("extracting receipts: %w", err)
 	}
-	return verifyChain(out, path, receipts, expectedKey)
+	return verifyChain(out, path, receipts, trustedKeys)
 }
 
-func verifyChainFromSessionDir(out io.Writer, dir, sessionID, expectedKey string) error {
+func verifyChainFromSessionDir(out io.Writer, dir, sessionID string, trustedKeys []string) error {
 	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, sessionID)
 	if err != nil {
 		return fmt.Errorf("extracting session receipts: %w", err)
 	}
 	label := fmt.Sprintf("%s (session %s)", dir, sessionID)
-	return verifyChain(out, label, receipts, expectedKey)
+	return verifyChain(out, label, receipts, trustedKeys)
 }
 
-func verifyChain(out io.Writer, label string, receipts []receipt.Receipt, expectedKey string) error {
+func verifyChain(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string) error {
 	if len(receipts) == 0 {
 		_, _ = fmt.Fprintf(out, "No receipts found in %s\n", label)
 		return fmt.Errorf("no receipts in %s", label)
 	}
 
-	result := receipt.VerifyChain(receipts, expectedKey)
+	result := receipt.VerifyChainTrusted(receipts, trustedKeys)
 	if !result.Valid {
 		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n", label)
 		_, _ = fmt.Fprintf(out, "  Error:    %s\n", result.Error)
 		_, _ = fmt.Fprintf(out, "  Broke at: seq %d\n", result.BrokenAtSeq)
+		if result.UntrustedSignerKey != "" {
+			_, _ = fmt.Fprintf(out, "  Untrusted signer key: %s\n", result.UntrustedSignerKey)
+			_, _ = fmt.Fprintf(out, "  If this is a legitimate key rotation, re-run with --key for each trusted key.\n")
+		}
 		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
 	}
 
@@ -130,7 +149,36 @@ func verifyChain(out io.Writer, label string, receipts []receipt.Receipt, expect
 	_, _ = fmt.Fprintf(out, "  Root hash: %s\n", result.RootHash)
 	_, _ = fmt.Fprintf(out, "  Start:     %s\n", result.StartTime.Format("2006-01-02T15:04:05Z"))
 	_, _ = fmt.Fprintf(out, "  End:       %s\n", result.EndTime.Format("2006-01-02T15:04:05Z"))
+	printSignerKeys(out, result)
 	return nil
+}
+
+// printSignerKeys reports the per-segment signer keys for a verified chain. When
+// the chain rotated keys, this is the operator's confirmation surface: the
+// verifier proved the segments are cryptographically linked via valid
+// KeyTransition boundaries, but ONLY the operator knows whether every key is one
+// of theirs. A chain that verifies but lists an unexpected key is a signal to
+// investigate, not a pass.
+func printSignerKeys(out io.Writer, result receipt.ChainResult) {
+	if len(result.SignerKeys) <= 1 {
+		if len(result.SignerKeys) == 1 {
+			_, _ = fmt.Fprintf(out, "  Signer:    %s\n", result.SignerKeys[0])
+		}
+		return
+	}
+	_, _ = fmt.Fprintf(out, "  Segments:  %d (signing key rotated)\n", len(result.Segments))
+	_, _ = fmt.Fprintf(out, "  CONFIRM every signer key below is one of yours:\n")
+	for i, seg := range result.Segments {
+		_, _ = fmt.Fprintf(out, "    segment %d: seq %d-%d  signer %s%s\n",
+			i, seg.FirstSeq, seg.FinalSeq, seg.SignerKey, boundaryNote(seg.Boundary))
+	}
+}
+
+func boundaryNote(boundary bool) string {
+	if boundary {
+		return "  (key rotation)"
+	}
+	return ""
 }
 
 func printReceiptDetails(out io.Writer, r receipt.Receipt) {
@@ -164,7 +212,7 @@ func printReceiptDetails(out io.Writer, r receipt.Receipt) {
 
 // TranscriptRootCmd returns the "transcript-root" cobra command.
 func TranscriptRootCmd() *cobra.Command {
-	var expectedKey string
+	var expectedKeys []string
 	var chainDir string
 	var sessionID string
 
@@ -176,21 +224,26 @@ extracts all action receipts, verifies the hash chain, and prints the
 transcript root.
 
 The transcript root is the hash of the final receipt in the chain,
-serving as a tamper-evident summary of the entire session.
+serving as a tamper-evident summary of the entire session. For a chain that
+rotated its signing key, pass --key once per trusted segment key.
 
 Examples:
   pipelock transcript-root --chain /var/lib/pipelock/evidence --key pub.key
-  pipelock transcript-root evidence-proxy-0.jsonl --key 70b991eb...`,
+  pipelock transcript-root evidence-proxy-0.jsonl --key 70b991eb...
+  pipelock transcript-root --chain DIR --key old.key --key new.key`,
 		Args: func(_ *cobra.Command, args []string) error {
 			return validateReceiptSourceArgs(args, chainDir)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if expectedKey == "" {
+			if len(expectedKeys) == 0 {
 				return fmt.Errorf("--key is required: transcript roots must be verified against a trusted signer key")
 			}
-			resolvedKey, err := resolveExpectedKeyHex(expectedKey)
+			resolvedKeys, err := resolveExpectedKeyHexes(expectedKeys)
 			if err != nil {
 				return fmt.Errorf("loading public key: %w", err)
+			}
+			if len(resolvedKeys) == 0 {
+				return fmt.Errorf("--key is required: transcript roots must be verified against a trusted signer key")
 			}
 			out := cmd.OutOrStdout()
 			var label string
@@ -220,7 +273,7 @@ Examples:
 				return fmt.Errorf("no receipts found in %s", label)
 			}
 
-			root, err := receipt.ComputeTranscriptRoot(sessionID, receipts, resolvedKey)
+			root, err := receipt.ComputeTranscriptRootTrusted(sessionID, receipts, resolvedKeys)
 			if err != nil {
 				return fmt.Errorf("computing transcript root: %w", err)
 			}
@@ -236,7 +289,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&expectedKey, "key", "", "expected signer public key (hex or file path)")
+	cmd.Flags().StringArrayVar(&expectedKeys, "key", nil, "trusted signer public key (hex or file path); repeat for rotated chains")
 	cmd.Flags().StringVar(&chainDir, "chain", "", "read the receipt chain from an evidence directory")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	return cmd
@@ -251,6 +304,23 @@ func resolveExpectedKeyHex(expectedKey string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(key), nil
+}
+
+// resolveExpectedKeyHexes resolves each --key value (hex or file path) to a hex
+// signer key. Empty/blank entries are skipped. The order is preserved so the
+// first entry can serve as the single-receipt pin.
+func resolveExpectedKeyHexes(keys []string) ([]string, error) {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		resolved, err := resolveExpectedKeyHex(k)
+		if err != nil {
+			return nil, err
+		}
+		if resolved != "" {
+			out = append(out, resolved)
+		}
+	}
+	return out, nil
 }
 
 func validateReceiptSourceArgs(args []string, chainDir string) error {

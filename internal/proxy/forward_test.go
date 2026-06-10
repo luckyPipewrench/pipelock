@@ -574,6 +574,55 @@ func TestForwardProxy_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	}
 }
 
+func TestConnect_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
+	var hits atomic.Int32
+	lc := net.ListenConfig{}
+	targetLn, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("target listen: %v", err)
+	}
+	defer targetLn.Close() //nolint:errcheck // test cleanup
+	go func() {
+		for {
+			conn, err := targetLn.Accept()
+			if err != nil {
+				return
+			}
+			hits.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	conn := dialProxy(t, proxyAddr)
+	defer conn.Close() //nolint:errcheck // test cleanup
+	target := targetLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("target hits = %d, want 0", got)
+	}
+}
+
 func TestForwardProxy_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

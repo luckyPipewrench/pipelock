@@ -9880,7 +9880,7 @@ func TestLoad_BehavioralBaselineDefaults(t *testing.T) {
 	dir := t.TempDir()
 	profileDir := filepath.Join(dir, "bb")
 	cfgPath := filepath.Join(dir, "bb.yaml")
-	content := "mode: balanced\nbehavioral_baseline:\n  enabled: true\n  profile_dir: " + profileDir + "\n"
+	content := "mode: balanced\nsession_profiling:\n  enabled: true\nbehavioral_baseline:\n  enabled: true\n  profile_dir: " + profileDir + "\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -12845,6 +12845,7 @@ func TestValidate_BehavioralBaseline(t *testing.T) {
 			name: "enabled_without_profile_dir",
 			cfg: func() *Config {
 				c := Defaults()
+				c.SessionProfiling.Enabled = true
 				c.BehavioralBaseline.Enabled = true
 				c.BehavioralBaseline.ProfileDir = ""
 				c.BehavioralBaseline.DeviationAction = ActionWarn
@@ -12856,6 +12857,7 @@ func TestValidate_BehavioralBaseline(t *testing.T) {
 			name: "invalid_deviation_action",
 			cfg: func() *Config {
 				c := Defaults()
+				c.SessionProfiling.Enabled = true
 				c.BehavioralBaseline.Enabled = true
 				c.BehavioralBaseline.ProfileDir = testProfileDir
 				c.BehavioralBaseline.DeviationAction = ActionAllow
@@ -12867,6 +12869,7 @@ func TestValidate_BehavioralBaseline(t *testing.T) {
 			name: "negative_learning_window",
 			cfg: func() *Config {
 				c := Defaults()
+				c.SessionProfiling.Enabled = true
 				c.BehavioralBaseline.Enabled = true
 				c.BehavioralBaseline.ProfileDir = testProfileDir
 				c.BehavioralBaseline.DeviationAction = ActionWarn
@@ -12879,6 +12882,7 @@ func TestValidate_BehavioralBaseline(t *testing.T) {
 			name: "negative_sensitivity_sigma",
 			cfg: func() *Config {
 				c := Defaults()
+				c.SessionProfiling.Enabled = true
 				c.BehavioralBaseline.Enabled = true
 				c.BehavioralBaseline.ProfileDir = testProfileDir
 				c.BehavioralBaseline.DeviationAction = ActionBlock
@@ -12891,6 +12895,7 @@ func TestValidate_BehavioralBaseline(t *testing.T) {
 			name: "invalid_seasonality_mode",
 			cfg: func() *Config {
 				c := Defaults()
+				c.SessionProfiling.Enabled = true
 				c.BehavioralBaseline.Enabled = true
 				c.BehavioralBaseline.ProfileDir = testProfileDir
 				c.BehavioralBaseline.DeviationAction = ActionWarn
@@ -12903,6 +12908,7 @@ func TestValidate_BehavioralBaseline(t *testing.T) {
 			name: "valid_full_config",
 			cfg: func() *Config {
 				c := Defaults()
+				c.SessionProfiling.Enabled = true
 				c.BehavioralBaseline.Enabled = true
 				c.BehavioralBaseline.ProfileDir = testProfileDir
 				c.BehavioralBaseline.DeviationAction = ActionAsk
@@ -12911,6 +12917,17 @@ func TestValidate_BehavioralBaseline(t *testing.T) {
 				c.BehavioralBaseline.SeasonalityMode = SeasonalityModeLabeled
 				return c
 			},
+		},
+		{
+			name: "enabled_requires_session_profiling",
+			cfg: func() *Config {
+				c := Defaults()
+				c.BehavioralBaseline.Enabled = true
+				c.BehavioralBaseline.ProfileDir = testProfileDir
+				c.BehavioralBaseline.DeviationAction = ActionWarn
+				return c
+			},
+			wantErr: "behavioral_baseline.enabled requires session_profiling.enabled",
 		},
 	}
 

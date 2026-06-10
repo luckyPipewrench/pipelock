@@ -122,6 +122,53 @@ func TestEnsureFlightRecorderSigningKey_RegeneratesUnloadable(t *testing.T) {
 	}
 }
 
+// TestEnsureFlightRecorderSigningKey_ErrorPaths covers the abort branches that
+// guard against clobbering or misprovisioning, using deterministic filesystem
+// shapes (no permission tricks, so they behave the same under root and non-root
+// CI): a directory component that is actually a regular file makes MkdirAll
+// fail, and an existing key path that is a directory makes the read abort.
+func TestEnsureFlightRecorderSigningKey_ErrorPaths(t *testing.T) {
+	t.Run("recorder_dir_parent_is_file", func(t *testing.T) {
+		base := t.TempDir()
+		blocker := filepath.Join(base, "blocker")
+		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// recorderDir nested under a regular file -> first MkdirAll fails.
+		err := ensureFlightRecorderSigningKey(filepath.Join(base, "k", "key"), filepath.Join(blocker, "recorder"))
+		if err == nil {
+			t.Fatal("expected error when the recorder dir is nested under a regular file")
+		}
+	})
+	t.Run("key_dir_parent_is_file", func(t *testing.T) {
+		base := t.TempDir()
+		blocker := filepath.Join(base, "blocker")
+		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// recorderDir is fine, but the key dir is nested under a regular file ->
+		// the second MkdirAll fails.
+		err := ensureFlightRecorderSigningKey(filepath.Join(blocker, "keys", "key"), filepath.Join(base, "recorder"))
+		if err == nil {
+			t.Fatal("expected error when the key dir is nested under a regular file")
+		}
+	})
+	t.Run("existing_unreadable_key_aborts_without_clobber", func(t *testing.T) {
+		base := t.TempDir()
+		keyPath := filepath.Join(base, "keys", "key")
+		// Make the key path itself a directory: it exists (Stat succeeds) but is
+		// unreadable as a file (ReadFile returns EISDIR), so we must abort rather
+		// than regenerate over something we cannot read.
+		if err := os.MkdirAll(keyPath, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		err := ensureFlightRecorderSigningKey(keyPath, filepath.Join(base, "recorder"))
+		if err == nil {
+			t.Fatal("expected abort when the existing key path is unreadable (a directory)")
+		}
+	})
+}
+
 // TestInitCmd_DryRunProvisionsNoKey proves --dry-run never writes a signing key
 // (no side effects on disk) even though the previewed config names one.
 func TestInitCmd_DryRunProvisionsNoKey(t *testing.T) {

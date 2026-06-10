@@ -59,6 +59,57 @@ func TestServer_SealTranscriptRoot_NoRecorderIsNoOp(t *testing.T) {
 	s.sealTranscriptRoot()
 }
 
+// TestServer_SealTranscriptRoot_SecondSealLogsError covers the error branch of
+// sealTranscriptRoot: once the chain is sealed, a second seal returns
+// ErrRootAlreadyEmitted, which must be logged (best-effort) rather than panic or
+// propagate. Uses the live emitter directly (no full shutdown needed).
+func TestServer_SealTranscriptRoot_SecondSealLogsError(t *testing.T) {
+	recorderDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("save signing key: %v", err)
+	}
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"flight_recorder:",
+		"  enabled: true",
+		"  dir: " + strconv.Quote(recorderDir),
+		"  signing_key_path: " + strconv.Quote(keyPath),
+		"",
+	}, "\n"))
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+
+	e := s.liveReceiptEmitter()
+	if e == nil {
+		t.Fatal("live receipt emitter is nil; recorder did not wire a signed emitter")
+	}
+	if err := e.Emit(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "forward",
+		Method:    http.MethodGet,
+		Target:    "https://example.com/",
+	}); err != nil {
+		t.Fatalf("seed Emit: %v", err)
+	}
+
+	s.sealTranscriptRoot() // first seal succeeds
+	s.sealTranscriptRoot() // second seal: ErrRootAlreadyEmitted -> logged, not fatal
+
+	if !evidenceDirContains(t, recorderDir, "transcript_root") {
+		t.Fatal("first seal did not write a transcript_root")
+	}
+}
+
 // TestServer_GracefulShutdownSealsTranscriptRoot proves F4: a clean shutdown
 // wires EmitTranscriptRoot, sealing the receipt chain with a transcript_root
 // (the completeness anchor). Without this, a chain truncated by a clean exit

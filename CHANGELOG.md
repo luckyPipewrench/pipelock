@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`verify-receipt` without `--key` now exits non-zero.** Unpinned verification is structural-only and no longer reads as success — this applies to `pipelock verify-receipt`, the standalone `pipelock-verifier`, and every language SDK verifier. **Migration:** any script or CI step that calls a verifier without pinning a key must either pass the trusted signer key with `--key` (preferred — that is what makes the verification mean something) or pass `--allow-unpinned` to explicitly accept the structural-only check. (#726)
 - **Flight recorder defaults to enabled.** Existing configs are unaffected (recording stays inert until a `dir` and signing key exist), but a fresh `pipelock init` now provisions both, so new installs produce signed evidence on disk by default. Set `flight_recorder.enabled: false` to opt out. (#728)
+- **Key-free capture is DLP-redacted by default.** `pipelock run --capture-output` and `pipelock mcp proxy --capture-output` now honor `flight_recorder.redact` and redact by default before writing key-free evidence. **Migration:** if you intentionally consume raw capture payloads, set `flight_recorder.redact: false` and protect the capture directory as raw evidence. (#696)
 - **Receipts now carry a `run_nonce`.** The field is additive: receipts emitted before this release (no `run_nonce`) still verify. (#729)
 
 ### New Features

@@ -2352,6 +2352,8 @@ The `action` knob applies only to unsigned tools. A tool whose attestation is pr
 Profile-then-lock behavioral analysis per agent. Pipelock observes an agent's sessions, builds a statistical profile of its normal behavior (tool calls, unique tools, domains, bytes, duration, requests), and once the profile is ratified and locked, flags or blocks sessions that deviate beyond `sensitivity_sigma` standard deviations from the learned mean.
 
 ```yaml
+session_profiling:
+  enabled: true
 behavioral_baseline:
   enabled: true
   learning_window: 10
@@ -2362,7 +2364,7 @@ behavioral_baseline:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Enable behavioral baseline learning and enforcement |
+| `enabled` | `false` | Enable behavioral baseline learning and enforcement. Requires `session_profiling.enabled: true` because the baseline engine runs on session records. |
 | `learning_window` | `10` | Sessions to observe before building the statistical profile |
 | `deviation_action` | `warn` | Action on deviation from a locked profile: `warn`, `ask`, or `block` |
 | `profile_dir` | (required if enabled) | Directory where learned profiles persist as JSON |
@@ -2372,7 +2374,9 @@ behavioral_baseline:
 | `poison_resistance` | `true` | Trim outlier sessions when building the profile, so adversarial sessions during learning have bounded influence |
 | `seasonality_mode` | `none` | Only `none` is implemented. `labeled` and `time` are reserved and rejected by the baseline engine at startup. |
 
-Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement applies only to a **locked** profile; an agent still in learning produces no deviations. Profiles persist to `profile_dir` (one JSON file per agent, carrying the lifecycle state) and survive restarts. Without `auto_ratify`, a learned profile waits in the `ratify` state for operator approval before it enforces.
+Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement applies only to a **locked** profile; a profile in any earlier state (including `ratify`) produces no deviations. Profiles persist to `profile_dir` (one JSON file per agent, carrying the lifecycle state) and survive restarts.
+
+**Locking a profile (current limitation).** A profile reaches `locked` only via `auto_ratify: true`, which locks automatically at the end of the learning window. There is no operator ratify command in this release: a profile learned without `auto_ratify` stays in `ratify` and never enforces. So today the practical choices are `auto_ratify: true` (accepting the documented learning-window poisoning risk) or leaving the baseline observe-only. Do not rely on a manual operator-approval step before enforcement — it is not yet wired.
 
 ## Taint-Aware Policy Escalation (v2.1)
 

@@ -44,6 +44,16 @@ const (
 	// whitespace. Concrete rule names override this. Extracted as a const
 	// so production and tests share the same string (goconst).
 	mcpReceiptPatternPolicyDefault = "policy"
+
+	// mcpReceiptA2AHeaderPattern is the fallback Pattern for an A2A
+	// header-scan block receipt when the scan result carries no reason.
+	mcpReceiptA2AHeaderPattern = "a2a_header"
+
+	// mcpReceiptA2AHeaderTarget is the receipt Target for an A2A header
+	// block. The block is on the A2A-Extensions header surface rather than a
+	// named tool or body method, so a stable label stands in for the target
+	// the receipt record requires.
+	mcpReceiptA2AHeaderTarget = "a2a:extensions-header"
 )
 
 type taintDecision struct {

@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -399,6 +400,31 @@ func RunHTTPListenerProxy(
 						decide.RecordSignal(reqRec, session.SignalNearMiss, ep)
 					default:
 						decide.RecordSignal(reqRec, session.SignalBlock, ep)
+					}
+				}
+				// Emit a block receipt so an A2A header block leaves the same
+				// policy-hash-bearing evidence as every other applicable
+				// surface. Forward proxy A2A headers already did this; the
+				// listener header block previously returned silently with no
+				// receipt. Transport is the wire (mcp_http_listener); A2A
+				// attribution lives in the layer.
+				if emitter := baseOpts.receiptEmitter(); emitter != nil {
+					if _, emitErr := EmitMCPDecision(emitter, baseOpts.v2ReceiptEmitter(), nil, MCPDecision{
+						Receipt: baseOpts.withReceiptPolicyHash(receipt.EmitOpts{
+							ActionID:  receipt.NewActionID(),
+							Verdict:   config.ActionBlock,
+							Layer:     mcpReceiptLayerA2A,
+							Pattern:   firstNonEmpty(headerResult.Reason, mcpReceiptA2AHeaderPattern),
+							Severity:  config.SeverityHigh,
+							Transport: baseOpts.Transport,
+							// The block is on the A2A-Extensions header, not the
+							// body method, so MCPMethod is left empty and the
+							// target names the header surface. Layer + Pattern
+							// carry the A2A-header attribution.
+							Target: mcpReceiptA2AHeaderTarget,
+						}),
+					}); emitErr != nil {
+						_, _ = fmt.Fprintf(safeLogW, "pipelock: receipt emission failed: %v\n", emitErr)
 					}
 				}
 				w.Header().Set("Content-Type", "application/json")

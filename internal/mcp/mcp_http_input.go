@@ -78,6 +78,25 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	receiptSeverity := ""
 	var receiptContractGate *mcpContractGateOutput
 	defer func() {
+		// A2A methods are not tools/call, so actionID stays empty on the
+		// tools/call path above. When such a request is BLOCKED (receiptVerdict
+		// set), mint an actionID here so the block still leaves a
+		// policy-hash-bearing receipt, matching the other applicable block
+		// surfaces. Clean or allowed A2A requests leave receiptVerdict empty and
+		// emit nothing, and tools/call already carries its own actionID, so
+		// neither path changes.
+		emitActionID := actionID
+		emitTarget := toolName
+		if emitActionID == "" && receiptVerdict != "" && IsA2AMethod(mcpMethod) {
+			emitActionID = receipt.NewActionID()
+			// A2A frames carry no tool name, but the receipt record requires a
+			// non-empty target. Use the A2A method name (e.g. SendMessage) as
+			// the action target. ClassifyMCPTool only consults the tool name
+			// for tools/call, so this leaves the action type unaffected.
+			if emitTarget == "" {
+				emitTarget = mcpMethod
+			}
+		}
 		receiptOpts := mcpToolReceiptOpts{
 			Emitter:          receiptEmitter,
 			V2Emitter:        v2ReceiptEmitter,
@@ -85,9 +104,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			Log:              logW,
 			Transport:        opts.Transport,
 			RedactionProfile: redactionCfg.Profile,
-			ActionID:         actionID,
+			ActionID:         emitActionID,
 			MCPMethod:        mcpMethod,
-			ToolName:         toolName,
+			ToolName:         emitTarget,
 			Verdict:          receiptVerdict,
 			Layer:            receiptLayer,
 			Pattern:          receiptPattern,
@@ -169,6 +188,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		toolName = pendingToolName
 		mcpMethod = methodToolsCall
 		actionID = receipt.NewActionID()
+	} else if IsA2AMethod(frame.Method) {
+		// A2A methods (SendMessage, GetTask, ...) are not tools/call, so they
+		// carry no actionID up front. Record the method now so an early-return
+		// block path (pre-redaction content scan, redaction error) still
+		// attributes the receipt to the A2A method; the deferred emitter
+		// assigns the actionID lazily when the request is actually blocked.
+		mcpMethod = frame.Method
 	}
 	if scanEnabled && redactionCfg.Matcher != nil {
 		originalVerdict := scanRequestForAgent(inputScanCtx, msg, sc, action, onParseError, opts.addressProtectionAgent())

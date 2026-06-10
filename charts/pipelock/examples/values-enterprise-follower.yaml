@@ -45,6 +45,10 @@ conductorFollower:
 pipelock:
   mode: strict
   enforce: true
+  # Strict mode requires an explicit API allowlist. Replace with the APIs
+  # your agents actually call.
+  api_allowlist:
+    - api.provider.example
   dlp:
     include_defaults: true
   response_scanning:
@@ -52,8 +56,32 @@ pipelock:
     action: block
   request_body_scanning:
     enabled: true
+  # A Conductor follower must produce signed evidence: validation requires the
+  # flight recorder enabled with signed checkpoints and a signing key. The key
+  # is mounted from a Secret via extraVolumes below; create it out of band
+  # (e.g. `pipelock keygen recorder` and store recorder.key in the Secret).
   flight_recorder:
     enabled: true
+    sign_checkpoints: true
+    signing_key_path: /etc/pipelock/recorder/recorder.key
+    dir: /var/lib/pipelock/evidence
+
+extraVolumes:
+  - name: recorder-signing-key
+    secret:
+      secretName: follower-recorder-key
+      defaultMode: 0400
+  # Evidence is buffered here before the durable audit queue ships it.
+  # Swap for a PVC if you need recorder evidence to survive pod replacement.
+  - name: recorder-evidence
+    emptyDir: {}
+
+extraVolumeMounts:
+  - name: recorder-signing-key
+    mountPath: /etc/pipelock/recorder
+    readOnly: true
+  - name: recorder-evidence
+    mountPath: /var/lib/pipelock/evidence
 
 podDisruptionBudget:
   enabled: true

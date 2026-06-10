@@ -235,6 +235,37 @@ func TestLicenseStatusConfigFileEnvIntermediateFallback(t *testing.T) {
 	}
 }
 
+// TestLicenseStatusEnvIntermediateLoadFailure covers the load-error branch of
+// the env intermediate fallback: a configured intermediate path that cannot be
+// read records the load error and a placeholder cert instead of failing status,
+// so the command still reports the rest of the license state.
+func TestLicenseStatusEnvIntermediateLoadFailure(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missingPath := filepath.Join(dir, "does-not-exist.json")
+	t.Setenv(config.EnvLicenseKey, "")
+	t.Setenv(config.EnvLicensePublicKey, "")
+	t.Setenv(config.EnvLicenseCRLFile, "")
+	t.Setenv(license.EnvLicenseIntermediateFile, missingPath)
+
+	cfg, err := loadLicenseStatusConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadLicenseStatusConfig: %v", err)
+	}
+	if cfg.LicenseIntermediateFile != missingPath {
+		t.Fatalf("LicenseIntermediateFile = %q, want env path %q", cfg.LicenseIntermediateFile, missingPath)
+	}
+	if cfg.LicenseIntermediateLoadError == "" {
+		t.Fatal("LicenseIntermediateLoadError = empty, want a load error for the missing file")
+	}
+	if string(cfg.LicenseIntermediateCert) != "configured intermediate certificate unavailable" {
+		t.Fatalf("LicenseIntermediateCert = %q, want placeholder", cfg.LicenseIntermediateCert)
+	}
+}
+
 func TestLicenseStatusCommandOutputs(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

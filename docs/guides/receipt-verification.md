@@ -36,7 +36,7 @@ pipelock verify-receipt receipt.json --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a
 
 Output on success:
 
-```
+```text
 OK: receipt.json
   Action ID:   019...
   Action Type: fetch
@@ -56,7 +56,7 @@ the hash linkage holds, but it cannot prove *who* signed the receipt. That is
 not a pass on its own, so an unpinned run prints a loud banner and **exits
 non-zero**:
 
-```
+```text
 UNPINNED: receipt.json
 UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key
   Action ID:   019...
@@ -85,7 +85,7 @@ pipelock verify-receipt evidence-proxy-0.jsonl --key 70b991eb...
 
 Output on success:
 
-```
+```text
 CHAIN VALID: evidence-proxy-0.jsonl
   Receipts:  142
   Final seq: 141
@@ -123,7 +123,7 @@ pipelock verify-receipt --chain /var/lib/pipelock/evidence --key old.pub --key n
 
 A rotated chain reports each segment and its signer for you to confirm:
 
-```
+```text
 CHAIN VALID: /var/lib/pipelock/evidence (session proxy)
   ...
   Segments:  2 (signing key rotated)

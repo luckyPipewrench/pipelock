@@ -9777,6 +9777,81 @@ func TestLoad_FlightRecorderEnabledStates(t *testing.T) {
 	}
 }
 
+// TestLoad_FlightRecorderRequireReceiptsStates documents the default-false
+// invariant for the opt-in fail-closed receipt mode across its load-time
+// states. Reload reuses Load(), and the reload-with-change / reload-no-change
+// cases below exercise the same parsing path a hot reload receives before
+// runtime applies restart-only field preservation.
+func TestLoad_FlightRecorderRequireReceiptsStates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		section string
+		want    bool
+	}{
+		{name: "omitted_whole_section", section: "", want: false},
+		{name: "key_null", section: "flight_recorder:\n  require_receipts:\n", want: false},
+		{name: "key_blank", section: "flight_recorder:\n  require_receipts: \n", want: false},
+		{name: "explicit_false", section: "flight_recorder:\n  require_receipts: false\n", want: false},
+		{name: "explicit_true", section: "flight_recorder:\n  require_receipts: true\n", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "fr-require.yaml")
+			content := "mode: balanced\n" + tt.section
+			if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(cfgPath)
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			if cfg.FlightRecorder.RequireReceipts != tt.want {
+				t.Errorf("FlightRecorder.RequireReceipts = %v, want %v", cfg.FlightRecorder.RequireReceipts, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoad_FlightRecorderRequireReceiptsReloadStates(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "fr-require-reload.yaml")
+
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nflight_recorder:\n  require_receipts: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load #1: %v", err)
+	}
+	if first.FlightRecorder.RequireReceipts {
+		t.Fatal("first load RequireReceipts = true, want false")
+	}
+
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nflight_recorder:\n  require_receipts: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load #2: %v", err)
+	}
+	if !second.FlightRecorder.RequireReceipts {
+		t.Fatal("reload with change RequireReceipts = false, want true")
+	}
+
+	third, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load #3: %v", err)
+	}
+	if third.FlightRecorder.RequireReceipts != second.FlightRecorder.RequireReceipts {
+		t.Fatalf("reload without change RequireReceipts = %v, want %v",
+			third.FlightRecorder.RequireReceipts, second.FlightRecorder.RequireReceipts)
+	}
+}
+
 func TestLoad_MCPToolProvenanceDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "prov.yaml")

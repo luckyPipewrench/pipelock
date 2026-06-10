@@ -2097,6 +2097,7 @@ flight_recorder:
   checkpoint_interval: 1000
   retention_days: 90
   redact: true
+  require_receipts: false
   sign_checkpoints: true
   signing_key_path: "/path/to/signing-key"
   max_entries_per_file: 10000
@@ -2111,6 +2112,7 @@ flight_recorder:
 | `checkpoint_interval` | `1000` | Entries between signed checkpoints |
 | `retention_days` | `0` | Auto-expire files after N days (0 = keep forever) |
 | `redact` | `true` | DLP-redact evidence content before writing. Receipt entries get field-level redaction (target/pattern scrubbed, signature preserved). |
+| `require_receipts` | `false` | Require allow-path receipt emission before forwarding traffic. When true, signing/recorder failures block with `receipt_emission_failed`; block-path receipts remain best-effort because the action is already denied. |
 | `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |
 | `signing_key_path` | (empty) | Ed25519 private key for signed action receipts. When set, every proxy decision produces a signed receipt. Without it, the flight recorder can still write non-receipt evidence entries. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file>`. In `pipelock run`, changing the configured path requires restart; reload re-reads updated key bytes only when the same path stays configured. |
 | `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |

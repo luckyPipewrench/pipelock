@@ -243,7 +243,7 @@ func TestRedactionBlockAttribution(t *testing.T) {
 
 func TestEmitMCPToolReceiptIncludesAttribution(t *testing.T) {
 	emitter, _, dir, _ := newReceiptTestHarness(t)
-	emitMCPToolReceipt(mcpToolReceiptOpts{
+	_ = emitMCPToolReceipt(mcpToolReceiptOpts{
 		Emitter:   emitter,
 		Transport: transportMCPStdio,
 		ActionID:  "mcp-tool-attribution-1",
@@ -293,7 +293,7 @@ func TestEmitMCPToolReceiptLogsV2EmitError(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	emitMCPToolReceipt(mcpToolReceiptOpts{
+	_ = emitMCPToolReceipt(mcpToolReceiptOpts{
 		Emitter:    emitter,
 		V2Emitter:  v2,
 		Log:        &log,

@@ -205,6 +205,10 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 			},
 		},
 		{
+			name: "flight_recorder.require_receipts enabled",
+			mut:  func(c *Config) { c.FlightRecorder.RequireReceipts = true },
+		},
+		{
 			name: "mediation_envelope.sign enabled",
 			mut: func(c *Config) {
 				c.MediationEnvelope.Enabled = true

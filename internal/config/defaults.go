@@ -515,9 +515,11 @@ func Defaults() *Config {
 			// Footguns handled here: Redact stays on (receipts carry targets, so
 			// without scrubbing they would persist secrets in the clear) and
 			// MaxEntriesPerFile caps file growth (rotation), so default-on cannot
-			// silently fill the disk or leak. Evidence, not enforcement: a
-			// recorder failure never blocks traffic.
+			// silently fill the disk or leak. Evidence, not enforcement by default:
+			// a recorder failure never blocks traffic unless RequireReceipts is
+			// explicitly enabled by the operator.
 			Enabled:            true,
+			RequireReceipts:    false,
 			CheckpointInterval: 1000,  // entries between signed checkpoints
 			Redact:             true,  // DLP-scrub evidence before commit
 			SignCheckpoints:    true,  // Ed25519 sign checkpoints

@@ -531,6 +531,7 @@ var specCanonicalPairs = map[Reason]struct {
 	KillSwitchActive:       {SeverityCritical, RetryTransient},
 	EnvelopeVerifyFailed:   {SeverityCritical, RetryNone},
 	OutboundEnvelopeFailed: {SeverityCritical, RetryTransient},
+	ReceiptEmissionFailed:  {SeverityCritical, RetryTransient},
 	RedirectScanDenied:     {SeverityCritical, RetryNone},
 	AuthorityMismatch:      {SeverityCritical, RetryPolicy},
 	EscalationLevel:        {SeverityCritical, RetryTransient},

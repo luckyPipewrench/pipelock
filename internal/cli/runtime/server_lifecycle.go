@@ -642,6 +642,10 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 			return &c.RequestBodyScanning
 		}
+		mcpRequireReceiptsFn := func() bool {
+			c := s.proxy.CurrentConfig()
+			return c != nil && c.FlightRecorder.RequireReceipts
+		}
 
 		mcpErr = make(chan error, 1)
 		lifecycleWG.Add(1)
@@ -675,6 +679,7 @@ func (s *Server) Start(ctx context.Context) error {
 				AddressProtectionAgent: edition.ProfileDefault,
 				ProvenanceCfgFn:        mcpProvenanceCfgFn,
 				ReceiptEmitterFn:       s.liveReceiptEmitter,
+				RequireReceiptsFn:      mcpRequireReceiptsFn,
 				V2ReceiptEmitterFn:     s.liveV2ReceiptEmitter,
 				PolicyHashFn:           mcpConfigHashFn,
 				EnvelopeEmitterFn:      s.liveEnvelopeEmitter,

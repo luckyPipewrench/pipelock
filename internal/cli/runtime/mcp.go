@@ -222,10 +222,12 @@ func mcpReceiptParityOpts(
 	receiptEmitter *receipt.Emitter,
 	v2ReceiptEmitter *proxydecision.Emitter,
 	policyHash string,
+	requireReceipts bool,
 ) mcp.MCPProxyOpts {
 	opts.ReceiptEmitter = receiptEmitter
 	opts.V2ReceiptEmitter = v2ReceiptEmitter
 	opts.PolicyHash = policyHash
+	opts.RequireReceipts = requireReceipts
 	return opts
 }
 
@@ -771,6 +773,15 @@ Key-free evidence capture:
 					cmd.PrintErrf("  Receipts: disabled — set flight_recorder.signing_key_path to enable signed action receipts\n")
 				}
 			}
+			// require_receipts escalates a missing receipt to a block. With no
+			// live signed emitter (recorder disabled, no dir, or no signing
+			// key) every tools/call would fail closed with
+			// receipt_emission_failed - a silent, total block. Refuse to start
+			// so the misconfiguration surfaces here, not as an all-blocked
+			// proxy at runtime.
+			if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(receiptEmitter) {
+				return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
+			}
 			sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 				emitDLPWarn(auditLogger, nil, receiptEmitter, ctx, patternName, severity)
 			})
@@ -903,7 +914,7 @@ Key-free evidence capture:
 						TaintCfg:               &cfg.Taint,
 						ContractLoader:         contractLoader,
 						ContractAgent:          contractAgent,
-					}, receiptEmitter, v2ReceiptEmitter, captureConfigHash)
+					}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), listenerOpts); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
@@ -938,7 +949,7 @@ Key-free evidence capture:
 						TaintCfg:               &cfg.Taint,
 						ContractLoader:         contractLoader,
 						ContractAgent:          contractAgent,
-					}, receiptEmitter, v2ReceiptEmitter, captureConfigHash)
+					}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
@@ -972,7 +983,7 @@ Key-free evidence capture:
 					TaintCfg:               &cfg.Taint,
 					ContractLoader:         contractLoader,
 					ContractAgent:          contractAgent,
-				}, receiptEmitter, v2ReceiptEmitter, captureConfigHash)
+				}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, extraHeaders, httpOpts); err != nil {
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
@@ -1131,7 +1142,7 @@ Key-free evidence capture:
 					TaintCfg:        &cfg.Taint,
 					ContractLoader:  contractLoader,
 					ContractAgent:   contractAgent,
-				}, receiptEmitter, v2ReceiptEmitter, captureConfigHash)
+				}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
 				}
@@ -1242,7 +1253,7 @@ Key-free evidence capture:
 				Lineage:         lin, OnChildReady: onChildReady,
 				ContractLoader: contractLoader,
 				ContractAgent:  contractAgent,
-			}, receiptEmitter, v2ReceiptEmitter, captureConfigHash)
+			}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				return handleProxyError(err, logW, sentryClient)
 			}

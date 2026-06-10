@@ -4,10 +4,15 @@
 package mcp
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
+
+var ErrReceiptRequired = errors.New("receipt required but not emitted")
 
 // MCPDecision bundles the per-decision state a gate in the inbound
 // MCP pipeline needs to emit. Today each gate calls
@@ -46,6 +51,12 @@ type MCPDecision struct {
 	// Callers that do not need envelope injection (block, strip,
 	// redirect) can set this to nil and ignore the returned bytes.
 	InboundMsg []byte
+
+	// RequireReceipt escalates a missing or failed receipt into an error.
+	// Callers use this only for otherwise-forwardable decisions so an
+	// operator can opt into "no receipt, no traffic" without changing the
+	// default warn-and-forward behavior.
+	RequireReceipt bool
 }
 
 // EmitMCPDecision emits the receipt and (optionally) injects the
@@ -84,12 +95,18 @@ func EmitMCPDecision(
 	outbound = d.InboundMsg
 
 	v1Emitted := false
-	if receiptEmitter != nil && d.Receipt.ActionID != "" {
+	receiptRequired := d.RequireReceipt && d.Receipt.ActionID != ""
+	if receiptRequired && receiptEmitter == nil {
+		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
+	} else if receiptEmitter != nil && d.Receipt.ActionID != "" {
 		err = receiptEmitter.Emit(d.Receipt)
 		v1Emitted = err == nil
 		// Intentional: continue to envelope injection even on receipt
 		// error. The two stages are independent at today's callsites
 		// and coupling them here would break parity.
+	}
+	if receiptRequired && err != nil {
+		err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)
 	}
 	if v1Emitted && v2Emitter != nil {
 		if v2Decision, ok := mcpV2DecisionFromReceipt(d.Receipt); ok {

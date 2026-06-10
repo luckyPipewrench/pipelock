@@ -783,6 +783,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	oldCfg.ScanAPI.ConnectionLimit = 2
 	oldCfg.ScanAPI.Timeouts = config.ScanAPITimeouts{Read: "1s", Write: "1s"}
 	oldCfg.FlightRecorder.SigningKeyPath = "/tmp/old-signing-key"
+	oldCfg.FlightRecorder.RequireReceipts = false
 	oldCfg.Conductor.ConductorURL = "https://boss-old.example"
 	oldCfg.FileSentry.Enabled = true
 	oldCfg.FileSentry.Action = config.ActionWarn
@@ -794,6 +795,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	newCfg.ScanAPI.ConnectionLimit = 4
 	newCfg.ScanAPI.Timeouts = config.ScanAPITimeouts{Read: "2s", Write: "2s"}
 	newCfg.FlightRecorder.SigningKeyPath = "/tmp/new-signing-key"
+	newCfg.FlightRecorder.RequireReceipts = true
 	newCfg.Conductor.ConductorURL = "https://boss-new.example"
 	newCfg.FileSentry.Action = config.ActionBlock // file_sentry is restart-only; this change must be ignored
 	newCfg.ReverseProxy.Listen = "127.0.0.1:28084"
@@ -816,6 +818,9 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	}
 	if live.FlightRecorder.SigningKeyPath != oldCfg.FlightRecorder.SigningKeyPath {
 		t.Fatalf("signing key path = %q, want %q", live.FlightRecorder.SigningKeyPath, oldCfg.FlightRecorder.SigningKeyPath)
+	}
+	if !live.FlightRecorder.RequireReceipts {
+		t.Fatal("flight_recorder.require_receipts reload change was not applied")
 	}
 	if live.Conductor != oldCfg.Conductor {
 		t.Fatalf("conductor settings not preserved: %+v", live.Conductor)

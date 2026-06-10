@@ -163,7 +163,10 @@ const (
 	// over-match benign shell env-var references; the "Credential in URL"
 	// value tail additionally excludes ';' so a semicolon-separated param
 	// does not bleed into the captured credential. Detection-relevant change.
-	goldenHashDefaults = "1b3034ef2fe75b621c1cde30aaad593a18a4e54a0c0505a8e8814d06f6b4aeba"
+	// Re-bumped for flight_recorder.require_receipts: the default is false,
+	// but explicit true changes enforcement by blocking otherwise-allowed
+	// requests when a required receipt cannot be emitted.
+	goldenHashDefaults = "68802d0f2366afa9ca612d55b9186245b897cf8a321ab7fb8523635b07c5529d"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -246,7 +249,9 @@ const (
 	// still part of the canonical policy view.
 	// Re-bumped for DLP precision on the env-var-secret / credential-in-URL
 	// patterns: see goldenHashDefaults note above.
-	goldenHashRichConfig = "fdb19355c9ddcfe952f1652a882f495c56981501c8c794a8872669a50d44e653"
+	// Re-bumped for flight_recorder.require_receipts: see goldenHashDefaults
+	// note above.
+	goldenHashRichConfig = "8c6e749eff3408990afc9a91926ac1b60b9e0958d919afd2d1c383dd54d777b0"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

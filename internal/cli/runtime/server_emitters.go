@@ -43,6 +43,14 @@ func (s *Server) liveReceiptEmitter() *receipt.Emitter {
 	return s.receiptEmitter
 }
 
+func receiptEmitterReady(e *receipt.Emitter) bool {
+	return e != nil && e.InitError() == nil
+}
+
+func (s *Server) liveReceiptEmitterReady() bool {
+	return receiptEmitterReady(s.liveReceiptEmitter())
+}
+
 // sealTranscriptRoot writes the transcript root for the live receipt chain at
 // graceful shutdown, anchoring the receipts emitted this run so a chain truncated
 // by a CLEAN exit becomes detectable: verify can see the sealed root instead of

@@ -137,12 +137,15 @@ func (c *Config) policySemanticView() Config {
 	view.ReverseProxy.Upstream = ""
 
 	// Telemetry and operational outputs - emit destinations, log
-	// formatting, Sentry DSN, flight recorder path. None of these
-	// affect detection decisions; they affect where observations go.
+	// formatting, Sentry DSN, flight recorder path/key/retention. None of
+	// these affect detection decisions; they affect where observations go.
+	// flight_recorder.require_receipts is intentionally preserved below:
+	// it changes enforcement posture by escalating receipt-emission failure
+	// from warn-and-forward to block.
 	view.Logging = LoggingConfig{}
 	view.Sentry = SentryConfig{}
 	view.Emit = EmitConfig{}
-	view.FlightRecorder = FlightRecorder{}
+	view.FlightRecorder = FlightRecorder{RequireReceipts: view.FlightRecorder.RequireReceipts}
 	view.Conductor = Conductor{}
 
 	// License metadata - determines whether a tier feature is available,

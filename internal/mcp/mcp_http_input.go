@@ -39,7 +39,7 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 // per-message logic, but returns the block verdict plus the message to forward.
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
-func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) httpInputDecision {
+func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) (result httpInputDecision) {
 	// Strip any inbound com.pipelock/mediation from _meta before
 	// parsing, scanning, or forwarding. Prevents an agent (or compromised
 	// upstream that managed to send back through the listener) from
@@ -63,7 +63,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	envelopeEmitter := opts.envelopeEmitter()
 	redirectRT := opts.redirectRT()
-	result := httpInputDecision{ForwardMessage: msg}
+	result = httpInputDecision{ForwardMessage: msg}
 	mcpMethod := ""
 	toolName := ""
 	actionID := ""
@@ -77,6 +77,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	receiptPattern := ""
 	receiptSeverity := ""
 	var receiptContractGate *mcpContractGateOutput
+	requireReceipts := opts.requireReceipts()
+
+	// Parse the inbound frame once. Every gate below reads ID / Method /
+	// tool fields from this frame instead of re-parsing. Redaction may
+	// rewrite argument values; the frame is re-parsed after redaction so
+	// downstream gates (DoW, taint) see the redacted args while
+	// ID / Method / ToolCallName stay stable.
+	frame := ParseMCPFrame(msg)
 	defer func() {
 		// A2A methods are not tools/call, so actionID stays empty on the
 		// tools/call path above. When such a request is BLOCKED (receiptVerdict
@@ -114,16 +122,19 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			Decision:         taintEval,
 			Report:           redactionReport,
 			ContractGate:     receiptContractGate,
+			RequireReceipt:   requireReceipts && result.Blocked == nil,
 		}
-		emitMCPToolReceipt(receiptOpts)
+		if err := emitMCPToolReceipt(receiptOpts); err != nil && requireReceipts && result.Blocked == nil {
+			result.Blocked = &BlockedRequest{
+				ID:             frame.ID,
+				IsNotification: isRPCNotification(frame.ID),
+				LogMessage:     "receipt emission failed",
+				ErrorCode:      -32007,
+				ErrorMessage:   "pipelock: receipt emission failed",
+				ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
+			}
+		}
 	}()
-
-	// Parse the inbound frame once. Every gate below reads ID / Method /
-	// tool fields from this frame instead of re-parsing. Redaction may
-	// rewrite argument values; the frame is re-parsed after redaction so
-	// downstream gates (DoW, taint) see the redacted args while
-	// ID / Method / ToolCallName stay stable.
-	frame := ParseMCPFrame(msg)
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
@@ -506,9 +517,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.Blocked = ptrMCPBlockedRequest(mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"))
 			return result
 		}
-		if verdict.Method == methodToolsCall {
+		if actionID != "" {
 			var decorateErr error
-			result.ForwardMessage, decorateErr = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionAllow, taintEval)
+			result.ForwardMessage, decorateErr = decorateMCPToolMessage(msg, envelopeEmitter, actionID, mcpMethod, toolName, config.ActionAllow, taintEval)
 			if decorateErr != nil {
 				result.Blocked = &BlockedRequest{
 					ID:             verdict.ID,

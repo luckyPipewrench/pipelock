@@ -276,7 +276,7 @@ func (f *dualEmitFixture) v2Receipt(t *testing.T) contractreceipt.EvidenceReceip
 
 func TestDualEmit_ProducesVerifiableV2AlongsideV1(t *testing.T) {
 	f := newDualEmitFixture(t, false)
-	f.p.emitReceipt(receipt.EmitOpts{
+	_ = f.p.emitReceipt(receipt.EmitOpts{
 		ActionID: "a1", Transport: TransportForward, Method: "GET",
 		Target: "https://api.vendor.example/v1/x", Verdict: "block",
 		Layer: "dlp", Pattern: "prompt_injection", RequestID: "r1",
@@ -306,7 +306,7 @@ func TestDualEmit_ProducesVerifiableV2AlongsideV1(t *testing.T) {
 func TestDualEmit_SanitizesV2TargetWithRedaction(t *testing.T) {
 	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
 	f := newDualEmitFixture(t, true)
-	f.p.emitReceipt(receipt.EmitOpts{
+	_ = f.p.emitReceipt(receipt.EmitOpts{
 		ActionID: "a1", Transport: TransportForward, Method: "GET",
 		Target: "https://api.vendor.example/v1/x?key=" + secret, Verdict: "block",
 		Layer: "dlp", Pattern: "aws_access_key", RequestID: "r1",
@@ -340,7 +340,7 @@ func TestDualEmit_DisabledWhenNoV2Emitter(t *testing.T) {
 	}
 	t.Cleanup(p.Close)
 
-	p.emitReceipt(receipt.EmitOpts{
+	_ = p.emitReceipt(receipt.EmitOpts{
 		ActionID: "a1", Transport: TransportFetch, Method: "GET",
 		Target: "https://x.example/a", Verdict: "allow", RequestID: "r1",
 	})
@@ -397,7 +397,7 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 		ActionID: "a1", Transport: TransportForward, Method: "GET",
 		Target: "https://x.example/a", Verdict: "allow", RequestID: "r1",
 	}
-	p.emitReceipt(opts) // v2 seq 0
+	_ = p.emitReceipt(opts) // v2 seq 0
 
 	// Hot reload with the same signing key; buildReceiptEmitter must carry the
 	// v2 chain head forward instead of resetting to genesis.
@@ -411,7 +411,7 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 	if p.v2EmitterPtr.Load() == nil {
 		t.Fatal("v2 emitter nil after reload with signing key")
 	}
-	p.emitReceipt(opts) // v2 seq 1, chained to seq 0
+	_ = p.emitReceipt(opts) // v2 seq 1, chained to seq 0
 
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
@@ -466,7 +466,7 @@ func TestDualEmit_V1FailureSkipsV2(t *testing.T) {
 	}
 
 	// This decision's v1 Emit fails (sealed); v2 must be skipped.
-	f.p.emitReceipt(receipt.EmitOpts{
+	_ = f.p.emitReceipt(receipt.EmitOpts{
 		ActionID: "a1", Transport: TransportForward, Method: "GET",
 		Target: "https://x.example/a", Verdict: "block",
 		Layer: "dlp", Pattern: "inj", RequestID: "r1",

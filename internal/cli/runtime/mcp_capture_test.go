@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,19 +66,35 @@ mcp_tool_policy:
 func runMCPProxyStdin(t *testing.T, stdin string, args []string) (string, error) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	cmd := McpCmd()
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.SetContext(ctx)
-	cmd.SetOut(&stdout)
+	cmd.SetOut(io.Discard)
 	cmd.SetErr(&stderr)
 	cmd.SetIn(strings.NewReader(stdin))
 	cmd.SetArgs(args)
 
-	err := cmd.Execute()
-	return stderr.String(), err
+	done := make(chan error, 1)
+	go func() { done <- cmd.Execute() }()
+
+	select {
+	case err := <-done:
+		return stderr.String(), err
+	case <-time.After(mcpProxyRunHangBackstop):
+		cancel()
+		select {
+		case err := <-done:
+			t.Fatalf("mcp proxy command did not complete within %s (hang backstop); Execute returned after cancellation with: %v",
+				mcpProxyRunHangBackstop, err)
+		case <-time.After(mcpProxyCancelGrace):
+			t.Fatalf("mcp proxy command did not complete within %s and did not stop within %s after cancellation",
+				mcpProxyRunHangBackstop, mcpProxyCancelGrace)
+		}
+		return "", nil
+	}
 }
 
 // collectCaptureSurfaces walks the per-session subdirectories the capture

@@ -74,7 +74,7 @@ func TestMCPReceiptParityOpts(t *testing.T) {
 	opts := mcpReceiptParityOpts(mcp.MCPProxyOpts{
 		ConfigHash: "config-hash",
 		PolicyHash: "old-policy-hash",
-	}, r, v2, "policy-hash")
+	}, r, v2, "policy-hash", true)
 
 	if opts.ReceiptEmitter != r {
 		t.Fatal("receipt emitter not threaded")
@@ -84,6 +84,9 @@ func TestMCPReceiptParityOpts(t *testing.T) {
 	}
 	if opts.PolicyHash != "policy-hash" {
 		t.Fatalf("PolicyHash = %q, want policy-hash", opts.PolicyHash)
+	}
+	if !opts.RequireReceipts {
+		t.Fatal("RequireReceipts not threaded")
 	}
 	if opts.ConfigHash != "config-hash" {
 		t.Fatalf("ConfigHash = %q, want config-hash", opts.ConfigHash)

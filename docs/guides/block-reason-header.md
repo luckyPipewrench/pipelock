@@ -63,6 +63,7 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 | `kill_switch_active` | The four-source kill switch is asserted (config, API, SIGUSR1, or sentinel file). |
 | `envelope_verify_failed` | Inbound mediation envelope verification failed. |
 | `outbound_envelope_failed` | Outbound envelope injection, refresh, or signing failed before forwarding. |
+| `receipt_emission_failed` | `flight_recorder.require_receipts` is enabled and the required allow-path receipt could not be emitted before forwarding. |
 | `redirect_scan_denied` | A followed redirect target was denied by the scanner pipeline. |
 | `authority_mismatch` | Operator authority for the requested action is missing or below threshold. |
 | `escalation_level` | Adaptive enforcement raised an escalation tier that blocks the requested action class. |

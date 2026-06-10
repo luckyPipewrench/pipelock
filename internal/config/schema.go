@@ -1175,6 +1175,7 @@ type FlightRecorder struct {
 	RawEscrow          bool        `yaml:"raw_escrow"`           // encrypted raw detail sidecar (default false)
 	EscrowPublicKey    string      `yaml:"escrow_public_key"`    // X25519 public key for raw escrow encryption
 	SigningKeyPath     string      `yaml:"signing_key_path"`     // Ed25519 private key for checkpoint signing and action receipts
+	RequireReceipts    bool        `yaml:"require_receipts"`     // fail closed when a required receipt cannot be emitted (default false)
 }
 
 // MediationEnvelope configures sideband metadata on proxied requests.

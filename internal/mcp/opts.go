@@ -151,8 +151,10 @@ type MCPProxyOpts struct {
 
 	// ReceiptEmitter emits signed action receipts for MCP decisions.
 	// Nil-safe (no-op when nil).
-	ReceiptEmitter   *receipt.Emitter
-	ReceiptEmitterFn func() *receipt.Emitter
+	ReceiptEmitter    *receipt.Emitter
+	ReceiptEmitterFn  func() *receipt.Emitter
+	RequireReceipts   bool
+	RequireReceiptsFn func() bool
 	// V2ReceiptEmitter emits EvidenceReceipt v2 proxy_decision records in
 	// parity with ReceiptEmitter. Nil-safe (no-op when nil).
 	V2ReceiptEmitter   *proxydecision.Emitter
@@ -335,6 +337,13 @@ func (o MCPProxyOpts) receiptEmitter() *receipt.Emitter {
 		return o.ReceiptEmitterFn()
 	}
 	return o.ReceiptEmitter
+}
+
+func (o MCPProxyOpts) requireReceipts() bool {
+	if o.RequireReceiptsFn != nil {
+		return o.RequireReceiptsFn()
+	}
+	return o.RequireReceipts
 }
 
 func (o MCPProxyOpts) v2ReceiptEmitter() *proxydecision.Emitter {

@@ -182,6 +182,8 @@ func constNameForReason(r blockreason.Reason) string {
 		return "EnvelopeVerifyFailed"
 	case blockreason.OutboundEnvelopeFailed:
 		return "OutboundEnvelopeFailed"
+	case blockreason.ReceiptEmissionFailed:
+		return "ReceiptEmissionFailed"
 	case blockreason.RedirectScanDenied:
 		return "RedirectScanDenied"
 	case blockreason.AuthorityMismatch:

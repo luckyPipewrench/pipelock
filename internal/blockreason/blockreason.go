@@ -90,6 +90,7 @@ const (
 	KillSwitchActive       Reason = "kill_switch_active"
 	EnvelopeVerifyFailed   Reason = "envelope_verify_failed"
 	OutboundEnvelopeFailed Reason = "outbound_envelope_failed"
+	ReceiptEmissionFailed  Reason = "receipt_emission_failed"
 	RedirectScanDenied     Reason = "redirect_scan_denied"
 	AuthorityMismatch      Reason = "authority_mismatch"
 	EscalationLevel        Reason = "escalation_level"
@@ -160,6 +161,7 @@ var validReasons = map[Reason]struct{}{
 	KillSwitchActive:       {},
 	EnvelopeVerifyFailed:   {},
 	OutboundEnvelopeFailed: {},
+	ReceiptEmissionFailed:  {},
 	RedirectScanDenied:     {},
 	AuthorityMismatch:      {},
 	EscalationLevel:        {},
@@ -561,6 +563,7 @@ func RetryFor(reason Reason) Retry {
 		Timeout,
 		PatternUnavailable,
 		OutboundEnvelopeFailed,
+		ReceiptEmissionFailed,
 		SessionAnomaly,
 		BlockReasonOverflow:
 		return RetryTransient

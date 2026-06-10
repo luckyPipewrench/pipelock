@@ -97,6 +97,6 @@ All receipts from a single proxy instance share a hash chain. The first receipt 
 
 Verify a single file with `pipelock verify-receipt evidence-proxy-0.jsonl`. Verify chain integrity across rotated or restarted evidence files with `pipelock verify-receipt --chain <evidence-dir>`.
 
-## Fail-Open on Emit
+## Emit Failure Behavior
 
-Receipt emission failures are logged but never fail the request. The receipt is evidence, not enforcement. If signing fails or the recorder is unavailable, the proxy decision still completes normally.
+Receipt emission failures are logged and do not fail requests by default. Set `flight_recorder.require_receipts: true` to require allow-path receipts before forwarding traffic; if signing fails or the recorder is unavailable, Pipelock blocks the action with `receipt_emission_failed` instead of sending it upstream. Block-path receipts remain best-effort because the underlying action has already been denied.

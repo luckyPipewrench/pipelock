@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
@@ -467,8 +468,9 @@ func ForwardScannedInput(
 				actionID = receipt.NewActionID()
 			}
 		}
+		receiptEmitted := false
 
-		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) {
+		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
 			layer, pattern, severity := pickAttribution(eval)
@@ -488,11 +490,12 @@ func ForwardScannedInput(
 				Severity:         severity,
 				Decision:         taintDecision,
 				Report:           redactionReport,
+				RequireReceipt:   opts.requireReceipts() && receiptVerdict != config.ActionBlock,
 			}
 			if len(contractGate) > 0 {
 				receiptOpts.ContractGate = &contractGate[0]
 			}
-			emitMCPToolReceipt(receiptOpts)
+			return emitMCPToolReceipt(receiptOpts)
 		}
 
 		logTaintDecision := func() {
@@ -548,7 +551,7 @@ func ForwardScannedInput(
 				ErrorCode:      -32600,
 				ErrorMessage:   "pipelock: " + eval.DoWReason,
 			}
-			emitToolReceipt(config.ActionBlock)
+			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateFrozenTool:
 			frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, eval.FrozenToolName)
@@ -567,7 +570,7 @@ func ForwardScannedInput(
 				ErrorCode:      -32600,
 				ErrorMessage:   "pipelock: tool not in frozen inventory",
 			}
-			emitToolReceipt(config.ActionBlock)
+			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateChain:
 			recordAdaptiveSignal(session.SignalBlock)
@@ -578,7 +581,7 @@ func ForwardScannedInput(
 				ErrorCode:      -32004,
 				ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", eval.ChainPatternName),
 			}
-			emitToolReceipt(config.ActionBlock)
+			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateParseError:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
@@ -587,7 +590,7 @@ func ForwardScannedInput(
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (parse error)", lineNum),
 			}
-			emitToolReceipt(config.ActionBlock)
+			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateTaintBlock, blockingGateTaintAskDenied:
 			logTaintDecision()
@@ -598,7 +601,7 @@ func ForwardScannedInput(
 				ErrorCode:      -32002,
 				ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
 			}
-			emitToolReceipt(config.ActionBlock)
+			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		}
 
@@ -673,19 +676,15 @@ func ForwardScannedInput(
 					ErrorCode:      -32006,
 					ErrorMessage:   "pipelock: contract tool-call evaluation failed",
 				}
-				emitToolReceipt(config.ActionBlock)
+				_ = emitToolReceipt(config.ActionBlock)
 				continue
 			}
 			if contractGate.Verdict == config.ActionBlock {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked tools/call %q (%s)\n", lineNum, toolCallName, contractGate.Reason)
 				blockedCh <- mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract")
-				emitToolReceipt(config.ActionBlock, contractGate)
+				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				continue
 			}
-			// Track request ID before forwarding so response-side can validate.
-			// Must happen before write to prevent race: response could arrive
-			// before Track completes in concurrent stdio paths.
-			tracker.Track(verdict.ID)
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
 				buildOpts := envelope.BuildOpts{
@@ -713,11 +712,25 @@ func ForwardScannedInput(
 					continue
 				}
 			}
+			if err := emitToolReceipt(config.ActionAllow, contractGate); err != nil {
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     "receipt emission failed",
+					ErrorCode:      -32007,
+					ErrorMessage:   "pipelock: receipt emission failed",
+					ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
+				}
+				continue
+			}
+			// Track request ID immediately before forwarding so response-side
+			// can validate without leaving stale state when a required
+			// receipt fails before the request is written.
+			tracker.Track(verdict.ID)
 			if err := writer.WriteMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
-			emitToolReceipt(config.ActionAllow, contractGate)
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
@@ -983,18 +996,16 @@ func ForwardScannedInput(
 					ErrorCode:      -32006,
 					ErrorMessage:   "pipelock: contract tool-call evaluation failed",
 				}
-				emitToolReceipt(config.ActionBlock)
+				_ = emitToolReceipt(config.ActionBlock)
 				continue
 			}
 			if contractGate.Verdict == config.ActionBlock {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked tools/call %q (%s)\n", lineNum, toolCallName, contractGate.Reason)
 				blockedCh <- mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract")
-				emitToolReceipt(config.ActionBlock, contractGate)
+				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				continue
 			}
 			contractGateForReceipt = &contractGate
-			// Track ID before forwarding (warn mode still sends the request).
-			tracker.Track(verdict.ID)
 			// Inject envelope for warn-mode tool calls before forwarding.
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
@@ -1023,7 +1034,20 @@ func ForwardScannedInput(
 					continue
 				}
 			}
+			if err := emitToolReceipt(effectiveAction, contractGate); err != nil {
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     "receipt emission failed",
+					ErrorCode:      -32007,
+					ErrorMessage:   "pipelock: receipt emission failed",
+					ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
+				}
+				continue
+			}
+			receiptEmitted = true
 			// Forward anyway (warn mode).
+			tracker.Track(verdict.ID)
 			if err := writer.WriteMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
@@ -1046,10 +1070,12 @@ func ForwardScannedInput(
 		}
 
 		// Action receipt: emit for tools/call decisions only.
-		if contractGateForReceipt != nil {
-			emitToolReceipt(effectiveAction, *contractGateForReceipt)
-		} else {
-			emitToolReceipt(effectiveAction)
+		if !receiptEmitted {
+			if contractGateForReceipt != nil {
+				_ = emitToolReceipt(effectiveAction, *contractGateForReceipt)
+			} else {
+				_ = emitToolReceipt(effectiveAction)
+			}
 		}
 
 		// Capture: record DLP/injection input verdict.

@@ -542,6 +542,67 @@ func proxyClient(proxyAddr string) *http.Client {
 	}
 }
 
+func TestForwardProxy_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+}
+
+func TestForwardProxy_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = false
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+}
+
 // TestForwardProxy_ResponseScanCapOverrunBlocks proves the forward proxy blocks
 // a response that exceeds the configured scan cap instead of forwarding a
 // silently-truncated prefix as an apparently-successful, scanned response. This

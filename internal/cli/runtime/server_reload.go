@@ -91,28 +91,41 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			s.logger.LogConfigReload("ignored", "conductor settings restart-only", attemptedHash)
 			newCfg.Conductor = oldCfg.Conductor
 		}
-		// Block flight_recorder changes via reload. The recorder (and its
+		// Block recorder-binding changes via reload. The recorder (and its
 		// receipt/audit chain) is built once at Start; reload swaps config and
-		// scanner but never rebuilds the recorder, so any flight_recorder change
-		// would leave the live config disagreeing with the running recorder.
-		// Signing-key rotation is the sharpest case - the receipt chain is
-		// anchored to the current key, and rotating mid-chain breaks tail-
-		// signature verification on resume - but every field is restart-only for
-		// the same build-once reason. Preserve the whole block and warn.
+		// scanner but never rebuilds the recorder, so path/key/retention/etc.
+		// changes would leave the live config disagreeing with the running
+		// recorder. require_receipts is the exception: it changes only whether
+		// an emit failure escalates an otherwise-allowed request to a block, so
+		// it is safe and intentionally reloadable.
 		//
 		// This also keeps Conductor policy-bundle apply working: a signed bundle
 		// carries enforcement-only config (flight_recorder is not an allowlisted
 		// bundle section), so the bundle's loaded config omits flight_recorder.
 		// Preserving the follower's existing block means conductor.enabled - which
 		// requires a signed flight recorder - still validates after the apply.
-		if !reflect.DeepEqual(oldCfg.FlightRecorder, newCfg.FlightRecorder) {
+		oldFR := oldCfg.FlightRecorder
+		newFR := newCfg.FlightRecorder
+		oldFR.RequireReceipts = newFR.RequireReceipts
+		if !reflect.DeepEqual(oldFR, newFR) {
 			if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
 					oldCfg.FlightRecorder.SigningKeyPath, newCfg.FlightRecorder.SigningKeyPath)
 			} else {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder settings changed — recorder is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
 			}
+			requireReceipts := newCfg.FlightRecorder.RequireReceipts
 			newCfg.FlightRecorder = oldCfg.FlightRecorder
+			newCfg.FlightRecorder.RequireReceipts = requireReceipts
+		}
+		// require_receipts reloads freely, but it only has a live emitter to
+		// gate on when one was built at Start (the recorder is restart-only).
+		// Enabling it without one fails every request closed with
+		// receipt_emission_failed. Warn loudly; the value still applies so the
+		// posture is honest (fail-closed), but restart with a configured
+		// recorder is the real fix.
+		if newCfg.FlightRecorder.RequireReceipts && !s.liveReceiptEmitterReady() {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.require_receipts is enabled but no healthy live signed receipt emitter exists — every request will fail closed with receipt_emission_failed. Configure flight_recorder.dir + signing_key_path, fix any receipt-chain resume error, and restart.\n")
 		}
 		// Block file_sentry changes via reload. The watcher is built
 		// once at Start from the startup snapshot; reloading would

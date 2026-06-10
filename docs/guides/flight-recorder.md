@@ -2,7 +2,7 @@
 
 The flight recorder writes every enforcement decision pipelock makes to a hash-chained, tamper-evident evidence log. Each entry is cryptographically linked to the one before it, so any deletion or modification breaks the chain. Signed checkpoints let auditors verify the chain was intact at specific points in time without replaying every entry. The recorder is designed for post-incident investigation, compliance evidence, and forensic replay.
 
-**On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` and a signing key are configured, though: without them the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. The recorder is **evidence, never enforcement** — a recorder failure never blocks traffic.
+**On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` and a signing key are configured, though: without them the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. Receipt emission is best-effort by default; set `require_receipts: true` when allow-path receipt failures must fail closed before traffic is forwarded.
 
 ## What Gets Recorded
 
@@ -24,6 +24,7 @@ flight_recorder:
   checkpoint_interval: 1000      # entries between signed checkpoints
   retention_days: 90             # auto-expire files older than 90 days (0 = forever)
   redact: true                   # DLP redaction before commit (recommended)
+  require_receipts: false        # fail closed before forwarding when allow receipts cannot be emitted
   sign_checkpoints: true         # Ed25519 signed checkpoints
   max_entries_per_file: 10000    # rotate to a new file after this many entries
   raw_escrow: false              # encrypted raw sidecar (see below)
@@ -37,6 +38,7 @@ flight_recorder:
 | `checkpoint_interval` | 1000 | How many entries between signed checkpoints. |
 | `retention_days` | 0 | Auto-expire files after N days. 0 = never expire. |
 | `redact` | true | DLP scan each entry before writing. Replaces matched content with a redaction marker. |
+| `require_receipts` | false | Require receipt emission before allow-path traffic is forwarded. When true, missing or failed receipt emission blocks the action with `receipt_emission_failed`; block-path receipts remain best-effort because the action is already denied. |
 | `sign_checkpoints` | true | Sign each checkpoint with the agent's Ed25519 private key. |
 | `max_entries_per_file` | 10000 | Rotate to a new JSONL file after this many entries. |
 | `raw_escrow` | false | Write an encrypted sidecar with the unredacted detail for each entry. |
@@ -44,6 +46,34 @@ flight_recorder:
 
 The receipt-signing private key is loaded from
 `flight_recorder.signing_key_path`.
+
+### Fail-closed receipts (`require_receipts`)
+
+By default receipt emission is best-effort: if signing or the recorder fails,
+the decision is logged and traffic still flows (evidence, not enforcement). Set
+`require_receipts: true` to make an *allow-path* receipt a precondition for
+forwarding. When it is on, pipelock emits the allow receipt **before** the
+request leaves the proxy; if that emission fails it blocks with
+`receipt_emission_failed` instead of egressing. This is enforced on every
+egress transport — forward proxy, CONNECT, WebSocket, `/fetch`, MCP stdio, and
+MCP HTTP. Block-path receipts stay best-effort because the action is already
+denied.
+
+Two operational notes:
+
+- **It needs a live signed recorder.** `require_receipts` has nothing to emit
+  unless `enabled`, `dir`, and `signing_key_path` are all set. With no live
+  emitter every request would fail closed, so `pipelock run` and
+  `pipelock mcp proxy` **refuse to start** in that state rather than serve an
+  all-blocked proxy. `require_receipts` is hot-reloadable, but because the
+  recorder is built once at startup, enabling it via reload without a recorder
+  only logs a warning — restart with a recorder configured to actually use it.
+- **An allowed request that is later blocked carries two receipts.** The
+  pre-egress allow receipt attests the egress *decision*; if response scanning
+  then blocks the reply, a block receipt is emitted under the **same
+  `action_id`**. Under `require_receipts` you will therefore see an allow
+  followed by a block for one action — the request did egress, and the response
+  was blocked separately.
 
 ### Default-on footguns (handled)
 

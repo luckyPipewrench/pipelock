@@ -230,7 +230,7 @@ Every block or allow decision produces a signed action receipt. The table below 
 | MCP HTTP / SSE | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts, stream-aware |
 | MCP HTTP reverse proxy | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts |
 
-All receipt emission is fire-and-forget on the async flight-recorder channel and survives config reload across all transports. Receipts chain via `chain_prev_hash` / `chain_seq` for tamper-evidence. See [`docs/guides/receipt-verification.md`](receipt-verification.md) for the verify CLI and the cross-implementation conformance suite.
+Receipt emission is best-effort by default on the async flight-recorder channel and survives config reload across all transports. Set `flight_recorder.require_receipts: true` to fail closed before allow-path proxy/MCP traffic is forwarded when the required receipt cannot be emitted; block-path receipts stay best-effort because the action is already denied. Receipts chain via `chain_prev_hash` / `chain_seq` for tamper-evidence. See [`docs/guides/receipt-verification.md`](receipt-verification.md) for the verify CLI and the cross-implementation conformance suite.
 
 ## See Also
 

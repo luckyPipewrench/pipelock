@@ -90,7 +90,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
-		p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}
 
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
@@ -526,6 +526,30 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	allowReceipt := receipt.EmitOpts{
+		ActionID:  actionID,
+		Verdict:   config.ActionAllow,
+		Transport: "connect",
+		Method:    http.MethodConnect,
+		Target:    syntheticURL,
+		RequestID: requestID,
+		Agent:     agent,
+	}
+	if connectGate.HasContractContext() {
+		allowReceipt = withContractReceipt(connectGate, allowReceipt)
+	}
+	if cfg.FlightRecorder.RequireReceipts {
+		if err := p.emitRequiredReceipt(withReceiptPolicyHash(allowReceipt, cfg.CanonicalPolicyHash())); err != nil {
+			blockedErr := newReceiptEmissionBlockedRequest(err)
+			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordTunnelBlocked(agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				"CONNECT blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
+		}
+	}
+
 	// Bound the outbound dial, then let the established tunnel live until it
 	// goes idle. Long-poll, SSE, and WebSocket control-plane streams must not
 	// be cut by a fixed wall-clock lifetime while bytes are still flowing.
@@ -673,19 +697,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.metrics.RecordTunnel(duration, totalBytes, agentLabel)
 	// Count successful tunnels in request totals so /stats reflects CONNECT traffic.
 	p.metrics.RecordAllowed(duration, agentLabel)
-	allowReceipt := receipt.EmitOpts{
-		ActionID:  actionID,
-		Verdict:   config.ActionAllow,
-		Transport: "connect",
-		Method:    http.MethodConnect,
-		Target:    syntheticURL,
-		RequestID: requestID,
-		Agent:     agent,
+	if !cfg.FlightRecorder.RequireReceipts {
+		emitConnectReceipt(allowReceipt)
 	}
-	if connectGate.HasContractContext() {
-		allowReceipt = withContractReceipt(connectGate, allowReceipt)
-	}
-	emitConnectReceipt(allowReceipt)
 	p.logger.LogTunnelClose(targetCtx, totalBytes, duration)
 
 	// Record data budget for the target domain
@@ -721,7 +735,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		agent = agentAnonymous
 	}
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
-		p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		pattern := inboundEnvelopeFailurePattern(err)
@@ -1610,6 +1624,39 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	forwardAllowReceipt := withForwardRedaction(receipt.EmitOpts{
+		ActionID:            actionID,
+		Verdict:             config.ActionAllow,
+		Transport:           "forward",
+		Method:              r.Method,
+		Target:              targetURL,
+		RequestID:           requestID,
+		Agent:               agent,
+		SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+		SessionContaminated: forwardTaint.Risk.Contaminated,
+		RecentTaintSources:  forwardTaint.Risk.Sources,
+		SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+		SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+		AuthorityKind:       forwardTaint.Authority.String(),
+		TaintDecision:       forwardTaint.Result.Decision.String(),
+		TaintDecisionReason: forwardTaint.Result.Reason,
+		TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+	})
+	if forwardGate.HasContractContext() {
+		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
+	}
+	if cfg.FlightRecorder.RequireReceipts {
+		if err := p.emitRequiredReceipt(withReceiptPolicyHash(forwardAllowReceipt, cfg.CanonicalPolicyHash())); err != nil {
+			blockedErr := newReceiptEmissionBlockedRequest(err)
+			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
+		}
+	}
+
 	resp, err := p.client.Do(outReq)
 	if err != nil {
 		if blockedErr, ok := blockedRequestErrorFrom(err); ok {
@@ -1873,24 +1920,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			EffectiveAction:   config.ActionAllow,
 			Outcome:           captureOutcome(config.ActionAllow, true),
 		})
-		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
-			ActionID:            actionID,
-			Verdict:             config.ActionAllow,
-			Transport:           "forward",
-			Method:              r.Method,
-			Target:              targetURL,
-			RequestID:           requestID,
-			Agent:               agent,
-			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
-			SessionContaminated: forwardTaint.Risk.Contaminated,
-			RecentTaintSources:  forwardTaint.Risk.Sources,
-			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
-			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
-			AuthorityKind:       forwardTaint.Authority.String(),
-			TaintDecision:       forwardTaint.Result.Decision.String(),
-			TaintDecisionReason: forwardTaint.Result.Reason,
-			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-		}))
+		if !cfg.FlightRecorder.RequireReceipts {
+			emitForwardReceipt(forwardAllowReceipt)
+		}
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -2327,24 +2359,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
-	emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
-		ActionID:            actionID,
-		Verdict:             config.ActionAllow,
-		Transport:           "forward",
-		Method:              r.Method,
-		Target:              targetURL,
-		RequestID:           requestID,
-		Agent:               agent,
-		SessionTaintLevel:   forwardTaint.Risk.Level.String(),
-		SessionContaminated: forwardTaint.Risk.Contaminated,
-		RecentTaintSources:  forwardTaint.Risk.Sources,
-		SessionTaskID:       forwardTaint.Task.CurrentTaskID,
-		SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
-		AuthorityKind:       forwardTaint.Authority.String(),
-		TaintDecision:       forwardTaint.Result.Decision.String(),
-		TaintDecisionReason: forwardTaint.Result.Reason,
-		TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-	}))
+	if !cfg.FlightRecorder.RequireReceipts {
+		emitForwardReceipt(forwardAllowReceipt)
+	}
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)

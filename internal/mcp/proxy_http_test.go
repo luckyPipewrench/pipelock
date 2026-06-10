@@ -5487,6 +5487,52 @@ func TestScanHTTPInputDecision_EnvelopeMetadataBackfillWhenInputScanningDisabled
 	}
 }
 
+func TestScanHTTPInputDecision_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(`{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/readme.md"}}}`)
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	decision := scanHTTPInputDecision(msg, io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:        sc,
+		ReceiptEmitter: receiptEmitter,
+		Transport:      "mcp_http",
+	})
+	if decision.Blocked != nil {
+		t.Fatalf("expected request to pass when require_receipts is false, got block: %+v", decision.Blocked)
+	}
+	if !bytes.Equal(decision.ForwardMessage, msg) {
+		t.Fatalf("forward message changed unexpectedly: %s", decision.ForwardMessage)
+	}
+}
+
+func TestScanHTTPInputDecision_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(`{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/readme.md"}}}`)
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	decision := scanHTTPInputDecision(msg, io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:         sc,
+		ReceiptEmitter:  receiptEmitter,
+		RequireReceipts: true,
+		Transport:       "mcp_http",
+	})
+	if decision.Blocked == nil {
+		t.Fatal("expected require_receipts to block failed receipt emission")
+	}
+	if decision.Blocked.ErrorCode != -32007 {
+		t.Fatalf("error code = %d, want -32007", decision.Blocked.ErrorCode)
+	}
+	if !strings.Contains(string(decision.Blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
+		t.Fatalf("error data = %s, want %s", decision.Blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+}
+
 func TestScanHTTPInputDecision_ReceiptBackfillWhenInputScanningDisabledAndBlocked(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	msg := []byte(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"expensive_tool","arguments":{"path":"/tmp/readme.md"}}}`)

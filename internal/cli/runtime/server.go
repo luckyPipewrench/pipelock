@@ -503,6 +503,17 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			"  Recorder: enabled but inert - no flight_recorder.dir configured; "+
 				"no receipts will be written. Run 'pipelock init' or set flight_recorder.dir + signing_key_path.\n")
 	}
+	// require_receipts escalates a missing receipt to a block. With no live
+	// signed emitter (no recorder dir or no signing key) EVERY request would
+	// fail closed with receipt_emission_failed - a silent, total egress
+	// black-hole. Refuse to start so the misconfiguration surfaces here
+	// instead of as an all-403 outage at runtime. (Restart-only recorder
+	// fields are preserved across reload, so a live emitter built here stays
+	// live; this check intentionally lives at build time, not in Validate.)
+	if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(s.receiptEmitter) {
+		s.cleanup()
+		return nil, fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
+	}
 	if err := s.initConductorProducer(cfg, m, recPrivKey, opts.Stderr); err != nil {
 		s.cleanup()
 		return nil, err

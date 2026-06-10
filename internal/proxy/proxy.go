@@ -140,6 +140,8 @@ var requestCounter atomic.Uint64
 const (
 	blockLayerMediationEnvelope  = "mediation_envelope"
 	mediationEnvelopeBlockReason = "mediation envelope signing failed"
+	blockLayerReceiptEmission    = "receipt_emission"
+	receiptEmissionBlockReason   = "receipt emission failed"
 )
 
 // blockedRequestError signals a fail-closed block in a request path that still
@@ -208,6 +210,14 @@ func newRedirectEnvelopeBlockedRequest(err error) *blockedRequestError {
 		blockLayerMediationEnvelope,
 		reason,
 		reason+": "+err.Error(),
+	)
+}
+
+func newReceiptEmissionBlockedRequest(err error) *blockedRequestError {
+	return newBlockedRequestError(
+		blockLayerReceiptEmission,
+		receiptEmissionBlockReason,
+		receiptEmissionBlockReason+": "+err.Error(),
 	)
 }
 
@@ -667,7 +677,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				RequestID:   requestID,
 				Agent:       agentName,
 				AuditCtx:    newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName),
-				Emit:        p.emitReceipt,
+				Emit: func(opts receipt.EmitOpts) {
+					_ = p.emitReceipt(opts)
+				},
 			}); rpRes.Block {
 				return newRedirectBlockedRequest(blockLayerRequestPolicy, rpRes.Reason)
 			}
@@ -965,7 +977,7 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // operator reconstructing the enforcement decision after a missing-receipt
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested.
-func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
+func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 	if cfg := p.cfgPtr.Load(); cfg != nil {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	}
@@ -977,11 +989,19 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
 					opts.Transport, opts.Method, opts.Target, opts.Agent, err))
 			// v1 stays authoritative: skip v2 when v1 failed to record, so a
 			// proxy_decision never outlives its action_receipt sibling.
-			return
+			return err
 		}
 		// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
 		p.emitV2Receipt(opts)
 	}
+	return nil
+}
+
+func (p *Proxy) emitRequiredReceipt(opts receipt.EmitOpts) error {
+	if p.receiptEmitterPtr.Load() == nil {
+		return fmt.Errorf("receipt emitter unavailable")
+	}
+	return p.emitReceipt(opts)
 }
 
 // receiptEmitterStage is the staged result of a receipt-emitter reload.
@@ -1046,16 +1066,22 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	// (e.g. key rotation). Cross-restart the chain restarts at genesis; the
 	// recorder's outer hash chain provides tamper-evidence across restarts.
 	resumeSeq, resumePrev := p.v2EmitterPtr.Load().ChainState()
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   p.recorder,
+		PrivKey:    privKey,
+		ConfigHash: cfg.Hash(),
+		Principal:  "local",
+		Actor:      "pipelock",
+		Metrics:    p.metrics,
+	})
+	if emitter != nil {
+		if initErr := emitter.InitError(); initErr != nil {
+			return receiptEmitterStage{}, fmt.Errorf("resuming receipt chain: %w", initErr)
+		}
+	}
 
 	return receiptEmitterStage{
-		emitter: receipt.NewEmitter(receipt.EmitterConfig{
-			Recorder:   p.recorder,
-			PrivKey:    privKey,
-			ConfigHash: cfg.Hash(),
-			Principal:  "local",
-			Actor:      "pipelock",
-			Metrics:    p.metrics,
-		}),
+		emitter: emitter,
 		v2: proxydecision.NewEmitter(proxydecision.EmitterConfig{
 			Recorder:       p.recorder,
 			Signer:         proxydecision.NewKeyedSigner(privKey),
@@ -2578,7 +2604,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 		target = hostname
 	}
 	target = shieldReceiptTarget(target)
-	p.emitReceipt(receipt.EmitOpts{
+	_ = p.emitReceipt(receipt.EmitOpts{
 		ActionID:       receipt.NewActionID(),
 		ParentActionID: parentActionID,
 		Verdict:        config.ActionAllow,
@@ -2843,7 +2869,7 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 					// so emit a forward receipt here to keep the
 					// audit chain unbroken.
 					requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
-					p.emitReceipt(forwardKillSwitchReceiptOpts(
+					_ = p.emitReceipt(forwardKillSwitchReceiptOpts(
 						receipt.NewActionID(),
 						requestID,
 						r.Method,
@@ -3084,7 +3110,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		agent = agentAnonymous
 	}
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
-		p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
 		pattern := inboundEnvelopeFailurePattern(err)
@@ -3886,6 +3912,49 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build the allow receipt once, before egress, so require_receipts can
+	// fail closed BEFORE the fetch leaves the proxy (parity with forward /
+	// CONNECT / WebSocket / MCP). Every field here is request-side, so the
+	// pre-egress receipt is identical to the terminal one below; the terminal
+	// emit is skipped when require_receipts is on to avoid a duplicate.
+	fetchAllowReceipt := receipt.EmitOpts{
+		ActionID:            actionID,
+		Verdict:             config.ActionAllow,
+		Transport:           "fetch",
+		Method:              http.MethodGet,
+		Target:              displayURL,
+		RequestID:           requestID,
+		Agent:               agent,
+		SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+		SessionContaminated: fetchTaint.Risk.Contaminated,
+		RecentTaintSources:  fetchTaint.Risk.Sources,
+		SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+		SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+		AuthorityKind:       fetchTaint.Authority.String(),
+		TaintDecision:       fetchTaint.Result.Decision.String(),
+		TaintDecisionReason: fetchTaint.Result.Reason,
+		TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+	}
+	if fetchGate.HasContractContext() {
+		fetchAllowReceipt = withContractReceipt(fetchGate, fetchAllowReceipt)
+	}
+	if cfg.FlightRecorder.RequireReceipts {
+		if rcptErr := p.emitRequiredReceipt(withReceiptPolicyHash(fetchAllowReceipt, cfg.CanonicalPolicyHash())); rcptErr != nil {
+			blockedErr := newReceiptEmissionBlockedRequest(rcptErr)
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			writeBlockedJSON(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				http.StatusForbidden, FetchResponse{
+					URL:         displayURL,
+					Agent:       agent,
+					Blocked:     true,
+					BlockReason: blockedErr.reason,
+				})
+			return
+		}
+	}
+
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
 		// Detect fail-closed blocks from CheckRedirect and report them as blocked.
@@ -3998,7 +4067,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			log.LogBlocked(actx, "response_size", reason)
 			p.metrics.RecordBlocked(parsed.Hostname(), "response_size", time.Since(start), agentLabel)
 			emitFetchReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "response_size",
 				Pattern:   reason,
@@ -4024,7 +4093,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
 		_ = resolved.Budget.RecordBytes(int64(len(body)))
 		emitFetchReceipt(receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
+			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     "budget",
 			Pattern:   reason,
@@ -4059,7 +4128,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if shieldBlocked {
 		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
+			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     "shield_oversize",
 			Pattern:   "response body exceeds browser shield size limit",
@@ -4134,7 +4203,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			rawResult := sc.ScanResponse(r.Context(), hidden)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 			if blocked {
 				return
 			}
@@ -4170,7 +4239,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		log.LogBlocked(actx, "response_scan", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
+			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     "response_scan",
 			Pattern:   reason,
@@ -4238,7 +4307,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
+		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 		if found {
 			hasFinding = true
 		}
@@ -4266,28 +4335,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
-	allowReceipt := receipt.EmitOpts{
-		ActionID:            actionID,
-		Verdict:             config.ActionAllow,
-		Transport:           "fetch",
-		Method:              http.MethodGet,
-		Target:              displayURL,
-		RequestID:           requestID,
-		Agent:               agent,
-		SessionTaintLevel:   fetchTaint.Risk.Level.String(),
-		SessionContaminated: fetchTaint.Risk.Contaminated,
-		RecentTaintSources:  fetchTaint.Risk.Sources,
-		SessionTaskID:       fetchTaint.Task.CurrentTaskID,
-		SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
-		AuthorityKind:       fetchTaint.Authority.String(),
-		TaintDecision:       fetchTaint.Result.Decision.String(),
-		TaintDecisionReason: fetchTaint.Result.Reason,
-		TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+	// fetchAllowReceipt was built (and, under require_receipts, already
+	// emitted before egress) above. Emit it here only in the best-effort
+	// path; require_receipts mode has the pre-egress emit as its single
+	// authoritative allow receipt.
+	if !cfg.FlightRecorder.RequireReceipts {
+		emitFetchReceipt(fetchAllowReceipt)
 	}
-	if fetchGate.HasContractContext() {
-		allowReceipt = withContractReceipt(fetchGate, allowReceipt)
-	}
-	emitFetchReceipt(allowReceipt)
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 
 	writeJSON(w, http.StatusOK, FetchResponse{
@@ -4312,7 +4366,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 func (p *Proxy) filterAndActOnResponseScan(
 	w http.ResponseWriter,
 	result scanner.ResponseScanResult,
-	content, displayURL, agent, clientIP, requestID string,
+	content, displayURL, agent, clientIP, requestID, actionID string,
 	sc *scanner.Scanner,
 	cfg *config.Config,
 	log *audit.Logger,
@@ -4321,7 +4375,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 ) (blocked bool, out string, found bool) {
 	out = content
 	emitResponseReceipt := func(opts receipt.EmitOpts) {
-		p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}
 
 	// Suppress filter: serves both the main response scan path (where the caller's
@@ -4399,7 +4453,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 		log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 		emitResponseReceipt(receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
+			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     "response_scan",
 			Pattern:   reason,
@@ -4420,7 +4474,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
 			log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			emitResponseReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "response_scan",
 				Pattern:   reason,
@@ -4458,7 +4512,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
 			log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			emitResponseReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "response_scan",
 				Pattern:   reason,

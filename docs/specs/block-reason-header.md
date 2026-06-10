@@ -84,6 +84,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `kill_switch_active` | One of the four kill-switch sources is active. | `critical` | `transient` |
 | `envelope_verify_failed` | Inbound mediation envelope did not verify (signature / replay / trust). | `critical` | `none` |
 | `outbound_envelope_failed` | Outbound envelope injection / refresh / signing failed before the request left pipelock. Distinct from `envelope_verify_failed` so agents can tell inbound verification from outbound emission. | `critical` | `transient` |
+| `receipt_emission_failed` | `flight_recorder.require_receipts` is enabled and Pipelock could not emit the allow-path receipt before forwarding. The action is denied so there is no unreceipted upstream traffic. | `critical` | `transient` |
 | `redirect_scan_denied` | A followed redirect target was denied by the scanner pipeline (SSRF, blocklist, etc.). Distinct from the same scanner firing pre-redirect so clients can detect open-redirect probes. | `critical` | `none` |
 | `authority_mismatch` | Posture-capsule authority did not match the request's claimed authority. | `critical` | `policy` |
 | `escalation_level` | Per-session escalation level exceeded the configured ceiling. | `critical` | `transient` |

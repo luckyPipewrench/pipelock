@@ -280,6 +280,7 @@ type mcpToolReceiptOpts struct {
 	Decision         taintDecision
 	Report           *redact.Report
 	ContractGate     *mcpContractGateOutput
+	RequireReceipt   bool
 }
 
 // emitMCPToolReceipt emits the post-decision tool receipt for an MCP
@@ -287,9 +288,9 @@ type mcpToolReceiptOpts struct {
 // transport, scanner attribution, and the full taint snapshot. Routed
 // through EmitMCPDecision so every tool receipt in the MCP inbound
 // pipeline goes through a single emission entry point.
-func emitMCPToolReceipt(opts mcpToolReceiptOpts) {
-	if opts.ActionID == "" || opts.Emitter == nil {
-		return
+func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
+	if opts.ActionID == "" {
+		return nil
 	}
 	emitOpts := receipt.EmitOpts{
 		ActionID:            opts.ActionID,
@@ -318,10 +319,23 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) {
 		emitOpts = mcpWithContractReceipt(emitOpts, *opts.ContractGate)
 	}
 	if _, err := EmitMCPDecision(opts.Emitter, opts.V2Emitter, nil, MCPDecision{
-		Receipt: emitOpts,
-	}); err != nil && opts.Log != nil {
-		_, _ = fmt.Fprintf(opts.Log, "pipelock: receipt emission failed: %v\n", err)
+		Receipt:        emitOpts,
+		RequireReceipt: opts.RequireReceipt,
+	}); err != nil {
+		if opts.Log != nil {
+			_, _ = fmt.Fprintf(opts.Log, "pipelock: receipt emission failed: %v\n", err)
+		}
+		// Only a failure of the authoritative v1 action receipt under
+		// RequireReceipt escalates to a block (ErrReceiptRequired). A
+		// best-effort emit failure (require off) or a v2-only failure
+		// stays non-blocking, preserving the default warn-and-forward
+		// posture and matching the forward proxy, which fails closed on
+		// v1 emission only.
+		if errors.Is(err, ErrReceiptRequired) {
+			return err
+		}
 	}
+	return nil
 }
 
 // pickAttribution derives the receipt Layer / Pattern / Severity for a

@@ -141,6 +141,8 @@ func RunHTTPListenerProxy(
 		Transport:                "mcp_http_listener",
 		ReceiptEmitter:           opts.receiptEmitter(),
 		ReceiptEmitterFn:         opts.ReceiptEmitterFn,
+		RequireReceipts:          opts.requireReceipts(),
+		RequireReceiptsFn:        opts.RequireReceiptsFn,
 		V2ReceiptEmitter:         opts.v2ReceiptEmitter(),
 		V2ReceiptEmitterFn:       opts.V2ReceiptEmitterFn,
 		PolicyHash:               opts.receiptPolicyHash(),

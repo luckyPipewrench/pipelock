@@ -103,6 +103,11 @@ Enterprise server modes use the license Secret as `PIPELOCK_LICENSE_KEY` because
 | `conductorFollower.persistence.bundleCache.enabled` | `false` | PVC for signed policy bundle cache |
 | `conductorFollower.persistence.auditQueue.enabled` | `false` | PVC for durable audit queue |
 
+The follower audit queue is single-writer. Pipelock uses an advisory lock for
+one host / local-filesystem scope, but it is not a distributed lock for shared
+RWX, network, or overlay PVCs. Use ReadWriteOnce storage, leader election, or a
+separate audit queue per pod when running multiple followers.
+
 ### Fleet sink
 
 | Key | Default | Description |

@@ -116,6 +116,15 @@ func TestHandlerMapsStoreErrors(t *testing.T) {
 		{name: "rollback", err: ErrUnsupportedRollback, code: http.StatusConflict},
 		{name: "too-large", err: conductor.ErrPayloadTooLarge, code: http.StatusRequestEntityTooLarge},
 		{name: "expired", err: conductor.ErrExpired, code: http.StatusUnprocessableEntity},
+		// Client-input validation sentinels produced by PolicyBundle.Validate
+		// must map to 4xx, never fall through to 500. Mirrors the audit-ingest
+		// path's choices: malformed structure -> 400, hash mismatch -> 422.
+		{name: "schema-version", err: conductor.ErrUnsupportedSchemaVersion, code: http.StatusBadRequest, body: conductor.ErrUnsupportedSchemaVersion.Error()},
+		{name: "invalid-hash", err: conductor.ErrInvalidHash, code: http.StatusBadRequest, body: conductor.ErrInvalidHash.Error()},
+		{name: "invalid-sequence-range", err: conductor.ErrInvalidSequenceRange, code: http.StatusBadRequest, body: conductor.ErrInvalidSequenceRange.Error()},
+		{name: "invalid-dropped-accounting", err: conductor.ErrInvalidDroppedAccounting, code: http.StatusBadRequest, body: conductor.ErrInvalidDroppedAccounting.Error()},
+		{name: "invalid-min-version", err: conductor.ErrInvalidMinVersion, code: http.StatusBadRequest, body: conductor.ErrInvalidMinVersion.Error()},
+		{name: "hash-mismatch", err: conductor.ErrHashMismatch, code: http.StatusUnprocessableEntity, body: conductor.ErrHashMismatch.Error()},
 		{name: "internal", err: internalErr, code: http.StatusInternalServerError, body: "internal server error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -132,6 +141,102 @@ func TestHandlerMapsStoreErrors(t *testing.T) {
 			}
 			if strings.Contains(w.Body.String(), internalErr.Error()) {
 				t.Fatalf("body leaked internal error: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerValidationSentinelsReachRealPublishHandlers(t *testing.T) {
+	signer := newTestSigner(t)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*conductor.PolicyBundle)
+		code   int
+		body   string
+	}{
+		{
+			name:   "unsupported_schema_version",
+			mutate: func(b *conductor.PolicyBundle) { b.SchemaVersion = 99 },
+			code:   http.StatusBadRequest,
+			body:   conductor.ErrUnsupportedSchemaVersion.Error(),
+		},
+		{
+			name:   "invalid_hash",
+			mutate: func(b *conductor.PolicyBundle) { b.PayloadSHA256 = "not-hex" },
+			code:   http.StatusBadRequest,
+			body:   conductor.ErrInvalidHash.Error(),
+		},
+		{
+			name:   "invalid_min_version",
+			mutate: func(b *conductor.PolicyBundle) { b.MinPipelockVersion = "01.2.3" },
+			code:   http.StatusBadRequest,
+			body:   conductor.ErrInvalidMinVersion.Error(),
+		},
+		{
+			name: "hash_mismatch",
+			mutate: func(b *conductor.PolicyBundle) {
+				b.Payload.ConfigYAML = "mode: balanced\napi_allowlist:\n  - api.example.com\n"
+			},
+			code: http.StatusUnprocessableEntity,
+			body: conductor.ErrHashMismatch.Error(),
+		},
+	} {
+		t.Run("policy_"+tc.name, func(t *testing.T) {
+			bundle := signedControlBundle(t, signer, bundleSpec{
+				id:       "bundle-" + strings.ReplaceAll(tc.name, "_", "-"),
+				version:  1,
+				audience: conductor.Audience{InstanceIDs: []string{"pl-prod-1"}},
+			})
+			tc.mutate(&bundle)
+			data, err := json.Marshal(publishPolicyBundleRequest{Bundle: bundle})
+			if err != nil {
+				t.Fatalf("Marshal(bundle) error = %v", err)
+			}
+			handler := newTestHandler(t, mustStore(t), nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(data))
+			req.Header.Set("X-Pipelock-Publisher", "ok")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != tc.code {
+				t.Fatalf("status = %d body=%s, want %d", w.Code, w.Body.String(), tc.code)
+			}
+			if !strings.Contains(w.Body.String(), tc.body) {
+				t.Fatalf("body = %s, want %q", w.Body.String(), tc.body)
+			}
+		})
+	}
+
+	pub, priv := testAuditSigner(t)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ingestAuditBatchRequest)
+		body   string
+	}{
+		{
+			name: "invalid_sequence_range",
+			mutate: func(req *ingestAuditBatchRequest) {
+				req.Envelope.SeqEnd = req.Envelope.SeqStart - 1
+			},
+			body: conductor.ErrInvalidSequenceRange.Error(),
+		},
+		{
+			name: "invalid_dropped_accounting",
+			mutate: func(req *ingestAuditBatchRequest) {
+				req.Envelope.Dropped = conductor.DroppedAccounting{Count: 1}
+			},
+			body: conductor.ErrInvalidDroppedAccounting.Error(),
+		},
+	} {
+		t.Run("audit_"+tc.name, func(t *testing.T) {
+			req := signedAuditIngestRequest(t, defaultFollowerIdentity(), []byte(`{"entry":"ok"}`), priv, testNow)
+			tc.mutate(&req)
+			handler := newAuditIngestTestHandler(t, &captureAuditSink{}, auditKeyResolverFor(pub), 0)
+			w := postAuditBatch(t, handler, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s, want 400", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.body) {
+				t.Fatalf("body = %s, want %q", w.Body.String(), tc.body)
 			}
 		})
 	}

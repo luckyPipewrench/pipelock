@@ -23,6 +23,17 @@ const (
 	AuditBatchesPath         = conductor.AuditBatchesPath
 	defaultTransportDelay    = time.Second
 	maxTransportErrorSnippet = 1024
+
+	// defaultMaxDeliveryAttempts caps how many times a single audit batch may
+	// be attempted before it is dead-lettered instead of released for another
+	// retry. Without a ceiling a permanently-failing (e.g. 5xx) poison batch
+	// sits at the FIFO head forever and starves every batch behind it. The
+	// dead-letter is a durable, operator-inspectable quarantine - never a
+	// silent discard - so audit loss is surfaced via queue_dead + the
+	// max_retries drop reason. Operator knob deferred: this ships as a default
+	// constant; TransportConfig.MaxDeliveryAttempts allows runtime override
+	// without yet wiring a YAML config field.
+	defaultMaxDeliveryAttempts = 10
 )
 
 const (
@@ -34,6 +45,11 @@ const (
 	deliveryReasonClientError = "http_client_error"
 	deliveryReasonRateLimited = "http_rate_limited"
 	deliveryReasonServerError = "http_server_error"
+
+	// dropReasonMaxRetries stamps a batch that exhausted the delivery-attempt
+	// ceiling. It is the only drop reason produced from the otherwise-retryable
+	// path; all other drops come from terminal 4xx/marshal/request errors.
+	dropReasonMaxRetries = "max_retries"
 )
 
 // HTTPDoer is the narrow boundary between the durable queue and Conductor.
@@ -57,15 +73,19 @@ type TransportConfig struct {
 	Metrics    MetricsSink
 	RetryDelay time.Duration
 	EmptyDelay time.Duration
+	// MaxDeliveryAttempts caps total delivery attempts per batch before
+	// dead-lettering. <= 0 uses defaultMaxDeliveryAttempts.
+	MaxDeliveryAttempts int
 }
 
 type Transport struct {
-	endpoint   string
-	client     HTTPDoer
-	queue      *Queue
-	metrics    MetricsSink
-	retryDelay time.Duration
-	emptyDelay time.Duration
+	endpoint    string
+	client      HTTPDoer
+	queue       *Queue
+	metrics     MetricsSink
+	retryDelay  time.Duration
+	emptyDelay  time.Duration
+	maxAttempts uint64
 }
 
 type batchUpload struct {
@@ -96,13 +116,18 @@ func NewTransport(cfg TransportConfig) (*Transport, error) {
 	if cfg.EmptyDelay <= 0 {
 		cfg.EmptyDelay = defaultTransportDelay
 	}
+	maxAttempts := uint64(defaultMaxDeliveryAttempts)
+	if cfg.MaxDeliveryAttempts > 0 {
+		maxAttempts = uint64(cfg.MaxDeliveryAttempts)
+	}
 	return &Transport{
-		endpoint:   endpoint,
-		client:     cfg.Client,
-		queue:      cfg.Queue,
-		metrics:    cfg.Metrics,
-		retryDelay: cfg.RetryDelay,
-		emptyDelay: cfg.EmptyDelay,
+		endpoint:    endpoint,
+		client:      cfg.Client,
+		queue:       cfg.Queue,
+		metrics:     cfg.Metrics,
+		retryDelay:  cfg.RetryDelay,
+		emptyDelay:  cfg.EmptyDelay,
+		maxAttempts: maxAttempts,
 	}, nil
 }
 
@@ -158,6 +183,35 @@ func (t *Transport) DeliverOnce(ctx context.Context) error {
 			return err
 		}
 	case deliveryOutcomeRetry:
+		// The attempt that just failed is attempt number RetryCount+1. Once
+		// that number reaches the ceiling the batch is exhausted: escalate to
+		// the dead-letter directory instead of releasing it for another retry,
+		// so a permanently-failing poison batch cannot starve the FIFO head.
+		// Compare without RetryCount+1 to avoid overflow if a corrupt on-disk
+		// record carries retry_count=MaxUint64. ctx cancellation is not a
+		// delivery failure - never burn an attempt on shutdown, always release
+		// so the record survives.
+		if ctx.Err() != nil {
+			if err := t.queue.Release(lease.ID); err != nil {
+				return err
+			}
+			break
+		}
+		if t.maxAttempts > 0 && lease.RetryCount >= t.maxAttempts-1 {
+			attempts := lease.RetryCount
+			if attempts < ^uint64(0) {
+				attempts++
+			}
+			result = deliveryResult{
+				outcome: deliveryOutcomeDrop,
+				reason:  dropReasonMaxRetries,
+				err:     fmt.Errorf("auditbatcher: dropping batch after %d delivery attempts: %w", attempts, result.err),
+			}
+			if err := t.queue.Drop(lease.ID, result.reason); err != nil {
+				return err
+			}
+			break
+		}
 		if err := t.queue.ReleaseWithRetry(lease.ID, result.reason); err != nil {
 			return err
 		}

@@ -31,6 +31,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -335,6 +336,32 @@ func TestBuildConductorBundlePollerRejectsBadRosterEvenWithHonorFalse(t *testing
 	if !strings.Contains(err.Error(), "trust resolver") && !strings.Contains(err.Error(), "trust roster") {
 		t.Fatalf("error = %v, want trust roster/resolver failure", err)
 	}
+}
+
+func TestBuildConductorAuditTransportReleasesQueueOnConstructorFailure(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "audit-queue")
+	caPath := filepath.Join(dir, "boss-ca.pem")
+	writePrivateTestFile(t, caPath, []byte("not a PEM bundle"))
+
+	cfg := &config.Config{
+		Conductor: config.Conductor{
+			Enabled:              true,
+			ConductorURL:         "https://conductor.example",
+			ServerCAFile:         caPath,
+			ClientCertPath:       filepath.Join(dir, "missing-client.crt"),
+			ClientKeyPath:        filepath.Join(dir, "missing-client.key"),
+			DurableAuditQueueDir: queueDir,
+		},
+	}
+	if _, _, err := buildConductorAuditTransport(cfg, nil); err == nil {
+		t.Fatal("buildConductorAuditTransport() error = nil, want mTLS constructor failure")
+	}
+	reopened, err := auditbatcher.Open(auditbatcher.Config{Dir: queueDir})
+	if err != nil {
+		t.Fatalf("Open(queue after failed build) error = %v, want lock released", err)
+	}
+	defer func() { _ = reopened.Close() }()
 }
 
 // TestBuildConductorBundlePollerDisabled confirms the poller is a no-op (nil,

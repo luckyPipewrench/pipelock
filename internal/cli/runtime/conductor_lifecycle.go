@@ -57,15 +57,25 @@ func (s *Server) setConductorCancel(cancel context.CancelFunc) {
 	}
 }
 
+func (s *Server) setConductorWait(wait func()) {
+	if s == nil {
+		return
+	}
+	s.conductorLifeMu.Lock()
+	s.conductorWait = wait
+	s.conductorLifeMu.Unlock()
+}
+
 // teardownConductor fail-closes the follower-side Conductor runtime when its
 // fleet entitlement is revoked, expires, or is downgraded at runtime. It cancels
-// the poller goroutines, detaches the durable-audit observer, and closes the
-// audit producer. The proxy/detection path is deliberately left running: losing
-// a paid fleet entitlement must never take down free detection (the product rule
-// is "sell coordination, not detection"). Idempotent and safe to call
-// concurrently from the runtime CRL watcher, the expiry timer, and the config
-// reload path. Conductor stays down until process restart, matching the
-// restart-only conductor invariant.
+// the poller goroutines, detaches the durable-audit observer, closes the audit
+// producer, waits for the pollers to stop, then releases the audit queue lock.
+// The proxy/detection path is deliberately left running: losing a paid fleet
+// entitlement must never take down free detection (the product rule is "sell
+// coordination, not detection"). Idempotent and safe to call concurrently from
+// the runtime CRL watcher, the expiry timer, and the config reload path.
+// Conductor stays down until process restart, matching the restart-only
+// conductor invariant.
 func (s *Server) teardownConductor(reason string) {
 	if s == nil {
 		return
@@ -81,12 +91,21 @@ func (s *Server) teardownConductor(reason string) {
 	}
 	s.conductorDown.Store(true)
 	cancel := s.conductorCancel
+	wait := s.conductorWait
+	s.conductorWait = nil
 	// Take ownership of the producer under the lock and clear the field so it is
 	// closed exactly once and never reused after teardown. conductorDown is
 	// already set, so a racing teardown bails at the guard above and a later
 	// hasConductorRuntime() check never sees the closed handle.
 	producer := s.conductorProducer
 	s.conductorProducer = nil
+	// Take ownership of the audit queue too so its single-writer lock is
+	// released on teardown (and only once). On the Apache-only core build the
+	// field is always nil; on enterprise it holds an *auditbatcher.Queue, which
+	// satisfies io.Closer. Asserting the interface keeps this untagged file free
+	// of an enterprise import.
+	auditQueue := s.conductorAuditQueue
+	s.conductorAuditQueue = nil
 	s.conductorLifeMu.Unlock()
 
 	// Stop the follower pollers. Their Run loops return context.Canceled, which
@@ -104,9 +123,25 @@ func (s *Server) teardownConductor(reason string) {
 	if producer != nil {
 		_ = producer.Close()
 	}
+	// The audit transport owns Claim/Ack/Release/Drop. Wait for it to observe the
+	// cancelled conductor context before releasing the queue lock, otherwise a
+	// replacement process could Open the same dir while this process still has a
+	// leased record in flight.
+	if wait != nil {
+		wait()
+	}
+	// Release the durable audit queue's single-writer lock after producers and
+	// transports have stopped touching it.
+	closeConductorAuditQueue(auditQueue)
 	if s.opts.Stderr != nil {
 		_, _ = fmt.Fprintf(s.opts.Stderr,
 			"pipelock: fleet license %s; Conductor runtime stopped, detection continues\n", reason)
+	}
+}
+
+func closeConductorAuditQueue(auditQueue any) {
+	if closer, ok := auditQueue.(interface{ Close() error }); ok && closer != nil {
+		_ = closer.Close()
 	}
 }
 

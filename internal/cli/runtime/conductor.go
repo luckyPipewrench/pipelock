@@ -135,6 +135,12 @@ func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*audi
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening conductor audit queue: %w", err)
 	}
+	opened := false
+	defer func() {
+		if !opened {
+			_ = q.Close()
+		}
+	}()
 	stats, err := q.Stats()
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading conductor audit queue stats: %w", err)
@@ -156,6 +162,7 @@ func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*audi
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating conductor audit transport: %w", err)
 	}
+	opened = true
 	return q, tr, nil
 }
 

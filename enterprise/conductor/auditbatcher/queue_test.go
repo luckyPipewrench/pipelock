@@ -73,6 +73,9 @@ func TestNilQueueMethodsReturnErrors(t *testing.T) {
 	if _, err := q.Stats(); err == nil {
 		t.Fatal("Stats(nil) error = nil, want error")
 	}
+	if err := q.Close(); err == nil {
+		t.Fatal("Close(nil) error = nil, want error")
+	}
 }
 
 func TestQueueClaimEmpty(t *testing.T) {
@@ -97,17 +100,141 @@ func TestQueuePersistsAcrossOpen(t *testing.T) {
 	if _, err := q.Enqueue(batch); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
+	// Release the single-writer lock before reopening (simulates restart).
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 
 	reopened, err := Open(Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
+	defer func() { _ = reopened.Close() }()
 	lease, err := reopened.Claim()
 	if err != nil {
 		t.Fatalf("Claim() error = %v", err)
 	}
 	if lease.Batch.Envelope.BatchID != "batch-persist" {
 		t.Fatalf("BatchID = %q, want batch-persist", lease.Batch.Envelope.BatchID)
+	}
+}
+
+// TestQueueOpenLocksDirectory proves the cross-process single-writer guard: a
+// second Open on a dir already held by a live Queue fails closed with
+// ErrQueueLocked rather than silently allowing two writers.
+func TestQueueOpenLocksDirectory(t *testing.T) {
+	dir := t.TempDir()
+	q, err := Open(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = q.Close() }()
+
+	if _, err := Open(Config{Dir: dir}); !errors.Is(err, ErrQueueLocked) {
+		t.Fatalf("Open(second) error = %v, want ErrQueueLocked", err)
+	}
+}
+
+// TestQueueCloseReleasesLock proves the lock is released on Close so a fresh
+// Open succeeds. flock auto-releases on process death, so a crashed prior owner
+// (fd gone) is indistinguishable from an explicit Close here.
+func TestQueueCloseReleasesLock(t *testing.T) {
+	dir := t.TempDir()
+	q, err := Open(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	// Idempotent: a second Close is a no-op.
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close(second) error = %v", err)
+	}
+
+	reopened, err := Open(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Open(after close) error = %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+}
+
+func TestQueueOperationsFailAfterClose(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	q := openTestQueue(t, Config{})
+	id, err := q.Enqueue(signedTestBatch(t, "batch-closed", priv))
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	if _, err := q.Claim(); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	batch := signedTestBatch(t, "batch-closed-new", priv)
+	if _, err := q.Enqueue(batch); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Enqueue(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if _, err := q.Enqueue(Batch{}); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Enqueue(invalid batch after Close) = %v, want ErrQueueClosed", err)
+	}
+	if _, err := q.Claim(); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Claim(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if err := q.Ack(id); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Ack(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if err := q.Release(id); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Release(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if err := q.ReleaseWithRetry(id, "retry"); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("ReleaseWithRetry(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if err := q.Drop(id, "drop"); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Drop(after Close) = %v, want ErrQueueClosed", err)
+	}
+	if _, err := q.Stats(); !errors.Is(err, ErrQueueClosed) {
+		t.Fatalf("Stats(after Close) = %v, want ErrQueueClosed", err)
+	}
+}
+
+// TestQueueLockFileNotTreatedAsRecord proves the .lock file lives under the
+// queue root but is invisible to Claim/Stats (it is not a .json record) and is
+// not swept as a stale temp.
+func TestQueueLockFileNotTreatedAsRecord(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	dir := t.TempDir()
+	q, err := Open(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = q.Close() }()
+
+	// Lock file exists at the queue root.
+	if _, err := os.Stat(filepath.Join(q.dir, lockFileName)); err != nil {
+		t.Fatalf("Stat(lock file) error = %v, want present", err)
+	}
+	// Fresh queue is empty - the lock file must not count as a record.
+	assertStats(t, q, Stats{})
+
+	if _, err := q.Enqueue(signedTestBatch(t, "batch-lock", priv)); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	assertStats(t, q, Stats{Pending: 1})
+	lease, err := q.Claim()
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if lease.Batch.Envelope.BatchID != "batch-lock" {
+		t.Fatalf("BatchID = %q, want batch-lock", lease.Batch.Envelope.BatchID)
 	}
 }
 
@@ -136,10 +263,14 @@ func TestQueueReleaseAndRecoverInflight(t *testing.T) {
 	if _, err := q.Claim(); err != nil {
 		t.Fatalf("Claim(second) error = %v", err)
 	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 	reopened, err := Open(Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
+	defer func() { _ = reopened.Close() }()
 	assertStats(t, reopened, Stats{Pending: 1})
 }
 
@@ -163,11 +294,15 @@ func TestQueueReleaseWithRetryPersistsAccounting(t *testing.T) {
 	if err := q.ReleaseWithRetry(id, "HTTP 503 temporary outage"); err != nil {
 		t.Fatalf("ReleaseWithRetry() error = %v", err)
 	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 
 	reopened, err := Open(Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
+	defer func() { _ = reopened.Close() }()
 	record, err := readRecord(filepath.Join(reopened.pendingDir, id), conductor.MaxAuditPayloadBytes)
 	if err != nil {
 		t.Fatalf("readRecord() error = %v", err)
@@ -180,6 +315,15 @@ func TestQueueReleaseWithRetryPersistsAccounting(t *testing.T) {
 	}
 	if record.LastError != "http_503_temporary_outage" {
 		t.Fatalf("LastError = %q, want normalized retry reason", record.LastError)
+	}
+	// A claim after restart must surface the durable RetryCount on the lease so
+	// the transport's delivery-attempt ceiling survives a serve restart.
+	lease, err := reopened.Claim()
+	if err != nil {
+		t.Fatalf("Claim(after reopen) error = %v", err)
+	}
+	if lease.RetryCount != 1 {
+		t.Fatalf("lease.RetryCount = %d, want 1 (durable across restart)", lease.RetryCount)
 	}
 }
 
@@ -598,11 +742,15 @@ func TestOpenSweepsStaleTempFiles(t *testing.T) {
 			t.Fatalf("WriteFile(%s) error = %v", sub, err)
 		}
 	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 
 	reopened, err := Open(Config{Dir: dir})
 	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
+	defer func() { _ = reopened.Close() }()
 	for _, sub := range []string{reopened.pendingDir, reopened.inflightDir, reopened.deadDir} {
 		entries, err := os.ReadDir(sub)
 		if err != nil {
@@ -681,10 +829,15 @@ func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(q.pendingDir, recoveredID), originalContent, fileMode); err != nil {
 		t.Fatalf("WriteFile(pending/<id>-recovered) error = %v", err)
 	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 
-	if _, err := Open(Config{Dir: dir}); err != nil {
+	reopened, err := Open(Config{Dir: dir})
+	if err != nil {
 		t.Fatalf("Open(reopen) error = %v", err)
 	}
+	defer func() { _ = reopened.Close() }()
 	// Both originals must be intact; recovery must have landed under a
 	// fresh name (recovered-1-<id>).
 	for _, p := range []string{
@@ -1058,6 +1211,7 @@ func openTestQueue(t *testing.T, cfg Config) *Queue {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
+	t.Cleanup(func() { _ = q.Close() })
 	return q
 }
 

@@ -45,6 +45,15 @@ func (r *Reloader) Changes() <-chan *Config {
 	return r.onChange
 }
 
+// Ready returns a channel closed once the file watch is established (or once
+// Start has exited without establishing it, so a waiter never deadlocks on a
+// watcher-setup failure). Callers that mutate the config after observing the
+// process as live should wait on this first: otherwise an edit made in the
+// window before the watch is active is silently missed until the next write.
+func (r *Reloader) Ready() <-chan struct{} {
+	return r.ready
+}
+
 // Start watches the config file and listens for reload signals (SIGHUP on Unix). It blocks until
 // ctx is cancelled or Close is called. When Start returns, the onChange
 // channel is closed. Reload failures are logged to stderr via tryReload;
@@ -59,6 +68,11 @@ func (r *Reloader) Start(ctx context.Context) error {
 	r.startMu.Unlock()
 
 	defer close(r.onChange)
+	// Guarantee Ready() resolves on every exit path. The success path closes it
+	// below once watcher.Add succeeds; this backstop closes it if Start returns
+	// first (e.g. watcher creation/Add failure) so a Ready() waiter cannot
+	// deadlock when the watch never came up. Idempotent via readyOnce.
+	defer r.readyOnce.Do(func() { close(r.ready) })
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {

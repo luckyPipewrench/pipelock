@@ -434,15 +434,22 @@ func ensureFlightRecorderSigningKey(keyPath, recorderDir string) error {
 	}
 	switch _, statErr := os.Stat(keyPath); {
 	case statErr == nil:
-		// A key already exists. Reuse it ONLY if it is a loadable Ed25519 key:
-		// reusing preserves any receipt chain already signed under it, which is
-		// why we never blindly regenerate. But a file that does not parse as a
-		// key (zero-byte, truncated, wrong material) signed no valid chain, so
-		// regenerate over it rather than leaving init pointing at an unusable
-		// key that the recorder would only fail to load later at startup.
-		if _, loadErr := signing.LoadPrivateKeyFile(keyPath); loadErr == nil {
-			return nil
+		// A key already exists. Distinguish two failure modes so we never clobber
+		// a still-valid key (which would orphan its receipt chain):
+		//   - cannot READ the file (permission drift, I/O, symlink/read failure):
+		//     abort. The bytes may be a perfectly good key we just can't read.
+		//   - readable but the bytes do not PARSE as a key (zero-byte, truncated,
+		//     wrong material): that file signed no valid chain, so regenerate
+		//     over it rather than leaving init pointing at an unusable key the
+		//     recorder would only fail to load later.
+		data, readErr := os.ReadFile(filepath.Clean(keyPath))
+		if readErr != nil {
+			return fmt.Errorf("reading existing signing key %s: %w", keyPath, readErr)
 		}
+		if _, decodeErr := signing.DecodePrivateKey(string(data)); decodeErr == nil {
+			return nil // valid key on disk: reuse, never orphan its receipt chain
+		}
+		// fall through: corrupt/unparseable key material -> regenerate.
 	case !errors.Is(statErr, os.ErrNotExist):
 		return fmt.Errorf("checking signing key %s: %w", keyPath, statErr)
 	}

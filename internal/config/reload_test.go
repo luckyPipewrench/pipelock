@@ -61,6 +61,31 @@ func renameUntilReload(t *testing.T, r *Reloader, dir, cfgPath, mode string) *Co
 	return waitForReload(t, r, mode)
 }
 
+// TestReloader_ReadyAccessorResolves locks the exported Ready() contract that
+// the server's startup uses to avoid serving before the config watch is live.
+func TestReloader_ReadyAccessorResolves(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	writeTestConfig(t, cfgPath, "balanced")
+
+	r := NewReloader(cfgPath)
+	defer r.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() {
+		if err := r.Start(ctx); err != nil {
+			t.Errorf("reloader error: %v", err)
+		}
+	}()
+
+	select {
+	case <-r.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ready() did not resolve after the watch was established")
+	}
+}
+
 func TestReloader_FileChange(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pipelock.yaml")

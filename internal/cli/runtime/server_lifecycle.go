@@ -166,6 +166,17 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}()
 
+		// Block until the config file watch is established before continuing to
+		// bind and serve. Without this, the proxy can report healthy while the
+		// watch is not yet active, and a config edit made in that window is
+		// silently missed until the next write. Ready() also closes if the
+		// reloader exits without establishing the watch, so this never deadlocks
+		// on a watcher-setup failure (the error is logged above).
+		select {
+		case <-reloader.Ready():
+		case <-ctx.Done():
+		}
+
 		reloadWG.Add(1)
 		go func() {
 			defer reloadWG.Done()

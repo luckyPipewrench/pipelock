@@ -57,6 +57,9 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("loading public key: %w", err)
 			}
+			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
+				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
+			}
 			if chainDir != "" {
 				return verifyChainFromSessionDir(out, chainDir, sessionID, trustedKeys)
 			}

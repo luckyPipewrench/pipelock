@@ -751,14 +751,7 @@ Key-free evidence capture:
 					cmd.PrintErrf("  Receipts: ERROR - chain could not be resumed: %v\n"+
 						"            Receipt emission is DISABLED until resolved. Inspect the evidence\n"+
 						"            directory and flight_recorder.signing_key_path.\n", initErr)
-				}
-				// receipt.NewEmitter returns nil when no signing key is
-				// configured. Receipts must be signed - there is no
-				// "unsigned receipt" mode - so report the operator-facing
-				// status by signing-key presence, not by emitter identity.
-				// This is more honest than the prior branch which could
-				// never execute.
-				if len(recPrivKey) > 0 {
+				} else if len(recPrivKey) > 0 {
 					cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
 					v2ReceiptEmitter = proxydecision.NewEmitter(proxydecision.EmitterConfig{
 						Recorder:  rec,
@@ -771,6 +764,10 @@ Key-free evidence capture:
 						cmd.PrintErrf("  Receipts: v2 proxy_decision dual-emit enabled\n")
 					}
 				} else {
+					// receipt.NewEmitter returns nil when no signing key is
+					// configured. Receipts must be signed - there is no
+					// "unsigned receipt" mode - so report the operator-facing
+					// status by signing-key presence, not by emitter identity.
 					cmd.PrintErrf("  Receipts: disabled — set flight_recorder.signing_key_path to enable signed action receipts\n")
 				}
 			}

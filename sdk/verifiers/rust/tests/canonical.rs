@@ -136,3 +136,32 @@ fn canonical_action_record_with_key_transition_matches_go_hash() {
         "e50a5512f6571afdd0196315580707451ec81e9637e9fb51d988bb6c175b1b40"
     );
 }
+
+#[test]
+fn canonical_action_record_preserves_explicit_empty_key_transition() {
+    let record = json!({
+        "version": 1,
+        "action_id": "ts-kt-empty",
+        "action_type": "read",
+        "timestamp": "2026-05-10T12:34:56.789Z",
+        "principal": "org:test",
+        "actor": "agent:test",
+        "target": "https://example.com/x",
+        "side_effect_class": "external_read",
+        "reversibility": "full",
+        "policy_hash": "sha256:abc",
+        "verdict": "allow",
+        "transport": "fetch",
+        "chain_prev_hash": "priortail",
+        "chain_seq": 0,
+        "key_transition": {}
+    });
+    let canonical =
+        String::from_utf8(canonicalize_action_record(&record)).expect("canonical UTF-8");
+    assert!(
+        canonical.contains(
+            r#""key_transition":{"prior_signer_key":"","prior_chain_seq":0,"prior_chain_hash":""}"#
+        ),
+        "canonical bytes should preserve and normalize explicit empty key_transition: {canonical}"
+    );
+}

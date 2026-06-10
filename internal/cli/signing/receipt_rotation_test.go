@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -61,7 +62,7 @@ func emitInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, startIdx
 			ActionID:  receipt.NewActionID(),
 			Verdict:   "allow",
 			Transport: "fetch",
-			Method:    "GET",
+			Method:    http.MethodGet,
 			Target:    fmt.Sprintf("https://example.com/%d", startIdx+i),
 		}); err != nil {
 			t.Fatalf("Emit %d: %v", i, err)
@@ -69,6 +70,23 @@ func emitInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, startIdx
 	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
+	}
+}
+
+func TestVerifyReceiptCmd_BlankKeyDoesNotDowngradeToTOFU(t *testing.T) {
+	dir, _, _ := buildRotatedChainJSONL(t, 2, 2)
+
+	var buf bytes.Buffer
+	cmd := VerifyReceiptCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--chain", dir, "--key", " "})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected blank --key to fail instead of falling back to trust-on-first-use")
+	}
+	if !strings.Contains(err.Error(), "--key was provided but no valid signer keys were resolved") {
+		t.Fatalf("err = %v, want explicit blank-key rejection", err)
 	}
 }
 

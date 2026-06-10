@@ -132,3 +132,15 @@ test("canonical ActionRecord with key_transition matches Go hash", () => {
     "e50a5512f6571afdd0196315580707451ec81e9637e9fb51d988bb6c175b1b40",
   );
 });
+
+test("canonical ActionRecord preserves explicitly present empty key_transition", () => {
+  const record = {
+    ...keyTransitionRecord,
+    key_transition: {},
+  } as unknown as NonNullable<Receipt["action_record"]>;
+
+  assert.match(
+    canonicalizeActionRecord(record).toString("utf8"),
+    /"key_transition":\{"prior_signer_key":"","prior_chain_seq":0,"prior_chain_hash":""\}/,
+  );
+});

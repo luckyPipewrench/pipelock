@@ -177,9 +177,6 @@ fn order_struct(value: &Value, fields: &[FieldSpec]) -> Value {
             field_value = Some(zero_value(spec.name, spec.nested));
         }
         let mut field_value = field_value.expect("field value set");
-        if spec.omitempty && is_go_zero(&field_value) {
-            continue;
-        }
         field_value = match spec.nested {
             Some(NestedKind::ActionRecord) if field_value.is_object() => {
                 order_struct(&field_value, ACTION_RECORD_FIELDS)
@@ -209,6 +206,9 @@ fn order_struct(value: &Value, fields: &[FieldSpec]) -> Value {
             }
             _ => normalize_maps(&field_value),
         };
+        if spec.omitempty && is_go_zero(&field_value) {
+            continue;
+        }
         out.insert(spec.name.to_string(), field_value);
     }
     Value::Object(out)

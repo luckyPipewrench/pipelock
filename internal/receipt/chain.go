@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -132,14 +133,36 @@ func VerifyChainTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
 		return ChainResult{Valid: true}
 	}
 
-	trusted := make(map[string]struct{}, len(trustedKeys))
-	for _, k := range trustedKeys {
-		if k != "" {
-			trusted[k] = struct{}{}
+	normalizedKeys, err := normalizeTrustedKeys(trustedKeys)
+	if err != nil {
+		return ChainResult{
+			Valid:       false,
+			BrokenAtSeq: receipts[0].ActionRecord.ChainSeq,
+			Error:       fmt.Sprintf("seq %d: trusted key set: %v", receipts[0].ActionRecord.ChainSeq, err),
 		}
+	}
+
+	trusted := make(map[string]struct{}, len(normalizedKeys))
+	for _, k := range normalizedKeys {
+		trusted[k] = struct{}{}
 	}
 	v := &chainVerifier{trusted: trusted}
 	return v.run(receipts)
+}
+
+func normalizeTrustedKeys(trustedKeys []string) ([]string, error) {
+	if len(trustedKeys) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(trustedKeys))
+	for _, key := range trustedKeys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, fmt.Errorf("trusted signer key cannot be empty")
+		}
+		out = append(out, key)
+	}
+	return out, nil
 }
 
 // chainVerifier carries the walking state for VerifyChain.
@@ -432,11 +455,15 @@ func ComputeTranscriptRootTrusted(sessionID string, receipts []Receipt, trustedK
 	if len(receipts) == 0 {
 		return TranscriptRoot{}, fmt.Errorf("empty receipt chain")
 	}
-	if len(trustedKeys) == 0 {
+	normalizedKeys, err := normalizeTrustedKeys(trustedKeys)
+	if err != nil {
+		return TranscriptRoot{}, fmt.Errorf("trusted key set: %w", err)
+	}
+	if len(normalizedKeys) == 0 {
 		return TranscriptRoot{}, fmt.Errorf("trust anchor required: pass expected signer key hex")
 	}
 
-	result := VerifyChainTrusted(receipts, trustedKeys)
+	result := VerifyChainTrusted(receipts, normalizedKeys)
 	if !result.Valid {
 		return TranscriptRoot{}, fmt.Errorf("invalid chain: %s", result.Error)
 	}

@@ -145,6 +145,32 @@ func TestVerifyChain_RotationToUnconfirmedKeyIsFlagged(t *testing.T) {
 	}
 }
 
+func TestVerifyChain_ExplicitEmptyTrustedKeyFailsClosed(t *testing.T) {
+	t.Parallel()
+	pub, priv := generateTestKey(t)
+	key := hex.EncodeToString(pub)
+	chain := buildChain(t, priv, 2)
+
+	res := VerifyChainTrusted(chain, []string{" "})
+	if res.Valid {
+		t.Fatal("explicit blank trusted key must not fall back to trust-on-first-use")
+	}
+	if res.Error == "" {
+		t.Fatal("blank trusted key rejection should explain the trust-anchor error")
+	}
+
+	root, err := ComputeTranscriptRootTrusted("proxy", chain, []string{" "})
+	if err == nil {
+		t.Fatalf("transcript root with blank trusted key must fail, got root %+v", root)
+	}
+
+	if root, err := ComputeTranscriptRootTrusted("proxy", chain, []string{" " + key + " "}); err != nil {
+		t.Fatalf("transcript root should trim valid trusted keys: %v", err)
+	} else if root.ReceiptCount != uint64(len(chain)) {
+		t.Fatalf("ReceiptCount = %d, want %d", root.ReceiptCount, len(chain))
+	}
+}
+
 func TestVerifyChain_RotatedSegmentWithoutPriorSegmentRejected(t *testing.T) {
 	t.Parallel()
 	_, privA := generateTestKey(t)

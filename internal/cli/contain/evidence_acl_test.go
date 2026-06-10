@@ -162,8 +162,24 @@ func TestStepGrantEvidenceACLs_Apply(t *testing.T) {
 	if inv.Operator != containInstallOperatorUser {
 		t.Fatalf("inventory operator = %q, want %q", inv.Operator, containInstallOperatorUser)
 	}
-	if len(inv.Dirs) == 0 {
-		t.Fatal("inventory recorded no dirs")
+	for _, dir := range []string{env.logsDir(), env.recorderDir()} {
+		if !containsString(inv.Dirs, dir) {
+			t.Fatalf("inventory dirs = %v, missing %s", inv.Dirs, dir)
+		}
+	}
+	info, err := os.Stat(env.evidenceACLInvPath)
+	if err != nil {
+		t.Fatalf("stat evidence ACL inventory: %v", err)
+	}
+	if got := info.Mode().Perm(); got != modePinSecret {
+		t.Fatalf("inventory mode = %s, want %s", got, modePinSecret)
+	}
+	parentInfo, err := os.Stat(filepath.Dir(env.evidenceACLInvPath))
+	if err != nil {
+		t.Fatalf("stat evidence ACL inventory parent: %v", err)
+	}
+	if got := parentInfo.Mode().Perm(); got != modeDirTraversable {
+		t.Fatalf("inventory parent mode = %s, want %s", got, modeDirTraversable)
 	}
 }
 
@@ -273,21 +289,27 @@ func TestRollbackActions_RevokesEvidenceACLs(t *testing.T) {
 	}
 
 	actions := rollbackActions(rollbackOpts{keepData: false})
-	var foundRevoke bool
-	for _, a := range actions {
-		if a.name == "revoke-evidence-acls" {
-			foundRevoke = true
-		}
-	}
-	if !foundRevoke {
+	revokeIdx := stepIndex(actions, "revoke-evidence-acls")
+	if revokeIdx == -1 {
 		t.Fatal("rollback actions missing revoke-evidence-acls")
+	}
+	for _, blocker := range []string{"remove-dir-data", "delete-proxy-user", "delete-agent-user"} {
+		blockerIdx := stepIndex(actions, blocker)
+		if blockerIdx == -1 {
+			t.Fatalf("rollback actions missing %s", blocker)
+		}
+		if revokeIdx <= blockerIdx {
+			t.Fatalf("revoke-evidence-acls index %d must be greater than %s index %d so reverse rollback runs revoke first", revokeIdx, blocker, blockerIdx)
+		}
 	}
 
 	for i := len(actions) - 1; i >= 0; i-- {
 		if actions[i].undo == nil {
 			continue
 		}
-		_ = actions[i].undo(context.Background(), env)
+		if err := actions[i].undo(context.Background(), env); err != nil {
+			t.Fatalf("undo %s: %v", actions[i].name, err)
+		}
 	}
 
 	var sawRevoke bool
@@ -330,11 +352,22 @@ func TestRollbackActions_KeepsEvidenceInventoryWithKeepData(t *testing.T) {
 		if actions[i].undo == nil {
 			continue
 		}
-		_ = actions[i].undo(context.Background(), env)
+		if err := actions[i].undo(context.Background(), env); err != nil {
+			t.Fatalf("undo %s: %v", actions[i].name, err)
+		}
 	}
 	if _, err := os.Stat(env.evidenceACLInvPath); err != nil {
 		t.Fatalf("evidence ACL inventory must be preserved with keep-data=true: %v", err)
 	}
+}
+
+func stepIndex(actions []step, name string) int {
+	for i, action := range actions {
+		if action.name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // TestEvidenceACL_DefaultInheritsToNewFile uses the REAL setfacl/getfacl to

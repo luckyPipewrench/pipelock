@@ -282,5 +282,5 @@ func writeEvidenceACLInventory(env *installEnv, inv evidenceACLInventory) error 
 		return fmt.Errorf("marshal evidence ACL inventory: %w", err)
 	}
 	data = append(data, '\n')
-	return backupAndWrite(env, env.evidenceACLInvPath, data, modeAllowListReadable)
+	return backupAndWrite(env, env.evidenceACLInvPath, data, modePinSecret)
 }

@@ -141,7 +141,6 @@ function orderStruct(
       if (omitempty) continue;
       fieldValue = zeroValue(name, nested);
     }
-    if (omitempty && isGoZero(fieldValue)) continue;
     if (nested === "action_record" && isPlainObject(fieldValue)) {
       fieldValue = orderStruct(fieldValue, actionRecordFields);
     } else if (nested === "redaction" && isPlainObject(fieldValue)) {
@@ -157,6 +156,7 @@ function orderStruct(
     } else {
       fieldValue = normalizeMaps(fieldValue);
     }
+    if (omitempty && isGoZero(fieldValue)) continue;
     out[name] = fieldValue;
   }
   return out;

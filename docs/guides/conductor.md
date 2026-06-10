@@ -288,11 +288,13 @@ rollback key to issue a kill (or vice versa).
 Every follower emits Ed25519-signed, hash-chained evidence (the
 [flight recorder](flight-recorder.md)) and ships it to the audit sink in signed
 batches. Because the batches are signed by the follower and verified against a
-pinned key, an auditor can verify the stored evidence **offline** with
-[`pipelock verify-receipt`](receipt-verification.md) or the standalone
-`pipelock-verifier` — without trusting Conductor, the follower, or the storage
-layer. Retention is bounded by `--audit-retention`; older batches are pruned at
-startup.
+pinned key, an operator with the raw evidence — the follower's own recorder
+output, or the sink's operator-controlled escrow at `--storage-dir` — can verify
+it **offline** with [`pipelock verify-receipt`](receipt-verification.md) or the
+standalone `pipelock-verifier`, without trusting Conductor, the follower, or the
+storage layer. The audit query API surfaces metadata only; the raw evidence
+stays in the escrow. Retention is bounded by `--audit-retention`; older batches
+are pruned at startup.
 
 ## Deployment notes
 

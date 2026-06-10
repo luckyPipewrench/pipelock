@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -142,6 +143,61 @@ func TestLicenseStatusRevokedByCRL(t *testing.T) {
 	}
 	if report.Status != "revoked" {
 		t.Fatalf("status = %q, want revoked; report=%+v", report.Status, report)
+	}
+}
+
+func TestLicenseStatusEnvFallbackForDefaultConfig(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID:        "lic_status_env",
+		Email:     "status-env@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvLicenseKey, " \n"+token+"\n")
+	t.Setenv(config.EnvLicensePublicKey, hex.EncodeToString(pub))
+	t.Setenv(config.EnvLicenseCRLFile, "")
+
+	cfg := config.Defaults()
+	applyLicenseStatusEnv(cfg)
+	if cfg.LicenseKey != token {
+		t.Fatalf("LicenseKey = %q, want env token", cfg.LicenseKey)
+	}
+	if cfg.LicensePublicKey != hex.EncodeToString(pub) {
+		t.Fatalf("LicensePublicKey = %q, want env public key", cfg.LicensePublicKey)
+	}
+	key, err := licenseStatusPublicKey(cfg)
+	if err != nil {
+		t.Fatalf("licenseStatusPublicKey: %v", err)
+	}
+	if _, err := license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, key, nil, time.Now()); err != nil {
+		t.Fatalf("env fallback token did not verify: %v", err)
+	}
+}
+
+func TestLicenseStatusEnvFallbackDoesNotOverrideConfig(t *testing.T) {
+	t.Setenv(config.EnvLicenseKey, "env-token")
+	t.Setenv(config.EnvLicensePublicKey, strings.Repeat("a", ed25519.PublicKeySize*2))
+	t.Setenv(config.EnvLicenseCRLFile, "/env/crl.json")
+
+	cfg := config.Defaults()
+	cfg.LicenseKey = "configured-token"
+	cfg.LicensePublicKey = strings.Repeat("b", ed25519.PublicKeySize*2)
+	cfg.LicenseCRLFile = "/configured/crl.json"
+
+	applyLicenseStatusEnv(cfg)
+	if cfg.LicenseKey != "configured-token" ||
+		cfg.LicensePublicKey != strings.Repeat("b", ed25519.PublicKeySize*2) ||
+		cfg.LicenseCRLFile != "/configured/crl.json" {
+		t.Fatalf("env fallback overwrote configured values: %+v", cfg)
 	}
 }
 

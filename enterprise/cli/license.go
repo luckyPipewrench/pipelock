@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -376,13 +377,45 @@ func loadLicenseStatusConfig(configFile string) (*config.Config, error) {
 		configFile = cliutil.DiscoverConfigPath()
 	}
 	if configFile == "" {
-		return config.Defaults(), nil
+		cfg := config.Defaults()
+		applyLicenseStatusEnv(cfg)
+		return cfg, nil
 	}
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("loading config %q: %w", configFile, err)
 	}
 	return cfg, nil
+}
+
+func applyLicenseStatusEnv(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if cfg.LicenseKey == "" {
+		cfg.LicenseKey = strings.TrimSpace(os.Getenv(config.EnvLicenseKey))
+	}
+	if cfg.LicensePublicKey == "" {
+		cfg.LicensePublicKey = strings.TrimSpace(os.Getenv(config.EnvLicensePublicKey))
+	}
+	if cfg.LicenseCRLFile == "" {
+		cfg.LicenseCRLFile = strings.TrimSpace(os.Getenv(config.EnvLicenseCRLFile))
+	}
+	if cfg.LicenseIntermediateFile == "" {
+		intermediateFile := strings.TrimSpace(os.Getenv(license.EnvLicenseIntermediateFile))
+		if intermediateFile == "" {
+			return
+		}
+		cfg.LicenseIntermediateFile = intermediateFile
+		data, err := license.LoadIntermediateCertFile(intermediateFile)
+		if err != nil {
+			cfg.LicenseIntermediateLoadError = err.Error()
+			cfg.LicenseIntermediateCert = []byte("configured intermediate certificate unavailable")
+			return
+		}
+		cfg.LicenseIntermediateCert = data
+		cfg.LicenseIntermediateLoadError = ""
+	}
 }
 
 func licenseStatusPublicKey(cfg *config.Config) (ed25519.PublicKey, error) {

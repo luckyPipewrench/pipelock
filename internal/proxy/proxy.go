@@ -981,27 +981,36 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 	if cfg := p.cfgPtr.Load(); cfg != nil {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	}
-	if e := p.receiptEmitterPtr.Load(); e != nil {
-		if err := e.Emit(opts); err != nil {
-			p.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-				fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
-					opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
-					opts.Transport, opts.Method, opts.Target, opts.Agent, err))
-			// v1 stays authoritative: skip v2 when v1 failed to record, so a
-			// proxy_decision never outlives its action_receipt sibling.
-			return err
-		}
-		// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
-		p.emitV2Receipt(opts)
-	}
-	return nil
+	return p.emitReceiptWithEmitter(opts, p.receiptEmitterPtr.Load())
 }
 
 func (p *Proxy) emitRequiredReceipt(opts receipt.EmitOpts) error {
-	if p.receiptEmitterPtr.Load() == nil {
+	if cfg := p.cfgPtr.Load(); cfg != nil {
+		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	}
+	e := p.receiptEmitterPtr.Load()
+	if e == nil {
 		return fmt.Errorf("receipt emitter unavailable")
 	}
-	return p.emitReceipt(opts)
+	return p.emitReceiptWithEmitter(opts, e)
+}
+
+func (p *Proxy) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
+	if e == nil {
+		return nil
+	}
+	if err := e.Emit(opts); err != nil {
+		p.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
+			fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
+				opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
+				opts.Transport, opts.Method, opts.Target, opts.Agent, err))
+		// v1 stays authoritative: skip v2 when v1 failed to record, so a
+		// proxy_decision never outlives its action_receipt sibling.
+		return err
+	}
+	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
+	p.emitV2Receipt(opts)
+	return nil
 }
 
 // receiptEmitterStage is the staged result of a receipt-emitter reload.

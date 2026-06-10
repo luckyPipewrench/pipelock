@@ -90,6 +90,10 @@ func (r *wsRelay) escalationLevel() int {
 	return r.rec.EscalationLevel()
 }
 
+func (r *wsRelay) emitReceipt(opts receipt.EmitOpts) error {
+	return r.proxy.emitReceipt(withReceiptPolicyHash(opts, r.cfg.CanonicalPolicyHash()))
+}
+
 // recordSignal records an adaptive enforcement signal on the relay's session
 // recorder. No-op when the recorder is nil or adaptive enforcement is disabled.
 func (r *wsRelay) recordSignal(sig session.SignalType, log *audit.Logger) {
@@ -559,17 +563,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsGate.HasContractContext() {
 		admissionReceipt = withContractReceipt(wsGate, admissionReceipt)
 	}
-	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptPolicyHash(admissionReceipt, cfg.CanonicalPolicyHash())); err != nil {
-			blockedErr := newReceiptEmissionBlockedRequest(err)
-			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-			p.metrics.RecordWSBlocked()
-			writeBlockedError(w,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
-				"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
-			return
-		}
-	}
 
 	// Upgrade the client connection.
 	upgrader := ws.HTTPUpgrader{
@@ -701,6 +694,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if cfg.FlightRecorder.RequireReceipts {
+		if err := p.emitRequiredReceipt(withReceiptPolicyHash(admissionReceipt, cfg.CanonicalPolicyHash())); err != nil {
+			blockedErr := newReceiptEmissionBlockedRequest(err)
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordWSBlocked()
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).CloseFramePayload())
+			return
+		}
+	}
+
 	// Dial upstream via SSRF-safe dialer.
 	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
 	if dialErr != nil {
@@ -802,7 +806,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsGate.HasContractContext() {
 		closeReceipt = withContractReceipt(wsGate, closeReceipt)
 	}
-	if !cfg.FlightRecorder.RequireReceipts || stats.blocked {
+	if !cfg.FlightRecorder.RequireReceipts || stats.blocked || relay.redactionLog != nil {
 		emitWebSocketReceipt(closeReceipt)
 	}
 
@@ -1001,7 +1005,7 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in.Agent = r.agent
 	in.AuditCtx = newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
 	in.Emit = func(opts receipt.EmitOpts) {
-		_ = r.proxy.emitReceipt(opts)
+		_ = r.emitReceipt(opts)
 	}
 	res := r.proxy.applyRequestPolicy(in)
 	if !res.Block {
@@ -1101,7 +1105,7 @@ func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Log
 		r.recordSignal(session.SignalBlock, log)
 		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelRedaction, reason, r.clientIP, r.requestID)
 		r.proxy.metrics.RecordWSScanHit(scannerLabelRedaction)
-		_ = r.proxy.emitReceipt(receipt.EmitOpts{
+		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
 			Verdict:          config.ActionBlock,
 			Layer:            scannerLabelRedaction,
@@ -1182,7 +1186,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
 			r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
-			_ = r.proxy.emitReceipt(receipt.EmitOpts{
+			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     audit.ScannerDLP,
@@ -1208,7 +1212,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
 			r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
-			_ = r.proxy.emitReceipt(receipt.EmitOpts{
+			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     audit.ScannerDLP,
@@ -1269,7 +1273,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			}
 			reason := fmt.Sprintf("address poisoning: %s", blockExplanation)
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
-			_ = r.proxy.emitReceipt(receipt.EmitOpts{
+			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "address_protection",
@@ -1289,7 +1293,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			r.recordSignal(session.SignalBlock, log)
 			reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
-			_ = r.proxy.emitReceipt(receipt.EmitOpts{
+			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "address_protection",
@@ -1480,7 +1484,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		r.recordSignal(session.SignalBlock, log)
 		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, reason, r.clientIP, r.requestID)
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)
-		_ = r.proxy.emitReceipt(receipt.EmitOpts{
+		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
 			Verdict:          config.ActionBlock,
 			Layer:            receiptLayer,
@@ -1549,7 +1553,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		}
 		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, blockReason, r.clientIP, r.requestID)
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)
-		_ = r.proxy.emitReceipt(receipt.EmitOpts{
+		_ = r.emitReceipt(receipt.EmitOpts{
 			ActionID:         receipt.NewActionID(),
 			Verdict:          config.ActionBlock,
 			Layer:            receiptLayer,
@@ -1627,7 +1631,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Kill switch: terminate WebSocket relay when activated mid-stream.
 		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
 			r.terminalOnce.Do(func() {
-				_ = r.proxy.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "kill_switch",
@@ -1658,7 +1662,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			sessionKey := sessionKeyFor(r.agent, r.clientIP)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
-				_ = r.proxy.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "session_deny",
@@ -1748,7 +1752,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if !r.allowBinary {
 				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "ws_protocol", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("ws_protocol")
-				_ = r.proxy.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "ws_protocol",
@@ -1770,7 +1774,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			reason := string(redact.ReasonWebSocketFragmented)
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelRedaction, reason, r.clientIP, r.requestID)
 			r.proxy.metrics.RecordWSScanHit(scannerLabelRedaction)
-			_ = r.proxy.emitReceipt(receipt.EmitOpts{
+			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     scannerLabelRedaction,
@@ -1791,7 +1795,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "ws_protocol", closeReason, r.clientIP, r.requestID)
-			_ = r.proxy.emitReceipt(receipt.EmitOpts{
+			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "ws_protocol",
@@ -1906,7 +1910,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if ceeRes.Blocked {
 				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "cross_request", ceeRes.Reason, r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("cross_request")
-				_ = r.proxy.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "cross_request",
@@ -1930,7 +1934,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				level := recEscalationLevel(ceeRec)
 				recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: r.clientIP, RequestID: r.requestID})
 				r.terminalOnce.Do(func() {
-					_ = r.proxy.emitReceipt(receipt.EmitOpts{
+					_ = r.emitReceipt(receipt.EmitOpts{
 						ActionID:  receipt.NewActionID(),
 						Verdict:   config.ActionBlock,
 						Layer:     "session_deny",
@@ -1986,7 +1990,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Kill switch: terminate WebSocket relay when activated mid-stream.
 		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
 			r.terminalOnce.Do(func() {
-				_ = r.proxy.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "kill_switch",
@@ -2016,7 +2020,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			sessionKey := sessionKeyFor(r.agent, r.clientIP)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: r.clientIP, RequestID: r.requestID})
 			r.terminalOnce.Do(func() {
-				_ = r.proxy.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "session_deny",
@@ -2105,7 +2109,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if !r.allowBinary {
 				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "ws_protocol", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("ws_protocol")
-				_ = r.proxy.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "ws_protocol",
@@ -2127,7 +2131,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
 			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "ws_protocol", closeReason, r.clientIP, r.requestID)
-			_ = r.proxy.emitReceipt(receipt.EmitOpts{
+			_ = r.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "ws_protocol",
@@ -2163,7 +2167,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if mediaVerdict.Blocked {
 				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "media_policy", mediaVerdict.BlockReason, r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("media_policy")
-				_ = r.proxy.emitReceipt(receipt.EmitOpts{
+				_ = r.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "media_policy",
@@ -2231,7 +2235,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					case config.ActionBlock:
 						reason := fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
-						_ = r.proxy.emitReceipt(receipt.EmitOpts{
+						_ = r.emitReceipt(receipt.EmitOpts{
 							ActionID:  receipt.NewActionID(),
 							Verdict:   config.ActionBlock,
 							Layer:     "response_scan",

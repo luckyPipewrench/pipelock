@@ -549,6 +549,67 @@ func TestWSProxyRedaction_RewritesJSONMessage(t *testing.T) {
 	}
 }
 
+func TestWSProxyRequireReceipts_RedactedSuccessEmitsCloseSummary(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	rph := newReceiptProxyHelper(t)
+	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(false)
+		cfg.FlightRecorder.RequireReceipts = true
+		applyRedactionTestProfile(cfg)
+	})
+	defer proxyCleanup()
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	secret := redactionE2ESecret()
+	msg := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reply, op, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("opcode = %v, want OpText", op)
+	}
+	if strings.Contains(string(reply), secret) {
+		t.Fatalf("echoed reply leaked secret: %q", reply)
+	}
+	plwsutil.WriteClientCloseFrame(conn, ws.StatusNormalClosure, "done")
+	if err := conn.Close(); err != nil {
+		t.Fatalf("conn.Close: %v", err)
+	}
+
+	testwait.For(t, 2*time.Second, func() bool {
+		for _, rcpt := range extractReceiptsFromDir(t, rph.dir) {
+			if rcpt.ActionRecord.Layer == "session_close" && rcpt.ActionRecord.Redaction != nil {
+				return true
+			}
+		}
+		return false
+	}, "websocket redaction close receipt")
+
+	receipts := rph.findReceipts(t)
+	var allowCount, redactionCloseCount int
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Verdict == config.ActionAllow && rcpt.ActionRecord.Layer == "" {
+			allowCount++
+		}
+		if rcpt.ActionRecord.Layer == "session_close" && rcpt.ActionRecord.Redaction != nil {
+			redactionCloseCount++
+		}
+	}
+	if allowCount != 1 {
+		t.Fatalf("allow receipt count = %d, want one admission receipt", allowCount)
+	}
+	if redactionCloseCount != 1 {
+		t.Fatalf("redaction close receipt count = %d, want one signed close summary", redactionCloseCount)
+	}
+}
+
 func TestWSProxyRedaction_BinaryNonJSONBlocked(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

@@ -1656,6 +1656,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	emitForwardAllowReceipt := func() {
+		if !cfg.FlightRecorder.RequireReceipts {
+			emitForwardReceipt(forwardAllowReceipt)
+		}
+	}
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
@@ -1848,24 +1853,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			duration := time.Since(start)
 			p.metrics.RecordAllowed(duration, agentLabel)
-			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
-				ActionID:            actionID,
-				Verdict:             config.ActionAllow,
-				Transport:           "forward",
-				Method:              r.Method,
-				Target:              targetURL,
-				RequestID:           requestID,
-				Agent:               agent,
-				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
-				SessionContaminated: forwardTaint.Risk.Contaminated,
-				RecentTaintSources:  forwardTaint.Risk.Sources,
-				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
-				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
-				AuthorityKind:       forwardTaint.Authority.String(),
-				TaintDecision:       forwardTaint.Result.Decision.String(),
-				TaintDecisionReason: forwardTaint.Result.Reason,
-				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-			}))
+			emitForwardAllowReceipt()
 			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 				recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -1994,24 +1982,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					_ = resolved.Budget.RecordBytes(totalWritten)
 					duration := time.Since(start)
 					p.metrics.RecordAllowed(duration, agentLabel)
-					emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
-						ActionID:            actionID,
-						Verdict:             config.ActionAllow,
-						Transport:           "forward",
-						Method:              r.Method,
-						Target:              targetURL,
-						RequestID:           requestID,
-						Agent:               agent,
-						SessionTaintLevel:   forwardTaint.Risk.Level.String(),
-						SessionContaminated: forwardTaint.Risk.Contaminated,
-						RecentTaintSources:  forwardTaint.Risk.Sources,
-						SessionTaskID:       forwardTaint.Task.CurrentTaskID,
-						SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
-						AuthorityKind:       forwardTaint.Authority.String(),
-						TaintDecision:       forwardTaint.Result.Decision.String(),
-						TaintDecisionReason: forwardTaint.Result.Reason,
-						TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-					}))
+					emitForwardAllowReceipt()
 					p.logger.LogForwardHTTP(actx, resp.StatusCode, int(totalWritten), duration)
 					if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 						forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -2308,24 +2279,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
-		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
-			ActionID:            actionID,
-			Verdict:             config.ActionAllow,
-			Transport:           "forward",
-			Method:              r.Method,
-			Target:              targetURL,
-			RequestID:           requestID,
-			Agent:               agent,
-			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
-			SessionContaminated: forwardTaint.Risk.Contaminated,
-			RecentTaintSources:  forwardTaint.Risk.Sources,
-			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
-			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
-			AuthorityKind:       forwardTaint.Authority.String(),
-			TaintDecision:       forwardTaint.Result.Decision.String(),
-			TaintDecisionReason: forwardTaint.Result.Reason,
-			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-		}))
+		emitForwardAllowReceipt()
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -2359,9 +2313,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
-	if !cfg.FlightRecorder.RequireReceipts {
-		emitForwardReceipt(forwardAllowReceipt)
-	}
+	emitForwardAllowReceipt()
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)

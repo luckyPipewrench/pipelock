@@ -37,20 +37,20 @@ MaxMinVersionMajorSkew  # RESERVED conductor follower knob; documented reserved
 MaxMinVersionMinorSkew  # RESERVED conductor follower knob; documented reserved
 
 # --- INERT-BASELINE (2026-06-10 audit; wire or remove, tracked in ops state.md) ---
-OnSeverity  # INERT airlock severity trigger; only OnElevated/OnHigh/OnCritical are wired (proxy.go:2287-2293)
+OnSeverity  # INERT airlock severity trigger; recordSessionActivityWithUserAgent wires only OnElevated/OnHigh/OnCritical
 AnomalyCount  # INERT airlock anomaly trigger; no consumer
 AnomalyWindowMinutes  # INERT airlock anomaly window; no consumer
 ToolFreeze  # INERT struct; freeze runs via proxy FrozenTools wiring regardless of these knobs
 SnapshotOnEntry  # INERT; freeze mechanism does not consult it
 AllowCachedTools  # INERT; freeze mechanism does not consult it
-ScanRawParts  # INERT; A2A never base64-decodes Part.raw (raw string still passes general scanning as opaque text)
+ScanRawParts  # INERT; A2A extraction never base64-decodes Part.raw (raw string still passes general scanning as opaque text)
 MaxRawSize  # INERT; companion to ScanRawParts
 AllowedBranches  # INERT; git_push_guard reads Enabled/AllowedPushRepos/BlockedCommands/PrePushScan only
-MaxConnections  # INERT on MCPWSListener; no listener code enforces the cap
-MCPWSListener  # INERT struct fields (AllowedOrigins/MaxConnections) never read outside internal/config
-StripCompression  # INERT knob; behavior is hardcoded stricter: relay disables permessage-deflate and rejects RSV1 frames unconditionally (websocket.go:936,1706,2064)
+MaxConnections  # INERT on MCPWSListener; no MCP WebSocket listener accept loop enforces the cap
+MCPWSListener  # INERT struct fields; MCP WebSocket listener config is only normalized/validated in internal/config
+StripCompression  # INERT knob; wsDialUpstream disables permessage-deflate and wsRelay frame loops reject RSV1 unconditionally
 CostMultipliers  # INERT; budget enforcement reads no domain cost weights
-TrustedIssuers  # INERT; mapProvenanceConfig (mcp/scan.go:579) drops it; sigstore unimplemented
+TrustedIssuers  # INERT; mapProvenanceConfig drops it; sigstore unimplemented
 TrustedSubjects  # INERT; same as TrustedIssuers
 PublicAllowlistDefault  # INERT; privacy enforcer does not read it
 WellKnownURL  # INERT; no key-discovery fetch implemented for mediation trusted keys

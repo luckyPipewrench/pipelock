@@ -117,9 +117,8 @@ func VerifyChain(receipts []Receipt, expectedKeyHex string) ChainResult {
 // Structural rules (independent of trust), all fail-closed:
 //
 //   - The genesis (first) receipt must have chain_prev_hash == genesis with no
-//     KeyTransition marker, UNLESS it is itself a segment genesis carrying a
-//     marker (verifying one rotated segment in isolation against its embedded
-//     anchor - the marker's PriorChainHash).
+//     KeyTransition marker. A rotated segment cannot be verified as a complete
+//     chain in isolation because its embedded marker is not the actual prior tail.
 //   - A new segment mid-chain is introduced ONLY by a seq-0 receipt carrying a
 //     marker whose PriorChainHash equals both this receipt's chain_prev_hash and
 //     the actual prior tail hash, whose PriorSignerKey equals the prior
@@ -195,8 +194,8 @@ func (v *chainVerifier) run(receipts []Receipt) ChainResult {
 	}
 }
 
-// startFirstSegment establishes the anchor and key for the genesis (or
-// isolated) segment. Returns ok=false with a failing result on violation.
+// startFirstSegment establishes the anchor and key for the genesis segment.
+// Returns ok=false with a failing result on violation.
 func (v *chainVerifier) startFirstSegment(r Receipt) (ChainResult, bool) {
 	marker := r.ActionRecord.KeyTransition
 	// Trust-on-first-use: when no trusted set was supplied, adopt the first
@@ -212,17 +211,11 @@ func (v *chainVerifier) startFirstSegment(r Receipt) (ChainResult, bool) {
 
 	switch {
 	case marker != nil:
-		// Single rotated segment verified in isolation against its embedded
-		// anchor. seq must be 0 (segment genesis) and prev_hash must equal the
-		// marker's PriorChainHash.
-		if r.ActionRecord.ChainSeq != 0 {
-			return v.brokenAt(r, "key_transition marker on a non-genesis receipt (seq != 0)"), false
-		}
-		if r.ActionRecord.ChainPrevHash != marker.PriorChainHash {
-			return v.brokenAt(r, "segment-genesis chain_prev_hash does not match key_transition prior_chain_hash"), false
-		}
-		v.prevHash = marker.PriorChainHash
-		v.beginSegment(r, true)
+		// A KeyTransition marker is continuity metadata for a boundary to a
+		// prior tail that must be present in the chain being verified. Accepting
+		// a marker on the first receipt would allow deletion/truncation of the
+		// prior segment while still returning CHAIN VALID for the suffix.
+		return v.brokenAt(r, "chain starts at a key_transition segment without the prior segment"), false
 	default:
 		// Ordinary genesis: prev_hash must be the genesis sentinel.
 		v.prevHash = GenesisHash

@@ -145,7 +145,7 @@ func TestVerifyChain_RotationToUnconfirmedKeyIsFlagged(t *testing.T) {
 	}
 }
 
-func TestVerifyChain_SingleRotatedSegmentVerifiesGivenAnchor(t *testing.T) {
+func TestVerifyChain_RotatedSegmentWithoutPriorSegmentRejected(t *testing.T) {
 	t.Parallel()
 	_, privA := generateTestKey(t)
 	pubB, privB := generateTestKey(t)
@@ -160,17 +160,23 @@ func TestVerifyChain_SingleRotatedSegmentVerifiesGivenAnchor(t *testing.T) {
 	}
 	segB, _ := buildSegment(t, privB, 3, tailA, base.Add(time.Hour), marker)
 
-	// Verify segment B alone: its anchor is the marker's PriorChainHash.
+	// A rotated segment cannot verify as a COMPLETE chain by itself. The marker
+	// is signed by the new key and embeds only a claimed prior hash; the actual
+	// prior tail must be present so deletion/truncation is detected.
 	res := VerifyChain(segB, "")
-	if !res.Valid {
-		t.Fatalf("isolated rotated segment must verify given its anchor, got: %s", res.Error)
+	if res.Valid {
+		t.Fatal("rotated segment without its prior segment must be rejected")
 	}
-	if len(res.Segments) != 1 || !res.Segments[0].Boundary {
-		t.Fatalf("expected one boundary segment, got %+v", res.Segments)
+	if res.Error == "" {
+		t.Fatal("rejected isolated rotated segment should explain the missing prior segment")
 	}
-	// Pinned to B (the isolated segment's own key) verifies.
-	if res := VerifyChain(segB, hex.EncodeToString(pubB)); !res.Valid {
-		t.Fatalf("isolated segment pinned to its own key must verify, got: %s", res.Error)
+	// Pinned to B (the isolated segment's own key) still rejects: key trust
+	// cannot substitute for the missing prior tail.
+	if res := VerifyChain(segB, hex.EncodeToString(pubB)); res.Valid {
+		t.Fatal("isolated rotated segment pinned to its own key must still be rejected")
+	}
+	if _, err := ComputeTranscriptRootTrusted("proxy", segB, []string{hex.EncodeToString(pubB)}); err == nil {
+		t.Fatal("transcript root must reject a rotated suffix missing its prior segment")
 	}
 }
 
@@ -348,7 +354,8 @@ func TestVerifyChain_IsolatedSegmentStructuralRejections(t *testing.T) {
 	_, priv := generateTestKey(t)
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 
-	// Isolated first receipt carrying a marker but with seq != 0 is rejected.
+	// First receipt carrying a marker is rejected before it can be treated as
+	// a complete chain, including when seq != 0.
 	t.Run("marker_seq_not_zero", func(t *testing.T) {
 		t.Parallel()
 		marker := &KeyTransition{PriorSignerKey: "k", PriorChainSeq: 1, PriorChainHash: "anchor"}
@@ -358,7 +365,8 @@ func TestVerifyChain_IsolatedSegmentStructuralRejections(t *testing.T) {
 		}
 	})
 
-	// Isolated first receipt whose prev_hash != marker.PriorChainHash is rejected.
+	// First receipt carrying a marker is rejected before it can be treated as
+	// a complete chain, including when prev_hash != marker.PriorChainHash.
 	t.Run("prev_hash_not_marker_anchor", func(t *testing.T) {
 		t.Parallel()
 		marker := &KeyTransition{PriorSignerKey: "k", PriorChainSeq: 1, PriorChainHash: "anchor"}

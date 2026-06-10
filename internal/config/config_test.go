@@ -2170,6 +2170,22 @@ func TestLoad_PresetsEnableFlightRecorder(t *testing.T) {
 			if err != nil {
 				t.Fatalf("resolving %s: %v", path, err)
 			}
+			// Assert the block is actually IN the file. enabled defaults to true
+			// even when the section is omitted, so a post-Load() check alone would
+			// pass for a preset missing the block - read the raw YAML and require
+			// the top-level flight_recorder key (a comment mentioning it does not
+			// count, which is why this unmarshals rather than substring-matches).
+			raw, err := os.ReadFile(filepath.Clean(abs))
+			if err != nil {
+				t.Fatalf("reading preset %s: %v", abs, err)
+			}
+			var doc map[string]any
+			if err := yaml.Unmarshal(raw, &doc); err != nil {
+				t.Fatalf("unmarshaling preset %s: %v", abs, err)
+			}
+			if _, ok := doc["flight_recorder"]; !ok {
+				t.Fatalf("%s: missing top-level flight_recorder block", filepath.Base(path))
+			}
 			cfg, err := Load(abs)
 			if err != nil {
 				t.Fatalf("loading preset %s: %v", abs, err)

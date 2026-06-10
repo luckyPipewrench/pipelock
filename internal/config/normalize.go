@@ -89,6 +89,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.Learn.Privacy.PublicAllowlistDefault = true
 		cfg.HealthWatchdog.Enabled = true
 		cfg.Conductor.HonorRemoteKillSwitch = true
+		cfg.FlightRecorder.Enabled = true
 		return
 	}
 

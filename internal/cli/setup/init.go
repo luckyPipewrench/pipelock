@@ -432,10 +432,19 @@ func ensureFlightRecorderSigningKey(keyPath, recorderDir string) error {
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
 		return fmt.Errorf("creating signing key directory: %w", err)
 	}
-	if _, err := os.Stat(keyPath); err == nil {
-		return nil // reuse existing key; never orphan the prior receipt chain
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("checking signing key %s: %w", keyPath, err)
+	switch _, statErr := os.Stat(keyPath); {
+	case statErr == nil:
+		// A key already exists. Reuse it ONLY if it is a loadable Ed25519 key:
+		// reusing preserves any receipt chain already signed under it, which is
+		// why we never blindly regenerate. But a file that does not parse as a
+		// key (zero-byte, truncated, wrong material) signed no valid chain, so
+		// regenerate over it rather than leaving init pointing at an unusable
+		// key that the recorder would only fail to load later at startup.
+		if _, loadErr := signing.LoadPrivateKeyFile(keyPath); loadErr == nil {
+			return nil
+		}
+	case !errors.Is(statErr, os.ErrNotExist):
+		return fmt.Errorf("checking signing key %s: %w", keyPath, statErr)
 	}
 	_, priv, err := signing.GenerateKeyPair()
 	if err != nil {

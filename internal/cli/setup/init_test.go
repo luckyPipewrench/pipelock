@@ -98,6 +98,30 @@ func TestEnsureFlightRecorderSigningKey_ReusesExisting(t *testing.T) {
 	}
 }
 
+// TestEnsureFlightRecorderSigningKey_RegeneratesUnloadable proves a junk key
+// file (zero-byte / corrupt) is replaced with a valid one rather than reused.
+// Such a file signed no valid chain, so regenerating is safe and keeps init from
+// emitting a config that points at a key the recorder would fail to load.
+func TestEnsureFlightRecorderSigningKey_RegeneratesUnloadable(t *testing.T) {
+	base := t.TempDir()
+	keyPath := filepath.Join(base, "keys", "flight-recorder-signing.key")
+	recorderDir := filepath.Join(base, "recorder")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Pre-seed a corrupt (non-key) file.
+	if err := os.WriteFile(keyPath, []byte("not a key"), 0o600); err != nil {
+		t.Fatalf("seed junk key: %v", err)
+	}
+
+	if err := ensureFlightRecorderSigningKey(keyPath, recorderDir); err != nil {
+		t.Fatalf("provision over junk key: %v", err)
+	}
+	if _, err := signing.LoadPrivateKeyFile(keyPath); err != nil {
+		t.Errorf("key was not regenerated to a loadable Ed25519 key: %v", err)
+	}
+}
+
 // TestInitCmd_DryRunProvisionsNoKey proves --dry-run never writes a signing key
 // (no side effects on disk) even though the previewed config names one.
 func TestInitCmd_DryRunProvisionsNoKey(t *testing.T) {

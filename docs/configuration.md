@@ -551,7 +551,7 @@ websocket_proxy:
 | `max_concurrent_connections` | `128` | No | Connection limit |
 | `scan_text_frames` | `true` | No | DLP + injection on text frames |
 | `allow_binary_frames` | `false` | No | Allow binary frames (not scanned) |
-| `strip_compression` | `true` | No | Force uncompressed (required for scanning) |
+| `strip_compression` | `true` | No | Accepted for compatibility; the relay always disables permessage-deflate and rejects compressed (RSV1) frames regardless of this value, so frames are always scanned uncompressed |
 | `max_connection_seconds` | `3600` | No | Upstream WebSocket setup/dial deadline |
 | `idle_timeout_seconds` | `300` | No | Close established connections after this much inactivity |
 | `origin_policy` | `"rewrite"` | No | Origin header: rewrite, forward, or strip |
@@ -962,8 +962,8 @@ mcp_ws_listener:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `allowed_origins` | `[]` | Additional browser origins to allow (loopback always allowed) |
-| `max_connections` | `100` | Max concurrent inbound WebSocket connections |
+| `allowed_origins` | `[]` | Reserved, not yet enforced |
+| `max_connections` | `100` | Reserved, not yet enforced |
 
 ## Session Profiling
 
@@ -1353,7 +1353,7 @@ git_protection:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable git protection |
-| `allowed_branches` | `["feature/*", "fix/*", "main", "master"]` | Branch name patterns |
+| `allowed_branches` | `["feature/*", "fix/*", "main", "master"]` | Reserved, not yet enforced (push gating today uses `allowed_push_repos`, `blocked_commands`, `pre_push_scan`) |
 | `allowed_push_repos` | `[]` | Optional proxy-enforced allowlist for visible Git smart-HTTP pushes (`git-receive-pack`). Supported patterns include exact repos (`host/owner/repo`), owner globs (`github.com/acme/*`), and host-wide allowlists (`gitlab.com/*`). Bare `owner/repo` entries are rejected. Matching is case-insensitive. When `git_protection.enabled` is true and the allowlist is empty, visible pushes are blocked (fail-closed). Non-intercepted HTTPS CONNECT exposes only the host; enable TLS interception for repo-path enforcement. SSH pushes are opaque to the proxy and are not gated. |
 | `pre_push_scan` | `true` | Scan diffs before push |
 
@@ -2152,7 +2152,7 @@ learn:
 | `enabled` | `false` | Enable the learn observation configuration. When true, `capture_dir` is required. |
 | `capture_dir` | `""` | Absolute directory for recorder JSONL evidence used by `pipelock learn observe`, `compile`, and `shadow`. Use durable storage for production captures. |
 | `privacy.salt_source` | `""` | Salt resolver for privacy-sensitive dimensions: `${VAR}` reads an environment variable, `file:/abs/path` reads a file, any other string is treated as a literal salt. |
-| `privacy.public_allowlist_default` | `true` | Use the built-in public allowlist when no explicit privacy allowlist is configured. |
+| `privacy.public_allowlist_default` | `true` | Reserved, not yet enforced |
 | `inference.floors.min_sessions` | `5` | Minimum distinct sessions before a rule can be classified stable. |
 | `inference.floors.min_events` | `20` | Minimum matching events before a rule can be classified stable. |
 | `inference.floors.min_windows` | `3` | Minimum observation windows before a rule can be classified stable. |
@@ -2264,8 +2264,8 @@ a2a_scanning:
 | `session_smuggling_detection` | `true` | Track contextId to detect session smuggling |
 | `max_context_messages` | `100` | Per-context message cap |
 | `max_contexts` | `1000` | Total tracked contexts |
-| `scan_raw_parts` | `true` | Decode and scan text-like `Part.raw` fields |
-| `max_raw_size` | `1048576` | Max encoded size for `Part.raw` decoding (bytes) |
+| `scan_raw_parts` | `true` | Reserved, not yet enforced: `Part.raw` is not base64-decoded for scanning. The raw value still passes through general content scanning as an opaque string. |
+| `max_raw_size` | `1048576` | Reserved, not yet enforced (companion to `scan_raw_parts`) |
 | `require_signed_agent_cards` | `false` | Treat an **unsigned** Agent Card as a finding (enforced at `action`). When `false`, unsigned cards keep their existing scan/drift behavior. |
 | `trusted_agent_card_keys` | _(none)_ | Operator-pinned Ed25519 signing keys, each scoped to one or more origins. When non-empty, signed cards are cryptographically verified. |
 
@@ -2339,8 +2339,8 @@ mcp_tool_provenance:
 | `action` | `warn` | Action on an **unsigned** tool (no attestation): `block` or `warn` |
 | `mode` | `pipelock` | Accepted attestation mode: `pipelock` (offline Ed25519), `sigstore`, or `any` |
 | `trusted_keys` | `[]` | Ed25519 public keys trusted in `pipelock` mode |
-| `trusted_issuers` | `[]` | OIDC issuers trusted in `sigstore` mode |
-| `trusted_subjects` | `[]` | OIDC subjects trusted in `sigstore` mode |
+| `trusted_issuers` | `[]` | Reserved with `sigstore` mode (not yet read by the verifier) |
+| `trusted_subjects` | `[]` | Reserved with `sigstore` mode (not yet read by the verifier) |
 | `offline_only` | `true` | Never make network calls during verification |
 
 The `action` knob applies only to unsigned tools. A tool whose attestation is present but **fails** verification (digest mismatch, bad signature, untrusted signer, malformed attestation) always blocks regardless of `action` — a tampered attestation is treated as tampering, not as missing. An unparseable `tools/list` response also blocks (fail-closed).

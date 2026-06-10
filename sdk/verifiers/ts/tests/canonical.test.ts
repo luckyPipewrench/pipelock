@@ -96,7 +96,7 @@ test("canonical Receipt envelope matches Go hash", () => {
 });
 
 test("full-field receipt signature verifies", async () => {
-  await assert.doesNotReject(verifyReceipt(fullReceipt));
+  await assert.doesNotReject(verifyReceipt(fullReceipt, "", { allowUnpinned: true }));
 });
 
 // A segment-genesis receipt after a signing-key rotation carries a

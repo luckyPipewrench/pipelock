@@ -18,12 +18,21 @@ const v2GoldenPolicyHash =
 
 test("receipt command accepts a valid Go-generated receipt", async () => {
   const report = await runReceipt(validSingle, "");
+  assert.equal(report.valid, false);
+  assert.equal(report.unpinned, true);
+  assert.match(report.error ?? "", /UNPINNED/u);
+});
+
+test("receipt command explicitly allows unpinned structural verification", async () => {
+  const report = await runReceipt(validSingle, "", true);
   assert.equal(report.valid, true);
+  assert.equal(report.unpinned, true);
   assert.equal(report.action_id, "conformance-00000");
 });
 
 test("receipt command rejects a tampered signature", async () => {
-  const report = await runReceipt(invalidSignature, "");
+  const receipt = JSON.parse(readFileSync(invalidSignature, "utf8")) as Receipt;
+  const report = await runReceipt(invalidSignature, receipt.signer_key ?? "");
   assert.equal(report.valid, false);
   assert.match(report.error ?? "", /signature verification failed/u);
 });

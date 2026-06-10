@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import binascii
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,12 @@ V2_REDACTION_RULESET_HASH = (
 )
 CRIT_CANONICALIZATION = "canonicalization"
 CRIT_SOURCE_SPANS = "source_spans"
+GENESIS_HASH = "genesis"
+EVIDENCE_ENTRY_TYPE = "evidence_receipt"
+UNPINNED_RECEIPT_BANNER = (
+    "UNPINNED — signature is self-consistent but the signer was NOT checked "
+    "against a trusted key"
+)
 
 _PAYLOAD_KINDS = {
     "proxy_decision",
@@ -151,7 +158,9 @@ def load_receipt(path: str | Path) -> dict[str, Any]:
     return value
 
 
-def verify_receipt_file(path: str | Path, key_hex: str = "") -> dict[str, Any]:
+def verify_receipt_file(
+    path: str | Path, key_hex: str = "", allow_unpinned: bool = False
+) -> dict[str, Any]:
     clean = str(Path(path))
     report: dict[str, Any] = {"path": clean, "valid": False}
     try:
@@ -166,11 +175,126 @@ def verify_receipt_file(path: str | Path, key_hex: str = "") -> dict[str, Any]:
         report["signer_key"] = key_hex
         report["policy_hash"] = receipt.get("policy_hash")
         report["chain_seq"] = receipt.get("chain_seq")
-        verify_evidence_receipt(receipt, key_hex)
+        if key_hex:
+            verify_evidence_receipt(receipt, key_hex)
+        else:
+            normalize_evidence_receipt(receipt)
+            report["unpinned"] = True
+            report["error"] = UNPINNED_RECEIPT_BANNER
+            report["valid"] = allow_unpinned
+            return report
         report["valid"] = True
     except Exception as exc:  # noqa: BLE001 - verifier report captures cause
         report["error"] = str(exc)
     return report
+
+
+def verify_evidence_chain_file(
+    path: str | Path, key_hex: str = "", allow_unpinned: bool = False
+) -> dict[str, Any]:
+    clean = str(Path(path))
+    report: dict[str, Any] = {
+        "path": clean,
+        "valid": False,
+        "receipt_count": 0,
+        "final_seq": 0,
+    }
+    try:
+        receipts = load_evidence_chain(clean)
+        if not receipts:
+            raise ReceiptError("empty chain")
+        result = verify_evidence_chain(receipts, key_hex, allow_unpinned)
+        report.update(result)
+    except Exception as exc:  # noqa: BLE001 - verifier report captures cause
+        report["error"] = str(exc)
+    return report
+
+
+def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
+    receipts: list[dict[str, Any]] = []
+    for index, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
+        raw = line.strip()
+        if raw == "":
+            continue
+        try:
+            entry = json.loads(raw, object_pairs_hook=_reject_duplicate_pairs)
+        except ReceiptError:
+            raise
+        except json.JSONDecodeError as exc:
+            raise ReceiptError(f"line {index}: malformed JSON: {exc}") from exc
+        if not isinstance(entry, dict):
+            raise ReceiptError(f"line {index}: recorder entry must be an object")
+        if entry.get("type") != EVIDENCE_ENTRY_TYPE:
+            continue
+        detail = entry.get("detail")
+        if not isinstance(detail, dict):
+            raise ReceiptError(f"line {index}: evidence entry has empty detail")
+        receipts.append(detail)
+    return receipts
+
+
+def verify_evidence_chain(
+    receipts: list[dict[str, Any]], key_hex: str = "", allow_unpinned: bool = False
+) -> dict[str, Any]:
+    if not receipts:
+        raise ReceiptError("empty chain")
+    if not key_hex and not allow_unpinned:
+        return {
+            "valid": False,
+            "unpinned": True,
+            "receipt_count": 0,
+            "final_seq": 0,
+            "error": UNPINNED_RECEIPT_BANNER,
+            "broken_at_seq": 0,
+        }
+    signer_id = _signature_signer_key_id(receipts[0])
+    prev_hash = GENESIS_HASH
+    for index, receipt in enumerate(receipts):
+        seq = receipt.get("chain_seq", index)
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            raise ReceiptError(f"seq {index}: missing or invalid chain_seq")
+        try:
+            if key_hex:
+                verify_evidence_receipt(receipt, key_hex)
+            else:
+                normalize_evidence_receipt(receipt)
+        except ReceiptError as exc:
+            return _broken_chain(seq, f"seq {seq}: signature: {exc}")
+        if _signature_signer_key_id(receipt) != signer_id:
+            return _broken_chain(
+                seq, f"seq {seq}: signer_key_id breaks chain signer {signer_id}"
+            )
+        if seq != index:
+            return _broken_chain(seq, f"seq gap: expected {index}, got {seq}")
+        if receipt.get("chain_prev_hash") != prev_hash:
+            return _broken_chain(seq, f"seq {seq}: chain_prev_hash mismatch")
+        prev_hash = receipt_hash(receipt)
+    return {
+        "valid": True,
+        "unpinned": (not key_hex) or None,
+        "receipt_count": len(receipts),
+        "final_seq": receipts[-1].get("chain_seq", 0),
+        "root_hash": prev_hash,
+    }
+
+
+def receipt_hash(receipt: dict[str, Any]) -> str:
+    return hashlib.sha256(canonicalize(receipt)).hexdigest()
+
+
+def _broken_chain(seq: int, error: str) -> dict[str, Any]:
+    return {
+        "valid": False,
+        "receipt_count": 0,
+        "final_seq": 0,
+        "error": error,
+        "broken_at_seq": seq,
+    }
+
+
+def _signature_signer_key_id(receipt: dict[str, Any]) -> str:
+    signature = _require_object(receipt.get("signature"), "signature")
+    return _require_string(signature.get("signer_key_id"), "signature.signer_key_id")
 
 
 def verify_evidence_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -> None:

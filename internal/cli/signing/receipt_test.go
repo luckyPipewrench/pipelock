@@ -57,16 +57,66 @@ func TestVerifyReceiptCmd_ValidReceipt(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{path})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected unpinned receipt verification to exit non-zero")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "UNPINNED:") {
+		t.Errorf("expected UNPINNED in output, got: %s", output)
+	}
+	if !strings.Contains(output, unpinnedReceiptBanner) {
+		t.Errorf("expected unpinned banner in output, got: %s", output)
+	}
+	if !strings.Contains(output, ar.ActionID) {
+		t.Errorf("expected action_id in output, got: %s", output)
+	}
+}
+
+func TestVerifyReceiptCmd_AllowUnpinnedValidReceipt(t *testing.T) {
+	t.Parallel()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	ar := receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        receipt.NewActionID(),
+		ActionType:      receipt.ActionRead,
+		Timestamp:       time.Now().UTC(),
+		Target:          "https://example.com/api",
+		Verdict:         "block",
+		Transport:       "fetch",
+		SideEffectClass: receipt.SideEffectExternalRead,
+		Reversibility:   receipt.ReversibilityFull,
+	}
+	r, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	data, err := receipt.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--allow-unpinned"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	output := buf.String()
-	if !strings.Contains(output, "OK:") {
-		t.Errorf("expected OK in output, got: %s", output)
-	}
-	if !strings.Contains(output, ar.ActionID) {
-		t.Errorf("expected action_id in output, got: %s", output)
+	if !strings.Contains(buf.String(), "UNPINNED:") {
+		t.Errorf("expected UNPINNED in output, got: %s", buf.String())
 	}
 }
 
@@ -236,7 +286,7 @@ func TestVerifyReceiptCmd_InvalidFile(t *testing.T) {
 	cmd := VerifyReceiptCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{path})
+	cmd.SetArgs([]string{path, "--allow-unpinned"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -305,7 +355,7 @@ func TestVerifyReceiptCmd_ReceiptWithMethodShowsFullRecord(t *testing.T) {
 	cmd := VerifyReceiptCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{path})
+	cmd.SetArgs([]string{path, "--allow-unpinned"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -433,13 +483,38 @@ func TestVerifyReceiptCmd_ChainValid(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{path})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected unpinned chain verification to exit non-zero")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "CHAIN UNPINNED") {
+		t.Errorf("expected CHAIN UNPINNED, got: %s", output)
+	}
+	if !strings.Contains(output, unpinnedReceiptBanner) {
+		t.Errorf("expected unpinned banner, got: %s", output)
+	}
+	if !strings.Contains(output, "Receipts:  5") {
+		t.Errorf("expected 5 receipts, got: %s", output)
+	}
+}
+
+func TestVerifyReceiptCmd_ChainAllowUnpinned(t *testing.T) {
+	t.Parallel()
+
+	path, _ := buildChainJSONL(t, 5)
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--allow-unpinned"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "CHAIN VALID") {
-		t.Errorf("expected CHAIN VALID, got: %s", output)
+	if !strings.Contains(output, "CHAIN UNPINNED") {
+		t.Errorf("expected CHAIN UNPINNED, got: %s", output)
 	}
 	if !strings.Contains(output, "Receipts:  5") {
 		t.Errorf("expected 5 receipts, got: %s", output)
@@ -692,14 +767,23 @@ func TestVerifyChain_ValidReceiptsNoKey(t *testing.T) {
 
 	var buf bytes.Buffer
 	err = verifyChain(&buf, "test-chain", receipts, nil)
-	if err != nil {
-		t.Fatalf("verifyChain: %v", err)
+	if err == nil {
+		t.Fatal("expected unpinned chain verification to fail closed")
 	}
-	if !strings.Contains(buf.String(), "CHAIN VALID") {
-		t.Errorf("expected CHAIN VALID, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "CHAIN UNPINNED") {
+		t.Errorf("expected CHAIN UNPINNED, got: %s", buf.String())
 	}
 	if !strings.Contains(buf.String(), "Receipts:  4") {
 		t.Errorf("expected 4 receipts, got: %s", buf.String())
+	}
+
+	buf.Reset()
+	err = verifyChainWithOptions(&buf, "test-chain", receipts, nil, true)
+	if err != nil {
+		t.Fatalf("verifyChainWithOptions allow unpinned: %v", err)
+	}
+	if !strings.Contains(buf.String(), "CHAIN UNPINNED") {
+		t.Errorf("expected CHAIN UNPINNED, got: %s", buf.String())
 	}
 }
 
@@ -754,5 +838,17 @@ func TestVerifyChain_WrongKeyBreaksChain(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Broke at:") {
 		t.Errorf("expected 'Broke at' detail, got: %s", buf.String())
+	}
+}
+
+func TestResolveExpectedKeyHexesWrapsFailedKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveExpectedKeyHexes([]string{"not-a-key"})
+	if err == nil {
+		t.Fatal("expected invalid key to fail")
+	}
+	if !strings.Contains(err.Error(), `resolving --key "not-a-key"`) {
+		t.Fatalf("expected failing key in error, got %v", err)
 	}
 }

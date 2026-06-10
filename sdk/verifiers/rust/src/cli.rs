@@ -1,5 +1,5 @@
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
-use crate::chain::verify_chain;
+use crate::chain::verify_chain_with_options;
 use crate::output::{emit_audit_packet, emit_chain, emit_receipt};
 use crate::receipt::run_receipt;
 use crate::recorder::{extract_receipts, extract_receipts_from_session_dir};
@@ -15,6 +15,7 @@ struct ParsedArgs {
     key: String,
     offline: bool,
     allow_self_consistent_only: bool,
+    allow_unpinned: bool,
     no_trust_required: bool,
     expect_sha256: String,
     dir: bool,
@@ -85,6 +86,7 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
         let report = ChainCommandReport {
             path: label,
             valid: false,
+            unpinned: None,
             receipt_count: 0,
             final_seq: 0,
             root_hash: None,
@@ -95,10 +97,13 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
         return Ok(1);
     }
 
-    let result = verify_chain(&receipts, &key_hex);
+    let result = verify_chain_with_options(&receipts, &key_hex, parsed.allow_unpinned);
     let report = ChainCommandReport {
         path: label,
         valid: result.valid,
+        unpinned: (key_hex.is_empty()
+            && (result.valid || result.error.as_deref().unwrap_or("").contains("UNPINNED")))
+        .then_some(true),
         receipt_count: result.receipt_count,
         final_seq: result.final_seq,
         root_hash: (!result.root_hash.is_empty()).then_some(result.root_hash),
@@ -112,7 +117,7 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
 fn run_receipt_command(args: &[String]) -> Result<i32> {
     let parsed = parse_args(args, "receipt")?;
     let target = require_one_arg(&parsed.positionals, "receipt")?;
-    let report = run_receipt(target, &parsed.key)?;
+    let report = run_receipt(target, &parsed.key, parsed.allow_unpinned)?;
     emit_receipt(&report, parsed.json)?;
     Ok(if report.valid { 0 } else { 1 })
 }
@@ -136,6 +141,9 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
             "--offline" if command == "audit-packet" => parsed.offline = true,
             "--allow-self-consistent-only" if command == "audit-packet" => {
                 parsed.allow_self_consistent_only = true;
+            }
+            "--allow-unpinned" if command == "chain" || command == "receipt" => {
+                parsed.allow_unpinned = true;
             }
             "--no-trust-required" if command == "audit-packet" => parsed.no_trust_required = true,
             "--dir" if command == "chain" => parsed.dir = true,
@@ -219,8 +227,8 @@ fn require_one_arg<'a>(positionals: &'a [String], command: &str) -> Result<&'a s
 fn usage(command: Option<&str>) -> String {
     match command {
         Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
-        Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--dir] [--session-id ID]".to_string(),
-        Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE]".to_string(),
+        Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
+        Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]".to_string(),
         _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|receipt} PATH [flags]"
             .to_string(),
     }

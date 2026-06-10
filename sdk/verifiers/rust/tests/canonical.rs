@@ -1,7 +1,7 @@
 #![recursion_limit = "256"]
 
 use pipelock_verifier_rs::canonical::{canonicalize_action_record, canonicalize_receipt};
-use pipelock_verifier_rs::signing::verify_receipt;
+use pipelock_verifier_rs::signing::verify_receipt_with_options;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -101,7 +101,7 @@ fn canonical_receipt_envelope_matches_go_hash() {
 #[test]
 fn full_field_receipt_signature_verifies() {
     let receipt = full_receipt();
-    verify_receipt(&receipt, "").expect("signature verifies");
+    verify_receipt_with_options(&receipt, "", true).expect("signature verifies");
 }
 
 // A segment-genesis receipt after a signing-key rotation carries a

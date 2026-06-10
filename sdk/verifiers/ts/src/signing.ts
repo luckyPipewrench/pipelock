@@ -6,6 +6,8 @@ import { canonicalizeBytes } from "./aarp/canonical.js";
 import { decodeHex } from "./util.js";
 
 const signaturePrefix = "ed25519:";
+export const unpinnedReceiptBanner =
+  "UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key";
 const v2RecordType = "evidence_receipt_v2";
 const v2ReceiptVersion = 2;
 const v2SignatureAlgorithm = "ed25519";
@@ -409,13 +411,24 @@ export function normalizeReceipt(receipt: Receipt): Receipt {
   return receipt;
 }
 
-export async function verifyReceipt(receipt: Receipt, expectedKeyHex = ""): Promise<void> {
+export interface VerifyReceiptOptions {
+  allowUnpinned?: boolean;
+}
+
+export async function verifyReceipt(
+  receipt: Receipt,
+  expectedKeyHex = "",
+  options: VerifyReceiptOptions = {},
+): Promise<void> {
   if (receipt.record_type === v2RecordType) {
     return verifyEvidenceReceipt(receipt, expectedKeyHex);
   }
   normalizeReceipt(receipt);
   const signerKey = (receipt.signer_key ?? "").toLowerCase();
   const expected = expectedKeyHex.toLowerCase();
+  if (expected === "" && options.allowUnpinned !== true) {
+    throw new Error(unpinnedReceiptBanner);
+  }
   const keyHex = expected === "" ? signerKey : expected;
   if (expected !== "" && signerKey !== expected) {
     throw new Error(`signer_key ${signerKey} does not match expected key ${expected}`);

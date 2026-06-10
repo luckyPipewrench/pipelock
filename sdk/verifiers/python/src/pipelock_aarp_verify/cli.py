@@ -34,7 +34,7 @@ from .appraise import (
 )
 from .chain import comparable_chain, verify_chain
 from .envelope import unmarshal
-from .receipt import verify_receipt_file
+from .receipt import UNPINNED_RECEIPT_BANNER, verify_evidence_chain_file, verify_receipt_file
 from .svid import SVIDConfigError, appraise_with_svid, load_svid_file
 
 ED25519_PUBLIC_KEY_SIZE = 32
@@ -280,14 +280,31 @@ def _emit_human(stdout: IO[str], ap: Any) -> None:
         stdout.write(f"  signature {s.key_id}/{s.alg}: {s.status}\n")
 
 
-def _run_receipt(stdout: IO[str], target: str, key_hex: str, json_mode: bool) -> int:
-    report = verify_receipt_file(target, key_hex)
+def _run_receipt(
+    stdout: IO[str],
+    target: str,
+    key_hex: str,
+    json_mode: bool,
+    chain_mode: bool,
+    allow_unpinned: bool,
+) -> int:
+    report = (
+        verify_evidence_chain_file(target, key_hex, allow_unpinned)
+        if chain_mode
+        else verify_receipt_file(target, key_hex, allow_unpinned)
+    )
     if json_mode:
         stdout.write(json.dumps(report, separators=(",", ":"), ensure_ascii=False))
         stdout.write("\n")
     else:
-        status = "valid" if report.get("valid") else "invalid"
-        stdout.write(f"EvidenceReceipt v2: {status}\n")
+        if report.get("unpinned"):
+            status = "UNPINNED"
+        else:
+            status = "valid" if report.get("valid") else "invalid"
+        label = "EvidenceReceipt v2 chain" if chain_mode else "EvidenceReceipt v2"
+        stdout.write(f"{label}: {status}\n")
+        if report.get("unpinned"):
+            stdout.write(f"  warning: {UNPINNED_RECEIPT_BANNER}\n")
         if report.get("error"):
             stdout.write(f"  error: {report['error']}\n")
     return EXIT_OK if report.get("valid") else EXIT_GENERAL
@@ -322,8 +339,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     receipt_p = sub.add_parser("receipt", help="verify an EvidenceReceipt v2 receipt")
     receipt_p.add_argument("path", help="path to an EvidenceReceipt v2 JSON file")
-    receipt_p.add_argument("--key", required=True, help="pinned Ed25519 public key hex")
+    receipt_p.add_argument("--key", default="", help="pinned Ed25519 public key hex")
     receipt_p.add_argument("--json", action="store_true", help="emit JSON report")
+    receipt_p.add_argument(
+        "--chain", action="store_true", help="PATH is an EvidenceReceipt v2 JSONL chain"
+    )
+    receipt_p.add_argument(
+        "--allow-unpinned",
+        action="store_true",
+        help="allow structural-only verification without a trusted signer key",
+    )
 
     try:
         args = parser.parse_args(argv)
@@ -332,7 +357,14 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
     if args.command == "receipt":
-        return _run_receipt(sys.stdout, args.path, args.key, args.json)
+        return _run_receipt(
+            sys.stdout,
+            args.path,
+            args.key,
+            args.json,
+            args.chain,
+            args.allow_unpinned,
+        )
 
     if args.command != "aarp":
         parser.print_usage(sys.stderr)

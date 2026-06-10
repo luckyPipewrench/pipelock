@@ -1,4 +1,6 @@
-use crate::signing::verify_receipt;
+use crate::signing::{
+    normalize_evidence_receipt, verify_receipt_with_options, UNPINNED_RECEIPT_BANNER,
+};
 use crate::types::ReceiptReport;
 use crate::util::{
     parse_json_text, reject_duplicate_keys, resolve_signer_key, string_at, u64_at, Result,
@@ -8,7 +10,11 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
-pub fn run_receipt(pathname: &str, signer_key: &str) -> Result<ReceiptReport> {
+pub fn run_receipt(
+    pathname: &str,
+    signer_key: &str,
+    allow_unpinned: bool,
+) -> Result<ReceiptReport> {
     let clean = PathBuf::from(pathname);
     let key_hex = resolve_signer_key(signer_key)?;
     // Read the raw text so duplicate-key detection sees every key occurrence,
@@ -18,6 +24,7 @@ pub fn run_receipt(pathname: &str, signer_key: &str) -> Result<ReceiptReport> {
     let mut report = ReceiptReport {
         path: clean.display().to_string(),
         valid: false,
+        unpinned: None,
         action_id: None,
         verdict: None,
         transport: None,
@@ -50,8 +57,26 @@ pub fn run_receipt(pathname: &str, signer_key: &str) -> Result<ReceiptReport> {
             string_at(&receipt, &["action_record", "policy_hash"]).map(str::to_string);
         report.chain_seq = u64_at(&receipt, &["action_record", "chain_seq"]);
     }
-    match verify_receipt(&receipt, &key_hex) {
-        Ok(()) => report.valid = true,
+    let is_v2 = string_at(&receipt, &["record_type"]) == Some("evidence_receipt_v2");
+    if key_hex.is_empty() && is_v2 {
+        match normalize_evidence_receipt(&receipt) {
+            Ok(()) => {
+                report.valid = allow_unpinned;
+                report.unpinned = Some(true);
+                report.error = Some(UNPINNED_RECEIPT_BANNER.to_string());
+            }
+            Err(err) => report.error = Some(err),
+        }
+        return Ok(report);
+    }
+    match verify_receipt_with_options(&receipt, &key_hex, allow_unpinned) {
+        Ok(()) => {
+            report.valid = true;
+            if key_hex.is_empty() {
+                report.unpinned = Some(true);
+                report.error = Some(UNPINNED_RECEIPT_BANNER.to_string());
+            }
+        }
         Err(err) => report.error = Some(err),
     }
     Ok(report)

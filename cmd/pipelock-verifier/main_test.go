@@ -581,12 +581,50 @@ func TestChain_Valid(t *testing.T) {
 	_ = pkt
 	evidence := filepath.Join(dir, "evidence.jsonl")
 
-	stdout, _, code := runRoot(t, "chain", evidence)
+	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid chain should pass, stdout=%q", stdout)
 	}
 	if !strings.Contains(stdout, "CHAIN VALID") {
 		t.Errorf("missing CHAIN VALID marker, got %q", stdout)
+	}
+}
+
+func TestChain_ActionWithoutKeyFailsUnpinned(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 2)
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+	evidence := filepath.Join(dir, "evidence.jsonl")
+
+	stdout, stderr, code := runRoot(t, "chain", evidence)
+	if code == cliutil.ExitOK {
+		t.Fatalf("unpinned action chain should fail, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "CHAIN UNPINNED") {
+		t.Fatalf("stderr = %q, want CHAIN UNPINNED", stderr)
+	}
+	if !strings.Contains(stderr, unpinnedReceiptBanner) {
+		t.Fatalf("stderr = %q, want unpinned warning", stderr)
+	}
+}
+
+func TestChain_ActionAllowUnpinned(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 2)
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+	evidence := filepath.Join(dir, "evidence.jsonl")
+
+	stdout, stderr, code := runRoot(t, "chain", "--allow-unpinned", evidence)
+	if code != cliutil.ExitOK {
+		t.Fatalf("allow-unpinned action chain should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "CHAIN UNPINNED") {
+		t.Fatalf("stdout = %q, want CHAIN UNPINNED", stdout)
+	}
+	if !strings.Contains(stdout, "warning:") {
+		t.Fatalf("stdout = %q, want warning", stdout)
 	}
 }
 
@@ -626,7 +664,7 @@ func TestChain_JSONOutput(t *testing.T) {
 	fix.writePacketDir(t, dir, nil)
 	evidence := filepath.Join(dir, "evidence.jsonl")
 
-	stdout, _, code := runRoot(t, "chain", "--json", evidence)
+	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, "--json", evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid chain --json should pass")
 	}
@@ -669,7 +707,7 @@ func TestReceipt_Valid(t *testing.T) {
 		t.Fatalf("write receipt: %v", err)
 	}
 
-	stdout, _, code := runRoot(t, "receipt", rPath)
+	stdout, _, code := runRoot(t, "receipt", "--key", fix.keyHex, rPath)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid receipt should pass, stdout=%q", stdout)
 	}
@@ -690,7 +728,7 @@ func TestReceipt_TamperedSignature(t *testing.T) {
 		t.Fatalf("write tampered: %v", err)
 	}
 
-	_, stderr, code := runRoot(t, "receipt", rPath)
+	_, stderr, code := runRoot(t, "receipt", "--allow-unpinned", rPath)
 	if code == cliutil.ExitOK {
 		t.Fatalf("tampered receipt should fail, stderr=%q", stderr)
 	}
@@ -709,7 +747,7 @@ func TestReceipt_JSONOutput(t *testing.T) {
 		t.Fatalf("write receipt: %v", err)
 	}
 
-	stdout, _, code := runRoot(t, "receipt", "--json", rPath)
+	stdout, _, code := runRoot(t, "receipt", "--key", fix.keyHex, "--json", rPath)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid receipt --json should pass")
 	}
@@ -736,20 +774,48 @@ func TestReceipt_V1WithoutKeyIsNotProvenance(t *testing.T) {
 	}
 
 	stdout, _, code := runRoot(t, "receipt", "--json", rPath)
-	if code != cliutil.ExitOK {
-		t.Fatalf("valid v1 receipt should pass without a key")
+	if code == cliutil.ExitOK {
+		t.Fatalf("unpinned v1 receipt should exit non-zero")
 	}
 	var rpt receiptReport
 	if err := json.Unmarshal([]byte(stdout), &rpt); err != nil {
 		t.Fatalf("parse json: %v", err)
 	}
-	if !rpt.Valid {
-		t.Fatalf("expected valid=true, got %+v", rpt)
+	if rpt.Valid {
+		t.Fatalf("expected valid=false, got %+v", rpt)
+	}
+	if !rpt.Unpinned {
+		t.Fatalf("expected unpinned=true, got %+v", rpt)
 	}
 	// Without a pinned --key, v1 verifies against the embedded signer key
 	// (self-consistency), which is not provenance — mirror the v2 contract.
 	if rpt.SignaturesVerified {
 		t.Error("v1 receipt without --key must report signatures_verified=false")
+	}
+}
+
+func TestReceipt_V1AllowUnpinned(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "r.json")
+	data, err := receipt.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write receipt: %v", err)
+	}
+
+	stdout, stderr, code := runRoot(t, "receipt", "--allow-unpinned", rPath)
+	if code != cliutil.ExitOK {
+		t.Fatalf("allow-unpinned receipt should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "RECEIPT UNPINNED") {
+		t.Fatalf("stdout = %q, want RECEIPT UNPINNED", stdout)
+	}
+	if !strings.Contains(stdout, "signature is self-consistent") {
+		t.Fatalf("stdout = %q, want unpinned warning", stdout)
 	}
 }
 
@@ -795,11 +861,60 @@ func TestReceipt_EvidenceV2WithoutKeyIsNotProvenance(t *testing.T) {
 	}
 
 	stdout, stderr, code := runRoot(t, "receipt", rPath)
-	if code != cliutil.ExitOK {
-		t.Fatalf("v2 receipt structure check should pass, stdout=%q stderr=%q", stdout, stderr)
+	if code == cliutil.ExitOK {
+		t.Fatalf("v2 receipt without key should exit non-zero, stdout=%q stderr=%q", stdout, stderr)
 	}
-	if !strings.Contains(stdout, "not checked") {
-		t.Fatalf("stdout = %q, want not checked trust boundary", stdout)
+	if !strings.Contains(stderr, "RECEIPT UNPINNED") {
+		t.Fatalf("stderr = %q, want unpinned trust boundary", stderr)
+	}
+}
+
+func TestReceipt_EvidenceV2AllowUnpinned(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "shadow-delta.json")
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("Marshal evidence receipt: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write evidence receipt: %v", err)
+	}
+
+	stdout, stderr, code := runRoot(t, "receipt", "--allow-unpinned", rPath)
+	if code != cliutil.ExitOK {
+		t.Fatalf("allow-unpinned v2 receipt should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "RECEIPT UNPINNED") {
+		t.Fatalf("stdout = %q, want RECEIPT UNPINNED", stdout)
+	}
+	if !strings.Contains(stdout, "signature:    not checked") {
+		t.Fatalf("stdout = %q, want signature not checked", stdout)
+	}
+}
+
+func TestReceipt_EvidenceV2WithoutKeyValidationFailure(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	bad := fix.receipts[0]
+	bad.ReceiptVersion = 99
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "shadow-delta.json")
+	data, err := json.Marshal(bad)
+	if err != nil {
+		t.Fatalf("Marshal evidence receipt: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write evidence receipt: %v", err)
+	}
+
+	_, stderr, code := runRoot(t, "receipt", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("invalid v2 receipt should fail, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "RECEIPT INVALID") {
+		t.Fatalf("stderr = %q, want RECEIPT INVALID", stderr)
 	}
 }
 
@@ -877,6 +992,27 @@ func TestReceipt_EvidenceV2RecheckSourceSpanMismatchReportsInvalid(t *testing.T)
 	}
 	if !strings.Contains(rpt.Error, "redacted_sample mismatch") {
 		t.Fatalf("error=%q", rpt.Error)
+	}
+}
+
+func TestReceipt_EvidenceV2RecheckSourceSpanMismatchWithoutKey(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.txt")
+	if err := os.WriteFile(sourcePath, []byte("https://example.com/xxxxxxxxxxxxxxxx"), 0o600); err != nil {
+		t.Fatalf("write recheck source: %v", err)
+	}
+	receiptPath := filepath.Clean(filepath.Join("..", "..", "internal", "contract", "testdata", "golden", "valid_evidence_receipt_proxy_decision_with_spans.json"))
+	_, stderr, code := runRoot(t,
+		"receipt",
+		"--recheck-source", sourcePath,
+		receiptPath,
+	)
+	if code == cliutil.ExitOK {
+		t.Fatalf("v2 recheck mismatch without key should fail, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "redacted_sample mismatch") {
+		t.Fatalf("stderr=%q, want redacted_sample mismatch", stderr)
 	}
 }
 
@@ -1183,7 +1319,7 @@ func TestChain_DirMode(t *testing.T) {
 	if err := os.Rename(src, dst); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	stdout, _, code := runRoot(t, "chain", "--dir", dir)
+	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, "--dir", dir)
 	if code != cliutil.ExitOK {
 		t.Fatalf("--dir mode should pass, stdout=%q", stdout)
 	}
@@ -1228,6 +1364,41 @@ func TestChain_EvidenceV2PinnedKey(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "signatures: verified") {
 		t.Fatalf("stdout = %q, want signatures verified", stdout)
+	}
+}
+
+func TestChain_EvidenceV2WithoutKeyFailsUnpinned(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 2)
+	dir := t.TempDir()
+	evidence := filepath.Join(dir, "evidence.jsonl")
+	fix.writeEvidenceJSONL(t, evidence)
+
+	stdout, stderr, code := runRoot(t, "chain", evidence)
+	if code == cliutil.ExitOK {
+		t.Fatalf("unpinned v2 chain should fail, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "CHAIN UNPINNED") {
+		t.Fatalf("stderr = %q, want CHAIN UNPINNED", stderr)
+	}
+}
+
+func TestChain_EvidenceV2AllowUnpinned(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 2)
+	dir := t.TempDir()
+	evidence := filepath.Join(dir, "evidence.jsonl")
+	fix.writeEvidenceJSONL(t, evidence)
+
+	stdout, stderr, code := runRoot(t, "chain", "--allow-unpinned", evidence)
+	if code != cliutil.ExitOK {
+		t.Fatalf("allow-unpinned v2 chain should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "CHAIN UNPINNED") {
+		t.Fatalf("stdout = %q, want CHAIN UNPINNED", stdout)
+	}
+	if !strings.Contains(stdout, "signatures: not checked") {
+		t.Fatalf("stdout = %q, want signatures not checked", stdout)
 	}
 }
 

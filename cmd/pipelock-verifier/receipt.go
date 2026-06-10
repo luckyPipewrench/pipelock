@@ -20,6 +20,7 @@ type receiptOptions struct {
 	signerKey string
 	evidenceBindingOptions
 	jsonOutput       bool
+	allowUnpinned    bool
 	recheckSource    string
 	recheckSpanIndex int
 }
@@ -32,10 +33,10 @@ func newReceiptCmd() *cobra.Command {
 		Short: "Verify a single Pipelock receipt",
 		Long: `Verifies a single Pipelock receipt written as JSON.
 
-Legacy ActionReceipt v1 files verify against their embedded signer_key unless
---key is supplied. EvidenceReceipt v2 files do not embed a public key, so
-without --key the verifier checks structure and canonical hashability only;
-with --key it verifies the Ed25519 signature against the pinned key.`,
+Legacy ActionReceipt v1 files require --key for trusted provenance. Pass
+--allow-unpinned for loud structural-only verification against the embedded
+signer key. EvidenceReceipt v2 files do not embed a public key, so --key is
+required unless --allow-unpinned is used for structural checks only.`,
 		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -53,6 +54,7 @@ with --key it verifies the Ed25519 signature against the pinned key.`,
 	cmd.Flags().StringVar(&opts.recheckSource, "recheck-source", "", "EvidenceReceipt v2 spans: source file containing the normalized/redacted source view input")
 	cmd.Flags().IntVar(&opts.recheckSpanIndex, "recheck-span-index", 0, "EvidenceReceipt v2 spans: source_spans index to recheck")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
+	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 
 	return cmd
 }
@@ -62,6 +64,7 @@ type receiptReport struct {
 	RecordType         string `json:"record_type,omitempty"`
 	Valid              bool   `json:"valid"`
 	SignaturesVerified bool   `json:"signatures_verified"`
+	Unpinned           bool   `json:"unpinned,omitempty"`
 	ActionID           string `json:"action_id,omitempty"`
 	Verdict            string `json:"verdict,omitempty"`
 	Transport          string `json:"transport,omitempty"`
@@ -136,10 +139,18 @@ func runActionReceipt(stdout, stderr io.Writer, clean string, data []byte, keyHe
 		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify: %w", err))
 	}
+	if keyHex == "" {
+		report.Unpinned = true
+		report.Error = unpinnedReceiptBanner
+		report.Valid = opts.allowUnpinned
+		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+		if !opts.allowUnpinned {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify: unpinned receipt"))
+		}
+		return nil
+	}
 	report.Valid = true
-	// Provenance only when an out-of-band key is pinned; an empty key
-	// verifies against the receipt's embedded signer (self-consistency).
-	report.SignaturesVerified = keyHex != ""
+	report.SignaturesVerified = true
 	emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
 	return nil
 }
@@ -160,6 +171,33 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 		ActiveManifestHash: r.ActiveManifestHash,
 		PolicyHash:         r.PolicyHash,
 		ChainSeq:           r.ChainSeq,
+	}
+	if keyHex == "" {
+		if err := r.Validate(); err != nil {
+			report.Valid = false
+			report.Error = err.Error()
+			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("validate evidence receipt: %w", err))
+		}
+		if opts.recheckSource != "" {
+			result, recheckErr := recheckEvidenceReceiptSpan(r, opts.recheckSource, opts.recheckSpanIndex)
+			report.RecheckValid = &result.Valid
+			report.RecheckView = result.View
+			if recheckErr != nil {
+				report.Valid = false
+				report.Error = recheckErr.Error()
+				emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+				return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("recheck evidence receipt: %w", recheckErr))
+			}
+		}
+		report.Unpinned = true
+		report.Error = unpinnedReceiptBanner
+		report.Valid = opts.allowUnpinned
+		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+		if !opts.allowUnpinned {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify evidence receipt: unpinned receipt"))
+		}
+		return nil
 	}
 	sigVerified, err := verifyEvidenceReceipt(r, keyHex, opts.evidenceBindingOptions)
 	if err != nil {

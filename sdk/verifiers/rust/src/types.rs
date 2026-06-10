@@ -132,6 +132,8 @@ pub struct ReceiptReport {
     pub path: String,
     pub valid: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpinned: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub action_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<String>,
@@ -151,6 +153,8 @@ pub struct ReceiptReport {
 pub struct ChainCommandReport {
     pub path: String,
     pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpinned: Option<bool>,
     pub receipt_count: usize,
     pub final_seq: u64,
     #[serde(skip_serializing_if = "Option::is_none")]

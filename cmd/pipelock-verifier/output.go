@@ -16,6 +16,8 @@ import (
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+const unpinnedReceiptBanner = "UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key"
+
 // emitReport writes the audit-packet report to stdout in either JSON or
 // human-readable form. The human form is loosely structured so script
 // consumers should prefer --json.
@@ -73,7 +75,12 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 		return
 	}
 	if r.Valid {
-		_, _ = fmt.Fprintf(stdout, "CHAIN VALID: %s\n", r.Path)
+		if r.Unpinned {
+			_, _ = fmt.Fprintf(stdout, "CHAIN UNPINNED: %s\n", r.Path)
+			_, _ = fmt.Fprintf(stdout, "  warning:    %s\n", unpinnedReceiptBanner)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "CHAIN VALID: %s\n", r.Path)
+		}
 		if r.RecordType != "" {
 			_, _ = fmt.Fprintf(stdout, "  record_type: %s\n", r.RecordType)
 		}
@@ -88,6 +95,11 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 				_, _ = fmt.Fprintln(stdout, "  signatures: not checked (self-consistency only; pass --key for provenance)")
 			}
 		}
+		return
+	}
+	if r.Unpinned {
+		_, _ = fmt.Fprintf(stderr, "CHAIN UNPINNED: %s\n", r.Path)
+		_, _ = fmt.Fprintf(stderr, "  warning:    %s\n", unpinnedReceiptBanner)
 		return
 	}
 	_, _ = fmt.Fprintf(stderr, "CHAIN BROKEN: %s\n", r.Path)
@@ -106,7 +118,12 @@ func emitReceiptReport(stdout, stderr io.Writer, r receiptReport, jsonMode bool)
 		return
 	}
 	if r.Valid {
-		_, _ = fmt.Fprintf(stdout, "RECEIPT VALID: %s\n", r.Path)
+		if r.Unpinned {
+			_, _ = fmt.Fprintf(stdout, "RECEIPT UNPINNED: %s\n", r.Path)
+			_, _ = fmt.Fprintf(stdout, "  warning:      %s\n", unpinnedReceiptBanner)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "RECEIPT VALID: %s\n", r.Path)
+		}
 		if r.RecordType != "" {
 			_, _ = fmt.Fprintf(stdout, "  record_type:  %s\n", r.RecordType)
 		}
@@ -136,6 +153,11 @@ func emitReceiptReport(stdout, stderr io.Writer, r receiptReport, jsonMode bool)
 		_, _ = fmt.Fprintf(stdout, "  signer:       %s\n", r.SignerKey)
 		_, _ = fmt.Fprintf(stdout, "  policy_hash:  %s\n", r.PolicyHash)
 		_, _ = fmt.Fprintf(stdout, "  chain_seq:    %d\n", r.ChainSeq)
+		return
+	}
+	if r.Unpinned {
+		_, _ = fmt.Fprintf(stderr, "RECEIPT UNPINNED: %s\n", r.Path)
+		_, _ = fmt.Fprintf(stderr, "  warning: %s\n", unpinnedReceiptBanner)
 		return
 	}
 	_, _ = fmt.Fprintf(stderr, "RECEIPT INVALID: %s\n", r.Path)

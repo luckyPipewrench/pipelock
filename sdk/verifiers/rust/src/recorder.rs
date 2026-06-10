@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 const ACTION_RECEIPT_TYPE: &str = "action_receipt";
+const EVIDENCE_RECEIPT_TYPE: &str = "evidence_receipt";
 
 pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
     let text = fs::read_to_string(path)
@@ -29,7 +30,8 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
 pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
     let mut receipts = Vec::new();
     for entry in read_entries(path)? {
-        if entry.get("type").and_then(serde_json::Value::as_str) != Some(ACTION_RECEIPT_TYPE) {
+        let entry_type = entry.get("type").and_then(serde_json::Value::as_str);
+        if entry_type != Some(ACTION_RECEIPT_TYPE) && entry_type != Some(EVIDENCE_RECEIPT_TYPE) {
             continue;
         }
         let detail = entry.get("detail").ok_or_else(|| {

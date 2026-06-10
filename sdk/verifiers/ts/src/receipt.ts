@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt } from "./types.js";
-import { verifyReceipt } from "./signing.js";
+import { normalizeEvidenceReceipt, unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
 import { parseJSON, rejectDuplicateKeys, resolveSignerKey } from "./util.js";
 
 export interface ReceiptReport {
   path: string;
   valid: boolean;
+  unpinned?: boolean;
   action_id?: string;
   verdict?: string;
   transport?: string;
@@ -16,7 +17,11 @@ export interface ReceiptReport {
   error?: string;
 }
 
-export async function runReceipt(pathname: string, signerKey: string): Promise<ReceiptReport> {
+export async function runReceipt(
+  pathname: string,
+  signerKey: string,
+  allowUnpinned = false,
+): Promise<ReceiptReport> {
   const clean = path.normalize(pathname);
   const keyHex = resolveSignerKey(signerKey);
   const text = readFileSync(clean, "utf8");
@@ -51,10 +56,24 @@ export async function runReceipt(pathname: string, signerKey: string): Promise<R
     report.chain_seq = receipt.action_record?.chain_seq;
   }
   try {
-    await verifyReceipt(receipt, keyHex);
+    if (keyHex === "" && receipt.record_type === "evidence_receipt_v2") {
+      normalizeEvidenceReceipt(receipt);
+      report.unpinned = true;
+      report.error = unpinnedReceiptBanner;
+      report.valid = allowUnpinned;
+      return report;
+    }
+    await verifyReceipt(receipt, keyHex, { allowUnpinned });
+    if (keyHex === "") {
+      report.unpinned = true;
+      report.error = unpinnedReceiptBanner;
+    }
     report.valid = true;
   } catch (err) {
     report.error = (err as Error).message;
+    if (keyHex === "" && report.error === unpinnedReceiptBanner) {
+      report.unpinned = true;
+    }
   }
   return report;
 }

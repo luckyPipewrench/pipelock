@@ -23,6 +23,7 @@ fn shield_bearing_corpus_receipt_verifies() {
     let report = run_receipt(
         &format!("{CORPUS}/golden/09-allow-shield-summary.json"),
         &key,
+        false,
     )
     .expect("run receipt");
     assert!(report.valid, "{:?}", report.error);
@@ -34,6 +35,7 @@ fn full_field_differential_corpus_receipt_verifies() {
     let report = run_receipt(
         &format!("{CORPUS}/golden/10-full-field-differential.json"),
         &key,
+        false,
     )
     .expect("run receipt");
     assert!(report.valid, "{:?}", report.error);
@@ -45,6 +47,7 @@ fn duplicate_key_corpus_receipt_rejected() {
     let report = run_receipt(
         &format!("{CORPUS}/malicious/m13-duplicate-key-verdict.json"),
         &key,
+        false,
     )
     .expect("run receipt");
     assert!(!report.valid);

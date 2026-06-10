@@ -23,6 +23,7 @@ fn valid_single_receipt_verifies_with_shared_key() {
             .to_str()
             .unwrap(),
         key["public_key_hex"].as_str().unwrap(),
+        false,
     )
     .unwrap();
     assert!(report.valid, "{:?}", report.error);
@@ -40,6 +41,7 @@ fn invalid_signature_is_rejected() {
             .to_str()
             .unwrap(),
         key["public_key_hex"].as_str().unwrap(),
+        false,
     )
     .unwrap();
     assert!(!report.valid);
@@ -61,7 +63,7 @@ fn duplicate_key_rejected_before_metadata_population() {
         r#"{"version":1,"action_record":{"version":1,"action_id":"x","action_type":"write","timestamp":"2026-04-15T12:00:00Z","verdict":"allow","verdict":"block","target":"https://e.example","transport":"https","chain_prev_hash":"genesis","chain_seq":0},"signature":"ed25519:00","signer_key":"00"}"#,
     )
     .unwrap();
-    let report = run_receipt(path.to_str().unwrap(), "").unwrap();
+    let report = run_receipt(path.to_str().unwrap(), "", false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -98,6 +100,7 @@ fn armored_public_key_file_accepts_crlf_line_endings() {
             .to_str()
             .unwrap(),
         key_path.to_str().unwrap(),
+        false,
     )
     .unwrap();
     assert!(report.valid, "{:?}", report.error);
@@ -134,6 +137,7 @@ fn valid_spanned_v2_receipt_verifies_with_shared_key() {
             .to_str()
             .unwrap(),
         V2_GOLDEN_PUBLIC_KEY,
+    false,
     )
     .unwrap();
     assert!(report.valid, "{:?}", report.error);
@@ -155,6 +159,7 @@ fn valid_plain_v2_receipt_verifies_with_shared_key() {
             .to_str()
             .unwrap(),
         V2_GOLDEN_PUBLIC_KEY,
+        false,
     )
     .unwrap();
     assert!(report.valid, "{:?}", report.error);
@@ -173,7 +178,7 @@ fn missing_v2_policy_hash_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -195,7 +200,7 @@ fn reserved_defer_v2_payload_kind_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -219,7 +224,7 @@ fn tampered_spanned_v2_receipt_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -242,7 +247,7 @@ fn unknown_spanned_v2_field_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -266,7 +271,7 @@ fn empty_dlp_normalized_suffix_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -289,7 +294,7 @@ fn unsupported_canonicalization_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -312,7 +317,7 @@ fn missing_source_spans_crit_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -335,7 +340,7 @@ fn unknown_crit_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report
@@ -357,7 +362,7 @@ fn source_spans_crit_on_plain_payload_is_rejected() {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_string(&receipt).unwrap()).unwrap();
-    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY).unwrap();
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     let _ = fs::remove_file(path);
     assert!(!report.valid);
     assert!(report

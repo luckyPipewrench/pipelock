@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
@@ -75,7 +76,13 @@ func mapClientError(err error) error {
 		case http.StatusUnauthorized:
 			return cliutil.ExitCodeError(2, fmt.Errorf("unauthorized — check --api-token or PIPELOCK_KILLSWITCH_API_TOKEN: %s", apiErr.Body))
 		case http.StatusNotFound:
-			return cliutil.ExitCodeError(1, errors.New("session not found"))
+			msg := strings.TrimSpace(apiErr.Body)
+			if msg == "" {
+				msg = "not found"
+			} else if !strings.Contains(strings.ToLower(msg), "not found") {
+				msg = "not found: " + msg
+			}
+			return cliutil.ExitCodeError(1, errors.New(msg))
 		case http.StatusTooManyRequests:
 			return cliutil.ExitCodeError(1, fmt.Errorf("rate limited; retry after %s seconds", apiErr.RetryAfter))
 		case http.StatusBadRequest:

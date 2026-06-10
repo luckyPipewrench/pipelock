@@ -118,6 +118,7 @@ Quick start:
 		skillScanCmd(),
 		// Session admin (airlock recovery)
 		session.AdaptiveCmd(),
+		session.BaselineCmd(),
 		session.Cmd(),
 		// Setup (IDE integrations)
 		setup.InitCmd(),

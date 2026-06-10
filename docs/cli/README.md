@@ -2,5 +2,6 @@
 
 | Command | Purpose |
 |---|---|
+| [`pipelock baseline`](baseline.md) | Inspect, ratify, and relearn behavioral-baseline profiles through the admin API. |
 | [`pipelock scan`](scan.md) | Scan files for invisible-Unicode and bidi-control injection. |
 | [`pipelock skill-scan`](skill-scan.md) | Inventory skill files, compare lock drift, and flag conservative source-to-sink combinations. |

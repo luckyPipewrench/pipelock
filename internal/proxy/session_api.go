@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -71,6 +72,7 @@ const (
 	apiPathSegment     = "api"
 	apiVersionSegment  = "v1"
 	apiSessionsSegment = "sessions"
+	apiBaselineSegment = "baseline"
 )
 
 // Admin API action names used as rate-limiter keys. Extracted so
@@ -84,6 +86,7 @@ const (
 	sessionAPIActionExplain   = "explain"
 	sessionAPIActionTerminate = "terminate"
 	sessionAPIActionAdaptive  = "adaptive"
+	sessionAPIActionBaseline  = "baseline"
 )
 
 // tierNotQuarantinedReason is the explanation returned for sessions that
@@ -162,6 +165,7 @@ func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
 			sessionAPIActionExplain:   {windowStart: time.Now()},
 			sessionAPIActionTerminate: {windowStart: time.Now()},
 			sessionAPIActionAdaptive:  {windowStart: time.Now()},
+			sessionAPIActionBaseline:  {windowStart: time.Now()},
 		},
 	}
 	// Seed the atomic token pointer from the constructor input. Stored via
@@ -226,6 +230,52 @@ func (h *SessionAPIHandler) loadManager(w http.ResponseWriter) *SessionManager {
 		return nil
 	}
 	return sm
+}
+
+func (h *SessionAPIHandler) loadBaselineManager(w http.ResponseWriter) (*baseline.Manager, bool) {
+	sm := h.loadManager(w)
+	if sm == nil {
+		return nil, false
+	}
+	mgr := sm.BaselineManager()
+	if mgr == nil {
+		http.Error(w, "behavioral baseline disabled", http.StatusServiceUnavailable)
+		return nil, false
+	}
+	return mgr, true
+}
+
+// BaselineProfile is the profile shape returned by the baseline admin API.
+type BaselineProfile = baseline.Profile
+
+// BaselineRange is a learned min/max/mean/stddev range returned by the
+// baseline admin API.
+type BaselineRange = baseline.Range
+
+// BaselineListResponse is returned by GET /api/v1/baseline.
+type BaselineListResponse struct {
+	Profiles      []baseline.Profile `json:"profiles"`
+	Count         int                `json:"count"`
+	PendingRatify int                `json:"pending_ratify"`
+	Locked        int                `json:"locked"`
+}
+
+// BaselineRatifyResult is returned by POST /api/v1/baseline/{agent}/ratify.
+type BaselineRatifyResult struct {
+	AgentKey      string                `json:"agent_key"`
+	PreviousState baseline.ProfileState `json:"previous_state"`
+	NewState      baseline.ProfileState `json:"new_state"`
+	Ratified      bool                  `json:"ratified"`
+	RatifiedAt    *time.Time            `json:"ratified_at,omitempty"`
+	Profile       baseline.Profile      `json:"profile"`
+}
+
+// BaselineForgetResult is returned by POST /api/v1/baseline/{agent}/forget.
+type BaselineForgetResult struct {
+	AgentKey      string                `json:"agent_key"`
+	PreviousState baseline.ProfileState `json:"previous_state"`
+	NewState      baseline.ProfileState `json:"new_state"`
+	Forgotten     bool                  `json:"forgotten"`
 }
 
 // HandleList handles GET /api/v1/sessions.
@@ -310,6 +360,278 @@ func tierMatches(snapshotTier, filter string) bool {
 		snapshotTier = config.AirlockTierNone
 	}
 	return snapshotTier == filter
+}
+
+// validBaselineAgentKey mirrors baseline's persisted-profile key rules so the
+// admin API rejects traversal-shaped agent names before calling the manager.
+func validBaselineAgentKey(key string) bool {
+	if key == "" || strings.Contains(key, "..") {
+		return false
+	}
+	for _, r := range key {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// extractBaselineAgentOnly extracts the agent key from /api/v1/baseline/{agent}.
+func extractBaselineAgentOnly(r *http.Request) (string, bool) {
+	segs := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
+	if len(segs) != 4 || segs[0] != apiPathSegment || segs[1] != apiVersionSegment || segs[2] != apiBaselineSegment {
+		return "", false
+	}
+	key, err := url.PathUnescape(segs[3])
+	if err != nil || strings.ContainsAny(key, "/\x00") || !validBaselineAgentKey(key) {
+		return "", false
+	}
+	return key, true
+}
+
+// extractBaselineAgentWithAction extracts the agent key from
+// /api/v1/baseline/{agent}/{action}.
+func extractBaselineAgentWithAction(r *http.Request, action string) (string, bool) {
+	segs := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
+	if len(segs) != 5 || segs[0] != apiPathSegment || segs[1] != apiVersionSegment ||
+		segs[2] != apiBaselineSegment || segs[4] != action {
+		return "", false
+	}
+	key, err := url.PathUnescape(segs[3])
+	if err != nil || strings.ContainsAny(key, "/\x00") || !validBaselineAgentKey(key) {
+		return "", false
+	}
+	return key, true
+}
+
+// HandleBaselineList handles GET /api/v1/baseline.
+func (h *SessionAPIHandler) HandleBaselineList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+	mgr, ok := h.loadBaselineManager(w)
+	if !ok {
+		h.logSessionAdmin("baseline_list_unavailable", clientIP, "", "baseline disabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	profiles := mgr.ListProfiles()
+	resp := BaselineListResponse{
+		Profiles: profiles,
+		Count:    len(profiles),
+	}
+	for _, profile := range profiles {
+		switch profile.State {
+		case baseline.StateRatify:
+			resp.PendingRatify++
+		case baseline.StateLocked:
+			resp.Locked++
+		}
+	}
+
+	h.logSessionAdmin("baseline_list", clientIP, "", "ok", http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// HandleBaselineProfile routes /api/v1/baseline/{agent} and
+// /api/v1/baseline/{agent}/{ratify|forget}.
+func (h *SessionAPIHandler) HandleBaselineProfile(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.HandleBaselineShow(w, r)
+	case http.MethodPost:
+		path := r.URL.EscapedPath()
+		switch {
+		case strings.HasSuffix(path, "/ratify"):
+			h.HandleBaselineRatify(w, r)
+		case strings.HasSuffix(path, "/forget"):
+			h.HandleBaselineForget(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	default:
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// HandleBaselineShow handles GET /api/v1/baseline/{agent}.
+func (h *SessionAPIHandler) HandleBaselineShow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+	mgr, ok := h.loadBaselineManager(w)
+	if !ok {
+		h.logSessionAdmin("baseline_show_unavailable", clientIP, "", "baseline disabled", http.StatusServiceUnavailable)
+		return
+	}
+	agent, ok := extractBaselineAgentOnly(r)
+	if !ok {
+		h.logSessionAdmin("baseline_show_bad_agent", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid baseline agent in URL path", http.StatusBadRequest)
+		return
+	}
+
+	profile, found := mgr.GetAgentProfile(agent)
+	if !found {
+		h.logSessionAdmin("baseline_show_not_found", clientIP, agent, "baseline profile not found", http.StatusNotFound)
+		http.Error(w, "baseline profile not found", http.StatusNotFound)
+		return
+	}
+
+	h.logSessionAdmin("baseline_show", clientIP, agent, "ok", http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(profile)
+}
+
+// HandleBaselineRatify handles POST /api/v1/baseline/{agent}/ratify.
+func (h *SessionAPIHandler) HandleBaselineRatify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+	if !h.checkRateLimit(sessionAPIActionBaseline) {
+		h.logSessionAdmin("baseline_ratify_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	if err := decodeJSONBody(r, &struct{}{}); err != nil {
+		h.logSessionAdmin("baseline_ratify_bad_body", clientIP, "", err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	mgr, ok := h.loadBaselineManager(w)
+	if !ok {
+		h.logSessionAdmin("baseline_ratify_unavailable", clientIP, "", "baseline disabled", http.StatusServiceUnavailable)
+		return
+	}
+	agent, ok := extractBaselineAgentWithAction(r, "ratify")
+	if !ok {
+		h.logSessionAdmin("baseline_ratify_bad_agent", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid baseline agent in URL path", http.StatusBadRequest)
+		return
+	}
+
+	before, found := mgr.GetAgentProfile(agent)
+	if !found {
+		h.logSessionAdmin("baseline_ratify_not_found", clientIP, agent, "baseline profile not found", http.StatusNotFound)
+		http.Error(w, "baseline profile not found", http.StatusNotFound)
+		return
+	}
+	if before.State != baseline.StateRatify {
+		msg := fmt.Sprintf("baseline profile is in state %q, not %q", before.State, baseline.StateRatify)
+		h.logSessionAdmin("baseline_ratify_conflict", clientIP, agent, msg, http.StatusConflict)
+		http.Error(w, msg, http.StatusConflict)
+		return
+	}
+	if err := mgr.Ratify(agent); err != nil {
+		h.logSessionAdmin("baseline_ratify_failed", clientIP, agent, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	after, _ := mgr.GetAgentProfile(agent)
+	resp := BaselineRatifyResult{
+		AgentKey:      agent,
+		PreviousState: before.State,
+		NewState:      after.State,
+		Ratified:      after.Ratified,
+		RatifiedAt:    after.RatifiedAt,
+		Profile:       after,
+	}
+
+	h.logSessionAdmin("baseline_ratify", clientIP, agent, "ok", http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// HandleBaselineForget handles POST /api/v1/baseline/{agent}/forget.
+func (h *SessionAPIHandler) HandleBaselineForget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+	if !h.checkRateLimit(sessionAPIActionBaseline) {
+		h.logSessionAdmin("baseline_forget_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	if err := decodeJSONBody(r, &struct{}{}); err != nil {
+		h.logSessionAdmin("baseline_forget_bad_body", clientIP, "", err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	mgr, ok := h.loadBaselineManager(w)
+	if !ok {
+		h.logSessionAdmin("baseline_forget_unavailable", clientIP, "", "baseline disabled", http.StatusServiceUnavailable)
+		return
+	}
+	agent, ok := extractBaselineAgentWithAction(r, "forget")
+	if !ok {
+		h.logSessionAdmin("baseline_forget_bad_agent", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid baseline agent in URL path", http.StatusBadRequest)
+		return
+	}
+
+	before, found := mgr.GetAgentProfile(agent)
+	if !found {
+		h.logSessionAdmin("baseline_forget_not_found", clientIP, agent, "baseline profile not found", http.StatusNotFound)
+		http.Error(w, "baseline profile not found", http.StatusNotFound)
+		return
+	}
+	if err := mgr.Reset(agent); err != nil {
+		h.logSessionAdmin("baseline_forget_failed", clientIP, agent, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := BaselineForgetResult{
+		AgentKey:      agent,
+		PreviousState: before.State,
+		NewState:      baseline.StateObserve,
+		Forgotten:     true,
+	}
+
+	h.logSessionAdmin("baseline_forget", clientIP, agent, "ok", http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // checkRateLimit enforces a sliding-window rate limit on a single

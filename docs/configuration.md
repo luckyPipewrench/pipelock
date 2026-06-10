@@ -992,6 +992,50 @@ session_profiling:
 | `session_ttl_minutes` | `30` | Idle session eviction |
 | `cleanup_interval_seconds` | `60` | Background cleanup interval |
 
+## Behavioral Baseline
+
+Profile-then-lock behavioral enforcement for a single agent. Pipelock observes completed identity sessions, learns per-session ranges, waits for operator ratification, and enforces deviations only after the profile reaches `locked`.
+
+Behavioral baseline depends on session profiling because session profiling owns the session store and eviction path that records completed-session metrics. Config validation rejects `behavioral_baseline.enabled: true` unless `session_profiling.enabled: true`.
+
+```yaml
+session_profiling:
+  enabled: true
+
+behavioral_baseline:
+  enabled: true
+  profile_dir: /var/lib/pipelock/baseline-profiles
+  learning_window: 10
+  deviation_action: block
+  auto_ratify: false
+  sensitivity_sigma: 2.0
+  lock_dimensions:
+    - tool_calls
+    - unique_tools
+    - domains
+    - bytes
+    - duration
+    - requests
+  poison_resistance: true
+  seasonality_mode: none
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable profile-then-lock behavioral baselines |
+| `profile_dir` | `""` | Directory for persisted per-agent profile JSON files; required when enabled |
+| `learning_window` | `10` | Completed identity sessions to observe before building a profile |
+| `deviation_action` | `"warn"` | Action for locked-profile deviations: `warn`, `ask`, or `block` |
+| `auto_ratify` | `false` | Automatically lock learned profiles. Dangerous for production because poisoned training traffic can approve itself. |
+| `sensitivity_sigma` | `2.0` | Standard-deviation multiplier for deviation detection |
+| `lock_dimensions` | all dimensions | Optional subset of `tool_calls`, `unique_tools`, `domains`, `bytes`, `duration`, `requests` |
+| `poison_resistance` | `true` | Trim high-sigma training outliers before building the profile |
+| `seasonality_mode` | `"none"` | Seasonality mode; only `none` is currently enforced |
+
+Profiles persist as one JSON file per agent in `profile_dir`. A learned profile moves to `ratify`, but it does not enforce until an operator runs `pipelock baseline ratify <agent>` against the authenticated admin API. `pipelock baseline show <agent>` displays learned per-dimension ranges plus retained, observed, and trimmed session counts so the operator can approve the profile with context. `pipelock baseline forget <agent>` removes the persisted profile and returns the agent to observe/relearn state.
+
+The baseline admin endpoints (list, show, ratify, forget) are only mounted on the dedicated admin API listener. Set both `kill_switch.api_token` and `kill_switch.api_listen`; the endpoints are not registered on the agent-facing main proxy port.
+
 ## Adaptive Enforcement
 
 Per-session threat score that accumulates across scanner hits and decays on clean requests. When the score exceeds the threshold, the session escalates through levels (elevated → high → critical). At each level, the `levels` configuration upgrades warn and ask actions to block, or denies all traffic.
@@ -1103,7 +1147,7 @@ kill_switch:
 | `api_listen` | `""` | **Yes** | Separate listen address for API |
 | `allowlist_ips` | `[]` | No | IPs always allowed through |
 
-**Port isolation:** When `api_listen` is set, the kill switch and session admin APIs run on a dedicated port. The main proxy port has no API routes, preventing agents from deactivating their own kill switch or resetting their own sessions.
+**Port isolation:** When `api_listen` is set, the kill switch, session, adaptive, and baseline admin APIs run on a dedicated port. The main proxy port has no API routes, preventing agents from deactivating their own kill switch, resetting their own sessions, or ratifying their own behavioral baseline.
 
 **Environment variable override:** Set `PIPELOCK_KILLSWITCH_API_TOKEN` to override `api_token` from the config file. This is useful for Kubernetes deployments where the config file lives in a ConfigMap (plaintext in etcd) but the token should come from a Secret:
 
@@ -1133,16 +1177,20 @@ When `kill_switch.api_token` is configured, the session admin API is available a
 | `/api/v1/adaptive/status` | GET | Summarize adaptive state, escalation counts, recent event counts, and top anomalies |
 | `/api/v1/adaptive/flush` | POST | Reset identity-session adaptive state and clear shared IP-domain burst tracking |
 | `/api/v1/adaptive/whoami` | GET | Show the caller's client-IP/session classification as seen by the proxy |
+| `/api/v1/baseline` | GET | List behavioral-baseline profiles and states |
+| `/api/v1/baseline/{agent}` | GET | Show learned ranges, retained/observed/trimmed sessions, and ratification state |
+| `/api/v1/baseline/{agent}/ratify` | POST | Lock a pending `ratify` profile so it enforces immediately |
+| `/api/v1/baseline/{agent}/forget` | POST | Remove a profile and return the agent to observe/relearn state |
 
 The `{key}` parameter is URL-encoded. For example, `my-agent|10.0.0.1` becomes `my-agent%7C10.0.0.1`.
 
 **Reset scope:** identity-family scoped. Resetting a session clears the session's threat score, escalation level, and block_all flag. It also clears shared IP-level burst tracking for the client IP and cross-request exfiltration (CEE) state. Other sessions on the same IP will have their burst state cleared as a side effect.
 
-**Rate limiting:** every mutating action (`reset`, `airlock`, `task`, `trust`, `terminate`) and every detail lookup (`inspect`, `explain`) is rate-limited to 10 requests per minute per action. Each action tracks its own sliding-window counter so abuse of one endpoint cannot starve another — an operator can still hit `/reset` or `/airlock` during incident response even if `/task` or `/trust` is under load. Only `GET /api/v1/sessions` (the list endpoint) is unbounded; it is used as the entry point for recovery tooling and has no destructive side effect. Responses that hit the limit return `429 Too Many Requests` with `Retry-After: 60`.
+**Rate limiting:** every mutating action (`reset`, `airlock`, `task`, `trust`, `terminate`, baseline `ratify`, baseline `forget`) and every detail lookup (`inspect`, `explain`) is rate-limited to 10 requests per minute per action. Each action tracks its own sliding-window counter so abuse of one endpoint cannot starve another — an operator can still hit `/reset` or `/airlock` during incident response even if `/task` or `/trust` is under load. Only `GET /api/v1/sessions` and `GET /api/v1/baseline` (the list endpoints) are unbounded; they are used as entry points for recovery tooling and have no destructive side effect. Responses that hit the limit return `429 Too Many Requests` with `Retry-After: 60`.
 
 Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset, mutated, or terminated.
 
-**Operator CLI:** the session admin API is exposed through `pipelock session <subcommand>` for airlock recovery and `pipelock adaptive <subcommand>` for fleet-level adaptive state. See [cli/session.md](cli/session.md) and [cli/adaptive.md](cli/adaptive.md) for the operator references.
+**Operator CLI:** the admin API is exposed through `pipelock session <subcommand>` for airlock recovery, `pipelock adaptive <subcommand>` for fleet-level adaptive state, and `pipelock baseline <subcommand>` for behavioral-baseline inspection and ratification. See [cli/session.md](cli/session.md), [cli/adaptive.md](cli/adaptive.md), and [cli/baseline.md](cli/baseline.md) for the operator references.
 
 **Token hot-reload:** `kill_switch.api_token` is hot-reloaded on SIGHUP or fsnotify config-file changes. Rotating the token in YAML (or via the `PIPELOCK_KILLSWITCH_API_TOKEN` env var, which wins over YAML) takes effect on the next admin API call without restarting the proxy. The previous bearer credential is revoked atomically: requests in flight at the moment of rotation complete against the token they were issued against; subsequent requests must present the new bearer. Setting `api_token` to the empty string disables the endpoint (HTTP 503) without tearing down the listener, so an operator can revoke access during an incident and restore it later with a second reload.
 

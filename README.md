@@ -219,7 +219,7 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **Multi-Agent Support** | Agent identification via `X-Pipelock-Agent` header for per-agent filtering |
 | **Fleet Monitoring** | Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json) |
 | **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, session smuggling prevention for Google's Agent-to-Agent protocol |
-| **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, flags deviations after ratification. |
+| **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, exposes `pipelock baseline list/show/ratify/forget` for operator approval and relearning, and flags deviations after ratification. See [`docs/cli/baseline.md`](docs/cli/baseline.md). |
 | **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. Catches loop storms and amplification attacks. |
 | **Taint Escalation** | Exposure-based policy escalation across MCP + task boundaries. Sessions that recently observed untrusted content get elevated scanning on protected operations until trust is explicitly restored. |
 | **Mediation Envelope** | RFC 8941 sideband metadata on forwarded HTTP requests and MCP `_meta`, carrying action type, verdict, actor identity, policy hash, taint context, and receipt correlation ID. v2.4 adds inbound verification with replay protection, SPIFFE actor format, and an RFC 9421 well-known signing-key directory at `/.well-known/http-message-signatures-directory`. See [federation guide](docs/guides/federation.md). |
@@ -500,6 +500,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Host Containment](docs/contain-cli.md) | `pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` for 3-UID kernel-enforced agent containment (v2.5) |
 | [MCP Integrity Manifests](docs/cli/mcp-integrity.md) | Generate, verify, sign, and require trusted MCP binary-integrity manifests (v2.5) |
 | [Adaptive CLI](docs/cli/adaptive.md) | Inspect and flush adaptive-enforcement runtime state through the admin API (v2.5) |
+| [`pipelock baseline`](docs/cli/baseline.md) | Inspect, ratify, and relearn behavioral-baseline profiles through the authenticated admin API |
 | [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots, `posture verify` CLI, CI gate, scoring model |
 | [`pipelock init sidecar`](docs/cli/init-sidecar.md) | Generate enforced Kubernetes companion-proxy manifests and MCP launcher contracts (strategic-merge, Kustomize, Helm values) |
 | [`pipelock session`](docs/cli/session.md) | Operator CLI for airlock inspection and recovery (list, inspect, explain, release, terminate, recover) |
@@ -512,7 +513,7 @@ cmd/pipelock/          CLI entry point
 internal/
   cli/                 20+ Cobra commands (run, check, init, generate, mcp, session, posture, rules, ...)
     diag/              `pipelock doctor` and install-verification diagnostics
-    session/           `pipelock session` operator CLI — airlock inspection and recovery
+    session/           `pipelock session`, `pipelock adaptive`, and `pipelock baseline` operator CLIs
     setup/             `pipelock init sidecar` — companion-proxy manifest generation (K8s)
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
   scanner/             11-layer URL scanning pipeline + response injection detection

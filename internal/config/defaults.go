@@ -507,6 +507,17 @@ func Defaults() *Config {
 			Action: ActionWarn, // default action when hash verification fails
 		},
 		FlightRecorder: FlightRecorder{
+			// Enabled by default so receipts ("verify the boundary") are on out
+			// of the box. Emission still requires Dir != "" AND a signing key
+			// (see server.go), so the default flip alone records nothing: a bare
+			// Defaults() with no dir/key is inert. `pipelock init` generates both
+			// and writes them into the config, which is what makes receipts live.
+			// Footguns handled here: Redact stays on (receipts carry targets, so
+			// without scrubbing they would persist secrets in the clear) and
+			// MaxEntriesPerFile caps file growth (rotation), so default-on cannot
+			// silently fill the disk or leak. Evidence, not enforcement: a
+			// recorder failure never blocks traffic.
+			Enabled:            true,
 			CheckpointInterval: 1000,  // entries between signed checkpoints
 			Redact:             true,  // DLP-scrub evidence before commit
 			SignCheckpoints:    true,  // Ed25519 sign checkpoints

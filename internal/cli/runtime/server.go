@@ -492,6 +492,16 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 
 		_, _ = fmt.Fprintf(opts.Stderr, "  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+	} else if cfg.FlightRecorder.Enabled {
+		// Flight recorder is on by default, but no dir is configured, so no
+		// recorder is built and no receipts are written. Surface this once so an
+		// operator who expects "verify the boundary" out of the box knows why the
+		// evidence directory is empty. `pipelock init` generates a dir + signing
+		// key and writes them into the config; setting flight_recorder.dir (and a
+		// signing_key_path) makes receipts live.
+		_, _ = fmt.Fprintf(opts.Stderr,
+			"  Recorder: enabled but inert - no flight_recorder.dir configured; "+
+				"no receipts will be written. Run 'pipelock init' or set flight_recorder.dir + signing_key_path.\n")
 	}
 	if err := s.initConductorProducer(cfg, m, recPrivKey, opts.Stderr); err != nil {
 		s.cleanup()

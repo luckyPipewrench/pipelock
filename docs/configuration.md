@@ -2106,8 +2106,8 @@ flight_recorder:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Enable evidence recording |
-| `dir` | (required if enabled) | Directory for evidence files |
+| `enabled` | `true` | Enable evidence recording. **On by default**, but recording requires `dir` and a signing key — `enabled: true` with no `dir` is inert (nothing written), not an error. `pipelock init` provisions both. Set `enabled: false` to opt out. |
+| `dir` | (empty) | Directory for evidence files. Recorder is inert until set; `pipelock init` generates one. |
 | `checkpoint_interval` | `1000` | Entries between signed checkpoints |
 | `retention_days` | `0` | Auto-expire files after N days (0 = keep forever) |
 | `redact` | `true` | DLP-redact evidence content before writing. Receipt entries get field-level redaction (target/pattern scrubbed, signature preserved). |

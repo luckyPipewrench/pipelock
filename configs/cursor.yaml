@@ -587,3 +587,16 @@ airlock:
     hard_minutes: 15
     drain_minutes: 0
     drain_timeout_seconds: 30
+
+# ---- flight_recorder (tamper-evident decision receipts) ----
+# On by default so you can "verify the boundary." Receipts are evidence, never
+# enforcement: a recorder failure never blocks traffic. Recording goes LIVE only
+# once `dir` and `signing_key_path` are set (run `pipelock init`, which generates
+# both); without them the recorder is inert and nothing is written. `redact`
+# scrubs secrets from receipt targets before they touch disk -- keep it on, since
+# receipts carry the destinations of mediated traffic.
+flight_recorder:
+  enabled: true
+  redact: true
+  # dir: /var/lib/pipelock/recorder
+  # signing_key_path: /etc/pipelock/keys/flight-recorder-signing.key

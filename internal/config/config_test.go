@@ -2149,6 +2149,41 @@ func TestLoad_PresetYAMLFiles(t *testing.T) {
 	}
 }
 
+// TestLoad_PresetsEnableFlightRecorder proves every shipped preset carries the
+// flight_recorder block consistent with the on-by-default invariant: the section
+// is present, parses, and resolves enabled=true. Presets cannot carry a
+// machine-specific dir/signing_key_path, so they stay inert until `pipelock init`
+// (or the operator) fills those in - this only asserts the consistency contract.
+func TestLoad_PresetsEnableFlightRecorder(t *testing.T) {
+	presets := []string{
+		"../../configs/balanced.yaml",
+		"../../configs/strict.yaml",
+		"../../configs/audit.yaml",
+		"../../configs/claude-code.yaml",
+		"../../configs/cursor.yaml",
+		"../../configs/generic-agent.yaml",
+		"../../configs/hostile-model.yaml",
+	}
+	for _, path := range presets {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				t.Fatalf("resolving %s: %v", path, err)
+			}
+			cfg, err := Load(abs)
+			if err != nil {
+				t.Fatalf("loading preset %s: %v", abs, err)
+			}
+			if !cfg.FlightRecorder.Enabled {
+				t.Errorf("%s: flight_recorder.enabled = false, want true (preset inconsistent with default)", filepath.Base(path))
+			}
+			if !cfg.FlightRecorder.Redact {
+				t.Errorf("%s: flight_recorder.redact = false, want true (receipts would persist targets in the clear)", filepath.Base(path))
+			}
+		})
+	}
+}
+
 func TestLoad_ExampleYAMLFiles(t *testing.T) {
 	examples := []string{
 		"../../examples/quickstart/pipelock.yaml",
@@ -9624,6 +9659,7 @@ func TestLoad_PreservesSecurityBooleanDefaults(t *testing.T) {
 		{"ScanAPI.Kinds.DLP", cfg.ScanAPI.Kinds.DLP},
 		{"ScanAPI.Kinds.PromptInjection", cfg.ScanAPI.Kinds.PromptInjection},
 		{"ScanAPI.Kinds.ToolCall", cfg.ScanAPI.Kinds.ToolCall},
+		{"FlightRecorder.Enabled", cfg.FlightRecorder.Enabled},
 		{"FlightRecorder.Redact", cfg.FlightRecorder.Redact},
 		{"FlightRecorder.SignCheckpoints", cfg.FlightRecorder.SignCheckpoints},
 		{"MCPToolProvenance.OfflineOnly", cfg.MCPToolProvenance.OfflineOnly},
@@ -9682,6 +9718,46 @@ func TestLoad_FlightRecorderFileMode(t *testing.T) {
 	}
 	if cfg.FlightRecorder.FileMode != 0o640 {
 		t.Errorf("FileMode = %04o, want 0640", cfg.FlightRecorder.FileMode)
+	}
+}
+
+// TestLoad_FlightRecorderEnabledStates documents the security-default invariant
+// for the on-by-default flight_recorder.enabled flag across its load-time states.
+// Reload reuses Load(), so the same resolution applies on hot reload; the
+// reload-with-change / reload-no-change states are exercised at the server layer
+// (see the runtime reload tests). A recorder is only BUILT when a dir is set, so
+// enabled=true with no dir resolves to true but records nothing (inert) - that
+// is asserted in the validation and server tests, not here.
+func TestLoad_FlightRecorderEnabledStates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		section string // YAML under the flight_recorder key, or "" to omit it
+		want    bool
+	}{
+		{name: "omitted_whole_section", section: "", want: true},
+		{name: "key_null", section: "flight_recorder:\n  enabled:\n", want: true},
+		{name: "key_blank", section: "flight_recorder:\n  enabled: \n", want: true},
+		{name: "explicit_false", section: "flight_recorder:\n  enabled: false\n", want: false},
+		{name: "explicit_true", section: "flight_recorder:\n  enabled: true\n", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "fr-enabled.yaml")
+			content := "mode: balanced\n" + tt.section
+			if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(cfgPath)
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			if cfg.FlightRecorder.Enabled != tt.want {
+				t.Errorf("FlightRecorder.Enabled = %v, want %v", cfg.FlightRecorder.Enabled, tt.want)
+			}
+		})
 	}
 }
 
@@ -9889,6 +9965,7 @@ func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
 		{"ScanAPI.Kinds.DLP", cfg.ScanAPI.Kinds.DLP},
 		{"ScanAPI.Kinds.PromptInjection", cfg.ScanAPI.Kinds.PromptInjection},
 		{"ScanAPI.Kinds.ToolCall", cfg.ScanAPI.Kinds.ToolCall},
+		{"FlightRecorder.Enabled", cfg.FlightRecorder.Enabled},
 		{"FlightRecorder.Redact", cfg.FlightRecorder.Redact},
 		{"FlightRecorder.SignCheckpoints", cfg.FlightRecorder.SignCheckpoints},
 		{"MCPToolProvenance.OfflineOnly", cfg.MCPToolProvenance.OfflineOnly},
@@ -9923,6 +10000,7 @@ func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
 		"  include_allowed: false\n" +
 		"  include_blocked: false\n" +
 		"flight_recorder:\n" +
+		"  enabled: false\n" +
 		"  redact: false\n" +
 		"  sign_checkpoints: false\n" +
 		"mcp_tool_provenance:\n" +
@@ -9954,6 +10032,7 @@ func TestLoad_ExplicitFalseOverridesDefaults(t *testing.T) {
 		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
 		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
 		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+		{"FlightRecorder.Enabled", cfg.FlightRecorder.Enabled},
 		{"FlightRecorder.Redact", cfg.FlightRecorder.Redact},
 		{"FlightRecorder.SignCheckpoints", cfg.FlightRecorder.SignCheckpoints},
 		{"MCPToolProvenance.OfflineOnly", cfg.MCPToolProvenance.OfflineOnly},
@@ -12779,14 +12858,16 @@ func TestValidate_FlightRecorder(t *testing.T) {
 			},
 		},
 		{
-			name: "enabled_without_dir",
+			// Enabled is on by default; without a dir the recorder is inert
+			// (no recorder built) rather than a validation error, so the
+			// default-on flip cannot break configs that omit a recorder dir.
+			name: "enabled_without_dir_is_inert_not_an_error",
 			cfg: func() *Config {
 				c := Defaults()
 				c.FlightRecorder.Enabled = true
 				c.FlightRecorder.Dir = ""
 				return c
 			},
-			wantErr: "flight_recorder.dir is required",
 		},
 		{
 			name: "negative_checkpoint_interval",

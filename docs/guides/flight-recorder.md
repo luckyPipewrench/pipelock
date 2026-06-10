@@ -2,6 +2,8 @@
 
 The flight recorder writes every enforcement decision pipelock makes to a hash-chained, tamper-evident evidence log. Each entry is cryptographically linked to the one before it, so any deletion or modification breaks the chain. Signed checkpoints let auditors verify the chain was intact at specific points in time without replaying every entry. The recorder is designed for post-incident investigation, compliance evidence, and forensic replay.
 
+**On by default.** `enabled` defaults to `true` so receipts are available out of the box ("verify the boundary"). It only *records* once a `dir` and a signing key are configured, though: without them the recorder is inert and writes nothing, so the default flip never breaks an existing config. `pipelock init` generates a recorder directory and an Ed25519 signing key and writes them into the config, which is what makes receipts live. The recorder is **evidence, never enforcement** — a recorder failure never blocks traffic.
+
 ## What Gets Recorded
 
 The recorder captures two categories of evidence:
@@ -30,8 +32,8 @@ flight_recorder:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | false | Master switch. Off by default. |
-| `dir` | (required) | Directory for evidence files. Created if absent. |
+| `enabled` | true | Master switch. **On by default.** Recording requires `dir` and a signing key too — `enabled: true` with no `dir` is inert (nothing is written), not an error. Set `enabled: false` to opt out. |
+| `dir` | (empty) | Directory for evidence files. The recorder stays inert until this is set; created if absent. `pipelock init` generates one. |
 | `checkpoint_interval` | 1000 | How many entries between signed checkpoints. |
 | `retention_days` | 0 | Auto-expire files after N days. 0 = never expire. |
 | `redact` | true | DLP scan each entry before writing. Replaces matched content with a redaction marker. |
@@ -42,6 +44,22 @@ flight_recorder:
 
 The receipt-signing private key is loaded from
 `flight_recorder.signing_key_path`.
+
+### Default-on footguns (handled)
+
+Because the recorder is on by default, two footguns are bounded by the defaults — keep them in mind if you change them:
+
+- **Disk growth.** Evidence files rotate at `max_entries_per_file` (default 10000) and can auto-expire with `retention_days`. Leave rotation on so a busy proxy cannot silently fill the disk; set `retention_days` for a hard cap.
+- **Privacy.** Receipts record the *targets* of mediated traffic. `redact` (default `true`) DLP-scrubs each entry before it touches disk so secrets are not persisted in the clear. Do not disable it unless you have a separate control around the evidence directory.
+
+### Completeness anchor (transcript root)
+
+On a **clean shutdown** the recorder seals the chain with a `transcript_root` entry: a single record naming the final sequence number and the chain's root hash. This is the completeness anchor — `verify-receipt --chain` can confirm the chain reached the sealed root rather than reporting a chain that was silently truncated at the tail as VALID.
+
+Scope and limits:
+
+- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). A `SIGKILL` (or power loss) terminates the process before the seal runs, so the tail is truncated with no root. Detecting that case requires an external/periodic anchor and is not closed here.
+- **Restart resumes cleanly.** A transcript root is a per-run checkpoint, not a permanent seal. The next start resumes emission into the same hash-linked chain (a continuous chain still verifies), so receipts are never silently bricked by a prior clean shutdown.
 
 ### Key-free evidence capture (`--capture-output`)
 

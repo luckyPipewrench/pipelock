@@ -128,6 +128,14 @@ func (s *Server) Start(ctx context.Context) error {
 		cancel()
 		s.proxy.ShutdownAgentServers()
 		lifecycleWG.Wait()
+		// Drain-then-seal: the main proxy server (s.proxy.Start below) has
+		// already returned and every auxiliary receipt-emitting listener has now
+		// joined lifecycleWG, so no Emit can race the seal. Write the transcript
+		// root here, before the deferred s.cleanup() (registered earlier, so it
+		// runs after this) closes the recorder. Sealing the completeness anchor
+		// on clean exit is the whole point of F4; it is a no-op when receipts are
+		// off or none were emitted.
+		s.sealTranscriptRoot()
 	}()
 
 	// Capture duration timer: cancel context after the specified capture

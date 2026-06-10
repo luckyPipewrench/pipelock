@@ -2293,7 +2293,14 @@ func (c *Config) validateFlightRecorder() error {
 		return nil
 	}
 	if c.FlightRecorder.Dir == "" {
-		return fmt.Errorf("flight_recorder.dir is required when enabled")
+		// Enabled is on by default, but a recorder is only built when a dir is
+		// configured (server.go gates on Dir != ""). Treat enabled-without-dir
+		// as an inert no-op rather than a hard error: making it fatal would
+		// break every config that omits flight_recorder.dir the moment the
+		// default flipped on, and the recorder is evidence, never enforcement.
+		// `pipelock init` populates dir + signing key; without them the server
+		// prints a one-time notice that receipts are inert.
+		return nil
 	}
 	if c.FlightRecorder.CheckpointInterval < 0 {
 		return fmt.Errorf("flight_recorder.checkpoint_interval must be non-negative")

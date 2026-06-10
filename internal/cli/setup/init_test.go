@@ -12,7 +12,117 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+// TestInitCmd_ProvisionsFlightRecorder proves done-state #1: a stock `pipelock
+// init` writes a config with the flight recorder live (enabled + dir + signing
+// key), so receipts work out of the box. Validation runs (not skipped) to prove
+// the generated config is valid with the recorder on.
+func TestInitCmd_ProvisionsFlightRecorder(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, "cfg", "pipelock.yaml")
+
+	var buf bytes.Buffer
+	cmd := InitCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"--scan-home", home,
+		"--output", configPath,
+		"--skip-canary",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v\noutput:\n%s", err, buf.String())
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("loading generated config: %v", err)
+	}
+	if !cfg.FlightRecorder.Enabled {
+		t.Error("generated config has flight_recorder.enabled = false, want true")
+	}
+	if cfg.FlightRecorder.Dir == "" {
+		t.Error("generated config has empty flight_recorder.dir; receipts would be inert")
+	}
+	if !filepath.IsAbs(cfg.FlightRecorder.Dir) {
+		t.Errorf("flight_recorder.dir = %q, want an absolute path", cfg.FlightRecorder.Dir)
+	}
+	if cfg.FlightRecorder.SigningKeyPath == "" {
+		t.Fatal("generated config has empty flight_recorder.signing_key_path; receipts cannot be signed")
+	}
+	if !cfg.FlightRecorder.Redact {
+		t.Error("generated config has flight_recorder.redact = false; receipts would persist targets in the clear")
+	}
+
+	// The signing key must exist on disk and load as a usable Ed25519 key.
+	if _, err := os.Stat(cfg.FlightRecorder.SigningKeyPath); err != nil {
+		t.Fatalf("signing key not on disk: %v", err)
+	}
+	if _, err := signing.LoadPrivateKeyFile(cfg.FlightRecorder.SigningKeyPath); err != nil {
+		t.Fatalf("generated signing key does not load: %v", err)
+	}
+
+	// The recorder directory must exist (created during provisioning).
+	if info, err := os.Stat(cfg.FlightRecorder.Dir); err != nil || !info.IsDir() {
+		t.Fatalf("recorder dir not provisioned: err=%v", err)
+	}
+}
+
+// TestEnsureFlightRecorderSigningKey_ReusesExisting proves an existing signing
+// key is never regenerated. Clobbering it would orphan any receipts already
+// signed under the old key (they fail to resume and emission bricks), so a
+// second provisioning pass (e.g. `pipelock init --force`) must keep the key.
+func TestEnsureFlightRecorderSigningKey_ReusesExisting(t *testing.T) {
+	base := t.TempDir()
+	keyPath := filepath.Join(base, "keys", "flight-recorder-signing.key")
+	recorderDir := filepath.Join(base, "recorder")
+
+	if err := ensureFlightRecorderSigningKey(keyPath, recorderDir); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+	first, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("reading first key: %v", err)
+	}
+	if err := ensureFlightRecorderSigningKey(keyPath, recorderDir); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+	second, err := os.ReadFile(filepath.Clean(keyPath))
+	if err != nil {
+		t.Fatalf("reading second key: %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Error("signing key was regenerated on the second pass; it must be reused to avoid orphaning the receipt chain")
+	}
+}
+
+// TestInitCmd_DryRunProvisionsNoKey proves --dry-run never writes a signing key
+// (no side effects on disk) even though the previewed config names one.
+func TestInitCmd_DryRunProvisionsNoKey(t *testing.T) {
+	home := t.TempDir()
+	configPath := filepath.Join(home, "cfg", "pipelock.yaml")
+
+	var buf bytes.Buffer
+	cmd := InitCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"--scan-home", home,
+		"--output", configPath,
+		"--dry-run",
+		"--skip-canary",
+		"--skip-validate",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init --dry-run failed: %v", err)
+	}
+	_, keyPath := flightRecorderInitPaths(configPath)
+	if _, err := os.Stat(keyPath); err == nil {
+		t.Errorf("dry-run wrote a signing key at %s; it must not touch disk", keyPath)
+	}
+}
 
 func TestInitCmd_DryRun(t *testing.T) {
 	home := t.TempDir()

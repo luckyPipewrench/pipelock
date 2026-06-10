@@ -6,6 +6,7 @@ package setup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // Exit codes for init command.
@@ -202,6 +204,16 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		configPath = filepath.Join(cfgDir, defaultConfigSubdir, "pipelock.yaml")
 	}
 
+	// Wire the flight recorder to disk so receipts ("verify the boundary") are
+	// live out of the box: a recorder directory and an Ed25519 signing key beside
+	// the config. Absolute paths so the generated config records regardless of
+	// the proxy's working directory (Load does not resolve flight_recorder paths
+	// relative to the config file). The key file is generated only on an actual
+	// write (below), never on --dry-run.
+	recorderDir, signingKeyPath := flightRecorderInitPaths(configPath)
+	cfg.FlightRecorder.Dir = recorderDir
+	cfg.FlightRecorder.SigningKeyPath = signingKeyPath
+
 	result.Setup = &initSetupResult{
 		ConfigPath: configPath,
 		Preset:     opts.preset,
@@ -224,6 +236,9 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 			result.Setup.Written = false
 			result.Setup.SkippedExsting = true
 		} else {
+			if err := ensureFlightRecorderSigningKey(signingKeyPath, recorderDir); err != nil {
+				return cliutil.ExitCodeError(initExitError, fmt.Errorf("provisioning flight recorder: %w", err))
+			}
 			if err := writeConfig(cfg, configPath, opts.preset); err != nil {
 				return cliutil.ExitCodeError(initExitError, fmt.Errorf("writing config: %w", err))
 			}
@@ -387,6 +402,48 @@ func writeConfig(cfg *config.Config, configPath, preset string) error {
 		return fmt.Errorf("writing %s: %w", configPath, err)
 	}
 
+	return nil
+}
+
+// flightRecorderInitPaths returns the recorder directory and signing-key path
+// that `pipelock init` provisions next to the generated config. Both are
+// absolute so the generated config records regardless of the proxy's working
+// directory. Mirrors the layout used by `pipelock contain` (recorder dir +
+// keys/ subdir) for consistency across setup paths.
+func flightRecorderInitPaths(configPath string) (dir, keyPath string) {
+	configDir := filepath.Dir(configPath)
+	if abs, err := filepath.Abs(configDir); err == nil {
+		configDir = abs
+	}
+	return filepath.Join(configDir, "recorder"),
+		filepath.Join(configDir, "keys", "flight-recorder-signing.key")
+}
+
+// ensureFlightRecorderSigningKey creates the recorder directory and an Ed25519
+// signing key used to sign decision receipts. An existing key is reused, never
+// overwritten: the signing key anchors the receipt chain, so clobbering it would
+// orphan any receipts already on disk under the old key (they fail to resume and
+// emission bricks). Directories use 0o750 and the key file 0o600 (via
+// signing.SavePrivateKey) so the agent side cannot read pipelock's signing key.
+func ensureFlightRecorderSigningKey(keyPath, recorderDir string) error {
+	if err := os.MkdirAll(recorderDir, 0o750); err != nil {
+		return fmt.Errorf("creating recorder directory %s: %w", recorderDir, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
+		return fmt.Errorf("creating signing key directory: %w", err)
+	}
+	if _, err := os.Stat(keyPath); err == nil {
+		return nil // reuse existing key; never orphan the prior receipt chain
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking signing key %s: %w", keyPath, err)
+	}
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		return fmt.Errorf("generating signing key: %w", err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		return fmt.Errorf("writing signing key %s: %w", keyPath, err)
+	}
 	return nil
 }
 

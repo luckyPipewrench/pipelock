@@ -488,8 +488,19 @@ func (e *Emitter) resumeChain() error {
 		for j := len(entries) - 1; j >= 0; j-- {
 			switch entries[j].Type {
 			case transcriptRootEntryType:
-				e.rootEmitted = true
-				return nil
+				// A transcript root is a clean-shutdown checkpoint that seals the
+				// receipts emitted up to that point IN THIS PROCESS. It is not a
+				// permanent on-disk seal: skip it and keep scanning back for the
+				// last action receipt so the next start resumes emission into the
+				// same hash-linked chain (a continuous chain still verifies, and
+				// the root's historical claim over seq 0..N stays true). The old
+				// behavior set rootEmitted=true here, which made every subsequent
+				// Emit return ErrChainSealed - silently bricking receipts after
+				// the first clean shutdown once EmitTranscriptRoot has a caller.
+				// Skipping it is also evidence-suppression-resistant: an attacker
+				// who appends a transcript_root to the evidence file cannot use it
+				// to stop the proxy from recording (the tail action receipt is
+				// still signature-verified below before we trust its chain state).
 			case recorderEntryType:
 				rcpt, unmarshalErr := receiptFromEntry(entries[j])
 				if unmarshalErr != nil {

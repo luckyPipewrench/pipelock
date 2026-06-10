@@ -456,6 +456,87 @@ func TestEmitTranscriptRoot_NoReceipts(t *testing.T) {
 	}
 }
 
+// TestResume_AfterTranscriptRoot_DoesNotBrick is the FIX-TRAP B regression. Once
+// EmitTranscriptRoot has a production caller (graceful shutdown), a transcript
+// root lands as the newest evidence entry on clean exit. A resume that treated
+// the root as a permanent on-disk seal would set rootEmitted and make every Emit
+// after the first clean shutdown return ErrChainSealed - silently killing
+// receipts. This proves a restart after a sealed shutdown resumes emitting into
+// one continuous, verifiable chain.
+func TestResume_AfterTranscriptRoot_DoesNotBrick(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+
+	emit := func(e *Emitter) error {
+		return e.Emit(EmitOpts{
+			ActionID:  NewActionID(),
+			Target:    chainTestTarget,
+			Verdict:   config.ActionAllow,
+			Transport: chainTestTransport,
+			Method:    http.MethodGet,
+		})
+	}
+
+	// Run 1: emit 2 receipts, seal with a transcript root, shut down.
+	rec1 := newTestRecorder(t, dir, priv)
+	e1 := NewEmitter(EmitterConfig{Recorder: rec1, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+	for range 2 {
+		if err := emit(e1); err != nil {
+			t.Fatalf("run1 Emit: %v", err)
+		}
+	}
+	if err := e1.EmitTranscriptRoot(chainTestSession); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+	if err := rec1.Close(); err != nil {
+		t.Fatalf("close rec1: %v", err)
+	}
+
+	// Run 2: restart against the SAME evidence dir (sealed tail on disk).
+	rec2 := newTestRecorder(t, dir, priv)
+	e2 := NewEmitter(EmitterConfig{Recorder: rec2, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+	if e2 == nil {
+		t.Fatal("emitter nil after resume")
+	}
+	if err := e2.InitError(); err != nil {
+		t.Fatalf("resume after sealed shutdown errored (should resume cleanly): %v", err)
+	}
+	// The post-seal restart MUST emit (not be bricked by ErrChainSealed).
+	for range 2 {
+		if err := emit(e2); err != nil {
+			t.Fatalf("post-seal restart Emit bricked: %v", err)
+		}
+	}
+	if err := rec2.Close(); err != nil {
+		t.Fatalf("close rec2: %v", err)
+	}
+
+	// All 4 action receipts (2 per run) form one continuous, verifiable chain.
+	entries := readAllEntriesFromDir(t, dir)
+	var receipts []Receipt
+	for i := range entries {
+		if entries[i].Type != recorderEntryType {
+			continue
+		}
+		r, err := receiptFromEntry(entries[i])
+		if err != nil {
+			t.Fatalf("parse receipt: %v", err)
+		}
+		receipts = append(receipts, *r)
+	}
+	if len(receipts) != 4 {
+		t.Fatalf("expected 4 action receipts across both runs, got %d", len(receipts))
+	}
+	res := VerifyChain(receipts, "")
+	if !res.Valid {
+		t.Fatalf("post-seal chain failed to verify: %s", res.Error)
+	}
+	if res.ReceiptCount != 4 {
+		t.Errorf("ReceiptCount = %d, want 4 (seq must continue across the seal, not reset)", res.ReceiptCount)
+	}
+}
+
 func TestEmitTranscriptRoot_HappyPath(t *testing.T) {
 	t.Parallel()
 

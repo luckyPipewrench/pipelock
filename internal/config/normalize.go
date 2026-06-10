@@ -149,8 +149,14 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	}
 	setBoolDefault(sse, "enabled", &cfg.ResponseScanning.SSEStreaming.Enabled)
 
-	// Flight recorder: redact and sign default to true (fail-closed for forensics).
+	// Flight recorder: enabled, redact, and sign default to true. enabled is
+	// default-on so receipts are available out of the box (omitting the section
+	// must produce enabled=true, per the security-default invariant); redact and
+	// sign default true for fail-closed forensics. enabled=true with no dir is
+	// inert (no recorder is built), so the default cannot break configs that omit
+	// a recorder dir - validateFlightRecorder treats that case as a no-op.
 	fr, _ := raw["flight_recorder"].(map[string]interface{})
+	setBoolDefault(fr, "enabled", &cfg.FlightRecorder.Enabled)
 	setBoolDefault(fr, "redact", &cfg.FlightRecorder.Redact)
 	setBoolDefault(fr, "sign_checkpoints", &cfg.FlightRecorder.SignCheckpoints)
 

@@ -81,9 +81,10 @@ Provide the license through the standard sources:
 - `PIPELOCK_LICENSE_PUBLIC_KEY` — required on unofficial/local enterprise builds
   that do not embed the public key;
 - `PIPELOCK_LICENSE_CRL_FILE` (or `--license-crl-file`) — an optional signed
-  revocation list; a revoked license tears the fleet entitlement down at
-  runtime, and Conductor cannot be re-activated by config reload once revoked or
-  expired (restart-only).
+  revocation list. Server commands check it at startup. Follower runtimes also
+  watch configured license revocation/expiry state: a proven loss tears down the
+  Conductor fan-out while free detection keeps running, and config reload cannot
+  re-activate Conductor once it is down (restart-only).
 
 See the [tier-gating audit matrix](../security/tier-gating-audit-matrix.md) for
 the full entitlement map and the negative (deny) cases.
@@ -166,9 +167,10 @@ org/fleet/instance. Ingest is idempotent per `batch_id`, so a retried delivery
 is recorded once.
 
 Audit reads require the full `org`/`fleet`/`instance` namespace tuple and an
-auditor (reader) token. The query API returns metadata-only batch summaries; the
-per-batch endpoint returns the stored payload to an authorized auditor. An
-auditor can read and export evidence but cannot change policy.
+auditor (reader) token. The query API, including the per-batch endpoint, returns
+metadata-only summaries and deliberately does **not** export raw stored payload
+bytes. The local SQLite store is the raw-evidence escrow boundary; treat
+`--storage-dir` as sensitive operator-controlled evidence storage.
 
 ## Trying it locally (`pipelock conductor bootstrap`)
 

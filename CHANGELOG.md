@@ -5,7 +5,13 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.7.0] - 2026-06-10
+
+### Highlights
+
+The arc of v2.7 is **receipts you can actually rely on, on by default**. The flight recorder is now enabled out of the box, so a stock install produces signed, verifiable evidence instead of nothing; receipt verification is **safe by default** (an unpinned `verify-receipt` is structural-only and exits non-zero unless you pass `--allow-unpinned`); a signing-key rotation no longer bricks the chain (it opens a linked, offline-verifiable segment); every receipt is bound to its process run by a signed `run_nonce` to defeat replay; A2A block paths emit receipts for transport parity; and `flight_recorder.require_receipts` lets an operator make an allow-path receipt a fail-closed precondition for egress.
+
+The second headline is **Conductor reaches GA**: the enterprise fleet control plane (signed policy-bundle distribution, a per-org/fleet/instance signed-evidence audit sink, and fleet-wide enrollment / remote kill / policy rollback over mTLS + SPIFFE) ships with full user documentation. Followers enforce locally and stay fail-closed; Conductor holds no agent secrets and never scans on their behalf, and every fleet command fails closed without an Enterprise license granting the `fleet` feature.
 
 ### ⚠️ Breaking Changes / Upgrade Notes
 

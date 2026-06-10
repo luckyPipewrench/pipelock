@@ -1,5 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -80,12 +79,14 @@ test("EvidenceReceipt v2 multi-receipt chain verifies with pinned key", async ()
   assert.equal(result.final_seq, 1);
 });
 
-test("EvidenceReceipt v2 tampered chain fails closed", async () => {
+test("EvidenceReceipt v2 valid 1-receipt chain after pop", async () => {
   const receipts = await buildEvidenceChain(2);
   receipts.pop();
   const result = await verifyChain(receipts, v2GoldenPublicKey);
   assert.equal(result.valid, true, result.error);
+});
 
+test("EvidenceReceipt v2 tampered chain fails closed", async () => {
   const tampered = await buildEvidenceChain(2);
   tampered[1]!.chain_prev_hash = "sha256:0";
   const broken = await verifyChain(tampered, v2GoldenPublicKey);

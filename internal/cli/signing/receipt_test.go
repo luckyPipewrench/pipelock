@@ -840,3 +840,15 @@ func TestVerifyChain_WrongKeyBreaksChain(t *testing.T) {
 		t.Errorf("expected 'Broke at' detail, got: %s", buf.String())
 	}
 }
+
+func TestResolveExpectedKeyHexesWrapsFailedKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveExpectedKeyHexes([]string{"not-a-key"})
+	if err == nil {
+		t.Fatal("expected invalid key to fail")
+	}
+	if !strings.Contains(err.Error(), `resolving --key "not-a-key"`) {
+		t.Fatalf("expected failing key in error, got %v", err)
+	}
+}

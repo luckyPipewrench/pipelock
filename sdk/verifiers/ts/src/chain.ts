@@ -94,10 +94,17 @@ async function verifyEvidenceChain(
   if (keyHex === "" && options.allowUnpinned !== true) {
     return unpinnedChainResult(0);
   }
-  const signerID = signerKeyID(receipts[0] as Receipt);
+  const first = receipts[0];
+  if (first === undefined) {
+    return broken(0, "empty chain");
+  }
+  const signerID = signerKeyID(first);
   let prevHash = genesisHash;
   for (let i = 0; i < receipts.length; i++) {
-    const receipt = receipts[i] as Receipt;
+    const receipt = receipts[i];
+    if (receipt === undefined) {
+      return broken(i, `seq gap: expected ${i}, got missing receipt`);
+    }
     const seq = receipt.chain_seq ?? 0;
     if (receipt.record_type !== evidenceRecordType) {
       return broken(seq, `seq ${seq}: mixed receipt record_type`);
@@ -122,7 +129,10 @@ async function verifyEvidenceChain(
     }
     prevHash = receiptHash(receipt);
   }
-  const last = receipts[receipts.length - 1] as Receipt;
+  const last = receipts[receipts.length - 1];
+  if (last === undefined) {
+    return broken(0, "empty chain");
+  }
   return {
     valid: true,
     receipt_count: receipts.length,

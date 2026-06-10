@@ -352,7 +352,7 @@ func resolveExpectedKeyHexes(keys []string) ([]string, error) {
 	for _, k := range keys {
 		resolved, err := resolveExpectedKeyHex(k)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolving --key %q: %w", k, err)
 		}
 		if resolved != "" {
 			out = append(out, resolved)

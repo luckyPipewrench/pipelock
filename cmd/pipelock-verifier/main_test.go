@@ -180,6 +180,25 @@ func newFixture(t *testing.T, n int) *fixture {
 	}
 }
 
+func conformanceCorpusKey(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join("..", "..", "sdk", "conformance", "testdata", "corpus", "test-key.json")
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read conformance key: %v", err)
+	}
+	var key struct {
+		PublicKeyHex string `json:"public_key_hex"`
+	}
+	if err := json.Unmarshal(data, &key); err != nil {
+		t.Fatalf("parse conformance key: %v", err)
+	}
+	if key.PublicKeyHex == "" {
+		t.Fatal("conformance key missing public_key_hex")
+	}
+	return key.PublicKeyHex
+}
+
 // writePacketDir lays out evidence.jsonl + verifier.txt + packet.json under
 // dir. If mutate is non-nil it is called on the packet just before writing
 // so individual tests can tamper specific fields.
@@ -757,6 +776,45 @@ func TestReceipt_JSONOutput(t *testing.T) {
 	}
 	if !rpt.Valid {
 		t.Errorf("expected valid=true, got %+v", rpt)
+	}
+}
+
+func TestReceipt_ConformanceRunNonceBound(t *testing.T) {
+	t.Parallel()
+
+	key := conformanceCorpusKey(t)
+	path := filepath.Join("..", "..", "sdk", "conformance", "testdata", "corpus", "golden", "11-run-nonce-bound.json")
+	stdout, _, code := runRoot(t, "receipt", "--key", key, "--json", path)
+	if code != cliutil.ExitOK {
+		t.Fatalf("nonce-bearing receipt should pass, stdout=%q", stdout)
+	}
+	var rpt receiptReport
+	if err := json.Unmarshal([]byte(stdout), &rpt); err != nil {
+		t.Fatalf("parse json: %v", err)
+	}
+	if !rpt.Valid {
+		t.Fatalf("expected valid=true, got %+v", rpt)
+	}
+}
+
+func TestReceipt_ConformanceRunNonceTamperFails(t *testing.T) {
+	t.Parallel()
+
+	key := conformanceCorpusKey(t)
+	path := filepath.Join("..", "..", "sdk", "conformance", "testdata", "corpus", "malicious", "m15-run-nonce-tampered.json")
+	stdout, _, code := runRoot(t, "receipt", "--key", key, "--json", path)
+	if code == cliutil.ExitOK {
+		t.Fatalf("tampered run_nonce receipt should fail, stdout=%q", stdout)
+	}
+	var rpt receiptReport
+	if err := json.Unmarshal([]byte(stdout), &rpt); err != nil {
+		t.Fatalf("parse json: %v", err)
+	}
+	if rpt.Valid {
+		t.Fatalf("expected valid=false, got %+v", rpt)
+	}
+	if !strings.Contains(rpt.Error, "signature verification failed") {
+		t.Fatalf("error = %q, want signature verification failed", rpt.Error)
 	}
 }
 

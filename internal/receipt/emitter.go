@@ -6,6 +6,8 @@ package receipt
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -65,6 +67,7 @@ type Emitter struct {
 	actor      string
 	metrics    MetricsSink
 	initErr    error
+	runNonce   string
 
 	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
@@ -102,15 +105,21 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	if len(cfg.PrivKey) != ed25519.PrivateKeySize {
 		return nil
 	}
+	runNonce, nonceErr := newRunNonce()
 	e := &Emitter{
 		recorder:      cfg.Recorder,
 		privKey:       cfg.PrivKey,
 		principal:     cfg.Principal,
 		actor:         cfg.Actor,
 		metrics:       cfg.Metrics,
+		runNonce:      runNonce,
 		chainPrevHash: GenesisHash,
 	}
 	e.configHash.Store(cfg.ConfigHash)
+	if nonceErr != nil {
+		e.initErr = fmt.Errorf("generate run nonce: %w", nonceErr)
+		return e
+	}
 	e.initErr = e.resumeChain()
 	return e
 }
@@ -264,6 +273,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		RequestID:             opts.RequestID,
 		ChainPrevHash:         e.chainPrevHash,
 		ChainSeq:              e.chainSeq,
+		RunNonce:              e.runNonce,
 		// pendingTransition is non-nil only on the first receipt of a new
 		// segment opened by resumeChain after a legitimate key rotation. It
 		// is bound into the signed record so the segment boundary is provable
@@ -440,6 +450,14 @@ func configHashString(v any) string {
 		return s
 	}
 	return ""
+}
+
+func newRunNonce() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(nonce[:]), nil
 }
 
 func redactionSummaryFromReport(profile string, report *redact.Report) *RedactionSummary {

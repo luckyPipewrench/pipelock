@@ -42,6 +42,35 @@ fn full_field_differential_corpus_receipt_verifies() {
 }
 
 #[test]
+fn run_nonce_corpus_receipt_verifies() {
+    let key = corpus_key();
+    let report = run_receipt(
+        &format!("{CORPUS}/golden/11-run-nonce-bound.json"),
+        &key,
+        false,
+    )
+    .expect("run receipt");
+    assert!(report.valid, "{:?}", report.error);
+}
+
+#[test]
+fn tampered_run_nonce_corpus_receipt_rejected() {
+    let key = corpus_key();
+    let report = run_receipt(
+        &format!("{CORPUS}/malicious/m15-run-nonce-tampered.json"),
+        &key,
+        false,
+    )
+    .expect("run receipt");
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("signature verification failed"));
+}
+
+#[test]
 fn duplicate_key_corpus_receipt_rejected() {
     let key = corpus_key();
     let report = run_receipt(

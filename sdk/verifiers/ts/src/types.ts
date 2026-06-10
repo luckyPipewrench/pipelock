@@ -71,12 +71,21 @@ export interface ActionRecord {
   request_id?: string;
   chain_prev_hash?: string;
   chain_seq?: number;
+  run_nonce?: string;
+  key_transition?: KeyTransition;
   venue?: string;
   jurisdiction?: string;
   rulebook_id?: string;
   remedy_class?: string;
   contestation_window?: string;
   precedent_refs?: string[];
+  [key: string]: unknown;
+}
+
+export interface KeyTransition {
+  prior_signer_key?: string;
+  prior_chain_seq?: number;
+  prior_chain_hash?: string;
   [key: string]: unknown;
 }
 

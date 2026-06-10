@@ -47,6 +47,7 @@ const actionRecordFields: readonly FieldSpec[] = [
   ["request_id", true],
   ["chain_prev_hash", false],
   ["chain_seq", false],
+  ["run_nonce", true],
   ["key_transition", true, "key_transition"],
   ["venue", true],
   ["jurisdiction", true],

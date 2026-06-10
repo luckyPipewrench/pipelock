@@ -168,6 +168,11 @@ type ActionRecord struct {
 	ChainPrevHash string `json:"chain_prev_hash"`
 	ChainSeq      uint64 `json:"chain_seq"`
 
+	// RunNonce is generated once per process run and bound into every signed
+	// action record emitted by that process. Legacy receipts omit it; verifiers
+	// canonicalize absence the same as the Go omitempty zero value.
+	RunNonce string `json:"run_nonce,omitempty"`
+
 	// KeyTransition is present ONLY on the first receipt of a new chain
 	// segment that begins after a legitimate signing-key rotation. It binds
 	// the new segment to the prior segment's tail (prior signer key, final

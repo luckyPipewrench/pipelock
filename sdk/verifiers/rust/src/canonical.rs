@@ -61,6 +61,7 @@ const ACTION_RECORD_FIELDS: &[FieldSpec] = &[
     field("request_id", true),
     field("chain_prev_hash", false),
     field("chain_seq", false),
+    field("run_nonce", true),
     nested_field("key_transition", true, NestedKind::KeyTransition),
     field("venue", true),
     field("jurisdiction", true),

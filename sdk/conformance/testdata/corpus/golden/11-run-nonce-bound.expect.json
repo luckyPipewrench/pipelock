@@ -1,0 +1,11 @@
+{
+  "fixture_id": "11-run-nonce-bound",
+  "category": "golden",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Allow receipt carrying action_record.run_nonce. The nonce is part of the signed ActionRecord preimage, binding an otherwise repeatable decision to one process run.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "568ea8684a698aea99462fbd035e96f55d360ac4c7afc7ac000fadb11147c5ce",
+  "notes": "Verifier MUST accept. This is the run-nonce cross-language drift sentinel: action_record.run_nonce must be canonicalized in the same Go struct-order slot by every verifier."
+}

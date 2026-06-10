@@ -58,6 +58,11 @@ var safeEnumRE = regexp.MustCompile(`^[a-z0-9_]+$`)
 // provider request id) is rejected.
 var safeRequestIDRE = regexp.MustCompile(`^req-[0-9]+$`)
 
+// safeRunNonceRE matches the per-process receipt nonce emitted as 16 random
+// bytes encoded lowercase hex. It carries no private context, but the public
+// packet gate still constrains the shape so arbitrary strings cannot publish.
+var safeRunNonceRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
 // secretShapeRE is a backstop: if any of these shapes survive into a target or
 // pattern, redaction-before-sign failed and the artifact must not publish. This
 // is defense-in-depth behind the emitter's pre-sign sanitizer.
@@ -95,6 +100,9 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	// request_id, when present, must be pipelock's own internal counter shape.
 	if ar.RequestID != "" && !safeRequestIDRE.MatchString(ar.RequestID) {
 		return fmt.Errorf("%w: request_id %q is not the internal counter shape", errAllowlist, ar.RequestID)
+	}
+	if ar.RunNonce != "" && !safeRunNonceRE.MatchString(ar.RunNonce) {
+		return fmt.Errorf("%w: run_nonce %q is not the expected nonce shape", errAllowlist, ar.RunNonce)
 	}
 
 	// Benign taint/authority classification labels: allowed only when they match

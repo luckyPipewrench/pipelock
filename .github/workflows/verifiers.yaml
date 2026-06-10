@@ -173,7 +173,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: luckyPipewrench/agent-egress-bench
-          ref: 977cd463cc0c973d2010023d74258cf901d155fc
+          ref: 7f7601ce3c8eaa6182c01632ea7fb678fc0d2be9
           path: _aeb
           persist-credentials: false
 
@@ -181,7 +181,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: luckyPipewrench/pipelock-verify-python
-          ref: 5ecd1adcc92e2a5b11f99d942065bef68bcbb5db
+          ref: dd900c05d6f1ea21e46cd01d3e1460d4c9a860c1
           path: _pyverify
           persist-credentials: false
 

@@ -28,6 +28,17 @@ test("canonical: full-field differential corpus receipt verifies", async () => {
   assert.equal(report.valid, true, report.error);
 });
 
+test("canonical: run-nonce corpus receipt verifies", async () => {
+  const report = await runReceipt(`${corpus}/golden/11-run-nonce-bound.json`, corpusKey);
+  assert.equal(report.valid, true, report.error);
+});
+
+test("canonical: tampered run-nonce corpus receipt is rejected", async () => {
+  const report = await runReceipt(`${corpus}/malicious/m15-run-nonce-tampered.json`, corpusKey);
+  assert.equal(report.valid, false);
+  assert.match(report.error ?? "", /signature verification failed/u);
+});
+
 test("duplicate-key: corpus dup-key receipt is rejected", async () => {
   const report = await runReceipt(`${corpus}/malicious/m13-duplicate-key-verdict.json`, corpusKey);
   assert.equal(report.valid, false);

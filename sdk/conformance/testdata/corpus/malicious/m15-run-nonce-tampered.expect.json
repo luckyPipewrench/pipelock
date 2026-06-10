@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m15-run-nonce-tampered",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "run_nonce_tampered",
+  "description": "Signature was valid for the original run_nonce, but action_record.run_nonce has been rewritten post-signing. SHA-256(canonical(action_record)) no longer matches.",
+  "notes": "Verifier MUST recompute the canonical ActionRecord including run_nonce. Accepting this fixture means the nonce is being treated as an unsigned cosmetic sidecar."
+}

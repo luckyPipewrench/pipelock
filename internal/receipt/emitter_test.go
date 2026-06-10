@@ -168,8 +168,96 @@ func TestEmitter_Emit_HappyPath(t *testing.T) {
 	if receipt.ActionRecord.PolicyHash != testConfigHash {
 		t.Errorf("policy_hash = %q, want %q", receipt.ActionRecord.PolicyHash, testConfigHash)
 	}
+	if receipt.ActionRecord.RunNonce == "" {
+		t.Fatal("run_nonce is empty")
+	}
+	if _, err := hex.DecodeString(receipt.ActionRecord.RunNonce); err != nil {
+		t.Fatalf("run_nonce is not hex: %v", err)
+	}
+	if len(receipt.ActionRecord.RunNonce) != 32 {
+		t.Fatalf("run_nonce length = %d, want 32", len(receipt.ActionRecord.RunNonce))
+	}
 	if receipt.ActionRecord.Principal != testPrincipal {
 		t.Errorf("principal = %q, want %q", receipt.ActionRecord.Principal, testPrincipal)
+	}
+}
+
+func TestEmitter_RunNoncePerProcessRun(t *testing.T) {
+	t.Parallel()
+
+	dirA := t.TempDir()
+	pubA, privA := generateTestKey(t)
+	recA := newTestRecorder(t, dirA, privA)
+	eA := NewEmitter(EmitterConfig{
+		Recorder:   recA,
+		PrivKey:    privA,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+	if eA == nil {
+		t.Fatal("NewEmitter A returned nil")
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := eA.Emit(EmitOpts{
+			ActionID:  NewActionID(),
+			Target:    testTarget,
+			Verdict:   config.ActionAllow,
+			Transport: testTransport,
+			Method:    http.MethodGet,
+		}); err != nil {
+			t.Fatalf("Emit A %d: %v", i, err)
+		}
+	}
+	if err := recA.Close(); err != nil {
+		t.Fatalf("Close A: %v", err)
+	}
+
+	receiptsA := readAllReceiptsFromDir(t, dirA, pubA)
+	if len(receiptsA) != 2 {
+		t.Fatalf("receipts A = %d, want 2", len(receiptsA))
+	}
+	if receiptsA[0].ActionRecord.RunNonce == "" {
+		t.Fatal("first run_nonce is empty")
+	}
+	if receiptsA[0].ActionRecord.RunNonce != receiptsA[1].ActionRecord.RunNonce {
+		t.Fatalf("same emitter produced different run_nonce values: %q != %q",
+			receiptsA[0].ActionRecord.RunNonce, receiptsA[1].ActionRecord.RunNonce)
+	}
+
+	dirB := t.TempDir()
+	pubB, privB := generateTestKey(t)
+	recB := newTestRecorder(t, dirB, privB)
+	eB := NewEmitter(EmitterConfig{
+		Recorder:   recB,
+		PrivKey:    privB,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+	if eB == nil {
+		t.Fatal("NewEmitter B returned nil")
+	}
+	if err := eB.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Target:    testTarget,
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+	}); err != nil {
+		t.Fatalf("Emit B: %v", err)
+	}
+	if err := recB.Close(); err != nil {
+		t.Fatalf("Close B: %v", err)
+	}
+
+	receiptsB := readAllReceiptsFromDir(t, dirB, pubB)
+	if len(receiptsB) != 1 {
+		t.Fatalf("receipts B = %d, want 1", len(receiptsB))
+	}
+	if receiptsA[0].ActionRecord.RunNonce == receiptsB[0].ActionRecord.RunNonce {
+		t.Fatalf("different emitters reused run_nonce %q", receiptsA[0].ActionRecord.RunNonce)
 	}
 }
 
@@ -395,6 +483,7 @@ func TestEmitter_Emit_NilRedactionReportOmitted(t *testing.T) {
 		}
 		got := readReceiptFromDir(t, dir, pub)
 		got.ActionRecord.Timestamp = time.Time{}
+		got.ActionRecord.RunNonce = ""
 		data, err := json.Marshal(got.ActionRecord)
 		if err != nil {
 			t.Fatalf("json.Marshal(ActionRecord): %v", err)

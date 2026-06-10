@@ -16,6 +16,8 @@ from pipelock_aarp_verify.receipt import (
 )
 
 ROOT = Path(__file__).resolve().parents[4]
+CORPUS = ROOT / "sdk/conformance/testdata/corpus"
+CORPUS_KEY = json.loads((CORPUS / "test-key.json").read_text())["public_key_hex"]
 VALID_SPANNED_V2 = (
     ROOT
     / "internal/contract/testdata/golden/"
@@ -54,6 +56,69 @@ def test_valid_plain_v2_receipt_verifies() -> None:
     report = verify_receipt_file(VALID_PLAIN_V2, V2_GOLDEN_PUBLIC_KEY)
     assert report["valid"] is True, report.get("error")
     assert report["policy_hash"] == V2_GOLDEN_POLICY_HASH
+
+
+def test_valid_v1_run_nonce_receipt_verifies() -> None:
+    report = verify_receipt_file(CORPUS / "golden/11-run-nonce-bound.json", CORPUS_KEY)
+    assert report["valid"] is True, report.get("error")
+    assert report["action_id"] == "conformance-00010"
+    assert report["signer_key"] == CORPUS_KEY
+
+
+def test_tampered_v1_run_nonce_receipt_rejects() -> None:
+    report = verify_receipt_file(
+        CORPUS / "malicious/m15-run-nonce-tampered.json", CORPUS_KEY
+    )
+    assert report["valid"] is False
+    assert "signature verification failed" in report["error"]
+
+
+def test_tampered_v1_receipt_rejects_even_when_unpinned_allowed() -> None:
+    report = verify_receipt_file(
+        CORPUS / "malicious/m15-run-nonce-tampered.json",
+        "",
+        allow_unpinned=True,
+    )
+    assert report["valid"] is False
+    assert "signature verification failed" in report["error"]
+
+
+def test_v1_receipt_with_unsigned_top_level_field_rejects(tmp_path: Path) -> None:
+    receipt = json.loads((CORPUS / "golden/11-run-nonce-bound.json").read_text())
+    receipt["unsigned_sidecar"] = "not-signed"
+    path = tmp_path / "unsigned-sidecar.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, CORPUS_KEY)
+    assert report["valid"] is False
+    assert "receipt: unknown field unsigned_sidecar" in report["error"]
+
+
+def test_v1_receipt_with_unsigned_action_field_rejects(tmp_path: Path) -> None:
+    receipt = json.loads((CORPUS / "golden/11-run-nonce-bound.json").read_text())
+    receipt["action_record"]["unsigned_sidecar"] = "not-signed"
+    path = tmp_path / "unsigned-action-field.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, CORPUS_KEY)
+    assert report["valid"] is False
+    assert "action_record: unknown field unsigned_sidecar" in report["error"]
+
+
+def test_v1_receipt_with_malformed_run_nonce_rejects_before_signature(tmp_path: Path) -> None:
+    receipt = json.loads((CORPUS / "golden/11-run-nonce-bound.json").read_text())
+    receipt["action_record"]["run_nonce"] = "0123456789ABCDEF0123456789ABCDEF"
+    path = tmp_path / "malformed-run-nonce.json"
+    path.write_text(json.dumps(receipt))
+
+    report = verify_receipt_file(path, CORPUS_KEY)
+    assert report["valid"] is False
+    assert "run_nonce must be 32 lowercase hex chars" in report["error"]
+
+
+def test_legacy_v1_receipt_without_run_nonce_still_verifies() -> None:
+    report = verify_receipt_file(CORPUS / "golden/01-allow-clean-get.json", CORPUS_KEY)
+    assert report["valid"] is True, report.get("error")
 
 
 def test_missing_v2_policy_hash_rejects(tmp_path: Path) -> None:

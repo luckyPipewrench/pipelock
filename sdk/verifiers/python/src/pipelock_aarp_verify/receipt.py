@@ -131,6 +131,122 @@ _NORMALIZED_VIEWS = {
     "dlp_normalized",
 }
 
+_ACTION_RECORD_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("version", False, None),
+    ("action_id", False, None),
+    ("parent_action_id", True, None),
+    ("action_type", False, None),
+    ("timestamp", False, None),
+    ("principal", False, None),
+    ("actor", False, None),
+    ("delegation_chain", False, None),
+    ("target", False, None),
+    ("intent", True, None),
+    ("data_classes_in", True, None),
+    ("data_classes_out", True, None),
+    ("side_effect_class", False, None),
+    ("reversibility", False, None),
+    ("policy_hash", False, None),
+    ("verdict", False, None),
+    ("session_taint_level", True, None),
+    ("session_contaminated", True, None),
+    ("recent_taint_sources", True, "taint_source"),
+    ("session_task_id", True, None),
+    ("session_task_label", True, None),
+    ("authority_kind", True, None),
+    ("taint_decision", True, None),
+    ("taint_decision_reason", True, None),
+    ("task_override_applied", True, None),
+    ("contract_winning_source", True, None),
+    ("contract_live_verdict", True, None),
+    ("contract_policy_sources", True, None),
+    ("contract_rule_id", True, None),
+    ("active_manifest_hash", True, None),
+    ("contract_hash", True, None),
+    ("contract_selector_id", True, None),
+    ("contract_generation", True, None),
+    ("transport", False, None),
+    ("method", True, None),
+    ("layer", True, None),
+    ("pattern", True, None),
+    ("severity", True, None),
+    ("redaction", True, "redaction"),
+    ("shield", True, "shield"),
+    ("request_id", True, None),
+    ("chain_prev_hash", False, None),
+    ("chain_seq", False, None),
+    ("run_nonce", True, None),
+    ("key_transition", True, "key_transition"),
+    ("venue", True, None),
+    ("jurisdiction", True, None),
+    ("rulebook_id", True, None),
+    ("remedy_class", True, None),
+    ("contestation_window", True, None),
+    ("precedent_refs", True, None),
+)
+
+_RECEIPT_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("version", False, None),
+    ("action_record", False, "action_record"),
+    ("signature", False, None),
+    ("signer_key", False, None),
+)
+
+_REDACTION_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("profile", True, None),
+    ("provider", True, None),
+    ("parser", True, None),
+    ("total_redactions", True, None),
+    ("by_class", True, None),
+    ("cache_boundary_kept", True, None),
+)
+
+_SHIELD_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("pipeline", True, None),
+    ("total_rewrites", True, None),
+    ("extension_probes", True, None),
+    ("tracking_beacons", True, None),
+    ("agent_traps", True, None),
+    ("fingerprint_shim_injected", True, None),
+    ("svg_foreign_objects", True, None),
+    ("svg_event_handlers", True, None),
+    ("svg_external_references", True, None),
+    ("svg_hidden_text", True, None),
+    ("svg_animation_injections", True, None),
+    ("body_bytes", True, None),
+    ("scanned_bytes", True, None),
+    ("partial", True, None),
+    ("adaptive_signals_recorded", True, None),
+    ("adaptive_signal_max_per_body", True, None),
+)
+
+_TAINT_SOURCE_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("url", False, None),
+    ("kind", False, None),
+    ("level", False, None),
+    ("timestamp", False, None),
+    ("receipt_id", True, None),
+    ("match_reason", True, None),
+)
+
+_KEY_TRANSITION_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("prior_signer_key", False, None),
+    ("prior_chain_seq", False, None),
+    ("prior_chain_hash", False, None),
+)
+
+_VALID_ACTION_TYPES = {
+    "read",
+    "derive",
+    "write",
+    "delegate",
+    "authorize",
+    "spend",
+    "commit",
+    "actuate",
+    "unclassified",
+}
+
 
 class ReceiptError(Exception):
     """Receipt parsing, validation, or signature verification failed."""
@@ -166,23 +282,39 @@ def verify_receipt_file(
     try:
         receipt = load_receipt(clean)
         if receipt.get("record_type") != V2_RECORD_TYPE:
-            raise ReceiptError("Python verifier supports EvidenceReceipt v2 only")
-        report["action_id"] = receipt.get("event_id")
-        payload = receipt.get("payload")
-        if isinstance(payload, dict):
-            report["verdict"] = payload.get("verdict")
-            report["transport"] = payload.get("transport")
-        report["signer_key"] = key_hex
-        report["policy_hash"] = receipt.get("policy_hash")
-        report["chain_seq"] = receipt.get("chain_seq")
-        if key_hex:
-            verify_evidence_receipt(receipt, key_hex)
+            action_record = receipt.get("action_record")
+            if isinstance(action_record, dict):
+                report["action_id"] = action_record.get("action_id")
+                report["verdict"] = action_record.get("verdict")
+                report["transport"] = action_record.get("transport")
+                report["policy_hash"] = action_record.get("policy_hash")
+                report["chain_seq"] = action_record.get("chain_seq")
+            report["signer_key"] = receipt.get("signer_key")
+            if key_hex:
+                verify_action_receipt(receipt, key_hex)
+            else:
+                verify_action_receipt(receipt)
+                report["unpinned"] = True
+                report["error"] = UNPINNED_RECEIPT_BANNER
+                report["valid"] = allow_unpinned
+                return report
         else:
-            normalize_evidence_receipt(receipt)
-            report["unpinned"] = True
-            report["error"] = UNPINNED_RECEIPT_BANNER
-            report["valid"] = allow_unpinned
-            return report
+            report["action_id"] = receipt.get("event_id")
+            payload = receipt.get("payload")
+            if isinstance(payload, dict):
+                report["verdict"] = payload.get("verdict")
+                report["transport"] = payload.get("transport")
+            report["signer_key"] = key_hex
+            report["policy_hash"] = receipt.get("policy_hash")
+            report["chain_seq"] = receipt.get("chain_seq")
+            if key_hex:
+                verify_evidence_receipt(receipt, key_hex)
+            else:
+                normalize_evidence_receipt(receipt)
+                report["unpinned"] = True
+                report["error"] = UNPINNED_RECEIPT_BANNER
+                report["valid"] = allow_unpinned
+                return report
         report["valid"] = True
     except Exception as exc:  # noqa: BLE001 - verifier report captures cause
         report["error"] = str(exc)
@@ -279,7 +411,9 @@ def verify_evidence_chain(
 
 
 def receipt_hash(receipt: dict[str, Any]) -> str:
-    return hashlib.sha256(canonicalize(receipt)).hexdigest()
+    if receipt.get("record_type") == V2_RECORD_TYPE:
+        return hashlib.sha256(canonicalize(receipt)).hexdigest()
+    return hashlib.sha256(_canonicalize_receipt(receipt)).hexdigest()
 
 
 def _broken_chain(seq: int, error: str) -> dict[str, Any]:
@@ -295,6 +429,97 @@ def _broken_chain(seq: int, error: str) -> dict[str, Any]:
 def _signature_signer_key_id(receipt: dict[str, Any]) -> str:
     signature = _require_object(receipt.get("signature"), "signature")
     return _require_string(signature.get("signer_key_id"), "signature.signer_key_id")
+
+
+def _canonicalize_action_record(action_record: dict[str, Any]) -> bytes:
+    return _canonical_json(_order_struct(action_record, _ACTION_RECORD_FIELDS))
+
+
+def _canonicalize_receipt(receipt: dict[str, Any]) -> bytes:
+    return _canonical_json(_order_struct(receipt, _RECEIPT_FIELDS))
+
+
+def _canonical_json(value: Any) -> bytes:
+    encoded = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    encoded = (
+        encoded.replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+    return encoded.encode("utf-8")
+
+
+def _order_struct(
+    value: dict[str, Any],
+    fields: tuple[tuple[str, bool, str | None], ...],
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, omitempty, nested in fields:
+        if name not in value:
+            if omitempty:
+                continue
+            field_value = _zero_value(name, nested)
+        else:
+            field_value = value[name]
+        if nested == "action_record" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _ACTION_RECORD_FIELDS)
+        elif nested == "redaction" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _REDACTION_FIELDS)
+        elif nested == "shield" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _SHIELD_FIELDS)
+        elif nested == "taint_source" and isinstance(field_value, list):
+            field_value = [
+                _order_struct(item, _TAINT_SOURCE_FIELDS) if isinstance(item, dict) else item
+                for item in field_value
+            ]
+        elif nested == "key_transition" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _KEY_TRANSITION_FIELDS)
+        else:
+            field_value = _normalize_maps(field_value)
+        if omitempty and _is_go_zero(field_value):
+            continue
+        out[name] = field_value
+    return out
+
+
+def _field_names(fields: tuple[tuple[str, bool, str | None], ...]) -> set[str]:
+    return {name for name, _, _ in fields}
+
+
+def _zero_value(name: str, nested: str | None) -> Any:
+    if nested == "action_record":
+        return {}
+    if name in {"version", "chain_seq", "level", "prior_chain_seq"}:
+        return 0
+    if name == "delegation_chain":
+        return None
+    if name == "timestamp":
+        return "0001-01-01T00:00:00Z"
+    return ""
+
+
+def _is_go_zero(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value == 0
+    if isinstance(value, str):
+        return value == ""
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
+
+
+def _normalize_maps(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_normalize_maps(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_maps(value[key]) for key in sorted(value)}
+    return value
 
 
 def verify_evidence_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -> None:
@@ -317,6 +542,107 @@ def verify_evidence_receipt(receipt: dict[str, Any], expected_key_hex: str = "")
         public_key.verify(sig, _evidence_preimage(receipt))
     except InvalidSignature as exc:
         raise ReceiptError("signature verification failed") from exc
+
+
+def verify_action_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -> None:
+    normalize_action_receipt(receipt)
+    signer_key = _require_string(receipt.get("signer_key"), "signer_key").lower()
+    expected = expected_key_hex.lower()
+    key_hex = expected or signer_key
+    if expected and signer_key != expected:
+        raise ReceiptError(f"signer_key {signer_key} does not match expected key {expected}")
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(binascii.unhexlify(key_hex))
+        sig = binascii.unhexlify(
+            _require_string(receipt.get("signature"), "signature")[
+                len(SIGNATURE_PREFIX) :
+            ]
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise ReceiptError(f"invalid signature key or bytes: {exc}") from exc
+    digest = hashlib.sha256(
+        _canonicalize_action_record(_require_object(receipt.get("action_record"), "action_record"))
+    ).digest()
+    try:
+        public_key.verify(sig, digest)
+    except InvalidSignature as exc:
+        raise ReceiptError("signature verification failed") from exc
+
+
+def normalize_action_receipt(receipt: dict[str, Any]) -> None:
+    _reject_unknown(receipt, _field_names(_RECEIPT_FIELDS), "receipt")
+    if receipt.get("version") != 1:
+        raise ReceiptError(f"unsupported receipt version {receipt.get('version')} (expected 1)")
+    validate_action_record(_require_object(receipt.get("action_record"), "action_record"))
+    signature = _require_string(receipt.get("signature"), "signature")
+    if not signature.startswith(SIGNATURE_PREFIX):
+        raise ReceiptError(f"invalid signature format: missing {SIGNATURE_PREFIX} prefix")
+    _require_hex(signature[len(SIGNATURE_PREFIX) :], 64, "signature")
+    _require_string(receipt.get("signer_key"), "signer_key")
+
+
+def validate_action_record(action_record: dict[str, Any]) -> None:
+    _reject_unknown(action_record, _field_names(_ACTION_RECORD_FIELDS), "action_record")
+    if action_record.get("version") != 1:
+        raise ReceiptError(
+            f"unsupported action record version {action_record.get('version')} (expected 1)"
+        )
+    _require_string(action_record.get("action_id"), "action_id")
+    action_type = _require_string(action_record.get("action_type"), "action_type")
+    if action_type not in _VALID_ACTION_TYPES:
+        raise ReceiptError(f"invalid action_type {action_type}")
+    _require_string(action_record.get("timestamp"), "timestamp")
+    _require_string(action_record.get("target"), "target")
+    _require_string(action_record.get("verdict"), "verdict")
+    _require_string(action_record.get("transport"), "transport")
+    _require_string(action_record.get("chain_prev_hash"), "chain_prev_hash")
+    _require_non_negative_int(action_record.get("chain_seq"), "chain_seq")
+    run_nonce = action_record.get("run_nonce")
+    if run_nonce is not None:
+        if (
+            not isinstance(run_nonce, str)
+            or len(run_nonce) != 32
+            or any(ch not in "0123456789abcdef" for ch in run_nonce)
+        ):
+            raise ReceiptError("run_nonce must be 32 lowercase hex chars when provided")
+    _validate_optional_action_structs(action_record)
+
+
+def _validate_optional_action_structs(action_record: dict[str, Any]) -> None:
+    redaction = action_record.get("redaction")
+    if redaction is not None:
+        _reject_unknown(
+            _require_object(redaction, "redaction"),
+            _field_names(_REDACTION_FIELDS),
+            "redaction",
+        )
+
+    shield = action_record.get("shield")
+    if shield is not None:
+        _reject_unknown(
+            _require_object(shield, "shield"),
+            _field_names(_SHIELD_FIELDS),
+            "shield",
+        )
+
+    key_transition = action_record.get("key_transition")
+    if key_transition is not None:
+        _reject_unknown(
+            _require_object(key_transition, "key_transition"),
+            _field_names(_KEY_TRANSITION_FIELDS),
+            "key_transition",
+        )
+
+    taint_sources = action_record.get("recent_taint_sources")
+    if taint_sources is not None:
+        if not isinstance(taint_sources, list):
+            raise ReceiptError("recent_taint_sources must be a list when provided")
+        for index, source in enumerate(taint_sources):
+            _reject_unknown(
+                _require_object(source, f"recent_taint_sources[{index}]"),
+                _field_names(_TAINT_SOURCE_FIELDS),
+                f"recent_taint_sources[{index}]",
+            )
 
 
 def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:

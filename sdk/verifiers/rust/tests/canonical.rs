@@ -64,6 +64,7 @@ fn full_receipt() -> serde_json::Value {
             "request_id": "req-1",
             "chain_prev_hash": "genesis",
             "chain_seq": 0,
+            "run_nonce": "0123456789abcdef0123456789abcdef",
             "venue": "test-venue",
             "jurisdiction": "test-jurisdiction",
             "rulebook_id": "rulebook-v1",
@@ -71,8 +72,8 @@ fn full_receipt() -> serde_json::Value {
             "contestation_window": "24h",
             "precedent_refs": ["p1", "p2"]
         },
-        "signature": "ed25519:dc7bdb6220e7dd261ca6a55f295ee0ca44c8dbb04c36a07940ee11730c2119dd1bae6e96ea6d465a7c6ba357119c2218a795b2eec17f424d6e070e03b9c9540c",
-        "signer_key": "7de2d117b21faaa0f1d9d3d02fcba13838bef0c75caddf71de376f0bb837bfbc"
+        "signature": "ed25519:3fbe112dfa4e9e21beb7cd004fbfd7029e71bc9808190fdc8daff98dd2fad4ca2e18c5c9d3e32543c16d8e73300cca2f6b4112af1c761f776ce248a535a6850c",
+        "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
     })
 }
 
@@ -85,7 +86,7 @@ fn canonical_action_record_matches_go_hash_for_all_current_fields() {
     let receipt = full_receipt();
     assert_eq!(
         sha256(&canonicalize_action_record(&receipt["action_record"])),
-        "8d5805f40a979a44983971f1a1a5de677cfa173edc33d71146c586a12a1ff3e1"
+        "c27e7c9646b7eb7afbbaecc4f795261b43ff9388434bc9e9fdaa9e4f217dbb9d"
     );
 }
 
@@ -94,7 +95,7 @@ fn canonical_receipt_envelope_matches_go_hash() {
     let receipt = full_receipt();
     assert_eq!(
         sha256(&canonicalize_receipt(&receipt)),
-        "1b07dab8572e98c5f823cfdc449cbce6711d6ed626df500d739fd9ba9b630345"
+        "b148f0d1084043abda24c375d1d836e5948efa06995b1025f6031a5871f259c2"
     );
 }
 

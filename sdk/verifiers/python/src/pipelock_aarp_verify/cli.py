@@ -301,7 +301,7 @@ def _run_receipt(
             status = "UNPINNED"
         else:
             status = "valid" if report.get("valid") else "invalid"
-        label = "EvidenceReceipt v2 chain" if chain_mode else "EvidenceReceipt v2"
+        label = "receipt chain" if chain_mode else "receipt"
         stdout.write(f"{label}: {status}\n")
         if report.get("unpinned"):
             stdout.write(f"  warning: {UNPINNED_RECEIPT_BANNER}\n")
@@ -337,12 +337,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="PATH is a JSONL stream; verify Rung-1 chain linkage",
     )
-    receipt_p = sub.add_parser("receipt", help="verify an EvidenceReceipt v2 receipt")
-    receipt_p.add_argument("path", help="path to an EvidenceReceipt v2 JSON file")
+    receipt_p = sub.add_parser("receipt", help="verify a Pipelock receipt")
+    receipt_p.add_argument("path", help="path to a Pipelock receipt JSON file")
     receipt_p.add_argument("--key", default="", help="pinned Ed25519 public key hex")
     receipt_p.add_argument("--json", action="store_true", help="emit JSON report")
     receipt_p.add_argument(
-        "--chain", action="store_true", help="PATH is an EvidenceReceipt v2 JSONL chain"
+        "--chain", action="store_true", help="PATH is a Pipelock receipt JSONL chain"
     )
     receipt_p.add_argument(
         "--allow-unpinned",

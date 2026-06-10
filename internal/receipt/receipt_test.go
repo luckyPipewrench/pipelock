@@ -117,6 +117,44 @@ func TestVerify_TamperedRecord(t *testing.T) {
 	}
 }
 
+func TestVerify_TamperedRunNonceFails(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	ar := validActionRecord()
+	ar.RunNonce = "0123456789abcdef0123456789abcdef"
+	r, err := Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	r.ActionRecord.RunNonce = "1123456789abcdef0123456789abcdef"
+	err = Verify(r)
+	if err == nil {
+		t.Fatal("Verify() expected error for tampered run_nonce, got nil")
+	}
+	if !strings.Contains(err.Error(), "signature verification failed") {
+		t.Errorf("Verify() error = %q, want substring \"signature verification failed\"", err)
+	}
+}
+
+func TestVerify_LegacyReceiptWithoutRunNonceStillVerifies(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	ar := validActionRecord()
+	r, err := Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if r.ActionRecord.RunNonce != "" {
+		t.Fatalf("legacy fixture run_nonce = %q, want empty", r.ActionRecord.RunNonce)
+	}
+	if err := Verify(r); err != nil {
+		t.Fatalf("Verify() legacy receipt without run_nonce: %v", err)
+	}
+}
+
 func TestVerify_TamperedSignature(t *testing.T) {
 	t.Parallel()
 

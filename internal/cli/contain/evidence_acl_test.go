@@ -107,6 +107,14 @@ func TestStepGrantEvidenceACLs_Apply(t *testing.T) {
 		_ = err
 	}
 	env, runner, _ := newFakeEnv(t)
+	var chowned []string
+	env.chown = func(path string, uid, gid int) error {
+		if uid != 988 || gid != 988 {
+			t.Fatalf("evidence dir chown = %d:%d, want pipelock-proxy 988:988", uid, gid)
+		}
+		chowned = append(chowned, filepath.Clean(path))
+		return nil
+	}
 
 	applied, err := stepGrantEvidenceACLs().apply(context.Background(), env)
 	if err != nil {
@@ -124,6 +132,9 @@ func TestStepGrantEvidenceACLs_Apply(t *testing.T) {
 		}
 		if !info.IsDir() {
 			t.Fatalf("%s is not a directory", dir)
+		}
+		if !containsString(chowned, filepath.Clean(dir)) {
+			t.Fatalf("evidence dir %s was not chowned to pipelock-proxy; chowned=%v", dir, chowned)
 		}
 	}
 

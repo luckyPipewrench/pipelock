@@ -142,11 +142,21 @@ func stepGrantEvidenceACLs() step {
 			}
 
 			dirs := env.evidenceACLDirs()
+			uid, gid, err := uidGidFor(env, env.proxyUserName)
+			if err != nil {
+				return false, err
+			}
 			// Ensure the evidence dirs exist before applying ACLs. They are
 			// created lazily by the running proxy otherwise, which would leave
-			// the operator without read access until the first write.
+			// the operator without read access until the first write. Because
+			// this step runs after chown-data, dirs created here must be
+			// explicitly re-owned by pipelock-proxy or the service cannot write
+			// its own evidence on a fresh install.
 			for _, dir := range dirs {
 				if err := ensureEvidenceDir(env, dir); err != nil {
+					return false, err
+				}
+				if err := walkAndChown(env, dir, uid, gid); err != nil {
 					return false, err
 				}
 			}

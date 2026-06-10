@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚠️ Breaking Changes / Upgrade Notes
+
+- **`verify-receipt` without `--key` now exits non-zero.** Unpinned verification is structural-only and no longer reads as success — this applies to `pipelock verify-receipt`, the standalone `pipelock-verifier`, and every language SDK verifier. **Migration:** any script or CI step that calls a verifier without pinning a key must either pass the trusted signer key with `--key` (preferred — that is what makes the verification mean something) or pass `--allow-unpinned` to explicitly accept the structural-only check. (#726)
+- **Flight recorder defaults to enabled.** Existing configs are unaffected (recording stays inert until a `dir` and signing key exist), but a fresh `pipelock init` now provisions both, so new installs produce signed evidence on disk by default. Set `flight_recorder.enabled: false` to opt out. (#728)
+- **Receipts now carry a `run_nonce`.** The field is additive: receipts emitted before this release (no `run_nonce`) still verify. (#729)
+
 ### New Features
 
 - **Conductor — the enterprise fleet control plane — is GA.** Conductor was an enterprise preview in v2.6; v2.7 promotes it to General Availability with full user documentation. It distributes signed policy bundles to follower instances, ingests and stores their signed evidence in a per-org/fleet/instance audit sink (`pipelock fleet-sink`), and coordinates fleet-wide enrollment, remote kill, and policy rollback over mutually-authenticated (mTLS, SPIFFE-identified) connections. Followers enforce locally and stay fail-closed; Conductor holds no agent secrets and never scans on their behalf. Every fleet server command (`conductor serve`, `conductor bootstrap`, `fleet-sink`) verifies an Enterprise license granting the `fleet` feature and fails closed before binding a listener or writing a file; follower runtimes also tear down Conductor fan-out on proven license revocation or expiry while free detection keeps running (restart-only re-activation). New [Conductor guide](docs/guides/conductor.md), [`pipelock license` reference](docs/cli/license.md), and the [audit-sink design](docs/specs/pipelock-conductor-audit-sink.md) flipped to GA.

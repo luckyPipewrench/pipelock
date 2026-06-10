@@ -2225,6 +2225,12 @@ Omitting `health_watchdog`, setting it to YAML null, or leaving `enabled` blank 
 
 For response examples and Kubernetes probe guidance, see [Health Endpoint and Wedge-Detection Watchdog](guides/health.md).
 
+The `pipelock healthcheck` command wraps the `/health` probe for container
+healthchecks: it sends a GET to `http://<addr>/health` (default
+`127.0.0.1:8888`, override with `--addr`) and exits 0 when healthy, 1
+otherwise. Designed for Docker `HEALTHCHECK` directives and Compose
+`healthcheck:` blocks: `test: ["/pipelock", "healthcheck"]`.
+
 ## A2A Scanning (v2.1)
 
 Scanning for Google A2A (Agent-to-Agent) protocol traffic. Detects A2A messages in forward proxy and MCP HTTP proxy paths. Applies field-aware content inspection with URL/text/secret classification.
@@ -2313,6 +2319,60 @@ mcp_binary_integrity:
 | `keystore` | `~/.pipelock` | Keystore used for the trusted signer lookup |
 
 The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing. Generate, preflight, and sign the manifest with `pipelock mcp integrity manifest`; see [MCP integrity manifest tooling](cli/mcp-integrity.md).
+
+## MCP Tool Provenance
+
+Cryptographic attestation verification for MCP tool definitions. Where [MCP Binary Integrity](#mcp-binary-integrity-v21) pins the server binary, tool provenance pins the tool definitions themselves: each tool in a `tools/list` response can carry a signed attestation in its `_meta` field (key `com.pipelock/provenance`) committing to a digest of the tool's name, description, and input schema. A server that silently edits or swaps a tool definition fails the digest check.
+
+```yaml
+mcp_tool_provenance:
+  enabled: true
+  action: block
+  mode: pipelock
+  trusted_keys:
+    - "<ed25519-public-key-hex>"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Verify tool attestations on `tools/list` responses |
+| `action` | `warn` | Action on an **unsigned** tool (no attestation): `block` or `warn` |
+| `mode` | `pipelock` | Accepted attestation mode: `pipelock` (offline Ed25519), `sigstore`, or `any` |
+| `trusted_keys` | `[]` | Ed25519 public keys trusted in `pipelock` mode |
+| `trusted_issuers` | `[]` | OIDC issuers trusted in `sigstore` mode |
+| `trusted_subjects` | `[]` | OIDC subjects trusted in `sigstore` mode |
+| `offline_only` | `true` | Never make network calls during verification |
+
+The `action` knob applies only to unsigned tools. A tool whose attestation is present but **fails** verification (digest mismatch, bad signature, untrusted signer, malformed attestation) always blocks regardless of `action` — a tampered attestation is treated as tampering, not as missing. An unparseable `tools/list` response also blocks (fail-closed).
+
+`sigstore` mode is reserved: verification is not yet implemented, so a sigstore attestation always fails (and therefore blocks). Use `pipelock` mode with `trusted_keys` for working provenance today.
+
+## Behavioral Baseline
+
+Profile-then-lock behavioral analysis per agent. Pipelock observes an agent's sessions, builds a statistical profile of its normal behavior (tool calls, unique tools, domains, bytes, duration, requests), and once the profile is ratified and locked, flags or blocks sessions that deviate beyond `sensitivity_sigma` standard deviations from the learned mean.
+
+```yaml
+behavioral_baseline:
+  enabled: true
+  learning_window: 10
+  deviation_action: warn
+  profile_dir: /var/lib/pipelock/baselines
+  sensitivity_sigma: 2.0
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable behavioral baseline learning and enforcement |
+| `learning_window` | `10` | Sessions to observe before building the statistical profile |
+| `deviation_action` | `warn` | Action on deviation from a locked profile: `warn`, `ask`, or `block` |
+| `profile_dir` | (required if enabled) | Directory where learned profiles persist as JSON |
+| `auto_ratify` | `false` | Lock learned profiles without operator approval. **Dangerous:** an attacker active during the learning window gets their behavior baselined as normal. |
+| `sensitivity_sigma` | `2.0` | Standard deviations from the learned mean before a metric counts as deviant |
+| `lock_dimensions` | all | Metrics to enforce: `tool_calls`, `unique_tools`, `domains`, `bytes`, `duration`, `requests` |
+| `poison_resistance` | `true` | Trim outlier sessions when building the profile, so adversarial sessions during learning have bounded influence |
+| `seasonality_mode` | `none` | Only `none` is implemented. `labeled` and `time` are reserved and rejected by the baseline engine at startup. |
+
+Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement applies only to a **locked** profile; an agent still in learning produces no deviations. Profiles persist to `profile_dir` (one JSON file per agent, carrying the lifecycle state) and survive restarts. Without `auto_ratify`, a learned profile waits in the `ratify` state for operator approval before it enforces.
 
 ## Taint-Aware Policy Escalation (v2.1)
 
@@ -2608,6 +2668,57 @@ SVG (`image/svg+xml`) is never in the allowed image types list. SVG is active co
 - `image/svg+xml` is rejected in `allowed_image_types` (SVG is active content)
 - `max_image_bytes` must be non-negative (0 means use the 5 MiB default)
 - Validation runs regardless of whether `enabled` is true, so re-enabling on reload cannot introduce malformed values
+
+## Conductor Follower (v2.7, Enterprise)
+
+Follower-side configuration for joining a [Conductor](guides/conductor.md)-managed fleet. The `conductor:` block is local control-plane plumbing, not scanner policy, and is excluded from the canonical policy hash. Any build parses the block, but `enabled: true` requires an enterprise build with the `fleet` license entitlement and fails closed otherwise.
+
+```yaml
+conductor:
+  enabled: true
+  conductor_url: https://conductor.internal:8895
+  org_id: org-acme
+  fleet_id: prod
+  instance_id: edge-01
+  trust_roster_path: /etc/pipelock/trust-roster.json
+  trust_roster_root_fingerprint: <sha256-of-trust-root>
+  server_ca_file: /etc/pipelock/conductor-ca.pem
+  client_cert_path: /etc/pipelock/follower.crt
+  client_key_path: /etc/pipelock/follower.key
+  bundle_cache_dir: /var/lib/pipelock/bundles
+  durable_audit_queue_dir: /var/lib/pipelock/audit-queue
+  poll_interval: 30s
+  honor_remote_kill_switch: true
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Join a Conductor fleet. Requires an enterprise build with the `fleet` entitlement; fails closed without it. |
+| `conductor_url` | (required) | HTTPS URL of the Conductor follower API. |
+| `org_id` / `fleet_id` / `instance_id` | (required) | Fleet identity tuple. Each must match the canonical identifier pattern (ASCII alphanumeric plus `_-.`, max 128 bytes). |
+| `trust_roster_path` | (required) | Signed trust roster file naming the keys this follower accepts. |
+| `trust_roster_root_fingerprint` | (required) | SHA-256 pin of the trust roster's root key. Must be non-empty. |
+| `server_ca_file` | (required) | CA bundle used to verify Conductor's TLS server certificate. |
+| `client_cert_path` / `client_key_path` | (required) | Follower mTLS client certificate and private key. |
+| `bundle_cache_dir` | (required) | Directory caching verified policy bundles across restarts. |
+| `durable_audit_queue_dir` | (required) | On-disk queue for signed evidence batches awaiting delivery to the audit sink. |
+| `audit_signing_key_id` | `instance_id` | Key ID the follower signs audit batches with. |
+| `recorder_key_id` | `instance_id` | Key ID for the follower's flight-recorder checkpoints. |
+| `poll_interval` | `30s` | How often the follower polls Conductor for bundles and coordination state. |
+| `honor_remote_kill_switch` | `true` | Act on a signed fleet-wide remote-kill message. |
+| `emergency_stream` | `true` | Reserved (see below). |
+| `created_skew_seconds` | `60` (max `300`) | Reserved (see below). |
+| `max_min_version_major_skew` | `0` | Reserved (see below). |
+| `max_min_version_minor_skew` | `1` | Reserved (see below). |
+| `max_capability_threshold` | `7` | Reserved (see below). |
+| `stale_policy.grace_multiplier` | `1` | Reserved (see below). |
+| `stale_policy.after_grace` | `strict_deny_all` | Reserved (see below). `continue_last_known_good` is accepted with an advisory warning because it weakens the fail-closed default. |
+
+When `enabled: true`, validation additionally requires the [flight recorder](#flight-recorder-v21) enabled with `sign_checkpoints: true` and a configured `signing_key_path` (a follower must produce signed evidence to participate), all file paths absolute, and no world-writable ancestor directory on any configured path.
+
+**Reserved fields.** The fields marked reserved are parsed and validated at startup but not yet enforced by the follower runtime in v2.7; they reserve the config surface for upcoming bundle-staleness and capability-negotiation work. Today a bundle's validity window is enforced when the bundle is verified and applied (an expired bundle fails verification), and a follower that cannot reach Conductor keeps enforcing the policy it already has.
+
+See the [Conductor guide](guides/conductor.md) for the full architecture, server-side flags, and licensing.
 
 ## Validation Rules
 

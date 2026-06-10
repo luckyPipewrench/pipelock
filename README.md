@@ -367,7 +367,8 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[LangGraph](docs/guides/langgraph.md):** `MultiServerMCPClient`, `StateGraph`
 - **[Hermes](docs/guides/hermes.md):** full-plugin coverage (default, plugin-visible tool surfaces) or lighter MCP-only wrapping for Nous Research's agent, with auth-header sidecar preservation
 - **[JetBrains/Junie](docs/guides/jetbrains.md):** MCP proxy wrapping for IntelliJ, PyCharm, GoLand ([walkthrough](https://pipelab.org/learn/jetbrains-integration/))
-- **Cursor:** use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
+- **Cursor:** `pipelock cursor install` registers Pipelock as a Cursor hook for shell execution, MCP tool calls, and file reads; or use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
+- **VS Code:** `pipelock vscode install` rewrites `.vscode/mcp.json` to route every MCP server through the MCP proxy (stdio commands wrapped, HTTP/SSE servers bridged via `--upstream`); `--global` targets the user-level `mcp.json`
 - **[OpenClaw](docs/guides/openclaw.md):** Gateway sidecar, init container, config wrapping
 
 ## Deployment
@@ -486,12 +487,15 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Transport Modes](docs/guides/transport-modes.md) | All proxy modes and their scanning capabilities |
 | [OWASP MCP Top 10](docs/compliance/owasp-mcp-top10.md) | OWASP MCP Top 10 coverage |
 | [OWASP Agentic Top 15](docs/owasp-agentic-top15-mapping.md) | OWASP Agentic AI Top 15 coverage |
+| [OWASP LLM Top 10](docs/owasp-llm-top10-mapping.md) | OWASP Top 10 for LLM Applications (2025) coverage |
 | [EU AI Act](docs/compliance/eu-ai-act-mapping.md) | EU AI Act compliance mapping |
 | [NIST 800-53](docs/compliance/nist-800-53.md) | NIST SP 800-53 Rev. 5 controls mapping |
+| [Assess Mapping](docs/compliance/assess-mapping.md) | Maps runtime controls to the frameworks `pipelock assess` produces evidence against, for procurement and audit review |
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
 | [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
 | [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
 | [Receipt Verification](docs/guides/receipt-verification.md) | `pipelock verify-receipt`, standalone `pipelock-verifier`, conformance suite, chain integrity |
+| [Receipt Spec Profiles](docs/specs/in-toto-agent-action-receipt-v0.1.md) | in-toto attestation predicate for action receipts, with companion SCITT and AARP profiles and prior-art mapping |
 | [Audit Packet Threat Model](docs/security/audit-packet-threat-model.md) | What verified Audit Packets prove, what they do not prove, and the trust assumptions relying parties must pin |
 | [Receipt Transport Coverage](docs/guides/receipt-transports.md) | Receipt emission matrix across fetch, forward, CONNECT/TLS, WebSocket, MCP, and A2A paths |
 | [Learn-and-Lock](docs/guides/learn-and-lock.md) | Per-agent behavioral contracts: observe, compile, shadow, ratify, promote (v2.4) |
@@ -503,6 +507,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Adaptive CLI](docs/cli/adaptive.md) | Inspect and flush adaptive-enforcement runtime state through the admin API (v2.5) |
 | [Conductor](docs/guides/conductor.md) | The Enterprise fleet control plane: policy distribution, audit sink, remote kill, rollback, mTLS/SPIFFE trust, licensing (v2.7, GA) |
 | [Conductor Operator Runbook](docs/guides/conductor-operator-runbook.md) | Hands-on local fleet walkthrough: bootstrap, serve, sign a batch, verify offline |
+| [Kubernetes Enterprise Deployment](docs/guides/kubernetes-enterprise-deployment.md) | Helm-based Conductor fleet: control plane, followers, fleet-sink, PKI Secrets, NetworkPolicies |
 | [`pipelock license`](docs/cli/license.md) | Install, inspect, and check the license that unlocks paid features (Pro `agents`, Enterprise `fleet`) |
 | [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots, `posture verify` CLI, CI gate, scoring model |
 | [`pipelock init sidecar`](docs/cli/init-sidecar.md) | Generate enforced Kubernetes companion-proxy manifests and MCP launcher contracts (strategic-merge, Kustomize, Helm values) |
@@ -514,6 +519,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Playground Replay Capture](docs/guides/playground-replay-capture.md) | Drive controlled synthetic attack scenarios and capture the evidence |
 | [PR Review](docs/guides/pr-review.md) | Manual-trigger AI security review for pull requests (`/review` comment) |
 | [MCP Inspector Front](docs/guides/mcp-inspector-front.md) | Front MCP dev tools (Inspector, test servers) through Pipelock scanning |
+| [`pipelock demo`](docs/cli/demo.md) | Self-contained attack scenarios with signed, offline-verifiable receipts — no config or network needed |
 | [Badges](docs/badges.md) | Drop-in Markdown for the `scanned by pipelock` badge on downstream projects |
 
 ## Project Structure

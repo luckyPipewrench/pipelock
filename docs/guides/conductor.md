@@ -240,11 +240,13 @@ When `conductor.enabled: true`, validation requires:
   `recorder_key_id`) matching the canonical identifier pattern;
 - all file paths absolute.
 
-`created_skew_seconds` (default `60`, capped at `300`) and the
-`max_min_version_*_skew` and `stale_policy` knobs tune how strictly a follower
-accepts policy bundles; `honor_remote_kill_switch` (default `true`) opts the
-follower into the fleet-wide kill signal. See the
-[configuration reference](../configuration.md) for the full field list.
+`honor_remote_kill_switch` (default `true`) opts the follower into the
+fleet-wide kill signal. A few fields (`created_skew_seconds`,
+`max_min_version_*_skew`, `max_capability_threshold`, `emergency_stream`,
+`stale_policy`) are validated at startup but reserved — the follower runtime
+does not enforce them yet. See the
+[configuration reference](../configuration.md#conductor-follower-v27-enterprise)
+for the full field list.
 
 ## PKI and trust model
 
@@ -305,9 +307,11 @@ are pruned at startup.
   followers and Conductor, and the protection of keys and tokens are yours to
   provide and operate.
 - **Followers enforce locally.** Conductor distributes and collects; it is not
-  in the data path. A follower keeps enforcing its current policy if Conductor
-  is unreachable, and a `stale_policy` setting governs what it does as a bundle
-  ages past its grace window.
+  in the data path. A follower keeps enforcing the policy it already has if
+  Conductor is unreachable; a bundle's validity window is checked when the
+  bundle is verified and applied, so an expired bundle never applies. (The
+  `stale_policy` block is reserved for finer-grained staleness handling and is
+  not enforced yet.)
 - **Capability separation holds.** Conductor never receives agent secrets and
   never scans traffic for a follower.
 

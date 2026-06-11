@@ -120,8 +120,11 @@ func PublicKeyHexFromPrivateKey(priv ed25519.PrivateKey) (string, error) {
 		return "", fmt.Errorf("invalid private key length: got %d, want %d", len(priv), ed25519.PrivateKeySize)
 	}
 	pub, ok := priv.Public().(ed25519.PublicKey)
-	if !ok || len(pub) != ed25519.PublicKeySize {
-		return "", fmt.Errorf("derive public key from private key")
+	if !ok {
+		return "", fmt.Errorf("derive public key from private key: got public key type %T, want ed25519.PublicKey", priv.Public())
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		return "", fmt.Errorf("derive public key from private key: public key length got %d, want %d", len(pub), ed25519.PublicKeySize)
 	}
 	return hex.EncodeToString(pub), nil
 }

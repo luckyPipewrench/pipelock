@@ -17,6 +17,10 @@ import (
 	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+// Keep exported recorder public-key sidecars group-readable but not
+// world-readable, matching init/contain provisioning. The key is public, but in
+// contained installs group-read is the operator/proxy handoff path while agent
+// users should not get broad key-directory visibility by default.
 const recorderPublicKeyFileMode os.FileMode = 0o640
 
 func pubkeyCmd() *cobra.Command {
@@ -63,6 +67,8 @@ Examples:
 }
 
 func resolveRecorderSigningKeyPath(keyFile, configFile string) (string, error) {
+	// Defensive guard for non-Cobra call sites; pubkeyCmd also declares these
+	// flags mutually exclusive with cmd.MarkFlagsMutuallyExclusive.
 	if keyFile != "" && configFile != "" {
 		return "", fmt.Errorf("pass either --key-file or --config, not both")
 	}

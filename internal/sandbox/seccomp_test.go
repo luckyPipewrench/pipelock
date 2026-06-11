@@ -15,11 +15,18 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 const seccompTestEnv = "__SANDBOX_SECCOMP_TEST"
+
+// seccompChildTimeout bounds each re-exec'd helper child so a wedged child fails
+// its own test in seconds instead of riding out the 10m package timeout and
+// failing the whole job. Far above real child runtime (<1s), far below the
+// package deadline.
+const seccompChildTimeout = 60 * time.Second
 
 func init() {
 	// If we're the seccomp test child, run the operation and exit.
@@ -150,7 +157,15 @@ func runSeccompTestChild(op string) {
 			os.Exit(1)
 		}
 		if r == 0 {
-			os.Exit(0) // child: exit immediately
+			// Child of a bare clone() shares a duplicated, inconsistent Go
+			// runtime: sibling OS threads vanished at clone and may have held
+			// runtime locks (scheduler, allocator, GC). Touching the runtime
+			// from this child — including os.Exit's stack-growth/scheduler path —
+			// can deadlock it, so it never exits and the parent's Wait4 below
+			// blocks until the whole-package test timeout (the ~50% CI hang).
+			// Exit via a raw, no-split syscall so the child does ZERO runtime
+			// work. exit_group matches what os.Exit ultimately issued.
+			_, _, _ = unix.RawSyscall(unix.SYS_EXIT_GROUP, 0, 0, 0)
 		}
 		// Parent: reap child.
 		var ws syscall.WaitStatus
@@ -197,10 +212,23 @@ func runSeccompChild(t *testing.T, op string) (string, int) {
 		t.Skip("seccomp requires linux")
 	}
 
-	ctx := context.Background()
+	// Bound every re-exec'd child. A child that wedges (e.g. a post-clone child
+	// deadlocking in the duplicated Go runtime) must fail THIS test fast and
+	// attributably, never ride out the 10m package timeout and take every other
+	// test in the package down with it (the root cause of the recurring CI
+	// flake). The window is generous vs. real child runtime (<1s) yet far under
+	// the package deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), seccompChildTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^$")
 	cmd.Env = append(os.Environ(), seccompTestEnv+"="+op)
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		// CommandContext SIGKILLs the child when the deadline trips; surface a
+		// clear, fast failure instead of an opaque whole-package timeout.
+		t.Fatalf("seccomp child %q did not exit within %s (hung): %v\noutput so far: %s",
+			op, seccompChildTimeout, ctx.Err(), out)
+	}
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -469,11 +497,16 @@ func TestApplyRlimits_ChildVerifiesAll(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip("rlimits require linux")
 	}
-	// Child process verifies all four limits.
-	ctx := context.Background()
+	// Child process verifies all four limits. Bounded so a wedged child fails
+	// fast instead of hanging the whole package (see seccompChildTimeout).
+	ctx, cancel := context.WithTimeout(context.Background(), seccompChildTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^$")
 	cmd.Env = append(os.Environ(), "__SANDBOX_RLIMIT_TEST=1")
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("rlimit test child did not exit within %s (hung): %v\n%s", seccompChildTimeout, ctx.Err(), out)
+	}
 	if err != nil {
 		t.Errorf("rlimit test child failed: %v\n%s", err, out)
 	}

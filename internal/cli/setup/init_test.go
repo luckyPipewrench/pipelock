@@ -5,9 +5,12 @@ package setup
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -63,6 +66,7 @@ func TestInitCmd_ProvisionsFlightRecorder(t *testing.T) {
 	if _, err := signing.LoadPrivateKeyFile(cfg.FlightRecorder.SigningKeyPath); err != nil {
 		t.Fatalf("generated signing key does not load: %v", err)
 	}
+	assertFlightRecorderPublicKeySidecar(t, cfg.FlightRecorder.SigningKeyPath)
 
 	// The recorder directory must exist (created during provisioning).
 	if info, err := os.Stat(cfg.FlightRecorder.Dir); err != nil || !info.IsDir() {
@@ -96,6 +100,30 @@ func TestEnsureFlightRecorderSigningKey_ReusesExisting(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Error("signing key was regenerated on the second pass; it must be reused to avoid orphaning the receipt chain")
 	}
+	assertFlightRecorderPublicKeySidecar(t, keyPath)
+
+	priv, err := signing.LoadPrivateKeyFile(keyPath)
+	if err != nil {
+		t.Fatalf("load reused key: %v", err)
+	}
+	stale := strings.Repeat("0", ed25519.PublicKeySize*2) + "\n"
+	if err := os.WriteFile(keyPath+".pub", []byte(stale), 0o600); err != nil {
+		t.Fatalf("write stale pubkey: %v", err)
+	}
+	if err := ensureFlightRecorderSigningKey(keyPath, recorderDir); err != nil {
+		t.Fatalf("third provision refreshes stale pubkey: %v", err)
+	}
+	refreshed, err := os.ReadFile(filepath.Clean(keyPath + ".pub"))
+	if err != nil {
+		t.Fatalf("read refreshed pubkey: %v", err)
+	}
+	want, err := signing.PublicKeyHexFromPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("derive public key: %v", err)
+	}
+	if string(refreshed) != want+"\n" {
+		t.Fatalf("refreshed pubkey = %q, want %q", refreshed, want+"\n")
+	}
 }
 
 // TestEnsureFlightRecorderSigningKey_RegeneratesUnloadable proves a junk key
@@ -120,6 +148,7 @@ func TestEnsureFlightRecorderSigningKey_RegeneratesUnloadable(t *testing.T) {
 	if _, err := signing.LoadPrivateKeyFile(keyPath); err != nil {
 		t.Errorf("key was not regenerated to a loadable Ed25519 key: %v", err)
 	}
+	assertFlightRecorderPublicKeySidecar(t, keyPath)
 }
 
 // TestEnsureFlightRecorderSigningKey_ErrorPaths covers the abort branches that
@@ -742,5 +771,35 @@ func TestInitResult_JSONRoundTrip(t *testing.T) {
 	}
 	if decoded.Setup.Preset != "balanced" {
 		t.Errorf("Preset = %q, want balanced", decoded.Setup.Preset)
+	}
+}
+
+func assertFlightRecorderPublicKeySidecar(t *testing.T, keyPath string) {
+	t.Helper()
+
+	priv, err := signing.LoadPrivateKeyFile(keyPath)
+	if err != nil {
+		t.Fatalf("load private key %s: %v", keyPath, err)
+	}
+	want, err := signing.PublicKeyHexFromPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("derive public key: %v", err)
+	}
+	pubPath := keyPath + ".pub"
+	raw, err := os.ReadFile(filepath.Clean(pubPath))
+	if err != nil {
+		t.Fatalf("read public key sidecar %s: %v", pubPath, err)
+	}
+	if string(raw) != want+"\n" {
+		t.Fatalf("public key sidecar = %q, want %q", raw, want+"\n")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(pubPath)
+		if err != nil {
+			t.Fatalf("stat public key sidecar %s: %v", pubPath, err)
+		}
+		if got := info.Mode().Perm(); got != flightRecorderPublicKeyMode {
+			t.Fatalf("public key sidecar mode = %s, want %s", got, flightRecorderPublicKeyMode)
+		}
 	}
 }

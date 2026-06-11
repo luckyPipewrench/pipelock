@@ -201,6 +201,8 @@ func migrateFlightRecorderSigningKey(ctx *configMigrationContext, root *yaml.Nod
 		}
 	} else if _, err := signing.LoadPrivateKeyFile(dest); err != nil {
 		return fmt.Errorf("migrate %s: validate migrated signing key %s: %w", field, dest, err)
+	} else if err := writeFlightRecorderPublicKeyForContain(ctx, dest); err != nil {
+		return fmt.Errorf("migrate %s: %w", field, err)
 	}
 	n.Value = dest
 	return nil
@@ -237,7 +239,7 @@ func ensureFlightRecorderSigningKeyWithRecovery(ctx *configMigrationContext, des
 		if _, err := signing.LoadPrivateKeyFile(dest); err != nil {
 			return fmt.Errorf("validate existing signing key %s: %w", dest, err)
 		}
-		return nil
+		return writeFlightRecorderPublicKeyForContain(ctx, dest)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat existing target %s: %w", dest, err)
 	}
@@ -249,7 +251,7 @@ func ensureFlightRecorderSigningKeyWithRecovery(ctx *configMigrationContext, des
 		if recovered, err := recoverExistingSigningKey(ctx, recoverSrc, dest); err != nil {
 			return err
 		} else if recovered {
-			return nil
+			return writeFlightRecorderPublicKeyForContain(ctx, dest)
 		}
 	}
 
@@ -264,6 +266,24 @@ func ensureFlightRecorderSigningKeyWithRecovery(ctx *configMigrationContext, des
 		return err
 	} else if wrote {
 		ctx.artifacts = append(ctx.artifacts, migratedConfigArtifact{path: dest})
+	}
+	return writeFlightRecorderPublicKeyForContain(ctx, dest)
+}
+
+func writeFlightRecorderPublicKeyForContain(ctx *configMigrationContext, keyPath string) error {
+	priv, err := signing.LoadPrivateKeyFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("load signing key %s for public export: %w", keyPath, err)
+	}
+	pubHex, err := signing.PublicKeyHexFromPrivateKey(priv)
+	if err != nil {
+		return fmt.Errorf("derive public key for %s: %w", keyPath, err)
+	}
+	pubPath := keyPath + ".pub"
+	if wrote, err := backupAndWriteIfChanged(ctx.env, pubPath, []byte(pubHex+"\n"), modeConfigSecret); err != nil {
+		return fmt.Errorf("write public signing key %s: %w", pubPath, err)
+	} else if wrote {
+		ctx.artifacts = append(ctx.artifacts, migratedConfigArtifact{path: pubPath})
 	}
 	return nil
 }

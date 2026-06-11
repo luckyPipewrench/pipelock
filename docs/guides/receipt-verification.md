@@ -51,6 +51,17 @@ Pin a specific signer key to reject receipts from unknown signers:
 pipelock verify-receipt receipt.json --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
 ```
 
+On a Pipelock host, export the verifier key from the configured
+flight-recorder signing key:
+
+```bash
+pipelock signing pubkey --config /etc/pipelock/pipelock.yaml --out /etc/pipelock/keys/flight-recorder-signing.key.pub
+pipelock verify-receipt receipt.json --key /etc/pipelock/keys/flight-recorder-signing.key.pub
+```
+
+The exported file is public key material only. Do not hand verifiers the private
+file named by `flight_recorder.signing_key_path`.
+
 Exit code 0 means valid, exit code 1 means invalid or malformed.
 
 ## Verifying a receipt chain

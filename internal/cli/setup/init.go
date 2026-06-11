@@ -5,6 +5,7 @@ package setup
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,8 @@ const (
 	initExitFailure = 1
 	initExitError   = 2
 )
+
+const flightRecorderPublicKeyMode os.FileMode = 0o640
 
 // defaultConfigSubdir is the subdirectory under os.UserConfigDir() for pipelock config.
 const defaultConfigSubdir = "pipelock"
@@ -446,8 +449,8 @@ func ensureFlightRecorderSigningKey(keyPath, recorderDir string) error {
 		if readErr != nil {
 			return fmt.Errorf("reading existing signing key %s: %w", keyPath, readErr)
 		}
-		if _, decodeErr := signing.DecodePrivateKey(string(data)); decodeErr == nil {
-			return nil // valid key on disk: reuse, never orphan its receipt chain
+		if priv, decodeErr := signing.DecodePrivateKey(string(data)); decodeErr == nil {
+			return writeFlightRecorderPublicKey(keyPath, priv) // reuse key, refresh public sidecar
 		}
 		// fall through: corrupt/unparseable key material -> regenerate.
 	case !errors.Is(statErr, os.ErrNotExist):
@@ -459,6 +462,14 @@ func ensureFlightRecorderSigningKey(keyPath, recorderDir string) error {
 	}
 	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
 		return fmt.Errorf("writing signing key %s: %w", keyPath, err)
+	}
+	return writeFlightRecorderPublicKey(keyPath, priv)
+}
+
+func writeFlightRecorderPublicKey(keyPath string, priv ed25519.PrivateKey) error {
+	pubPath := keyPath + ".pub"
+	if err := signing.SavePublicKeyHexFromPrivateKey(priv, pubPath, flightRecorderPublicKeyMode); err != nil {
+		return fmt.Errorf("writing public signing key %s: %w", pubPath, err)
 	}
 	return nil
 }

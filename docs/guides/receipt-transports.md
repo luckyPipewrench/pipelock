@@ -74,6 +74,7 @@ Every receipt contains these fields:
 | `chain_prev_hash` | SHA-256 of previous receipt | Hash chain linkage |
 | `chain_seq` | Monotonic counter | Position in chain |
 | `policy_hash` | Config hash | Which config version was active |
+| `signer_key` | Ed25519 public key hex | Public key that signed the receipt; export it with `pipelock signing pubkey` for verifier pinning |
 
 Taint-aware fields (when session profiling is active):
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -109,6 +110,7 @@ learn_lock:
 		filepath.Join(env.configDir, "tls", "ca.pem"),
 		filepath.Join(env.configDir, "tls", "ca-key.pem"),
 		filepath.Join(env.configDir, "keys", "flight-recorder-signing.key"),
+		filepath.Join(env.configDir, "keys", "flight-recorder-signing.key.pub"),
 		filepath.Join(env.configDir, "learn-privacy-salt"),
 		filepath.Join(env.configDir, "integrity", "manifest.json"),
 		filepath.Join(env.configDir, "roster.json"),
@@ -134,6 +136,7 @@ learn_lock:
 			t.Fatalf("%s mode = %s, want %s", p, got, modePinSecret)
 		}
 	}
+	assertContainFlightRecorderPublicKeySidecar(t, filepath.Join(env.configDir, "keys", "flight-recorder-signing.key"))
 	if len(artifacts) == 0 {
 		t.Fatal("expected tracked migrated artifacts")
 	}
@@ -277,12 +280,23 @@ func TestEnsureFlightRecorderSigningKeyUsesExistingTarget(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	dest := filepath.Join(env.configDir, "keys", "flight-recorder-signing.key")
 	mustWriteSigningKey(t, dest)
+	before, err := os.ReadFile(filepath.Clean(dest))
+	if err != nil {
+		t.Fatalf("read existing key: %v", err)
+	}
 	ctx := &configMigrationContext{env: env}
 	if err := ensureFlightRecorderSigningKey(ctx, dest); err != nil {
 		t.Fatalf("ensure existing: %v", err)
 	}
-	if len(ctx.artifacts) != 0 {
-		t.Fatalf("existing key should not add artifacts: %+v", ctx.artifacts)
+	if len(ctx.artifacts) != 1 || ctx.artifacts[0].path != dest+".pub" {
+		t.Fatalf("existing key should only add public sidecar artifact: %+v", ctx.artifacts)
+	}
+	after, err := os.ReadFile(filepath.Clean(dest))
+	if err != nil {
+		t.Fatalf("read reused key: %v", err)
+	}
+	if !bytesEqual(before, after) {
+		t.Fatal("existing private key was changed")
 	}
 	info, err := os.Stat(dest)
 	if err != nil {
@@ -290,6 +304,15 @@ func TestEnsureFlightRecorderSigningKeyUsesExistingTarget(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != modePinSecret {
 		t.Fatalf("mode=%s want %s", got, modePinSecret)
+	}
+	assertContainFlightRecorderPublicKeySidecar(t, dest)
+
+	ctx = &configMigrationContext{env: env}
+	if err := ensureFlightRecorderSigningKey(ctx, dest); err != nil {
+		t.Fatalf("ensure existing with sidecar: %v", err)
+	}
+	if len(ctx.artifacts) != 0 {
+		t.Fatalf("idempotent existing key should not add artifacts: %+v", ctx.artifacts)
 	}
 }
 
@@ -678,6 +701,7 @@ flight_recorder:
 	if _, err := signing.LoadPrivateKeyFile(dest); err != nil {
 		t.Fatalf("load generated key: %v", err)
 	}
+	assertContainFlightRecorderPublicKeySidecar(t, dest)
 	if len(artifacts) == 0 {
 		t.Fatal("expected generated key artifact to be tracked")
 	}
@@ -704,5 +728,35 @@ func mustWriteSigningKey(t *testing.T, path string) {
 	}
 	if err := signing.SavePrivateKey(priv, path); err != nil {
 		t.Fatalf("write signing key %s: %v", path, err)
+	}
+}
+
+func assertContainFlightRecorderPublicKeySidecar(t *testing.T, keyPath string) {
+	t.Helper()
+
+	priv, err := signing.LoadPrivateKeyFile(keyPath)
+	if err != nil {
+		t.Fatalf("load private key %s: %v", keyPath, err)
+	}
+	want, err := signing.PublicKeyHexFromPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("derive public key: %v", err)
+	}
+	pubPath := keyPath + ".pub"
+	raw, err := os.ReadFile(filepath.Clean(pubPath))
+	if err != nil {
+		t.Fatalf("read public key sidecar %s: %v", pubPath, err)
+	}
+	if string(raw) != want+"\n" {
+		t.Fatalf("public key sidecar = %q, want %q", raw, want+"\n")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(pubPath)
+		if err != nil {
+			t.Fatalf("stat public key sidecar %s: %v", pubPath, err)
+		}
+		if got := info.Mode().Perm(); got != modeConfigSecret {
+			t.Fatalf("public key sidecar mode = %s, want %s", got, modeConfigSecret)
+		}
 	}
 }

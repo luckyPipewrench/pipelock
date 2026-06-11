@@ -111,6 +111,31 @@ func EncodePublicKey(key ed25519.PublicKey) string {
 	return publicKeyHeader + "\n" + base64.StdEncoding.EncodeToString(key) + "\n"
 }
 
+// PublicKeyHexFromPrivateKey returns the raw 32-byte Ed25519 public key
+// embedded in priv, encoded as 64 lowercase hex characters. Ed25519 private
+// keys carry their public half; callers must derive from the existing key
+// rather than generating a new pair or receipt signer identity changes.
+func PublicKeyHexFromPrivateKey(priv ed25519.PrivateKey) (string, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("invalid private key length: got %d, want %d", len(priv), ed25519.PrivateKeySize)
+	}
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok || len(pub) != ed25519.PublicKeySize {
+		return "", fmt.Errorf("derive public key from private key")
+	}
+	return hex.EncodeToString(pub), nil
+}
+
+// SavePublicKeyHexFromPrivateKey writes the raw public-key hex derived from
+// priv to path, followed by a newline, using the requested permissions.
+func SavePublicKeyHexFromPrivateKey(priv ed25519.PrivateKey, path string, perm os.FileMode) error {
+	pubHex, err := PublicKeyHexFromPrivateKey(priv)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(path, []byte(pubHex+"\n"), perm)
+}
+
 // DecodePublicKey deserializes a public key from the versioned format.
 func DecodePublicKey(encoded string) (ed25519.PublicKey, error) {
 	lines := strings.SplitN(strings.TrimSpace(encoded), "\n", 2)

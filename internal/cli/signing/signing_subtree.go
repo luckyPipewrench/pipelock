@@ -70,7 +70,7 @@ Subcommand groups:
 	}
 	transition.AddCommand(transitionVerifyCmd())
 
-	cmd.AddCommand(keyGenerateGroupCmd(), roster, recovery, transition)
+	cmd.AddCommand(keyGenerateGroupCmd(), pubkeyCmd(), roster, recovery, transition)
 	return cmd
 }
 

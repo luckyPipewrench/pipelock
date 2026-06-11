@@ -47,6 +47,23 @@ flight_recorder:
 The receipt-signing private key is loaded from
 `flight_recorder.signing_key_path`.
 
+`pipelock init` and `pipelock contain install` also write a public-key sidecar
+next to that private key at `<signing_key_path>.pub`. The sidecar contains the
+64-hex Ed25519 public key that verifiers pin with `--key`; it is safe to share.
+Never share the private key file itself.
+
+For an existing install, or to refresh the sidecar without rotating the key:
+
+```bash
+pipelock signing pubkey --config /etc/pipelock/pipelock.yaml --out /etc/pipelock/keys/flight-recorder-signing.key.pub
+```
+
+You can also derive from the private key directly:
+
+```bash
+pipelock signing pubkey --key-file /etc/pipelock/keys/flight-recorder-signing.key
+```
+
 ### Fail-closed receipts (`require_receipts`)
 
 By default receipt emission is best-effort: if signing or the recorder fails,

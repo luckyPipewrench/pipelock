@@ -20,7 +20,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -147,10 +146,9 @@ func collectCaptureSurfaces(t *testing.T, baseDir string) (map[string]int, int) 
 // the fix, MCP evidence flowed only through the (key-gated) receipt emitter, so
 // this directory stayed empty on every OS.
 func TestMcpProxyCmd_KeyFreeCapture_WritesEvidence(t *testing.T) {
-	// Intentionally NOT parallel: this spawns a wrapped go-test helper
-	// subprocess, and stacking it in the parallel batch alongside the other
-	// subprocess proxy tests adds CI-load contention to a known-flaky family
-	// (the stdio receipt/recorder tests race their subprocess teardown).
+	// Intentionally not parallel: this test exercises subprocess lifecycle plus
+	// evidence capture, and it does not need package-level scheduling pressure to
+	// prove the capture invariant.
 	captureDir := filepath.Join(t.TempDir(), "evidence")
 	configPath := writeMCPCaptureProbeConfig(t)
 
@@ -172,10 +170,7 @@ func TestMcpProxyCmd_KeyFreeCapture_WritesEvidence(t *testing.T) {
 		os.Args[0],
 		"-test.run=TestMCPRuntimeHelperProcess$",
 	})
-	// ErrSubprocessExit is expected when the wrapped Go-test helper exits
-	// non-zero (see TestMcpProxyCmd_EmitsSignedReceipts_StdioSubprocess for the
-	// race rationale). The assertion is about evidence written before exit.
-	if err != nil && !errors.Is(err, mcp.ErrSubprocessExit) {
+	if err != nil {
 		t.Fatalf("run mcp proxy --capture-output: %v\nstderr:\n%s", err, stderr)
 	}
 

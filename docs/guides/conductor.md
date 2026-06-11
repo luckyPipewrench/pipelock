@@ -122,8 +122,8 @@ pipelock conductor serve \
 | `--auditor-token-file` | (required) | File holding the bearer token required to query audit metadata. |
 | `--admin-token-file` | (required) | File holding the bearer token required for Conductor admin requests. |
 | `--audit-retention` | `0` (keep forever) | Duration to keep audit evidence; older batches are pruned at startup. |
-| `--trusted-audit-key` | (repeatable) | Trusted follower audit signing key: `id=ID,(inline=BASE64\|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]`. `org=` is required. |
-| `--trusted-control-key` | (repeatable) | Trusted emergency control key: `id=ID,purpose=(remote-kill-signing\|policy-bundle-rollback),(inline=BASE64\|file=/path)`. |
+| `--trusted-audit-key` | (repeatable) | Trusted follower audit signing key: `id=ID,(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]`. `inline=` accepts a raw 64-hex Ed25519 public key or the versioned `pipelock-ed25519-public-v1` format. `org=` is required for `pipelock conductor serve`. |
+| `--trusted-control-key` | (repeatable) | Trusted emergency control key: `id=ID,purpose=(remote-kill-signing\|policy-bundle-rollback),(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)`. `inline=` accepts a raw 64-hex Ed25519 public key or the versioned `pipelock-ed25519-public-v1` format. |
 | `--remote-kill-max-validity` | `72h` | Maximum validity window for published remote-kill messages. |
 | `--rollback-max-validity` | `24h` | Maximum validity window for published rollback authorizations. |
 | `--license-crl-file` | (optional) | Signed license revocation list; falls back to `PIPELOCK_LICENSE_CRL_FILE`. |
@@ -156,7 +156,7 @@ pipelock fleet-sink \
 | `--listen` | `127.0.0.1:8894` | Address for the fleet-sink HTTP listener. |
 | `--probe-listen` | (empty = disabled) | Plain-HTTP address for health probes; empty disables it. |
 | `--storage-dir` | (required) | Directory for the fleet-sink SQLite store. |
-| `--trusted-audit-key` | (repeatable) | Trusted follower audit signing key: `id=ID,(inline=BASE64\|file=/path)[,org=ORG][,fleet=FLEET][,instance=INSTANCE]`. |
+| `--trusted-audit-key` | (repeatable) | Trusted follower audit signing key: `id=ID,(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)[,org=ORG][,fleet=FLEET][,instance=INSTANCE]`. `inline=` accepts a raw 64-hex Ed25519 public key or the versioned `pipelock-ed25519-public-v1` format. Omitting `org=` is allowed for `pipelock fleet-sink` and makes the key unrestricted across orgs. |
 | `--max-skew` | `60s` | Maximum allowed clock skew on an audit batch. |
 | `--tls-cert` | (optional) | TLS server certificate. |
 | `--tls-key` | (optional) | TLS server private key. |
@@ -270,8 +270,10 @@ Conductor's trust is rooted in deployment-provided PKI, not in the binary:
   under the `--follower-trust-domain`. Conductor requires TLS 1.3 and verifies
   the client certificate on every request.
 - **Audit signing keys** (`--trusted-audit-key`) verify the signature on each
-  evidence batch. The `org=` binding stops a key from one org authenticating
-  batches for another.
+  evidence batch. `pipelock conductor serve` requires an `org=` binding so a
+  key from one org cannot authenticate batches for another; `pipelock
+  fleet-sink` allows omitting `org=`, which intentionally makes that key
+  unrestricted across orgs.
 - **Emergency control keys** (`--trusted-control-key`) are purpose-scoped
   (`remote-kill-signing` or `policy-bundle-rollback`); a key signed for one
   purpose is rejected for the other.

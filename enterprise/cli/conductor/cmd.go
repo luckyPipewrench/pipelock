@@ -134,10 +134,10 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.adminFleetID, "admin-fleet", "", "optional fleet scope for the admin bearer token on audit/follower read requests")
 	cmd.Flags().DurationVar(&opts.auditRetention, "audit-retention", 0, "duration to keep SQLite audit evidence; older batches are pruned at startup (0 = keep forever)")
 	cmd.Flags().StringArrayVar(&opts.trustedAuditKeys, "trusted-audit-key", nil,
-		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=BASE64|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]'; "+
+		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]'; "+
 			"org= is required so a key cannot authenticate batches across orgs; repeatable")
 	cmd.Flags().StringArrayVar(&opts.trustedControlKeys, "trusted-control-key", nil,
-		"trusted emergency control key as comma-separated kv pairs: 'id=ID,purpose=(remote-kill-signing|policy-bundle-rollback),(inline=BASE64|file=/path)'; repeatable")
+		"trusted emergency control key as comma-separated kv pairs: 'id=ID,purpose=(remote-kill-signing|policy-bundle-rollback),(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)'; repeatable")
 	cmd.Flags().DurationVar(&opts.remoteKillMaxTTL, "remote-kill-max-validity", opts.remoteKillMaxTTL, "maximum validity window for published Conductor remote-kill messages")
 	cmd.Flags().DurationVar(&opts.rollbackMaxTTL, "rollback-max-validity", opts.rollbackMaxTTL, "maximum validity window for published Conductor rollback authorizations")
 	cmd.Flags().StringVar(&opts.licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")

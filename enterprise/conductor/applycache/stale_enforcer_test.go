@@ -266,6 +266,14 @@ func TestStaleEnforcer_RequiresCacheAndKillSwitch(t *testing.T) {
 	if _, err := NewStaleEnforcer(StaleEnforcerConfig{Cache: fakeActiveSource{}}); !errors.Is(err, ErrStaleEnforcerKillSwitchRequired) {
 		t.Fatalf("nil kill switch: err = %v, want ErrStaleEnforcerKillSwitchRequired", err)
 	}
+	var typedNilCache *swappableSource
+	if _, err := NewStaleEnforcer(StaleEnforcerConfig{Cache: typedNilCache, KillSwitch: &fakeStaleKillSwitch{}}); !errors.Is(err, ErrStaleEnforcerCacheRequired) {
+		t.Fatalf("typed-nil cache: err = %v, want ErrStaleEnforcerCacheRequired", err)
+	}
+	var typedNilKillSwitch *fakeStaleKillSwitch
+	if _, err := NewStaleEnforcer(StaleEnforcerConfig{Cache: fakeActiveSource{}, KillSwitch: typedNilKillSwitch}); !errors.Is(err, ErrStaleEnforcerKillSwitchRequired) {
+		t.Fatalf("typed-nil kill switch: err = %v, want ErrStaleEnforcerKillSwitchRequired", err)
+	}
 }
 
 func TestStaleEnforcer_IntervalFlooredToMinimum(t *testing.T) {

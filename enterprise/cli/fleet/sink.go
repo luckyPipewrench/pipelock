@@ -206,7 +206,7 @@ func SinkCmd() *cobra.Command {
 	cmd.Flags().StringVar(&probeListen, "probe-listen", "", "plain HTTP address for fleet sink health probes; empty disables the probe listener")
 	cmd.Flags().StringVar(&storageDir, "storage-dir", "", "directory for the fleet sink SQLite store")
 	cmd.Flags().StringArrayVar(&trustedKeys, "trusted-audit-key", nil,
-		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=BASE64|file=/path)[,org=ORG][,fleet=FLEET][,instance=INSTANCE]'; repeatable")
+		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,org=ORG][,fleet=FLEET][,instance=INSTANCE]'; omitting org= leaves the key unrestricted across orgs; repeatable")
 	cmd.Flags().DurationVar(&maxSkew, "max-skew", conductor.DefaultAuditMaxSkew, "maximum allowed audit batch clock skew")
 	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "TLS server certificate file")
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "TLS server private key file")

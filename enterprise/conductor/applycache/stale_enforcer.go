@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -73,10 +74,10 @@ type StaleEnforcer struct {
 
 // NewStaleEnforcer validates the wiring and returns a ready enforcer.
 func NewStaleEnforcer(cfg StaleEnforcerConfig) (*StaleEnforcer, error) {
-	if cfg.Cache == nil {
+	if isNilInterface(cfg.Cache) {
 		return nil, ErrStaleEnforcerCacheRequired
 	}
-	if cfg.KillSwitch == nil {
+	if isNilInterface(cfg.KillSwitch) {
 		return nil, ErrStaleEnforcerKillSwitchRequired
 	}
 	interval := cfg.CheckInterval
@@ -95,6 +96,19 @@ func NewStaleEnforcer(cfg StaleEnforcerConfig) (*StaleEnforcer, error) {
 		now:        now,
 		logger:     cfg.Logger,
 	}, nil
+}
+
+func isNilInterface(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
 
 // Run ticks on the check interval until ctx is cancelled, evaluating staleness

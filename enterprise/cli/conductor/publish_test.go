@@ -418,20 +418,19 @@ func TestBuildSignedBundle_NoKeyEscapesOnPostLoadError(t *testing.T) {
 	}
 }
 
-// TestReadSigningKeyBytes_SymlinkRejected is the Fix-3 regression: a symlink
-// pointing at a real (even 0600) key file must be rejected, because os.Open
-// would otherwise follow it and sign with a file the operator did not name.
-func TestReadSigningKeyBytes_SymlinkRejected(t *testing.T) {
+// TestLoadPolicySigningKey_SymlinkRejected is the publish-side integration
+// regression: a symlinked signing-key file must be rejected through the full
+// loader. The hardened reader (symlink/perm/size gates) now lives in
+// internal/cli/signing.ReadKeyFileBytes — its unit coverage is in
+// key_generate_test.go — so this test proves publish's path actually routes
+// through it.
+func TestLoadPolicySigningKey_SymlinkRejected(t *testing.T) {
 	dir := t.TempDir()
 	realPath, _ := writePolicyKeyFile(t, dir, wantPurposeFlag, "real-key")
 	linkPath := filepath.Join(dir, "link.json")
 	if err := os.Symlink(realPath, linkPath); err != nil {
 		t.Skipf("symlink unsupported on this platform: %v", err)
 	}
-	if _, err := readSigningKeyBytes(linkPath); err == nil || !strings.Contains(err.Error(), "symlink") {
-		t.Fatalf("want symlink rejection, got %v", err)
-	}
-	// And the full loader rejects it too.
 	if _, _, err := loadPolicySigningKey(linkPath); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("loadPolicySigningKey want symlink rejection, got %v", err)
 	}
@@ -448,7 +447,7 @@ func TestReadSigningKey_TooPermissiveRejected(t *testing.T) {
 		t.Fatalf("chmod: %v", err)
 	}
 	_, _, err := loadPolicySigningKey(keyPath)
-	if err == nil || !strings.Contains(err.Error(), "too open") {
+	if err == nil || !strings.Contains(err.Error(), "permissions") {
 		t.Fatalf("want permission error, got %v", err)
 	}
 }
@@ -811,10 +810,15 @@ func TestLoadPolicySigningKey_MissingKeyIDRejected(t *testing.T) {
 	}
 }
 
-func TestReadSigningKeyBytes_OversizedRejected(t *testing.T) {
+// TestLoadPolicySigningKey_OversizedRejected proves the shared reader's 16 KiB
+// size cap is enforced on publish's path. The cap itself is unit-tested in
+// internal/cli/signing (TestReadKeyFileBytes_RejectsOversizedFile); here we only
+// confirm loadPolicySigningKey routes through it.
+func TestLoadPolicySigningKey_OversizedRejected(t *testing.T) {
 	dir := t.TempDir()
-	path := writeFile(t, dir, "huge.json", strings.Repeat("x", publishKeyFileMaxSize+1))
-	if _, err := readSigningKeyBytes(path); err == nil || !strings.Contains(err.Error(), "max") {
+	// 16 KiB + slack is above the shared keyFileMaxSize (16 KiB).
+	path := writeFile(t, dir, "huge.json", strings.Repeat("x", 16*1024+1))
+	if _, _, err := loadPolicySigningKey(path); err == nil || !strings.Contains(err.Error(), "max") {
 		t.Fatalf("want oversized error, got %v", err)
 	}
 }

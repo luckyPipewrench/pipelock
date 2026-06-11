@@ -29,8 +29,8 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
+	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/license"
-	"github.com/luckyPipewrench/pipelock/internal/secperm"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -48,14 +48,9 @@ const (
 	// keyFileSchemaVersion mirrors the on-disk key file schema written by
 	// "pipelock signing key generate" (internal/cli/signing). Kept in sync so
 	// the publisher rejects a stale or future key file rather than mis-parsing
-	// it.
+	// it. The secret-permission, regular-file, symlink, and size gates are
+	// shared via clisigning.ReadKeyFileBytes, so no duplicate consts for those.
 	keyFileSchemaVersion = 1
-	// publishKeyFileMaxSize bounds the signing key file read. The on-disk key
-	// file is a small JSON object; a larger file is malformed or hostile.
-	publishKeyFileMaxSize = 16 * 1024
-	// privateKeyDisallowedPermBits mirrors the secret-permission gate used by
-	// the keygen loader: reject group-write/other access on a private key file.
-	privateKeyDisallowedPermBits = 0o037
 )
 
 // ErrStalePolicyVersion is returned when the Conductor rejects a publish because
@@ -442,7 +437,10 @@ func parseRuleBundleRefs(values []string) ([]conductorcore.RuleBundleRef, error)
 // but failing here is clearer and avoids a wasted round trip).
 func loadPolicySigningKey(path string) (string, ed25519.PrivateKey, error) {
 	cleanPath := filepath.Clean(path)
-	raw, err := readSigningKeyBytes(cleanPath)
+	// Reuse the signing package's hardened key-file reader (symlink reject +
+	// regular-file + secret-perm + 16 KiB size cap) rather than duplicating the
+	// open/stat/perm/size dance and re-introducing a gosec G304 suppression here.
+	raw, err := clisigning.ReadKeyFileBytes(cleanPath, true)
 	if err != nil {
 		return "", nil, fmt.Errorf("read --signing-key %q: %w", cleanPath, err)
 	}
@@ -482,53 +480,6 @@ func loadPolicySigningKey(path string) (string, ed25519.PrivateKey, error) {
 		return "", nil, fmt.Errorf("--signing-key %q: private key does not match its public key", cleanPath)
 	}
 	return kf.KeyID, priv, nil
-}
-
-// readSigningKeyBytes reads the key file with secret-permission and regular-file
-// gates: reject a symlink at the path, reject a non-regular target (device/FIFO),
-// reject group/other-accessible permissions, and bound the read.
-//
-// The symlink check is explicit and must come BEFORE os.Open: os.Open FOLLOWS
-// symlinks, so a later f.Stat() reports the TARGET's mode and would silently
-// accept a symlink pointing at a 0600 regular file the operator never intended
-// to sign with (a local confused-deputy vector). We os.Lstat the path first and
-// reject os.ModeSymlink, THEN open and fd-stat. The fd-stat (not a second path
-// stat) closes the obvious TOCTOU window: every subsequent check runs against
-// the file descriptor we actually read from.
-func readSigningKeyBytes(cleanPath string) ([]byte, error) {
-	lst, err := os.Lstat(cleanPath)
-	if err != nil {
-		return nil, err
-	}
-	if lst.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("key file %q is a symlink; pass the real key file path", cleanPath)
-	}
-	f, err := os.Open(cleanPath) //nolint:gosec // operator-supplied, cleaned; lstat symlink-reject above + fd regular-file/perm/size gates below
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("not a regular file (mode=%s)", info.Mode())
-	}
-	if secperm.TooPermissive(info.Mode().Perm(), privateKeyDisallowedPermBits) {
-		return nil, fmt.Errorf("permissions %04o are too open, want 0600 or 0640", info.Mode().Perm())
-	}
-	if info.Size() > publishKeyFileMaxSize {
-		return nil, fmt.Errorf("key file is %d bytes, max %d", info.Size(), publishKeyFileMaxSize)
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, publishKeyFileMaxSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > publishKeyFileMaxSize {
-		return nil, fmt.Errorf("key file exceeds %d bytes", publishKeyFileMaxSize)
-	}
-	return raw, nil
 }
 
 // readPublisherToken loads the publisher bearer token from a file, trimming

@@ -133,6 +133,7 @@ func emergencyResolverFromKeys(keys map[string]conductorcore.SignatureKey) condu
 type testServer struct {
 	url    string
 	client *http.Client
+	store  *controlplane.FileBundleStore
 }
 
 type testServerOptions struct {
@@ -209,7 +210,7 @@ func newTestServer(t *testing.T, opts testServerOptions) *testServer {
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &testServer{url: srv.URL, client: srv.Client()}
+	return &testServer{url: srv.URL, client: srv.Client(), store: store}
 }
 
 func (s *testServer) Do(req *http.Request) (*http.Response, error) { return s.client.Do(req) }

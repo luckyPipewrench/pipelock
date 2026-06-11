@@ -768,6 +768,10 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		writeStoreError(w, err)
 		return
 	}
+	if _, err := h.store.BundleByIDVersion(r.Context(), req.Authorization.TargetBundleID, req.Authorization.TargetVersion); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	record, created, err := h.emergencyControls.PublishRollbackAuthorization(r.Context(), req.Authorization, now)
 	if err != nil {
 		writeStoreError(w, err)

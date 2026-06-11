@@ -233,6 +233,46 @@ func TestHandlerPublishRollbackAuthorizationResetsPolicyHead(t *testing.T) {
 	assertLatestBundleID(t, w, "bundle-handler-reset-v3")
 }
 
+func TestHandlerPublishRollbackAuthorizationMissingTargetDoesNotRecord(t *testing.T) {
+	store := mustStore(t)
+	signer := newTestSigner(t)
+	current := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-missing-current",
+		version:  2,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	if _, _, err := store.Publish(t.Context(), current, PublishOptions{Now: testNow}); err != nil {
+		t.Fatalf("Publish(current) error = %v", err)
+	}
+	missingTarget := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-missing-target",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-missing-target-not-recorded", current, missingTarget, conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}, testNow)
+	handler := newTestHandlerWithOptions(t, store, nil, resolver)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("rollback missing target status=%d body=%s, want 404", w.Code, w.Body.String())
+	}
+	lookup := RollbackLookup{
+		CurrentBundleID: auth.CurrentBundleID,
+		CurrentVersion:  auth.CurrentVersion,
+		TargetBundleID:  auth.TargetBundleID,
+		TargetVersion:   auth.TargetVersion,
+	}
+	if _, err := handler.emergencyControls.LatestRollbackAuthorization(t.Context(), defaultFollowerIdentity(), lookup, testNow); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRollbackAuthorization(after missing target) err=%v, want ErrEmergencyNotFound", err)
+	}
+}
+
 func TestHandlerPublishesAndServesEmergencyControls(t *testing.T) {
 	msg, killResolver := signedRemoteKillMessageWithResolver(t, "kill-handler", 3, conductor.KillSwitchActive, testNow)
 	auth, rollbackResolver := signedRollbackAuthorizationWithResolver(t, "rollback-handler", 4, testNow)
@@ -508,6 +548,7 @@ func TestHandlerEmergencyControlErrors(t *testing.T) {
 	}
 
 	failing := newTestHandlerWithEmergencyKeys(t, killResolver, rollbackResolver)
+	publishRollbackTargetAndCurrent(t, failing, auth)
 	failing.emergencyControls = failingEmergencyStore{}
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPut, RemoteKillPath, strings.NewReader(remoteBody))
 	req.Header.Set("X-Pipelock-Admin", "ok")

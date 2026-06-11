@@ -7,6 +7,9 @@ package conductor
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -15,9 +18,12 @@ import (
 	"github.com/spf13/cobra"
 
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+const rollbackTestPolicyKeyID = "policy-signer-1"
 
 func newRollbackRig(t *testing.T, serverRollbackTTL time.Duration) rollbackOptions {
 	t.Helper()
@@ -50,7 +56,79 @@ func newRollbackRig(t *testing.T, serverRollbackTTL time.Duration) rollbackOptio
 		transport:       srv,
 	}
 	opts.baseURL = srv.url
+	seedRollbackBundles(t, srv.store, opts)
 	return opts
+}
+
+func seedRollbackBundles(t *testing.T, store *controlplane.FileBundleStore, opts rollbackOptions) {
+	t.Helper()
+	target := signedRollbackTestBundle(t, opts.targetBundleID, opts.targetVersion, "")
+	targetRecord, _, err := store.Publish(context.Background(), target, controlplane.PublishOptions{Now: opts.now()})
+	if err != nil {
+		t.Fatalf("Publish(rollback target): %v", err)
+	}
+	current := signedRollbackTestBundle(t, opts.currentBundleID, opts.currentVersion, targetRecord.BundleHash)
+	if _, _, err := store.Publish(context.Background(), current, controlplane.PublishOptions{Now: opts.now().Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(rollback current): %v", err)
+	}
+}
+
+func signedRollbackTestBundle(t *testing.T, bundleID string, version uint64, previousHash string) conductorcore.PolicyBundle {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(policy bundle): %v", err)
+	}
+	payload := conductorcore.PolicyBundlePayload{ConfigYAML: "mode: strict\napi_allowlist:\n  - api.example.com\n"}
+	payloadHash, err := payload.PayloadHash()
+	if err != nil {
+		t.Fatalf("PayloadHash(): %v", err)
+	}
+	policyHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash(): %v", err)
+	}
+	bundle := conductorcore.PolicyBundle{
+		SchemaVersion:      conductorcore.SchemaVersion,
+		BundleID:           bundleID,
+		OrgID:              testOrgID,
+		FleetID:            testFleetID,
+		Environment:        testEnvironment,
+		Audience:           conductorcore.Audience{InstanceIDs: []string{testInstanceID}},
+		Version:            version,
+		PreviousBundleHash: previousHash,
+		CreatedAt:          testFixedNow(t).Add(-time.Minute),
+		NotBefore:          testFixedNow(t).Add(-time.Minute),
+		ExpiresAt:          testFixedNow(t).Add(time.Hour),
+		MinPipelockVersion: "1.2.3",
+		PolicyHash:         policyHash,
+		PayloadSHA256:      payloadHash,
+		Payload:            payload,
+	}
+	preimage, err := bundle.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(): %v", err)
+	}
+	bundle.Signatures = []conductorcore.SignatureProof{{
+		SignerKeyID: rollbackTestPolicyKeyID,
+		KeyPurpose:  signing.PurposePolicyBundleSigning,
+		Algorithm:   conductorcore.SignatureAlgorithmEd25519,
+		Signature:   conductorcore.SignaturePrefixEd25519 + hex.EncodeToString(ed25519.Sign(priv, preimage)),
+	}}
+	if err := bundle.VerifySignaturesAt(testFixedNow(t), func(keyID string) (conductorcore.SignatureKey, error) {
+		if keyID != rollbackTestPolicyKeyID {
+			return conductorcore.SignatureKey{}, conductorcore.ErrSignatureVerification
+		}
+		return conductorcore.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposePolicyBundleSigning,
+			NotBefore:  testFixedNow(t).Add(-time.Hour),
+			NotAfter:   testFixedNow(t).Add(time.Hour),
+		}, nil
+	}); err != nil {
+		t.Fatalf("VerifySignaturesAt(): %v", err)
+	}
+	return bundle
 }
 
 func rollbackCobra(t *testing.T) (*cobra.Command, *bytes.Buffer) {

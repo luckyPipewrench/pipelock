@@ -4393,7 +4393,7 @@ func TestHintForBlock(t *testing.T) {
 		want    string
 	}{
 		{ScannerBlocklist, "Domain is on the blocklist. Remove from fetch_proxy.monitoring.blocklist if legitimate."},
-		{ScannerDLP, "A DLP pattern matched this URL. If false positive, add a suppress entry for this rule."},
+		{ScannerDLP, "A DLP pattern matched this URL. If a false positive, add the destination host to that pattern's dlp.patterns[].exempt_domains; URL DLP does not consult the top-level suppress: list."},
 		{ScannerEntropy, "High-entropy content detected. Review the URL for data exfiltration attempts."},
 		{ScannerSubdomainEntropy, "High-entropy content detected in subdomain. Review for data exfiltration via DNS."},
 		{ScannerSSRF, "SSRF protection blocked this URL. It may resolve to a private IP or DNS resolution failed."},

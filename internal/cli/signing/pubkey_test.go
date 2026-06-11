@@ -138,6 +138,93 @@ func TestPubkeyCmd_RejectsPublicKeyFileAsKeyFile(t *testing.T) {
 	}
 }
 
+func TestPubkeyCmd_RejectsMutuallyExclusiveInputs(t *testing.T) {
+	_, err := resolveRecorderSigningKeyPath("key", "config")
+	if err == nil {
+		t.Fatal("expected mutually exclusive input error")
+	}
+	if !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("error = %v, want mutually exclusive diagnostic", err)
+	}
+}
+
+func TestPubkeyCmd_NoDiscoveredConfigFailsClosed(t *testing.T) {
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	t.Setenv("HOME", t.TempDir())
+
+	_, err := resolveRecorderSigningKeyPath("", "")
+	if err == nil {
+		t.Fatal("expected missing config error")
+	}
+	if strings.Contains(err.Error(), "/etc/pipelock/pipelock.yaml") {
+		t.Skip("system pipelock config is installed; cannot force config discovery miss")
+	}
+	if !strings.Contains(err.Error(), "no pipelock config found") {
+		t.Fatalf("error = %v, want no config diagnostic", err)
+	}
+}
+
+func TestPubkeyCmd_ConfigLoadErrorIncludesPath(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "missing.yaml")
+
+	_, err := resolveRecorderSigningKeyPath("", cfgPath)
+	if err == nil {
+		t.Fatal("expected config load error")
+	}
+	if !strings.Contains(err.Error(), cfgPath) {
+		t.Fatalf("error = %v, want config path", err)
+	}
+}
+
+func TestPubkeyCmd_RejectsInvalidDerivedPublicKey(t *testing.T) {
+	err := writeRecorderPublicKeyHex(filepath.Join(t.TempDir(), "out.pub"), "not-hex")
+	if err == nil {
+		t.Fatal("expected invalid derived public key error")
+	}
+	if !strings.Contains(err.Error(), "invalid derived public key") {
+		t.Fatalf("error = %v, want invalid derived public key", err)
+	}
+}
+
+func TestPubkeyCmd_OutWriteErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	_, pubHex, _ := writeRecorderSigningKey(t)
+	outPath := filepath.Join(t.TempDir(), "out.pub")
+	if err := os.Mkdir(outPath, 0o750); err != nil {
+		t.Fatalf("mkdir out path: %v", err)
+	}
+
+	err := writeRecorderPublicKeyHex(outPath, pubHex)
+	if err == nil {
+		t.Fatal("expected write failure")
+	}
+	if !strings.Contains(err.Error(), "write public key") {
+		t.Fatalf("error = %v, want write public key diagnostic", err)
+	}
+}
+
+func TestPubkeyCmd_DeriveRejectsNonPublicInvalidFile(t *testing.T) {
+	t.Parallel()
+
+	keyPath := filepath.Join(t.TempDir(), "not-a-key")
+	if err := os.WriteFile(keyPath, []byte("not a private or public key"), 0o600); err != nil {
+		t.Fatalf("write invalid key file: %v", err)
+	}
+
+	_, err := deriveRecorderPublicKeyHexFromPrivateFile(keyPath)
+	if err == nil {
+		t.Fatal("expected invalid private key error")
+	}
+	if strings.Contains(err.Error(), "contains a public key") {
+		t.Fatalf("error = %v, should not classify junk as public key", err)
+	}
+	if !strings.Contains(err.Error(), "load private signing key") {
+		t.Fatalf("error = %v, want private key load diagnostic", err)
+	}
+}
+
 func TestPubkeyCmd_ExportedKeyMatchesReceiptSignerKey(t *testing.T) {
 	t.Parallel()
 

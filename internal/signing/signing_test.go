@@ -329,6 +329,72 @@ func TestSaveLoadPrivateKeyFile_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestPublicKeyHexFromPrivateKey(t *testing.T) {
+	pub, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(): %v", err)
+	}
+
+	got, err := PublicKeyHexFromPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("PublicKeyHexFromPrivateKey(): %v", err)
+	}
+	if want := hex.EncodeToString(pub); got != want {
+		t.Fatalf("public key hex = %q, want %q", got, want)
+	}
+}
+
+func TestPublicKeyHexFromPrivateKeyRejectsBadLength(t *testing.T) {
+	_, err := PublicKeyHexFromPrivateKey(ed25519.PrivateKey("not-a-valid-private-key"))
+	if err == nil {
+		t.Fatal("expected invalid private key length error")
+	}
+	if !strings.Contains(err.Error(), "invalid private key length") {
+		t.Fatalf("error = %v, want invalid private key length", err)
+	}
+}
+
+func TestSavePublicKeyHexFromPrivateKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666")
+	}
+	pub, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(): %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "flight-recorder-signing.key.pub")
+
+	if err := SavePublicKeyHexFromPrivateKey(priv, path, 0o640); err != nil {
+		t.Fatalf("SavePublicKeyHexFromPrivateKey(): %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read public key file: %v", err)
+	}
+	want := hex.EncodeToString(pub) + "\n"
+	if string(raw) != want {
+		t.Fatalf("public key file = %q, want %q", raw, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat public key file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("public key mode = %s, want %s", got, os.FileMode(0o640))
+	}
+}
+
+func TestSavePublicKeyHexFromPrivateKeyPropagatesBadPrivateKey(t *testing.T) {
+	err := SavePublicKeyHexFromPrivateKey(ed25519.PrivateKey("bad"), filepath.Join(t.TempDir(), "out.pub"), 0o640)
+	if err == nil {
+		t.Fatal("expected bad private key error")
+	}
+	if !strings.Contains(err.Error(), "invalid private key length") {
+		t.Fatalf("error = %v, want invalid private key length", err)
+	}
+}
+
 func TestSavePrivateKeyFile_Permissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows uses NTFS ACLs not Unix mode bits; os.Stat reports a synthesized 0o666")

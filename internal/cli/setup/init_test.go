@@ -196,6 +196,32 @@ func TestEnsureFlightRecorderSigningKey_ErrorPaths(t *testing.T) {
 			t.Fatal("expected abort when the existing key path is unreadable (a directory)")
 		}
 	})
+	t.Run("public_sidecar_write_failure_aborts", func(t *testing.T) {
+		base := t.TempDir()
+		keyPath := filepath.Join(base, "keys", "key")
+		recorderDir := filepath.Join(base, "recorder")
+		_, priv, err := signing.GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("generate signing key: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
+			t.Fatalf("mkdir key dir: %v", err)
+		}
+		if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+			t.Fatalf("write private key: %v", err)
+		}
+		if err := os.Mkdir(keyPath+".pub", 0o750); err != nil {
+			t.Fatalf("mkdir pubkey blocker: %v", err)
+		}
+
+		err = ensureFlightRecorderSigningKey(keyPath, recorderDir)
+		if err == nil {
+			t.Fatal("expected public sidecar write failure")
+		}
+		if !strings.Contains(err.Error(), "writing public signing key") {
+			t.Fatalf("error = %v, want public signing key diagnostic", err)
+		}
+	})
 }
 
 // TestInitCmd_DryRunProvisionsNoKey proves --dry-run never writes a signing key

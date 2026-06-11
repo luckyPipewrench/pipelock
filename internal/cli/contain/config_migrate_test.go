@@ -316,6 +316,37 @@ func TestEnsureFlightRecorderSigningKeyUsesExistingTarget(t *testing.T) {
 	}
 }
 
+func TestEnsureFlightRecorderSigningKeyFailsWhenPublicSidecarCannotBeWritten(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dest := filepath.Join(env.configDir, "keys", "flight-recorder-signing.key")
+	mustWriteSigningKey(t, dest)
+	if err := os.Mkdir(dest+".pub", 0o750); err != nil {
+		t.Fatalf("mkdir pubkey blocker: %v", err)
+	}
+
+	err := ensureFlightRecorderSigningKey(&configMigrationContext{env: env}, dest)
+	if err == nil {
+		t.Fatal("expected public sidecar write failure")
+	}
+	if !strings.Contains(err.Error(), "write public signing key") {
+		t.Fatalf("error = %v, want public signing key diagnostic", err)
+	}
+}
+
+func TestWriteFlightRecorderPublicKeyForContainFailsOnInvalidPrivateKey(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	keyPath := filepath.Join(env.configDir, "keys", "bad.key")
+	mustWriteFile(t, keyPath, "not a private key")
+
+	err := writeFlightRecorderPublicKeyForContain(&configMigrationContext{env: env}, keyPath)
+	if err == nil {
+		t.Fatal("expected invalid private key error")
+	}
+	if !strings.Contains(err.Error(), "load signing key") {
+		t.Fatalf("error = %v, want load signing key diagnostic", err)
+	}
+}
+
 func TestEnsureFlightRecorderSigningKeyRejectsBadExistingTargets(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	ctx := &configMigrationContext{env: env}

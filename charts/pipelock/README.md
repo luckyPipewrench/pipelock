@@ -194,19 +194,17 @@ See [`examples/`](examples/) for ready-to-use values configurations:
 
 Each example is an executable claim: render it and validate the embedded config
 rather than reading it. `helm lint` checks chart wiring; `pipelock check`
-validates the rendered `pipelock.yaml`. The snippets below use `python3` (always
-present) to pull the `pipelock.yaml` key out of the rendered `ConfigMap`.
+validates the rendered `pipelock.yaml`. The `extract_cfg` helper below uses
+`awk` to pull the `pipelock.yaml` key out of the rendered `ConfigMap`.
 
 ```bash
 # Helper: extract the embedded pipelock.yaml from a rendered example to a file.
 extract_cfg() {  # usage: extract_cfg <example.yaml> <out.yaml>
-  helm template t charts/pipelock -f "$1" | python3 -c '
-import sys, yaml
-for d in yaml.safe_load_all(sys.stdin):
-    if isinstance(d, dict) and d.get("kind") == "ConfigMap":
-        for k, v in (d.get("data") or {}).items():
-            if k.endswith(".yaml") and "mode:" in v:
-                sys.stdout.write(v)' > "$2"
+  helm template t charts/pipelock -f "$1" | awk '
+    /^  pipelock.yaml: \|/ { in_cfg=1; next }
+    in_cfg && /^    / { sub(/^    /, ""); print; next }
+    in_cfg && !/^    / { exit }
+  ' > "$2"
 }
 
 # Lint + render every example; validate the embedded proxy config when present.

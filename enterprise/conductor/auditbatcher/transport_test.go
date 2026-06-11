@@ -264,14 +264,21 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 	attempted := make(chan struct{})
 	releaseHandler := make(chan struct{})
 	var attemptedOnce sync.Once
+	var releaseOnce sync.Once
+	releaseServer := func() {
+		releaseOnce.Do(func() { close(releaseHandler) })
+	}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		attemptedOnce.Do(func() { close(attempted) })
 		select {
-		case <-releaseHandler:
 		case <-r.Context().Done():
+		case <-releaseHandler:
 		}
 	}))
-	defer srv.Close()
+	defer func() {
+		releaseServer()
+		srv.Close()
+	}()
 
 	tr, err := NewTransport(TransportConfig{
 		BaseURL:    srv.URL,
@@ -303,7 +310,6 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 		t.Fatal("transport did not attempt send within 1s")
 	}
 	cancel()
-	close(releaseHandler)
 
 	select {
 	case err := <-runErrCh:
@@ -314,6 +320,7 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 		t.Fatal("Run() did not return within 1s after context cancellation")
 	}
 	wg.Wait()
+	releaseServer()
 
 	// Record must still be present (retry kept it pending) or back in pending.
 	// Either way, no data loss on shutdown.

@@ -569,6 +569,22 @@ func TestConductorRuntimeChanged(t *testing.T) {
 	if !conductorRuntimeChanged(oldCfg, newCfg) {
 		t.Fatal("conductorRuntimeChanged(changed) = false, want true")
 	}
+
+	// A reload that tries to weaken stale-fail-closed (flip after_grace from the
+	// strict_deny_all default to continue_last_known_good) must be detected as a
+	// conductor-runtime change, so the reload path preserves the original
+	// conductor block instead of applying it. Conductor settings are restart-only;
+	// an operator cannot hot-reload their way out of stale fail-closed.
+	staleFlip := oldCfg.Clone()
+	staleFlip.Conductor.StalePolicy.AfterGrace = config.ConductorStaleContinueLastKnownGood
+	if !conductorRuntimeChanged(oldCfg, staleFlip) {
+		t.Fatal("conductorRuntimeChanged(after_grace flip) = false, want true (stale policy is restart-only)")
+	}
+	graceFlip := oldCfg.Clone()
+	graceFlip.Conductor.StalePolicy.GraceMultiplier = oldCfg.Conductor.StalePolicy.GraceMultiplier + 5
+	if !conductorRuntimeChanged(oldCfg, graceFlip) {
+		t.Fatal("conductorRuntimeChanged(grace_multiplier flip) = false, want true (stale policy is restart-only)")
+	}
 }
 
 func TestBuildConductorApplyCacheRejectsInvalidDir(t *testing.T) {

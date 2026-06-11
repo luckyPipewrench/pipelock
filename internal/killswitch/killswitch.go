@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package killswitch implements an emergency deny-all controller for Pipelock.
-// Five activation sources (config, API, Conductor remote kill, SIGUSR1, sentinel
-// file) are OR-composed:
-// any one being active engages the kill switch and denies all requests.
+// Six activation sources (config, API, Conductor remote kill, Conductor stale
+// bundle, SIGUSR1, sentinel file) are OR-composed: any one being active engages
+// the kill switch and denies all requests.
 package killswitch
 
 import (
@@ -30,18 +30,25 @@ const EnvAPIToken = config.EnvKillSwitchAPIToken
 type Decision struct {
 	Active         bool
 	Message        string
-	Source         string // "config", "api", "conductor_remote", "signal", "sentinel"
+	Source         string // "config", "api", "conductor_remote", "conductor_stale", "signal", "sentinel"
 	IsNotification bool   // MCP only: true if the message has no "id" field
 }
 
-// Controller manages the kill switch state across five activation sources.
+// Controller manages the kill switch state across six activation sources.
 type Controller struct {
 	cfg          atomic.Pointer[runtime]
 	api          atomic.Bool
 	sigusr1      atomic.Bool
 	conductor    atomic.Bool
 	conductorMsg atomic.Value
-	separatePort atomic.Bool // true when API runs on a dedicated port (no main-port exemption)
+	// conductorStale is the autonomous fail-closed source: the follower's active
+	// policy bundle aged past its grace window with no fresh bundle from the
+	// leader. It is independent of conductorRemote (operator-driven remote kill)
+	// so clearing one never clears the other - a follower can be both stale AND
+	// remote-killed, and recovering from staleness must not lift an operator kill.
+	conductorStale    atomic.Bool
+	conductorStaleMsg atomic.Value
+	separatePort      atomic.Bool // true when API runs on a dedicated port (no main-port exemption)
 }
 
 // runtime holds the parsed config state for atomic swap on reload.
@@ -247,6 +254,17 @@ func (c *Controller) SetConductorRemote(active bool, message string) {
 	c.conductor.Store(active)
 }
 
+// SetConductorStale sets the Conductor stale-bundle activation source. The
+// follower's stale enforcer engages this when the active policy bundle ages
+// past its grace window under a strict_deny_all policy, and clears it once a
+// fresh bundle restores a within-grace state. It is independent of the
+// remote-kill source: clearing stale never lifts an operator remote kill, and
+// vice versa.
+func (c *Controller) SetConductorStale(active bool, message string) {
+	c.conductorStaleMsg.Store(message)
+	c.conductorStale.Store(active)
+}
+
 // SetSeparateAPIPort marks whether the kill switch API runs on a separate
 // listener. When true, IsActiveHTTP skips the /api/v1/* exemption on the
 // main port - the agent cannot reach the API to deactivate its own kill switch.
@@ -262,6 +280,7 @@ func (c *Controller) Sources() map[string]bool {
 		"api":              c.api.Load(),
 		"signal":           c.sigusr1.Load(),
 		"conductor_remote": c.conductor.Load(),
+		"conductor_stale":  c.conductorStale.Load(),
 	}
 	if rt.sentinelFile != "" {
 		_, err := os.Stat(rt.sentinelFile)
@@ -274,7 +293,7 @@ func (c *Controller) Sources() map[string]bool {
 
 // computeDecision evaluates activation sources in priority order.
 func (c *Controller) computeDecision(rt *runtime) Decision {
-	// Priority: config > api > conductor_remote > signal > sentinel.
+	// Priority: config > api > conductor_remote > conductor_stale > signal > sentinel.
 	if rt.cfgEnabled {
 		return Decision{Active: true, Message: rt.message, Source: "config"}
 	}
@@ -287,6 +306,13 @@ func (c *Controller) computeDecision(rt *runtime) Decision {
 			msg = rt.message
 		}
 		return Decision{Active: true, Message: msg, Source: "conductor_remote"}
+	}
+	if c.conductorStale.Load() {
+		msg, _ := c.conductorStaleMsg.Load().(string)
+		if msg == "" {
+			msg = rt.message
+		}
+		return Decision{Active: true, Message: msg, Source: "conductor_stale"}
 	}
 	if c.sigusr1.Load() {
 		return Decision{Active: true, Message: rt.message, Source: "signal"}

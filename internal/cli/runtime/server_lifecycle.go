@@ -251,6 +251,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.conductorBundle != nil {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Conductor: policy bundle polling enabled -> %s\n", RedactEndpoint(cfg.Conductor.ConductorURL))
 	}
+	if s.conductorStale != nil {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  Conductor: stale-bundle fail-closed enforcement enabled (after_grace=%s)\n", cfg.Conductor.StalePolicy.AfterGrace)
+	}
 	if s.opts.CaptureOutput != "" {
 		if s.opts.CaptureDuration > 0 {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "  Capture: %s (duration: %s)\n", s.opts.CaptureOutput, s.opts.CaptureDuration)
@@ -277,7 +280,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// poller's Run returns context.Canceled (the teardown signal) the error
 	// branches below intentionally skip the process-wide cancel().
 	conductorCtx := ctx
-	if s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil {
+	conductorRunners := s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil || s.conductorStale != nil
+	if conductorRunners {
 		var conductorCancel context.CancelFunc
 		conductorCtx, conductorCancel = context.WithCancel(ctx)
 		s.setConductorCancel(conductorCancel)
@@ -290,9 +294,12 @@ func (s *Server) Start(ctx context.Context) error {
 		if s.conductorBundle != nil {
 			conductorWG.Add(1)
 		}
+		if s.conductorStale != nil {
+			conductorWG.Add(1)
+		}
 		s.setConductorWait(conductorWG.Wait)
 	}
-	if s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil {
+	if conductorRunners {
 		if s.conductorRemoteKill != nil {
 			go func() {
 				defer conductorWG.Done()
@@ -340,7 +347,23 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}()
 	}
-	if s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil {
+	if s.conductorStale != nil {
+		go func() {
+			defer conductorWG.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor stale-bundle enforcer panic: %v\n", r)
+					cancel()
+				}
+			}()
+			if err := s.conductorStale.Run(conductorCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				s.logger.LogError(audit.NewResourceLogContext("conductor_stale_enforcer", cfg.Conductor.ConductorURL), err)
+				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor stale-bundle enforcer stopped: %v\n", err)
+				cancel()
+			}
+		}()
+	}
+	if conductorRunners {
 		defer func() {
 			cancel()
 			conductorWG.Wait()

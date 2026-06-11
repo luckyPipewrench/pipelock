@@ -67,3 +67,15 @@ func (s *Server) initConductorBundlePoller(cfg *config.Config, _ io.Writer) erro
 	}
 	return nil
 }
+
+// initConductorStaleEnforcer is a no-op in the Apache-only build. The
+// stale-bundle enforcer (and the whole follower-side Conductor runtime) ships
+// only in the enterprise build; an Apache-only binary fails closed on
+// conductor.enabled. See initConductorApplyAndAudit for the rationale.
+func (s *Server) initConductorStaleEnforcer(cfg *config.Config, _ *killswitch.Controller, _ io.Writer) error {
+	s.touchConductorCoreFields()
+	if cfg != nil && cfg.Conductor.Enabled {
+		return errConductorEnterpriseBuildRequired
+	}
+	return nil
+}

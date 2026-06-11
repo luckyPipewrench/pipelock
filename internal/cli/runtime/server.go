@@ -114,7 +114,11 @@ type Server struct {
 	conductorAudit      conductorRunner
 	conductorRemoteKill conductorRunner
 	conductorBundle     conductorRunner
-	conductorProducer   conductorCloser
+	// conductorStale holds *applycache.StaleEnforcer in the enterprise build.
+	// It engages the kill switch's conductor_stale source when the active
+	// policy bundle ages past its grace window, failing closed.
+	conductorStale    conductorRunner
+	conductorProducer conductorCloser
 
 	// conductorLifeMu guards conductorCancel and conductorWait.
 	// teardownConductor may be invoked concurrently from the runtime CRL watcher
@@ -355,6 +359,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		return nil, err
 	}
 	if err := s.initConductorBundlePoller(cfg, opts.Stderr); err != nil {
+		s.cleanup()
+		return nil, err
+	}
+	if err := s.initConductorStaleEnforcer(cfg, ks, opts.Stderr); err != nil {
 		s.cleanup()
 		return nil, err
 	}

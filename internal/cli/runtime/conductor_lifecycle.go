@@ -151,6 +151,7 @@ func (s *Server) hasConductorRuntime() bool {
 		s.conductorAudit != nil ||
 		s.conductorRemoteKill != nil ||
 		s.conductorBundle != nil ||
+		s.conductorStale != nil ||
 		s.conductorProducer != nil
 }
 

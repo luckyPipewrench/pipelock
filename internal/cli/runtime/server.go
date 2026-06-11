@@ -114,6 +114,11 @@ type Server struct {
 	conductorAudit      conductorRunner
 	conductorRemoteKill conductorRunner
 	conductorBundle     conductorRunner
+	// conductorRollback holds *policysync.RollbackPoller in the enterprise build.
+	// It polls the leader for a signed rollback authorization matching the
+	// follower's active->prior bundle pair and drives the existing apply boundary
+	// (with AllowRollback) to restore the prior bundle.
+	conductorRollback conductorRunner
 	// conductorStale holds *applycache.StaleEnforcer in the enterprise build.
 	// It engages the kill switch's conductor_stale source when the active
 	// policy bundle ages past its grace window, failing closed.
@@ -367,6 +372,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		return nil, err
 	}
 	if err := s.initConductorBundlePoller(cfg, opts.Stderr); err != nil {
+		s.cleanup()
+		return nil, err
+	}
+	if err := s.initConductorRollbackPoller(cfg, opts.Stderr); err != nil {
 		s.cleanup()
 		return nil, err
 	}

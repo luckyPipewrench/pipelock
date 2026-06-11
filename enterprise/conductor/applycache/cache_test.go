@@ -439,3 +439,114 @@ func signProof(t *testing.T, key testKey, preimage func() ([]byte, error)) condu
 		Signature:   conductor.SignaturePrefixEd25519 + hex.EncodeToString(sig),
 	}
 }
+
+func TestLookupBundleHappyPathAndBaseHashChain(t *testing.T) {
+	key := newTestKey(t)
+	cache := openTestCache(t)
+
+	first := signedTestBundle(t, key, "bundle-1", 1, "")
+	v1, err := cache.storeVerified(first, testVerifyOptions(key))
+	if err != nil {
+		t.Fatalf("storeVerified(first) error = %v", err)
+	}
+	firstHash, err := first.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(first) error = %v", err)
+	}
+	second := signedTestBundle(t, key, "bundle-2", 2, firstHash)
+	v2, err := cache.storeVerified(second, testVerifyOptions(key))
+	if err != nil {
+		t.Fatalf("storeVerified(second) error = %v", err)
+	}
+
+	// Active is bundle-2; its BaseHash points at bundle-1.
+	active, err := cache.Active()
+	if err != nil {
+		t.Fatalf("Active() error = %v", err)
+	}
+	if active.BundleHash != v2.BundleHash {
+		t.Fatalf("active hash = %q, want %q", active.BundleHash, v2.BundleHash)
+	}
+
+	curLookup, err := cache.LookupBundle(active.BundleHash)
+	if err != nil {
+		t.Fatalf("LookupBundle(active) error = %v", err)
+	}
+	if curLookup.Bundle.BundleID != "bundle-2" || curLookup.Bundle.Version != 2 {
+		t.Fatalf("current lookup bundle = %s/%d, want bundle-2/2", curLookup.Bundle.BundleID, curLookup.Bundle.Version)
+	}
+	if !strings.EqualFold(curLookup.BaseHash, v1.BundleHash) {
+		t.Fatalf("current BaseHash = %q, want %q", curLookup.BaseHash, v1.BundleHash)
+	}
+	if curLookup.ConfigPath == "" {
+		t.Fatal("current lookup ConfigPath empty")
+	}
+	if _, statErr := os.Stat(curLookup.ConfigPath); statErr != nil {
+		t.Fatalf("current lookup ConfigPath not on disk: %v", statErr)
+	}
+
+	// Walk back to the target via BaseHash.
+	targetLookup, err := cache.LookupBundle(curLookup.BaseHash)
+	if err != nil {
+		t.Fatalf("LookupBundle(base) error = %v", err)
+	}
+	if targetLookup.Bundle.BundleID != "bundle-1" || targetLookup.Bundle.Version != 1 {
+		t.Fatalf("target lookup bundle = %s/%d, want bundle-1/1", targetLookup.Bundle.BundleID, targetLookup.Bundle.Version)
+	}
+	// The first bundle ever applied has no predecessor.
+	if targetLookup.BaseHash != "" {
+		t.Fatalf("target BaseHash = %q, want empty", targetLookup.BaseHash)
+	}
+}
+
+func TestLookupBundleMissingHash(t *testing.T) {
+	cache := openTestCache(t)
+	missing := strings.Repeat("a", 64)
+	if _, err := cache.LookupBundle(missing); err == nil {
+		t.Fatal("LookupBundle(missing) expected error, got nil")
+	}
+}
+
+func TestLookupBundleRejectsHashAliasRecord(t *testing.T) {
+	key := newTestKey(t)
+	cache := openTestCache(t)
+
+	first := signedTestBundle(t, key, "bundle-1", 1, "")
+	v1, err := cache.storeVerified(first, testVerifyOptions(key))
+	if err != nil {
+		t.Fatalf("storeVerified(first) error = %v", err)
+	}
+	second := signedTestBundle(t, key, "bundle-2", 2, v1.BundleHash)
+	v2, err := cache.storeVerified(second, testVerifyOptions(key))
+	if err != nil {
+		t.Fatalf("storeVerified(second) error = %v", err)
+	}
+
+	v2RecordPath := filepath.Join(cache.bundlesDir, v2.BundleHash+recordExt)
+	v2Record, err := os.ReadFile(filepath.Clean(v2RecordPath))
+	if err != nil {
+		t.Fatalf("read second bundle record: %v", err)
+	}
+	v1RecordPath := filepath.Join(cache.bundlesDir, v1.BundleHash+recordExt)
+	if err := os.WriteFile(v1RecordPath, v2Record, 0o600); err != nil {
+		t.Fatalf("write aliased first bundle record: %v", err)
+	}
+
+	if _, err := cache.LookupBundle(v1.BundleHash); !errors.Is(err, ErrInvalidActiveRecord) {
+		t.Fatalf("LookupBundle(alias record) err = %v, want ErrInvalidActiveRecord", err)
+	}
+}
+
+func TestLookupBundleRejectsMalformedHash(t *testing.T) {
+	cache := openTestCache(t)
+	if _, err := cache.LookupBundle("not-a-hash"); !errors.Is(err, conductor.ErrInvalidHash) {
+		t.Fatalf("LookupBundle(bad) err = %v, want ErrInvalidHash", err)
+	}
+}
+
+func TestLookupBundleNilCache(t *testing.T) {
+	var cache *Cache
+	if _, err := cache.LookupBundle(strings.Repeat("a", 64)); !errors.Is(err, ErrCacheRequired) {
+		t.Fatalf("nil cache LookupBundle err = %v, want ErrCacheRequired", err)
+	}
+}

@@ -273,6 +273,168 @@ func (s *Server) initConductorBundlePoller(cfg *config.Config, stderr io.Writer)
 	return nil
 }
 
+// conductorRollbackContextProvider reports the active bundle and its on-disk
+// predecessor so the rollback poller can name the current->target pair to the
+// leader. It walks one step back through the durable bundle history:
+// Active() gives the current bundle; LookupBundle(active.BundleHash).BaseHash
+// gives the predecessor's hash; LookupBundle(baseHash) gives the target bundle.
+// When there is no predecessor (first bundle ever applied, empty BaseHash), it
+// reports ok=false so the poller skips cleanly.
+type conductorRollbackContextProvider struct {
+	cache *applycache.Cache
+}
+
+func (p conductorRollbackContextProvider) RollbackContext() (current, target policysync.RollbackRef, ok bool, err error) {
+	active, err := p.cache.Active()
+	if err != nil {
+		// No active bundle yet (ErrNoValidBundle) or a read error: nothing to roll
+		// back from. Treat as "skip this tick" rather than an error so a follower
+		// that has not yet applied a bundle does not log a poll error every cycle.
+		if errors.Is(err, applycache.ErrNoValidBundle) {
+			return policysync.RollbackRef{}, policysync.RollbackRef{}, false, nil
+		}
+		return policysync.RollbackRef{}, policysync.RollbackRef{}, false, err
+	}
+	currentLookup, err := p.cache.LookupBundle(active.BundleHash)
+	if err != nil {
+		return policysync.RollbackRef{}, policysync.RollbackRef{}, false, err
+	}
+	if currentLookup.BaseHash == "" {
+		// Active bundle is the first one ever applied: no prior to roll back to.
+		return policysync.RollbackRef{}, policysync.RollbackRef{}, false, nil
+	}
+	targetLookup, err := p.cache.LookupBundle(currentLookup.BaseHash)
+	if err != nil {
+		return policysync.RollbackRef{}, policysync.RollbackRef{}, false, err
+	}
+	if targetLookup.Bundle.Version >= active.Bundle.Version {
+		// A valid rollback authorization can only move to a lower version. This
+		// happens naturally after a rollback: re-staging the target records the
+		// rolled-away bundle as its BaseHash, but asking the leader for
+		// current=1,target=2 can never succeed. Skip locally to avoid noisy 400s.
+		return policysync.RollbackRef{}, policysync.RollbackRef{}, false, nil
+	}
+	current = policysync.RollbackRef{BundleID: active.Bundle.BundleID, Version: active.Bundle.Version}
+	target = policysync.RollbackRef{BundleID: targetLookup.Bundle.BundleID, Version: targetLookup.Bundle.Version}
+	return current, target, true, nil
+}
+
+// conductorRollbackApplier drives a fetched, signed rollback authorization
+// through the SAME apply boundary used for forward policy-bundle applies, under
+// the SAME conductorApplyMu, so a forward-apply and a rollback-apply can never
+// race. It looks up the TARGET bundle from the cache (failing closed if that
+// bundle is not on disk) and calls ApplyConductorPolicyBundle with
+// AllowRollback set, letting the existing authorizeVersionTransition path
+// re-verify the authorization's signatures, audience, and version transition.
+type conductorRollbackApplier struct {
+	server   *Server
+	cache    *applycache.Cache
+	resolver conductor.SignatureKeyResolver
+	labels   map[string]string
+}
+
+func (a conductorRollbackApplier) ApplyRollback(auth conductor.RollbackAuthorization) error {
+	target, err := a.targetBundle()
+	if err != nil {
+		return err
+	}
+	_, err = a.server.ApplyConductorPolicyBundle(target, ConductorApplyOptions{
+		Resolver:      a.resolver,
+		Labels:        a.labels,
+		Rollback:      &auth,
+		AllowRollback: true,
+	})
+	return err
+}
+
+// targetBundle resolves the rollback TARGET: the active bundle's immediate
+// on-disk predecessor, reached via the active bundle's BaseHash. A missing
+// active bundle, a missing predecessor (empty BaseHash), or an unreadable target
+// record all return an error so ApplyRollback fails closed rather than reloading
+// nothing. The apply boundary independently re-checks that the authorization's
+// TargetBundleID/TargetVersion match this bundle (authorizeVersionTransition),
+// so an authorization naming a different target is rejected there, not here.
+func (a conductorRollbackApplier) targetBundle() (conductor.PolicyBundle, error) {
+	active, err := a.cache.Active()
+	if err != nil {
+		return conductor.PolicyBundle{}, err
+	}
+	currentLookup, err := a.cache.LookupBundle(active.BundleHash)
+	if err != nil {
+		return conductor.PolicyBundle{}, err
+	}
+	if currentLookup.BaseHash == "" {
+		return conductor.PolicyBundle{}, fmt.Errorf("%w: active bundle has no prior to roll back to", applycache.ErrNoValidBundle)
+	}
+	targetLookup, err := a.cache.LookupBundle(currentLookup.BaseHash)
+	if err != nil {
+		return conductor.PolicyBundle{}, err
+	}
+	if targetLookup.Bundle.Version >= active.Bundle.Version {
+		return conductor.PolicyBundle{}, fmt.Errorf("%w: target version must be lower than active version", conductor.ErrInvalidRollback)
+	}
+	return targetLookup.Bundle, nil
+}
+
+// buildConductorRollbackPoller wires the follower-side rollback poller. Like the
+// bundle poller it ALWAYS builds the real trust resolver: applying a rollback
+// mutates the running config, so the authorization must be signature-verified
+// regardless of honor_remote_kill_switch. It reuses the shared mTLS client, base
+// URL, and poll interval that the bundle and remote-kill pollers use. A
+// missing/unloadable roster fails closed here.
+func (s *Server) buildConductorRollbackPoller(cfg *config.Config, logWriter io.Writer) (*policysync.RollbackPoller, error) {
+	if cfg == nil || !cfg.Conductor.Enabled {
+		return nil, nil
+	}
+	cache, _ := s.conductorApply.(*applycache.Cache)
+	if cache == nil {
+		// conductor.enabled with no apply cache is a wiring error: the apply cache
+		// is built in initConductorApplyAndAudit, which runs first. Fail closed
+		// rather than launching a poller that can never read a bundle.
+		return nil, applycache.ErrCacheRequired
+	}
+	client, err := newConductorMTLSClient(cfg.Conductor)
+	if err != nil {
+		return nil, err
+	}
+	resolver, err := buildConductorTrustResolver(cfg.Conductor, time.Now)
+	if err != nil {
+		return nil, fmt.Errorf("building conductor rollback trust resolver: %w", err)
+	}
+	interval, err := time.ParseDuration(cfg.Conductor.PollInterval)
+	if err != nil {
+		return nil, fmt.Errorf("parsing conductor rollback poll interval: %w", err)
+	}
+	if logWriter == nil {
+		logWriter = io.Discard
+	}
+	logger := slog.New(slog.NewJSONHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})).
+		With("service", "pipelock", "component", "conductor_rollback")
+	return policysync.NewRollbackPoller(policysync.RollbackPollerConfig{
+		BaseURL:      cfg.Conductor.ConductorURL,
+		Client:       client,
+		Provider:     conductorRollbackContextProvider{cache: cache},
+		Applier:      conductorRollbackApplier{server: s, cache: cache, resolver: resolver},
+		PollInterval: interval,
+		Logger:       logger,
+	})
+}
+
+// initConductorRollbackPoller stores the rollback poller on the Server so the
+// lifecycle can launch its Run loop alongside the other conductor pollers.
+// Mirrors initConductorBundlePoller. Must run after initConductorApplyAndAudit
+// has opened the apply cache.
+func (s *Server) initConductorRollbackPoller(cfg *config.Config, stderr io.Writer) error {
+	poller, err := s.buildConductorRollbackPoller(cfg, stderr)
+	if err != nil {
+		return err
+	}
+	if poller != nil {
+		s.conductorRollback = poller
+	}
+	return nil
+}
+
 // buildConductorStaleEnforcer wires the follower-side stale-bundle enforcer. It
 // is the runtime consumer of applycache.DecideStale: a ticker re-evaluates the
 // active bundle's age each poll interval and, under a strict_deny_all policy,

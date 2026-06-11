@@ -251,6 +251,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.conductorBundle != nil {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Conductor: policy bundle polling enabled -> %s\n", RedactEndpoint(cfg.Conductor.ConductorURL))
 	}
+	if s.conductorRollback != nil {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  Conductor: rollback polling enabled -> %s\n", RedactEndpoint(cfg.Conductor.ConductorURL))
+	}
 	if s.conductorStale != nil {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Conductor: stale-bundle fail-closed enforcement enabled (after_grace=%s)\n", cfg.Conductor.StalePolicy.AfterGrace)
 	}
@@ -280,7 +283,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// poller's Run returns context.Canceled (the teardown signal) the error
 	// branches below intentionally skip the process-wide cancel().
 	conductorCtx := ctx
-	conductorRunners := s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil || s.conductorStale != nil
+	conductorRunners := s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil || s.conductorRollback != nil || s.conductorStale != nil
 	if conductorRunners {
 		var conductorCancel context.CancelFunc
 		conductorCtx, conductorCancel = context.WithCancel(ctx)
@@ -292,6 +295,9 @@ func (s *Server) Start(ctx context.Context) error {
 			conductorWG.Add(1)
 		}
 		if s.conductorBundle != nil {
+			conductorWG.Add(1)
+		}
+		if s.conductorRollback != nil {
 			conductorWG.Add(1)
 		}
 		if s.conductorStale != nil {
@@ -343,6 +349,22 @@ func (s *Server) Start(ctx context.Context) error {
 			if err := s.conductorBundle.Run(conductorCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				s.logger.LogError(audit.NewResourceLogContext("conductor_policy_bundle_poller", cfg.Conductor.ConductorURL), err)
 				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor policy bundle poller stopped: %v\n", err)
+				cancel()
+			}
+		}()
+	}
+	if s.conductorRollback != nil {
+		go func() {
+			defer conductorWG.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor rollback poller panic: %v\n", r)
+					cancel()
+				}
+			}()
+			if err := s.conductorRollback.Run(conductorCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				s.logger.LogError(audit.NewResourceLogContext("conductor_rollback_poller", cfg.Conductor.ConductorURL), err)
+				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor rollback poller stopped: %v\n", err)
 				cancel()
 			}
 		}()

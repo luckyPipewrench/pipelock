@@ -254,6 +254,59 @@ func (c *Cache) Active() (VerifiedBundle, error) {
 	return c.readActiveLocked()
 }
 
+// BundleLookup reports a stored bundle plus the hash of the bundle that was
+// active immediately before it (its BaseHash). The follower-side rollback
+// poller uses BaseHash to walk one step back through the on-disk bundle history
+// (active -> its predecessor) so it can name the rollback TARGET to the leader
+// and re-load it via the apply boundary.
+type BundleLookup struct {
+	VerifiedBundle
+	BaseHash string
+}
+
+// LookupBundle reads the durably-stored bundle for hash, returning the same
+// verified view Active() produces (Bundle + ConfigPath) plus the bundle's
+// BaseHash (the hash of its predecessor, empty for the first bundle ever
+// applied). The hash must be a stored bundle; a missing or malformed record is
+// an error so a rollback applier fails closed rather than reloading nothing. The
+// returned ConfigPath points at the same per-hash config file the apply boundary
+// writes, so a caller can re-load and re-apply the target bundle without
+// re-deriving the path.
+func (c *Cache) LookupBundle(hash string) (BundleLookup, error) {
+	if c == nil {
+		return BundleLookup{}, ErrCacheRequired
+	}
+	if err := validateHash(hash); err != nil {
+		return BundleLookup{}, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	record, err := readBundleRecord(filepath.Join(c.bundlesDir, hash+recordExt))
+	if err != nil {
+		return BundleLookup{}, err
+	}
+	if !strings.EqualFold(record.BundleHash, hash) {
+		return BundleLookup{}, fmt.Errorf("%w: bundle record hash does not match lookup hash", ErrInvalidActiveRecord)
+	}
+	configName := record.BundleHash + configExt
+	configPath := filepath.Join(c.configsDir, configName)
+	if err := validateContainedPath(c.dir, configPath); err != nil {
+		return BundleLookup{}, err
+	}
+	if err := validateRegularFile(configPath, conductor.MaxConfigYAMLBytes); err != nil {
+		return BundleLookup{}, err
+	}
+	return BundleLookup{
+		VerifiedBundle: VerifiedBundle{
+			Bundle:     record.Bundle,
+			BundleHash: record.BundleHash,
+			VerifiedAt: record.VerifiedAt,
+			ConfigPath: configPath,
+		},
+		BaseHash: record.BaseHash,
+	}, nil
+}
+
 func (c *Cache) readActiveLocked() (VerifiedBundle, error) {
 	activePath := filepath.Join(c.dir, activeRecordName)
 	active, err := readActiveRecord(activePath)

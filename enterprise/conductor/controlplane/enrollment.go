@@ -29,9 +29,8 @@ import (
 )
 
 const (
-	enrollmentStoreFileMode = 0o600
-	enrollmentTokenBytes    = 32
-	enrollmentTokenPrefix   = "pl_enroll_"
+	enrollmentTokenBytes  = 32
+	enrollmentTokenPrefix = "pl_enroll_"
 
 	// defaultFollowerListLimit / maxFollowerListLimit bound the roster read so
 	// a large or malicious enrollment store cannot force an unbounded response.
@@ -417,7 +416,7 @@ func (s *FileEnrollmentStore) saveLocked() error {
 		return fmt.Errorf("encode enrollment store: %w", err)
 	}
 	data = append(data, '\n')
-	if err := durableWrite(s.path, data, enrollmentStoreFileMode); err != nil {
+	if err := durableWrite(s.path, data); err != nil {
 		return fmt.Errorf("write enrollment store: %w", err)
 	}
 	return nil

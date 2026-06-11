@@ -773,6 +773,10 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		writeStoreError(w, err)
 		return
 	}
+	if err := h.store.ApplyRollbackHead(r.Context(), req.Authorization, now); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
@@ -897,6 +901,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrBundleConflict), errors.Is(err, ErrUnsupportedRollback), errors.Is(err, ErrEmergencyConflict), errors.Is(err, ErrEmergencyStaleCounter):
 		writeError(w, http.StatusConflict, err)
+	case errors.Is(err, ErrBundleNotFound):
+		writeError(w, http.StatusNotFound, err)
 	case errors.Is(err, conductor.ErrPayloadTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, err)
 	case errors.Is(err, conductor.ErrUnsupportedSchemaVersion), errors.Is(err, conductor.ErrInvalidHash),

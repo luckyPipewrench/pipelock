@@ -21,7 +21,6 @@ import (
 
 const (
 	emergencyStateFileName    = "emergency-controls.json"
-	emergencyStateFileMode    = 0o600
 	maxEmergencyStateJSONSize = conductor.MaxConfigYAMLBytes * 2
 )
 
@@ -409,7 +408,7 @@ func writeEmergencyState(path string, record emergencyStateRecord) error {
 		return fmt.Errorf("conductor emergency store marshal state: %w", err)
 	}
 	data = append(data, '\n')
-	return durableWrite(path, data, emergencyStateFileMode)
+	return durableWrite(path, data)
 }
 
 func validateStoredRemoteKill(record StoredRemoteKill) error {

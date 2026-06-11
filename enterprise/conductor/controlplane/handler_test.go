@@ -101,7 +101,7 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Publish(v2) error = %v", err)
 	}
-	auth := signedRollbackAuthorizationForBundles(t, "rollback-ceiling", 1, v2, v1, conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}, testNow)
+	auth := signedRollbackAuthorizationForBundles(t, "rollback-ceiling", v2, v1, conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}, testNow)
 	if _, created, err := handler.emergencyControls.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
 		t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
 	}
@@ -143,13 +143,13 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 		version:  1,
 		audience: audience,
 	})
-	missingAuth := signedRollbackAuthorizationForBundles(t, "rollback-missing-target", 1, missingCurrent, missingTarget, conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}, testNow)
+	missingAuth := signedRollbackAuthorizationForBundles(t, "rollback-missing-target", missingCurrent, missingTarget, conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}, testNow)
 	if _, created, err := missingHandler.emergencyControls.PublishRollbackAuthorization(t.Context(), missingAuth, testNow); err != nil || !created {
 		t.Fatalf("PublishRollbackAuthorization(missing target) created=%v err=%v, want created", created, err)
 	}
 	w = latestPolicyBundle(t, missingHandler, nil)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("missing rollback target status=%d body=%s, want 500", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("missing rollback target status=%d body=%s, want 404", w.Code, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), rollbackCeilingBundleV2) {
 		t.Fatalf("missing rollback target served current bundle body=%s", w.Body.String())
@@ -171,6 +171,66 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 	}
 	w = latestPolicyBundle(t, handler, nil)
 	assertLatestBundleID(t, w, rollbackCeilingBundleV3)
+}
+
+func TestHandlerPublishRollbackAuthorizationResetsPolicyHead(t *testing.T) {
+	store := mustStore(t)
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-handler-reset-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-reset-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api2.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-handler-reset", v2, v1, conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}, testNow)
+	handler := newTestHandlerWithOptions(t, store, nil, resolver)
+	body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("rollback publish status=%d body=%s, want 201", w.Code, w.Body.String())
+	}
+	w = latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, w, "bundle-handler-reset-v1")
+
+	v3 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-handler-reset-v3",
+		version:      3,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api3.example.com\n",
+	})
+	body, err = json.Marshal(publishPolicyBundleRequest{Bundle: v3})
+	if err != nil {
+		t.Fatalf("Marshal(v3): %v", err)
+	}
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, PublishPolicyBundlePath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Publisher", "ok")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("forward publish status=%d body=%s, want 201", w.Code, w.Body.String())
+	}
+	w = latestPolicyBundle(t, handler, nil)
+	assertLatestBundleID(t, w, "bundle-handler-reset-v3")
 }
 
 func TestHandlerPublishesAndServesEmergencyControls(t *testing.T) {
@@ -209,6 +269,7 @@ func TestHandlerPublishesAndServesEmergencyControls(t *testing.T) {
 		t.Fatalf("remote kill message_id=%q, want %q", gotKill.MessageID, msg.MessageID)
 	}
 
+	publishRollbackTargetAndCurrent(t, handler, auth)
 	body, err = json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
 	if err != nil {
 		t.Fatalf("Marshal(rollback): %v", err)
@@ -788,12 +849,24 @@ func assertLatestBundleID(t *testing.T, w *httptest.ResponseRecorder, want strin
 func signedRollbackAuthorizationForBundles(
 	t *testing.T,
 	id string,
-	counter uint64,
 	current conductor.PolicyBundle,
 	target conductor.PolicyBundle,
 	audience conductor.Audience,
 	created time.Time,
 ) conductor.RollbackAuthorization {
+	t.Helper()
+	auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, id, current, target, audience, created)
+	return auth
+}
+
+func signedRollbackAuthorizationForBundlesWithResolver(
+	t *testing.T,
+	id string,
+	current conductor.PolicyBundle,
+	target conductor.PolicyBundle,
+	audience conductor.Audience,
+	created time.Time,
+) (conductor.RollbackAuthorization, conductor.SignatureKeyResolver) {
 	t.Helper()
 	auth := conductor.RollbackAuthorization{
 		SchemaVersion:   conductor.SchemaVersion,
@@ -805,7 +878,7 @@ func signedRollbackAuthorizationForBundles(
 		CurrentVersion:  current.Version,
 		TargetBundleID:  target.BundleID,
 		TargetVersion:   target.Version,
-		Counter:         counter,
+		Counter:         1,
 		Reason:          "operator rollback",
 		CreatedAt:       created,
 		ExpiresAt:       created.Add(time.Hour),
@@ -818,7 +891,31 @@ func signedRollbackAuthorizationForBundles(
 	if err := auth.Validate(); err != nil {
 		t.Fatalf("rollback authorization Validate() error = %v", err)
 	}
-	return auth
+	return auth, resolver
+}
+
+func publishRollbackTargetAndCurrent(t *testing.T, handler *Handler, auth conductor.RollbackAuthorization) {
+	t.Helper()
+	signer := newTestSigner(t)
+	target := signedControlBundle(t, signer, bundleSpec{
+		id:       auth.TargetBundleID,
+		version:  auth.TargetVersion,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	targetRecord, _, err := handler.store.Publish(t.Context(), target, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(rollback target) error = %v", err)
+	}
+	current := signedControlBundle(t, signer, bundleSpec{
+		id:           auth.CurrentBundleID,
+		version:      auth.CurrentVersion,
+		previousHash: targetRecord.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - rollback-current.example.com\n",
+	})
+	if _, _, err := handler.store.Publish(t.Context(), current, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(rollback current) error = %v", err)
+	}
 }
 
 func newTestHandler(t *testing.T, store BundleStore, identity FollowerIdentityResolver) *Handler {

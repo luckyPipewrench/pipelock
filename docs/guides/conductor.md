@@ -8,8 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 Conductor is Pipelock's Enterprise control plane for a fleet of Pipelock
 instances. It distributes signed policy bundles to follower instances, ingests
 and stores their signed evidence for audit, and coordinates fleet-wide
-operations — enrollment, remote kill, and policy rollback. It is **General
-Availability as of v2.7**.
+operations — enrollment, remote kill, and policy rollback. The v2.7 production
+workflow is being completed across companion operator-workflow changes; the
+production runbook marks any command surface that is still pending.
 
 Conductor preserves Pipelock's capability separation. Followers enforce policy
 locally and stay fail-closed on their own; Conductor coordinates distribution,
@@ -25,7 +26,10 @@ writing a file** if the entitlement is missing.
 > **Scope.** This guide covers what Conductor is, how the planes fit together,
 > and how to run each component. For a hands-on local walkthrough (one
 > Conductor, one follower, one signed batch, verified offline) see the
-> [Conductor operator runbook](conductor-operator-runbook.md). For the full
+> [Conductor dev runbook](conductor-operator-runbook.md); for the full
+> production day-2 lifecycle (key generation, BYO-PKI, publish, kill/rollback,
+> rotation) see the
+> [Conductor production runbook](conductor-production-runbook.md). For the full
 > protocol and storage design see the
 > [Conductor & audit sink design](../specs/pipelock-conductor-audit-sink.md).
 
@@ -241,10 +245,17 @@ When `conductor.enabled: true`, validation requires:
 - all file paths absolute.
 
 `honor_remote_kill_switch` (default `true`) opts the follower into the
-fleet-wide kill signal. A few fields (`created_skew_seconds`,
-`max_min_version_*_skew`, `max_capability_threshold`, `emergency_stream`,
-`stale_policy`) are validated at startup but reserved — the follower runtime
-does not enforce them yet. See the
+fleet-wide kill signal. `stale_policy.strict_deny_all` is the intended
+fail-closed stale-bundle behavior: once the companion emergency-control runtime
+change lands, a stale active bundle engages an independent `conductor_stale`
+kill-switch source and denies traffic until a fresh in-grace bundle applies.
+**Until that change ships, `conductor.stale_policy` validates at startup but the
+follower runtime does not yet act on it** — a follower that loses contact with
+Conductor keeps enforcing the last bundle it applied (an expired bundle still
+never applies, because a bundle's validity window is checked at apply time). A
+few more fields (`created_skew_seconds`, `max_min_version_*_skew`,
+`max_capability_threshold`, `emergency_stream`) are likewise validated but
+reserved. See the
 [configuration reference](../configuration.md#conductor-follower-v27-enterprise)
 for the full field list.
 
@@ -309,9 +320,12 @@ are pruned at startup.
 - **Followers enforce locally.** Conductor distributes and collects; it is not
   in the data path. A follower keeps enforcing the policy it already has if
   Conductor is unreachable; a bundle's validity window is checked when the
-  bundle is verified and applied, so an expired bundle never applies. (The
-  `stale_policy` block is reserved for finer-grained staleness handling and is
-  not enforced yet.)
+  bundle is verified and applied, so an expired bundle never applies. Once the
+  companion emergency-control runtime change lands,
+  `stale_policy.strict_deny_all` engages an independent fail-closed
+  `conductor_stale` source after the grace window; until then `stale_policy`
+  validates but is not yet enforced (see
+  [Follower configuration](#follower-configuration)).
 - **Capability separation holds.** Conductor never receives agent secrets and
   never scans traffic for a follower.
 

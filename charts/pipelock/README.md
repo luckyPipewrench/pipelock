@@ -190,6 +190,68 @@ See [`examples/`](examples/) for ready-to-use values configurations:
 - `values-enterprise-follower.yaml` — Follower proxy with Conductor mTLS, trust roster, bundle cache, and durable audit queue
 - `values-enterprise-devfleet.yaml` — Standalone fleet-sink development deployment
 
+### Validating examples locally
+
+Each example is an executable claim: render it and validate the embedded config
+rather than reading it. `helm lint` checks chart wiring; `pipelock check`
+validates the rendered `pipelock.yaml`. The `extract_cfg` helper below uses
+`awk` to pull the `pipelock.yaml` key out of the rendered `ConfigMap`.
+
+```bash
+# Helper: extract the embedded pipelock.yaml from a rendered example to a file.
+extract_cfg() {  # usage: extract_cfg <example.yaml> <out.yaml>
+  helm template t charts/pipelock -f "$1" | awk '
+    /^  pipelock.yaml: \|/ { in_cfg=1; next }
+    in_cfg && /^    / { sub(/^    /, ""); print; next }
+    in_cfg && !/^    / { exit }
+  ' > "$2"
+}
+
+# Lint + render every example; validate the embedded proxy config when present.
+for f in charts/pipelock/examples/*.yaml; do
+  helm lint charts/pipelock -f "$f"
+  extract_cfg "$f" /tmp/rendered-pipelock.yaml
+  [ -s /tmp/rendered-pipelock.yaml ] && pipelock check --config /tmp/rendered-pipelock.yaml
+done
+```
+
+`values-enterprise-conductor.yaml` and `values-enterprise-devfleet.yaml` render
+in flag-driven modes (`conductor` / `fleetSink`) and carry **no** proxy
+`ConfigMap`, so there is no `pipelock.yaml` to `pipelock check` — validate those
+by `helm lint` + `helm template` rendering alone.
+
+Two examples reference deployment-time Secrets that are **absent on a laptop**,
+so a naive local `pipelock check` reports a failure that is environmental, not a
+config-shape bug — at deploy time the chart mounts those Secrets:
+
+- `values-enterprise-follower.yaml` and `values-pro.yaml` set
+  `license_file: /etc/pipelock/license/license.token` (the mounted Enterprise
+  license Secret), and the follower example also references a license CRL.
+- `values-pro.yaml` enables `adminApi`, which renders
+  `kill_switch.api_listen` and wires `PIPELOCK_KILLSWITCH_API_TOKEN` from a
+  Secret into the Deployment.
+
+To reproduce a clean local check for those two, supply stand-ins for exactly the
+deploy-time inputs the chart provides (a 0600 license file and the kill-switch
+token env var) — do **not** weaken the examples:
+
+```bash
+# Stub the license file the Secret would mount (0600, or pipelock rejects it).
+printf 'stub\n' > /tmp/license.token && chmod 600 /tmp/license.token
+
+# Render, repoint the license path at the stub, and check with the admin token set.
+extract_cfg charts/pipelock/examples/values-pro.yaml /tmp/rendered-pipelock.yaml
+sed -i 's#/etc/pipelock/license/license.token#/tmp/license.token#' /tmp/rendered-pipelock.yaml
+PIPELOCK_KILLSWITCH_API_TOKEN=stub-admin-token \
+  pipelock check --config /tmp/rendered-pipelock.yaml
+# → Config validation: OK   (Mode: strict)
+```
+
+(The follower example additionally references
+`license_crl_file: /etc/pipelock/license-crl/license.crl`; stub that path the
+same way. On a non-embedded local build `pipelock check` also prints a
+`no license public key` warning, which is expected and not a validation error.)
+
 ## See also
 
 - [Pipelock docs](https://pipelab.org/learn/)

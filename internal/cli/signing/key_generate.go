@@ -224,7 +224,7 @@ Examples:
 // cannot smuggle extra metadata past the loader.
 func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, ed25519.PublicKey, ed25519.PrivateKey, error) {
 	cleanPath := filepath.Clean(path)
-	raw, err := readKeyFileBytes(cleanPath, true)
+	raw, err := ReadKeyFileBytes(cleanPath, true)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read key file %q: %w", cleanPath, err)
 	}
@@ -268,7 +268,7 @@ func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, 
 // has no purpose field, so callers fall back to the operator-supplied flag.
 func readPublicKeyForRoster(path string) ([]byte, string, error) {
 	cleanPath := filepath.Clean(path)
-	raw, err := readKeyFileBytes(cleanPath, false)
+	raw, err := ReadKeyFileBytes(cleanPath, false)
 	if err != nil {
 		return nil, "", fmt.Errorf("read public key %q: %w", cleanPath, err)
 	}
@@ -292,7 +292,30 @@ func readPublicKeyForRoster(path string) ([]byte, string, error) {
 	return pub, "", nil
 }
 
-func readKeyFileBytes(cleanPath string, requireSecretPerms bool) ([]byte, error) {
+// ReadKeyFileBytes reads a key file from disk with the secure gates every
+// key-file consumer needs: reject a symlink AT the path, reject a non-regular
+// target (device/FIFO), optionally reject group/other-accessible permissions
+// (requireSecretPerms), and bound the read to keyFileMaxSize (16 KiB).
+//
+// Exported so non-signing callers (e.g. the Conductor publish CLI's
+// policy-bundle-signing key loader) reuse this one secure reader instead of
+// duplicating the open/stat/perm/size dance — and the one gosec G304 suppression
+// on the operator-path os.Open below lives in exactly one place.
+//
+// The symlink check is explicit and must come BEFORE os.Open: os.Open FOLLOWS
+// symlinks, so a later f.Stat() reports the TARGET's mode and would silently
+// accept a symlink pointing at a 0600 regular file the operator never named (a
+// local confused-deputy vector). We os.Lstat the path first and reject
+// os.ModeSymlink, THEN open and fd-stat so every subsequent check runs against
+// the descriptor we actually read from.
+func ReadKeyFileBytes(cleanPath string, requireSecretPerms bool) ([]byte, error) {
+	lst, err := os.Lstat(cleanPath)
+	if err != nil {
+		return nil, err
+	}
+	if lst.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("key file %q is a symlink; pass the real key file path", cleanPath)
+	}
 	// Open first so the subsequent Stat is on the same file descriptor
 	// (TOCTOU defense) AND so a non-regular file like a FIFO or device
 	// is detected before any read can block. Plain os.Stat + os.ReadFile

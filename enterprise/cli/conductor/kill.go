@@ -128,10 +128,13 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 	if counter == 0 {
 		// Default to a wall-clock-derived counter so two operators publishing
 		// in sequence without coordinating still produce a monotonically
-		// increasing counter the server accepts. Unix() is always > 0 for any
-		// realistic clock, so it never collides with the "0 means unset"
-		// sentinel.
-		counter = uint64(now.Unix()) //nolint:gosec // now.Unix() is a positive wall-clock second count
+		// increasing counter the server accepts. Guard the signed->unsigned
+		// conversion: a negative Unix time (pre-1970 / skewed clock) would wrap
+		// to a huge counter, so only adopt non-negative seconds and otherwise
+		// leave counter 0 (the operator must then pass an explicit --counter).
+		if u := now.Unix(); u >= 0 {
+			counter = uint64(u)
+		}
 	}
 
 	messageID := strings.TrimSpace(opts.messageID)

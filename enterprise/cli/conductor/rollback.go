@@ -108,7 +108,13 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 
 	counter := opts.counter
 	if counter == 0 {
-		counter = uint64(now.Unix()) //nolint:gosec // now.Unix() is a positive wall-clock second count
+		// Guard the signed->unsigned conversion: a negative Unix time (skewed
+		// clock) would wrap to a huge counter. On a non-negative clock, adopt the
+		// seconds; otherwise leave counter 0 so Validate() rejects it and the
+		// operator must pass an explicit --counter.
+		if u := now.Unix(); u >= 0 {
+			counter = uint64(u)
+		}
 	}
 
 	authID := strings.TrimSpace(opts.authorizationID)

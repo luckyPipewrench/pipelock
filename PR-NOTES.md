@@ -1,164 +1,158 @@
-# PR C — Conductor observability + audit (fleet status / followers + audit query)
+# PR B — Conductor emergency control: deferred live-proof sequence
 
-## What this PR adds
+This PR ships the operator producer-side CLIs for Conductor emergency control:
 
-Three operator-side read CLIs under `enterprise/cli/conductor/`, plus ONE new
-server-side read endpoint that did not exist before.
+- `pipelock conductor kill` / `pipelock conductor resume` → signed remote-kill →
+  `POST /api/v1/conductor/remote-kill` (purpose `remote-kill-signing`, 2-of-N).
+- `pipelock conductor rollback` → signed rollback authorization →
+  `POST /api/v1/conductor/rollback-authorizations` (purpose `policy-bundle-rollback`, 2-of-N).
+- `pipelock conductor enrollment-token mint` → one-shot enrollment token →
+  `POST /api/v1/conductor/enrollment-tokens` (admin bearer token).
 
-### CLI commands (client-only)
-- `conductor audit query` — list/get accepted audit-batch **metadata** from a
-  Conductor (auditor or admin bearer, audience-scoped). Pure client against the
-  pre-existing `controlplane.AuditBatchesPath` GET handlers
-  (`handleListAuditBatches` / `handleGetAuditBatch`).
-- `conductor fleet status` and `conductor followers` (alias) — list enrolled
-  followers (auditor or admin bearer, audience-scoped).
+All three are gated on the `fleet` Enterprise license and refuse to run unlicensed.
 
-All three share `client.go`: an mTLS-client + bearer-token, GET-only,
-size-capped HTTP client. They fail closed on the `fleet` license entitlement
-(`license.VerifyFleet`) before any connection, matching `serve` / `bootstrap`.
+## What is proven in-repo (unit, `-race`, in this PR)
 
-### NEW SERVER ENDPOINT (flag this in review)
-There was **no follower-list read endpoint** before this PR. This PR adds one,
-isolated to this PR per the coordination doc:
+Full producer→server round-trips drive the REAL control-plane handler over an
+`httptest` server (mTLS is a transport concern; the producer logic — message
+construction, M-of-N signing, and the server's acceptance — is what these
+exercise):
 
-- **Route:** `GET /api/v1/conductor/followers` (`controlplane.FollowersPath`).
-- **Handler:** `handleListFollowers` in `enterprise/conductor/controlplane/followers.go`.
-- **Store method:** `EnrollmentStore.ListEnrolledFollowers(ctx, FollowerListQuery)`
-  + the `FileEnrollmentStore` implementation in `enrollment.go`.
-- **Authorizer:** `ScopedBearerFollowerListAuthorizer` in `auth.go` (admits
-  admin + auditor roles, enforces credential org/fleet scope against the query —
-  identical semantics to `ScopedBearerAuditQueryAuthorizer`).
-- **Wiring:** `HandlerOptions.AuthorizeFollowers` + the serve command
-  (`buildServeHandler`) reuses the existing auditor/admin token files.
+- kill → server accepts (`state=active`); resume with a higher counter → accepts (`state=inactive`).
+- rollback (target_version < current_version) → server accepts.
+- enrollment-token mint → server issues a `pl_enroll_…` token (to stdout; summary to stderr).
+- **M-of-N enforced both sides:** one signer → rejected at the CLI boundary
+  (`ErrThresholdRequired`, no network call); the same keyfile supplied twice
+  (same embedded `key_id`) → rejected at the CLI; a roster key held under the
+  WRONG purpose → rejected by the server (distinct-public-key threshold).
+- **Purpose binding at load:** `--signing-key` reads the keygen JSON keyfile and
+  rejects a keyfile whose embedded purpose ≠ the action's required purpose (a
+  rollback keyfile handed to `kill` fails locally), plus a strict integrity gate
+  (0600/0640-only, strict JSON, schema, key sizes, private→public derivation).
+- **TTL ceiling:** a window exceeding the server's configured max validity → rejected.
+- **Replay:** a stale (`<= max`) counter → rejected.
+- **Auth:** a wrong admin bearer token → 403; a missing token file → required error.
+- **Fail-closed transport:** with no injected transport and no TLS flags, the
+  production mTLS client build fails (`--tls-cert is required`) before any request.
+- **No license → no action:** each command returns `ErrFleetLicenseRequired` unlicensed.
 
-### Security properties (tested)
-- **Mandatory org scoping.** The handler rejects a missing `org_id` with 400
-  before any auth or store access, so the roster read is never globally
-  unscoped.
-- **Audience isolation (org AND fleet).** An org-A-scoped auditor reading
-  `org_id=org-B` gets 403; a fleet-scoped (`org-main/prod`) auditor reading a
-  sibling fleet (`org-main/staging`) or widening to the whole org by omitting
-  `fleet_id` gets 403. The authorizer binds credential scope to the requested
-  org/fleet BEFORE the store is touched, so no out-of-scope roster ever leaves
-  the process (`TestHandlerListFollowersDeniesCrossOrgRead`,
-  `TestHandlerListFollowersDeniesCrossFleetRead`).
-- **No unscoped read tokens (external-review fix).** `ScopedBearerFollower
-  ListAuthorizer` now REJECTS an empty-org admin/auditor credential AT
-  CONSTRUCTION — an unscoped read token is a cross-org enumeration token.
-  Whitespace-only org normalizes to empty and is rejected identically (no
-  whitespace bypass). The same scoping was applied to the audit-query
-  credentials, and `conductor serve` now requires `--auditor-org` and
-  `--admin-org` (see operator note below).
-- **Fail-closed default.** An unconfigured `AuthorizeFollowers` denies every
-  read (`ErrFollowerListForbidden`).
-- **Bounded list (anti-DoS).** Server clamps the result to `[1, 1000]`
-  (default 100) via `normalizeFollowerListLimit`; the client `--limit` is
-  validated non-negative.
-- **Strict query parsing.** Allowlisted params only; unknown/duplicate params,
-  invalid identifiers, and bad limits → 400.
-- **Metadata-only.** `FollowerSummary` omits the audit public-key bytes; only
-  identity, audit_key_id, enrolled_at, active state are returned.
+Coverage on the package is ~90% (new run functions 93–100%).
 
-## External-review (Codex) fixes folded in
-1. **CRITICAL — `/followers` authz bypass closed.** Empty-org admin/auditor
-   creds previously acted as global cross-org read tokens. Now rejected at
-   authorizer construction (`auth.go`); whitespace-org bypass also closed
-   (normalization). Same scoping applied to the audit-query authorizer.
-2. **CRITICAL — untrusted server body in CLI errors.** `clientSnippet`
-   (`client.go`) now redacts the operator bearer token and strips control bytes
-   (`< 0x20`, `0x7f`) before the body appears in an error string — no token
-   leak, no CRLF/log injection.
-3. **WARNING — bounded follower-list allocation.** `ListEnrolledFollowers`
-   (`enrollment.go`) now keeps a bounded max-heap of at most `limit` summaries
-   and sorts once before returning; proven by
-   `TestFileEnrollmentStoreListEnrolledFollowersCapsHugeRoster` (1025-follower
-   roster → exactly `maxFollowerListLimit` returned, smallest-id slice kept).
+## What is DEFERRED (live, against the dogfood/test followers)
 
-### OPERATOR IMPACT (serve CLI surface change — flag in PR body)
-`conductor serve` now REQUIRES two new flags so the read tokens are
-audience-scoped instead of global:
-- `--auditor-org <org>` (required) + optional `--auditor-fleet <fleet>`
-- `--admin-org <org>` (required) + optional `--admin-fleet <fleet>`
-An existing deployment that omits these will fail closed at startup with
-`--auditor-org is required` / `--admin-org is required`. This is intentional:
-an unscoped operator token was the bypass. Document as an upgrade note.
+The live fleet proof needs ≥2 keys per catastrophic purpose for the 2-of-N
+demonstration. The bootstrap fleet at `~/.local/share/v27-prod-fleet/trust/`
+ships ONE `remote-kill.key` and ONE `rollback.key`. Generating the SECOND key per
+purpose is **PR #736's keygen** (`signing key generate` accepting the conductor
+purposes). #736 is NOT on this branch, so the live proof is deferred until this
+branch is rebased onto a main that includes #736. The bar forbids undocumented
+key material (no `openssl`), so the second key must come from the shipped CLI.
 
-## Honest scope limitation (applied-version / last-seen)
-The kickoff asked fleet status to show "applied bundle version" and "last-seen".
-**The Conductor enrollment store does not track either today** — there is no
-per-follower last-contact timestamp or applied-version record anywhere in
-`enterprise/conductor/` (confirmed by grep: no `last_seen`/`applied_version`
-fields exist). Rather than invent fields the server cannot populate, this PR
-reports only what the store actually holds (enrollment state). Adding
-applied-version/last-seen is a follower-contact-tracking feature (the bundle
-store / poller would have to record per-follower `Latest()` hits) and is a
-separate change. **Flagged as a deferred follow-up, not silently dropped.**
+### Exact live-proof sequence (run after rebasing onto main with #736 merged)
 
-## fleet-sink: studied, live proof DEFERRED
-The audit sink path is the existing `SQLiteAuditStore` (an `AuditBatchSink` that
-also implements `AuditBatchQuerier`). `conductor audit query` reads exactly the
-batches that path accepts. The end-to-end live proof is deferred per the
-worktree guardrails (no cluster deploy in this run; #736 keygen not on this
-branch). Unit coverage proves the client/endpoint contract; the live proof is
-documented below.
+Fleet material (already on this host): `~/.local/share/v27-prod-fleet/`
+(CA at `ca/ca.crt`, conductor server at `conductor/`, admin token at
+`conductor/admin.token`, operator client cert reusable from `follower/client.crt`
++ `follower/client.key`, first control keys at `trust/remote-kill.key` and
+`trust/rollback.key`). Conductor URL: `https://127.0.0.1:8895`.
 
-## Deferred live-proof commands (run after merge, on the dogfood fleet)
+`--signing-key` takes a PATH to a JSON keypair file produced by
+`pipelock signing key generate` (the file carries its own `key_id` and
+`purpose`; the CLI reads them and validates the purpose matches the action — no
+`id=`/`file=` sub-fields, no inline keys). The existing bootstrap keys at
+`trust/remote-kill.key` are in the OLD `pipelock-ed25519-private-v1` format and
+are NOT directly consumable; regenerate both signers per purpose with #736's
+keygen, which emits the JSON keyfile format.
 
-The examples below use `~/.local/share/pipelock-fleet/` as a placeholder for
-the CA, roster, control keys, and operator tokens. Substitute the real
-org/fleet/instance and the operator token + cert paths from the target fleet.
+```bash
+FLEET=~/.local/share/v27-prod-fleet
+CU=https://127.0.0.1:8895
+KD=$FLEET/control-keys; mkdir -p "$KD"
 
-1. **Fleet status — list both enrolled followers:**
-   ```bash
-   pipelock conductor fleet status \
-     --server https://<conductor-host>:8895 \
-     --ca-file ~/.local/share/pipelock-fleet/ca.pem \
-     --client-cert ~/.local/share/pipelock-fleet/operator-client.pem \
-     --client-key ~/.local/share/pipelock-fleet/operator-client.key \
-     --token-file ~/.local/share/pipelock-fleet/admin-token \
-     --org-id <org> --fleet-id <fleet>
-   ```
-   Expect: a table with both followers, ACTIVE=true, their audit_key_id and
-   enrolled_at. (Applied-version/last-seen intentionally absent — see above.)
+# 0. Generate TWO signers per purpose with #736's keygen (sanctioned key
+#    material; --out writes a single JSON keypair file).
+pipelock signing key generate --purpose remote-kill-signing --id remote-kill-1 --out "$KD/remote-kill-1.json"
+pipelock signing key generate --purpose remote-kill-signing --id remote-kill-2 --out "$KD/remote-kill-2.json"
+pipelock signing key generate --purpose policy-bundle-rollback --id rollback-1  --out "$KD/rollback-1.json"
+pipelock signing key generate --purpose policy-bundle-rollback --id rollback-2  --out "$KD/rollback-2.json"
+# Roster/serve the Conductor so it TRUSTS both signer ids per purpose. The
+# conductor `--trusted-control-key` flag is repeatable and takes the PUBLIC key
+# (extract `public` hex from each keyfile, or use the matching .pub the keygen
+# wrote alongside it):
+#   --trusted-control-key id=remote-kill-1,purpose=remote-kill-signing,inline=<pubhex>
+#   --trusted-control-key id=remote-kill-2,purpose=remote-kill-signing,inline=<pubhex>
+#   --trusted-control-key id=rollback-1,purpose=policy-bundle-rollback,inline=<pubhex>
+#   --trusted-control-key id=rollback-2,purpose=policy-bundle-rollback,inline=<pubhex>
 
-2. **Generate audit traffic, then query the batches:**
-   Drive follower audit emission (normal agent traffic through the follower),
-   then:
-   ```bash
-   pipelock conductor audit query \
-     --server https://<conductor-host>:8895 \
-     --ca-file ... --client-cert ... --client-key ... \
-     --token-file ~/.local/share/pipelock-fleet/auditor-token \
-     --org-id <org> --fleet-id <fleet>
-   ```
-   Expect: JSON `{"batches":[...],"count":N}` including the freshly-emitted
-   batch ids.
+# 1. KILL: both followers must fail CLOSED (deny all traffic).
+pipelock conductor kill \
+  --conductor-url "$CU" \
+  --admin-token-file "$FLEET/conductor/admin.token" \
+  --signing-key "$KD/remote-kill-1.json" \
+  --signing-key "$KD/remote-kill-2.json" \
+  --org pipelab --fleet prod --instance '*' \
+  --reason "live emergency-stop proof" \
+  --tls-cert "$FLEET/follower/client.crt" --tls-key "$FLEET/follower/client.key" \
+  --server-ca "$FLEET/ca/ca.crt" --server-name 127.0.0.1
+# OBSERVE: both followers poll, apply the remote-kill, and deny all egress.
+#   Confirm on each follower: a probe request returns the fail-closed block, and
+#   the follower's remote-kill-state.json records state="active".
 
-3. **Fetch one batch by id, then verify it OFFLINE:**
-   ```bash
-   pipelock conductor audit query ... --org-id <org> --fleet-id <fleet> \
-     --instance-id <instance> --batch-id <batch-id>
-   ```
-   Then verify the signed batch offline with the existing batch verifier
-   (the path `conductor bootstrap` already exercises via `audit-batch.json`).
+# 2. RESUME: both followers recover (counter is auto-derived from the clock, so
+#    a resume issued after the kill always supersedes it).
+pipelock conductor resume \
+  --conductor-url "$CU" \
+  --admin-token-file "$FLEET/conductor/admin.token" \
+  --signing-key "$KD/remote-kill-1.json" \
+  --signing-key "$KD/remote-kill-2.json" \
+  --org pipelab --fleet prod --instance '*' \
+  --tls-cert "$FLEET/follower/client.crt" --tls-key "$FLEET/follower/client.key" \
+  --server-ca "$FLEET/ca/ca.crt" --server-name 127.0.0.1
+# OBSERVE: both followers return to normal enforcement; state="inactive".
 
-4. **fleet-sink end-to-end:** deploy the audit sink in-cluster and demonstrate
-   `follower → conductor → sink → conductor audit query → offline-verify`. The
-   `conductor bootstrap` command already proves this loop in-process; the
-   in-cluster deploy + proof is the deferred operator-workflow step.
+# 3. ROLLBACK: publish bundle v2 (via PR A's `conductor publish`, or the publish
+#    HTTP path directly), confirm followers apply v2, then roll back to v1.
+pipelock conductor rollback \
+  --conductor-url "$CU" \
+  --admin-token-file "$FLEET/conductor/admin.token" \
+  --signing-key "$KD/rollback-1.json" \
+  --signing-key "$KD/rollback-2.json" \
+  --org pipelab --fleet prod --instance '*' \
+  --current-bundle-id <v2-bundle-id> --current-version 2 \
+  --target-bundle-id  <v1-bundle-id> --target-version 1 \
+  --reason "live rollback proof" \
+  --tls-cert "$FLEET/follower/client.crt" --tls-key "$FLEET/follower/client.key" \
+  --server-ca "$FLEET/ca/ca.crt" --server-name 127.0.0.1
+# OBSERVE: both followers restore the PRIOR bundle; applied version goes 2 -> 1.
 
-## cmd.go shared-file note
-This PR appends `auditCmd()`, `fleetCmd()`, `followersCmd()` to
-`enterprise/cli/conductor/cmd.go` `Cmd()` (the one shared Go file across the
-A/B/C/D conductor PRs). Whoever merges later re-adds their `AddCommand` line per
-the coordination doc.
+# 4. UNDER-THRESHOLD rejected: one signer short -> the CLI refuses BEFORE any
+#    network call.
+pipelock conductor kill \
+  --conductor-url "$CU" \
+  --admin-token-file "$FLEET/conductor/admin.token" \
+  --signing-key "$KD/remote-kill-1.json" \
+  --org pipelab --fleet prod --instance '*' \
+  --tls-cert "$FLEET/follower/client.crt" --tls-key "$FLEET/follower/client.key" \
+  --server-ca "$FLEET/ca/ca.crt" --server-name 127.0.0.1
+# OBSERVE: "requires 2 distinct signers, got 1" with no request sent.
+#   (Supplying the same keyfile twice is also rejected at the CLI — same key_id —
+#    and a key the roster holds under the wrong purpose is rejected by the server.
+#    Both are covered by unit tests.)
+```
 
-## Validation run locally (this worktree)
-- `go build -tags enterprise ./...` — green.
-- `go test -tags enterprise -race -count=1` on
-  `./enterprise/conductor/controlplane/`, `./enterprise/cli/conductor/`, and
-  `./enterprise/conductor/bootstrap/` — green.
-- `golangci-lint run --new-from-rev=HEAD --build-tags enterprise` on both
-  touched packages — 0 issues.
-- New-symbol coverage: authorizer 90.9%, store list 94.7%, handler 85%,
-  parse 92.9%, license-gate paths covered.
+## Notes / scope
+
+- **`enrollment-token` ships `mint` only.** The control plane has no token-LIST
+  read endpoint today (the only new fleet read endpoint in this epic is PR C's
+  follower-list). `enrollment-token` is a parent command so a `list` subcommand
+  can be added later without breaking the surface; this PR does not invent a
+  server endpoint to back a `list`.
+- **Private signing keys are file-only** (`--signing-key /path/to/keypair.json`,
+  the keygen JSON format). Inline key values are not accepted, so signing
+  material never lands in shell history or the process table. The keyfile's
+  embedded `key_id` is used (operator does not retype it) and its `purpose` is
+  validated against the action.
+- The minted enrollment token goes to **stdout**, the human summary to **stderr**,
+  so `... mint > token.txt` captures only the credential.
+- One-line CHANGELOG stub belongs in PR D (consolidated docs/CHANGELOG per the
+  parallel-coordination plan); this PR keeps its docs to this file.

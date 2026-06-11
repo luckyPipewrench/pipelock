@@ -5,6 +5,7 @@
 package controlplane
 
 import (
+	"container/heap"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -304,7 +305,7 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]FollowerSummary, 0, limit)
+	out := make(followerSummaryMaxHeap, 0, limit)
 	for _, follower := range s.data.Followers {
 		if q.OrgID != "" && follower.Identity.OrgID != q.OrgID {
 			continue
@@ -315,7 +316,7 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 		if q.InstanceID != "" && follower.Identity.InstanceID != q.InstanceID {
 			continue
 		}
-		out = append(out, FollowerSummary{
+		summary := FollowerSummary{
 			OrgID:       follower.Identity.OrgID,
 			FleetID:     follower.Identity.FleetID,
 			InstanceID:  follower.Identity.InstanceID,
@@ -323,18 +324,46 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 			AuditKeyID:  follower.AuditKeyID,
 			EnrolledAt:  follower.EnrolledAt,
 			Active:      follower.Active,
-		})
-		if len(out) > limit {
-			sort.Slice(out, func(i, j int) bool {
-				return followerSummaryLess(out[i], out[j])
-			})
-			out = out[:limit]
+		}
+		if len(out) < limit {
+			heap.Push(&out, summary)
+			continue
+		}
+		if followerSummaryLess(summary, out[0]) {
+			out[0] = summary
+			heap.Fix(&out, 0)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return followerSummaryLess(out[i], out[j])
 	})
-	return out, nil
+	return []FollowerSummary(out), nil
+}
+
+type followerSummaryMaxHeap []FollowerSummary
+
+func (h followerSummaryMaxHeap) Len() int {
+	return len(h)
+}
+
+func (h followerSummaryMaxHeap) Less(i, j int) bool {
+	return followerSummaryLess(h[j], h[i])
+}
+
+func (h followerSummaryMaxHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *followerSummaryMaxHeap) Push(x any) {
+	*h = append(*h, x.(FollowerSummary))
+}
+
+func (h *followerSummaryMaxHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
 }
 
 func followerSummaryLess(a, b FollowerSummary) bool {

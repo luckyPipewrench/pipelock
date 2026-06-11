@@ -69,8 +69,8 @@ isolated to this PR per the coordination doc:
    (`< 0x20`, `0x7f`) before the body appears in an error string — no token
    leak, no CRLF/log injection.
 3. **WARNING — bounded follower-list allocation.** `ListEnrolledFollowers`
-   (`enrollment.go`) now allocates `cap=limit` and trims-as-it-grows so the
-   in-memory slice never exceeds `limit+1` regardless of roster size; proven by
+   (`enrollment.go`) now keeps a bounded max-heap of at most `limit` summaries
+   and sorts once before returning; proven by
    `TestFileEnrollmentStoreListEnrolledFollowersCapsHugeRoster` (1025-follower
    roster → exactly `maxFollowerListLimit` returned, smallest-id slice kept).
 
@@ -104,18 +104,18 @@ documented below.
 
 ## Deferred live-proof commands (run after merge, on the dogfood fleet)
 
-Fleet material lives at `~/.local/share/v27-prod-fleet/` (CA, roster, control
-keys, operator tokens); fedora-host follower at `~/.local/share/v27-fedora-follower/`.
-Substitute the real org/fleet/instance and the operator token + cert paths.
+The examples below use `~/.local/share/pipelock-fleet/` as a placeholder for
+the CA, roster, control keys, and operator tokens. Substitute the real
+org/fleet/instance and the operator token + cert paths from the target fleet.
 
 1. **Fleet status — list both enrolled followers:**
-   ```
+   ```bash
    pipelock conductor fleet status \
      --server https://<conductor-host>:8895 \
-     --ca-file ~/.local/share/v27-prod-fleet/ca.pem \
-     --client-cert ~/.local/share/v27-prod-fleet/operator-client.pem \
-     --client-key ~/.local/share/v27-prod-fleet/operator-client.key \
-     --token-file ~/.local/share/v27-prod-fleet/admin-token \
+     --ca-file ~/.local/share/pipelock-fleet/ca.pem \
+     --client-cert ~/.local/share/pipelock-fleet/operator-client.pem \
+     --client-key ~/.local/share/pipelock-fleet/operator-client.key \
+     --token-file ~/.local/share/pipelock-fleet/admin-token \
      --org-id <org> --fleet-id <fleet>
    ```
    Expect: a table with both followers, ACTIVE=true, their audit_key_id and
@@ -124,18 +124,18 @@ Substitute the real org/fleet/instance and the operator token + cert paths.
 2. **Generate audit traffic, then query the batches:**
    Drive follower audit emission (normal agent traffic through the follower),
    then:
-   ```
+   ```bash
    pipelock conductor audit query \
      --server https://<conductor-host>:8895 \
      --ca-file ... --client-cert ... --client-key ... \
-     --token-file ~/.local/share/v27-prod-fleet/auditor-token \
+     --token-file ~/.local/share/pipelock-fleet/auditor-token \
      --org-id <org> --fleet-id <fleet>
    ```
    Expect: JSON `{"batches":[...],"count":N}` including the freshly-emitted
    batch ids.
 
 3. **Fetch one batch by id, then verify it OFFLINE:**
-   ```
+   ```bash
    pipelock conductor audit query ... --org-id <org> --fleet-id <fleet> \
      --instance-id <instance> --batch-id <batch-id>
    ```

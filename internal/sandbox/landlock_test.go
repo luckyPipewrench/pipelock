@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // Landlock tests use subprocess execution because Landlock restrictions are
@@ -24,6 +25,11 @@ import (
 // Pattern: build a test helper, exec it with Landlock applied via env flag.
 
 const landlockTestEnv = "__SANDBOX_LANDLOCK_TEST"
+
+// landlockChildTimeout bounds each Landlock re-exec helper. The helper normally
+// exits in well under a second; this prevents a wedged child or grandchild from
+// consuming the whole package timeout.
+const landlockChildTimeout = 60 * time.Second
 
 func TestMain(m *testing.M) {
 	// Sandbox re-exec entry point. Must be checked FIRST because the
@@ -190,8 +196,10 @@ func runSandboxedChild(t *testing.T, op, workspace string) (string, int) {
 		t.Skip("landlock requires linux")
 	}
 
-	// Use /proc/self/exe to re-exec the test binary.
-	ctx := context.Background()
+	// Use /proc/self/exe to re-exec the test binary. Bound the child so a
+	// wedged helper fails this test instead of hanging the whole package.
+	ctx, cancel := context.WithTimeout(context.Background(), landlockChildTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^$")
 	cmd.Env = append(os.Environ(),
 		landlockTestEnv+"="+op,
@@ -199,6 +207,10 @@ func runSandboxedChild(t *testing.T, op, workspace string) (string, int) {
 		"REAL_HOME="+os.Getenv("HOME"),
 	)
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("landlock child %q did not exit within %s (hung): %v\noutput so far: %s",
+			op, landlockChildTimeout, ctx.Err(), out)
+	}
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError

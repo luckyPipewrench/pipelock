@@ -2720,7 +2720,7 @@ conductor:
 
 When `enabled: true`, validation additionally requires the [flight recorder](#flight-recorder-v21) enabled with `sign_checkpoints: true` and a configured `signing_key_path` (a follower must produce signed evidence to participate), all file paths absolute, and no world-writable ancestor directory on any configured path.
 
-**Reserved fields.** The fields marked reserved are parsed and validated at startup but not yet enforced by the follower runtime in v2.7; they reserve the config surface for upcoming bundle-staleness and capability-negotiation work. This includes `emergency_stream`, `created_skew_seconds`, `max_min_version_major_skew`, `max_min_version_minor_skew`, `max_capability_threshold`, and `stale_policy.*`. Today a bundle's validity window is enforced when the bundle is verified and applied (an expired bundle fails verification), and a follower that cannot reach Conductor keeps enforcing the policy it already has.
+**Reserved fields.** The fields marked reserved are parsed and validated at startup but not yet enforced by the follower runtime in v2.7; they reserve the config surface for upcoming bundle-staleness and capability-negotiation work. This includes `emergency_stream`, `created_skew_seconds`, `max_min_version_major_skew` (`MaxMinVersionMajorSkew`), `max_min_version_minor_skew` (`MaxMinVersionMinorSkew`), `max_capability_threshold`, and `stale_policy.*` (`StalePolicy`). Today a bundle's validity window is enforced when the bundle is verified and applied (an expired bundle fails verification), and a follower that cannot reach Conductor keeps enforcing the policy it already has.
 
 See the [Conductor guide](guides/conductor.md) for the full architecture, server-side flags, and licensing.
 

@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -171,6 +173,9 @@ func runPublish(ctx context.Context, out io.Writer, opts publishOptions) error {
 	if err != nil {
 		return err
 	}
+	// buildSignedBundle hands the private key to us; we now own zeroization on
+	// every path out of this function, including the error returns below.
+	defer zeroizeKey(priv)
 	client, err := publishHTTPClient(opts)
 	if err != nil {
 		return err
@@ -185,18 +190,28 @@ func runPublish(ctx context.Context, out io.Writer, opts publishOptions) error {
 	}
 	_, _ = fmt.Fprintf(out, "published policy bundle %s version %d (hash %s, created=%t) signed by %s\n",
 		resp.BundleID, resp.Version, resp.BundleHash, resp.Created, keyID)
-	// Defensive: zeroize the in-memory private key once we are done with it.
-	// Go's GC may keep copies, but clearing the slice we hold removes the
-	// obvious one.
+	return nil
+}
+
+// zeroizeKey overwrites an Ed25519 private key in place. Best-effort: Go's GC
+// may retain copies, but clearing the slice we hold removes the obvious one and
+// shrinks the window the secret sits in memory.
+func zeroizeKey(priv ed25519.PrivateKey) {
 	for i := range priv {
 		priv[i] = 0
 	}
-	return nil
 }
 
 // buildSignedBundle assembles, validates the inputs for, signs, and locally
 // validates the policy bundle. It returns the signed bundle plus the signer key
 // id and private key so the caller can report and zeroize them.
+//
+// Ordering is deliberate: EVERY non-key input is validated BEFORE the signing
+// key is read off disk, so a malformed flag (bad --previous-bundle-hash, bad
+// audience, etc.) fails without ever decoding the private key. Once the key IS
+// loaded, a deferred conditional wipe guarantees every subsequent error path
+// zeroizes it; only the successful hand-off to the caller suppresses the wipe
+// (the caller then owns zeroization).
 func buildSignedBundle(opts publishOptions) (conductorcore.PolicyBundle, string, ed25519.PrivateKey, error) {
 	if opts.version == 0 {
 		return conductorcore.PolicyBundle{}, "", nil, errors.New("--version is required and must be greater than 0")
@@ -216,10 +231,6 @@ func buildSignedBundle(opts publishOptions) (conductorcore.PolicyBundle, string,
 		return conductorcore.PolicyBundle{}, "", nil, err
 	}
 	ruleBundles, err := parseRuleBundleRefs(opts.ruleBundles)
-	if err != nil {
-		return conductorcore.PolicyBundle{}, "", nil, err
-	}
-	keyID, priv, err := loadPolicySigningKey(opts.signingKey)
 	if err != nil {
 		return conductorcore.PolicyBundle{}, "", nil, err
 	}
@@ -250,6 +261,21 @@ func buildSignedBundle(opts publishOptions) (conductorcore.PolicyBundle, string,
 	if err != nil {
 		return conductorcore.PolicyBundle{}, "", nil, fmt.Errorf("compute policy hash: %w", err)
 	}
+
+	// Key read happens LAST among the inputs, so all the validation above
+	// short-circuits without ever touching key material. From here on, the
+	// deferred wipe fires on every error path; handedOff cancels it only when we
+	// successfully return the key to the caller.
+	keyID, priv, err := loadPolicySigningKey(opts.signingKey)
+	if err != nil {
+		return conductorcore.PolicyBundle{}, "", nil, err
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			zeroizeKey(priv)
+		}
+	}()
 
 	now := time.Now().UTC()
 	bundle := conductorcore.PolicyBundle{
@@ -289,6 +315,7 @@ func buildSignedBundle(opts publishOptions) (conductorcore.PolicyBundle, string,
 	if err := bundle.Validate(); err != nil {
 		return conductorcore.PolicyBundle{}, "", nil, fmt.Errorf("policy bundle failed local validation: %w", err)
 	}
+	handedOff = true
 	return bundle, keyID, priv, nil
 }
 
@@ -457,11 +484,26 @@ func loadPolicySigningKey(path string) (string, ed25519.PrivateKey, error) {
 	return kf.KeyID, priv, nil
 }
 
-// readSigningKeyBytes reads the key file with the same secret-permission and
-// regular-file gates the keygen loader applies: reject a symlinked device/FIFO,
+// readSigningKeyBytes reads the key file with secret-permission and regular-file
+// gates: reject a symlink at the path, reject a non-regular target (device/FIFO),
 // reject group/other-accessible permissions, and bound the read.
+//
+// The symlink check is explicit and must come BEFORE os.Open: os.Open FOLLOWS
+// symlinks, so a later f.Stat() reports the TARGET's mode and would silently
+// accept a symlink pointing at a 0600 regular file the operator never intended
+// to sign with (a local confused-deputy vector). We os.Lstat the path first and
+// reject os.ModeSymlink, THEN open and fd-stat. The fd-stat (not a second path
+// stat) closes the obvious TOCTOU window: every subsequent check runs against
+// the file descriptor we actually read from.
 func readSigningKeyBytes(cleanPath string) ([]byte, error) {
-	f, err := os.Open(cleanPath) //nolint:gosec // operator-supplied, cleaned; regular-file + perm + size gates below
+	lst, err := os.Lstat(cleanPath)
+	if err != nil {
+		return nil, err
+	}
+	if lst.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("key file %q is a symlink; pass the real key file path", cleanPath)
+	}
+	f, err := os.Open(cleanPath) //nolint:gosec // operator-supplied, cleaned; lstat symlink-reject above + fd regular-file/perm/size gates below
 	if err != nil {
 		return nil, err
 	}
@@ -606,11 +648,11 @@ func postBundle(ctx context.Context, client *http.Client, baseURL, token string,
 		}
 		return result, nil
 	case http.StatusConflict:
-		return publishResult{}, fmt.Errorf("%w: %s", ErrStalePolicyVersion, serverErrorDetail(respBody))
+		return publishResult{}, fmt.Errorf("%w: %s", ErrStalePolicyVersion, serverErrorDetail(respBody, token))
 	case http.StatusForbidden, http.StatusUnauthorized:
-		return publishResult{}, fmt.Errorf("publisher not authorized (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody))
+		return publishResult{}, fmt.Errorf("publisher not authorized (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
 	default:
-		return publishResult{}, fmt.Errorf("conductor rejected publish (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody))
+		return publishResult{}, fmt.Errorf("conductor rejected publish (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
 	}
 }
 
@@ -622,22 +664,74 @@ type publishResult struct {
 	Created     bool      `json:"created"`
 }
 
+// serverErrorMaxRunes bounds the sanitized server-error detail we surface in an
+// operator-facing error string. Applied AFTER control-byte sanitization so the
+// cap counts visible runes, not raw bytes a hostile server could pad with.
+const serverErrorMaxRunes = 256
+
 // serverErrorDetail extracts the Conductor's JSON {"error":"..."} message when
-// present, falling back to a trimmed raw body so the operator always sees
-// something actionable.
-func serverErrorDetail(body []byte) string {
+// present, falling back to the raw body. The server is UNTRUSTED: a malicious or
+// compromised Conductor can return a body crafted to forge multiline terminal
+// log lines or echo back the publisher bearer token. So before this value ever
+// reaches an error string (which lands in operator logs/terminals), we:
+//  1. redact the exact publisher token if the server reflected it,
+//  2. collapse every control byte (CR/LF/tab/NUL/escape/...) to a single space
+//     so the output is one line and cannot inject log records or ANSI escapes,
+//  3. cap by RUNES after sanitization so a padded body cannot blow up the line.
+func serverErrorDetail(body []byte, token string) string {
 	var payload struct {
 		Error string `json:"error"`
 	}
+	var detail string
 	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Error) != "" {
-		return payload.Error
+		detail = payload.Error
+	} else {
+		detail = string(body)
 	}
-	trimmed := strings.TrimSpace(string(body))
-	if trimmed == "" {
+	detail = sanitizeServerDetail(detail, token)
+	if detail == "" {
 		return "(no response body)"
 	}
-	if len(trimmed) > 256 {
-		trimmed = trimmed[:256]
+	return detail
+}
+
+// sanitizeServerDetail redacts the publisher token, strips control characters to
+// single spaces, collapses whitespace runs, trims, and rune-caps. Exported-shape
+// kept small and pure so it is directly unit-testable.
+func sanitizeServerDetail(s, token string) string {
+	// Redact the token FIRST, before any transformation, so a server that
+	// reflects it verbatim cannot leak it into the operator's logs. Guard the
+	// empty-token case so we never replace every empty substring.
+	if t := strings.TrimSpace(token); t != "" {
+		s = strings.ReplaceAll(s, t, "[REDACTED]")
 	}
-	return trimmed
+	// Collapse every control or non-printable rune (CR, LF, tab, NUL, ESC, the
+	// BOM/zero-width chars, and the U+2028/U+2029 line/paragraph separators that
+	// some log viewers treat as newlines) to a single space. This is what
+	// defeats log forging and ANSI-escape injection: the result is one printable
+	// line. utf8.RuneError from invalid UTF-8 is also folded to a space.
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for _, r := range s {
+		if r == utf8.RuneError || unicode.IsControl(r) || !unicode.IsPrint(r) {
+			r = ' '
+		}
+		if r == ' ' {
+			if prevSpace {
+				continue
+			}
+			prevSpace = true
+		} else {
+			prevSpace = false
+		}
+		b.WriteRune(r)
+	}
+	out := strings.TrimSpace(b.String())
+	// Cap by RUNES, after sanitization, so the cap reflects visible characters.
+	runes := []rune(out)
+	if len(runes) > serverErrorMaxRunes {
+		out = string(runes[:serverErrorMaxRunes])
+	}
+	return out
 }

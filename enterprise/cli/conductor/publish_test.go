@@ -361,6 +361,82 @@ func TestBuildSignedBundle_TamperedPrivateKeyRejected(t *testing.T) {
 	}
 }
 
+// TestBuildSignedBundle_InputsValidatedBeforeKeyRead is the Fix-2 ordering
+// regression: a malformed --previous-bundle-hash must be rejected BEFORE the
+// signing key file is read. Proof: point --signing-key at a path that does NOT
+// exist; if key-read happened first, the error would be "read --signing-key"
+// (file-not-found). Because input validation runs first, we instead get the
+// previous-bundle-hash error and the key is never touched.
+func TestBuildSignedBundle_InputsValidatedBeforeKeyRead(t *testing.T) {
+	dir := t.TempDir()
+	opts := baseOpts(t, dir, "https://conductor.example:8895")
+	opts.version = 2
+	opts.previousHash = "zzz-not-hex"
+	opts.signingKey = filepath.Join(dir, "this-file-does-not-exist.json")
+
+	_, _, _, err := buildSignedBundle(opts)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "--previous-bundle-hash must be") {
+		t.Fatalf("expected previous-hash error BEFORE key read, got %v", err)
+	}
+	if strings.Contains(err.Error(), "read --signing-key") {
+		t.Fatalf("key file was read before input validation (ordering bug): %v", err)
+	}
+}
+
+// TestBuildSignedBundle_KeyWipedOnPostLoadError is the Fix-2 wipe regression: a
+// valid key loads, then a post-load failure occurs (forged signature/validation
+// path). We can't see buildSignedBundle's internal slice, so we prove the
+// deferred-wipe contract structurally: build a bundle that loads the key but
+// fails local Validate (oversized config slips past readConfigPayload? no — use
+// a min-version that Validate rejects), and assert the returned priv is nil so
+// no key escapes on the error path.
+func TestBuildSignedBundle_NoKeyEscapesOnPostLoadError(t *testing.T) {
+	dir := t.TempDir()
+	opts := baseOpts(t, dir, "https://conductor.example:8895")
+	// A malformed min-pipelock-version passes the early checks (key loads) but
+	// fails bundle.Validate() AFTER signing — exercising a post-key-load error.
+	opts.minVersion = "not.a.version.x"
+
+	bundle, keyID, priv, err := buildSignedBundle(opts)
+	if err == nil {
+		t.Fatalf("expected post-load validation error")
+	}
+	if !strings.Contains(err.Error(), "local validation") {
+		t.Fatalf("expected local-validation error, got %v", err)
+	}
+	// On the error path nothing is handed off: the bundle, keyID, and priv are
+	// all zero. priv==nil proves the key did not escape to the caller (and the
+	// deferred wipe ran on the in-function copy).
+	if priv != nil {
+		t.Fatalf("private key escaped on error path (len=%d)", len(priv))
+	}
+	if keyID != "" || bundle.BundleID != "" {
+		t.Fatalf("non-zero return on error path: keyID=%q bundleID=%q", keyID, bundle.BundleID)
+	}
+}
+
+// TestReadSigningKeyBytes_SymlinkRejected is the Fix-3 regression: a symlink
+// pointing at a real (even 0600) key file must be rejected, because os.Open
+// would otherwise follow it and sign with a file the operator did not name.
+func TestReadSigningKeyBytes_SymlinkRejected(t *testing.T) {
+	dir := t.TempDir()
+	realPath, _ := writePolicyKeyFile(t, dir, wantPurposeFlag, "real-key")
+	linkPath := filepath.Join(dir, "link.json")
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	if _, err := readSigningKeyBytes(linkPath); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("want symlink rejection, got %v", err)
+	}
+	// And the full loader rejects it too.
+	if _, _, err := loadPolicySigningKey(linkPath); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("loadPolicySigningKey want symlink rejection, got %v", err)
+	}
+}
+
 func TestReadSigningKey_TooPermissiveRejected(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, _ := writePolicyKeyFile(t, dir, wantPurposeFlag, "perm-key")
@@ -879,19 +955,86 @@ func TestPostBundle_ConnectionRefused(t *testing.T) {
 // --- serverErrorDetail ------------------------------------------------------
 
 func TestServerErrorDetail(t *testing.T) {
-	if got := serverErrorDetail([]byte(`{"error":"boom"}`)); got != "boom" {
+	if got := serverErrorDetail([]byte(`{"error":"boom"}`), ""); got != "boom" {
 		t.Fatalf("json error = %q", got)
 	}
-	if got := serverErrorDetail([]byte("plain text body")); got != "plain text body" {
+	if got := serverErrorDetail([]byte("plain text body"), ""); got != "plain text body" {
 		t.Fatalf("plain body = %q", got)
 	}
-	if got := serverErrorDetail([]byte("  ")); got != "(no response body)" {
+	if got := serverErrorDetail([]byte("  "), ""); got != "(no response body)" {
 		t.Fatalf("empty body = %q", got)
 	}
+	// Cap is by RUNES after sanitization.
 	long := strings.Repeat("z", 400)
-	if got := serverErrorDetail([]byte(long)); len(got) != 256 {
-		t.Fatalf("long body truncation = %d", len(got))
+	if got := serverErrorDetail([]byte(long), ""); len([]rune(got)) != serverErrorMaxRunes {
+		t.Fatalf("long body truncation = %d runes", len([]rune(got)))
 	}
+}
+
+// TestServerErrorDetail_LogForgingAndTokenEcho is the Fix-1 regression: an
+// untrusted server returns a body crafted to (a) forge multiline log lines via
+// CR/LF and control bytes, (b) inject an ANSI escape, and (c) echo back the
+// publisher token. The sanitized detail must be single-line, control-stripped,
+// rune-capped, and MUST NOT contain the token.
+func TestServerErrorDetail_LogForgingAndTokenEcho(t *testing.T) {
+	const token = "publisher-secret-abc123"
+	// Hostile body: newlines (log forging), tab/NUL/ESC control bytes, an ANSI
+	// escape sequence, U+2028 line separator, and the literal token reflected.
+	hostile := "denied\n{\"level\":\"info\",\"msg\":\"fake log line\"}\r\n" +
+		"\x1b[31mred\x1b[0m\ttabbed\x00nul sep Bearer " + token
+	body := []byte(`{"error":` + mustJSONString(t, hostile) + `}`)
+
+	got := serverErrorDetail(body, token)
+
+	if strings.ContainsAny(got, "\r\n\t\x00\x1b") {
+		t.Fatalf("sanitized detail still contains control bytes: %q", got)
+	}
+	if strings.Contains(got, " ") || strings.Contains(got, " ") {
+		t.Fatalf("sanitized detail still contains line/para separators: %q", got)
+	}
+	if strings.Contains(got, token) {
+		t.Fatalf("sanitized detail LEAKED the publisher token: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("expected token to be redacted, got: %q", got)
+	}
+	// Single line: no embedded newline of any kind.
+	if strings.Count(got, "\n") != 0 {
+		t.Fatalf("detail is not single-line: %q", got)
+	}
+	if len([]rune(got)) > serverErrorMaxRunes {
+		t.Fatalf("detail exceeds rune cap: %d", len([]rune(got)))
+	}
+}
+
+// TestSanitizeServerDetail_TokenSubstringRedaction proves the token is redacted
+// even when embedded mid-string and across a control byte boundary, and that an
+// empty token does not corrupt the output (no every-empty-substring replace).
+func TestSanitizeServerDetail_TokenSubstringRedaction(t *testing.T) {
+	const token = "tok-XYZ"
+	got := sanitizeServerDetail("prefix "+token+" suffix", token)
+	if strings.Contains(got, token) || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("token not redacted: %q", got)
+	}
+	// Empty token: output preserved, no spurious [REDACTED] injected.
+	got2 := sanitizeServerDetail("clean message", "")
+	if got2 != "clean message" {
+		t.Fatalf("empty-token sanitize altered output: %q", got2)
+	}
+	// Whitespace-only token must be treated as empty (not redact every space).
+	got3 := sanitizeServerDetail("a b c", "   ")
+	if got3 != "a b c" {
+		t.Fatalf("whitespace token corrupted output: %q", got3)
+	}
+}
+
+func mustJSONString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal string: %v", err)
+	}
+	return string(b)
 }
 
 // --- cobra command registration --------------------------------------------

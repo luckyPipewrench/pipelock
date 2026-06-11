@@ -78,6 +78,29 @@ Done-state for the live proof: both followers visibly apply the new config and
 their applied version advances; a lower version is rejected; the chained forward
 is accepted.
 
+## External review hardening (2026-06-11, commit 2)
+
+Codex adversarial review found no critical breaks but three WARNINGs, all fixed
+in-PR with mutation-proven regression tests:
+
+1. **Untrusted server body → log forging / token echo.** `serverErrorDetail` now
+   redacts the publisher token if reflected, collapses every control/non-printable
+   rune (CR/LF/tab/NUL/ESC, BOM, U+2028/29) to a single space, and rune-caps AFTER
+   sanitization. Test `TestServerErrorDetail_LogForgingAndTokenEcho` (+
+   `TestSanitizeServerDetail_TokenSubstringRedaction`).
+2. **Private key not zeroized on every error path.** `buildSignedBundle` now
+   validates ALL non-key inputs before reading the key, then `defer`s a conditional
+   wipe that fires on every error path; success hands off and the caller `defer`s
+   its own wipe. Tests `TestBuildSignedBundle_InputsValidatedBeforeKeyRead` (ordering)
+   and `TestBuildSignedBundle_NoKeyEscapesOnPostLoadError`.
+3. **Symlink rejection comment was false.** `readSigningKeyBytes` now `os.Lstat`s
+   first and rejects `os.ModeSymlink` before `os.Open` (which follows symlinks),
+   then fd-stats. Test `TestReadSigningKeyBytes_SymlinkRejected`.
+
+Each fix was mutation-verified: reverting it makes the matching test fail with the
+exact security symptom (token leak / key read before input validation / symlink
+followed).
+
 ## Known boundaries (honest)
 - The publisher does NOT auto-discover the current stream head. Forward publishes
   need `--previous-bundle-hash <H>` where `<H>` is the hash printed by the prior

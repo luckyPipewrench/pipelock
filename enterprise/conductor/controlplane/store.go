@@ -97,6 +97,7 @@ type PublishOptions struct {
 type BundleStore interface {
 	Publish(ctx context.Context, bundle conductor.PolicyBundle, opts PublishOptions) (PublishedBundle, bool, error)
 	Latest(ctx context.Context, follower FollowerIdentity, now time.Time) (PublishedBundle, error)
+	BundleByIDVersion(ctx context.Context, bundleID string, version uint64) (PublishedBundle, error)
 }
 
 type FileBundleStore struct {
@@ -211,6 +212,26 @@ func (s *FileBundleStore) Latest(_ context.Context, follower FollowerIdentity, n
 		return PublishedBundle{}, ErrBundleNotFound
 	}
 	return best, nil
+}
+
+func (s *FileBundleStore) BundleByIDVersion(_ context.Context, bundleID string, version uint64) (PublishedBundle, error) {
+	if s == nil {
+		return PublishedBundle{}, ErrStoreRequired
+	}
+	if err := conductor.ValidateIdentifier("bundle_id", bundleID); err != nil {
+		return PublishedBundle{}, err
+	}
+	if version == 0 {
+		return PublishedBundle{}, fmt.Errorf("%w: version", conductor.ErrMissingField)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, record := range s.records {
+		if record.Bundle.BundleID == bundleID && record.Bundle.Version == version {
+			return record, nil
+		}
+	}
+	return PublishedBundle{}, ErrBundleNotFound
 }
 
 // Validate rejects identities whose components are empty OR contain anything

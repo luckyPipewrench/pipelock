@@ -592,12 +592,18 @@ func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusUnauthorized, ErrFollowerRequired)
 		return
 	}
-	record, err := h.store.Latest(r.Context(), identity, h.now())
+	now := h.now()
+	record, err := h.store.Latest(r.Context(), identity, now)
 	if err != nil {
 		if errors.Is(err, ErrBundleNotFound) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		writeStoreError(w, err)
+		return
+	}
+	record, err = h.applyRollbackCeiling(r, identity, record, now)
+	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -609,6 +615,31 @@ func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("ETag", etag)
 	writeJSON(w, http.StatusOK, record.Bundle)
+}
+
+func (h *Handler) applyRollbackCeiling(r *http.Request, identity FollowerIdentity, latest PublishedBundle, now time.Time) (PublishedBundle, error) {
+	if h.emergencyControls == nil {
+		return latest, nil
+	}
+	rollback, ok, err := h.emergencyControls.ActiveRollbackForFollower(r.Context(), identity, now)
+	if err != nil {
+		return PublishedBundle{}, err
+	}
+	if !ok {
+		return latest, nil
+	}
+	auth := rollback.Authorization
+	if latest.Bundle.Version > auth.CurrentVersion {
+		return latest, nil
+	}
+	target, err := h.store.BundleByIDVersion(r.Context(), auth.TargetBundleID, auth.TargetVersion)
+	if err != nil {
+		if errors.Is(err, ErrBundleNotFound) {
+			return PublishedBundle{}, fmt.Errorf("active rollback target unavailable: %w", err)
+		}
+		return PublishedBundle{}, err
+	}
+	return target, nil
 }
 
 func (h *Handler) handleRemoteKill(w http.ResponseWriter, r *http.Request) {

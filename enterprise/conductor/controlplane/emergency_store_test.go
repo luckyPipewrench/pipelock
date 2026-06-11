@@ -95,6 +95,86 @@ func TestFileEmergencyStoreRollbackLookup(t *testing.T) {
 	}
 }
 
+func TestFileEmergencyStoreActiveRollbackForFollower(t *testing.T) {
+	store := mustEmergencyStore(t)
+	first := signedRollbackAuthorization(t, "rollback-active-1", 1, testNow)
+	if _, created, err := store.PublishRollbackAuthorization(context.Background(), first, testNow); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization(first) created=%v err=%v, want created", created, err)
+	}
+	newest := signedRollbackAuthorization(t, "rollback-active-2", 2, testNow.Add(time.Minute))
+	if _, created, err := store.PublishRollbackAuthorization(context.Background(), newest, testNow.Add(time.Minute)); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization(newest) created=%v err=%v, want created", created, err)
+	}
+	otherAudience := signedRollbackAuthorization(t, "rollback-other-audience", 3, testNow.Add(2*time.Minute))
+	otherAudience.Audience = conductor.Audience{InstanceIDs: []string{"pl-prod-2"}}
+	if _, created, err := store.PublishRollbackAuthorization(context.Background(), otherAudience, testNow.Add(2*time.Minute)); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization(other audience) created=%v err=%v, want created", created, err)
+	}
+	otherFleet := signedRollbackAuthorization(t, "rollback-other-fleet", 1, testNow.Add(3*time.Minute))
+	otherFleet.FleetID = "dev"
+	if _, created, err := store.PublishRollbackAuthorization(context.Background(), otherFleet, testNow.Add(3*time.Minute)); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization(other fleet) created=%v err=%v, want created", created, err)
+	}
+
+	tests := []struct {
+		name       string
+		follower   FollowerIdentity
+		now        time.Time
+		wantOK     bool
+		wantAuthID string
+	}{
+		{
+			name:       "newest matching active rollback",
+			follower:   defaultFollowerIdentity(),
+			now:        testNow.Add(4 * time.Minute),
+			wantOK:     true,
+			wantAuthID: newest.AuthorizationID,
+		},
+		{
+			name:     "all expired",
+			follower: defaultFollowerIdentity(),
+			now:      testNow.Add(2 * time.Hour),
+			wantOK:   false,
+		},
+		{
+			name: "audience mismatch",
+			follower: FollowerIdentity{
+				OrgID:       "org-main",
+				FleetID:     "prod",
+				InstanceID:  "pl-prod-3",
+				Environment: "prod",
+			},
+			now:    testNow.Add(4 * time.Minute),
+			wantOK: false,
+		},
+		{
+			name: "wrong org fleet",
+			follower: FollowerIdentity{
+				OrgID:       "org-main",
+				FleetID:     "stage",
+				InstanceID:  "pl-prod-1",
+				Environment: "prod",
+			},
+			now:    testNow.Add(4 * time.Minute),
+			wantOK: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok, err := store.ActiveRollbackForFollower(context.Background(), tc.follower, tc.now)
+			if err != nil {
+				t.Fatalf("ActiveRollbackForFollower() error = %v", err)
+			}
+			if ok != tc.wantOK {
+				t.Fatalf("ActiveRollbackForFollower() ok=%v, want %v", ok, tc.wantOK)
+			}
+			if ok && got.Authorization.AuthorizationID != tc.wantAuthID {
+				t.Fatalf("ActiveRollbackForFollower() auth=%q, want %q", got.Authorization.AuthorizationID, tc.wantAuthID)
+			}
+		})
+	}
+}
+
 func TestFileEmergencyStoreRollsBackMemoryOnWriteFailure(t *testing.T) {
 	store := mustEmergencyStore(t)
 	msg := signedRemoteKillMessage(t, "kill-write-fail", 1, conductor.KillSwitchActive, testNow)

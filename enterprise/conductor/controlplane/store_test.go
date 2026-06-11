@@ -73,6 +73,37 @@ func TestFileBundleStorePublishesIdempotentlyAndReloads(t *testing.T) {
 	}
 }
 
+func TestFileBundleStoreBundleByIDVersion(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	signer := newTestSigner(t)
+	bundle := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-lookup-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	published, _, err := store.Publish(t.Context(), bundle, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	got, err := store.BundleByIDVersion(t.Context(), "bundle-lookup-1", 1)
+	if err != nil {
+		t.Fatalf("BundleByIDVersion() error = %v", err)
+	}
+	if got.BundleHash != published.BundleHash {
+		t.Fatalf("BundleByIDVersion() hash=%q, want %q", got.BundleHash, published.BundleHash)
+	}
+	if _, err := store.BundleByIDVersion(t.Context(), "bundle-lookup-1", 2); !errors.Is(err, ErrBundleNotFound) {
+		t.Fatalf("BundleByIDVersion(missing version) err=%v, want ErrBundleNotFound", err)
+	}
+	if _, err := store.BundleByIDVersion(t.Context(), "bundle-missing", 1); !errors.Is(err, ErrBundleNotFound) {
+		t.Fatalf("BundleByIDVersion(missing id) err=%v, want ErrBundleNotFound", err)
+	}
+}
+
 func TestFileBundleStoreRejectsStreamConflicts(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {

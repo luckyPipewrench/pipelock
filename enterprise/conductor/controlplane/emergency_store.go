@@ -57,6 +57,7 @@ type EmergencyStore interface {
 	LatestRemoteKill(ctx context.Context, follower FollowerIdentity, now time.Time) (StoredRemoteKill, error)
 	PublishRollbackAuthorization(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) (StoredRollbackAuthorization, bool, error)
 	LatestRollbackAuthorization(ctx context.Context, follower FollowerIdentity, lookup RollbackLookup, now time.Time) (StoredRollbackAuthorization, error)
+	ActiveRollbackForFollower(ctx context.Context, follower FollowerIdentity, now time.Time) (StoredRollbackAuthorization, bool, error)
 }
 
 type FileEmergencyStore struct {
@@ -263,6 +264,42 @@ func (s *FileEmergencyStore) LatestRollbackAuthorization(_ context.Context, foll
 		return StoredRollbackAuthorization{}, ErrEmergencyNotFound
 	}
 	return best, nil
+}
+
+func (s *FileEmergencyStore) ActiveRollbackForFollower(_ context.Context, follower FollowerIdentity, now time.Time) (StoredRollbackAuthorization, bool, error) {
+	if s == nil {
+		return StoredRollbackAuthorization{}, false, ErrEmergencyStoreRequired
+	}
+	if err := follower.Validate(); err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var best StoredRollbackAuthorization
+	for _, record := range s.rollbacks {
+		auth := record.Authorization
+		if err := auth.ValidateAtTime(now); err != nil {
+			continue
+		}
+		if auth.OrgID != follower.OrgID || auth.FleetID != follower.FleetID {
+			continue
+		}
+		if !auth.Audience.Matches(follower.InstanceID, follower.Labels) {
+			continue
+		}
+		if best.AuthorizationHash == "" || newerRollback(record, best) {
+			best = record
+		}
+	}
+	if best.AuthorizationHash == "" {
+		return StoredRollbackAuthorization{}, false, nil
+	}
+	return best, true, nil
 }
 
 func (l RollbackLookup) Validate() error {

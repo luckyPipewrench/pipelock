@@ -136,7 +136,7 @@ func coreResponsePatternDefs() []coreResponsePattern {
 		},
 		{
 			name:  "Credential Solicitation",
-			regex: `(?is)\b(send|provide|paste|return|supply|submit|share)\b.{0,80}\b(password|passwd|token|api[_ -]?key|secret|credential|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b`,
+			regex: `(?is)(\b(send|provide|paste|return|supply|submit|share)\b.{0,80}\b(password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b|(?:^|[\n.!?]\s+|\bplease\s+)include\s+(your|my|our)\s+(password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b)`,
 		},
 		{
 			name:  "System Prompt Disclosure",

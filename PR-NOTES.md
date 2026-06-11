@@ -1,112 +1,130 @@
-# PR A: `conductor publish` — notes
+# PR C — Conductor observability + audit (fleet status / followers + audit query)
 
-## What shipped
-`pipelock conductor publish` — a producer CLI that builds a `PolicyBundle` from a
-pipelock config (+ optional rule-bundle refs), signs it with a
-`policy-bundle-signing` key, and PUTs it to a running Conductor's publish
-endpoint (`PUT /api/v1/conductor/policy-bundles`) over mutual TLS with a
-publisher bearer token. Followers then pull and apply it on their next poll.
+## What this PR adds
 
-- New file: `enterprise/cli/conductor/publish.go` (+ `publish_test.go`).
-- One-line registration in `enterprise/cli/conductor/cmd.go` (`cmd.AddCommand(publishCmd())`).
-- License gate: `license.VerifyFleet` (fleet entitlement), fail-closed before any
-  key read or network call, mirroring `serveCmd` / `bootstrapCmd`.
+Three operator-side read CLIs under `enterprise/cli/conductor/`, plus ONE new
+server-side read endpoint that did not exist before.
 
-## Proven by unit test (not live)
-- Full build → sign → PUT accepted by the REAL `controlplane.Handler` over
-  `httptest` (real `PolicyBundle.Validate` + real file-store monotonic/chain logic).
-- Monotonic version: forward publish chained via `--previous-bundle-hash` accepted;
-  unchained forward and lower version both rejected (409 → `ErrStalePolicyVersion`).
-- First-bundle-with-previous-hash rejected.
-- Bad publisher token → "not authorized"; wrong-purpose / unknown-purpose /
-  tampered / too-permissive signing key all rejected; forbidden config section and
-  license field rejected at local `Validate` before any network call.
-- mTLS required for https; `--allow-plaintext-loopback` restricted to a true
-  loopback host (userinfo trick, look-alike subdomain, 0.0.0.0, link-local all
-  rejected; `[::1]` allowed). Signature verifies against the signer public key.
-- publish.go statement coverage: ~92%.
+### CLI commands (client-only)
+- `conductor audit query` — list/get accepted audit-batch **metadata** from a
+  Conductor (auditor or admin bearer, audience-scoped). Pure client against the
+  pre-existing `controlplane.AuditBatchesPath` GET handlers
+  (`handleListAuditBatches` / `handleGetAuditBatch`).
+- `conductor fleet status` and `conductor followers` (alias) — list enrolled
+  followers (auditor or admin bearer, audience-scoped).
 
-## DEFERRED — live follower proof (run after #736 lands and a rebase)
-`#736` adds the `policy-bundle-signing` purpose to `pipelock signing key generate`.
-It is NOT on this branch. Once it merges, `git rebase origin/main` and run:
+All three share `client.go`: an mTLS-client + bearer-token, GET-only,
+size-capped HTTP client. They fail closed on the `fleet` license entitlement
+(`license.VerifyFleet`) before any connection, matching `serve` / `bootstrap`.
 
-```bash
-# 0. Fleet material already exists at ~/.local/share/v27-prod-fleet/ (CA, roster,
-#    publisher token, follower client cert/key). Confirm the leader + both
-#    followers are up first.
+### NEW SERVER ENDPOINT (flag this in review)
+There was **no follower-list read endpoint** before this PR. This PR adds one,
+isolated to this PR per the coordination doc:
 
-# 1. Generate a policy-bundle-signing key with the SHIPPED CLI (no openssl).
-pipelock signing key generate \
-  --purpose policy-bundle-signing \
-  --out ~/.local/share/v27-prod-fleet/policy-signing.json
+- **Route:** `GET /api/v1/conductor/followers` (`controlplane.FollowersPath`).
+- **Handler:** `handleListFollowers` in `enterprise/conductor/controlplane/followers.go`.
+- **Store method:** `EnrollmentStore.ListEnrolledFollowers(ctx, FollowerListQuery)`
+  + the `FileEnrollmentStore` implementation in `enrollment.go`.
+- **Authorizer:** `ScopedBearerFollowerListAuthorizer` in `auth.go` (admits
+  admin + auditor roles, enforces credential org/fleet scope against the query —
+  identical semantics to `ScopedBearerAuditQueryAuthorizer`).
+- **Wiring:** `HandlerOptions.AuthorizeFollowers` + the serve command
+  (`buildServeHandler`) reuses the existing auditor/admin token files.
 
-#    Add its PUBLIC key to the Conductor's trusted policy-bundle-signing roster
-#    so followers verify the signature (roster wiring is the serve side; if the
-#    running leader's roster does not yet trust this key, add it and restart the
-#    leader, OR sign with a key already in the roster).
+### Security properties (tested)
+- **Mandatory org scoping.** The handler rejects a missing `org_id` with 400
+  before any auth or store access, so the roster read is never globally
+  unscoped.
+- **Audience isolation.** An org-A-scoped auditor reading `org_id=org-B` gets
+  403 — the authorizer binds credential scope to the requested org BEFORE the
+  store is touched, so no org-B roster ever leaves the process
+  (`TestHandlerListFollowersDeniesCrossOrgRead`).
+- **Fail-closed default.** An unconfigured `AuthorizeFollowers` denies every
+  read (`ErrFollowerListForbidden`).
+- **Bounded list (anti-DoS).** Server clamps the result to `[1, 1000]`
+  (default 100) via `normalizeFollowerListLimit`; the client `--limit` is
+  validated non-negative.
+- **Strict query parsing.** Allowlisted params only; unknown/duplicate params,
+  invalid identifiers, and bad limits → 400.
+- **Metadata-only.** `FollowerSummary` omits the audit public-key bytes; only
+  identity, audit_key_id, enrolled_at, active state are returned.
 
-# 2. Publish v1 with a visible config change (e.g. flip a mode / add a suppress).
-pipelock conductor publish \
-  --conductor-url https://<leader-host>:8895 \
-  --config /path/to/changed-policy.yaml \
-  --org <org> --fleet <fleet> --env <env> \
-  --audience '*' \
-  --version <N+1> \
-  --signing-key ~/.local/share/v27-prod-fleet/policy-signing.json \
-  --publisher-token-file ~/.local/share/v27-prod-fleet/publisher.token \
-  --tls-cert ~/.local/share/v27-prod-fleet/follower-client.crt \
-  --tls-key  ~/.local/share/v27-prod-fleet/follower-client.key \
-  --server-ca ~/.local/share/v27-prod-fleet/ca.pem
-#    -> prints: published policy bundle <id> version <N+1> (hash <H>, created=true) ...
+## Honest scope limitation (applied-version / last-seen)
+The kickoff asked fleet status to show "applied bundle version" and "last-seen".
+**The Conductor enrollment store does not track either today** — there is no
+per-follower last-contact timestamp or applied-version record anywhere in
+`enterprise/conductor/` (confirmed by grep: no `last_seen`/`applied_version`
+fields exist). Rather than invent fields the server cannot populate, this PR
+reports only what the store actually holds (enrollment state). Adding
+applied-version/last-seen is a follower-contact-tracking feature (the bundle
+store / poller would have to record per-follower `Latest()` hits) and is a
+separate change. **Flagged as a deferred follow-up, not silently dropped.**
 
-# 3. OBSERVE BOTH followers apply it:
-#    - in-cluster dogfood follower(s) and the fedora-host follower at
-#      ~/.local/share/v27-fedora-follower/ should advance their applied version
-#      to <N+1> and reflect the config change on their next poll.
-#    - check follower logs / applied-version metric for each.
+## fleet-sink: studied, live proof DEFERRED
+The audit sink path is the existing `SQLiteAuditStore` (an `AuditBatchSink` that
+also implements `AuditBatchQuerier`). `conductor audit query` reads exactly the
+batches that path accepts. The end-to-end live proof is deferred per the
+worktree guardrails (no cluster deploy in this run; #736 keygen not on this
+branch). Unit coverage proves the client/endpoint contract; the live proof is
+documented below.
 
-# 4. Re-publish a LOWER version -> MUST be rejected as stale:
-pipelock conductor publish ... --version <N>     # (same flags)
-#    -> exits non-zero: "policy bundle version is stale ..."
+## Deferred live-proof commands (run after merge, on the dogfood fleet)
 
-# 5. Forward publish v<N+2> chained to the prior head hash <H>:
-pipelock conductor publish ... --version <N+2> --previous-bundle-hash <H>
-#    -> accepted; followers advance to <N+2>.
-```
+Fleet material lives at `~/.local/share/v27-prod-fleet/` (CA, roster, control
+keys, operator tokens); fedora-host follower at `~/.local/share/v27-fedora-follower/`.
+Substitute the real org/fleet/instance and the operator token + cert paths.
 
-Done-state for the live proof: both followers visibly apply the new config and
-their applied version advances; a lower version is rejected; the chained forward
-is accepted.
+1. **Fleet status — list both enrolled followers:**
+   ```
+   pipelock conductor fleet status \
+     --server https://<conductor-host>:8895 \
+     --ca-file ~/.local/share/v27-prod-fleet/ca.pem \
+     --client-cert ~/.local/share/v27-prod-fleet/operator-client.pem \
+     --client-key ~/.local/share/v27-prod-fleet/operator-client.key \
+     --token-file ~/.local/share/v27-prod-fleet/admin-token \
+     --org-id <org> --fleet-id <fleet>
+   ```
+   Expect: a table with both followers, ACTIVE=true, their audit_key_id and
+   enrolled_at. (Applied-version/last-seen intentionally absent — see above.)
 
-## External review hardening (2026-06-11, commit 2)
+2. **Generate audit traffic, then query the batches:**
+   Drive follower audit emission (normal agent traffic through the follower),
+   then:
+   ```
+   pipelock conductor audit query \
+     --server https://<conductor-host>:8895 \
+     --ca-file ... --client-cert ... --client-key ... \
+     --token-file ~/.local/share/v27-prod-fleet/auditor-token \
+     --org-id <org> --fleet-id <fleet>
+   ```
+   Expect: JSON `{"batches":[...],"count":N}` including the freshly-emitted
+   batch ids.
 
-Codex adversarial review found no critical breaks but three WARNINGs, all fixed
-in-PR with mutation-proven regression tests:
+3. **Fetch one batch by id, then verify it OFFLINE:**
+   ```
+   pipelock conductor audit query ... --org-id <org> --fleet-id <fleet> \
+     --instance-id <instance> --batch-id <batch-id>
+   ```
+   Then verify the signed batch offline with the existing batch verifier
+   (the path `conductor bootstrap` already exercises via `audit-batch.json`).
 
-1. **Untrusted server body → log forging / token echo.** `serverErrorDetail` now
-   redacts the publisher token if reflected, collapses every control/non-printable
-   rune (CR/LF/tab/NUL/ESC, BOM, U+2028/29) to a single space, and rune-caps AFTER
-   sanitization. Test `TestServerErrorDetail_LogForgingAndTokenEcho` (+
-   `TestSanitizeServerDetail_TokenSubstringRedaction`).
-2. **Private key not zeroized on every error path.** `buildSignedBundle` now
-   validates ALL non-key inputs before reading the key, then `defer`s a conditional
-   wipe that fires on every error path; success hands off and the caller `defer`s
-   its own wipe. Tests `TestBuildSignedBundle_InputsValidatedBeforeKeyRead` (ordering)
-   and `TestBuildSignedBundle_NoKeyEscapesOnPostLoadError`.
-3. **Symlink rejection comment was false.** `ReadKeyFileBytes` now `os.Lstat`s
-   first and rejects `os.ModeSymlink` before `os.Open` (which follows symlinks),
-   then fd-stats. Test `TestReadSigningKeyBytes_SymlinkRejected`.
+4. **fleet-sink end-to-end:** deploy the audit sink in-cluster and demonstrate
+   `follower → conductor → sink → conductor audit query → offline-verify`. The
+   `conductor bootstrap` command already proves this loop in-process; the
+   in-cluster deploy + proof is the deferred operator-workflow step.
 
-Each fix was mutation-verified: reverting it makes the matching test fail with the
-exact security symptom (token leak / key read before input validation / symlink
-followed).
+## cmd.go shared-file note
+This PR appends `auditCmd()`, `fleetCmd()`, `followersCmd()` to
+`enterprise/cli/conductor/cmd.go` `Cmd()` (the one shared Go file across the
+A/B/C/D conductor PRs). Whoever merges later re-adds their `AddCommand` line per
+the coordination doc.
 
-## Known boundaries (honest)
-- The publisher does NOT auto-discover the current stream head. Forward publishes
-  need `--previous-bundle-hash <H>` where `<H>` is the hash printed by the prior
-  publish. (Auto-fetch would require follower mTLS identity on the publish path,
-  which the publisher role does not carry; the `LatestPolicyBundlePath` GET is
-  follower-identity gated, not publisher-token gated.)
-- Roster trust for the new signing key is a serve-side concern (operator adds the
-  public key to the Conductor's trusted policy-bundle-signing set). This PR is the
-  producer/client only.
+## Validation run locally (this worktree)
+- `go build -tags enterprise ./...` — green.
+- `go test -tags enterprise -race -count=1` on
+  `./enterprise/conductor/controlplane/`, `./enterprise/cli/conductor/`, and
+  `./enterprise/conductor/bootstrap/` — green.
+- `golangci-lint run --new-from-rev=HEAD --build-tags enterprise` on both
+  touched packages — 0 issues.
+- New-symbol coverage: authorizer 90.9%, store list 94.7%, handler 85%,
+  parse 92.9%, license-gate paths covered.

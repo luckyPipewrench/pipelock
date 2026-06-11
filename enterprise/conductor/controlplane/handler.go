@@ -27,6 +27,7 @@ const (
 	RemoteKillPath             = "/api/v1/conductor/remote-kill"
 	RollbackAuthorizationsPath = "/api/v1/conductor/rollback-authorizations"
 	AuditBatchesPath           = conductor.AuditBatchesPath
+	FollowersPath              = "/api/v1/conductor/followers"
 	EnrollPath                 = "/api/v1/conductor/enroll"
 	EnrollmentTokensPath       = "/api/v1/conductor/enrollment-tokens" //nolint:gosec // route constant, not a credential
 	HealthPath                 = "/health"
@@ -67,6 +68,12 @@ type BundleAuthorizer func(*http.Request, conductor.PolicyBundle) error
 // callers to the org/fleet they are permitted to inspect.
 type AuditQueryAuthorizer func(*http.Request, AuditBatchQuery) error
 
+// FollowerListAuthorizer authorizes a parsed follower-roster query. Like
+// [AuditQueryAuthorizer] it MUST scope callers to the org/fleet they are
+// permitted to inspect; a follower roster is fleet-topology metadata and is
+// authorized identically to audit metadata.
+type FollowerListAuthorizer func(*http.Request, FollowerListQuery) error
+
 type HandlerOptions struct {
 	Store               BundleStore
 	Capabilities        conductor.CapabilitiesResponse
@@ -77,6 +84,7 @@ type HandlerOptions struct {
 	AuthorizePublisher  PublisherAuthorizer
 	AuthorizeBundle     BundleAuthorizer
 	AuthorizeAuditQuery AuditQueryAuthorizer
+	AuthorizeFollowers  FollowerListAuthorizer
 	AuthorizeAdmin      PublisherAuthorizer
 	AuditSink           AuditBatchSink
 	AuditKeys           AuditKeyResolver
@@ -99,6 +107,7 @@ type Handler struct {
 	authorizePublisher  PublisherAuthorizer
 	authorizeBundle     BundleAuthorizer
 	authorizeAuditQuery AuditQueryAuthorizer
+	authorizeFollowers  FollowerListAuthorizer
 	authorizeAdmin      PublisherAuthorizer
 	auditSink           AuditBatchSink
 	// nil auditQuerier means the configured sink does not implement
@@ -245,6 +254,14 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 			return ErrAuditQueryForbidden
 		}
 	}
+	authorizeFollowers := opts.AuthorizeFollowers
+	if authorizeFollowers == nil {
+		// Fail closed: an unconfigured roster authorizer denies every read
+		// rather than exposing the enrollment roster to any caller.
+		authorizeFollowers = func(*http.Request, FollowerListQuery) error {
+			return ErrFollowerListForbidden
+		}
+	}
 	authorizeBundle := opts.AuthorizeBundle
 	if authorizeBundle == nil {
 		authorizeBundle = func(*http.Request, conductor.PolicyBundle) error {
@@ -268,6 +285,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		authorizePublisher:  opts.AuthorizePublisher,
 		authorizeBundle:     authorizeBundle,
 		authorizeAuditQuery: authorizeAuditQuery,
+		authorizeFollowers:  authorizeFollowers,
 		authorizeAdmin:      authorizeAdmin,
 		auditSink:           opts.AuditSink,
 		auditQuerier:        auditQuerier,
@@ -343,6 +361,8 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleLatestPolicyBundle(w, r)
 	case AuditBatchesPath:
 		h.handleAuditBatch(w, r)
+	case FollowersPath:
+		h.handleListFollowers(w, r)
 	default:
 		if isAuditBatchSubroute(r.URL.Path) {
 			h.handleGetAuditBatch(w, r)
@@ -401,7 +421,7 @@ func conductorRoute(path string) string {
 		return AuditBatchesPath
 	}
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath:
 		return path
 	default:
 		return "unknown"

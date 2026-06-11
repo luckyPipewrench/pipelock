@@ -82,6 +82,9 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(serveCmd())
 	cmd.AddCommand(bootstrapCmd())
 	cmd.AddCommand(publishCmd())
+	cmd.AddCommand(auditCmd())
+	cmd.AddCommand(fleetCmd())
+	cmd.AddCommand(followersCmd())
 	return cmd
 }
 
@@ -263,6 +266,13 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	followerListAuthorizer, err := controlplane.ScopedBearerFollowerListAuthorizer([]controlplane.ScopedBearerCredential{
+		{Token: auditorToken, Role: controlplane.RoleAuditor},
+		{Token: adminToken, Role: controlplane.RoleAdmin},
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	adminAuthorizer, err := controlplane.ScopedBearerAdminAuthorizer([]controlplane.ScopedBearerCredential{{
 		Token: adminToken,
 		Role:  controlplane.RoleAdmin,
@@ -317,6 +327,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 		AuthorizePublisher:  authorizer,
 		AuthorizeBundle:     publishAuthorizer,
 		AuthorizeAuditQuery: auditQueryAuthorizer,
+		AuthorizeFollowers:  followerListAuthorizer,
 		AuthorizeAdmin:      adminAuthorizer,
 		AuditSink:           auditStore,
 		AuditKeys:           controlplane.CompositeAuditKeyResolver(enrollments, auditKeys),

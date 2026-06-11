@@ -149,6 +149,32 @@ func ScopedBearerBundleAuthorizer(creds []ScopedBearerCredential) (BundleAuthori
 	}, nil
 }
 
+// ScopedBearerFollowerListAuthorizer authorizes a follower-roster read. Like
+// the audit-query authorizer it admits admin and auditor (reader) roles and
+// enforces the credential's org/fleet scope against the requested query, so a
+// token scoped to org A cannot enumerate org B's followers. A credential with
+// an empty scope (org-wide admin) may read any org's roster, matching the
+// audit-query semantics.
+func ScopedBearerFollowerListAuthorizer(creds []ScopedBearerCredential) (FollowerListAuthorizer, error) {
+	normalized, err := normalizeScopedBearerCredentials(creds)
+	if err != nil {
+		return nil, err
+	}
+	return func(r *http.Request, q FollowerListQuery) error {
+		cred, ok := matchBearerCredential(r, normalized)
+		if !ok {
+			return ErrFollowerListForbidden
+		}
+		switch cred.Role {
+		case RoleAdmin, RoleAuditor:
+			if scopedCredentialAllows(cred, q.OrgID, q.FleetID) {
+				return nil
+			}
+		}
+		return ErrFollowerListForbidden
+	}, nil
+}
+
 func ScopedBearerAuditQueryAuthorizer(creds []ScopedBearerCredential) (AuditQueryAuthorizer, error) {
 	normalized, err := normalizeScopedBearerCredentials(creds)
 	if err != nil {
@@ -304,5 +330,6 @@ func IsAuthConfigError(err error) bool {
 	return errors.Is(err, ErrFollowerRequired) ||
 		errors.Is(err, ErrPublisherForbidden) ||
 		errors.Is(err, ErrAuditQueryForbidden) ||
+		errors.Is(err, ErrFollowerListForbidden) ||
 		errors.Is(err, ErrAuditKeyRequired)
 }

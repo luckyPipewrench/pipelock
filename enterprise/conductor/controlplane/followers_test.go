@@ -1,0 +1,350 @@
+//go:build enterprise
+
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
+package controlplane
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
+)
+
+const (
+	followerAdminToken      = "admin-token"
+	followerAuditorToken    = "auditor-token"
+	followerOrgMainAuditTok = "org-main-auditor-token"
+)
+
+// mustEnrollFollower creates and immediately consumes an enrollment token,
+// leaving an active enrolled follower in the store. It is the direct-store
+// shortcut for the HTTP create-token + enroll round trip.
+func mustEnrollFollower(t *testing.T, store *FileEnrollmentStore, tokenID string, identity FollowerIdentity, auditKeyID string) {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  tokenID,
+		Identity: identity,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken(%s) error = %v", tokenID, err)
+	}
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: auditKeyID,
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken(%s) error = %v", tokenID, err)
+	}
+}
+
+func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler {
+	t.Helper()
+	followerAuth, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{
+		{Token: followerAdminToken, Role: RoleAdmin},
+		{Token: followerAuditorToken, Role: RoleAuditor},
+		{Token: followerOrgMainAuditTok, Role: RoleAuditor, OrgID: "org-main"},
+	})
+	if err != nil {
+		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
+	}
+	handler, err := NewHandler(HandlerOptions{
+		Store:              mustStore(t),
+		Capabilities:       DefaultCapabilities("conductor-test"),
+		Now:                func() time.Time { return testNow },
+		FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
+		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuthorizeFollowers: followerAuth,
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
+		Enrollments:        enrollments,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	return handler
+}
+
+func getFollowers(t *testing.T, handler *Handler, target, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
+}
+
+func TestHandlerListFollowersReturnsScopedRoster(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	mustEnrollFollower(t, enrollments, "tok-main-1", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}, "audit-key-main-1")
+	mustEnrollFollower(t, enrollments, "tok-main-2", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-2", Environment: "prod"}, "audit-key-main-2")
+	mustEnrollFollower(t, enrollments, "tok-other-1", FollowerIdentity{OrgID: "org-other", FleetID: "prod", InstanceID: "pl-other-1", Environment: "prod"}, "audit-key-other-1")
+
+	handler := newFollowersTestHandler(t, enrollments)
+
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-main", followerAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp listFollowersResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Count != 2 || len(resp.Followers) != 2 {
+		t.Fatalf("count = %d followers = %+v, want 2 org-main followers", resp.Count, resp.Followers)
+	}
+	for _, f := range resp.Followers {
+		if f.OrgID != "org-main" {
+			t.Fatalf("leaked follower from org %q: %+v", f.OrgID, f)
+		}
+		if !f.Active {
+			t.Fatalf("expected active follower, got %+v", f)
+		}
+	}
+	// Deterministic ordering: instance ids sorted.
+	if resp.Followers[0].InstanceID != "pl-prod-1" || resp.Followers[1].InstanceID != "pl-prod-2" {
+		t.Fatalf("non-deterministic order: %+v", resp.Followers)
+	}
+}
+
+func TestHandlerListFollowersRequiresAuthorization(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	mustEnrollFollower(t, enrollments, "tok-main-1", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}, "audit-key-main-1")
+	handler := newFollowersTestHandler(t, enrollments)
+
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{"no token", ""},
+		{"unknown token", "bogus-token"},
+		{"follower-shaped bearer that is not an operator", "pl_enroll_abc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := getFollowers(t, handler, FollowersPath+"?org_id=org-main", tc.token)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d body=%s, want 403", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerListFollowersDeniesCrossOrgRead(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	mustEnrollFollower(t, enrollments, "tok-main-1", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}, "audit-key-main-1")
+	mustEnrollFollower(t, enrollments, "tok-other-1", FollowerIdentity{OrgID: "org-other", FleetID: "prod", InstanceID: "pl-other-1", Environment: "prod"}, "audit-key-other-1")
+	handler := newFollowersTestHandler(t, enrollments)
+
+	// org-main-scoped auditor reading its own org succeeds.
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-main", followerOrgMainAuditTok)
+	if w.Code != http.StatusOK {
+		t.Fatalf("own-org read status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+
+	// org-main-scoped auditor attempting to read org-other is denied — the
+	// authorizer binds credential scope to the requested org BEFORE the store
+	// is touched, so no org-other roster ever leaves the process.
+	w = getFollowers(t, handler, FollowersPath+"?org_id=org-other", followerOrgMainAuditTok)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-org read status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+}
+
+func TestHandlerListFollowersRejectsMalformedQuery(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	handler := newFollowersTestHandler(t, enrollments)
+
+	cases := []struct {
+		name   string
+		target string
+		want   int
+	}{
+		{"missing org_id", FollowersPath, http.StatusBadRequest},
+		{"unknown param", FollowersPath + "?org_id=org-main&bogus=1", http.StatusBadRequest},
+		{"duplicate param", FollowersPath + "?org_id=org-main&org_id=org-other", http.StatusBadRequest},
+		{"invalid identifier", FollowersPath + "?org_id=" + "bad%2Fid", http.StatusBadRequest},
+		{"invalid limit", FollowersPath + "?org_id=org-main&limit=-3", http.StatusBadRequest},
+		{"non-numeric limit", FollowersPath + "?org_id=org-main&limit=abc", http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Use the admin token: a malformed query must be rejected at
+			// parse time (400), BEFORE authorization. The parse failure is
+			// the assertion here.
+			w := getFollowers(t, handler, tc.target, followerAdminToken)
+			if w.Code != tc.want {
+				t.Fatalf("status = %d body=%s, want %d", w.Code, w.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestHandlerListFollowersMethodAndStoreGuards(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+
+	// POST is rejected before any auth/store work.
+	handler := newFollowersTestHandler(t, enrollments)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, FollowersPath+"?org_id=org-main", nil)
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d, want 405", w.Code)
+	}
+
+	// A handler with no enrollment store returns 501, not a 500 or a panic.
+	noStore := newFollowersTestHandler(t, nil)
+	w = getFollowers(t, noStore, FollowersPath+"?org_id=org-main", followerAdminToken)
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("no-store status = %d body=%s, want 501", w.Code, w.Body.String())
+	}
+}
+
+func TestFileEnrollmentStoreListEnrolledFollowersFiltersAndBounds(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	mustEnrollFollower(t, store, "tok-a", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "i-a", Environment: "prod"}, "k-a")
+	mustEnrollFollower(t, store, "tok-b", FollowerIdentity{OrgID: "org-main", FleetID: "staging", InstanceID: "i-b", Environment: "staging"}, "k-b")
+	mustEnrollFollower(t, store, "tok-c", FollowerIdentity{OrgID: "org-other", FleetID: "prod", InstanceID: "i-c", Environment: "prod"}, "k-c")
+
+	// Org filter.
+	got, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: "org-main"})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers(org) error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("org filter returned %d, want 2", len(got))
+	}
+
+	// Org+fleet filter.
+	got, err = store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: "org-main", FleetID: "staging"})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers(org+fleet) error = %v", err)
+	}
+	if len(got) != 1 || got[0].InstanceID != "i-b" {
+		t.Fatalf("org+fleet filter returned %+v, want only i-b", got)
+	}
+
+	// Limit clamps the result count.
+	got, err = store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: "org-main", Limit: 1})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers(limit) error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("limit=1 returned %d, want 1", len(got))
+	}
+
+	// nil receiver fails closed.
+	var nilStore *FileEnrollmentStore
+	if _, err := nilStore.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: "org-main"}); err == nil {
+		t.Fatal("nil store ListEnrolledFollowers() error = nil, want error")
+	}
+}
+
+func TestFollowerSummaryLessOrdersByAllKeys(t *testing.T) {
+	base := FollowerSummary{OrgID: "o", FleetID: "f", InstanceID: "i", Environment: "e"}
+	cases := []struct {
+		name string
+		a, b FollowerSummary
+		want bool
+	}{
+		{"org tiebreak", FollowerSummary{OrgID: "a"}, FollowerSummary{OrgID: "b"}, true},
+		{"fleet tiebreak", withFleet(base, "a"), withFleet(base, "b"), true},
+		{"instance tiebreak", withInstance(base, "a"), withInstance(base, "b"), true},
+		{"env tiebreak", withEnv(base, "a"), withEnv(base, "b"), true},
+		{"equal is not less", base, base, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := followerSummaryLess(tc.a, tc.b); got != tc.want {
+				t.Fatalf("followerSummaryLess() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func withFleet(s FollowerSummary, fleet string) FollowerSummary {
+	s.FleetID = fleet
+	return s
+}
+
+func withInstance(s FollowerSummary, instance string) FollowerSummary {
+	s.InstanceID = instance
+	return s
+}
+
+func withEnv(s FollowerSummary, env string) FollowerSummary {
+	s.Environment = env
+	return s
+}
+
+func TestHandlerListFollowersEmptyRosterReturnsEmptyArray(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	handler := newFollowersTestHandler(t, enrollments)
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-empty", followerAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	// A nil slice must serialize as [] not null so clients can iterate safely.
+	if !strings.Contains(w.Body.String(), `"followers":[]`) || !strings.Contains(w.Body.String(), `"count":0`) {
+		t.Fatalf("body = %s, want empty followers array", w.Body.String())
+	}
+}
+
+func TestNormalizeFollowerListLimit(t *testing.T) {
+	cases := []struct {
+		in, want int
+	}{
+		{0, defaultFollowerListLimit},
+		{-5, defaultFollowerListLimit},
+		{50, 50},
+		{maxFollowerListLimit, maxFollowerListLimit},
+		{maxFollowerListLimit + 1, maxFollowerListLimit},
+	}
+	for _, tc := range cases {
+		if got := normalizeFollowerListLimit(tc.in); got != tc.want {
+			t.Fatalf("normalizeFollowerListLimit(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}

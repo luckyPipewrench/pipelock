@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,11 @@ const (
 	enrollmentStoreFileMode = 0o600
 	enrollmentTokenBytes    = 32
 	enrollmentTokenPrefix   = "pl_enroll_"
+
+	// defaultFollowerListLimit / maxFollowerListLimit bound the roster read so
+	// a large or malicious enrollment store cannot force an unbounded response.
+	defaultFollowerListLimit = 100
+	maxFollowerListLimit     = 1000
 )
 
 var (
@@ -45,6 +51,35 @@ type EnrollmentStore interface {
 	CreateEnrollmentToken(context.Context, EnrollmentTokenSpec) (IssuedEnrollmentToken, error)
 	ConsumeEnrollmentToken(context.Context, ConsumeEnrollmentTokenRequest) (EnrolledFollower, error)
 	ResolveEnrolledAuditKey(FollowerIdentity, string) (conductor.SignatureKey, error)
+	ListEnrolledFollowers(context.Context, FollowerListQuery) ([]FollowerSummary, error)
+}
+
+// FollowerListQuery scopes a follower-roster read. OrgID is mandatory at the
+// handler layer; the store applies whichever of OrgID/FleetID/InstanceID are
+// non-empty as exact-match filters. Limit caps the returned roster size to
+// bound memory and response size for a malicious or pathological store.
+type FollowerListQuery struct {
+	OrgID      string
+	FleetID    string
+	InstanceID string
+	Limit      int
+}
+
+// FollowerSummary is the metadata-only view of one enrolled follower returned
+// by [EnrollmentStore.ListEnrolledFollowers]. It deliberately omits the audit
+// PUBLIC key bytes: an operator listing the roster has no need for the raw key
+// material, and excluding it keeps the response surface minimal. The store
+// tracks enrollment state only; applied bundle version and last-contact time
+// are NOT recorded by the enrollment store today, so this summary does not
+// claim them.
+type FollowerSummary struct {
+	OrgID       string    `json:"org_id"`
+	FleetID     string    `json:"fleet_id"`
+	InstanceID  string    `json:"instance_id"`
+	Environment string    `json:"environment"`
+	AuditKeyID  string    `json:"audit_key_id"`
+	EnrolledAt  time.Time `json:"enrolled_at"`
+	Active      bool      `json:"active"`
 }
 
 type EnrollmentTokenSpec struct {
@@ -252,6 +287,74 @@ func (s *FileEnrollmentStore) ResolveEnrolledAuditKey(identity FollowerIdentity,
 		return conductor.SignatureKey{}, conductor.ErrSignatureVerification
 	}
 	return follower.AuditKey, nil
+}
+
+// ListEnrolledFollowers returns the metadata-only roster of enrolled
+// followers matching q. The org/fleet/instance filters are applied as exact
+// matches over the persisted records; the handler is responsible for forcing a
+// non-empty OrgID and binding it to the caller's authorized scope so this
+// method is never reachable as an unscoped "list everything" read. Results are
+// sorted deterministically (org, fleet, instance, environment) and capped at
+// FollowerListQuery.Limit (clamped to [1, maxFollowerListLimit]).
+func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q FollowerListQuery) ([]FollowerSummary, error) {
+	if s == nil {
+		return nil, ErrEnrollmentStoreRequired
+	}
+	limit := normalizeFollowerListLimit(q.Limit)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]FollowerSummary, 0, len(s.data.Followers))
+	for _, follower := range s.data.Followers {
+		if q.OrgID != "" && follower.Identity.OrgID != q.OrgID {
+			continue
+		}
+		if q.FleetID != "" && follower.Identity.FleetID != q.FleetID {
+			continue
+		}
+		if q.InstanceID != "" && follower.Identity.InstanceID != q.InstanceID {
+			continue
+		}
+		out = append(out, FollowerSummary{
+			OrgID:       follower.Identity.OrgID,
+			FleetID:     follower.Identity.FleetID,
+			InstanceID:  follower.Identity.InstanceID,
+			Environment: follower.Identity.Environment,
+			AuditKeyID:  follower.AuditKeyID,
+			EnrolledAt:  follower.EnrolledAt,
+			Active:      follower.Active,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return followerSummaryLess(out[i], out[j])
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func followerSummaryLess(a, b FollowerSummary) bool {
+	if a.OrgID != b.OrgID {
+		return a.OrgID < b.OrgID
+	}
+	if a.FleetID != b.FleetID {
+		return a.FleetID < b.FleetID
+	}
+	if a.InstanceID != b.InstanceID {
+		return a.InstanceID < b.InstanceID
+	}
+	return a.Environment < b.Environment
+}
+
+func normalizeFollowerListLimit(limit int) int {
+	if limit <= 0 {
+		return defaultFollowerListLimit
+	}
+	if limit > maxFollowerListLimit {
+		return maxFollowerListLimit
+	}
+	return limit
 }
 
 func (s *FileEnrollmentStore) load() error {

@@ -82,10 +82,10 @@ func newTestClientServer(t *testing.T, token string, handler http.Handler) clien
 	certPath := filepath.Join(dir, "client.pem")
 	keyPath := filepath.Join(dir, "client.key")
 	tokenPath := filepath.Join(dir, "token")
-	writeFile(t, caPath, caPEM)
-	writeFile(t, certPath, clientCertPEM)
-	writeFile(t, keyPath, clientKeyPEM)
-	writeFile(t, tokenPath, []byte(token+"\n"))
+	writeClientFile(t, caPath, caPEM)
+	writeClientFile(t, certPath, clientCertPEM)
+	writeClientFile(t, keyPath, clientKeyPEM)
+	writeClientFile(t, tokenPath, []byte(token+"\n"))
 
 	return clientOptions{
 		server:         srv.URL,
@@ -97,7 +97,7 @@ func newTestClientServer(t *testing.T, token string, handler http.Handler) clien
 	}
 }
 
-func writeFile(t *testing.T, path string, data []byte) {
+func writeClientFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("WriteFile(%s): %v", path, err)
@@ -107,7 +107,7 @@ func writeFile(t *testing.T, path string, data []byte) {
 func TestNewConductorClientValidatesFlags(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "f")
-	writeFile(t, good, []byte("x"))
+	writeClientFile(t, good, []byte("x"))
 	base := clientOptions{
 		server:         "https://127.0.0.1:8895",
 		caFile:         good,
@@ -171,7 +171,7 @@ func TestConductorClientGetJSONSendsBearerAndReturnsBody(t *testing.T) {
 func TestConductorClientGetJSONPropagatesStatusErrors(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":"conductor follower list authorization failed"}`))
+		_, _ = w.Write([]byte("{\"error\":\"conductor follower list authorization failed\"}\nAuthorization: Bearer operator-token\r\n"))
 	})
 	opts := newTestClientServer(t, "operator-token", handler)
 	client, err := newConductorClient(opts)
@@ -181,6 +181,12 @@ func TestConductorClientGetJSONPropagatesStatusErrors(t *testing.T) {
 	_, err = client.getJSON(context.Background(), "/api/v1/conductor/followers?org_id=org-main")
 	if err == nil || !strings.Contains(err.Error(), "status 403") {
 		t.Fatalf("getJSON() error = %v, want status 403", err)
+	}
+	if strings.Contains(err.Error(), "\n") || strings.Contains(err.Error(), "\r") {
+		t.Fatalf("getJSON() error kept response control bytes: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "operator-token") {
+		t.Fatalf("getJSON() error leaked bearer token: %q", err.Error())
 	}
 }
 

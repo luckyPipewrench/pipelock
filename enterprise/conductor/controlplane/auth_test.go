@@ -200,6 +200,21 @@ func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
 	}
 }
 
+func TestScopedBearerFollowerListAuthorizerRejectsUnscopedReadCredentials(t *testing.T) {
+	if _, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{{
+		Token: "admin-token",
+		Role:  RoleAdmin,
+	}}); !errors.Is(err, ErrFollowerListForbidden) {
+		t.Fatalf("ScopedBearerFollowerListAuthorizer(unscoped admin) error = %v, want ErrFollowerListForbidden", err)
+	}
+	if _, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{{
+		Token: "audit-token",
+		Role:  RoleAuditor,
+	}}); !errors.Is(err, ErrFollowerListForbidden) {
+		t.Fatalf("ScopedBearerFollowerListAuthorizer(unscoped auditor) error = %v, want ErrFollowerListForbidden", err)
+	}
+}
+
 func TestScopedBearerAuthorizersRejectInvalidConfigAndHeaders(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

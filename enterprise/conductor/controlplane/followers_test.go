@@ -8,6 +8,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -23,6 +25,7 @@ const (
 	followerAdminToken      = "admin-token"
 	followerAuditorToken    = "auditor-token"
 	followerOrgMainAuditTok = "org-main-auditor-token"
+	followerOrgEmptyAdmin   = "org-empty-admin-token"
 )
 
 // mustEnrollFollower creates and immediately consumes an enrollment token,
@@ -59,9 +62,10 @@ func mustEnrollFollower(t *testing.T, store *FileEnrollmentStore, tokenID string
 func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler {
 	t.Helper()
 	followerAuth, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{
-		{Token: followerAdminToken, Role: RoleAdmin},
-		{Token: followerAuditorToken, Role: RoleAuditor},
+		{Token: followerAdminToken, Role: RoleAdmin, OrgID: "org-main"},
+		{Token: followerAuditorToken, Role: RoleAuditor, OrgID: "org-main"},
 		{Token: followerOrgMainAuditTok, Role: RoleAuditor, OrgID: "org-main"},
+		{Token: followerOrgEmptyAdmin, Role: RoleAdmin, OrgID: "org-empty"},
 	})
 	if err != nil {
 		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
@@ -180,6 +184,78 @@ func TestHandlerListFollowersDeniesCrossOrgRead(t *testing.T) {
 	}
 }
 
+func TestScopedBearerFollowerListAuthorizerConstructionRejectsUnscopedAndWhitespace(t *testing.T) {
+	// Empty-org read creds are a cross-org enumeration token: reject at
+	// construction, not at request time. Whitespace-only org normalizes to
+	// empty and must be rejected identically (no whitespace bypass).
+	for _, tc := range []struct {
+		name string
+		cred ScopedBearerCredential
+	}{
+		{"empty-org admin", ScopedBearerCredential{Token: "t", Role: RoleAdmin}},
+		{"empty-org auditor", ScopedBearerCredential{Token: "t", Role: RoleAuditor}},
+		{"whitespace-org admin", ScopedBearerCredential{Token: "t", Role: RoleAdmin, OrgID: "   "}},
+		{"tab-org auditor", ScopedBearerCredential{Token: "t", Role: RoleAuditor, OrgID: "\t"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{tc.cred}); !errors.Is(err, ErrFollowerListForbidden) {
+				t.Fatalf("ScopedBearerFollowerListAuthorizer(%+v) error = %v, want ErrFollowerListForbidden", tc.cred, err)
+			}
+		})
+	}
+
+	// A properly org-scoped cred constructs cleanly.
+	if _, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{{Token: "t", Role: RoleAdmin, OrgID: "org-main"}}); err != nil {
+		t.Fatalf("ScopedBearerFollowerListAuthorizer(scoped) error = %v, want nil", err)
+	}
+}
+
+func TestHandlerListFollowersDeniesCrossFleetRead(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	mustEnrollFollower(t, enrollments, "tok-prod", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}, "audit-key-prod")
+	mustEnrollFollower(t, enrollments, "tok-stg", FollowerIdentity{OrgID: "org-main", FleetID: "staging", InstanceID: "pl-stg-1", Environment: "staging"}, "audit-key-stg")
+
+	// A fleet-scoped auditor (org-main/prod) may read its own fleet but not a
+	// sibling fleet in the same org.
+	fleetScoped, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{
+		{Token: "prod-fleet-token", Role: RoleAuditor, OrgID: "org-main", FleetID: "prod"},
+	})
+	if err != nil {
+		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
+	}
+	handler, err := NewHandler(HandlerOptions{
+		Store:              mustStore(t),
+		Capabilities:       DefaultCapabilities("conductor-test"),
+		Now:                func() time.Time { return testNow },
+		FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
+		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuthorizeFollowers: fleetScoped,
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
+		Enrollments:        enrollments,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	// Own fleet: allowed.
+	if w := getFollowers(t, handler, FollowersPath+"?org_id=org-main&fleet_id=prod", "prod-fleet-token"); w.Code != http.StatusOK {
+		t.Fatalf("own-fleet read status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	// Sibling fleet in same org: denied.
+	if w := getFollowers(t, handler, FollowersPath+"?org_id=org-main&fleet_id=staging", "prod-fleet-token"); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-fleet read status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+	// Org-only query (no fleet) with a fleet-scoped cred: denied — a
+	// fleet-scoped token cannot widen to the whole org by omitting fleet_id.
+	if w := getFollowers(t, handler, FollowersPath+"?org_id=org-main", "prod-fleet-token"); w.Code != http.StatusForbidden {
+		t.Fatalf("org-wide read with fleet-scoped cred status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+}
+
 func TestHandlerListFollowersRejectsMalformedQuery(t *testing.T) {
 	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
 	if err != nil {
@@ -271,11 +347,51 @@ func TestFileEnrollmentStoreListEnrolledFollowersFiltersAndBounds(t *testing.T) 
 	if len(got) != 1 {
 		t.Fatalf("limit=1 returned %d, want 1", len(got))
 	}
+	if got[0].InstanceID != "i-a" {
+		t.Fatalf("limit=1 returned %+v, want sorted first follower i-a", got)
+	}
 
 	// nil receiver fails closed.
 	var nilStore *FileEnrollmentStore
 	if _, err := nilStore.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: "org-main"}); err == nil {
 		t.Fatal("nil store ListEnrolledFollowers() error = nil, want error")
+	}
+}
+
+func TestFileEnrollmentStoreListEnrolledFollowersCapsHugeRoster(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	store.mu.Lock()
+	for i := maxFollowerListLimit + 25; i >= 0; i-- {
+		identity := FollowerIdentity{
+			OrgID:       "org-main",
+			FleetID:     "prod",
+			InstanceID:  fmt.Sprintf("i-%04d", i),
+			Environment: "prod",
+		}
+		store.data.Followers[followerEnrollmentKey(identity)] = enrolledFollowerRecord{
+			Identity:   identity,
+			AuditKeyID: fmt.Sprintf("k-%04d", i),
+			EnrolledAt: testNow,
+			Active:     true,
+		}
+	}
+	store.mu.Unlock()
+
+	got, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{
+		OrgID: "org-main",
+		Limit: maxFollowerListLimit + 100,
+	})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers(huge roster) error = %v", err)
+	}
+	if len(got) != maxFollowerListLimit {
+		t.Fatalf("huge roster returned %d, want max %d", len(got), maxFollowerListLimit)
+	}
+	if got[0].InstanceID != "i-0000" || got[len(got)-1].InstanceID != "i-0999" {
+		t.Fatalf("huge roster bounds = %s..%s, want sorted i-0000..i-0999", got[0].InstanceID, got[len(got)-1].InstanceID)
 	}
 }
 
@@ -322,7 +438,7 @@ func TestHandlerListFollowersEmptyRosterReturnsEmptyArray(t *testing.T) {
 		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
 	}
 	handler := newFollowersTestHandler(t, enrollments)
-	w := getFollowers(t, handler, FollowersPath+"?org_id=org-empty", followerAdminToken)
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-empty", followerOrgEmptyAdmin)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s, want 200", w.Code, w.Body.String())
 	}

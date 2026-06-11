@@ -46,6 +46,10 @@ type serveOptions struct {
 	publisherTokenFile  string
 	auditorTokenFile    string
 	adminTokenFile      string
+	auditorOrgID        string
+	auditorFleetID      string
+	adminOrgID          string
+	adminFleetID        string
 	trustedAuditKeys    []string
 	trustedControlKeys  []string
 	remoteKillMaxTTL    time.Duration
@@ -120,6 +124,10 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.publisherTokenFile, "publisher-token-file", "", "file containing bearer token required for policy publish requests")
 	cmd.Flags().StringVar(&opts.auditorTokenFile, "auditor-token-file", "", "file containing bearer token required for audit metadata query requests")
 	cmd.Flags().StringVar(&opts.adminTokenFile, "admin-token-file", "", "file containing bearer token required for Conductor admin requests")
+	cmd.Flags().StringVar(&opts.auditorOrgID, "auditor-org", "", "org scope for the auditor bearer token on audit/follower read requests (required)")
+	cmd.Flags().StringVar(&opts.auditorFleetID, "auditor-fleet", "", "optional fleet scope for the auditor bearer token on audit/follower read requests")
+	cmd.Flags().StringVar(&opts.adminOrgID, "admin-org", "", "org scope for the admin bearer token on audit/follower read requests (required)")
+	cmd.Flags().StringVar(&opts.adminFleetID, "admin-fleet", "", "optional fleet scope for the admin bearer token on audit/follower read requests")
 	cmd.Flags().DurationVar(&opts.auditRetention, "audit-retention", 0, "duration to keep SQLite audit evidence; older batches are pruned at startup (0 = keep forever)")
 	cmd.Flags().StringArrayVar(&opts.trustedAuditKeys, "trusted-audit-key", nil,
 		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=BASE64|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]'; "+
@@ -252,6 +260,12 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if strings.TrimSpace(opts.auditorOrgID) == "" {
+		return nil, nil, nil, errors.New("--auditor-org is required")
+	}
+	if strings.TrimSpace(opts.adminOrgID) == "" {
+		return nil, nil, nil, errors.New("--admin-org is required")
+	}
 	publishAuthorizer, err := controlplane.ScopedBearerBundleAuthorizer([]controlplane.ScopedBearerCredential{{
 		Token: publisherToken,
 		Role:  controlplane.RolePublisher,
@@ -260,15 +274,15 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 		return nil, nil, nil, err
 	}
 	auditQueryAuthorizer, err := controlplane.ScopedBearerAuditQueryAuthorizer([]controlplane.ScopedBearerCredential{
-		{Token: auditorToken, Role: controlplane.RoleAuditor},
-		{Token: adminToken, Role: controlplane.RoleAdmin},
+		{Token: auditorToken, Role: controlplane.RoleAuditor, OrgID: opts.auditorOrgID, FleetID: opts.auditorFleetID},
+		{Token: adminToken, Role: controlplane.RoleAdmin, OrgID: opts.adminOrgID, FleetID: opts.adminFleetID},
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	followerListAuthorizer, err := controlplane.ScopedBearerFollowerListAuthorizer([]controlplane.ScopedBearerCredential{
-		{Token: auditorToken, Role: controlplane.RoleAuditor},
-		{Token: adminToken, Role: controlplane.RoleAdmin},
+		{Token: auditorToken, Role: controlplane.RoleAuditor, OrgID: opts.auditorOrgID, FleetID: opts.auditorFleetID},
+		{Token: adminToken, Role: controlplane.RoleAdmin, OrgID: opts.adminOrgID, FleetID: opts.adminFleetID},
 	})
 	if err != nil {
 		return nil, nil, nil, err

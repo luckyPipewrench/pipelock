@@ -304,7 +304,7 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]FollowerSummary, 0, len(s.data.Followers))
+	out := make([]FollowerSummary, 0, limit)
 	for _, follower := range s.data.Followers {
 		if q.OrgID != "" && follower.Identity.OrgID != q.OrgID {
 			continue
@@ -324,13 +324,16 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 			EnrolledAt:  follower.EnrolledAt,
 			Active:      follower.Active,
 		})
+		if len(out) > limit {
+			sort.Slice(out, func(i, j int) bool {
+				return followerSummaryLess(out[i], out[j])
+			})
+			out = out[:limit]
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return followerSummaryLess(out[i], out[j])
 	})
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return out, nil
 }
 

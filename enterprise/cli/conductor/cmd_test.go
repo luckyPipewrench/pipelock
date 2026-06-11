@@ -77,6 +77,8 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		publisherTokenFile:  tokenPath,
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
+		auditorOrgID:        "org-main",
+		adminOrgID:          "org-main",
 		trustedAuditKeys: []string{
 			"id=audit-key-1,inline=" + signing.EncodePublicKey(pub) + ",org=org-main",
 		},
@@ -184,6 +186,35 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 	})
+	if err == nil || err.Error() != "--auditor-org is required" {
+		t.Fatalf("buildServeHandler(missing auditor org) error = %v, want --auditor-org required", err)
+	}
+	_, _, _, err = buildServeHandler(context.Background(), serveOptions{
+		storageDir:          filepath.Join(dir, "store"),
+		followerTrustDomain: defaultTrustDomain,
+		tlsCert:             "server.pem",
+		tlsKey:              "server.key",
+		clientCA:            caPath,
+		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
+		auditorOrgID:        "org-main",
+	})
+	if err == nil || err.Error() != "--admin-org is required" {
+		t.Fatalf("buildServeHandler(missing admin org) error = %v, want --admin-org required", err)
+	}
+	_, _, _, err = buildServeHandler(context.Background(), serveOptions{
+		storageDir:          filepath.Join(dir, "store"),
+		followerTrustDomain: defaultTrustDomain,
+		tlsCert:             "server.pem",
+		tlsKey:              "server.key",
+		clientCA:            caPath,
+		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
+		auditorOrgID:        "org-main",
+		adminOrgID:          "org-main",
+	})
 	if err == nil || !errors.Is(err, controlplane.ErrEmergencyKeyRequired) {
 		t.Fatalf("buildServeHandler(no trusted control keys) error = %v, want ErrEmergencyKeyRequired", err)
 	}
@@ -200,6 +231,8 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 		publisherTokenFile:  tokenPath,
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
+		auditorOrgID:        "org-main",
+		adminOrgID:          "org-main",
 		trustedControlKeys: []string{
 			"id=remote-key-1,purpose=remote-kill-signing,inline=" + signing.EncodePublicKey(pub),
 			"id=rollback-key-1,purpose=policy-bundle-rollback,inline=" + signing.EncodePublicKey(pub),
@@ -283,6 +316,8 @@ func TestBuildServeHandlerPrunesAuditRetention(t *testing.T) {
 		publisherTokenFile:  tokenPath,
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
+		auditorOrgID:        "org-main",
+		adminOrgID:          "org-main",
 		auditRetention:      time.Hour,
 		logWriter:           &logs,
 		trustedControlKeys: []string{
@@ -352,6 +387,8 @@ func TestRunServeReturnsTLSLoadError(t *testing.T) {
 		publisherTokenFile:  tokenPath,
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
+		auditorOrgID:        "org-main",
+		adminOrgID:          "org-main",
 		trustedAuditKeys: []string{
 			"id=audit-key-1,inline=" + signing.EncodePublicKey(pub) + ",org=org-main",
 		},

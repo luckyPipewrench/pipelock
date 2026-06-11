@@ -140,7 +140,7 @@ func (c *conductorClient) getJSON(ctx context.Context, path string) ([]byte, err
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, clientMaxBodyBytes))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(body))
+		return nil, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(body, c.token))
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("read conductor response: %w", readErr)
@@ -163,8 +163,21 @@ func readClientTokenFile(path string) (string, error) {
 	return token, nil
 }
 
-func clientSnippet(b []byte) string {
+func clientSnippet(b []byte, secrets ...string) string {
 	s := strings.TrimSpace(string(b))
+	for _, cred := range secrets {
+		cred = strings.TrimSpace(cred)
+		if cred != "" {
+			s = strings.ReplaceAll(s, cred, "[redacted]")
+		}
+	}
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
 	const maxLen = 256
 	if len(s) > maxLen {
 		return s[:maxLen] + "…"

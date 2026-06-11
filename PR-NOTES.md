@@ -35,10 +35,20 @@ isolated to this PR per the coordination doc:
 - **Mandatory org scoping.** The handler rejects a missing `org_id` with 400
   before any auth or store access, so the roster read is never globally
   unscoped.
-- **Audience isolation.** An org-A-scoped auditor reading `org_id=org-B` gets
-  403 — the authorizer binds credential scope to the requested org BEFORE the
-  store is touched, so no org-B roster ever leaves the process
-  (`TestHandlerListFollowersDeniesCrossOrgRead`).
+- **Audience isolation (org AND fleet).** An org-A-scoped auditor reading
+  `org_id=org-B` gets 403; a fleet-scoped (`org-main/prod`) auditor reading a
+  sibling fleet (`org-main/staging`) or widening to the whole org by omitting
+  `fleet_id` gets 403. The authorizer binds credential scope to the requested
+  org/fleet BEFORE the store is touched, so no out-of-scope roster ever leaves
+  the process (`TestHandlerListFollowersDeniesCrossOrgRead`,
+  `TestHandlerListFollowersDeniesCrossFleetRead`).
+- **No unscoped read tokens (external-review fix).** `ScopedBearerFollower
+  ListAuthorizer` now REJECTS an empty-org admin/auditor credential AT
+  CONSTRUCTION — an unscoped read token is a cross-org enumeration token.
+  Whitespace-only org normalizes to empty and is rejected identically (no
+  whitespace bypass). The same scoping was applied to the audit-query
+  credentials, and `conductor serve` now requires `--auditor-org` and
+  `--admin-org` (see operator note below).
 - **Fail-closed default.** An unconfigured `AuthorizeFollowers` denies every
   read (`ErrFollowerListForbidden`).
 - **Bounded list (anti-DoS).** Server clamps the result to `[1, 1000]`
@@ -48,6 +58,30 @@ isolated to this PR per the coordination doc:
   invalid identifiers, and bad limits → 400.
 - **Metadata-only.** `FollowerSummary` omits the audit public-key bytes; only
   identity, audit_key_id, enrolled_at, active state are returned.
+
+## External-review (Codex) fixes folded in
+1. **CRITICAL — `/followers` authz bypass closed.** Empty-org admin/auditor
+   creds previously acted as global cross-org read tokens. Now rejected at
+   authorizer construction (`auth.go`); whitespace-org bypass also closed
+   (normalization). Same scoping applied to the audit-query authorizer.
+2. **CRITICAL — untrusted server body in CLI errors.** `clientSnippet`
+   (`client.go`) now redacts the operator bearer token and strips control bytes
+   (`< 0x20`, `0x7f`) before the body appears in an error string — no token
+   leak, no CRLF/log injection.
+3. **WARNING — bounded follower-list allocation.** `ListEnrolledFollowers`
+   (`enrollment.go`) now allocates `cap=limit` and trims-as-it-grows so the
+   in-memory slice never exceeds `limit+1` regardless of roster size; proven by
+   `TestFileEnrollmentStoreListEnrolledFollowersCapsHugeRoster` (1025-follower
+   roster → exactly `maxFollowerListLimit` returned, smallest-id slice kept).
+
+### OPERATOR IMPACT (serve CLI surface change — flag in PR body)
+`conductor serve` now REQUIRES two new flags so the read tokens are
+audience-scoped instead of global:
+- `--auditor-org <org>` (required) + optional `--auditor-fleet <fleet>`
+- `--admin-org <org>` (required) + optional `--admin-fleet <fleet>`
+An existing deployment that omits these will fail closed at startup with
+`--auditor-org is required` / `--admin-org is required`. This is intentional:
+an unscoped operator token was the bypass. Document as an upgrade note.
 
 ## Honest scope limitation (applied-version / last-seen)
 The kickoff asked fleet status to show "applied bundle version" and "last-seen".

@@ -274,6 +274,7 @@ func TestHandlerListFollowersRejectsMalformedQuery(t *testing.T) {
 		{"invalid identifier", FollowersPath + "?org_id=" + "bad%2Fid", http.StatusBadRequest},
 		{"invalid limit", FollowersPath + "?org_id=org-main&limit=-3", http.StatusBadRequest},
 		{"non-numeric limit", FollowersPath + "?org_id=org-main&limit=abc", http.StatusBadRequest},
+		{"limit too high", FollowersPath + "?org_id=org-main&limit=1001", http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

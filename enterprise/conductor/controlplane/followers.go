@@ -7,6 +7,7 @@ package controlplane
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -44,6 +45,15 @@ func (h *Handler) handleListFollowers(w http.ResponseWriter, r *http.Request) {
 	}
 	followers, err := h.enrollments.ListEnrolledFollowers(r.Context(), query)
 	if err != nil {
+		if h.logger != nil {
+			h.logger.ErrorContext(r.Context(), "conductor_followers_list_failed",
+				slog.String("event", "conductor_followers_list_failed"),
+				slog.String("error", err.Error()),
+				slog.String("org_id", query.OrgID),
+				slog.String("fleet_id", query.FleetID),
+				slog.String("instance_id", query.InstanceID),
+			)
+		}
 		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
 		return
 	}
@@ -74,8 +84,8 @@ func parseFollowerListQuery(r *http.Request) (FollowerListQuery, error) {
 	}
 	if rawLimit := values.Get("limit"); rawLimit != "" {
 		limit, err := strconv.Atoi(rawLimit)
-		if err != nil || limit <= 0 {
-			return FollowerListQuery{}, fmt.Errorf("invalid limit query parameter: %q", rawLimit)
+		if err != nil || limit <= 0 || limit > maxFollowerListLimit {
+			return FollowerListQuery{}, fmt.Errorf("invalid limit query parameter: %q (must be 1..%d)", rawLimit, maxFollowerListLimit)
 		}
 		q.Limit = limit
 	}

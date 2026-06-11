@@ -32,20 +32,18 @@ writing a file. See [`pipelock license`](../cli/license.md).
 | 3. Provision PKI (BYO) | cert-manager recipe (below) | **Shipped (recipe)** |
 | 4. Deploy Conductor + sink | `pipelock conductor serve` / `pipelock fleet-sink` + Helm | **Shipped** |
 | 5. Enroll followers | follower `conductor:` config + mTLS auto-enroll | **Shipped** |
-| 6. Publish a policy | `pipelock conductor publish` | **Pending** (PR A) |
-| 7. Kill / resume the fleet | `pipelock conductor kill` / `resume` | **Pending** (PR B) |
-| 8. Roll back a bad bundle | `pipelock conductor rollback` | **Pending** (PR B) |
-| 9. Mint enrollment tokens | `pipelock conductor enrollment-token` | **Pending** (PR B) |
-| 10. Fleet status / followers | `pipelock conductor fleet status` | **Pending** (PR C) |
-| 11. Query the audit sink | `pipelock conductor audit query` | **Pending** (PR C) |
+| 6. Publish a policy | `pipelock conductor publish` | **Shipped** |
+| 7. Kill / resume the fleet | `pipelock conductor kill` / `resume` | **Shipped** |
+| 8. Roll back a bad bundle | `pipelock conductor rollback` | **Shipped** |
+| 9. Mint enrollment tokens | `pipelock conductor enrollment-token mint` | **Shipped** |
+| 10. Fleet status / followers | `pipelock conductor fleet status` / `followers` | **Shipped** |
+| 11. Query the audit sink | `pipelock conductor audit query` | **Shipped** |
 | 12. Rotate certs and keys | cert-manager + `signing key generate` | **Shipped** |
 
-Sections marked **Pending** describe the command surface from the design spec so
-this runbook is ready to finalize the moment those CLIs merge; they show the
-intended shape, not captured output. Until they land, drive those endpoints
-through the HTTP API shapes documented in the
-[audit-sink design](../specs/pipelock-conductor-audit-sink.md) and the
-[dev runbook's Policy Publish section](conductor-operator-runbook.md#policy-publish).
+Every stage uses a shipped CLI; the full lifecycle runs without hand-rolled Go or
+OpenSSL beyond the documented bring-your-own-PKI choice. For the on-wire request
+shapes behind each command, see the
+[audit-sink design](../specs/pipelock-conductor-audit-sink.md).
 
 ## 0. License gate
 
@@ -334,49 +332,48 @@ policy bundle and for remote-kill state, and ships signed audit batches to the
 sink. These three loops are what Conductor coordinates — the follower still
 enforces locally and stays fail-closed if Conductor is unreachable.
 
-## 6. Publish a policy bundle — *pending PR A*
+## 6. Publish a policy bundle
 
-> **Status: pending.** `pipelock conductor publish` is not yet in the shipped
-> CLI. Until it merges, build and sign the `PolicyBundle` in your operator
-> workflow and POST it to `PUT/POST /api/v1/conductor/policy-bundles` with the
-> publisher token — see the
-> [dev runbook's Policy Publish section](conductor-operator-runbook.md#policy-publish)
-> for the verified request body shape.
-
-Intended shape once shipped:
+`pipelock conductor publish` builds, signs, and POSTs a policy bundle from a
+follower config. The bundle is signed with a policy-bundle-signing key and
+authorized by the publisher token; followers verify the signature against the
+pinned roster and apply only bundles addressed to their org/fleet/environment/
+audience.
 
 ```bash
 pipelock conductor publish \
   --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
   --config /etc/pipelock/fleet-policy.yaml \
+  --bundle-id prod-2026-06-11 \
+  --org org-acme --fleet prod --env prod \
+  --validity 720h \
+  --min-pipelock-version 2.7.0 \
   --signing-key /etc/pipelock/fleet-keys/policy-signing.json \
-  --version 2 \
-  --not-before 2026-06-11T00:00:00Z \
-  --expires-at 2026-09-11T00:00:00Z \
-  --org org-acme --fleet prod \
   --publisher-token-file /etc/pipelock/conductor/tokens/publisher/token \
-  --client-cert /etc/pipelock/operator.crt --client-key /etc/pipelock/operator.key \
+  --tls-cert /etc/pipelock/operator.crt \
+  --tls-key /etc/pipelock/operator.key \
   --server-ca /etc/pipelock/conductor-ca.pem
 ```
 
-The command will build the canonical bundle (monotonic `version`, validity
-window, `audience`, `policy_hash` / `payload_sha256`), sign it with the
-policy-bundle-signing key, and POST it. Followers verify the signature against
-the pinned roster and apply only bundles addressed to their org/fleet/
-environment/audience.
+The command computes the canonical `policy_hash` / `payload_sha256`, stamps the
+validity window from `--validity`, and assigns a monotonic version server-side.
+Add `--rule-bundle <path>` (repeatable) to ship signed rule bundles alongside the
+config, `--audience` to narrow the addressed followers, and
+`--previous-bundle-hash <hex>` to pin continuity against the prior bundle (the
+publish is rejected if the server's current bundle does not match). For a
+loopback dev conductor without TLS, `--allow-plaintext-loopback` permits an
+`http://127.0.0.1` URL.
 
-**Prove on apply:** after publishing, confirm both followers picked up the new
-version (watch the follower logs for the bundle-apply line, or `fleet status`
-once PR C lands) before treating the rollout as complete.
+**Prove on apply:** after publishing, confirm followers picked up the new version
+(watch the follower logs for the bundle-apply line, or `pipelock conductor fleet
+status`) before treating the rollout as complete.
 
-## 7. Kill and resume the fleet — *pending PR B*
+## 7. Kill and resume the fleet
 
-> **Status: pending.** `pipelock conductor kill` / `resume` are not yet in the
-> shipped CLI. The follower side (remote-kill poll → local kill switch) **is**
-> shipped and enforced for followers with `honor_remote_kill_switch: true`;
-> what's missing is the operator producer.
-
-Intended shape once shipped:
+`pipelock conductor kill` pushes a signed, time-bounded fleet-wide kill;
+`pipelock conductor resume` clears it. Followers with
+`honor_remote_kill_switch: true` fail closed within one poll and recover on
+resume.
 
 ```bash
 # Push a signed, time-bounded fleet-wide kill (threshold-signed).
@@ -408,12 +405,10 @@ Conductor rejects a kill whose validity window exceeds
 fail closed within one `poll_interval`; clearing it lets them recover on the
 next poll.
 
-## 8. Roll back a bad bundle — *pending PR B*
+## 8. Roll back a bad bundle
 
-> **Status: pending.** `pipelock conductor rollback` is not yet shipped; the
-> `/api/v1/conductor/rollback-authorizations` endpoint exists.
-
-Intended shape once shipped:
+`pipelock conductor rollback` authorizes a signed revert to a prior bundle
+version:
 
 ```bash
 pipelock conductor rollback \
@@ -435,21 +430,29 @@ rollback whose window exceeds `--rollback-max-validity` (default `24h`). Because
 kill and rollback keys are purpose-scoped, a rollback key cannot issue a kill or
 vice versa.
 
-## 9. Mint enrollment tokens — *pending PR B*
+## 9. Mint enrollment tokens
 
-> **Status: pending.** The default enrollment model auto-registers a follower
-> from its mTLS SPIFFE identity, so no token is required to enroll. A
-> `pipelock conductor enrollment-token mint` admin command to mint one-shot
-> tokens (for an approval-gated enrollment model) is not yet shipped.
+The default enrollment model auto-registers a follower from its mTLS SPIFFE
+identity, so no token is required to enroll. For an approval-gated join,
+`pipelock conductor enrollment-token mint` issues a single-use token scoped to
+one follower identity:
 
-## 10. Fleet status and followers — *pending PR C*
+```bash
+pipelock conductor enrollment-token mint \
+  --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org org-acme --fleet prod --instance edge-02 \
+  --admin-token-file /etc/pipelock/conductor/tokens/admin/token \
+  --tls-cert /etc/pipelock/operator.crt \
+  --tls-key /etc/pipelock/operator.key \
+  --server-ca /etc/pipelock/conductor-ca.pem
+```
 
-> **Status: pending.** `pipelock conductor fleet status` / `followers` are
-> not yet shipped (PR C adds a follower-list read endpoint plus the CLI). Until
-> then, follower health is observable through pod readiness and the follower's
-> own logs.
+## 10. Fleet status and followers
 
-Intended shape once shipped:
+`pipelock conductor fleet status` and `pipelock conductor fleet followers` list
+enrolled instances — identity, audit key id, active state, and enrollment time —
+read over mTLS with an org-scoped operator token against the audience-scoped
+`/followers` endpoint.
 
 ```bash
 pipelock conductor fleet status \
@@ -459,18 +462,12 @@ pipelock conductor fleet status \
   --client-cert /etc/pipelock/operator.crt \
   --client-key /etc/pipelock/operator.key \
   --ca-file /etc/pipelock/conductor-ca.pem
-# Lists enrolled instance metadata: identity, audit key id, active state, and enrollment time.
 ```
 
-## 11. Query the audit sink — *pending PR C*
+## 11. Query the audit sink
 
-> **Status: pending.** `pipelock conductor audit query` is not yet shipped. The
-> sink ingests and stores signed batches today; the operator query/verify CLI
-> lands in PR C. Until then, query metadata through the auditor HTTP API
-> (`org`/`fleet`/`instance` tuple + auditor token) and verify the raw evidence
-> offline with `pipelock verify-receipt` (below).
-
-Intended shape once shipped:
+`pipelock conductor audit query` queries the audit sink's stored evidence
+metadata for one org/fleet/instance, read over mTLS with an auditor token:
 
 ```bash
 pipelock conductor audit query \
@@ -488,11 +485,10 @@ treat it as sensitive operator-controlled storage.
 
 ## Verify follower evidence offline
 
-This is **shipped and works today**, independent of the pending CLIs. Every
-follower emits Ed25519-signed, hash-chained evidence and ships it to the sink in
-signed batches. An operator with the raw evidence — the follower's own recorder
-output, or the sink's escrow — verifies it offline against a pinned key, with no
-trust in Conductor, the follower, or the storage layer:
+Every follower emits Ed25519-signed, hash-chained evidence and ships it to the
+sink in signed batches. An operator with the raw evidence — the follower's own
+recorder output, or the sink's escrow — verifies it offline against a pinned key,
+with no trust in Conductor, the follower, or the storage layer:
 
 ```bash
 # Verify a follower's receipt chain against the pinned recorder public key.
@@ -537,35 +533,33 @@ The operator-lifecycle rule for every piece of fleet state: prove you can
   the Secret and restarting the consuming server; there is no in-flight token
   refresh.
 
+## Stale-policy fail-closed enforcement
+
+Under `stale_policy.strict_deny_all` (the default), a follower re-evaluates its
+active bundle each poll interval and, once that bundle is missing, unreadable, or
+past its grace window, engages the independent `conductor_stale` kill-switch
+source — denying **all traffic across every transport** (forward, CONNECT,
+WebSocket, MCP) until a fresh in-grace bundle applies. The `conductor_stale`
+source is OR-composed and independent of the remote-kill source: clearing
+remote-kill does not clear stale denial, and clearing stale does not clear
+remote-kill.
+
+On proven license revocation or expiry the follower tears down its Conductor
+pollers and keeps only free local detection running (re-activatable by restart).
+Under a strict stale policy, teardown engages the `conductor_stale` source
+**before** the enforcer's ticker stops, so the deny is in place even though no
+later tick will re-evaluate the bundle — this closes the teardown fail-open
+window. Under `continue_last_known_good` the flag is not set and the follower
+keeps serving its last applied bundle.
+
 ## Known limitations (be honest about these)
 
-- **`stale_policy.strict_deny_all` enforcement lands with the emergency-control
-  runtime change.** Once that companion change is present, the follower runtime
-  re-evaluates the active bundle on the poll cadence and engages the independent
-  `conductor_stale` kill-switch source when the bundle is missing, corrupt, or
-  past grace. Clearing remote-kill does not clear stale denial, and clearing
-  stale does not clear remote-kill. Before that runtime change lands,
-  `conductor.stale_policy` validates but remains inert.
-- **License-revocation teardown interacts with stale-policy.** When the fleet
-  license is revoked or expires, the follower tears down its Conductor pollers
-  (including the stale enforcer) and keeps only free local detection running,
-  re-activatable by restart. Because the stale enforcer stops on teardown, it no
-  longer re-evaluates bundle staleness afterward: if it had last cleared
-  `conductor_stale` while the bundle was in grace, the `conductor_stale` source
-  stays clear post-teardown until the follower restarts or another local
-  kill-switch source engages. Confirm the exact post-teardown posture against the
-  emergency-control change's own tests before relying on stale-deny across a
-  license-revocation event; treat the interaction as a known limitation until
-  teardown itself asserts a fail-closed source.
 - **Several follower `conductor:` fields are reserved.**
   `created_skew_seconds`, `max_min_version_*_skew`, `max_capability_threshold`,
   and `emergency_stream` validate but are not enforced by the follower runtime
   yet.
 - **`trust-root-rotation` and `enrollment-token-signing` keys** are wire-stable
   purpose bindings with no consuming workflow yet.
-- **Operator producer CLIs are pending** (publish/kill/resume/rollback/
-  enrollment-token/fleet-status/audit-query) — see the per-section status notes
-  above.
 
 ## See also
 

@@ -8,9 +8,10 @@ SPDX-License-Identifier: Apache-2.0
 Conductor is Pipelock's Enterprise control plane for a fleet of Pipelock
 instances. It distributes signed policy bundles to follower instances, ingests
 and stores their signed evidence for audit, and coordinates fleet-wide
-operations — enrollment, remote kill, and policy rollback. The v2.7 production
-workflow is being completed across companion operator-workflow changes; the
-production runbook marks any command surface that is still pending.
+operations — enrollment, remote kill, and policy rollback. It is **General
+Availability as of v2.7**, with a shipped operator command surface (publish,
+kill/resume, rollback, enrollment-token, fleet status, audit query) documented in
+the [production runbook](conductor-production-runbook.md).
 
 Conductor preserves Pipelock's capability separation. Followers enforce policy
 locally and stay fail-closed on their own; Conductor coordinates distribution,
@@ -245,17 +246,18 @@ When `conductor.enabled: true`, validation requires:
 - all file paths absolute.
 
 `honor_remote_kill_switch` (default `true`) opts the follower into the
-fleet-wide kill signal. `stale_policy.strict_deny_all` is the intended
-fail-closed stale-bundle behavior: once the companion emergency-control runtime
-change lands, a stale active bundle engages an independent `conductor_stale`
-kill-switch source and denies traffic until a fresh in-grace bundle applies.
-**Until that change ships, `conductor.stale_policy` validates at startup but the
-follower runtime does not yet act on it** — a follower that loses contact with
-Conductor keeps enforcing the last bundle it applied (an expired bundle still
-never applies, because a bundle's validity window is checked at apply time). A
-few more fields (`created_skew_seconds`, `max_min_version_*_skew`,
-`max_capability_threshold`, `emergency_stream`) are likewise validated but
-reserved. See the
+fleet-wide kill signal. `stale_policy.strict_deny_all` is the **enforced**
+fail-closed stale-bundle behavior: a follower re-evaluates its active bundle each
+poll interval and, once that bundle is missing, unreadable, or past its grace
+window, engages an independent `conductor_stale` kill-switch source that **denies
+all traffic across every transport** (forward, CONNECT, WebSocket, MCP) until a
+fresh in-grace bundle applies. The `conductor_stale` source is OR-composed and
+independent of the remote-kill source — clearing one does not clear the other.
+Under `continue_last_known_good` the follower instead keeps serving its last
+applied bundle (an expired bundle still never applies, because a bundle's
+validity window is checked at apply time). A few other fields
+(`created_skew_seconds`, `max_min_version_*_skew`, `max_capability_threshold`,
+`emergency_stream`) are validated but reserved. See the
 [configuration reference](../configuration.md#conductor-follower-v27-enterprise)
 for the full field list.
 
@@ -317,14 +319,16 @@ are pruned at startup.
   (CAs, certificates, SPIFFE identities), the network reachability between
   followers and Conductor, and the protection of keys and tokens are yours to
   provide and operate.
-- **Followers enforce locally.** Conductor distributes and collects; it is not
-  in the data path. A follower keeps enforcing the policy it already has if
-  Conductor is unreachable; a bundle's validity window is checked when the
-  bundle is verified and applied, so an expired bundle never applies. Once the
-  companion emergency-control runtime change lands,
-  `stale_policy.strict_deny_all` engages an independent fail-closed
-  `conductor_stale` source after the grace window; until then `stale_policy`
-  validates but is not yet enforced (see
+- **Followers enforce locally, and fail closed when policy goes stale.** Conductor
+  distributes and collects; it is not in the data path. A bundle's validity window
+  is checked when the bundle is verified and applied, so an expired bundle never
+  applies. Under `stale_policy.strict_deny_all` (the default), a follower that
+  loses contact with Conductor past the grace window engages an independent
+  `conductor_stale` kill-switch source and **denies all traffic** until a fresh
+  in-grace bundle applies; on proven license revocation or expiry, teardown under
+  a strict policy engages that same fail-closed source before the enforcer stops,
+  closing the teardown window. Under `continue_last_known_good` the follower keeps
+  serving its last applied bundle instead (see
   [Follower configuration](#follower-configuration)).
 - **Capability separation holds.** Conductor never receives agent secrets and
   never scans traffic for a follower.

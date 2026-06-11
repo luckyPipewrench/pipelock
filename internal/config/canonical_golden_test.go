@@ -166,7 +166,13 @@ const (
 	// Re-bumped for flight_recorder.require_receipts: the default is false,
 	// but explicit true changes enforcement by blocking otherwise-allowed
 	// requests when a required receipt cannot be emitted.
-	goldenHashDefaults = "68802d0f2366afa9ca612d55b9186245b897cf8a321ab7fb8523635b07c5529d"
+	// Re-bumped for response-injection precision: the "Hidden Instruction"
+	// default pattern now matches the directive-marker form
+	// (hidden instruction:) instead of the bare noun, and "Credential
+	// Solicitation" drops the "include" verb (rehomed to "Credential Path
+	// Directive") so security-standards/docs prose that DESCRIBES these attacks
+	// no longer over-matches. Detection-relevant change.
+	goldenHashDefaults = "5c0ab759bd154d6f01b8442484a362937647f3625c08b9987c87a4040cd71b0f"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -251,7 +257,7 @@ const (
 	// patterns: see goldenHashDefaults note above.
 	// Re-bumped for flight_recorder.require_receipts: see goldenHashDefaults
 	// note above.
-	goldenHashRichConfig = "8c6e749eff3408990afc9a91926ac1b60b9e0958d919afd2d1c383dd54d777b0"
+	goldenHashRichConfig = "cf2233538d0024d72a287eb664715e52041933387f532f368cafe26f0a3ce2f3"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

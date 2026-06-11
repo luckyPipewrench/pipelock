@@ -316,7 +316,7 @@ response_scanning:
     - name: "Jailbreak Attempt"
       regex: '(?i)((?-i:\bDAN\b)|developer\s+mode|sudo\s+mode|unrestricted\s+mode)'
     - name: "Hidden Instruction"
-      regex: '(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instruction|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)'
+      regex: '(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instructions?\s*[:=]|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)'
     - name: "Behavior Override"
       regex: '(?i)from\s+now\s+on\s+(you\s+)?(will|must|should|shall)\s+'
     - name: "Encoded Payload"

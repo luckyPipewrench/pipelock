@@ -132,11 +132,11 @@ func coreResponsePatternDefs() []coreResponsePattern {
 		},
 		{
 			name:  "Hidden Instruction",
-			regex: `(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instruction|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)`,
+			regex: `(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instructions?\s*[:=]|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)`,
 		},
 		{
 			name:  "Credential Solicitation",
-			regex: `(?is)\b(send|provide|paste|return|include|supply|submit|share)\b.{0,80}\b(password|passwd|token|api[_ -]?key|secret|credential|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b`,
+			regex: `(?is)\b(send|provide|paste|return|supply|submit|share)\b.{0,80}\b(password|passwd|token|api[_ -]?key|secret|credential|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b`,
 		},
 		{
 			name:  "System Prompt Disclosure",
@@ -144,7 +144,7 @@ func coreResponsePatternDefs() []coreResponsePattern {
 		},
 		{
 			name:  "Credential Path Directive",
-			regex: `(?is)\b(read|get|fetch|retrieve|cat|copy|extract|open)\b.{0,80}(\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)`,
+			regex: `(?is)\b(read|get|fetch|retrieve|cat|copy|extract|open|include)\b.{0,80}(\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)`,
 		},
 		{
 			name:  "Covert Action Directive",

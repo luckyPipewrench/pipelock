@@ -983,9 +983,10 @@ func TestServerErrorDetail(t *testing.T) {
 func TestServerErrorDetail_LogForgingAndTokenEcho(t *testing.T) {
 	const token = "publisher-secret-abc123"
 	// Hostile body: newlines (log forging), tab/NUL/ESC control bytes, an ANSI
-	// escape sequence, U+2028 line separator, and the literal token reflected.
+	// escape sequence, U+2028 line separator, U+2029 paragraph separator, and
+	// the literal token reflected.
 	hostile := "denied\n{\"level\":\"info\",\"msg\":\"fake log line\"}\r\n" +
-		"\x1b[31mred\x1b[0m\ttabbed\x00nul sep Bearer " + token
+		"\x1b[31mred\x1b[0m\ttabbed\x00nul\u2028line sep\u2029para sep Bearer " + token
 	body := []byte(`{"error":` + mustJSONString(t, hostile) + `}`)
 
 	got := serverErrorDetail(body, token)

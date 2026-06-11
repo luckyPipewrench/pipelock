@@ -3,7 +3,7 @@
 ## What shipped
 `pipelock conductor publish` — a producer CLI that builds a `PolicyBundle` from a
 pipelock config (+ optional rule-bundle refs), signs it with a
-`policy-bundle-signing` key, and POSTs it to a running Conductor's publish
+`policy-bundle-signing` key, and PUTs it to a running Conductor's publish
 endpoint (`PUT /api/v1/conductor/policy-bundles`) over mutual TLS with a
 publisher bearer token. Followers then pull and apply it on their next poll.
 
@@ -13,7 +13,7 @@ publisher bearer token. Followers then pull and apply it on their next poll.
   key read or network call, mirroring `serveCmd` / `bootstrapCmd`.
 
 ## Proven by unit test (not live)
-- Full build → sign → POST accepted by the REAL `controlplane.Handler` over
+- Full build → sign → PUT accepted by the REAL `controlplane.Handler` over
   `httptest` (real `PolicyBundle.Validate` + real file-store monotonic/chain logic).
 - Monotonic version: forward publish chained via `--previous-bundle-hash` accepted;
   unchained forward and lower version both rejected (409 → `ErrStalePolicyVersion`).
@@ -93,7 +93,7 @@ in-PR with mutation-proven regression tests:
    wipe that fires on every error path; success hands off and the caller `defer`s
    its own wipe. Tests `TestBuildSignedBundle_InputsValidatedBeforeKeyRead` (ordering)
    and `TestBuildSignedBundle_NoKeyEscapesOnPostLoadError`.
-3. **Symlink rejection comment was false.** `readSigningKeyBytes` now `os.Lstat`s
+3. **Symlink rejection comment was false.** `ReadKeyFileBytes` now `os.Lstat`s
    first and rejects `os.ModeSymlink` before `os.Open` (which follows symlinks),
    then fd-stats. Test `TestReadSigningKeyBytes_SymlinkRejected`.
 

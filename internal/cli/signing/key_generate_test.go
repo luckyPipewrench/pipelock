@@ -483,12 +483,34 @@ func TestReadKeyFileBytes_RejectsNonRegularFile(t *testing.T) {
 	// Directory is the most portable non-regular file; FIFOs require mkfifo
 	// which is platform-specific. Both fail the IsRegular() gate identically.
 	dir := t.TempDir()
-	_, err := readKeyFileBytes(dir, false)
+	_, err := ReadKeyFileBytes(dir, false)
 	if err == nil {
 		t.Fatalf("expected non-regular-file rejection on directory")
 	}
 	if !strings.Contains(err.Error(), "regular file") {
 		t.Errorf("err %q does not mention regular file", err.Error())
+	}
+}
+
+func TestReadKeyFileBytes_RejectsSymlink(t *testing.T) {
+	// os.Open follows symlinks, so without the explicit Lstat reject a symlink
+	// pointing at a real 0600 key file would be silently accepted (the f.Stat
+	// gates check the TARGET). Reject the symlink at the path itself.
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "real-key.json")
+	if err := os.WriteFile(realPath, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write real key: %v", err)
+	}
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(realPath, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	_, err := ReadKeyFileBytes(link, true)
+	if err == nil {
+		t.Fatalf("expected symlink rejection")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("err %q does not mention symlink", err.Error())
 	}
 }
 
@@ -512,7 +534,7 @@ func TestReadKeyFileBytes_RejectsLoosePermissions(t *testing.T) {
 			if err := os.Chmod(path, tc.mode); err != nil {
 				t.Fatalf("chmod key: %v", err)
 			}
-			_, err := readKeyFileBytes(path, true)
+			_, err := ReadKeyFileBytes(path, true)
 			if err == nil {
 				t.Fatalf("readKeyFileBytes accepted mode %04o", tc.mode)
 			}
@@ -532,7 +554,7 @@ func TestReadKeyFileBytes_AcceptsGroupReadPermissions(t *testing.T) {
 	if err := os.Chmod(path, 0o640); err != nil { //nolint:gosec // test intentionally verifies k8s fsGroup-style 0640 is accepted.
 		t.Fatalf("chmod key: %v", err)
 	}
-	raw, err := readKeyFileBytes(path, true)
+	raw, err := ReadKeyFileBytes(path, true)
 	if err != nil {
 		t.Fatalf("readKeyFileBytes should accept 0640: %v", err)
 	}
@@ -549,7 +571,7 @@ func TestReadKeyFileBytes_RejectsOversizedFile(t *testing.T) {
 	if err := os.WriteFile(path, big, 0o600); err != nil {
 		t.Fatalf("write big: %v", err)
 	}
-	_, err := readKeyFileBytes(path, false)
+	_, err := ReadKeyFileBytes(path, false)
 	if err == nil {
 		t.Fatalf("expected oversize rejection")
 	}

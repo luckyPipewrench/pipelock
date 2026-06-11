@@ -81,6 +81,7 @@ func Cmd() *cobra.Command {
 	}
 	cmd.AddCommand(serveCmd())
 	cmd.AddCommand(bootstrapCmd())
+	cmd.AddCommand(publishCmd())
 	return cmd
 }
 

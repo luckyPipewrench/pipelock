@@ -92,6 +92,7 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(killCmd())
 	cmd.AddCommand(resumeCmd())
 	cmd.AddCommand(rollbackCmd())
+	cmd.AddCommand(enrollCmd())
 	cmd.AddCommand(enrollmentTokenCmd())
 	return cmd
 }

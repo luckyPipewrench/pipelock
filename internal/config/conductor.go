@@ -100,6 +100,14 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 			return err
 		}
 	}
+	if strings.TrimSpace(cfg.EnrollmentTokenPath) != "" {
+		if err := validateConductorAbsolutePath("conductor.enrollment_token_path", cfg.EnrollmentTokenPath); err != nil {
+			return err
+		}
+		if err := validateConductorPrivateParent("conductor.enrollment_token_path", cfg.EnrollmentTokenPath); err != nil {
+			return err
+		}
+	}
 	for field, value := range map[string]string{
 		"conductor.bundle_cache_dir":        cfg.BundleCacheDir,
 		"conductor.durable_audit_queue_dir": cfg.DurableAuditQueueDir,

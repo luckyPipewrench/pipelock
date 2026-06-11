@@ -543,6 +543,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		s.cleanup()
 		return nil, err
 	}
+	if err := s.initConductorEnrollment(cfg, recPrivKey, opts.Stderr); err != nil {
+		s.cleanup()
+		return nil, err
+	}
 
 	if cfg.MediationEnvelope.Enabled {
 		s.envelopeEmitter = envelope.NewEmitter(envelope.EmitterConfig{

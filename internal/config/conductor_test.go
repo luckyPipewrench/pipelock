@@ -30,6 +30,9 @@ func TestApplyDefaults_Conductor(t *testing.T) {
 	if cfg.Conductor.MaxCapabilityThreshold != 7 {
 		t.Fatalf("MaxCapabilityThreshold = %d, want 7", cfg.Conductor.MaxCapabilityThreshold)
 	}
+	if cfg.Conductor.EnrollmentTokenPath != "" {
+		t.Fatalf("EnrollmentTokenPath = %q, want empty", cfg.Conductor.EnrollmentTokenPath)
+	}
 	if !cfg.Conductor.EmergencyStreamEnabled() {
 		t.Fatal("EmergencyStreamEnabled() = false, want true")
 	}
@@ -183,6 +186,11 @@ func TestValidateConductor_RejectsInvalidEnabledConfig(t *testing.T) {
 			name:   "relative_cert",
 			mutate: func(c *Conductor) { c.ClientCertPath = "client.crt" },
 			want:   "conductor.client_cert_path must be an absolute path",
+		},
+		{
+			name:   "relative_enrollment_token_path",
+			mutate: func(c *Conductor) { c.EnrollmentTokenPath = "enrollment-token" },
+			want:   "conductor.enrollment_token_path must be an absolute path",
 		},
 		{
 			name:   "missing_server_ca",

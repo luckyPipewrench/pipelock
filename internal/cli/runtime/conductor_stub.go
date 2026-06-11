@@ -58,6 +58,16 @@ func (s *Server) initConductorProducer(cfg *config.Config, _ *metrics.Metrics, _
 	return nil
 }
 
+// initConductorEnrollment is a no-op in the Apache-only build. See
+// initConductorApplyAndAudit for the rationale.
+func (s *Server) initConductorEnrollment(cfg *config.Config, _ ed25519.PrivateKey, _ io.Writer) error {
+	s.touchConductorCoreFields()
+	if cfg != nil && cfg.Conductor.Enabled {
+		return errConductorEnterpriseBuildRequired
+	}
+	return nil
+}
+
 // initConductorBundlePoller is a no-op in the Apache-only build. See
 // initConductorApplyAndAudit for the rationale.
 func (s *Server) initConductorBundlePoller(cfg *config.Config, _ io.Writer) error {

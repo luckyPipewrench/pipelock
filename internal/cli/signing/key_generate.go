@@ -46,6 +46,24 @@ const fingerprintPrefix = "sha256:"
 
 var errKeyFileTooLarge = errors.New("key file exceeds size cap")
 
+func keyPurposeUsage() string {
+	purposes := domsigning.KnownPurposes()
+	labels := make([]string, 0, len(purposes))
+	for _, purpose := range purposes {
+		labels = append(labels, purpose.String())
+	}
+	return strings.Join(labels, ", ")
+}
+
+func isReservedConductorKeyPurpose(purpose domsigning.KeyPurpose) bool {
+	switch purpose {
+	case domsigning.PurposeTrustRootRotation, domsigning.PurposeEnrollmentTokenSigning:
+		return true
+	default:
+		return false
+	}
+}
+
 // keyFile is the on-disk JSON shape produced by "pipelock signing key generate".
 // Both private and public keys are stored hex-encoded; the file is written
 // 0o600 because the private key is sensitive.
@@ -94,6 +112,18 @@ The --purpose flag binds the key to one of the recognised wire purposes:
   recovery-root                  break-glass root for recovery operations
   receipt-signing                runtime receipt signing
   rules-official-signing         official rules package signing
+  policy-bundle-signing          Conductor policy bundle signing
+  policy-bundle-rollback         Conductor rollback authorization signing
+  remote-kill-signing            Conductor remote kill-switch signing
+  trust-root-rotation            reserved Conductor trust-root rotation signing
+  audit-batch-signing            Conductor follower audit batch signing
+  enrollment-token-signing       reserved Conductor enrollment-token signing
+
+Conductor rollback, remote-kill, and trust-root-rotation keys are threshold
+keys: generate independent keys for separate approvers and configure the
+Conductor roster/control plane to require the fleet threshold. Reserved
+purposes are wire-stable purpose bindings, but no shipped operator workflow
+consumes them yet.
 
 Writes a 0o600 JSON file containing schema_version, purpose, key_id, public
 (hex), private (hex), and created_at. The canonical sha256 fingerprint is
@@ -165,13 +195,19 @@ Examples:
 			_, _ = fmt.Fprintf(out, "Generated %s keypair\n", purpose)
 			_, _ = fmt.Fprintf(out, "  key_id:      %s\n", resolvedID)
 			_, _ = fmt.Fprintf(out, "  fingerprint: %s\n", fp)
+			if isReservedConductorKeyPurpose(kp) {
+				_, _ = fmt.Fprintf(out, "  status:      reserved purpose; no shipped operator workflow consumes this key yet\n")
+			}
+			if kp.RequiresConductorThreshold() {
+				_, _ = fmt.Fprintf(out, "  threshold:   required for this Conductor purpose; do not deploy as a single-signer authority\n")
+			}
 			_, _ = fmt.Fprintf(out, "  out:         %s\n", cleanOut)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&purpose, "purpose", "",
-		"key purpose (one of: roster-root, contract-activation-signing, contract-compile-signing, recovery-root, receipt-signing, rules-official-signing)")
+		"key purpose (one of: "+keyPurposeUsage()+")")
 	cmd.Flags().StringVar(&outPath, "out", "", "absolute output path for the keypair JSON file")
 	cmd.Flags().StringVar(&keyID, "id", "", "operator-chosen key ID (default: <purpose>-<short-fingerprint>)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing output file")

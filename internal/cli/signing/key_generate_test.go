@@ -183,6 +183,83 @@ func TestKeyGenerate_HonoursExplicitID(t *testing.T) {
 	}
 }
 
+func TestKeyGenerate_AcceptsConductorPurposes(t *testing.T) {
+	dir := t.TempDir()
+	for _, purpose := range []domsigning.KeyPurpose{
+		domsigning.PurposePolicyBundleSigning,
+		domsigning.PurposePolicyBundleRollback,
+		domsigning.PurposeRemoteKillSigning,
+		domsigning.PurposeTrustRootRotation,
+		domsigning.PurposeAuditBatchSigning,
+		domsigning.PurposeEnrollmentTokenSigning,
+	} {
+		t.Run(purpose.String(), func(t *testing.T) {
+			out := filepath.Join(dir, purpose.String()+".json")
+			var stdout bytes.Buffer
+			cmd := keyGenerateCmd()
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--purpose", purpose.String(), "--out", out})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+
+			raw, err := os.ReadFile(filepath.Clean(out))
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			var kf keyFile
+			if err := json.Unmarshal(raw, &kf); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if kf.Purpose != purpose.String() {
+				t.Errorf("purpose = %q, want %q", kf.Purpose, purpose)
+			}
+			gotWarning := strings.Contains(stdout.String(), "threshold:")
+			if gotWarning != purpose.RequiresConductorThreshold() {
+				t.Errorf("threshold warning present = %v, want %v; output:\n%s",
+					gotWarning, purpose.RequiresConductorThreshold(), stdout.String())
+			}
+			gotReserved := strings.Contains(stdout.String(), "reserved purpose")
+			if gotReserved != isReservedConductorKeyPurpose(purpose) {
+				t.Errorf("reserved warning present = %v, want %v; output:\n%s",
+					gotReserved, isReservedConductorKeyPurpose(purpose), stdout.String())
+			}
+		})
+	}
+}
+
+func TestKeyGenerate_HelpListsConductorPurposes(t *testing.T) {
+	cmd := keyGenerateCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+
+	help := stdout.String()
+	for _, purpose := range []domsigning.KeyPurpose{
+		domsigning.PurposePolicyBundleSigning,
+		domsigning.PurposePolicyBundleRollback,
+		domsigning.PurposeRemoteKillSigning,
+		domsigning.PurposeTrustRootRotation,
+		domsigning.PurposeAuditBatchSigning,
+		domsigning.PurposeEnrollmentTokenSigning,
+	} {
+		if !strings.Contains(help, purpose.String()) {
+			t.Errorf("help missing %q:\n%s", purpose, help)
+		}
+	}
+	if !strings.Contains(help, "threshold") {
+		t.Errorf("help missing threshold guidance:\n%s", help)
+	}
+	if !strings.Contains(help, "reserved") {
+		t.Errorf("help missing reserved-purpose guidance:\n%s", help)
+	}
+}
+
 func TestLoadKeyFile_DetectsPurposeMismatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "k.json")

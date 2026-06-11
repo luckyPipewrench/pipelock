@@ -2364,6 +2364,9 @@ func (c *Config) validateBehavioralBaseline() error {
 	if !c.BehavioralBaseline.Enabled {
 		return nil
 	}
+	if !c.SessionProfiling.Enabled {
+		return fmt.Errorf("behavioral_baseline.enabled requires session_profiling.enabled")
+	}
 	if c.BehavioralBaseline.ProfileDir == "" {
 		return fmt.Errorf("behavioral_baseline.profile_dir is required when enabled")
 	}

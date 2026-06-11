@@ -16,7 +16,8 @@ v2.6 review (May 2026):
 - Art. 15: `request_policy` operation rails, per-frame WebSocket enforcement, header-DLP parity, and submit-profile SSRF-safe dialing strengthen runtime robustness against unsafe egress.
 - Art. 15(4)/(5): redaction passthrough hardening, media canonical-end truncation, and response scan-cap fail-closed behavior reduce avoidable corruption while keeping cybersecurity controls fail-closed.
 
-Fleet control-plane documentation is deferred to v2.7.
+Fleet control-plane documentation ships in v2.7: see the
+[Conductor guide](../guides/conductor.md).
 
 ---
 

@@ -46,15 +46,22 @@ topologySpreadConstraints:
 pipelock:
   mode: strict
   enforce: true
+  # Strict mode requires an explicit API allowlist. Replace with the APIs
+  # your agents actually call.
+  api_allowlist:
+    - api.provider.example
   mediation_envelope:
     actor_format: spiffe
   health_watchdog:
     enabled: true
     expose_subsystems: false
+  # Per-agent profiles (Pro): a map keyed by agent name. Source identification
+  # uses source_cidrs; see docs/configuration.md "Agent Profiles" for the
+  # full per-agent override surface.
   agents:
-    - name: claude-code
-      cidr: "10.0.0.0/16"
+    claude-code:
+      source_cidrs: ["10.0.0.0/16"]
       mode: balanced
-    - name: cursor
-      cidr: "10.1.0.0/16"
+    cursor:
+      source_cidrs: ["10.1.0.0/16"]
       mode: strict

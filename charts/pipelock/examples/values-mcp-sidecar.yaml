@@ -19,7 +19,22 @@ pipelock:
   mcp_tool_scanning:
     enabled: true
     detect_drift: true
+  # Tool policy requires at least one rule when enabled. Replace with the
+  # rules that match your tool surface.
   mcp_tool_policy:
     enabled: true
+    action: block
+    rules:
+      - name: "Block shell execution"
+        tool_pattern: "bash|shell|exec"
+  # Redaction requires a default profile naming the secret classes to
+  # placeholder-substitute. Extend the class list for your environment.
   redaction:
     enabled: true
+    default_profile: code
+    profiles:
+      code:
+        classes:
+          - aws-access-key
+          - google-api-key
+          - github-token

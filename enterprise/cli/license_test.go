@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -142,6 +143,126 @@ func TestLicenseStatusRevokedByCRL(t *testing.T) {
 	}
 	if report.Status != "revoked" {
 		t.Fatalf("status = %q, want revoked; report=%+v", report.Status, report)
+	}
+}
+
+func TestLicenseStatusEnvFallbackForDefaultConfig(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID:        "lic_status_env",
+		Email:     "status-env@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvLicenseKey, " \n"+token+"\n")
+	t.Setenv(config.EnvLicensePublicKey, hex.EncodeToString(pub))
+	t.Setenv(config.EnvLicenseCRLFile, "")
+
+	cfg := config.Defaults()
+	applyLicenseStatusEnv(cfg)
+	if cfg.LicenseKey != token {
+		t.Fatalf("LicenseKey = %q, want env token", cfg.LicenseKey)
+	}
+	if cfg.LicensePublicKey != hex.EncodeToString(pub) {
+		t.Fatalf("LicensePublicKey = %q, want env public key", cfg.LicensePublicKey)
+	}
+	key, err := licenseStatusPublicKey(cfg)
+	if err != nil {
+		t.Fatalf("licenseStatusPublicKey: %v", err)
+	}
+	if _, err := license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, key, nil, time.Now()); err != nil {
+		t.Fatalf("env fallback token did not verify: %v", err)
+	}
+}
+
+func TestLicenseStatusEnvFallbackDoesNotOverrideConfig(t *testing.T) {
+	t.Setenv(config.EnvLicenseKey, "env-token")
+	t.Setenv(config.EnvLicensePublicKey, strings.Repeat("a", ed25519.PublicKeySize*2))
+	t.Setenv(config.EnvLicenseCRLFile, "/env/crl.json")
+
+	cfg := config.Defaults()
+	cfg.LicenseKey = "configured-token"
+	cfg.LicensePublicKey = strings.Repeat("b", ed25519.PublicKeySize*2)
+	cfg.LicenseCRLFile = "/configured/crl.json"
+
+	applyLicenseStatusEnv(cfg)
+	if cfg.LicenseKey != "configured-token" ||
+		cfg.LicensePublicKey != strings.Repeat("b", ed25519.PublicKeySize*2) ||
+		cfg.LicenseCRLFile != "/configured/crl.json" {
+		t.Fatalf("env fallback overwrote configured values: %+v", cfg)
+	}
+}
+
+// TestLicenseStatusConfigFileEnvIntermediateFallback covers the config-file
+// path: config.Load never reads PIPELOCK_LICENSE_INTERMEDIATE_FILE (the
+// runtime fleet gate does), so status must apply the same env fallback after
+// Load or it diverges from runtime verification.
+func TestLicenseStatusConfigFileEnvIntermediateFallback(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	intermediatePath := filepath.Join(dir, "intermediate.json")
+	if err := os.WriteFile(intermediatePath, []byte(`{"payload":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvLicenseKey, "")
+	t.Setenv(config.EnvLicensePublicKey, "")
+	t.Setenv(config.EnvLicenseCRLFile, "")
+	t.Setenv(license.EnvLicenseIntermediateFile, intermediatePath)
+
+	cfg, err := loadLicenseStatusConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadLicenseStatusConfig: %v", err)
+	}
+	if cfg.LicenseIntermediateFile != intermediatePath {
+		t.Fatalf("LicenseIntermediateFile = %q, want env path %q", cfg.LicenseIntermediateFile, intermediatePath)
+	}
+	if cfg.LicenseIntermediateLoadError != "" {
+		t.Fatalf("LicenseIntermediateLoadError = %q, want empty", cfg.LicenseIntermediateLoadError)
+	}
+	if string(cfg.LicenseIntermediateCert) != `{"payload":"test"}` {
+		t.Fatalf("LicenseIntermediateCert = %q, want env file contents", cfg.LicenseIntermediateCert)
+	}
+}
+
+// TestLicenseStatusEnvIntermediateLoadFailure covers the load-error branch of
+// the env intermediate fallback: a configured intermediate path that cannot be
+// read records the load error and a placeholder cert instead of failing status,
+// so the command still reports the rest of the license state.
+func TestLicenseStatusEnvIntermediateLoadFailure(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missingPath := filepath.Join(dir, "does-not-exist.json")
+	t.Setenv(config.EnvLicenseKey, "")
+	t.Setenv(config.EnvLicensePublicKey, "")
+	t.Setenv(config.EnvLicenseCRLFile, "")
+	t.Setenv(license.EnvLicenseIntermediateFile, missingPath)
+
+	cfg, err := loadLicenseStatusConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadLicenseStatusConfig: %v", err)
+	}
+	if cfg.LicenseIntermediateFile != missingPath {
+		t.Fatalf("LicenseIntermediateFile = %q, want env path %q", cfg.LicenseIntermediateFile, missingPath)
+	}
+	if cfg.LicenseIntermediateLoadError == "" {
+		t.Fatal("LicenseIntermediateLoadError = empty, want a load error for the missing file")
+	}
+	if string(cfg.LicenseIntermediateCert) != "configured intermediate certificate unavailable" {
+		t.Fatalf("LicenseIntermediateCert = %q, want placeholder", cfg.LicenseIntermediateCert)
 	}
 }
 

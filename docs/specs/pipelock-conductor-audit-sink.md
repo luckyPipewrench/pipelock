@@ -1,6 +1,8 @@
 # Pipelock Conductor and Audit Sink Design
 
-**Status:** Design preview, not GA in v2.6
+**Status:** GA as of v2.7 — the core control plane, audit sink, and coordination
+plane ship and are documented in the [Conductor guide](../guides/conductor.md).
+Advanced slices explicitly marked as later work below remain roadmap.
 **Version:** 0.1.0
 **Date:** 2026-05-23
 
@@ -12,8 +14,8 @@ plane that ingests signed evidence from those instances.
 Conductor server commands and follower wiring are present only in enterprise
 builds. Core builds still parse `conductor` config so reload guards can preserve
 restart-only state, but `conductor.enabled: true` fails closed without the
-enterprise build tag. User-facing GA documentation is intentionally deferred
-until v2.7.
+enterprise build tag. User-facing GA documentation ships in v2.7 and is tracked
+in the [Conductor guide](../guides/conductor.md).
 
 The architecture shape is:
 
@@ -40,9 +42,9 @@ evidence operations, fleet visibility, and auditor workflows.
 - Make bundle signing, enrollment, rollback, remote kill, and audit ingest
   explicit security protocols, not implicit HTTP APIs.
 - Provide a central audit sink that verifies source, schema, chain continuity,
-  and content safety before indexing.
+  and content safety before storage.
 - Dogfood Pro value through fleet coordination, per-agent budgets, source CIDR
-  binding, central audit search, and auditor export.
+  binding, and central audit metadata queries.
 
 ## Non-Goals
 
@@ -80,7 +82,7 @@ requirements:
 - `policy-publisher`: can create policy bundle candidates.
 - `policy-approver`: can countersign catastrophic operations.
 - `follower-instance`: a registered Pipelock deployment.
-- `auditor`: can query and export accepted evidence without changing policy.
+- `auditor`: can query accepted evidence metadata without changing policy.
 
 ### Key Purposes
 
@@ -705,10 +707,10 @@ Conductor must:
 - Verify v2 recorder entry hashes.
 - Verify checkpoint signature with enrolled receipt/checkpoint public key.
 - Stitch segment rotation using previous segment tail and current segment head.
-- DLP-scan payload contents before indexing.
+- DLP-scan payload contents before storage.
 - Apply per-follower rate, size, and reputation limits.
 - Store raw accepted batch in per-follower namespace.
-- Index only redacted/safe fields into cross-fleet search.
+- Future search/index slices must expose only redacted/safe fields.
 
 Fork detection is critical severity, not a soft reject.
 
@@ -723,8 +725,8 @@ Controls:
 - Request body caps.
 - Batch entry count caps.
 - Per-follower namespace isolation.
-- DLP and prompt-injection scanning before indexing.
-- Escaping and query-safe indexing for all strings.
+- DLP and prompt-injection scanning before storage.
+- Future indexes must escape and query-sanitize all strings.
 - No cross-fleet query expansion from untrusted event fields.
 - Reputation scoring for malformed, oversized, forked, or DLP-positive batches.
 
@@ -858,7 +860,7 @@ MVP roles:
 | `publisher` | create and stage bundle candidates |
 | `approver` | countersign catastrophic operations |
 | `viewer` | view fleet state and non-sensitive metrics |
-| `auditor` | query/export accepted evidence |
+| `auditor` | query accepted evidence metadata |
 
 Catastrophic actions require approval by at least two distinct principals:
 
@@ -1000,7 +1002,7 @@ Required test coverage:
 - Conductor audit ingest rejects v1 recorder entries.
 - Conductor audit ingest detects sequence forks.
 - Conductor audit ingest verifies checkpoint signatures.
-- Conductor audit ingest DLP-scans payload before indexing.
+- Conductor audit ingest DLP-scans payload before storage.
 - Follower identity is derived from mTLS, not payload `instance_id`.
 - Enrollment token reuse fails.
 - Duplicate active `instance_id` enrollment fails.

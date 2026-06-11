@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -376,13 +377,58 @@ func loadLicenseStatusConfig(configFile string) (*config.Config, error) {
 		configFile = cliutil.DiscoverConfigPath()
 	}
 	if configFile == "" {
-		return config.Defaults(), nil
+		cfg := config.Defaults()
+		applyLicenseStatusEnv(cfg)
+		return cfg, nil
 	}
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("loading config %q: %w", configFile, err)
 	}
+	// Load resolves the license key, public key, and CRL path from env, but
+	// not the intermediate certificate file — at runtime the fleet gate reads
+	// PIPELOCK_LICENSE_INTERMEDIATE_FILE itself. Apply the same env fallback
+	// here so status agrees with the runtime when the intermediate is
+	// supplied only via env. The empty-field guards make this a no-op for
+	// everything Load already resolved.
+	applyLicenseStatusEnv(cfg)
 	return cfg, nil
+}
+
+// applyLicenseStatusEnv fills unset license fields from the environment,
+// mirroring the fallbacks the runtime applies at verification time. Fallback
+// only: a non-empty configured value always wins here. (Load gives
+// PIPELOCK_LICENSE_KEY priority over config-file values; that never conflicts
+// with this helper because a field Load resolved is non-empty and the guard
+// skips it.)
+func applyLicenseStatusEnv(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if cfg.LicenseKey == "" {
+		cfg.LicenseKey = strings.TrimSpace(os.Getenv(config.EnvLicenseKey))
+	}
+	if cfg.LicensePublicKey == "" {
+		cfg.LicensePublicKey = strings.TrimSpace(os.Getenv(config.EnvLicensePublicKey))
+	}
+	if cfg.LicenseCRLFile == "" {
+		cfg.LicenseCRLFile = strings.TrimSpace(os.Getenv(config.EnvLicenseCRLFile))
+	}
+	if cfg.LicenseIntermediateFile == "" {
+		intermediateFile := strings.TrimSpace(os.Getenv(license.EnvLicenseIntermediateFile))
+		if intermediateFile == "" {
+			return
+		}
+		cfg.LicenseIntermediateFile = intermediateFile
+		data, err := license.LoadIntermediateCertFile(intermediateFile)
+		if err != nil {
+			cfg.LicenseIntermediateLoadError = err.Error()
+			cfg.LicenseIntermediateCert = []byte("configured intermediate certificate unavailable")
+			return
+		}
+		cfg.LicenseIntermediateCert = data
+		cfg.LicenseIntermediateLoadError = ""
+	}
 }
 
 func licenseStatusPublicKey(cfg *config.Config) (ed25519.PublicKey, error) {

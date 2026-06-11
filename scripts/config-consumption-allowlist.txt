@@ -1,0 +1,56 @@
+# Allowlist for scripts/check-config-consumption.sh.
+# Format: FieldName  # reason
+#
+# Three entry classes:
+#   (A) consumed-hidden — consumed via a receiver method defined inside
+#       internal/config (the grep can't see through the indirection); the
+#       reason names the receiver and an outside caller.
+#   (B) validation-only-by-design — the field's entire job happens at config
+#       load/validate time.
+#   RESERVED / INERT-BASELINE — known-dead knobs baselined 2026-06-10 so the
+#       tripwire stays green while catching NEW unconsumed fields. Each is a
+#       wire-or-remove work item tracked in ops; do NOT add new entries of
+#       this class without an ops-tracked justification.
+
+# --- (A) consumed via receiver methods in internal/config ---
+ExplainBlocks  # (A) Config.ExplainBlocksEnabled() schema_receiver_methods.go:164 -> proxy/forward.go, proxy/intercept.go:641, proxy/proxy.go:3359
+SNIVerification  # (A) ForwardProxy.SNIVerificationEnabled() schema_receiver_methods.go:147 -> proxy/forward.go:596
+IntervalSeconds  # (A) HealthWatchdog.IntervalDuration() schema.go:1002 -> proxy/proxy.go:488
+SampleRate  # (A) SentryConfig.EffectiveSampleRate() schema_receiver_methods.go:175 -> sentry/client.go:84
+StripImages  # (A) MediaPolicy.ShouldStripImages() schema_receiver_methods.go:210 -> proxy/media_policy.go:149, mcp/media_policy.go
+StripAudio  # (A) MediaPolicy.ShouldStripAudio() schema_receiver_methods.go:216 -> proxy+mcp media_policy
+StripVideo  # (A) MediaPolicy.ShouldStripVideo() schema_receiver_methods.go:222 -> proxy+mcp media_policy
+StripImageMetadata  # (A) MediaPolicy.ShouldStripImageMetadata() schema_receiver_methods.go:228 -> proxy+mcp media_policy
+AllowedImageTypes  # (A) MediaPolicy.EffectiveAllowedImageTypes() -> IsImageTypeAllowed() -> proxy+mcp media_policy
+MaxImageBytes  # (A) MediaPolicy.EffectiveMaxImageBytes() schema_receiver_methods.go:240 -> mcp/media_policy.go:304
+SaltSource  # (A) Learn normalizer (normalize.go:16) resolves it; contract/privacy/salt.go:58 + cli/contain/config_migrate.go consume the resolved value
+MinimumSignatures  # (A) LearnLock.EffectiveMinimumSignatures() schema.go:1806 -> mcp/contractgate.go:58, proxy/contractgate.go:151
+
+# --- (B) validation-only by design ---
+MatchAbsPath  # (B) enforces absolute-path constraint on RedirectProfile.Exec[0] at validate.go:816; nothing to read after validation passes
+TrustedUpstream  # (B) config-time integrity assertion that declared upstream matches Upstream URL (validate.go:2148-2188)
+Added  # (B) audit-provenance date on ReverseProxy trusted_upstream, format-validated at validate.go:2184
+
+# --- RESERVED (documented as reserved in docs/configuration.md Conductor section) ---
+StalePolicy  # RESERVED conductor follower knob; DecideStale exists with 0 callers (verified 2026-06-10); documented reserved
+MaxMinVersionMajorSkew  # RESERVED conductor follower knob; documented reserved
+MaxMinVersionMinorSkew  # RESERVED conductor follower knob; documented reserved
+
+# --- INERT-BASELINE (2026-06-10 audit; wire or remove, tracked in ops state.md) ---
+OnSeverity  # INERT airlock severity trigger; recordSessionActivityWithUserAgent wires only OnElevated/OnHigh/OnCritical
+AnomalyCount  # INERT airlock anomaly trigger; no consumer
+AnomalyWindowMinutes  # INERT airlock anomaly window; no consumer
+ToolFreeze  # INERT struct; freeze runs via proxy FrozenTools wiring regardless of these knobs
+SnapshotOnEntry  # INERT; freeze mechanism does not consult it
+AllowCachedTools  # INERT; freeze mechanism does not consult it
+ScanRawParts  # INERT; A2A extraction never base64-decodes Part.raw (raw string still passes general scanning as opaque text)
+MaxRawSize  # INERT; companion to ScanRawParts
+AllowedBranches  # INERT; git_push_guard reads Enabled/AllowedPushRepos/BlockedCommands/PrePushScan only
+MaxConnections  # INERT on MCPWSListener; no MCP WebSocket listener accept loop enforces the cap
+MCPWSListener  # INERT struct fields; MCP WebSocket listener config is only normalized/validated in internal/config
+StripCompression  # INERT knob; wsDialUpstream disables permessage-deflate and wsRelay frame loops reject RSV1 unconditionally
+CostMultipliers  # INERT; budget enforcement reads no domain cost weights
+TrustedIssuers  # INERT; mapProvenanceConfig drops it; sigstore unimplemented
+TrustedSubjects  # INERT; same as TrustedIssuers
+PublicAllowlistDefault  # INERT; privacy enforcer does not read it
+WellKnownURL  # INERT; no key-discovery fetch implemented for mediation trusted keys

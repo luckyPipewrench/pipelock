@@ -551,7 +551,7 @@ websocket_proxy:
 | `max_concurrent_connections` | `128` | No | Connection limit |
 | `scan_text_frames` | `true` | No | DLP + injection on text frames |
 | `allow_binary_frames` | `false` | No | Allow binary frames (not scanned) |
-| `strip_compression` | `true` | No | Force uncompressed (required for scanning) |
+| `strip_compression` | `true` | No | Accepted for compatibility; the relay always disables permessage-deflate and rejects compressed (RSV1) frames regardless of this value, so frames are always scanned uncompressed |
 | `max_connection_seconds` | `3600` | No | Upstream WebSocket setup/dial deadline |
 | `idle_timeout_seconds` | `300` | No | Close established connections after this much inactivity |
 | `origin_policy` | `"rewrite"` | No | Origin header: rewrite, forward, or strip |
@@ -962,8 +962,8 @@ mcp_ws_listener:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `allowed_origins` | `[]` | Additional browser origins to allow (loopback always allowed) |
-| `max_connections` | `100` | Max concurrent inbound WebSocket connections |
+| `allowed_origins` | `[]` | Reserved, not yet enforced |
+| `max_connections` | `100` | Reserved, not yet enforced |
 
 ## Session Profiling
 
@@ -1401,7 +1401,7 @@ git_protection:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable git protection |
-| `allowed_branches` | `["feature/*", "fix/*", "main", "master"]` | Branch name patterns |
+| `allowed_branches` | `["feature/*", "fix/*", "main", "master"]` | Reserved, not yet enforced (push gating today uses `allowed_push_repos`, `blocked_commands`, `pre_push_scan`) |
 | `allowed_push_repos` | `[]` | Optional proxy-enforced allowlist for visible Git smart-HTTP pushes (`git-receive-pack`). Supported patterns include exact repos (`host/owner/repo`), owner globs (`github.com/acme/*`), and host-wide allowlists (`gitlab.com/*`). Bare `owner/repo` entries are rejected. Matching is case-insensitive. When `git_protection.enabled` is true and the allowlist is empty, visible pushes are blocked (fail-closed). Non-intercepted HTTPS CONNECT exposes only the host; enable TLS interception for repo-path enforcement. SSH pushes are opaque to the proxy and are not gated. |
 | `pre_push_scan` | `true` | Scan diffs before push |
 
@@ -2162,7 +2162,7 @@ flight_recorder:
 | `redact` | `true` | DLP-redact evidence content before writing. Receipt entries get field-level redaction (target/pattern scrubbed, signature preserved). |
 | `require_receipts` | `false` | Require allow-path receipt emission before forwarding traffic. When true, signing/recorder failures block with `receipt_emission_failed`; block-path receipts remain best-effort because the action is already denied. |
 | `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |
-| `signing_key_path` | (empty) | Ed25519 private key for signed action receipts. When set, every proxy decision produces a signed receipt. Without it, the flight recorder can still write non-receipt evidence entries. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file>`. In `pipelock run`, changing the configured path requires restart; reload re-reads updated key bytes only when the same path stays configured. |
+| `signing_key_path` | (empty) | Ed25519 private key for signed action receipts. When set, every proxy decision produces a signed receipt. Without it, the flight recorder can still write non-receipt evidence entries. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file> --key <signer.pub>` (pin the signer key — an unpinned run is structural-only and exits non-zero unless you pass `--allow-unpinned`). In `pipelock run`, changing the configured path requires restart; reload re-reads updated key bytes only when the same path stays configured. |
 | `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |
 | `raw_escrow` | `false` | Encrypt raw (pre-redaction) detail to sidecar files |
 | `escrow_public_key` | (required if raw_escrow) | X25519 public key (hex) for escrow encryption |
@@ -2200,7 +2200,7 @@ learn:
 | `enabled` | `false` | Enable the learn observation configuration. When true, `capture_dir` is required. |
 | `capture_dir` | `""` | Absolute directory for recorder JSONL evidence used by `pipelock learn observe`, `compile`, and `shadow`. Use durable storage for production captures. |
 | `privacy.salt_source` | `""` | Salt resolver for privacy-sensitive dimensions: `${VAR}` reads an environment variable, `file:/abs/path` reads a file, any other string is treated as a literal salt. |
-| `privacy.public_allowlist_default` | `true` | Use the built-in public allowlist when no explicit privacy allowlist is configured. |
+| `privacy.public_allowlist_default` | `true` | Reserved, not yet enforced |
 | `inference.floors.min_sessions` | `5` | Minimum distinct sessions before a rule can be classified stable. |
 | `inference.floors.min_events` | `20` | Minimum matching events before a rule can be classified stable. |
 | `inference.floors.min_windows` | `3` | Minimum observation windows before a rule can be classified stable. |
@@ -2273,6 +2273,12 @@ Omitting `health_watchdog`, setting it to YAML null, or leaving `enabled` blank 
 
 For response examples and Kubernetes probe guidance, see [Health Endpoint and Wedge-Detection Watchdog](guides/health.md).
 
+The `pipelock healthcheck` command wraps the `/health` probe for container
+healthchecks: it sends a GET to `http://<addr>/health` (default
+`127.0.0.1:8888`, override with `--addr`) and exits 0 when healthy, 1
+otherwise. Designed for Docker `HEALTHCHECK` directives and Compose
+`healthcheck:` blocks: `test: ["/pipelock", "healthcheck"]`.
+
 ## A2A Scanning (v2.1)
 
 Scanning for Google A2A (Agent-to-Agent) protocol traffic. Detects A2A messages in forward proxy and MCP HTTP proxy paths. Applies field-aware content inspection with URL/text/secret classification.
@@ -2306,8 +2312,8 @@ a2a_scanning:
 | `session_smuggling_detection` | `true` | Track contextId to detect session smuggling |
 | `max_context_messages` | `100` | Per-context message cap |
 | `max_contexts` | `1000` | Total tracked contexts |
-| `scan_raw_parts` | `true` | Decode and scan text-like `Part.raw` fields |
-| `max_raw_size` | `1048576` | Max encoded size for `Part.raw` decoding (bytes) |
+| `scan_raw_parts` | `true` | Reserved, not yet enforced: `Part.raw` is not base64-decoded for scanning. The raw value still passes through general content scanning as an opaque string. |
+| `max_raw_size` | `1048576` | Reserved, not yet enforced (companion to `scan_raw_parts`) |
 | `require_signed_agent_cards` | `false` | Treat an **unsigned** Agent Card as a finding (enforced at `action`). When `false`, unsigned cards keep their existing scan/drift behavior. |
 | `trusted_agent_card_keys` | _(none)_ | Operator-pinned Ed25519 signing keys, each scoped to one or more origins. When non-empty, signed cards are cryptographically verified. |
 
@@ -2361,6 +2367,64 @@ mcp_binary_integrity:
 | `keystore` | `~/.pipelock` | Keystore used for the trusted signer lookup |
 
 The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing. Generate, preflight, and sign the manifest with `pipelock mcp integrity manifest`; see [MCP integrity manifest tooling](cli/mcp-integrity.md).
+
+## MCP Tool Provenance
+
+Cryptographic attestation verification for MCP tool definitions. Where [MCP Binary Integrity](#mcp-binary-integrity-v21) pins the server binary, tool provenance pins the tool definitions themselves: each tool in a `tools/list` response can carry a signed attestation in its `_meta` field (key `com.pipelock/provenance`) committing to a digest of the tool's name, description, and input schema. A server that silently edits or swaps a tool definition fails the digest check.
+
+```yaml
+mcp_tool_provenance:
+  enabled: true
+  action: block
+  mode: pipelock
+  trusted_keys:
+    - "<ed25519-public-key-hex>"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Verify tool attestations on `tools/list` responses |
+| `action` | `warn` | Action on an **unsigned** tool (no attestation): `block` or `warn` |
+| `mode` | `pipelock` | Accepted attestation mode: `pipelock` (offline Ed25519), `sigstore`, or `any` |
+| `trusted_keys` | `[]` | Ed25519 public keys trusted in `pipelock` mode |
+| `trusted_issuers` | `[]` | Reserved with `sigstore` mode (not yet read by the verifier) |
+| `trusted_subjects` | `[]` | Reserved with `sigstore` mode (not yet read by the verifier) |
+| `offline_only` | `true` | Never make network calls during verification |
+
+The `action` knob applies only to unsigned tools. A tool whose attestation is present but **fails** verification (digest mismatch, bad signature, untrusted signer, malformed attestation) always blocks regardless of `action` — a tampered attestation is treated as tampering, not as missing. An unparseable `tools/list` response also blocks (fail-closed).
+
+`sigstore` mode is reserved: verification is not yet implemented, so a sigstore attestation always fails (and therefore blocks). Use `pipelock` mode with `trusted_keys` for working provenance today.
+
+## Behavioral Baseline
+
+Profile-then-lock behavioral analysis per agent. Pipelock observes an agent's sessions, builds a statistical profile of its normal behavior (tool calls, unique tools, domains, bytes, duration, requests), and once the profile is ratified and locked, flags or blocks sessions that deviate beyond `sensitivity_sigma` standard deviations from the learned mean.
+
+```yaml
+session_profiling:
+  enabled: true
+behavioral_baseline:
+  enabled: true
+  learning_window: 10
+  deviation_action: warn
+  profile_dir: /var/lib/pipelock/baselines
+  sensitivity_sigma: 2.0
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable behavioral baseline learning and enforcement. Requires `session_profiling.enabled: true` because the baseline engine runs on session records. |
+| `learning_window` | `10` | Sessions to observe before building the statistical profile |
+| `deviation_action` | `warn` | Action on deviation from a locked profile: `warn`, `ask`, or `block` |
+| `profile_dir` | (required if enabled) | Directory where learned profiles persist as JSON |
+| `auto_ratify` | `false` | Lock learned profiles without operator approval. **Dangerous:** an attacker active during the learning window gets their behavior baselined as normal. |
+| `sensitivity_sigma` | `2.0` | Standard deviations from the learned mean before a metric counts as deviant |
+| `lock_dimensions` | all | Metrics to enforce: `tool_calls`, `unique_tools`, `domains`, `bytes`, `duration`, `requests` |
+| `poison_resistance` | `true` | Trim outlier sessions when building the profile, so adversarial sessions during learning have bounded influence |
+| `seasonality_mode` | `none` | Only `none` is implemented. `labeled` and `time` are reserved and rejected by the baseline engine at startup. |
+
+Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement applies only to a **locked** profile; a profile in any earlier state (including `ratify`) produces no deviations. Profiles persist to `profile_dir` (one JSON file per agent, carrying the lifecycle state) and survive restarts.
+
+**Locking a profile (current limitation).** A profile reaches `locked` only via `auto_ratify: true`, which locks automatically at the end of the learning window. There is no operator ratify command in this release: a profile learned without `auto_ratify` stays in `ratify` and never enforces. So today the practical choices are `auto_ratify: true` (accepting the documented learning-window poisoning risk) or leaving the baseline observe-only. Do not rely on a manual operator-approval step before enforcement — it is not yet wired.
 
 ## Taint-Aware Policy Escalation (v2.1)
 
@@ -2656,6 +2720,57 @@ SVG (`image/svg+xml`) is never in the allowed image types list. SVG is active co
 - `image/svg+xml` is rejected in `allowed_image_types` (SVG is active content)
 - `max_image_bytes` must be non-negative (0 means use the 5 MiB default)
 - Validation runs regardless of whether `enabled` is true, so re-enabling on reload cannot introduce malformed values
+
+## Conductor Follower (v2.7, Enterprise)
+
+Follower-side configuration for joining a [Conductor](guides/conductor.md)-managed fleet. The `conductor:` block is local control-plane plumbing, not scanner policy, and is excluded from the canonical policy hash. Any build parses the block, but `enabled: true` requires an enterprise build with the `fleet` license entitlement and fails closed otherwise.
+
+```yaml
+conductor:
+  enabled: true
+  conductor_url: https://conductor.internal:8895
+  org_id: org-acme
+  fleet_id: prod
+  instance_id: edge-01
+  trust_roster_path: /etc/pipelock/trust-roster.json
+  trust_roster_root_fingerprint: <sha256-of-trust-root>
+  server_ca_file: /etc/pipelock/conductor-ca.pem
+  client_cert_path: /etc/pipelock/follower.crt
+  client_key_path: /etc/pipelock/follower.key
+  bundle_cache_dir: /var/lib/pipelock/bundles
+  durable_audit_queue_dir: /var/lib/pipelock/audit-queue
+  poll_interval: 30s
+  honor_remote_kill_switch: true
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Join a Conductor fleet. Requires an enterprise build with the `fleet` entitlement; fails closed without it. |
+| `conductor_url` | (required) | HTTPS URL of the Conductor follower API. |
+| `org_id` / `fleet_id` / `instance_id` | (required) | Fleet identity tuple. Each must match the canonical identifier pattern (ASCII alphanumeric plus `_-.`, max 128 bytes). |
+| `trust_roster_path` | (required) | Signed trust roster file naming the keys this follower accepts. |
+| `trust_roster_root_fingerprint` | (required) | SHA-256 pin of the trust roster's root key. Must be non-empty. |
+| `server_ca_file` | (required) | CA bundle used to verify Conductor's TLS server certificate. |
+| `client_cert_path` / `client_key_path` | (required) | Follower mTLS client certificate and private key. |
+| `bundle_cache_dir` | (required) | Directory caching verified policy bundles across restarts. |
+| `durable_audit_queue_dir` | (required) | On-disk queue for signed evidence batches awaiting delivery to the audit sink. |
+| `audit_signing_key_id` | `instance_id` | Key ID the follower signs audit batches with. |
+| `recorder_key_id` | `instance_id` | Key ID for the follower's flight-recorder checkpoints. |
+| `poll_interval` | `30s` | How often the follower polls Conductor for bundles and coordination state. |
+| `honor_remote_kill_switch` | `true` | Act on a signed fleet-wide remote-kill message. |
+| `emergency_stream` | `true` | Reserved (see below). |
+| `created_skew_seconds` | `60` (max `300`) | Reserved (see below). |
+| `max_min_version_major_skew` | `0` | Reserved (see below). |
+| `max_min_version_minor_skew` | `1` | Reserved (see below). |
+| `max_capability_threshold` | `7` | Reserved (see below). |
+| `stale_policy.grace_multiplier` | `1` | Reserved (see below). |
+| `stale_policy.after_grace` | `strict_deny_all` | Reserved (see below). `continue_last_known_good` is accepted with an advisory warning because it weakens the fail-closed default. |
+
+When `enabled: true`, validation additionally requires the [flight recorder](#flight-recorder-v21) enabled with `sign_checkpoints: true` and a configured `signing_key_path` (a follower must produce signed evidence to participate), all file paths absolute, and no world-writable ancestor directory on any configured path.
+
+**Reserved fields.** The fields marked reserved are parsed and validated at startup but not yet enforced by the follower runtime in v2.7; they reserve the config surface for upcoming bundle-staleness and capability-negotiation work. This includes `emergency_stream`, `created_skew_seconds`, `max_min_version_major_skew` (`MaxMinVersionMajorSkew`), `max_min_version_minor_skew` (`MaxMinVersionMinorSkew`), `max_capability_threshold`, and `stale_policy.*` (`StalePolicy`). Today a bundle's validity window is enforced when the bundle is verified and applied (an expired bundle fails verification), and a follower that cannot reach Conductor keeps enforcing the policy it already has.
+
+See the [Conductor guide](guides/conductor.md) for the full architecture, server-side flags, and licensing.
 
 ## Validation Rules
 

@@ -26,13 +26,17 @@ cross-implementation conformance suite.
 
 ## Verifying a single receipt
 
+Verification is **safe by default**: pin the trusted signer key with `--key` so
+the receipt is checked against a key you trust, not merely for internal
+consistency. The value is a hex key or a path to a public-key file.
+
 ```bash
-pipelock verify-receipt receipt.json
+pipelock verify-receipt receipt.json --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
 ```
 
 Output on success:
 
-```
+```text
 OK: receipt.json
   Action ID:   019...
   Action Type: fetch
@@ -45,43 +49,93 @@ OK: receipt.json
   Chain prev:  sha256:a1b2c3d4...
 ```
 
-Pin a specific signer key to reject receipts from unknown signers:
+### Unpinned (structural-only) verification
 
-```bash
-pipelock verify-receipt receipt.json --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
+Without `--key`, the verifier can confirm the signature is self-consistent and
+the hash linkage holds, but it cannot prove *who* signed the receipt. That is
+not a pass on its own, so an unpinned run prints a loud banner and **exits
+non-zero**:
+
+```text
+UNPINNED: receipt.json
+UNPINNED — signature is self-consistent but the signer was NOT checked against a trusted key
+  Action ID:   019...
+  ...
 ```
 
-Exit code 0 means valid, exit code 1 means invalid or malformed.
+Pass `--allow-unpinned` to acknowledge the reduced guarantee and exit 0 for a
+structural-only check (for example, a quick local sanity check when you do not
+have the key on hand):
+
+```bash
+pipelock verify-receipt receipt.json --allow-unpinned
+```
+
+Exit code 0 means valid (and signer-pinned, unless you passed `--allow-unpinned`);
+exit code 1 means invalid, malformed, or unpinned without `--allow-unpinned`.
 
 ## Verifying a receipt chain
 
-Pass a flight recorder JSONL file to verify the entire hash chain:
+Pass a flight recorder JSONL file (or `--chain DIR` for a multi-file chain that
+spans restarts or rotations) and pin the trusted key:
 
 ```bash
-pipelock verify-receipt evidence-proxy-0.jsonl
+pipelock verify-receipt evidence-proxy-0.jsonl --key 70b991eb...
 ```
 
 Output on success:
 
-```
+```text
 CHAIN VALID: evidence-proxy-0.jsonl
   Receipts:  142
   Final seq: 141
   Root hash:  sha256:e5f6a7b8...
   Start:     2026-04-10T14:00:00Z
   End:       2026-04-10T15:30:00Z
+  Signer:    70b991eb...
 ```
 
 Chain verification checks:
 
-- Every receipt's Ed25519 signature is valid against the signer key.
-- All receipts share the same signer key (or match the `--key` argument).
-- `chain_seq` increments by exactly 1 from 0 to N-1.
+- Every receipt's Ed25519 signature is valid against its signer key.
+- `chain_seq` increments by exactly 1 from 0 to N-1 (per segment; see rotation below).
 - The first receipt has `chain_prev_hash: "genesis"`.
 - Each subsequent receipt's `chain_prev_hash` equals the SHA-256 hash of
   the previous receipt's canonical JSON.
 
+As with a single receipt, an unpinned chain run (no `--key`) prints
+`CHAIN UNPINNED` and exits non-zero unless you pass `--allow-unpinned`; pinning
+the key is what proves the chain came from a signer you trust.
+
 If any check fails, the output reports which sequence number broke the chain.
+
+### Chains that rotated the signing key
+
+A chain whose signing key was rotated mid-life splits into **segments**. The
+verifier understands this: a segment boundary is a sequence-0 receipt carrying a
+`KeyTransition` marker that links to the prior segment's tail hash, so the
+cross-segment hash chain still proves nothing was inserted or dropped at the
+rotation. Pass `--key` once per trusted segment key:
+
+```bash
+pipelock verify-receipt --chain /var/lib/pipelock/evidence --key old.pub --key new.pub
+```
+
+A rotated chain reports each segment and its signer for you to confirm:
+
+```text
+CHAIN VALID: /var/lib/pipelock/evidence (session proxy)
+  ...
+  Segments:  2 (signing key rotated)
+  CONFIRM every signer key below is one of yours:
+    segment 0: seq 0-140  signer 70b991eb...
+    segment 1: seq 0-87   signer a1b2c3d4...  (key rotation)
+```
+
+If a segment is signed by a key you did not pass, the chain reports
+`CHAIN BROKEN` and names the untrusted signer key — re-run with a `--key` for
+each key you trust. The verifier proves the segments are cryptographically
+linked; only the operator knows whether every key is one of theirs.
 
 ## Computing a transcript root
 
@@ -117,7 +171,11 @@ an exit-0 status to mean "receipts were present and the chain verified."
 Each receipt contains:
 
 - **action_record**: The security decision (action ID, verdict, target,
-  transport, policy hash, chain sequence, chain previous hash).
+  transport, policy hash, chain sequence, chain previous hash). When present, a
+  `run_nonce` — generated once per process run and folded into the signed
+  preimage — binds the receipt to a single run so it cannot be replayed as
+  evidence of a different one. Receipts emitted before the nonce was added omit
+  the field and still verify.
 - **signature**: `ed25519:` prefix + hex-encoded Ed25519 signature over
   `SHA-256(canonical JSON of action_record)`.
 - **signer_key**: Hex-encoded Ed25519 public key of the signer.
@@ -153,9 +211,20 @@ resume path in three ways:
   `strconv.ParseUint` so evidence filenames with sequence numbers
   greater than `math.MaxInt` (or 32-bit builds) order correctly.
 
-These hardenings are transparent to verifiers — the wire format is
+These restart hardenings are transparent to verifiers — the wire format is
 unchanged. They protect the emitter side from bugs and tampering that
 would have produced broken or forgeable chains at restart.
+
+**Signing-key rotation no longer bricks the chain.** Earlier builds resumed by
+hard-verifying the persisted tail against the *current* signing key, so any
+legitimate operator key rotation orphaned the chain and failed every subsequent
+emit. The emitter now recognizes a tail that is self-valid under a *different*
+embedded key as a rotation and opens a new chain segment: its first receipt
+links to the prior tail hash and carries a `KeyTransition` marker, so the
+boundary is provable and the chain stays offline-verifiable across the switch
+(see [Chains that rotated the signing key](#chains-that-rotated-the-signing-key)).
+A tail whose own signature is invalid still fails closed, so a forged tail
+cannot force a silent chain reset that hides history.
 
 ## Standalone `pipelock-verifier` CLI
 

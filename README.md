@@ -21,9 +21,9 @@
   <a href="https://github.com/luckyPipewrench/pipelock/blob/main/.github/workflows/ci.yaml#L21-L35"><img alt="pipelock self-scanned" src="https://img.shields.io/badge/pipelock-self--scanned-00FFC8?style=flat&labelColor=1A1A2E&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNCAxNCI+PHBhdGggZmlsbD0iIzAwRkZDOCIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik03IDAuNWMtMS45MyAwLTMuNSAxLjY2LTMuNSAzLjd2MS4zSDNjLS44MyAwLTEuNSAuNjctMS41IDEuNXY2YzAgLjgzLjY3IDEuNSAxLjUgMS41aDhjLjgzIDAgMS41LS42NyAxLjUtMS41VjdjMC0uODMtLjY3LTEuNS0xLjUtMS41aC0uNVY0LjJjMC0yLjA0LTEuNTctMy43LTMuNS0zLjdabS0yIDVWNC4yYzAtMS40OSAxLjEyLTIuNyAyLjUtMi43czIuNSAxLjIxIDIuNSAyLjd2MS4zSDVaTTIuNSA1aDJ2MS4yaC0yVjVabTcgMGgydjEuMmgtMlY1Wk03IDguMmMtLjY5IDAtMS4yNS41Ni0xLjI1IDEuMjUgMCAuNDQuMjMuODMuNTcgMS4wNXYxLjVoMS4zNnYtMS41Yy4zNC0uMjIuNTctLjYxLjU3LTEuMDUgMC0uNjktLjU2LTEuMjUtMS4yNS0xLjI1WiIvPjwvc3ZnPgo="></a>
 </p>
 
-**Open-source AI agent firewall for [Verifiable Egress Control (VEC)](https://pipelab.org/learn/verifiable-egress-control/).** Pipelock sits between AI agents and the network, scanning mediated HTTP, MCP, A2A, and WebSocket traffic for exfiltration and prompt-injection paths, and emitting mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) that third parties can verify outside the agent runtime. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
+**Open-source AI agent firewall for [Verifiable Egress Control (VEC)](https://pipelab.org/learn/verifiable-egress-control/).** Pipelock sits between AI agents and the network and inspects the actual content crossing every mediated transport — HTTP, WebSocket, CONNECT, MCP, and A2A — for secret exfiltration, prompt injection, and SSRF, then emits mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) that third parties can verify outside the agent runtime. The detections are exercised by a public adversarial benchmark anyone can run ([agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench)). Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
 
-**Agent-external evidence built in.** Runtime logs and in-process receipts are useful telemetry. Pipelock receipts are signed by a mediator outside the agent process and outside its credentials, so verifiers can reason about the traffic that actually crossed the Pipelock boundary.
+**The receipt proves a content-aware decision — not a blind one.** A signed receipt is only as good as what the signature is over: a decision made without inspecting the content is a notarized blind spot. Pipelock signs each receipt over a content-aware decision, from a mediator outside the agent process and outside its credentials, so a verifier can reason about the traffic that actually crossed the Pipelock boundary without trusting the agent or the vendor.
 
 **Covers MCP security, agent egress security, DLP for AI agents, and prompt injection defense.** Pipelock acts as an agent egress proxy for wrapped outbound HTTP, WebSocket, and MCP traffic, with bidirectional MCP scanning, 62 credential patterns, and 29 injection patterns with 6-pass normalization.
 
@@ -190,7 +190,7 @@ The free summary shows your grade, section scores, and top findings. Licensed us
 
 ### Flight Recorder
 
-Hash-chained JSONL evidence log with Ed25519-signed checkpoints and DLP redaction. Every proxy decision is recorded as a tamper-evident entry linked to the previous one. Action receipts provide cryptographically signed proof of each mediated action (what happened, what the verdict was, which policy was active), and request-side rewrites add a compact `redaction` summary block instead of storing plaintext secrets. Verify any receipt independently with `pipelock verify-receipt`.
+Hash-chained JSONL evidence log with Ed25519-signed checkpoints and DLP redaction. On by default — `pipelock init` provisions a recorder directory and signing key so a stock install produces verifiable evidence out of the box (the recorder stays inert until a `dir` and key exist, so the default never breaks an existing config). Every proxy decision is recorded as a tamper-evident entry linked to the previous one. Action receipts provide cryptographically signed proof of each mediated action (what happened, what the verdict was, which policy was active), and request-side rewrites add a compact `redaction` summary block instead of storing plaintext secrets. Verify any receipt independently with `pipelock verify-receipt --key <signer.pub>` (an unpinned run is structural-only and exits non-zero unless you pass `--allow-unpinned`).
 
 ### Canary Tokens
 
@@ -217,7 +217,8 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **Adaptive Operator CLI** (v2.5) | `pipelock adaptive status / flush / whoami` exposes runtime adaptive state through the authenticated admin API. See [`docs/cli/adaptive.md`](docs/cli/adaptive.md). |
 | **Finding Suppression** | Silence known false positives via config rules or inline `pipelock:ignore` comments |
 | **Multi-Agent Support** | Agent identification via `X-Pipelock-Agent` header for per-agent filtering |
-| **Fleet Monitoring** | Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json) |
+| **Fleet Monitoring** | Per-instance Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json). (Free; monitors a single instance — distinct from the Conductor fleet control plane below.) |
+| **Conductor — fleet control plane** (v2.7, Enterprise) | The Enterprise control plane for a fleet of Pipelock instances: signed policy-bundle distribution to followers, a signed-evidence audit sink (`pipelock fleet-sink`) namespaced per org/fleet/instance, and fleet-wide enrollment, remote kill, and policy rollback over mTLS/SPIFFE. Followers enforce locally and stay fail-closed; Conductor holds no agent secrets. Gated by the `fleet` license feature, fail-closed. See the [Conductor guide](docs/guides/conductor.md). |
 | **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, session smuggling prevention for Google's Agent-to-Agent protocol |
 | **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, exposes `pipelock baseline list/show/ratify/forget` for operator approval and relearning, and flags deviations after ratification. See [`docs/cli/baseline.md`](docs/cli/baseline.md). |
 | **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. Catches loop storms and amplification attacks. |
@@ -366,7 +367,8 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[LangGraph](docs/guides/langgraph.md):** `MultiServerMCPClient`, `StateGraph`
 - **[Hermes](docs/guides/hermes.md):** full-plugin coverage (default, plugin-visible tool surfaces) or lighter MCP-only wrapping for Nous Research's agent, with auth-header sidecar preservation
 - **[JetBrains/Junie](docs/guides/jetbrains.md):** MCP proxy wrapping for IntelliJ, PyCharm, GoLand ([walkthrough](https://pipelab.org/learn/jetbrains-integration/))
-- **Cursor:** use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
+- **Cursor:** `pipelock cursor install` registers Pipelock as a Cursor hook for shell execution, MCP tool calls, and file reads; or use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
+- **VS Code:** `pipelock vscode install` rewrites `.vscode/mcp.json` to route every MCP server through the MCP proxy (stdio commands wrapped, HTTP/SSE servers bridged via `--upstream`); `--global` targets the user-level `mcp.json`
 - **[OpenClaw](docs/guides/openclaw.md):** Gateway sidecar, init container, config wrapping
 
 ## Deployment
@@ -485,12 +487,15 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Transport Modes](docs/guides/transport-modes.md) | All proxy modes and their scanning capabilities |
 | [OWASP MCP Top 10](docs/compliance/owasp-mcp-top10.md) | OWASP MCP Top 10 coverage |
 | [OWASP Agentic Top 15](docs/owasp-agentic-top15-mapping.md) | OWASP Agentic AI Top 15 coverage |
+| [OWASP LLM Top 10](docs/owasp-llm-top10-mapping.md) | OWASP Top 10 for LLM Applications (2025) coverage |
 | [EU AI Act](docs/compliance/eu-ai-act-mapping.md) | EU AI Act compliance mapping |
 | [NIST 800-53](docs/compliance/nist-800-53.md) | NIST SP 800-53 Rev. 5 controls mapping |
+| [Assess Mapping](docs/compliance/assess-mapping.md) | Maps runtime controls to the frameworks `pipelock assess` produces evidence against, for procurement and audit review |
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
 | [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
 | [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
 | [Receipt Verification](docs/guides/receipt-verification.md) | `pipelock verify-receipt`, standalone `pipelock-verifier`, conformance suite, chain integrity |
+| [Receipt Spec Profiles](docs/specs/in-toto-agent-action-receipt-v0.1.md) | in-toto attestation predicate for action receipts, with companion SCITT and AARP profiles and prior-art mapping |
 | [Audit Packet Threat Model](docs/security/audit-packet-threat-model.md) | What verified Audit Packets prove, what they do not prove, and the trust assumptions relying parties must pin |
 | [Receipt Transport Coverage](docs/guides/receipt-transports.md) | Receipt emission matrix across fetch, forward, CONNECT/TLS, WebSocket, MCP, and A2A paths |
 | [Learn-and-Lock](docs/guides/learn-and-lock.md) | Per-agent behavioral contracts: observe, compile, shadow, ratify, promote (v2.4) |
@@ -500,10 +505,22 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Host Containment](docs/contain-cli.md) | `pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` for 3-UID kernel-enforced agent containment (v2.5) |
 | [MCP Integrity Manifests](docs/cli/mcp-integrity.md) | Generate, verify, sign, and require trusted MCP binary-integrity manifests (v2.5) |
 | [Adaptive CLI](docs/cli/adaptive.md) | Inspect and flush adaptive-enforcement runtime state through the admin API (v2.5) |
+| [Conductor](docs/guides/conductor.md) | The Enterprise fleet control plane: policy distribution, audit sink, remote kill, rollback, mTLS/SPIFFE trust, licensing (v2.7, GA) |
+| [Conductor Operator Runbook](docs/guides/conductor-operator-runbook.md) | Hands-on local fleet walkthrough: bootstrap, serve, sign a batch, verify offline |
+| [Kubernetes Enterprise Deployment](docs/guides/kubernetes-enterprise-deployment.md) | Helm-based Conductor fleet: control plane, followers, fleet-sink, PKI Secrets, NetworkPolicies |
+| [`pipelock license`](docs/cli/license.md) | Install, inspect, and check the license that unlocks paid features (Pro `agents`, Enterprise `fleet`) |
 | [`pipelock baseline`](docs/cli/baseline.md) | Inspect, ratify, and relearn behavioral-baseline profiles through the authenticated admin API |
 | [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots, `posture verify` CLI, CI gate, scoring model |
 | [`pipelock init sidecar`](docs/cli/init-sidecar.md) | Generate enforced Kubernetes companion-proxy manifests and MCP launcher contracts (strategic-merge, Kustomize, Helm values) |
 | [`pipelock session`](docs/cli/session.md) | Operator CLI for airlock inspection and recovery (list, inspect, explain, release, terminate, recover) |
+| [Flight Recorder](docs/guides/flight-recorder.md) | Hash-chained signed evidence log: default-on behavior, transcript-root seal, redaction, escrow, key rotation |
+| [TLS Interception](docs/guides/tls-interception.md) | CONNECT-tunnel MITM: CA setup, body/header/response scanning, passthrough domains |
+| [Canary Tokens](docs/guides/canary-tokens.md) | Synthetic secrets that trip an alert the moment an agent tries to exfiltrate one |
+| [Detection Integration](docs/guides/detection-integration.md) | Feed Pipelock decisions and evidence into external detection / SIEM pipelines |
+| [Playground Replay Capture](docs/guides/playground-replay-capture.md) | Drive controlled synthetic attack scenarios and capture the evidence |
+| [PR Review](docs/guides/pr-review.md) | Manual-trigger AI security review for pull requests (`/review` comment) |
+| [MCP Inspector Front](docs/guides/mcp-inspector-front.md) | Front MCP dev tools (Inspector, test servers) through Pipelock scanning |
+| [`pipelock demo`](docs/cli/demo.md) | Self-contained attack scenarios with signed, offline-verifiable receipts — no config or network needed |
 | [Badges](docs/badges.md) | Drop-in Markdown for the `scanned by pipelock` badge on downstream projects |
 
 ## Project Structure

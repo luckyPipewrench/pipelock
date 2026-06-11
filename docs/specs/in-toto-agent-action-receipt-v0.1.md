@@ -10,6 +10,7 @@
 > - [Pipelock Action Receipt implementation spec](https://pipelab.org/learn/action-receipt-spec/)
 > - [Receipt prior-art mapping](./receipt-prior-art-mapping.md) (see the in-toto / SLSA row)
 > - [SCITT signed-statement profile (parallel artifact)](./scitt-agent-action-statement-v0.1.md)
+> - [AARP assurance envelope and appraisal profile (parallel artifact)](./aarp-v0.1-envelope.md)
 
 ## What this is
 

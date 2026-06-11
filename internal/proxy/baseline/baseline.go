@@ -77,13 +77,15 @@ const profileFileExt = ".json"
 
 // Profile is a learned behavioral baseline for an agent.
 type Profile struct {
-	AgentKey     string         `json:"agent_key"`
-	State        ProfileState   `json:"state"`
-	LearnedAt    time.Time      `json:"learned_at"`
-	SessionCount int            `json:"session_count"`
-	Ratified     bool           `json:"ratified"`
-	RatifiedAt   *time.Time     `json:"ratified_at,omitempty"`
-	Metrics      ProfileMetrics `json:"metrics"`
+	AgentKey             string         `json:"agent_key"`
+	State                ProfileState   `json:"state"`
+	LearnedAt            time.Time      `json:"learned_at"`
+	SessionCount         int            `json:"session_count"`
+	ObservedSessionCount int            `json:"observed_session_count,omitempty"`
+	TrimmedSessionCount  int            `json:"trimmed_session_count,omitempty"`
+	Ratified             bool           `json:"ratified"`
+	RatifiedAt           *time.Time     `json:"ratified_at,omitempty"`
+	Metrics              ProfileMetrics `json:"metrics"`
 }
 
 // ProfileMetrics are the learned behavioral ranges.
@@ -321,6 +323,25 @@ func (m *Manager) GetProfile(agentKey string) *Profile {
 	return &cp
 }
 
+// GetAgentProfile returns the current profile summary for an agent, including
+// agents still in observe/learn state that have no learned profile yet.
+func (m *Manager) GetAgentProfile(agentKey string) (Profile, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	as, exists := m.agents[agentKey]
+	if !exists {
+		return Profile{}, false
+	}
+	if as.profile == nil {
+		return Profile{
+			AgentKey: agentKey,
+			State:    as.state,
+		}, true
+	}
+	return cloneProfileSnapshot(as.profile, agentKey, as.state), true
+}
+
 // GetState returns the current state for an agent.
 func (m *Manager) GetState(agentKey string) ProfileState {
 	m.mu.RLock()
@@ -383,15 +404,21 @@ func (m *Manager) Reset(agentKey string) error {
 		return fmt.Errorf("agent %q not found", agentKey)
 	}
 
+	// Delete the persisted profile BEFORE clearing in-memory state. If the
+	// file cannot be removed, fail closed: leave the profile enforcing and
+	// surface the error rather than reporting a forget that silently
+	// resurrects the locked profile on the next restart (loadProfiles
+	// re-reads ProfileDir at construction). A missing file is success.
+	if m.cfg.ProfileDir != "" {
+		path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
+		if err := os.Remove(filepath.Clean(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("removing persisted profile for agent %q: %w", agentKey, err)
+		}
+	}
+
 	as.profile = nil
 	as.learning = nil
 	as.state = StateObserve
-
-	// Remove persisted profile.
-	if m.cfg.ProfileDir != "" {
-		path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
-		_ = os.Remove(filepath.Clean(path))
-	}
 
 	return nil
 }
@@ -409,6 +436,45 @@ func (m *Manager) ListAgents() []string {
 	return keys
 }
 
+// ListProfiles returns a copy of every tracked agent profile sorted by agent
+// key. Agents still learning are returned with their current state and no
+// metrics so operator list views can show progress before ratification.
+func (m *Manager) ListProfiles() []Profile {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	keys := make([]string, 0, len(m.agents))
+	for k := range m.agents {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	profiles := make([]Profile, 0, len(keys))
+	for _, key := range keys {
+		as := m.agents[key]
+		if as.profile == nil {
+			profiles = append(profiles, Profile{
+				AgentKey: key,
+				State:    as.state,
+			})
+			continue
+		}
+		profiles = append(profiles, cloneProfileSnapshot(as.profile, key, as.state))
+	}
+	return profiles
+}
+
+func cloneProfileSnapshot(profile *Profile, agentKey string, state ProfileState) Profile {
+	cp := *profile
+	cp.AgentKey = agentKey
+	cp.State = state
+	if cp.RatifiedAt != nil {
+		ratifiedAt := *cp.RatifiedAt
+		cp.RatifiedAt = &ratifiedAt
+	}
+	return cp
+}
+
 // buildProfile computes a statistical profile from session metrics.
 func (m *Manager) buildProfile(agentKey string, sessions []SessionMetrics) *Profile {
 	data := sessions
@@ -421,11 +487,20 @@ func (m *Manager) buildProfile(agentKey string, sessions []SessionMetrics) *Prof
 		data = sessions
 	}
 
+	observed := len(sessions)
+	retained := len(data)
+	trimmed := observed - retained
+	if trimmed < 0 {
+		trimmed = 0
+	}
+
 	return &Profile{
-		AgentKey:     agentKey,
-		State:        StateRatify,
-		LearnedAt:    time.Now(),
-		SessionCount: len(data),
+		AgentKey:             agentKey,
+		State:                StateRatify,
+		LearnedAt:            time.Now(),
+		SessionCount:         retained,
+		ObservedSessionCount: observed,
+		TrimmedSessionCount:  trimmed,
 		Metrics: ProfileMetrics{
 			ToolCallsPerSession:   computeRange(extractFloat64s(data, func(s SessionMetrics) float64 { return float64(s.ToolCalls) })),
 			UniqueToolsPerSession: computeRange(extractFloat64s(data, func(s SessionMetrics) float64 { return float64(s.UniqueTools) })),

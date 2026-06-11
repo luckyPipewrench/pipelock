@@ -165,6 +165,42 @@ func (c *Client) AdaptiveWhoami(ctx context.Context) (proxy.AdaptiveWhoami, erro
 	return resp, nil
 }
 
+func (c *Client) BaselineList(ctx context.Context) (proxy.BaselineListResponse, error) {
+	target := c.base + "/api/v1/baseline"
+	var resp proxy.BaselineListResponse
+	if err := c.do(ctx, http.MethodGet, target, nil, &resp); err != nil {
+		return proxy.BaselineListResponse{}, err
+	}
+	return resp, nil
+}
+
+func (c *Client) BaselineShow(ctx context.Context, agent string) (proxy.BaselineProfile, error) {
+	target := c.base + "/api/v1/baseline/" + url.PathEscape(agent)
+	var resp proxy.BaselineProfile
+	if err := c.do(ctx, http.MethodGet, target, nil, &resp); err != nil {
+		return proxy.BaselineProfile{}, err
+	}
+	return resp, nil
+}
+
+func (c *Client) BaselineRatify(ctx context.Context, agent string) (proxy.BaselineRatifyResult, error) {
+	target := c.base + "/api/v1/baseline/" + url.PathEscape(agent) + "/ratify"
+	var resp proxy.BaselineRatifyResult
+	if err := c.do(ctx, http.MethodPost, target, nil, &resp); err != nil {
+		return proxy.BaselineRatifyResult{}, err
+	}
+	return resp, nil
+}
+
+func (c *Client) BaselineForget(ctx context.Context, agent string) (proxy.BaselineForgetResult, error) {
+	target := c.base + "/api/v1/baseline/" + url.PathEscape(agent) + "/forget"
+	var resp proxy.BaselineForgetResult
+	if err := c.do(ctx, http.MethodPost, target, nil, &resp); err != nil {
+		return proxy.BaselineForgetResult{}, err
+	}
+	return resp, nil
+}
+
 // do performs the HTTP call with bearer auth, decodes the JSON response
 // into out, and returns a typed APIError for non-2xx statuses so the
 // caller can map each class to a distinct exit code.

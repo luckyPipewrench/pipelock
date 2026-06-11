@@ -45,13 +45,16 @@ func enableSubreaper() error {
 	return unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
 }
 
-// killAdoptedDescendants SIGKILLs every process whose parent PID matches
-// our own. Call after the direct MCP child has been waited on and the
-// pgid kill has drained; anything still around at that point was either
-// a double-forked orphan (reparented to us by the subreaper bit) or a
-// grandchild that set its own session via setsid. Either way, it is not
-// a child of the original process group and the earlier -pid SIGKILL
-// would not have reached it.
+// killAdoptedDescendants SIGKILLs orphaned descendants whose parent PID
+// matches our own. Call after the direct MCP child has been waited on and the
+// pgid kill has drained; anything still around at that point was either a
+// double-forked orphan (reparented to us by the subreaper bit) or a grandchild
+// that set its own session via setsid. Either way, it is not a child of the
+// original process group and the earlier -pid SIGKILL would not have reached it.
+//
+// Concurrent RunProxy calls in the same process also have direct children whose
+// PPID is our PID. Those are active MCP servers, not adopted descendants, and
+// must not be killed by another proxy's teardown sweep.
 //
 // We don't return errors - best-effort. A process we can't signal
 // (ESRCH because it already died, EPERM because of a namespace boundary)
@@ -71,7 +74,7 @@ func killAdoptedDescendants() {
 		if convErr != nil {
 			continue
 		}
-		if childPID == pid {
+		if childPID == pid || isProtectedDirectPID(childPID) {
 			continue
 		}
 		statPath := filepath.Clean("/proc/" + name + "/stat")

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const testAgent = "agent-1"
@@ -78,6 +79,12 @@ func TestBaseline_Learning(t *testing.T) {
 	if profile.SessionCount != 3 {
 		t.Errorf("expected session count 3, got %d", profile.SessionCount)
 	}
+	if profile.ObservedSessionCount != 3 {
+		t.Errorf("expected observed session count 3, got %d", profile.ObservedSessionCount)
+	}
+	if profile.TrimmedSessionCount != 0 {
+		t.Errorf("expected trimmed session count 0, got %d", profile.TrimmedSessionCount)
+	}
 
 	// Mean of [3,4,5] = 4.0.
 	if math.Abs(profile.Metrics.ToolCallsPerSession.Mean-4.0) > 0.1 {
@@ -129,6 +136,80 @@ func TestBaseline_StateTransitions(t *testing.T) {
 	}
 	if profile.RatifiedAt == nil {
 		t.Error("ratified_at should be set")
+	}
+}
+
+func TestBaseline_ProfileSnapshotsDeepCopyRatifiedAt(t *testing.T) {
+	cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: t.TempDir()}
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+	if err := mgr.Ratify(testAgent); err != nil {
+		t.Fatalf("Ratify: %v", err)
+	}
+
+	profile, ok := mgr.GetAgentProfile(testAgent)
+	if !ok {
+		t.Fatal("GetAgentProfile should find learned profile")
+	}
+	if profile.RatifiedAt == nil {
+		t.Fatal("ratified snapshot should include RatifiedAt")
+	}
+	original := *profile.RatifiedAt
+	*profile.RatifiedAt = time.Unix(0, 0).UTC()
+
+	again, ok := mgr.GetAgentProfile(testAgent)
+	if !ok {
+		t.Fatal("GetAgentProfile should still find learned profile")
+	}
+	if again.RatifiedAt == nil || !again.RatifiedAt.Equal(original) {
+		t.Fatalf("GetAgentProfile leaked mutable RatifiedAt pointer: got %v want %v", again.RatifiedAt, original)
+	}
+
+	list := mgr.ListProfiles()
+	if len(list) != 1 || list[0].RatifiedAt == nil {
+		t.Fatalf("ListProfiles should include ratified profile snapshot: %+v", list)
+	}
+	*list[0].RatifiedAt = time.Unix(1, 0).UTC()
+	again, ok = mgr.GetAgentProfile(testAgent)
+	if !ok {
+		t.Fatal("GetAgentProfile should still find learned profile after list mutation")
+	}
+	if again.RatifiedAt == nil || !again.RatifiedAt.Equal(original) {
+		t.Fatalf("ListProfiles leaked mutable RatifiedAt pointer: got %v want %v", again.RatifiedAt, original)
+	}
+}
+
+func TestBaseline_ProfileSnapshotsIncludeLearningAgents(t *testing.T) {
+	cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: t.TempDir()}
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	mgr.RecordSession(testAgent, normalMetrics())
+
+	if _, ok := mgr.GetAgentProfile("missing-agent"); ok {
+		t.Fatal("GetAgentProfile should not find unknown agents")
+	}
+
+	profile, ok := mgr.GetAgentProfile(testAgent)
+	if !ok {
+		t.Fatal("GetAgentProfile should include learning agent")
+	}
+	if profile.AgentKey != testAgent || profile.State != StateObserve || profile.SessionCount != 0 {
+		t.Fatalf("unexpected learning snapshot: %+v", profile)
+	}
+
+	profiles := mgr.ListProfiles()
+	if len(profiles) != 1 {
+		t.Fatalf("ListProfiles count = %d, want 1: %+v", len(profiles), profiles)
+	}
+	if profiles[0].AgentKey != testAgent || profiles[0].State != StateObserve || profiles[0].SessionCount != 0 {
+		t.Fatalf("unexpected learning list snapshot: %+v", profiles[0])
 	}
 }
 
@@ -266,6 +347,59 @@ func TestBaseline_Reset(t *testing.T) {
 	if profile := mgr.GetProfile(testAgent); profile != nil {
 		t.Error("profile should be nil after reset")
 	}
+	devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 999})
+	if len(devs) != 0 {
+		t.Errorf("expected reset profile to stop enforcement, got %d deviations", len(devs))
+	}
+}
+
+func TestBaseline_Reset_FailsClosedWhenRemovalFails(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: dir}
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+	if err := mgr.Ratify(testAgent); err != nil {
+		t.Fatalf("Ratify: %v", err)
+	}
+	if state := mgr.GetState(testAgent); state != StateLocked {
+		t.Fatalf("expected locked after ratify, got %q", state)
+	}
+
+	// Force os.Remove to fail by replacing the persisted profile file with a
+	// NON-EMPTY directory at the same path. ENOTEMPTY fails regardless of
+	// test privilege, unlike a read-only parent dir (bypassed under root).
+	path := filepath.Join(dir, testAgent+profileFileExt)
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove seeded profile: %v", err)
+	}
+	if err := os.Mkdir(path, 0o750); err != nil {
+		t.Fatalf("mkdir blocker dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "blocker"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+
+	// Forget must fail closed: surface the removal error and leave the
+	// profile enforcing, NOT report success while the locked profile would
+	// resurrect on the next loadProfiles().
+	if err := mgr.Reset(testAgent); err == nil {
+		t.Fatal("expected Reset to error when persisted profile cannot be removed")
+	}
+	if state := mgr.GetState(testAgent); state != StateLocked {
+		t.Fatalf("profile must stay locked after failed forget, got %q", state)
+	}
+	if profile := mgr.GetProfile(testAgent); profile == nil {
+		t.Fatal("profile must remain in memory after failed forget")
+	}
+	if devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("enforcement must remain active after a failed forget")
+	}
 }
 
 func TestBaseline_Reset_NotFound(t *testing.T) {
@@ -314,6 +448,12 @@ func TestBaseline_PoisonResistance(t *testing.T) {
 	// The poison session should be trimmed. Mean should be close to 4 (normal).
 	if profile.Metrics.ToolCallsPerSession.Mean > 10 {
 		t.Errorf("poison session should be trimmed; mean=%f (expected ~4)", profile.Metrics.ToolCallsPerSession.Mean)
+	}
+	if profile.ObservedSessionCount != 11 {
+		t.Errorf("observed session count = %d, want 11", profile.ObservedSessionCount)
+	}
+	if profile.TrimmedSessionCount != 1 {
+		t.Errorf("trimmed session count = %d, want 1", profile.TrimmedSessionCount)
 	}
 }
 

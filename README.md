@@ -220,7 +220,7 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **Fleet Monitoring** | Per-instance Prometheus metrics + ready-to-import [Grafana dashboard](configs/grafana-dashboard.json). (Free; monitors a single instance — distinct from the Conductor fleet control plane below.) |
 | **Conductor — fleet control plane** (v2.7, Enterprise) | The Enterprise control plane for a fleet of Pipelock instances: signed policy-bundle distribution to followers, a signed-evidence audit sink (`pipelock fleet-sink`) namespaced per org/fleet/instance, and fleet-wide enrollment, remote kill, and policy rollback over mTLS/SPIFFE. Followers enforce locally and stay fail-closed; Conductor holds no agent secrets. Gated by the `fleet` license feature, fail-closed. See the [Conductor guide](docs/guides/conductor.md). |
 | **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, session smuggling prevention for Google's Agent-to-Agent protocol |
-| **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, flags deviations after ratification. |
+| **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, exposes `pipelock baseline list/show/ratify/forget` for operator approval and relearning, and flags deviations after ratification. See [`docs/cli/baseline.md`](docs/cli/baseline.md). |
 | **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. Catches loop storms and amplification attacks. |
 | **Taint Escalation** | Exposure-based policy escalation across MCP + task boundaries. Sessions that recently observed untrusted content get elevated scanning on protected operations until trust is explicitly restored. |
 | **Mediation Envelope** | RFC 8941 sideband metadata on forwarded HTTP requests and MCP `_meta`, carrying action type, verdict, actor identity, policy hash, taint context, and receipt correlation ID. v2.4 adds inbound verification with replay protection, SPIFFE actor format, and an RFC 9421 well-known signing-key directory at `/.well-known/http-message-signatures-directory`. See [federation guide](docs/guides/federation.md). |
@@ -509,6 +509,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Conductor Operator Runbook](docs/guides/conductor-operator-runbook.md) | Hands-on local fleet walkthrough: bootstrap, serve, sign a batch, verify offline |
 | [Kubernetes Enterprise Deployment](docs/guides/kubernetes-enterprise-deployment.md) | Helm-based Conductor fleet: control plane, followers, fleet-sink, PKI Secrets, NetworkPolicies |
 | [`pipelock license`](docs/cli/license.md) | Install, inspect, and check the license that unlocks paid features (Pro `agents`, Enterprise `fleet`) |
+| [`pipelock baseline`](docs/cli/baseline.md) | Inspect, ratify, and relearn behavioral-baseline profiles through the authenticated admin API |
 | [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots, `posture verify` CLI, CI gate, scoring model |
 | [`pipelock init sidecar`](docs/cli/init-sidecar.md) | Generate enforced Kubernetes companion-proxy manifests and MCP launcher contracts (strategic-merge, Kustomize, Helm values) |
 | [`pipelock session`](docs/cli/session.md) | Operator CLI for airlock inspection and recovery (list, inspect, explain, release, terminate, recover) |
@@ -529,7 +530,7 @@ cmd/pipelock/          CLI entry point
 internal/
   cli/                 20+ Cobra commands (run, check, init, generate, mcp, session, posture, rules, ...)
     diag/              `pipelock doctor` and install-verification diagnostics
-    session/           `pipelock session` operator CLI — airlock inspection and recovery
+    session/           `pipelock session`, `pipelock adaptive`, and `pipelock baseline` operator CLIs
     setup/             `pipelock init sidecar` — companion-proxy manifest generation (K8s)
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
   scanner/             11-layer URL scanning pipeline + response injection detection

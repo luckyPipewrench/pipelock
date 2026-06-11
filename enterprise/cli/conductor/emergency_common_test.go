@@ -678,6 +678,74 @@ func TestEmergencySnippetTruncates(t *testing.T) {
 	}
 }
 
+func TestEmergencySnippetSanitizesAndRedacts(t *testing.T) {
+	got := emergencySnippet([]byte("first line\nAuthorization: Bearer admin-token\r\nsecond\x00line"), "admin-token")
+	if strings.Contains(got, "\n") || strings.Contains(got, "\r") || strings.Contains(got, "\x00") {
+		t.Fatalf("snippet kept control bytes: %q", got)
+	}
+	if strings.Contains(got, "admin-token") {
+		t.Fatalf("snippet leaked bearer token: %q", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("snippet did not mark redaction: %q", got)
+	}
+
+	// Empty / whitespace-only secrets must NOT redact: an empty token would
+	// otherwise turn ReplaceAll into a no-op-or-corruption and, worse, an
+	// attacker-controlled empty secret could mask the whole body. The guard
+	// skips empty secrets, so the body survives verbatim (minus control bytes).
+	plain := emergencySnippet([]byte("plain server error body"), "", "   ")
+	if plain != "plain server error body" {
+		t.Fatalf("empty secret altered snippet: %q", plain)
+	}
+	if strings.Contains(plain, "[redacted]") {
+		t.Fatalf("empty secret produced spurious redaction: %q", plain)
+	}
+
+	// Multiple secrets all redact; a non-matching secret is harmless.
+	multi := emergencySnippet([]byte("tokenA and tokenB and tokenA"), "tokenA", "tokenB", "absent")
+	if strings.Contains(multi, "tokenA") || strings.Contains(multi, "tokenB") {
+		t.Fatalf("multi-secret redaction leaked: %q", multi)
+	}
+}
+
+func TestZeroBytesAndZeroLoadedSigningKeys(t *testing.T) {
+	// zeroBytes wipes in place.
+	b := []byte{1, 2, 3, 4}
+	zeroBytes(b)
+	for i, v := range b {
+		if v != 0 {
+			t.Fatalf("zeroBytes left byte %d = %d, want 0", i, v)
+		}
+	}
+	// zeroLoadedSigningKeys wipes each key's private bytes in place. Because
+	// ed25519.PrivateKey(privBytes) aliases the same backing array, wiping the
+	// loaded key zeroes the underlying material.
+	_, f1, _ := writeSigningKey(t, "wipe-signer")
+	key, err := loadSigningKeyFile(f1, signing.PurposeRemoteKillSigning)
+	if err != nil {
+		t.Fatalf("loadSigningKeyFile: %v", err)
+	}
+	// Capture the backing array reference; confirm it is non-zero before wipe.
+	priv := key.priv
+	allZero := true
+	for _, v := range priv {
+		if v != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Fatal("loaded private key was already all-zero before wipe")
+	}
+	zeroLoadedSigningKeys([]loadedSigningKey{key})
+	for i, v := range priv {
+		if v != 0 {
+			t.Fatalf("zeroLoadedSigningKeys left private byte %d = %d, want 0", i, v)
+		}
+	}
+}
+
 func TestSignEmergencyPreimagePropagatesError(t *testing.T) {
 	_, f1, _ := writeSigningKey(t, "signer-1")
 	keys, err := loadSigningKeys([]string{f1}, 1, signing.PurposeRemoteKillSigning)

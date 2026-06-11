@@ -120,6 +120,7 @@ func loadSigningKeyFile(path string, requiredPurpose signing.KeyPurpose) (loaded
 	if err != nil {
 		return loadedSigningKey{}, fmt.Errorf("read signing key %q: %w", clean, err)
 	}
+	defer zeroBytes(raw)
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var kf signingKeyFile
@@ -149,6 +150,7 @@ func loadSigningKeyFile(path string, requiredPurpose signing.KeyPurpose) (loaded
 	priv := ed25519.PrivateKey(privBytes)
 	derived, ok := priv.Public().(ed25519.PublicKey)
 	if !ok || !bytes.Equal(derived, pubBytes) {
+		zeroBytes(privBytes)
 		return loadedSigningKey{}, fmt.Errorf("signing key %q: private key does not match its declared public key", clean)
 	}
 	return loadedSigningKey{id: kf.KeyID, priv: priv}, nil
@@ -169,19 +171,35 @@ func loadSigningKeys(files []string, minSigners int, purpose signing.KeyPurpose)
 	for _, file := range files {
 		key, err := loadSigningKeyFile(file, purpose)
 		if err != nil {
+			zeroLoadedSigningKeys(keys)
 			return nil, err
 		}
 		if _, dup := seen[key.id]; dup {
+			zeroBytes(key.priv)
+			zeroLoadedSigningKeys(keys)
 			return nil, fmt.Errorf("%w: key_id %q", errControlKeyDuplicateKey, key.id)
 		}
 		seen[key.id] = struct{}{}
 		keys = append(keys, key)
 	}
 	if minSigners > 0 && len(keys) < minSigners {
+		zeroLoadedSigningKeys(keys)
 		return nil, fmt.Errorf("%w: this action requires %d distinct signers, got %d",
 			conductorcore.ErrThresholdRequired, minSigners, len(keys))
 	}
 	return keys, nil
+}
+
+func zeroLoadedSigningKeys(keys []loadedSigningKey) {
+	for _, key := range keys {
+		zeroBytes(key.priv)
+	}
+}
+
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // signEmergencyPreimage attaches one ed25519 SignatureProof per loaded key for
@@ -313,7 +331,7 @@ func postEmergencyJSON(ctx context.Context, client emergencyTransport, baseURL, 
 		return fmt.Errorf("read conductor response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("conductor rejected request: status=%d body=%s", resp.StatusCode, emergencySnippet(body))
+		return fmt.Errorf("conductor rejected request: status=%d body=%s", resp.StatusCode, emergencySnippet(body, bearer))
 	}
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {
@@ -323,8 +341,21 @@ func postEmergencyJSON(ctx context.Context, client emergencyTransport, baseURL, 
 	return nil
 }
 
-func emergencySnippet(b []byte) string {
+func emergencySnippet(b []byte, secrets ...string) string {
 	s := strings.TrimSpace(string(b))
+	for _, secret := range secrets {
+		secret = strings.TrimSpace(secret)
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "[redacted]")
+		}
+	}
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
 	const maxLen = 512
 	if len(s) > maxLen {
 		return s[:maxLen] + "…"

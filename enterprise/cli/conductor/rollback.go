@@ -136,6 +136,7 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 	if err != nil {
 		return err
 	}
+	defer zeroLoadedSigningKeys(keys)
 	auth.Signatures, err = signEmergencyPreimage(auth.SignablePreimage, signing.PurposePolicyBundleRollback, keys)
 	if err != nil {
 		return err

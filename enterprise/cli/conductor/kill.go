@@ -157,6 +157,7 @@ func runRemoteKill(cmd *cobra.Command, opts killOptions, state conductorcore.Kil
 	if err != nil {
 		return err
 	}
+	defer zeroLoadedSigningKeys(keys)
 	msg.Signatures, err = signEmergencyPreimage(msg.SignablePreimage, signing.PurposeRemoteKillSigning, keys)
 	if err != nil {
 		return err

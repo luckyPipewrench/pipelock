@@ -89,6 +89,52 @@ func TestBuildConductorStaleEnforcerValid(t *testing.T) {
 	}
 }
 
+// TestInitConductorStaleEnforcerSetsStrictDenyFlag proves the production init
+// path records the strict_deny_all posture on the Server so teardownConductor
+// can fail closed. Strict -> flag set; continue -> flag NOT set.
+func TestInitConductorStaleEnforcerSetsStrictDenyFlag(t *testing.T) {
+	t.Run("strict sets flag", func(t *testing.T) {
+		dir := t.TempDir()
+		cache, err := applycache.Open(applycache.Config{Dir: filepath.Join(dir, "cache")})
+		if err != nil {
+			t.Fatalf("applycache.Open: %v", err)
+		}
+		s := &Server{conductorApply: cache}
+		cfg := staleEnforcerBaseConfig(dir) // defaults to strict_deny_all
+		if err := s.initConductorStaleEnforcer(&config.Config{Conductor: cfg}, killswitch.New(config.Defaults()), io.Discard); err != nil {
+			t.Fatalf("initConductorStaleEnforcer: %v", err)
+		}
+		if !s.conductorStaleStrictDeny.Load() {
+			t.Fatal("strict policy did not set conductorStaleStrictDeny")
+		}
+	})
+	t.Run("continue does not set flag", func(t *testing.T) {
+		dir := t.TempDir()
+		cache, err := applycache.Open(applycache.Config{Dir: filepath.Join(dir, "cache")})
+		if err != nil {
+			t.Fatalf("applycache.Open: %v", err)
+		}
+		s := &Server{conductorApply: cache}
+		cfg := staleEnforcerBaseConfig(dir)
+		cfg.StalePolicy.AfterGrace = config.ConductorStaleContinueLastKnownGood
+		if err := s.initConductorStaleEnforcer(&config.Config{Conductor: cfg}, killswitch.New(config.Defaults()), io.Discard); err != nil {
+			t.Fatalf("initConductorStaleEnforcer: %v", err)
+		}
+		if s.conductorStaleStrictDeny.Load() {
+			t.Fatal("continue policy set conductorStaleStrictDeny, want false")
+		}
+	})
+	t.Run("disabled does not set flag", func(t *testing.T) {
+		s := &Server{}
+		if err := s.initConductorStaleEnforcer(&config.Config{Conductor: config.Conductor{Enabled: false}}, killswitch.New(config.Defaults()), io.Discard); err != nil {
+			t.Fatalf("initConductorStaleEnforcer: %v", err)
+		}
+		if s.conductorStaleStrictDeny.Load() {
+			t.Fatal("disabled conductor set conductorStaleStrictDeny, want false")
+		}
+	})
+}
+
 // TestStaleEnforcerEndToEndDeniesAllThroughRealKillSwitch wires a real apply
 // cache (empty -> no valid bundle), a real kill-switch controller, and the real
 // enforcer, then runs the enforcer and asserts it engages a TOTAL deny on the

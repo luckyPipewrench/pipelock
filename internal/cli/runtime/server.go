@@ -117,8 +117,16 @@ type Server struct {
 	// conductorStale holds *applycache.StaleEnforcer in the enterprise build.
 	// It engages the kill switch's conductor_stale source when the active
 	// policy bundle ages past its grace window, failing closed.
-	conductorStale    conductorRunner
-	conductorProducer conductorCloser
+	conductorStale conductorRunner
+	// conductorStaleStrictDeny is set true at enforcer init when the follower's
+	// stale policy is strict_deny_all. teardownConductor reads it to fail closed:
+	// once the fleet entitlement is permanently gone, the stale enforcer's ticker
+	// is cancelled and can never re-engage, so a strict follower whose bundle
+	// later ages past grace would otherwise serve stale config forever. Engaging
+	// conductor_stale AT teardown closes that window. Independent of the build
+	// tag (the field lives here so the untagged teardown path can read it).
+	conductorStaleStrictDeny atomic.Bool
+	conductorProducer        conductorCloser
 
 	// conductorLifeMu guards conductorCancel and conductorWait.
 	// teardownConductor may be invoked concurrently from the runtime CRL watcher

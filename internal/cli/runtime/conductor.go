@@ -321,6 +321,13 @@ func (s *Server) initConductorStaleEnforcer(cfg *config.Config, ks *killswitch.C
 	}
 	if enforcer != nil {
 		s.conductorStale = enforcer
+		// Record whether the stale policy is strict_deny_all so teardownConductor
+		// can fail closed when the enforcer is cancelled on entitlement loss. Set
+		// only alongside a live enforcer (conductor enabled), so a disabled or
+		// continue_last_known_good follower never engages stale-deny at teardown.
+		if cfg.Conductor.StalePolicy.AfterGrace == config.ConductorStaleStrictDenyAll {
+			s.conductorStaleStrictDeny.Store(true)
+		}
 	}
 	return nil
 }

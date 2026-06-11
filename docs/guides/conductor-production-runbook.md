@@ -381,14 +381,26 @@ Intended shape once shipped:
 ```bash
 # Push a signed, time-bounded fleet-wide kill (threshold-signed).
 pipelock conductor kill \
-  --conductor-url https://conductor…:8895 \
+  --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org org-acme --fleet prod --instance '*' \
   --signing-key /etc/pipelock/fleet-keys/kill-approver-1.json \
-  --valid-for 1h \
+  --signing-key /etc/pipelock/fleet-keys/kill-approver-2.json \
+  --ttl 1h \
   --admin-token-file /etc/pipelock/conductor/tokens/admin/token \
-  --client-cert … --client-key … --server-ca …
+  --tls-cert /etc/pipelock/operator.crt \
+  --tls-key /etc/pipelock/operator.key \
+  --server-ca /etc/pipelock/conductor-ca.pem
 
 # Clear it once the incident is resolved.
-pipelock conductor resume --conductor-url https://conductor…:8895 --admin-token-file …
+pipelock conductor resume \
+  --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org org-acme --fleet prod --instance '*' \
+  --signing-key /etc/pipelock/fleet-keys/kill-approver-1.json \
+  --signing-key /etc/pipelock/fleet-keys/kill-approver-2.json \
+  --admin-token-file /etc/pipelock/conductor/tokens/admin/token \
+  --tls-cert /etc/pipelock/operator.crt \
+  --tls-key /etc/pipelock/operator.key \
+  --server-ca /etc/pipelock/conductor-ca.pem
 ```
 
 Conductor rejects a kill whose validity window exceeds
@@ -405,12 +417,17 @@ Intended shape once shipped:
 
 ```bash
 pipelock conductor rollback \
-  --conductor-url https://conductor…:8895 \
-  --to-version 1 \
+  --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org org-acme --fleet prod --instance '*' \
+  --current-bundle-id bundle-v2 --current-version 2 \
+  --target-bundle-id bundle-v1 --target-version 1 \
   --signing-key /etc/pipelock/fleet-keys/rollback-approver-1.json \
-  --valid-for 1h \
+  --signing-key /etc/pipelock/fleet-keys/rollback-approver-2.json \
+  --ttl 1h \
   --admin-token-file /etc/pipelock/conductor/tokens/admin/token \
-  --client-cert … --client-key … --server-ca …
+  --tls-cert /etc/pipelock/operator.crt \
+  --tls-key /etc/pipelock/operator.key \
+  --server-ca /etc/pipelock/conductor-ca.pem
 ```
 
 Signed with the policy-bundle-rollback (threshold) key. Conductor rejects a
@@ -422,12 +439,12 @@ vice versa.
 
 > **Status: pending.** The default enrollment model auto-registers a follower
 > from its mTLS SPIFFE identity, so no token is required to enroll. A
-> `pipelock conductor enrollment-token` admin command to mint/list one-shot
+> `pipelock conductor enrollment-token mint` admin command to mint one-shot
 > tokens (for an approval-gated enrollment model) is not yet shipped.
 
 ## 10. Fleet status and followers — *pending PR C*
 
-> **Status: pending.** `pipelock conductor fleet status` / `followers list` are
+> **Status: pending.** `pipelock conductor fleet status` / `followers` are
 > not yet shipped (PR C adds a follower-list read endpoint plus the CLI). Until
 > then, follower health is observable through pod readiness and the follower's
 > own logs.
@@ -436,10 +453,13 @@ Intended shape once shipped:
 
 ```bash
 pipelock conductor fleet status \
-  --conductor-url https://conductor…:8895 \
-  --auditor-token-file /etc/pipelock/conductor/tokens/auditor/token \
-  --client-cert … --client-key … --server-ca …
-# Lists enrolled instances, last-seen, applied bundle version, and drift.
+  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org-id org-acme --fleet-id prod \
+  --token-file /etc/pipelock/conductor/tokens/auditor/token \
+  --client-cert /etc/pipelock/operator.crt \
+  --client-key /etc/pipelock/operator.key \
+  --ca-file /etc/pipelock/conductor-ca.pem
+# Lists enrolled instance metadata: identity, audit key id, active state, and enrollment time.
 ```
 
 ## 11. Query the audit sink — *pending PR C*
@@ -449,6 +469,18 @@ pipelock conductor fleet status \
 > lands in PR C. Until then, query metadata through the auditor HTTP API
 > (`org`/`fleet`/`instance` tuple + auditor token) and verify the raw evidence
 > offline with `pipelock verify-receipt` (below).
+
+Intended shape once shipped:
+
+```bash
+pipelock conductor audit query \
+  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org-id org-acme --fleet-id prod --instance-id edge-01 \
+  --token-file /etc/pipelock/conductor/tokens/auditor/token \
+  --client-cert /etc/pipelock/operator.crt \
+  --client-key /etc/pipelock/operator.key \
+  --ca-file /etc/pipelock/conductor-ca.pem
+```
 
 The audit query API returns **metadata only** — it never exports raw stored
 payload bytes. The sink's `--storage-dir` is the raw-evidence escrow boundary;
@@ -507,18 +539,28 @@ The operator-lifecycle rule for every piece of fleet state: prove you can
 
 ## Known limitations (be honest about these)
 
-- **`stale_policy` / `strict_deny_all` is not enforced yet.** The
-  `conductor.stale_policy` block validates at startup, but the follower runtime
-  does **not** yet act on it — there is no runtime code path that denies all
-  traffic when the active bundle goes stale and Conductor is unreachable. A
-  follower that loses contact with Conductor keeps enforcing the **last bundle it
-  applied** (and a bundle's own validity window is still checked, so an expired
-  bundle never applies). Do not rely on `strict_deny_all` for stale-policy
-  fail-closed behavior until that runtime path ships.
+- **`stale_policy.strict_deny_all` enforcement lands with the emergency-control
+  runtime change.** Once that companion change is present, the follower runtime
+  re-evaluates the active bundle on the poll cadence and engages the independent
+  `conductor_stale` kill-switch source when the bundle is missing, corrupt, or
+  past grace. Clearing remote-kill does not clear stale denial, and clearing
+  stale does not clear remote-kill. Before that runtime change lands,
+  `conductor.stale_policy` validates but remains inert.
+- **License-revocation teardown interacts with stale-policy.** When the fleet
+  license is revoked or expires, the follower tears down its Conductor pollers
+  (including the stale enforcer) and keeps only free local detection running,
+  re-activatable by restart. Because the stale enforcer stops on teardown, it no
+  longer re-evaluates bundle staleness afterward: if it had last cleared
+  `conductor_stale` while the bundle was in grace, the `conductor_stale` source
+  stays clear post-teardown until the follower restarts or another local
+  kill-switch source engages. Confirm the exact post-teardown posture against the
+  emergency-control change's own tests before relying on stale-deny across a
+  license-revocation event; treat the interaction as a known limitation until
+  teardown itself asserts a fail-closed source.
 - **Several follower `conductor:` fields are reserved.**
   `created_skew_seconds`, `max_min_version_*_skew`, `max_capability_threshold`,
-  `emergency_stream`, and `stale_policy` validate but are not enforced by the
-  follower runtime yet.
+  and `emergency_stream` validate but are not enforced by the follower runtime
+  yet.
 - **`trust-root-rotation` and `enrollment-token-signing` keys** are wire-stable
   purpose bindings with no consuming workflow yet.
 - **Operator producer CLIs are pending** (publish/kill/resume/rollback/

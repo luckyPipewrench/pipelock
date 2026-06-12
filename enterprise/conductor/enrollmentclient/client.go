@@ -142,10 +142,10 @@ func validateResponse(resp Response, req Request) error {
 
 func snippet(b []byte, secrets ...string) string {
 	s := strings.TrimSpace(string(b))
-	for _, secret := range secrets {
-		secret = strings.TrimSpace(secret)
-		if secret != "" {
-			s = strings.ReplaceAll(s, secret, "[redacted]")
+	for _, cred := range secrets {
+		cred = strings.TrimSpace(cred)
+		if cred != "" {
+			s = strings.ReplaceAll(s, cred, "[redacted]")
 		}
 	}
 	s = strings.Map(func(r rune) rune {

@@ -1028,8 +1028,6 @@ func TestRollbackAuthorization_ValidateErrors(t *testing.T) {
 		{"unsupported_schema", func(r *RollbackAuthorization) { r.SchemaVersion = 99 }, ErrUnsupportedSchemaVersion},
 		{"missing_authorization_id", func(r *RollbackAuthorization) { r.AuthorizationID = "" }, ErrMissingField},
 		{"missing_fleet", func(r *RollbackAuthorization) { r.FleetID = "" }, ErrMissingField},
-		{"instance_scoped_audience", func(r *RollbackAuthorization) { r.Audience = Audience{InstanceIDs: []string{"instance-1"}} }, ErrInvalidRollback},
-		{"label_scoped_audience", func(r *RollbackAuthorization) { r.Audience = Audience{Labels: map[string]string{"tier": "prod"}} }, ErrInvalidRollback},
 		{"missing_current_bundle", func(r *RollbackAuthorization) { r.CurrentBundleID = "" }, ErrMissingField},
 		{"missing_target_bundle", func(r *RollbackAuthorization) { r.TargetBundleID = "" }, ErrMissingField},
 		{"missing_counter", func(r *RollbackAuthorization) { r.Counter = 0 }, ErrMissingField},
@@ -1044,6 +1042,19 @@ func TestRollbackAuthorization_ValidateErrors(t *testing.T) {
 				t.Fatalf("Validate() = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestRollbackAuthorization_ValidateToleratesLegacyAudience(t *testing.T) {
+	for _, audience := range []Audience{
+		{InstanceIDs: []string{"instance-1"}},
+		{Labels: map[string]string{"tier": "prod"}},
+	} {
+		auth := testRollbackAuthorization()
+		auth.Audience = audience
+		if err := auth.Validate(); err != nil {
+			t.Fatalf("Validate() with audience %+v error = %v, want nil", audience, err)
+		}
 	}
 }
 

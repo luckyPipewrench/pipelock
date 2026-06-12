@@ -341,14 +341,11 @@ type RollbackReconcileSkip struct {
 
 // ReconcileRollbackHeads re-applies persisted rollback authorizations to the
 // stream heads at startup, healing a head whose marker write failed after the
-// authorization was accepted. It is best-effort and TOLERANT: an authorization
-// that no longer applies (e.g. one persisted by an earlier release whose
-// audience the current validator rejects, one already superseded by a forward
-// publish, or one whose bundles are no longer present) is collected as a skip
-// and reconciliation continues. The durable per-stream head markers loaded by
-// the store remain the source of truth for the effective head, so skipping a
-// stale authorization is safe; failing the whole startup on one bad record would
-// take the fleet's coordination down. Only a nil store is fatal.
+// authorization was accepted. It is tolerant only for logical/stale
+// authorizations that no longer apply, such as one already superseded by a
+// forward publish or one whose bundles are no longer present. Persistence and
+// other non-logical errors are fatal so startup cannot serve an un-rolled-back
+// forward head after recovery fails to durably apply the rollback marker.
 func (s *FileBundleStore) ReconcileRollbackHeads(ctx context.Context, records []StoredRollbackAuthorization, now time.Time) ([]RollbackReconcileSkip, error) {
 	if s == nil {
 		return nil, ErrStoreRequired
@@ -370,10 +367,14 @@ func (s *FileBundleStore) ReconcileRollbackHeads(ctx context.Context, records []
 	var skipped []RollbackReconcileSkip
 	for _, record := range sorted {
 		if err := s.ApplyRollbackHead(ctx, record.Authorization, now); err != nil {
-			skipped = append(skipped, RollbackReconcileSkip{
-				AuthorizationID: record.Authorization.AuthorizationID,
-				Err:             err,
-			})
+			if errors.Is(err, conductor.ErrInvalidRollback) || errors.Is(err, ErrBundleNotFound) {
+				skipped = append(skipped, RollbackReconcileSkip{
+					AuthorizationID: record.Authorization.AuthorizationID,
+					Err:             err,
+				})
+				continue
+			}
+			return skipped, err
 		}
 	}
 	return skipped, nil

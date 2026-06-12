@@ -295,6 +295,59 @@ func TestHandlerPublishRollbackAuthorizationMissingTargetDoesNotRecord(t *testin
 	}
 }
 
+func TestHandlerPublishRollbackAuthorizationRejectsAudience(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		audience conductor.Audience
+	}{
+		{name: "instance_ids", audience: conductor.Audience{InstanceIDs: []string{"edge-01"}}},
+		{name: "labels", audience: conductor.Audience{Labels: map[string]string{"tier": "prod"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := mustStore(t)
+			signer := newTestSigner(t)
+			v1 := signedControlBundle(t, signer, bundleSpec{
+				id:       "bundle-handler-audience-v1-" + tt.name,
+				version:  1,
+				audience: conductor.Audience{InstanceIDs: []string{"*"}},
+			})
+			r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+			if err != nil {
+				t.Fatalf("Publish(v1) error = %v", err)
+			}
+			v2 := signedControlBundle(t, signer, bundleSpec{
+				id:           "bundle-handler-audience-v2-" + tt.name,
+				version:      2,
+				previousHash: r1.BundleHash,
+				audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+				configYAML:   "mode: strict\napi_allowlist:\n  - audience2.example.com\n",
+			})
+			if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+				t.Fatalf("Publish(v2) error = %v", err)
+			}
+			auth := signedRollbackAuthorizationForBundles(t, "rollback-handler-audience-"+tt.name, v2, v1, testNow)
+			auth.Audience = tt.audience
+			signatures, resolver := signConductorPreimage(t, auth.SignablePreimage, signing.PurposePolicyBundleRollback, "rollback-signer-1", "rollback-signer-2")
+			auth.Signatures = signatures
+			if err := auth.Validate(); err != nil {
+				t.Fatalf("Validate(legacy audience) error = %v, want nil", err)
+			}
+			handler := newTestHandlerWithOptions(t, store, nil, resolver)
+			body, err := json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+			if err != nil {
+				t.Fatalf("Marshal(rollback): %v", err)
+			}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+			req.Header.Set("X-Pipelock-Admin", "ok")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "rollback audience must be empty") {
+				t.Fatalf("rollback audience status=%d body=%s, want 422 audience error", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandlerPublishesAndServesEmergencyControls(t *testing.T) {
 	msg, killResolver := signedRemoteKillMessageWithResolver(t, "kill-handler", 3, conductor.KillSwitchActive, testNow)
 	auth, rollbackResolver := signedRollbackAuthorizationWithResolver(t, "rollback-handler", 4, testNow)

@@ -285,6 +285,77 @@ func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	}
 }
 
+func TestRollbackHeadReconciliationLoadsLegacyAudienceEmergencyState(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	emergencyDir := t.TempDir()
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-reconcile-legacy-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-reconcile-legacy-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - legacy-reconcile2.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth := conductor.RollbackAuthorization{
+		SchemaVersion:   conductor.SchemaVersion,
+		AuthorizationID: "rollback-reconcile-legacy-audience",
+		OrgID:           v2.OrgID,
+		FleetID:         v2.FleetID,
+		Audience:        conductor.Audience{Labels: map[string]string{"tier": "legacy"}},
+		CurrentBundleID: v2.BundleID,
+		CurrentVersion:  v2.Version,
+		TargetBundleID:  v1.BundleID,
+		TargetVersion:   v1.Version,
+		Counter:         1,
+		Reason:          "operator rollback",
+		CreatedAt:       testNow,
+		ExpiresAt:       testNow.Add(time.Hour),
+	}
+	auth.Signatures, _ = signConductorPreimage(t, auth.SignablePreimage, signing.PurposePolicyBundleRollback, "rollback-signer-1", "rollback-signer-2")
+	authHash, err := auth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(rollback): %v", err)
+	}
+	record := StoredRollbackAuthorization{
+		Authorization:     auth,
+		AuthorizationHash: authHash,
+		PublishedAt:       testNow,
+	}
+	if err := writeEmergencyState(filepath.Join(emergencyDir, emergencyStateFileName), emergencyStateRecord{Rollbacks: []StoredRollbackAuthorization{record}}); err != nil {
+		t.Fatalf("writeEmergencyState(legacy rollback): %v", err)
+	}
+
+	reopenedEmergency, err := OpenFileEmergencyStore(emergencyDir)
+	if err != nil {
+		t.Fatalf("OpenFileEmergencyStore(legacy rollback) error = %v", err)
+	}
+	if err := reconcileRollbackHeads(store, reopenedEmergency, testNow.Add(2*time.Minute), nil); err != nil {
+		t.Fatalf("reconcileRollbackHeads(legacy rollback) error = %v", err)
+	}
+	latest, err := store.Latest(t.Context(), defaultFollowerIdentity(), testNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("Latest(after legacy reconcile) error = %v", err)
+	}
+	if latest.Bundle.BundleID != "bundle-reconcile-legacy-v1" {
+		t.Fatalf("Latest(after legacy reconcile) bundle=%q, want bundle-reconcile-legacy-v1", latest.Bundle.BundleID)
+	}
+}
+
 func TestFileBundleStoreApplyRollbackHeadForwardProgress(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {

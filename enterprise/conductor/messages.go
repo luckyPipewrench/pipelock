@@ -714,9 +714,6 @@ func (r RollbackAuthorization) Validate() error {
 	if err := validateOrgFleet(r.OrgID, r.FleetID); err != nil {
 		return err
 	}
-	if len(r.Audience.InstanceIDs) != 0 || len(r.Audience.Labels) != 0 {
-		return fmt.Errorf("%w: rollback audience must be empty", ErrInvalidRollback)
-	}
 	if err := validateIdentifier("current_bundle_id", r.CurrentBundleID); err != nil {
 		return err
 	}

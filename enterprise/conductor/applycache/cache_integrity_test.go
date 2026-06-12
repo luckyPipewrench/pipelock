@@ -253,10 +253,9 @@ func TestActivateRejectsNonHexHash(t *testing.T) {
 	}
 }
 
-// TestRollbackAuthorizationMismatches drives every post-signature rejection
-// branch in authorizeVersionTransition: a validly signed authorization is
-// still refused when its window, rollback scope, or bundle targeting does not match
-// the local state.
+// TestRollbackAuthorizationMismatches drives post-signature rejection branches
+// in authorizeVersionTransition: a validly signed authorization is still
+// refused when its window or bundle targeting does not match the local state.
 func TestRollbackAuthorizationMismatches(t *testing.T) {
 	policyKey := newTestKey(t)
 	rk1 := newPurposeKey(t, "rollback-1", signing.PurposePolicyBundleRollback)
@@ -271,13 +270,6 @@ func TestRollbackAuthorizationMismatches(t *testing.T) {
 			name:   "expired",
 			mutate: func(a *conductor.RollbackAuthorization) { a.ExpiresAt = testNow.Add(-time.Hour) },
 			want:   nil, // ValidateAtTime returns a window error; assert non-nil + not activated
-		},
-		{
-			name: "scoped_rollback_audience",
-			mutate: func(a *conductor.RollbackAuthorization) {
-				a.Audience = conductor.Audience{InstanceIDs: []string{"other"}}
-			},
-			want: conductor.ErrInvalidRollback,
 		},
 		{
 			name: "wrong_current_target",
@@ -326,6 +318,42 @@ func TestRollbackAuthorizationMismatches(t *testing.T) {
 				t.Fatalf("active version = %d, want 2 (rejected rollback must not activate)", active.Bundle.Version)
 			}
 		})
+	}
+}
+
+func TestRollbackAuthorizationLegacyAudienceAccepted(t *testing.T) {
+	policyKey := newTestKey(t)
+	rk1 := newPurposeKey(t, "rollback-1", signing.PurposePolicyBundleRollback)
+	rk2 := newPurposeKey(t, "rollback-2", signing.PurposePolicyBundleRollback)
+	cache := openTestCache(t)
+	v1 := signedTestBundle(t, policyKey, "bundle-1", 1, "")
+	if _, err := cache.storeVerified(v1, testVerifyOptions(policyKey, rk1, rk2)); err != nil {
+		t.Fatalf("storeVerified(v1): %v", err)
+	}
+	v1Hash, err := v1.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(v1): %v", err)
+	}
+	v2 := signedTestBundle(t, policyKey, "bundle-2", 2, v1Hash)
+	if _, err := cache.storeVerified(v2, testVerifyOptions(policyKey, rk1, rk2)); err != nil {
+		t.Fatalf("storeVerified(v2): %v", err)
+	}
+
+	auth := mutatedRollbackAuth(t, rk1, rk2, v2, v1, func(a *conductor.RollbackAuthorization) {
+		a.Audience = conductor.Audience{InstanceIDs: []string{"other"}}
+	})
+	opts := testVerifyOptions(policyKey, rk1, rk2)
+	opts.AllowRollback = true
+	opts.Rollback = &auth
+	if _, err := cache.storeVerified(v1, opts); err != nil {
+		t.Fatalf("storeVerified(scoped legacy rollback audience) error = %v, want nil", err)
+	}
+	active, err := cache.Active()
+	if err != nil {
+		t.Fatalf("Active(): %v", err)
+	}
+	if active.Bundle.Version != 1 {
+		t.Fatalf("active version = %d, want 1 (legacy audience ignored for stream-wide rollback)", active.Bundle.Version)
 	}
 }
 

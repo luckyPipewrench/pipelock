@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -287,25 +288,36 @@ func TestReconcileRollbackHeadsBranches(t *testing.T) {
 
 // TestReconcileRollbackHeadsToleratesLegacyAudience is the regression for the
 // startup-bricking migration bug: a rollback authorization persisted by an
-// earlier release carried a non-empty audience, which the current validator
-// rejects. Reconciliation must SKIP it (collected with the audience error) and
-// return no fatal error, so a control plane with such legacy state still starts.
+// earlier release carried a non-empty audience. Reconciliation must ignore that
+// legacy audience and apply the stream-wide rollback when the bundles are
+// present.
 func TestReconcileRollbackHeadsToleratesLegacyAudience(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("OpenFileBundleStore() error = %v", err)
 	}
-	legacy := conductor.RollbackAuthorization{
-		SchemaVersion:   conductor.SchemaVersion,
-		AuthorizationID: "rollback-legacy-audience",
-		OrgID:           "org-local",
-		FleetID:         "prod",
-		Audience:        conductor.Audience{InstanceIDs: []string{"edge-01"}},
-		CurrentBundleID: "bundle-current",
-		CurrentVersion:  2,
-		TargetBundleID:  "bundle-target",
-		TargetVersion:   1,
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-legacy-audience-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
 	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-legacy-audience-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - legacy2.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	legacy := signedRollbackAuthorizationForBundles(t, "rollback-legacy-audience", v2, v1, testNow)
+	legacy.Audience = conductor.Audience{InstanceIDs: []string{"edge-01"}}
 	skips, err := store.ReconcileRollbackHeads(
 		t.Context(),
 		[]StoredRollbackAuthorization{{Authorization: legacy, PublishedAt: testNow}},
@@ -314,9 +326,59 @@ func TestReconcileRollbackHeadsToleratesLegacyAudience(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileRollbackHeads(legacy audience) err=%v, want nil (tolerated)", err)
 	}
-	if len(skips) != 1 || skips[0].AuthorizationID != "rollback-legacy-audience" ||
-		!strings.Contains(skips[0].Err.Error(), "audience must be empty") {
-		t.Fatalf("ReconcileRollbackHeads(legacy audience) skips=%+v, want one audience-rejected skip", skips)
+	if len(skips) != 0 {
+		t.Fatalf("ReconcileRollbackHeads(legacy audience) skips=%+v, want none", skips)
+	}
+	latest, err := store.Latest(t.Context(), defaultFollowerIdentity(), testNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("Latest(after legacy audience reconcile) error = %v", err)
+	}
+	if latest.Bundle.BundleID != "bundle-legacy-audience-v1" {
+		t.Fatalf("Latest(after legacy audience reconcile) bundle=%q, want bundle-legacy-audience-v1", latest.Bundle.BundleID)
+	}
+}
+
+func TestReconcileRollbackHeadsFatalOnStreamHeadWriteFailure(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-reconcile-fatal-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-reconcile-fatal-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - fatal2.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth := signedRollbackAuthorizationForBundles(t, "rollback-reconcile-fatal", v2, v1, testNow)
+	store.streamHeadsDir = filepath.Join(store.dir, "missing-stream-heads")
+
+	skips, err := store.ReconcileRollbackHeads(
+		t.Context(),
+		[]StoredRollbackAuthorization{{Authorization: auth, PublishedAt: testNow}},
+		testNow.Add(time.Minute),
+	)
+	if err == nil {
+		t.Fatal("ReconcileRollbackHeads(write failure) error = nil, want fatal error")
+	}
+	if len(skips) != 0 {
+		t.Fatalf("ReconcileRollbackHeads(write failure) skips=%+v, want none", skips)
+	}
+	if errors.Is(err, conductor.ErrInvalidRollback) || errors.Is(err, ErrBundleNotFound) {
+		t.Fatalf("ReconcileRollbackHeads(write failure) err=%v, want non-logical fatal error", err)
 	}
 }
 

@@ -823,6 +823,10 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if len(req.Authorization.Audience.InstanceIDs) != 0 || len(req.Authorization.Audience.Labels) != 0 {
+		writeStoreError(w, fmt.Errorf("%w: rollback audience must be empty", conductor.ErrInvalidRollback))
+		return
+	}
 	now := h.now()
 	if err := validateMaxValidity(req.Authorization.CreatedAt, req.Authorization.ExpiresAt, h.rollbackMaxTTL); err != nil {
 		writeStoreError(w, err)

@@ -28,7 +28,7 @@ writing a file** if the entitlement is missing.
 > and how to run each component. For a hands-on local walkthrough (one
 > Conductor, one follower, one signed batch, verified offline) see the
 > [Conductor dev runbook](conductor-operator-runbook.md); for the full
-> production day-2 lifecycle (key generation, BYO-PKI, publish, kill/rollback,
+> production lifecycle (key generation, BYO-PKI, publish, kill/rollback,
 > rotation) see the
 > [Conductor production runbook](conductor-production-runbook.md). For the full
 > protocol and storage design see the

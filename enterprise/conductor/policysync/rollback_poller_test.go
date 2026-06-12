@@ -384,7 +384,7 @@ func TestRollbackEndpointValidation(t *testing.T) {
 	if u.Path != RollbackAuthorizationsPath {
 		t.Fatalf("endpoint path = %q, want %q", u.Path, RollbackAuthorizationsPath)
 	}
-	for _, bad := range []string{"http://leader.example", "https://", "https://u:p@leader.example", "https://leader.example?x=1", "https://leader.example#frag"} {
+	for _, bad := range []string{"http://leader.example", "https://", "https://user@leader.example", "https://leader.example?x=1", "https://leader.example#frag"} {
 		if _, err := rollbackEndpoint(bad); err == nil {
 			t.Fatalf("rollbackEndpoint(%q) expected error", bad)
 		}

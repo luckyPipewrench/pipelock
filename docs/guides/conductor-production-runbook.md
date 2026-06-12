@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 This runbook walks the **full production lifecycle** of a [Conductor](conductor.md)
 fleet with shipped Pipelock CLIs and a documented bring-your-own-PKI recipe — no
 custom Go and no hand-rolled OpenSSL beyond the PKI choice you make. It is the
-day-2 counterpart to the [local dev walkthrough](conductor-operator-runbook.md)
+operational counterpart to the [local dev walkthrough](conductor-operator-runbook.md)
 (which proves the round trip in-process with `conductor bootstrap`) and the
 [Kubernetes deployment guide](kubernetes-enterprise-deployment.md) (which covers
 the Helm topology). Read those first for context; this guide is the operator

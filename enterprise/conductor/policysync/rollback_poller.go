@@ -245,7 +245,7 @@ func rollbackEndpoint(rawBaseURL string) (string, error) {
 	if u.Scheme != "https" || u.Host == "" {
 		return "", fmt.Errorf("conductor rollback base URL must be https with a host")
 	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return "", fmt.Errorf("conductor rollback base URL must not include userinfo, query, or fragment")
 	}
 	if u.Path != "" && u.Path != "/" {

@@ -474,11 +474,11 @@ pipelock conductor enrollment-token mint \
 ```
 
 The command prints the token to stdout. For startup auto-enroll, write it to the
-follower's `enrollment_token_path` (single-use, `0600`):
+follower's `enrollment_token_path` with restrictive permissions from the start
+(a `umask` in the same subshell so the file is never briefly world-readable):
 
 ```bash
-pipelock conductor enrollment-token mint ... > /etc/pipelock/conductor/enrollment-token
-chmod 600 /etc/pipelock/conductor/enrollment-token
+( umask 077; pipelock conductor enrollment-token mint ... > /etc/pipelock/conductor/enrollment-token )
 ```
 
 Or enroll an out-of-band follower directly with `pipelock conductor enroll`,
@@ -491,6 +491,7 @@ pipelock conductor enroll \
   --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
   --enrollment-token-file /etc/pipelock/conductor/enrollment-token \
   --audit-key-file /etc/pipelock/conductor/edge-02-audit.key \
+  --audit-key-id edge-02-audit \
   --tls-cert /etc/pipelock/follower.crt \
   --tls-key /etc/pipelock/follower.key \
   --server-ca /etc/pipelock/conductor-ca.pem

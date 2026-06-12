@@ -32,10 +32,21 @@ func (d *stubDoer) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-func TestNewRejectsPlainHTTPBaseURL(t *testing.T) {
-	_, err := New(Config{BaseURL: "http://conductor.example:8895", Client: &stubDoer{}})
-	if err == nil || !strings.Contains(err.Error(), "must be https") {
-		t.Fatalf("New(http) error = %v, want https rejection", err)
+func TestNewRejectsBadBaseURL(t *testing.T) {
+	for name, tc := range map[string]struct{ url, want string }{
+		"plain http":      {"http://conductor.example:8895", "must be https"},
+		"userinfo":        {"https://user@conductor.example:8895", "userinfo"},
+		"query":           {"https://conductor.example:8895?x=1", "userinfo, query, or fragment"},
+		"bare query mark": {"https://conductor.example:8895?", "userinfo, query, or fragment"},
+		"fragment":        {"https://conductor.example:8895#frag", "userinfo, query, or fragment"},
+		"path":            {"https://conductor.example:8895/api", "path component"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := New(Config{BaseURL: tc.url, Client: &stubDoer{}})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("New(%q) error = %v, want %q", tc.url, err, tc.want)
+			}
+		})
 	}
 }
 

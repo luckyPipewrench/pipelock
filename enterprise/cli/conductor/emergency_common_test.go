@@ -702,6 +702,23 @@ func TestPostEmergencyJSONRejectsPlainHTTPBeforeSending(t *testing.T) {
 	}
 }
 
+func TestConductorWriteBaseURLRejectsMalformed(t *testing.T) {
+	for name, tc := range map[string]struct{ url, want string }{
+		"plain http":      {"http://conductor.example:8895", "must be https"},
+		"userinfo":        {"https://user@conductor.example:8895", "userinfo, query, or fragment"},
+		"query":           {"https://conductor.example:8895?x=1", "userinfo, query, or fragment"},
+		"bare query mark": {"https://conductor.example:8895?", "userinfo, query, or fragment"},
+		"fragment":        {"https://conductor.example:8895#frag", "userinfo, query, or fragment"},
+		"path":            {"https://conductor.example:8895/api", "path component"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := conductorWriteBaseURL(tc.url); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("conductorWriteBaseURL(%q) error = %v, want %q", tc.url, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestEmergencySnippetTruncates(t *testing.T) {
 	long := strings.Repeat("a", 1000)
 	got := emergencySnippet([]byte(long))

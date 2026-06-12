@@ -273,7 +273,7 @@ func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)
 	}
-	if err := reconcileRollbackHeads(reopenedStore, reopenedEmergency, testNow.Add(2*time.Hour)); err != nil {
+	if err := reconcileRollbackHeads(reopenedStore, reopenedEmergency, testNow.Add(2*time.Hour), nil); err != nil {
 		t.Fatalf("reconcileRollbackHeads(after TTL) error = %v", err)
 	}
 	latest, err = reopenedStore.Latest(t.Context(), defaultFollowerIdentity(), testNow.Add(2*time.Hour))

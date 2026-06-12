@@ -184,6 +184,101 @@ func TestInitConductorEnrollmentFailureDoesNotBlockStartup(t *testing.T) {
 	}
 }
 
+func TestRunConductorAutoEnrollNilRecorderKeyErrors(t *testing.T) {
+	cfg := conductorEnrollmentTestConfig(t)
+	client := &conductorEnrollmentStubClient{}
+	// A nil recorder/flight-recorder key fails closed before any enroll POST:
+	// the follower has no audit public key to register.
+	_, err := runConductorAutoEnroll(t.Context(), cfg, nil, client)
+	if err == nil || !strings.Contains(err.Error(), "flight recorder signing key") {
+		t.Fatalf("runConductorAutoEnroll(nil key) error = %v, want recorder key required", err)
+	}
+	if client.count() != 0 {
+		t.Fatalf("request count = %d, want 0 (no POST before key check)", client.count())
+	}
+}
+
+func TestRunConductorAutoEnrollTokenReadError(t *testing.T) {
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	cfg := conductorEnrollmentTestConfig(t)
+	// Point at a token path that does not exist so the read fails.
+	cfg.Conductor.EnrollmentTokenPath = filepath.Join(t.TempDir(), "absent-token")
+	client := &conductorEnrollmentStubClient{}
+	_, err = runConductorAutoEnroll(t.Context(), cfg, priv, client)
+	if err == nil || !strings.Contains(err.Error(), "read conductor enrollment token") {
+		t.Fatalf("runConductorAutoEnroll(token read error) error = %v, want read error", err)
+	}
+	if client.count() != 0 {
+		t.Fatalf("request count = %d, want 0", client.count())
+	}
+}
+
+func TestRunConductorAutoEnrollBuildsClientWhenNil(t *testing.T) {
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	cfg := conductorEnrollmentTestConfig(t)
+	client := &conductorEnrollmentStubClient{}
+	// When the caller passes a nil HTTPDoer, runConductorAutoEnroll builds one
+	// via newConductorEnrollmentHTTPClient. Stub that constructor.
+	old := newConductorEnrollmentHTTPClient
+	newConductorEnrollmentHTTPClient = func(config.Conductor) (enrollmentclient.HTTPDoer, error) {
+		return client, nil
+	}
+	t.Cleanup(func() { newConductorEnrollmentHTTPClient = old })
+
+	enrolled, err := runConductorAutoEnroll(t.Context(), cfg, priv, nil)
+	if err != nil {
+		t.Fatalf("runConductorAutoEnroll(nil client) error = %v", err)
+	}
+	if !enrolled {
+		t.Fatal("runConductorAutoEnroll(nil client) enrolled=false, want true")
+	}
+	if client.count() != 1 {
+		t.Fatalf("request count = %d, want 1", client.count())
+	}
+}
+
+func TestReadConductorEnrollmentToken(t *testing.T) {
+	t.Run("unreadable path", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "no-such-token")
+		if _, err := readConductorEnrollmentToken(missing); err == nil ||
+			!strings.Contains(err.Error(), "read conductor enrollment token") {
+			t.Fatalf("readConductorEnrollmentToken(missing) error = %v, want read error", err)
+		}
+	})
+
+	t.Run("empty contents", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "blank-token")
+		if err := os.WriteFile(path, []byte("  \n"), 0o600); err != nil {
+			t.Fatalf("write blank token: %v", err)
+		}
+		if _, err := readConductorEnrollmentToken(path); err == nil ||
+			!strings.Contains(err.Error(), "token file is empty") {
+			t.Fatalf("readConductorEnrollmentToken(blank) error = %v, want empty", err)
+		}
+	})
+
+	t.Run("trims and returns", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "token")
+		token := "pl_" + "enroll_runtime"
+		if err := os.WriteFile(path, []byte("  "+token+"\n"), 0o600); err != nil {
+			t.Fatalf("write token: %v", err)
+		}
+		got, err := readConductorEnrollmentToken(path)
+		if err != nil {
+			t.Fatalf("readConductorEnrollmentToken() error = %v", err)
+		}
+		if got != token {
+			t.Fatalf("readConductorEnrollmentToken() = %q, want %q", got, token)
+		}
+	})
+}
+
 func conductorEnrollmentTestConfig(t *testing.T) *config.Config {
 	t.Helper()
 	dir := t.TempDir()

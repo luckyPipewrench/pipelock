@@ -330,12 +330,31 @@ func (s *FileBundleStore) BundleByIDVersion(_ context.Context, bundleID string, 
 	return s.bundleByIDVersionLocked(bundleID, version)
 }
 
-func (s *FileBundleStore) ReconcileRollbackHeads(ctx context.Context, records []StoredRollbackAuthorization, now time.Time) error {
+// RollbackReconcileSkip records a persisted rollback authorization that startup
+// reconciliation could not re-apply. It is informational, not fatal: the caller
+// logs it and continues so one stale authorization never bricks the control
+// plane (see ReconcileRollbackHeads).
+type RollbackReconcileSkip struct {
+	AuthorizationID string
+	Err             error
+}
+
+// ReconcileRollbackHeads re-applies persisted rollback authorizations to the
+// stream heads at startup, healing a head whose marker write failed after the
+// authorization was accepted. It is best-effort and TOLERANT: an authorization
+// that no longer applies (e.g. one persisted by an earlier release whose
+// audience the current validator rejects, one already superseded by a forward
+// publish, or one whose bundles are no longer present) is collected as a skip
+// and reconciliation continues. The durable per-stream head markers loaded by
+// the store remain the source of truth for the effective head, so skipping a
+// stale authorization is safe; failing the whole startup on one bad record would
+// take the fleet's coordination down. Only a nil store is fatal.
+func (s *FileBundleStore) ReconcileRollbackHeads(ctx context.Context, records []StoredRollbackAuthorization, now time.Time) ([]RollbackReconcileSkip, error) {
 	if s == nil {
-		return ErrStoreRequired
+		return nil, ErrStoreRequired
 	}
 	if len(records) == 0 {
-		return nil
+		return nil, nil
 	}
 	sorted := slices.Clone(records)
 	slices.SortFunc(sorted, func(a, b StoredRollbackAuthorization) int {
@@ -348,12 +367,16 @@ func (s *FileBundleStore) ReconcileRollbackHeads(ctx context.Context, records []
 			return 0
 		}
 	})
+	var skipped []RollbackReconcileSkip
 	for _, record := range sorted {
 		if err := s.ApplyRollbackHead(ctx, record.Authorization, now); err != nil {
-			return fmt.Errorf("reconcile rollback authorization %q: %w", record.Authorization.AuthorizationID, err)
+			skipped = append(skipped, RollbackReconcileSkip{
+				AuthorizationID: record.Authorization.AuthorizationID,
+				Err:             err,
+			})
 		}
 	}
-	return nil
+	return skipped, nil
 }
 
 func (s *FileBundleStore) bundleByIDVersionLocked(bundleID string, version uint64) (PublishedBundle, error) {

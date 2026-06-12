@@ -129,7 +129,7 @@ type rollbackAuthorizationEnumerator interface {
 }
 
 type rollbackHeadReconciler interface {
-	ReconcileRollbackHeads(context.Context, []StoredRollbackAuthorization, time.Time) error
+	ReconcileRollbackHeads(context.Context, []StoredRollbackAuthorization, time.Time) ([]RollbackReconcileSkip, error)
 }
 
 type publishPolicyBundleRequest struct {
@@ -284,7 +284,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		}
 	}
 	auditQuerier, _ := opts.AuditSink.(AuditBatchQuerier)
-	if err := reconcileRollbackHeads(opts.Store, opts.EmergencyControls, now()); err != nil {
+	if err := reconcileRollbackHeads(opts.Store, opts.EmergencyControls, now(), opts.Logger); err != nil {
 		return nil, err
 	}
 	return &Handler{
@@ -312,7 +312,13 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	}, nil
 }
 
-func reconcileRollbackHeads(store BundleStore, emergencyControls EmergencyStore, now time.Time) error {
+// reconcileRollbackHeads re-applies persisted rollback authorizations to the
+// stream heads at startup. It is best-effort: a failure to enumerate or a single
+// unapplyable authorization is logged and tolerated, never fatal, so the control
+// plane still starts (the durable head markers loaded by the store hold the
+// effective head regardless). Only a programming error from the store (nil
+// receiver) is propagated.
+func reconcileRollbackHeads(store BundleStore, emergencyControls EmergencyStore, now time.Time, logger *slog.Logger) error {
 	if emergencyControls == nil {
 		return nil
 	}
@@ -326,9 +332,26 @@ func reconcileRollbackHeads(store BundleStore, emergencyControls EmergencyStore,
 	}
 	records, err := lister.RollbackAuthorizations(context.Background())
 	if err != nil {
+		// A control plane must still start even if the persisted rollback
+		// authorizations cannot be listed; the durable head markers remain the
+		// source of truth for the effective policy head.
+		if logger != nil {
+			logger.Warn("conductor_rollback_reconcile_list_failed", "error", err.Error())
+		}
+		return nil
+	}
+	skipped, err := reconciler.ReconcileRollbackHeads(context.Background(), records, now)
+	if err != nil {
 		return err
 	}
-	return reconciler.ReconcileRollbackHeads(context.Background(), records, now)
+	for _, skip := range skipped {
+		if logger != nil {
+			logger.Warn("conductor_rollback_reconcile_skipped",
+				"authorization_id", skip.AuthorizationID,
+				"error", skip.Err.Error())
+		}
+	}
+	return nil
 }
 
 func DefaultCapabilities(conductorID string) conductor.CapabilitiesResponse {

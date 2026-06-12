@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,6 +238,10 @@ type emergencyClientOptions struct {
 // missing flag is an operator error surfaced before any request, not a silent
 // downgrade to an insecure transport.
 func buildEmergencyClient(opts emergencyClientOptions) (*http.Client, error) {
+	_, serverName, err := conductorWriteBaseURL(opts.baseURL)
+	if err != nil {
+		return nil, err
+	}
 	switch {
 	case strings.TrimSpace(opts.tlsCert) == "":
 		return nil, errors.New("--tls-cert is required")
@@ -257,6 +262,9 @@ func buildEmergencyClient(opts emergencyClientOptions) (*http.Client, error) {
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, errors.New("server CA bundle contains no PEM certificates")
 	}
+	if override := strings.TrimSpace(opts.serverName); override != "" {
+		serverName = override
+	}
 	return &http.Client{
 		Timeout: emergencyHTTPTimeout,
 		Transport: &http.Transport{
@@ -264,7 +272,7 @@ func buildEmergencyClient(opts emergencyClientOptions) (*http.Client, error) {
 				MinVersion:   tls.VersionTLS13,
 				Certificates: []tls.Certificate{cert},
 				RootCAs:      pool,
-				ServerName:   strings.TrimSpace(opts.serverName),
+				ServerName:   serverName,
 			},
 		},
 	}, nil
@@ -297,6 +305,10 @@ func loadBearerToken(path string) (string, error) {
 // the request (under-threshold, expired window, wrong purpose) instead of a bare
 // status code. The body read is capped to maxEmergencyResponseBytes.
 func postEmergencyJSON(ctx context.Context, client emergencyTransport, baseURL, path, bearer string, reqBody, out any) error {
+	baseURL, _, err := conductorWriteBaseURL(baseURL)
+	if err != nil {
+		return err
+	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -328,6 +340,29 @@ func postEmergencyJSON(ctx context.Context, client emergencyTransport, baseURL, 
 		}
 	}
 	return nil
+}
+
+func conductorWriteBaseURL(rawBaseURL string) (string, string, error) {
+	u, err := url.Parse(strings.TrimSpace(rawBaseURL))
+	if err != nil {
+		return "", "", fmt.Errorf("conductor base URL: %w", err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return "", "", errors.New("conductor base URL must be https with a host")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", "", errors.New("conductor base URL must not include userinfo, query, or fragment")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", "", errors.New("conductor base URL must not include a path component")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", "", errors.New("conductor base URL must include a TLS server name")
+	}
+	u.Path = ""
+	u.RawPath = ""
+	return strings.TrimRight(u.String(), "/"), host, nil
 }
 
 func emergencySnippet(b []byte, secrets ...string) string {

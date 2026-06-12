@@ -125,11 +125,11 @@ func emergencyResolverFromKeys(keys map[string]conductorcore.SignatureKey) condu
 	}
 }
 
-// testServer wraps a real control-plane handler over plain HTTP so the CLI's
-// injected transport can drive the genuine server logic (signature threshold
-// verification, TTL ceiling, counter replay, admin auth) without standing up
-// mTLS. mTLS is a transport concern proven separately; the producer logic under
-// test is the message construction + signing + the server's acceptance of it.
+// testServer wraps a real control-plane handler over HTTPS so the CLI's injected
+// transport can drive the genuine server logic (signature threshold verification,
+// TTL ceiling, counter replay, admin auth) without requiring mTLS. mTLS is proven
+// separately; the producer logic under test is the message construction +
+// signing + the server's acceptance of it.
 type testServer struct {
 	url    string
 	client *http.Client
@@ -208,7 +208,7 @@ func newTestServer(t *testing.T, opts testServerOptions) *testServer {
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	srv := httptest.NewServer(handler)
+	srv := httptest.NewTLSServer(handler)
 	t.Cleanup(srv.Close)
 	return &testServer{url: srv.URL, client: srv.Client(), store: store}
 }
@@ -487,9 +487,9 @@ func TestLoadBearerToken(t *testing.T) {
 
 func TestBuildEmergencyClientRequiresTLSMaterial(t *testing.T) {
 	for name, opts := range map[string]emergencyClientOptions{
-		"no cert": {tlsKey: "k", serverCA: "ca"},
-		"no key":  {tlsCert: "c", serverCA: "ca"},
-		"no ca":   {tlsCert: "c", tlsKey: "k"},
+		"no cert": {baseURL: "https://conductor.example:8895", tlsKey: "k", serverCA: "ca"},
+		"no key":  {baseURL: "https://conductor.example:8895", tlsCert: "c", serverCA: "ca"},
+		"no ca":   {baseURL: "https://conductor.example:8895", tlsCert: "c", tlsKey: "k"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := buildEmergencyClient(opts); err == nil {
@@ -500,7 +500,7 @@ func TestBuildEmergencyClientRequiresTLSMaterial(t *testing.T) {
 }
 
 func TestPostEmergencyJSONSurfacesServerError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_, _ = w.Write([]byte(`{"error":"under threshold"}`))
 	}))
@@ -585,7 +585,7 @@ func TestBuildEmergencyClientHappyPath(t *testing.T) {
 	certPath, keyPath := writeLeafCertKeyPEM(t)
 	caPath := writeCAPEM(t)
 	client, err := buildEmergencyClient(emergencyClientOptions{
-		tlsCert: certPath, tlsKey: keyPath, serverCA: caPath, serverName: "conductor.example",
+		baseURL: "https://conductor.example:8895", tlsCert: certPath, tlsKey: keyPath, serverCA: caPath,
 	})
 	if err != nil {
 		t.Fatalf("buildEmergencyClient happy path error = %v", err)
@@ -593,13 +593,28 @@ func TestBuildEmergencyClientHappyPath(t *testing.T) {
 	if client == nil || client.Timeout != emergencyHTTPTimeout {
 		t.Fatalf("unexpected client: %+v", client)
 	}
+	transport := client.Transport.(*http.Transport)
+	if got := transport.TLSClientConfig.ServerName; got != "conductor.example" {
+		t.Fatalf("ServerName = %q, want conductor.example", got)
+	}
+}
+
+func TestBuildEmergencyClientRejectsPlainHTTPBaseURL(t *testing.T) {
+	certPath, keyPath := writeLeafCertKeyPEM(t)
+	caPath := writeCAPEM(t)
+	_, err := buildEmergencyClient(emergencyClientOptions{
+		baseURL: "http://conductor.example:8895", tlsCert: certPath, tlsKey: keyPath, serverCA: caPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "must be https") {
+		t.Fatalf("buildEmergencyClient(http) error = %v, want https rejection", err)
+	}
 }
 
 func TestBuildEmergencyClientBadCertMaterial(t *testing.T) {
 	caPath := writeCAPEM(t)
 	// Point cert/key at the CA file (not a usable keypair) -> load error.
 	if _, err := buildEmergencyClient(emergencyClientOptions{
-		tlsCert: caPath, tlsKey: caPath, serverCA: caPath,
+		baseURL: "https://conductor.example:8895", tlsCert: caPath, tlsKey: caPath, serverCA: caPath,
 	}); err == nil {
 		t.Fatal("buildEmergencyClient(bad keypair) = nil error, want load error")
 	}
@@ -610,13 +625,13 @@ func TestBuildEmergencyClientBadCertMaterial(t *testing.T) {
 		t.Fatalf("write empty CA: %v", err)
 	}
 	if _, err := buildEmergencyClient(emergencyClientOptions{
-		tlsCert: certPath, tlsKey: keyPath, serverCA: emptyCA,
+		baseURL: "https://conductor.example:8895", tlsCert: certPath, tlsKey: keyPath, serverCA: emptyCA,
 	}); err == nil {
 		t.Fatal("buildEmergencyClient(empty CA) = nil error, want no-PEM error")
 	}
 	// Missing CA file.
 	if _, err := buildEmergencyClient(emergencyClientOptions{
-		tlsCert: certPath, tlsKey: keyPath, serverCA: filepath.Join(t.TempDir(), "nope.pem"),
+		baseURL: "https://conductor.example:8895", tlsCert: certPath, tlsKey: keyPath, serverCA: filepath.Join(t.TempDir(), "nope.pem"),
 	}); err == nil {
 		t.Fatal("buildEmergencyClient(missing CA) = nil error, want read error")
 	}
@@ -626,7 +641,7 @@ func TestResolveEmergencyTransportBuildsProductionClient(t *testing.T) {
 	certPath, keyPath := writeLeafCertKeyPEM(t)
 	caPath := writeCAPEM(t)
 	tr, err := resolveEmergencyTransport(nil, emergencyClientOptions{
-		tlsCert: certPath, tlsKey: keyPath, serverCA: caPath,
+		baseURL: "https://conductor.example:8895", tlsCert: certPath, tlsKey: keyPath, serverCA: caPath,
 	})
 	if err != nil {
 		t.Fatalf("resolveEmergencyTransport(nil injected) error = %v", err)
@@ -642,14 +657,14 @@ func (e errTransport) Do(*http.Request) (*http.Response, error) { return nil, e.
 
 func TestPostEmergencyJSON_TransportErrorWrapped(t *testing.T) {
 	boom := errors.New("dial refused")
-	err := postEmergencyJSON(context.Background(), errTransport{err: boom}, "http://x", "/p", "", map[string]string{"a": "b"}, nil)
+	err := postEmergencyJSON(context.Background(), errTransport{err: boom}, "https://x", "/p", "", map[string]string{"a": "b"}, nil)
 	if err == nil || !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want wrapped transport error", err)
 	}
 }
 
 func TestPostEmergencyJSON_DecodeErrorOnBadBody(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("not json"))
 	}))
@@ -665,7 +680,7 @@ func TestPostEmergencyJSON_DecodeErrorOnBadBody(t *testing.T) {
 
 func TestPostEmergencyJSON_NoBearerHeaderOmitted(t *testing.T) {
 	var sawAuth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
@@ -676,6 +691,14 @@ func TestPostEmergencyJSON_NoBearerHeaderOmitted(t *testing.T) {
 	}
 	if sawAuth != "" {
 		t.Fatalf("Authorization header sent with empty bearer: %q", sawAuth)
+	}
+}
+
+func TestPostEmergencyJSONRejectsPlainHTTPBeforeSending(t *testing.T) {
+	tr := errTransport{err: errors.New("should not send")}
+	err := postEmergencyJSON(context.Background(), tr, "http://conductor.example:8895", "/p", "", map[string]string{"a": "b"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "must be https") {
+		t.Fatalf("error = %v, want https rejection", err)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -53,12 +54,12 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Client == nil {
 		return nil, errors.New("enrollmentclient: http client required")
 	}
-	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	if base == "" {
-		return nil, errors.New("enrollmentclient: conductor base URL required")
+	endpoint, err := enrollEndpoint(cfg.BaseURL)
+	if err != nil {
+		return nil, err
 	}
 	return &Client{
-		endpoint: base + controlplane.EnrollPath,
+		endpoint: endpoint,
 		client:   cfg.Client,
 	}, nil
 }
@@ -93,7 +94,50 @@ func (c *Client) Enroll(ctx context.Context, reqBody Request) (Response, error) 
 	if err := json.Unmarshal(respBody, &out); err != nil {
 		return Response{}, fmt.Errorf("enrollmentclient: decode enroll response: %w", err)
 	}
+	if err := validateResponse(out, reqBody); err != nil {
+		return Response{}, err
+	}
 	return out, nil
+}
+
+func enrollEndpoint(rawBaseURL string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(rawBaseURL))
+	if err != nil {
+		return "", fmt.Errorf("enrollmentclient: parse conductor base URL: %w", err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return "", errors.New("enrollmentclient: conductor base URL must be https with a host")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("enrollmentclient: conductor base URL must not include userinfo, query, or fragment")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", errors.New("enrollmentclient: conductor base URL must not include a path component")
+	}
+	u.Path = controlplane.EnrollPath
+	u.RawPath = ""
+	return u.String(), nil
+}
+
+func validateResponse(resp Response, req Request) error {
+	switch {
+	case strings.TrimSpace(resp.OrgID) == "":
+		return errors.New("enrollmentclient: enroll response missing org_id")
+	case strings.TrimSpace(resp.FleetID) == "":
+		return errors.New("enrollmentclient: enroll response missing fleet_id")
+	case strings.TrimSpace(resp.InstanceID) == "":
+		return errors.New("enrollmentclient: enroll response missing instance_id")
+	case strings.TrimSpace(resp.Environment) == "":
+		return errors.New("enrollmentclient: enroll response missing environment")
+	case strings.TrimSpace(resp.AuditKeyID) == "":
+		return errors.New("enrollmentclient: enroll response missing audit_key_id")
+	case resp.EnrolledAt.IsZero():
+		return errors.New("enrollmentclient: enroll response missing enrolled_at")
+	case resp.AuditKeyID != req.AuditKeyID:
+		return errors.New("enrollmentclient: enroll response audit_key_id does not match request")
+	default:
+		return nil
+	}
 }
 
 func snippet(b []byte, secrets ...string) string {

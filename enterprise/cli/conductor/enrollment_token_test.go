@@ -139,6 +139,16 @@ func TestRunEnrollmentTokenMint_MissingAdminTokenFileRejected(t *testing.T) {
 	}
 }
 
+func TestRunEnrollmentTokenMintRejectsPlainHTTPConductorURL(t *testing.T) {
+	opts := newEnrollmentRig(t)
+	opts.baseURL = "http://conductor.example:8895"
+	cmd, _, _ := enrollmentCobra(t)
+	err := runEnrollmentTokenMint(cmd, opts)
+	if err == nil || !strings.Contains(err.Error(), "must be https") {
+		t.Fatalf("mint http URL error = %v, want https rejection", err)
+	}
+}
+
 func TestRunEnrollmentTokenMint_ProductionTransportTLSErrorSurfaces(t *testing.T) {
 	opts := newEnrollmentRig(t)
 	opts.transport = nil

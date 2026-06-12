@@ -99,7 +99,7 @@ build that carries the conductor-keygen help update.)
 > **Reserved purposes.** `trust-root-rotation` and `enrollment-token-signing`
 > are wire-stable purpose bindings, but no shipped operator workflow consumes
 > them yet. You can generate them, but nothing reads them until the trust-root
-> rotation and enrollment-token features ship.
+> rotation and enrollment-token signing workflows ship.
 
 Each follower also needs an Ed25519 recorder key to sign its evidence:
 
@@ -306,8 +306,9 @@ the follower one of two ways:
   records the follower and trusts its audit key. Enrollment is best-effort and
   never blocks enforcement: a rejected or failed enroll logs a warning and the
   follower keeps serving and polling. A marker file under `bundle_cache_dir`
-  makes it idempotent, so the one-shot token is consumed once and never re-sent
-  on restart.
+  makes normal restarts idempotent. If the leader accepts the token but the
+  local marker write fails, the next restart may retry the already-consumed
+  token and log a warning; enforcement still continues.
 - **One-shot operator command.** Run `pipelock conductor enroll` (see
   [step 9](#9-mint-enrollment-tokens)) with the token, the follower's audit key,
   and the follower's mTLS material. Use this when the follower is provisioned out

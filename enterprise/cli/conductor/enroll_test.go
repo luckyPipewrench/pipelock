@@ -71,6 +71,22 @@ func TestRunEnroll_BadTokenRejected(t *testing.T) {
 	}
 }
 
+func TestRunEnrollRejectsPlainHTTPConductorURL(t *testing.T) {
+	mintOpts := newEnrollmentRig(t)
+	_, auditKeyFile, _ := writeSigningKeyWithPurpose(t, "audit-key-1", signing.PurposeAuditBatchSigning)
+	opts := enrollOptions{
+		emergencyClientOptions: emergencyClientOptions{baseURL: "http://conductor.example:8895"},
+		enrollmentTokenFile:    writeEnrollmentTokenFile(t, "pl_enroll_test"),
+		auditKeyFile:           auditKeyFile,
+		transport:              mintOpts.transport,
+	}
+	cmd, _ := enrollCobra(t)
+	err := runEnroll(cmd, opts)
+	if err == nil || !strings.Contains(err.Error(), "must be https") {
+		t.Fatalf("runEnroll(http) error = %v, want https rejection", err)
+	}
+}
+
 func TestEnrollCmd_Registered(t *testing.T) {
 	cmd := Cmd()
 	for _, child := range cmd.Commands() {

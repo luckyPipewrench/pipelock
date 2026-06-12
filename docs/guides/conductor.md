@@ -10,8 +10,8 @@ instances. It distributes signed policy bundles to follower instances, ingests
 and stores their signed evidence for audit, and coordinates fleet-wide
 operations — enrollment, remote kill, and policy rollback. It is **General
 Availability as of v2.7**, with a shipped operator command surface (publish,
-kill/resume, rollback, enrollment-token, fleet status, audit query) documented in
-the [production runbook](conductor-production-runbook.md).
+kill/resume, rollback, enroll, enrollment-token, fleet status, audit query)
+documented in the [production runbook](conductor-production-runbook.md).
 
 Conductor preserves Pipelock's capability separation. Followers enforce policy
 locally and stay fail-closed on their own; Conductor coordinates distribution,

@@ -61,7 +61,7 @@ func (c *conductorEnrollmentStubClient) count() int {
 }
 
 func TestRunConductorAutoEnrollHappyPathPersistsMarkerAndSkipsSecondStart(t *testing.T) {
-	_, priv, err := signing.GenerateKeyPair()
+	pub, priv, err := signing.GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
@@ -86,6 +86,12 @@ func TestRunConductorAutoEnrollHappyPathPersistsMarkerAndSkipsSecondStart(t *tes
 	}
 	if _, err := signing.ParsePublicKey(req.AuditPublicKey); err != nil {
 		t.Fatalf("enroll request audit_public_key does not parse: %v", err)
+	}
+	// The enrolled public key must be the recorder/audit-signer key's public
+	// half: the leader verifies the follower's audit batches against exactly
+	// this key, so a mismatch would silently break audit ingest.
+	if got, want := req.AuditPublicKey, signing.EncodePublicKey(pub); got != want {
+		t.Fatalf("enroll request audit_public_key = %q, want recorder public key %q", got, want)
 	}
 	markerPath := filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName)
 	info, err := os.Stat(markerPath)

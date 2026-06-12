@@ -2739,6 +2739,7 @@ conductor:
   client_key_path: /etc/pipelock/follower.key
   bundle_cache_dir: /var/lib/pipelock/bundles
   durable_audit_queue_dir: /var/lib/pipelock/audit-queue
+  enrollment_token_path: /etc/pipelock/conductor/enrollment-token
   poll_interval: 30s
   honor_remote_kill_switch: true
 ```
@@ -2756,6 +2757,7 @@ conductor:
 | `durable_audit_queue_dir` | (required) | On-disk queue for signed evidence batches awaiting delivery to the audit sink. |
 | `audit_signing_key_id` | `instance_id` | Key ID the follower signs audit batches with. |
 | `recorder_key_id` | `instance_id` | Key ID for the follower's flight-recorder checkpoints. |
+| `enrollment_token_path` | (none) | Path to a single-use enrollment token file. When set, the follower auto-enrolls on startup, registering its audit public key with Conductor so it appears in `fleet status` and its evidence is ingested. Enrollment is best-effort (a failed enroll logs a warning and never blocks enforcement); a marker under `bundle_cache_dir` makes it idempotent so the token is consumed once. Must be an absolute path with no world-writable ancestor. Unset means no auto-enroll (enroll out of band with `pipelock conductor enroll`). |
 | `poll_interval` | `30s` | How often the follower polls Conductor for bundles and coordination state. |
 | `honor_remote_kill_switch` | `true` | Act on a signed fleet-wide remote-kill message. |
 | `emergency_stream` | `true` | Reserved (see below). |

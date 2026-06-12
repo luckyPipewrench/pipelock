@@ -31,7 +31,7 @@ writing a file. See [`pipelock license`](../cli/license.md).
 | 2. Build the trust roster | `pipelock signing roster build` | **Shipped** |
 | 3. Provision PKI (BYO) | cert-manager recipe (below) | **Shipped (recipe)** |
 | 4. Deploy Conductor + sink | `pipelock conductor serve` / `pipelock fleet-sink` + Helm | **Shipped** |
-| 5. Enroll followers | follower `conductor:` config + mTLS auto-enroll | **Shipped** |
+| 5. Enroll followers | `enrollment_token_path` auto-enroll or `pipelock conductor enroll` | **Shipped** |
 | 6. Publish a policy | `pipelock conductor publish` | **Shipped** |
 | 7. Kill / resume the fleet | `pipelock conductor kill` / `resume` | **Shipped** |
 | 8. Roll back a bad bundle | `pipelock conductor rollback` | **Shipped** |
@@ -293,9 +293,30 @@ listener (`--probe-listen`), never on the mTLS follower API.
 ## 5. Enroll followers
 
 A follower is an ordinary Pipelock proxy with a `conductor:` block. It
-authenticates with its client cert; its identity is the cert's SPIFFE URI SAN.
-On first contact over mTLS the follower **auto-enrolls** from that identity — no
-pre-shared token in the default model.
+authenticates with its client cert, whose SPIFFE URI SAN is its fleet identity
+(`org`/`fleet`/`instance`/`environment`). Enrollment is **token-gated**: the
+follower registers its audit-batch public key with the Conductor by presenting a
+single-use enrollment token whose scope must match its certificate identity.
+Mint the token first ([step 9](#9-mint-enrollment-tokens)), then deliver it to
+the follower one of two ways:
+
+- **Auto-enroll on startup (recommended).** Point `conductor.enrollment_token_path`
+  at a file containing the token. On startup the follower reads the token and
+  POSTs it with its audit key id and audit public key over mTLS; the Conductor
+  records the follower and trusts its audit key. Enrollment is best-effort and
+  never blocks enforcement: a rejected or failed enroll logs a warning and the
+  follower keeps serving and polling. A marker file under `bundle_cache_dir`
+  makes it idempotent, so the one-shot token is consumed once and never re-sent
+  on restart.
+- **One-shot operator command.** Run `pipelock conductor enroll` (see
+  [step 9](#9-mint-enrollment-tokens)) with the token, the follower's audit key,
+  and the follower's mTLS material. Use this when the follower is provisioned out
+  of band.
+
+Until a follower enrolls it still enforces locally and polls for policy and
+remote-kill, but it does **not** appear in `conductor fleet status` and the audit
+sink cannot verify its evidence — the Conductor has no audit key registered for
+it. Enrollment is what turns both on.
 
 ```yaml
 conductor:
@@ -313,6 +334,7 @@ conductor:
   durable_audit_queue_dir: /var/lib/pipelock/audit-queue
   audit_signing_key_id: edge-01-audit
   recorder_key_id: edge-01-recorder
+  enrollment_token_path: /etc/pipelock/conductor/enrollment-token  # single-use; auto-enroll on startup
   poll_interval: 30s
   honor_remote_kill_switch: true
 ```
@@ -432,27 +454,53 @@ vice versa.
 
 ## 9. Mint enrollment tokens
 
-The default enrollment model auto-registers a follower from its mTLS SPIFFE
-identity, so no token is required to enroll. For an approval-gated join,
+Enrollment is token-gated (see [step 5](#5-enroll-followers)).
 `pipelock conductor enrollment-token mint` issues a single-use token scoped to
-one follower identity:
+one follower identity (`--org`/`--fleet`/`--instance`/`--env`), authorized by an
+admin token over mTLS. `--token-id` is a stable id used for audit and
+de-duplication; `--ttl` (default `1h`) bounds how long the token stays valid
+before it is used.
 
 ```bash
 pipelock conductor enrollment-token mint \
   --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
-  --org org-acme --fleet prod --instance edge-02 \
+  --org org-acme --fleet prod --instance edge-02 --env prod \
+  --token-id edge-02-enroll-2026-06-11 --ttl 1h \
   --admin-token-file /etc/pipelock/conductor/tokens/admin/token \
   --tls-cert /etc/pipelock/operator.crt \
   --tls-key /etc/pipelock/operator.key \
   --server-ca /etc/pipelock/conductor-ca.pem
 ```
 
+The command prints the token to stdout. For startup auto-enroll, write it to the
+follower's `enrollment_token_path` (single-use, `0600`):
+
+```bash
+pipelock conductor enrollment-token mint ... > /etc/pipelock/conductor/enrollment-token
+chmod 600 /etc/pipelock/conductor/enrollment-token
+```
+
+Or enroll an out-of-band follower directly with `pipelock conductor enroll`,
+which POSTs the token plus the follower's audit key id and audit public key over
+mTLS (`--audit-key-file` is the follower's audit-batch-signing key; a JSON
+keypair derives the key id, a raw private key needs `--audit-key-id`):
+
+```bash
+pipelock conductor enroll \
+  --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --enrollment-token-file /etc/pipelock/conductor/enrollment-token \
+  --audit-key-file /etc/pipelock/conductor/edge-02-audit.key \
+  --tls-cert /etc/pipelock/follower.crt \
+  --tls-key /etc/pipelock/follower.key \
+  --server-ca /etc/pipelock/conductor-ca.pem
+```
+
 ## 10. Fleet status and followers
 
-`pipelock conductor fleet status` and `pipelock conductor fleet followers` list
-enrolled instances — identity, audit key id, active state, and enrollment time —
-read over mTLS with an org-scoped operator token against the audience-scoped
-`/followers` endpoint.
+`pipelock conductor fleet status` lists enrolled instances — identity, audit key
+id, active state, and enrollment time — read over mTLS with an org-scoped
+operator token (admin or auditor) against the audience-scoped `/followers`
+endpoint.
 
 ```bash
 pipelock conductor fleet status \

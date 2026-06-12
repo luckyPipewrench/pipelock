@@ -44,7 +44,6 @@ func newRollbackRig(t *testing.T, serverRollbackTTL time.Duration) rollbackOptio
 		signingKeys:     []string{f1, f2},
 		orgID:           testOrgID,
 		fleetID:         testFleetID,
-		instanceIDs:     []string{testInstanceID},
 		currentBundleID: "bundle-current",
 		currentVersion:  42,
 		targetBundleID:  "bundle-target",
@@ -222,13 +221,13 @@ func TestRunRollback_BadAdminTokenRejected(t *testing.T) {
 	}
 }
 
-func TestRunRollback_InvalidAudienceRejected(t *testing.T) {
+func TestRunRollback_ScopedAudienceRejected(t *testing.T) {
 	opts := newRollbackRig(t, 0)
-	opts.instanceIDs = nil
-	opts.labels = nil
+	opts.instanceIDs = []string{testInstanceID}
 	cmd, _ := rollbackCobra(t)
-	if err := runRollback(cmd, opts); err == nil {
-		t.Fatal("rollback empty audience = nil error, want audience error")
+	err := runRollback(cmd, opts)
+	if err == nil || !strings.Contains(err.Error(), "stream-wide") {
+		t.Fatalf("rollback scoped audience error = %v, want stream-wide rejection", err)
 	}
 }
 

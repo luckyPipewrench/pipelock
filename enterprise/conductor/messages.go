@@ -714,8 +714,8 @@ func (r RollbackAuthorization) Validate() error {
 	if err := validateOrgFleet(r.OrgID, r.FleetID); err != nil {
 		return err
 	}
-	if err := r.Audience.Validate(); err != nil {
-		return err
+	if len(r.Audience.InstanceIDs) != 0 || len(r.Audience.Labels) != 0 {
+		return fmt.Errorf("%w: rollback audience must be empty", ErrInvalidRollback)
 	}
 	if err := validateIdentifier("current_bundle_id", r.CurrentBundleID); err != nil {
 		return err
@@ -739,8 +739,9 @@ func (r RollbackAuthorization) Validate() error {
 }
 
 // ValidateAtTime extends Validate with a freshness check. Rollback
-// authorizations are single-shot; an expired authorization must not be
-// applicable even if the operator hasn't redacted it.
+// authorizations are single-shot at publish/fetch time; recovery of a rollback
+// already accepted by the control plane can use Validate to avoid bricking
+// crash reconciliation after this wall-clock window expires.
 func (r RollbackAuthorization) ValidateAtTime(now time.Time) error {
 	if err := r.Validate(); err != nil {
 		return err

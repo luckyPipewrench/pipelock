@@ -104,6 +104,72 @@ func TestFileBundleStoreBundleByIDVersion(t *testing.T) {
 	}
 }
 
+func TestFileBundleStoreRejectsDuplicateBundleIDVersionGlobally(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	signer := newTestSigner(t)
+	first := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-global-dup",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	if _, _, err := store.Publish(t.Context(), first, PublishOptions{Now: testNow}); err != nil {
+		t.Fatalf("Publish(first) error = %v", err)
+	}
+	duplicate := signedControlBundle(t, signer, bundleSpec{
+		id:         "bundle-global-dup",
+		version:    1,
+		audience:   conductor.Audience{Labels: map[string]string{"ring": "canary"}},
+		configYAML: "mode: strict\napi_allowlist:\n  - canary.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), duplicate, PublishOptions{Now: testNow.Add(time.Minute)}); !errors.Is(err, ErrBundleConflict) {
+		t.Fatalf("Publish(duplicate id/version) err=%v, want ErrBundleConflict", err)
+	}
+}
+
+func TestFileBundleStoreRejectsDuplicateBundleIDVersionOnOpen(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	signer := newTestSigner(t)
+	first := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-load-dup",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	if _, _, err := store.Publish(t.Context(), first, PublishOptions{Now: testNow}); err != nil {
+		t.Fatalf("Publish(first) error = %v", err)
+	}
+	duplicate := signedControlBundle(t, signer, bundleSpec{
+		id:         "bundle-load-dup",
+		version:    1,
+		audience:   conductor.Audience{Labels: map[string]string{"ring": "canary"}},
+		configYAML: "mode: strict\napi_allowlist:\n  - load-dup.example.com\n",
+	})
+	hash, err := duplicate.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(duplicate) error = %v", err)
+	}
+	streamKey, err := streamKey(duplicate)
+	if err != nil {
+		t.Fatalf("streamKey(duplicate) error = %v", err)
+	}
+	if err := writeBundleRecord(store.bundlesDir, PublishedBundle{
+		Bundle:      duplicate,
+		BundleHash:  hash,
+		StreamKey:   streamKey,
+		PublishedAt: testNow.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("write duplicate record: %v", err)
+	}
+	if _, err := OpenFileBundleStore(store.dir); !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("OpenFileBundleStore(duplicate id/version) error=%v, want ErrInvalidStoreRecord", err)
+	}
+}
+
 func TestFileBundleStoreApplyRollbackHeadDurableAndTTLIndependent(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {
@@ -129,7 +195,7 @@ func TestFileBundleStoreApplyRollbackHeadDurableAndTTLIndependent(t *testing.T) 
 	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
 		t.Fatalf("Publish(v2) error = %v", err)
 	}
-	auth := signedRollbackAuthorizationForBundles(t, "rollback-head-reset", v2, v1, conductor.Audience{InstanceIDs: []string{"*"}}, testNow)
+	auth := signedRollbackAuthorizationForBundles(t, "rollback-head-reset", v2, v1, testNow)
 
 	if err := store.ApplyRollbackHead(t.Context(), auth, testNow); err != nil {
 		t.Fatalf("ApplyRollbackHead() error = %v", err)
@@ -155,6 +221,67 @@ func TestFileBundleStoreApplyRollbackHeadDurableAndTTLIndependent(t *testing.T) 
 	}
 	if latest.Bundle.BundleID != "bundle-head-v1" {
 		t.Fatalf("Latest(reopened) bundle=%q, want durable bundle-head-v1", latest.Bundle.BundleID)
+	}
+}
+
+func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	emergencyStore, err := OpenFileEmergencyStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileEmergencyStore() error = %v", err)
+	}
+	signer := newTestSigner(t)
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-reconcile-v1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-reconcile-v2",
+		version:      2,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - reconcile2.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+	auth := signedRollbackAuthorizationForBundles(t, "rollback-reconcile", v2, v1, testNow)
+	if _, created, err := emergencyStore.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
+	}
+
+	reopenedStore, err := OpenFileBundleStore(store.dir)
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore(reopen before reconcile) error = %v", err)
+	}
+	latest, err := reopenedStore.Latest(t.Context(), defaultFollowerIdentity(), testNow.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("Latest(before reconcile) error = %v", err)
+	}
+	if latest.Bundle.BundleID != "bundle-reconcile-v2" {
+		t.Fatalf("Latest(before reconcile) bundle=%q, want unreconciled bundle-reconcile-v2", latest.Bundle.BundleID)
+	}
+	reopenedEmergency, err := OpenFileEmergencyStore(emergencyStore.dir)
+	if err != nil {
+		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)
+	}
+	if err := reconcileRollbackHeads(reopenedStore, reopenedEmergency, testNow.Add(2*time.Hour)); err != nil {
+		t.Fatalf("reconcileRollbackHeads(after TTL) error = %v", err)
+	}
+	latest, err = reopenedStore.Latest(t.Context(), defaultFollowerIdentity(), testNow.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("Latest(after reconcile) error = %v", err)
+	}
+	if latest.Bundle.BundleID != "bundle-reconcile-v1" {
+		t.Fatalf("Latest(after reconcile) bundle=%q, want bundle-reconcile-v1", latest.Bundle.BundleID)
 	}
 }
 
@@ -184,7 +311,7 @@ func TestFileBundleStoreApplyRollbackHeadForwardProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Publish(v2) error = %v", err)
 	}
-	auth := signedRollbackAuthorizationForBundles(t, "rollback-progress", v2, v1, conductor.Audience{InstanceIDs: []string{"*"}}, testNow)
+	auth := signedRollbackAuthorizationForBundles(t, "rollback-progress", v2, v1, testNow)
 	if err := store.ApplyRollbackHead(t.Context(), auth, testNow); err != nil {
 		t.Fatalf("ApplyRollbackHead() error = %v", err)
 	}
@@ -258,11 +385,11 @@ func TestFileBundleStoreApplyRollbackHeadValidation(t *testing.T) {
 		version:  1,
 		audience: conductor.Audience{InstanceIDs: []string{"*"}},
 	})
-	missingAuth := signedRollbackAuthorizationForBundles(t, "rollback-missing-bundle", v2, missingTarget, conductor.Audience{InstanceIDs: []string{"*"}}, testNow)
+	missingAuth := signedRollbackAuthorizationForBundles(t, "rollback-missing-bundle", v2, missingTarget, testNow)
 	if err := store.ApplyRollbackHead(t.Context(), missingAuth, testNow); !errors.Is(err, ErrBundleNotFound) {
 		t.Fatalf("ApplyRollbackHead(missing target) err=%v, want ErrBundleNotFound", err)
 	}
-	mismatched := signedRollbackAuthorizationForBundles(t, "rollback-wrong-current", v2, v1, conductor.Audience{InstanceIDs: []string{"*"}}, testNow)
+	mismatched := signedRollbackAuthorizationForBundles(t, "rollback-wrong-current", v2, v1, testNow)
 	mismatched.CurrentBundleID = "bundle-validate-ghost"
 	if err := store.ApplyRollbackHead(t.Context(), mismatched, testNow); !errors.Is(err, conductor.ErrInvalidRollback) {
 		t.Fatalf("ApplyRollbackHead(wrong current) err=%v, want ErrInvalidRollback", err)

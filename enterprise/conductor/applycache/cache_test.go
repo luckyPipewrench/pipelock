@@ -408,7 +408,6 @@ func signedRollbackAuthorization(t *testing.T, key1, key2 testKey, current, targ
 		AuthorizationID: "rollback-1",
 		OrgID:           "org-1",
 		FleetID:         "fleet-1",
-		Audience:        conductor.Audience{InstanceIDs: []string{"instance-1"}},
 		CurrentBundleID: current.BundleID,
 		CurrentVersion:  current.Version,
 		TargetBundleID:  target.BundleID,

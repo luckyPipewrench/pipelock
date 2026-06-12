@@ -5,6 +5,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,6 +122,14 @@ type Handler struct {
 	rollbackMaxTTL    time.Duration
 	metrics           *metrics.Metrics
 	logger            *slog.Logger
+}
+
+type rollbackAuthorizationEnumerator interface {
+	RollbackAuthorizations(context.Context) ([]StoredRollbackAuthorization, error)
+}
+
+type rollbackHeadReconciler interface {
+	ReconcileRollbackHeads(context.Context, []StoredRollbackAuthorization, time.Time) error
 }
 
 type publishPolicyBundleRequest struct {
@@ -275,6 +284,9 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		}
 	}
 	auditQuerier, _ := opts.AuditSink.(AuditBatchQuerier)
+	if err := reconcileRollbackHeads(opts.Store, opts.EmergencyControls, now()); err != nil {
+		return nil, err
+	}
 	return &Handler{
 		store:               opts.Store,
 		capabilities:        capabilities,
@@ -298,6 +310,25 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		metrics:             opts.Metrics,
 		logger:              opts.Logger,
 	}, nil
+}
+
+func reconcileRollbackHeads(store BundleStore, emergencyControls EmergencyStore, now time.Time) error {
+	if emergencyControls == nil {
+		return nil
+	}
+	lister, ok := emergencyControls.(rollbackAuthorizationEnumerator)
+	if !ok {
+		return nil
+	}
+	reconciler, ok := store.(rollbackHeadReconciler)
+	if !ok {
+		return nil
+	}
+	records, err := lister.RollbackAuthorizations(context.Background())
+	if err != nil {
+		return err
+	}
+	return reconciler.ReconcileRollbackHeads(context.Background(), records, now)
 }
 
 func DefaultCapabilities(conductorID string) conductor.CapabilitiesResponse {
@@ -632,12 +663,22 @@ func (h *Handler) applyRollbackCeiling(r *http.Request, identity FollowerIdentit
 	if latest.Bundle.Version > auth.CurrentVersion {
 		return latest, nil
 	}
+	current, err := h.store.BundleByIDVersion(r.Context(), auth.CurrentBundleID, auth.CurrentVersion)
+	if err != nil {
+		if errors.Is(err, ErrBundleNotFound) {
+			return PublishedBundle{}, fmt.Errorf("active rollback current unavailable: %w", err)
+		}
+		return PublishedBundle{}, err
+	}
 	target, err := h.store.BundleByIDVersion(r.Context(), auth.TargetBundleID, auth.TargetVersion)
 	if err != nil {
 		if errors.Is(err, ErrBundleNotFound) {
 			return PublishedBundle{}, fmt.Errorf("active rollback target unavailable: %w", err)
 		}
 		return PublishedBundle{}, err
+	}
+	if current.StreamKey != latest.StreamKey || target.StreamKey != latest.StreamKey {
+		return latest, nil
 	}
 	return target, nil
 }

@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -252,9 +253,6 @@ func (s *FileEmergencyStore) LatestRollbackAuthorization(_ context.Context, foll
 		if auth.OrgID != follower.OrgID || auth.FleetID != follower.FleetID {
 			continue
 		}
-		if !auth.Audience.Matches(follower.InstanceID, follower.Labels) {
-			continue
-		}
 		if best.AuthorizationHash == "" || newerRollback(record, best) {
 			best = record
 		}
@@ -286,9 +284,6 @@ func (s *FileEmergencyStore) ActiveRollbackForFollower(_ context.Context, follow
 			continue
 		}
 		if auth.OrgID != follower.OrgID || auth.FleetID != follower.FleetID {
-			continue
-		}
-		if !auth.Audience.Matches(follower.InstanceID, follower.Labels) {
 			continue
 		}
 		if best.AuthorizationHash == "" || newerRollback(record, best) {
@@ -354,6 +349,15 @@ func (s *FileEmergencyStore) load() error {
 		s.rollbackAuthIDMap[rb.Authorization.AuthorizationID] = rb.AuthorizationHash
 	}
 	return nil
+}
+
+func (s *FileEmergencyStore) RollbackAuthorizations(_ context.Context) ([]StoredRollbackAuthorization, error) {
+	if s == nil {
+		return nil, ErrEmergencyStoreRequired
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return slices.Clone(s.rollbacks), nil
 }
 
 func (s *FileEmergencyStore) writeLocked() error {

@@ -71,7 +71,6 @@ func signedRuntimeRollbackAuth(t *testing.T, current, target conductor.PolicyBun
 		AuthorizationID: "rollback-1",
 		OrgID:           "org-main",
 		FleetID:         "prod",
-		Audience:        conductor.Audience{InstanceIDs: []string{"pl-prod-1"}},
 		CurrentBundleID: current.BundleID,
 		CurrentVersion:  current.Version,
 		TargetBundleID:  target.BundleID,

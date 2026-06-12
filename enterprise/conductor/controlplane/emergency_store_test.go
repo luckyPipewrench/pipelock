@@ -105,11 +105,6 @@ func TestFileEmergencyStoreActiveRollbackForFollower(t *testing.T) {
 	if _, created, err := store.PublishRollbackAuthorization(context.Background(), newest, testNow.Add(time.Minute)); err != nil || !created {
 		t.Fatalf("PublishRollbackAuthorization(newest) created=%v err=%v, want created", created, err)
 	}
-	otherAudience := signedRollbackAuthorization(t, "rollback-other-audience", 3, testNow.Add(2*time.Minute))
-	otherAudience.Audience = conductor.Audience{InstanceIDs: []string{"pl-prod-2"}}
-	if _, created, err := store.PublishRollbackAuthorization(context.Background(), otherAudience, testNow.Add(2*time.Minute)); err != nil || !created {
-		t.Fatalf("PublishRollbackAuthorization(other audience) created=%v err=%v, want created", created, err)
-	}
 	otherFleet := signedRollbackAuthorization(t, "rollback-other-fleet", 1, testNow.Add(3*time.Minute))
 	otherFleet.FleetID = "dev"
 	if _, created, err := store.PublishRollbackAuthorization(context.Background(), otherFleet, testNow.Add(3*time.Minute)); err != nil || !created {
@@ -137,15 +132,16 @@ func TestFileEmergencyStoreActiveRollbackForFollower(t *testing.T) {
 			wantOK:   false,
 		},
 		{
-			name: "audience mismatch",
+			name: "stream-global rollback matches any instance in org fleet",
 			follower: FollowerIdentity{
 				OrgID:       "org-main",
 				FleetID:     "prod",
 				InstanceID:  "pl-prod-3",
 				Environment: "prod",
 			},
-			now:    testNow.Add(4 * time.Minute),
-			wantOK: false,
+			now:        testNow.Add(4 * time.Minute),
+			wantOK:     true,
+			wantAuthID: newest.AuthorizationID,
 		},
 		{
 			name: "wrong org fleet",
@@ -520,7 +516,6 @@ func signedRollbackAuthorizationWithTTL(t *testing.T, id string, counter uint64,
 		AuthorizationID: id,
 		OrgID:           "org-main",
 		FleetID:         "prod",
-		Audience:        conductor.Audience{InstanceIDs: []string{"pl-prod-1"}},
 		CurrentBundleID: "bundle-current",
 		CurrentVersion:  42,
 		TargetBundleID:  "bundle-target",

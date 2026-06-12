@@ -5,6 +5,7 @@
 package conductor
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -49,11 +50,12 @@ func rollbackCmd() *cobra.Command {
 	opts := rollbackOptions{}
 	cmd := &cobra.Command{
 		Use:   "rollback",
-		Short: "Publish a signed Conductor authorization to roll a fleet back to a prior policy bundle",
+		Short: "Publish a signed Conductor authorization to roll a policy stream back to a prior bundle",
 		Long: `rollback publishes a signed, multi-signer rollback authorization to the
-Conductor. Followers restore the prior policy bundle (the target version, which
-must be lower than the current version). Rollback is catastrophic and requires
-at least ` + fmt.Sprintf("%d", conductorcore.RequiredCatastrophicSigners) + ` distinct signers (M-of-N), each holding a key with the
+Conductor. Followers on the affected policy stream restore the prior policy
+bundle (the target version, which must be lower than the current version).
+Rollback is catastrophic and stream-wide; per-instance and per-label rollback
+are not supported. It requires at least ` + fmt.Sprintf("%d", conductorcore.RequiredCatastrophicSigners) + ` distinct signers (M-of-N), each holding a key with the
 "` + string(signing.PurposePolicyBundleRollback) + `" purpose.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -72,8 +74,6 @@ at least ` + fmt.Sprintf("%d", conductorcore.RequiredCatastrophicSigners) + ` di
 		"path to a policy-bundle-rollback keypair file from `pipelock signing key generate`; repeat to supply the M-of-N signers")
 	cmd.Flags().StringVar(&opts.orgID, "org", "", "fleet org id the authorization targets (required)")
 	cmd.Flags().StringVar(&opts.fleetID, "fleet", "", "fleet id the authorization targets (required)")
-	cmd.Flags().StringArrayVar(&opts.instanceIDs, "instance", nil, "target follower instance id; repeat for several, or '*' for the whole fleet (mutually exclusive with --label)")
-	cmd.Flags().StringToStringVar(&opts.labels, "label", nil, "target followers by label selector key=value (mutually exclusive with --instance)")
 	cmd.Flags().StringVar(&opts.authorizationID, "authorization-id", "", "authorization id (defaults to rollback-<current>-to-<target>-<counter>)")
 	cmd.Flags().StringVar(&opts.currentBundleID, "current-bundle-id", "", "bundle id currently applied on the followers (required)")
 	cmd.Flags().Uint64Var(&opts.currentVersion, "current-version", 0, "version currently applied on the followers (required, must be > target)")
@@ -101,9 +101,8 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 		now = opts.now().UTC()
 	}
 
-	audience, err := buildAudience(opts.instanceIDs, opts.labels)
-	if err != nil {
-		return err
+	if len(opts.instanceIDs) > 0 || len(opts.labels) > 0 {
+		return errors.New("rollback is stream-wide; per-instance and per-label rollback are not supported")
 	}
 
 	counter := opts.counter
@@ -127,7 +126,6 @@ func runRollback(cmd *cobra.Command, opts rollbackOptions) error {
 		AuthorizationID: authID,
 		OrgID:           opts.orgID,
 		FleetID:         opts.fleetID,
-		Audience:        audience,
 		CurrentBundleID: opts.currentBundleID,
 		CurrentVersion:  opts.currentVersion,
 		TargetBundleID:  opts.targetBundleID,

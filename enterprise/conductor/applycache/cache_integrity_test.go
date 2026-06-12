@@ -255,7 +255,7 @@ func TestActivateRejectsNonHexHash(t *testing.T) {
 
 // TestRollbackAuthorizationMismatches drives every post-signature rejection
 // branch in authorizeVersionTransition: a validly signed authorization is
-// still refused when its window, audience, or bundle targeting does not match
+// still refused when its window, rollback scope, or bundle targeting does not match
 // the local state.
 func TestRollbackAuthorizationMismatches(t *testing.T) {
 	policyKey := newTestKey(t)
@@ -273,11 +273,11 @@ func TestRollbackAuthorizationMismatches(t *testing.T) {
 			want:   nil, // ValidateAtTime returns a window error; assert non-nil + not activated
 		},
 		{
-			name: "wrong_audience",
+			name: "scoped_rollback_audience",
 			mutate: func(a *conductor.RollbackAuthorization) {
 				a.Audience = conductor.Audience{InstanceIDs: []string{"other"}}
 			},
-			want: conductor.ErrAudienceMismatch,
+			want: conductor.ErrInvalidRollback,
 		},
 		{
 			name: "wrong_current_target",
@@ -339,7 +339,6 @@ func mutatedRollbackAuth(t *testing.T, key1, key2 testKey, current, target condu
 		AuthorizationID: "rollback-1",
 		OrgID:           "org-1",
 		FleetID:         "fleet-1",
-		Audience:        conductor.Audience{InstanceIDs: []string{"instance-1"}},
 		CurrentBundleID: current.BundleID,
 		CurrentVersion:  current.Version,
 		TargetBundleID:  target.BundleID,

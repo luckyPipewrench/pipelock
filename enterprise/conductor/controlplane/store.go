@@ -197,6 +197,11 @@ func (s *FileBundleStore) Publish(_ context.Context, bundle conductor.PolicyBund
 		s.maybeResolveRollbackHeadLocked(existing)
 		return existing, false, nil
 	}
+	if existing, err := s.bundleByIDVersionLocked(bundle.BundleID, bundle.Version); err == nil {
+		return PublishedBundle{}, false, fmt.Errorf("%w: bundle_id/version already published as %s", ErrBundleConflict, existing.BundleHash)
+	} else if !errors.Is(err, ErrBundleNotFound) {
+		return PublishedBundle{}, false, err
+	}
 	if err := s.authorizeForwardLocked(record); err != nil {
 		return PublishedBundle{}, false, err
 	}
@@ -250,21 +255,27 @@ func (s *FileBundleStore) ApplyRollbackHead(_ context.Context, auth conductor.Ro
 	} else {
 		now = now.UTC()
 	}
-	if err := auth.ValidateAtTime(now); err != nil {
+	if err := auth.Validate(); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	target, ok := s.bundleByIDVersionLocked(auth.TargetBundleID, auth.TargetVersion)
-	if !ok {
-		return ErrBundleNotFound
+	target, err := s.bundleByIDVersionLocked(auth.TargetBundleID, auth.TargetVersion)
+	if err != nil {
+		return err
 	}
 	if auth.CurrentVersion <= target.Bundle.Version {
 		return fmt.Errorf("%w: rollback current version must exceed target version", conductor.ErrInvalidRollback)
 	}
-	currentRecord, ok := s.bundleByIDVersionLocked(auth.CurrentBundleID, auth.CurrentVersion)
-	if !ok || currentRecord.StreamKey != target.StreamKey {
+	currentRecord, err := s.bundleByIDVersionLocked(auth.CurrentBundleID, auth.CurrentVersion)
+	if err != nil {
+		if errors.Is(err, ErrBundleNotFound) {
+			return fmt.Errorf("%w: rollback current bundle is not present in target stream", conductor.ErrInvalidRollback)
+		}
+		return err
+	}
+	if currentRecord.StreamKey != target.StreamKey {
 		return fmt.Errorf("%w: rollback current bundle is not present in target stream", conductor.ErrInvalidRollback)
 	}
 	head, ok := s.streams[target.StreamKey]
@@ -316,20 +327,49 @@ func (s *FileBundleStore) BundleByIDVersion(_ context.Context, bundleID string, 
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	record, ok := s.bundleByIDVersionLocked(bundleID, version)
-	if !ok {
-		return PublishedBundle{}, ErrBundleNotFound
-	}
-	return record, nil
+	return s.bundleByIDVersionLocked(bundleID, version)
 }
 
-func (s *FileBundleStore) bundleByIDVersionLocked(bundleID string, version uint64) (PublishedBundle, bool) {
-	for _, record := range s.records {
-		if record.Bundle.BundleID == bundleID && record.Bundle.Version == version {
-			return record, true
+func (s *FileBundleStore) ReconcileRollbackHeads(ctx context.Context, records []StoredRollbackAuthorization, now time.Time) error {
+	if s == nil {
+		return ErrStoreRequired
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	sorted := slices.Clone(records)
+	slices.SortFunc(sorted, func(a, b StoredRollbackAuthorization) int {
+		switch {
+		case newerRollback(a, b):
+			return -1
+		case newerRollback(b, a):
+			return 1
+		default:
+			return 0
+		}
+	})
+	for _, record := range sorted {
+		if err := s.ApplyRollbackHead(ctx, record.Authorization, now); err != nil {
+			return fmt.Errorf("reconcile rollback authorization %q: %w", record.Authorization.AuthorizationID, err)
 		}
 	}
-	return PublishedBundle{}, false
+	return nil
+}
+
+func (s *FileBundleStore) bundleByIDVersionLocked(bundleID string, version uint64) (PublishedBundle, error) {
+	var found PublishedBundle
+	for _, record := range s.records {
+		if record.Bundle.BundleID == bundleID && record.Bundle.Version == version {
+			if found.BundleHash != "" {
+				return PublishedBundle{}, fmt.Errorf("%w: duplicate bundle_id/version %q/%d", ErrInvalidStoreRecord, bundleID, version)
+			}
+			found = record
+		}
+	}
+	if found.BundleHash == "" {
+		return PublishedBundle{}, ErrBundleNotFound
+	}
+	return found, nil
 }
 
 // Validate rejects identities whose components are empty OR contain anything
@@ -383,6 +423,11 @@ func (s *FileBundleStore) load() error {
 		}
 		if _, exists := s.records[record.BundleHash]; exists {
 			return fmt.Errorf("%w: duplicate bundle_hash %q", ErrInvalidStoreRecord, record.BundleHash)
+		}
+		if _, err := s.bundleByIDVersionLocked(record.Bundle.BundleID, record.Bundle.Version); err == nil {
+			return fmt.Errorf("%w: duplicate bundle_id/version %q/%d", ErrInvalidStoreRecord, record.Bundle.BundleID, record.Bundle.Version)
+		} else if !errors.Is(err, ErrBundleNotFound) {
+			return err
 		}
 		s.records[record.BundleHash] = record
 		if current, ok := s.streams[record.StreamKey]; !ok || newerRecord(record, current) {

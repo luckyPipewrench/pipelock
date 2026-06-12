@@ -393,9 +393,6 @@ func authorizeVersionTransition(now time.Time, current, next conductor.PolicyBun
 	if auth.OrgID != opts.Identity.OrgID || auth.FleetID != opts.Identity.FleetID {
 		return fmt.Errorf("%w: org_id/fleet_id", conductor.ErrAudienceMismatch)
 	}
-	if !auth.Audience.Matches(opts.Identity.InstanceID, opts.Identity.Labels) {
-		return fmt.Errorf("%w: instance_id=%q", conductor.ErrAudienceMismatch, opts.Identity.InstanceID)
-	}
 	if auth.CurrentBundleID != current.BundleID ||
 		auth.CurrentVersion != current.Version ||
 		auth.TargetBundleID != next.BundleID ||

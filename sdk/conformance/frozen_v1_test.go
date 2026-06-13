@@ -100,6 +100,7 @@ func TestFrozenV1ReceiptFixtures(t *testing.T) {
 				// The chain file is JSONL: one flight-recorder entry per line. The
 				// receipt lives under the "detail" key (see valid-chain.jsonl format).
 				sc := bufio.NewScanner(bytes.NewReader(data))
+				var receipts []receipt.Receipt
 				var n int
 				for sc.Scan() {
 					line := bytes.TrimSpace(sc.Bytes())
@@ -123,6 +124,7 @@ func TestFrozenV1ReceiptFixtures(t *testing.T) {
 					if err := receipt.VerifyWithKey(r, ""); err != nil {
 						return fmt.Errorf("line %d: VerifyWithKey: %w", n+1, err)
 					}
+					receipts = append(receipts, r)
 					n++
 				}
 				if err := sc.Err(); err != nil {
@@ -130,6 +132,13 @@ func TestFrozenV1ReceiptFixtures(t *testing.T) {
 				}
 				if n == 0 {
 					return fmt.Errorf("chain file had no entries")
+				}
+				result := receipt.VerifyChain(receipts, "")
+				if !result.Valid {
+					return fmt.Errorf("VerifyChain: %s", result.Error)
+				}
+				if result.ReceiptCount != uint64(n) {
+					return fmt.Errorf("VerifyChain receipt_count = %d, want %d", result.ReceiptCount, n)
 				}
 				return nil
 			},

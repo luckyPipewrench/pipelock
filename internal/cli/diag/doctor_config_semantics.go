@@ -41,7 +41,7 @@ const (
 
 	// nextSuppressURLDLP is the correct knob for a URL-query DLP false
 	// positive (suppress does not reach URL DLP).
-	nextSuppressURLDLP = "to exempt a URL-query match, set dlp.patterns[].exempt_domains for this pattern; suppress: only reaches body/header/response/SSE scanning and the audit/git scanners"
+	nextSuppressURLDLP = "to exempt a URL-query match, set dlp.patterns[].exempt_domains for this pattern; suppress: only reaches body/header DLP, generic SSE DLP, response scanning, and the audit/git scanners"
 )
 
 // checkDoctorConfigSemantics runs the semantic config-validation checks and
@@ -125,18 +125,19 @@ func checkDoctorSuppressEntries(cfg *config.Config) []doctorReportCheck {
 
 		switch {
 		case !isDLP && !isResp:
-			// Unknown pattern name: matches no active DLP or response-scan
-			// pattern, so no scanner can ever honor this suppress. Genuinely
-			// inert regardless of which scanners are enabled.
+			// Unknown pattern name for proxy namespaces: matches no active
+			// DLP or response-scan pattern, so no proxy scanner can honor this
+			// suppress. Audit/git project scanners have additional finding
+			// names, so keep the warning explicitly scoped.
 			checks = append(checks, doctorReportCheck{
 				Name:       doctorCheckSuppressSemantics,
 				Surface:    doctorSurfaceConfig,
 				Status:     doctorStatusWarn,
 				Configured: true,
 				Detail: fmt.Sprintf(
-					"suppress entry names pattern %q, which matches no active DLP or response-scanning pattern; this exemption is inert and suppresses nothing",
+					"suppress entry names pattern %q, which matches no active DLP or response-scanning pattern; this exemption is inert for the proxy enforcement path",
 					entry.Rule),
-				Next: "fix the rule name to match a pattern in dlp.patterns or response_scanning.patterns, or remove the entry; run `pipelock doctor` again to confirm",
+				Next: "fix the rule name to match a pattern in dlp.patterns or response_scanning.patterns, move audit/git-only suppressions to the config used for those commands, or remove the entry; run `pipelock doctor` again to confirm",
 			})
 		case isResp && !isDLP && !cfg.ResponseScanning.Enabled:
 			// Response-only pattern, response scanning off. The only scanners
@@ -152,7 +153,7 @@ func checkDoctorSuppressEntries(cfg *config.Config) []doctorReportCheck {
 					entry.Rule),
 				Next: "enable response_scanning to make this suppress effective, or remove the entry",
 			})
-		case isDLP && !suppressConsumingDLPScannerEnabled(cfg) && !cfg.ResponseScanning.Enabled:
+		case isDLP && !isResp && !suppressConsumingDLPScannerEnabled(cfg):
 			// DLP pattern, but no live proxy scanner that consults suppress is
 			// enabled. URL DLP would still match this pattern, but it ignores
 			// suppress entirely, so the suppress cannot affect any proxy path.
@@ -165,9 +166,22 @@ func checkDoctorSuppressEntries(cfg *config.Config) []doctorReportCheck {
 				Status:     doctorStatusWarn,
 				Configured: true,
 				Detail: fmt.Sprintf(
-					"suppress entry names DLP pattern %q, but no suppress-consulting proxy scanner is enabled (request_body_scanning=false, response_scanning=false, sse_streaming=false); URL-query DLP would match this pattern but does not consult suppress, so the suppress has no effect on the proxy path",
+					"suppress entry names DLP pattern %q, but no suppress-consulting DLP proxy scanner is enabled (request_body_scanning=false, sse_streaming=false; response_scanning uses a separate pattern namespace); URL-query DLP would match this pattern but does not consult suppress, so the suppress has no effect on the proxy path",
 					entry.Rule),
 				Next: nextSuppressURLDLP,
+			})
+		case isDLP && isResp && !cfg.ResponseScanning.Enabled && !suppressConsumingDLPScannerEnabled(cfg):
+			// Same rule name exists in both namespaces, but every proxy scanner
+			// that could honor either namespace is off.
+			checks = append(checks, doctorReportCheck{
+				Name:       doctorCheckSuppressSemantics,
+				Surface:    doctorSurfaceConfig,
+				Status:     doctorStatusWarn,
+				Configured: true,
+				Detail: fmt.Sprintf(
+					"suppress entry names pattern %q in both DLP and response-scanning namespaces, but response_scanning=false and no suppress-consulting DLP proxy scanner is enabled; URL-query DLP would match this pattern but does not consult suppress, so the suppress has no effect on the proxy path",
+					entry.Rule),
+				Next: "enable the scanner path this suppress is meant to affect, or use dlp.patterns[].exempt_domains for URL-query DLP false positives",
 			})
 		}
 	}

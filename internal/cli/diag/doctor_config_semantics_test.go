@@ -106,6 +106,33 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			wantNextSubstr:   "dlp.patterns[].exempt_domains",
 		},
 		{
+			name: "DLP-only suppress with response scanning on is still inert for DLP",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.SSEStreaming.Enabled = false
+				cfg.Suppress = []config.SuppressEntry{
+					{Rule: testDLPPatternName, Path: "*" + testExemptHost + "*", Reason: "url token FP"},
+				}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "response_scanning uses a separate pattern namespace",
+			wantNextSubstr:   "dlp.patterns[].exempt_domains",
+		},
+		{
+			name: "same rule in DLP and response namespaces is honored when response scanning is on",
+			mutate: func(cfg *config.Config) {
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+					{Name: testDLPPatternName, Regex: "ignore previous instructions"},
+				}
+				cfg.Suppress = []config.SuppressEntry{
+					{Rule: testDLPPatternName, Path: "*" + testExemptHost + "*", Reason: "known response FP"},
+				}
+			},
+			wantWarn: 0,
+		},
+		{
 			name: "correct DLP suppress with body scanning on is NOT flagged",
 			mutate: func(cfg *config.Config) {
 				cfg.RequestBodyScanning.Enabled = true

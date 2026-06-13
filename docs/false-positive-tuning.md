@@ -8,6 +8,8 @@ When pipelock blocks or warns on legitimate traffic, this guide walks you throug
 pipelock generate config --preset audit > pipelock.yaml
 ```
 
+**Fastest path for a single URL.** Run [`pipelock explain <url>`](cli/explain.md) to see which scanner blocked a specific URL and the exact, narrowest config knob that scanner consults — without resolving DNS or fetching anything. It names the correct knob per scanner (for example, URL-DLP false positives point at `dlp.patterns[].exempt_domains`, not the top-level `suppress:` list, which URL DLP never reads).
+
 ## Identifying Which Scanner Triggered
 
 Every pipelock log entry includes a `scanner` field and a `rule` field. These tell you exactly which layer flagged the request and which pattern matched.

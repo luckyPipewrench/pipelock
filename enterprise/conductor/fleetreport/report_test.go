@@ -13,10 +13,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	conductorcore "github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
@@ -176,10 +178,31 @@ func TestBuildFleetReceiptReportNegativeCases(t *testing.T) {
 			opts: baseOpts,
 			want: ErrNoActionReceipts.Error(),
 		},
+		{
+			name: "report_id_generation_failure",
+			evidence: []controlplane.AuditBatchEvidence{
+				base,
+			},
+			opts: func() Options {
+				opts := baseOpts
+				opts.ReportID = ""
+				return opts
+			}(),
+			want: "generate report id",
+		},
 	}
 	_ = auditPub
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "report_id_generation_failure" {
+				orig := newReportUUID
+				newReportUUID = func() (uuid.UUID, error) {
+					return uuid.Nil, errors.New("uuid unavailable")
+				}
+				t.Cleanup(func() {
+					newReportUUID = orig
+				})
+			}
 			_, err := Build(context.Background(), staticEvidenceSource{evidence: tc.evidence}, tc.opts)
 			if err == nil {
 				t.Fatal("Build() error = nil")
@@ -205,13 +228,16 @@ func TestExactDecimalRatio(t *testing.T) {
 		{1, 3, "", ErrNonTerminatingRatio},
 	}
 	for _, tc := range cases {
-		got, err := exactDecimalRatio(tc.num, tc.den)
-		if !errors.Is(err, tc.wantErr) {
-			t.Fatalf("exactDecimalRatio(%d,%d) error = %v, want %v", tc.num, tc.den, err, tc.wantErr)
-		}
-		if got != tc.want {
-			t.Fatalf("exactDecimalRatio(%d,%d) = %q, want %q", tc.num, tc.den, got, tc.want)
-		}
+		tc := tc
+		t.Run(fmt.Sprintf("%d/%d", tc.num, tc.den), func(t *testing.T) {
+			got, err := exactDecimalRatio(tc.num, tc.den)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("exactDecimalRatio(%d,%d) error = %v, want %v", tc.num, tc.den, err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Fatalf("exactDecimalRatio(%d,%d) = %q, want %q", tc.num, tc.den, got, tc.want)
+			}
+		})
 	}
 }
 

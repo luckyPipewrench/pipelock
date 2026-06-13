@@ -37,6 +37,7 @@ var (
 	ErrNoEvidence          = errors.New("fleet report: no audit-batch evidence matched the query")
 	ErrNoActionReceipts    = errors.New("fleet report: no action_receipt records found in matched evidence")
 	ErrNonTerminatingRatio = errors.New("fleet report: mediated fraction is not representable as an exact decimal")
+	newReportUUID          = uuid.NewV7
 )
 
 type EvidenceSource interface {
@@ -129,13 +130,17 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 	if err != nil {
 		return Result{}, err
 	}
+	id, err := reportID(opts.ReportID)
+	if err != nil {
+		return Result{}, err
+	}
 	statement := fleetreceipt.Statement{
 		Type:          fleetreceipt.StatementType,
 		Subject:       subjects,
 		PredicateType: fleetreceipt.PredicateType,
 		Predicate: fleetreceipt.Predicate{
 			SchemaVersion:     1,
-			ReportID:          reportID(opts.ReportID),
+			ReportID:          id,
 			GeneratedAt:       opts.GeneratedAt.UTC().Format(time.RFC3339),
 			OrgID:             opts.OrgID,
 			FleetID:           opts.FleetID,
@@ -197,15 +202,15 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
-func reportID(value string) string {
+func reportID(value string) (string, error) {
 	if strings.TrimSpace(value) != "" {
-		return value
+		return value, nil
 	}
-	id, err := uuid.NewV7()
+	id, err := newReportUUID()
 	if err != nil {
-		return "00000000-0000-7000-8000-000000000000"
+		return "", fmt.Errorf("fleet report: generate report id: %w", err)
 	}
-	return id.String()
+	return id.String(), nil
 }
 
 func validateEvidence(opts Options, ev controlplane.AuditBatchEvidence) error {

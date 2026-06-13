@@ -50,7 +50,7 @@ func TestRunCommand_DefaultAlreadyCurrent(t *testing.T) {
 	if !strings.Contains(out.String(), "latest release") {
 		t.Fatalf("expected nothing-to-do, got %q", out.String())
 	}
-	if string(readT(target)) != "OLD" { //nolint:gosec // test reads its own temp file
+	if string(readT(target)) != "OLD" {
 		t.Fatalf("target mutated: %q", readT(target))
 	}
 }

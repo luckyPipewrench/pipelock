@@ -105,7 +105,7 @@ type CommandRunner func(ctx context.Context, name string, args ...string) ([]byt
 
 // defaultCommandRunner shells out for real.
 func defaultCommandRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput() //nolint:gosec // name is a fixed const (cosign); args are internally constructed
+	return exec.CommandContext(ctx, name, args...).CombinedOutput() // #nosec G204 -- name is a fixed const (cosign); args are internally constructed
 }
 
 // Options configures an update operation. The cobra command fills defaults;

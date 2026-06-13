@@ -127,7 +127,7 @@ func TestRunCommand_ConfirmDeclined(t *testing.T) {
 
 func TestRunCommand_RollbackFlag(t *testing.T) {
 	target := writeTargetBinary(t, "NEW")
-	if err := os.WriteFile(target+backupSuffix, []byte("PREVIOUS"), 0o755); err != nil { //nolint:gosec // test fixture binary
+	if err := os.WriteFile(target+backupSuffix, []byte("PREVIOUS"), 0o755); err != nil { // #nosec G306 -- test fixture binary needs exec bit
 		t.Fatalf("write backup: %v", err)
 	}
 	opts := &Options{
@@ -174,6 +174,6 @@ func TestRunCommand_ErrorJSONEmitsStatus(t *testing.T) {
 
 // readFile is a tiny test helper.
 func readFile(path string) (string, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // test reads its own temp file
+	b, err := os.ReadFile(path) // #nosec G304 -- test reads its own temp file
 	return string(b), err
 }

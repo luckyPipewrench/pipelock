@@ -87,7 +87,7 @@ func sum(data []byte) string {
 // readT reads a file the test created. Centralizes the gosec G304 suppression
 // (every path here is a test-owned temp file).
 func readT(path string) []byte {
-	b, _ := os.ReadFile(path) //nolint:gosec // test reads its own temp file
+	b, _ := os.ReadFile(path) // #nosec G304 -- test reads its own temp file
 	return b
 }
 
@@ -167,7 +167,7 @@ func writeTargetBinary(t *testing.T, contents string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pipelock")
-	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil { //nolint:gosec // test fixture binary needs exec bit
+	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil { // #nosec G306 -- test fixture binary needs exec bit
 		t.Fatalf("write target: %v", err)
 	}
 	return path
@@ -201,7 +201,7 @@ func stubVersionRunner(forceErr string) CommandRunner {
 		// Simulate "<binary> --version": read the binary file we extracted and
 		// echo its embedded version line.
 		if len(args) == 1 && args[0] == "--version" {
-			data, err := os.ReadFile(name) //nolint:gosec // test reads its own temp file
+			data, err := os.ReadFile(name) // #nosec G304 -- test reads its own temp file
 			if err != nil {
 				return nil, err
 			}

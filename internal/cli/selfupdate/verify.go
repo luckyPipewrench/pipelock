@@ -251,7 +251,7 @@ func checkWritable(target string) error {
 
 	// The target file itself must be writable if it already exists.
 	if info, statErr := os.Stat(target); statErr == nil && info.Mode().IsRegular() {
-		f, openErr := os.OpenFile(target, os.O_WRONLY, info.Mode().Perm()) //nolint:gosec // target is the resolved running binary path
+		f, openErr := os.OpenFile(target, os.O_WRONLY, info.Mode().Perm()) // #nosec G304 -- target is the resolved running binary path
 		if openErr != nil {
 			return fmt.Errorf("%w: file %q: %s", ErrNotWritable, target, openErr.Error())
 		}
@@ -319,7 +319,7 @@ func rollback(target string) (backupPath string, err error) {
 // callers copy executables.
 func copyFile(src, dst string) error {
 	const perm = extractedBinaryPerm
-	in, err := os.Open(src) //nolint:gosec // src is a path we control (target binary or our temp file)
+	in, err := os.Open(src) // #nosec G304 -- src is a path we control (target binary or our temp file)
 	if err != nil {
 		return fmt.Errorf("opening %q: %w", src, err)
 	}

@@ -80,11 +80,11 @@ func TestHTTPGet_BadRequest(t *testing.T) {
 func TestRollback_BackupIsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "pipelock")
-	if err := os.WriteFile(target, []byte("NEW"), 0o755); err != nil { //nolint:gosec // test fixture
+	if err := os.WriteFile(target, []byte("NEW"), 0o755); err != nil { // #nosec G306 -- test fixture binary needs exec bit
 		t.Fatalf("write target: %v", err)
 	}
 	// Make the backup path a DIRECTORY so copyFile(open) fails mid-rollback.
-	if err := os.Mkdir(target+backupSuffix, 0o755); err != nil { //nolint:gosec // test fixture
+	if err := os.Mkdir(target+backupSuffix, 0o755); err != nil { // #nosec G301 -- test fixture directory
 		t.Fatalf("mkdir backup: %v", err)
 	}
 	opts := &Options{TargetPath: target, CurrentVersion: testCurrent, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
@@ -129,7 +129,7 @@ func TestCopyFile_RoundTrip(t *testing.T) {
 	if err := copyFile(src, dst); err != nil {
 		t.Fatalf("copyFile: %v", err)
 	}
-	got, _ := os.ReadFile(dst) //nolint:gosec // test reads its own temp file
+	got, _ := os.ReadFile(dst) // #nosec G304 -- test reads its own temp file
 	if string(got) != "payload" {
 		t.Fatalf("dst = %q", got)
 	}
@@ -168,12 +168,12 @@ func TestInstallBinary_BackupFails(t *testing.T) {
 func TestInstallBinary_RestoreOnRenameFailure(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "pipelock")
-	if err := os.WriteFile(target, []byte("ORIGINAL"), 0o755); err != nil { //nolint:gosec // test fixture binary
+	if err := os.WriteFile(target, []byte("ORIGINAL"), 0o755); err != nil { // #nosec G306 -- test fixture binary needs exec bit
 		t.Fatalf("write target: %v", err)
 	}
 	// tmpPath points at a directory, so os.Rename(tmp, target) fails -> restore path.
 	tmpDir := filepath.Join(dir, "tmpisdir")
-	if err := os.Mkdir(tmpDir, 0o755); err != nil { //nolint:gosec // test fixture
+	if err := os.Mkdir(tmpDir, 0o755); err != nil { // #nosec G301 -- test fixture directory
 		t.Fatalf("mkdir: %v", err)
 	}
 	_, err := installBinary(target, tmpDir)
@@ -181,7 +181,7 @@ func TestInstallBinary_RestoreOnRenameFailure(t *testing.T) {
 		t.Fatal("expected rename failure")
 	}
 	// After failed rename, target restored to ORIGINAL from backup.
-	if string(readT(target)) != "ORIGINAL" { //nolint:gosec // test reads its own temp file
+	if string(readT(target)) != "ORIGINAL" {
 		t.Fatalf("target not restored: %q", readT(target))
 	}
 }
@@ -205,7 +205,7 @@ func TestRun_NoArchiveAssetOnPinned(t *testing.T) {
 	if !errors.Is(err, ErrUnsupportedPlatform) {
 		t.Fatalf("expected ErrUnsupportedPlatform, got %v", err)
 	}
-	if string(readT(target)) != "ORIGINAL" { //nolint:gosec // test reads its own temp file
+	if string(readT(target)) != "ORIGINAL" {
 		t.Fatalf("target mutated: %q", readT(target))
 	}
 }
@@ -220,7 +220,7 @@ func TestRun_MissingChecksumsAsset(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when checksums asset missing")
 	}
-	if string(readT(target)) != "ORIGINAL" { //nolint:gosec // test reads its own temp file
+	if string(readT(target)) != "ORIGINAL" {
 		t.Fatalf("target mutated: %q", readT(target))
 	}
 }

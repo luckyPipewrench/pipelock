@@ -173,7 +173,7 @@ func TestExtractZip_WindowsExeEntry(t *testing.T) {
 	if !strings.HasSuffix(tmp, ".exe") {
 		t.Fatalf("windows temp binary should keep .exe suffix, got %q", tmp)
 	}
-	got, _ := os.ReadFile(tmp) //nolint:gosec // test temp file
+	got, _ := os.ReadFile(tmp) // #nosec G304 -- test temp file
 	if !strings.Contains(string(got), "version 2.8.0") {
 		t.Fatalf("wrong binary extracted: %q", got)
 	}
@@ -221,14 +221,14 @@ func TestRun_TargetNotWritableAborts(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	target := filepath.Join(roDir, "pipelock")
-	if err := os.WriteFile(target, []byte("ORIGINAL"), 0o755); err != nil { //nolint:gosec // test fixture binary
+	if err := os.WriteFile(target, []byte("ORIGINAL"), 0o755); err != nil { // #nosec G306 -- test fixture binary needs exec bit
 		t.Fatalf("write target: %v", err)
 	}
 	// Drop write on the dir AFTER placing the file.
-	if err := os.Chmod(roDir, 0o500); err != nil { //nolint:gosec // test needs a read-only dir to exercise the not-writable abort
+	if err := os.Chmod(roDir, 0o500); err != nil { // #nosec G302 -- test needs a read-only dir to exercise the not-writable abort
 		t.Fatalf("chmod: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) }) //nolint:gosec // restore writable so TempDir cleanup can remove it
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) }) // #nosec G302 -- restore writable so TempDir cleanup can remove it
 
 	opts := baseOptions(rs, target)
 	_, err := opts.Run(context.Background())
@@ -243,7 +243,7 @@ func TestRun_TargetNotWritableAborts(t *testing.T) {
 func TestRollback_RestoresBackup(t *testing.T) {
 	target := writeTargetBinary(t, "NEW")
 	// Place a backup.
-	if err := os.WriteFile(target+backupSuffix, []byte("PREVIOUS"), 0o755); err != nil { //nolint:gosec // test fixture
+	if err := os.WriteFile(target+backupSuffix, []byte("PREVIOUS"), 0o755); err != nil { // #nosec G306 -- test fixture binary needs exec bit
 		t.Fatalf("write backup: %v", err)
 	}
 	opts := &Options{

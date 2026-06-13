@@ -78,7 +78,7 @@ func TestExtractBinary_SkipsNonMatchingEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	got, _ := os.ReadFile(tmp) //nolint:gosec // test temp file
+	got, _ := os.ReadFile(tmp) // #nosec G304 -- test temp file
 	if !strings.Contains(string(got), "version 2.8.0") {
 		t.Fatalf("wrong binary extracted: %q", got)
 	}
@@ -94,7 +94,7 @@ func TestExtractZip_SkipsNonMatchingAndDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract zip: %v", err)
 	}
-	got, _ := os.ReadFile(tmp) //nolint:gosec // test temp file
+	got, _ := os.ReadFile(tmp) // #nosec G304 -- test temp file
 	if !strings.Contains(string(got), "version 2.8.0") {
 		t.Fatalf("wrong binary extracted from zip: %q", got)
 	}

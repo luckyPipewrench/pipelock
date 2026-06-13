@@ -1,0 +1,237 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package selfupdate
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// bareVersion strips a leading "v" and any build/pre-release suffix for
+// comparison. "v2.7.0" -> "2.7.0", "2.7.0-rc1" -> "2.7.0".
+func bareVersion(v string) string {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	return v
+}
+
+// parseSemver parses "X.Y.Z" into three ints. Returns ok=false if not parseable
+// (e.g. a "0.1.0-dev" dev build's core still parses, but "unknown" does not).
+func parseSemver(v string) (major, minor, patch int, ok bool) {
+	parts := strings.Split(bareVersion(v), ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var err error
+	if major, err = strconv.Atoi(parts[0]); err != nil {
+		return 0, 0, 0, false
+	}
+	if minor, err = strconv.Atoi(parts[1]); err != nil {
+		return 0, 0, 0, false
+	}
+	if patch, err = strconv.Atoi(parts[2]); err != nil {
+		return 0, 0, 0, false
+	}
+	return major, minor, patch, true
+}
+
+// isNewer reports whether latest is a newer release than current. If current is
+// not parseable semver (dev build), ANY parseable latest counts as newer so a
+// dev build can always move to a real release.
+func isNewer(current, latest string) bool {
+	cMaj, cMin, cPatch, cOK := parseSemver(current)
+	lMaj, lMin, lPatch, lOK := parseSemver(latest)
+	if !lOK {
+		return false // can't reason about a non-semver target
+	}
+	if !cOK {
+		return true // dev/unknown current -> any real release is "newer"
+	}
+	switch {
+	case lMaj != cMaj:
+		return lMaj > cMaj
+	case lMin != cMin:
+		return lMin > cMin
+	default:
+		return lPatch > cPatch
+	}
+}
+
+// Check resolves the latest (or pinned) release and reports status WITHOUT
+// making any changes. Used by --check.
+func (o *Options) Check(ctx context.Context) (*Status, error) {
+	if err := o.fillDefaults(); err != nil {
+		return nil, err
+	}
+	rel, err := o.fetchRelease(ctx)
+	if err != nil {
+		return nil, err
+	}
+	st := &Status{
+		CurrentVersion:  o.CurrentVersion,
+		LatestVersion:   rel.TagName,
+		TargetPath:      o.TargetPath,
+		UpdateAvailable: isNewer(o.CurrentVersion, rel.TagName),
+	}
+	return st, nil
+}
+
+// Run performs the full verified update: resolve release -> verify publisher
+// signature (best-effort) -> download archive -> checksum match -> extract ->
+// verify version -> back up -> atomic replace. FAIL-CLOSED at every step: any
+// error aborts and leaves the installed binary untouched.
+//
+// The cobra layer is responsible for any interactive confirmation before
+// calling Run; Run itself always proceeds (it is the "yes" path).
+func (o *Options) Run(ctx context.Context) (*Status, error) {
+	if err := o.fillDefaults(); err != nil {
+		return nil, err
+	}
+	rel, err := o.fetchRelease(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	st := &Status{
+		CurrentVersion:  o.CurrentVersion,
+		LatestVersion:   rel.TagName,
+		TargetPath:      o.TargetPath,
+		UpdateAvailable: isNewer(o.CurrentVersion, rel.TagName),
+	}
+
+	// Nothing to do unless pinned to a specific version or genuinely newer.
+	if !st.UpdateAvailable && o.TargetVersion == "" {
+		return st, ErrUpToDate
+	}
+
+	// Writability gate FIRST — never start a destructive flow we can't finish.
+	if err := checkWritable(o.TargetPath); err != nil {
+		return st, err
+	}
+
+	bare := bareVersion(rel.TagName)
+	isZip := o.GOOS == "windows"
+	asset := assetName(bare, o.GOOS, o.GOARCH)
+	st.Asset = asset
+
+	// Resolve all asset URLs up front; an unsupported os/arch is an early abort.
+	archiveURL, err := assetURL(rel, asset)
+	if err != nil {
+		return st, fmt.Errorf("%w: %s/%s (looked for %s)", ErrUnsupportedPlatform, o.GOOS, o.GOARCH, asset)
+	}
+	sumsURL, err := assetURL(rel, checksumsFile)
+	if err != nil {
+		return st, fmt.Errorf("resolving checksums asset: %w", err)
+	}
+
+	// Stage checksums + signature material in the target directory's tempdir so
+	// cosign can read them by path and the extracted binary lands on the same FS.
+	dir := dirOf(o.TargetPath)
+
+	// --- 1. checksums.txt + cosign authenticity (best-effort) ---
+	sums, err := o.httpGet(ctx, sumsURL)
+	if err != nil {
+		return st, fmt.Errorf("downloading %s: %w", checksumsFile, err)
+	}
+	skipped, err := o.stageAndVerifySignature(ctx, rel, dir, sums)
+	if err != nil {
+		return st, err // ErrSignatureVerify -> fail-closed, no changes
+	}
+	st.SignatureSkipped = skipped
+	st.SignatureVerified = !skipped
+	if skipped {
+		_, _ = fmt.Fprintln(o.Stderr,
+			"WARNING: cosign not found on PATH — publisher signature was NOT verified. "+
+				"Proceeding with checksum integrity only. Install cosign for full authenticity verification.")
+	}
+
+	// --- 2. download archive + exact checksum match ---
+	archive, err := o.httpGet(ctx, archiveURL)
+	if err != nil {
+		return st, fmt.Errorf("downloading %s: %w", asset, err)
+	}
+	wantSum, ok := parseChecksums(sums)[asset]
+	if !ok {
+		return st, fmt.Errorf("%w: %s has no entry in %s", ErrChecksumMismatch, asset, checksumsFile)
+	}
+	if got := sha256Hex(archive); got != wantSum {
+		return st, fmt.Errorf("%w: %s got %s want %s", ErrChecksumMismatch, asset, got, wantSum)
+	}
+
+	// --- 3. extract the pipelock binary into the target dir (atomic-rename ready) ---
+	tmpPath, err := extractBinary(archive, isZip, dir)
+	if err != nil {
+		return st, err
+	}
+	// From here, any failure must delete tmpPath and leave target untouched.
+
+	// --- 4. verify the extracted binary self-reports the expected version ---
+	if err := o.verifyBinaryVersion(ctx, tmpPath, bare); err != nil {
+		_ = removeQuiet(tmpPath)
+		return st, err
+	}
+
+	// --- 5. back up current + atomic replace ---
+	backup, err := installBinary(o.TargetPath, tmpPath)
+	if err != nil {
+		_ = removeQuiet(tmpPath)
+		return st, err
+	}
+	st.BackupPath = backup
+	st.Applied = true
+	return st, nil
+}
+
+// Rollback restores the previous binary from <target>.bak.
+func (o *Options) Rollback(_ context.Context) (*Status, error) {
+	if err := o.fillDefaults(); err != nil {
+		return nil, err
+	}
+	st := &Status{
+		CurrentVersion: o.CurrentVersion,
+		TargetPath:     o.TargetPath,
+	}
+	if err := checkWritable(o.TargetPath); err != nil {
+		return st, err
+	}
+	backup, err := rollback(o.TargetPath)
+	if err != nil {
+		return st, err
+	}
+	st.BackupPath = backup
+	st.Applied = true
+	return st, nil
+}
+
+// stageAndVerifySignature writes checksums.txt (+ .sig + .pem if present) into
+// dir, then runs cosign verification. Returns skipped=true when cosign is
+// absent (integrity-only), or an error when cosign is present and rejects the
+// signature.
+func (o *Options) stageAndVerifySignature(ctx context.Context, rel *release, dir string, sums []byte) (skipped bool, err error) {
+	if err := writeFileQuiet(joinDir(dir, checksumsFile), sums); err != nil {
+		return false, fmt.Errorf("staging %s: %w", checksumsFile, err)
+	}
+	defer func() { _ = removeQuiet(joinDir(dir, checksumsFile)) }()
+
+	// Best-effort fetch of signature + certificate. If they're missing from the
+	// release AND cosign is present, verification will fail closed below.
+	if sigURL, e := assetURL(rel, checksumsSig); e == nil {
+		if sig, ge := o.httpGet(ctx, sigURL); ge == nil {
+			_ = writeFileQuiet(joinDir(dir, checksumsSig), sig)
+			defer func() { _ = removeQuiet(joinDir(dir, checksumsSig)) }()
+		}
+	}
+	if pemURL, e := assetURL(rel, checksumsPEM); e == nil {
+		if pem, ge := o.httpGet(ctx, pemURL); ge == nil {
+			_ = writeFileQuiet(joinDir(dir, checksumsPEM), pem)
+			defer func() { _ = removeQuiet(joinDir(dir, checksumsPEM)) }()
+		}
+	}
+
+	return o.verifyPublisherSignature(ctx, dir)
+}

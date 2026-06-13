@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/rules"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/cli/scan"
+	"github.com/luckyPipewrench/pipelock/internal/cli/selfupdate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/session"
 	"github.com/luckyPipewrench/pipelock/internal/cli/setup"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
@@ -147,6 +148,8 @@ Quick start:
 		explainCmd(),
 		// Binary install helper for sidecar init containers.
 		installCmd(),
+		// Self-update (verified release install)
+		selfupdate.Cmd(),
 		// Version
 		versionCmd(),
 	)

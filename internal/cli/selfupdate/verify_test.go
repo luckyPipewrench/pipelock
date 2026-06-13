@@ -1,0 +1,268 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package selfupdate
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// assetsWithSignature adds checksums.txt.sig + .pem to a standard release so
+// the cosign path has material to read.
+func assetsWithSignature(t *testing.T, version, goos, goarch string) map[string][]byte {
+	t.Helper()
+	assets, _ := standardAssets(t, version, goos, goarch)
+	assets[checksumsSig] = []byte("fake-signature")
+	assets[checksumsPEM] = []byte("fake-certificate")
+	return assets
+}
+
+func TestRun_CosignAbsentWarnsButProceeds(t *testing.T) {
+	assets := assetsWithSignature(t, testLatest, testGOOS, testGOARCH)
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "OLD")
+	opts := baseOptions(rs, target)
+	stderr := &bytes.Buffer{}
+	opts.Stderr = stderr
+	opts.CosignAvailable = func() bool { return false }
+
+	st, err := opts.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !st.Applied || !st.SignatureSkipped {
+		t.Fatalf("expected applied + skipped, got %+v", st)
+	}
+	if !strings.Contains(stderr.String(), "cosign not found") {
+		t.Fatalf("expected loud warning, got %q", stderr.String())
+	}
+}
+
+func TestRun_CosignPresentAndPasses(t *testing.T) {
+	assets := assetsWithSignature(t, testLatest, testGOOS, testGOARCH)
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "OLD")
+	opts := baseOptions(rs, target)
+	opts.CosignAvailable = func() bool { return true }
+	// Runner: cosign verify-blob succeeds; --version echoes the binary file.
+	opts.RunCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == cosignBinary {
+			return []byte("Verified OK"), nil
+		}
+		return stubVersionRunner("")(ctx, name, args...)
+	}
+
+	st, err := opts.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !st.Applied || st.SignatureSkipped || !st.SignatureVerified {
+		t.Fatalf("expected applied + verified, got %+v", st)
+	}
+}
+
+func TestRun_CosignPresentAndFailsAborts(t *testing.T) {
+	assets := assetsWithSignature(t, testLatest, testGOOS, testGOARCH)
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "ORIGINAL")
+	opts := baseOptions(rs, target)
+	opts.CosignAvailable = func() bool { return true }
+	opts.RunCommand = func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name == cosignBinary {
+			return []byte("error: no matching signatures"), errors.New("exit status 1")
+		}
+		return nil, nil
+	}
+
+	_, err := opts.Run(context.Background())
+	if !errors.Is(err, ErrSignatureVerify) {
+		t.Fatalf("expected ErrSignatureVerify, got %v", err)
+	}
+	if string(readT(target)) != "ORIGINAL" {
+		t.Fatalf("target mutated on signature failure: %q", readT(target))
+	}
+	if _, err := os.Stat(target + backupSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup should not exist after signature abort")
+	}
+}
+
+func TestExtractBinary_TarTraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+	archive := makeTarGz(t, map[string][]byte{"../../etc/evil": []byte("x")})
+	_, err := extractBinary(archive, false, dir)
+	// Traversal entry is rejected; since it's the only entry, either the unsafe
+	// error or "not found" is acceptable — but it must NOT write outside dir.
+	if err == nil {
+		t.Fatalf("expected error for traversal archive")
+	}
+	if !errors.Is(err, ErrUnsafeArchive) && !errors.Is(err, ErrAssetNotFound) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSafeEntryName(t *testing.T) {
+	cases := []struct {
+		name    string
+		wantErr bool
+		wantOut string
+	}{
+		{"pipelock", false, "pipelock"},
+		{"dir/pipelock", false, "pipelock"},
+		{"../pipelock", true, ""},
+		{"a/../../pipelock", true, ""},
+		{"/abs/pipelock", true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := safeEntryName(tc.name)
+			if tc.wantErr {
+				if !errors.Is(err, ErrUnsafeArchive) {
+					t.Fatalf("want ErrUnsafeArchive, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if got != tc.wantOut {
+				t.Fatalf("got %q want %q", got, tc.wantOut)
+			}
+		})
+	}
+}
+
+func TestExtractZip_TraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("../../evil")
+	_, _ = w.Write([]byte("x"))
+	_ = zw.Close()
+	_, err := extractBinary(buf.Bytes(), true, dir)
+	if err == nil {
+		t.Fatalf("expected error for zip-slip")
+	}
+}
+
+func TestRun_TargetNotWritableAborts(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits don't gate writes")
+	}
+	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	rs := newReleaseServer(t, testLatest, assets)
+
+	// Put the target in a directory we make read-only.
+	dir := t.TempDir()
+	roDir := filepath.Join(dir, "ro")
+	if err := os.Mkdir(roDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	target := filepath.Join(roDir, "pipelock")
+	if err := os.WriteFile(target, []byte("ORIGINAL"), 0o755); err != nil { //nolint:gosec // test fixture binary
+		t.Fatalf("write target: %v", err)
+	}
+	// Drop write on the dir AFTER placing the file.
+	if err := os.Chmod(roDir, 0o500); err != nil { //nolint:gosec // test needs a read-only dir to exercise the not-writable abort
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) }) //nolint:gosec // restore writable so TempDir cleanup can remove it
+
+	opts := baseOptions(rs, target)
+	_, err := opts.Run(context.Background())
+	if !errors.Is(err, ErrNotWritable) {
+		t.Fatalf("expected ErrNotWritable, got %v", err)
+	}
+	if string(readT(target)) != "ORIGINAL" {
+		t.Fatalf("target mutated despite not-writable: %q", readT(target))
+	}
+}
+
+func TestRollback_RestoresBackup(t *testing.T) {
+	target := writeTargetBinary(t, "NEW")
+	// Place a backup.
+	if err := os.WriteFile(target+backupSuffix, []byte("PREVIOUS"), 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write backup: %v", err)
+	}
+	opts := &Options{
+		TargetPath:     target,
+		CurrentVersion: testCurrent,
+		Stdout:         &bytes.Buffer{},
+		Stderr:         &bytes.Buffer{},
+	}
+	st, err := opts.Rollback(context.Background())
+	if err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if !st.Applied {
+		t.Fatalf("rollback not applied: %+v", st)
+	}
+	if string(readT(target)) != "PREVIOUS" {
+		t.Fatalf("target = %q, want PREVIOUS", readT(target))
+	}
+}
+
+func TestRollback_NoBackup(t *testing.T) {
+	target := writeTargetBinary(t, "NEW")
+	opts := &Options{
+		TargetPath:     target,
+		CurrentVersion: testCurrent,
+		Stdout:         &bytes.Buffer{},
+		Stderr:         &bytes.Buffer{},
+	}
+	_, err := opts.Rollback(context.Background())
+	if !errors.Is(err, ErrNoBackup) {
+		t.Fatalf("expected ErrNoBackup, got %v", err)
+	}
+}
+
+func TestIsNewer(t *testing.T) {
+	cases := []struct {
+		cur, latest string
+		want        bool
+	}{
+		{"v2.7.0", "v2.8.0", true},
+		{"v2.7.0", "v2.7.1", true},
+		{"v2.7.0", "v3.0.0", true},
+		{"v2.7.0", "v2.7.0", false},
+		{"v2.8.0", "v2.7.0", false},
+		{"0.1.0-dev", "v2.8.0", true}, // dev build -> any real release is newer
+		{"unknown", "v2.8.0", true},   // unparseable current -> newer
+		{"v2.7.0", "garbage", false},  // unparseable latest -> not newer
+	}
+	for _, tc := range cases {
+		t.Run(tc.cur+"->"+tc.latest, func(t *testing.T) {
+			if got := isNewer(tc.cur, tc.latest); got != tc.want {
+				t.Fatalf("isNewer(%q,%q) = %v, want %v", tc.cur, tc.latest, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseChecksums(t *testing.T) {
+	data := []byte("abc123  pipelock_2.8.0_linux_amd64.tar.gz\n" +
+		"def456  pipelock_2.8.0_darwin_arm64.tar.gz\n" +
+		"malformed-line-no-sep\n")
+	m := parseChecksums(data)
+	if m["pipelock_2.8.0_linux_amd64.tar.gz"] != "abc123" {
+		t.Fatalf("linux entry wrong: %v", m)
+	}
+	if len(m) != 2 {
+		t.Fatalf("expected 2 entries, got %d: %v", len(m), m)
+	}
+}
+
+func TestAssetName(t *testing.T) {
+	if got := assetName("2.8.0", "linux", "amd64"); got != "pipelock_2.8.0_linux_amd64.tar.gz" {
+		t.Fatalf("linux: %q", got)
+	}
+	if got := assetName("2.8.0", "windows", "amd64"); got != "pipelock_2.8.0_windows_amd64.zip" {
+		t.Fatalf("windows: %q", got)
+	}
+}

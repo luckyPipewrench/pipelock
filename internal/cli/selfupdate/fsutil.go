@@ -4,6 +4,7 @@
 package selfupdate
 
 import (
+	"errors"
 	"os"
 )
 
@@ -15,5 +16,8 @@ func writeFileQuiet(path string, data []byte) error {
 
 // removeQuiet removes a path, ignoring "not exist".
 func removeQuiet(path string) error {
-	return os.Remove(path)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }

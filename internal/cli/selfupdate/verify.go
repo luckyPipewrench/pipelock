@@ -17,6 +17,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -219,9 +220,11 @@ func (o *Options) verifyBinaryVersion(ctx context.Context, path, wantVersion str
 }
 
 func versionOutputMatches(output, wantVersion string) bool {
-	wantBare := bareVersion(wantVersion)
+	// Exact match including any pre-release suffix: a "2.8.0" binary must NOT
+	// satisfy a "2.8.0-rc1" pin. Strip only the leading "v".
+	want := versionTag(wantVersion)
 	for _, field := range strings.Fields(output) {
-		if field == wantBare || field == "v"+wantBare {
+		if field == want || field == "v"+want {
 			return true
 		}
 	}
@@ -264,9 +267,14 @@ func checkWritable(target string) error {
 }
 
 // installBinary backs up the current binary to <target>.bak (overwriting any
-// prior backup) and atomically renames the verified temp binary into place.
-// On rename failure it restores from the backup. tmpPath and backup live in the
-// same directory as target, so renames are atomic on one filesystem.
+// prior backup) and renames the verified temp binary into place. On rename
+// failure it restores from the backup. tmpPath and backup live in the same
+// directory as target, so the rename is atomic on one filesystem on Unix.
+//
+// Windows note: os.Rename cannot overwrite an existing file, so the old binary
+// is removed first; the replace is therefore NOT atomic on Windows, but the
+// .bak backup is the recovery path. Replacing a running .exe still fails (the
+// OS locks it) — fail-closed, backup intact.
 func installBinary(target, tmpPath string) (backupPath string, err error) {
 	backupPath = target + backupSuffix
 
@@ -274,6 +282,13 @@ func installBinary(target, tmpPath string) (backupPath string, err error) {
 	// inode; copy preserves the running process's mapping on Linux).
 	if err := copyFile(target, backupPath); err != nil {
 		return "", fmt.Errorf("backing up current binary: %w", err)
+	}
+
+	if runtime.GOOS == "windows" {
+		// os.Rename won't overwrite on Windows; move the old binary aside first.
+		if rmErr := os.Remove(target); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return backupPath, fmt.Errorf("removing old binary before install: %w", rmErr)
+		}
 	}
 
 	if err := os.Rename(tmpPath, target); err != nil {

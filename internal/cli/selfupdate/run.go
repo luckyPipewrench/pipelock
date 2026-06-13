@@ -12,10 +12,19 @@ import (
 	"strings"
 )
 
-// bareVersion strips a leading "v" and any build/pre-release suffix for
-// comparison. "v2.7.0" -> "2.7.0", "2.7.0-rc1" -> "2.7.0".
+// versionTag strips only a leading "v" and surrounding whitespace, PRESERVING
+// any pre-release/build suffix. Use this for asset-name resolution and the
+// extracted-binary version check, where "v2.8.0-rc1" must stay "2.8.0-rc1"
+// (GoReleaser keeps the suffix in the archive name and the binary reports it).
+func versionTag(v string) string {
+	return strings.TrimPrefix(strings.TrimSpace(v), "v")
+}
+
+// bareVersion additionally strips the pre-release/build suffix, leaving only the
+// X.Y.Z core for semver COMPARISON. "v2.7.0" -> "2.7.0", "2.7.0-rc1" -> "2.7.0".
+// Never use it for asset names or version-token matching (see versionTag).
 func bareVersion(v string) string {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	v = versionTag(v)
 	if i := strings.IndexAny(v, "-+"); i >= 0 {
 		v = v[:i]
 	}
@@ -116,9 +125,9 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 		return st, err
 	}
 
-	bare := bareVersion(rel.TagName)
+	assetVer := versionTag(rel.TagName)
 	isZip := o.GOOS == "windows"
-	asset := assetName(bare, o.GOOS, o.GOARCH)
+	asset := assetName(assetVer, o.GOOS, o.GOARCH)
 	st.Asset = asset
 
 	// Resolve all asset URLs up front; an unsupported os/arch is an early abort.
@@ -173,7 +182,7 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	// From here, any failure must delete tmpPath and leave target untouched.
 
 	// --- 4. verify the extracted binary self-reports the expected version ---
-	if err := o.verifyBinaryVersion(ctx, tmpPath, bare); err != nil {
+	if err := o.verifyBinaryVersion(ctx, tmpPath, assetVer); err != nil {
 		_ = removeQuiet(tmpPath)
 		return st, err
 	}

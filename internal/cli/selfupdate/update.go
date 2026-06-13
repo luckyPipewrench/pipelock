@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -228,7 +229,8 @@ type Status struct {
 }
 
 // assetName returns the GoReleaser archive name for the given version/os/arch.
-// version must be the bare semver (no leading "v") because GoReleaser strips it.
+// version must have the leading "v" stripped but KEEP any pre-release suffix
+// (e.g. "2.8.0-rc1"), because GoReleaser drops only the "v" in the archive name.
 func assetName(version, goos, goarch string) string {
 	ext := "tar.gz"
 	if goos == "windows" {
@@ -243,7 +245,9 @@ func (o *Options) fetchRelease(ctx context.Context) (*release, error) {
 	if o.TargetVersion == "" {
 		url = fmt.Sprintf("%s/repos/%s/%s/releases/latest", o.APIBase, repoOwner, repoName)
 	} else {
-		url = fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", o.APIBase, repoOwner, repoName, o.TargetVersion)
+		// PathEscape the tag: --version is runtime input and valid Git tags can
+		// contain "/" and other reserved path characters.
+		url = fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", o.APIBase, repoOwner, repoName, neturl.PathEscape(o.TargetVersion))
 	}
 	body, err := o.httpGet(ctx, url)
 	if err != nil {

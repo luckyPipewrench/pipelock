@@ -215,6 +215,31 @@ func TestVersionOutputMatchesWholeTokenOnly(t *testing.T) {
 	if versionOutputMatches("pipelock version 12.8.0\n", "2.8.0") {
 		t.Fatal("substring version match should fail")
 	}
+	// Pre-release pins must match EXACTLY, not collapse to the core version.
+	if !versionOutputMatches("pipelock version 2.8.0-rc1\n", "v2.8.0-rc1") {
+		t.Fatal("expected exact pre-release token to match")
+	}
+	if versionOutputMatches("pipelock version 2.8.0\n", "2.8.0-rc1") {
+		t.Fatal("a stable binary must NOT satisfy a pre-release pin")
+	}
+	if versionOutputMatches("pipelock version 2.8.0-rc2\n", "2.8.0-rc1") {
+		t.Fatal("rc2 binary must NOT satisfy an rc1 pin")
+	}
+}
+
+// TestVersionTagPreservesPrerelease guards the bareVersion-vs-versionTag split:
+// asset names and version checks must keep the pre-release suffix so a pinned
+// "v2.8.0-rc1" resolves the rc archive, not the stable one.
+func TestVersionTagPreservesPrerelease(t *testing.T) {
+	if got := versionTag("v2.8.0-rc1"); got != "2.8.0-rc1" {
+		t.Fatalf("versionTag should keep pre-release: got %q", got)
+	}
+	if got := bareVersion("v2.8.0-rc1"); got != "2.8.0" {
+		t.Fatalf("bareVersion should drop pre-release for comparison: got %q", got)
+	}
+	if got := assetName(versionTag("v2.8.0-rc1"), "linux", "amd64"); got != "pipelock_2.8.0-rc1_linux_amd64.tar.gz" {
+		t.Fatalf("pre-release asset name wrong: got %q", got)
+	}
 }
 
 func TestRun_TargetNotWritableAborts(t *testing.T) {

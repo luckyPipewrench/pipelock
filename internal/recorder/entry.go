@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -243,8 +244,18 @@ func ReadEntries(path string) ([]Entry, error) {
 	}
 	defer func() { _ = f.Close() }()
 
+	entries, err := ReadEntriesFromReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("reading evidence file: %w", err)
+	}
+	return entries, nil
+}
+
+// ReadEntriesFromReader reads and parses JSONL evidence entries from r.
+// It applies the same duplicate-key and version fences as ReadEntries.
+func ReadEntriesFromReader(r io.Reader) ([]Entry, error) {
 	var entries []Entry
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 
 	// 1MB max line size for entries with large Detail payloads
 	const maxLineSize = 1 << 20
@@ -275,7 +286,7 @@ func ReadEntries(path string) ([]Entry, error) {
 		entries = append(entries, e)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("scanning evidence file: %w", err)
+		return nil, fmt.Errorf("scanning evidence entries: %w", err)
 	}
 	return entries, nil
 }

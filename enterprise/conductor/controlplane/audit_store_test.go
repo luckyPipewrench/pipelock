@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -79,6 +80,88 @@ func TestSQLiteAuditStoreIngestsQueriesAndDeduplicates(t *testing.T) {
 	}
 	if gotMode := info.Mode().Perm(); gotMode != 0o600 {
 		t.Fatalf("store mode = %v, want 0600", gotMode)
+	}
+}
+
+func TestSQLiteAuditStoreListsLocalAuditEvidence(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	if _, err := store.put(context.Background(), batch); err != nil {
+		t.Fatalf("put() error = %v", err)
+	}
+	got, err := store.ListAuditBatchEvidence(context.Background(), AuditEvidenceQuery{
+		OrgID:        batch.Identity.OrgID,
+		FleetID:      batch.Identity.FleetID,
+		ReceivedFrom: testNow.Add(-time.Minute),
+		ReceivedTo:   testNow.Add(time.Minute),
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditBatchEvidence() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListAuditBatchEvidence() len=%d, want 1", len(got))
+	}
+	if got[0].Summary.BatchID != batch.Envelope.BatchID || got[0].Envelope.BatchID != batch.Envelope.BatchID {
+		t.Fatalf("evidence identity = %+v envelope=%+v", got[0].Summary, got[0].Envelope)
+	}
+	if string(got[0].Payload) != testAuditPayload {
+		t.Fatalf("payload = %q, want %q", got[0].Payload, testAuditPayload)
+	}
+	got[0].Payload[0] = 'X'
+	again, err := store.ListAuditBatchEvidence(context.Background(), AuditEvidenceQuery{
+		OrgID:        batch.Identity.OrgID,
+		FleetID:      batch.Identity.FleetID,
+		ReceivedFrom: testNow.Add(-time.Minute),
+		ReceivedTo:   testNow.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("second ListAuditBatchEvidence() error = %v", err)
+	}
+	if string(again[0].Payload) != testAuditPayload {
+		t.Fatalf("payload alias escaped from reader: %q", again[0].Payload)
+	}
+}
+
+func TestSQLiteAuditStoreEvidenceFailsClosedOnTruncation(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	identity := defaultFollowerIdentity()
+	for i := uint64(0); i < 3; i++ {
+		batch := signedAcceptedAuditBatch(t, identity,
+			fmt.Sprintf("audit-batch-%d", i), 10+i, 10+i,
+			[]byte(fmt.Sprintf(`{"event":%d}`, i)), testNow)
+		if _, err := store.put(context.Background(), batch); err != nil {
+			t.Fatalf("put(%d) error = %v", i, err)
+		}
+	}
+	window := AuditEvidenceQuery{
+		OrgID:        identity.OrgID,
+		FleetID:      identity.FleetID,
+		ReceivedFrom: testNow.Add(-time.Minute),
+		ReceivedTo:   testNow.Add(time.Minute),
+	}
+
+	// A limit below the true count must fail closed, never silently truncate the
+	// evidence set a report would attest to.
+	truncated := window
+	truncated.Limit = 2
+	if _, err := store.ListAuditBatchEvidence(context.Background(), truncated); !errors.Is(err, ErrAuditEvidenceTruncated) {
+		t.Fatalf("ListAuditBatchEvidence(limit=2) error = %v, want ErrAuditEvidenceTruncated", err)
+	}
+
+	// A limit at or above the true count returns the full set.
+	exact := window
+	exact.Limit = 3
+	got, err := store.ListAuditBatchEvidence(context.Background(), exact)
+	if err != nil {
+		t.Fatalf("ListAuditBatchEvidence(limit=3) error = %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ListAuditBatchEvidence(limit=3) len=%d, want 3", len(got))
 	}
 }
 

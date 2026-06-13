@@ -284,14 +284,7 @@ func installBinary(target, tmpPath string) (backupPath string, err error) {
 		return "", fmt.Errorf("backing up current binary: %w", err)
 	}
 
-	if runtime.GOOS == "windows" {
-		// os.Rename won't overwrite on Windows; move the old binary aside first.
-		if rmErr := os.Remove(target); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			return backupPath, fmt.Errorf("removing old binary before install: %w", rmErr)
-		}
-	}
-
-	if err := os.Rename(tmpPath, target); err != nil {
+	if err := replaceBinary(tmpPath, target); err != nil {
 		// Restore from backup on failure, best-effort.
 		if restoreErr := copyFile(backupPath, target); restoreErr != nil {
 			return backupPath, fmt.Errorf("install failed AND restore failed (backup at %s): %w",
@@ -312,7 +305,7 @@ func rollback(target string) (backupPath string, err error) {
 		}
 		return backupPath, fmt.Errorf("checking backup %q: %w", backupPath, statErr)
 	}
-	// Stage the restored bytes into a temp file in the target dir, then atomic rename.
+	// Stage the restored bytes into a temp file in the target dir, then replace.
 	dir := filepath.Dir(target)
 	tmp, err := os.CreateTemp(dir, ".pipelock-rollback-*")
 	if err != nil {
@@ -324,11 +317,25 @@ func rollback(target string) (backupPath string, err error) {
 		_ = os.Remove(tmpPath)
 		return backupPath, fmt.Errorf("staging backup: %w", err)
 	}
-	if err := os.Rename(tmpPath, target); err != nil {
+	if err := replaceBinary(tmpPath, target); err != nil {
 		_ = os.Remove(tmpPath)
 		return backupPath, fmt.Errorf("restoring backup: %w", err)
 	}
 	return backupPath, nil
+}
+
+// replaceBinary moves the staged file at tmpPath over target. On Unix this is an
+// atomic rename. On Windows os.Rename cannot overwrite an existing file, so the
+// old target is removed first — NOT atomic, but install/rollback both keep a
+// .bak backup as the recovery path. Replacing a running .exe still fails (the OS
+// locks it): fail-closed, backup intact.
+func replaceBinary(tmpPath, target string) error {
+	if runtime.GOOS == "windows" {
+		if rmErr := os.Remove(target); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return rmErr
+		}
+	}
+	return os.Rename(tmpPath, target)
 }
 
 // copyFile copies src to dst with the executable binary perm. dst is written

@@ -155,6 +155,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		checkDoctorSentry(cfg),
 		checkDoctorDeploymentBoundary(cfg),
 	}
+	report.Checks = append(report.Checks, checkDoctorConfigSemantics(cfg)...)
 	for _, check := range report.Checks {
 		switch check.Status {
 		case doctorStatusOK:

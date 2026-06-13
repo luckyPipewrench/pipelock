@@ -39,6 +39,7 @@ func fleetCmd() *cobra.Command {
 		Short: "Inspect Conductor fleet topology",
 	}
 	cmd.AddCommand(fleetStatusCmd())
+	cmd.AddCommand(fleetReportCmd())
 	return cmd
 }
 

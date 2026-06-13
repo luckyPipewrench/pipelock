@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/session"
 	"github.com/luckyPipewrench/pipelock/internal/cli/setup"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
+	"github.com/luckyPipewrench/pipelock/internal/cli/support"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
@@ -98,6 +99,7 @@ Quick start:
 		diag.TestCmd(),
 		diag.DemoCmd(),
 		diag.LogsCmd(),
+		support.Cmd(),
 		// Generate
 		generate.Cmd(),
 		// Git

@@ -142,7 +142,7 @@ func newReleaseServer(t *testing.T, tag string, assets map[string][]byte) *relea
 }
 
 // standardAssets builds a coherent release: archive + matching checksums.txt.
-func standardAssets(t *testing.T, version, goos, goarch string) (assets map[string][]byte, archiveName string) {
+func standardAssets(t *testing.T, version, goos string) (assets map[string][]byte, archiveName string) {
 	t.Helper()
 	bare := strings.TrimPrefix(version, "v")
 	bin := fakeBinaryBytes(bare)
@@ -153,11 +153,13 @@ func standardAssets(t *testing.T, version, goos, goarch string) (assets map[stri
 	} else {
 		archive = makeTarGz(t, map[string][]byte{archiveBinaryName(goos): bin})
 	}
-	archiveName = assetName(bare, goos, goarch)
+	archiveName = assetName(bare, goos, testGOARCH)
 	checks := fmt.Sprintf("%s  %s\n", sum(archive), archiveName)
 	return map[string][]byte{
 		archiveName:   archive,
 		checksumsFile: []byte(checks),
+		checksumsSig:  []byte("fake-signature"),
+		checksumsPEM:  []byte("fake-certificate"),
 	}, archiveName
 }
 
@@ -174,7 +176,7 @@ func writeTargetBinary(t *testing.T, contents string) string {
 }
 
 // baseOptions wires a test Options pointed at the fake server, with cosign
-// absent by default (integrity-only path).
+// present by default so success paths exercise publisher verification.
 func baseOptions(rs *releaseServer, target string) *Options {
 	return &Options{
 		APIBase:         rs.srv.URL,
@@ -183,7 +185,7 @@ func baseOptions(rs *releaseServer, target string) *Options {
 		CurrentVersion:  testCurrent,
 		GOOS:            testGOOS,
 		GOARCH:          testGOARCH,
-		CosignAvailable: func() bool { return false },
+		CosignAvailable: func() bool { return true },
 		RunCommand:      stubVersionRunner(""),
 		Stdout:          &bytes.Buffer{},
 		Stderr:          &bytes.Buffer{},
@@ -212,7 +214,7 @@ func stubVersionRunner(forceErr string) CommandRunner {
 }
 
 func TestCheck_UpdateAvailable(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -234,7 +236,7 @@ func TestCheck_UpdateAvailable(t *testing.T) {
 }
 
 func TestCheck_AlreadyCurrent(t *testing.T) {
-	assets, _ := standardAssets(t, testCurrent, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testCurrent, testGOOS)
 	rs := newReleaseServer(t, testCurrent, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -249,7 +251,7 @@ func TestCheck_AlreadyCurrent(t *testing.T) {
 }
 
 func TestRun_SuccessReplacesAndBacksUp(t *testing.T) {
-	assets, archiveName := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, archiveName := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -272,15 +274,14 @@ func TestRun_SuccessReplacesAndBacksUp(t *testing.T) {
 	if bak := readT(target + backupSuffix); string(bak) != "OLD" {
 		t.Fatalf("backup = %q, want OLD", bak)
 	}
-	// cosign absent -> signature skipped, integrity-only.
-	if !st.SignatureSkipped || st.SignatureVerified {
-		t.Fatalf("expected signature skipped; got %+v", st)
+	if st.SignatureSkipped || !st.SignatureVerified {
+		t.Fatalf("expected signature verified; got %+v", st)
 	}
 }
 
 func TestRun_PinnedVersion(t *testing.T) {
 	const pinned = "v2.7.5"
-	assets, _ := standardAssets(t, pinned, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, pinned, testGOOS)
 	rs := newReleaseServer(t, pinned, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -296,7 +297,7 @@ func TestRun_PinnedVersion(t *testing.T) {
 }
 
 func TestRun_ChecksumMismatchAborts(t *testing.T) {
-	assets, archiveName := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, archiveName := standardAssets(t, testLatest, testGOOS)
 	// Corrupt the checksums entry so it no longer matches the archive.
 	assets[checksumsFile] = []byte("deadbeef  " + archiveName + "\n")
 	rs := newReleaseServer(t, testLatest, assets)
@@ -318,7 +319,7 @@ func TestRun_ChecksumMismatchAborts(t *testing.T) {
 }
 
 func TestRun_NetworkErrorFailsClosed(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	rs.failBody = true // asset downloads return 500
 	target := writeTargetBinary(t, "ORIGINAL")
@@ -356,7 +357,7 @@ func TestRun_ExtractedVersionMismatchAborts(t *testing.T) {
 }
 
 func TestRun_UnsupportedPlatform(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "ORIGINAL")
 	opts := baseOptions(rs, target)
@@ -373,7 +374,7 @@ func TestRun_UnsupportedPlatform(t *testing.T) {
 }
 
 func TestRun_WindowsZip(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, "windows", "amd64")
+	assets, _ := standardAssets(t, testLatest, "windows")
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)

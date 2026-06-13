@@ -135,7 +135,7 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	// cosign can read them by path and the extracted binary lands on the same FS.
 	dir := filepath.Dir(o.TargetPath)
 
-	// --- 1. checksums.txt + cosign authenticity (best-effort) ---
+	// --- 1. checksums.txt + cosign authenticity (fail-closed unless --insecure-skip-signature) ---
 	sums, err := o.httpGet(ctx, sumsURL)
 	if err != nil {
 		return st, fmt.Errorf("downloading %s: %w", checksumsFile, err)
@@ -148,8 +148,8 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	st.SignatureVerified = !skipped
 	if skipped {
 		_, _ = fmt.Fprintln(o.Stderr,
-			"WARNING: cosign not found on PATH — publisher signature was NOT verified. "+
-				"Proceeding with checksum integrity only. Install cosign for full authenticity verification.")
+			"WARNING: --insecure-skip-signature is set and cosign was not found on PATH. "+
+				"Publisher identity was NOT verified; proceeding with checksum integrity only.")
 	}
 
 	// --- 2. download archive + exact checksum match ---

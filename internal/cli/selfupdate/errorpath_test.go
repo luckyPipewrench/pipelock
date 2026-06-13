@@ -196,7 +196,7 @@ func TestVerifyBinaryVersion_RunError(t *testing.T) {
 
 func TestRun_NoArchiveAssetOnPinned(t *testing.T) {
 	// Release exists with checksums but NO archive for our os/arch.
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	delete(assets, assetName(strings.TrimPrefix(testLatest, "v"), testGOOS, testGOARCH))
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "ORIGINAL")
@@ -211,7 +211,7 @@ func TestRun_NoArchiveAssetOnPinned(t *testing.T) {
 }
 
 func TestRun_MissingChecksumsAsset(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	delete(assets, checksumsFile)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "ORIGINAL")

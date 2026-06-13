@@ -19,6 +19,7 @@ pipelock update --yes        # update without the confirmation prompt
 pipelock update --version v2.7.0   # install a specific release tag
 pipelock update --rollback   # restore the previous binary from <binary>.bak
 pipelock update --json       # machine-readable status
+pipelock update --insecure-skip-signature   # checksum-only fallback if cosign is unavailable
 ```
 
 ## Flags
@@ -30,6 +31,7 @@ pipelock update --json       # machine-readable status
 | `--yes`, `-y` | Skip the interactive confirmation prompt. |
 | `--rollback` | Restore the previous binary from the `.bak` backup saved by a prior update. |
 | `--json` | Emit machine-readable JSON status (consistent with `doctor` / `keys`). |
+| `--insecure-skip-signature` | Allow checksum-only update when `cosign` is unavailable. Publisher identity is not verified; use only for explicit recovery. |
 
 ## Verification chain
 
@@ -40,16 +42,16 @@ installed binary unchanged**:
    with `--version`) from the GitHub API for `luckyPipewrench/pipelock`. The
    HTTP client honors `HTTPS_PROXY` / `HTTP_PROXY` from the environment, so the
    updater works inside a contained Pipelock deployment.
-2. **Publisher authenticity (best-effort).** Download `checksums.txt` plus its
+2. **Publisher authenticity.** Download `checksums.txt` plus its
    keyless cosign signature (`checksums.txt.sig`) and certificate
    (`checksums.txt.pem`).
    - If a `cosign` binary is on `PATH`, run `cosign verify-blob` pinned to the
      GitHub Actions OIDC issuer (`https://token.actions.githubusercontent.com`)
      and the `luckyPipewrench/pipelock` release workflow identity for the
      target tag. If it fails, the update **aborts**.
-   - If `cosign` is **not** on `PATH`, the updater prints a loud warning that
-     publisher-signature verification was skipped and proceeds with **checksum
-     integrity only**. See the caveat below.
+   - If `cosign` is **not** on `PATH`, the update **aborts** by default before
+     any binary replacement. Passing `--insecure-skip-signature` changes this to
+     checksum-only mode and prints a warning. See the caveat below.
 3. **Integrity.** Download the release archive
    (`pipelock_<version>_<os>_<arch>.tar.gz`, or `.zip` on Windows), compute its
    SHA256, and require an **exact match** to the entry in `checksums.txt`. A
@@ -69,11 +71,10 @@ installed binary unchanged**:
 ### Authenticity caveat (cosign)
 
 Publisher-signature verification depends on a `cosign` binary being present on
-`PATH`. When it is absent, the updater still enforces the SHA256 checksum match
-(integrity) but **cannot prove the publisher identity** — it warns loudly and
-continues. For full supply-chain assurance, install
-[cosign](https://github.com/sigstore/cosign) before running `pipelock update`,
-or verify the release artifacts manually.
+`PATH`. When it is absent, the updater fails closed by default. If you pass
+`--insecure-skip-signature`, the updater still enforces the SHA256 checksum
+match (integrity) but **cannot prove publisher identity**. Use that fallback
+only for an explicit recovery flow, or verify the release artifacts manually.
 
 ## Rollback
 

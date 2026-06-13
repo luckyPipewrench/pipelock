@@ -36,8 +36,8 @@ func parseChecksums(data []byte) map[string]string {
 
 // verifyPublisherSignature checks checksums.txt against its keyless cosign
 // signature. Behavior:
-//   - cosign NOT on PATH: returns (skipped=true, nil) — integrity-only mode;
-//     the caller prints a loud WARNING but continues.
+//   - cosign NOT on PATH: returns ErrSignatureUnavailable unless the caller
+//     explicitly enabled checksum-only mode.
 //   - cosign present and verification FAILS: returns (false, ErrSignatureVerify)
 //     — fail-closed, caller aborts with no changes.
 //   - cosign present and verification PASSES: returns (false-skipped, nil).
@@ -46,6 +46,9 @@ func parseChecksums(data []byte) map[string]string {
 // all three paths without a real cosign binary.
 func (o *Options) verifyPublisherSignature(ctx context.Context, dir, tagName string) (skipped bool, err error) {
 	if !o.CosignAvailable() {
+		if !o.AllowUnsignedChecksums {
+			return false, ErrSignatureUnavailable
+		}
 		return true, nil
 	}
 	// #nosec G204 -- all args are fixed consts or paths we constructed in our temp dir.

@@ -82,6 +82,9 @@ var (
 	// ErrSignatureVerify is returned when cosign is present and rejects the
 	// publisher signature on checksums.txt. Fail-closed: no changes applied.
 	ErrSignatureVerify = errors.New("publisher signature verification failed")
+	// ErrSignatureUnavailable is returned when cosign is unavailable and the
+	// caller did not explicitly opt into checksum-only update mode.
+	ErrSignatureUnavailable = errors.New("publisher signature verification unavailable")
 	// ErrUnsupportedPlatform is returned for an OS/arch with no published asset.
 	ErrUnsupportedPlatform = errors.New("no release asset for this OS/architecture")
 	// ErrAssetNotFound is returned when the release has no matching archive asset.
@@ -132,6 +135,10 @@ type Options struct {
 	AssumeYes bool
 	// JSON requests machine-readable output (handled by the cobra layer).
 	JSON bool
+	// AllowUnsignedChecksums permits checksum-only updates when cosign is absent.
+	// This is intentionally opt-in because checksums downloaded from the same
+	// release page prove integrity, not publisher authenticity.
+	AllowUnsignedChecksums bool
 
 	// CosignAvailable reports whether a cosign binary is usable. Default: PATH lookup.
 	CosignAvailable func() bool

@@ -21,7 +21,7 @@ func TestCmd_Construction(t *testing.T) {
 	if len(cmd.Aliases) != 1 || cmd.Aliases[0] != "upgrade" {
 		t.Fatalf("aliases = %v", cmd.Aliases)
 	}
-	for _, f := range []string{"check", "version", "yes", "rollback", "json"} {
+	for _, f := range []string{"check", "version", "yes", "rollback", "json", "insecure-skip-signature"} {
 		if cmd.Flags().Lookup(f) == nil {
 			t.Fatalf("missing flag --%s", f)
 		}
@@ -29,7 +29,7 @@ func TestCmd_Construction(t *testing.T) {
 }
 
 func TestRunCommand_CheckJSON(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -58,7 +58,7 @@ func TestRunCommand_CheckJSON(t *testing.T) {
 }
 
 func TestRunCommand_CheckHuman(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -78,7 +78,7 @@ func TestRunCommand_CheckHuman(t *testing.T) {
 }
 
 func TestRunCommand_YesUpdateJSON(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -103,7 +103,7 @@ func TestRunCommand_YesUpdateJSON(t *testing.T) {
 }
 
 func TestRunCommand_ConfirmDeclined(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -150,7 +150,7 @@ func TestRunCommand_RollbackFlag(t *testing.T) {
 }
 
 func TestRunCommand_ErrorJSONEmitsStatus(t *testing.T) {
-	assets, archiveName := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, archiveName := standardAssets(t, testLatest, testGOOS)
 	assets[checksumsFile] = []byte("deadbeef  " + archiveName + "\n")
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "ORIGINAL")

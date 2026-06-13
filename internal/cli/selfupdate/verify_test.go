@@ -16,39 +16,49 @@ import (
 	"testing"
 )
 
-// assetsWithSignature adds checksums.txt.sig + .pem to a standard release so
-// the cosign path has material to read.
-func assetsWithSignature(t *testing.T, version, goos, goarch string) map[string][]byte {
-	t.Helper()
-	assets, _ := standardAssets(t, version, goos, goarch)
-	assets[checksumsSig] = []byte("fake-signature")
-	assets[checksumsPEM] = []byte("fake-certificate")
-	return assets
+func TestRun_CosignAbsentFailsClosedByDefault(t *testing.T) {
+	assets, _ := standardAssets(t, testLatest, testGOOS)
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "ORIGINAL")
+	opts := baseOptions(rs, target)
+	opts.CosignAvailable = func() bool { return false }
+
+	_, err := opts.Run(context.Background())
+	if !errors.Is(err, ErrSignatureUnavailable) {
+		t.Fatalf("expected ErrSignatureUnavailable, got %v", err)
+	}
+	if string(readT(target)) != "ORIGINAL" {
+		t.Fatalf("target mutated when cosign unavailable: %q", readT(target))
+	}
+	if _, err := os.Stat(target + backupSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup should not exist after signature-unavailable abort")
+	}
 }
 
-func TestRun_CosignAbsentWarnsButProceeds(t *testing.T) {
-	assets := assetsWithSignature(t, testLatest, testGOOS, testGOARCH)
+func TestRun_InsecureSkipSignatureAllowsChecksumOnly(t *testing.T) {
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
 	stderr := &bytes.Buffer{}
 	opts.Stderr = stderr
 	opts.CosignAvailable = func() bool { return false }
+	opts.AllowUnsignedChecksums = true
 
 	st, err := opts.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !st.Applied || !st.SignatureSkipped {
+	if !st.Applied || !st.SignatureSkipped || st.SignatureVerified {
 		t.Fatalf("expected applied + skipped, got %+v", st)
 	}
-	if !strings.Contains(stderr.String(), "cosign not found") {
-		t.Fatalf("expected loud warning, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "--insecure-skip-signature") {
+		t.Fatalf("expected insecure warning, got %q", stderr.String())
 	}
 }
 
 func TestRun_CosignPresentAndPasses(t *testing.T) {
-	assets := assetsWithSignature(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -76,7 +86,7 @@ func TestRun_CosignPresentAndPasses(t *testing.T) {
 }
 
 func TestRun_CosignPresentAndFailsAborts(t *testing.T) {
-	assets := assetsWithSignature(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "ORIGINAL")
 	opts := baseOptions(rs, target)
@@ -211,7 +221,7 @@ func TestRun_TargetNotWritableAborts(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission bits don't gate writes")
 	}
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 
 	// Put the target in a directory we make read-only.

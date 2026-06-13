@@ -53,7 +53,7 @@ func TestCheck_FetchError(t *testing.T) {
 
 func TestRun_UpToDate(t *testing.T) {
 	// Latest equals current and no pin -> ErrUpToDate, no changes.
-	assets, _ := standardAssets(t, testCurrent, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testCurrent, testGOOS)
 	rs := newReleaseServer(t, testCurrent, assets)
 	target := writeTargetBinary(t, "ORIGINAL")
 	opts := baseOptions(rs, target)
@@ -141,17 +141,20 @@ func TestRollback_StatError(t *testing.T) {
 }
 
 func TestCmd_RunE_CheckEndToEnd(t *testing.T) {
-	// Drive the actual cobra RunE with --check; it will hit the real GitHub API
-	// default unless we can't reach it. We only assert it does not panic and
-	// returns (network failure is acceptable here as a fail-closed error).
+	// Drive the actual cobra RunE with --check without allowing a live network
+	// dial. A canceled context exercises the command path and must fail closed.
 	cmd := Cmd()
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 	cmd.SetErr(out)
 	cmd.SetArgs([]string{"--check", "--json"})
-	// Best-effort: ignore the error (network may be blocked in CI sandbox).
-	_ = cmd.Execute()
-	// Either we got JSON or a clean error message — never a panic.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd.SetContext(ctx)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected canceled context error")
+	}
+	// Clean fail-closed error path, never a panic.
 	if strings.Contains(out.String(), "panic") {
 		t.Fatalf("unexpected panic output: %q", out.String())
 	}

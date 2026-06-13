@@ -12,7 +12,7 @@ import (
 )
 
 func TestRunCommand_ConfirmAccepted(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -34,7 +34,7 @@ func TestRunCommand_ConfirmAccepted(t *testing.T) {
 }
 
 func TestRunCommand_DefaultAlreadyCurrent(t *testing.T) {
-	assets, _ := standardAssets(t, testCurrent, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testCurrent, testGOOS)
 	rs := newReleaseServer(t, testCurrent, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
@@ -87,7 +87,7 @@ func TestRunCommand_RollbackError(t *testing.T) {
 func TestRunCommand_DefaultUpToDateAfterRun(t *testing.T) {
 	// AssumeYes skips confirm; latest == current -> Run returns ErrUpToDate ->
 	// the default branch converts it to a friendly message, no error.
-	assets, _ := standardAssets(t, testCurrent, testGOOS, testGOARCH)
+	assets, _ := standardAssets(t, testCurrent, testGOOS)
 	rs := newReleaseServer(t, testCurrent, assets)
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)

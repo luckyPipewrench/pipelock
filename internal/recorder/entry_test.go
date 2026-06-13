@@ -120,6 +120,19 @@ func TestComputeHash_FieldChange(t *testing.T) {
 	}
 }
 
+func TestIsAcceptedEntryVersion(t *testing.T) {
+	for _, version := range []int{1, recorder.EntryVersion} {
+		if !recorder.IsAcceptedEntryVersion(version) {
+			t.Fatalf("IsAcceptedEntryVersion(%d) = false, want true", version)
+		}
+	}
+	for _, version := range []int{0, 99} {
+		if recorder.IsAcceptedEntryVersion(version) {
+			t.Fatalf("IsAcceptedEntryVersion(%d) = true, want false", version)
+		}
+	}
+}
+
 func TestReadEntries_ValidFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")

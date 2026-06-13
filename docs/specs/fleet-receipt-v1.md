@@ -108,6 +108,20 @@ or omitted from unavailable audit batches is outside the claim.
 
 ## Verification
 
+Enterprise report creation reads accepted audit-batch evidence from the local
+Conductor audit store:
+
+```bash
+pipelock conductor fleet report \
+  --storage-dir /var/lib/pipelock/conductor \
+  --org-id pipelab \
+  --fleet-id dogfood \
+  --from 2026-06-13T00:00:00Z \
+  --to 2026-06-14T00:00:00Z \
+  --signing-key /etc/pipelock/keys/fleet-report.key \
+  --out fleet-receipt.dsse.json
+```
+
 Use the free Apache binary:
 
 ```bash

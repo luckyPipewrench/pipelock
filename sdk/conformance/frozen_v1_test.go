@@ -113,7 +113,9 @@ func TestFrozenV1ReceiptFixtures(t *testing.T) {
 					if err := json.Unmarshal(line, &wrapper); err != nil {
 						return fmt.Errorf("line %d: unmarshal chain wrapper: %w", n+1, err)
 					}
-					if wrapper.Detail == nil {
+					// json.RawMessage("null") is non-nil, so a literal `detail: null`
+					// must be caught here, not slip through to the verifier.
+					if len(bytes.TrimSpace(wrapper.Detail)) == 0 || string(bytes.TrimSpace(wrapper.Detail)) == "null" {
 						return fmt.Errorf("line %d: missing detail field", n+1)
 					}
 					r, err := receipt.Unmarshal(wrapper.Detail)

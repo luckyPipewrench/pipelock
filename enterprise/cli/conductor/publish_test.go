@@ -213,7 +213,9 @@ func TestPublish_HappyPathAcceptedByRealHandler(t *testing.T) {
 
 // TestPublish_ForwardWithoutChainHashRejected proves a forward publish that
 // omits --previous-bundle-hash is rejected by the stream chain check (409), so
-// an operator cannot accidentally fork the stream.
+// an operator cannot accidentally fork the stream. The version is fine (v2 > max
+// v1); only the chain pointer is wrong, so the operator must get the
+// previous-hash-mismatch error, NOT a misleading "version is stale".
 func TestPublish_ForwardWithoutChainHashRejected(t *testing.T) {
 	dir := t.TempDir()
 	url := newPublishServer(t)
@@ -230,8 +232,12 @@ func TestPublish_ForwardWithoutChainHashRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected chain-conflict error, got nil")
 	}
-	if !errors.Is(err, ErrStalePolicyVersion) {
-		t.Fatalf("want ErrStalePolicyVersion (409), got %v", err)
+	if !errors.Is(err, ErrPolicyPreviousHashMismatch) {
+		t.Fatalf("want ErrPolicyPreviousHashMismatch (409), got %v", err)
+	}
+	// De-conflation guard: this must NOT be reported as any other conflict class.
+	if errors.Is(err, ErrPolicyRollbackViaPublish) || errors.Is(err, ErrPolicyVersionBelowStreamMax) {
+		t.Fatalf("prev-hash mismatch conflated with another conflict class: %v", err)
 	}
 }
 
@@ -245,8 +251,10 @@ func TestPublish_FirstBundleWithPreviousHashRejected(t *testing.T) {
 	opts := baseOpts(t, dir, url)
 	opts.previousHash = strings.Repeat("ab", 32) // valid-shape hash, but no stream head exists
 	err := runPublish(context.Background(), &strings.Builder{}, opts)
-	if err == nil || !errors.Is(err, ErrStalePolicyVersion) {
-		t.Fatalf("want rejection for first bundle with previous hash, got %v", err)
+	// No stream head exists yet, so this is the generic conflict class (the store
+	// reports "initial bundle has previous_bundle_hash" without a specific code).
+	if err == nil || !errors.Is(err, ErrPolicyPublishConflict) {
+		t.Fatalf("want ErrPolicyPublishConflict for first bundle with previous hash, got %v", err)
 	}
 }
 
@@ -266,9 +274,11 @@ func extractHash(t *testing.T, out string) string {
 	return strings.TrimSpace(rest[:end])
 }
 
-// TestPublish_StaleVersionRejectedClean drives the 409 path explicitly with
-// captured output so the assertion is deterministic.
-func TestPublish_StaleVersionRejectedClean(t *testing.T) {
+// TestPublish_LowerVersionReportedAsRollbackAttempt drives the 409 path with a
+// version BELOW the current head: that is a rollback attempt via publish, and
+// the operator must get the rollback-attempt error (pointing at the rollback
+// flow), NOT a generic "version is stale".
+func TestPublish_LowerVersionReportedAsRollbackAttempt(t *testing.T) {
 	dir := t.TempDir()
 	url := newPublishServer(t)
 	opts := baseOpts(t, dir, url)
@@ -278,15 +288,19 @@ func TestPublish_StaleVersionRejectedClean(t *testing.T) {
 	if err := runPublish(context.Background(), &out, opts); err != nil {
 		t.Fatalf("publish v5: %v", err)
 	}
-	// Now publish a lower version: server returns 409, surfaced as ErrStalePolicyVersion.
+	// Now publish a lower version (4 < head 5): server returns 409 with the
+	// rollback-attempt code.
 	opts.version = 4
 	out.Reset()
 	err := runPublish(context.Background(), &out, opts)
 	if err == nil {
-		t.Fatalf("expected stale-version error, got nil")
+		t.Fatalf("expected rollback-attempt error, got nil")
 	}
-	if !errors.Is(err, ErrStalePolicyVersion) {
-		t.Fatalf("want ErrStalePolicyVersion, got %v", err)
+	if !errors.Is(err, ErrPolicyRollbackViaPublish) {
+		t.Fatalf("want ErrPolicyRollbackViaPublish, got %v", err)
+	}
+	if errors.Is(err, ErrPolicyVersionBelowStreamMax) || errors.Is(err, ErrPolicyPreviousHashMismatch) {
+		t.Fatalf("rollback attempt conflated with another conflict class: %v", err)
 	}
 }
 
@@ -945,6 +959,93 @@ func TestPostBundle_401Rejected(t *testing.T) {
 	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
 	if err == nil || !strings.Contains(err.Error(), "not authorized") {
 		t.Fatalf("want auth error, got %v", err)
+	}
+}
+
+// TestPostBundle_409ConflictCodesDeConflated is the core regression for gap A3:
+// the SAME HTTP 409 that used to collapse into one "version is stale" must now
+// map to a DISTINCT, accurate sentinel per the control plane's "code" field.
+// The prev-hash case in particular must surface a previous-hash-specific message
+// instead of "version is stale".
+func TestPostBundle_409ConflictCodesDeConflated(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		code        string
+		want        error
+		notWant     []error
+		wantMessage string // a substring proving the message is specific to the case
+	}{
+		{
+			name:        "rollback-attempt",
+			code:        controlplane.PublishConflictRollbackAttempt,
+			want:        ErrPolicyRollbackViaPublish,
+			notWant:     []error{ErrPolicyVersionBelowStreamMax, ErrPolicyPreviousHashMismatch},
+			wantMessage: "rolled-back",
+		},
+		{
+			name:        "below-stream-max",
+			code:        controlplane.PublishConflictVersionBelowStreamMax,
+			want:        ErrPolicyVersionBelowStreamMax,
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyPreviousHashMismatch},
+			wantMessage: "highest published version",
+		},
+		{
+			name:        "previous-hash-mismatch",
+			code:        controlplane.PublishConflictPreviousHashMismatch,
+			want:        ErrPolicyPreviousHashMismatch,
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax},
+			wantMessage: "previous-bundle-hash",
+		},
+		{
+			name:        "unknown-code-falls-back",
+			code:        "some_future_code",
+			want:        ErrPolicyPublishConflict,
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyPreviousHashMismatch},
+			wantMessage: "conflicts with the active stream",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"error":"server detail here","code":"` + tc.code + `"}`
+			url := newStubStatusServer(t, http.StatusConflict, body)
+			_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+			if err == nil {
+				t.Fatalf("want conflict error, got nil")
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("want %v, got %v", tc.want, err)
+			}
+			for _, nw := range tc.notWant {
+				if errors.Is(err, nw) {
+					t.Fatalf("conflict conflated: %v also matches %v", err, nw)
+				}
+			}
+			if !strings.Contains(err.Error(), tc.wantMessage) {
+				t.Fatalf("message %q does not contain case-specific %q", err.Error(), tc.wantMessage)
+			}
+		})
+	}
+}
+
+// TestPostBundle_409PrevHashNotReportedAsStale is the explicit before/after of
+// the conflated case: a previous_bundle_hash mismatch (which the old code
+// reported as "version is stale") must now produce a previous-hash-specific
+// message and MUST NOT mention version staleness.
+func TestPostBundle_409PrevHashNotReportedAsStale(t *testing.T) {
+	body := `{"error":"previous_bundle_hash does not match stream head","code":"` + controlplane.PublishConflictPreviousHashMismatch + `"}`
+	url := newStubStatusServer(t, http.StatusConflict, body)
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	if err == nil {
+		t.Fatalf("want conflict error, got nil")
+	}
+	if !errors.Is(err, ErrPolicyPreviousHashMismatch) {
+		t.Fatalf("want ErrPolicyPreviousHashMismatch, got %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "previous-bundle-hash") {
+		t.Fatalf("message not prev-hash-specific: %q", msg)
+	}
+	if strings.Contains(msg, "stale") {
+		t.Fatalf("message still says 'stale' for a prev-hash mismatch: %q", msg)
 	}
 }
 

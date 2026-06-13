@@ -525,6 +525,122 @@ func TestFileBundleStoreRejectsStreamConflicts(t *testing.T) {
 	}
 }
 
+// TestFileBundleStoreForwardPublishConflictsAreDistinct proves the store
+// returns three operationally DISTINCT, errors.Is-testable sentinels for the
+// three forward-publish conflict cases, so the publish error can no longer be
+// conflated into a single misleading "version is stale". The third case (the
+// below-stream-max trap) is the one that cost a real operator a failed publish
+// during a live recovery: after a rollback the head sits at vN while vN+1..vM
+// still exist, so a naive forward publish of vN+1 is below the stream MAX.
+func TestFileBundleStoreForwardPublishConflictsAreDistinct(t *testing.T) {
+	store, err := OpenFileBundleStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	signer := newTestSigner(t)
+	aud := conductor.Audience{InstanceIDs: []string{"*"}}
+
+	v1 := signedControlBundle(t, signer, bundleSpec{id: "distinct-v1", version: 1, audience: aud})
+	r1, _, err := store.Publish(t.Context(), v1, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish(v1) error = %v", err)
+	}
+	v2 := signedControlBundle(t, signer, bundleSpec{
+		id: "distinct-v2", version: 2, previousHash: r1.BundleHash, audience: aud,
+		configYAML: "mode: strict\napi_allowlist:\n  - api2.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
+		t.Fatalf("Publish(v2) error = %v", err)
+	}
+
+	// Case 3: previous_bundle_hash mismatch. Version (3) is above the stream max
+	// (2), so the only fault is the chain pointer.
+	prevHashMismatch := signedControlBundle(t, signer, bundleSpec{
+		id: "distinct-v3-badprev", version: 3, previousHash: stringsOf("a", 64), audience: aud,
+		configYAML: "mode: strict\napi_allowlist:\n  - api3-badprev.example.com\n",
+	})
+	err = publishErr(t, store, prevHashMismatch, testNow.Add(2*time.Minute))
+	if !errors.Is(err, ErrPreviousHashMismatch) {
+		t.Fatalf("prev-hash case err=%v, want ErrPreviousHashMismatch", err)
+	}
+	assertConflictExclusive(t, err, ErrPreviousHashMismatch)
+
+	// Case 1: rollback attempt. While the head is still v2, publishing version 1
+	// (strictly below the current head) is a rollback, not a forward publish, and
+	// must surface as ErrUnsupportedRollback, distinct from the below-stream-max
+	// and prev-hash cases. Asserted here, before the rollback below, because once
+	// the head is rolled back to v1 a version-below-head publish is no longer
+	// expressible (versions are >= 1).
+	rollbackAttempt := signedControlBundle(t, signer, bundleSpec{
+		id: "distinct-rollback-attempt", version: 1, previousHash: r1.BundleHash, audience: aud,
+		configYAML: "mode: strict\napi_allowlist:\n  - api1-rollback.example.com\n",
+	})
+	err = publishErr(t, store, rollbackAttempt, testNow.Add(150*time.Second))
+	if !errors.Is(err, ErrUnsupportedRollback) {
+		t.Fatalf("rollback-attempt case err=%v, want ErrUnsupportedRollback", err)
+	}
+	assertConflictExclusive(t, err, ErrUnsupportedRollback)
+
+	// Roll the head back to v1 so the head (1) is now BELOW the stream max (2).
+	auth := signedRollbackAuthorizationForBundles(t, "distinct-rollback", v2, v1, testNow)
+	if err := store.ApplyRollbackHead(t.Context(), auth, testNow.Add(3*time.Minute)); err != nil {
+		t.Fatalf("ApplyRollbackHead() error = %v", err)
+	}
+
+	// Case 2 (THE key fix): below-stream-max trap. Head is v1 after rollback, but
+	// max is still 2. A naive operator publishes version 2 (head+1) chained to the
+	// current head v1 — that is <= max(2) and >= head(1), so it must be reported
+	// as below-stream-max, NOT as a stale/rollback error.
+	belowMax := signedControlBundle(t, signer, bundleSpec{
+		id: "distinct-v2-trap", version: 2, previousHash: r1.BundleHash, audience: aud,
+		configYAML: "mode: strict\napi_allowlist:\n  - api2-trap.example.com\n",
+	})
+	err = publishErr(t, store, belowMax, testNow.Add(4*time.Minute))
+	if !errors.Is(err, ErrVersionBelowStreamMax) {
+		t.Fatalf("below-stream-max case err=%v, want ErrVersionBelowStreamMax", err)
+	}
+	assertConflictExclusive(t, err, ErrVersionBelowStreamMax)
+
+	// A correct forward publish above the stream max (3) chained to the head still
+	// succeeds: detection is preserved, only the message is de-conflated.
+	ok := signedControlBundle(t, signer, bundleSpec{
+		id: "distinct-v3-good", version: 3, previousHash: r1.BundleHash, audience: aud,
+		configYAML: "mode: strict\napi_allowlist:\n  - api3-good.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), ok, PublishOptions{Now: testNow.Add(5 * time.Minute)}); err != nil {
+		t.Fatalf("Publish(v3 above max) error = %v, want success", err)
+	}
+}
+
+// publishErr publishes a bundle and returns only the error (helper to keep the
+// distinctness assertions terse).
+func publishErr(t *testing.T, store *FileBundleStore, bundle conductor.PolicyBundle, now time.Time) error {
+	t.Helper()
+	_, _, err := store.Publish(t.Context(), bundle, PublishOptions{Now: now})
+	return err
+}
+
+// assertConflictExclusive asserts err is the umbrella ErrBundleConflict and the
+// expected specific sentinel, and is NOT any of the OTHER specific conflict
+// sentinels — i.e. the three cases never alias each other.
+func assertConflictExclusive(t *testing.T, err, want error) {
+	t.Helper()
+	if !errors.Is(err, ErrBundleConflict) {
+		t.Fatalf("conflict err=%v does not wrap umbrella ErrBundleConflict", err)
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("conflict err=%v does not match expected sentinel %v", err, want)
+	}
+	for _, other := range []error{ErrUnsupportedRollback, ErrVersionBelowStreamMax, ErrPreviousHashMismatch} {
+		if errors.Is(other, want) {
+			continue
+		}
+		if errors.Is(err, other) {
+			t.Fatalf("conflict err=%v conflated: also matches %v", err, other)
+		}
+	}
+}
+
 func TestFileBundleStoreLatestSelectsMatchingValidBundle(t *testing.T) {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {

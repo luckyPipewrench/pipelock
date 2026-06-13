@@ -53,11 +53,41 @@ const (
 	keyFileSchemaVersion = 1
 )
 
-// ErrStalePolicyVersion is returned when the Conductor rejects a publish because
-// the supplied --version is not strictly greater than the version already
-// published for this org/fleet/environment stream. Monotonic versions are how a
-// follower distinguishes a newer policy from a replay of an older one.
-var ErrStalePolicyVersion = errors.New("policy bundle version is stale (not greater than the currently published version for this stream)")
+// A publish can be rejected by the Conductor with HTTP 409 Conflict for several
+// operationally distinct reasons. The control plane reports which one in the
+// "code" field of the JSON error body (see controlplane.PublishConflict*); the
+// CLI maps each to a distinct sentinel below so an operator gets an accurate,
+// actionable message instead of one collapsed "version is stale". Every sentinel
+// is errors.Is-testable. Conflating them once cost a real operator a failed
+// publish during a live recovery (the head was rolled back to vN while vN+1..vM
+// still existed, so the forward publish needed a version above the stream MAX,
+// not merely above the head — but the message only said "stale").
+var (
+	// ErrPolicyVersionBelowStreamMax: the supplied --version is not strictly
+	// greater than the stream's HIGHEST-ever published version. After a rollback
+	// the head sits at vN while vN+1..vM already exist, so a forward publish must
+	// use a version greater than M, not merely greater than the current head N.
+	// Query the stream's head/max version through the operator's Conductor status
+	// surface and re-publish with --version greater than the max.
+	ErrPolicyVersionBelowStreamMax = errors.New("policy bundle version must exceed the stream's highest published version (after a rollback, newer versions still exist above the current head; publish a version above the stream max, not just above the head)")
+
+	// ErrPolicyRollbackViaPublish: the supplied --version is below the current
+	// (rolled-back) stream head. A forward publish cannot perform a rollback; use
+	// the rollback authorization flow (`pipelock conductor rollback`) instead.
+	ErrPolicyRollbackViaPublish = errors.New("policy bundle version is below the current (rolled-back) stream head; a publish cannot roll back — use the rollback authorization flow instead")
+
+	// ErrPolicyPreviousHashMismatch: --previous-bundle-hash does not match the
+	// current stream head hash. The version is fine; the chain pointer is wrong
+	// (typically a stale or copy-pasted hash). Use the hash printed by the most
+	// recent successful publish for this stream (also reported by the stream
+	// head/status query) as --previous-bundle-hash.
+	ErrPolicyPreviousHashMismatch = errors.New("policy bundle --previous-bundle-hash does not match the current stream head hash; use the hash printed by the most recent successful publish for this stream")
+
+	// ErrPolicyPublishConflict: a 409 Conflict that is none of the more specific
+	// cases above (e.g. a bundle_id/version already published with a different
+	// hash, or a first-in-stream bundle that carries a --previous-bundle-hash).
+	ErrPolicyPublishConflict = errors.New("policy bundle conflicts with the active stream")
+)
 
 // publishOptions collects every operator-supplied input for `conductor publish`.
 // Grouped into a struct (rather than a long parameter list) per the project
@@ -110,9 +140,13 @@ rule-bundle references), signs it with a policy-bundle-signing key, and POSTs it
 to a running Conductor's policy-bundle endpoint over mutual TLS using a publisher
 bearer token. Followers then pull and apply it on their next poll.
 
-The --version must be strictly greater than the version already published for the
-same org/fleet/environment stream; the Conductor rejects a stale or duplicate
-version and this command reports it as such.
+The --version must be strictly greater than the stream's highest published
+version. After a rollback the stream head sits below the highest version that was
+ever published, so a forward publish must use a version above the stream MAX, not
+merely above the current head. The Conductor distinguishes a rollback attempt, a
+below-stream-max version, and a previous_bundle_hash mismatch, and this command
+reports each as a distinct, actionable error (query the stream head/max version
+through your Conductor status workflow).
 
 The signing key is a file produced by:
   pipelock signing key generate --purpose policy-bundle-signing --out <abs>
@@ -146,7 +180,7 @@ Example:
 	cmd.Flags().StringVar(&opts.environment, "env", "", "environment the bundle targets")
 	cmd.Flags().StringVar(&opts.bundleID, "bundle-id", "", "bundle id (default: <fleet>-<env>-v<version>)")
 	cmd.Flags().StringArrayVar(&opts.audience, "audience", nil, "audience selector: '*' for the whole fleet, an instance id, or 'label:KEY=VALUE'; repeatable. Instance ids and labels cannot be mixed")
-	cmd.Flags().Uint64Var(&opts.version, "version", 0, "monotonic bundle version; must be strictly greater than the currently published version for this stream")
+	cmd.Flags().Uint64Var(&opts.version, "version", 0, "monotonic bundle version; must exceed the stream's highest published version (after a rollback, newer versions can exist above the current head, so this must beat the stream max, not just the head)")
 	cmd.Flags().StringVar(&opts.previousHash, "previous-bundle-hash", "", "hash of the currently published bundle for this stream (printed by the prior publish); omit only for the first bundle in a stream")
 	cmd.Flags().DurationVar(&opts.validity, "validity", opts.validity, "validity window for the bundle starting now (not_before=now, expires_at=now+validity)")
 	cmd.Flags().StringVar(&opts.minVersion, "min-pipelock-version", "", "minimum pipelock version a follower must run to apply this bundle (major.minor.patch)")
@@ -567,8 +601,10 @@ func isLoopbackHost(host string) bool {
 }
 
 // postBundle marshals the bundle into the publish request envelope and POSTs it.
-// It translates the Conductor's status codes into clear operator errors, in
-// particular surfacing a 409 (stale/duplicate version) as ErrStalePolicyVersion.
+// It translates the Conductor's status codes into clear operator errors. A 409
+// Conflict is de-conflated via conflictSentinel into one of the distinct publish
+// conflict sentinels (rollback attempt, version-below-stream-max, or
+// previous-hash mismatch) so the operator gets an accurate, actionable message.
 func postBundle(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle) (publishResult, error) {
 	envelope := struct {
 		Bundle conductorcore.PolicyBundle `json:"bundle"`
@@ -599,7 +635,7 @@ func postBundle(ctx context.Context, client *http.Client, baseURL, token string,
 		}
 		return result, nil
 	case http.StatusConflict:
-		return publishResult{}, fmt.Errorf("%w: %s", ErrStalePolicyVersion, serverErrorDetail(respBody, token))
+		return publishResult{}, fmt.Errorf("%w: %s", conflictSentinel(respBody), serverErrorDetail(respBody, token))
 	case http.StatusForbidden, http.StatusUnauthorized:
 		return publishResult{}, fmt.Errorf("publisher not authorized (HTTP %d): %s", resp.StatusCode, serverErrorDetail(respBody, token))
 	default:
@@ -613,6 +649,34 @@ type publishResult struct {
 	Version     uint64    `json:"version"`
 	PublishedAt time.Time `json:"published_at"`
 	Created     bool      `json:"created"`
+}
+
+// conflictSentinel selects the distinct CLI sentinel for an HTTP 409 publish
+// rejection by reading the machine-readable "code" field the control plane
+// attaches to the JSON error body (controlplane.PublishConflict*). This is the
+// de-conflation: the three operationally distinct conflicts map to three
+// distinct, errors.Is-testable sentinels rather than one "version is stale".
+//
+// An older control plane that does not emit a code (or a malformed body) yields
+// the generic ErrPolicyPublishConflict, so the CLI still reports a correct
+// (if less specific) conflict rather than mis-attributing the cause.
+func conflictSentinel(body []byte) error {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ErrPolicyPublishConflict
+	}
+	switch payload.Code {
+	case controlplane.PublishConflictRollbackAttempt:
+		return ErrPolicyRollbackViaPublish
+	case controlplane.PublishConflictVersionBelowStreamMax:
+		return ErrPolicyVersionBelowStreamMax
+	case controlplane.PublishConflictPreviousHashMismatch:
+		return ErrPolicyPreviousHashMismatch
+	default:
+		return ErrPolicyPublishConflict
+	}
 }
 
 // serverErrorMaxRunes bounds the sanitized server-error detail we surface in an

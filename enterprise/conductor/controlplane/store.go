@@ -75,7 +75,20 @@ var (
 	ErrAuditBatchConflict    = errors.New("conductor audit batch conflicts with accepted batch")
 	ErrAuditForkDetected     = errors.New("conductor audit sequence fork detected")
 	ErrUnsupportedRollback   = errors.New("conductor control plane rollback publication not implemented")
-	ErrEmergencyKeyRequired  = errors.New("conductor emergency control key resolver required")
+	// ErrVersionBelowStreamMax is returned by a forward publish whose version is
+	// not strictly greater than the highest version EVER published in the stream,
+	// yet is not below the current (possibly rolled-back) head. After a rollback
+	// the head sits at vN while vN+1..vM already exist, so a forward publish needs
+	// a version greater than M, not merely greater than N. This is a distinct case
+	// from a genuine rollback attempt (ErrUnsupportedRollback) and from a stream
+	// head-hash mismatch (ErrPreviousHashMismatch); conflating the three is what
+	// produced the misleading "version is stale" message during a live recovery.
+	ErrVersionBelowStreamMax = errors.New("conductor policy bundle version must exceed the stream's highest published version")
+	// ErrPreviousHashMismatch is returned by a forward publish whose
+	// previous_bundle_hash does not equal the current stream head hash. The version
+	// is fine; the chain pointer is wrong (typically a stale or copy-pasted hash).
+	ErrPreviousHashMismatch = errors.New("conductor policy bundle previous_bundle_hash does not match the current stream head hash")
+	ErrEmergencyKeyRequired = errors.New("conductor emergency control key resolver required")
 	// ErrAuditEvidenceTruncated is returned by ListAuditBatchEvidence when the
 	// window matches more accepted audit batches than the effective limit. Report
 	// minting must fail closed rather than sign a report over a silently truncated
@@ -728,9 +741,9 @@ func (s *FileBundleStore) authorizeForwardLocked(record PublishedBundle) error {
 		if record.Bundle.Version < current.Bundle.Version {
 			return fmt.Errorf("%w: %w", ErrBundleConflict, ErrUnsupportedRollback)
 		}
-		return fmt.Errorf("%w: version must exceed stream max version", ErrBundleConflict)
+		return fmt.Errorf("%w: %w (stream max version is %d)", ErrBundleConflict, ErrVersionBelowStreamMax, maxVersion)
 	case record.Bundle.PreviousBundleHash != current.BundleHash:
-		return fmt.Errorf("%w: previous_bundle_hash does not match stream head", ErrBundleConflict)
+		return fmt.Errorf("%w: %w (current stream head hash is %s)", ErrBundleConflict, ErrPreviousHashMismatch, current.BundleHash)
 	default:
 		return nil
 	}

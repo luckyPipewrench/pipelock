@@ -82,6 +82,22 @@ included signed audit batches and carry the mediated-fraction completeness
 metric. They do not claim non-bypass; they prove the signed report's source set
 and arithmetic for mediated actions inside that source set.
 
+Enterprise operators mint a report from the local Conductor audit store:
+
+```bash
+pipelock conductor fleet report \
+  --storage-dir /var/lib/pipelock/conductor \
+  --org-id pipelab \
+  --fleet-id dogfood \
+  --from 2026-06-13T00:00:00Z \
+  --to 2026-06-14T00:00:00Z \
+  --signing-key /etc/pipelock/keys/fleet-report.key \
+  --out fleet-receipt.dsse.json
+```
+
+The mint command reads stored audit-batch envelopes and payloads locally. The
+remote `conductor audit query` API stays metadata-only.
+
 Pin the fleet-report public key:
 
 ```bash

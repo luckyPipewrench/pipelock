@@ -75,6 +75,11 @@ var (
 	ErrAuditForkDetected     = errors.New("conductor audit sequence fork detected")
 	ErrUnsupportedRollback   = errors.New("conductor control plane rollback publication not implemented")
 	ErrEmergencyKeyRequired  = errors.New("conductor emergency control key resolver required")
+	// ErrAuditEvidenceTruncated is returned by ListAuditBatchEvidence when the
+	// window matches more accepted audit batches than the effective limit. Report
+	// minting must fail closed rather than sign a report over a silently truncated
+	// source set, which would misstate the completeness and summary it attests to.
+	ErrAuditEvidenceTruncated = errors.New("conductor audit evidence exceeds query limit")
 )
 
 type FollowerIdentity struct {

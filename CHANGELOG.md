@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New Features
 
-- **Fleet Receipt Reports.** Adds the Apache/free verifier path for Fleet Receipt Report DSSE envelopes through `pipelock verify-receipt --fleet-report --key <fleet-report.pub>`, the `fleet-report-signing` key purpose, the `fleet-receipt/v1` schema/spec foundation, and the Enterprise-gated `pipelock conductor fleet report` mint path from locally accepted Conductor audit batches.
+- **Fleet Receipt Report verification foundation.** Adds the Apache/free verifier path for Fleet Receipt Report DSSE envelopes through `pipelock verify-receipt --fleet-report --key <fleet-report.pub>`, the `fleet-report-signing` key purpose, and the `fleet-receipt/v1` schema/spec foundation. Report creation remains Enterprise-gated and lands separately.
+- **Fleet Receipt Report minting.** Adds the Enterprise-gated `pipelock conductor fleet report` path for minting DSSE Fleet Receipt Reports from locally accepted Conductor audit batches. The mint path reads raw audit payloads only from the local Conductor audit store, aggregates action receipt summaries, signs with a `fleet-report-signing` key, and fails closed rather than silently truncating evidence windows that exceed the configured batch limit.
 
 ## [2.7.0] - 2026-06-10
 

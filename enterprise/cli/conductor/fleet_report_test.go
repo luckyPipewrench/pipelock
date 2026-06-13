@@ -94,11 +94,141 @@ func TestLoadFleetReportSigningKeyPurpose(t *testing.T) {
 	}
 }
 
+func TestLoadFleetReportSigningKeyRejectsMalformedFiles(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(report): %v", err)
+	}
+	otherPub, _, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(other): %v", err)
+	}
+	base := publishKeyFile{
+		SchemaVersion: keyFileSchemaVersion,
+		Purpose:       signing.PurposeFleetReportSigning.String(),
+		KeyID:         "report-key-1",
+		Public:        hex.EncodeToString(pub),
+		Private:       hex.EncodeToString(priv),
+		CreatedAt:     "2026-06-13T00:00:00Z",
+	}
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "malformed json", content: `{"schema_version":`, want: "decode --signing-key"},
+		{name: "trailing json", content: fleetReportKeyJSON(t, base) + `{}`, want: "trailing JSON"},
+		{name: "wrong schema", content: fleetReportKeyJSON(t, withFleetReportKey(base, func(k *publishKeyFile) {
+			k.SchemaVersion = keyFileSchemaVersion + 1
+		})), want: "unsupported schema_version"},
+		{name: "invalid purpose", content: fleetReportKeyJSON(t, withFleetReportKey(base, func(k *publishKeyFile) {
+			k.Purpose = "not-a-real-purpose"
+		})), want: "unknown key_purpose"},
+		{name: "missing key id", content: fleetReportKeyJSON(t, withFleetReportKey(base, func(k *publishKeyFile) {
+			k.KeyID = " "
+		})), want: "missing key_id"},
+		{name: "malformed public", content: fleetReportKeyJSON(t, withFleetReportKey(base, func(k *publishKeyFile) {
+			k.Public = "zz"
+		})), want: "malformed public key"},
+		{name: "malformed private", content: fleetReportKeyJSON(t, withFleetReportKey(base, func(k *publishKeyFile) {
+			k.Private = "zz"
+		})), want: "malformed private key"},
+		{name: "mismatched private", content: fleetReportKeyJSON(t, withFleetReportKey(base, func(k *publishKeyFile) {
+			k.Public = hex.EncodeToString(otherPub)
+		})), want: "private key does not match"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(c.name, " ", "-")+".key")
+			if err := os.WriteFile(path, []byte(c.content), 0o600); err != nil {
+				t.Fatalf("WriteFile(key): %v", err)
+			}
+			if _, _, err := loadFleetReportSigningKey(path); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("loadFleetReportSigningKey() error = %v, want substring %q", err, c.want)
+			}
+		})
+	}
+	missing := filepath.Join(dir, "missing.key")
+	if _, _, err := loadFleetReportSigningKey(missing); err == nil || !strings.Contains(err.Error(), "read --signing-key") {
+		t.Fatalf("loadFleetReportSigningKey(missing) error = %v, want read error", err)
+	}
+}
+
 func TestOpenFleetReportAuditStoreRequiresExistingDB(t *testing.T) {
 	cmd := fleetReportCmd()
 	_, err := openFleetReportAuditStore(cmd, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "stat Conductor audit store") {
 		t.Fatalf("openFleetReportAuditStore(missing) error = %v, want stat error", err)
+	}
+}
+
+func TestOpenFleetReportAuditStoreRejectsNonRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "audit.db"), 0o700); err != nil {
+		t.Fatalf("Mkdir(audit.db): %v", err)
+	}
+	cmd := fleetReportCmd()
+	_, err := openFleetReportAuditStore(cmd, dir)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("openFleetReportAuditStore(directory) error = %v, want not regular", err)
+	}
+}
+
+func TestRunFleetReportRejectsInvalidInputs(t *testing.T) {
+	dir := t.TempDir()
+	_, reportPriv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(report) error = %v", err)
+	}
+	keyPath := writeFleetReportKeyFile(t, dir, "report.key", "report-key-1", signing.PurposeFleetReportSigning, reportPriv)
+	base := fleetReportOptions{
+		storageDir:  dir,
+		orgID:       "org-main",
+		fleetID:     "prod",
+		from:        "2026-06-13T00:00:00Z",
+		to:          "2026-06-13T01:00:00Z",
+		signingKey:  keyPath,
+		out:         filepath.Join(dir, "fleet-receipt.dsse.json"),
+		conductorID: "conductor-1",
+		limit:       10,
+	}
+	emptyStoreDir := t.TempDir()
+	emptyStore, err := controlplane.OpenSQLiteAuditStore(context.Background(), filepath.Join(emptyStoreDir, "audit.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteAuditStore(empty) error = %v", err)
+	}
+	if err := emptyStore.Close(); err != nil {
+		t.Fatalf("Close(empty store) error = %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*fleetReportOptions)
+		want   string
+	}{
+		{name: "bad from", mutate: func(o *fleetReportOptions) { o.from = "not-rfc3339" }, want: "parse --from"},
+		{name: "bad to", mutate: func(o *fleetReportOptions) { o.to = "not-rfc3339" }, want: "parse --to"},
+		{name: "bad trusted audit key", mutate: func(o *fleetReportOptions) {
+			o.trustedAuditKeys = []string{"id=audit-key-1,org=org-main"}
+		}, want: "invalid --trusted-audit-key"},
+		{name: "missing store", mutate: func(o *fleetReportOptions) {
+			o.storageDir = filepath.Join(dir, "missing-store")
+		}, want: "stat Conductor audit store"},
+		{name: "no evidence", mutate: func(o *fleetReportOptions) {
+			o.storageDir = emptyStoreDir
+		}, want: "no audit-batch evidence"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts := base
+			c.mutate(&opts)
+			cmd := fleetReportCmd()
+			cmd.SetContext(context.Background())
+			if err := runFleetReport(cmd, opts); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("runFleetReport() error = %v, want substring %q", err, c.want)
+			}
+		})
 	}
 }
 
@@ -143,7 +273,7 @@ func TestRunFleetReportWritesVerifiedEnvelope(t *testing.T) {
 		limit:            10,
 		conductorVersion: "v2.8.0-test",
 		licenseCRLFile:   "",
-		signingKeyID:     "",
+		signingKeyID:     "override-report-key",
 	})
 	if err != nil {
 		t.Fatalf("runFleetReport() error = %v", err)
@@ -166,12 +296,59 @@ func TestRunFleetReportWritesVerifiedEnvelope(t *testing.T) {
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		t.Fatalf("Unmarshal(envelope) error = %v", err)
 	}
-	verified, err := fleetreceipt.VerifyEnvelope(envelope, map[string]ed25519.PublicKey{"report-key-1": reportPub})
+	verified, err := fleetreceipt.VerifyEnvelope(envelope, map[string]ed25519.PublicKey{"override-report-key": reportPub})
 	if err != nil {
 		t.Fatalf("VerifyEnvelope() error = %v", err)
 	}
 	if verified.Statement.Predicate.ReportID == "" || verified.Statement.Predicate.Summary.TotalActions != 1 {
 		t.Fatalf("verified predicate = %+v", verified.Statement.Predicate)
+	}
+}
+
+func TestRunFleetReportPropagatesWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controlplane.OpenSQLiteAuditStore(context.Background(), filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteAuditStore() error = %v", err)
+	}
+	auditPub, auditPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(audit) error = %v", err)
+	}
+	if _, err := store.IngestAuditBatch(context.Background(), cliTestAcceptedAuditBatch(t, auditPriv)); err != nil {
+		t.Fatalf("IngestAuditBatch() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close(store) error = %v", err)
+	}
+	_, reportPriv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(report) error = %v", err)
+	}
+	keyPath := writeFleetReportKeyFile(t, dir, "report.key", "report-key-1", signing.PurposeFleetReportSigning, reportPriv)
+	cmd := fleetReportCmd()
+	cmd.SetContext(context.Background())
+	err = runFleetReport(cmd, fleetReportOptions{
+		storageDir:       dir,
+		orgID:            "org-main",
+		fleetID:          "prod",
+		from:             "2026-06-13T00:00:00Z",
+		to:               "2026-06-13T01:00:00Z",
+		signingKey:       keyPath,
+		out:              filepath.Join(dir, "missing", "fleet-receipt.dsse.json"),
+		conductorID:      "conductor-1",
+		trustedAuditKeys: []string{"id=audit-key-1,inline=" + hex.EncodeToString(auditPub) + ",org=org-main,fleet=prod,instance=pl-1"},
+		limit:            10,
+	})
+	if err == nil || !strings.Contains(err.Error(), "write --out") {
+		t.Fatalf("runFleetReport(write failure) error = %v, want write --out", err)
+	}
+}
+
+func TestWriteFleetReportEnvelopeRejectsUnmarshalableEnvelope(t *testing.T) {
+	err := writeFleetReportEnvelope(filepath.Join(t.TempDir(), "out.json"), map[string]any{"bad": make(chan int)})
+	if err == nil || !strings.Contains(err.Error(), "marshal fleet report envelope") {
+		t.Fatalf("writeFleetReportEnvelope(unmarshalable) error = %v, want marshal error", err)
 	}
 }
 
@@ -192,6 +369,20 @@ func writeFleetReportKeyFile(t *testing.T, dir, name, keyID string, purpose sign
 		t.Fatalf("WriteFile(key): %v", err)
 	}
 	return path
+}
+
+func withFleetReportKey(k publishKeyFile, mutate func(*publishKeyFile)) publishKeyFile {
+	mutate(&k)
+	return k
+}
+
+func fleetReportKeyJSON(t *testing.T, k publishKeyFile) string {
+	t.Helper()
+	data, err := json.Marshal(k)
+	if err != nil {
+		t.Fatalf("Marshal(key): %v", err)
+	}
+	return string(data)
 }
 
 func cliTestAcceptedAuditBatch(t *testing.T, auditPriv ed25519.PrivateKey) controlplane.AcceptedAuditBatch {

@@ -165,7 +165,7 @@ func TestOpenFleetReportAuditStoreRequiresExistingDB(t *testing.T) {
 
 func TestOpenFleetReportAuditStoreRejectsNonRegularFile(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "audit.db"), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "audit.db"), 0o750); err != nil {
 		t.Fatalf("Mkdir(audit.db): %v", err)
 	}
 	cmd := fleetReportCmd()

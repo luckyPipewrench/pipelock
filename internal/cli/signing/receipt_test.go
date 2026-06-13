@@ -213,6 +213,23 @@ func TestVerifyReceiptCmd_FleetReportRequiresPinByDefault(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_FleetReportRejectsSessionSelector(t *testing.T) {
+	t.Parallel()
+
+	_, path := writeFleetReportFixture(t)
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--fleet-report", "--session", "operator"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected --fleet-report with --session to fail")
+	}
+	if !strings.Contains(err.Error(), "--fleet-report cannot be combined with --session") {
+		t.Fatalf("Execute error = %v, want --session conflict", err)
+	}
+}
+
 func TestVerifyReceiptCmd_WithExpectedKeyFile(t *testing.T) {
 	t.Parallel()
 

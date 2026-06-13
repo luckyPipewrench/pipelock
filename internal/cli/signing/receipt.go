@@ -75,6 +75,9 @@ Examples:
 				if chainDir != "" {
 					return fmt.Errorf("--fleet-report cannot be combined with --chain")
 				}
+				if cmd.Flags().Changed("session") {
+					return fmt.Errorf("--fleet-report cannot be combined with --session")
+				}
 				return verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned)
 			}
 			if chainDir != "" {

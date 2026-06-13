@@ -407,7 +407,7 @@ func validateSubjects(subjects []Subject, batches []SourceBatch) error {
 		if name == "" {
 			return fmt.Errorf("%w: subject.name required", ErrInvalidStatement)
 		}
-		if err := validateHexSHA256("subject.digest.sha256", subject.Digest.SHA256); err != nil {
+		if err := validateHexSHA256(ErrInvalidStatement, "subject.digest.sha256", subject.Digest.SHA256); err != nil {
 			return err
 		}
 		if _, ok := seen[name]; ok {
@@ -460,7 +460,7 @@ func validateSourceBatches(orgID, fleetID string, batches []SourceBatch) error {
 			"envelopeHash":    b.EnvelopeHash,
 			"segmentTailHash": b.SegmentTailHash,
 		} {
-			if err := validateHexSHA256(name, value); err != nil {
+			if err := validateHexSHA256(ErrInvalidPredicate, name, value); err != nil {
 				return err
 			}
 		}
@@ -507,20 +507,23 @@ func addUint64(a, b uint64) (uint64, bool) {
 	return a + b, true
 }
 
-func validateHexSHA256(name, value string) error {
+func validateHexSHA256(baseErr error, name, value string) error {
 	if len(value) != sha256.Size*2 {
-		return fmt.Errorf("%w: %s must be 64 hex chars", ErrInvalidPredicate, name)
+		return fmt.Errorf("%w: %s must be 64 hex chars", baseErr, name)
 	}
 	if _, err := hex.DecodeString(value); err != nil {
-		return fmt.Errorf("%w: %s must be hex", ErrInvalidPredicate, name)
+		return fmt.Errorf("%w: %s must be hex", baseErr, name)
 	}
 	if value != strings.ToLower(value) {
-		return fmt.Errorf("%w: %s must be lowercase hex", ErrInvalidPredicate, name)
+		return fmt.Errorf("%w: %s must be lowercase hex", baseErr, name)
 	}
 	return nil
 }
 
 func parseTime(name, value string) (time.Time, error) {
+	if !strings.HasSuffix(value, "Z") {
+		return time.Time{}, fmt.Errorf("%w: %s must be an RFC3339 UTC timestamp ending in Z", ErrInvalidPredicate, name)
+	}
 	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrInvalidPredicate, name, err)

@@ -215,6 +215,13 @@ func TestStatementValidateRejectsDuplicateAndReorderedBatches(t *testing.T) {
 			},
 			want: "digest",
 		},
+		{
+			name: "generated_at_must_be_utc",
+			edit: func(s *Statement) {
+				s.Predicate.GeneratedAt = "2026-06-13T07:00:00-05:00"
+			},
+			want: "ending in Z",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -228,6 +235,37 @@ func TestStatementValidateRejectsDuplicateAndReorderedBatches(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStatementValidateErrorClasses(t *testing.T) {
+	t.Parallel()
+
+	t.Run("subject digest is statement error", func(t *testing.T) {
+		stmt := testStatement()
+		stmt.Subject[0].Digest.SHA256 = strings.ToUpper(stmt.Subject[0].Digest.SHA256)
+		err := stmt.Validate()
+		if err == nil {
+			t.Fatal("expected uppercase subject digest to fail")
+		}
+		if !errors.Is(err, ErrInvalidStatement) {
+			t.Fatalf("Validate error = %v, want ErrInvalidStatement", err)
+		}
+		if errors.Is(err, ErrInvalidPredicate) {
+			t.Fatalf("Validate error = %v, must not wrap ErrInvalidPredicate", err)
+		}
+	})
+
+	t.Run("source batch digest is predicate error", func(t *testing.T) {
+		stmt := testStatement()
+		stmt.Predicate.SourceBatches[0].PayloadSHA256 = strings.ToUpper(stmt.Predicate.SourceBatches[0].PayloadSHA256)
+		err := stmt.Validate()
+		if err == nil {
+			t.Fatal("expected uppercase source batch digest to fail")
+		}
+		if !errors.Is(err, ErrInvalidPredicate) {
+			t.Fatalf("Validate error = %v, want ErrInvalidPredicate", err)
+		}
+	})
 }
 
 func TestUnmarshalEnvelopeRejectsDuplicateKeys(t *testing.T) {

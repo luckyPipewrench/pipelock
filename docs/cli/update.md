@@ -45,8 +45,8 @@ installed binary unchanged**:
    (`checksums.txt.pem`).
    - If a `cosign` binary is on `PATH`, run `cosign verify-blob` pinned to the
      GitHub Actions OIDC issuer (`https://token.actions.githubusercontent.com`)
-     and the `luckyPipewrench/pipelock` workflow identity. If it fails, the
-     update **aborts**.
+     and the `luckyPipewrench/pipelock` release workflow identity for the
+     target tag. If it fails, the update **aborts**.
    - If `cosign` is **not** on `PATH`, the updater prints a loud warning that
      publisher-signature verification was skipped and proceeds with **checksum
      integrity only**. See the caveat below.

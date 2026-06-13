@@ -53,10 +53,9 @@ const (
 	// oidcIssuer is the keyless OIDC issuer GoReleaser signs under (GitHub Actions).
 	oidcIssuer = "https://token.actions.githubusercontent.com"
 
-	// certIdentityRegexp matches the GitHub Actions workflow identity that signs
-	// our releases. Kept broad enough to tolerate tag/ref changes but pinned to
-	// this repository.
-	certIdentityRegexp = `^https://github\.com/luckyPipewrench/pipelock/`
+	// releaseWorkflowIdentity is the exact GitHub Actions OIDC identity that
+	// signs release checksums for a tag.
+	releaseWorkflowIdentity = "https://github.com/luckyPipewrench/pipelock/.github/workflows/release.yaml@refs/tags/%s"
 
 	// httpTimeout bounds every network operation.
 	httpTimeout = 60 * time.Second
@@ -93,6 +92,9 @@ var (
 	// ErrUnsafeArchive is returned when an archive entry attempts path traversal
 	// (zip-slip / tar "..") or carries an absolute path.
 	ErrUnsafeArchive = errors.New("refusing unsafe archive entry")
+	// ErrBinaryTooLarge is returned when an extracted/staged binary exceeds the
+	// updater's bounded-copy limit. Fail-closed: no replacement is applied.
+	ErrBinaryTooLarge = errors.New("binary exceeds updater size limit")
 	// ErrNoBackup is returned by --rollback when no .bak backup exists.
 	ErrNoBackup = errors.New("no previous binary backup found to roll back to")
 )

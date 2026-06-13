@@ -5,18 +5,7 @@ package selfupdate
 
 import (
 	"os"
-	"path/filepath"
 )
-
-// dirOf returns the directory containing path.
-func dirOf(path string) string {
-	return filepath.Dir(path)
-}
-
-// joinDir joins a directory and a file name.
-func joinDir(dir, name string) string {
-	return filepath.Join(dir, name)
-}
 
 // writeFileQuiet writes data with 0o600 perms (these are signature/checksum
 // staging files, not the executable — the 0o600 rule applies here).

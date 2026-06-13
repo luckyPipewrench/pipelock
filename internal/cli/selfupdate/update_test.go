@@ -149,9 +149,9 @@ func standardAssets(t *testing.T, version, goos, goarch string) (assets map[stri
 	isZip := goos == "windows"
 	var archive []byte
 	if isZip {
-		archive = makeZip(t, map[string][]byte{binaryName: bin})
+		archive = makeZip(t, map[string][]byte{archiveBinaryName(goos): bin})
 	} else {
-		archive = makeTarGz(t, map[string][]byte{binaryName: bin})
+		archive = makeTarGz(t, map[string][]byte{archiveBinaryName(goos): bin})
 	}
 	archiveName = assetName(bare, goos, goarch)
 	checks := fmt.Sprintf("%s  %s\n", sum(archive), archiveName)

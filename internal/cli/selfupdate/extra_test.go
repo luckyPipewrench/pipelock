@@ -74,7 +74,7 @@ func TestExtractBinary_SkipsNonMatchingEntries(t *testing.T) {
 		"sub/notbin": []byte("noise"),
 		binaryName:   fakeBinaryBytes("2.8.0"),
 	})
-	tmp, err := extractBinary(archive, false, dir)
+	tmp, err := extractBinary(archive, false, dir, binaryName)
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestExtractZip_SkipsNonMatchingAndDirs(t *testing.T) {
 		"README.md": []byte("docs"),
 		binaryName:  fakeBinaryBytes("2.8.0"),
 	})
-	tmp, err := extractBinary(archive, true, dir)
+	tmp, err := extractBinary(archive, true, dir, binaryName)
 	if err != nil {
 		t.Fatalf("extract zip: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestExtractBinary_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	// Archive with a different binary name only.
 	archive := makeTarGz(t, map[string][]byte{"other-tool": []byte("x")})
-	_, err := extractBinary(archive, false, dir)
+	_, err := extractBinary(archive, false, dir, binaryName)
 	if !errors.Is(err, ErrAssetNotFound) {
 		t.Fatalf("expected ErrAssetNotFound, got %v", err)
 	}
@@ -112,7 +112,7 @@ func TestExtractBinary_NotFound(t *testing.T) {
 
 func TestExtractBinary_BadGzip(t *testing.T) {
 	dir := t.TempDir()
-	_, err := extractBinary([]byte("not gzip"), false, dir)
+	_, err := extractBinary([]byte("not gzip"), false, dir, binaryName)
 	if err == nil {
 		t.Fatal("expected gzip error")
 	}
@@ -120,7 +120,7 @@ func TestExtractBinary_BadGzip(t *testing.T) {
 
 func TestExtractBinary_BadZip(t *testing.T) {
 	dir := t.TempDir()
-	_, err := extractBinary([]byte("not a zip"), true, dir)
+	_, err := extractBinary([]byte("not a zip"), true, dir, binaryName)
 	if err == nil {
 		t.Fatal("expected zip error")
 	}

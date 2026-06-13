@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,9 +53,11 @@ func TestRun_CosignPresentAndPasses(t *testing.T) {
 	target := writeTargetBinary(t, "OLD")
 	opts := baseOptions(rs, target)
 	opts.CosignAvailable = func() bool { return true }
+	var cosignArgs []string
 	// Runner: cosign verify-blob succeeds; --version echoes the binary file.
 	opts.RunCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		if name == cosignBinary {
+			cosignArgs = append([]string(nil), args...)
 			return []byte("Verified OK"), nil
 		}
 		return stubVersionRunner("")(ctx, name, args...)
@@ -65,6 +69,9 @@ func TestRun_CosignPresentAndPasses(t *testing.T) {
 	}
 	if !st.Applied || st.SignatureSkipped || !st.SignatureVerified {
 		t.Fatalf("expected applied + verified, got %+v", st)
+	}
+	if !containsArgPair(cosignArgs, "--certificate-identity", fmt.Sprintf(releaseWorkflowIdentity, testLatest)) {
+		t.Fatalf("cosign args did not pin release workflow identity: %v", cosignArgs)
 	}
 }
 
@@ -96,7 +103,7 @@ func TestRun_CosignPresentAndFailsAborts(t *testing.T) {
 func TestExtractBinary_TarTraversalRejected(t *testing.T) {
 	dir := t.TempDir()
 	archive := makeTarGz(t, map[string][]byte{"../../etc/evil": []byte("x")})
-	_, err := extractBinary(archive, false, dir)
+	_, err := extractBinary(archive, false, dir, binaryName)
 	// Traversal entry is rejected; since it's the only entry, either the unsafe
 	// error or "not found" is acceptable — but it must NOT write outside dir.
 	if err == nil {
@@ -115,9 +122,12 @@ func TestSafeEntryName(t *testing.T) {
 	}{
 		{"pipelock", false, "pipelock"},
 		{"dir/pipelock", false, "pipelock"},
+		{`dir\pipelock`, false, "pipelock"},
 		{"../pipelock", true, ""},
 		{"a/../../pipelock", true, ""},
+		{`..\pipelock`, true, ""},
 		{"/abs/pipelock", true, ""},
+		{`C:\abs\pipelock`, true, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -145,9 +155,55 @@ func TestExtractZip_TraversalRejected(t *testing.T) {
 	w, _ := zw.Create("../../evil")
 	_, _ = w.Write([]byte("x"))
 	_ = zw.Close()
-	_, err := extractBinary(buf.Bytes(), true, dir)
+	_, err := extractBinary(buf.Bytes(), true, dir, binaryName)
 	if err == nil {
 		t.Fatalf("expected error for zip-slip")
+	}
+}
+
+func TestExtractZip_WindowsExeEntry(t *testing.T) {
+	dir := t.TempDir()
+	archive := makeZip(t, map[string][]byte{
+		archiveBinaryName("windows"): fakeBinaryBytes("2.8.0"),
+	})
+	tmp, err := extractBinary(archive, true, dir, archiveBinaryName("windows"))
+	if err != nil {
+		t.Fatalf("extract windows zip: %v", err)
+	}
+	if !strings.HasSuffix(tmp, ".exe") {
+		t.Fatalf("windows temp binary should keep .exe suffix, got %q", tmp)
+	}
+	got, _ := os.ReadFile(tmp) //nolint:gosec // test temp file
+	if !strings.Contains(string(got), "version 2.8.0") {
+		t.Fatalf("wrong binary extracted: %q", got)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestCopyBounded_RejectsOversize(t *testing.T) {
+	err := copyBounded(io.Discard, io.LimitReader(zeroReader{}, maxDownloadBytes+1))
+	if !errors.Is(err, ErrBinaryTooLarge) {
+		t.Fatalf("expected ErrBinaryTooLarge, got %v", err)
+	}
+}
+
+func TestVersionOutputMatchesWholeTokenOnly(t *testing.T) {
+	if !versionOutputMatches("pipelock version 2.8.0\n", "2.8.0") {
+		t.Fatal("expected exact bare version token to match")
+	}
+	if !versionOutputMatches("pipelock version v2.8.0\n", "2.8.0") {
+		t.Fatal("expected exact v-prefixed version token to match")
+	}
+	if versionOutputMatches("pipelock version 12.8.0\n", "2.8.0") {
+		t.Fatal("substring version match should fail")
 	}
 }
 
@@ -265,4 +321,13 @@ func TestAssetName(t *testing.T) {
 	if got := assetName("2.8.0", "windows", "amd64"); got != "pipelock_2.8.0_windows_amd64.zip" {
 		t.Fatalf("windows: %q", got)
 	}
+}
+
+func containsArgPair(args []string, key, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }

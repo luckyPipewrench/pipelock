@@ -6,6 +6,8 @@ package selfupdate
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -131,7 +133,7 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 
 	// Stage checksums + signature material in the target directory's tempdir so
 	// cosign can read them by path and the extracted binary lands on the same FS.
-	dir := dirOf(o.TargetPath)
+	dir := filepath.Dir(o.TargetPath)
 
 	// --- 1. checksums.txt + cosign authenticity (best-effort) ---
 	sums, err := o.httpGet(ctx, sumsURL)
@@ -164,7 +166,7 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	}
 
 	// --- 3. extract the pipelock binary into the target dir (atomic-rename ready) ---
-	tmpPath, err := extractBinary(archive, isZip, dir)
+	tmpPath, err := extractBinary(archive, isZip, dir, archiveBinaryName(o.GOOS))
 	if err != nil {
 		return st, err
 	}
@@ -209,29 +211,32 @@ func (o *Options) Rollback(_ context.Context) (*Status, error) {
 }
 
 // stageAndVerifySignature writes checksums.txt (+ .sig + .pem if present) into
-// dir, then runs cosign verification. Returns skipped=true when cosign is
-// absent (integrity-only), or an error when cosign is present and rejects the
-// signature.
+// a private temp dir under dir, then runs cosign verification. Returns
+// skipped=true when cosign is absent (integrity-only), or an error when cosign
+// is present and rejects the signature.
 func (o *Options) stageAndVerifySignature(ctx context.Context, rel *release, dir string, sums []byte) (skipped bool, err error) {
-	if err := writeFileQuiet(joinDir(dir, checksumsFile), sums); err != nil {
+	stageDir, err := os.MkdirTemp(dir, ".pipelock-verify-*")
+	if err != nil {
+		return false, fmt.Errorf("creating verification temp dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stageDir) }()
+
+	if err := writeFileQuiet(filepath.Join(stageDir, checksumsFile), sums); err != nil {
 		return false, fmt.Errorf("staging %s: %w", checksumsFile, err)
 	}
-	defer func() { _ = removeQuiet(joinDir(dir, checksumsFile)) }()
 
 	// Best-effort fetch of signature + certificate. If they're missing from the
 	// release AND cosign is present, verification will fail closed below.
 	if sigURL, e := assetURL(rel, checksumsSig); e == nil {
 		if sig, ge := o.httpGet(ctx, sigURL); ge == nil {
-			_ = writeFileQuiet(joinDir(dir, checksumsSig), sig)
-			defer func() { _ = removeQuiet(joinDir(dir, checksumsSig)) }()
+			_ = writeFileQuiet(filepath.Join(stageDir, checksumsSig), sig)
 		}
 	}
 	if pemURL, e := assetURL(rel, checksumsPEM); e == nil {
 		if pem, ge := o.httpGet(ctx, pemURL); ge == nil {
-			_ = writeFileQuiet(joinDir(dir, checksumsPEM), pem)
-			defer func() { _ = removeQuiet(joinDir(dir, checksumsPEM)) }()
+			_ = writeFileQuiet(filepath.Join(stageDir, checksumsPEM), pem)
 		}
 	}
 
-	return o.verifyPublisherSignature(ctx, dir)
+	return o.verifyPublisherSignature(ctx, stageDir, rel.TagName)
 }

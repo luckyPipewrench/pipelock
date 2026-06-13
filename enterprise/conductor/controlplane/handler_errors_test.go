@@ -327,3 +327,7 @@ func (f fakeStore) BundleByIDVersion(context.Context, string, uint64) (Published
 func (f fakeStore) ApplyRollbackHead(context.Context, conductor.RollbackAuthorization, time.Time) error {
 	return nil
 }
+
+func (f fakeStore) StreamOverview(context.Context, StreamStatusQuery) ([]StreamSummary, error) {
+	return nil, nil
+}

@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 )
 
 const (
@@ -146,6 +148,18 @@ func (c *conductorClient) getJSON(ctx context.Context, path string) ([]byte, err
 		return nil, fmt.Errorf("read conductor response: %w", readErr)
 	}
 	return body, nil
+}
+
+// getStreamStatus performs the authenticated GET for the conductor stream
+// overview, scoped by org (required) and optional fleet. It mirrors
+// fetchFollowers: build the allowlisted query, then delegate to getJSON which
+// enforces the response size cap and status handling.
+func (c *conductorClient) getStreamStatus(ctx context.Context, orgID, fleetID string) ([]byte, error) {
+	params := map[string]string{
+		"org_id":   orgID,
+		"fleet_id": fleetID,
+	}
+	return c.getJSON(ctx, controlplane.StreamStatusPath+encodeQuery(params))
 }
 
 func readClientTokenFile(path string) (string, error) {

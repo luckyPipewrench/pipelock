@@ -360,6 +360,20 @@ func (s *FileEmergencyStore) RollbackAuthorizations(_ context.Context) ([]Stored
 	return slices.Clone(s.rollbacks), nil
 }
 
+// RemoteKills returns a snapshot of every stored remote-kill record. It is the
+// enumeration counterpart of [FileEmergencyStore.RollbackAuthorizations] and is
+// consumed by the operator stream-overview read; callers apply their own
+// org/fleet scope and validity filtering. The returned slice is a clone so the
+// caller cannot mutate the store's backing array.
+func (s *FileEmergencyStore) RemoteKills(_ context.Context) ([]StoredRemoteKill, error) {
+	if s == nil {
+		return nil, ErrEmergencyStoreRequired
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return slices.Clone(s.remoteKills), nil
+}
+
 func (s *FileEmergencyStore) writeLocked() error {
 	return writeEmergencyState(s.statePath, emergencyStateRecord{
 		RemoteKills: s.remoteKills,

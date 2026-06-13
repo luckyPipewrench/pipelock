@@ -181,6 +181,38 @@ func ScopedBearerFollowerListAuthorizer(creds []ScopedBearerCredential) (Followe
 	}, nil
 }
 
+// ScopedBearerStreamStatusAuthorizer authorizes a conductor stream-overview
+// read. Like the follower-roster authorizer it admits admin and auditor
+// (reader) roles and enforces the credential's org/fleet scope against the
+// requested query, so a token scoped to org A cannot enumerate org B's stream
+// state. It also rejects empty-org admin/auditor credentials at construction
+// time for the same reason the follower-list authorizer does: an unscoped read
+// token is a cross-org enumeration token.
+func ScopedBearerStreamStatusAuthorizer(creds []ScopedBearerCredential) (StreamStatusAuthorizer, error) {
+	normalized, err := normalizeScopedBearerCredentials(creds)
+	if err != nil {
+		return nil, err
+	}
+	for _, cred := range normalized {
+		if (cred.Role == RoleAdmin || cred.Role == RoleAuditor) && cred.OrgID == "" {
+			return nil, fmt.Errorf("%w: org_id required for stream status credential", ErrStreamStatusForbidden)
+		}
+	}
+	return func(r *http.Request, q StreamStatusQuery) error {
+		cred, ok := matchBearerCredential(r, normalized)
+		if !ok {
+			return ErrStreamStatusForbidden
+		}
+		switch cred.Role {
+		case RoleAdmin, RoleAuditor:
+			if scopedCredentialAllows(cred, q.OrgID, q.FleetID) {
+				return nil
+			}
+		}
+		return ErrStreamStatusForbidden
+	}, nil
+}
+
 func ScopedBearerAuditQueryAuthorizer(creds []ScopedBearerCredential) (AuditQueryAuthorizer, error) {
 	normalized, err := normalizeScopedBearerCredentials(creds)
 	if err != nil {
@@ -337,5 +369,6 @@ func IsAuthConfigError(err error) bool {
 		errors.Is(err, ErrPublisherForbidden) ||
 		errors.Is(err, ErrAuditQueryForbidden) ||
 		errors.Is(err, ErrFollowerListForbidden) ||
+		errors.Is(err, ErrStreamStatusForbidden) ||
 		errors.Is(err, ErrAuditKeyRequired)
 }

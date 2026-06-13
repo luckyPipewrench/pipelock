@@ -29,6 +29,7 @@ const (
 	RollbackAuthorizationsPath = "/api/v1/conductor/rollback-authorizations"
 	AuditBatchesPath           = conductor.AuditBatchesPath
 	FollowersPath              = "/api/v1/conductor/followers"
+	StreamStatusPath           = "/api/v1/conductor/stream"
 	EnrollPath                 = "/api/v1/conductor/enroll"
 	EnrollmentTokensPath       = "/api/v1/conductor/enrollment-tokens" //nolint:gosec // route constant, not a credential
 	HealthPath                 = "/health"
@@ -75,6 +76,12 @@ type AuditQueryAuthorizer func(*http.Request, AuditBatchQuery) error
 // authorized identically to audit metadata.
 type FollowerListAuthorizer func(*http.Request, FollowerListQuery) error
 
+// StreamStatusAuthorizer authorizes a parsed stream-overview query. Like
+// [FollowerListAuthorizer] it MUST scope callers to the org/fleet they are
+// permitted to inspect; stream topology is fleet metadata and is authorized
+// identically to the follower roster.
+type StreamStatusAuthorizer func(*http.Request, StreamStatusQuery) error
+
 type HandlerOptions struct {
 	Store               BundleStore
 	Capabilities        conductor.CapabilitiesResponse
@@ -86,6 +93,7 @@ type HandlerOptions struct {
 	AuthorizeBundle     BundleAuthorizer
 	AuthorizeAuditQuery AuditQueryAuthorizer
 	AuthorizeFollowers  FollowerListAuthorizer
+	AuthorizeStream     StreamStatusAuthorizer
 	AuthorizeAdmin      PublisherAuthorizer
 	AuditSink           AuditBatchSink
 	AuditKeys           AuditKeyResolver
@@ -109,6 +117,7 @@ type Handler struct {
 	authorizeBundle     BundleAuthorizer
 	authorizeAuditQuery AuditQueryAuthorizer
 	authorizeFollowers  FollowerListAuthorizer
+	authorizeStream     StreamStatusAuthorizer
 	authorizeAdmin      PublisherAuthorizer
 	auditSink           AuditBatchSink
 	// nil auditQuerier means the configured sink does not implement
@@ -271,6 +280,14 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 			return ErrFollowerListForbidden
 		}
 	}
+	authorizeStream := opts.AuthorizeStream
+	if authorizeStream == nil {
+		// Fail closed: an unconfigured stream-status authorizer denies every read
+		// rather than exposing stream topology to any caller.
+		authorizeStream = func(*http.Request, StreamStatusQuery) error {
+			return ErrStreamStatusForbidden
+		}
+	}
 	authorizeBundle := opts.AuthorizeBundle
 	if authorizeBundle == nil {
 		authorizeBundle = func(*http.Request, conductor.PolicyBundle) error {
@@ -298,6 +315,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		authorizeBundle:     authorizeBundle,
 		authorizeAuditQuery: authorizeAuditQuery,
 		authorizeFollowers:  authorizeFollowers,
+		authorizeStream:     authorizeStream,
 		authorizeAdmin:      authorizeAdmin,
 		auditSink:           opts.AuditSink,
 		auditQuerier:        auditQuerier,
@@ -417,6 +435,8 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAuditBatch(w, r)
 	case FollowersPath:
 		h.handleListFollowers(w, r)
+	case StreamStatusPath:
+		h.handleStreamStatus(w, r)
 	default:
 		if isAuditBatchSubroute(r.URL.Path) {
 			h.handleGetAuditBatch(w, r)
@@ -475,7 +495,7 @@ func conductorRoute(path string) string {
 		return AuditBatchesPath
 	}
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, StreamStatusPath:
 		return path
 	default:
 		return "unknown"

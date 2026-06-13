@@ -68,6 +68,7 @@ var (
 	ErrPublisherForbidden    = errors.New("conductor publisher authorization failed")
 	ErrAuditQueryForbidden   = errors.New("conductor audit query authorization failed")
 	ErrFollowerListForbidden = errors.New("conductor follower list authorization failed")
+	ErrStreamStatusForbidden = errors.New("conductor stream status authorization failed")
 	ErrAuditSinkRequired     = errors.New("conductor audit sink required")
 	ErrAuditKeyRequired      = errors.New("conductor audit key resolver required")
 	ErrAuditBatchNotFound    = errors.New("conductor audit batch not found")
@@ -107,6 +108,130 @@ type BundleStore interface {
 	Latest(ctx context.Context, follower FollowerIdentity, now time.Time) (PublishedBundle, error)
 	BundleByIDVersion(ctx context.Context, bundleID string, version uint64) (PublishedBundle, error)
 	ApplyRollbackHead(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) error
+	StreamOverview(ctx context.Context, q StreamStatusQuery) ([]StreamSummary, error)
+}
+
+// StreamStatusQuery scopes an operator stream-overview read. OrgID is mandatory
+// so the read is never globally unscoped; FleetID is optional and narrows the
+// result to a single fleet within the org.
+type StreamStatusQuery struct {
+	OrgID   string
+	FleetID string
+}
+
+// BundleChainEntry is the metadata-only view of one published bundle in a
+// stream. It deliberately omits the bundle payload, signatures, and policy hash;
+// an operator stream overview reports chain topology, not bundle content.
+type BundleChainEntry struct {
+	BundleID           string    `json:"bundle_id"`
+	Version            uint64    `json:"version"`
+	BundleHash         string    `json:"bundle_hash"`
+	PreviousBundleHash string    `json:"previous_bundle_hash,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	MinPipelockVersion string    `json:"min_pipelock_version"`
+	PublishedAt        time.Time `json:"published_at"`
+}
+
+// StreamSummary is the operator-facing view of one publication stream: its
+// effective head, the monotonicity gate (max-ever version), and the ordered
+// bundle chain. It reports stream topology only; per-follower applied version
+// and drift are NOT tracked by the Conductor and are intentionally absent.
+type StreamSummary struct {
+	StreamKey      string             `json:"stream_key"`
+	OrgID          string             `json:"org_id"`
+	FleetID        string             `json:"fleet_id"`
+	Environment    string             `json:"environment"`
+	Audience       conductor.Audience `json:"audience"`
+	HeadVersion    uint64             `json:"head_version"`
+	HeadBundleID   string             `json:"head_bundle_id"`
+	HeadBundleHash string             `json:"head_bundle_hash"`
+	MaxVersion     uint64             `json:"max_version"`
+	RolledBack     bool               `json:"rolled_back"`
+	BundleChain    []BundleChainEntry `json:"bundle_chain"`
+}
+
+// StreamOverview returns the operator view of every publication stream matching
+// the query's org (and optional fleet) scope. The result is read-only: it
+// reflects the current in-memory head, max-ever version, and bundle chain under
+// a read lock without mutating any stream state. Streams are returned sorted by
+// stream key for deterministic output.
+//
+// The reported chain is ordered ascending by version and includes every stored
+// record for the stream (including records superseded by a durable rollback
+// marker, which remain on disk as audit history); RolledBack is true when an
+// active rollback marker currently caps the effective head below the max-ever
+// version.
+func (s *FileBundleStore) StreamOverview(_ context.Context, q StreamStatusQuery) ([]StreamSummary, error) {
+	if s == nil {
+		return nil, ErrStoreRequired
+	}
+	if err := conductor.ValidateIdentifier("org_id", q.OrgID); err != nil {
+		return nil, err
+	}
+	if q.FleetID != "" {
+		if err := conductor.ValidateIdentifier("fleet_id", q.FleetID); err != nil {
+			return nil, err
+		}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	chains := make(map[string][]BundleChainEntry)
+	for _, record := range s.records {
+		if record.Bundle.OrgID != q.OrgID {
+			continue
+		}
+		if q.FleetID != "" && record.Bundle.FleetID != q.FleetID {
+			continue
+		}
+		chains[record.StreamKey] = append(chains[record.StreamKey], BundleChainEntry{
+			BundleID:           record.Bundle.BundleID,
+			Version:            record.Bundle.Version,
+			BundleHash:         record.BundleHash,
+			PreviousBundleHash: record.Bundle.PreviousBundleHash,
+			CreatedAt:          record.Bundle.CreatedAt,
+			MinPipelockVersion: record.Bundle.MinPipelockVersion,
+			PublishedAt:        record.PublishedAt,
+		})
+	}
+
+	summaries := make([]StreamSummary, 0, len(chains))
+	for streamKey, chain := range chains {
+		slices.SortFunc(chain, func(a, b BundleChainEntry) int {
+			switch {
+			case a.Version < b.Version:
+				return -1
+			case a.Version > b.Version:
+				return 1
+			default:
+				return strings.Compare(a.BundleHash, b.BundleHash)
+			}
+		})
+		head, ok := s.streams[streamKey]
+		if !ok {
+			// A stream with stored records always has a selected head; this guard
+			// is defense-in-depth so a future divergence never panics the read.
+			continue
+		}
+		_, rolledBack := s.rollbackHeads[streamKey]
+		summaries = append(summaries, StreamSummary{
+			StreamKey:      streamKey,
+			OrgID:          head.Bundle.OrgID,
+			FleetID:        head.Bundle.FleetID,
+			Environment:    head.Bundle.Environment,
+			Audience:       head.Bundle.Audience,
+			HeadVersion:    head.Bundle.Version,
+			HeadBundleID:   head.Bundle.BundleID,
+			HeadBundleHash: head.BundleHash,
+			MaxVersion:     s.maxStreamVersionLocked(streamKey),
+			RolledBack:     rolledBack,
+			BundleChain:    chain,
+		})
+	}
+	slices.SortFunc(summaries, func(a, b StreamSummary) int {
+		return strings.Compare(a.StreamKey, b.StreamKey)
+	})
+	return summaries, nil
 }
 
 type FileBundleStore struct {

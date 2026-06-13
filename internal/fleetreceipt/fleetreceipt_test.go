@@ -4,11 +4,13 @@
 package fleetreceipt
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -144,6 +146,158 @@ func TestVerifyFleetReceiptRejectsTamperedPayload(t *testing.T) {
 	}
 }
 
+func TestVerifyEnvelopeRejectsMalformedEnvelope(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyID := hex.EncodeToString(pub)
+	env, err := SignStatement(testStatement(), keyID, priv)
+	if err != nil {
+		t.Fatalf("SignStatement: %v", err)
+	}
+	payload, err := base64.StdEncoding.DecodeString(env.Payload)
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, payload, "", "  "); err != nil {
+		t.Fatalf("Indent: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		edit        func(*Envelope)
+		trustedKeys map[string]ed25519.PublicKey
+		want        string
+	}{
+		{
+			name: "wrong_payload_type",
+			edit: func(e *Envelope) {
+				e.PayloadType = "application/json"
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "payloadType",
+		},
+		{
+			name: "signature_count",
+			edit: func(e *Envelope) {
+				e.Signatures = append(e.Signatures, e.Signatures[0])
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "signatures=2",
+		},
+		{
+			name: "bad_payload_base64",
+			edit: func(e *Envelope) {
+				e.Payload = "not base64"
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "decode payload",
+		},
+		{
+			name: "noncanonical_payload",
+			edit: func(e *Envelope) {
+				e.Payload = base64.StdEncoding.EncodeToString(pretty.Bytes())
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "not canonical",
+		},
+		{
+			name: "wrong_key_purpose",
+			edit: func(e *Envelope) {
+				e.Signatures[0].KeyPurpose = signing.PurposeAuditBatchSigning.String()
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "key_purpose",
+		},
+		{
+			name: "wrong_algorithm",
+			edit: func(e *Envelope) {
+				e.Signatures[0].Algorithm = "rsa"
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "algorithm",
+		},
+		{
+			name: "missing_signature_prefix",
+			edit: func(e *Envelope) {
+				e.Signatures[0].Sig = strings.TrimPrefix(e.Signatures[0].Sig, signaturePrefix)
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "signature missing",
+		},
+		{
+			name: "bad_signature_base64",
+			edit: func(e *Envelope) {
+				e.Signatures[0].Sig = signaturePrefix + "not base64"
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "decode signature",
+		},
+		{
+			name: "bad_signature_length",
+			edit: func(e *Envelope) {
+				e.Signatures[0].Sig = signaturePrefix + base64.StdEncoding.EncodeToString([]byte("short"))
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+			want:        "signature length",
+		},
+		{
+			name: "missing_keyid",
+			edit: func(e *Envelope) {
+				e.Signatures[0].KeyID = ""
+			},
+			trustedKeys: nil,
+			want:        "keyid required",
+		},
+		{
+			name: "untrusted_key",
+			edit: func(*Envelope) {
+			},
+			trustedKeys: map[string]ed25519.PublicKey{"other": pub},
+			want:        ErrUntrustedKey.Error(),
+		},
+		{
+			name: "bad_trusted_key_length",
+			edit: func(*Envelope) {
+			},
+			trustedKeys: map[string]ed25519.PublicKey{keyID: ed25519.PublicKey("short")},
+			want:        "trusted key",
+		},
+		{
+			name: "bad_unpinned_keyid",
+			edit: func(e *Envelope) {
+				e.Signatures[0].KeyID = "not-hex"
+			},
+			trustedKeys: nil,
+			want:        "unpinned keyid",
+		},
+		{
+			name: "signature_mismatch",
+			edit: func(e *Envelope) {
+				e.Signatures[0].KeyID = hex.EncodeToString(mustOtherPublicKey(t))
+			},
+			trustedKeys: nil,
+			want:        "signature verification failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := env
+			candidate.Signatures = append([]Signature(nil), env.Signatures...)
+			tt.edit(&candidate)
+			_, err := VerifyEnvelope(candidate, tt.trustedKeys)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("VerifyEnvelope error = %v, want %q", err, tt.want)
+			}
+			if !errors.Is(err, ErrInvalidEnvelope) && !errors.Is(err, ErrUntrustedKey) {
+				t.Fatalf("VerifyEnvelope error = %v, want envelope or trust error", err)
+			}
+		})
+	}
+}
+
 func TestStatementValidateRejectsDuplicateAndReorderedBatches(t *testing.T) {
 	base := testStatement()
 	tests := []struct {
@@ -268,6 +422,247 @@ func TestStatementValidateErrorClasses(t *testing.T) {
 	})
 }
 
+func TestStatementValidateRejectsInvalidStatementHeaders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		edit func(*Statement)
+		want string
+	}{
+		{
+			name: "wrong_type",
+			edit: func(s *Statement) {
+				s.Type = "https://example.com/wrong"
+			},
+			want: "_type",
+		},
+		{
+			name: "wrong_predicate_type",
+			edit: func(s *Statement) {
+				s.PredicateType = "https://example.com/wrong"
+			},
+			want: "predicateType",
+		},
+		{
+			name: "missing_subjects",
+			edit: func(s *Statement) {
+				s.Subject = nil
+			},
+			want: "subject required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stmt := testStatement()
+			tt.edit(&stmt)
+			err := stmt.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate error = %v, want %q", err, tt.want)
+			}
+			if !errors.Is(err, ErrInvalidStatement) {
+				t.Fatalf("Validate error = %v, want ErrInvalidStatement", err)
+			}
+		})
+	}
+}
+
+func TestPredicateValidateRejectsEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		edit func(*Predicate)
+		want string
+	}{
+		{
+			name: "schema_version",
+			edit: func(p *Predicate) {
+				p.SchemaVersion = 2
+			},
+			want: "schemaVersion",
+		},
+		{
+			name: "required_string",
+			edit: func(p *Predicate) {
+				p.ReportID = " "
+			},
+			want: "reportId required",
+		},
+		{
+			name: "bad_rfc3339",
+			edit: func(p *Predicate) {
+				p.GeneratedAt = "2026-13-99T99:99:99Z"
+			},
+			want: "generatedAt",
+		},
+		{
+			name: "window_end_not_after_start",
+			edit: func(p *Predicate) {
+				p.ReportWindow.End = p.ReportWindow.Start
+			},
+			want: "reportWindow.end",
+		},
+		{
+			name: "source_batches_required",
+			edit: func(p *Predicate) {
+				p.SourceBatches = nil
+			},
+			want: "sourceBatches required",
+		},
+		{
+			name: "source_batch_identity_required",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].BatchID = ""
+			},
+			want: "source batch identity required",
+		},
+		{
+			name: "source_batch_invalid_range",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].SeqEnd = p.SourceBatches[0].SeqStart - 1
+			},
+			want: "invalid source batch sequence range",
+		},
+		{
+			name: "source_batch_empty_size",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].PayloadBytes = 0
+			},
+			want: "eventCount and payloadBytes",
+		},
+		{
+			name: "source_batch_bad_hex_length",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].PayloadSHA256 = "abc"
+			},
+			want: "64 hex chars",
+		},
+		{
+			name: "source_batch_bad_hex_char",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].PayloadSHA256 = strings.Repeat("g", 64)
+			},
+			want: "must be hex",
+		},
+		{
+			name: "source_batch_bad_timestamp",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].EmittedAt = "2026-06-13T12:00:00"
+			},
+			want: "ending in Z",
+		},
+		{
+			name: "source_batch_signature_keys_required",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].SignatureKeyIDs = nil
+			},
+			want: "signatureKeyIds required",
+		},
+		{
+			name: "source_batch_signature_blank",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].SignatureKeyIDs = []string{" "}
+			},
+			want: "blank key",
+		},
+		{
+			name: "summary_total_required",
+			edit: func(p *Predicate) {
+				p.Summary.TotalActions = 0
+			},
+			want: "summary.totalActions",
+		},
+		{
+			name: "summary_empty_key",
+			edit: func(p *Predicate) {
+				p.Summary.ByFollower = map[string]uint64{"": 3}
+			},
+			want: "empty key",
+		},
+		{
+			name: "summary_zero_count",
+			edit: func(p *Predicate) {
+				p.Summary.ByFollower = map[string]uint64{"pl-1": 0}
+			},
+			want: "is zero",
+		},
+		{
+			name: "summary_overflow",
+			edit: func(p *Predicate) {
+				p.Summary.TotalActions = ^uint64(0)
+				p.Summary.ByFollower = map[string]uint64{"a": ^uint64(0), "b": 1}
+			},
+			want: "overflow",
+		},
+		{
+			name: "mediated_exceeds_observed",
+			edit: func(p *Predicate) {
+				p.Completeness.MediatedActions = p.Completeness.ObservedActions + 1
+			},
+			want: "mediatedActions exceeds",
+		},
+		{
+			name: "bad_decimal_text",
+			edit: func(p *Predicate) {
+				p.Completeness.MediatedFraction = "0.x"
+			},
+			want: "decimal string",
+		},
+		{
+			name: "bad_decimal_shape",
+			edit: func(p *Predicate) {
+				p.Completeness.MediatedFraction = "1.1"
+			},
+			want: "between 0 and 1",
+		},
+		{
+			name: "bad_decimal_trailing_nonzero",
+			edit: func(p *Predicate) {
+				p.Completeness.MediatedFraction = "1.01"
+			},
+			want: "between 0 and 1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			predicate := testStatement().Predicate
+			tt.edit(&predicate)
+			err := predicate.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate error = %v, want %q", err, tt.want)
+			}
+			if !errors.Is(err, ErrInvalidPredicate) {
+				t.Fatalf("Validate error = %v, want ErrInvalidPredicate", err)
+			}
+		})
+	}
+}
+
+func TestTrustedKeyMap(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyID := "fleet"
+	got, err := TrustedKeyMap(map[string]string{keyID: hex.EncodeToString(pub)})
+	if err != nil {
+		t.Fatalf("TrustedKeyMap: %v", err)
+	}
+	if !bytes.Equal(got[keyID], pub) {
+		t.Fatalf("TrustedKeyMap[%q] = %x, want %x", keyID, got[keyID], pub)
+	}
+
+	if _, err := TrustedKeyMap(map[string]string{"bad": "not-hex"}); err == nil {
+		t.Fatal("expected bad hex trusted key to fail")
+	}
+	if _, err := TrustedKeyMap(map[string]string{"short": hex.EncodeToString([]byte("short"))}); err == nil {
+		t.Fatal("expected short trusted key to fail")
+	}
+}
+
 func TestUnmarshalEnvelopeRejectsDuplicateKeys(t *testing.T) {
 	raw := []byte(`{"payloadType":"a","payloadType":"b","payload":"","signatures":[]}`)
 	_, err := UnmarshalEnvelope(raw)
@@ -343,6 +738,15 @@ func testBatch(id string, start, end, events uint64) SourceBatch {
 func hex64(seed string) string {
 	sum := sha256String(seed)
 	return hex.EncodeToString(sum[:])
+}
+
+func mustOtherPublicKey(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey other: %v", err)
+	}
+	return pub
 }
 
 func sha256String(seed string) [32]byte {

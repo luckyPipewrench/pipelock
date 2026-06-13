@@ -29,7 +29,10 @@ func TestLicenseVerifyEmbeddedKey(t *testing.T) {
 
 	cfg := config.Defaults()
 	// Set a DIFFERENT override to prove embedded wins (override ignored).
-	otherPub, _, _ := domsigning.GenerateKeyPair()
+	otherPub, _, err := domsigning.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("gen other key: %v", err)
+	}
 	cfg.LicensePublicKey = hex.EncodeToString(otherPub)
 
 	report := buildKeyStatusReport(cfg, "(test)")
@@ -40,7 +43,10 @@ func TestLicenseVerifyEmbeddedKey(t *testing.T) {
 	if item.Status != statusOK {
 		t.Errorf("embedded key status = %q, want ok", item.Status)
 	}
-	wantFP, _ := domsigning.Fingerprint(pub)
+	wantFP, err := domsigning.Fingerprint(pub)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
 	if item.Fingerprint != wantFP {
 		t.Errorf("fingerprint = %q, want embedded key %q (override must be ignored)", item.Fingerprint, wantFP)
 	}
@@ -52,8 +58,14 @@ func TestLicenseVerifyEmbeddedKey(t *testing.T) {
 // TestMultipleTrustedKeysNote covers the >1 trusted-key branch of the public
 // key list reporter.
 func TestMultipleTrustedKeysNote(t *testing.T) {
-	pub1, _, _ := domsigning.GenerateKeyPair()
-	pub2, _, _ := domsigning.GenerateKeyPair()
+	pub1, _, err := domsigning.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("gen pub1: %v", err)
+	}
+	pub2, _, err := domsigning.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("gen pub2: %v", err)
+	}
 	cfg := config.Defaults()
 	cfg.Rules.TrustedKeys = []config.TrustedKey{
 		{Name: "a", PublicKey: hex.EncodeToString(pub1)},
@@ -113,12 +125,17 @@ func TestPrinterWithColorAndPresentKey(t *testing.T) {
 // TestStatusTagAllBranches exercises every status tag in both modes.
 func TestStatusTagAllBranches(t *testing.T) {
 	for _, s := range []string{statusOK, statusWarn, statusFail, statusInfo} {
-		if got := statusTag(s, false); got != "["+strings.ToUpper(s)+"]" {
-			t.Errorf("plain tag(%q) = %q", s, got)
-		}
-		if got := statusTag(s, true); !strings.Contains(got, "\033[") {
-			t.Errorf("color tag(%q) = %q, want ANSI", s, got)
-		}
+		s := s
+		t.Run(s+"_plain", func(t *testing.T) {
+			if got := statusTag(s, false); got != "["+strings.ToUpper(s)+"]" {
+				t.Errorf("plain tag(%q) = %q", s, got)
+			}
+		})
+		t.Run(s+"_color", func(t *testing.T) {
+			if got := statusTag(s, true); !strings.Contains(got, "\033[") {
+				t.Errorf("color tag(%q) = %q, want ANSI", s, got)
+			}
+		})
 	}
 }
 

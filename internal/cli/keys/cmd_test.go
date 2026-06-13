@@ -6,8 +6,10 @@ package keys
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -77,7 +79,7 @@ func TestStatusConfigFlag(t *testing.T) {
 	path, fp := writeValidPrivateKey(t, dir, "receipt.key")
 
 	cfgPath := filepath.Join(dir, "pipelock.yaml")
-	cfgYAML := "mode: balanced\nflight_recorder:\n  signing_key_path: " + path + "\n"
+	cfgYAML := "mode: balanced\nflight_recorder:\n  signing_key_path: " + strconv.Quote(path) + "\n"
 	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -154,8 +156,8 @@ func TestReadabilityDeniedNonRoot(t *testing.T) {
 
 // TestParsePublicKeyHexRejectsWrongLength guards the helper directly.
 func TestParsePublicKeyHexRejectsWrongLength(t *testing.T) {
-	if _, err := parsePublicKeyHex("abcd"); err == nil {
-		t.Error("want error for short hex")
+	if _, err := parsePublicKeyHex("abcd"); !errors.Is(err, errInvalidPublicKeyLen) {
+		t.Errorf("short hex error = %v, want errInvalidPublicKeyLen", err)
 	}
 	if _, err := parsePublicKeyHex("zz"); err == nil {
 		t.Error("want error for non-hex")
@@ -164,15 +166,18 @@ func TestParsePublicKeyHexRejectsWrongLength(t *testing.T) {
 
 // TestAppendNote covers the small join helper.
 func TestAppendNote(t *testing.T) {
-	cases := []struct{ a, b, want string }{
-		{"", "x", "x"},
-		{"x", "", "x"},
-		{"a", "b", "a; b"},
-		{"", "", ""},
+	cases := []struct{ name, a, b, want string }{
+		{"empty_existing", "", "x", "x"},
+		{"empty_add", "x", "", "x"},
+		{"join", "a", "b", "a; b"},
+		{"both_empty", "", "", ""},
 	}
 	for _, c := range cases {
-		if got := appendNote(c.a, c.b); got != c.want {
-			t.Errorf("appendNote(%q,%q) = %q, want %q", c.a, c.b, got, c.want)
-		}
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			if got := appendNote(c.a, c.b); got != c.want {
+				t.Errorf("appendNote(%q,%q) = %q, want %q", c.a, c.b, got, c.want)
+			}
+		})
 	}
 }

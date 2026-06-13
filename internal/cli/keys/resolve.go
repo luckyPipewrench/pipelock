@@ -6,6 +6,7 @@ package keys
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,10 +55,10 @@ func rulesTrustedPublicKeys(cfg *config.Config) []ed25519.PublicKey {
 func parsePublicKeyHex(s string) (ed25519.PublicKey, error) {
 	raw, err := hex.DecodeString(strings.TrimSpace(s))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode ed25519 public key hex: %w", err)
 	}
 	if len(raw) != ed25519.PublicKeySize {
-		return nil, errInvalidPublicKeyLen
+		return nil, fmt.Errorf("decode ed25519 public key hex: %w", errInvalidPublicKeyLen)
 	}
 	return ed25519.PublicKey(raw), nil
 }

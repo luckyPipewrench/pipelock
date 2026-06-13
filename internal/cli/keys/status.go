@@ -6,6 +6,7 @@ package keys
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -329,8 +330,17 @@ func finishPrivateKeyFile(item keyStatusItem, path, absentNote string) keyStatus
 
 	info, err := os.Lstat(clean)
 	if err != nil {
-		item.Status = statusInfo
-		item.Note = "configured but no file at path (not yet provisioned)"
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			item.Status = statusInfo
+			item.Note = "configured but no file at path (not yet provisioned)"
+		case errors.Is(err, os.ErrPermission):
+			item.Status = statusFail
+			item.Note = "configured path is not stat-readable by this user"
+		default:
+			item.Status = statusWarn
+			item.Note = "configured path could not be inspected"
+		}
 		return item
 	}
 	if info.Mode()&os.ModeSymlink == 0 && !info.Mode().IsRegular() {

@@ -263,7 +263,10 @@ func TestRulesTrustedPublicKeys(t *testing.T) {
 	if !item.Present || !item.Valid {
 		t.Fatalf("want present+valid for configured trusted key, got %+v", item)
 	}
-	wantFP, _ := domsigning.Fingerprint(pub)
+	wantFP, err := domsigning.Fingerprint(pub)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
 	if item.Fingerprint != wantFP {
 		t.Errorf("fingerprint = %q, want %q", item.Fingerprint, wantFP)
 	}
@@ -300,16 +303,19 @@ func TestDeploymentFilePurposesAreInformational(t *testing.T) {
 	cfg := config.Defaults()
 	report := buildKeyStatusReport(cfg, "(test)")
 	for _, p := range []string{"contract-compile-signing", "contract-activation-signing"} {
-		item := findKey(t, report, p)
-		if item.SourceKind != sourceDeploymentFile {
-			t.Errorf("%s source_kind = %q, want %q", p, item.SourceKind, sourceDeploymentFile)
-		}
-		if item.Status != statusInfo {
-			t.Errorf("%s status = %q, want info", p, item.Status)
-		}
-		if item.Present {
-			t.Errorf("%s must not claim present for an unlocatable file", p)
-		}
+		p := p
+		t.Run(p, func(t *testing.T) {
+			item := findKey(t, report, p)
+			if item.SourceKind != sourceDeploymentFile {
+				t.Errorf("%s source_kind = %q, want %q", p, item.SourceKind, sourceDeploymentFile)
+			}
+			if item.Status != statusInfo {
+				t.Errorf("%s status = %q, want info", p, item.Status)
+			}
+			if item.Present {
+				t.Errorf("%s must not claim present for an unlocatable file", p)
+			}
+		})
 	}
 }
 
@@ -347,7 +353,10 @@ func TestLicenseVerifyEnvOverride(t *testing.T) {
 	if item.Status != statusWarn {
 		t.Errorf("dev-build override status = %q, want warn", item.Status)
 	}
-	wantFP, _ := domsigning.Fingerprint(pub)
+	wantFP, err := domsigning.Fingerprint(pub)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
 	if item.Fingerprint != wantFP {
 		t.Errorf("fingerprint = %q, want %q", item.Fingerprint, wantFP)
 	}
@@ -416,7 +425,10 @@ func TestNoPrivateMaterialInJSON(t *testing.T) {
 		t.Fatal("encoded private key leaked into JSON output")
 	}
 	// The PUBLIC fingerprint is allowed and expected.
-	wantFP, _ := domsigning.Fingerprint(pub)
+	wantFP, err := domsigning.Fingerprint(pub)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
 	if !strings.Contains(string(out), wantFP) {
 		t.Errorf("expected public fingerprint %q in output", wantFP)
 	}

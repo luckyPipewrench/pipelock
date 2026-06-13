@@ -28,6 +28,7 @@ func TestKeyPurpose_String(t *testing.T) {
 		{"trust-root-rotation", PurposeTrustRootRotation, "trust-root-rotation"},
 		{"audit-batch-signing", PurposeAuditBatchSigning, "audit-batch-signing"},
 		{"enrollment-token-signing", PurposeEnrollmentTokenSigning, "enrollment-token-signing"},
+		{"fleet-report-signing", PurposeFleetReportSigning, "fleet-report-signing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -166,8 +167,8 @@ func TestKnownPurposes(t *testing.T) {
 	purposes := KnownPurposes()
 
 	t.Run("length", func(t *testing.T) {
-		if len(purposes) != 12 {
-			t.Fatalf("KnownPurposes() returned %d elements, want 12", len(purposes))
+		if len(purposes) != 13 {
+			t.Fatalf("KnownPurposes() returned %d elements, want 13", len(purposes))
 		}
 	})
 
@@ -185,6 +186,7 @@ func TestKnownPurposes(t *testing.T) {
 			PurposeTrustRootRotation,
 			PurposeAuditBatchSigning,
 			PurposeEnrollmentTokenSigning,
+			PurposeFleetReportSigning,
 		}
 		for i, p := range purposes {
 			if p != expected[i] {
@@ -221,6 +223,7 @@ func TestKeyPurpose_IsConductorPurpose(t *testing.T) {
 		{PurposeTrustRootRotation, true},
 		{PurposeAuditBatchSigning, true},
 		{PurposeEnrollmentTokenSigning, true},
+		{PurposeFleetReportSigning, true},
 		{KeyPurpose("unknown"), false},
 	}
 	for _, tt := range tests {
@@ -243,6 +246,7 @@ func TestKeyPurpose_RequiresConductorThreshold(t *testing.T) {
 		{PurposeTrustRootRotation, true},
 		{PurposeAuditBatchSigning, false},
 		{PurposeEnrollmentTokenSigning, false},
+		{PurposeFleetReportSigning, false},
 		{PurposeReceiptSigning, false},
 		{KeyPurpose("unknown"), false},
 	}

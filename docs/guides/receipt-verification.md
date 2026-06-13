@@ -74,6 +74,41 @@ pipelock verify-receipt receipt.json --allow-unpinned
 Exit code 0 means valid (and signer-pinned, unless you passed `--allow-unpinned`);
 exit code 1 means invalid, malformed, or unpinned without `--allow-unpinned`.
 
+## Verifying a Fleet Receipt Report
+
+Fleet Receipt Reports are DSSE envelopes wrapping an in-toto Statement v1
+payload with the `fleet-receipt/v1` predicate. They summarize a fleet's
+included signed audit batches and carry the mediated-fraction completeness
+metric. They do not claim non-bypass; they prove the signed report's source set
+and arithmetic for mediated actions inside that source set.
+
+Pin the fleet-report public key:
+
+```bash
+pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub
+```
+
+Output on success:
+
+```text
+FLEET RECEIPT OK: fleet-receipt.dsse.json
+  Signer:           70b991eb...
+  Payload SHA-256:  9c46a3...
+  Org/Fleet:        pipelab/dogfood
+  Report ID:        019...
+  Level:            L1
+  Source batches:   12
+  Total actions:    481
+  Mediated fraction: 1
+```
+
+Without `--key`, the verifier can check structure and self-consistency only. It
+prints `FLEET RECEIPT UNPINNED` and exits non-zero unless `--allow-unpinned` is
+passed.
+
+See [Fleet Receipt Report v1](../specs/fleet-receipt-v1.md) for the wire
+format.
+
 ## Verifying a receipt chain
 
 Pass a flight recorder JSONL file (or `--chain DIR` for a multi-file chain that

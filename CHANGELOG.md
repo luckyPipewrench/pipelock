@@ -5,6 +5,12 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### New Features
+
+- **Fleet Receipt Report verification foundation.** Adds the Apache/free verifier path for Fleet Receipt Report DSSE envelopes through `pipelock verify-receipt --fleet-report --key <fleet-report.pub>`, the `fleet-report-signing` key purpose, and the `fleet-receipt/v1` schema/spec foundation. Report creation remains Enterprise-gated and lands separately.
+
 ## [2.7.0] - 2026-06-10
 
 ### Highlights

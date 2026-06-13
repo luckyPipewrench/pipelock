@@ -14,7 +14,7 @@ import (
 // every signed-artifact key entry. The wire form is the lowercase hyphenated
 // string representation; this typed wrapper centralises validation and helpers.
 //
-// Twelve values are defined, drawn from the design doc Key Management section
+// Thirteen values are defined, drawn from the design doc Key Management section
 // (lines 758-870) and the Conductor control-plane spec:
 //
 //   - PurposeReceiptSigning:            runtime receipt keys (hot-loadable)
@@ -29,6 +29,7 @@ import (
 //   - PurposeTrustRootRotation:         Conductor trust-root rotation keys
 //   - PurposeAuditBatchSigning:         follower audit batch signing keys
 //   - PurposeEnrollmentTokenSigning:    Conductor enrollment-token signing keys
+//   - PurposeFleetReportSigning:        Fleet Receipt Report signing keys
 //
 // Wire stability: these strings are part of the signed-artifact wire format
 // and will not change without a schema_version bump.
@@ -86,6 +87,10 @@ const (
 	// PurposeEnrollmentTokenSigning identifies Conductor keys used to sign narrow,
 	// one-shot enrollment tokens.
 	PurposeEnrollmentTokenSigning KeyPurpose = "enrollment-token-signing"
+
+	// PurposeFleetReportSigning identifies keys used to sign Fleet Receipt
+	// Reports. Verification is Apache/free; minting is Enterprise-gated.
+	PurposeFleetReportSigning KeyPurpose = "fleet-report-signing"
 )
 
 // ErrUnknownKeyPurpose indicates a key_purpose value is not one of the
@@ -106,6 +111,7 @@ var knownPurposes = [...]KeyPurpose{
 	PurposeTrustRootRotation,
 	PurposeAuditBatchSigning,
 	PurposeEnrollmentTokenSigning,
+	PurposeFleetReportSigning,
 }
 
 // knownSet provides O(1) validation lookup.
@@ -165,7 +171,8 @@ func (p KeyPurpose) IsConductorPurpose() bool {
 		PurposeRemoteKillSigning,
 		PurposeTrustRootRotation,
 		PurposeAuditBatchSigning,
-		PurposeEnrollmentTokenSigning:
+		PurposeEnrollmentTokenSigning,
+		PurposeFleetReportSigning:
 		return true
 	default:
 		return false
@@ -198,6 +205,7 @@ func (p KeyPurpose) RequiresConductorThreshold() bool {
 //  10. PurposeTrustRootRotation
 //  11. PurposeAuditBatchSigning
 //  12. PurposeEnrollmentTokenSigning
+//  13. PurposeFleetReportSigning
 //
 // Tests rely on this order; it will not change without a major version bump.
 func KnownPurposes() []KeyPurpose {

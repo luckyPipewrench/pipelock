@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pipelab.org/attestation/fleet-receipt/v1.schema.json",
+  "title": "Pipelock Fleet Receipt Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_type", "subject", "predicateType", "predicate"],
+  "properties": {
+    "_type": {
+      "const": "https://in-toto.io/Statement/v1"
+    },
+    "subject": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "digest"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "$ref": "#/$defs/digest"
+          }
+        }
+      }
+    },
+    "predicateType": {
+      "const": "https://pipelab.org/attestation/fleet-receipt/v1"
+    },
+    "predicate": {
+      "$ref": "#/$defs/predicate"
+    }
+  },
+  "$defs": {
+    "hexSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "rfc3339": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "countMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256"],
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/hexSha256"
+        }
+      }
+    },
+    "predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "reportId",
+        "generatedAt",
+        "orgId",
+        "fleetId",
+        "reportWindow",
+        "verificationLevel",
+        "conductor",
+        "sourceBatches",
+        "summary",
+        "completeness"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "reportId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generatedAt": {
+          "$ref": "#/$defs/rfc3339"
+        },
+        "orgId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fleetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reportWindow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": {
+              "$ref": "#/$defs/rfc3339"
+            },
+            "end": {
+              "$ref": "#/$defs/rfc3339"
+            }
+          }
+        },
+        "verificationLevel": {
+          "enum": ["L1"]
+        },
+        "conductor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "sourceBatches": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceBatch"
+          }
+        },
+        "summary": {
+          "$ref": "#/$defs/summary"
+        },
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "externalCorrelations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/externalCorrelation"
+          }
+        }
+      }
+    },
+    "sourceBatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "orgId",
+        "fleetId",
+        "instanceId",
+        "batchId",
+        "seqStart",
+        "seqEnd",
+        "eventCount",
+        "payloadSha256",
+        "payloadBytes",
+        "envelopeHash",
+        "segmentTailHash",
+        "droppedCount",
+        "emittedAt",
+        "receivedAt",
+        "signatureKeyIds"
+      ],
+      "properties": {
+        "orgId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fleetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "instanceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "batchId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seqStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seqEnd": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "eventCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "payloadSha256": {
+          "$ref": "#/$defs/hexSha256"
+        },
+        "payloadBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "envelopeHash": {
+          "$ref": "#/$defs/hexSha256"
+        },
+        "segmentTailHash": {
+          "$ref": "#/$defs/hexSha256"
+        },
+        "droppedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "emittedAt": {
+          "$ref": "#/$defs/rfc3339"
+        },
+        "receivedAt": {
+          "$ref": "#/$defs/rfc3339"
+        },
+        "signatureKeyIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["totalActions"],
+      "properties": {
+        "totalActions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "byFollower": {
+          "$ref": "#/$defs/countMap"
+        },
+        "byTransport": {
+          "$ref": "#/$defs/countMap"
+        },
+        "byActionType": {
+          "$ref": "#/$defs/countMap"
+        },
+        "byVerdict": {
+          "$ref": "#/$defs/countMap"
+        },
+        "byLayer": {
+          "$ref": "#/$defs/countMap"
+        },
+        "bySeverity": {
+          "$ref": "#/$defs/countMap"
+        }
+      }
+    },
+    "completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observedActions",
+        "droppedObservedActions",
+        "mediatedActions",
+        "mediatedFraction",
+        "basis",
+        "claim",
+        "nonClaim"
+      ],
+      "properties": {
+        "observedActions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "droppedObservedActions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mediatedActions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mediatedFraction": {
+          "type": "string",
+          "pattern": "^(0(\\.[0-9]+)?|1(\\.0+)?)$"
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nonClaim": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "externalCorrelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "ref"],
+      "properties": {
+        "system": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

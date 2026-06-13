@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
@@ -166,6 +168,48 @@ func TestVerifyReceiptCmd_WithExpectedKey(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "OK:") {
 		t.Errorf("expected OK in output, got: %s", buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_FleetReportWithExpectedKey(t *testing.T) {
+	t.Parallel()
+
+	pub, path := writeFleetReportFixture(t)
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--fleet-report", "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"FLEET RECEIPT OK:",
+		"Org/Fleet:        pipelab/dogfood",
+		"Source batches:   1",
+		"Total actions:    2",
+		"Mediated fraction: 1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestVerifyReceiptCmd_FleetReportRequiresPinByDefault(t *testing.T) {
+	t.Parallel()
+
+	_, path := writeFleetReportFixture(t)
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--fleet-report"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected unpinned fleet report verification to exit non-zero")
+	}
+	if !strings.Contains(buf.String(), "FLEET RECEIPT UNPINNED:") {
+		t.Fatalf("output missing unpinned warning:\n%s", buf.String())
 	}
 }
 
@@ -851,4 +895,79 @@ func TestResolveExpectedKeyHexesWrapsFailedKey(t *testing.T) {
 	if !strings.Contains(err.Error(), `resolving --key "not-a-key"`) {
 		t.Fatalf("expected failing key in error, got %v", err)
 	}
+}
+
+func writeFleetReportFixture(t *testing.T) (ed25519.PublicKey, string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyID := hex.EncodeToString(pub)
+	statement := fleetreceipt.Statement{
+		Type: fleetreceipt.StatementType,
+		Subject: []fleetreceipt.Subject{{
+			Name:   "conductor-audit-batch:pipelab/dogfood/pl-1/audit-1",
+			Digest: fleetreceipt.Digest{SHA256: testHexSHA256("envelope")},
+		}},
+		PredicateType: fleetreceipt.PredicateType,
+		Predicate: fleetreceipt.Predicate{
+			SchemaVersion:     1,
+			ReportID:          "01934e1c-cd60-7abc-823a-d6f5e6f7a8b9",
+			GeneratedAt:       "2026-06-13T12:00:00Z",
+			OrgID:             "pipelab",
+			FleetID:           "dogfood",
+			ReportWindow:      fleetreceipt.TimeWindow{Start: "2026-06-13T11:00:00Z", End: "2026-06-13T12:00:00Z"},
+			VerificationLevel: fleetreceipt.VerificationLevelL1,
+			Conductor:         fleetreceipt.Conductor{ID: "conductor"},
+			SourceBatches: []fleetreceipt.SourceBatch{{
+				OrgID:           "pipelab",
+				FleetID:         "dogfood",
+				InstanceID:      "pl-1",
+				BatchID:         "audit-1",
+				SeqStart:        1,
+				SeqEnd:          2,
+				EventCount:      2,
+				PayloadSHA256:   testHexSHA256("payload"),
+				PayloadBytes:    512,
+				EnvelopeHash:    testHexSHA256("envelope"),
+				SegmentTailHash: testHexSHA256("tail"),
+				EmittedAt:       "2026-06-13T12:00:00Z",
+				ReceivedAt:      "2026-06-13T12:00:00Z",
+				SignatureKeyIDs: []string{"audit-key"},
+			}},
+			Summary: fleetreceipt.Summary{
+				TotalActions: 2,
+				ByFollower:   map[string]uint64{"pl-1": 2},
+				ByVerdict:    map[string]uint64{"allow": 1, "block": 1},
+			},
+			Completeness: fleetreceipt.Completeness{
+				ObservedActions:        2,
+				DroppedObservedActions: 0,
+				MediatedActions:        2,
+				MediatedFraction:       "1",
+				Basis:                  "included_signed_audit_batches",
+				Claim:                  "fraction of observed fleet action records in included signed audit batches that were mediated by Pipelock",
+				NonClaim:               "does not prove no bypass occurred outside Pipelock, outside enrolled followers, or outside the report window",
+			},
+		},
+	}
+	env, err := fleetreceipt.SignStatement(statement, keyID, priv)
+	if err != nil {
+		t.Fatalf("SignStatement: %v", err)
+	}
+	data, err := fleetreceipt.MarshalEnvelope(env)
+	if err != nil {
+		t.Fatalf("MarshalEnvelope: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "fleet-receipt.dsse.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return pub, path
+}
+
+func testHexSHA256(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:])
 }

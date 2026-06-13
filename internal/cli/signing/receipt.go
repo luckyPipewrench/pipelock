@@ -4,6 +4,7 @@
 package signing
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -26,16 +28,18 @@ func VerifyReceiptCmd() *cobra.Command {
 	var chainDir string
 	var sessionID string
 	var allowUnpinned bool
+	var fleetReport bool
 
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
 		Short: "Verify a signed action receipt or receipt chain",
-		Long: `Verifies Ed25519 signatures on action receipts.
+		Long: `Verifies Ed25519 signatures on action receipts and Fleet Receipt Reports.
 
 For a single receipt JSON file: verifies the signature and prints details.
 For a flight recorder JSONL file: extracts all receipts and verifies the
 full hash chain (prev_hash linkage, seq continuity, signatures). For a
 multi-file chain spanning restarts or rotations, pass --chain DIR.
+For a Fleet Receipt Report DSSE envelope, pass --fleet-report.
 
 Signing-key rotation: a chain that rotated its signing key splits into
 segments. Each segment's key must be trusted. Pass --key once per trusted
@@ -53,6 +57,7 @@ Examples:
   pipelock verify-receipt --chain /var/lib/pipelock/evidence
   pipelock verify-receipt receipt.json --key 70b991eb...
   pipelock verify-receipt --chain DIR --key old.key --key new.key
+  pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub
   pipelock verify-receipt receipt.json --allow-unpinned`,
 		Args: func(_ *cobra.Command, args []string) error {
 			return validateReceiptSourceArgs(args, chainDir)
@@ -65,6 +70,12 @@ Examples:
 			}
 			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
 				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
+			}
+			if fleetReport {
+				if chainDir != "" {
+					return fmt.Errorf("--fleet-report cannot be combined with --chain")
+				}
+				return verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned)
 			}
 			if chainDir != "" {
 				return verifyChainFromSessionDirWithOptions(out, chainDir, sessionID, trustedKeys, allowUnpinned)
@@ -87,6 +98,7 @@ Examples:
 	cmd.Flags().StringVar(&chainDir, "chain", "", "verify the full receipt chain from an evidence directory")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
+	cmd.Flags().BoolVar(&fleetReport, "fleet-report", false, "verify a Fleet Receipt Report DSSE envelope")
 	return cmd
 }
 
@@ -125,6 +137,58 @@ func verifySingleReceiptWithOptions(out io.Writer, path, expectedKey string, all
 	}
 	printReceiptDetails(out, r)
 	return nil
+}
+
+func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []string, allowUnpinned bool) error {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("reading fleet receipt: %w", err)
+	}
+	keyMap, err := fleetTrustedKeyMap(trustedKeys)
+	if err != nil {
+		return err
+	}
+	result, err := fleetreceipt.Verify(data, keyMap)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
+		return fmt.Errorf("fleet receipt verification failed: %w", err)
+	}
+	if result.Unpinned {
+		_, _ = fmt.Fprintf(out, "FLEET RECEIPT UNPINNED: %s\n", path)
+		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
+	} else {
+		_, _ = fmt.Fprintf(out, "FLEET RECEIPT OK: %s\n", path)
+	}
+	_, _ = fmt.Fprintf(out, "  Signer:           %s\n", result.SignerKeyID)
+	_, _ = fmt.Fprintf(out, "  Payload SHA-256:  %s\n", result.PayloadSHA256)
+	_, _ = fmt.Fprintf(out, "  Org/Fleet:        %s/%s\n", result.Statement.Predicate.OrgID, result.Statement.Predicate.FleetID)
+	_, _ = fmt.Fprintf(out, "  Report ID:        %s\n", result.Statement.Predicate.ReportID)
+	_, _ = fmt.Fprintf(out, "  Level:            %s\n", result.Statement.Predicate.VerificationLevel)
+	_, _ = fmt.Fprintf(out, "  Source batches:   %d\n", result.SourceBatches)
+	_, _ = fmt.Fprintf(out, "  Total actions:    %d\n", result.TotalActions)
+	_, _ = fmt.Fprintf(out, "  Mediated fraction: %s\n", result.MediatedFraction)
+	if result.Unpinned && !allowUnpinned {
+		return fmt.Errorf("fleet receipt verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
+	}
+	return nil
+}
+
+func fleetTrustedKeyMap(keys []string) (map[string]ed25519.PublicKey, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]ed25519.PublicKey, len(keys))
+	for _, key := range keys {
+		raw, err := hex.DecodeString(key)
+		if err != nil {
+			return nil, fmt.Errorf("decode trusted fleet report key: %w", err)
+		}
+		if len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("trusted fleet report key length=%d want %d", len(raw), ed25519.PublicKeySize)
+		}
+		out[key] = ed25519.PublicKey(raw)
+	}
+	return out, nil
 }
 
 func verifyChainFromFile(out io.Writer, path string, trustedKeys []string) error {

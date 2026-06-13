@@ -64,9 +64,9 @@ func redactConfig(cfg *config.Config) map[string]any {
 				}
 				return ""
 			}(),
-			"otlp_endpoint":  cfg.Emit.OTLP.Endpoint,
+			"otlp_endpoint":  redactURL(cfg.Emit.OTLP.Endpoint),
 			"otlp_headers":   redactHeaders(cfg.Emit.OTLP.Headers),
-			"syslog_address": cfg.Emit.Syslog.Address,
+			"syslog_address": redactURL(cfg.Emit.Syslog.Address),
 		},
 		"kill_switch": map[string]any{
 			"enabled":       cfg.KillSwitch.Enabled,
@@ -142,17 +142,18 @@ func redactURL(raw string) string {
 	if u.User != nil {
 		u.User = url.User("<redacted>")
 	}
-	// Redact known secret query params.
+	// Redact known secret query params, matching param NAMES case-insensitively
+	// (query keys can be ?Token= / ?API_KEY= just as easily as lowercase).
 	q := u.Query()
-	secretParams := []string{
-		"token", "access_token", "api_key", "apikey", "secret",
-		"password", "passwd", "key", "auth", "authorization",
-		"client_secret", "client_id",
+	secretParams := map[string]bool{
+		"token": true, "access_token": true, "api_key": true, "apikey": true,
+		"secret": true, "password": true, "passwd": true, "key": true,
+		"auth": true, "authorization": true, "client_secret": true, "client_id": true,
 	}
 	modified := false
-	for _, p := range secretParams {
-		if q.Has(p) {
-			q.Set(p, "<redacted>")
+	for key := range q {
+		if secretParams[strings.ToLower(key)] {
+			q.Set(key, redactedPlaceholder)
 			modified = true
 		}
 	}

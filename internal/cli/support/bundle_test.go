@@ -160,6 +160,7 @@ func writeTempConfig(t *testing.T, cfg *config.Config) string {
 
 	yaml := strings.Join([]string{
 		"mode: balanced",
+		"internal: null",
 		"license_key: " + awsKey,
 		"kill_switch:",
 		"  api_token: " + ghToken,
@@ -196,6 +197,7 @@ func writeTempLoggingConfig(t *testing.T, logLines []string) string {
 	cfgPath := filepath.Join(tmp, "pipelock.yaml")
 	yaml := strings.Join([]string{
 		"mode: balanced",
+		"internal: null",
 		"logging:",
 		"  output: file",
 		"  file: " + logPath,
@@ -454,10 +456,11 @@ func TestBundle_EnvVarNamesNeverHaveValues(t *testing.T) {
 	archivePath := runBundleCmd(t, "")
 	files := readArchive(t, archivePath)
 
+	// We set a PIPELOCK_ var above, so the file MUST be present; a missing file
+	// is a regression, not a skip condition.
 	data, ok := files["env-var-names.txt"]
 	if !ok {
-		// env-var-names.txt may be absent if no PIPELOCK_ vars exist.
-		t.Skip("no env-var-names.txt in bundle (no matching env vars set)")
+		t.Fatalf("env-var-names.txt missing despite PIPELOCK_FAKE_TEST_VAR being set; files: %v", fileNames(files))
 	}
 
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
@@ -607,6 +610,10 @@ func TestBundleCmd_OutputWrittenToStdout(t *testing.T) {
 	if !strings.Contains(stdout.String(), archivePath) {
 		t.Errorf("expected stdout to contain archive path %q; got: %q", archivePath, stdout.String())
 	}
+	// The path is a stdout contract: it must NOT also go to stderr.
+	if strings.Contains(stderr.String(), archivePath) {
+		t.Errorf("archive path leaked to stderr: %q", stderr.String())
+	}
 }
 
 // --- unit tests for redaction helpers ---
@@ -638,6 +645,12 @@ func TestRedactURL(t *testing.T) {
 			input:   "https://api.example.com/hook?token=abc123secret&channel=alerts",
 			wantSub: "channel=alerts",
 			wantNot: []string{"abc123secret"},
+		},
+		{
+			name:    "uppercase Token query param stripped (case-insensitive)",
+			input:   "https://api.example.com/hook?Token=UPPERSECRET&channel=alerts",
+			wantSub: "channel=alerts",
+			wantNot: []string{"UPPERSECRET"},
 		},
 		{
 			name:    "api_key query param stripped",
@@ -688,6 +701,7 @@ func TestRedactHeaders(t *testing.T) {
 	// actually loads them.
 	yamlContent := strings.Join([]string{
 		"mode: balanced",
+		"internal: null",
 		"emit:",
 		"  otlp:",
 		"    endpoint: https://otlp.provider.example/v1/logs",
@@ -741,7 +755,7 @@ func captureRedactedWebhookURLWithT(t *testing.T, rawURL string) string {
 	tmp := t.TempDir() // properly isolated per-test temp dir
 
 	// YAML must quote the URL to handle embedded colons and special chars.
-	yamlContent := "mode: balanced\nemit:\n  webhook:\n    url: '" + rawURL + "'\n"
+	yamlContent := "mode: balanced\ninternal: null\nemit:\n  webhook:\n    url: '" + rawURL + "'\n"
 	yamlPath := filepath.Join(tmp, "pipelock.yaml")
 	if err := os.WriteFile(filepath.Clean(yamlPath), []byte(yamlContent), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

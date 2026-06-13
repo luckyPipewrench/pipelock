@@ -30,9 +30,12 @@ import (
 const (
 	defaultOutputDir = "."
 	maxAuditLogLines = 200
-	bundleFileMode   = 0o600
-	bundleDirMode    = 0o750
-	redactedSentinel = "<redacted>"
+	// maxAuditLogLineBytes caps a single scanned log line (1 MiB) so a long
+	// line does not trip bufio.Scanner's 64KB default and drop the whole tail.
+	maxAuditLogLineBytes = 1 << 20
+	bundleFileMode       = 0o600
+	bundleDirMode        = 0o750
+	redactedSentinel     = "<redacted>"
 )
 
 // BundleCmd returns the `support bundle` subcommand.
@@ -308,18 +311,21 @@ func readAuditLogTail(cfg *config.Config, n int) []string {
 	}
 	defer func() { _ = f.Close() }()
 
-	var lines []string
+	// Bounded line buffer so long JSON log lines don't trip the 64KB Scanner
+	// default (which would otherwise drop the whole tail). Keep only the last n
+	// lines in a ring so memory stays bounded regardless of file size.
 	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), maxAuditLogLineBytes)
+	var ring []string
 	for sc.Scan() {
-		lines = append(lines, sc.Text())
+		if n > 0 && len(ring) == n {
+			ring = ring[1:]
+		}
+		ring = append(ring, sc.Text())
 	}
-	if sc.Err() != nil {
-		return nil
-	}
-	if n > 0 && len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return lines
+	// On a read error (including an over-long line) return what we collected
+	// rather than silently dropping the entire tail.
+	return ring
 }
 
 // redactLogLines redacts configured/env/file secret literals, then DLP-scans

@@ -241,6 +241,114 @@ func TestExactDecimalRatio(t *testing.T) {
 	}
 }
 
+func TestValidateOptionsRejectsInvalidInputs(t *testing.T) {
+	_, reportPriv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(report): %v", err)
+	}
+	base := Options{
+		OrgID:       testOrgID,
+		FleetID:     testFleetID,
+		WindowStart: testWindowStart,
+		WindowEnd:   testWindowStart.Add(time.Hour),
+		ConductorID: "conductor",
+		Signer:      reportPriv,
+	}
+	cases := []struct {
+		name string
+		edit func(*Options)
+		want string
+	}{
+		{"missing_org", func(o *Options) { o.OrgID = "" }, "org id"},
+		{"missing_fleet", func(o *Options) { o.FleetID = "" }, "fleet id"},
+		{"missing_conductor", func(o *Options) { o.ConductorID = "" }, "conductor id"},
+		{"bad_window", func(o *Options) { o.WindowEnd = o.WindowStart }, "invalid report window"},
+		{"bad_signer", func(o *Options) { o.Signer = ed25519.PrivateKey("short") }, "signer private key length"},
+		{"negative_limit", func(o *Options) { o.Limit = -1 }, "limit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := base
+			tc.edit(&opts)
+			err := validateOptions(opts)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateOptions() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifySegmentRejectsMalformedSegments(t *testing.T) {
+	first := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  10,
+		Timestamp: testWindowStart,
+		SessionID: "proxy",
+		Type:      "checkpoint",
+		Transport: "recorder",
+		Summary:   "first",
+		PrevHash:  recorder.GenesisHash,
+	}
+	first.Hash = recorder.ComputeHash(first)
+	second := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  11,
+		Timestamp: testWindowStart.Add(time.Second),
+		SessionID: "proxy",
+		Type:      "checkpoint",
+		Transport: "recorder",
+		Summary:   "second",
+		PrevHash:  first.Hash,
+	}
+	second.Hash = recorder.ComputeHash(second)
+	valid := []recorder.Entry{first, second}
+	cases := []struct {
+		name    string
+		start   uint64
+		end     uint64
+		head    string
+		tail    string
+		entries []recorder.Entry
+		want    string
+	}{
+		{"empty", 10, 11, first.Hash, second.Hash, nil, "empty payload"},
+		{"range", 9, 11, first.Hash, second.Hash, valid, "sequence range mismatch"},
+		{"head_tail", 10, 11, strings.Repeat("0", 64), second.Hash, valid, "chain head/tail mismatch"},
+		{"unsupported_version", 10, 11, first.Hash, second.Hash, func() []recorder.Entry {
+			entries := append([]recorder.Entry(nil), valid...)
+			entries[1].Version = 99
+			return entries
+		}(), "unsupported recorder entry version"},
+		{"gap", 10, 12, first.Hash, second.Hash, func() []recorder.Entry {
+			entries := append([]recorder.Entry(nil), valid...)
+			entries[1].Sequence = 12
+			return entries
+		}(), "seq gap"},
+		{"link", 10, 11, first.Hash, second.Hash, func() []recorder.Entry {
+			entries := append([]recorder.Entry(nil), valid...)
+			entries[1].PrevHash = recorder.GenesisHash
+			return entries
+		}(), "chain link mismatch"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifySegment("audit-1", tc.start, tc.end, tc.head, tc.tail, tc.entries)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("verifySegment() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValueOrUnspecified(t *testing.T) {
+	if got := valueOrUnspecified(" fetch "); got != "fetch" {
+		t.Fatalf("valueOrUnspecified(non-empty) = %q", got)
+	}
+	if got := valueOrUnspecified(" "); got != "unspecified" {
+		t.Fatalf("valueOrUnspecified(empty) = %q", got)
+	}
+}
+
 func testActionReceipt(t *testing.T, id string, actionType receipt.ActionType, verdict, transport, layer, severity string) receipt.Receipt {
 	t.Helper()
 	_, priv, err := signing.GenerateKeyPair()

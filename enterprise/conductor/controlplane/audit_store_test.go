@@ -165,6 +165,35 @@ func TestSQLiteAuditStoreEvidenceFailsClosedOnTruncation(t *testing.T) {
 	}
 }
 
+func TestSQLiteAuditStoreEvidenceQueryValidation(t *testing.T) {
+	var nilStore *SQLiteAuditStore
+	if _, err := nilStore.ListAuditBatchEvidence(context.Background(), AuditEvidenceQuery{}); !errors.Is(err, ErrAuditSinkRequired) {
+		t.Fatalf("nil ListAuditBatchEvidence() error = %v, want ErrAuditSinkRequired", err)
+	}
+
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+	valid := AuditEvidenceQuery{
+		OrgID:        defaultFollowerIdentity().OrgID,
+		FleetID:      defaultFollowerIdentity().FleetID,
+		ReceivedFrom: testNow.Add(-time.Minute),
+		ReceivedTo:   testNow.Add(time.Minute),
+	}
+	if _, err := store.ListAuditBatchEvidence(nil, valid); !errors.Is(err, ErrAuditSinkRequired) { //nolint:staticcheck // explicitly verifies nil-context fail-closed behavior
+		t.Fatalf("nil context ListAuditBatchEvidence() error = %v, want ErrAuditSinkRequired", err)
+	}
+	missingFleet := valid
+	missingFleet.FleetID = ""
+	if _, err := store.ListAuditBatchEvidence(context.Background(), missingFleet); !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("missing fleet ListAuditBatchEvidence() error = %v, want ErrInvalidStoreRecord", err)
+	}
+	badWindow := valid
+	badWindow.ReceivedTo = badWindow.ReceivedFrom
+	if _, err := store.ListAuditBatchEvidence(context.Background(), badWindow); !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("bad window ListAuditBatchEvidence() error = %v, want ErrInvalidStoreRecord", err)
+	}
+}
+
 func TestSQLiteAuditStoreRejectsConflictingBatchID(t *testing.T) {
 	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
 	defer func() { _ = store.Close() }()

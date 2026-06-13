@@ -1,12 +1,13 @@
 # `pipelock support bundle`
 
-`pipelock support bundle` collects a secret-redacted diagnostics archive (`.tar.gz`) that can be attached when filing a bug report or support issue. All secret material is stripped before the archive is written — the command is designed to be safe to send to a third party.
+`pipelock support bundle` collects a secret-redacted diagnostics archive (`.tar.gz`) that can be attached when filing a bug report or support issue. The command omits raw config and referenced file contents, redacts known secret fields, and DLP-scans included audit-log lines before writing the archive. Review bundles before sharing them outside your support boundary, especially when logs are included.
 
 ```sh
 pipelock support bundle
 pipelock support bundle --config pipelock.yaml
 pipelock support bundle --output /tmp/pl-diag.tar.gz
 pipelock support bundle --config pipelock.yaml --output /tmp/pl-diag.tar.gz --json
+pipelock support bundle --config pipelock.yaml --no-logs
 ```
 
 ## Flags
@@ -16,6 +17,7 @@ pipelock support bundle --config pipelock.yaml --output /tmp/pl-diag.tar.gz --js
 | `--config` | `-c` | (none — built-in defaults) | Config file to summarise in the bundle. |
 | `--output` | `-o` | `./pipelock-support-<timestamp>.tar.gz` | Output path for the archive. |
 | `--json` | | (off) | Also write a standalone `<basename>-manifest.json` alongside the archive. |
+| `--no-logs` | | (off) | Omit `audit-log-tail.txt` even when `logging.file` is configured. |
 
 ## Archive Contents
 
@@ -27,7 +29,7 @@ pipelock support bundle --config pipelock.yaml --output /tmp/pl-diag.tar.gz --js
 | `scanners.json` | Scanner and feature enable flags derived from the loaded config. |
 | `env-var-names.txt` | Names of relevant environment variables present in the process environment. **Values are never included.** |
 | `config-path.txt` | The effective config file path (or `"defaults"` if no config was specified). |
-| `audit-log-tail.txt` | Last 200 lines of the audit log, if `logging.file` is configured and readable. Each line is run through a literal-match redaction pass before inclusion. |
+| `audit-log-tail.txt` | Last 200 lines of the audit log, if `logging.file` is configured and readable and `--no-logs` is not set. Each line is literal-redacted, then DLP-scanned; a line with remaining secret-shaped content is replaced with `<redacted>`. |
 
 ## What Is and Is Not Included
 
@@ -37,7 +39,7 @@ pipelock support bundle --config pipelock.yaml --output /tmp/pl-diag.tar.gz --js
 - A structured config summary with secrets replaced
 - Scanner feature flags
 - Environment variable **names** matching `PIPELOCK_*`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, and `SENTRY_*`
-- A redacted audit log tail (if the log file is configured and readable)
+- A redacted audit log tail (if the log file is configured and readable, unless `--no-logs` is set)
 
 **Never included:**
 - License tokens, bearer tokens, API keys, webhook auth tokens → replaced with `<redacted>`
@@ -58,7 +60,7 @@ Redaction is fail-closed by design:
 
 3. **Header redaction** redacts values for headers whose names match auth-like prefixes (`authorization`, `x-api-key`, `x-auth`, `x-token`, `bearer`, `secret`, `token`, `password`). Non-secret headers (e.g., `X-Request-ID`) are preserved.
 
-4. **Audit log redaction** applies a literal-match pass using `scanner.RedactionSecretValues()`, which includes encoded forms (base64, hex, base32 variants). This is belt-and-suspenders: the audit log should not contain raw secrets, but this ensures the bundle is clean even if a log line carries one.
+4. **Audit log redaction** first applies a literal-match pass using `scanner.RedactionSecretValues()`, which includes encoded forms (base64, hex, base32 variants). It then DLP-scans each line; if a line still contains secret-shaped content, the whole line is replaced with `<redacted>`. Use `--no-logs` to omit audit logs entirely.
 
 ## Exit Codes
 

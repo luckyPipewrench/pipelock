@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ func BundleCmd() *cobra.Command {
 	var configFile string
 	var outputPath string
 	var jsonManifest bool
+	var noLogs bool
 
 	cmd := &cobra.Command{
 		Use:   "bundle",
@@ -46,11 +48,12 @@ func BundleCmd() *cobra.Command {
 		Long: `Collect diagnostics into a .tar.gz archive that can be attached when
 filing a bug report or support issue.
 
-ALL secret values are redacted before inclusion:
+Secret handling before inclusion:
   - License tokens, bearer tokens, API keys → <redacted>
   - Private key material (CA key, signing keys) → presence noted only
   - Environment variable values → names only, never values
   - Webhook URLs → userinfo and token query params → <redacted>
+  - Audit-log lines with remaining secret-shaped content → <redacted>
 
 The archive contains:
   - pipelock version and build metadata
@@ -64,17 +67,19 @@ Examples:
   pipelock support bundle
   pipelock support bundle --config pipelock.yaml
   pipelock support bundle --output /tmp/pl-diag.tar.gz
+  pipelock support bundle --config pipelock.yaml --no-logs
   pipelock support bundle --json`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runBundle(cmd, configFile, outputPath, jsonManifest)
+			return runBundle(cmd, configFile, outputPath, jsonManifest, !noLogs)
 		},
 	}
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file to include in bundle (default: built-in defaults)")
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "output path for the .tar.gz archive (default: ./pipelock-support-<timestamp>.tar.gz)")
 	cmd.Flags().BoolVar(&jsonManifest, "json", false, "also write a manifest.json alongside the archive")
+	cmd.Flags().BoolVar(&noLogs, "no-logs", false, "omit audit-log-tail.txt even when logging.file is configured")
 
 	return cmd
 }
@@ -106,7 +111,7 @@ type manifest struct {
 	Files           []string `json:"files"`
 }
 
-func runBundle(cmd *cobra.Command, configFile, outputPath string, writeJSON bool) error {
+func runBundle(cmd *cobra.Command, configFile, outputPath string, writeJSON bool, includeLogs bool) error {
 	ts := time.Now().UTC()
 	archiveName := fmt.Sprintf("pipelock-support-%s.tar.gz", ts.Format("20060102-150405"))
 	if outputPath == "" {
@@ -128,7 +133,7 @@ func runBundle(cmd *cobra.Command, configFile, outputPath string, writeJSON bool
 	}
 
 	// Collect the bundle entries.
-	entries, err := collectEntries(cfg, cfgLabel)
+	entries, err := collectEntries(cfg, cfgLabel, includeLogs)
 	if err != nil {
 		return fmt.Errorf("collecting bundle entries: %w", err)
 	}
@@ -175,7 +180,7 @@ type bundleEntry struct {
 }
 
 // collectEntries assembles all bundle content.
-func collectEntries(cfg *config.Config, cfgLabel string) ([]bundleEntry, error) {
+func collectEntries(cfg *config.Config, cfgLabel string, includeLogs bool) ([]bundleEntry, error) {
 	var entries []bundleEntry
 
 	// version.txt
@@ -211,12 +216,15 @@ func collectEntries(cfg *config.Config, cfgLabel string) ([]bundleEntry, error) 
 	})
 
 	// audit-log-tail.txt — last N lines of the audit log if present.
-	if logTail := readAuditLogTail(cfg, maxAuditLogLines); len(logTail) > 0 {
-		redacted := redactLogLines(cfg, logTail)
-		entries = append(entries, bundleEntry{
-			name: "audit-log-tail.txt",
-			data: []byte(strings.Join(redacted, "\n") + "\n"),
-		})
+	if includeLogs {
+		logTail := readAuditLogTail(cfg, maxAuditLogLines)
+		if len(logTail) > 0 {
+			redacted := redactLogLines(cfg, logTail)
+			entries = append(entries, bundleEntry{
+				name: "audit-log-tail.txt",
+				data: []byte(strings.Join(redacted, "\n") + "\n"),
+			})
+		}
 	}
 
 	// config-path.txt — the effective config path label.
@@ -314,10 +322,9 @@ func readAuditLogTail(cfg *config.Config, n int) []string {
 	return lines
 }
 
-// redactLogLines runs known secret values through a simple literal-redaction
-// pass on each log line. This is a belt-and-suspenders defence: the audit log
-// should never contain raw secrets, but this ensures the bundle is clean even
-// if a log line somehow carries one.
+// redactLogLines redacts configured/env/file secret literals, then DLP-scans
+// each remaining line. Any line still carrying secret-shaped content is replaced
+// wholesale; support diagnostics can lose one line, but must not leak a secret.
 func redactLogLines(cfg *config.Config, lines []string) []string {
 	sc := scanner.New(cfg)
 	secrets := sc.RedactionSecretValues()
@@ -325,9 +332,6 @@ func redactLogLines(cfg *config.Config, lines []string) []string {
 	all = append(all, secrets.Env...)
 	all = append(all, secrets.File...)
 
-	if len(all) == 0 {
-		return lines
-	}
 	out := make([]string, len(lines))
 	for i, line := range lines {
 		redacted := line
@@ -335,6 +339,10 @@ func redactLogLines(cfg *config.Config, lines []string) []string {
 			if s != "" && strings.Contains(redacted, s) {
 				redacted = strings.ReplaceAll(redacted, s, redactedSentinel)
 			}
+		}
+		dlp := sc.ScanTextForDLPQuiet(context.Background(), redacted)
+		if len(dlp.Matches) > 0 || len(dlp.InformationalMatches) > 0 {
+			redacted = redactedSentinel
 		}
 		out[i] = redacted
 	}

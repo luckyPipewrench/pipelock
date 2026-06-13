@@ -43,6 +43,7 @@ func fakeAWSKey() string       { return testAWSKeyPrefix + testAWSKeySuffix }
 func fakeGHToken() string      { return testGitHubTokenPrefix + testGitHubTokenPad }
 func fakeAnthropicKey() string { return testAnthropicKeyPart1 + testAnthropicKeyPart2 }
 func fakeWebhookToken() string { return "wh-t0k3n-" + testAWSKeySuffix }
+func fakeLogAWSKey() string    { return testAWSKeyPrefix + strings.Repeat("Z", 16) }
 
 // makeSecretConfig returns a config seeded with several fake secrets in
 // different positions: top-level token, nested field, webhook URL userinfo,
@@ -183,6 +184,28 @@ func writeTempConfig(t *testing.T, cfg *config.Config) string {
 	return path
 }
 
+func writeTempLoggingConfig(t *testing.T, logLines []string) string {
+	t.Helper()
+
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "pipelock-audit.log")
+	if err := os.WriteFile(filepath.Clean(logPath), []byte(strings.Join(logLines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	cfgPath := filepath.Join(tmp, "pipelock.yaml")
+	yaml := strings.Join([]string{
+		"mode: balanced",
+		"logging:",
+		"  output: file",
+		"  file: " + logPath,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Clean(cfgPath), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return cfgPath
+}
+
 // --- adversarial leak tests ---
 
 // TestBundle_NoSecretLeaks_TopLevelToken verifies that a secret stored in
@@ -267,6 +290,57 @@ func TestBundle_NoSecretLeaks_WebhookAuthToken(t *testing.T) {
 
 	if bytes.Contains(all, []byte(secret)) {
 		t.Errorf("webhook auth token leaked into bundle: %q found in archive", secret)
+	}
+}
+
+func TestBundle_AuditLogTailDLPRedactsUnknownSecret(t *testing.T) {
+	t.Parallel()
+
+	secret := fakeLogAWSKey()
+	cfgPath := writeTempLoggingConfig(t, []string{
+		`{"level":"info","event":"allowed","msg":"normal line"}`,
+		`{"level":"warn","event":"unexpected","detail":"leaked ` + secret + `"}`,
+	})
+
+	archivePath := runBundleCmd(t, cfgPath)
+	files := readArchive(t, archivePath)
+	all := archiveBytes(files)
+
+	if bytes.Contains(all, []byte(secret)) {
+		t.Errorf("secret-shaped audit-log value leaked into bundle: %q found in archive", secret)
+	}
+	tail, ok := files["audit-log-tail.txt"]
+	if !ok {
+		t.Fatal("audit-log-tail.txt missing despite configured readable audit log")
+	}
+	if !bytes.Contains(tail, []byte("<redacted>")) {
+		t.Errorf("audit-log-tail.txt should contain redaction sentinel; got: %q", string(tail))
+	}
+}
+
+func TestBundle_NoLogsFlagOmitsAuditLogTail(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeTempLoggingConfig(t, []string{`{"level":"info","event":"allowed"}`})
+	tmp := t.TempDir()
+	out := filepath.Join(tmp, "bundle.tar.gz")
+
+	cmd := support.BundleCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--output", out, "--config", cfgPath, "--no-logs"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("bundle command failed: %v (output: %s)", err, buf.String())
+	}
+
+	files := readArchive(t, out)
+	if _, ok := files["audit-log-tail.txt"]; ok {
+		t.Fatal("audit-log-tail.txt present despite --no-logs")
+	}
+	if bytes.Contains(files["manifest.json"], []byte("audit-log-tail.txt")) {
+		t.Fatal("manifest lists audit-log-tail.txt despite --no-logs")
 	}
 }
 

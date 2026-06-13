@@ -143,7 +143,7 @@ func redactURL(raw string) string {
 		u.User = url.User("<redacted>")
 	}
 	// Redact known secret query params, matching param NAMES case-insensitively
-	// (query keys can be ?Token= / ?API_KEY= just as easily as lowercase).
+	// (a key may be spelled Token or API_KEY just as easily as lowercase).
 	q := u.Query()
 	secretParams := map[string]bool{
 		"token": true, "access_token": true, "api_key": true, "apikey": true,

@@ -49,6 +49,7 @@ jobs:
             internal/config/config_test.go
             internal/cli/test.go
             internal/cli/license_test.go
+            internal/cli/support/bundle_test.go
             enterprise/licenseservice/*_test.go
             configs/*.yaml
             test/secureiqlab/

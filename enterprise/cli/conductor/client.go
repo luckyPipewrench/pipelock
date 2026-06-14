@@ -5,9 +5,11 @@
 package conductor
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +21,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 )
 
 const (
@@ -146,6 +150,47 @@ func (c *conductorClient) getJSON(ctx context.Context, path string) ([]byte, err
 		return nil, fmt.Errorf("read conductor response: %w", readErr)
 	}
 	return body, nil
+}
+
+// getStreamStatus performs the authenticated GET for the conductor stream
+// overview, scoped by org (required) and optional fleet. It mirrors
+// fetchFollowers: build the allowlisted query, then delegate to getJSON which
+// enforces the response size cap and status handling.
+func (c *conductorClient) getStreamStatus(ctx context.Context, orgID, fleetID string) ([]byte, error) {
+	params := map[string]string{
+		"org_id":   orgID,
+		"fleet_id": fleetID,
+	}
+	return c.getJSON(ctx, controlplane.StreamStatusPath+encodeQuery(params))
+}
+
+// deleteJSON performs an authenticated DELETE with a JSON body and returns the
+// response body bytes for a 200 response, or a descriptive error otherwise.
+func (c *conductorClient) deleteJSON(ctx context.Context, path string, body any) ([]byte, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal delete request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("build delete request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("delete request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, clientMaxBodyBytes))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("conductor returned status %d: %s", resp.StatusCode, clientSnippet(respBody, c.token))
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("read delete response: %w", readErr)
+	}
+	return respBody, nil
 }
 
 func readClientTokenFile(path string) (string, error) {

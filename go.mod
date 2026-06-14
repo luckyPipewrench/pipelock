@@ -16,7 +16,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
-	github.com/spiffe/go-spiffe/v2 v2.6.0
+	github.com/spiffe/go-spiffe/v2 v2.7.0
 	go.opentelemetry.io/proto/otlp v1.10.0
 	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.55.0

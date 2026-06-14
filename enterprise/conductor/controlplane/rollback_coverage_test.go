@@ -455,6 +455,10 @@ func (stubBundleStore) ApplyRollbackHead(context.Context, conductor.RollbackAuth
 	return nil
 }
 
+func (stubBundleStore) StreamOverview(context.Context, StreamStatusQuery) ([]StreamSummary, error) {
+	return nil, nil
+}
+
 // TestApplyRollbackCeilingUnavailableBundles drives the leader-side ceiling
 // helper through the current-unavailable, target-unavailable, and cross-stream
 // branches by serving GET latest with a published rollback authorization whose

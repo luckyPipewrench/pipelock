@@ -201,8 +201,8 @@ func (c Conductor) EmergencyStreamEnabled() bool {
 // config: conductor.Audience.Matches reads labels[k] for each audience key, so a
 // follower carrying an empty-valued label key would spuriously match an audience
 // whose value is also empty (the zero value of a missing map lookup), widening
-// who accepts a label-scoped bundle. Keys and values are bounded the same way as
-// other conductor identifiers to keep the audience-match surface predictable.
+// who accepts a label-scoped bundle. Keys and values are byte-bounded and use
+// the conductor identifier charset to keep the audience-match surface predictable.
 // Conductor follower label bounds + charset MIRROR the leader-side selector rules
 // in enterprise/conductor/messages.go (MaxLabelKeyBytes=128, MaxLabelValueBytes=256,
 // isIdentifier). They are duplicated here because core config (Apache) cannot import

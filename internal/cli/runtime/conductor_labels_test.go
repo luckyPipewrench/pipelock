@@ -42,6 +42,29 @@ func TestConductorFollowerLabels_WiresConfigAndCopies(t *testing.T) {
 	}
 }
 
+// TestBuildConductorRemoteKillApplier_CapturesFollowerLabels proves the
+// remote-kill audience path uses the same configured follower labels as policy
+// bundle and rollback applies. A label-scoped remote kill would otherwise fail
+// closed on every labeled follower because RemoteKillApplier.Labels stayed nil.
+func TestBuildConductorRemoteKillApplier_CapturesFollowerLabels(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Conductor.OrgID = "org-main"
+	cfg.Conductor.FleetID = "prod"
+	cfg.Conductor.InstanceID = "pl-prod-1"
+	cfg.Conductor.BundleCacheDir = t.TempDir()
+	cfg.Conductor.HonorRemoteKillSwitch = true
+	cfg.Conductor.Labels = map[string]string{"ring": "canary"}
+
+	applier := buildConductorRemoteKillApplier(cfg, nil, nil, nil)
+	if applier.Labels["ring"] != "canary" {
+		t.Fatalf("remote kill labels[ring] = %q, want canary", applier.Labels["ring"])
+	}
+	cfg.Conductor.Labels["ring"] = "stable"
+	if applier.Labels["ring"] != "canary" {
+		t.Fatalf("remote kill labels aliased config mutation: got %q, want canary", applier.Labels["ring"])
+	}
+}
+
 // signedLabelScopedBundle mirrors signedRuntimePolicyBundle but targets the
 // bundle at an audience LABEL selector instead of an instance ID. The follower's
 // configured labels (passed via ConductorApplyOptions.Labels) must match every

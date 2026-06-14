@@ -447,7 +447,12 @@ func TestLoad_ConductorHonorRemoteKillSwitchDefaulting(t *testing.T) {
 func TestValidateConductor_AcceptsFollowerLabels(t *testing.T) {
 	cfg := Defaults()
 	cfg.Conductor = validConductorConfig(t)
-	cfg.Conductor.Labels = map[string]string{"ring": "canary", "region": "us-east"}
+	cfg.Conductor.Labels = map[string]string{
+		"ring":                         "canary",
+		"region":                       "us-east",
+		strings.Repeat("k", 128):       strings.Repeat("v", 256),
+		"max_value_boundary_is_256_ok": strings.Repeat("v", maxConductorLabelValueBytes),
+	}
 	configureConductorRecorder(t, cfg)
 
 	if _, err := cfg.ValidateWithWarnings(); err != nil {
@@ -469,6 +474,8 @@ func TestValidateConductor_RejectsMalformedFollowerLabels(t *testing.T) {
 		{name: "blank_key", labels: map[string]string{"   ": "canary"}, want: "must not contain an empty key"},
 		{name: "empty_value", labels: map[string]string{"ring": ""}, want: `conductor.labels["ring"] must not have an empty value`},
 		{name: "blank_value", labels: map[string]string{"ring": "  "}, want: `conductor.labels["ring"] must not have an empty value`},
+		{name: "long_key", labels: map[string]string{strings.Repeat("k", maxConductorLabelKeyBytes+1): "canary"}, want: "must be <= 128 bytes"},
+		{name: "long_value", labels: map[string]string{"ring": strings.Repeat("v", maxConductorLabelValueBytes+1)}, want: "value must be <= 256 bytes"},
 		// Charset must mirror the leader-side selector (isIdentifier): a label the
 		// leader cannot express is silently unreachable, so reject it at startup.
 		{name: "space_in_value", labels: map[string]string{"ring": "us east"}, want: "must use only alphanumerics"},

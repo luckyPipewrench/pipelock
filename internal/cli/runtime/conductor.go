@@ -214,17 +214,7 @@ func buildConductorRemoteKillPoller(cfg *config.Config, ks emergency.KillSwitchS
 	}
 	logger := slog.New(slog.NewJSONHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})).
 		With("service", "pipelock", "component", "conductor_remote_kill")
-	applier := &emergency.RemoteKillApplier{
-		OrgID:             cfg.Conductor.OrgID,
-		FleetID:           cfg.Conductor.FleetID,
-		InstanceID:        cfg.Conductor.InstanceID,
-		Resolver:          resolver,
-		KillSwitch:        ks,
-		StatePath:         filepath.Join(cfg.Conductor.BundleCacheDir, emergency.RemoteKillStateFileName),
-		DisableRemoteKill: !cfg.Conductor.HonorRemoteKillSwitch,
-		Now:               time.Now,
-		Logger:            logger,
-	}
+	applier := buildConductorRemoteKillApplier(cfg, ks, resolver, logger)
 	if !applier.DisableRemoteKill {
 		if err := applier.RestorePersistedState(); err != nil {
 			return nil, fmt.Errorf("restoring conductor remote kill state: %w", err)
@@ -237,6 +227,21 @@ func buildConductorRemoteKillPoller(cfg *config.Config, ks emergency.KillSwitchS
 		PollInterval: interval,
 		Logger:       logger,
 	})
+}
+
+func buildConductorRemoteKillApplier(cfg *config.Config, ks emergency.KillSwitchSetter, resolver conductor.SignatureKeyResolver, logger *slog.Logger) *emergency.RemoteKillApplier {
+	return &emergency.RemoteKillApplier{
+		OrgID:             cfg.Conductor.OrgID,
+		FleetID:           cfg.Conductor.FleetID,
+		InstanceID:        cfg.Conductor.InstanceID,
+		Labels:            conductorFollowerLabels(cfg),
+		Resolver:          resolver,
+		KillSwitch:        ks,
+		StatePath:         filepath.Join(cfg.Conductor.BundleCacheDir, emergency.RemoteKillStateFileName),
+		DisableRemoteKill: !cfg.Conductor.HonorRemoteKillSwitch,
+		Now:               time.Now,
+		Logger:            logger,
+	}
 }
 
 // buildConductorBundlePoller wires the follower-side policy-bundle poller. It is

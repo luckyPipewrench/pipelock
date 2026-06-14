@@ -249,17 +249,18 @@ When `conductor.enabled: true`, validation requires:
 - all file paths absolute.
 
 `labels` (optional) are the follower's self-declared audience labels. The leader
-targets a policy bundle (or a rollback authorization) at a subset of followers by
-label selector — for example `audience: {labels: {ring: canary}}` reaches only
-followers whose `conductor.labels` contains `ring: canary`. A follower accepts a
-label-scoped bundle only when **every** audience label key matches its own
-labels; a follower with no labels (or a different value) is not in the audience
-and the bundle is withheld (audience mismatch, fail closed). Labels are
-restart-only like the rest of the conductor block — changing them takes effect on
-restart, not via hot reload. Each key and value must be a non-empty identifier
-(letters, digits, `_`, `-`, `.`, not leading punctuation), `<= 128` bytes;
-empty keys or values are rejected at startup so an ambiguous label can never
-broaden which followers accept a bundle.
+targets policy bundles, rollback authorizations, and remote-kill messages at a
+subset of followers by label selector — for example `audience: {labels: {ring:
+canary}}` reaches only followers whose `conductor.labels` contains `ring:
+canary`. A follower accepts a label-scoped message only when **every** audience
+label key matches its own labels; a follower with no labels (or a different
+value) is not in the audience and the message is withheld (audience mismatch,
+fail closed). Labels are restart-only like the rest of the conductor block —
+changing them takes effect on restart, not via hot reload. Each key and value
+must be a non-empty identifier (letters, digits, `_`, `-`, `.`, not leading
+punctuation); keys are `<= 128` bytes and values are `<= 256` bytes. Empty keys
+or values are rejected at startup so an ambiguous label can never broaden which
+followers accept a message.
 
 `honor_remote_kill_switch` (default `true`) opts the follower into the
 fleet-wide kill signal. `stale_policy.strict_deny_all` is the **enforced**

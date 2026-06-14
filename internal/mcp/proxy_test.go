@@ -148,6 +148,12 @@ func newReceiptTestHarness(t *testing.T) (*receipt.Emitter, *recorder.Recorder, 
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
+	// Close the recorder before t.TempDir's RemoveAll runs. t.Cleanup is
+	// LIFO and the recorder is created after t.TempDir above, so this fires
+	// first and releases the evidence-proxy-0.jsonl handle. Without it,
+	// Windows cleanup fails ("being used by another process") because it
+	// cannot unlink an open file; Unix tolerates the leak silently.
+	t.Cleanup(func() { _ = rec.Close() })
 
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   rec,

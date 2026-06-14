@@ -51,6 +51,7 @@ func streamCmd() *cobra.Command {
 	}
 	cmd.AddCommand(streamStatusCmd())
 	cmd.AddCommand(streamInspectCmd())
+	cmd.AddCommand(streamResetCmd())
 	return cmd
 }
 

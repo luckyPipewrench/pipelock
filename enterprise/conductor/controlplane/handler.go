@@ -839,8 +839,10 @@ func (h *Handler) handleRollbackAuthorizations(w http.ResponseWriter, r *http.Re
 		h.handleLatestRollbackAuthorization(w, r)
 	case http.MethodPut, http.MethodPost:
 		h.handlePublishRollbackAuthorization(w, r)
+	case http.MethodDelete:
+		h.handleClearRollbackAuthorization(w, r)
 	default:
-		writeMethodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodPost)
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodPost, http.MethodDelete)
 	}
 }
 
@@ -903,6 +905,63 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		Counter:           record.Authorization.Counter,
 		PublishedAt:       record.PublishedAt,
 		Created:           created,
+	})
+}
+
+// rollbackClearer is the optional interface an [EmergencyStore] may implement
+// to support clearing (removing) a rollback authorization by its
+// authorization_id. The [FileEmergencyStore] implements it. Stores that do not
+// implement it degrade to HTTP 501 Not Implemented on DELETE.
+type rollbackClearer interface {
+	ClearRollbackAuthorization(ctx context.Context, authorizationID string) (bool, error)
+}
+
+// clearRollbackAuthorizationRequest is the JSON body for DELETE
+// /api/v1/conductor/rollback-authorizations.
+type clearRollbackAuthorizationRequest struct {
+	AuthorizationID string `json:"authorization_id"`
+}
+
+func (h *Handler) handleClearRollbackAuthorization(w http.ResponseWriter, r *http.Request) {
+	if h.emergencyControls == nil {
+		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
+		return
+	}
+	if err := h.authorizeAdmin(r); err != nil {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
+		return
+	}
+	clearer, ok := h.emergencyControls.(rollbackClearer)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, errors.New("emergency store does not support clearing rollback authorizations"))
+		return
+	}
+	var req clearRollbackAuthorizationRequest
+	if err := decodeStrictJSON(w, r, h.maxRequestBody, &req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.AuthorizationID) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: authorization_id", conductor.ErrMissingField))
+		return
+	}
+	cleared, err := clearer.ClearRollbackAuthorization(r.Context(), req.AuthorizationID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if !cleared {
+		writeError(w, http.StatusNotFound, ErrEmergencyNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authorization_id": req.AuthorizationID,
+		"cleared":          true,
 	})
 }
 

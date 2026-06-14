@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -181,7 +182,7 @@ Example:
 	cmd.Flags().StringVar(&opts.bundleID, "bundle-id", "", "bundle id (default: <fleet>-<env>-v<version>)")
 	cmd.Flags().StringArrayVar(&opts.audience, "audience", nil, "audience selector: '*' for the whole fleet, an instance id, or 'label:KEY=VALUE'; repeatable. Instance ids and labels cannot be mixed")
 	cmd.Flags().Uint64Var(&opts.version, "version", 0, "monotonic bundle version; must exceed the stream's highest published version (after a rollback, newer versions can exist above the current head, so this must beat the stream max, not just the head)")
-	cmd.Flags().StringVar(&opts.previousHash, "previous-bundle-hash", "", "hash of the currently published bundle for this stream (printed by the prior publish); omit only for the first bundle in a stream")
+	cmd.Flags().StringVar(&opts.previousHash, "previous-bundle-hash", "", "hash of the currently published bundle for this stream (printed by the prior publish); use 'auto' to fetch the current stream head hash from the Conductor; omit only for the first bundle in a stream")
 	cmd.Flags().DurationVar(&opts.validity, "validity", opts.validity, "validity window for the bundle starting now (not_before=now, expires_at=now+validity)")
 	cmd.Flags().StringVar(&opts.minVersion, "min-pipelock-version", "", "minimum pipelock version a follower must run to apply this bundle (major.minor.patch)")
 	cmd.Flags().StringVar(&opts.signingKey, "signing-key", "", "path to a policy-bundle-signing key file from 'pipelock signing key generate'")
@@ -194,9 +195,24 @@ Example:
 	return cmd
 }
 
+// previousHashAuto is the sentinel value for --previous-bundle-hash that
+// triggers automatic resolution of the current stream head hash via the
+// Conductor's stream-status endpoint.
+const previousHashAuto = "auto"
+
 func runPublish(ctx context.Context, out io.Writer, opts publishOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// Resolve "auto" previous-bundle-hash before building the bundle. This
+	// requires a round trip to the Conductor to fetch the current stream head.
+	if strings.EqualFold(strings.TrimSpace(opts.previousHash), previousHashAuto) {
+		resolved, err := resolveAutoHash(ctx, opts)
+		if err != nil {
+			return fmt.Errorf("resolve --previous-bundle-hash auto: %w", err)
+		}
+		opts.previousHash = resolved
+		_, _ = fmt.Fprintf(out, "resolved --previous-bundle-hash auto to %s\n", resolved)
 	}
 	bundle, keyID, priv, err := buildSignedBundle(opts)
 	if err != nil {
@@ -749,4 +765,107 @@ func sanitizeServerDetail(s, token string) string {
 		out = string(runes[:serverErrorMaxRunes])
 	}
 	return out
+}
+
+// resolveAutoHash fetches the current stream head hash from the Conductor's
+// stream-status endpoint and selects the stream matching the bundle this publish
+// is about to create: same org/fleet query, same environment, and same audience.
+// An empty match returns "" so a first-in-stream publish proceeds without a
+// previous hash.
+func resolveAutoHash(ctx context.Context, opts publishOptions) (string, error) {
+	audience, err := parseAudience(opts.audience)
+	if err != nil {
+		return "", err
+	}
+	environment := strings.TrimSpace(opts.environment)
+	if environment == "" {
+		return "", errors.New("--env is required when --previous-bundle-hash auto is used")
+	}
+	client, err := publishHTTPClient(opts)
+	if err != nil {
+		return "", err
+	}
+	token, err := readPublisherToken(opts.publisherTok)
+	if err != nil {
+		return "", err
+	}
+	params := url.Values{}
+	if strings.TrimSpace(opts.orgID) != "" {
+		params.Set("org_id", opts.orgID)
+	}
+	if strings.TrimSpace(opts.fleetID) != "" {
+		params.Set("fleet_id", opts.fleetID)
+	}
+	endpoint := strings.TrimRight(opts.conductorURL, "/") + controlplane.StreamStatusPath
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("build stream-status request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("stream-status request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, publishMaxResponseBytes))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("stream-status returned HTTP %d: %s", resp.StatusCode, serverErrorDetail(body, token))
+	}
+	var status struct {
+		Streams []struct {
+			Environment    string                 `json:"environment"`
+			Audience       conductorcore.Audience `json:"audience"`
+			HeadBundleHash string                 `json:"head_bundle_hash"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(body, &status); err != nil {
+		return "", fmt.Errorf("decode stream-status: %w", err)
+	}
+	var matches []string
+	for _, stream := range status.Streams {
+		if stream.Environment != environment {
+			continue
+		}
+		if !audiencesEquivalent(stream.Audience, audience) {
+			continue
+		}
+		matches = append(matches, stream.HeadBundleHash)
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("stream-status returned %d matching streams for env %q and audience; refusing to choose a previous hash", len(matches), environment)
+	}
+	return matches[0], nil
+}
+
+func audiencesEquivalent(a, b conductorcore.Audience) bool {
+	aIDs := canonicalInstanceIDs(a.InstanceIDs)
+	bIDs := canonicalInstanceIDs(b.InstanceIDs)
+	if !slices.Equal(aIDs, bIDs) {
+		return false
+	}
+	if len(a.Labels) != len(b.Labels) {
+		return false
+	}
+	for key, aVal := range a.Labels {
+		if b.Labels[key] != aVal {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalInstanceIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := slices.Clone(ids)
+	slices.Sort(out)
+	return slices.Compact(out)
 }

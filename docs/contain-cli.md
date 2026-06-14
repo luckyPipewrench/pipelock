@@ -70,6 +70,18 @@ Exit codes:
 - **1** — a step failed; earlier applied steps were rolled back.
 - **2** — precondition error: not root, missing executable, bad `--config`.
 
+### Post-install output
+
+On success, `install` prints a **Next steps** block with:
+
+- **sudo secure_path check** -- if `/usr/local/bin` is not in sudo's `secure_path`, a warning explains how to add it. Without this, `sudo pipelock ...` reports "command not found" even though the binary is installed. Install emits guidance rather than silently editing sudoers.
+- **Agent registration** -- the exact command to register the first agent tool (`sudo pipelock contain add-tool <name> --target /path/to/<tool>`) and how to invoke it (`plk-<name> [args...]`).
+- **Evidence paths** -- where audit logs and signed receipts are written (`/var/lib/pipelock/logs` and `/var/lib/pipelock/recorder`).
+
+### nftables version compatibility
+
+The nftables step checks the installed `nft` version before generating rules. The containment ruleset requires nftables >= 0.6 (for `meta skuid` and inline `counter log prefix ... drop` syntax). On hosts with an older `nft` (seen on some older enterprise Linux images), install fails with a clear error naming the minimum version and the distro-appropriate upgrade command, rather than a cryptic parse error at load time.
+
 ## `pipelock contain verify`
 
 Verify is read-only. It walks 12 probes in order and prints pass / fail / skip per probe. It does not require root.
@@ -169,6 +181,14 @@ Flags:
 | `--url` | `https://example.com/` | Allowed canary URL the agent should be able to reach. |
 
 Exit code is 0 if every check passed, 1 if any check failed, and 2 if the diagnosis was incomplete because a check skipped (for example, not run as root, or a tool isn't installed). Checks that can't proceed skip with remediation rather than failing.
+
+After the result summary, `doctor` prints the resolved evidence paths so operators know where to find audit logs and signed receipts:
+
+```text
+Evidence paths:
+  logs:     /var/lib/pipelock/logs
+  receipts: /var/lib/pipelock/recorder
+```
 
 ## `pipelock contain explain`
 

@@ -173,7 +173,79 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, err)
 	}
 	_, _ = fmt.Fprintln(env.out, "install complete — run `pipelock contain verify` to confirm.")
+	printPostInstallNextActions(env)
 	return nil
+}
+
+// printPostInstallNextActions emits a next-actions block after a successful
+// install. The block tells the operator how to register their first agent
+// tool, where to find evidence/receipts, and warns about sudo secure_path
+// if /usr/local/bin is not included.
+func printPostInstallNextActions(env *installEnv) {
+	_, _ = fmt.Fprintln(env.out, "")
+	_, _ = fmt.Fprintln(env.out, "Next steps:")
+
+	// 1. sudo secure_path check: if /usr/local/bin is not in sudo's
+	// secure_path the operator gets "command not found" when running
+	// `sudo pipelock ...`. Emit guidance rather than silently editing sudoers.
+	if warning := checkSudoSecurePath(env); warning != "" {
+		_, _ = fmt.Fprintln(env.out, warning)
+	}
+
+	// 2. Agent tool registration guidance.
+	_, _ = fmt.Fprintf(env.out, "  - Register your first agent tool:\n")
+	_, _ = fmt.Fprintf(env.out, "      sudo pipelock contain add-tool <name> --target /path/to/<tool>\n")
+	_, _ = fmt.Fprintf(env.out, "    Then wrap the agent with:\n")
+	_, _ = fmt.Fprintf(env.out, "      plk-<name> [args...]\n")
+
+	// 3. Evidence / receipts location.
+	_, _ = fmt.Fprintf(env.out, "  - Evidence and receipts are written to:\n")
+	_, _ = fmt.Fprintf(env.out, "      logs:     %s\n", env.logsDir())
+	_, _ = fmt.Fprintf(env.out, "      receipts: %s\n", env.recorderDir())
+}
+
+// checkSudoSecurePath runs `sudo -V` and checks whether /usr/local/bin is in
+// the effective secure_path. Returns a warning string if missing, or "" if
+// present or undetectable. Never errors fatally -- this is advisory guidance,
+// not a gate.
+func checkSudoSecurePath(env *installEnv) string {
+	// Try `sudo -V 2>&1` and look for "Value to override ... secure_path"
+	// or the "Default value for ... secure_path" line.
+	out, code, err := env.runCmd(context.Background(), "sudo", "-V")
+	if err != nil || code != 0 {
+		return ""
+	}
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.Contains(trimmed, "secure_path") {
+			continue
+		}
+		// The line looks like:
+		//   Value to override user supplied: secure_path = /sbin:/bin:/usr/sbin:/usr/bin
+		if idx := strings.Index(trimmed, "="); idx >= 0 {
+			pathVal := strings.TrimSpace(trimmed[idx+1:])
+			if containsPathEntry(pathVal, "/usr/local/bin") {
+				return ""
+			}
+			return fmt.Sprintf("  - WARNING: sudo secure_path does not include /usr/local/bin.\n"+
+				"    `sudo pipelock ...` may report 'command not found'.\n"+
+				"    Fix: add /usr/local/bin to secure_path in /etc/sudoers, or create\n"+
+				"    /etc/sudoers.d/99-local-bin with:\n"+
+				"      Defaults secure_path=\"%s:/usr/local/bin\"", pathVal)
+		}
+	}
+	return ""
+}
+
+// containsPathEntry checks whether a colon-separated PATH string contains
+// the given directory entry.
+func containsPathEntry(pathList, entry string) bool {
+	for _, p := range filepath.SplitList(pathList) {
+		if p == entry {
+			return true
+		}
+	}
+	return false
 }
 
 func validateContainUsername(label, name string) error {
@@ -1189,6 +1261,15 @@ func stepInstallNFTRules() step {
 		name: "install-nft-rules",
 		desc: "write + load /etc/nftables.d/50-pipelock-containment.nft + persist via nftables.service",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			// Check nft version before generating rules. The containment
+			// ruleset requires "meta skuid" (available since nftables 0.4)
+			// and "counter log prefix ... drop" inline syntax (0.6+). Hosts
+			// with nft < 0.5 (rare but seen on AL2-era images) fail at load
+			// time with a cryptic parse error. Detect early and fail with a
+			// clear minimum-version message.
+			if err := checkNFTVersion(ctx, env); err != nil {
+				return false, err
+			}
 			operatorUID, err := operatorUIDFromEnv(env)
 			if err != nil {
 				return false, err
@@ -1419,6 +1500,75 @@ func (e *installEnv) nftTableOrDefault() string {
 
 func (e *installEnv) nftChainOrDefault() string {
 	return defaultNFTChain
+}
+
+// minNFTMajor and minNFTMinor define the minimum nftables version that
+// supports all syntax used by the containment ruleset: "meta skuid" (0.4+),
+// "counter log prefix ... drop" inline (0.6+), and "table inet" (0.2+).
+// We require 0.6.0 as the floor.
+const (
+	minNFTMajor = 0
+	minNFTMinor = 6
+)
+
+// checkNFTVersion runs `nft -v` and parses the version. Returns nil when the
+// version is sufficient, or a clear error naming the minimum when it is not.
+// Unparseable output is treated as a warning-only pass (the subsequent
+// `nft -c -f` validation will catch truly incompatible syntax at load time).
+func checkNFTVersion(ctx context.Context, env *installEnv) error {
+	out, code, err := env.runCmd(ctx, "nft", "-v")
+	if err != nil || code != 0 {
+		// nft exists (passed preflight) but -v failed -- unusual. Let the
+		// later nft -c -f validation catch real issues.
+		return nil
+	}
+	major, minor, ok := parseNFTVersion(out)
+	if !ok {
+		// Unparseable version string. Don't block -- the syntax-check step
+		// (`nft -c -f`) will catch incompatible syntax at load time.
+		return nil
+	}
+	if major > minNFTMajor || (major == minNFTMajor && minor >= minNFTMinor) {
+		return nil
+	}
+	return fmt.Errorf(
+		"nft version %d.%d is too old; the containment ruleset requires nftables >= %d.%d "+
+			"(meta skuid + inline counter/log/drop). "+
+			"Upgrade nftables: on RHEL/AL2 `yum install nftables`, on Debian/Ubuntu `apt install nftables`",
+		major, minor, minNFTMajor, minNFTMinor)
+}
+
+// parseNFTVersion extracts the major.minor version from the output of
+// `nft -v`. The output format is typically:
+//
+//	nftables v0.9.3 (Topsy)
+//	nftables v1.0.6 (Lester Gooch #5)
+//
+// Returns (major, minor, true) on success.
+func parseNFTVersion(output string) (major, minor int, ok bool) {
+	// Look for the "v" prefix followed by digits.
+	idx := strings.Index(output, "v")
+	if idx < 0 || idx+1 >= len(output) {
+		return 0, 0, false
+	}
+	rest := output[idx+1:]
+	// Trim at the first space or paren.
+	for i, c := range rest {
+		if c == ' ' || c == '(' || c == '\n' {
+			rest = rest[:i]
+			break
+		}
+	}
+	parts := strings.SplitN(rest, ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	maj, err1 := strconv.Atoi(parts[0])
+	mino, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return maj, mino, true
 }
 
 // operatorUIDFromEnv returns the numeric UID for the operator-side user.

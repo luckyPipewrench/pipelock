@@ -278,7 +278,7 @@ func doctorVerifiedLicense(cfg *config.Config) (license.License, bool, error) {
 	}
 	var crl *license.CRL
 	if cfg.LicenseCRLFile != "" {
-		loaded, crlErr := license.LoadAndVerifyCRL(cfg.LicenseCRLFile, pubKey, time.Now())
+		loaded, crlErr := license.LoadAndVerifyCRLMonotonic(cfg.LicenseCRLFile, pubKey, time.Now())
 		if crlErr != nil {
 			return license.License{}, true, crlErr
 		}

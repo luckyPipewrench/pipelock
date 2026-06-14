@@ -325,7 +325,7 @@ func loadLicenseCRL(c *config.Config, pubKey ed25519.PublicKey) (*license.CRL, b
 	if c.LicenseCRLFile == "" {
 		return nil, false, nil
 	}
-	crl, err := license.LoadAndVerifyCRL(c.LicenseCRLFile, pubKey, time.Now())
+	crl, err := license.LoadAndVerifyCRLMonotonic(c.LicenseCRLFile, pubKey, time.Now())
 	if err != nil {
 		return nil, true, err
 	}

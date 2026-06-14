@@ -108,9 +108,9 @@ func TestCRLRollbackRejection(t *testing.T) {
 		if failClosed {
 			t.Fatal("gen 0 (legacy) must not fail closed")
 		}
-		gen, found, err := readCRLHighWater(f.crlPath)
+		gen, found, err := license.ReadCRLHighWater(f.crlPath)
 		if err != nil {
-			t.Fatalf("readCRLHighWater: %v", err)
+			t.Fatalf("ReadCRLHighWater: %v", err)
 		}
 		if !found || gen != 0 {
 			t.Fatalf("high-water = (%d, %v), want (0, true)", gen, found)
@@ -123,7 +123,7 @@ func TestCRLRollbackRejection(t *testing.T) {
 		if failClosed, err := mustCheck(t, f.newServer(t)); err != nil || failClosed {
 			t.Fatalf("gen 5 should be accepted: failClosed=%v err=%v", failClosed, err)
 		}
-		gen, _, err := readCRLHighWater(f.crlPath)
+		gen, _, err := license.ReadCRLHighWater(f.crlPath)
 		if err != nil || gen != 5 {
 			t.Fatalf("high-water = %d (err %v), want 5", gen, err)
 		}
@@ -132,7 +132,7 @@ func TestCRLRollbackRejection(t *testing.T) {
 		if failClosed, err := mustCheck(t, f.newServer(t)); err != nil || failClosed {
 			t.Fatalf("gen 9 should be accepted: failClosed=%v err=%v", failClosed, err)
 		}
-		gen, _, _ = readCRLHighWater(f.crlPath)
+		gen, _, _ = license.ReadCRLHighWater(f.crlPath)
 		if gen != 9 {
 			t.Fatalf("high-water = %d, want 9", gen)
 		}
@@ -148,7 +148,7 @@ func TestCRLRollbackRejection(t *testing.T) {
 		if failClosed, err := mustCheck(t, f.newServer(t)); err != nil || failClosed {
 			t.Fatalf("equal gen 7 reload should be accepted: failClosed=%v err=%v", failClosed, err)
 		}
-		gen, _, _ := readCRLHighWater(f.crlPath)
+		gen, _, _ := license.ReadCRLHighWater(f.crlPath)
 		if gen != 7 {
 			t.Fatalf("high-water = %d, want 7 (unchanged)", gen)
 		}
@@ -173,7 +173,7 @@ func TestCRLRollbackRejection(t *testing.T) {
 			t.Fatalf("error = %q, want rollback-rejected message", err)
 		}
 		// The high-water must NOT have regressed.
-		gen, _, _ := readCRLHighWater(f.crlPath)
+		gen, _, _ := license.ReadCRLHighWater(f.crlPath)
 		if gen != 10 {
 			t.Fatalf("high-water regressed to %d, want 10", gen)
 		}
@@ -239,7 +239,7 @@ func TestCRLRollbackSidecarDeletionResidual(t *testing.T) {
 		t.Fatalf("gen 50 should be accepted: failClosed=%v err=%v", failClosed, err)
 	}
 	// Attacker deletes the sidecar and rolls the CRL back.
-	if err := os.Remove(crlHighWaterPath(f.crlPath)); err != nil {
+	if err := os.Remove(license.CRLHighWaterPath(f.crlPath)); err != nil {
 		t.Fatal(err)
 	}
 	f.writeCRL(t, 2)
@@ -275,7 +275,7 @@ func TestCRLRollbackConcurrentAcceptNoCorruption(t *testing.T) {
 	for i := 0; i < workers; i++ {
 		<-done
 	}
-	gen, found, err := readCRLHighWater(f.crlPath)
+	gen, found, err := license.ReadCRLHighWater(f.crlPath)
 	if err != nil || !found || gen != 20 {
 		t.Fatalf("after concurrent accepts high-water = (%d, %v, %v), want (20, true, nil)", gen, found, err)
 	}
@@ -288,7 +288,7 @@ func TestCRLHighWaterCorruptFailsClosed(t *testing.T) {
 	f := newCRLRollbackFixture(t)
 	f.writeCRL(t, 4)
 	// Corrupt the high-water sidecar: it EXISTS but is not valid JSON.
-	if err := os.WriteFile(crlHighWaterPath(f.crlPath), []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(license.CRLHighWaterPath(f.crlPath), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	failClosed, err := mustCheck(t, f.newServer(t))
@@ -307,22 +307,22 @@ func TestCRLHighWaterStore(t *testing.T) {
 	crlFile := filepath.Join(dir, "crl.json")
 
 	// Absent: (0, false, nil) — first run, not an error.
-	gen, found, err := readCRLHighWater(crlFile)
+	gen, found, err := license.ReadCRLHighWater(crlFile)
 	if err != nil || found || gen != 0 {
 		t.Fatalf("absent high-water = (%d, %v, %v), want (0, false, nil)", gen, found, err)
 	}
 
 	// Write then read back.
-	if err := writeCRLHighWater(crlFile, 17); err != nil {
-		t.Fatalf("writeCRLHighWater: %v", err)
+	if _, err := license.AdvanceCRLHighWater(crlFile, 17); err != nil {
+		t.Fatalf("AdvanceCRLHighWater: %v", err)
 	}
-	gen, found, err = readCRLHighWater(crlFile)
+	gen, found, err = license.ReadCRLHighWater(crlFile)
 	if err != nil || !found || gen != 17 {
 		t.Fatalf("read-back = (%d, %v, %v), want (17, true, nil)", gen, found, err)
 	}
 
 	// Mode is 0o600 (no group/other access).
-	info, err := os.Stat(crlHighWaterPath(crlFile))
+	info, err := os.Stat(license.CRLHighWaterPath(crlFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,20 +331,34 @@ func TestCRLHighWaterStore(t *testing.T) {
 	}
 
 	// Oversized existing file fails closed.
-	big := make([]byte, crlHighWaterMaxSize+1)
-	if err := os.WriteFile(crlHighWaterPath(crlFile), big, 0o600); err != nil {
+	big := make([]byte, 4*1024+1)
+	if err := os.WriteFile(license.CRLHighWaterPath(crlFile), big, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := readCRLHighWater(crlFile); err == nil {
+	if _, _, err := license.ReadCRLHighWater(crlFile); err == nil {
 		t.Fatal("oversized high-water must error")
 	}
 
 	// A directory at the high-water path (not a regular file) fails closed.
 	dirCRL := filepath.Join(dir, "dircrl.json")
-	if err := os.Mkdir(crlHighWaterPath(dirCRL), 0o750); err != nil {
+	if err := os.Mkdir(license.CRLHighWaterPath(dirCRL), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := readCRLHighWater(dirCRL); err == nil {
+	if _, _, err := license.ReadCRLHighWater(dirCRL); err == nil {
 		t.Fatal("non-regular high-water must error")
+	}
+}
+
+func TestCRLHighWaterAdvanceNeverRegresses(t *testing.T) {
+	crlFile := filepath.Join(t.TempDir(), "crl.json")
+	if _, err := license.AdvanceCRLHighWater(crlFile, 20); err != nil {
+		t.Fatalf("advance to 20: %v", err)
+	}
+	if _, err := license.AdvanceCRLHighWater(crlFile, 10); err == nil {
+		t.Fatal("advance to lower generation must fail closed")
+	}
+	gen, found, err := license.ReadCRLHighWater(crlFile)
+	if err != nil || !found || gen != 20 {
+		t.Fatalf("high-water after lower advance = (%d, %v, %v), want (20, true, nil)", gen, found, err)
 	}
 }

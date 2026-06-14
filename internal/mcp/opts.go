@@ -140,6 +140,28 @@ type MCPProxyOpts struct {
 	AddressProtectionAgent   string
 	AddressProtectionAgentFn func() string
 
+	// Suppress holds the operator's response suppress rules (config Suppress
+	// list). The stdio response path consults these via config.IsSuppressed so
+	// a response-scan false positive can be remediated for one server without a
+	// global change, reaching parity with the SSE/HTTP response paths.
+	// Nil/empty preserves no-suppression behavior.
+	Suppress []config.SuppressEntry
+
+	// ServerName is a stable per-server identity used to build the suppress
+	// Target ("mcp://<ServerName>/response") that path-scoped suppress entries
+	// match against. Empty disables target-scoped response suppression. Set
+	// from `pipelock mcp proxy --server-name`.
+	ServerName string
+
+	// AdaptiveResetFile, when set, is a local operator control file: when it
+	// appears (regular file, mode 0600, owned by the proxy user) the stdio
+	// proxy clears this session's adaptive-enforcement escalation on the next
+	// message and removes the file. It lets an airlocked invocation session
+	// recover without a restart (invocation sessions are otherwise
+	// un-resettable). Empty disables the reset path. Set from
+	// `pipelock mcp proxy --adaptive-reset-file`.
+	AdaptiveResetFile string
+
 	// Transport identifies the MCP transport for capture records.
 	// Set by each proxy surface, for example "mcp_stdio", "mcp_http_upstream",
 	// "mcp_http_listener", or "mcp_ws".
@@ -186,6 +208,25 @@ type MCPProxyOpts struct {
 	// File sentry (stdio proxy only)
 	Lineage      filesentry.Lineage
 	OnChildReady func() // called after child process starts
+}
+
+// responseTarget returns the suppress-rule target for this server's MCP
+// responses ("mcp://<ServerName>/response"), or "" when no stable server
+// name is set (which disables target-scoped response suppression).
+func (o MCPProxyOpts) responseTarget() string {
+	if o.ServerName == "" {
+		return ""
+	}
+	return "mcp://" + o.ServerName + "/response"
+}
+
+// responseScanOptions builds the per-server suppression context passed into
+// the stdio response scan (ScanResponseOpts).
+func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
+	return ResponseScanOptions{
+		Target:   o.responseTarget(),
+		Suppress: o.Suppress,
+	}
 }
 
 // captureObserver returns the observer, defaulting to NopObserver when nil.

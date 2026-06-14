@@ -137,6 +137,10 @@ Examples:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (default: built-in defaults)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
 
+	// `explain mcp-response` explains an MCP response block and names the
+	// per-server suppress knob (the stdio MCP equivalent of a URL verdict).
+	cmd.AddCommand(explainMCPResponseCmd())
+
 	return cmd
 }
 

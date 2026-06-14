@@ -1458,21 +1458,19 @@ func TestHealthIncludesForwardProxy(t *testing.T) {
 	}
 }
 
-// startProxyOnFreePort starts the proxy via Start() on a random port and returns
-// the listening address. Uses the production code path (mux wrapper, WriteTimeout).
+// startProxyOnFreePort starts the proxy via the production server path on a
+// random port and returns the listening address.
 func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
 	t.Helper()
 
-	// Find a free port
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
-	_ = ln.Close()
 
-	cfg.FetchProxy.Listen = addr
+	cfg.FetchProxy.Listen = "127.0.0.1:0"
 	cfg.FetchProxy.TimeoutSeconds = 5
 
 	logger := audit.NewNop()
@@ -1486,7 +1484,7 @@ func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- p.Start(ctx)
+		errCh <- p.start(ctx, ln)
 	}()
 
 	// Wait for server to be ready, draining errCh to detect startup failures.

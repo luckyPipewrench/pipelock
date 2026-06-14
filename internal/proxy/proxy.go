@@ -3014,6 +3014,10 @@ func (p *Proxy) Handler() http.Handler {
 // Start starts the fetch proxy HTTP server. It blocks until the context
 // is cancelled or the server encounters a fatal error.
 func (p *Proxy) Start(ctx context.Context) error {
+	return p.start(ctx, nil)
+}
+
+func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 	cfg := p.cfgPtr.Load()
 
 	if p.wd != nil {
@@ -3037,8 +3041,13 @@ func (p *Proxy) Start(ctx context.Context) error {
 		writeTimeout = 0
 	}
 
+	listenAddr := cfg.FetchProxy.Listen
+	if ln != nil {
+		listenAddr = ln.Addr().String()
+	}
+
 	p.server = &http.Server{
-		Addr:    cfg.FetchProxy.Listen,
+		Addr:    listenAddr,
 		Handler: handler,
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
@@ -3068,7 +3077,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 				}
 			}
 			if err := p.server.Shutdown(shutdownCtx); err != nil {
-				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", cfg.FetchProxy.Listen), err)
+				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", listenAddr), err)
 			}
 			p.Close()
 		case <-done:
@@ -3078,19 +3087,24 @@ func (p *Proxy) Start(ctx context.Context) error {
 	// Warn if listen address exposes metrics/stats to the network.
 	// Skip when metrics_listen is set - metrics are on a separate port.
 	if cfg.MetricsListen == "" {
-		if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
+		if host, _, splitErr := net.SplitHostPort(listenAddr); splitErr == nil {
 			ip := net.ParseIP(host)
 			if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
-				p.logger.LogAnomaly(audit.NewResourceLogContext("STARTUP", cfg.FetchProxy.Listen), "",
+				p.logger.LogAnomaly(audit.NewResourceLogContext("STARTUP", listenAddr), "",
 					"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
 					0.5)
 			}
 		}
 	}
 
-	p.logger.LogStartup(cfg.FetchProxy.Listen, cfg.Mode, Version, cfg.Hash())
+	p.logger.LogStartup(listenAddr, cfg.Mode, Version, cfg.Hash())
 
-	err := p.server.ListenAndServe()
+	var err error
+	if ln != nil {
+		err = p.server.Serve(ln)
+	} else {
+		err = p.server.ListenAndServe()
+	}
 	close(done) // unblock shutdown goroutine if server failed immediately
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

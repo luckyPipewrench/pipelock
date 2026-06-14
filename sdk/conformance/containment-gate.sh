@@ -65,6 +65,7 @@ echo "==> [2/2] Proving the must-fail property: a leaked egress marked 'pass' MU
 # against the mutated corpus means a leaked egress could be marked pass -> the
 # gate is not real -> we fail loud.
 BACKUP="$(mktemp)"
+MUT_OUT="$(mktemp)"
 RESTORED=0
 restore_expect() {
   # Only restore from a NON-EMPTY backup. mktemp creates an empty file; if the
@@ -72,9 +73,12 @@ restore_expect() {
   # would clobber the real fixture with nothing. An empty backup also means the
   # in-place mutation never happened (we fatal before mutating), so the fixture
   # on disk is already the untouched original — skipping restore is correct.
-  if [ "$RESTORED" -eq 0 ] && [ -s "$BACKUP" ]; then
-    cp "$BACKUP" "$LEAKY_EXPECT" 2>/dev/null || true
+  if [ "$RESTORED" -eq 0 ]; then
+    if [ -s "$BACKUP" ]; then
+      cp "$BACKUP" "$LEAKY_EXPECT" 2>/dev/null || true
+    fi
     rm -f "$BACKUP" 2>/dev/null || true
+    rm -f "$MUT_OUT" 2>/dev/null || true
     RESTORED=1
   fi
 }
@@ -99,16 +103,27 @@ JSON
 # independently of .expect.json); this mutation step must isolate the corpus
 # walker's expect-comparison logic. Restore immediately after, regardless of outcome.
 set +e
-( cd "$REPO_ROOT" && go test -count=1 -run '^TestContainmentConformance$' "$TEST_PKG" >/dev/null 2>&1 )
+( cd "$REPO_ROOT" && go test -count=1 -run '^TestContainmentConformance$' "$TEST_PKG" >"$MUT_OUT" 2>&1 )
 MUT_RC=$?
 set -e
-restore_expect
 
 if [ "$MUT_RC" -eq 0 ]; then
+  restore_expect
   echo "FAIL: mutating leaky-egress to expect 'pass' did NOT trip the conformance test." >&2
   echo "      The must-fail property is broken — the egress-denied gate is not real." >&2
   exit 1
 fi
+
+if ! grep -Eq 'leaky-egress: (exit code = 1, want 0|probe 8 status = "fail", want "pass")' "$MUT_OUT"; then
+  echo "FAIL: mutated conformance test failed, but not for the expected leaky-egress mismatch." >&2
+  echo "      Refusing to treat an unrelated compile/tooling failure as proof of the must-fail property." >&2
+  echo "---- mutated test output ----" >&2
+  cat "$MUT_OUT" >&2
+  restore_expect
+  exit 1
+fi
+
+restore_expect
 echo "    mutation correctly tripped the test: the must-fail property holds"
 
 echo "----"

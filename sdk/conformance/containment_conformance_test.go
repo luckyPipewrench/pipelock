@@ -21,6 +21,7 @@ package conformance_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,11 @@ import (
 )
 
 const containmentFixtureDir = "testdata/containment"
+
+var expectedContainmentProbes = map[int]string{
+	8: "cc_agent_egress_denied",
+	9: "operator_egress_reachable",
+}
 
 // containmentRunRule is one canned command-match rule from a *.probe.json
 // fixture: when the joined command line contains every Match substring, the
@@ -103,23 +109,112 @@ func loadContainmentExpect(t *testing.T, path string) containmentExpectFixture {
 	if len(fx.Probes) == 0 {
 		t.Fatalf("expect fixture %s lists no probes", path)
 	}
+	if err := validateContainmentExpect(fx); err != nil {
+		t.Fatalf("invalid expect fixture %s: %v", path, err)
+	}
 	return fx
 }
 
-// cannedRunner builds the injected command runner from a fixture's run rules.
-// It returns a non-nil error when no rule matches so a fixture that forgets a
-// rule fails loud (the probe surfaces that as skip, which the gate treats as a
-// non-pass) rather than silently passing.
-func cannedRunner(fx containmentProbeFixture) contain.ConformanceRunCommand {
-	return func(_ context.Context, name string, args ...string) (string, int, error) {
-		joined := name + " " + strings.Join(args, " ")
-		for _, rule := range fx.Runs {
-			if allSubstringsPresent(joined, rule.Match) {
-				return rule.Stdout, rule.ExitCode, nil
-			}
-		}
-		return "", -1, errNoMatchingRule(joined)
+func validateContainmentExpect(fx containmentExpectFixture) error {
+	switch fx.ExitCode {
+	case contain.ConformanceExitOK, contain.ConformanceExitFail, contain.ConformanceExitSkip:
+	default:
+		return fmt.Errorf("exit_code = %d, want one of 0, 1, 2", fx.ExitCode)
 	}
+	if len(fx.Probes) != len(expectedContainmentProbes) {
+		return fmt.Errorf("lists %d probes, want exactly %d", len(fx.Probes), len(expectedContainmentProbes))
+	}
+	seen := make(map[int]struct{}, len(fx.Probes))
+	for i, p := range fx.Probes {
+		wantName, ok := expectedContainmentProbes[p.Probe]
+		if !ok {
+			return fmt.Errorf("probes[%d] has unexpected probe %d", i, p.Probe)
+		}
+		if _, ok := seen[p.Probe]; ok {
+			return fmt.Errorf("probes[%d] duplicates probe %d", i, p.Probe)
+		}
+		seen[p.Probe] = struct{}{}
+		if p.Name != wantName {
+			return fmt.Errorf("probes[%d] name = %q, want %q", i, p.Name, wantName)
+		}
+		if !isContainmentStatus(p.Status) {
+			return fmt.Errorf("probes[%d] status = %q, want pass/fail/skip", i, p.Status)
+		}
+	}
+	for probe := range expectedContainmentProbes {
+		if _, ok := seen[probe]; !ok {
+			return fmt.Errorf("missing expected probe %d", probe)
+		}
+	}
+	return nil
+}
+
+func isContainmentStatus(status string) bool {
+	switch status {
+	case contain.ConformanceStatusPass, contain.ConformanceStatusFail, contain.ConformanceStatusSkip:
+		return true
+	default:
+		return false
+	}
+}
+
+type auditedCannedRunner struct {
+	rules []containmentRunRule
+	calls []ruleMatchAudit
+}
+
+type ruleMatchAudit struct {
+	cmdline string
+	matches []int
+}
+
+// newAuditedCannedRunner builds the injected command runner from a fixture's
+// run rules and records which rules matched each command. The harness later
+// rejects zero-match, multi-match, and unused-rule fixtures so malformed
+// fixtures cannot be blessed by a matching .expect.json.
+func newAuditedCannedRunner(fx containmentProbeFixture) *auditedCannedRunner {
+	return &auditedCannedRunner{rules: fx.Runs}
+}
+
+func (r *auditedCannedRunner) Run(_ context.Context, name string, args ...string) (string, int, error) {
+	joined := name + " " + strings.Join(args, " ")
+	var matches []int
+	for i, rule := range r.rules {
+		if allSubstringsPresent(joined, rule.Match) {
+			matches = append(matches, i)
+		}
+	}
+	r.calls = append(r.calls, ruleMatchAudit{cmdline: joined, matches: append([]int(nil), matches...)})
+
+	switch len(matches) {
+	case 0:
+		return "", -1, errNoMatchingRule(joined)
+	case 1:
+		rule := r.rules[matches[0]]
+		return rule.Stdout, rule.ExitCode, nil
+	default:
+		return "", -1, errAmbiguousMatchingRule(joined, matches)
+	}
+}
+
+func (r *auditedCannedRunner) validate() error {
+	used := make([]bool, len(r.rules))
+	for _, call := range r.calls {
+		switch len(call.matches) {
+		case 0:
+			return errNoMatchingRule(call.cmdline)
+		case 1:
+			used[call.matches[0]] = true
+		default:
+			return errAmbiguousMatchingRule(call.cmdline, call.matches)
+		}
+	}
+	for i, ok := range used {
+		if !ok {
+			return fmt.Errorf("unused canned rule at runs[%d] with match %q", i, r.rules[i].Match)
+		}
+	}
+	return nil
 }
 
 func allSubstringsPresent(haystack string, needles []string) bool {
@@ -139,19 +234,36 @@ func (e noMatchingRuleError) Error() string {
 
 func errNoMatchingRule(cmdline string) error { return noMatchingRuleError(cmdline) }
 
+type ambiguousMatchingRuleError struct {
+	cmdline string
+	matches []int
+}
+
+func (e ambiguousMatchingRuleError) Error() string {
+	return fmt.Sprintf("ambiguous canned rules matched command line %q: run indexes %v", e.cmdline, e.matches)
+}
+
+func errAmbiguousMatchingRule(cmdline string, matches []int) error {
+	return ambiguousMatchingRuleError{cmdline: cmdline, matches: append([]int(nil), matches...)}
+}
+
 // runContainmentFixture loads a fixture pair, drives the containment probes
 // through the exported seam, and returns the results plus exit code.
 func runContainmentFixture(t *testing.T, name string) ([]contain.ConformanceProbeResult, int) {
 	t.Helper()
 	probeFx := loadContainmentProbe(t, filepath.Join(containmentFixtureDir, name+".probe.json"))
+	runner := newAuditedCannedRunner(probeFx)
 	env := contain.ConformanceEnv{
-		RunCommand:   cannedRunner(probeFx),
+		RunCommand:   runner.Run,
 		AgentUser:    probeFx.AgentUser,
 		OperatorUser: probeFx.OperatorUser,
 	}
 	results, exit, err := contain.RunContainmentConformance(context.Background(), env)
 	if err != nil {
 		t.Fatalf("RunContainmentConformance(%s): unexpected error: %v", name, err)
+	}
+	if err := runner.validate(); err != nil {
+		t.Fatalf("%s: invalid canned command-runner fixture: %v", name, err)
 	}
 	return results, exit
 }
@@ -269,6 +381,129 @@ func TestContainmentConformance_NilRunnerFailsClosed(t *testing.T) {
 	}
 }
 
+func TestContainmentConformance_InvalidExpectFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		expect  containmentExpectFixture
+		wantErr string
+	}{
+		{
+			name: "duplicate probe omits probe nine",
+			expect: containmentExpectFixture{
+				ExitCode: contain.ConformanceExitOK,
+				Probes: []containmentExpectProbe{
+					{Probe: 8, Name: "cc_agent_egress_denied", Status: "pass"},
+					{Probe: 8, Name: "cc_agent_egress_denied", Status: "pass"},
+				},
+			},
+			wantErr: "duplicates probe 8",
+		},
+		{
+			name: "unknown status",
+			expect: containmentExpectFixture{
+				ExitCode: contain.ConformanceExitOK,
+				Probes: []containmentExpectProbe{
+					{Probe: 8, Name: "cc_agent_egress_denied", Status: "pass"},
+					{Probe: 9, Name: "operator_egress_reachable", Status: "maybe"},
+				},
+			},
+			wantErr: "want pass/fail/skip",
+		},
+		{
+			name: "unexpected exit code",
+			expect: containmentExpectFixture{
+				ExitCode: 99,
+				Probes: []containmentExpectProbe{
+					{Probe: 8, Name: "cc_agent_egress_denied", Status: "pass"},
+					{Probe: 9, Name: "operator_egress_reachable", Status: "pass"},
+				},
+			},
+			wantErr: "want one of 0, 1, 2",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateContainmentExpect(tc.expect)
+			if err == nil {
+				t.Fatalf("expected invalid expect fixture error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("invalid expect fixture error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestContainmentConformance_InvalidRunRulesFailClosed(t *testing.T) {
+	t.Parallel()
+
+	baseRuns := []containmentRunRule{
+		{Match: []string{"sudo", "pipelock-agent", "/usr/bin/curl"}, Stdout: "200", ExitCode: 0},
+		{Match: []string{"sudo", "operator", "/usr/bin/curl"}, Stdout: "200", ExitCode: 0},
+	}
+	tests := []struct {
+		name    string
+		runs    []containmentRunRule
+		wantErr string
+	}{
+		{
+			name: "missing operator rule",
+			runs: []containmentRunRule{
+				baseRuns[0],
+			},
+			wantErr: "no canned rule matched command line",
+		},
+		{
+			name: "ambiguous duplicate rule",
+			runs: []containmentRunRule{
+				baseRuns[0],
+				baseRuns[0],
+				baseRuns[1],
+			},
+			wantErr: "ambiguous canned rules matched command line",
+		},
+		{
+			name: "unused stale rule",
+			runs: []containmentRunRule{
+				baseRuns[0],
+				baseRuns[1],
+				{Match: []string{"never-used-command"}, Stdout: "200", ExitCode: 0},
+			},
+			wantErr: "unused canned rule",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runner := newAuditedCannedRunner(containmentProbeFixture{
+				AgentUser:    "pipelock-agent",
+				OperatorUser: "operator",
+				Runs:         tc.runs,
+			})
+			_, _, err := contain.RunContainmentConformance(context.Background(), contain.ConformanceEnv{
+				RunCommand:   runner.Run,
+				AgentUser:    "pipelock-agent",
+				OperatorUser: "operator",
+			})
+			if err != nil {
+				t.Fatalf("RunContainmentConformance returned unexpected setup error: %v", err)
+			}
+			err = runner.validate()
+			if err == nil {
+				t.Fatalf("expected invalid rule set error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("invalid rule set error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
 // discoverContainmentFixtures lists fixture base names (those with both a
 // .probe.json and a .expect.json) under the fixture directory.
 func discoverContainmentFixtures(t *testing.T) []string {
@@ -278,17 +513,29 @@ func discoverContainmentFixtures(t *testing.T) []string {
 		t.Fatalf("read fixture dir %s: %v", containmentFixtureDir, err)
 	}
 	var names []string
+	probes := map[string]struct{}{}
+	expects := map[string]struct{}{}
 	for _, e := range entries {
 		n := e.Name()
-		if !strings.HasSuffix(n, ".probe.json") {
+		switch {
+		case strings.HasSuffix(n, ".probe.json"):
+			base := strings.TrimSuffix(n, ".probe.json")
+			probes[base] = struct{}{}
+			expectPath := filepath.Join(containmentFixtureDir, base+".expect.json")
+			if _, err := os.Stat(expectPath); err != nil {
+				t.Fatalf("fixture %s has no matching .expect.json (%s): %v", base, expectPath, err)
+			}
+			names = append(names, base)
+		case strings.HasSuffix(n, ".expect.json"):
+			expects[strings.TrimSuffix(n, ".expect.json")] = struct{}{}
+		default:
 			continue
 		}
-		base := strings.TrimSuffix(n, ".probe.json")
-		expectPath := filepath.Join(containmentFixtureDir, base+".expect.json")
-		if _, err := os.Stat(expectPath); err != nil {
-			t.Fatalf("fixture %s has no matching .expect.json (%s): %v", base, expectPath, err)
+	}
+	for base := range expects {
+		if _, ok := probes[base]; !ok {
+			t.Fatalf("expect fixture %s.expect.json has no matching .probe.json", base)
 		}
-		names = append(names, base)
 	}
 	return names
 }

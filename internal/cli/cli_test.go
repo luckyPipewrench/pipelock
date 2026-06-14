@@ -803,6 +803,8 @@ func TestHealthcheckCmd_RegisteredInHelp(t *testing.T) {
 	}
 }
 
+// TestRunCmd_Integration starts the proxy from a config file and verifies the
+// --mode flag overrides the file's mode (balanced -> strict) in /health.
 func TestRunCmd_Integration(t *testing.T) {
 	testport.WithRetry(t, 1, func(addrs []string) error {
 		addr := addrs[0]
@@ -957,6 +959,8 @@ func TestRunCmd_NonexistentConfig(t *testing.T) {
 	}
 }
 
+// TestRunCmd_InvalidMode verifies an invalid --mode override is rejected with
+// an "invalid config" error before the server starts.
 func TestRunCmd_InvalidMode(t *testing.T) {
 	// Create a valid config file first, then override mode with an invalid one.
 	dir := t.TempDir()
@@ -1641,6 +1645,8 @@ forward_proxy:
 	})
 }
 
+// TestRunCmd_ReloadRejectsForwardProxyEnable verifies that enabling forward_proxy
+// via hot reload is rejected and the proxy keeps it disabled.
 func TestRunCmd_ReloadRejectsForwardProxyEnable(t *testing.T) {
 	testport.WithRetry(t, 1, func(addrs []string) error {
 		addr := addrs[0]
@@ -2123,6 +2129,8 @@ kill_switch:
 	})
 }
 
+// TestGenerateCmd_WriteError verifies "generate config" surfaces a wrapped
+// "writing config file" error when the output path cannot be written.
 func TestGenerateCmd_WriteError(t *testing.T) {
 	// Point -o at an existing directory so os.WriteFile fails on every
 	// platform. This exercises the write-error path portably, without
@@ -2159,6 +2167,9 @@ func TestDemoCmd_Basic(t *testing.T) {
 	}
 }
 
+// TestGenerateDockerComposeCmd_WriteError verifies "generate docker-compose"
+// surfaces a wrapped "writing compose file" error when the output path cannot
+// be written.
 func TestGenerateDockerComposeCmd_WriteError(t *testing.T) {
 	// Point -o at an existing directory so os.WriteFile fails on every
 	// platform. This exercises the write-error path portably, without

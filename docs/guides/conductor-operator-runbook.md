@@ -248,6 +248,18 @@ The server authorizes the request with the publisher token file configured on `c
 
 This runbook does not include a one-line policy signing helper because none exists in the verified CLI help. Use the signed bundle producer in your operator workflow, then publish through the API above.
 
+### Publish conflicts (HTTP 409)
+
+A forward publish can be rejected with `409 Conflict` for three operationally distinct reasons. The control plane carries a machine-readable `code` in the JSON error body so the publisher can tell them apart instead of treating every conflict as a stale version:
+
+| `code` | Meaning | What to do |
+| --- | --- | --- |
+| `rollback_attempt` | The supplied `version` is below the current (rolled-back) stream head. A publish cannot roll back. | Use the rollback authorization flow, not a publish. |
+| `version_below_stream_max` | The `version` is not greater than the stream's **highest-ever** published version. After a rollback the head sits at `vN` while `vN+1..vM` still exist, so a forward publish needs a version greater than `M`, not merely greater than the current head `N`. | Publish a `version` above the stream **max**. Query the stream head/max version through your Conductor status workflow before retrying. |
+| `previous_hash_mismatch` | `previous_bundle_hash` does not match the current stream head hash (typically a stale or copy-pasted hash). | Set `previous_bundle_hash` to the hash printed by the most recent successful publish for this stream. |
+
+The `pipelock conductor publish` CLI maps each `code` to a distinct, errors-comparable error with an actionable message, so an operator recovering from a rollback is told to publish above the stream max rather than seeing a misleading "version is stale".
+
 ## Signed Audit Batch And Offline Verification
 
 Bootstrap proves the signed audit path end to end unless `--skip-proof` is set:

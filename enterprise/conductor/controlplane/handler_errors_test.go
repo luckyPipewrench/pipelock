@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -141,6 +142,63 @@ func TestHandlerMapsStoreErrors(t *testing.T) {
 			}
 			if strings.Contains(w.Body.String(), internalErr.Error()) {
 				t.Fatalf("body leaked internal error: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestHandlerPublishConflictCarriesDistinctCode proves the publish endpoint
+// keeps every conflict at HTTP 409 (status semantics unchanged) but attaches a
+// DISTINCT machine-readable "code" so the CLI can de-conflate the three cases.
+// The store error shapes here mirror exactly what authorizeForwardLocked wraps.
+func TestHandlerPublishConflictCarriesDistinctCode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		storeErr error
+		wantCode string
+	}{
+		{
+			name:     "rollback-attempt",
+			storeErr: fmt.Errorf("%w: %w", ErrBundleConflict, ErrUnsupportedRollback),
+			wantCode: PublishConflictRollbackAttempt,
+		},
+		{
+			name:     "below-stream-max",
+			storeErr: fmt.Errorf("%w: %w (stream max version is 2)", ErrBundleConflict, ErrVersionBelowStreamMax),
+			wantCode: PublishConflictVersionBelowStreamMax,
+		},
+		{
+			name:     "previous-hash-mismatch",
+			storeErr: fmt.Errorf("%w: %w (current stream head hash is abc)", ErrBundleConflict, ErrPreviousHashMismatch),
+			wantCode: PublishConflictPreviousHashMismatch,
+		},
+		{
+			name:     "generic-conflict",
+			storeErr: fmt.Errorf("%w: bundle_id/version already published as deadbeef", ErrBundleConflict),
+			wantCode: PublishConflictOther,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newTestHandler(t, fakeStore{publishErr: tc.storeErr}, nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, PublishPolicyBundlePath, strings.NewReader(`{"bundle":{}}`))
+			req.Header.Set("X-Pipelock-Publisher", "ok")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d body=%s, want 409", w.Code, w.Body.String())
+			}
+			var payload struct {
+				Error string `json:"error"`
+				Code  string `json:"code"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode body %s: %v", w.Body.String(), err)
+			}
+			if payload.Code != tc.wantCode {
+				t.Fatalf("code = %q, want %q (body=%s)", payload.Code, tc.wantCode, w.Body.String())
+			}
+			if payload.Error == "" {
+				t.Fatalf("error message empty (body=%s)", w.Body.String())
 			}
 		})
 	}
@@ -326,4 +384,8 @@ func (f fakeStore) BundleByIDVersion(context.Context, string, uint64) (Published
 
 func (f fakeStore) ApplyRollbackHead(context.Context, conductor.RollbackAuthorization, time.Time) error {
 	return nil
+}
+
+func (f fakeStore) StreamOverview(context.Context, StreamStatusQuery) ([]StreamSummary, error) {
+	return nil, nil
 }

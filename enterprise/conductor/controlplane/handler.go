@@ -29,6 +29,7 @@ const (
 	RollbackAuthorizationsPath = "/api/v1/conductor/rollback-authorizations"
 	AuditBatchesPath           = conductor.AuditBatchesPath
 	FollowersPath              = "/api/v1/conductor/followers"
+	StreamStatusPath           = "/api/v1/conductor/stream"
 	EnrollPath                 = "/api/v1/conductor/enroll"
 	EnrollmentTokensPath       = "/api/v1/conductor/enrollment-tokens" //nolint:gosec // route constant, not a credential
 	HealthPath                 = "/health"
@@ -41,6 +42,30 @@ const (
 
 	DefaultRemoteKillMaxValidity = 72 * time.Hour
 	DefaultRollbackMaxValidity   = 24 * time.Hour
+)
+
+// Publish-conflict codes. A policy-bundle publish can be rejected with HTTP 409
+// for three operationally distinct reasons; the control plane carries one of
+// these machine-readable codes in the JSON error body's "code" field so the
+// publishing CLI can render an accurate, actionable message instead of a single
+// misleading "version is stale". The codes are part of the publish API contract
+// and MUST stay in sync with the CLI's mapping (enterprise/cli/conductor).
+const (
+	// PublishConflictRollbackAttempt: the supplied version is below the current
+	// (rolled-back) stream head. A forward publish cannot perform a rollback;
+	// the operator must use the rollback authorization flow instead.
+	PublishConflictRollbackAttempt = "rollback_attempt"
+	// PublishConflictVersionBelowStreamMax: the version is not strictly greater
+	// than the highest version EVER published in the stream (vN+1..vM exist after
+	// a rollback, so a forward publish needs a version greater than M, not N).
+	PublishConflictVersionBelowStreamMax = "version_below_stream_max"
+	// PublishConflictPreviousHashMismatch: previous_bundle_hash does not match
+	// the current stream head hash (a stale or copy-pasted chain pointer).
+	PublishConflictPreviousHashMismatch = "previous_hash_mismatch"
+	// PublishConflictOther: a 409 conflict that is none of the above (e.g. a
+	// bundle_id/version already published with a different hash, or an initial
+	// bundle that carries a previous_bundle_hash).
+	PublishConflictOther = "conflict"
 )
 
 // FollowerIdentityResolver returns the [FollowerIdentity] for an incoming
@@ -75,6 +100,12 @@ type AuditQueryAuthorizer func(*http.Request, AuditBatchQuery) error
 // authorized identically to audit metadata.
 type FollowerListAuthorizer func(*http.Request, FollowerListQuery) error
 
+// StreamStatusAuthorizer authorizes a parsed stream-overview query. Like
+// [FollowerListAuthorizer] it MUST scope callers to the org/fleet they are
+// permitted to inspect; stream topology is fleet metadata and is authorized
+// identically to the follower roster.
+type StreamStatusAuthorizer func(*http.Request, StreamStatusQuery) error
+
 type HandlerOptions struct {
 	Store               BundleStore
 	Capabilities        conductor.CapabilitiesResponse
@@ -86,6 +117,7 @@ type HandlerOptions struct {
 	AuthorizeBundle     BundleAuthorizer
 	AuthorizeAuditQuery AuditQueryAuthorizer
 	AuthorizeFollowers  FollowerListAuthorizer
+	AuthorizeStream     StreamStatusAuthorizer
 	AuthorizeAdmin      PublisherAuthorizer
 	AuditSink           AuditBatchSink
 	AuditKeys           AuditKeyResolver
@@ -109,6 +141,7 @@ type Handler struct {
 	authorizeBundle     BundleAuthorizer
 	authorizeAuditQuery AuditQueryAuthorizer
 	authorizeFollowers  FollowerListAuthorizer
+	authorizeStream     StreamStatusAuthorizer
 	authorizeAdmin      PublisherAuthorizer
 	auditSink           AuditBatchSink
 	// nil auditQuerier means the configured sink does not implement
@@ -271,6 +304,14 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 			return ErrFollowerListForbidden
 		}
 	}
+	authorizeStream := opts.AuthorizeStream
+	if authorizeStream == nil {
+		// Fail closed: an unconfigured stream-status authorizer denies every read
+		// rather than exposing stream topology to any caller.
+		authorizeStream = func(*http.Request, StreamStatusQuery) error {
+			return ErrStreamStatusForbidden
+		}
+	}
 	authorizeBundle := opts.AuthorizeBundle
 	if authorizeBundle == nil {
 		authorizeBundle = func(*http.Request, conductor.PolicyBundle) error {
@@ -298,6 +339,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		authorizeBundle:     authorizeBundle,
 		authorizeAuditQuery: authorizeAuditQuery,
 		authorizeFollowers:  authorizeFollowers,
+		authorizeStream:     authorizeStream,
 		authorizeAdmin:      authorizeAdmin,
 		auditSink:           opts.AuditSink,
 		auditQuerier:        auditQuerier,
@@ -417,6 +459,8 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAuditBatch(w, r)
 	case FollowersPath:
 		h.handleListFollowers(w, r)
+	case StreamStatusPath:
+		h.handleStreamStatus(w, r)
 	default:
 		if isAuditBatchSubroute(r.URL.Path) {
 			h.handleGetAuditBatch(w, r)
@@ -475,7 +519,7 @@ func conductorRoute(path string) string {
 		return AuditBatchesPath
 	}
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, StreamStatusPath:
 		return path
 	default:
 		return "unknown"
@@ -620,7 +664,7 @@ func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Reque
 	}
 	record, created, err := h.store.Publish(r.Context(), req.Bundle, PublishOptions{Now: h.now()})
 	if err != nil {
-		writeStoreError(w, err)
+		writePublishStoreError(w, err)
 		return
 	}
 	status := http.StatusOK
@@ -967,6 +1011,47 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, de
 		return errors.New("trailing JSON document")
 	}
 	return nil
+}
+
+// writePublishStoreError maps a policy-bundle Publish error to an HTTP response.
+// It preserves the exact status semantics of writeStoreError (publish conflicts
+// remain HTTP 409 Conflict) but DE-CONFLATES the 409 body: it attaches a
+// machine-readable "code" so the publishing CLI can distinguish a rollback
+// attempt, a below-stream-max version, and a previous_bundle_hash mismatch
+// instead of collapsing all three into one misleading "version is stale".
+// Non-conflict errors fall through to writeStoreError unchanged.
+func writePublishStoreError(w http.ResponseWriter, err error) {
+	if !errors.Is(err, ErrBundleConflict) {
+		writeStoreError(w, err)
+		return
+	}
+	writeCodedError(w, http.StatusConflict, publishConflictCode(err), err)
+}
+
+// publishConflictCode classifies an ErrBundleConflict from the forward-publish
+// authorization path into one of the operator-facing PublishConflict* codes.
+// Order matters: the rollback-attempt case wraps ErrUnsupportedRollback in
+// addition to ErrBundleConflict, so it must be checked before the umbrella
+// fallthrough. The codes mirror the distinct wrapped sentinels set by
+// authorizeForwardLocked in store.go.
+func publishConflictCode(err error) string {
+	switch {
+	case errors.Is(err, ErrUnsupportedRollback):
+		return PublishConflictRollbackAttempt
+	case errors.Is(err, ErrVersionBelowStreamMax):
+		return PublishConflictVersionBelowStreamMax
+	case errors.Is(err, ErrPreviousHashMismatch):
+		return PublishConflictPreviousHashMismatch
+	default:
+		return PublishConflictOther
+	}
+}
+
+// writeCodedError writes a JSON error body carrying both the human-readable
+// message and a stable machine-readable code. Mirrors writeError's shape with
+// the extra "code" field so existing {"error":"..."} parsers keep working.
+func writeCodedError(w http.ResponseWriter, status int, code string, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error(), "code": code})
 }
 
 func writeStoreError(w http.ResponseWriter, err error) {

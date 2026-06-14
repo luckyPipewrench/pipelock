@@ -545,6 +545,7 @@ func runDoctor(cmd *cobra.Command, env *doctorEnv, opts doctorOpts) error {
 		}
 	} else {
 		_, _ = fmt.Fprintf(w, "Result: %d PASS / %d FAIL / %d SKIP — exit %d\n", passN, failN, skipN, exitCode)
+		printEvidencePaths(w)
 	}
 
 	if exitCode == cliutil.ExitOK {
@@ -578,4 +579,15 @@ func writeDoctorLine(w io.Writer, c doctorCheck, res doctorResult) {
 			_, _ = fmt.Fprintf(w, "          ↳ %s\n", res.remediation)
 		}
 	}
+}
+
+// printEvidencePaths emits the resolved evidence/receipts paths after the
+// doctor result summary. Operators running doctor are typically debugging
+// containment and need to know where to find audit logs and receipts.
+func printEvidencePaths(w io.Writer) {
+	// Use the same default paths from the install env so there is a single
+	// source of truth for the filesystem layout.
+	_, _ = fmt.Fprintln(w, "Evidence paths:")
+	_, _ = fmt.Fprintf(w, "  logs:     %s\n", filepath.Join(defaultDataDir, "logs"))
+	_, _ = fmt.Fprintf(w, "  receipts: %s\n", filepath.Join(defaultDataDir, "recorder"))
 }

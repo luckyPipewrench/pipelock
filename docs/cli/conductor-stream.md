@@ -23,6 +23,7 @@ pipelock conductor stream inspect --org-id acme --fleet-id prod
 |---|---|
 | `status` | A human-readable table of streams plus active emergency controls. Add `--json` for the raw response. |
 | `inspect` | Always emits the raw JSON response, including every stream's complete bundle chain (`bundle_id`, `version`, `bundle_hash`, `previous_bundle_hash`, `created_at`, `min_pipelock_version`, `published_at`). Identical authorization and scope to `status`. |
+| `reset` | Clear all active rollback authorizations for an org/fleet scope. Requires `--confirm` (refuses without it). See [Stream reset](#stream-reset). |
 
 ## Authorization and scope
 
@@ -144,6 +145,25 @@ and active emergency controls.
 Connection flags (control-plane address, token file, CA, license CRL) are shared
 with the other `conductor` subcommands; run `pipelock conductor stream status
 --help` for the full list.
+
+## Stream reset
+
+`pipelock conductor stream reset` is a guarded, destructive admin operation that
+clears all active (non-expired) rollback authorizations for the given org/fleet
+scope. It fetches the stream status to discover active rollback authorizations,
+then deletes each one via the Conductor's DELETE endpoint.
+
+```sh
+pipelock conductor stream reset --org-id acme --fleet-id prod --confirm
+```
+
+The `--confirm` flag is mandatory; the command refuses to run without it. Prefer
+`pipelock conductor rollback clear --authorization-id <id>` to remove a single
+rollback authorization rather than clearing all of them.
+
+The command also fails closed if stream status cannot read emergency controls.
+In that case it aborts before deleting any rollback authorization, so operators
+do not get a partial reset from incomplete control-plane state.
 
 ## See also
 

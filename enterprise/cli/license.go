@@ -48,6 +48,7 @@ func LicenseCmd() *cobra.Command {
 		licenseInstallCmd(),
 		licenseStatusCmd(),
 		licenseCRLCmd(),
+		licenseIntermediateCmd(),
 	)
 	return cmd
 }

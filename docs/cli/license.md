@@ -20,6 +20,7 @@ never weakens any free detection or enforcement.
 | [`inspect TOKEN`](#pipelock-license-inspect-token) | anyone | Decode a token's claims (no signature verification). |
 | [`keygen`](#pipelock-license-keygen) | issuer | Generate a license signing keypair. |
 | [`issue`](#pipelock-license-issue) | issuer | Sign a license token from a private key. |
+| [`intermediate issue`](#pipelock-license-intermediate-issue) | issuer | Mint a root-signed intermediate signing certificate (offline root). |
 
 Most customers only run `install` and `status`: you receive a signed token,
 install it, and confirm it is active. `keygen` and `issue` are for license
@@ -65,7 +66,14 @@ expiry, whether an intermediate certificate is configured, and the reason on
 failure. JSON output carries the same fields as machine-readable keys
 (`status`, `license_id`, `tier`, `subscription_id`, `expires_at`,
 `days_remaining`, `warning_band`, `severity`, `crl_configured`,
-`crl_expires_at`, `crl_sha256`, `intermediate_configured`, `reason`).
+`crl_expires_at`, `crl_sha256`, `intermediate_configured`,
+`require_intermediate`, `reason`).
+
+When `license_require_intermediate` is on (config field or
+`PIPELOCK_LICENSE_REQUIRE_INTERMEDIATE`), `status` enforces the full chain: a
+configured intermediate is required, a missing or stale CRL is `invalid`, and a
+token not signed through the intermediate fails. See the
+[intermediate-signing migration runbook](../guides/license-intermediate-migration.md).
 
 ## `pipelock license inspect TOKEN`
 
@@ -123,6 +131,34 @@ ledger. The `--features` you sign decide what the token unlocks: `agents` for
 Pro, `fleet` for the Enterprise fleet control plane (see the
 [tier-gating audit matrix](../security/tier-gating-audit-matrix.md)).
 
+## `pipelock license intermediate issue`
+
+Mint a root-signed **intermediate signing certificate** from the OFFLINE root
+key. Issuer-side; run it on the air-gapped host that holds the root key.
+
+```bash
+pipelock license intermediate issue \
+  --root-key /path/to/offline/license.key \
+  --serial im-2026-001 \
+  --validity 2160h \
+  --out ./out
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--root-key` | `~/.config/pipelock/license.key` | Path to the OFFLINE root private key. Used to sign; never copied or logged. |
+| `--serial` | (required) | Unique serial / key id for this intermediate — the CRL revocation key. |
+| `--out` | current directory | Output directory for `intermediate.key` + `intermediate.json`. |
+| `--validity` | `2160h` (90 days) | Validity window; capped by the library maximum (refused if too long). |
+
+Generates a fresh intermediate keypair, signs the certificate over its public
+half with the root key, and writes two `0600` files: `intermediate.key` (the
+intermediate **private** key — deploy ONLY to the license service) and
+`intermediate.json` (the root-signed certificate — distribute to consumers via
+`license_intermediate_file`). It refuses to overwrite an existing
+`intermediate.key`. This is the first step of the
+[intermediate-signing migration runbook](../guides/license-intermediate-migration.md).
+
 ## `pipelock license crl`
 
 Inspect and verify signed **certificate/license revocation lists** (CRLs). A CRL
@@ -173,6 +209,9 @@ revocation list, and the runtime tears the paid features back down to free.
 
 ## See also
 
+- [Intermediate-signing migration runbook](../guides/license-intermediate-migration.md)
+  — move from direct root signing to root → intermediate → token and turn on
+  `require_intermediate`.
 - [Conductor](../guides/conductor.md) — the Enterprise fleet control plane the
   `fleet` feature unlocks.
 - [Tier-gating audit matrix](../security/tier-gating-audit-matrix.md) — which

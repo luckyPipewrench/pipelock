@@ -550,7 +550,7 @@ seed_phrase_detection:
 # that intermediate. Default (omitted/false) keeps accepting direct root-signed
 # licenses, so existing deployments are unaffected. Turning it on requires a
 # configured license_intermediate_file and a fresh signed CRL; see
-# docs/operations/license-intermediate.md for the migration runbook.
+# docs/guides/license-intermediate-migration.md for the migration runbook.
 # license_require_intermediate: false
 #
 # agents:

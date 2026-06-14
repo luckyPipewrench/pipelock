@@ -1774,6 +1774,7 @@ license_key: "pipelock_lic_v1_eyJ..."        # inline token (lowest priority)
 license_file: "/etc/pipelock/license.token"  # file path (medium priority)
 license_crl_file: "/etc/pipelock/license.crl" # signed revocation list
 license_intermediate_file: "/etc/pipelock/license-intermediate.json" # root-signed intermediate cert
+license_require_intermediate: false          # require the token to chain through an intermediate
 license_public_key: "a1b2c3d4..."            # hex-encoded Ed25519 public key (dev builds only)
 ```
 
@@ -1804,6 +1805,8 @@ Official release builds embed the signing public key at compile time via ldflags
 `license_crl_file` points at a signed license revocation list. It is read and verified at startup and on config reload; a revoked active license is disabled immediately. The CRL file should be mounted from trusted operator-controlled storage, not written by the agent.
 
 `license_intermediate_file` points at the root-signed intermediate license-signing certificate. It is public cert material, not a secret, but it controls the active signing chain and should still come from trusted operator-controlled storage. Relative paths resolve against the config file directory. A configured intermediate certificate is checked at startup: a missing, unreadable, malformed, expired, or wrong-root cert emits a startup warning and disables licensed features such as multi-agent profiles and Assess signing, rather than silently downgrading to direct-root verification. It never blocks startup or single-agent protection — a licensing-tier misconfiguration must not take the proxy down, and a short-lived intermediate's expiry must not crash-loop it. Changing this field requires a restart for the new license chain to take effect.
+
+`license_require_intermediate` (default `false`; env `PIPELOCK_LICENSE_REQUIRE_INTERMEDIATE`) turns the intermediate tier from optional into mandatory. When `true`, Pipelock refuses any token that is not validated through a root-certified intermediate: a legacy direct-root token (or one forged with a stolen root key) is rejected with no fall-back, a missing or stale CRL fails closed (the CRL is the revocation floor), and signature/expiry/revocation failures fail closed. The default `false` preserves today's behaviour exactly — existing root-signed licenses keep verifying — so this is an explicit operator decision made AFTER an intermediate and a fresh CRL are distributed. An invalid boolean env value is rejected (never silently defaulted to `false`); a require-on-but-misconfigured consumer (no intermediate, or a bad env value) surfaces a startup **warning** and disables paid features while detection/enforcement stays up. A reload that flips require on/off re-verifies and tears down a paid surface that no longer satisfies the required chain. Full migration sequence: the [intermediate-signing migration runbook](guides/license-intermediate-migration.md).
 
 ### CLI Commands
 

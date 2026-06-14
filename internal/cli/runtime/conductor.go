@@ -52,6 +52,26 @@ type ConductorApplyOptions struct {
 	AllowRollback bool
 }
 
+// conductorFollowerLabels returns a defensive copy of the follower's
+// self-declared audience labels from config. Both the forward bundle applier and
+// the rollback applier source the follower's labels here so leader-side
+// label/audience targeting can match this follower (conductor.Audience.Matches).
+// A copy is returned so the captured applier never shares a map with a config
+// that a later (no-op for conductor) reload could replace; conductor settings
+// are restart-only, but the copy keeps the apply path independent of config
+// mutation regardless. Returns nil for nil/empty labels, which fails closed:
+// a label-scoped bundle simply will not match a follower that declares none.
+func conductorFollowerLabels(cfg *config.Config) map[string]string {
+	if cfg == nil || len(cfg.Conductor.Labels) == 0 {
+		return nil
+	}
+	labels := make(map[string]string, len(cfg.Conductor.Labels))
+	for k, v := range cfg.Conductor.Labels {
+		labels[k] = v
+	}
+	return labels
+}
+
 func buildConductorApplyCache(cfg *config.Config) (*applycache.Cache, error) {
 	if cfg == nil || !cfg.Conductor.Enabled {
 		return nil, nil
@@ -246,8 +266,13 @@ func (s *Server) buildConductorBundlePoller(cfg *config.Config, logWriter io.Wri
 	}
 	logger := slog.New(slog.NewJSONHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})).
 		With("service", "pipelock", "component", "conductor_policy_bundle")
+	// Capture the follower's self-declared audience labels so the leader can
+	// target this follower by label (e.g. ring=canary). Without this the
+	// applier passes empty labels and a label-scoped bundle would never match.
+	// Conductor config is restart-only, so capturing at build time is correct.
+	labels := conductorFollowerLabels(cfg)
 	applier := policysync.ApplierFunc(func(bundle conductor.PolicyBundle) error {
-		_, applyErr := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: resolver})
+		_, applyErr := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: resolver, Labels: labels})
 		return applyErr
 	})
 	return policysync.NewPoller(policysync.PollerConfig{
@@ -411,10 +436,13 @@ func (s *Server) buildConductorRollbackPoller(cfg *config.Config, logWriter io.W
 	logger := slog.New(slog.NewJSONHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})).
 		With("service", "pipelock", "component", "conductor_rollback")
 	return policysync.NewRollbackPoller(policysync.RollbackPollerConfig{
-		BaseURL:      cfg.Conductor.ConductorURL,
-		Client:       client,
-		Provider:     conductorRollbackContextProvider{cache: cache},
-		Applier:      conductorRollbackApplier{server: s, cache: cache, resolver: resolver},
+		BaseURL:  cfg.Conductor.ConductorURL,
+		Client:   client,
+		Provider: conductorRollbackContextProvider{cache: cache},
+		// Pass the follower's self-declared audience labels so a label-scoped
+		// rollback authorization can match this follower. Conductor config is
+		// restart-only, so capturing the labels at build time is correct.
+		Applier:      conductorRollbackApplier{server: s, cache: cache, resolver: resolver, labels: conductorFollowerLabels(cfg)},
 		PollInterval: interval,
 		Logger:       logger,
 	})

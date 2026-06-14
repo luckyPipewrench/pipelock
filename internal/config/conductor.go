@@ -66,6 +66,9 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 			return err
 		}
 	}
+	if err := validateConductorLabels(cfg.Labels); err != nil {
+		return err
+	}
 	if !c.FlightRecorder.Enabled {
 		return fmt.Errorf("flight_recorder.enabled must be true when conductor.enabled is true")
 	}
@@ -191,6 +194,71 @@ func validateConductorURL(raw string) error {
 
 func (c Conductor) EmergencyStreamEnabled() bool {
 	return c.EmergencyStream == nil || *c.EmergencyStream
+}
+
+// validateConductorLabels rejects malformed follower audience labels. An empty
+// key or empty value is a fail-closed error rather than a silently-broadening
+// config: conductor.Audience.Matches reads labels[k] for each audience key, so a
+// follower carrying an empty-valued label key would spuriously match an audience
+// whose value is also empty (the zero value of a missing map lookup), widening
+// who accepts a label-scoped bundle. Keys and values are bounded the same way as
+// other conductor identifiers to keep the audience-match surface predictable.
+// Conductor follower label bounds + charset MIRROR the leader-side selector rules
+// in enterprise/conductor/messages.go (MaxLabelKeyBytes=128, MaxLabelValueBytes=256,
+// isIdentifier). They are duplicated here because core config (Apache) cannot import
+// the enterprise (ELv2) package. KEEP IN SYNC: a follower label the leader's selector
+// validation cannot express is permanently unreachable for label-scoped bundles, so
+// the follower must reject it at startup rather than silently accept an untargetable
+// config (fail-closed, but a silent operator trap if unchecked).
+const (
+	maxConductorLabelKeyBytes   = 128
+	maxConductorLabelValueBytes = 256
+)
+
+func validateConductorLabels(labels map[string]string) error {
+	for k, v := range labels {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("conductor.labels must not contain an empty key")
+		}
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("conductor.labels[%q] must not have an empty value", k)
+		}
+		if len(k) > maxConductorLabelKeyBytes {
+			return fmt.Errorf("conductor.labels key %q must be <= %d bytes", k, maxConductorLabelKeyBytes)
+		}
+		if len(v) > maxConductorLabelValueBytes {
+			return fmt.Errorf("conductor.labels[%q] value must be <= %d bytes", k, maxConductorLabelValueBytes)
+		}
+		if !isConductorLabelIdentifier(k) {
+			return fmt.Errorf("conductor.labels key %q must use only alphanumerics, '_', '-', '.' with no leading punctuation to be targetable by a leader", k)
+		}
+		if !isConductorLabelIdentifier(v) {
+			return fmt.Errorf("conductor.labels[%q] value must use only alphanumerics, '_', '-', '.' with no leading punctuation to be targetable by a leader", k)
+		}
+	}
+	return nil
+}
+
+// isConductorLabelIdentifier mirrors enterprise/conductor/messages.go isIdentifier:
+// non-empty, ASCII alphanumerics plus '_', '-', '.', with no leading punctuation.
+func isConductorLabelIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validateConductorIdentifier(field, value string) error {

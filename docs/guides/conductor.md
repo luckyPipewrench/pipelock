@@ -223,6 +223,9 @@ conductor:
   org_id: org-acme
   fleet_id: prod
   instance_id: edge-01
+  labels:
+    ring: canary
+    region: us-east
   trust_roster_path: /etc/pipelock/trust-roster.json
   trust_roster_root_fingerprint: <sha256-of-trust-root>
   server_ca_file: /etc/pipelock/conductor-ca.pem
@@ -244,6 +247,19 @@ When `conductor.enabled: true`, validation requires:
 - all identity fields (`org_id`, `fleet_id`, `instance_id`, `audit_signing_key_id`,
   `recorder_key_id`) matching the canonical identifier pattern;
 - all file paths absolute.
+
+`labels` (optional) are the follower's self-declared audience labels. The leader
+targets a policy bundle (or a rollback authorization) at a subset of followers by
+label selector — for example `audience: {labels: {ring: canary}}` reaches only
+followers whose `conductor.labels` contains `ring: canary`. A follower accepts a
+label-scoped bundle only when **every** audience label key matches its own
+labels; a follower with no labels (or a different value) is not in the audience
+and the bundle is withheld (audience mismatch, fail closed). Labels are
+restart-only like the rest of the conductor block — changing them takes effect on
+restart, not via hot reload. Each key and value must be a non-empty identifier
+(letters, digits, `_`, `-`, `.`, not leading punctuation), `<= 128` bytes;
+empty keys or values are rejected at startup so an ambiguous label can never
+broaden which followers accept a bundle.
 
 `honor_remote_kill_switch` (default `true`) opts the follower into the
 fleet-wide kill signal. `stale_policy.strict_deny_all` is the **enforced**

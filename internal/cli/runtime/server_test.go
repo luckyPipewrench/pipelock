@@ -822,7 +822,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	if !live.FlightRecorder.RequireReceipts {
 		t.Fatal("flight_recorder.require_receipts reload change was not applied")
 	}
-	if live.Conductor != oldCfg.Conductor {
+	if !reflect.DeepEqual(live.Conductor, oldCfg.Conductor) {
 		t.Fatalf("conductor settings not preserved: %+v", live.Conductor)
 	}
 	if !reflect.DeepEqual(live.FileSentry, oldCfg.FileSentry) {

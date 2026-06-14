@@ -2732,6 +2732,9 @@ conductor:
   org_id: org-acme
   fleet_id: prod
   instance_id: edge-01
+  labels:
+    ring: canary
+    region: us-east
   trust_roster_path: /etc/pipelock/trust-roster.json
   trust_roster_root_fingerprint: <sha256-of-trust-root>
   server_ca_file: /etc/pipelock/conductor-ca.pem
@@ -2749,6 +2752,7 @@ conductor:
 | `enabled` | `false` | Join a Conductor fleet. Requires an enterprise build with the `fleet` entitlement; fails closed without it. |
 | `conductor_url` | (required) | HTTPS URL of the Conductor follower API. |
 | `org_id` / `fleet_id` / `instance_id` | (required) | Fleet identity tuple. Each must match the canonical identifier pattern (ASCII alphanumeric plus `_-.`, max 128 bytes). |
+| `labels` | (none) | Follower's self-declared audience labels (e.g. `ring: canary`). The leader targets policy bundles and rollback authorizations at a subset of followers by label selector; this follower accepts a label-scoped bundle only when **every** audience label key matches one of these labels (a follower with no labels, or a different value, is not in the audience and the bundle is withheld — fail closed). Each key and value must be a non-empty identifier, max 128 bytes; empty keys/values are rejected at startup. Restart-only, like the rest of the conductor block. |
 | `trust_roster_path` | (required) | Signed trust roster file naming the keys this follower accepts. |
 | `trust_roster_root_fingerprint` | (required) | SHA-256 pin of the trust roster's root key. Must be non-empty. |
 | `server_ca_file` | (required) | CA bundle used to verify Conductor's TLS server certificate. |

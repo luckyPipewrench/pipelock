@@ -451,11 +451,21 @@ const (
 // fleet. It is local control-plane plumbing, not scanner policy, and is
 // excluded from CanonicalPolicyHash.
 type Conductor struct {
-	Enabled                    bool                 `yaml:"enabled"`
-	ConductorURL               string               `yaml:"conductor_url"`
-	OrgID                      string               `yaml:"org_id"`
-	FleetID                    string               `yaml:"fleet_id"`
-	InstanceID                 string               `yaml:"instance_id"`
+	Enabled      bool   `yaml:"enabled"`
+	ConductorURL string `yaml:"conductor_url"`
+	OrgID        string `yaml:"org_id"`
+	FleetID      string `yaml:"fleet_id"`
+	InstanceID   string `yaml:"instance_id"`
+	// Labels are the follower's self-declared audience labels (e.g.
+	// {ring: canary}). The leader targets policy bundles and rollback
+	// authorizations at a subset of followers by audience labels; a follower
+	// only accepts a label-scoped bundle/rollback when every audience label key
+	// matches this map (see conductor.Audience.Matches). Restart-only, like the
+	// rest of the conductor block: the forward and rollback appliers capture
+	// these labels at startup, so changing them requires a restart, not a hot
+	// reload (conductorRuntimeChanged forces conductor settings to be
+	// restart-only).
+	Labels                     map[string]string    `yaml:"labels"`
 	TrustRosterPath            string               `yaml:"trust_roster_path"`
 	TrustRosterRootFingerprint string               `yaml:"trust_roster_root_fingerprint"`
 	ServerCAFile               string               `yaml:"server_ca_file"`

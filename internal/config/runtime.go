@@ -220,6 +220,17 @@ func (c *Config) Clone() *Config {
 		clone.ResponseScanning.ExemptDomains = append([]string(nil), c.ResponseScanning.ExemptDomains...)
 	}
 	clone.MCPToolPolicy.Rules = cloneToolPolicyRules(c.MCPToolPolicy.Rules)
+	// Deep-copy the follower audience-labels map so a runtime caller that
+	// mutates clone.Conductor.Labels never aliases back into the loaded config,
+	// preserving the frozen-after-Load guarantee for conductor (restart-only)
+	// settings.
+	if c.Conductor.Labels != nil {
+		labels := make(map[string]string, len(c.Conductor.Labels))
+		for k, v := range c.Conductor.Labels {
+			labels[k] = v
+		}
+		clone.Conductor.Labels = labels
+	}
 
 	return &clone
 }

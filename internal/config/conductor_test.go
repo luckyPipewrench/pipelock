@@ -442,6 +442,87 @@ func TestLoad_ConductorHonorRemoteKillSwitchDefaulting(t *testing.T) {
 	}
 }
 
+// TestValidateConductor_AcceptsFollowerLabels proves a well-formed follower
+// audience-labels map passes validation when conductor is enabled.
+func TestValidateConductor_AcceptsFollowerLabels(t *testing.T) {
+	cfg := Defaults()
+	cfg.Conductor = validConductorConfig(t)
+	cfg.Conductor.Labels = map[string]string{"ring": "canary", "region": "us-east"}
+	configureConductorRecorder(t, cfg)
+
+	if _, err := cfg.ValidateWithWarnings(); err != nil {
+		t.Fatalf("ValidateWithWarnings() with valid labels error = %v", err)
+	}
+}
+
+// TestValidateConductor_RejectsMalformedFollowerLabels proves an empty label key
+// or empty label value is a fail-closed validation error rather than a silently
+// broadening config (a missing-key map lookup is the empty string, so an
+// empty-valued label could spuriously match an empty-valued audience).
+func TestValidateConductor_RejectsMalformedFollowerLabels(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   string
+	}{
+		{name: "empty_key", labels: map[string]string{"": "canary"}, want: "must not contain an empty key"},
+		{name: "blank_key", labels: map[string]string{"   ": "canary"}, want: "must not contain an empty key"},
+		{name: "empty_value", labels: map[string]string{"ring": ""}, want: `conductor.labels["ring"] must not have an empty value`},
+		{name: "blank_value", labels: map[string]string{"ring": "  "}, want: `conductor.labels["ring"] must not have an empty value`},
+		// Charset must mirror the leader-side selector (isIdentifier): a label the
+		// leader cannot express is silently unreachable, so reject it at startup.
+		{name: "space_in_value", labels: map[string]string{"ring": "us east"}, want: "must use only alphanumerics"},
+		{name: "space_in_key", labels: map[string]string{"data center": "east"}, want: "must use only alphanumerics"},
+		{name: "leading_dot_key", labels: map[string]string{".ring": "canary"}, want: "must use only alphanumerics"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Conductor = validConductorConfig(t)
+			cfg.Conductor.Labels = tc.labels
+			configureConductorRecorder(t, cfg)
+
+			_, err := cfg.ValidateWithWarnings()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateWithWarnings() = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoad_ConductorLabelsRoundTrip proves the conductor.labels map unmarshals
+// from YAML through the strict (KnownFields) loader. Without the schema field a
+// `labels:` key would be rejected as an unknown field; this locks in that the
+// field exists and parses key/value pairs.
+func TestLoad_ConductorLabelsRoundTrip(t *testing.T) {
+	root := privateTempDir(t)
+	cfgPath := filepath.Join(root, "cfg.yaml")
+	// conductor.enabled is intentionally false so Load does not require the full
+	// enterprise trust-material set; we are exercising the YAML parse of the
+	// labels map, not the enabled-follower validation path.
+	data := strings.Join([]string{
+		"mode: balanced",
+		"conductor:",
+		"  labels:",
+		"    ring: canary",
+		"    region: us-east",
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Conductor.Labels["ring"]; got != "canary" {
+		t.Fatalf("conductor.labels[ring] = %q, want canary", got)
+	}
+	if got := cfg.Conductor.Labels["region"]; got != "us-east" {
+		t.Fatalf("conductor.labels[region] = %q, want us-east", got)
+	}
+}
+
 func validConductorConfig(t *testing.T) Conductor {
 	t.Helper()
 	root := privateTempDir(t)

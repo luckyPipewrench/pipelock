@@ -16,6 +16,7 @@ on:
       - 'cmd/pipelock/**'
       - 'cmd/pipelock-verifier/**'
       - 'internal/aarp/**'
+      - 'internal/cli/contain/**'
       - 'internal/jsonscan/**'
       - 'internal/receipt/**'
       - 'internal/recorder/**'
@@ -28,6 +29,7 @@ on:
       - 'cmd/pipelock/**'
       - 'cmd/pipelock-verifier/**'
       - 'internal/aarp/**'
+      - 'internal/cli/contain/**'
       - 'internal/jsonscan/**'
       - 'internal/receipt/**'
       - 'internal/recorder/**'
@@ -336,3 +338,33 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/sdk/verifiers/python/src
           PY_AARP: python -m pipelock_aarp_verify aarp
         run: bash sdk/conformance/aarp-corpus-gate.sh
+
+  # Containment direct-egress conformance gate: packages pipelock's
+  # `contain verify` direct-egress probes (probe 8 — pipelock-agent must NOT
+  # reach the internet directly; probe 9 — the operator must still reach it) as
+  # a publishable conformance artifact and proves the egress-denied test is
+  # real. The gate runs the Go conformance test over the fixture pairs under
+  # sdk/conformance/testdata/containment, then asserts the must-fail property by
+  # temporarily marking the leaked-egress fixture as expected-pass and
+  # confirming the test then fails. Entirely offline — no real network, sudo,
+  # curl, or nftables. The probes run against a canned command-runner built
+  # from the fixtures.
+  #
+  # Security note: no run: step consumes untrusted github.event.* input.
+  containment-conformance:
+    name: Containment direct-egress gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pipelock
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.26'
+
+      - name: Run containment direct-egress conformance gate
+        run: bash sdk/conformance/containment-gate.sh

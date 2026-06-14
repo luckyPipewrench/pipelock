@@ -1,0 +1,19 @@
+{
+  "description": "Containment BROKEN: probe 8 (agent egress) SUCCEEDS — the agent reached example.com directly. This is the must-fail fixture: probe 8 must report 'fail' and the overall exit code must be non-zero. If this ever passes, the egress-denied test is not real.",
+  "agent_user": "pipelock-agent",
+  "operator_user": "operator",
+  "runs": [
+    {
+      "comment": "probe 8: agent egress canary LEAKS. curl succeeds (exit 0, HTTP 200) — direct egress was NOT contained.",
+      "match": ["sudo", "pipelock-agent", "/usr/bin/curl"],
+      "stdout": "200",
+      "exit_code": 0
+    },
+    {
+      "comment": "probe 9: operator egress canary still reaches example.com (unchanged).",
+      "match": ["sudo", "operator", "/usr/bin/curl"],
+      "stdout": "200",
+      "exit_code": 0
+    }
+  ]
+}

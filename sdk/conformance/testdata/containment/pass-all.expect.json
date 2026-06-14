@@ -1,0 +1,8 @@
+{
+  "description": "Expected outcome when containment is intact.",
+  "exit_code": 0,
+  "probes": [
+    { "probe": 8, "name": "cc_agent_egress_denied", "status": "pass" },
+    { "probe": 9, "name": "operator_egress_reachable", "status": "pass" }
+  ]
+}

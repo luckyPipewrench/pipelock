@@ -312,6 +312,33 @@ Flags:
 | `--bundle-output` | `/etc/pipelock/combined-ca.pem` | Destination for the combined bundle. |
 | `--system-bundle` | system default | Source system CA bundle to combine with the Pipelock CA. |
 
+## Containment conformance artifact
+
+The two direct-egress probes — probe 8 (`cc_agent_egress_denied`) and probe 9 (`operator_egress_reachable`) — are also packaged as a publishable conformance artifact under `sdk/conformance/testdata/containment/`. The artifact proves the egress-denied test is *real*: it ships a deliberately-leaky fixture in which the agent's direct-egress canary succeeds (containment broken), and the gate **must** fail on it.
+
+The probes run against a canned command-runner built from external JSON fixtures, with no real network, sudo, curl, or nftables. Each fixture is a pair:
+
+- `<name>.probe.json` — the canned `(command → stdout, exit_code)` inputs.
+- `<name>.expect.json` — the expected per-probe status and aggregate exit code.
+
+| Fixture | Probe 8 | Overall exit | Role |
+|---|---|---|---|
+| `pass-all` | `pass` (egress blocked) | 0 | clean baseline — gate must PASS |
+| `leaky-egress` | `fail` (egress leaked) | 1 | **must-fail** — gate must DETECT |
+
+The fixture schema is documented in `sdk/conformance/testdata/containment/README.md`. Run the artifact two ways:
+
+```bash
+# Go conformance test over every fixture pair.
+go test -run TestContainmentConformance ./sdk/conformance/
+
+# Standalone gate: runs the test and additionally proves the must-fail property
+# (it flips the leaky fixture to expect a pass and confirms the test then fails).
+bash sdk/conformance/containment-gate.sh
+```
+
+The test drives the probes through the exported `contain.RunContainmentConformance` seam, so it stays a thin, reproducible wrapper over the same probe logic `pipelock contain verify` runs in production. CI gates the artifact via the `containment-conformance` job in `.github/workflows/verifiers.yaml`, triggered by changes under `internal/cli/contain/**` or `sdk/conformance/**`.
+
 ## Operational notes
 
 - **Binary integrity is TOFU.** The first `install` pins the binary hash. Verify compares the installed binary against that pin on every run. To install a new pipelock binary, run `install` again with `--pipelock-binary <new path>`; install rewrites the pin atomically.

@@ -1,0 +1,19 @@
+{
+  "description": "Containment intact: probe 8 (agent egress) is BLOCKED, probe 9 (operator egress) reaches example.com. This is the clean baseline the gate must PASS.",
+  "agent_user": "pipelock-agent",
+  "operator_user": "operator",
+  "runs": [
+    {
+      "comment": "probe 8: agent egress canary. curl is BLOCKED, returns non-zero exit (containment enforced).",
+      "match": ["sudo", "pipelock-agent", "/usr/bin/curl"],
+      "stdout": "curl: (7) Failed to connect to example.com port 443: Connection refused",
+      "exit_code": 7
+    },
+    {
+      "comment": "probe 9: operator egress canary. curl succeeds, prints HTTP 200.",
+      "match": ["sudo", "operator", "/usr/bin/curl"],
+      "stdout": "200",
+      "exit_code": 0
+    }
+  ]
+}

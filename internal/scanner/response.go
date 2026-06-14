@@ -92,6 +92,9 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// Core response patterns run FIRST - immutable safety floor.
 	// These run regardless of response_scanning.enabled.
 	if coreSet := s.scanCoreResponse(ctx, original); len(coreSet.matches) > 0 {
+		// Defensive anti-solicitation filtering happens per-pass inside
+		// scanCoreResponse (not here), so an all-defensive early pass cannot
+		// mask an encoded solicitation that only a later pass catches.
 		coreMatches := filterEducationalQuotedResponseMatches(coreSet.content, coreSet.matches)
 		if len(coreMatches) == 0 {
 			if !s.responseEnabled {
@@ -131,8 +134,11 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// Pre-filter checks are per-pass: each normalized variant gets its
 	// own keyword check because normalization reveals new keywords
 	// (e.g., leetspeak "1gnore" → "ignore" after normalization).
+	// Defensive anti-solicitation matches are dropped per-pass (not after the
+	// cascade) so an all-defensive early pass cannot mask an encoded
+	// solicitation that only a later pass catches. See scanCoreResponse.
 	var matches []ResponseMatch
-	matches = withResponseSpans(s.matchResponsePatternsPreFiltered(content), ViewForMatching)
+	matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, s.matchResponsePatternsPreFiltered(content)), ViewForMatching)
 
 	// Secondary: replace invisible chars with spaces, then normalize. Catches
 	// word-boundary collapse where the attacker uses ZW instead of space:
@@ -141,7 +147,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 {
 		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 		if spaced != content {
-			matches = withResponseSpans(s.matchResponsePatternsPreFiltered(spaced), ViewInvisibleSpaced)
+			matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, s.matchResponsePatternsPreFiltered(spaced)), ViewInvisibleSpaced)
 			if len(matches) > 0 {
 				matchContent = spaced
 				content = spaced // use spaced version for strip action
@@ -154,7 +160,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 {
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
-			matches = withResponseSpans(s.matchResponsePatternsPreFiltered(leeted), ViewLeetspeak)
+			matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, s.matchResponsePatternsPreFiltered(leeted)), ViewLeetspeak)
 			if len(matches) > 0 {
 				matchContent = leeted
 			}
@@ -166,7 +172,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// "i\u200bgnore\u200ball\u200bprevious" -> strip ZW -> "ignoreallprevious"
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
 	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 {
-		matches = withResponseSpans(matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content), ViewForMatching)
+		matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)), ViewForMatching)
 		if len(matches) > 0 {
 			matchContent = content
 		}
@@ -179,7 +185,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			matches = withResponseSpans(matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded), ViewVowelFold)
+			matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold)
 			if len(matches) > 0 {
 				matchContent = folded
 			}
@@ -246,6 +252,149 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	}
 
 	return result
+}
+
+func filterDefensiveCredentialSolicitationMatches(content string, matches []ResponseMatch) []ResponseMatch {
+	if len(matches) == 0 {
+		return matches
+	}
+
+	filtered := matches[:0]
+	for _, match := range matches {
+		if isSecretAskPattern(match.PatternName) && isDefensiveCredentialSolicitation(content, match) {
+			continue
+		}
+		filtered = append(filtered, match)
+	}
+	return filtered
+}
+
+func isSecretAskPattern(name string) bool {
+	return name == "Credential "+"Solicitation"
+}
+
+// foldedContains / foldedHasSuffix match a literal in both its raw form and its
+// vowel-folded form. The defensive-context check runs on whichever normalization
+// pass surfaced the match, and the vowel-fold pass turns keywords like "never"
+// into "navar"; matching the folded literal too keeps defensive detection
+// invariant across passes without re-indexing folded content positions.
+func foldedContains(haystack, needle string) bool {
+	return strings.Contains(haystack, needle) || strings.Contains(haystack, normalize.FoldVowels(needle))
+}
+
+func foldedHasSuffix(s, suffix string) bool {
+	return strings.HasSuffix(s, suffix) || strings.HasSuffix(s, normalize.FoldVowels(suffix))
+}
+
+func isDefensiveCredentialSolicitation(content string, match ResponseMatch) bool {
+	start := match.Position
+	if start < 0 || start > len(content) {
+		return false
+	}
+	end := start + match.matchLength
+	if match.matchLength == 0 {
+		end = start + len(match.MatchText)
+	}
+	if end < start || end > len(content) {
+		end = len(content)
+	}
+
+	lower := strings.ToLower(content)
+	if hasDefensiveSolicitationPivot(lower[start:end]) {
+		return false
+	}
+	if hasSolicitationContinuation(lower[end:]) {
+		return false
+	}
+	sentenceStart := strings.LastIndexAny(lower[:start], ".!?\n\r;:") + 1
+	prefix := strings.TrimSpace(lower[sentenceStart:start])
+	if prefix == "" {
+		return false
+	}
+
+	for _, phrase := range []string{
+		"do not",
+		"don't",
+		"never",
+		"must not",
+		"must never",
+		"should not",
+		"should never",
+		"will not",
+		"will never",
+		"won't",
+		"cannot",
+		"can't",
+		"never ask you to",
+		"not ask you to",
+		"do not ask you to",
+		"don't ask you to",
+		"won't ask you to",
+	} {
+		if foldedHasSuffix(prefix, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDefensiveSolicitationPivot(matchText string) bool {
+	for _, pivot := range []string{
+		"; instead",
+		", instead",
+		" instead ",
+		"; rather",
+		", rather",
+		" rather ",
+		"; actually",
+		", actually",
+		" actually ",
+		"; but ",
+		", but ",
+		" but ",
+		"; however",
+		", however",
+		" however ",
+	} {
+		if foldedContains(matchText, pivot) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSolicitationContinuation(suffix string) bool {
+	sentenceEnd := strings.IndexAny(suffix, ".!?\n\r")
+	if sentenceEnd >= 0 {
+		suffix = suffix[:sentenceEnd]
+	}
+	for _, phrase := range []string{
+		", send it ",
+		"; send it ",
+		", send them ",
+		"; send them ",
+		", provide it ",
+		"; provide it ",
+		", provide them ",
+		"; provide them ",
+		", paste it ",
+		"; paste it ",
+		", paste them ",
+		"; paste them ",
+		", email it ",
+		"; email it ",
+		", email them ",
+		"; email them ",
+		", forward it ",
+		"; forward it ",
+		", forward them ",
+		"; forward them ",
+	} {
+		if foldedContains(suffix, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func filterEducationalQuotedResponseMatches(content string, matches []ResponseMatch) []ResponseMatch {
@@ -597,18 +746,18 @@ func isPrintableText(data []byte) bool {
 // vowel-substituted or zero-width-separated injection would bypass detection.
 func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
-	if matches := matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized); len(matches) > 0 {
+	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized)); len(matches) > 0 {
 		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 	}
 	if len(s.responseOptSpacePatterns) > 0 {
-		if matches := matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized); len(matches) > 0 {
+		if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized)); len(matches) > 0 {
 			return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 		}
 	}
 	if len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
 		if folded != normalized {
-			if matches := matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded); len(matches) > 0 {
+			if matches := filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)); len(matches) > 0 {
 				return responseMatchSet{matches: withResponseSpans(matches, vowelFoldViewLabel(decodedViewLabel)), content: folded}
 			}
 		}

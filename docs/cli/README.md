@@ -18,3 +18,4 @@ the full command tree and `pipelock <command> --help` for any command's flags.
 | [`pipelock mcp integrity manifest`](mcp-integrity.md) | Generate and verify MCP server binary-integrity manifests. |
 | [`pipelock init sidecar`](init-sidecar.md) | Generate an enforced Pipelock companion proxy for a Kubernetes workload. |
 | [`pipelock license`](license.md) | Install, inspect, and check the license that unlocks paid features. |
+| [`pipelock update`](update.md) | Check for, verify, and install a newer Pipelock release; roll back to the previous binary. |

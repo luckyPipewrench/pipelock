@@ -479,11 +479,21 @@ func (h *WebhookHandler) SignedCRL(ctx context.Context, now time.Time) (license.
 			RevokedAt: rec.RevokedAt.UTC().Unix(),
 		})
 	}
+	// Advance the durable monotonic generation BEFORE signing so every CRL this
+	// service emits carries a strictly higher generation than the previous one.
+	// Consumers reject any CRL below their accepted high-water mark, which stops
+	// a rolled-back (older, revocation-omitting) CRL from re-validating a
+	// revoked license.
+	generation, err := h.db.NextCRLGeneration(ctx)
+	if err != nil {
+		return license.CRL{}, fmt.Errorf("advance CRL generation: %w", err)
+	}
 	return license.SignCRL(license.CRLPayload{
-		Version:   license.CRLVersion,
-		IssuedAt:  now.UTC().Unix(),
-		ExpiresAt: now.UTC().Add(7 * 24 * time.Hour).Unix(),
-		Revoked:   revoked,
+		Version:    license.CRLVersion,
+		Generation: generation,
+		IssuedAt:   now.UTC().Unix(),
+		ExpiresAt:  now.UTC().Add(7 * 24 * time.Hour).Unix(),
+		Revoked:    revoked,
 	}, h.cfg.CRLPrivateKey)
 }
 

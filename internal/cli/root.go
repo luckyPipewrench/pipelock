@@ -24,9 +24,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/rules"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/cli/scan"
+	"github.com/luckyPipewrench/pipelock/internal/cli/selfupdate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/session"
 	"github.com/luckyPipewrench/pipelock/internal/cli/setup"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
+	"github.com/luckyPipewrench/pipelock/internal/cli/support"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
@@ -98,6 +100,7 @@ Quick start:
 		diag.TestCmd(),
 		diag.DemoCmd(),
 		diag.LogsCmd(),
+		support.Cmd(),
 		// Generate
 		generate.Cmd(),
 		// Git
@@ -147,6 +150,8 @@ Quick start:
 		explainCmd(),
 		// Binary install helper for sidecar init containers.
 		installCmd(),
+		// Self-update (verified release install)
+		selfupdate.Cmd(),
 		// Version
 		versionCmd(),
 	)

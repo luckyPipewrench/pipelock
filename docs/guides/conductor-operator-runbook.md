@@ -248,6 +248,18 @@ The server authorizes the request with the publisher token file configured on `c
 
 This runbook does not include a one-line policy signing helper because none exists in the verified CLI help. Use the signed bundle producer in your operator workflow, then publish through the API above.
 
+### Publish conflicts (HTTP 409)
+
+A forward publish can be rejected with `409 Conflict` for three operationally distinct reasons. The control plane carries a machine-readable `code` in the JSON error body so the publisher can tell them apart instead of treating every conflict as a stale version:
+
+| `code` | Meaning | What to do |
+| --- | --- | --- |
+| `rollback_attempt` | The supplied `version` is below the current (rolled-back) stream head. A publish cannot roll back. | Use the rollback authorization flow, not a publish. |
+| `version_below_stream_max` | The `version` is not greater than the stream's **highest-ever** published version. After a rollback the head sits at `vN` while `vN+1..vM` still exist, so a forward publish needs a version greater than `M`, not merely greater than the current head `N`. | Publish a `version` above the stream **max**. Query the stream head/max version through your Conductor status workflow before retrying. |
+| `previous_hash_mismatch` | `previous_bundle_hash` does not match the current stream head hash (typically a stale or copy-pasted hash). | Set `previous_bundle_hash` to the hash printed by the most recent successful publish for this stream. |
+
+The `pipelock conductor publish` CLI maps each `code` to a distinct, errors-comparable error with an actionable message, so an operator recovering from a rollback is told to publish above the stream max rather than seeing a misleading "version is stale".
+
 ## Signed Audit Batch And Offline Verification
 
 Bootstrap proves the signed audit path end to end unless `--skip-proof` is set:
@@ -304,6 +316,22 @@ With a valid operator Enterprise license, bootstrap proves:
 - offline signature verification succeeds with no running Conductor.
 
 It does not prove mediation completeness. The agent reaching the network only through Pipelock remains deployment-enforced through capability separation, container/network policy, or per-UID firewalling.
+
+## Recovery Operations
+
+After a rollback or during incident recovery, additional operator commands are
+available. See [`docs/cli/conductor-recovery.md`](../cli/conductor-recovery.md)
+for full details.
+
+| Command | Purpose |
+|---|---|
+| `conductor publish --previous-bundle-hash auto` | Publish forward after a rollback without manually copying the stream head hash. |
+| `conductor rollback clear --authorization-id <id> --confirm` | Remove a single active rollback authorization (unblock forward publishes before TTL expiry). |
+| `conductor stream reset --org-id <org> --fleet-id <fleet> --confirm` | Clear all active rollback authorizations for an org/fleet scope. |
+| `conductor kill status --org-id <org>` | Show active remote-kill messages (read-only). |
+| `conductor store dump --org-id <org>` | Dump the stream-status JSON response for support. |
+
+All guarded commands require `--confirm`; they refuse to run without it.
 
 ## Validation Status For This Doc
 

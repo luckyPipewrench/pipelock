@@ -803,6 +803,8 @@ func TestHealthcheckCmd_RegisteredInHelp(t *testing.T) {
 	}
 }
 
+// TestRunCmd_Integration starts the proxy from a config file and verifies the
+// --mode flag overrides the file's mode (balanced -> strict) in /health.
 func TestRunCmd_Integration(t *testing.T) {
 	testport.WithRetry(t, 1, func(addrs []string) error {
 		addr := addrs[0]
@@ -822,7 +824,7 @@ logging:
   format: json
   output: file
   file: "%s"
-`, addr, logPath)
+`, addr, filepath.ToSlash(logPath))
 		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -957,6 +959,8 @@ func TestRunCmd_NonexistentConfig(t *testing.T) {
 	}
 }
 
+// TestRunCmd_InvalidMode verifies an invalid --mode override is rejected with
+// an "invalid config" error before the server starts.
 func TestRunCmd_InvalidMode(t *testing.T) {
 	// Create a valid config file first, then override mode with an invalid one.
 	dir := t.TempDir()
@@ -974,7 +978,7 @@ logging:
   format: json
   output: file
   file: "%s"
-`, logPath)
+`, filepath.ToSlash(logPath))
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1641,6 +1645,8 @@ forward_proxy:
 	})
 }
 
+// TestRunCmd_ReloadRejectsForwardProxyEnable verifies that enabling forward_proxy
+// via hot reload is rejected and the proxy keeps it disabled.
 func TestRunCmd_ReloadRejectsForwardProxyEnable(t *testing.T) {
 	testport.WithRetry(t, 1, func(addrs []string) error {
 		addr := addrs[0]
@@ -1659,7 +1665,7 @@ forward_proxy:
 logging:
   output: file
   file: "%s"
-`, addr, logPath)
+`, addr, filepath.ToSlash(logPath))
 		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1703,7 +1709,7 @@ forward_proxy:
 logging:
   output: file
   file: "%s"
-`, addr, logPath)
+`, addr, filepath.ToSlash(logPath))
 		if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -2123,24 +2129,23 @@ kill_switch:
 	})
 }
 
+// TestGenerateCmd_WriteError verifies "generate config" surfaces a wrapped
+// "writing config file" error when the output path cannot be written.
 func TestGenerateCmd_WriteError(t *testing.T) {
-	// Generate config with -o pointing to a read-only directory.
+	// Point -o at an existing directory so os.WriteFile fails on every
+	// platform. This exercises the write-error path portably, without
+	// relying on Unix-only chmod 0500 directory permissions.
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore
 
-	outPath := filepath.Join(dir, "pipelock.yaml")
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"generate", "config", "--preset", "balanced", "-o", outPath})
+	cmd.SetArgs([]string{"generate", "config", "--preset", "balanced", "-o", dir})
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error writing to read-only directory")
+		t.Fatal("expected error writing config to a directory path")
 	}
 	if !strings.Contains(err.Error(), "writing config file") {
 		t.Errorf("expected 'writing config file' error, got: %v", err)
@@ -2162,23 +2167,27 @@ func TestDemoCmd_Basic(t *testing.T) {
 	}
 }
 
+// TestGenerateDockerComposeCmd_WriteError verifies "generate docker-compose"
+// surfaces a wrapped "writing compose file" error when the output path cannot
+// be written.
 func TestGenerateDockerComposeCmd_WriteError(t *testing.T) {
+	// Point -o at an existing directory so os.WriteFile fails on every
+	// platform. This exercises the write-error path portably, without
+	// relying on Unix-only chmod 0500 directory permissions.
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore
 
-	outPath := filepath.Join(dir, "docker-compose.yaml")
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"generate", "docker-compose", "-o", outPath})
+	cmd.SetArgs([]string{"generate", "docker-compose", "-o", dir})
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error writing to read-only directory")
+		t.Fatal("expected error writing compose file to a directory path")
+	}
+	if !strings.Contains(err.Error(), "writing compose file") {
+		t.Errorf("expected 'writing compose file' error, got: %v", err)
 	}
 }
 

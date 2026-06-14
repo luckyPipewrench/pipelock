@@ -65,7 +65,7 @@ func (s *Server) checkLicenseCRL() (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	crl, err := license.LoadAndVerifyCRL(cfg.LicenseCRLFile, pubKey, time.Now())
+	crl, err := license.LoadAndVerifyCRLMonotonic(cfg.LicenseCRLFile, pubKey, time.Now())
 	if err != nil {
 		return true, err
 	}

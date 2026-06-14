@@ -210,6 +210,16 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 		committed_at DATETIME NOT NULL DEFAULT (datetime('now')),
 		error_reason TEXT NOT NULL DEFAULT ''
 	);
+
+	-- crl_generation holds the issuer's monotonic CRL generation counter as a
+	-- single row (id = 0). It is the durable high-water mark on the issuing
+	-- side: NextCRLGeneration advances it atomically so every newly signed CRL
+	-- carries a strictly higher generation than the one before, which is what
+	-- lets consumers reject rolled-back CRLs.
+	CREATE TABLE IF NOT EXISTS crl_generation (
+		id         INTEGER PRIMARY KEY CHECK (id = 0),
+		generation INTEGER NOT NULL DEFAULT 0
+	);
 	`
 	_, err := e.db.ExecContext(ctx, ddl)
 	return err
@@ -457,6 +467,40 @@ func (e *EntitlementDB) ListLicenseRevocations(ctx context.Context) ([]RevokedLi
 		results = append(results, rec)
 	}
 	return results, rows.Err()
+}
+
+// NextCRLGeneration atomically advances and returns the issuer's monotonic CRL
+// generation counter. Each call returns a value strictly greater than every
+// prior call's, persisted durably in SQLite so a service restart cannot rewind
+// the counter and re-issue a lower-generation CRL. This is the issuer half of
+// the revocation-rollback defense; the consumer rejects any CRL below its own
+// accepted high-water mark.
+func (e *EntitlementDB) NextCRLGeneration(ctx context.Context) (uint64, error) {
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin crl generation transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Seed the single row if absent, then bump it. INSERT OR IGNORE keeps the
+	// existing value when the row is already present.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO crl_generation (id, generation) VALUES (0, 0)`); err != nil {
+		return 0, fmt.Errorf("seed crl generation: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE crl_generation SET generation = generation + 1 WHERE id = 0`); err != nil {
+		return 0, fmt.Errorf("advance crl generation: %w", err)
+	}
+	var generation uint64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT generation FROM crl_generation WHERE id = 0`).Scan(&generation); err != nil {
+		return 0, fmt.Errorf("read crl generation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit crl generation: %w", err)
+	}
+	return generation, nil
 }
 
 // InsertLicenseIssuance records a minted license token for later revocation.

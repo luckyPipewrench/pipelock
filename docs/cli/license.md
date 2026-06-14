@@ -123,6 +123,45 @@ ledger. The `--features` you sign decide what the token unlocks: `agents` for
 Pro, `fleet` for the Enterprise fleet control plane (see the
 [tier-gating audit matrix](../security/tier-gating-audit-matrix.md)).
 
+## `pipelock license crl`
+
+Inspect and verify signed **certificate/license revocation lists** (CRLs). A CRL
+lets the runtime reject licenses (and revoked intermediate signing certificates)
+that have been pulled before their natural expiry.
+
+CRLs are **issued (signed) by the cluster license-service**, which owns the
+canonical revocation list. The CLI deliberately does **not** sign CRLs: a CRL is
+a whole-list snapshot with no monotonic generation number, so an offline signer
+that could mint a smaller list would be a revocation-rollback footgun. The CLI
+provides only the read side.
+
+### `pipelock license crl inspect FILE`
+
+Decode a CRL and show what it revokes. Does **not** verify the signature.
+
+```bash
+pipelock license crl inspect crl.json
+pipelock license crl inspect crl.json --json
+```
+
+### `pipelock license crl verify FILE`
+
+Verify a CRL's Ed25519 signature and check it has not expired. Exit code `0` on
+a valid, unexpired CRL; `1` otherwise.
+
+```bash
+pipelock license crl verify crl.json --public-key /path/to/license.pub
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--public-key` | embedded key, then configured key | Public key as a file path or raw hex. |
+| `--config` / `-c` | discovered config | Config file used to resolve the license public key when `--public-key` is omitted. |
+
+The public key is resolved in order: `--public-key`, then the embedded build key
+(if the binary was built with one), then the configured license public key
+(config file or `PIPELOCK_LICENSE_PUBLIC_KEY`).
+
 ## Enterprise Eval
 
 The time-boxed **Enterprise Eval** tier grants the full Enterprise feature set

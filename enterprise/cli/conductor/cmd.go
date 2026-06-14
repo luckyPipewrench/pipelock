@@ -88,12 +88,18 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(publishCmd())
 	cmd.AddCommand(auditCmd())
 	cmd.AddCommand(fleetCmd())
+	cmd.AddCommand(streamCmd())
 	cmd.AddCommand(followersCmd())
-	cmd.AddCommand(killCmd())
+	kCmd := killCmd()
+	kCmd.AddCommand(killStatusCmd())
+	cmd.AddCommand(kCmd)
 	cmd.AddCommand(resumeCmd())
-	cmd.AddCommand(rollbackCmd())
+	rbCmd := rollbackCmd()
+	rbCmd.AddCommand(rollbackClearCmd())
+	cmd.AddCommand(rbCmd)
 	cmd.AddCommand(enrollCmd())
 	cmd.AddCommand(enrollmentTokenCmd())
+	cmd.AddCommand(storeCmd())
 	return cmd
 }
 
@@ -292,6 +298,13 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	streamStatusAuthorizer, err := controlplane.ScopedBearerStreamStatusAuthorizer([]controlplane.ScopedBearerCredential{
+		{Token: auditorToken, Role: controlplane.RoleAuditor, OrgID: opts.auditorOrgID, FleetID: opts.auditorFleetID},
+		{Token: adminToken, Role: controlplane.RoleAdmin, OrgID: opts.adminOrgID, FleetID: opts.adminFleetID},
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	adminAuthorizer, err := controlplane.ScopedBearerAdminAuthorizer([]controlplane.ScopedBearerCredential{{
 		Token: adminToken,
 		Role:  controlplane.RoleAdmin,
@@ -347,6 +360,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 		AuthorizeBundle:     publishAuthorizer,
 		AuthorizeAuditQuery: auditQueryAuthorizer,
 		AuthorizeFollowers:  followerListAuthorizer,
+		AuthorizeStream:     streamStatusAuthorizer,
 		AuthorizeAdmin:      adminAuthorizer,
 		AuditSink:           auditStore,
 		AuditKeys:           controlplane.CompositeAuditKeyResolver(enrollments, auditKeys),

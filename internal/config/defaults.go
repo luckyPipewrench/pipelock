@@ -10,6 +10,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
+// CredentialSolicitationRegex is the canonical direction-anchored response
+// pattern for requests that try to make the agent hand credentials back to the
+// requester. The immutable scanner floor and default config both use this
+// value; preset YAML files are guarded by a parity test.
+const CredentialSolicitationRegex = `(?i)(\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^.!?]|\.\S){0,40}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b(?:[^\n.!?]|\.\S){0,40}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)|\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^\n.!?]|\.\S){0,30}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)(?:[^\n.!?]|\.\S){0,30}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH solicitation text, not a hardcoded credential
+
 // Defaults returns a Config with sensible defaults for balanced mode.
 func Defaults() *Config {
 	cfg := &Config{
@@ -373,7 +379,13 @@ func Defaults() *Config {
 				{Name: "Priority Override", Regex: `(?i)\bprioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)`},
 				// State/control poisoning - detect credential solicitation,
 				// memory persistence, and preference manipulation in tool results.
-				{Name: "Credential Solicitation", Regex: `(?is)(\b(send|provide|paste|return|supply|submit|share)\b.{0,80}\b(password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b|(?:^|[\n.!?]\s+|\bplease\s+)include\s+(your|my|our)\s+(password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b)`},
+				// Credential Solicitation is direction-anchored (verb + credential
+				// noun + an explicit "send it back to the requester" cue in the same
+				// local solicitation clause). Bare setup docs like "provide your API
+				// key in config" and defensive docs like "never send your API key to
+				// us" are ordinary documentation, not attacks. Mirrors the immutable
+				// core floor in internal/scanner/core.go.
+				{Name: "Credential Solicitation", Regex: CredentialSolicitationRegex},
 				{Name: "Credential Path Directive", Regex: `(?is)\b(read|get|fetch|retrieve|cat|copy|extract|open|include)\b.{0,80}(\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)`},
 				{Name: "Auth Material Requirement", Regex: `(?is)\bto\s+(complete|continue|finish|proceed|verify)\b.{0,80}\b(authentication|credential|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key)\b.{0,40}\b(required|needed|necessary|must be)\b`},
 				{Name: "Memory Persistence Directive", Regex: `(?is)\b(save|store|remember|retain|persist|record|cache)\b.{0,40}\b(this|these|that|it|the)\b.{0,60}\b(for future|for later|across sessions?|next session|next time|future tasks?|future sessions?|for all future|subsequent|permanently|from now on|going forward|in all future)\b`},

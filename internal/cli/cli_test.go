@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -822,7 +823,7 @@ logging:
   format: json
   output: file
   file: "%s"
-`, addr, logPath)
+`, addr, filepath.ToSlash(logPath))
 		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -974,7 +975,7 @@ logging:
   format: json
   output: file
   file: "%s"
-`, logPath)
+`, filepath.ToSlash(logPath))
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1659,7 +1660,7 @@ forward_proxy:
 logging:
   output: file
   file: "%s"
-`, addr, logPath)
+`, addr, filepath.ToSlash(logPath))
 		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -1703,7 +1704,7 @@ forward_proxy:
 logging:
   output: file
   file: "%s"
-`, addr, logPath)
+`, addr, filepath.ToSlash(logPath))
 		if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -2124,6 +2125,9 @@ kill_switch:
 }
 
 func TestGenerateCmd_WriteError(t *testing.T) {
+	if stdruntime.GOOS == "windows" {
+		t.Skip("os.Chmod(dir, 0o500) does not make a directory non-writable on Windows (POSIX mode bits do not gate directory writes); the write-error path is verified on Unix CI")
+	}
 	// Generate config with -o pointing to a read-only directory.
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
@@ -2163,6 +2167,9 @@ func TestDemoCmd_Basic(t *testing.T) {
 }
 
 func TestGenerateDockerComposeCmd_WriteError(t *testing.T) {
+	if stdruntime.GOOS == "windows" {
+		t.Skip("os.Chmod(dir, 0o500) does not make a directory non-writable on Windows (POSIX mode bits do not gate directory writes); the write-error path is verified on Unix CI")
+	}
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
 		t.Fatal(err)

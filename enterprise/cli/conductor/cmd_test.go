@@ -588,3 +588,126 @@ func testCAPEM(t *testing.T) []byte {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
+
+// requireModeKeys builds a root keypair, an intermediate cert + key, and the
+// signed fresh CRL file used by the require-intermediate env-only command tests.
+func requireModeKeys(t *testing.T) (rootPubHex, crlPath, intPath string, rootPriv, intPriv ed25519.PrivateKey) {
+	t.Helper()
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("root keygen: %v", err)
+	}
+	intPub, intPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("int keygen: %v", err)
+	}
+	now := time.Now()
+	cert, err := license.SignIntermediate(license.IntermediatePayload{
+		Serial:    "int-test-001",
+		Purpose:   license.PurposeLicenseSigning,
+		Algorithm: license.AlgorithmEd25519,
+		PublicKey: hexEncode(intPub),
+		NotBefore: now.Add(-time.Hour).Unix(),
+		NotAfter:  now.Add(30 * 24 * time.Hour).Unix(),
+		IssuedAt:  now.Add(-time.Hour).Unix(),
+	}, rootPriv)
+	if err != nil {
+		t.Fatalf("SignIntermediate: %v", err)
+	}
+	certBytes, err := cert.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal cert: %v", err)
+	}
+	dir := t.TempDir()
+	intPath = filepath.Join(dir, "intermediate.json")
+	if err := os.WriteFile(intPath, certBytes, 0o600); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	crl, err := license.SignCRL(license.CRLPayload{
+		Version:    license.CRLVersion,
+		Generation: 1,
+		IssuedAt:   now.Add(-time.Hour).Unix(),
+		ExpiresAt:  now.Add(7 * 24 * time.Hour).Unix(),
+	}, rootPriv)
+	if err != nil {
+		t.Fatalf("SignCRL: %v", err)
+	}
+	crlBytes, err := crl.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal CRL: %v", err)
+	}
+	crlPath = filepath.Join(dir, "crl.json")
+	if err := os.WriteFile(crlPath, crlBytes, 0o600); err != nil {
+		t.Fatalf("write CRL: %v", err)
+	}
+	return hexEncode(rootPub), crlPath, intPath, rootPriv, intPriv
+}
+
+func hexEncode(b []byte) string {
+	const hexdigits = "0123456789abcdef"
+	out := make([]byte, len(b)*2)
+	for i, c := range b {
+		out[i*2] = hexdigits[c>>4]
+		out[i*2+1] = hexdigits[c&0x0f]
+	}
+	return string(out)
+}
+
+func issueFleetToken(t *testing.T, signer ed25519.PrivateKey, id string) string {
+	t.Helper()
+	tok, err := license.Issue(license.License{
+		ID:       id,
+		Email:    "ops@example.test",
+		IssuedAt: time.Now().Add(-time.Hour).Unix(),
+		Features: []string{license.FeatureFleet},
+	}, signer)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	return tok
+}
+
+// TestEnvOnlyCommand_RequireIntermediateHonored proves the require-intermediate
+// knob is honored on a real env-only conductor CLI command (`kill status`),
+// which resolves its entire license from the environment via
+// VerifyFleetWithOptions. This is the actual round-1 fail-open path: ~18
+// commands called VerifyFleet("","",crl) directly, ignoring require mode.
+func TestEnvOnlyCommand_RequireIntermediateHonored(t *testing.T) {
+	if license.EmbeddedPublicKey() != nil {
+		t.Skip("embedded license key present; env public key override is ignored")
+	}
+	rootPubHex, crlPath, intPath, rootPriv, intPriv := requireModeKeys(t)
+
+	run := func(t *testing.T, token string) error {
+		t.Setenv(license.EnvLicenseKey, token)
+		t.Setenv(license.EnvLicensePublicKey, rootPubHex)
+		t.Setenv(license.EnvLicenseCRLFile, crlPath)
+		t.Setenv(license.EnvLicenseIntermediateFile, intPath)
+		t.Setenv(license.EnvLicenseRequireIntermediate, "true")
+		cmd := Cmd()
+		// kill status: license gate first, then "--org-id is required".
+		cmd.SetArgs([]string{"kill", "status"})
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		return cmd.Execute()
+	}
+
+	t.Run("root_signed_token_rejected_under_require", func(t *testing.T) {
+		err := run(t, issueFleetToken(t, rootPriv, "lic_root"))
+		if !errors.Is(err, license.ErrFleetLicenseRequired) {
+			t.Fatalf("root-signed token under require must be rejected at the license gate, got %v", err)
+		}
+	})
+
+	t.Run("intermediate_signed_token_passes_gate", func(t *testing.T) {
+		err := run(t, issueFleetToken(t, intPriv, "lic_int"))
+		// The gate passes; the command then fails for a non-license reason
+		// (--org-id is required). Assert the gate did NOT reject it.
+		if errors.Is(err, license.ErrFleetLicenseRequired) {
+			t.Fatalf("intermediate-signed token must pass the require gate, got fleet-required: %v", err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "org-id") {
+			t.Fatalf("expected post-gate --org-id error, got %v", err)
+		}
+	})
+}

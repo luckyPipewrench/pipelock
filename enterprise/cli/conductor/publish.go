@@ -167,7 +167,7 @@ Example:
 			// License gate: publishing fleet policy is an Enterprise fleet
 			// operation. Fail closed before reading any key material or opening
 			// a connection, mirroring serveCmd / bootstrapCmd.
-			if _, err := license.VerifyFleet("", "", opts.licenseCRL); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRL}); err != nil {
 				return err
 			}
 			return runPublish(cmd.Context(), cmd.OutOrStdout(), opts)

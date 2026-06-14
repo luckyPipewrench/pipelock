@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
@@ -176,6 +177,43 @@ func (c *Config) resolveLicenseRuntimeVerification() {
 			c.LicensePublicKey = env
 		}
 	}
+	c.resolveLicenseRequireIntermediate()
+}
+
+// resolveLicenseRequireIntermediate materializes the effective
+// require-intermediate value into LicenseRequireIntermediateResolved so runtime
+// consumers (CRL watcher, reload classifier) read the same value the startup
+// gate uses. An explicit config field wins; otherwise the env is consulted. A
+// malformed env value is recorded (LicenseRequireIntermediateEnvError) and
+// resolved to false — Validate surfaces it as a WARNING; the free proxy never
+// crashes on a license-trust misconfiguration, and paid surfaces fail closed at
+// their own verify (which re-parses the env via ResolveVerifyOptions).
+func (c *Config) resolveLicenseRequireIntermediate() {
+	if c.LicenseRequireIntermediate != nil {
+		c.LicenseRequireIntermediateResolved = *c.LicenseRequireIntermediate
+		c.LicenseRequireIntermediateEnvError = ""
+		return
+	}
+	raw, ok := os.LookupEnv(EnvLicenseRequireIntermediate)
+	if !ok {
+		c.LicenseRequireIntermediateResolved = false
+		c.LicenseRequireIntermediateEnvError = ""
+		return
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		c.LicenseRequireIntermediateResolved = false
+		c.LicenseRequireIntermediateEnvError = ""
+		return
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		c.LicenseRequireIntermediateResolved = false
+		c.LicenseRequireIntermediateEnvError = fmt.Sprintf("%q is not a boolean", raw)
+		return
+	}
+	c.LicenseRequireIntermediateResolved = v
+	c.LicenseRequireIntermediateEnvError = ""
 }
 
 // resolveLicenseKey populates LicenseKey from the highest-priority source:

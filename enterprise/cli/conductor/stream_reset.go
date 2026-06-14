@@ -38,7 +38,7 @@ without it. Prefer 'conductor rollback clear --authorization-id <id>' to remove
 a single rollback authorization.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runStreamReset(cmd, opts)

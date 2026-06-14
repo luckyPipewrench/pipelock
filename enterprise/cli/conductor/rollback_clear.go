@@ -34,7 +34,7 @@ The --confirm flag is required as a safety guard; the command refuses to run
 without it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runRollbackClear(cmd, opts)

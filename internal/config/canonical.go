@@ -160,6 +160,9 @@ func (c *Config) policySemanticView() Config {
 	view.LicenseIntermediateFile = ""
 	view.LicenseIntermediateCert = nil
 	view.LicenseIntermediateLoadError = ""
+	view.LicenseRequireIntermediate = nil
+	view.LicenseRequireIntermediateResolved = false
+	view.LicenseRequireIntermediateEnvError = ""
 	view.LicensePublicKey = ""
 	view.LicenseExpiresAt = 0
 	view.LicenseID = ""

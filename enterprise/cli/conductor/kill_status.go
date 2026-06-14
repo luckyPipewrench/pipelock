@@ -36,7 +36,7 @@ No new server endpoint is needed; the data is already in the stream-status
 response.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runKillStatus(cmd, opts)

@@ -80,7 +80,7 @@ func remoteKillStateCmd(use, short, long string, state conductorcore.KillSwitchS
 			// action. Fail closed before loading any key material or building
 			// a client so an unlicensed invocation gets a clear entitlement
 			// error, not a partial side effect.
-			if _, err := license.VerifyFleet("", "", opts.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runRemoteKill(cmd, opts, state)

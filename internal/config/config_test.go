@@ -13126,3 +13126,167 @@ func TestValidateMediationEnvelope(t *testing.T) {
 		})
 	}
 }
+
+// TestLicenseRequireIntermediateConfigStates exercises the 6 mandated states of
+// the license_require_intermediate boolean knob: omitted, YAML null/blank,
+// explicit false, explicit true, reload with change, reload without change. The
+// resolved value (LicenseRequireIntermediateResolved) folds the config field
+// over the env so runtime consumers see the same value the startup gate uses.
+func TestLicenseRequireIntermediateConfigStates(t *testing.T) {
+	writeCfg := func(t *testing.T, body string) *Config {
+		t.Helper()
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg
+	}
+
+	t.Run("omitted_defaults_false", func(t *testing.T) {
+		// Ensure no env leaks in.
+		t.Setenv(EnvLicenseRequireIntermediate, "")
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		cfg := writeCfg(t, "mode: balanced\n")
+		if cfg.LicenseRequireIntermediate != nil {
+			t.Fatalf("omitted field must be nil pointer, got %v", *cfg.LicenseRequireIntermediate)
+		}
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("omitted must resolve to false (brick-guard: today's behaviour)")
+		}
+	})
+
+	t.Run("yaml_null", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		cfg := writeCfg(t, "mode: balanced\nlicense_require_intermediate:\n")
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("null must resolve to false")
+		}
+	})
+
+	t.Run("explicit_false", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		cfg := writeCfg(t, "mode: balanced\nlicense_require_intermediate: false\n")
+		if cfg.LicenseRequireIntermediate == nil || *cfg.LicenseRequireIntermediate {
+			t.Fatal("explicit false must set pointer to false")
+		}
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("explicit false must resolve false")
+		}
+	})
+
+	t.Run("explicit_true", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		cfg := writeCfg(t, "mode: balanced\nlicense_require_intermediate: true\n")
+		if cfg.LicenseRequireIntermediate == nil || !*cfg.LicenseRequireIntermediate {
+			t.Fatal("explicit true must set pointer to true")
+		}
+		if !cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("explicit true must resolve true")
+		}
+	})
+
+	t.Run("explicit_config_wins_over_env", func(t *testing.T) {
+		t.Setenv(EnvLicenseRequireIntermediate, "true")
+		cfg := writeCfg(t, "mode: balanced\nlicense_require_intermediate: false\n")
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("explicit config false must win over env true")
+		}
+	})
+
+	t.Run("env_true_when_omitted", func(t *testing.T) {
+		t.Setenv(EnvLicenseRequireIntermediate, "true")
+		cfg := writeCfg(t, "mode: balanced\n")
+		if !cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("env=true must resolve true when config omits the field")
+		}
+	})
+
+	t.Run("invalid_env_recorded_not_crashing", func(t *testing.T) {
+		t.Setenv(EnvLicenseRequireIntermediate, "treu")
+		cfg := writeCfg(t, "mode: balanced\n")
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("invalid env must resolve to false, NOT crash and NOT default-on")
+		}
+		if cfg.LicenseRequireIntermediateEnvError == "" {
+			t.Fatal("invalid env must record an env error for the validate WARNING")
+		}
+		// Validate must surface the warning, not a fatal error.
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("invalid require env must not fail validation: %v", err)
+		}
+		found := false
+		for _, w := range warnings {
+			if w.Field == "license_require_intermediate" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected a license_require_intermediate warning, got %+v", warnings)
+		}
+	})
+
+	t.Run("reload_change_and_no_change", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_require_intermediate: false\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		first, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.LicenseRequireIntermediateResolved {
+			t.Fatal("first load false")
+		}
+		// Reload WITHOUT change.
+		unchanged, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unchanged.LicenseRequireIntermediateResolved {
+			t.Fatal("reload without change must stay false")
+		}
+		// Reload WITH change.
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_require_intermediate: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed.LicenseRequireIntermediateResolved {
+			t.Fatal("reload with change must flip to true")
+		}
+	})
+}
+
+// TestLicenseRequireIntermediateExcludedFromPolicyHash confirms the trust knob
+// does not enter the canonical policy hash (changing it must not shift ph).
+func TestLicenseRequireIntermediateExcludedFromPolicyHash(t *testing.T) {
+	base := Defaults()
+	withRequire := Defaults()
+	rq := true
+	withRequire.LicenseRequireIntermediate = &rq
+	withRequire.LicenseRequireIntermediateResolved = true
+	withRequire.LicenseRequireIntermediateEnvError = "ignored"
+	if base.CanonicalPolicyHash() != withRequire.CanonicalPolicyHash() {
+		t.Fatal("license_require_intermediate must be excluded from the canonical policy hash")
+	}
+}
+
+// TestEnvLicenseRequireIntermediateNameParity asserts the config-package env
+// name matches the canonical license-package name (the two are declared
+// separately to avoid an import-cycle concern and MUST stay identical).
+func TestEnvLicenseRequireIntermediateNameParity(t *testing.T) {
+	if EnvLicenseRequireIntermediate != license.EnvLicenseRequireIntermediate {
+		t.Fatalf("env name mismatch: config=%q license=%q",
+			EnvLicenseRequireIntermediate, license.EnvLicenseRequireIntermediate)
+	}
+}

@@ -71,7 +71,7 @@ last-contact time are NOT tracked by the Conductor and are not reported; use
 'conductor fleet status' for the enrolled-follower roster.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runStreamStatus(cmd, opts, false)
@@ -95,7 +95,7 @@ the active emergency controls. Per-follower applied version and drift are not
 included because the Conductor does not track them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runStreamStatus(cmd, opts, true)

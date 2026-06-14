@@ -138,6 +138,13 @@ const (
 	EnvLicenseCRLFile   = "PIPELOCK_LICENSE_CRL_FILE"
 	EnvLicensePublicKey = "PIPELOCK_LICENSE_PUBLIC_KEY"
 
+	// EnvLicenseRequireIntermediate mirrors license.EnvLicenseRequireIntermediate
+	// in the config package so Load() can materialize it into the resolved Config
+	// (license_require_intermediate). Re-declared here to avoid an import cycle
+	// concern in the env-name table; the canonical name lives in the license
+	// package and the two MUST match (asserted by a parity test).
+	EnvLicenseRequireIntermediate = "PIPELOCK_LICENSE_REQUIRE_INTERMEDIATE"
+
 	// EnvKillSwitchAPIToken is the environment variable for admin API bearer
 	// token override. Takes priority over kill_switch.api_token.
 	EnvKillSwitchAPIToken = "PIPELOCK_KILLSWITCH_API_TOKEN" //nolint:gosec // env var name, not a credential
@@ -392,11 +399,17 @@ type Config struct {
 	LicenseFile              string                  `yaml:"license_file,omitempty"`                       // path to file containing the license token (read at startup)
 	LicenseCRLFile           string                  `yaml:"license_crl_file,omitempty" json:"-"`          // path to signed license revocation list (read at startup)
 	LicenseIntermediateFile  string                  `yaml:"license_intermediate_file,omitempty" json:"-"` // path to root-signed intermediate license-signing certificate
-	LicensePublicKey         string                  `yaml:"license_public_key,omitempty"`                 // hex-encoded Ed25519 public key for license verification (dev builds only)
-	Internal                 []string                `yaml:"internal"`
-	TrustedDomains           []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
-	SSRF                     SSRF                    `yaml:"ssrf"`
-	DNS                      DNS                     `yaml:"dns"`
+	// LicenseRequireIntermediate, when true, refuses any license that is not
+	// validated through a root-certified intermediate (the offline-root PKI
+	// tier). A *bool distinguishes omitted (nil -> env fallback, default false)
+	// from an explicit false. Excluded from the canonical policy hash: it is a
+	// license-trust knob, not effective request policy.
+	LicenseRequireIntermediate *bool    `yaml:"license_require_intermediate,omitempty" json:"-"`
+	LicensePublicKey           string   `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
+	Internal                   []string `yaml:"internal"`
+	TrustedDomains             []string `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
+	SSRF                       SSRF     `yaml:"ssrf"`
+	DNS                        DNS      `yaml:"dns"`
 
 	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
 	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
@@ -418,6 +431,19 @@ type Config struct {
 	// not be loaded. LicenseIntermediateCert stays non-empty in that state so
 	// verification fails closed instead of silently downgrading to root-only.
 	LicenseIntermediateLoadError string `yaml:"-" json:"-"`
+	// LicenseRequireIntermediateResolved is the effective require-intermediate
+	// value after folding the env (EnvLicenseRequireIntermediate) under the
+	// config field. Runtime consumers (CRL watcher, reload classifier) read this
+	// so they see the same require-mode the startup gate did — the env must be
+	// materialized here or a reload would miss a require-mode change. Set by
+	// Load(); false for Defaults().
+	LicenseRequireIntermediateResolved bool `yaml:"-" json:"-"`
+	// LicenseRequireIntermediateEnvError records a malformed
+	// EnvLicenseRequireIntermediate value. The free proxy must NOT crash on it
+	// (never gate detection behind a license), so Load surfaces it as a validate
+	// WARNING and treats require as false; paid surfaces fail closed at their own
+	// verify call.
+	LicenseRequireIntermediateEnvError string `yaml:"-" json:"-"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().

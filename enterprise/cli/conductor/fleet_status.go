@@ -56,7 +56,7 @@ enrollment time, and active state. Applied bundle version and last-contact time
 are NOT tracked by the Conductor enrollment store today and are not reported.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runFleetStatus(cmd, opts, false)
@@ -75,7 +75,7 @@ func followersCmd() *cobra.Command {
 		Short: "List enrolled Conductor followers (alias of 'fleet status')",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runFleetStatus(cmd, opts, false)

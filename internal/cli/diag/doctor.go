@@ -276,15 +276,14 @@ func doctorVerifiedLicense(cfg *config.Config) (license.License, bool, error) {
 		}
 		return lic, false, nil
 	}
-	var crl *license.CRL
-	if cfg.LicenseCRLFile != "" {
-		loaded, crlErr := license.LoadAndVerifyCRLMonotonic(cfg.LicenseCRLFile, pubKey, time.Now())
-		if crlErr != nil {
-			return license.License{}, true, crlErr
-		}
-		crl = &loaded
+	opts, optErr := license.ResolveVerifyOptions(
+		pubKey, cfg.LicenseCRLFile, cfg.LicenseIntermediateCert, cfg.LicenseIntermediateFile,
+		true, cfg.LicenseRequireIntermediateResolved,
+	)
+	if optErr != nil {
+		return license.License{}, true, optErr
 	}
-	lic, verifyErr := license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, crl, time.Now())
+	lic, verifyErr := license.VerifyTokenWithOptions(cfg.LicenseKey, opts)
 	return lic, true, verifyErr
 }
 

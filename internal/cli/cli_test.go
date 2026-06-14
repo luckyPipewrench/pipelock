@@ -17,7 +17,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	stdruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -2125,26 +2124,20 @@ kill_switch:
 }
 
 func TestGenerateCmd_WriteError(t *testing.T) {
-	if stdruntime.GOOS == "windows" {
-		t.Skip("os.Chmod(dir, 0o500) does not make a directory non-writable on Windows (POSIX mode bits do not gate directory writes); the write-error path is verified on Unix CI")
-	}
-	// Generate config with -o pointing to a read-only directory.
+	// Point -o at an existing directory so os.WriteFile fails on every
+	// platform. This exercises the write-error path portably, without
+	// relying on Unix-only chmod 0500 directory permissions.
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore
 
-	outPath := filepath.Join(dir, "pipelock.yaml")
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"generate", "config", "--preset", "balanced", "-o", outPath})
+	cmd.SetArgs([]string{"generate", "config", "--preset", "balanced", "-o", dir})
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error writing to read-only directory")
+		t.Fatal("expected error writing config to a directory path")
 	}
 	if !strings.Contains(err.Error(), "writing config file") {
 		t.Errorf("expected 'writing config file' error, got: %v", err)
@@ -2167,25 +2160,23 @@ func TestDemoCmd_Basic(t *testing.T) {
 }
 
 func TestGenerateDockerComposeCmd_WriteError(t *testing.T) {
-	if stdruntime.GOOS == "windows" {
-		t.Skip("os.Chmod(dir, 0o500) does not make a directory non-writable on Windows (POSIX mode bits do not gate directory writes); the write-error path is verified on Unix CI")
-	}
+	// Point -o at an existing directory so os.WriteFile fails on every
+	// platform. This exercises the write-error path portably, without
+	// relying on Unix-only chmod 0500 directory permissions.
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // intentionally restrictive for test
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore
 
-	outPath := filepath.Join(dir, "docker-compose.yaml")
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"generate", "docker-compose", "-o", outPath})
+	cmd.SetArgs([]string{"generate", "docker-compose", "-o", dir})
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error writing to read-only directory")
+		t.Fatal("expected error writing compose file to a directory path")
+	}
+	if !strings.Contains(err.Error(), "writing compose file") {
+		t.Errorf("expected 'writing compose file' error, got: %v", err)
 	}
 }
 

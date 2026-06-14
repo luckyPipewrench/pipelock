@@ -115,7 +115,7 @@ func verifyLicenseInputs(licenseKey, publicKeyHex, crlFile, intermediateFile str
 	}
 	var crl *CRL
 	if crlFile != "" {
-		loaded, crlErr := LoadAndVerifyCRL(crlFile, pubKey, time.Now())
+		loaded, crlErr := LoadAndVerifyCRLMonotonic(crlFile, pubKey, time.Now())
 		if crlErr != nil {
 			return License{}, fmt.Errorf("loading license CRL: %w", crlErr)
 		}

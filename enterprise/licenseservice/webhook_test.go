@@ -1316,6 +1316,42 @@ func TestSignedCRL_NoSigningKeyFailsClosed(t *testing.T) {
 	}
 }
 
+func TestSignedCRL_AdvancesGeneration(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	first, err := ts.handler.SignedCRL(ctx, now)
+	if err != nil {
+		t.Fatalf("first SignedCRL: %v", err)
+	}
+	second, err := ts.handler.SignedCRL(ctx, now)
+	if err != nil {
+		t.Fatalf("second SignedCRL: %v", err)
+	}
+	if first.Payload.Generation != 1 {
+		t.Fatalf("first CRL generation = %d, want 1", first.Payload.Generation)
+	}
+	if second.Payload.Generation != 2 {
+		t.Fatalf("second CRL generation = %d, want 2", second.Payload.Generation)
+	}
+}
+
+func TestSignedCRL_GenerationFailureFailsClosed(t *testing.T) {
+	ts := newTestSetup(t)
+	if _, err := ts.db.db.ExecContext(t.Context(), `DROP TABLE crl_generation`); err != nil {
+		t.Fatalf("drop crl_generation: %v", err)
+	}
+
+	_, err := ts.handler.SignedCRL(t.Context(), time.Now())
+	if err == nil {
+		t.Fatal("SignedCRL must fail closed when generation cannot advance")
+	}
+	if !strings.Contains(err.Error(), "advance CRL generation") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestSignedCRL_UsesDedicatedSigningKey(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := t.Context()

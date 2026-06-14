@@ -46,6 +46,7 @@ func LicenseCmd() *cobra.Command {
 		licenseInspectCmd(),
 		licenseInstallCmd(),
 		licenseStatusCmd(),
+		licenseCRLCmd(),
 	)
 	return cmd
 }
@@ -334,7 +335,7 @@ func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, 
 	var crl *license.CRL
 	if crlFile != "" {
 		report.CRLConfigured = true
-		loaded, crlErr := license.LoadAndVerifyCRL(crlFile, pubKey, time.Now())
+		loaded, crlErr := license.LoadAndVerifyCRLMonotonic(crlFile, pubKey, time.Now())
 		if crlErr != nil {
 			report.Status = licenseStatusInvalid
 			report.Reason = crlErr.Error()

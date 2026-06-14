@@ -90,11 +90,16 @@ func Cmd() *cobra.Command {
 	cmd.AddCommand(fleetCmd())
 	cmd.AddCommand(streamCmd())
 	cmd.AddCommand(followersCmd())
-	cmd.AddCommand(killCmd())
+	kCmd := killCmd()
+	kCmd.AddCommand(killStatusCmd())
+	cmd.AddCommand(kCmd)
 	cmd.AddCommand(resumeCmd())
-	cmd.AddCommand(rollbackCmd())
+	rbCmd := rollbackCmd()
+	rbCmd.AddCommand(rollbackClearCmd())
+	cmd.AddCommand(rbCmd)
 	cmd.AddCommand(enrollCmd())
 	cmd.AddCommand(enrollmentTokenCmd())
+	cmd.AddCommand(storeCmd())
 	return cmd
 }
 

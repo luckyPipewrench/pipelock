@@ -52,8 +52,17 @@ type RevokedIntermediate struct {
 // simply carry an empty list, and the wire version stays 1 (a pre-PKI verifier
 // only does direct-root verification and never trusts an intermediate anyway).
 type CRLPayload struct {
-	Version              int                   `json:"version"`
-	IssuedAt             int64                 `json:"issued_at"`
+	Version  int   `json:"version"`
+	IssuedAt int64 `json:"issued_at"`
+	// Generation is a monotonic counter, per trust anchor, that the issuer
+	// strictly increases for every newly distributed CRL. Consumers reject any
+	// CRL whose generation is below the highest one they have accepted, which
+	// closes the revocation-rollback gap: an attacker who can write the CRL file
+	// cannot swap in an OLDER (still-unexpired) signed CRL that omits a
+	// revocation to re-validate a revoked license. It is omitempty and absent/0
+	// on legacy CRLs predating this field; generation 0 remains valid and is
+	// treated as the lowest generation (first run).
+	Generation           uint64                `json:"generation,omitempty"`
 	ExpiresAt            int64                 `json:"expires_at"`
 	Revoked              []RevokedLicense      `json:"revoked"`
 	RevokedIntermediates []RevokedIntermediate `json:"revoked_intermediates,omitempty"`

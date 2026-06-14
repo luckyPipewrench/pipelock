@@ -386,6 +386,64 @@ func TestLoadAndVerifyCRLRejectsBadPaths(t *testing.T) {
 	}
 }
 
+func TestCRLGenerationRoundTrip(t *testing.T) {
+	pub, priv := testKeyPair(t)
+	now := time.Now().UTC()
+
+	t.Run("legacy-no-generation-field-is-gen-0", func(t *testing.T) {
+		// A CRL signed without a Generation field round-trips as generation 0
+		// and verifies (back-compat: legacy CRLs predate the field).
+		crl, err := SignCRL(CRLPayload{
+			Version:   CRLVersion,
+			IssuedAt:  now.Add(-time.Hour).Unix(),
+			ExpiresAt: now.Add(24 * time.Hour).Unix(),
+		}, priv)
+		if err != nil {
+			t.Fatalf("SignCRL: %v", err)
+		}
+		// omitempty: a 0 generation must NOT appear in the signed payload, so a
+		// legacy verifier that never knew the field sees byte-identical output.
+		if strings.Contains(string(crl.payload), "generation") {
+			t.Fatalf("gen-0 payload should omit the generation field: %s", crl.payload)
+		}
+		data, err := json.Marshal(crl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ParseAndVerifyCRL(data, pub, now)
+		if err != nil {
+			t.Fatalf("ParseAndVerifyCRL: %v", err)
+		}
+		if got.Payload.Generation != 0 {
+			t.Fatalf("generation = %d, want 0", got.Payload.Generation)
+		}
+	})
+
+	t.Run("generation-survives-sign-verify", func(t *testing.T) {
+		const wantGen = 123
+		crl, err := SignCRL(CRLPayload{
+			Version:    CRLVersion,
+			Generation: wantGen,
+			IssuedAt:   now.Add(-time.Hour).Unix(),
+			ExpiresAt:  now.Add(24 * time.Hour).Unix(),
+		}, priv)
+		if err != nil {
+			t.Fatalf("SignCRL: %v", err)
+		}
+		data, err := json.Marshal(crl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ParseAndVerifyCRL(data, pub, now)
+		if err != nil {
+			t.Fatalf("ParseAndVerifyCRL: %v", err)
+		}
+		if got.Payload.Generation != wantGen {
+			t.Fatalf("generation = %d, want %d", got.Payload.Generation, wantGen)
+		}
+	})
+}
+
 func testCRL(t *testing.T, priv ed25519.PrivateKey, now time.Time, revokedID string) CRL {
 	t.Helper()
 	crl, err := SignCRL(CRLPayload{

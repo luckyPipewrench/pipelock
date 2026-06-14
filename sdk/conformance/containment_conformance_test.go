@@ -76,6 +76,15 @@ func loadContainmentProbe(t *testing.T, path string) containmentProbeFixture {
 	if len(fx.Runs) == 0 {
 		t.Fatalf("probe fixture %s has no runs (fail-closed: refusing to drive an empty runner)", path)
 	}
+	// A run rule with no match substrings matches every command (allSubstringsPresent
+	// returns true for an empty needle set), which would let the first such rule
+	// swallow every probe invocation and misattribute its canned response. Reject it
+	// at load so a malformed fixture fails loud instead of silently shadowing later rules.
+	for i, rule := range fx.Runs {
+		if len(rule.Match) == 0 {
+			t.Fatalf("probe fixture %s: runs[%d] has an empty match (would match every command)", path, i)
+		}
+	}
 	return fx
 }
 

@@ -94,9 +94,12 @@ cat > "$LEAKY_EXPECT" <<'JSON'
 JSON
 
 # Run only the corpus-walking test (the one that reads .expect.json) against the
-# mutated corpus. Restore immediately after, regardless of outcome.
+# mutated corpus. The regex is anchored so it does NOT also pull in the dedicated
+# TestContainmentConformance_* helpers (which assert the must-fail property
+# independently of .expect.json); this mutation step must isolate the corpus
+# walker's expect-comparison logic. Restore immediately after, regardless of outcome.
 set +e
-( cd "$REPO_ROOT" && go test -count=1 -run TestContainmentConformance "$TEST_PKG" >/dev/null 2>&1 )
+( cd "$REPO_ROOT" && go test -count=1 -run '^TestContainmentConformance$' "$TEST_PKG" >/dev/null 2>&1 )
 MUT_RC=$?
 set -e
 restore_expect

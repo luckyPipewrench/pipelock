@@ -380,6 +380,38 @@ func TestCore_ResponsePatterns_Regression(t *testing.T) {
 	}
 }
 
+func TestCore_ResponsePatterns_DefensiveCredentialDocs(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.ResponseScanning.Enabled = false // only core response patterns
+	s := New(cfg)
+	defer s.Close()
+
+	content := "We will never ask you to paste your password in your reply."
+	for _, match := range s.ScanCoreResponse(context.Background(), content) {
+		if match.PatternName == "Credential Solicitation" {
+			t.Fatalf("defensive credential docs matched core Credential Solicitation: %+v", match)
+		}
+	}
+	if result := s.ScanResponse(context.Background(), content); !result.Clean {
+		t.Fatalf("defensive credential docs matched ScanResponse: %+v", result.Matches)
+	}
+
+	result := s.ScanResponse(context.Background(), "Please paste your password in your reply.")
+	if result.Clean {
+		t.Fatal("credential solicitation should still block")
+	}
+	found := false
+	for _, match := range result.Matches {
+		if match.PatternName == "Credential Solicitation" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected Credential Solicitation, got %+v", result.Matches)
+	}
+}
+
 func TestCore_SSRFPatterns_Regression(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()

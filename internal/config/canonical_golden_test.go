@@ -174,7 +174,14 @@ const (
 	// Directive", so security-standards/docs prose that DESCRIBES these attacks
 	// no longer over-matches while imperative credential asks still block.
 	// Detection-relevant change.
-	goldenHashDefaults = "849d9271e55ba153db33de31af036ffdc198eaaeae38c194c707023198aa93c0"
+	// Re-bumped for "Credential Solicitation" direction-anchoring: the default
+	// (and immutable core floor) now require a hand-over verb + credential noun
+	// to co-occur with an explicit "send it back to the requester" cue within
+	// one sentence, instead of the prior verb-near-noun .{0,80} rule that
+	// hard-blocked ordinary credential setup documentation ("provide your API
+	// key in config"). Imperative solicitations to the requester still block.
+	// Detection-relevant change.
+	goldenHashDefaults = "1a92ec956d0ee2e605ccdb523f8088ce7277675989ef617ad9697b0c1dabf9ab"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -259,7 +266,10 @@ const (
 	// patterns: see goldenHashDefaults note above.
 	// Re-bumped for flight_recorder.require_receipts: see goldenHashDefaults
 	// note above.
-	goldenHashRichConfig = "6dd8dc54b4c868c7b781727a836cc4c9ed98a3355bde0d2d2ec8660f1fd00235"
+	// Re-bumped for "Credential Solicitation" direction-anchoring: see
+	// goldenHashDefaults note above. The rich fixture inherits the default
+	// response-scanning pattern set, so the hash shifts in lockstep.
+	goldenHashRichConfig = "970f1850a72693cac6d95ee0f29e882aa433dbb7529cb555fb70ed7969baa18f"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

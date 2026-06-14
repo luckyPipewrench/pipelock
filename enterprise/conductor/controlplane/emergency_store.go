@@ -477,6 +477,56 @@ func newerRollback(candidate, current StoredRollbackAuthorization) bool {
 	return candidate.AuthorizationHash > current.AuthorizationHash
 }
 
+// ClearRollbackAuthorization removes a rollback authorization by its
+// authorization_id. It is an admin-only state mutation: the operator uses it to
+// clear an active rollback authorization that is no longer needed (e.g. after a
+// forward publish succeeds) without waiting for the TTL to expire. Returns
+// true when a record was found and removed.
+func (s *FileEmergencyStore) ClearRollbackAuthorization(_ context.Context, authorizationID string) (bool, error) {
+	if s == nil {
+		return false, ErrEmergencyStoreRequired
+	}
+	if strings.TrimSpace(authorizationID) == "" {
+		return false, fmt.Errorf("%w: authorization_id required", conductor.ErrMissingField)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hash, ok := s.rollbackAuthIDMap[authorizationID]
+	if !ok {
+		return false, nil
+	}
+	// Capture what we are about to remove so we can restore the in-memory
+	// state verbatim if the durable write fails (mirrors the rollback in
+	// PublishRollbackAuthorization). Diverging memory from disk on a failed
+	// write would let a cleared-in-memory-only authorization stop capping the
+	// stream head while disk still has it.
+	removed, hadRecord := s.rollbackHashes[hash]
+	originalRollbacks := s.rollbacks
+	// Remove from the ID→hash map and the hash→record map.
+	delete(s.rollbackAuthIDMap, authorizationID)
+	delete(s.rollbackHashes, hash)
+	// Remove from the ordered slice (new backing array; originalRollbacks
+	// still references the pre-clear contents for restore-on-error).
+	filtered := make([]StoredRollbackAuthorization, 0, len(s.rollbacks))
+	for _, record := range s.rollbacks {
+		if record.Authorization.AuthorizationID != authorizationID {
+			filtered = append(filtered, record)
+		}
+	}
+	s.rollbacks = filtered
+	if err := s.writeLocked(); err != nil {
+		// Restore the exact pre-clear in-memory state: disk is the source of
+		// truth and the write did not land.
+		s.rollbackAuthIDMap[authorizationID] = hash
+		if hadRecord {
+			s.rollbackHashes[hash] = removed
+		}
+		s.rollbacks = originalRollbacks
+		return false, fmt.Errorf("conductor emergency store write after clear: %w", err)
+	}
+	return true, nil
+}
+
 func (s *FileEmergencyStore) maxRemoteKillCounterForOrgFleetLocked(orgID, fleetID string) (uint64, bool) {
 	var maxCounter uint64
 	found := false

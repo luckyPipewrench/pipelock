@@ -562,6 +562,8 @@ func TestInstallCA_PrintsInstructions(t *testing.T) {
 	}
 }
 
+// TestWriteCAFiles_ReadOnlyDir verifies writeCAFiles returns a "create key
+// directory" error when the key directory cannot be created.
 func TestWriteCAFiles_ReadOnlyDir(t *testing.T) {
 	// Force the key-directory MkdirAll to fail portably: place a regular
 	// file at a path component, then nest the key path beneath it. MkdirAll
@@ -649,6 +651,8 @@ func TestSaveCA_RefusesOverwrite_KeyExists(t *testing.T) {
 	}
 }
 
+// TestWriteCAFiles_CertDirCreateFails verifies writeCAFiles returns a "create
+// cert directory" error when the cert directory cannot be created.
 func TestWriteCAFiles_CertDirCreateFails(t *testing.T) {
 	// Force the cert-directory MkdirAll to fail portably: a regular file at
 	// a path component makes directory creation fail on every platform, so

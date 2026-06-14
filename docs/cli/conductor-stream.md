@@ -42,7 +42,7 @@ validated before the store is read).
 
 Both subcommands issue a single request:
 
-```
+```http
 GET /api/v1/conductor/stream?org_id=<org>&fleet_id=<fleet>
 ```
 

@@ -51,7 +51,7 @@ for f in "$LEAKY_PROBE" "$LEAKY_EXPECT" "$CLEAN_PROBE" "$CLEAN_EXPECT"; do
 done
 
 echo "==> [1/2] Running containment conformance test over the real corpus"
-if ! ( cd "$REPO_ROOT" && go test -count=1 -run "$TEST_RUN" "$TEST_PKG" ); then
+if ! ( cd "$REPO_ROOT" && go test -race -count=1 -run "$TEST_RUN" "$TEST_PKG" ); then
   echo "FAIL: containment conformance test failed against the real corpus" >&2
   exit 1
 fi
@@ -103,7 +103,7 @@ JSON
 # independently of .expect.json); this mutation step must isolate the corpus
 # walker's expect-comparison logic. Restore immediately after, regardless of outcome.
 set +e
-( cd "$REPO_ROOT" && go test -count=1 -run '^TestContainmentConformance$' "$TEST_PKG" >"$MUT_OUT" 2>&1 )
+( cd "$REPO_ROOT" && go test -race -count=1 -run '^TestContainmentConformance$' "$TEST_PKG" >"$MUT_OUT" 2>&1 )
 MUT_RC=$?
 set -e
 

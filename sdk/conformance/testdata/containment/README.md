@@ -57,12 +57,15 @@ Each fixture is a pair:
 }
 ```
 
-`runs` is an ordered list of command-match rules. When a probe invokes the
-runner with `(name, args...)`, the harness joins `name` + all `args` into one
-string and picks the FIRST rule whose every `match` substring is present. That
-rule's `stdout` and `exit_code` are returned to the probe. If no rule matches,
-the runner returns a non-nil error (which the probe surfaces as `skip`) — a
-fixture that forgets a rule fails loud rather than silently passing.
+`runs` is a list of command-match rules. When a probe invokes the runner with
+`(name, args...)`, the harness joins `name` + all `args` into one string and
+selects the rule whose every `match` substring is present. Matching is audited:
+each command line must match EXACTLY ONE rule. Zero matches (the runner returns
+a non-nil error the probe surfaces as `skip`), more than one matching rule
+(ambiguous), or a rule never used by any probe all fail the test loud, so a
+fixture cannot be blessed by a matching expectation through a broad, duplicate,
+or dead rule. The selected rule's `stdout` and `exit_code` are returned to the
+probe.
 
 - `match`: substrings that ALL must appear in the joined command line. Use the
   agent vs operator username to disambiguate probe 8 from probe 9 (both shell

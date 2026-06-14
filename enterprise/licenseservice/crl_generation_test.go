@@ -6,6 +6,7 @@ package licenseservice
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,4 +86,51 @@ func TestNextCRLGenerationDBError(t *testing.T) {
 	if _, err := db.NextCRLGeneration(t.Context()); err == nil {
 		t.Fatal("NextCRLGeneration on a closed DB must error, got nil")
 	}
+}
+
+func TestNextCRLGenerationSQLErrors(t *testing.T) {
+	t.Run("seed failure fails closed", func(t *testing.T) {
+		db := openTestDB(t)
+		if _, err := db.db.ExecContext(t.Context(), `DROP TABLE crl_generation`); err != nil {
+			t.Fatalf("drop crl_generation: %v", err)
+		}
+		_, err := db.NextCRLGeneration(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "seed crl generation") {
+			t.Fatalf("NextCRLGeneration err = %v, want seed crl generation", err)
+		}
+	})
+
+	t.Run("advance failure fails closed", func(t *testing.T) {
+		db := openTestDB(t)
+		_, err := db.db.ExecContext(t.Context(), `
+			CREATE TRIGGER crl_generation_block_update
+			BEFORE UPDATE ON crl_generation
+			BEGIN
+				SELECT RAISE(ABORT, 'blocked crl generation update');
+			END`)
+		if err != nil {
+			t.Fatalf("create update trigger: %v", err)
+		}
+		_, err = db.NextCRLGeneration(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "advance crl generation") {
+			t.Fatalf("NextCRLGeneration err = %v, want advance crl generation", err)
+		}
+	})
+
+	t.Run("read failure fails closed", func(t *testing.T) {
+		db := openTestDB(t)
+		_, err := db.db.ExecContext(t.Context(), `
+			CREATE TRIGGER crl_generation_delete_after_update
+			AFTER UPDATE ON crl_generation
+			BEGIN
+				DELETE FROM crl_generation WHERE id = NEW.id;
+			END`)
+		if err != nil {
+			t.Fatalf("create delete trigger: %v", err)
+		}
+		_, err = db.NextCRLGeneration(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "read crl generation") {
+			t.Fatalf("NextCRLGeneration err = %v, want read crl generation", err)
+		}
+	})
 }

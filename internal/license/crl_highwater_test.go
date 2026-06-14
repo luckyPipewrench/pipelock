@@ -194,6 +194,18 @@ func TestWriteCRLHighWaterErrors(t *testing.T) {
 	})
 }
 
+func TestAcquireCRLHighWaterLockOpenError(t *testing.T) {
+	crlFile := filepath.Join(t.TempDir(), "crl.json")
+	lockPath := CRLHighWaterPath(crlFile) + ".lock"
+	if err := os.Mkdir(lockPath, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if unlock, err := acquireCRLHighWaterLock(crlFile); err == nil {
+		unlock()
+		t.Fatal("lock path that is already a directory must fail, got nil")
+	}
+}
+
 func TestLoadAndVerifyCRLMonotonic(t *testing.T) {
 	pub, priv := testKeyPair(t)
 	now := time.Now().UTC()

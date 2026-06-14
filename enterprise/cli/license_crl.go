@@ -69,6 +69,9 @@ func readCRLFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stat CRL file: %w", err)
 	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("CRL must be a regular file")
+	}
 	if info.Size() > maxInspectCRLSize {
 		return nil, fmt.Errorf("CRL file too large: %d bytes (max %d)", info.Size(), maxInspectCRLSize)
 	}

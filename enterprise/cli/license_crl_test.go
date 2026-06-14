@@ -55,10 +55,10 @@ func writeSignedCRL(t *testing.T, priv ed25519.PrivateKey, ids ...string) string
 	return path
 }
 
-// writeUnsignedExpiredCRL hand-builds a CRL wire file with a past expiry and a
-// junk signature. Inspect must decode it (it does not verify); verify must
-// reject it. SignCRL refuses past expiry, so the wire format is built directly.
-func writeUnsignedExpiredCRL(t *testing.T) string {
+// writeExpiredCRLWire hand-builds a past-expiry CRL wire file, signing the
+// payload bytes with sign. SignCRL refuses past expiry, so expired fixtures are
+// built directly. Callers vary only the signature (junk vs valid) and filename.
+func writeExpiredCRLWire(t *testing.T, name string, sign func(payload []byte) string) string {
 	t.Helper()
 	now := time.Now()
 	payload := license.CRLPayload{
@@ -76,17 +76,26 @@ func writeUnsignedExpiredCRL(t *testing.T) string {
 		Signature string `json:"signature"`
 	}{
 		Payload:   base64.RawURLEncoding.EncodeToString(raw),
-		Signature: base64.RawURLEncoding.EncodeToString([]byte("not-a-real-signature")),
+		Signature: sign(raw),
 	}
 	data, err := json.Marshal(wire)
 	if err != nil {
 		t.Fatalf("marshal wire: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "expired-crl.json")
+	path := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write CRL: %v", err)
 	}
 	return path
+}
+
+// writeUnsignedExpiredCRL builds an expired CRL with a junk signature. Inspect
+// must decode it (it does not verify); verify must reject it.
+func writeUnsignedExpiredCRL(t *testing.T) string {
+	t.Helper()
+	return writeExpiredCRLWire(t, "expired-crl.json", func([]byte) string {
+		return base64.RawURLEncoding.EncodeToString([]byte("not-a-real-signature"))
+	})
 }
 
 func runCRLCmd(t *testing.T, args ...string) (string, error) {
@@ -187,6 +196,15 @@ func TestLicenseCRLInspect(t *testing.T) {
 			t.Errorf("want exit 1 for malformed, got err=%v", err)
 		}
 	})
+
+	t.Run("non-regular file rejected", func(t *testing.T) {
+		// A directory is a portable non-regular file; the size guard alone
+		// would not catch a device/FIFO, so IsRegular must reject it.
+		_, err := runCRLCmd(t, "inspect", t.TempDir())
+		if exitCode(t, err) != 1 {
+			t.Errorf("want exit 1 for non-regular file, got err=%v", err)
+		}
+	})
 }
 
 func TestLicenseCRLVerify(t *testing.T) {
@@ -250,32 +268,7 @@ func TestLicenseCRLVerify(t *testing.T) {
 // rejection (not just signature) is exercised end-to-end.
 func writeValidlySignedExpiredCRL(t *testing.T, priv ed25519.PrivateKey) string {
 	t.Helper()
-	now := time.Now()
-	payload := license.CRLPayload{
-		Version:   license.CRLVersion,
-		IssuedAt:  now.Add(-1440 * time.Hour).Unix(),
-		ExpiresAt: now.Add(-720 * time.Hour).Unix(),
-		Revoked:   []license.RevokedLicense{{ID: testRevokedID, RevokedAt: now.Add(-1440 * time.Hour).Unix()}},
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
-	}
-	sig := ed25519.Sign(priv, raw)
-	wire := struct {
-		Payload   string `json:"payload"`
-		Signature string `json:"signature"`
-	}{
-		Payload:   base64.RawURLEncoding.EncodeToString(raw),
-		Signature: base64.RawURLEncoding.EncodeToString(sig),
-	}
-	data, err := json.Marshal(wire)
-	if err != nil {
-		t.Fatalf("marshal wire: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "signed-expired-crl.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write CRL: %v", err)
-	}
-	return path
+	return writeExpiredCRLWire(t, "signed-expired-crl.json", func(raw []byte) string {
+		return base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, raw))
+	})
 }

@@ -265,15 +265,30 @@ func TestCRLRollbackConcurrentAcceptNoCorruption(t *testing.T) {
 	for i := range servers {
 		servers[i] = f.newServer(t)
 	}
+	type checkResult struct {
+		failClosed bool
+		err        error
+	}
 	done := make(chan struct{})
+	results := make(chan checkResult, workers)
 	for _, s := range servers {
 		go func(srv *Server) {
 			defer func() { done <- struct{}{} }()
-			_, _ = srv.checkLicenseCRL()
+			failClosed, err := srv.checkLicenseCRL()
+			results <- checkResult{failClosed: failClosed, err: err}
 		}(s)
 	}
 	for i := 0; i < workers; i++ {
 		<-done
+	}
+	// Every concurrent check must accept the gen-20 CRL: the blocking
+	// high-water lock serializes the read-compare-write, so none should fail
+	// closed or error under contention.
+	close(results)
+	for r := range results {
+		if r.err != nil || r.failClosed {
+			t.Fatalf("concurrent check failed: failClosed=%v err=%v", r.failClosed, r.err)
+		}
 	}
 	gen, found, err := license.ReadCRLHighWater(f.crlPath)
 	if err != nil || !found || gen != 20 {

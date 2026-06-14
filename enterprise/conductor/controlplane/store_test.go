@@ -253,7 +253,7 @@ func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	if _, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
 		t.Fatalf("Publish(v2) error = %v", err)
 	}
-	auth := signedRollbackAuthorizationForBundles(t, "rollback-reconcile", v2, v1, testNow)
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-reconcile", v2, v1, testNow)
 	if _, created, err := emergencyStore.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
 		t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
 	}
@@ -273,7 +273,11 @@ func TestRollbackHeadReconciliationRecoversAfterTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore(reopen) error = %v", err)
 	}
-	if err := reconcileRollbackHeads(reopenedStore, reopenedEmergency, testNow.Add(2*time.Hour), nil); err != nil {
+	// Reconcile consumes the signature-verifying view, exactly as NewHandler
+	// wires it, so the persisted rollback must verify against the trusted keys
+	// to move the head.
+	verified := newVerifiedEmergencyStore(reopenedEmergency, resolver, nil, nil)
+	if err := reconcileRollbackHeads(reopenedStore, verified, testNow.Add(2*time.Hour), nil); err != nil {
 		t.Fatalf("reconcileRollbackHeads(after TTL) error = %v", err)
 	}
 	latest, err = reopenedStore.Latest(t.Context(), defaultFollowerIdentity(), testNow.Add(2*time.Hour))
@@ -326,7 +330,8 @@ func TestRollbackHeadReconciliationLoadsLegacyAudienceEmergencyState(t *testing.
 		CreatedAt:       testNow,
 		ExpiresAt:       testNow.Add(time.Hour),
 	}
-	auth.Signatures, _ = signConductorPreimage(t, auth.SignablePreimage, signing.PurposePolicyBundleRollback, "rollback-signer-1", "rollback-signer-2")
+	var resolver conductor.SignatureKeyResolver
+	auth.Signatures, resolver = signConductorPreimage(t, auth.SignablePreimage, signing.PurposePolicyBundleRollback, "rollback-signer-1", "rollback-signer-2")
 	authHash, err := auth.CanonicalHash()
 	if err != nil {
 		t.Fatalf("CanonicalHash(rollback): %v", err)
@@ -344,7 +349,10 @@ func TestRollbackHeadReconciliationLoadsLegacyAudienceEmergencyState(t *testing.
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore(legacy rollback) error = %v", err)
 	}
-	if err := reconcileRollbackHeads(store, reopenedEmergency, testNow.Add(2*time.Minute), nil); err != nil {
+	// A legacy audience'd record is structurally valid and correctly signed; it
+	// must still verify and reconcile through the signature-verifying view.
+	verified := newVerifiedEmergencyStore(reopenedEmergency, resolver, nil, nil)
+	if err := reconcileRollbackHeads(store, verified, testNow.Add(2*time.Minute), nil); err != nil {
 		t.Fatalf("reconcileRollbackHeads(legacy rollback) error = %v", err)
 	}
 	latest, err := store.Latest(t.Context(), defaultFollowerIdentity(), testNow.Add(3*time.Minute))

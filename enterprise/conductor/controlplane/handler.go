@@ -325,7 +325,15 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		}
 	}
 	auditQuerier, _ := opts.AuditSink.(AuditBatchQuerier)
-	if err := reconcileRollbackHeads(opts.Store, opts.EmergencyControls, now(), opts.Logger); err != nil {
+	// Wrap the configured emergency store in the signature-verifying view. This
+	// wrapper is the ONLY emergency-store type the Handler holds, so every read
+	// and enumeration path filters out records that pass structural validation
+	// but fail Ed25519 verification against the static operator-trusted control
+	// keys. Startup reconcile below and all request-time reads consume the
+	// verified view. A nil store stays nil (no emergency controls configured);
+	// a nil/empty resolver quarantines every record but does not crash startup.
+	emergencyControls := newVerifiedEmergencyStore(opts.EmergencyControls, opts.EmergencyKeys, opts.Logger, opts.Metrics)
+	if err := reconcileRollbackHeads(opts.Store, emergencyControls, now(), opts.Logger); err != nil {
 		return nil, err
 	}
 	return &Handler{
@@ -345,7 +353,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		auditQuerier:        auditQuerier,
 		auditKeys:           opts.AuditKeys,
 		enrollments:         opts.Enrollments,
-		emergencyControls:   opts.EmergencyControls,
+		emergencyControls:   emergencyControls,
 		emergencyKeys:       opts.EmergencyKeys,
 		remoteKillMaxTTL:    remoteKillMaxTTL,
 		rollbackMaxTTL:      rollbackMaxTTL,

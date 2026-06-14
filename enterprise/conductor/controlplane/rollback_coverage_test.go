@@ -469,7 +469,6 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 	// error rather than serving any bundle.
 	t.Run("current unavailable", func(t *testing.T) {
 		store := mustStore(t)
-		handler := newTestHandler(t, store, nil)
 		signer := newTestSigner(t)
 		audience := conductor.Audience{InstanceIDs: []string{"*"}}
 		target := signedControlBundle(t, signer, bundleSpec{
@@ -487,7 +486,8 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 			audience:   audience,
 			configYAML: "mode: strict\napi_allowlist:\n  - cur-current.example.com\n",
 		})
-		auth := signedRollbackAuthorizationForBundles(t, "rollback-ceiling-cur", missingCurrent, target, testNow)
+		auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-ceiling-cur", missingCurrent, target, testNow)
+		handler := newTestHandlerWithOptions(t, store, nil, resolver)
 		if _, created, err := handler.emergencyControls.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
 			t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
 		}
@@ -502,7 +502,6 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 	// 404-mapped error.
 	t.Run("target unavailable", func(t *testing.T) {
 		store := mustStore(t)
-		handler := newTestHandler(t, store, nil)
 		signer := newTestSigner(t)
 		audience := conductor.Audience{InstanceIDs: []string{"*"}}
 		current := signedControlBundle(t, signer, bundleSpec{
@@ -520,7 +519,8 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 			audience:   audience,
 			configYAML: "mode: strict\napi_allowlist:\n  - tgt-target.example.com\n",
 		})
-		auth := signedRollbackAuthorizationForBundles(t, "rollback-ceiling-tgt", current, missingTarget, testNow)
+		auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-ceiling-tgt", current, missingTarget, testNow)
+		handler := newTestHandlerWithOptions(t, store, nil, resolver)
 		if _, created, err := handler.emergencyControls.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
 			t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
 		}
@@ -534,7 +534,6 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 	// follower's latest bundle, so the ceiling leaves the latest unchanged.
 	t.Run("cross stream returns latest unchanged", func(t *testing.T) {
 		store := mustStore(t)
-		handler := newTestHandler(t, store, nil)
 		signer := newTestSigner(t)
 
 		// Follower's matching stream: a wildcard-audience bundle (the latest the
@@ -570,7 +569,8 @@ func TestApplyRollbackCeilingUnavailableBundles(t *testing.T) {
 		if _, _, err := store.Publish(t.Context(), canaryV2, PublishOptions{Now: testNow.Add(time.Minute)}); err != nil {
 			t.Fatalf("Publish(canary v2) error = %v", err)
 		}
-		auth := signedRollbackAuthorizationForBundles(t, "rollback-ceiling-cross", canaryV2, canaryV1, testNow)
+		auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-ceiling-cross", canaryV2, canaryV1, testNow)
+		handler := newTestHandlerWithOptions(t, store, nil, resolver)
 		if _, created, err := handler.emergencyControls.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
 			t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
 		}

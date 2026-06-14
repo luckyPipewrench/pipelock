@@ -50,7 +50,7 @@ func publishStreamFixture(t *testing.T, store *FileBundleStore) (PublishedBundle
 	return r1, r2
 }
 
-func newStreamStatusTestHandler(t *testing.T, store BundleStore, emergency EmergencyStore) *Handler {
+func newStreamStatusTestHandler(t *testing.T, store BundleStore, emergency EmergencyStore, emergencyKeys ...conductor.SignatureKeyResolver) *Handler {
 	t.Helper()
 	streamAuth, err := ScopedBearerStreamStatusAuthorizer([]ScopedBearerCredential{
 		{Token: streamAdminToken, Role: RoleAdmin, OrgID: "org-main"},
@@ -70,11 +70,36 @@ func newStreamStatusTestHandler(t *testing.T, store BundleStore, emergency Emerg
 		AuditSink:          discardAuditSink{},
 		AuditKeys:          rejectingAuditKeyResolver,
 		EmergencyControls:  emergency,
+		EmergencyKeys:      composeResolvers(emergencyKeys...),
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
 	}
 	return handler
+}
+
+// composeResolvers returns a single SignatureKeyResolver that tries each
+// supplied resolver in order, returning the first key that resolves. With no
+// non-nil resolvers it returns nil so the verified emergency view fails closed
+// (quarantines every record).
+func composeResolvers(resolvers ...conductor.SignatureKeyResolver) conductor.SignatureKeyResolver {
+	nonNil := make([]conductor.SignatureKeyResolver, 0, len(resolvers))
+	for _, r := range resolvers {
+		if r != nil {
+			nonNil = append(nonNil, r)
+		}
+	}
+	if len(nonNil) == 0 {
+		return nil
+	}
+	return func(keyID string) (conductor.SignatureKey, error) {
+		for _, resolve := range nonNil {
+			if key, err := resolve(keyID); err == nil {
+				return key, nil
+			}
+		}
+		return conductor.SignatureKey{}, conductor.ErrSignatureVerification
+	}
 }
 
 func getStreamStatus(t *testing.T, handler *Handler, target, token string) *httptest.ResponseRecorder {
@@ -307,7 +332,7 @@ func TestHandlerStreamStatusIncludesActiveEmergencyControls(t *testing.T) {
 	emergency := mustEmergencyStore(t)
 
 	// A valid active remote kill in scope.
-	kill := signedRemoteKillMessage(t, "kill-1", 1, conductor.KillSwitchActive, testNow)
+	kill, killResolver := signedRemoteKillMessageWithResolver(t, "kill-1", 1, conductor.KillSwitchActive, testNow)
 	if _, _, err := emergency.PublishRemoteKill(t.Context(), kill, testNow); err != nil {
 		t.Fatalf("PublishRemoteKill() error = %v", err)
 	}
@@ -316,12 +341,12 @@ func TestHandlerStreamStatusIncludesActiveEmergencyControls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BundleByIDVersion(v1) error = %v", err)
 	}
-	auth := signedRollbackAuthorizationForBundles(t, "rollback-1", r2.Bundle, r1.Bundle, testNow)
+	auth, rollbackResolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-1", r2.Bundle, r1.Bundle, testNow)
 	if _, _, err := emergency.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil {
 		t.Fatalf("PublishRollbackAuthorization() error = %v", err)
 	}
 
-	handler := newStreamStatusTestHandler(t, store, emergency)
+	handler := newStreamStatusTestHandler(t, store, emergency, killResolver, rollbackResolver)
 	w := getStreamStatus(t, handler, StreamStatusPath+"?org_id=org-main", streamAdminToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s, want 200", w.Code, w.Body.String())
@@ -356,12 +381,13 @@ func TestHandlerStreamStatusDropsExpiredAndOutOfScopeEmergencyControls(t *testin
 	emergency := mustEmergencyStore(t)
 
 	// An active kill, but published long ago so it is expired at testNow.
-	expired := signedRemoteKillMessage(t, "kill-expired", 1, conductor.KillSwitchActive, testNow.Add(-48*time.Hour))
+	expired, expiredResolver := signedRemoteKillMessageWithResolver(t, "kill-expired", 1, conductor.KillSwitchActive, testNow.Add(-48*time.Hour))
 	if _, _, err := emergency.PublishRemoteKill(t.Context(), expired, testNow.Add(-48*time.Hour)); err != nil {
 		t.Fatalf("PublishRemoteKill(expired) error = %v", err)
 	}
 
-	handler := newStreamStatusTestHandler(t, store, emergency)
+	// Trust the signer so the record is dropped for expiry/scope, not quarantine.
+	handler := newStreamStatusTestHandler(t, store, emergency, expiredResolver)
 
 	// signedRemoteKillMessage's default scope is org "org-main" / fleet "prod".
 	// Query a different fleet: the kill is org-main/prod, so a prod-mismatched
@@ -384,12 +410,13 @@ func TestHandlerStreamStatusDropsInactiveRemoteKill(t *testing.T) {
 	publishStreamFixture(t, store)
 	emergency := mustEmergencyStore(t)
 
-	inactive := signedRemoteKillMessage(t, "kill-inactive", 1, conductor.KillSwitchInactive, testNow)
+	inactive, inactiveResolver := signedRemoteKillMessageWithResolver(t, "kill-inactive", 1, conductor.KillSwitchInactive, testNow)
 	if _, _, err := emergency.PublishRemoteKill(t.Context(), inactive, testNow); err != nil {
 		t.Fatalf("PublishRemoteKill(inactive) error = %v", err)
 	}
 
-	handler := newStreamStatusTestHandler(t, store, emergency)
+	// Trust the signer so the record is dropped for inactive state, not quarantine.
+	handler := newStreamStatusTestHandler(t, store, emergency, inactiveResolver)
 	w := getStreamStatus(t, handler, StreamStatusPath+"?org_id=org-main", streamAdminToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s, want 200", w.Code, w.Body.String())
@@ -550,7 +577,7 @@ func TestIsAuthConfigErrorIncludesStreamStatus(t *testing.T) {
 
 func TestRemoteKillsNilReceiver(t *testing.T) {
 	var store *FileEmergencyStore
-	if _, err := store.RemoteKills(context.Background()); !errors.Is(err, ErrEmergencyStoreRequired) {
+	if _, err := store.enumerateRemoteKills(context.Background()); !errors.Is(err, ErrEmergencyStoreRequired) {
 		t.Fatalf("RemoteKills(nil) error = %v, want ErrEmergencyStoreRequired", err)
 	}
 }

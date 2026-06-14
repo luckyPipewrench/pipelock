@@ -78,7 +78,6 @@ func TestHandlerPublishesAndServesLatestBundle(t *testing.T) {
 
 func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 	store := mustStore(t)
-	handler := newTestHandler(t, store, nil)
 	signer := newTestSigner(t)
 	audience := conductor.Audience{InstanceIDs: []string{"*"}}
 	v1 := signedControlBundle(t, signer, bundleSpec{
@@ -101,7 +100,10 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Publish(v2) error = %v", err)
 	}
-	auth := signedRollbackAuthorizationForBundles(t, "rollback-ceiling", v2, v1, testNow)
+	// The rollback ceiling is served through the signature-verifying view, so
+	// the handler must trust the keys that signed the authorization.
+	auth, resolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-ceiling", v2, v1, testNow)
+	handler := newTestHandlerWithOptions(t, store, nil, resolver)
 	if _, created, err := handler.emergencyControls.PublishRollbackAuthorization(t.Context(), auth, testNow); err != nil || !created {
 		t.Fatalf("PublishRollbackAuthorization() created=%v err=%v, want created", created, err)
 	}
@@ -151,7 +153,6 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 	assertLatestBundleID(t, w, "bundle-ceiling-canary-v2")
 
 	missingStore := mustStore(t)
-	missingHandler := newTestHandler(t, missingStore, nil)
 	missingCurrent := signedControlBundle(t, signer, bundleSpec{
 		id:       rollbackCeilingBundleV2,
 		version:  2,
@@ -165,7 +166,8 @@ func TestHandlerLatestPolicyBundleHonorsRollbackCeiling(t *testing.T) {
 		version:  1,
 		audience: audience,
 	})
-	missingAuth := signedRollbackAuthorizationForBundles(t, "rollback-missing-target", missingCurrent, missingTarget, testNow)
+	missingAuth, missingResolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rollback-missing-target", missingCurrent, missingTarget, testNow)
+	missingHandler := newTestHandlerWithOptions(t, missingStore, nil, missingResolver)
 	if _, created, err := missingHandler.emergencyControls.PublishRollbackAuthorization(t.Context(), missingAuth, testNow); err != nil || !created {
 		t.Fatalf("PublishRollbackAuthorization(missing target) created=%v err=%v, want created", created, err)
 	}

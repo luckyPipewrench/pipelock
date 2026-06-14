@@ -111,14 +111,15 @@ type Metrics struct {
 	captureActionClassSanitized *prometheus.CounterVec
 
 	// Conductor audit transport (conductor.go).
-	conductorAuditQueuePending  prometheus.Gauge
-	conductorAuditQueueInflight prometheus.Gauge
-	conductorAuditQueueDead     prometheus.Gauge
-	conductorAuditDeliveries    *prometheus.CounterVec
-	conductorServerRequests     *prometheus.CounterVec
-	conductorServerDuration     *prometheus.HistogramVec
-	conductorServerAuditIngest  *prometheus.CounterVec
-	conductorServerAuditQueries *prometheus.CounterVec
+	conductorAuditQueuePending   prometheus.Gauge
+	conductorAuditQueueInflight  prometheus.Gauge
+	conductorAuditQueueDead      prometheus.Gauge
+	conductorAuditDeliveries     *prometheus.CounterVec
+	conductorServerRequests      *prometheus.CounterVec
+	conductorServerDuration      *prometheus.HistogramVec
+	conductorServerAuditIngest   *prometheus.CounterVec
+	conductorServerAuditQueries  *prometheus.CounterVec
+	conductorEmergencyQuarantine *prometheus.CounterVec
 
 	// Learn-and-lock observation pipeline (learn.go).
 	learnObservationEvents        *prometheus.CounterVec

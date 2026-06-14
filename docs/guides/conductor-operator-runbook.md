@@ -180,6 +180,35 @@ Start Conductor (source-verified from bootstrap quickstart and `conductor serve 
   --probe-listen 127.0.0.1:9092
 ```
 
+### Emergency-control signature verification (defense in depth)
+
+The `--trusted-control-key` set is the leader's static, restart-stable list of
+keys that may sign remote-kill messages and rollback authorizations. The leader
+verifies an emergency-control signature against this set at **publish ingress**
+and **again at every read** (startup reconcile, the follower latest-bundle
+rollback ceiling, remote-kill / rollback lookups, and the stream-status
+overview). A stored emergency-control record that does not verify is
+**quarantined**: it is dropped from every read path so it can neither move nor
+suppress the served stream head, and a high-severity audit event is emitted
+(`conductor_rollback_reconcile_quarantined_unverified`,
+`conductor_remote_kill_quarantined_unverified`, with the
+`conductor_emergency_quarantine_total{control,reason}` metric). The leader does
+**not** crash on an unverifiable record — only raw on-disk corruption is fatal.
+
+**Key rotation caution.** If you rotate a control key out of
+`--trusted-control-key`, any emergency-control record still on disk that was
+signed only by the rotated-out key will quarantine after the next leader
+restart. This is correct (the leader will not honor a record it can no longer
+verify), but it can **silently remove emergency state** that you still rely on.
+The rotation case is logged distinctly
+(`conductor_rollback_quarantined_rotated_key` /
+`conductor_remote_kill_quarantined_rotated_key`, reason
+`untrusted_or_rotated_signer`). When rotating control keys, re-issue and
+re-publish any still-active remote-kill or rollback authorization under a key
+that remains in the trusted set, and confirm via `conductor kill status` /
+`conductor stream` after the restart that the expected emergency controls are
+still served.
+
 Start the follower in a second shell with the same generated dev license environment:
 
 ```bash

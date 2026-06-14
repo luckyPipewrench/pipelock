@@ -351,7 +351,14 @@ func (s *FileEmergencyStore) load() error {
 	return nil
 }
 
-func (s *FileEmergencyStore) RollbackAuthorizations(_ context.Context) ([]StoredRollbackAuthorization, error) {
+// rollbackAuthorizations returns a snapshot of every stored rollback
+// authorization. It is UNEXPORTED on purpose: the only legitimate consumer is
+// the in-package [verifiedEmergencyStore], which signature-verifies and
+// quarantines before returning records to the Handler. Keeping it unexported
+// means no caller outside this package can obtain the unfiltered (structurally-
+// valid-only) records and accidentally serve a forged one. The returned slice is
+// a clone so the caller cannot mutate the store's backing array.
+func (s *FileEmergencyStore) enumerateRollbacks(_ context.Context) ([]StoredRollbackAuthorization, error) {
 	if s == nil {
 		return nil, ErrEmergencyStoreRequired
 	}
@@ -360,12 +367,12 @@ func (s *FileEmergencyStore) RollbackAuthorizations(_ context.Context) ([]Stored
 	return slices.Clone(s.rollbacks), nil
 }
 
-// RemoteKills returns a snapshot of every stored remote-kill record. It is the
-// enumeration counterpart of [FileEmergencyStore.RollbackAuthorizations] and is
-// consumed by the operator stream-overview read; callers apply their own
-// org/fleet scope and validity filtering. The returned slice is a clone so the
-// caller cannot mutate the store's backing array.
-func (s *FileEmergencyStore) RemoteKills(_ context.Context) ([]StoredRemoteKill, error) {
+// remoteKills returns a snapshot of every stored remote-kill record. It is the
+// enumeration counterpart of rollbackAuthorizations and is UNEXPORTED for the
+// same reason: only the in-package verified view may read the unfiltered
+// records. The returned slice is a clone so the caller cannot mutate the store's
+// backing array.
+func (s *FileEmergencyStore) enumerateRemoteKills(_ context.Context) ([]StoredRemoteKill, error) {
 	if s == nil {
 		return nil, ErrEmergencyStoreRequired
 	}

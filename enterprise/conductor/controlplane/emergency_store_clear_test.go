@@ -40,7 +40,7 @@ func TestClearRollbackAuthorization_HappyPath(t *testing.T) {
 	}
 
 	// Verify it's listed.
-	all, err := store.RollbackAuthorizations(context.Background())
+	all, err := store.enumerateRollbacks(context.Background())
 	if err != nil {
 		t.Fatalf("RollbackAuthorizations: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestClearRollbackAuthorization_HappyPath(t *testing.T) {
 	}
 
 	// Verify it's gone.
-	all, err = store.RollbackAuthorizations(context.Background())
+	all, err = store.enumerateRollbacks(context.Background())
 	if err != nil {
 		t.Fatalf("RollbackAuthorizations after clear: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestClearRollbackAuthorization_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFileEmergencyStore (reopen): %v", err)
 	}
-	all2, err := store2.RollbackAuthorizations(context.Background())
+	all2, err := store2.enumerateRollbacks(context.Background())
 	if err != nil {
 		t.Fatalf("RollbackAuthorizations (reopened): %v", err)
 	}
@@ -120,7 +120,7 @@ func TestClearRollbackAuthorization_RestoresStateOnWriteFailure(t *testing.T) {
 	}
 
 	// In-memory state must be unchanged: the authorization is still present.
-	all, err := store.RollbackAuthorizations(context.Background())
+	all, err := store.enumerateRollbacks(context.Background())
 	if err != nil {
 		t.Fatalf("RollbackAuthorizations: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestClearRollbackAuthorization_PreservesOtherRecords(t *testing.T) {
 		t.Fatal("expected cleared=true")
 	}
 
-	all, err := store.RollbackAuthorizations(context.Background())
+	all, err := store.enumerateRollbacks(context.Background())
 	if err != nil {
 		t.Fatalf("RollbackAuthorizations: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestClearRollbackAuthorization_HandlerEndpoint(t *testing.T) {
 	}
 
 	// Verify it was stored.
-	all, err := store.RollbackAuthorizations(context.Background())
+	all, err := store.enumerateRollbacks(context.Background())
 	if err != nil {
 		t.Fatalf("RollbackAuthorizations: %v", err)
 	}

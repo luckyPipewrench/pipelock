@@ -54,6 +54,11 @@ func (m *Metrics) registerConductorMetrics(reg *prometheus.Registry) {
 		Name:      "conductor_server_audit_queries_total",
 		Help:      "Total Conductor server audit query outcomes.",
 	}, []string{"outcome", "reason"})
+	m.conductorEmergencyQuarantine = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "conductor_emergency_quarantine_total",
+		Help:      "Total Conductor emergency-control records dropped at a leader read path because they failed signature verification against the trusted control keys.",
+	}, []string{"control", "reason"})
 	reg.MustRegister(
 		m.conductorAuditQueuePending,
 		m.conductorAuditQueueInflight,
@@ -63,6 +68,7 @@ func (m *Metrics) registerConductorMetrics(reg *prometheus.Registry) {
 		m.conductorServerDuration,
 		m.conductorServerAuditIngest,
 		m.conductorServerAuditQueries,
+		m.conductorEmergencyQuarantine,
 	)
 }
 
@@ -102,4 +108,16 @@ func (m *Metrics) RecordConductorServerAuditQuery(outcome, reason string) {
 		return
 	}
 	m.conductorServerAuditQueries.WithLabelValues(outcome, reason).Inc()
+}
+
+// RecordConductorEmergencyQuarantine counts an emergency-control record dropped
+// at a leader read path because it failed Ed25519 signature verification against
+// the trusted control keys. control is "rollback" or "remote_kill"; reason
+// classifies the failure (signature_verification_failed,
+// untrusted_or_rotated_signer, or nil_resolver).
+func (m *Metrics) RecordConductorEmergencyQuarantine(control, reason string) {
+	if m == nil {
+		return
+	}
+	m.conductorEmergencyQuarantine.WithLabelValues(control, reason).Inc()
 }

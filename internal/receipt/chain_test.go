@@ -418,13 +418,14 @@ func TestExtractReceipts_RawJSONL(t *testing.T) {
 	}
 
 	var raw strings.Builder
+	raw.WriteByte('\n')
 	for _, r := range receipts {
 		data, err := Marshal(r)
 		if err != nil {
 			t.Fatalf("Marshal: %v", err)
 		}
 		raw.Write(data)
-		raw.WriteByte('\n')
+		raw.WriteString("\n\n")
 	}
 	path := filepath.Join(t.TempDir(), "receipts.jsonl")
 	if err := os.WriteFile(path, []byte(raw.String()), 0o600); err != nil {
@@ -441,6 +442,101 @@ func TestExtractReceipts_RawJSONL(t *testing.T) {
 	result := VerifyChain(got, got[0].SignerKey)
 	if !result.Valid {
 		t.Fatalf("raw chain invalid: %s", result.Error)
+	}
+}
+
+func TestExtractReceipts_RawJSONLRejectsMalformedTail(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
+	data, err := Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "receipts.jsonl")
+	if err := os.WriteFile(path, append(data, []byte("\nnot-json\n")...), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err = ExtractReceipts(path)
+	if err == nil || !strings.Contains(err.Error(), "parse raw receipt line 2") {
+		t.Fatalf("ExtractReceipts error = %v, want raw line parse error", err)
+	}
+}
+
+func TestExtractReceipts_RawJSONLRejectsMissingFieldsTail(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
+	data, err := Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "receipts.jsonl")
+	body := append(data, []byte("\n{\"version\":1}\n")...)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err = ExtractReceipts(path)
+	if err == nil || !strings.Contains(err.Error(), "missing receipt fields") {
+		t.Fatalf("ExtractReceipts error = %v, want missing fields error", err)
+	}
+}
+
+func TestExtractReceipts_RawJSONLIgnoresNonReceiptFile(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "not-receipts.jsonl")
+	if err := os.WriteFile(path, []byte("not-json\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := extractRawReceiptsJSONL(path)
+	if err != nil {
+		t.Fatalf("extractRawReceiptsJSONL: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("receipt count = %d, want 0", len(got))
+	}
+}
+
+func TestExtractReceipts_RecorderFileWithoutReceipts(t *testing.T) {
+	t.Parallel()
+
+	entry := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  0,
+		Timestamp: time.Now().UTC(),
+		SessionID: "session-no-receipts",
+		Type:      "request",
+		Transport: "fetch",
+		Summary:   "request entry only",
+		PrevHash:  recorder.GenesisHash,
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+
+	path := filepath.Join(t.TempDir(), "evidence-session-no-receipts-0.jsonl")
+	f, err := os.Create(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := json.NewEncoder(f).Encode(entry); err != nil {
+		_ = f.Close()
+		t.Fatalf("Encode: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	got, err := ExtractReceipts(path)
+	if err != nil {
+		t.Fatalf("ExtractReceipts: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("receipt count = %d, want 0", len(got))
 	}
 }
 

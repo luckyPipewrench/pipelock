@@ -563,6 +563,9 @@ func TestInstallCA_PrintsInstructions(t *testing.T) {
 }
 
 func TestWriteCAFiles_ReadOnlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod(dir, 0o444) does not make a directory non-writable on Windows (POSIX mode bits do not gate directory writes), so MkdirAll under it still succeeds; the read-only-dir error path is verified on Unix CI")
+	}
 	dir := t.TempDir()
 	roDir := filepath.Join(dir, "readonly")
 	if err := os.MkdirAll(roDir, 0o750); err != nil {
@@ -649,6 +652,9 @@ func TestSaveCA_RefusesOverwrite_KeyExists(t *testing.T) {
 }
 
 func TestWriteCAFiles_CertDirCreateFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod(dir, 0o444) does not make a directory non-writable on Windows (POSIX mode bits do not gate directory writes), so MkdirAll under it still succeeds; the read-only-dir error path is verified on Unix CI")
+	}
 	dir := t.TempDir()
 	roDir := filepath.Join(dir, "readonly")
 	if err := os.MkdirAll(roDir, 0o750); err != nil {

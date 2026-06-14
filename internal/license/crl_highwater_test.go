@@ -145,6 +145,55 @@ func TestAdvanceCRLHighWater(t *testing.T) {
 	})
 }
 
+func TestReadCRLHighWaterStatError(t *testing.T) {
+	// A path component that is a regular file makes os.Stat fail with a
+	// non-ErrNotExist error (ENOTDIR). That must surface fail-closed rather than
+	// be mistaken for a genuine first-run absent high-water.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	crlFile := filepath.Join(blocker, "crl.json")
+	if _, _, err := ReadCRLHighWater(crlFile); err == nil {
+		t.Fatal("stat under a non-directory parent must error, got nil")
+	}
+}
+
+func TestWriteCRLHighWaterErrors(t *testing.T) {
+	t.Run("mkdir failure under non-directory parent", func(t *testing.T) {
+		dir := t.TempDir()
+		blocker := filepath.Join(dir, "blocker")
+		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// The sidecar dir cannot be created beneath a regular file.
+		if err := writeCRLHighWater(filepath.Join(blocker, "crl.json"), 1); err == nil {
+			t.Fatal("write under a non-directory parent must fail, got nil")
+		}
+	})
+
+	t.Run("atomic write failure in read-only dir", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory write permissions")
+		}
+		roDir := filepath.Join(t.TempDir(), "ro")
+		if err := os.Mkdir(roDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(roDir, 0o500); err != nil { // #nosec G302 -- deliberately read-only dir to exercise the write-failure branch
+			t.Fatal(err)
+		}
+		// Restore write so t.TempDir cleanup can remove the tree.
+		t.Cleanup(func() { _ = os.Chmod(roDir, 0o750) }) // #nosec G302 -- restore traversable dir perms for TempDir cleanup
+		// MkdirAll no-ops on the existing dir, but the atomic temp-file write
+		// cannot create its file in a non-writable directory.
+		if err := writeCRLHighWater(filepath.Join(roDir, "crl.json"), 1); err == nil {
+			t.Fatal("write into a read-only dir must fail, got nil")
+		}
+	})
+}
+
 func TestLoadAndVerifyCRLMonotonic(t *testing.T) {
 	pub, priv := testKeyPair(t)
 	now := time.Now().UTC()
@@ -169,8 +218,7 @@ func TestLoadAndVerifyCRLMonotonic(t *testing.T) {
 	t.Run("propagates signature verification failure", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "crl.json")
 		signCRLFile(t, path, priv, 1, now)
-		_, wrongPriv, _ := ed25519.GenerateKey(nil)
-		wrongPub := wrongPriv.Public().(ed25519.PublicKey)
+		wrongPub, _ := testKeyPair(t)
 		if _, err := LoadAndVerifyCRLMonotonic(path, wrongPub, now); err == nil {
 			t.Fatal("load with wrong verifier key must error, got nil")
 		}

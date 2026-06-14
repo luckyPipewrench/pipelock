@@ -70,3 +70,19 @@ func TestNextCRLGenerationSurvivesReopen(t *testing.T) {
 		t.Fatalf("post-reopen generation = %d, want 4 (counter rewound on restart)", next)
 	}
 }
+
+// TestNextCRLGenerationDBError verifies the issuer counter fails closed when the
+// backing store is unusable: a closed DB must surface an error rather than
+// silently return a generation that was never persisted.
+func TestNextCRLGenerationDBError(t *testing.T) {
+	db, err := OpenEntitlementDB(t.Context(), ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	if _, err := db.NextCRLGeneration(t.Context()); err == nil {
+		t.Fatal("NextCRLGeneration on a closed DB must error, got nil")
+	}
+}

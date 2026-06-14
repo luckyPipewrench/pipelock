@@ -479,6 +479,23 @@ func (h *WebhookHandler) SignedCRL(ctx context.Context, now time.Time) (license.
 			RevokedAt: rec.RevokedAt.UTC().Unix(),
 		})
 	}
+	// Issuer-side intermediate revocation: include every revoked intermediate
+	// serial so consumers actually fail closed on a rotated/compromised
+	// intermediate. Without this the model + consumer check exist but the issuer
+	// never publishes the serials, making intermediate revocation a consumer-side
+	// illusion.
+	intRecords, err := h.db.ListRevokedIntermediates(ctx)
+	if err != nil {
+		return license.CRL{}, fmt.Errorf("list revoked intermediates: %w", err)
+	}
+	revokedInt := make([]license.RevokedIntermediate, 0, len(intRecords))
+	for _, rec := range intRecords {
+		revokedInt = append(revokedInt, license.RevokedIntermediate{
+			Serial:    rec.Serial,
+			Reason:    rec.Reason,
+			RevokedAt: rec.RevokedAt.UTC().Unix(),
+		})
+	}
 	// Advance the durable monotonic generation BEFORE signing so every CRL this
 	// service emits carries a strictly higher generation than the previous one.
 	// Consumers reject any CRL below their accepted high-water mark, which stops
@@ -489,12 +506,65 @@ func (h *WebhookHandler) SignedCRL(ctx context.Context, now time.Time) (license.
 		return license.CRL{}, fmt.Errorf("advance CRL generation: %w", err)
 	}
 	return license.SignCRL(license.CRLPayload{
-		Version:    license.CRLVersion,
-		Generation: generation,
-		IssuedAt:   now.UTC().Unix(),
-		ExpiresAt:  now.UTC().Add(7 * 24 * time.Hour).Unix(),
-		Revoked:    revoked,
+		Version:              license.CRLVersion,
+		Generation:           generation,
+		IssuedAt:             now.UTC().Unix(),
+		ExpiresAt:            now.UTC().Add(7 * 24 * time.Hour).Unix(),
+		Revoked:              revoked,
+		RevokedIntermediates: revokedInt,
 	}, h.cfg.CRLPrivateKey)
+}
+
+// RecoverCRLGenerationFromSignedCRL re-seeds the durable monotonic CRL
+// generation high-water from a PREVIOUSLY PUBLISHED signed CRL (P0.2 recovery).
+// After a DB restore the in-DB counter can be behind the highest generation a
+// consumer has already accepted; minting a lower generation next would let a
+// restored CRL un-revoke a license. The operator feeds the last published signed
+// CRL (fetched from the CRL endpoint cache / CDN / object store) and this:
+//
+//  1. verifies it against the service's CRL signing public key (an unsigned or
+//     wrong-key CRL cannot move the high-water — fail closed), and
+//  2. raises the DB counter to at least that CRL's generation (never lowers it).
+//
+// It reads the generation from the SIGNED CRL, not the DB, exactly as the spec
+// requires.
+func (h *WebhookHandler) RecoverCRLGenerationFromSignedCRL(ctx context.Context, signedCRL []byte) (uint64, error) {
+	if len(h.cfg.CRLPrivateKey) != ed25519.PrivateKeySize {
+		return 0, errors.New("license CRL signing key not configured")
+	}
+	pub, ok := h.cfg.CRLPrivateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return 0, errors.New("CRL signing key has no public half")
+	}
+	// Signature-only verify: a forged or wrong-key CRL cannot move the
+	// high-water. Expiry is intentionally NOT enforced — a previously published
+	// CRL may have aged out, but its generation is still a real high-water the
+	// service must not regress below.
+	crl, err := license.ParseAndVerifyCRLSignatureOnly(signedCRL, pub)
+	if err != nil {
+		return 0, fmt.Errorf("verify published CRL for recovery: %w", err)
+	}
+	return h.db.RecoverCRLGeneration(ctx, crl.Payload.Generation)
+}
+
+// RevokeIntermediate records an intermediate signing-cert serial as revoked so
+// the next published SignedCRL carries it. This is the admin flow that makes
+// intermediate revocation real: an operator (or rotation automation) calls it
+// when an intermediate is rotated out or compromised. Idempotent — re-revoking
+// the same serial updates the reason/timestamp without faulting.
+func (h *WebhookHandler) RevokeIntermediate(ctx context.Context, serial, reason string, now time.Time) error {
+	if serial == "" {
+		return errors.New("intermediate serial is required")
+	}
+	if err := h.db.UpsertRevokedIntermediate(ctx, RevokedIntermediateRecord{
+		Serial:    serial,
+		Reason:    reason,
+		RevokedAt: now.UTC(),
+	}); err != nil {
+		return fmt.Errorf("record intermediate revocation: %w", err)
+	}
+	_ = h.ledger.LogIntermediateRevoked(serial, reason)
+	return nil
 }
 
 // HandleOrderEvent processes a Polar order.created webhook event for

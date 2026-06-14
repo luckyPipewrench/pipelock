@@ -60,6 +60,15 @@ type RevokedLicenseRecord struct {
 	RevokedAt      time.Time
 }
 
+// RevokedIntermediateRecord is an intermediate signing-cert serial that must be
+// included in the published signed CRL. Revoking it invalidates every license
+// token the intermediate signed.
+type RevokedIntermediateRecord struct {
+	Serial    string
+	Reason    string
+	RevokedAt time.Time
+}
+
 // LicenseIssuance records each minted license token so subscription shutdown
 // can revoke still-valid older refresh tokens, not just the latest one.
 type LicenseIssuance struct {
@@ -172,6 +181,20 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_license_revocations_subscription ON license_revocations(subscription_id);
+
+	-- revoked_intermediates is the durable issuer-side list of revoked
+	-- intermediate signing certificates, keyed by serial. Revoking an
+	-- intermediate (rotation or compromise) invalidates EVERY license token it
+	-- signed. The published SignedCRL includes these as RevokedIntermediates so
+	-- consumers fail closed. Without this table, intermediate revocation is a
+	-- consumer-side illusion (the model and consumer check exist, but the issuer
+	-- never publishes the serials).
+	CREATE TABLE IF NOT EXISTS revoked_intermediates (
+		serial      TEXT PRIMARY KEY,
+		reason      TEXT NOT NULL,
+		revoked_at  DATETIME NOT NULL,
+		created_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+	);
 
 	CREATE TABLE IF NOT EXISTS license_issuances (
 		license_id      TEXT PRIMARY KEY,
@@ -499,6 +522,89 @@ func (e *EntitlementDB) NextCRLGeneration(ctx context.Context) (uint64, error) {
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit crl generation: %w", err)
+	}
+	return generation, nil
+}
+
+// UpsertRevokedIntermediate records (or re-records) a revoked intermediate
+// serial. Re-revoking the same serial is idempotent (ON CONFLICT update), so a
+// replayed admin/webhook call cannot fault.
+func (e *EntitlementDB) UpsertRevokedIntermediate(ctx context.Context, rec RevokedIntermediateRecord) error {
+	if rec.Serial == "" {
+		return errors.New("serial is required")
+	}
+	if rec.Reason == "" {
+		rec.Reason = "rotated"
+	}
+	if rec.RevokedAt.IsZero() {
+		rec.RevokedAt = time.Now().UTC()
+	}
+	const query = `
+	INSERT INTO revoked_intermediates (serial, reason, revoked_at)
+	VALUES (?, ?, ?)
+	ON CONFLICT(serial) DO UPDATE SET
+		reason = excluded.reason,
+		revoked_at = excluded.revoked_at
+	`
+	if _, err := e.db.ExecContext(ctx, query, rec.Serial, rec.Reason, rec.RevokedAt); err != nil {
+		return fmt.Errorf("upsert revoked intermediate %s: %w", rec.Serial, err)
+	}
+	return nil
+}
+
+// ListRevokedIntermediates returns every revoked intermediate serial for CRL
+// publication, ordered by serial for a deterministic CRL payload.
+func (e *EntitlementDB) ListRevokedIntermediates(ctx context.Context) ([]RevokedIntermediateRecord, error) {
+	const query = `SELECT serial, reason, revoked_at FROM revoked_intermediates ORDER BY serial ASC`
+	rows, err := e.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list revoked intermediates: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []RevokedIntermediateRecord
+	for rows.Next() {
+		var rec RevokedIntermediateRecord
+		if err := rows.Scan(&rec.Serial, &rec.Reason, &rec.RevokedAt); err != nil {
+			return nil, fmt.Errorf("scan revoked intermediate: %w", err)
+		}
+		results = append(results, rec)
+	}
+	return results, rows.Err()
+}
+
+// RecoverCRLGeneration raises the durable monotonic generation counter to at
+// least `floor` if it is currently below it. This is the high-water RECOVERY
+// path (P0.2): after a DB restore, the in-DB counter can be behind the highest
+// generation already PUBLISHED in a signed CRL. Seeding the counter from the
+// latest published signed CRL's generation (read off disk / object store, not
+// the DB) ensures the next NextCRLGeneration cannot mint a generation a consumer
+// has already accepted — which would otherwise let a restored, lower-generation
+// CRL un-revoke a license. It never lowers the counter (monotonic).
+func (e *EntitlementDB) RecoverCRLGeneration(ctx context.Context, floor uint64) (uint64, error) {
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin crl generation recovery: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO crl_generation (id, generation) VALUES (0, 0)`); err != nil {
+		return 0, fmt.Errorf("seed crl generation: %w", err)
+	}
+	// Only ever raise the counter — never lower it. SQLite max() of the existing
+	// value and the floor is the monotonic ratchet.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE crl_generation SET generation = MAX(generation, ?) WHERE id = 0`, floor); err != nil {
+		return 0, fmt.Errorf("recover crl generation: %w", err)
+	}
+	var generation uint64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT generation FROM crl_generation WHERE id = 0`).Scan(&generation); err != nil {
+		return 0, fmt.Errorf("read crl generation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit crl generation recovery: %w", err)
 	}
 	return generation, nil
 }

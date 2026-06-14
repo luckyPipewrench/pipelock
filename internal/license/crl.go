@@ -204,6 +204,55 @@ func ParseAndVerifyCRL(data []byte, publicKey ed25519.PublicKey, now time.Time) 
 	return crl, nil
 }
 
+// ParseAndVerifyCRLSignatureOnly verifies a CRL's Ed25519 signature and
+// structural validity but does NOT enforce expiry against the current clock.
+// It exists for the issuer-side high-water RECOVERY path, where the input is a
+// historical, possibly-expired published CRL whose only load-bearing field is
+// its monotonic generation. It must NEVER be used for a trust decision on a
+// license token — use ParseAndVerifyCRL (which enforces expiry) for that.
+func ParseAndVerifyCRLSignatureOnly(data []byte, publicKey ed25519.PublicKey) (CRL, error) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return CRL{}, errors.New("invalid public key")
+	}
+	if len(data) > maxCRLFileSize {
+		return CRL{}, errors.New("license CRL exceeds maximum size")
+	}
+	var wire crlWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return CRL{}, fmt.Errorf("parse license CRL: %w", err)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(wire.Payload)
+	if err != nil {
+		return CRL{}, fmt.Errorf("decode CRL payload: %w", err)
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(wire.Signature)
+	if err != nil {
+		return CRL{}, fmt.Errorf("decode CRL signature: %w", err)
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return CRL{}, errors.New("invalid CRL signature size")
+	}
+	if !ed25519.Verify(publicKey, payload, sig) {
+		return CRL{}, errors.New("invalid CRL signature")
+	}
+	var payloadClaims CRLPayload
+	if err := json.Unmarshal(payload, &payloadClaims); err != nil {
+		return CRL{}, fmt.Errorf("parse CRL payload: %w", err)
+	}
+	if payloadClaims.Version != CRLVersion {
+		return CRL{}, fmt.Errorf("unsupported CRL version %d", payloadClaims.Version)
+	}
+	sum := sha256.Sum256(payload)
+	crl := CRL{
+		Payload:   payloadClaims,
+		Signature: wire.Signature,
+		SHA256:    hex.EncodeToString(sum[:]),
+		payload:   slices.Clone(payload),
+	}
+	crl.buildIndex()
+	return crl, nil
+}
+
 func LoadAndVerifyCRL(path string, publicKey ed25519.PublicKey, now time.Time) (CRL, error) {
 	cleanPath := filepath.Clean(path)
 	info, err := os.Stat(cleanPath)

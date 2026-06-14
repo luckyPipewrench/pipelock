@@ -563,32 +563,30 @@ func TestInstallCA_PrintsInstructions(t *testing.T) {
 }
 
 func TestWriteCAFiles_ReadOnlyDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Chmod(dir, 0o444) does not make a directory non-writable on Windows (POSIX mode bits do not gate directory writes), so MkdirAll under it still succeeds; the read-only-dir error path is verified on Unix CI")
-	}
+	// Force the key-directory MkdirAll to fail portably: place a regular
+	// file at a path component, then nest the key path beneath it. MkdirAll
+	// fails on every platform when a parent element is a file, so we keep
+	// this error-path covered without Unix-only chmod 0444 behavior.
 	dir := t.TempDir()
-	roDir := filepath.Join(dir, "readonly")
-	if err := os.MkdirAll(roDir, 0o750); err != nil {
+	blocker := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Write cert to writable dir, key to read-only dir.
+	// Cert goes to a writable path; the key-directory creation must fail.
 	certPath := filepath.Join(dir, "ca.pem")
-	keyPath := filepath.Join(roDir, "subdir", "ca-key.pem")
+	keyPath := filepath.Join(blocker, "subdir", "ca-key.pem")
 
 	ca, key, _, err := GenerateCA("Test", 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Make roDir read-only so MkdirAll for keyPath fails.
-	if err := os.Chmod(roDir, 0o444); err != nil { //nolint:gosec // test: intentionally restrictive perms
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(roDir, 0o750) }) //nolint:gosec // test: restore dir permissions for cleanup
-
 	err = writeCAFiles(certPath, keyPath, ca, key)
 	if err == nil {
-		t.Error("expected error for read-only key directory")
+		t.Error("expected error for unwritable key directory")
+	}
+	if err != nil && !strings.Contains(err.Error(), "create key directory") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -652,17 +650,17 @@ func TestSaveCA_RefusesOverwrite_KeyExists(t *testing.T) {
 }
 
 func TestWriteCAFiles_CertDirCreateFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Chmod(dir, 0o444) does not make a directory non-writable on Windows (POSIX mode bits do not gate directory writes), so MkdirAll under it still succeeds; the read-only-dir error path is verified on Unix CI")
-	}
+	// Force the cert-directory MkdirAll to fail portably: a regular file at
+	// a path component makes directory creation fail on every platform, so
+	// we keep this error-path covered without Unix-only chmod 0444 behavior.
 	dir := t.TempDir()
-	roDir := filepath.Join(dir, "readonly")
-	if err := os.MkdirAll(roDir, 0o750); err != nil {
+	blocker := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Both cert and key paths under read-only directory.
-	certPath := filepath.Join(roDir, "subdir", testCertFile)
+	// Cert directory creation must fail; the key path stays writable.
+	certPath := filepath.Join(blocker, "subdir", testCertFile)
 	keyPath := filepath.Join(dir, testKeyFile)
 
 	ca, key, _, err := GenerateCA(testOrg, testValidityDay)
@@ -670,15 +668,9 @@ func TestWriteCAFiles_CertDirCreateFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Make roDir read-only so MkdirAll for certPath fails.
-	if err := os.Chmod(roDir, 0o444); err != nil { //nolint:gosec // test: intentionally restrictive perms
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(roDir, 0o750) }) //nolint:gosec // test: restore dir permissions for cleanup
-
 	err = writeCAFiles(certPath, keyPath, ca, key)
 	if err == nil {
-		t.Error("expected error for read-only cert directory")
+		t.Fatal("expected error for unwritable cert directory")
 	}
 	if !strings.Contains(err.Error(), "create cert directory") {
 		t.Errorf("unexpected error: %v", err)

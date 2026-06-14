@@ -4,9 +4,12 @@
 package receipt
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -386,11 +389,27 @@ func (v *chainVerifier) brokenAt(r Receipt, msg string) ChainResult {
 // ExtractReceipts reads a flight recorder JSONL file and extracts all
 // action_receipt entries as Receipt structs, in file order.
 func ExtractReceipts(path string) ([]Receipt, error) {
-	entries, err := recorder.ReadEntries(filepath.Clean(path))
+	clean := filepath.Clean(path)
+	entries, err := recorder.ReadEntries(clean)
 	if err != nil {
+		rawReceipts, rawErr := extractRawReceiptsJSONL(clean)
+		if rawErr != nil {
+			return nil, rawErr
+		}
+		if len(rawReceipts) > 0 {
+			return rawReceipts, nil
+		}
 		return nil, fmt.Errorf("reading entries: %w", err)
 	}
-	return extractReceiptsFromEntries(entries)
+	receipts, err := extractReceiptsFromEntries(entries)
+	if err != nil || len(receipts) > 0 {
+		return receipts, err
+	}
+	rawReceipts, rawErr := extractRawReceiptsJSONL(clean)
+	if rawErr != nil {
+		return nil, rawErr
+	}
+	return rawReceipts, nil
 }
 
 // ExtractReceiptsWithSessionID reads a flight recorder JSONL file and returns
@@ -433,6 +452,42 @@ func extractReceiptsFromEntries(entries []recorder.Entry) ([]Receipt, error) {
 			return nil, err
 		}
 		receipts = append(receipts, *r)
+	}
+	return receipts, nil
+}
+
+func extractRawReceiptsJSONL(path string) ([]Receipt, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("reading raw receipts: %w", err)
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
+	var receipts []Receipt
+	line := 0
+	for scanner.Scan() {
+		line++
+		raw := bytes.TrimSpace(scanner.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		r, err := Unmarshal(raw)
+		if err != nil {
+			if len(receipts) == 0 {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("parse raw receipt line %d: %w", line, err)
+		}
+		if r.Version != ReceiptVersion || r.Signature == "" || r.SignerKey == "" {
+			if len(receipts) == 0 {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("parse raw receipt line %d: missing receipt fields", line)
+		}
+		receipts = append(receipts, r)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan raw receipts: %w", err)
 	}
 	return receipts, nil
 }

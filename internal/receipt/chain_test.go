@@ -400,6 +400,50 @@ func TestExtractReceipts_HappyPath(t *testing.T) {
 	}
 }
 
+func TestExtractReceipts_RawJSONL(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	now := time.Now().UTC()
+	var receipts []Receipt
+	prev := GenesisHash
+	for seq := uint64(0); seq < 3; seq++ {
+		r := signChainReceipt(t, priv, seq, prev, now.Add(time.Duration(seq)*time.Second))
+		receipts = append(receipts, r)
+		hash, err := ReceiptHash(r)
+		if err != nil {
+			t.Fatalf("ReceiptHash %d: %v", seq, err)
+		}
+		prev = hash
+	}
+
+	var raw strings.Builder
+	for _, r := range receipts {
+		data, err := Marshal(r)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		raw.Write(data)
+		raw.WriteByte('\n')
+	}
+	path := filepath.Join(t.TempDir(), "receipts.jsonl")
+	if err := os.WriteFile(path, []byte(raw.String()), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := ExtractReceipts(path)
+	if err != nil {
+		t.Fatalf("ExtractReceipts: %v", err)
+	}
+	if len(got) != len(receipts) {
+		t.Fatalf("receipt count = %d, want %d", len(got), len(receipts))
+	}
+	result := VerifyChain(got, got[0].SignerKey)
+	if !result.Valid {
+		t.Fatalf("raw chain invalid: %s", result.Error)
+	}
+}
+
 func TestExtractReceipts_BadPath(t *testing.T) {
 	t.Parallel()
 

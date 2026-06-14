@@ -161,6 +161,10 @@ The `--confirm` flag is mandatory; the command refuses to run without it. Prefer
 `pipelock conductor rollback clear --authorization-id <id>` to remove a single
 rollback authorization rather than clearing all of them.
 
+The command also fails closed if stream status cannot read emergency controls.
+In that case it aborts before deleting any rollback authorization, so operators
+do not get a partial reset from incomplete control-plane state.
+
 ## See also
 
 - [`pipelock conductor fleet status`](../guides/conductor.md) — the enrolled-follower roster.

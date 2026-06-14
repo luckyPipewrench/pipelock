@@ -66,14 +66,6 @@ func runRollbackClear(cmd *cobra.Command, opts rollbackClearOptions) error {
 	return nil
 }
 
-func init() {
-	// Attach rollback clear as a subcommand of rollback. The rollback command
-	// itself is assembled in rollback.go; this init registers the clear
-	// subcommand after the cobra tree is built. We do this via a helper that
-	// rollbackCmd will call, not init, to avoid import-order issues. See the
-	// registration in cmd.go.
-}
-
 // deleteRollbackAuthorization sends a DELETE to the Conductor's
 // rollback-authorizations endpoint with the authorization_id in the JSON body.
 func (c *conductorClient) deleteRollbackAuthorization(ctx context.Context, authorizationID string) ([]byte, error) {

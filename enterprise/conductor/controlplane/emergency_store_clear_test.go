@@ -263,7 +263,10 @@ func TestClearRollbackAuthorization_HandlerEndpoint(t *testing.T) {
 	}
 
 	// Verify it was stored.
-	all, _ := store.RollbackAuthorizations(context.Background())
+	all, err := store.RollbackAuthorizations(context.Background())
+	if err != nil {
+		t.Fatalf("RollbackAuthorizations: %v", err)
+	}
 	if len(all) != 1 {
 		t.Fatalf("expected 1 stored, got %d", len(all))
 	}

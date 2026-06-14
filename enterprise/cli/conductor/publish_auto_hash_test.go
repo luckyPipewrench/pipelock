@@ -150,6 +150,55 @@ func TestResolveAutoHash_NoMatchingStream(t *testing.T) {
 	}
 }
 
+func TestResolveAutoHash_MultipleMatchingStreams(t *testing.T) {
+	hash1 := "1111111111111111111111111111111111111111111111111111111111111111"
+	hash2 := "2222222222222222222222222222222222222222222222222222222222222222"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"streams":[` +
+			`{"environment":"prod","audience":{"instance_ids":["*"]},"head_bundle_hash":"` + hash1 + `"},` +
+			`{"environment":"prod","audience":{"instance_ids":["*"]},"head_bundle_hash":"` + hash2 + `"}` +
+			`],"stream_count":2}`))
+	}))
+	defer srv.Close()
+
+	opts := publishOptions{
+		conductorURL: srv.URL,
+		orgID:        "org-main",
+		fleetID:      "prod",
+		environment:  "prod",
+		audience:     []string{"*"},
+		publisherTok: writePublisherTokenFile(t),
+		insecure:     true,
+	}
+	_, err := resolveAutoHash(t.Context(), opts)
+	if err == nil {
+		t.Fatal("resolveAutoHash with multiple matching streams: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "matching streams") {
+		t.Fatalf("error = %v, want matching streams mention", err)
+	}
+}
+
+func TestResolveAutoHash_MissingEnvironment(t *testing.T) {
+	opts := publishOptions{
+		conductorURL: "http://127.0.0.1:1",
+		orgID:        "org-main",
+		fleetID:      "prod",
+		environment:  "  ",
+		audience:     []string{"*"},
+		publisherTok: writePublisherTokenFile(t),
+		insecure:     true,
+	}
+	_, err := resolveAutoHash(t.Context(), opts)
+	if err == nil {
+		t.Fatal("resolveAutoHash with missing environment: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--env") {
+		t.Fatalf("error = %v, want --env mention", err)
+	}
+}
+
 func TestPreviousHashAutoSentinelIgnoresCase(t *testing.T) {
 	for _, val := range []string{"auto", "AUTO", "Auto", "  auto  "} {
 		if !strings.EqualFold(strings.TrimSpace(val), previousHashAuto) {

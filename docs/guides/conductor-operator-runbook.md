@@ -327,9 +327,9 @@ for full details.
 |---|---|
 | `conductor publish --previous-bundle-hash auto` | Publish forward after a rollback without manually copying the stream head hash. |
 | `conductor rollback clear --authorization-id <id> --confirm` | Remove a single active rollback authorization (unblock forward publishes before TTL expiry). |
-| `conductor stream reset --org-id <org> --confirm` | Clear all active rollback authorizations for an org/fleet scope. |
+| `conductor stream reset --org-id <org> --fleet-id <fleet> --confirm` | Clear all active rollback authorizations for an org/fleet scope. |
 | `conductor kill status --org-id <org>` | Show active remote-kill messages (read-only). |
-| `conductor store dump --org-id <org>` | Dump control-plane state as JSON for support. |
+| `conductor store dump --org-id <org>` | Dump the stream-status JSON response for support. |
 
 All guarded commands require `--confirm`; they refuse to run without it.
 

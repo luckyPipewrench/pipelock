@@ -55,7 +55,8 @@ func runStreamReset(cmd *cobra.Command, opts streamResetOptions) error {
 	if !opts.confirm {
 		return fmt.Errorf("--confirm is required: stream reset clears all active rollback authorizations; pass --confirm to proceed")
 	}
-	if strings.TrimSpace(opts.orgID) == "" {
+	orgID := strings.TrimSpace(opts.orgID)
+	if orgID == "" {
 		return errors.New("--org-id is required")
 	}
 	// Fetch the stream status to discover active rollback authorizations.
@@ -63,7 +64,7 @@ func runStreamReset(cmd *cobra.Command, opts streamResetOptions) error {
 	if err != nil {
 		return err
 	}
-	body, err := client.getStreamStatus(cmd.Context(), opts.orgID, opts.fleetID)
+	body, err := client.getStreamStatus(cmd.Context(), orgID, opts.fleetID)
 	if err != nil {
 		return err
 	}

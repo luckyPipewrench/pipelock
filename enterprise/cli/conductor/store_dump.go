@@ -35,9 +35,9 @@ func storeDumpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dump",
 		Short: "Dump the Conductor stream overview as JSON for support and debugging",
-		Long: `dump performs a read-only query of the Conductor's stream-status and
-stream-inspect endpoints and prints the combined JSON. This is a convenience
-for operators gathering support artifacts. No state is modified.`,
+		Long: `dump performs a read-only query of the Conductor stream-status
+endpoint and prints its JSON response. This is a convenience for operators
+gathering support artifacts. No state is modified.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {

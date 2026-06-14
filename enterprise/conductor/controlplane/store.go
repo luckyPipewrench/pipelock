@@ -213,7 +213,13 @@ func (s *FileBundleStore) StreamOverview(_ context.Context, q StreamStatusQuery)
 			// is defense-in-depth so a future divergence never panics the read.
 			continue
 		}
-		_, rolledBack := s.rollbackHeads[streamKey]
+		// RolledBack reflects whether a rollback is still CAPPING the head, not
+		// merely whether a rollback marker exists: markers are retained as audit
+		// context after a forward publish resumes past the ceiling, so a
+		// presence check would report rolled_back=true forever. Reuse the same
+		// supersession test the store uses everywhere else so the operator view
+		// and the publish path agree.
+		rolledBack := s.rollbackSupersedesRecordLocked(head)
 		summaries = append(summaries, StreamSummary{
 			StreamKey:      streamKey,
 			OrgID:          head.Bundle.OrgID,

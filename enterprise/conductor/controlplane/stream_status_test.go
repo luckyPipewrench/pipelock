@@ -159,6 +159,57 @@ func TestFileBundleStoreStreamOverviewRolledBack(t *testing.T) {
 	}
 }
 
+// TestFileBundleStoreStreamOverviewRollbackResumes proves that a forward publish
+// after a rollback clears RolledBack. The rollback marker is retained as audit
+// context, so a marker-presence check would report rolled_back=true forever even
+// though the head has resumed above the rollback ceiling; the operator view must
+// track whether the rollback still caps the head, not whether a marker exists.
+func TestFileBundleStoreStreamOverviewRollbackResumes(t *testing.T) {
+	store := mustStore(t)
+	r1, r2 := publishStreamFixture(t, store)
+	r1Latest, err := store.BundleByIDVersion(t.Context(), "bundle-v1", 1)
+	if err != nil {
+		t.Fatalf("BundleByIDVersion(v1) error = %v", err)
+	}
+	auth := signedRollbackAuthorizationForBundles(t, "rollback-resume", r2.Bundle, r1Latest.Bundle, testNow)
+	if err := store.ApplyRollbackHead(t.Context(), auth, testNow); err != nil {
+		t.Fatalf("ApplyRollbackHead() error = %v", err)
+	}
+
+	// Forward-publish v3. After the rollback the served head is v1 (r1), so the
+	// new bundle chains off r1.BundleHash, and version 3 exceeds the stream max
+	// of 2 (the monotonicity gate).
+	signer := newTestSigner(t)
+	v3 := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-v3",
+		version:      3,
+		previousHash: r1.BundleHash,
+		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
+		configYAML:   "mode: strict\napi_allowlist:\n  - api3.example.com\n",
+	})
+	if _, _, err := store.Publish(t.Context(), v3, PublishOptions{Now: testNow.Add(2 * time.Minute)}); err != nil {
+		t.Fatalf("Publish(v3 forward-after-rollback) error = %v", err)
+	}
+
+	summaries, err := store.StreamOverview(t.Context(), StreamStatusQuery{OrgID: "org-main"})
+	if err != nil {
+		t.Fatalf("StreamOverview() error = %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("got %d streams, want 1", len(summaries))
+	}
+	s := summaries[0]
+	if s.RolledBack {
+		t.Fatal("RolledBack = true, want false after a forward publish resumed past the rollback ceiling")
+	}
+	if s.HeadVersion != 3 {
+		t.Fatalf("head version = %d, want 3 (forward publish is the new head)", s.HeadVersion)
+	}
+	if s.MaxVersion != 3 {
+		t.Fatalf("max version = %d, want 3", s.MaxVersion)
+	}
+}
+
 func TestFileBundleStoreStreamOverviewScopeAndValidation(t *testing.T) {
 	store := mustStore(t)
 	publishStreamFixture(t, store)

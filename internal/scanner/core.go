@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -135,8 +136,22 @@ func coreResponsePatternDefs() []coreResponsePattern {
 			regex: `(?i)(do\s+not\s+(reveal|tell|show|display|mention)\s+this\s+to\s+the\s+user|hidden\s+instructions?\s*[:=]|invisible\s+to\s+(the\s+)?user|the\s+user\s+(cannot|must\s+not|should\s+not)\s+see\s+this)`,
 		},
 		{
+			// Credential Solicitation is direction-anchored: it fires only when
+			// a hand-over verb and a credential noun co-occur with an explicit
+			// "send it back to the requester" cue (to verify/confirm, so I can,
+			// in your reply, to me/us, to a URL/email, etc.) in the same local
+			// solicitation clause.
+			// A bare verb+noun ("provide your API key in config") is NOT an
+			// attack here - it is the same shape legitimate setup documentation
+			// uses, so direction is what separates solicitation from prose.
+			// The direction cue does not cross sentence punctuation or newlines,
+			// so unrelated bullets do not pair. The verb-to-noun gap still allows
+			// newline splitting to catch short wrapped solicitations. This is the
+			// immutable floor; the config default mirrors it for preset parity.
+			// Replaces the prior .{0,80} verb-near-noun rule that hard-blocked
+			// ordinary credential documentation.
 			name:  "Credential Solicitation",
-			regex: `(?is)(\b(send|provide|paste|return|supply|submit|share)\b.{0,80}\b(password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b|(?:^|[\n.!?]\s+|\bplease\s+)include\s+(your|my|our)\s+(password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b)`,
+			regex: config.CredentialSolicitationRegex,
 		},
 		{
 			name:  "System Prompt Disclosure",
@@ -291,10 +306,12 @@ func initCoreScanner() *compiledCoreScanner {
 
 // ScanCoreResponse runs core response patterns against content. This runs
 // regardless of ResponseScanning.Enabled - the safety floor is non-negotiable.
-// Returns matches found by core patterns only; the caller should run the main
-// response scanner separately if enabled.
+// Returns filtered matches found by core patterns only; the caller should run
+// the main response scanner separately if enabled.
 func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []ResponseMatch {
-	return s.scanCoreResponse(ctx, content).matches
+	coreSet := s.scanCoreResponse(ctx, content)
+	matches := filterEducationalQuotedResponseMatches(coreSet.content, coreSet.matches)
+	return filterDefensiveCredentialSolicitationMatches(coreSet.content, matches)
 }
 
 func (s *Scanner) scanCoreResponse(ctx context.Context, content string) responseMatchSet {
@@ -311,15 +328,22 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 	original := content
 	content = normalize.ForMatching(content)
 
+	// Each pass drops defensive anti-solicitation matches (e.g. "never send
+	// your password to us") via filterDefensiveCredentialSolicitationMatches
+	// BEFORE treating the pass as a hit, so an all-defensive pass falls through
+	// to the later encoded passes. Filtering here, not in the caller, closes a
+	// masking bypass where a defensive decoy sentence short-circuits the scan
+	// and hides a leetspeak/base64 solicitation that only a later pass catches.
+
 	// Primary pass.
-	if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, content); len(matches) > 0 {
+	if matches := filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, content)); len(matches) > 0 {
 		return responseMatchSet{matches: withResponseSpans(matches, ViewForMatching), content: content}
 	}
 
 	// Secondary: replace invisible chars with spaces.
 	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 	if spaced != content {
-		if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced); len(matches) > 0 {
+		if matches := filterDefensiveCredentialSolicitationMatches(spaced, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced)); len(matches) > 0 {
 			return responseMatchSet{matches: withResponseSpans(matches, ViewInvisibleSpaced), content: spaced}
 		}
 	}
@@ -327,14 +351,14 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 	// Tertiary: leetspeak normalization.
 	leeted := normalize.Leetspeak(content)
 	if leeted != content {
-		if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted); len(matches) > 0 {
+		if matches := filterDefensiveCredentialSolicitationMatches(leeted, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted)); len(matches) > 0 {
 			return responseMatchSet{matches: withResponseSpans(matches, ViewLeetspeak), content: leeted}
 		}
 	}
 
 	// Quaternary: optional-whitespace matching.
 	if len(s.core.responseOptSpacePatterns) > 0 {
-		if matches := matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content); len(matches) > 0 {
+		if matches := filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content)); len(matches) > 0 {
 			return responseMatchSet{matches: withResponseSpans(matches, ViewForMatching), content: content}
 		}
 	}
@@ -343,7 +367,7 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 	if len(s.core.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			if matches := matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded); len(matches) > 0 {
+			if matches := filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded)); len(matches) > 0 {
 				return responseMatchSet{matches: withResponseSpans(matches, ViewVowelFold), content: folded}
 			}
 		}
@@ -438,7 +462,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 
 func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
-	if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized); len(matches) > 0 {
+	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized)); len(matches) > 0 {
 		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 	}
 	return responseMatchSet{}

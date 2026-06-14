@@ -198,7 +198,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// normal text content.
 	if len(matches) == 0 && hasEncodedRun(content) {
 		decodedSet := s.matchDecodedResponse(content)
-		matches = filterDefensiveCredentialSolicitationMatches(decodedSet.content, decodedSet.matches)
+		matches = decodedSet.matches
 		if len(matches) > 0 {
 			matchContent = decodedSet.content
 		}
@@ -746,18 +746,18 @@ func isPrintableText(data []byte) bool {
 // vowel-substituted or zero-width-separated injection would bypass detection.
 func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
-	if matches := matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized); len(matches) > 0 {
+	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized)); len(matches) > 0 {
 		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 	}
 	if len(s.responseOptSpacePatterns) > 0 {
-		if matches := matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized); len(matches) > 0 {
+		if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized)); len(matches) > 0 {
 			return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 		}
 	}
 	if len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
 		if folded != normalized {
-			if matches := matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded); len(matches) > 0 {
+			if matches := filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)); len(matches) > 0 {
 				return responseMatchSet{matches: withResponseSpans(matches, vowelFoldViewLabel(decodedViewLabel)), content: folded}
 			}
 		}

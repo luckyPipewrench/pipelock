@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -150,7 +151,7 @@ func coreResponsePatternDefs() []coreResponsePattern {
 			// Replaces the prior .{0,80} verb-near-noun rule that hard-blocked
 			// ordinary credential documentation.
 			name:  "Credential Solicitation",
-			regex: `(?i)(\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^.!?]|\.\S){0,40}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b(?:[^\n.!?]|\.\S){0,40}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)|\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^\n.!?]|\.\S){0,30}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)(?:[^\n.!?]|\.\S){0,30}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b)`,
+			regex: config.CredentialSolicitationRegex,
 		},
 		{
 			name:  "System Prompt Disclosure",
@@ -375,10 +376,7 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 	// Senary: base64/hex decode pass for encoded injection payloads.
 	if hasEncodedRun(content) {
 		if decodedSet := s.matchDecodedCoreResponse(content); len(decodedSet.matches) > 0 {
-			decodedSet.matches = filterDefensiveCredentialSolicitationMatches(decodedSet.content, decodedSet.matches)
-			if len(decodedSet.matches) > 0 {
-				return decodedSet
-			}
+			return decodedSet
 		}
 	}
 
@@ -464,7 +462,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 
 func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
-	if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized); len(matches) > 0 {
+	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized)); len(matches) > 0 {
 		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 	}
 	return responseMatchSet{}

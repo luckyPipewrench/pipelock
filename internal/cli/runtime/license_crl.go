@@ -69,6 +69,29 @@ func (s *Server) checkLicenseCRL() (bool, error) {
 	if err != nil {
 		return true, err
 	}
+	// Rollback rejection: a signature-valid, unexpired CRL is necessary but not
+	// sufficient. An attacker who can write the CRL file could swap in an OLDER
+	// (still-unexpired) signed CRL that omits a revocation. We hold a durable
+	// high-water mark of the highest generation accepted and refuse any CRL
+	// below it, failing closed. The high-water is persisted to disk so a process
+	// restart cannot reset it to 0 and re-accept a rolled-back CRL.
+	highWater, found, err := readCRLHighWater(cfg.LicenseCRLFile)
+	if err != nil {
+		// The high-water file EXISTS but is unreadable/corrupt. We cannot prove
+		// this CRL is not a rollback, so fail closed rather than trust it.
+		return true, fmt.Errorf("license CRL high-water unreadable, cannot verify rollback: %w", err)
+	}
+	if found && crl.Payload.Generation < highWater {
+		return true, fmt.Errorf("license CRL rollback rejected: generation %d below accepted %d", crl.Payload.Generation, highWater)
+	}
+	if !found || crl.Payload.Generation > highWater {
+		// Advance the durable high-water BEFORE honoring the CRL. If we cannot
+		// persist the new mark, fail closed: a non-persisted acceptance would
+		// re-open the rollback window on the next restart.
+		if err := writeCRLHighWater(cfg.LicenseCRLFile, crl.Payload.Generation); err != nil {
+			return true, fmt.Errorf("persist license CRL high-water: %w", err)
+		}
+	}
 	_, err = license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, &crl, time.Now())
 	if err == nil {
 		return false, nil

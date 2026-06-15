@@ -167,7 +167,7 @@ directly, with or without an expiry.
 ### Break-glass (offline emergency signing)
 
 `--break-glass` preserves the offline emergency-signing capability the
-[key-custody runbook](license-intermediate-migration.md) depends on (e.g.
+[key-custody runbook](../guides/license-intermediate-migration.md) depends on (e.g.
 signing a replacement token directly from the offline root). To keep the token
 revocable, a break-glass paid mint **requires `--export <path>`**: it writes a
 **signed issuance export** that the license service imports into its durable

@@ -633,6 +633,9 @@ func (h *WebhookHandler) ImportSignedIssuance(
 		// Fail closed: a malformed / forged / wrong-key export never imports.
 		return license.IssuanceExportPayload{}, "", fmt.Errorf("verify issuance export: %w", err)
 	}
+	if now.IsZero() {
+		now = time.Now()
+	}
 	rec := importedIssuanceFromExport(verified.Payload, importID)
 	rec.ImportedAt = now.UTC()
 

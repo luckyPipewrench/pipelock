@@ -162,7 +162,10 @@ func TestImportSignedIssuance_BadSignatureRejected(t *testing.T) {
 	if importErr == nil {
 		t.Fatal("expected wrong-key verification to fail closed")
 	}
-	all, _ := ts.handler.ListImportedIssuances(context.Background())
+	all, err := ts.handler.ListImportedIssuances(context.Background())
+	if err != nil {
+		t.Fatalf("list imported issuances: %v", err)
+	}
 	if len(all) != 0 {
 		t.Fatalf("a bad-signature export was imported: %d rows", len(all))
 	}
@@ -231,7 +234,11 @@ func TestImportSignedIssuance_UnexpectedError_IsAuditedAndFailsClosed(t *testing
 	}
 
 	// Fail-closed: nothing was actually recorded.
-	if got, _ := ts.handler.GetImportedIssuance(context.Background(), lic.ID); got != nil {
+	got, err := ts.handler.GetImportedIssuance(context.Background(), lic.ID)
+	if err != nil {
+		t.Fatalf("get imported issuance: %v", err)
+	}
+	if got != nil {
 		t.Fatal("record was imported despite the error; expected fail-closed")
 	}
 

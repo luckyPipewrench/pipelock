@@ -13,7 +13,22 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+// isUniqueConstraintError reports whether err is a SQLite UNIQUE/PRIMARY KEY
+// constraint violation. Only such a violation means "a concurrent import won the
+// race after our lookup" (a conflict); any other ExecContext error (disk full,
+// I/O, context cancellation) must NOT be mislabeled as a conflict.
+func isUniqueConstraintError(err error) bool {
+	var serr *sqlite.Error
+	if errors.As(err, &serr) {
+		code := serr.Code()
+		return code == sqlite3.SQLITE_CONSTRAINT_UNIQUE || code == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY
+	}
+	return false
+}
 
 // ImportedIssuance is a license token minted outside the service (offline-root
 // break-glass / standalone CLI) and imported via a signed issuance export. It is
@@ -127,9 +142,13 @@ func (e *EntitlementDB) ImportIssuance(ctx context.Context, rec ImportedIssuance
 		rec.IssuedAt.UTC(), nullableTime(rec.ExpiresAt), rec.ImportID, rec.ImportedAt.UTC(),
 	); err != nil {
 		// A UNIQUE/PRIMARY KEY violation here means a concurrent import won the
-		// race after our lookup. Treat it as a conflict (fail closed) rather than
-		// swallowing it.
-		return fmt.Errorf("%w: %s", ErrIssuanceConflict, err.Error())
+		// race after our lookup: treat it as a conflict (fail closed). Any other
+		// ExecContext error (disk full, I/O, context cancellation) is NOT a
+		// conflict and must surface as a generic error so it is audited as such.
+		if isUniqueConstraintError(err) {
+			return fmt.Errorf("%w: license_id=%s", ErrIssuanceConflict, rec.LicenseID)
+		}
+		return fmt.Errorf("insert imported issuance: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

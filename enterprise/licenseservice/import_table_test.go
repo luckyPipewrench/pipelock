@@ -111,7 +111,10 @@ func TestImportIssuance_ConflictRejections(t *testing.T) {
 				t.Fatalf("expected ErrIssuanceConflict, got %v", err)
 			}
 			// The original record must be intact (no silent overwrite).
-			got, _ := db.GetImportedIssuance(t.Context(), base.LicenseID)
+			got, gerr := db.GetImportedIssuance(t.Context(), base.LicenseID)
+			if gerr != nil {
+				t.Fatalf("get seeded record: %v", gerr)
+			}
 			if got == nil || got.SubscriptionID != base.SubscriptionID || got.TokenSHA256 != base.TokenSHA256 {
 				t.Fatalf("original record was mutated: %+v", got)
 			}
@@ -189,7 +192,10 @@ func TestImportIssuance_FromSignedExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.Marshal(export)
+	data, err := json.Marshal(export)
+	if err != nil {
+		t.Fatalf("marshal export: %v", err)
+	}
 
 	verified, err := license.ParseAndVerifyIssuanceExport(data, pub)
 	if err != nil {
@@ -201,7 +207,10 @@ func TestImportIssuance_FromSignedExport(t *testing.T) {
 	if err := db.ImportIssuance(t.Context(), rec); err != nil {
 		t.Fatalf("import from export: %v", err)
 	}
-	got, _ := db.GetImportedIssuance(t.Context(), lic.ID)
+	got, err := db.GetImportedIssuance(t.Context(), lic.ID)
+	if err != nil {
+		t.Fatalf("get imported issuance: %v", err)
+	}
 	if got == nil || got.TokenSHA256 != license.TokenSHA256Hex(token) {
 		t.Fatalf("imported record does not bind the full token hash: %+v", got)
 	}
@@ -297,5 +306,37 @@ func TestImportIssuance_DistinctRecordsNoCrossContamination(t *testing.T) {
 	}
 	if len(all) != n {
 		t.Fatalf("stored %d distinct rows, want %d", len(all), n)
+	}
+}
+
+// isUniqueConstraintError must detect a REAL driver-level UNIQUE/PRIMARY KEY
+// violation (so a race-lost INSERT is classified as a conflict) and must NOT
+// misclassify a generic error (so disk/IO/cancellation surfaces as an error,
+// not a phantom conflict).
+func TestIsUniqueConstraintError(t *testing.T) {
+	db := openImportTestDB(t)
+	rec := sampleImport()
+	if err := db.ImportIssuance(t.Context(), rec); err != nil {
+		t.Fatalf("seed import: %v", err)
+	}
+	// Insert the same row directly, bypassing ImportIssuance's pre-INSERT lookup,
+	// to force the driver to raise the constraint error.
+	const insert = `
+	INSERT INTO imported_issuances (
+		license_id, token_sha256, subscription_id, issuer_key_id,
+		issued_at, expires_at, import_id, imported_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	_, rawErr := db.db.ExecContext(t.Context(), insert,
+		rec.LicenseID, rec.TokenSHA256, rec.SubscriptionID, rec.IssuerKeyID,
+		rec.IssuedAt.UTC(), nullableTime(rec.ExpiresAt), rec.ImportID, rec.ImportedAt.UTC(),
+	)
+	if rawErr == nil {
+		t.Fatal("expected a UNIQUE constraint violation on duplicate insert")
+	}
+	if !isUniqueConstraintError(rawErr) {
+		t.Fatalf("real UNIQUE violation not detected: %v", rawErr)
+	}
+	if isUniqueConstraintError(errors.New("disk full")) {
+		t.Fatal("generic error misclassified as a constraint violation")
 	}
 }

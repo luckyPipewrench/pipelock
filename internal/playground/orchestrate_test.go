@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -152,5 +153,34 @@ func TestPreflight_UncontainedSucceeds(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("preflight must succeed for uncontained: %v", err)
+	}
+}
+
+// TestRunDemo_PrintedVerifyKey_ActuallyVerifies guards the demo-breaking bug
+// where the run printed the Pipelock key (not the orchestrator key) as
+// --orchestrator-key, so the audience verify command failed. It extracts the
+// key from the printed "verify ... --orchestrator-key <hex>" line and confirms
+// that key actually verifies the run dir standalone.
+func TestRunDemo_PrintedVerifyKey_ActuallyVerifies(t *testing.T) {
+	var buf bytes.Buffer
+	runDir := t.TempDir()
+	rep, err := playground.RunDemo(t.Context(), &buf, playground.DemoOpts{Contained: false, ScenarioID: "secret-exfil-url-blocked", RunDir: runDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.OK {
+		t.Fatalf("run must verify: %+v", rep)
+	}
+	m := regexp.MustCompile(`--orchestrator-key ([0-9a-f]{64})`).FindStringSubmatch(buf.String())
+	if m == nil {
+		t.Fatalf("could not find printed orchestrator key in output:\n%s", buf.String())
+	}
+	printedKey := m[1]
+	got, err := playground.VerifyRun(runDir, printedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK {
+		t.Fatalf("the PRINTED verify key must verify the run standalone, but it failed: %+v", got.Checks)
 	}
 }

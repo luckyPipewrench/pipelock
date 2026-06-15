@@ -249,7 +249,7 @@ func renderVerifySummary(out io.Writer, rep VerifyReport, runDir string) {
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "To verify this run independently:")
 	_, _ = fmt.Fprintf(out, "  pipelock-playground-demo verify %s --orchestrator-key %s\n",
-		filepath.Clean(runDir), rep.PipelockKey)
+		filepath.Clean(runDir), rep.OrchestratorKey)
 }
 
 // Reset clears all state from a previous run in runDir, making it safe to

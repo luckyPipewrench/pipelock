@@ -29,6 +29,11 @@ type VerifyReport struct {
 	RunNonce      string  `json:"run_nonce"`
 	CollectorKey  string  `json:"collector_key"`
 	PipelockKey   string  `json:"pipelock_key"`
+	// OrchestratorKey is the trust-root key the run was verified against. It is
+	// the key callers must pass to `verify --orchestrator-key`; it is NOT the
+	// Pipelock or collector key. Echoed from the VerifyRun argument so the
+	// report (and any printed verify command) carries the correct key.
+	OrchestratorKey string `json:"orchestrator_key"`
 }
 
 // Run directory layout (produced by the demo runner, consumed by VerifyRun):
@@ -81,7 +86,7 @@ var requiredChecks = []string{
 // OK = logical AND of all checks. Any single failure => OK=false with a
 // specific reason. Missing/malformed files fail closed (no panic).
 func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
-	rep := VerifyReport{}
+	rep := VerifyReport{OrchestratorKey: orchestratorPubHex}
 	cleanDir := filepath.Clean(dir)
 
 	// --- Load files (fail closed on missing/malformed) ---

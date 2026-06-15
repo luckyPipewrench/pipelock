@@ -34,6 +34,12 @@ func yamlRoundTripConfig(t *testing.T, cfg *config.Config) *config.Config {
 	return &out
 }
 
+func TestRedactionConfigKey_NilConfig(t *testing.T) {
+	if got, err := redactionConfigKey(nil); err != nil || got != "" {
+		t.Fatalf("redactionConfigKey(nil) = (%q, %v), want (\"\", nil)", got, err)
+	}
+}
+
 func mustRedactionKey(t *testing.T, cfg *config.Config) string {
 	t.Helper()
 	k, err := redactionConfigKey(cfg)

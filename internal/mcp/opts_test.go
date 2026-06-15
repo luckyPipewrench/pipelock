@@ -61,6 +61,10 @@ func withAdaptive(cfg *config.AdaptiveEnforcement) testOptsFunc {
 	return func(o *MCPProxyOpts) { o.AdaptiveCfg = cfg }
 }
 
+func withResetFile(path string) testOptsFunc {
+	return func(o *MCPProxyOpts) { o.AdaptiveResetFile = path }
+}
+
 func withRedaction(m *redact.Matcher) testOptsFunc {
 	return func(o *MCPProxyOpts) {
 		o.RedactMatcher = m

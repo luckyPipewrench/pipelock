@@ -54,6 +54,28 @@ func LoadAndVerifyCRLMonotonic(path string, publicKey ed25519.PublicKey, now tim
 	return crl, nil
 }
 
+// LoadAndVerifyCRLMonotonicFresh extends LoadAndVerifyCRLMonotonic with an
+// IssuedAt-age freshness gate. It is the function the require-intermediate
+// resolver uses: under require mode an unexpired-but-stale CRL is a
+// rollback/compromise-response gap and must fail closed. maxAge is the operator-
+// configured freshness window (license_crl_max_age); a zero/negative value is
+// clamped to DefaultCRLMaxAge so a misconfiguration can never DISABLE the check.
+// The legacy (non-require) paths keep calling LoadAndVerifyCRLMonotonic so
+// behaviour is unchanged when require mode is off.
+func LoadAndVerifyCRLMonotonicFresh(path string, publicKey ed25519.PublicKey, now time.Time, maxAge time.Duration) (CRL, error) {
+	crl, err := LoadAndVerifyCRLMonotonic(path, publicKey, now)
+	if err != nil {
+		return CRL{}, err
+	}
+	if maxAge <= 0 {
+		maxAge = DefaultCRLMaxAge
+	}
+	if err := crl.CheckFreshness(now, maxAge); err != nil {
+		return CRL{}, err
+	}
+	return crl, nil
+}
+
 // ReadCRLHighWater returns the persisted high-water generation.
 //
 // Fail-closed semantics:

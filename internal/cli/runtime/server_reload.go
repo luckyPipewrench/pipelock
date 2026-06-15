@@ -177,7 +177,16 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			oldCfg.LicenseCRLFile != newCfg.LicenseCRLFile ||
 			oldCfg.LicenseIntermediateFile != newCfg.LicenseIntermediateFile ||
 			!bytes.Equal(oldCfg.LicenseIntermediateCert, newCfg.LicenseIntermediateCert) ||
-			oldCfg.LicenseIntermediateLoadError != newCfg.LicenseIntermediateLoadError
+			oldCfg.LicenseIntermediateLoadError != newCfg.LicenseIntermediateLoadError ||
+			// A require-intermediate flip is a license-trust change: compare the
+			// MATERIALIZED value so a reload that turns require on/off (via config
+			// or env) re-verifies and can tear down a surface that no longer
+			// satisfies the required trust tier.
+			oldCfg.LicenseRequireIntermediateResolved != newCfg.LicenseRequireIntermediateResolved ||
+			// A CRL freshness-window change is also a license-trust change: shrinking
+			// it can make a previously-fresh CRL stale, which under require mode is
+			// proven loss. Compare the materialized window.
+			oldCfg.LicenseCRLMaxAgeResolved != newCfg.LicenseCRLMaxAgeResolved
 
 		// Re-verify the NEW license inputs ONCE and classify the result so both
 		// paid surfaces — agent listeners and the Conductor follower — make the
@@ -199,8 +208,16 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			reloadClass = license.ReloadVerified
 		)
 		if reloadLicenseChecked {
-			reloadLic, reloadClass = license.ClassifyReload(
-				newCfg.LicenseKey, newCfg.LicensePublicKey, newCfg.LicenseCRLFile, newCfg.LicenseIntermediateFile)
+			reloadLic, reloadClass = license.ClassifyReloadWithOptions(license.FleetVerifyInputs{
+				LicenseKey:       newCfg.LicenseKey,
+				PublicKeyHex:     newCfg.LicensePublicKey,
+				CRLFile:          newCfg.LicenseCRLFile,
+				IntermediateFile: newCfg.LicenseIntermediateFile,
+				IntermediateCert: newCfg.LicenseIntermediateCert,
+				RequireSet:       true,
+				Require:          newCfg.LicenseRequireIntermediateResolved,
+				MaxAge:           newCfg.LicenseCRLMaxAgeResolved,
+			})
 		}
 		conductorFleetLost := oldCfg.Conductor.Enabled && reloadLicenseChecked &&
 			reloadClass.ProvesLoss(reloadLic, license.FeatureFleet)
@@ -372,6 +389,16 @@ func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
 	newCfg.LicenseIntermediateCert = append([]byte(nil), oldCfg.LicenseIntermediateCert...)
 	newCfg.LicenseIntermediateLoadError = oldCfg.LicenseIntermediateLoadError
 	newCfg.LicensePublicKey = oldCfg.LicensePublicKey
+	// Require-intermediate is restart-only too: preserve both the YAML pointer and
+	// the materialized value so a later unrelated reload sees no diff and cannot
+	// silently apply a staged require-mode change without a restart.
+	newCfg.LicenseRequireIntermediate = oldCfg.LicenseRequireIntermediate
+	newCfg.LicenseRequireIntermediateResolved = oldCfg.LicenseRequireIntermediateResolved
+	newCfg.LicenseRequireIntermediateEnvError = oldCfg.LicenseRequireIntermediateEnvError
+	// The CRL freshness window is part of the restart-only license input set.
+	newCfg.LicenseCRLMaxAge = oldCfg.LicenseCRLMaxAge
+	newCfg.LicenseCRLMaxAgeResolved = oldCfg.LicenseCRLMaxAgeResolved
+	newCfg.LicenseCRLMaxAgeError = oldCfg.LicenseCRLMaxAgeError
 }
 
 // cleanup closes all owned resources. Safe to call multiple times: each

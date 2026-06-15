@@ -52,7 +52,7 @@ batch; omit it to list the most recent batches for the scope.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// License gate: audit query is an Enterprise fleet operator tool.
 			// Fail closed before any network connection.
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runAuditQuery(cmd, opts)

@@ -57,7 +57,7 @@ func SinkCmd() *cobra.Command {
 			// License gate: fleet-sink is the Enterprise audit-sink server.
 			// Fail-closed before any listener bind / disk IO so an unlicensed
 			// invocation produces a clear entitlement error.
-			if _, err := license.VerifyFleet("", "", licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: licenseCRLFile}); err != nil {
 				return err
 			}
 			if strings.TrimSpace(storageDir) == "" {

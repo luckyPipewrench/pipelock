@@ -62,7 +62,7 @@ func enrollmentTokenMintCmd() *cobra.Command {
 			// License gate first: enrollment-token issuance is an Enterprise
 			// fleet admin action. Fail closed before any client build or
 			// network call.
-			if _, err := license.VerifyFleet("", "", opts.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runEnrollmentTokenMint(cmd, opts)

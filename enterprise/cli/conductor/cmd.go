@@ -121,7 +121,7 @@ func serveCmd() *cobra.Command {
 			// Fail-closed before any listener bind or file IO so an unlicensed
 			// invocation produces a clear entitlement error instead of a
 			// half-started server with leaked sockets.
-			if _, err := license.VerifyFleet("", "", opts.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runServe(cmd, opts)

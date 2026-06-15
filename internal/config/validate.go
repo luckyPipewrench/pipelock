@@ -253,6 +253,35 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 // closed on a bad cert by disabling agent profiles, so the safe degraded state
 // is reached without the early hard rejection.
 func (c *Config) validateLicenseIntermediate(warnings *[]Warning) {
+	// Require-intermediate misconfiguration surfaces as a WARNING, never a fatal
+	// error: a license-trust knob must not crash the free proxy (the runtime
+	// gate fails closed on paid surfaces at verify time). A malformed env value
+	// is reported; require-on with no cert configured is reported so the
+	// operator knows licensed features will be unavailable until they configure
+	// an intermediate.
+	if c.LicenseRequireIntermediateEnvError != "" {
+		*warnings = append(*warnings, Warning{
+			Field:   "license_require_intermediate",
+			Message: fmt.Sprintf("environment value %s could not be parsed (%s) — require-intermediate fails closed to ON (a malformed enable-toggle must not silently re-open the direct-root fallback); set license_require_intermediate in config or fix the env value", EnvLicenseRequireIntermediate, c.LicenseRequireIntermediateEnvError),
+		})
+	}
+	if c.LicenseRequireIntermediateResolved && len(c.LicenseIntermediateCert) == 0 {
+		*warnings = append(*warnings, Warning{
+			Field:   "license_require_intermediate",
+			Message: "is enabled but no license_intermediate_file is configured — licensed features will be disabled until an intermediate certificate is provided",
+		})
+	}
+	// A malformed/non-positive license_crl_max_age is a WARNING, never fatal: the
+	// resolver already clamped the effective window to DefaultCRLMaxAge (the
+	// freshness check stays ON), so the proxy keeps running and require mode keeps
+	// its floor — the operator just gets told their value did not take.
+	if c.LicenseCRLMaxAgeError != "" {
+		*warnings = append(*warnings, Warning{
+			Field:   "license_crl_max_age",
+			Message: fmt.Sprintf("could not be parsed (%s) — using the default %s freshness window instead", c.LicenseCRLMaxAgeError, c.LicenseCRLMaxAgeResolved),
+		})
+	}
+
 	if len(c.LicenseIntermediateCert) == 0 {
 		return
 	}

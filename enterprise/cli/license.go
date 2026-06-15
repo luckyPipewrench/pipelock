@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ func LicenseCmd() *cobra.Command {
 		licenseInstallCmd(),
 		licenseStatusCmd(),
 		licenseCRLCmd(),
+		licenseIntermediateCmd(),
 	)
 	return cmd
 }
@@ -263,19 +265,20 @@ func licenseInspectCmd() *cobra.Command {
 }
 
 type licenseStatusReport struct {
-	Status         string `json:"status"`
-	LicenseID      string `json:"license_id,omitempty"`
-	Tier           string `json:"tier,omitempty"`
-	SubscriptionID string `json:"subscription_id,omitempty"`
-	ExpiresAt      string `json:"expires_at,omitempty"`
-	DaysRemaining  int    `json:"days_remaining,omitempty"`
-	WarningBand    int    `json:"warning_band,omitempty"`
-	Severity       string `json:"severity,omitempty"`
-	CRLConfigured  bool   `json:"crl_configured"`
-	CRLExpiresAt   string `json:"crl_expires_at,omitempty"`
-	CRLSHA256      string `json:"crl_sha256,omitempty"`
-	Intermediate   bool   `json:"intermediate_configured"`
-	Reason         string `json:"reason,omitempty"`
+	Status              string `json:"status"`
+	LicenseID           string `json:"license_id,omitempty"`
+	Tier                string `json:"tier,omitempty"`
+	SubscriptionID      string `json:"subscription_id,omitempty"`
+	ExpiresAt           string `json:"expires_at,omitempty"`
+	DaysRemaining       int    `json:"days_remaining,omitempty"`
+	WarningBand         int    `json:"warning_band,omitempty"`
+	Severity            string `json:"severity,omitempty"`
+	CRLConfigured       bool   `json:"crl_configured"`
+	CRLExpiresAt        string `json:"crl_expires_at,omitempty"`
+	CRLSHA256           string `json:"crl_sha256,omitempty"`
+	Intermediate        bool   `json:"intermediate_configured"`
+	RequireIntermediate bool   `json:"require_intermediate"`
+	Reason              string `json:"reason,omitempty"`
 }
 
 func licenseStatusCmd() *cobra.Command {
@@ -332,10 +335,19 @@ func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, 
 		crlFile = cfg.LicenseCRLFile
 	}
 	report.Intermediate = len(cfg.LicenseIntermediateCert) > 0
+	report.RequireIntermediate = cfg.LicenseRequireIntermediateResolved
+	require := cfg.LicenseRequireIntermediateResolved
+	maxAge := cfg.LicenseCRLMaxAgeResolved
 	var crl *license.CRL
 	if crlFile != "" {
 		report.CRLConfigured = true
-		loaded, crlErr := license.LoadAndVerifyCRLMonotonic(crlFile, pubKey, time.Now())
+		var loaded license.CRL
+		var crlErr error
+		if require {
+			loaded, crlErr = license.LoadAndVerifyCRLMonotonicFresh(crlFile, pubKey, time.Now(), maxAge)
+		} else {
+			loaded, crlErr = license.LoadAndVerifyCRLMonotonic(crlFile, pubKey, time.Now())
+		}
 		if crlErr != nil {
 			report.Status = licenseStatusInvalid
 			report.Reason = crlErr.Error()
@@ -344,9 +356,21 @@ func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, 
 		crl = &loaded
 		report.CRLExpiresAt = time.Unix(loaded.Payload.ExpiresAt, 0).UTC().Format(time.DateOnly)
 		report.CRLSHA256 = loaded.SHA256
+	} else if require {
+		err := errors.New("license_require_intermediate is on but no CRL is configured (a signed CRL is required)")
+		report.Status = licenseStatusInvalid
+		report.Reason = err.Error()
+		return report, err
 	}
 
-	lic, err := license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, crl, time.Now())
+	lic, err := license.VerifyTokenWithOptions(cfg.LicenseKey, license.VerifyOptions{
+		Intermediate:        cfg.LicenseIntermediateCert,
+		RequireIntermediate: require,
+		CRL:                 crl,
+		RootPub:             pubKey,
+		Now:                 time.Now(),
+		MaxAge:              maxAge,
+	})
 	report.LicenseID = lic.ID
 	report.Tier = lic.Tier
 	report.SubscriptionID = lic.SubscriptionID
@@ -414,6 +438,39 @@ func applyLicenseStatusEnv(cfg *config.Config) {
 	}
 	if cfg.LicenseCRLFile == "" {
 		cfg.LicenseCRLFile = strings.TrimSpace(os.Getenv(config.EnvLicenseCRLFile))
+	}
+	// Materialize require-intermediate from env when the config did not set it,
+	// so status agrees with the runtime resolver. A malformed env value resolves
+	// to TRUE and records the error, mirroring resolveLicenseRequireIntermediate
+	// in config/load.go — status must report what the runtime actually enforces
+	// (fail closed), not a display-vs-reality divergence.
+	if cfg.LicenseRequireIntermediate == nil {
+		if raw, ok := os.LookupEnv(license.EnvLicenseRequireIntermediate); ok {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed == "" {
+				cfg.LicenseRequireIntermediateResolved = false
+			} else if v, err := strconv.ParseBool(trimmed); err == nil {
+				cfg.LicenseRequireIntermediateResolved = v
+			} else {
+				cfg.LicenseRequireIntermediateResolved = true
+				cfg.LicenseRequireIntermediateEnvError = fmt.Sprintf("%q is not a boolean", trimmed)
+			}
+		}
+	}
+	// Materialize the CRL freshness window from env when the config did not set
+	// it, so status reports the window the runtime actually enforces. A
+	// malformed/non-positive value clamps to DefaultCRLMaxAge (never disables the
+	// check), mirroring resolveLicenseCRLMaxAge in config/load.go.
+	if strings.TrimSpace(cfg.LicenseCRLMaxAge) == "" {
+		if raw, ok := os.LookupEnv(config.EnvLicenseCRLMaxAge); ok {
+			trimmed := strings.TrimSpace(raw)
+			if d, err := time.ParseDuration(trimmed); err == nil && d > 0 {
+				cfg.LicenseCRLMaxAgeResolved = d
+			} else if trimmed != "" {
+				cfg.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+				cfg.LicenseCRLMaxAgeError = fmt.Sprintf("%q is not a valid positive duration", trimmed)
+			}
+		}
 	}
 	if cfg.LicenseIntermediateFile == "" {
 		intermediateFile := strings.TrimSpace(os.Getenv(license.EnvLicenseIntermediateFile))

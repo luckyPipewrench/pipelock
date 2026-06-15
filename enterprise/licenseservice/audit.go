@@ -26,8 +26,11 @@ const (
 	AuditRefreshIssued   = "refresh_issued"
 	AuditSubscriptionEnd = "subscription_ended"
 	AuditLicenseRevoked  = "license_revoked"
-	AuditFoundingCapHit  = "founding_cap_hit"
-	AuditError           = "error"
+	// AuditIntermediateRevoked records an intermediate signing-cert serial being
+	// revoked and added to the published CRL (rotation or compromise).
+	AuditIntermediateRevoked = "intermediate_revoked"
+	AuditFoundingCapHit      = "founding_cap_hit"
+	AuditError               = "error"
 
 	// Enterprise Eval fulfillment events.
 	AuditEvalMinted        = "eval_minted"
@@ -171,6 +174,20 @@ func (a *AuditLedger) LogLicenseRevoked(subscriptionID, email, licenseID, reason
 		CustomerEmail:  email,
 		LicenseID:      licenseID,
 		Detail:         reason,
+	})
+}
+
+// LogIntermediateRevoked records an intermediate signing-cert revocation added
+// to the published CRL. The serial + reason go in Detail (the entry has no
+// dedicated serial field; the serial is not a license ID).
+func (a *AuditLedger) LogIntermediateRevoked(serial, reason string) error {
+	detail := serial
+	if reason != "" {
+		detail = serial + ": " + reason
+	}
+	return a.Log(AuditEntry{
+		Event:  AuditIntermediateRevoked,
+		Detail: detail,
 	})
 }
 

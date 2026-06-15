@@ -544,6 +544,19 @@ seed_phrase_detection:
 # X-Pipelock-Agent header, or ?agent= query param. Requires a license key
 # (via PIPELOCK_LICENSE_KEY env var, license_file path, or inline license_key).
 #
+# License trust hardening (Enterprise PKI tier): when an offline root signs a
+# short-lived intermediate that the license service uses for online signing,
+# set license_require_intermediate to refuse any license NOT validated through
+# that intermediate. Default (omitted/false) keeps accepting direct root-signed
+# licenses, so existing deployments are unaffected. Turning it on requires a
+# configured license_intermediate_file and a fresh signed CRL; see
+# docs/guides/license-intermediate-migration.md for the migration runbook.
+# license_require_intermediate: false
+# The CRL freshness window (max IssuedAt age) under require mode is tunable
+# via license_crl_max_age (default 25h); a stale CRL fails closed only when
+# require mode is on.
+# license_crl_max_age: 25h
+#
 # agents:
 #   claude-code:
 #     listeners: [":8889"]

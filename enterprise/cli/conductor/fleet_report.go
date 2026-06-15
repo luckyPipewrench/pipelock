@@ -57,7 +57,7 @@ use the remote audit query API and does not expose raw audit payloads over the
 network.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runFleetReport(cmd, opts)

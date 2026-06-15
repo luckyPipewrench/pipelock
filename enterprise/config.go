@@ -287,8 +287,17 @@ func EnforceLicenseGate(c *config.Config) {
 	}
 
 	// Verify the license token signature, expiration, optional intermediate
-	// chain, and revocation status.
-	lic, err := license.VerifyTokenWithOptionalIntermediate(c.LicenseKey, c.LicenseIntermediateCert, pubKey, crl, time.Now())
+	// chain, require-intermediate mode, and revocation status. The CRL was
+	// already loaded above (with freshness handled by loadLicenseCRL); pass it
+	// through VerifyOptions so require mode is honoured here too.
+	lic, err := license.VerifyTokenWithOptions(c.LicenseKey, license.VerifyOptions{
+		Intermediate:        c.LicenseIntermediateCert,
+		RequireIntermediate: c.LicenseRequireIntermediateResolved,
+		CRL:                 crl,
+		RootPub:             pubKey,
+		Now:                 time.Now(),
+		MaxAge:              c.LicenseCRLMaxAgeResolved,
+	})
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license verification failed: %v\n"+
 			"Multi-agent profiles disabled. Single-agent protection is active.\n", err)
@@ -322,10 +331,26 @@ func EnforceLicenseGate(c *config.Config) {
 }
 
 func loadLicenseCRL(c *config.Config, pubKey ed25519.PublicKey) (*license.CRL, bool, error) {
+	require := c.LicenseRequireIntermediateResolved
 	if c.LicenseCRLFile == "" {
+		if require {
+			// Under require-intermediate a CRL is the revocation floor; without
+			// one a revoked intermediate could be re-validated. Fail closed (the
+			// caller strips named agents, free single-agent protection survives).
+			return nil, true, errors.New("license_require_intermediate is on but no license_crl_file is configured (a signed CRL is required)")
+		}
 		return nil, false, nil
 	}
-	crl, err := license.LoadAndVerifyCRLMonotonic(c.LicenseCRLFile, pubKey, time.Now())
+	// Freshness (IssuedAt-age) is enforced only under require mode, matching the
+	// resolver: a stale-but-unexpired CRL is a compromise-response gap that
+	// require mode must close.
+	var crl license.CRL
+	var err error
+	if require {
+		crl, err = license.LoadAndVerifyCRLMonotonicFresh(c.LicenseCRLFile, pubKey, time.Now(), c.LicenseCRLMaxAgeResolved)
+	} else {
+		crl, err = license.LoadAndVerifyCRLMonotonic(c.LicenseCRLFile, pubKey, time.Now())
+	}
 	if err != nil {
 		return nil, true, err
 	}

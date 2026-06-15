@@ -13126,3 +13126,352 @@ func TestValidateMediationEnvelope(t *testing.T) {
 		})
 	}
 }
+
+// TestLicenseRequireIntermediateConfigStates exercises the 6 mandated states of
+// the license_require_intermediate boolean knob: omitted, YAML null/blank,
+// explicit false, explicit true, reload with change, reload without change. The
+// resolved value (LicenseRequireIntermediateResolved) folds the config field
+// over the env so runtime consumers see the same value the startup gate uses.
+func TestLicenseRequireIntermediateConfigStates(t *testing.T) {
+	writeCfg := func(t *testing.T, body string) *Config {
+		t.Helper()
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg
+	}
+
+	t.Run("omitted_defaults_false", func(t *testing.T) {
+		// Ensure no env leaks in.
+		t.Setenv(EnvLicenseRequireIntermediate, "")
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		cfg := writeCfg(t, "mode: balanced\n")
+		if cfg.LicenseRequireIntermediate != nil {
+			t.Fatalf("omitted field must be nil pointer, got %v", *cfg.LicenseRequireIntermediate)
+		}
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("omitted must resolve to false (brick-guard: today's behaviour)")
+		}
+	})
+
+	t.Run("yaml_null", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		cfg := writeCfg(t, "mode: balanced\nlicense_require_intermediate:\n")
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("null must resolve to false")
+		}
+	})
+
+	t.Run("explicit_false", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		cfg := writeCfg(t, "mode: balanced\nlicense_require_intermediate: false\n")
+		if cfg.LicenseRequireIntermediate == nil || *cfg.LicenseRequireIntermediate {
+			t.Fatal("explicit false must set pointer to false")
+		}
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("explicit false must resolve false")
+		}
+	})
+
+	t.Run("explicit_true", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		cfg := writeCfg(t, "mode: balanced\nlicense_require_intermediate: true\n")
+		if cfg.LicenseRequireIntermediate == nil || !*cfg.LicenseRequireIntermediate {
+			t.Fatal("explicit true must set pointer to true")
+		}
+		if !cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("explicit true must resolve true")
+		}
+	})
+
+	t.Run("explicit_config_wins_over_env", func(t *testing.T) {
+		t.Setenv(EnvLicenseRequireIntermediate, "true")
+		cfg := writeCfg(t, "mode: balanced\nlicense_require_intermediate: false\n")
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("explicit config false must win over env true")
+		}
+	})
+
+	t.Run("env_true_when_omitted", func(t *testing.T) {
+		t.Setenv(EnvLicenseRequireIntermediate, "true")
+		cfg := writeCfg(t, "mode: balanced\n")
+		if !cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("env=true must resolve true when config omits the field")
+		}
+	})
+
+	t.Run("invalid_env_fails_closed_to_on_not_crashing", func(t *testing.T) {
+		t.Setenv(EnvLicenseRequireIntermediate, "treu")
+		cfg := writeCfg(t, "mode: balanced\n")
+		// Fail closed: a malformed enable-toggle resolves to ON (true), never OFF.
+		// A typo must not silently re-open the legacy direct-root fallback.
+		if !cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("invalid env must fail CLOSED (resolve to true), NOT default to false")
+		}
+		if cfg.LicenseRequireIntermediateEnvError == "" {
+			t.Fatal("invalid env must record an env error for the validate WARNING")
+		}
+		// Validate must surface the warning, not a fatal error.
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("invalid require env must not fail validation: %v", err)
+		}
+		found := false
+		for _, w := range warnings {
+			if w.Field == "license_require_intermediate" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected a license_require_intermediate warning, got %+v", warnings)
+		}
+	})
+
+	t.Run("reload_change_and_no_change", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseRequireIntermediate)
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_require_intermediate: false\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		first, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.LicenseRequireIntermediateResolved {
+			t.Fatal("first load false")
+		}
+		// Reload WITHOUT change.
+		unchanged, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unchanged.LicenseRequireIntermediateResolved {
+			t.Fatal("reload without change must stay false")
+		}
+		// Reload WITH change.
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_require_intermediate: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed.LicenseRequireIntermediateResolved {
+			t.Fatal("reload with change must flip to true")
+		}
+	})
+}
+
+// TestLicenseRequireIntermediateExcludedFromPolicyHash confirms the trust knob
+// does not enter the canonical policy hash (changing it must not shift ph).
+func TestLicenseRequireIntermediateExcludedFromPolicyHash(t *testing.T) {
+	base := Defaults()
+	withRequire := Defaults()
+	rq := true
+	withRequire.LicenseRequireIntermediate = &rq
+	withRequire.LicenseRequireIntermediateResolved = true
+	withRequire.LicenseRequireIntermediateEnvError = "ignored"
+	if base.CanonicalPolicyHash() != withRequire.CanonicalPolicyHash() {
+		t.Fatal("license_require_intermediate must be excluded from the canonical policy hash")
+	}
+}
+
+// TestEnvLicenseRequireIntermediateNameParity asserts the config-package env
+// name matches the canonical license-package name (the two are declared
+// separately to avoid an import-cycle concern and MUST stay identical).
+func TestEnvLicenseRequireIntermediateNameParity(t *testing.T) {
+	if EnvLicenseRequireIntermediate != license.EnvLicenseRequireIntermediate {
+		t.Fatalf("env name mismatch: config=%q license=%q",
+			EnvLicenseRequireIntermediate, license.EnvLicenseRequireIntermediate)
+	}
+}
+
+// TestLicenseCRLMaxAgeConfigStates exercises the 6 mandated states of the
+// license_crl_max_age knob: omitted (default 25h), explicit value, malformed
+// (default + WARNING), non-positive (clamped to default + WARNING), reload with
+// change, and reload without change. The resolver must NEVER disable the
+// freshness check — a bad value always falls safe to DefaultCRLMaxAge.
+func TestLicenseCRLMaxAgeConfigStates(t *testing.T) {
+	writeCfg := func(t *testing.T, body string) *Config {
+		t.Helper()
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg
+	}
+	hasMaxAgeWarning := func(t *testing.T, cfg *Config) bool {
+		t.Helper()
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("ValidateWithWarnings: %v", err)
+		}
+		for _, w := range warnings {
+			if w.Field == "license_crl_max_age" {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("omitted_defaults_to_25h", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseCRLMaxAge)
+		cfg := writeCfg(t, "mode: balanced\n")
+		if cfg.LicenseCRLMaxAge != "" {
+			t.Fatalf("omitted field must stay empty, got %q", cfg.LicenseCRLMaxAge)
+		}
+		if cfg.LicenseCRLMaxAgeResolved != license.DefaultCRLMaxAge {
+			t.Fatalf("omitted must resolve to DefaultCRLMaxAge %s, got %s", license.DefaultCRLMaxAge, cfg.LicenseCRLMaxAgeResolved)
+		}
+		if cfg.LicenseCRLMaxAgeError != "" {
+			t.Fatalf("omitted must not record an error, got %q", cfg.LicenseCRLMaxAgeError)
+		}
+	})
+
+	t.Run("explicit_value", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseCRLMaxAge)
+		cfg := writeCfg(t, "mode: balanced\nlicense_crl_max_age: 1h\n")
+		if cfg.LicenseCRLMaxAgeResolved != time.Hour {
+			t.Fatalf("explicit 1h must resolve to 1h, got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+		if hasMaxAgeWarning(t, cfg) {
+			t.Fatal("a valid value must not warn")
+		}
+	})
+
+	t.Run("malformed_falls_back_to_default_with_warning", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseCRLMaxAge)
+		cfg := writeCfg(t, "mode: balanced\nlicense_crl_max_age: \"not-a-duration\"\n")
+		if cfg.LicenseCRLMaxAgeResolved != license.DefaultCRLMaxAge {
+			t.Fatalf("malformed must clamp to default %s, got %s", license.DefaultCRLMaxAge, cfg.LicenseCRLMaxAgeResolved)
+		}
+		if cfg.LicenseCRLMaxAgeError == "" {
+			t.Fatal("malformed must record an error")
+		}
+		if !hasMaxAgeWarning(t, cfg) {
+			t.Fatal("malformed must surface a validate WARNING")
+		}
+	})
+
+	t.Run("zero_clamps_to_default_with_warning", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseCRLMaxAge)
+		cfg := writeCfg(t, "mode: balanced\nlicense_crl_max_age: 0s\n")
+		if cfg.LicenseCRLMaxAgeResolved != license.DefaultCRLMaxAge {
+			t.Fatalf("zero must clamp to default (never disable), got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+		if cfg.LicenseCRLMaxAgeError == "" {
+			t.Fatal("zero must record an error so the operator knows it did not take")
+		}
+		if !hasMaxAgeWarning(t, cfg) {
+			t.Fatal("zero must surface a validate WARNING")
+		}
+	})
+
+	t.Run("negative_clamps_to_default_with_warning", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseCRLMaxAge)
+		cfg := writeCfg(t, "mode: balanced\nlicense_crl_max_age: -5h\n")
+		if cfg.LicenseCRLMaxAgeResolved != license.DefaultCRLMaxAge {
+			t.Fatalf("negative must clamp to default (never disable), got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+		if cfg.LicenseCRLMaxAgeError == "" {
+			t.Fatal("negative must record an error")
+		}
+	})
+
+	t.Run("env_used_when_omitted", func(t *testing.T) {
+		t.Setenv(EnvLicenseCRLMaxAge, "2h")
+		cfg := writeCfg(t, "mode: balanced\n")
+		if cfg.LicenseCRLMaxAgeResolved != 2*time.Hour {
+			t.Fatalf("env 2h must resolve when config omits the field, got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+	})
+
+	t.Run("explicit_config_wins_over_env", func(t *testing.T) {
+		t.Setenv(EnvLicenseCRLMaxAge, "2h")
+		cfg := writeCfg(t, "mode: balanced\nlicense_crl_max_age: 10h\n")
+		if cfg.LicenseCRLMaxAgeResolved != 10*time.Hour {
+			t.Fatalf("explicit config 10h must win over env 2h, got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+	})
+
+	t.Run("malformed_env_falls_back_to_default", func(t *testing.T) {
+		t.Setenv(EnvLicenseCRLMaxAge, "garbage")
+		cfg := writeCfg(t, "mode: balanced\n")
+		if cfg.LicenseCRLMaxAgeResolved != license.DefaultCRLMaxAge {
+			t.Fatalf("malformed env must clamp to default, got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+		if cfg.LicenseCRLMaxAgeError == "" {
+			t.Fatal("malformed env must record an error")
+		}
+	})
+
+	t.Run("reload_change_and_no_change", func(t *testing.T) {
+		_ = os.Unsetenv(EnvLicenseCRLMaxAge)
+		tmp := t.TempDir()
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_crl_max_age: 5h\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		first, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.LicenseCRLMaxAgeResolved != 5*time.Hour {
+			t.Fatalf("first load 5h, got %s", first.LicenseCRLMaxAgeResolved)
+		}
+		unchanged, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unchanged.LicenseCRLMaxAgeResolved != 5*time.Hour {
+			t.Fatalf("reload without change must stay 5h, got %s", unchanged.LicenseCRLMaxAgeResolved)
+		}
+		if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_crl_max_age: 30m\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed.LicenseCRLMaxAgeResolved != 30*time.Minute {
+			t.Fatalf("reload with change must flip to 30m, got %s", changed.LicenseCRLMaxAgeResolved)
+		}
+	})
+}
+
+// TestLicenseCRLMaxAgeExcludedFromPolicyHash confirms the freshness window does
+// not enter the canonical policy hash (it is a license-trust knob).
+func TestLicenseCRLMaxAgeExcludedFromPolicyHash(t *testing.T) {
+	base := Defaults()
+	withMaxAge := Defaults()
+	withMaxAge.LicenseCRLMaxAge = "1h"
+	withMaxAge.LicenseCRLMaxAgeResolved = time.Hour
+	withMaxAge.LicenseCRLMaxAgeError = "ignored"
+	if base.CanonicalPolicyHash() != withMaxAge.CanonicalPolicyHash() {
+		t.Fatal("license_crl_max_age must be excluded from the canonical policy hash")
+	}
+}
+
+// TestEnvLicenseCRLMaxAgeNameParity asserts the config-package env name matches
+// the canonical license-package window constant's intent (the env name is
+// declared in config; the default duration in license). The two packages must
+// agree on the default so status and runtime never diverge.
+func TestEnvLicenseCRLMaxAgeDefaultParity(t *testing.T) {
+	cfg := Defaults()
+	if cfg.LicenseCRLMaxAgeResolved != license.DefaultCRLMaxAge {
+		t.Fatalf("Defaults() resolved window %s must equal license.DefaultCRLMaxAge %s",
+			cfg.LicenseCRLMaxAgeResolved, license.DefaultCRLMaxAge)
+	}
+}

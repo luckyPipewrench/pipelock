@@ -344,7 +344,16 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// process does not silently start a half-wired follower the operator
 	// expects to be participating.
 	if cfg.Conductor.Enabled {
-		lic, err := license.VerifyFleetWithIntermediate(cfg.LicenseKey, cfg.LicensePublicKey, cfg.LicenseCRLFile, cfg.LicenseIntermediateFile)
+		lic, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{
+			LicenseKey:       cfg.LicenseKey,
+			PublicKeyHex:     cfg.LicensePublicKey,
+			CRLFile:          cfg.LicenseCRLFile,
+			IntermediateFile: cfg.LicenseIntermediateFile,
+			IntermediateCert: cfg.LicenseIntermediateCert,
+			RequireSet:       true,
+			Require:          cfg.LicenseRequireIntermediateResolved,
+			MaxAge:           cfg.LicenseCRLMaxAgeResolved,
+		})
 		if err != nil {
 			s.cleanup()
 			return nil, err

@@ -217,6 +217,13 @@ func handleProxyError(err error, logW io.Writer, sentryClient *plsentry.Client) 
 	return err
 }
 
+func applyMCPResponseSuppressOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, serverName string) {
+	opts.ServerName = serverName
+	if cfg != nil {
+		opts.Suppress = cfg.Suppress
+	}
+}
+
 func mcpReceiptParityOpts(
 	opts mcp.MCPProxyOpts,
 	receiptEmitter *receipt.Emitter,
@@ -368,6 +375,8 @@ func mcpProxyCmd() *cobra.Command {
 	var rawHeaders []string
 	var headerFile string
 	var agentName string
+	var serverName string
+	var adaptiveResetFile string
 	var sandboxEnabled bool
 	var sandboxStrict bool
 	var sandboxBestEffort bool
@@ -458,6 +467,17 @@ Key-free evidence capture:
 			}
 			if !hasUpstream && !hasSubprocess {
 				return errors.New("specify --upstream URL or -- COMMAND [ARGS...]")
+			}
+			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
+				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
+			}
+			if adaptiveResetFile != "" && runtime.GOOS == "windows" {
+				// The reset file authorizes a privilege de-escalation; its owner
+				// cannot be verified via file mode on Windows (the bits never
+				// reflect the NTFS ACL), so honoring it would not be secure.
+				// Fail closed at the door rather than silently no-op. Restart the
+				// proxy to clear an escalation on Windows.
+				return errors.New("--adaptive-reset-file is not supported on Windows: file ownership cannot be verified; restart the proxy to clear an adaptive escalation")
 			}
 			// Reject sandbox CLI flag with remote modes.
 			if sandboxEnabled {
@@ -894,7 +914,7 @@ Key-free evidence capture:
 					adaptiveFn := mcp.AdaptiveConfigFunc(func() *config.AdaptiveEnforcement {
 						return adaptiveCfg
 					})
-					listenerOpts := mcpReceiptParityOpts(mcp.MCPProxyOpts{
+					listenerOpts := mcp.MCPProxyOpts{
 						Scanner: sc, Approver: approver,
 						InputCfg: inputCfg, RequestBodyCfg: &cfg.RequestBodyScanning,
 						ToolCfg: toolCfg, PolicyCfg: policyCfg,
@@ -914,7 +934,9 @@ Key-free evidence capture:
 						TaintCfg:               &cfg.Taint,
 						ContractLoader:         contractLoader,
 						ContractAgent:          contractAgent,
-					}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
+					}
+					applyMCPResponseSuppressOpts(&listenerOpts, cfg, serverName)
+					listenerOpts = mcpReceiptParityOpts(listenerOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), listenerOpts); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
@@ -928,7 +950,7 @@ Key-free evidence capture:
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					wsOpts := mcpReceiptParityOpts(mcp.MCPProxyOpts{
+					wsOpts := mcp.MCPProxyOpts{
 						Scanner: sc, Approver: approver,
 						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -949,7 +971,9 @@ Key-free evidence capture:
 						TaintCfg:               &cfg.Taint,
 						ContractLoader:         contractLoader,
 						ContractAgent:          contractAgent,
-					}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
+					}
+					applyMCPResponseSuppressOpts(&wsOpts, cfg, serverName)
+					wsOpts = mcpReceiptParityOpts(wsOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
@@ -962,7 +986,7 @@ Key-free evidence capture:
 				// Stdio-to-HTTP mode: --upstream only.
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-				httpOpts := mcpReceiptParityOpts(mcp.MCPProxyOpts{
+				httpOpts := mcp.MCPProxyOpts{
 					Scanner: sc, Approver: approver,
 					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -983,7 +1007,9 @@ Key-free evidence capture:
 					TaintCfg:               &cfg.Taint,
 					ContractLoader:         contractLoader,
 					ContractAgent:          contractAgent,
-				}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
+				}
+				applyMCPResponseSuppressOpts(&httpOpts, cfg, serverName)
+				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, extraHeaders, httpOpts); err != nil {
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
@@ -1122,7 +1148,7 @@ Key-free evidence capture:
 				}
 				sandboxCmd.Stderr = cmd.ErrOrStderr()
 
-				proxyOpts := mcpReceiptParityOpts(mcp.MCPProxyOpts{
+				proxyOpts := mcp.MCPProxyOpts{
 					Scanner: sc, Approver: approver,
 					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -1131,18 +1157,21 @@ Key-free evidence capture:
 					ConfigHash: captureConfigHash, Profile: captureProfile,
 					AddressProtectionAgent: captureProfile,
 					RedirectRT:             buildRedirectRT(cfg), DoWCheck: dowCheck,
-					EnvelopeEmitter: envEmitter,
-					CaptureObs:      captureObs,
-					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
-					ProvenanceCfg:   &cfg.MCPToolProvenance,
-					MediaPolicy:     &cfg.MediaPolicy,
-					RedactMatcher:   mcpRedactMatcher,
-					RedactLimits:    cfg.Redaction.Limits.ToLimits(),
-					RedactProfile:   cfg.Redaction.DefaultProfile,
-					TaintCfg:        &cfg.Taint,
-					ContractLoader:  contractLoader,
-					ContractAgent:   contractAgent,
-				}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
+					EnvelopeEmitter:   envEmitter,
+					CaptureObs:        captureObs,
+					IntegrityCfg:      &cfg.MCPBinaryIntegrity,
+					ProvenanceCfg:     &cfg.MCPToolProvenance,
+					MediaPolicy:       &cfg.MediaPolicy,
+					RedactMatcher:     mcpRedactMatcher,
+					RedactLimits:      cfg.Redaction.Limits.ToLimits(),
+					RedactProfile:     cfg.Redaction.DefaultProfile,
+					TaintCfg:          &cfg.Taint,
+					ContractLoader:    contractLoader,
+					ContractAgent:     contractAgent,
+					AdaptiveResetFile: adaptiveResetFile,
+				}
+				applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
+				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
 				}
@@ -1232,7 +1261,7 @@ Key-free evidence capture:
 				} // watcher != nil
 			}
 
-			proxyOpts := mcpReceiptParityOpts(mcp.MCPProxyOpts{
+			proxyOpts := mcp.MCPProxyOpts{
 				Scanner: sc, Approver: approver,
 				InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 				KillSwitch: ks, ChainMatcher: chainMatcher,
@@ -1251,9 +1280,12 @@ Key-free evidence capture:
 				RedactProfile:   cfg.Redaction.DefaultProfile,
 				TaintCfg:        &cfg.Taint,
 				Lineage:         lin, OnChildReady: onChildReady,
-				ContractLoader: contractLoader,
-				ContractAgent:  contractAgent,
-			}, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
+				ContractLoader:    contractLoader,
+				ContractAgent:     contractAgent,
+				AdaptiveResetFile: adaptiveResetFile,
+			}
+			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
+			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				return handleProxyError(err, logW, sentryClient)
 			}
@@ -1268,6 +1300,8 @@ Key-free evidence capture:
 	cmd.Flags().StringArrayVar(&rawHeaders, "header", nil, "extra HTTP header for upstream MCP server in --upstream HTTP mode (repeatable, format: 'Key: Value')")
 	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a headers file (one 'Key: Value' per line, '#' comments) merged with --header; on Unix it must be mode 0o600 or 0o640, on Windows restrict access with file ACLs")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
+	cmd.Flags().StringVar(&serverName, "server-name", "", "stable identity for this MCP server; enables per-server response suppression via target 'mcp://<name>/response'")
+	cmd.Flags().StringVar(&adaptiveResetFile, "adaptive-reset-file", "", "local control file (must be regular, mode 0600, owned by the proxy user); when it appears the proxy clears this session's adaptive-enforcement escalation and removes it")
 	cmd.Flags().StringVar(&captureOutput, "capture-output", "", "directory for key-free evidence capture (evidence-*.jsonl); mirrors 'pipelock run --capture-output'")
 	cmd.Flags().StringVar(&captureEscrowKey, "capture-escrow-public-key", "", "X25519 public key (64 hex chars) to encrypt captured payload sidecars; requires --capture-output")
 	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + seccomp + network namespace, Linux only)")

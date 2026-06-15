@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
@@ -22,6 +23,11 @@ func Defaults() *Config {
 		Version:            1,
 		Mode:               ModeBalanced,
 		canonicalHashCache: &canonicalHashCacheHolder{},
+		// CRL freshness window default (consulted only under require-intermediate
+		// mode). The license_crl_max_age knob and EnvLicenseCRLMaxAge override it;
+		// a missing/non-positive value clamps back to this default in Load and at
+		// the verify boundary, so a misconfiguration never disables the check.
+		LicenseCRLMaxAgeResolved: license.DefaultCRLMaxAge,
 		APIAllowlist: []string{
 			"*.anthropic.com",
 			"*.openai.com",

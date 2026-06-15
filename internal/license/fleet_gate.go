@@ -70,7 +70,7 @@ func VerifyFleet(licenseKey, publicKeyHex, crlFile string) (License, error) {
 }
 
 // errNoLicenseToken and errNoVerifierKey are the unverifiable-input causes that
-// verifyLicenseInputs returns before any token verification can run. They are
+// verifyLicenseInputsOpts returns before any token verification can run. They are
 // unexported because callers classify by behavior (any non-revoked/non-expired
 // failure is "unverifiable"), not by these specific identities; VerifyFleet*
 // wraps them in ErrFleetLicenseRequired for the operator-facing message.
@@ -80,15 +80,37 @@ var (
 		"(build-embedded key missing and PIPELOCK_LICENSE_PUBLIC_KEY unset)")
 )
 
-// verifyLicenseInputs resolves the verifier public key, loads the optional
-// signed CRL and intermediate certificate, and verifies the token signature,
-// expiry, and revocation — but performs NO feature check. The fleet gate
-// (VerifyFleetWithIntermediate) and the hot-reload classifier (ClassifyReload)
-// share this one input-handling path so they never drift on key resolution,
-// env fallback, or CRL/intermediate loading. The returned error preserves
-// ErrLicenseRevoked / ErrLicenseExpired in its chain so callers can distinguish
-// proven entitlement loss from an unverifiable/malformed input.
-func verifyLicenseInputs(licenseKey, publicKeyHex, crlFile, intermediateFile string) (License, error) {
+// FleetVerifyInputs groups the license-resolution inputs shared by the fleet
+// gate, the reload classifier, and the env-only conductor/fleet CLI commands.
+// It is an options struct (per the options-struct rule) so require-intermediate
+// — and any future verify knob — threads through without growing the positional
+// signatures of VerifyFleet / ClassifyReload.
+//
+// All string fields are "" = fall back to the matching env var. RequireSet
+// distinguishes "config did not specify" (consult env) from "config explicitly
+// set Require to false/true".
+type FleetVerifyInputs struct {
+	LicenseKey       string
+	PublicKeyHex     string
+	CRLFile          string
+	IntermediateFile string
+	IntermediateCert []byte // already-loaded cert bytes (config path); wins over IntermediateFile
+	RequireSet       bool
+	Require          bool
+	// MaxAge is the configured CRL freshness window (license_crl_max_age). Zero
+	// falls back to DefaultCRLMaxAge.
+	MaxAge time.Duration
+}
+
+// verifyLicenseInputsOpts resolves the verifier public key, builds the
+// fail-closed VerifyOptions (CRL + intermediate + require-mode) via the single
+// resolver, and verifies the token. It performs NO feature check. The fleet
+// gate and the reload classifier share this so they never drift on key
+// resolution, env fallback, CRL freshness, or require semantics. The returned
+// error preserves ErrLicenseRevoked / ErrLicenseExpired / ErrIntermediateRevoked
+// / ErrIntermediateRequired in its chain so callers can classify the outcome.
+func verifyLicenseInputsOpts(in FleetVerifyInputs) (License, error) {
+	licenseKey := in.LicenseKey
 	if licenseKey == "" {
 		licenseKey = os.Getenv(EnvLicenseKey)
 	}
@@ -97,6 +119,7 @@ func verifyLicenseInputs(licenseKey, publicKeyHex, crlFile, intermediateFile str
 	}
 	pubKey := EmbeddedPublicKey()
 	if pubKey == nil {
+		publicKeyHex := in.PublicKeyHex
 		if publicKeyHex == "" {
 			publicKeyHex = os.Getenv(EnvLicensePublicKey)
 		}
@@ -110,37 +133,43 @@ func verifyLicenseInputs(licenseKey, publicKeyHex, crlFile, intermediateFile str
 	if pubKey == nil {
 		return License{}, errNoVerifierKey
 	}
-	if crlFile == "" {
-		crlFile = os.Getenv(EnvLicenseCRLFile)
+	opts, err := ResolveVerifyOptions(ResolveInputs{
+		RootPub:          pubKey,
+		CRLFile:          in.CRLFile,
+		IntermediateCert: in.IntermediateCert,
+		IntermediateFile: in.IntermediateFile,
+		RequireSet:       in.RequireSet,
+		Require:          in.Require,
+		MaxAge:           in.MaxAge,
+	})
+	if err != nil {
+		return License{}, err
 	}
-	var crl *CRL
-	if crlFile != "" {
-		loaded, crlErr := LoadAndVerifyCRLMonotonic(crlFile, pubKey, time.Now())
-		if crlErr != nil {
-			return License{}, fmt.Errorf("loading license CRL: %w", crlErr)
-		}
-		crl = &loaded
-	}
-	if intermediateFile == "" {
-		intermediateFile = os.Getenv(EnvLicenseIntermediateFile)
-	}
-	var intermediateCert []byte
-	if intermediateFile != "" {
-		data, loadErr := LoadIntermediateCertFile(intermediateFile)
-		if loadErr != nil {
-			return License{}, fmt.Errorf("loading intermediate certificate: %w", loadErr)
-		}
-		intermediateCert = data
-	}
-	return VerifyTokenWithOptionalIntermediate(licenseKey, intermediateCert, pubKey, crl, time.Now())
+	return VerifyTokenWithOptions(licenseKey, opts)
 }
 
 // VerifyFleetWithIntermediate verifies the supplied fleet license, optionally
 // using a configured intermediate certificate file. Empty intermediateFile
 // falls back to PIPELOCK_LICENSE_INTERMEDIATE_FILE, then legacy direct-root
-// verification if neither is set.
+// verification if neither is set. Require-intermediate mode is OFF on this
+// legacy entry point; use VerifyFleetWithOptions to honour it.
 func VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, intermediateFile string) (License, error) {
-	lic, err := verifyLicenseInputs(licenseKey, publicKeyHex, crlFile, intermediateFile)
+	return VerifyFleetWithOptions(FleetVerifyInputs{
+		LicenseKey:       licenseKey,
+		PublicKeyHex:     publicKeyHex,
+		CRLFile:          crlFile,
+		IntermediateFile: intermediateFile,
+	})
+}
+
+// VerifyFleetWithOptions verifies a fleet license honouring require-intermediate
+// mode (and any other VerifyOptions knob) resolved from in. It returns the
+// decoded license only when it carries FeatureFleet, failing closed (wrapped in
+// ErrFleetLicenseRequired) on any verification failure including
+// ErrIntermediateRequired. This is the entry point the env-only conductor / fleet
+// CLI commands use so require mode is honoured there, not just in the runtime.
+func VerifyFleetWithOptions(in FleetVerifyInputs) (License, error) {
+	lic, err := verifyLicenseInputsOpts(in)
 	if err != nil {
 		return License{}, fmt.Errorf("%w: %w", ErrFleetLicenseRequired, err)
 	}

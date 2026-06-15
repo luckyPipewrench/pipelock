@@ -20,9 +20,24 @@ import (
 const (
 	CRLVersion     = 1
 	maxCRLFileSize = 256 * 1024
+
+	// DefaultCRLMaxAge bounds how old (by IssuedAt) a CRL may be and still be
+	// trusted under freshness enforcement. validateCRLPayload only rejects an
+	// EXPIRED CRL; an unexpired-but-stale CRL (e.g. issued 30 days ago against a
+	// 7-day-issuance cadence) is a compromise-response gap, because it predates a
+	// revocation the issuer has since published. 25 hours gives a daily-cadence
+	// issuer a full day plus an hour of clock/distribution slack while rejecting
+	// a CRL the publisher has clearly stopped refreshing.
+	DefaultCRLMaxAge = 25 * time.Hour
 )
 
 var (
+	// ErrCRLStale is returned when a signed, unexpired CRL is older (by
+	// IssuedAt) than the configured freshness window. It is distinct from the
+	// expired-CRL error so the operator can tell "the publisher stopped
+	// refreshing" from "the CRL's own expiry passed".
+	ErrCRLStale = errors.New("license CRL is stale")
+
 	ErrLicenseRevoked = errors.New("license revoked")
 	// ErrIntermediateRevoked is returned when an intermediate signing
 	// certificate's serial appears in the CRL. Rotation revokes the prior
@@ -189,6 +204,55 @@ func ParseAndVerifyCRL(data []byte, publicKey ed25519.PublicKey, now time.Time) 
 	return crl, nil
 }
 
+// ParseAndVerifyCRLSignatureOnly verifies a CRL's Ed25519 signature and
+// structural validity but does NOT enforce expiry against the current clock.
+// It exists for the issuer-side high-water RECOVERY path, where the input is a
+// historical, possibly-expired published CRL whose only load-bearing field is
+// its monotonic generation. It must NEVER be used for a trust decision on a
+// license token — use ParseAndVerifyCRL (which enforces expiry) for that.
+func ParseAndVerifyCRLSignatureOnly(data []byte, publicKey ed25519.PublicKey) (CRL, error) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return CRL{}, errors.New("invalid public key")
+	}
+	if len(data) > maxCRLFileSize {
+		return CRL{}, errors.New("license CRL exceeds maximum size")
+	}
+	var wire crlWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return CRL{}, fmt.Errorf("parse license CRL: %w", err)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(wire.Payload)
+	if err != nil {
+		return CRL{}, fmt.Errorf("decode CRL payload: %w", err)
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(wire.Signature)
+	if err != nil {
+		return CRL{}, fmt.Errorf("decode CRL signature: %w", err)
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return CRL{}, errors.New("invalid CRL signature size")
+	}
+	if !ed25519.Verify(publicKey, payload, sig) {
+		return CRL{}, errors.New("invalid CRL signature")
+	}
+	var payloadClaims CRLPayload
+	if err := json.Unmarshal(payload, &payloadClaims); err != nil {
+		return CRL{}, fmt.Errorf("parse CRL payload: %w", err)
+	}
+	if payloadClaims.Version != CRLVersion {
+		return CRL{}, fmt.Errorf("unsupported CRL version %d", payloadClaims.Version)
+	}
+	sum := sha256.Sum256(payload)
+	crl := CRL{
+		Payload:   payloadClaims,
+		Signature: wire.Signature,
+		SHA256:    hex.EncodeToString(sum[:]),
+		payload:   slices.Clone(payload),
+	}
+	crl.buildIndex()
+	return crl, nil
+}
+
 func LoadAndVerifyCRL(path string, publicKey ed25519.PublicKey, now time.Time) (CRL, error) {
 	cleanPath := filepath.Clean(path)
 	info, err := os.Stat(cleanPath)
@@ -268,6 +332,32 @@ func (c CRL) CheckIntermediate(serial string) error {
 		return fmt.Errorf("%w: %s", ErrIntermediateRevoked, serial)
 	}
 	return fmt.Errorf("%w: %s (%s)", ErrIntermediateRevoked, serial, revoked.Reason)
+}
+
+// CheckFreshness fails closed when the CRL's IssuedAt is older than maxAge
+// relative to now. maxAge <= 0 disables the check. A CRL issued in the future
+// (beyond a small skew) is also rejected: a forward-dated IssuedAt would let a
+// stale CRL masquerade as fresh. The signed expiry check in validateCRLPayload
+// is orthogonal — a CRL can be unexpired yet stale.
+func (c CRL) CheckFreshness(now time.Time, maxAge time.Duration) error {
+	if maxAge <= 0 {
+		return nil
+	}
+	issued := c.Payload.IssuedAt
+	if issued <= 0 {
+		return fmt.Errorf("%w: CRL missing issued_at", ErrCRLStale)
+	}
+	issuedAt := time.Unix(issued, 0)
+	age := now.Sub(issuedAt)
+	if age > maxAge {
+		return fmt.Errorf("%w: issued %s ago (max %s)", ErrCRLStale, age.Round(time.Second), maxAge)
+	}
+	// Guard against a forward-dated CRL beyond a generous clock-skew window.
+	const maxForwardSkew = time.Hour
+	if age < -maxForwardSkew {
+		return fmt.Errorf("%w: issued_at is %s in the future", ErrCRLStale, (-age).Round(time.Second))
+	}
+	return nil
 }
 
 func VerifyWithCRL(token string, publicKey ed25519.PublicKey, crl *CRL) (License, error) {

@@ -45,16 +45,41 @@ const (
 // fallback, and CRL/intermediate loading) but classifies the outcome for a
 // hot-reload teardown decision instead of checking a specific feature. On
 // ReloadVerified it returns the decoded License so the caller can apply its own
-// HasFeature test; otherwise the returned License is zero.
+// HasFeature test; otherwise the returned License is zero. Require-intermediate
+// mode is OFF on this legacy entry point; use ClassifyReloadWithOptions to
+// honour it.
 func ClassifyReload(licenseKey, publicKeyHex, crlFile, intermediateFile string) (License, ReloadClass) {
-	lic, err := verifyLicenseInputs(licenseKey, publicKeyHex, crlFile, intermediateFile)
+	return ClassifyReloadWithOptions(FleetVerifyInputs{
+		LicenseKey:       licenseKey,
+		PublicKeyHex:     publicKeyHex,
+		CRLFile:          crlFile,
+		IntermediateFile: intermediateFile,
+	})
+}
+
+// ClassifyReloadWithOptions classifies a reload re-verification honouring
+// require-intermediate mode. A revoked intermediate or an unsatisfied
+// require-intermediate (ErrIntermediateRevoked / ErrIntermediateRequired) is
+// PROVEN loss on reload — the running surface must tear down — because the new
+// inputs prove the active entitlement can no longer be validated through the
+// required trust tier. (A configured-but-malformed intermediate stays
+// ReloadUnverifiable: an operator typo must not DoS a running paid surface.)
+func ClassifyReloadWithOptions(in FleetVerifyInputs) (License, ReloadClass) {
+	lic, err := verifyLicenseInputsOpts(in)
 	switch {
 	case err == nil:
 		return lic, ReloadVerified
-	case errors.Is(err, ErrLicenseRevoked):
+	case errors.Is(err, ErrLicenseRevoked), errors.Is(err, ErrIntermediateRevoked):
 		return License{}, ReloadRevoked
 	case errors.Is(err, ErrLicenseExpired):
 		return License{}, ReloadExpired
+	case errors.Is(err, ErrIntermediateRequired):
+		// require-intermediate is on but the active inputs no longer satisfy it
+		// (no/empty intermediate under require, or no CRL floor). This is proven
+		// loss of the verifiable entitlement, not an unreadable typo, so tear
+		// down fail-closed. Classified as Revoked (the strongest proven-loss
+		// class) since ProvesLoss treats Revoked/Expired identically.
+		return License{}, ReloadRevoked
 	default:
 		return License{}, ReloadUnverifiable
 	}

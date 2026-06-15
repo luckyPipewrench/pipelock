@@ -12,7 +12,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
@@ -176,6 +178,85 @@ func (c *Config) resolveLicenseRuntimeVerification() {
 			c.LicensePublicKey = env
 		}
 	}
+	c.resolveLicenseRequireIntermediate()
+	c.resolveLicenseCRLMaxAge()
+}
+
+// resolveLicenseCRLMaxAge materializes the effective CRL freshness window into
+// LicenseCRLMaxAgeResolved so runtime consumers read the same window the startup
+// gate uses. An explicit config field wins; otherwise the env
+// (EnvLicenseCRLMaxAge) is consulted. Unlike the require toggle, the fail-safe
+// here is the DEFAULT, never "no check": a malformed or non-positive value is
+// recorded (LicenseCRLMaxAgeError, surfaced as a WARNING) and clamped to
+// DefaultCRLMaxAge. A value that parses but is <= 0 would DISABLE freshness if
+// passed through, so it is treated as a misconfiguration and clamped too — a
+// configured knob must never be able to turn the freshness gate off.
+func (c *Config) resolveLicenseCRLMaxAge() {
+	raw := strings.TrimSpace(c.LicenseCRLMaxAge)
+	if raw == "" {
+		if env := strings.TrimSpace(os.Getenv(EnvLicenseCRLMaxAge)); env != "" {
+			raw = env
+		}
+	}
+	if raw == "" {
+		c.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+		c.LicenseCRLMaxAgeError = ""
+		return
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		c.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+		c.LicenseCRLMaxAgeError = fmt.Sprintf("%q is not a valid duration", raw)
+		return
+	}
+	if d <= 0 {
+		c.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+		c.LicenseCRLMaxAgeError = fmt.Sprintf("%q must be a positive duration", raw)
+		return
+	}
+	c.LicenseCRLMaxAgeResolved = d
+	c.LicenseCRLMaxAgeError = ""
+}
+
+// resolveLicenseRequireIntermediate materializes the effective
+// require-intermediate value into LicenseRequireIntermediateResolved so runtime
+// consumers (CRL watcher, reload classifier, EnforceLicenseGate) read the same
+// value the startup gate uses. An explicit config field wins; otherwise the env
+// is consulted. A malformed env value is recorded
+// (LicenseRequireIntermediateEnvError) and resolved to TRUE — fail closed to the
+// strictest interpretation: an operator who set this env was trying to ENABLE
+// require mode, so a typo must never silently re-open the direct-root fallback.
+// Validate surfaces the error as a WARNING and the free proxy never crashes on a
+// license-trust misconfiguration (require=true + no intermediate just disables
+// paid surfaces), so failing closed here is safe and matches operator intent.
+func (c *Config) resolveLicenseRequireIntermediate() {
+	if c.LicenseRequireIntermediate != nil {
+		c.LicenseRequireIntermediateResolved = *c.LicenseRequireIntermediate
+		c.LicenseRequireIntermediateEnvError = ""
+		return
+	}
+	raw, ok := os.LookupEnv(EnvLicenseRequireIntermediate)
+	if !ok {
+		c.LicenseRequireIntermediateResolved = false
+		c.LicenseRequireIntermediateEnvError = ""
+		return
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		c.LicenseRequireIntermediateResolved = false
+		c.LicenseRequireIntermediateEnvError = ""
+		return
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		// Fail closed: a malformed enable-toggle resolves to ON, never OFF, so a
+		// typo cannot silently re-enable the legacy direct-root fallback.
+		c.LicenseRequireIntermediateResolved = true
+		c.LicenseRequireIntermediateEnvError = fmt.Sprintf("%q is not a boolean", raw)
+		return
+	}
+	c.LicenseRequireIntermediateResolved = v
+	c.LicenseRequireIntermediateEnvError = ""
 }
 
 // resolveLicenseKey populates LicenseKey from the highest-priority source:

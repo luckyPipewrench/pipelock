@@ -40,7 +40,7 @@ endpoint and prints its JSON response. This is a convenience for operators
 gathering support artifacts. No state is modified.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if _, err := license.VerifyFleet("", "", opts.client.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runStoreDump(cmd, opts)

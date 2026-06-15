@@ -49,7 +49,7 @@ re-issued); pass --force to regenerate in place.`,
 			// tool. Fail closed before any key material is written, exactly as
 			// `conductor serve` and `fleet-sink` do. The dev license bootstrap
 			// MINTS for the spawned fleet is separate from this entitlement.
-			if _, err := license.VerifyFleet("", "", licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: licenseCRLFile}); err != nil {
 				return err
 			}
 			opts.Out = cmd.OutOrStdout()

@@ -58,24 +58,43 @@ func (s *Server) checkLicenseCRL() (bool, error) {
 		return false, nil
 	}
 	cfg := s.proxy.CurrentConfig()
-	if cfg == nil || cfg.LicenseCRLFile == "" || cfg.LicenseKey == "" {
+	if cfg == nil || cfg.LicenseKey == "" {
+		return false, nil
+	}
+	require := cfg.LicenseRequireIntermediateResolved
+	// Empty-CRL early return: when require-intermediate is OFF this preserves the
+	// legacy behaviour (no CRL configured = nothing to enforce here; the startup
+	// gate already verified the token). When require is ON, a CRL is mandatory —
+	// it is the revocation floor — so a missing CRL must fail closed and tear the
+	// paid surface down.
+	if cfg.LicenseCRLFile == "" {
+		if require {
+			return true, errors.New("license_require_intermediate is on but no license_crl_file is configured; a signed CRL is required as the revocation floor")
+		}
 		return false, nil
 	}
 	pubKey, err := runtimeLicensePublicKey(cfg)
 	if err != nil {
 		return true, err
 	}
-	crl, err := license.LoadAndVerifyCRLMonotonic(cfg.LicenseCRLFile, pubKey, time.Now())
+	opts, err := license.ResolveVerifyOptions(license.ResolveInputs{
+		RootPub:          pubKey,
+		CRLFile:          cfg.LicenseCRLFile,
+		IntermediateCert: cfg.LicenseIntermediateCert,
+		IntermediateFile: cfg.LicenseIntermediateFile,
+		RequireSet:       true,
+		Require:          require,
+		MaxAge:           cfg.LicenseCRLMaxAgeResolved,
+	})
 	if err != nil {
 		return true, err
 	}
-	_, err = license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, &crl, time.Now())
+	_, err = license.VerifyTokenWithOptions(cfg.LicenseKey, opts)
 	if err == nil {
 		return false, nil
 	}
-	if errors.Is(err, license.ErrLicenseRevoked) || errors.Is(err, license.ErrLicenseExpired) {
-		return true, err
-	}
+	// Revoked / expired / intermediate-revoked / require-not-satisfied all fail
+	// closed and tear the surface down.
 	return true, err
 }
 

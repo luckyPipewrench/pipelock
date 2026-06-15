@@ -62,7 +62,7 @@ are not supported. It requires at least ` + fmt.Sprintf("%d", conductorcore.Requ
 			// License gate first: rollback is an Enterprise fleet control
 			// action. Fail closed before loading key material or building a
 			// client.
-			if _, err := license.VerifyFleet("", "", opts.licenseCRLFile); err != nil {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
 			return runRollback(cmd, opts)

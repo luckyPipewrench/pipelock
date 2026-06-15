@@ -129,6 +129,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	receiptEmitter := opts.receiptEmitter()
 	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	provenanceCfg := opts.provenanceCfg()
+	respScanOpts := opts.responseScanOptions()
+	resetFile := opts.AdaptiveResetFile
 	taintOpts := opts
 	taintOpts.TaintCfg = opts.taintCfg()
 	taintOpts.TaintCfgFn = nil
@@ -191,6 +193,21 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 		// On-entry de-escalation for long-lived response streams.
 		tryRecoverSession(rec, adaptiveCfg, m)
+
+		// Operator-triggered local reset: when the adaptive reset file appears
+		// (owner-only, owned by the proxy user) clear this session's adaptive
+		// escalation so an airlocked stdio session recovers without a restart.
+		// Invocation sessions are otherwise un-resettable, and stdio mounts no
+		// admin API. The file checks fail closed against an agent-planted file.
+		if resetFile != "" && rec != nil && consumeAdaptiveResetFile(resetFile, logW) {
+			if r, ok := rec.(adaptiveResetter); ok {
+				prevScore, prevLevel := r.Reset()
+				blockAll = false
+				_, _ = fmt.Fprintf(logW,
+					"pipelock: adaptive enforcement reset by operator (score %.1f to 0, level %s to normal)\n",
+					prevScore, session.EscalationLabel(prevLevel))
+			}
+		}
 
 		// block_all enforcement: write a JSON-RPC error for every message when
 		// the session is at an escalation level with block_all=true. Refresh
@@ -437,9 +454,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Still scan the error field: injection could hide in non-tool fields.
 		var verdict jsonrpc.ScanVerdict
 		if isToolsList {
-			verdict = scanToolsListNonToolFields(line, sc)
+			verdict = scanToolsListNonToolFields(line, sc, respScanOpts)
 		} else {
-			verdict = ScanResponse(line, sc)
+			verdict = ScanResponseOpts(line, sc, respScanOpts)
 		}
 
 		if verdict.Clean {
@@ -989,8 +1006,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	childPgid := captureChildPgid(cmd.Process.Pid)
 
 	// Drain adopted-descendant zombies live, while the direct child is
-	// still running. Without this, long-running MCP wraps (codex
-	// mcp-server, playwright MCP - multi-hour direct children) accumulate
+	// still running. Without this, long-running MCP wraps (e.g. a code-assistant
+	// or browser-automation MCP server - multi-hour direct children) accumulate
 	// zombies under pipelock because the post-Wait killAdoptedDescendants
 	// sweep below only fires when the direct child exits. PR_SET_CHILD_SUBREAPER
 	// turned on above causes orphan adoption from minute one; this goroutine

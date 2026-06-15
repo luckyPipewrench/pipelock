@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,9 +36,45 @@ func main() {
 		w.TimeFormat = time.RFC3339
 	})).With().Timestamp().Str("service", "license-service").Logger()
 
+	// Offline admin subcommands (revoke-intermediate, recover-crl-generation)
+	// run one-shot against the live DB instead of serving.
+	if handled, err := dispatchAdmin(log); handled {
+		if err != nil {
+			log.Fatal().Err(err).Msg("license service admin command failed")
+		}
+		return
+	}
+
 	if err := run(log); err != nil {
 		log.Fatal().Err(err).Msg("license service failed")
 	}
+}
+
+// loadSigningKey loads the Ed25519 intermediate signing key.
+func loadSigningKey(cfg *licenseservice.Config) (ed25519.PrivateKey, error) {
+	privateKey, err := signing.LoadPrivateKeyFile(cfg.PrivateKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load signing key: %w", err)
+	}
+	intermediateCert, err := license.LoadIntermediateCertFile(cfg.IntermediateCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("load intermediate certificate: %w", err)
+	}
+	cfg.IntermediateCert = intermediateCert
+	return privateKey, nil
+}
+
+// loadCRLSigningKey loads the CRL signing key into cfg when configured.
+func loadCRLSigningKey(cfg *licenseservice.Config) error {
+	if cfg.CRLSigningKeyPath == "" {
+		return nil
+	}
+	crlKey, err := signing.LoadPrivateKeyFile(cfg.CRLSigningKeyPath)
+	if err != nil {
+		return fmt.Errorf("load CRL signing key: %w", err)
+	}
+	cfg.CRLPrivateKey = crlKey
+	return nil
 }
 
 func run(log zerolog.Logger) error {

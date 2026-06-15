@@ -977,7 +977,7 @@ func TestLicenseInstall_OverwritesExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Decode the installed token to verify it's the new one.
-	installed, err := license.Decode(strings.TrimSpace(string(data)))
+	installed, err := license.DecodeUnverified(strings.TrimSpace(string(data)))
 	if err != nil {
 		t.Fatalf("decode installed token: %v", err)
 	}

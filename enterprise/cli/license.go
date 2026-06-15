@@ -349,7 +349,7 @@ func licenseInspectCmd() *cobra.Command {
 		Short: "Decode and display a license token (does not verify signature)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			lic, err := license.Decode(args[0])
+			lic, err := license.DecodeUnverified(args[0])
 			if err != nil {
 				return fmt.Errorf("decode token: %w", err)
 			}
@@ -681,7 +681,7 @@ Default path: ~/.config/pipelock/license.token`,
 			token := args[0]
 
 			// Decode to validate format before writing.
-			lic, err := license.Decode(token)
+			lic, err := license.DecodeUnverified(token)
 			if err != nil {
 				return fmt.Errorf("invalid license token: %w", err)
 			}

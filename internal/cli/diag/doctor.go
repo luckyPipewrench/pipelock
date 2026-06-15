@@ -270,7 +270,7 @@ func doctorVerifiedLicense(cfg *config.Config) (license.License, bool, error) {
 		if cfg.LicensePublicKey != "" {
 			return license.License{}, false, err
 		}
-		lic, decodeErr := license.Decode(cfg.LicenseKey)
+		lic, decodeErr := license.DecodeUnverified(cfg.LicenseKey)
 		if decodeErr != nil {
 			return license.License{}, false, decodeErr
 		}

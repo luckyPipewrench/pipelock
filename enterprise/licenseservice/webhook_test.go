@@ -1848,7 +1848,7 @@ func TestProcessSubscription_LicenseTierAndSubscriptionIDPopulated(t *testing.T)
 	tokenStart := strings.Index(html[preStart:], ">") + preStart + 1
 	token := html[tokenStart:preEnd]
 
-	decoded, err := license.Decode(token)
+	decoded, err := license.DecodeUnverified(token)
 	if err != nil {
 		t.Fatalf("decode minted token: %v", err)
 	}
@@ -2146,7 +2146,7 @@ func TestHandleOrderEvent_OneTimeTrial(t *testing.T) {
 	tokenStart := strings.Index(html[preStart:], ">") + preStart + 1
 	token := html[tokenStart:preEnd]
 
-	decoded, err := license.Decode(token)
+	decoded, err := license.DecodeUnverified(token)
 	if err != nil {
 		t.Fatalf("decode minted token: %v", err)
 	}

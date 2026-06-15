@@ -67,9 +67,9 @@ func TestIssue_NoExpiration(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	decoded, err := Decode(token)
+	decoded, err := DecodeUnverified(token)
 	if err != nil {
-		t.Fatalf("Decode: %v", err)
+		t.Fatalf("DecodeUnverified: %v", err)
 	}
 	if decoded.ExpiresAt != 0 {
 		t.Errorf("ExpiresAt = %d, want 0 for perpetual", decoded.ExpiresAt)
@@ -91,9 +91,9 @@ func TestIssue_EmptyFeatures(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	decoded, err := Decode(token)
+	decoded, err := DecodeUnverified(token)
 	if err != nil {
-		t.Fatalf("Decode: %v", err)
+		t.Fatalf("DecodeUnverified: %v", err)
 	}
 	if len(decoded.Features) != 0 {
 		t.Errorf("Features length = %d, want 0", len(decoded.Features))
@@ -217,30 +217,30 @@ func TestVerify_InvalidPublicKeySize(t *testing.T) {
 	}
 }
 
-func TestDecode_EmptyToken(t *testing.T) {
-	_, err := Decode("")
+func TestDecodeUnverified_EmptyToken(t *testing.T) {
+	_, err := DecodeUnverified("")
 	if err == nil {
 		t.Error("expected error for empty token")
 	}
 }
 
-func TestDecode_BadPrefix(t *testing.T) {
-	_, err := Decode("bad_prefix_token")
+func TestDecodeUnverified_BadPrefix(t *testing.T) {
+	_, err := DecodeUnverified("bad_prefix_token")
 	if err == nil {
 		t.Error("expected error for bad prefix")
 	}
 }
 
-func TestDecode_InvalidBase64(t *testing.T) {
-	_, err := Decode(tokenPrefix + "!!!not-base64!!!")
+func TestDecodeUnverified_InvalidBase64(t *testing.T) {
+	_, err := DecodeUnverified(tokenPrefix + "!!!not-base64!!!")
 	if err == nil {
 		t.Error("expected error for invalid base64")
 	}
 }
 
-func TestDecode_TooShort(t *testing.T) {
+func TestDecodeUnverified_TooShort(t *testing.T) {
 	// Valid base64 but too short (less than signature size)
-	_, err := Decode(tokenPrefix + "AAAA")
+	_, err := DecodeUnverified(tokenPrefix + "AAAA")
 	if err == nil {
 		t.Error("expected error for token shorter than signature")
 	}

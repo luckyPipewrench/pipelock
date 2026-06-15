@@ -135,9 +135,12 @@ func (l License) HasFeature(feature string) bool {
 	return false
 }
 
-// Decode extracts the license payload from a token WITHOUT verifying the
-// signature. Use for inspection only, never for authorization decisions.
-func Decode(token string) (License, error) {
+// DecodeUnverified extracts the license payload from a token WITHOUT verifying
+// the signature. Use for inspection only, never for authorization decisions —
+// every authorization path uses Verify / VerifyWithCRL / VerifyTokenWithOptions,
+// which return a License only when the signature checks out. The Unverified
+// suffix makes accidental misuse in a trust path obvious at the call site.
+func DecodeUnverified(token string) (License, error) {
 	payload, _, err := splitToken(token)
 	if err != nil {
 		return License{}, err
@@ -152,8 +155,8 @@ func Decode(token string) (License, error) {
 // splitToken validates the token envelope (prefix, size cap, base64) and splits
 // the decoded bytes into the signed payload and its trailing Ed25519 signature.
 // It does NOT verify the signature or parse the payload, so verifyAt can check
-// the signature BEFORE unmarshalling untrusted JSON while Decode can inspect
-// without verifying. Shared by both so the wire format lives in one place.
+// the signature BEFORE unmarshalling untrusted JSON while DecodeUnverified can
+// inspect without verifying. Shared by both so the wire format lives in one place.
 func splitToken(token string) (payload, sig []byte, err error) {
 	if !strings.HasPrefix(token, tokenPrefix) {
 		return nil, nil, errors.New("invalid license format: missing prefix")

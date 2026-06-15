@@ -293,9 +293,9 @@ func TestVerifyRejectsOversizedToken(t *testing.T) {
 	}
 }
 
-func TestDecodeRejectsOversizedToken(t *testing.T) {
+func TestDecodeUnverifiedRejectsOversizedToken(t *testing.T) {
 	huge := tokenPrefix + strings.Repeat("A", maxTokenBytes+1)
-	_, err := Decode(huge)
+	_, err := DecodeUnverified(huge)
 	if err == nil {
 		t.Fatal("expected error for oversized token")
 	}
@@ -304,7 +304,7 @@ func TestDecodeRejectsOversizedToken(t *testing.T) {
 	}
 }
 
-func TestDecodeValidToken(t *testing.T) {
+func TestDecodeUnverifiedValidToken(t *testing.T) {
 	_, priv := testKeyPair(t)
 	lic := License{
 		ID:        "lic_decode_test",
@@ -318,9 +318,9 @@ func TestDecodeValidToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := Decode(token)
+	got, err := DecodeUnverified(token)
 	if err != nil {
-		t.Fatalf("Decode failed: %v", err)
+		t.Fatalf("DecodeUnverified failed: %v", err)
 	}
 	if got.ID != lic.ID {
 		t.Errorf("ID = %q, want %q", got.ID, lic.ID)
@@ -333,7 +333,7 @@ func TestDecodeValidToken(t *testing.T) {
 	}
 }
 
-func TestDecodeBadFormat(t *testing.T) {
+func TestDecodeUnverifiedBadFormat(t *testing.T) {
 	tests := []struct {
 		name  string
 		token string
@@ -344,7 +344,7 @@ func TestDecodeBadFormat(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Decode(tt.token)
+			_, err := DecodeUnverified(tt.token)
 			if err == nil {
 				t.Error("expected error")
 			}
@@ -386,7 +386,7 @@ func TestBackwardCompatibility_NoTierFields(t *testing.T) {
 	}
 }
 
-func TestDecodeWithTierFields(t *testing.T) {
+func TestDecodeUnverifiedWithTierFields(t *testing.T) {
 	_, priv := testKeyPair(t)
 
 	lic := License{
@@ -404,9 +404,9 @@ func TestDecodeWithTierFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Decode(token)
+	got, err := DecodeUnverified(token)
 	if err != nil {
-		t.Fatalf("Decode failed: %v", err)
+		t.Fatalf("DecodeUnverified failed: %v", err)
 	}
 	if got.Tier != "founding_pro" {
 		t.Errorf("Tier = %q, want founding_pro", got.Tier)

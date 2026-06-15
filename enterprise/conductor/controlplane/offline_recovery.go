@@ -132,6 +132,17 @@ func loadOfflineStore(policyBundlesDir string) (*FileBundleStore, []OfflineUnrea
 			})
 			continue
 		}
+		if existing, err := store.bundleByIDVersionLocked(record.Bundle.BundleID, record.Bundle.Version); err == nil {
+			unreadable = append(unreadable, OfflineUnreadableRecord{
+				FileName: name,
+				Err: fmt.Sprintf("%v: duplicate bundle_id/version %q/%d already present as %s",
+					ErrInvalidStoreRecord, record.Bundle.BundleID, record.Bundle.Version, existing.BundleHash),
+			})
+			continue
+		} else if !errors.Is(err, ErrBundleNotFound) {
+			unreadable = append(unreadable, OfflineUnreadableRecord{FileName: name, Err: err.Error()})
+			continue
+		}
 		store.records[record.BundleHash] = record
 		if current, ok := store.streams[record.StreamKey]; !ok || newerRecord(record, current) {
 			store.streams[record.StreamKey] = record

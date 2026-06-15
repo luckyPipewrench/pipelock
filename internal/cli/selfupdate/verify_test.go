@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -272,6 +273,23 @@ func TestRun_TargetNotWritableAborts(t *testing.T) {
 	}
 	if string(readT(target)) != "ORIGINAL" {
 		t.Fatalf("target mutated despite not-writable: %q", readT(target))
+	}
+}
+
+func TestCheckWritable_AllowsReadOnlyTargetInWritableDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows replacement semantics depend on file locking and attributes")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits don't gate writes")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "pipelock")
+	if err := os.WriteFile(target, []byte("ORIGINAL"), 0o500); err != nil { // #nosec G306 -- test fixture binary needs exec bit
+		t.Fatalf("write target: %v", err)
+	}
+	if err := checkWritable(target); err != nil {
+		t.Fatalf("checkWritable(read-only target in writable dir) = %v, want nil", err)
 	}
 }
 

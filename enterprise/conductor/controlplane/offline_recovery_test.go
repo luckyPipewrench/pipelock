@@ -269,6 +269,60 @@ func TestRepairOfflineStoreDoesNotRemoveManualReviewSibling(t *testing.T) {
 	}
 }
 
+func TestRepairOfflineStoreDoesNotRemoveDuplicateIDVersion(t *testing.T) {
+	pb := newOfflineStoreDir(t)
+	signer := newTestSigner(t)
+	bundlesDir := filepath.Join(pb, bundlesDirName)
+	audience := conductor.Audience{InstanceIDs: []string{"*"}}
+	v1 := signedControlBundle(t, signer, bundleSpec{
+		id:         "bundle-offline-dup-v1",
+		version:    1,
+		audience:   audience,
+		configYAML: "mode: strict\napi_allowlist:\n  - dup-v1.example.com\n",
+	})
+	v1Hash := writeForkRecord(t, bundlesDir, v1, testNow)
+	v2a := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-offline-dup-v2",
+		version:      2,
+		previousHash: v1Hash,
+		audience:     audience,
+		configYAML:   "mode: strict\napi_allowlist:\n  - dup-v2a.example.com\n",
+	})
+	v2b := signedControlBundle(t, signer, bundleSpec{
+		id:           "bundle-offline-dup-v2",
+		version:      2,
+		previousHash: v1Hash,
+		audience:     audience,
+		configYAML:   "mode: strict\napi_allowlist:\n  - dup-v2b.example.com\n",
+	})
+	v2aHash := writeForkRecord(t, bundlesDir, v2a, testNow.Add(time.Minute))
+	v2bHash := writeForkRecord(t, bundlesDir, v2b, testNow.Add(2*time.Minute))
+
+	report, err := InspectOfflineStore(pb)
+	if err != nil {
+		t.Fatalf("InspectOfflineStore() error = %v", err)
+	}
+	if len(report.UnreadableRecords) != 1 {
+		t.Fatalf("unreadable records = %+v, want one duplicate bundle_id/version record", report.UnreadableRecords)
+	}
+	if len(report.Orphans) != 0 {
+		t.Fatalf("orphans = %+v, want none for ambiguous duplicate bundle_id/version corruption", report.Orphans)
+	}
+
+	result, err := RepairOfflineStore(pb, "", true, testNow)
+	if err != nil {
+		t.Fatalf("RepairOfflineStore() error = %v", err)
+	}
+	if len(result.Removed) != 0 {
+		t.Fatalf("repair removed %+v, want none for duplicate bundle_id/version", result.Removed)
+	}
+	for _, hash := range []string{v2aHash, v2bHash} {
+		if _, err := os.Stat(filepath.Join(bundlesDir, hash+".json")); err != nil {
+			t.Fatalf("repair removed duplicate record %s: %v", hash, err)
+		}
+	}
+}
+
 func TestInspectOfflineStoreReportsUnreadableRecord(t *testing.T) {
 	pb := newOfflineStoreDir(t)
 	signer := newTestSigner(t)

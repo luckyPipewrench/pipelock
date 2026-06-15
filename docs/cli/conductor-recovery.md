@@ -84,8 +84,8 @@ pipelock conductor store dump \
 
 `store dump`, `stream inspect`, `stream status`, and `stream reset` are all
 client-side: they require a live Conductor reachable over mTLS. If a corrupt
-bundle store crashes the Conductor at startup, none of them can run -- the store
-is unrecoverable without raw filesystem surgery.
+bundle store crashes the Conductor at startup, none of those live-server commands
+can run, so recovery needs an offline path.
 
 `store inspect-offline` and `store repair` operate directly on `--storage-dir`
 with **no running server**. `--storage-dir` is the same directory passed to

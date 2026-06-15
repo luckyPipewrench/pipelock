@@ -146,7 +146,7 @@ func runStoreInspectOffline(cmd *cobra.Command, opts storeOfflineOptions) error 
 	for _, o := range report.Orphans {
 		_, _ = fmt.Fprintf(out, "  %s (%s v%d): %s\n", o.BundleHash, o.BundleID, o.Version, o.Reason)
 	}
-	_, _ = fmt.Fprintln(out, "run 'conductor store repair --storage-dir <dir> --confirm' to remove the removable orphans (backed up first)")
+	_, _ = fmt.Fprintf(out, "run 'conductor store repair --storage-dir %s --confirm' to remove the removable orphans (backed up first)\n", opts.storageDir)
 	return nil
 }
 

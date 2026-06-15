@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -32,6 +33,18 @@ type quarantineRecorder struct {
 type quarantineEvent struct {
 	control string
 	reason  string
+}
+
+type erroringVerifiedEnumerators struct {
+	failingEmergencyStore
+}
+
+func (erroringVerifiedEnumerators) enumerateRollbacks(context.Context) ([]StoredRollbackAuthorization, error) {
+	return nil, errors.New("enumerate rollbacks failed")
+}
+
+func (erroringVerifiedEnumerators) enumerateRemoteKills(context.Context) ([]StoredRemoteKill, error) {
+	return nil, errors.New("enumerate remote kills failed")
 }
 
 func (q *quarantineRecorder) RecordConductorEmergencyQuarantine(control, reason string) {
@@ -535,5 +548,105 @@ func TestVerifiedEmergencyStore_IdempotentReQuarantine(t *testing.T) {
 		if rec.count() != 1 {
 			t.Fatalf("iter %d quarantine count = %d, want exactly 1 (deterministic)", i, rec.count())
 		}
+	}
+}
+
+func TestVerifiedEmergencyStore_ReadPathValidationAndEnumerationFailures(t *testing.T) {
+	now := testNow
+	ctx := context.Background()
+
+	errStore := newVerifiedEmergencyStore(erroringVerifiedEnumerators{}, nil, nil, nil)
+	if _, err := errStore.LatestRemoteKill(ctx, defaultFollower(), now); err == nil || !strings.Contains(err.Error(), "enumerate remote kills failed") {
+		t.Fatalf("LatestRemoteKill(enum error) err = %v, want enumerate remote kills failed", err)
+	}
+	if _, err := errStore.LatestRollbackAuthorization(ctx, defaultFollower(), defaultRollbackLookup(), now); err == nil || !strings.Contains(err.Error(), "enumerate rollbacks failed") {
+		t.Fatalf("LatestRollbackAuthorization(enum error) err = %v, want enumerate rollbacks failed", err)
+	}
+	if _, _, err := errStore.ActiveRollbackForFollower(ctx, defaultFollower(), now); err == nil || !strings.Contains(err.Error(), "enumerate rollbacks failed") {
+		t.Fatalf("ActiveRollbackForFollower(enum error) err = %v, want enumerate rollbacks failed", err)
+	}
+
+	empty := newVerifiedEmergencyStore(mustEmergencyStore(t), nil, nil, nil)
+	if _, err := empty.LatestRemoteKill(ctx, FollowerIdentity{}, now); err == nil {
+		t.Fatal("LatestRemoteKill(invalid follower) error = nil, want validation error")
+	}
+	if _, err := empty.LatestRemoteKill(ctx, defaultFollower(), time.Time{}); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRemoteKill(zero time, no records) err = %v, want ErrEmergencyNotFound", err)
+	}
+	if _, err := empty.LatestRollbackAuthorization(ctx, FollowerIdentity{}, defaultRollbackLookup(), now); err == nil {
+		t.Fatal("LatestRollbackAuthorization(invalid follower) error = nil, want validation error")
+	}
+	if _, err := empty.LatestRollbackAuthorization(ctx, defaultFollower(), RollbackLookup{}, now); err == nil {
+		t.Fatal("LatestRollbackAuthorization(invalid lookup) error = nil, want validation error")
+	}
+	if _, err := empty.LatestRollbackAuthorization(ctx, defaultFollower(), defaultRollbackLookup(), time.Time{}); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRollbackAuthorization(zero time, no records) err = %v, want ErrEmergencyNotFound", err)
+	}
+	if _, _, err := empty.ActiveRollbackForFollower(ctx, FollowerIdentity{}, now); err == nil {
+		t.Fatal("ActiveRollbackForFollower(invalid follower) error = nil, want validation error")
+	}
+	if _, ok, err := empty.ActiveRollbackForFollower(ctx, defaultFollower(), time.Time{}); err != nil || ok {
+		t.Fatalf("ActiveRollbackForFollower(zero time, no records) ok=%v err=%v, want no active and nil error", ok, err)
+	}
+}
+
+func TestVerifiedEmergencyStore_SkipsInvalidVerifiedCandidates(t *testing.T) {
+	now := testNow
+	ctx := context.Background()
+
+	expiredKill, expiredKillResolver := signedRemoteKillMessageWithResolver(t, "skip-expired-kill", 1, conductor.KillSwitchActive, now.Add(-48*time.Hour))
+	scopedKill, scopedKillResolver := signedRemoteKillMessageWithResolver(t, "skip-scoped-kill", 2, conductor.KillSwitchActive, now)
+	store := seedEmergencyStateOnDisk(t, t.TempDir(),
+		[]StoredRemoteKill{storedRemoteKill(t, expiredKill, now), storedRemoteKill(t, scopedKill, now)},
+		nil,
+	)
+	verified := newVerifiedEmergencyStore(store, composeResolvers(expiredKillResolver, scopedKillResolver), nil, nil)
+	otherFollower := defaultFollower()
+	otherFollower.InstanceID = "pl-prod-2"
+	if _, err := verified.LatestRemoteKill(ctx, otherFollower, now); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRemoteKill(skip expired/out-of-scope) err = %v, want ErrEmergencyNotFound", err)
+	}
+	scopedOnlyKill, scopedOnlyResolver := signedRemoteKillMessageWithResolver(t, "skip-scoped-only-kill", 1, conductor.KillSwitchActive, now)
+	scopedOnlyStore := seedEmergencyStateOnDisk(t, t.TempDir(), []StoredRemoteKill{storedRemoteKill(t, scopedOnlyKill, now)}, nil)
+	scopedOnlyVerified := newVerifiedEmergencyStore(scopedOnlyStore, scopedOnlyResolver, nil, nil)
+	if _, err := scopedOnlyVerified.LatestRemoteKill(ctx, otherFollower, now); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRemoteKill(single out-of-scope) err = %v, want ErrEmergencyNotFound", err)
+	}
+
+	mismatchLookup, resolver := trustedRollbackRecord(t, "skip-mismatch-lookup", 1, now)
+	expiredAuth, expiredResolver := signedRollbackAuthorizationWithResolver(t, "skip-expired-auth", 2, now.Add(-48*time.Hour))
+	scopedAuth, scopedResolver := signedRollbackAuthorizationWithResolver(t, "skip-scoped-auth", 3, now)
+	rollbackStore := seedEmergencyStateOnDisk(t, t.TempDir(), nil, []StoredRollbackAuthorization{
+		mismatchLookup,
+		storedRollback(t, expiredAuth, now),
+		storedRollback(t, scopedAuth, now),
+	})
+	rollbackVerified := newVerifiedEmergencyStore(rollbackStore, composeResolvers(resolver, expiredResolver, scopedResolver), nil, nil)
+	lookup := RollbackLookup{CurrentBundleID: "other-current", CurrentVersion: 42, TargetBundleID: "bundle-target", TargetVersion: 41}
+	if _, err := rollbackVerified.LatestRollbackAuthorization(ctx, defaultFollower(), lookup, now); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRollbackAuthorization(skip mismatched lookup) err = %v, want ErrEmergencyNotFound", err)
+	}
+	otherOrg := defaultFollower()
+	otherOrg.OrgID = "org-other"
+	if _, err := rollbackVerified.LatestRollbackAuthorization(ctx, otherOrg, defaultRollbackLookup(), now); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRollbackAuthorization(skip expired/out-of-org) err = %v, want ErrEmergencyNotFound", err)
+	}
+	if _, ok, err := rollbackVerified.ActiveRollbackForFollower(ctx, otherOrg, now); err != nil || ok {
+		t.Fatalf("ActiveRollbackForFollower(skip expired/out-of-org) ok=%v err=%v, want no active", ok, err)
+	}
+	expiredOnlyAuth, expiredOnlyResolver := signedRollbackAuthorizationWithResolver(t, "skip-expired-only-auth", 1, now.Add(-48*time.Hour))
+	expiredOnlyStore := seedEmergencyStateOnDisk(t, t.TempDir(), nil, []StoredRollbackAuthorization{storedRollback(t, expiredOnlyAuth, now)})
+	expiredOnlyVerified := newVerifiedEmergencyStore(expiredOnlyStore, expiredOnlyResolver, nil, nil)
+	if _, err := expiredOnlyVerified.LatestRollbackAuthorization(ctx, defaultFollower(), defaultRollbackLookup(), now); !errors.Is(err, ErrEmergencyNotFound) {
+		t.Fatalf("LatestRollbackAuthorization(single expired) err = %v, want ErrEmergencyNotFound", err)
+	}
+	if _, ok, err := expiredOnlyVerified.ActiveRollbackForFollower(ctx, defaultFollower(), now); err != nil || ok {
+		t.Fatalf("ActiveRollbackForFollower(single expired) ok=%v err=%v, want no active", ok, err)
+	}
+
+	noRemoteEnumerator := newVerifiedEmergencyStore(failingEmergencyStore{}, nil, nil, nil).(*verifiedEmergencyStore)
+	kills, err := noRemoteEnumerator.verifiedRemoteKills(ctx, now)
+	if err != nil || len(kills) != 0 {
+		t.Fatalf("verifiedRemoteKills(no enumerator) len=%d err=%v, want empty nil", len(kills), err)
 	}
 }

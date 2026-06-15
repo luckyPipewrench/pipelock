@@ -941,7 +941,7 @@ func (h *Handler) handleClearRollbackAuthorization(w http.ResponseWriter, r *htt
 	}
 	clearer, ok := h.emergencyControls.(rollbackClearer)
 	if !ok {
-		writeError(w, http.StatusNotImplemented, errors.New("emergency store does not support clearing rollback authorizations"))
+		writeError(w, http.StatusNotImplemented, ErrEmergencyClearUnsupported)
 		return
 	}
 	var req clearRollbackAuthorizationRequest
@@ -960,6 +960,10 @@ func (h *Handler) handleClearRollbackAuthorization(w http.ResponseWriter, r *htt
 	}
 	cleared, err := clearer.ClearRollbackAuthorization(r.Context(), req.AuthorizationID)
 	if err != nil {
+		if errors.Is(err, ErrEmergencyClearUnsupported) {
+			writeError(w, http.StatusNotImplemented, err)
+			return
+		}
 		writeStoreError(w, err)
 		return
 	}

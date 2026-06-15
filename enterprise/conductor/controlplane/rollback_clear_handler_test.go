@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 )
@@ -127,6 +128,28 @@ func TestHandlerClearRollbackAuthorization(t *testing.T) {
 	t.Run("store without clearer returns 501", func(t *testing.T) {
 		handler := newTestHandler(t, mustStore(t), nil)
 		handler.emergencyControls = failingEmergencyStore{}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"x"}`, true))
+		if w.Code != http.StatusNotImplemented {
+			t.Fatalf("status=%d body=%s, want 501", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("wrapped store without clearer returns 501", func(t *testing.T) {
+		handler, err := NewHandler(HandlerOptions{
+			Store:              mustStore(t),
+			Capabilities:       DefaultCapabilities("conductor-test"),
+			Now:                func() time.Time { return testNow },
+			FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
+			AuthorizePublisher: func(*http.Request) error { return nil },
+			AuthorizeAdmin:     func(*http.Request) error { return nil },
+			AuditSink:          discardAuditSink{},
+			AuditKeys:          rejectingAuditKeyResolver,
+			EmergencyControls:  failingEmergencyStore{},
+		})
+		if err != nil {
+			t.Fatalf("NewHandler() error = %v", err)
+		}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, clearRollbackRequest(`{"authorization_id":"x"}`, true))
 		if w.Code != http.StatusNotImplemented {

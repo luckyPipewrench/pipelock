@@ -26,11 +26,12 @@ const (
 )
 
 var (
-	ErrEmergencyStoreRequired = errors.New("conductor emergency control store required")
-	ErrEmergencyNotFound      = errors.New("conductor emergency control message not found")
-	ErrEmergencyConflict      = errors.New("conductor emergency control message conflicts with stored message")
-	ErrEmergencyStaleCounter  = errors.New("conductor emergency control counter is stale")
-	ErrInvalidEmergencyRecord = errors.New("conductor emergency control store record invalid")
+	ErrEmergencyStoreRequired    = errors.New("conductor emergency control store required")
+	ErrEmergencyNotFound         = errors.New("conductor emergency control message not found")
+	ErrEmergencyConflict         = errors.New("conductor emergency control message conflicts with stored message")
+	ErrEmergencyStaleCounter     = errors.New("conductor emergency control counter is stale")
+	ErrInvalidEmergencyRecord    = errors.New("conductor emergency control store record invalid")
+	ErrEmergencyClearUnsupported = errors.New("conductor emergency control store does not support clearing rollback authorizations")
 )
 
 type StoredRemoteKill struct {

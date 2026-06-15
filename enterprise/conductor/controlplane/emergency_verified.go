@@ -366,7 +366,7 @@ func (v *verifiedEmergencyStore) RemoteKills(ctx context.Context) ([]StoredRemot
 func (v *verifiedEmergencyStore) ClearRollbackAuthorization(ctx context.Context, authorizationID string) (bool, error) {
 	clearer, ok := v.inner.(rollbackClearer)
 	if !ok {
-		return false, ErrEmergencyStoreRequired
+		return false, ErrEmergencyClearUnsupported
 	}
 	return clearer.ClearRollbackAuthorization(ctx, authorizationID)
 }

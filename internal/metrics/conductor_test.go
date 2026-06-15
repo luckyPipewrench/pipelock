@@ -57,3 +57,20 @@ func TestConductorServerMetrics(t *testing.T) {
 		t.Fatalf("audit query counter = %v, want 1", got)
 	}
 }
+
+func TestConductorEmergencyQuarantineMetric(t *testing.T) {
+	m := New()
+	m.RecordConductorEmergencyQuarantine("rollback", "signature_verification_failed")
+	m.RecordConductorEmergencyQuarantine("rollback", "signature_verification_failed")
+	m.RecordConductorEmergencyQuarantine("remote_kill", "nil_resolver")
+
+	if got := testutil.ToFloat64(m.conductorEmergencyQuarantine.WithLabelValues("rollback", "signature_verification_failed")); got != 2 {
+		t.Fatalf("rollback quarantine counter = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(m.conductorEmergencyQuarantine.WithLabelValues("remote_kill", "nil_resolver")); got != 1 {
+		t.Fatalf("remote kill quarantine counter = %v, want 1", got)
+	}
+
+	var nilMetrics *Metrics
+	nilMetrics.RecordConductorEmergencyQuarantine("rollback", "nil_resolver")
+}

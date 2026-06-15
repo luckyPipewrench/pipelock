@@ -145,6 +145,22 @@ func (w Witness) SignedBytes() []byte {
 	return b
 }
 
+// VerifyWitness reports whether the witness carries a valid ed25519 signature
+// under the given public key (hex-encoded). This is the production counterpart
+// to the test-only ed25519Verify helper: it decodes the key and signature from
+// hex, then verifies over the canonical SignedBytes().
+func VerifyWitness(collectorPubHex string, w Witness) bool {
+	pub, err := hex.DecodeString(collectorPubHex)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return false
+	}
+	sig, err := hex.DecodeString(w.Signature)
+	if err != nil {
+		return false
+	}
+	return ed25519.Verify(ed25519.PublicKey(pub), w.SignedBytes(), sig)
+}
+
 // WitnessBindsRun reports whether w is intrinsically bound to the given run
 // nonce and launch-manifest hash. A witness from one run does NOT satisfy this
 // for another run, which is what makes the witness non-replayable. The Task 4

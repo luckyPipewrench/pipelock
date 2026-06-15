@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
 
 func main() {
@@ -76,13 +77,44 @@ func newResetCmd() *cobra.Command {
 }
 
 func newVerifyCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "verify",
-		Short: "Verify a previously produced Audit Packet",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented")
+	var orchKey string
+	cmd := &cobra.Command{
+		Use:   "verify <rundir>",
+		Short: "Verify a previously produced demo run (offline, all-or-nothing)",
+		Long: `Performs all-or-nothing offline verification of a playground demo run
+directory. The trust root is the single --orchestrator-key; pipelock and
+collector keys are taken from the verified manifest, NOT trusted blindly.
+
+Exit code 0 = every check passed. Non-zero = at least one check failed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rep, err := playground.VerifyRun(args[0], orchKey)
+			if err != nil {
+				return err
+			}
+			w := cmd.OutOrStdout()
+			for _, c := range rep.Checks {
+				status := "PASS"
+				if !c.OK {
+					status = "FAIL"
+				}
+				_, _ = fmt.Fprintf(w, "[%s] %s", status, c.Name)
+				if c.Reason != "" {
+					_, _ = fmt.Fprintf(w, " -- %s", c.Reason)
+				}
+				_, _ = fmt.Fprintln(w)
+			}
+			_, _ = fmt.Fprintln(w)
+			if rep.OK {
+				_, _ = fmt.Fprintf(w, "VERIFY OK  run_nonce=%s observed=%d\n", rep.RunNonce, rep.ObservedCount)
+				return nil
+			}
+			return fmt.Errorf("VERIFY FAILED: one or more checks did not pass")
 		},
 	}
+	cmd.Flags().StringVar(&orchKey, "orchestrator-key", "", "hex-encoded orchestrator Ed25519 public key (trust root)")
+	_ = cmd.MarkFlagRequired("orchestrator-key")
+	return cmd
 }
 
 func newFallbackCmd() *cobra.Command {

@@ -519,6 +519,10 @@ func TestLicenseIssue(t *testing.T) {
 		"--org", "Test Org",
 		"--expires", time.Now().Add(365 * 24 * time.Hour).Format(time.DateOnly),
 		"--ledger", ledgerPath,
+		// Default features are [agents] (paid); the issuance gate requires
+		// break-glass + a signed export to mint a paid token from the CLI.
+		"--break-glass",
+		"--export", filepath.Join(dir, "export.json"),
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -567,6 +571,9 @@ func TestLicenseIssue_WithTierAndSubscription(t *testing.T) {
 		"--subscription-id", "sub_polar_test123",
 		"--expires", time.Now().Add(45 * 24 * time.Hour).Format(time.DateOnly),
 		"--ledger", ledgerPath,
+		// Paid tier + subscription => gated; break-glass + export required.
+		"--break-glass",
+		"--export", filepath.Join(dir, "export.json"),
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -626,6 +633,8 @@ func TestLicenseIssue_NoExpiry(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--key", privPath,
 		"--email", "test@example.com",
+		// Free token (no paid feature) so no-expiry is allowed without break-glass.
+		"--features", "",
 		"--ledger", filepath.Join(dir, licenseLedgerFile),
 	})
 
@@ -1088,9 +1097,10 @@ func TestLicenseIssue_DefaultKeyPath(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	// No --key flag; should use default path.
+	// No --key flag; should use default path. Free token avoids the paid gate.
 	cmd.SetArgs([]string{
 		"--email", "default@example.com",
+		"--features", "",
 		"--ledger", filepath.Join(dir, licenseLedgerFile),
 	})
 
@@ -1132,6 +1142,9 @@ func TestLicenseIssue_MissingKeyFile(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--key", missingKey,
 		"--email", "test@example.com",
+		// Free token so the issuance gate does not short-circuit before key load;
+		// this test asserts the key-load error path specifically.
+		"--features", "",
 	})
 
 	err := cmd.Execute()
@@ -1153,10 +1166,11 @@ func TestLicenseIssue_DefaultLedgerPath(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	// No --ledger flag; should default to alongside the private key.
+	// No --ledger flag; should default to alongside the private key. Free token.
 	cmd.SetArgs([]string{
 		"--key", privPath,
 		"--email", "test@example.com",
+		"--features", "",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -1191,6 +1205,7 @@ func TestLicenseIssue_LedgerWriteFailWarns(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--key", privPath,
 		"--email", "test@example.com",
+		"--features", "", // free token: not blocked by the issuance gate
 		"--ledger", ledgerDir, // directory, not a file
 	})
 

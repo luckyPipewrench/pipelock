@@ -111,8 +111,15 @@ tokens against `PIPELOCK_LICENSE_PUBLIC_KEY`; official builds may embed the key.
 Sign a license token from a private key. Issuer-side.
 
 ```bash
+# Free token (no paid feature) — allowed directly:
+pipelock license issue --email customer@example.com --features "" \
+  --expires 2027-01-01
+
+# Paid token — minted by the license service in normal operation; the
+# standalone CLI requires --break-glass + --export (see the issuance gate):
 pipelock license issue --email customer@example.com --tier enterprise \
-  --features fleet --features agents --expires 2027-01-01
+  --features fleet --features agents --expires 2027-01-01 \
+  --break-glass --export break-glass-export.json
 ```
 
 | Flag | Default | Description |
@@ -121,15 +128,54 @@ pipelock license issue --email customer@example.com --tier enterprise \
 | `--email` | (required) | Customer email. |
 | `--org` | (none) | Organization name. |
 | `--expires` | (none, perpetual) | Expiration date, `YYYY-MM-DD`. Omit for no expiration. |
-| `--features` | `[agents]` | Feature list (repeat the flag for multiple). |
+| `--features` | `[agents]` | Feature list (repeat the flag for multiple). Pass `--features ""` for a featureless free token. |
 | `--ledger` | alongside the private key | Ledger file path. |
 | `--tier` | (none) | License tier (e.g. `pro`, `founding_pro`, `enterprise`). |
 | `--subscription-id` | (none) | External billing subscription ID. |
+| `--break-glass` | `false` | Override the issuance gate to mint a paid token offline (emergency only; requires `--export`). |
+| `--export` | (none) | Write a signed issuance export to this path so the service can import the break-glass token. |
 
 Prints the signed token and appends a truncated hash of it to the issuance
 ledger. The `--features` you sign decide what the token unlocks: `agents` for
 Pro, `fleet` for the Enterprise fleet control plane (see the
 [tier-gating audit matrix](../security/tier-gating-audit-matrix.md)).
+
+### Issuance gate (paid tokens must be revocable)
+
+A paid license is a *revocable* credential: the license service tracks every
+paid token it mints (in its database) so it can revoke a still-valid token via
+the signed CRL. A token minted by the standalone CLI is invisible to the service
+and therefore **cannot be revoked** — a popped signing host could mint perpetual
+paid tokens with no way to pull them back.
+
+To close that gap, `license issue` **refuses to mint a paid/revocable token**
+unless `--break-glass` is set. The gate keys on the *capability itself*, not on a
+label flag:
+
+- any non-free feature (every shipped feature — `agents`, `assess`, `fleet` — is
+  paid; the Free tier needs no license at all);
+- a non-empty `--tier`;
+- a non-empty `--subscription-id`;
+- a no-expiry (perpetual) token that carries any feature.
+
+Omitting `--tier`/`--subscription-id` does **not** slip a paid token past the
+gate — the feature alone trips it.
+
+A genuinely free token (no features, no tier, no subscription) is issued
+directly, with or without an expiry.
+
+### Break-glass (offline emergency signing)
+
+`--break-glass` preserves the offline emergency-signing capability the
+[key-custody runbook](license-intermediate-migration.md) depends on (e.g.
+signing a replacement token directly from the offline root). To keep the token
+revocable, a break-glass paid mint **requires `--export <path>`**: it writes a
+**signed issuance export** that the license service imports into its durable
+signed import table (keyed by license ID and the **full** token hash, with
+replay and conflict rejection). The local issuance ledger stores only a
+truncated, unsigned hash and **cannot** be the import source. Import the export
+into the service after the emergency so the break-glass token can be revoked like
+any other paid license.
 
 ## `pipelock license intermediate issue`
 

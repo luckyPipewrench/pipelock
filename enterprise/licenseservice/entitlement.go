@@ -243,6 +243,32 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 		id         INTEGER PRIMARY KEY CHECK (id = 0),
 		generation INTEGER NOT NULL DEFAULT 0
 	);
+
+	-- imported_issuances is the durable record of license tokens minted OUTSIDE
+	-- the service (the offline-root break-glass / standalone-CLI path) and then
+	-- imported via a SIGNED issuance export. It is the revocation surface for
+	-- those tokens: the service can only revoke a token it knows about, and the
+	-- local JSONL ledger (truncated, unsigned hash) cannot be the import source.
+	--
+	-- token_sha256 is the FULL 64-hex sha256 of the exact token string (not the
+	-- truncated ledger hash), so an import is bound to the real credential.
+	-- import_id is a unique, server-assigned id per import. The UNIQUE constraint
+	-- on token_sha256 plus the PRIMARY KEY on license_id make a replayed export
+	-- (same token, same id) a no-op and a conflicting export (same id, different
+	-- token, or same token, different id) a hard rejection.
+	CREATE TABLE IF NOT EXISTS imported_issuances (
+		license_id      TEXT PRIMARY KEY,
+		token_sha256    TEXT NOT NULL UNIQUE,
+		subscription_id TEXT NOT NULL DEFAULT '',
+		issuer_key_id   TEXT NOT NULL,
+		issued_at       DATETIME NOT NULL,
+		expires_at      DATETIME,
+		import_id       TEXT NOT NULL UNIQUE,
+		imported_at     DATETIME NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_imported_issuances_subscription ON imported_issuances(subscription_id);
+	CREATE INDEX IF NOT EXISTS idx_imported_issuances_issuer ON imported_issuances(issuer_key_id);
 	`
 	_, err := e.db.ExecContext(ctx, ddl)
 	return err

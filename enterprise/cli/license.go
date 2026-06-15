@@ -120,6 +120,8 @@ func licenseIssueCmd() *cobra.Command {
 		ledgerPath     string
 		tier           string
 		subscriptionID string
+		breakGlass     bool
+		exportPath     string
 	)
 
 	cmd := &cobra.Command{
@@ -136,13 +138,12 @@ func licenseIssueCmd() *cobra.Command {
 			if email == "" {
 				return fmt.Errorf("--email is required")
 			}
-			if len(features) == 0 {
+			// Drop empty feature entries (e.g. from `--features ""`) so a blank
+			// flag yields a genuinely featureless free token rather than a token
+			// carrying an empty-string "feature".
+			features = nonEmptyStrings(features)
+			if !cmd.Flags().Changed("features") {
 				features = []string{license.FeatureAgents}
-			}
-
-			priv, err := signing.LoadPrivateKeyFile(keyPath)
-			if err != nil {
-				return fmt.Errorf("load private key: %w", err)
 			}
 
 			var expiresAt int64
@@ -171,9 +172,44 @@ func licenseIssueCmd() *cobra.Command {
 				SubscriptionID: subscriptionID,
 			}
 
+			// ISSUANCE GATE. The standalone CLI must not mint a paid/revocable
+			// token the service cannot revoke. Gate on the CAPABILITY itself (any
+			// non-free feature, paid tier, subscription, or a no-expiry paid
+			// token), NOT on --tier/--subscription-id, which an issuer can omit.
+			// --break-glass is the audited offline emergency-signing escape the
+			// key-custody runbook depends on.
+			if reason, gated := paidIssuanceReason(lic); gated && !breakGlass {
+				return fmt.Errorf("refusing to issue a paid/revocable license from the standalone CLI: %s.\n"+
+					"Paid tokens must be minted by the license service so they land in the signed "+
+					"import table and can be revoked. For an offline emergency signing, re-run with "+
+					"--break-glass (audited) and import the emitted --export into the service",
+					reason)
+			}
+
+			priv, err := signing.LoadPrivateKeyFile(keyPath)
+			if err != nil {
+				return fmt.Errorf("load private key: %w", err)
+			}
+
 			token, err := license.Issue(lic, priv)
 			if err != nil {
 				return fmt.Errorf("issue license: %w", err)
+			}
+
+			// Break-glass paid issuance emits a SIGNED export so the service can
+			// import the token into its revocation surface. Refuse silent
+			// break-glass: an emergency paid mint that cannot be imported is a
+			// blind spot.
+			if breakGlass {
+				if reason, gated := paidIssuanceReason(lic); gated {
+					if exportPath == "" {
+						return fmt.Errorf("--break-glass minting a paid token (%s) requires --export "+
+							"<path> so the service can import it into the signed revocation table", reason)
+					}
+					if err := writeIssuanceExport(exportPath, token, lic, priv); err != nil {
+						return fmt.Errorf("write signed issuance export: %w", err)
+					}
+				}
 			}
 
 			// Append to ledger for tracking.
@@ -203,6 +239,9 @@ func licenseIssueCmd() *cobra.Command {
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Features: %v\n", lic.Features)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Ledger:   %s\n", ledgerPath)
+			if breakGlass && exportPath != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Export:   %s (break-glass; import into the license service)\n", exportPath)
+			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nToken (put this in license_key config field):\n%s\n", token)
 
 			return nil
@@ -217,7 +256,91 @@ func licenseIssueCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ledgerPath, "ledger", "", "ledger file path (default: alongside private key)")
 	cmd.Flags().StringVar(&tier, "tier", "", "license tier (e.g. pro, founding_pro)")
 	cmd.Flags().StringVar(&subscriptionID, "subscription-id", "", "external billing subscription ID")
+	cmd.Flags().BoolVar(&breakGlass, "break-glass", false,
+		"override the issuance gate to mint a paid/revocable token offline (emergency only; requires --export)")
+	cmd.Flags().StringVar(&exportPath, "export", "",
+		"write a signed issuance export to this path (for importing a break-glass paid token into the license service)")
 	return cmd
+}
+
+// freeFeatures lists license features that do NOT require a paid subscription.
+// The Free tier needs no license at all, so this set is currently EMPTY: every
+// shipped feature (agents, assess, fleet) is a paid capability. The set exists
+// so a genuinely free feature, if one is ever introduced, can be issued by the
+// standalone CLI without break-glass.
+var freeFeatures = map[string]struct{}{}
+
+// paidIssuanceReason reports whether a license carries a paid/revocable
+// capability and, if so, a human-readable reason. It gates on the CAPABILITY
+// itself — never on the --tier/--subscription-id flags, which an issuer can omit
+// to slip a paid token past a label-based gate (the exact bypass class to
+// avoid). The checks, in order:
+//
+//   - any feature not in freeFeatures (all current features are paid);
+//   - a non-empty tier string;
+//   - a non-empty subscription id;
+//   - a token with NO expiry that still carries any paid marker (a perpetual
+//     paid token is the most dangerous to mint outside the revocation surface).
+func paidIssuanceReason(lic license.License) (string, bool) {
+	for _, f := range lic.Features {
+		if strings.TrimSpace(f) == "" {
+			continue // empty entry is not a capability
+		}
+		if _, free := freeFeatures[f]; !free {
+			return fmt.Sprintf("paid feature %q", f), true
+		}
+	}
+	if strings.TrimSpace(lic.Tier) != "" {
+		return fmt.Sprintf("paid tier %q", lic.Tier), true
+	}
+	if strings.TrimSpace(lic.SubscriptionID) != "" {
+		return fmt.Sprintf("subscription id %q", lic.SubscriptionID), true
+	}
+	// A no-expiry token with any feature at all is a perpetual paid grant.
+	if lic.ExpiresAt <= 0 && len(lic.Features) > 0 {
+		return "perpetual (no-expiry) token with features", true
+	}
+	return "", false
+}
+
+// nonEmptyStrings returns s with empty / whitespace-only entries removed.
+func nonEmptyStrings(s []string) []string {
+	out := s[:0:0]
+	for _, v := range s {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// writeIssuanceExport signs an issuance export for a break-glass paid token and
+// atomically writes it to path (0600). The export lets the license service
+// import the token into its signed revocation table.
+func writeIssuanceExport(path, token string, lic license.License, priv ed25519.PrivateKey) error {
+	featuresJSON, err := json.Marshal(lic.Features)
+	if err != nil {
+		return fmt.Errorf("marshal features: %w", err)
+	}
+	export, err := license.SignIssuanceExport(
+		license.BuildIssuanceExportFromToken(token, lic, string(featuresJSON), time.Now()), priv)
+	if err != nil {
+		return fmt.Errorf("sign export: %w", err)
+	}
+	data, err := json.MarshalIndent(export, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal export: %w", err)
+	}
+	cleanPath := filepath.Clean(path)
+	tmpPath := cleanPath + ".tmp"
+	if err := os.WriteFile(tmpPath, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write export file: %w", err)
+	}
+	if err := os.Rename(tmpPath, cleanPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("install export file: %w", err)
+	}
+	return nil
 }
 
 func licenseInspectCmd() *cobra.Command {

@@ -22,6 +22,10 @@
 // Security property: the canary VALUE lives only in the environment and in the
 // POST body.  It is never passed as a command-line argument and never placed in
 // a URL.
+//
+// Agent identity: if PLAYGROUND_AGENT_ID is set in the environment, the web
+// tool adds an X-Pipelock-Agent header on every request so the proxy records
+// the correct actor identity in its receipts.
 package main
 
 import (
@@ -33,6 +37,14 @@ import (
 	"os"
 	"strings"
 )
+
+// agentIDEnvVar, when set, causes the web tool to add an X-Pipelock-Agent
+// header on every request. This is how the playground's receipts record the
+// correct actor identity instead of "anonymous".
+const agentIDEnvVar = "PLAYGROUND_AGENT_ID"
+
+// agentHeader is the canonical Pipelock agent identity header.
+const agentHeader = "X-Pipelock-Agent"
 
 func main() {
 	err := runWebTool(context.Background(), os.Stdout, os.Args[1:], os.Getenv)
@@ -62,7 +74,7 @@ func runWebTool(ctx context.Context, out io.Writer, args []string, lookupEnv fun
 
 	switch subcmd {
 	case "get":
-		return doGet(ctx, out, rest)
+		return doGet(ctx, out, rest, lookupEnv)
 	case "post":
 		return doPost(ctx, out, rest, lookupEnv)
 	default:
@@ -72,7 +84,7 @@ func runWebTool(ctx context.Context, out io.Writer, args []string, lookupEnv fun
 
 // doGet performs an HTTP GET to the URL in args[0].  The default http.Client
 // is used, which respects HTTPS_PROXY / HTTP_PROXY from the environment.
-func doGet(ctx context.Context, out io.Writer, args []string) error {
+func doGet(ctx context.Context, out io.Writer, args []string, lookupEnv func(string) string) error {
 	if len(args) == 0 {
 		return errors.New("get requires a URL")
 	}
@@ -82,6 +94,7 @@ func doGet(ctx context.Context, out io.Writer, args []string) error {
 	if err != nil {
 		return fmt.Errorf("build GET request: %w", err)
 	}
+	setAgentHeader(req, lookupEnv)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -129,6 +142,7 @@ func doPost(ctx context.Context, out io.Writer, args []string, lookupEnv func(st
 		return fmt.Errorf("build POST request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setAgentHeader(req, lookupEnv)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -139,4 +153,13 @@ func doPost(ctx context.Context, out io.Writer, args []string, lookupEnv func(st
 	// Report status but NEVER echo the body or the canary value.
 	_, _ = fmt.Fprintf(out, "[webtool] POST %s -> HTTP %d\n", targetURL, resp.StatusCode)
 	return nil
+}
+
+// setAgentHeader adds the X-Pipelock-Agent header to a request when the
+// PLAYGROUND_AGENT_ID env var is set. This ensures the proxy records the
+// correct actor identity in its receipts.
+func setAgentHeader(req *http.Request, lookupEnv func(string) string) {
+	if id := lookupEnv(agentIDEnvVar); id != "" {
+		req.Header.Set(agentHeader, id)
+	}
 }

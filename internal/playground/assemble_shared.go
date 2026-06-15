@@ -13,6 +13,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
 )
 
+// AssembleFromEvidenceWithScenario is the same as AssembleFromEvidence but
+// accepts a full Scenario so the assembled CapturedScenario carries the real
+// Title, Category, ExpectedVerdict, etc. This is needed by the live-run path
+// where the caller knows the scenario and BuildManifest needs the full fields.
+// When sc is nil the function falls back to deriving a bare Scenario from the
+// evidence path (identical to AssembleFromEvidence).
+func AssembleFromEvidenceWithScenario(evidenceFile, pubKeyHex string, sc *replaycapture.Scenario, outDir string, generatedAt time.Time) (*replaycapture.AssembleResult, error) {
+	return assembleFromEvidenceCore(evidenceFile, pubKeyHex, sc, outDir, generatedAt)
+}
+
 // AssembleFromEvidence turns a live evidence JSONL file (written by a real
 // Pipelock proxy with receipt emission) into a verified Audit Packet directory.
 // This is the shared seam between the live-demo runner and the shipped
@@ -30,6 +40,10 @@ import (
 // evidence alone. AssemblePacket uses only Scenario.ID; callers that also need
 // BuildManifest must supply the full Scenario separately.
 func AssembleFromEvidence(evidenceFile, pubKeyHex, outDir string, generatedAt time.Time) (*replaycapture.AssembleResult, error) {
+	return assembleFromEvidenceCore(evidenceFile, pubKeyHex, nil, outDir, generatedAt)
+}
+
+func assembleFromEvidenceCore(evidenceFile, pubKeyHex string, sc *replaycapture.Scenario, outDir string, generatedAt time.Time) (*replaycapture.AssembleResult, error) {
 	cleanPath := filepath.Clean(evidenceFile)
 
 	if _, err := os.Stat(cleanPath); err != nil {
@@ -49,10 +63,17 @@ func AssembleFromEvidence(evidenceFile, pubKeyHex, outDir string, generatedAt ti
 		return nil, fmt.Errorf("chain verification failed: %s", chain.Error)
 	}
 
-	// Derive scenario ID from the evidence file's parent directory name.
-	scenarioID := filepath.Base(filepath.Dir(cleanPath))
-	if scenarioID == "." || scenarioID == "/" {
-		scenarioID = "live-evidence"
+	// Use the caller-supplied scenario when available; otherwise derive a
+	// bare Scenario from the evidence file's parent directory name.
+	var scenario replaycapture.Scenario
+	if sc != nil {
+		scenario = *sc
+	} else {
+		scenarioID := filepath.Base(filepath.Dir(cleanPath))
+		if scenarioID == "." || scenarioID == "/" {
+			scenarioID = "live-evidence"
+		}
+		scenario = replaycapture.Scenario{ID: scenarioID}
 	}
 
 	// Extract policy hash from the first receipt (all receipts in a single
@@ -60,9 +81,7 @@ func AssembleFromEvidence(evidenceFile, pubKeyHex, outDir string, generatedAt ti
 	policyHash := receipts[0].ActionRecord.PolicyHash
 
 	cs := &replaycapture.CapturedScenario{
-		Scenario: replaycapture.Scenario{
-			ID: scenarioID,
-		},
+		Scenario:     scenario,
 		Receipts:     receipts,
 		EvidenceFile: cleanPath,
 		SignerKeyHex: pubKeyHex,

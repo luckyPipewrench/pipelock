@@ -128,6 +128,8 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 	if err != nil {
 		return VerifyReport{}, fmt.Errorf("bin temp dir: %w", err)
 	}
+	// Contained mode executes these binaries after dropping to the
+	// pipelock-agent user, so the temp dir must be cross-user traversable.
 	if err := os.Chmod(binDir, 0o755); err != nil {
 		return VerifyReport{}, fmt.Errorf("bin temp dir permissions: %w", err)
 	}

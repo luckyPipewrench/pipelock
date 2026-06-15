@@ -125,16 +125,18 @@ func VerifyTokenWithOptions(token string, opts VerifyOptions) (License, error) {
 	// Strict path: token MUST be signed by the active intermediate. No
 	// fall-back to direct-root verification — that is the whole point of require
 	// mode (a popped root cannot mint a token that bypasses the intermediate).
-	return verifyChainStrict(token, im, opts.CRL)
+	return verifyChainStrict(token, im, opts.CRL, now)
 }
 
 // verifyChainStrict verifies a token against the intermediate public key ONLY.
 // Unlike VerifyChain it never falls back to direct-root verification on a
 // signature mismatch, so under require-intermediate mode a legacy root-signed
 // token (or a token forged with a compromised root key) is rejected. The
-// intermediate must already be root-verified by the caller.
-func verifyChainStrict(token string, im Intermediate, crl *CRL) (License, error) {
-	return VerifyWithCRL(token, im.PublicKey(), crl)
+// intermediate must already be root-verified by the caller. now is the
+// verification clock, threaded so token expiry shares the instant already used
+// for the intermediate window and CRL freshness.
+func verifyChainStrict(token string, im Intermediate, crl *CRL, now time.Time) (License, error) {
+	return verifyWithCRLAt(token, im.PublicKey(), crl, now)
 }
 
 // ResolveInputs are the config/env-resolved inputs ResolveVerifyOptions turns

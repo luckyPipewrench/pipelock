@@ -78,9 +78,19 @@ func Issue(l License, privateKey ed25519.PrivateKey) (string, error) {
 }
 
 // Verify decodes a license token, checks the Ed25519 signature against
-// the provided public key, and validates expiration. Returns the license
-// data on success.
+// the provided public key, and validates expiration against the wall clock.
+// Returns the license data on success. It is the wall-clock convenience
+// wrapper around verifyAt; callers that already carry an injected
+// verification time (the intermediate/CRL chain) use verifyAt so every
+// temporal check in the chain pivots on the same instant.
 func Verify(token string, publicKey ed25519.PublicKey) (License, error) {
+	return verifyAt(token, publicKey, time.Now())
+}
+
+// verifyAt is the clock-aware verification core. now is the verification
+// instant the license expiry is evaluated against, so the chain can share one
+// clock with the intermediate validity window and CRL expiry/freshness checks.
+func verifyAt(token string, publicKey ed25519.PublicKey, now time.Time) (License, error) {
 	if len(publicKey) != ed25519.PublicKeySize {
 		return License{}, errors.New("invalid public key")
 	}
@@ -120,7 +130,7 @@ func Verify(token string, publicKey ed25519.PublicKey) (License, error) {
 		return License{}, errors.New("license missing required field: sub")
 	}
 
-	if l.ExpiresAt > 0 && time.Now().Unix() > l.ExpiresAt {
+	if l.ExpiresAt > 0 && now.Unix() > l.ExpiresAt {
 		return l, fmt.Errorf("%w on %s", ErrLicenseExpired, time.Unix(l.ExpiresAt, 0).UTC().Format(time.DateOnly))
 	}
 

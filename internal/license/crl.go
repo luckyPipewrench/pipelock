@@ -360,8 +360,21 @@ func (c CRL) CheckFreshness(now time.Time, maxAge time.Duration) error {
 	return nil
 }
 
+// VerifyWithCRL verifies a token against publicKey (expiry evaluated against the
+// wall clock) and checks it against the supplied CRL. It is the wall-clock
+// wrapper around verifyWithCRLAt; the intermediate chain uses verifyWithCRLAt so
+// token expiry shares the injected clock with the intermediate window and CRL
+// expiry/freshness.
 func VerifyWithCRL(token string, publicKey ed25519.PublicKey, crl *CRL) (License, error) {
-	lic, err := Verify(token, publicKey)
+	return verifyWithCRLAt(token, publicKey, crl, time.Now())
+}
+
+// verifyWithCRLAt is the clock-aware variant. now is the instant the license
+// expiry is evaluated against, threaded from the chain so every temporal check
+// (token expiry, intermediate validity window, CRL expiry/freshness) pivots on
+// one clock.
+func verifyWithCRLAt(token string, publicKey ed25519.PublicKey, crl *CRL, now time.Time) (License, error) {
+	lic, err := verifyAt(token, publicKey, now)
 	if err != nil {
 		return lic, err
 	}

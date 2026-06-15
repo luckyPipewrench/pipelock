@@ -335,7 +335,7 @@ func decodeIntermediatePublicKey(hexKey string) (ed25519.PublicKey, error) {
 //     enforced on either path.
 func VerifyChain(token string, im *Intermediate, rootPub ed25519.PublicKey, crl *CRL, now time.Time) (License, error) {
 	if im == nil {
-		return VerifyWithCRL(token, rootPub, crl)
+		return verifyWithCRLAt(token, rootPub, crl, now)
 	}
 	verified, err := verifyIntermediateObject(*im, rootPub, now)
 	if err != nil {
@@ -347,7 +347,7 @@ func VerifyChain(token string, im *Intermediate, rootPub ed25519.PublicKey, crl 
 		}
 	}
 	// Primary path: token signed by the active intermediate.
-	lic, err := VerifyWithCRL(token, verified.PublicKey(), crl)
+	lic, err := verifyWithCRLAt(token, verified.PublicKey(), crl, now)
 	if err == nil {
 		return lic, nil
 	}
@@ -358,7 +358,7 @@ func VerifyChain(token string, im *Intermediate, rootPub ed25519.PublicKey, crl 
 	}
 	// Otherwise the signature simply did not match the intermediate key: try the
 	// legacy direct-root path for old root-signed tokens.
-	legacyLic, legacyErr := VerifyWithCRL(token, rootPub, crl)
+	legacyLic, legacyErr := verifyWithCRLAt(token, rootPub, crl, now)
 	if legacyErr == nil {
 		return legacyLic, nil
 	}
@@ -387,7 +387,7 @@ func VerifyChain(token string, im *Intermediate, rootPub ed25519.PublicKey, crl 
 //     verified against the intermediate key with legacy direct-root fallback.
 func VerifyTokenWithOptionalIntermediate(token string, intermediateCert []byte, rootPub ed25519.PublicKey, crl *CRL, now time.Time) (License, error) {
 	if len(intermediateCert) == 0 {
-		return VerifyWithCRL(token, rootPub, crl)
+		return verifyWithCRLAt(token, rootPub, crl, now)
 	}
 	im, err := ParseAndVerifyIntermediate(intermediateCert, rootPub, now)
 	if err != nil {

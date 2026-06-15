@@ -10,6 +10,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +180,39 @@ func TestListImportedIssuances_Empty(t *testing.T) {
 	}
 	if len(all) != 0 {
 		t.Fatalf("expected empty, got %d", len(all))
+	}
+}
+
+// An unexpected DB error (here: a pre-cancelled context) on a VERIFIED export must
+// fail closed (nothing imported) AND leave a forensic trace in the audit ledger, so
+// a presented-and-lost export does not vanish silently.
+func TestImportSignedIssuance_UnexpectedError_IsAuditedAndFailsClosed(t *testing.T) {
+	ts := newTestSetup(t)
+	lic := breakGlassLicense()
+	data, pub, _ := signTestExport(t, ts.privateKey, lic)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // force a non-replay/non-conflict DB error in ImportIssuance
+
+	_, outcome, err := ts.handler.ImportSignedIssuance(ctx, data, pub, "imp_err", time.Now())
+	if err == nil {
+		t.Fatal("expected an error on cancelled-context import, got nil")
+	}
+	if outcome != "" {
+		t.Fatalf("outcome = %q, want empty on unexpected error", outcome)
+	}
+
+	// Fail-closed: nothing was actually recorded.
+	if got, _ := ts.handler.GetImportedIssuance(context.Background(), lic.ID); got != nil {
+		t.Fatal("record was imported despite the error; expected fail-closed")
+	}
+
+	// Forensic trace: the verified-but-failed attempt is in the ledger.
+	entries, rerr := os.ReadFile(ts.ledger.path)
+	if rerr != nil {
+		t.Fatalf("read ledger: %v", rerr)
+	}
+	if !strings.Contains(string(entries), lic.ID) || !strings.Contains(string(entries), "error:") {
+		t.Fatalf("ledger missing audited error entry for %s:\n%s", lic.ID, entries)
 	}
 }

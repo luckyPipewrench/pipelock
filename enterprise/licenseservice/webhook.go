@@ -611,6 +611,11 @@ func (h *WebhookHandler) ImportSignedIssuance(
 		_ = h.ledger.LogIssuanceImported(rec.LicenseID, importID, string(ImportOutcomeConflict))
 		return verified.Payload, ImportOutcomeConflict, err
 	default:
+		// Unexpected DB error (disk full, context cancellation, corruption): the
+		// import failed closed (nothing recorded, nothing revocable), but a verified
+		// export was presented and lost. Record the attempt so it leaves a forensic
+		// trace in the ledger rather than vanishing silently.
+		_ = h.ledger.LogIssuanceImported(rec.LicenseID, importID, "error: "+err.Error())
 		return verified.Payload, "", fmt.Errorf("import issuance: %w", err)
 	}
 }

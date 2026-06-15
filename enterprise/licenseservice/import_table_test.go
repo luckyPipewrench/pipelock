@@ -130,6 +130,15 @@ func TestImportIssuance_RejectsTruncatedHash(t *testing.T) {
 	}
 }
 
+func TestImportIssuance_RejectsNonHexHash(t *testing.T) {
+	db := openImportTestDB(t)
+	rec := sampleImport()
+	rec.TokenSHA256 = strings.Repeat("z", tokenSHA256HexLen)
+	if err := db.ImportIssuance(t.Context(), rec); err == nil {
+		t.Fatal("expected non-hex token hash to be rejected")
+	}
+}
+
 func TestImportIssuance_RejectsMissingFields(t *testing.T) {
 	db := openImportTestDB(t)
 	tests := []struct {

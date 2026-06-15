@@ -567,6 +567,42 @@ func (h *WebhookHandler) RevokeIntermediate(ctx context.Context, serial, reason 
 	return nil
 }
 
+// RevokeImportedIssuance adds an imported break-glass license to the signed CRL
+// revocation set. Importing proves the externally-minted token exists; this
+// method is the operator surface that makes "imported == revocable" true.
+func (h *WebhookHandler) RevokeImportedIssuance(ctx context.Context, licenseID, reason string, now time.Time) error {
+	if licenseID == "" {
+		return errors.New("license_id is required")
+	}
+	rec, err := h.db.GetImportedIssuance(ctx, licenseID)
+	if err != nil {
+		return fmt.Errorf("load imported issuance %s: %w", licenseID, err)
+	}
+	if rec == nil {
+		return fmt.Errorf("imported issuance %s not found", licenseID)
+	}
+	if reason == "" {
+		reason = "imported_license_revoked"
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	subID := rec.SubscriptionID
+	if subID == "" {
+		subID = "imported:" + rec.ImportID
+	}
+	if err := h.db.UpsertLicenseRevocation(ctx, RevokedLicenseRecord{
+		LicenseID:      rec.LicenseID,
+		SubscriptionID: subID,
+		Reason:         reason,
+		RevokedAt:      now.UTC(),
+	}); err != nil {
+		return fmt.Errorf("record imported issuance revocation: %w", err)
+	}
+	_ = h.ledger.LogLicenseRevoked(subID, "", rec.LicenseID, reason)
+	return nil
+}
+
 // ImportSignedIssuance verifies a SIGNED issuance export and durably records the
 // externally-minted license token in the import table so it becomes revocable.
 // This is the consumer of the break-glass / standalone-CLI export: a paid token

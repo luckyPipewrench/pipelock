@@ -80,6 +80,34 @@ func TestImportSignedIssuance_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRevokeImportedIssuance_PublishesInSignedCRL(t *testing.T) {
+	ts := newTestSetup(t)
+	lic := breakGlassLicense()
+	data, pub, _ := signTestExport(t, ts.privateKey, lic)
+	now := time.Now()
+
+	if _, _, err := ts.handler.ImportSignedIssuance(context.Background(), data, pub, "imp_revoke", now); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if err := ts.handler.RevokeImportedIssuance(context.Background(), lic.ID, "break_glass_retired", now); err != nil {
+		t.Fatalf("revoke imported issuance: %v", err)
+	}
+	crl, err := ts.handler.SignedCRL(context.Background(), now)
+	if err != nil {
+		t.Fatalf("signed CRL: %v", err)
+	}
+	if _, ok := crl.RevocationFor(lic.ID); !ok {
+		t.Fatalf("imported license %s missing from signed CRL revocations", lic.ID)
+	}
+}
+
+func TestRevokeImportedIssuance_RejectsMissingRecord(t *testing.T) {
+	ts := newTestSetup(t)
+	if err := ts.handler.RevokeImportedIssuance(context.Background(), "lic_missing", "x", time.Now()); err == nil {
+		t.Fatal("expected missing imported issuance to be rejected")
+	}
+}
+
 func TestImportSignedIssuance_ReplayIsNoOp(t *testing.T) {
 	ts := newTestSetup(t)
 	data, pub, _ := signTestExport(t, ts.privateKey, breakGlassLicense())

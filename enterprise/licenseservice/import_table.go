@@ -7,6 +7,7 @@ package licenseservice
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -68,6 +69,9 @@ func (e *EntitlementDB) ImportIssuance(ctx context.Context, rec ImportedIssuance
 	}
 	if len(rec.TokenSHA256) != tokenSHA256HexLen {
 		return fmt.Errorf("token_sha256 must be a %d-char hex sha256", tokenSHA256HexLen)
+	}
+	if _, err := hex.DecodeString(rec.TokenSHA256); err != nil {
+		return fmt.Errorf("token_sha256 is not valid hex: %w", err)
 	}
 	if rec.IssuerKeyID == "" {
 		return errors.New("issuer_key_id is required")

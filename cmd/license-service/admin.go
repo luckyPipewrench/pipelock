@@ -27,6 +27,7 @@ import (
 // an operator can run them as one-shot jobs against the live database.
 var adminSubcommands = map[string]bool{
 	"revoke-intermediate":     true,
+	"revoke-imported-license": true,
 	"recover-crl-generation":  true,
 	"import-issuance":         true,
 	"list-imported-issuances": true,
@@ -44,6 +45,8 @@ func dispatchAdmin(log zerolog.Logger) (bool, error) {
 	switch sub {
 	case "revoke-intermediate":
 		return true, runRevokeIntermediate(log, args)
+	case "revoke-imported-license":
+		return true, runRevokeImportedLicense(log, args)
 	case "recover-crl-generation":
 		return true, runRecoverCRLGeneration(log, args)
 	case "import-issuance":
@@ -114,6 +117,29 @@ func runRevokeIntermediate(log zerolog.Logger, args []string) error {
 		return fmt.Errorf("revoke intermediate: %w", err)
 	}
 	log.Info().Str("serial", *serial).Str("reason", *reason).Msg("intermediate revoked; next published CRL will carry it")
+	return nil
+}
+
+func runRevokeImportedLicense(log zerolog.Logger, args []string) error {
+	fs := flag.NewFlagSet("revoke-imported-license", flag.ContinueOnError)
+	licenseID := fs.String("license-id", "", "imported break-glass license id to revoke (required)")
+	reason := fs.String("reason", "operator_revoked", "human-readable revocation reason")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *licenseID == "" {
+		return errors.New("--license-id is required")
+	}
+	ctx := context.Background()
+	handler, cleanup, err := adminHandler(ctx, log)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := handler.RevokeImportedIssuance(ctx, *licenseID, *reason, time.Now()); err != nil {
+		return fmt.Errorf("revoke imported license: %w", err)
+	}
+	log.Info().Str("license_id", *licenseID).Str("reason", *reason).Msg("imported license revoked; next published CRL will carry it")
 	return nil
 }
 

@@ -95,6 +95,39 @@ func TestRunImportIssuance_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRunRevokeImportedLicense_PublishesInSignedCRL(t *testing.T) {
+	tokenKeyPath, _, _ := setAdminEnv(t)
+	lic := importBreakGlassLicense()
+	exportPath, pubHex, _ := writeBreakGlassExport(t, tokenKeyPath, lic)
+
+	if err := runImportIssuance(discardLog(), []string{
+		"--export", exportPath,
+		"--issuer-pubkey", pubHex,
+		"--import-id", "imp_cmd_revoke",
+	}); err != nil {
+		t.Fatalf("runImportIssuance: %v", err)
+	}
+	if err := runRevokeImportedLicense(discardLog(), []string{
+		"--license-id", lic.ID,
+		"--reason", "operator_test",
+	}); err != nil {
+		t.Fatalf("runRevokeImportedLicense: %v", err)
+	}
+
+	handler, cleanup, err := adminHandler(context.Background(), discardLog())
+	if err != nil {
+		t.Fatalf("adminHandler: %v", err)
+	}
+	defer cleanup()
+	crl, err := handler.SignedCRL(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SignedCRL: %v", err)
+	}
+	if _, ok := crl.RevocationFor(lic.ID); !ok {
+		t.Fatalf("imported license %s missing from signed CRL", lic.ID)
+	}
+}
+
 func TestRunImportIssuance_PubkeyFromFile(t *testing.T) {
 	tokenKeyPath, _, _ := setAdminEnv(t)
 	lic := importBreakGlassLicense()
@@ -181,6 +214,16 @@ func TestRunImportIssuance_MissingFlags(t *testing.T) {
 	}
 }
 
+func TestRunRevokeImportedLicense_MissingOrUnknown(t *testing.T) {
+	setAdminEnv(t)
+	if err := runRevokeImportedLicense(discardLog(), nil); err == nil {
+		t.Fatal("missing --license-id must error")
+	}
+	if err := runRevokeImportedLicense(discardLog(), []string{"--license-id", "lic_missing"}); err == nil {
+		t.Fatal("unknown imported license must error")
+	}
+}
+
 func TestRunImportIssuance_MissingExportFile(t *testing.T) {
 	setAdminEnv(t)
 	err := runImportIssuance(discardLog(), []string{
@@ -246,7 +289,7 @@ func TestLoadIssuerPublicKey(t *testing.T) {
 }
 
 func TestDispatchAdmin_ImportSubcommandsRecognized(t *testing.T) {
-	for _, sub := range []string{"import-issuance", "list-imported-issuances"} {
+	for _, sub := range []string{"import-issuance", "list-imported-issuances", "revoke-imported-license"} {
 		if !adminSubcommands[sub] {
 			t.Fatalf("admin subcommand %q not registered", sub)
 		}

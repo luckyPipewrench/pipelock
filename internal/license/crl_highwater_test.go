@@ -6,6 +6,7 @@ package license
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -235,4 +236,45 @@ func TestLoadAndVerifyCRLMonotonic(t *testing.T) {
 			t.Fatal("load with wrong verifier key must error, got nil")
 		}
 	})
+}
+
+func TestLoadAndVerifyCRLMonotonicFresh_DoesNotAdvanceRejectedStaleCRL(t *testing.T) {
+	pub, priv := testKeyPair(t)
+	now := time.Now().UTC()
+	path := filepath.Join(t.TempDir(), "crl.json")
+
+	stale, err := SignCRL(CRLPayload{
+		Version:    CRLVersion,
+		Generation: 10,
+		IssuedAt:   now.Add(-3 * time.Hour).Unix(),
+		ExpiresAt:  now.Add(24 * time.Hour).Unix(),
+	}, priv)
+	if err != nil {
+		t.Fatalf("sign stale CRL: %v", err)
+	}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatalf("marshal stale CRL: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write stale CRL: %v", err)
+	}
+
+	_, err = LoadAndVerifyCRLMonotonicFresh(path, pub, now, time.Hour)
+	if !errors.Is(err, ErrCRLStale) {
+		t.Fatalf("stale CRL must be rejected with ErrCRLStale, got %v", err)
+	}
+	if gen, found, readErr := ReadCRLHighWater(path); readErr != nil || found || gen != 0 {
+		t.Fatalf("rejected stale CRL advanced high-water: gen=%d found=%v err=%v", gen, found, readErr)
+	}
+
+	// A lower-generation but fresh CRL must still be acceptable because the
+	// stale generation-10 CRL was never accepted into the rollback high-water.
+	signCRLFile(t, path, priv, 5, now)
+	if _, err := LoadAndVerifyCRLMonotonicFresh(path, pub, now, 2*time.Hour); err != nil {
+		t.Fatalf("fresh gen-5 CRL should verify after rejected stale gen-10 CRL: %v", err)
+	}
+	if gen, found, readErr := ReadCRLHighWater(path); readErr != nil || !found || gen != 5 {
+		t.Fatalf("accepted fresh CRL high-water = (%d, %v, %v), want (5, true, nil)", gen, found, readErr)
+	}
 }

@@ -178,8 +178,11 @@ truncated, unsigned hash and **cannot** be the import source.
 Import the export into the service after the emergency so the break-glass token
 can be revoked like any other paid license — the service operator runs
 `license-service import-issuance --export <file> --issuer-pubkey <key>` and can
-review the import table with `license-service list-imported-issuances`. See the
-full issue → export → import → inspect flow in the
+review the import table with `license-service list-imported-issuances`. To
+revoke it later, run
+`license-service revoke-imported-license --license-id <license-id> --reason <reason>`;
+the next signed CRL carries that license ID. See the full issue → export →
+import → inspect → revoke flow in the
 [intermediate-key migration guide](../guides/license-intermediate-migration.md#break-glass-tokens-issue-offline-then-import-so-they-stay-revocable).
 
 ## `pipelock license intermediate issue`

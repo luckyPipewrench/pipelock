@@ -63,7 +63,7 @@ func LoadAndVerifyCRLMonotonic(path string, publicKey ed25519.PublicKey, now tim
 // The legacy (non-require) paths keep calling LoadAndVerifyCRLMonotonic so
 // behaviour is unchanged when require mode is off.
 func LoadAndVerifyCRLMonotonicFresh(path string, publicKey ed25519.PublicKey, now time.Time, maxAge time.Duration) (CRL, error) {
-	crl, err := LoadAndVerifyCRLMonotonic(path, publicKey, now)
+	crl, err := LoadAndVerifyCRL(path, publicKey, now)
 	if err != nil {
 		return CRL{}, err
 	}
@@ -71,6 +71,9 @@ func LoadAndVerifyCRLMonotonicFresh(path string, publicKey ed25519.PublicKey, no
 		maxAge = DefaultCRLMaxAge
 	}
 	if err := crl.CheckFreshness(now, maxAge); err != nil {
+		return CRL{}, err
+	}
+	if _, err := AdvanceCRLHighWater(path, crl.Payload.Generation); err != nil {
 		return CRL{}, err
 	}
 	return crl, nil

@@ -185,7 +185,7 @@ token (any non-free feature, paid tier, subscription, or perpetual paid token)
 unless `--break-glass` is set — otherwise an offline mint would be invisible to
 revocation. See [`pipelock license issue`](../cli/license.md#pipelock-license-issue).
 
-The full operator flow — **issue → export → import → inspect**:
+The full operator flow — **issue → export → import → inspect → revoke**:
 
 ```bash
 # 1. ISSUE the break-glass token offline (e.g. from the offline root on the USB),
@@ -204,6 +204,11 @@ license-service import-issuance --export break-glass-export.json \
 
 # 3. INSPECT the import table to confirm the token is now in the revocation surface:
 license-service list-imported-issuances
+
+# 4. REVOKE the imported break-glass token if it must be pulled later. The next
+#    signed CRL carries the license ID:
+license-service revoke-imported-license --license-id lic_break_glass_123 \
+  --reason operator_revoked
 ```
 
 Import outcomes (also written to the audit ledger):
@@ -217,8 +222,8 @@ Import outcomes (also written to the audit ledger):
   never overwritten.
 
 A malformed, tampered, or wrong-key export **fails closed** — it never enters the
-import table. Revoke an imported break-glass token the same way as any other
-license (it appears in the published CRL once revoked).
+import table. Revoking an imported break-glass token writes a normal license
+revocation row, so it appears in the published CRL once revoked.
 
 ## Rollback
 

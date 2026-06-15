@@ -90,7 +90,7 @@ func TestFallback_VerifiesAndPrintsReplayEvidence(t *testing.T) {
 	}
 }
 
-func TestReset_RefusesEvidenceDirReuse(t *testing.T) {
+func TestReset_CleansStaleArtifactsForReuse(t *testing.T) {
 	if testing.Short() {
 		t.Skip("orchestrate test builds binaries and boots a real proxy")
 	}
@@ -126,8 +126,6 @@ func TestReset_RefusesEvidenceDirReuse(t *testing.T) {
 }
 
 func TestRunDemo_ContainedMode_FailsLoudlyWithoutHook(t *testing.T) {
-	t.Parallel()
-
 	// Ensure no containment hook is wired (default state).
 	playground.SetContainmentHook(nil)
 
@@ -146,8 +144,6 @@ func TestRunDemo_ContainedMode_FailsLoudlyWithoutHook(t *testing.T) {
 }
 
 func TestPreflight_ContainedWithoutHook(t *testing.T) {
-	t.Parallel()
-
 	playground.SetContainmentHook(nil)
 
 	err := playground.Preflight(playground.DemoOpts{
@@ -184,6 +180,10 @@ func TestPreflight_UncontainedSucceeds(t *testing.T) {
 // key from the printed "verify ... --orchestrator-key <hex>" line and confirms
 // that key actually verifies the run dir standalone.
 func TestRunDemo_PrintedVerifyKey_ActuallyVerifies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("orchestrate test builds binaries and boots a real proxy")
+	}
+
 	var buf bytes.Buffer
 	runDir := t.TempDir()
 	rep, err := playground.RunDemo(t.Context(), &buf, playground.DemoOpts{Contained: false, ScenarioID: playground.LiveDemoScenarioID, RunDir: runDir})
@@ -211,6 +211,10 @@ func TestRunDemo_PrintedVerifyKey_ActuallyVerifies(t *testing.T) {
 // `run --run-dir X` on the same dir failed at "rename packet dir: file exists".
 // Re-running on the same dir without a manual reset must succeed.
 func TestRunDemo_RerunSameDir_Idempotent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("orchestrate test builds binaries and boots a real proxy")
+	}
+
 	runDir := t.TempDir()
 	for i := 0; i < 2; i++ {
 		rep, err := playground.RunDemo(t.Context(), io.Discard, playground.DemoOpts{

@@ -193,6 +193,22 @@ func TestWebTool_MissingURL(t *testing.T) {
 	}
 }
 
+func TestWebTool_GetRejectsExtraArgs(t *testing.T) {
+	var buf bytes.Buffer
+	err := runWebTool(t.Context(), &buf, []string{"get", "http://x.example", "--include-canary"}, func(_ string) string { return "" })
+	if err == nil {
+		t.Fatal("expected error for extra GET argument")
+	}
+}
+
+func TestWebTool_PostRejectsUnknownArg(t *testing.T) {
+	var buf bytes.Buffer
+	err := runWebTool(t.Context(), &buf, []string{"post", "http://x.example", "--include-canery"}, func(_ string) string { return "" })
+	if err == nil {
+		t.Fatal("expected error for unknown POST argument")
+	}
+}
+
 func TestWebTool_HTTPClientHasTimeout(t *testing.T) {
 	if webToolHTTPClient().Timeout != 5*time.Second {
 		t.Fatalf("web tool HTTP timeout = %s", webToolHTTPClient().Timeout)

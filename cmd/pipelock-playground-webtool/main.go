@@ -87,8 +87,8 @@ func runWebTool(ctx context.Context, out io.Writer, args []string, lookupEnv fun
 
 // doGet performs an HTTP GET to the URL in args[0].
 func doGet(ctx context.Context, out io.Writer, args []string, lookupEnv func(string) string) error {
-	if len(args) == 0 {
-		return errors.New("get requires a URL")
+	if len(args) != 1 {
+		return errors.New("get requires exactly one URL")
 	}
 	targetURL := args[0]
 
@@ -127,8 +127,11 @@ func doPost(ctx context.Context, out io.Writer, args []string, lookupEnv func(st
 	// Check for --include-canary flag in the remaining args.
 	includeCanary := false
 	for _, a := range args[1:] {
-		if a == "--include-canary" {
+		switch a {
+		case "--include-canary":
 			includeCanary = true
+		default:
+			return fmt.Errorf("unknown post argument %q", a)
 		}
 	}
 

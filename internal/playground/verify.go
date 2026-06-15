@@ -5,12 +5,15 @@ package playground
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
 )
 
@@ -46,6 +49,7 @@ const (
 	packetSubdir          = "packet"
 	launchManifestFile    = "launch-manifest.json"
 	witnessFile           = "witness.json"
+	redWitnessFile        = "red-witness.json"
 	checkManifestSig      = "launch-manifest-signature"
 	checkPinnedPipelock   = "pinned-pipelock-key"
 	checkAuditPacket      = "audit-packet-chain"
@@ -53,6 +57,7 @@ const (
 	checkWitnessSig       = "collector-witness-signature"
 	checkWitnessBinding   = "witness-binds-run"
 	checkRedCaseCalibrate = "red-case-calibration"
+	checkLiveSemantics    = "live-demo-semantics"
 )
 
 // requiredChecks is the full set of check names that must all appear and pass
@@ -67,6 +72,7 @@ var requiredChecks = []string{
 	checkWitnessSig,
 	checkWitnessBinding,
 	checkRedCaseCalibrate,
+	checkLiveSemantics,
 }
 
 // VerifyRun performs the all-or-nothing offline verification of a playground
@@ -256,7 +262,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 		})
 		return finalize(rep), nil
 	}
-	var redReasons []string
+	redWitness, redReasons := verifyRedWitnessArtifact(cleanDir, lm, rc)
 	if !rc.WitnessWentRed {
 		redReasons = append(redReasons, "WitnessWentRed is false")
 	}
@@ -268,6 +274,9 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 	}
 	if rc.RedWitnessDigest == "" {
 		redReasons = append(redReasons, "RedWitnessDigest is empty")
+	}
+	if redWitness.CanaryID != "" && redWitness.CanaryID != lm.CanaryID {
+		redReasons = append(redReasons, fmt.Sprintf("red witness canary_id=%q manifest=%q", redWitness.CanaryID, lm.CanaryID))
 	}
 	if len(redReasons) > 0 {
 		rep.Checks = append(rep.Checks, Check{
@@ -282,8 +291,130 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 		OK:   true,
 	})
 
+	// --- Step 6: Verify the signed artifacts prove the live demo semantics ---
+
+	if err := verifyLiveDemoSemantics(cleanDir, lm, witness); err != nil {
+		rep.Checks = append(rep.Checks, Check{
+			Name:   checkLiveSemantics,
+			OK:     false,
+			Reason: err.Error(),
+		})
+		return finalize(rep), nil
+	}
+	rep.Checks = append(rep.Checks, Check{
+		Name: checkLiveSemantics,
+		OK:   true,
+	})
+
 	rep.ObservedCount = witness.ObservedCount
 	return finalize(rep), nil
+}
+
+func verifyRedWitnessArtifact(runDir string, lm LaunchManifest, rc *RedCaseResult) (Witness, []string) {
+	var reasons []string
+	path := filepath.Join(runDir, redWitnessFile)
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return Witness{}, []string{fmt.Sprintf("cannot read %s: %v", redWitnessFile, err)}
+	}
+
+	var red Witness
+	if err := json.Unmarshal(data, &red); err != nil {
+		return Witness{}, []string{fmt.Sprintf("malformed %s: %v", redWitnessFile, err)}
+	}
+	if !VerifyWitness(lm.CollectorPubKey, red) {
+		reasons = append(reasons, "red witness signature invalid under manifest's collector key")
+	}
+	if red.ObservedCount < 1 {
+		reasons = append(reasons, fmt.Sprintf("red witness ObservedCount=%d (want >= 1)", red.ObservedCount))
+	}
+	if red.RunNonce != calibrationNoncePrefix+lm.CanaryID {
+		reasons = append(reasons, fmt.Sprintf("red witness nonce=%q (want %q)", red.RunNonce, calibrationNoncePrefix+lm.CanaryID))
+	}
+	sum := sha256.Sum256(red.SignedBytes())
+	if got := hex.EncodeToString(sum[:]); got != rc.RedWitnessDigest {
+		reasons = append(reasons, fmt.Sprintf("red witness digest=%q summary=%q", got, rc.RedWitnessDigest))
+	}
+	if red.RedCaseResult != nil {
+		reasons = append(reasons, "red witness must not recursively carry a red-case result")
+	}
+	return red, reasons
+}
+
+func verifyLiveDemoSemantics(runDir string, lm LaunchManifest, witness Witness) error {
+	packetDir := filepath.Join(runDir, packetSubdir)
+	replayManifestPath := filepath.Join(packetDir, "manifest.json")
+	data, err := os.ReadFile(filepath.Clean(replayManifestPath))
+	if err != nil {
+		return fmt.Errorf("cannot read packet manifest: %w", err)
+	}
+	var replayManifest replaycapture.Manifest
+	if err := json.Unmarshal(data, &replayManifest); err != nil {
+		return fmt.Errorf("malformed packet manifest: %w", err)
+	}
+	if replayManifest.ScenarioID != lm.ScenarioID {
+		return fmt.Errorf("packet scenario_id=%q does not match launch manifest scenario_id=%q", replayManifest.ScenarioID, lm.ScenarioID)
+	}
+	if replayManifest.PolicyHash != lm.PolicyHash {
+		return fmt.Errorf("packet policy_hash=%q does not match launch manifest policy_hash=%q", replayManifest.PolicyHash, lm.PolicyHash)
+	}
+
+	receipts, err := receipt.ExtractReceipts(filepath.Join(packetDir, "evidence.jsonl"))
+	if err != nil {
+		return fmt.Errorf("extract packet receipts for semantic check: %w", err)
+	}
+
+	switch lm.ScenarioID {
+	case LiveDemoScenarioID:
+		return verifyBodyExfilLiveDemo(receipts, witness)
+	case "secret-exfil-url-blocked":
+		return verifyURLExfilReplayCompatible(receipts, witness)
+	default:
+		return fmt.Errorf("unsupported playground verify scenario %q", lm.ScenarioID)
+	}
+}
+
+func verifyBodyExfilLiveDemo(receipts []receipt.Receipt, witness Witness) error {
+	if witness.ObservedCount != 0 || witness.TotalCount != 0 {
+		return fmt.Errorf("collector observed=%d total=%d; blocked live exfil must not reach the collector", witness.ObservedCount, witness.TotalCount)
+	}
+
+	hasAllow := false
+	hasBodyBlock := false
+	for _, r := range receipts {
+		ar := r.ActionRecord
+		verdict := receipt.NormalizeVerdict(ar.Verdict)
+		if verdict == liveDemoAllowedVerdict {
+			hasAllow = true
+		}
+		if verdict == liveDemoExpectedVerdict && ar.Layer == liveDemoExpectedBlockLayer {
+			hasBodyBlock = true
+		}
+	}
+	var missing []string
+	if !hasAllow {
+		missing = append(missing, "allow receipt")
+	}
+	if !hasBodyBlock {
+		missing = append(missing, "body_dlp block receipt")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required live-demo receipt semantics: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func verifyURLExfilReplayCompatible(receipts []receipt.Receipt, witness Witness) error {
+	if witness.ObservedCount != 0 {
+		return fmt.Errorf("collector observed=%d; blocked exfil must observe 0", witness.ObservedCount)
+	}
+	for _, r := range receipts {
+		ar := r.ActionRecord
+		if receipt.NormalizeVerdict(ar.Verdict) == liveDemoExpectedVerdict && ar.Layer == "core_dlp" {
+			return nil
+		}
+	}
+	return fmt.Errorf("missing core_dlp block receipt")
 }
 
 // finalize computes the top-level OK. It is affirmative: OK=true requires

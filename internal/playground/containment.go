@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"time"
 )
 
@@ -32,6 +33,8 @@ type ProbeResult struct {
 // enough to keep the self-test fast, long enough that a real connection on
 // loopback or LAN completes.
 const probeTimeout = 2 * time.Second
+
+const defaultContainedAgentUser = "pipelock-agent"
 
 // ProbeDirectEgress attempts a direct (proxy-less) TCP connection to target
 // (host:port). It classifies the result as Open (connected) or Blocked
@@ -140,13 +143,6 @@ func RunContainmentSelfTest(ctx context.Context, targets []string) SelfTestResul
 	}
 }
 
-// selfTestTargets returns the direct-egress suite for use in self-tests.
-// This is the same list as DirectEgressTargets(); factored here so the
-// self-test call site reads clearly.
-func selfTestTargets() []string {
-	return DirectEgressTargets()
-}
-
 // --------------------------------------------------------------------------
 // ErrContainmentSelfTestFailed is returned when the per-run containment
 // self-test detects open routes, meaning containment is not fully enforced.
@@ -189,9 +185,8 @@ func NewRealContainmentHook(pipelockBin string) *RealContainmentHook {
 	}
 }
 
-// Setup prepares kernel containment: verifies privileges, runs
-// `pipelock contain install` (or verifies it was already run), then
-// executes the per-run containment self-test.
+// Setup prepares kernel containment: verifies privileges, verifies
+// `pipelock contain` is installed, and confirms the contained agent user exists.
 //
 // HOST-VERIFICATION-PENDING: this method only succeeds on a privileged
 // host with `pipelock contain` installed. It returns a descriptive error
@@ -213,27 +208,20 @@ func (h *RealContainmentHook) Setup(ctx context.Context, opts DemoOpts) error {
 		return fmt.Errorf("containment setup: pipelock binary %q not found: %w", bin, err)
 	}
 
+	agentUser := h.AgentUser
+	if agentUser == "" {
+		agentUser = defaultContainedAgentUser
+	}
+	if _, err := user.Lookup(agentUser); err != nil {
+		return fmt.Errorf("containment setup: contained agent user %q not found: %w", agentUser, err)
+	}
+
 	// --- Verify containment is installed (pipelock contain verify) ---
 	verifyCmd := exec.CommandContext(ctx, resolvedBin, "contain", "verify") //nolint:gosec // G204: resolvedBin is operator-configured, not untrusted input.
 	verifyOut, verifyErr := verifyCmd.CombinedOutput()
 	if verifyErr != nil {
 		return fmt.Errorf("containment setup: 'pipelock contain verify' failed "+
 			"(containment may not be installed): %w\noutput: %s", verifyErr, verifyOut)
-	}
-
-	// --- Per-run containment self-test ---
-	// Before showing the bypass beat, confirm known-bad routes are actually
-	// blocked. This is the fail-closed gate: if any route is open, the demo
-	// must not proceed in contained mode.
-	result := RunContainmentSelfTest(ctx, selfTestTargets())
-	if !result.AllBlocked {
-		var openTargets []string
-		for _, p := range result.Probes {
-			if p.Open {
-				openTargets = append(openTargets, p.Target)
-			}
-		}
-		return fmt.Errorf("%w: open routes: %v", ErrContainmentSelfTestFailed, openTargets)
 	}
 
 	return nil
@@ -285,20 +273,17 @@ func ContainmentAvailable() bool {
 // --------------------------------------------------------------------------
 // Wiring point for RunDemo: where to call RunContainmentSelfTest.
 //
-// T9's RunDemo must call RunContainmentSelfTest BEFORE step 3 (the bypass
-// beat) when opts.Contained is true. The call site is in orchestrate.go
-// between the containment hook Setup and the step 3 RunSteps call. The
-// RealContainmentHook.Setup already runs the self-test, so the gate is
-// enforced. If a different hook implementation is used (e.g. for testing),
-// the self-test should be called explicitly:
+// T9's RunDemo uses the actual step 3 toy-agent bypass attempt as the contained
+// egress gate. The older RunContainmentSelfTest helper remains useful for
+// diagnostics, but it runs in the caller's process and is not representative of
+// UID-scoped containment when the caller is root. If a future hook can execute
+// probes as the contained user, it should call:
 //
-//   result := RunContainmentSelfTest(ctx, selfTestTargets())
+//   result := RunContainmentSelfTest(ctx, DirectEgressTargets())
 //   if !result.AllBlocked {
 //       return VerifyReport{}, ErrContainmentSelfTestFailed
 //   }
 //
-// This is documented here rather than wired into orchestrate.go's step 3
-// path because T9 owns the RunDemo integration and may choose a different
-// call site. The self-test gate is ALREADY enforced by RealContainmentHook.
-// Setup for the production path.
+// The production path's fail-closed check is the contained toy-agent process
+// running with --expect-bypass-blocked.
 // --------------------------------------------------------------------------

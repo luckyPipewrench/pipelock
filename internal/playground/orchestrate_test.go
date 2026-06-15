@@ -15,7 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
 
-const testScenarioID = "secret-exfil-url-blocked"
+const testScenarioID = playground.LiveDemoScenarioID
 
 func TestRunDemo_Uncontained_VerifiesAndRendersTimeline(t *testing.T) {
 	if testing.Short() {
@@ -164,7 +164,7 @@ func TestPreflight_UncontainedSucceeds(t *testing.T) {
 func TestRunDemo_PrintedVerifyKey_ActuallyVerifies(t *testing.T) {
 	var buf bytes.Buffer
 	runDir := t.TempDir()
-	rep, err := playground.RunDemo(t.Context(), &buf, playground.DemoOpts{Contained: false, ScenarioID: "secret-exfil-url-blocked", RunDir: runDir})
+	rep, err := playground.RunDemo(t.Context(), &buf, playground.DemoOpts{Contained: false, ScenarioID: playground.LiveDemoScenarioID, RunDir: runDir})
 	if err != nil {
 		t.Fatal(err)
 	}

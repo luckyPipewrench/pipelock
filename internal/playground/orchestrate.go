@@ -87,7 +87,7 @@ type DemoOpts struct {
 const defaultDemoNonce = "playground-demo-run"
 
 // defaultScenarioID is the scenario used when DemoOpts.ScenarioID is empty.
-const defaultScenarioID = "secret-exfil-url-blocked"
+const defaultScenarioID = LiveDemoScenarioID
 
 // RunDemo drives a full live demo: preflight, start infrastructure, run the
 // toy agent, collect evidence, render the mediator timeline, assemble the
@@ -127,6 +127,9 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 	binDir, err := os.MkdirTemp("", "playground-demo-bins-*")
 	if err != nil {
 		return VerifyReport{}, fmt.Errorf("bin temp dir: %w", err)
+	}
+	if err := os.Chmod(binDir, 0o755); err != nil { //nolint:gosec // G302: contained agent user needs traverse/execute access to demo binaries.
+		return VerifyReport{}, fmt.Errorf("bin temp dir permissions: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(binDir) }()
 

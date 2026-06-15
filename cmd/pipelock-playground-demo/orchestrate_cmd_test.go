@@ -21,7 +21,7 @@ func TestFallbackCmd_ShowsReplayWatermarkAndHash(t *testing.T) {
 	var runBuf bytes.Buffer
 	rep, err := playground.RunDemo(t.Context(), &runBuf, playground.DemoOpts{
 		Contained:  false,
-		ScenarioID: "secret-exfil-url-blocked",
+		ScenarioID: playground.LiveDemoScenarioID,
 		RunDir:     recordedDir,
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestRunCmd_Uncontained_ExitZero(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"run", "--run-dir", rd, "--scenario", "secret-exfil-url-blocked"})
+	cmd.SetArgs([]string{"run", "--run-dir", rd, "--scenario", playground.LiveDemoScenarioID})
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("run --uncontained must exit 0, got: %v\noutput:\n%s", err, buf.String())

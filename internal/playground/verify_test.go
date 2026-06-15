@@ -9,8 +9,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,7 +107,7 @@ func goodRunDir(t *testing.T) (string, string) {
 		CanaryID:        "aws_canary",
 		PipelockPubKey:  engine.PublicKeyHex(),
 		CollectorPubKey: hex.EncodeToString(colPub),
-		PolicyHash:      "sha256:testpolicyhash",
+		PolicyHash:      captured.PolicyHash,
 		TargetHost:      "exfil.target.test",
 		StartedAt:       time.Now().UTC(),
 	}
@@ -112,7 +115,7 @@ func goodRunDir(t *testing.T) (string, string) {
 
 	// 5. Run red-case calibration.
 	ctx := context.Background()
-	redCase, err := playground.RunRedCaseCalibration(ctx, colPriv, "aws_canary", verifyCanaryValue)
+	redCase, redWitness, err := playground.RunRedCaseCalibrationWithWitness(ctx, colPriv, "aws_canary", verifyCanaryValue)
 	if err != nil {
 		t.Fatalf("RunRedCaseCalibration: %v", err)
 	}
@@ -147,6 +150,13 @@ func goodRunDir(t *testing.T) (string, string) {
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "witness.json"), wBytes, 0o600); err != nil {
 		t.Fatalf("write witness: %v", err)
+	}
+	redBytes, err := json.Marshal(redWitness)
+	if err != nil {
+		t.Fatalf("marshal red witness: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "red-witness.json"), redBytes, 0o600); err != nil {
+		t.Fatalf("write red witness: %v", err)
 	}
 
 	return runDir, hex.EncodeToString(orchPub)
@@ -183,8 +193,8 @@ func TestVerify_AllGood_Passes(t *testing.T) {
 		}
 		t.Fatalf("good run must pass: OK=false")
 	}
-	// Every check must have passed. 7 required checks in the full chain.
-	const expectedChecks = 7
+	// Every check must have passed. 8 required checks in the full chain.
+	const expectedChecks = 8
 	if len(rep.Checks) < expectedChecks {
 		t.Fatalf("expected at least %d checks, got %d", expectedChecks, len(rep.Checks))
 	}
@@ -240,6 +250,36 @@ func TestVerify_StrippedRedCase_FailsClosed(t *testing.T) {
 			t.Fatalf("write witness: %v", err)
 		}
 	})
+}
+
+func TestVerify_MissingRedWitnessArtifact_FailsClosed(t *testing.T) {
+	t.Parallel()
+	mustFailVerify(t, func(dir string) {
+		if err := os.Remove(filepath.Join(dir, "red-witness.json")); err != nil {
+			t.Fatalf("remove red witness: %v", err)
+		}
+	})
+}
+
+func TestVerify_SignedCollectorLeak_FailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, orchPubHex := goodRunDirWithSignedCollectorLeak(t)
+	rep, err := playground.VerifyRun(dir, orchPubHex)
+	if err != nil {
+		return
+	}
+	if rep.OK {
+		t.Fatalf("signed collector leak must fail verification, got OK=true: %+v", rep)
+	}
+	found := false
+	for _, c := range rep.Checks {
+		if c.Name == "live-demo-semantics" && !c.OK {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected failed live-demo-semantics check, got %+v", rep.Checks)
+	}
 }
 
 func TestVerify_EditedManifestNonce_FailsClosed(t *testing.T) {
@@ -396,14 +436,14 @@ func goodRunDirWithPinnedKeyOverride(t *testing.T, pipelockKeyOverride, collecto
 		CanaryID:        "aws_canary",
 		PipelockPubKey:  pipelockKey,
 		CollectorPubKey: collectorKey,
-		PolicyHash:      "sha256:testpolicyhash",
+		PolicyHash:      captured.PolicyHash,
 		TargetHost:      "exfil.target.test",
 		StartedAt:       time.Now().UTC(),
 	}
 	lm = playground.SignLaunchManifest(orchPriv, lm)
 
 	ctx := context.Background()
-	redCase, err := playground.RunRedCaseCalibration(ctx, colPriv, "aws_canary", verifyCanaryValue)
+	redCase, redWitness, err := playground.RunRedCaseCalibrationWithWitness(ctx, colPriv, "aws_canary", verifyCanaryValue)
 	if err != nil {
 		t.Fatalf("RunRedCaseCalibration: %v", err)
 	}
@@ -433,6 +473,125 @@ func goodRunDirWithPinnedKeyOverride(t *testing.T, pipelockKeyOverride, collecto
 	}
 	if err := os.WriteFile(filepath.Join(runDir, "witness.json"), wBytes, 0o600); err != nil {
 		t.Fatalf("write witness: %v", err)
+	}
+	redBytes, err := json.Marshal(redWitness)
+	if err != nil {
+		t.Fatalf("marshal red witness: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "red-witness.json"), redBytes, 0o600); err != nil {
+		t.Fatalf("write red witness: %v", err)
+	}
+
+	return runDir, hex.EncodeToString(orchPub)
+}
+
+func goodRunDirWithSignedCollectorLeak(t *testing.T) (string, string) {
+	t.Helper()
+
+	orchPub, orchPriv := testGenKey(t)
+	colPub, colPriv := testGenKey(t)
+
+	engineDir := t.TempDir()
+	engine, err := replaycapture.NewEngine(engineDir)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	var exfilScenario replaycapture.Scenario
+	for _, s := range replaycapture.DefaultScenarios() {
+		if s.ID == "secret-exfil-url-blocked" {
+			exfilScenario = s
+			break
+		}
+	}
+	if exfilScenario.ID == "" {
+		t.Fatal("secret-exfil-url-blocked scenario not found")
+	}
+
+	captured, err := engine.Capture(exfilScenario)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	runDir := t.TempDir()
+	stageDir := t.TempDir()
+	result, err := playground.AssembleFromEvidence(
+		captured.EvidenceFile,
+		engine.PublicKeyHex(),
+		stageDir,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("AssembleFromEvidence: %v", err)
+	}
+	if err := os.Rename(result.PacketDir, filepath.Join(runDir, "packet")); err != nil {
+		t.Fatalf("rename packet dir: %v", err)
+	}
+
+	nonce := "verify-test-nonce"
+	lm := playground.LaunchManifest{
+		RunNonce:        nonce,
+		ScenarioID:      exfilScenario.ID,
+		CanaryID:        "aws_canary",
+		PipelockPubKey:  engine.PublicKeyHex(),
+		CollectorPubKey: hex.EncodeToString(colPub),
+		PolicyHash:      captured.PolicyHash,
+		TargetHost:      "exfil.target.test",
+		StartedAt:       time.Now().UTC(),
+	}
+	lm = playground.SignLaunchManifest(orchPriv, lm)
+
+	redCase, redWitness, err := playground.RunRedCaseCalibrationWithWitness(t.Context(), colPriv, lm.CanaryID, verifyCanaryValue)
+	if err != nil {
+		t.Fatalf("RunRedCaseCalibrationWithWitness: %v", err)
+	}
+
+	collector := playground.NewCollector(lm.CanaryID, verifyCanaryValue)
+	if err := collector.OpenRun(lm.RunNonce, lm.Hash()); err != nil {
+		t.Fatalf("OpenRun: %v", err)
+	}
+	if err := collector.AttachRedCase(lm.RunNonce, redCase); err != nil {
+		t.Fatalf("AttachRedCase: %v", err)
+	}
+
+	srv := httptest.NewServer(collector.Handler())
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/?run="+lm.RunNonce, strings.NewReader("field="+verifyCanaryValue))
+	if err != nil {
+		t.Fatalf("build leak request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post leak to collector: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	witness, err := collector.SealAndSign(lm.RunNonce, colPriv, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SealAndSign: %v", err)
+	}
+
+	lmBytes, err := json.Marshal(lm)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "launch-manifest.json"), lmBytes, 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	wBytes, err := json.Marshal(witness)
+	if err != nil {
+		t.Fatalf("marshal witness: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "witness.json"), wBytes, 0o600); err != nil {
+		t.Fatalf("write witness: %v", err)
+	}
+	redBytes, err := json.Marshal(redWitness)
+	if err != nil {
+		t.Fatalf("marshal red witness: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "red-witness.json"), redBytes, 0o600); err != nil {
+		t.Fatalf("write red witness: %v", err)
 	}
 
 	return runDir, hex.EncodeToString(orchPub)

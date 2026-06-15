@@ -76,9 +76,9 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 			w := cmd.OutOrStdout()
 			if contained {
 				// Register the real (host-only) containment hook. Its Setup
-				// requires root + an installed `pipelock contain` and enforces
-				// the fail-closed egress self-test; without privileges it fails
-				// loudly rather than silently running uncontained.
+				// requires root + an installed `pipelock contain`; the bypass
+				// beat itself runs as the contained agent user and fails loudly
+				// rather than silently running uncontained.
 				playground.SetContainmentHook(playground.NewRealContainmentHook(""))
 			}
 			rep, err := playground.RunDemo(cmd.Context(), w, playground.DemoOpts{
@@ -99,7 +99,7 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 	}
 	cmd.Flags().BoolVar(&contained, "contained", false, "run in kernel-containment mode (requires Task 7 hook)")
 	cmd.Flags().StringVar(&runDir, "run-dir", "", "directory for run artifacts (required)")
-	cmd.Flags().StringVar(&scenario, "scenario", "secret-exfil-url-blocked", "scenario ID to run")
+	cmd.Flags().StringVar(&scenario, "scenario", playground.LiveDemoScenarioID, "scenario ID to run")
 	cmd.Flags().BoolVar(&color, "color", false, "enable ANSI color output")
 	cmd.Flags().StringVar(&runNonce, "run-nonce", "", "unique run identifier (default: generated)")
 	_ = cmd.MarkFlagRequired("run-dir")

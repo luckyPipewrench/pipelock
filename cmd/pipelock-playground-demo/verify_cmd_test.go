@@ -77,13 +77,13 @@ func cmdTestRunDir(t *testing.T) (string, string) {
 		CanaryID:        "aws_canary",
 		PipelockPubKey:  engine.PublicKeyHex(),
 		CollectorPubKey: hex.EncodeToString(colPub),
-		PolicyHash:      "sha256:test",
+		PolicyHash:      captured.PolicyHash,
 		TargetHost:      "exfil.target.test",
 		StartedAt:       time.Now().UTC(),
 	})
 
 	ctx := context.Background()
-	rc, err := playground.RunRedCaseCalibration(ctx, colPriv, "aws_canary", cmdCanaryValue)
+	rc, redWitness, err := playground.RunRedCaseCalibrationWithWitness(ctx, colPriv, "aws_canary", cmdCanaryValue)
 	if err != nil {
 		t.Fatalf("redcase: %v", err)
 	}
@@ -102,6 +102,7 @@ func cmdTestRunDir(t *testing.T) (string, string) {
 
 	writeJSON(t, filepath.Join(runDir, "launch-manifest.json"), lm)
 	writeJSON(t, filepath.Join(runDir, "witness.json"), w)
+	writeJSON(t, filepath.Join(runDir, "red-witness.json"), redWitness)
 
 	return runDir, hex.EncodeToString(orchPub)
 }

@@ -100,7 +100,7 @@ func TestLiveRun_Uncontained_ProducesVerifiableRun(t *testing.T) {
 
 	rc, err := playground.StartLiveRun(t.Context(), playground.LiveRunOpts{
 		Contained:   false,
-		ScenarioID:  "secret-exfil-url-blocked",
+		ScenarioID:  playground.LiveDemoScenarioID,
 		RunNonce:    "N1",
 		ToyAgentBin: agentBin,
 		WebToolBin:  webtoolBin,

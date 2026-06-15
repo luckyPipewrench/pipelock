@@ -15,8 +15,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -34,6 +37,7 @@ import (
 const (
 	liveRunSafeHost  = "safe.target.test"
 	liveRunExfilHost = "exfil.target.test"
+	liveRunBypassURL = "http://93.184.216.34/" //nolint:gosec // G101: reserved example.com IP, not a credential.
 )
 
 // liveRunPrincipal and liveRunActor use the same values as the replaycapture
@@ -60,6 +64,9 @@ type LiveRunOpts struct {
 	// empty, StartLiveRun builds them into a temp dir.
 	ToyAgentBin string
 	WebToolBin  string
+	// AgentUser is the OS user used for contained-mode toy-agent execution.
+	// Empty means pipelock-agent.
+	AgentUser string
 }
 
 // LiveRun holds the state of a running live playground demo. All resources
@@ -139,16 +146,12 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 
 	// --- Canary ---
 	lr.canaryID = "playground-canary"
-	lr.canaryValue = "SYNTH-CANARY-" + opts.RunNonce
+	lr.canaryValue = liveCanaryValue(opts.RunNonce)
 
 	// --- Look up the scenario ---
-	for _, s := range replaycapture.DefaultScenarios() {
-		if s.ID == opts.ScenarioID {
-			lr.scenario = s
-			break
-		}
-	}
-	if lr.scenario.ID == "" {
+	if s, ok := lookupPlaygroundScenario(opts.ScenarioID); ok {
+		lr.scenario = s
+	} else {
 		err = fmt.Errorf("unknown scenario %q", opts.ScenarioID)
 		return nil, err
 	}
@@ -181,19 +184,6 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF/DNS lookups
 	cfg.ForwardProxy.Enabled = true
-
-	// Canary token for DLP detection. The canary value is set explicitly
-	// (not via env var) so the proxy detects it without depending on the
-	// test process's real environment.
-	cfg.CanaryTokens = config.CanaryTokens{
-		Enabled: true,
-		Tokens: []config.CanaryToken{
-			{
-				Name:  lr.canaryID,
-				Value: lr.canaryValue,
-			},
-		},
-	}
 
 	// DNS host overrides: .test hosts -> loopback
 	cfg.DNS.HostOverrides = map[string][]string{
@@ -309,8 +299,17 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 			"--exfil-url", exfilURL,
 			"--webtool", lr.webtoolBin,
 		}
+		if step == 3 {
+			args = append(args, "--bypass-url", liveRunBypassURL)
+			if lr.opts.Contained {
+				args = append(args, "--expect-bypass-blocked")
+			}
+		}
 
-		cmd := exec.CommandContext(lr.ctx, lr.agentBin, args...) //nolint:gosec // G204: agentBin is an operator-configured path from LiveRunOpts, not untrusted input.
+		cmd, err := lr.agentCommand(args)
+		if err != nil {
+			return fmt.Errorf("step %d command: %w", step, err)
+		}
 		// Minimal, controlled environment: the demo agent holds ONLY the
 		// synthetic canary plus the demo plumbing -- NEVER the operator's real
 		// environment (which could contain real secrets). This enforces the
@@ -328,14 +327,48 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 
 		if err := cmd.Run(); err != nil {
 			// Non-zero exit from the agent is expected when pipelock blocks;
-			// we only fail on exec errors.
+			// except for the contained bypass beat, where non-zero means the
+			// direct-egress check connected or could not run honestly.
 			var exitErr *exec.ExitError
 			if !errors.As(err, &exitErr) {
 				return fmt.Errorf("step %d exec: %w", step, err)
 			}
+			if step == 3 && lr.opts.Contained {
+				return fmt.Errorf("step %d contained bypass check failed: %w", step, err)
+			}
 		}
 	}
 	return nil
+}
+
+func (lr *LiveRun) agentCommand(args []string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(lr.ctx, lr.agentBin, args...) //nolint:gosec // G204: agentBin is an operator-configured path from LiveRunOpts, not untrusted input.
+	if !lr.opts.Contained {
+		return cmd, nil
+	}
+	if os.Geteuid() != 0 {
+		return nil, fmt.Errorf("contained toy-agent execution requires root (euid=%d)", os.Geteuid())
+	}
+	agentUser := lr.opts.AgentUser
+	if agentUser == "" {
+		agentUser = defaultContainedAgentUser
+	}
+	u, err := user.Lookup(agentUser)
+	if err != nil {
+		return nil, fmt.Errorf("lookup contained agent user %q: %w", agentUser, err)
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("parse uid for %q: %w", agentUser, err)
+	}
+	gid, err := strconv.ParseUint(u.Gid, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("parse gid for %q: %w", agentUser, err)
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)},
+	}
+	return cmd, nil
 }
 
 // HasReceipt reports whether the evidence JSONL contains at least one receipt
@@ -384,7 +417,7 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	}
 
 	// --- Red-case calibration ---
-	rcResult, err := RunRedCaseCalibration(lr.ctx, lr.collectorPriv, lr.canaryID, lr.canaryValue)
+	rcResult, redWitness, err := RunRedCaseCalibrationWithWitness(lr.ctx, lr.collectorPriv, lr.canaryID, lr.canaryValue)
 	if err != nil {
 		return VerifyReport{}, fmt.Errorf("red-case calibration: %w", err)
 	}
@@ -446,6 +479,16 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	wPath := filepath.Join(runDir, "witness.json")
 	if err := os.WriteFile(wPath, wBytes, 0o600); err != nil {
 		return VerifyReport{}, fmt.Errorf("write witness: %w", err)
+	}
+
+	// --- Write red-case witness ---
+	redBytes, err := json.Marshal(redWitness)
+	if err != nil {
+		return VerifyReport{}, fmt.Errorf("marshal red witness: %w", err)
+	}
+	redPath := filepath.Join(runDir, redWitnessFile)
+	if err := os.WriteFile(redPath, redBytes, 0o600); err != nil {
+		return VerifyReport{}, fmt.Errorf("write red witness: %w", err)
 	}
 
 	// --- Verify ---

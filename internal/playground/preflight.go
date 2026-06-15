@@ -10,9 +10,17 @@ import (
 	"strings"
 )
 
-// preflightCanaryPrefix is the expected prefix for synthetic playground canary
-// values. Real secrets must not be used; this check catches operator mistakes.
-const preflightCanaryPrefix = "SYNTH-CANARY-"
+const (
+	liveCanaryPrefix              = "AKIA"
+	liveCanaryPublicExampleSuffix = "IOSFODNN7EXAMPLE"
+)
+
+func liveCanaryValue(runNonce string) string {
+	if runNonce == "" {
+		return liveCanaryPrefix + liveCanaryPublicExampleSuffix
+	}
+	return liveCanaryPrefix + liveCanaryPublicExampleSuffix + "-" + runNonce
+}
 
 // Preflight runs cheap stage-hygiene checks before a demo run. It confirms:
 //   - the canary value looks synthetic (not a real-looking secret),
@@ -20,12 +28,12 @@ const preflightCanaryPrefix = "SYNTH-CANARY-"
 //   - if contained mode is requested, the containment hook is wired.
 func Preflight(opts DemoOpts) error {
 	// --- Canary shape check ---
-	// The demo plants a synthetic canary. If someone passes a real-looking
-	// secret (e.g. starts with AKIA, ghp_, sk-), that's a misuse we catch
-	// before the proxy even boots.
-	canary := "SYNTH-CANARY-" + opts.RunNonce
-	if !strings.HasPrefix(canary, preflightCanaryPrefix) {
-		return fmt.Errorf("preflight: canary value does not have the expected synthetic prefix %q", preflightCanaryPrefix)
+	// The demo plants a credential-shaped but inert public example value. It is
+	// deliberately AWS-shaped so normal DLP catches the class; Pipelock is not
+	// configured with the exact value as a canary token.
+	canary := liveCanaryValue(opts.RunNonce)
+	if !strings.HasPrefix(canary, liveCanaryPrefix) || !strings.Contains(canary, liveCanaryPublicExampleSuffix) {
+		return fmt.Errorf("preflight: canary value is not the expected inert public example shape")
 	}
 
 	// --- RunDir writable check ---

@@ -32,6 +32,14 @@ const calibrationNoncePrefix = "redcase-calib-"
 // can confirm a real signed witness existed and was produced by the same
 // collector key as the green witness.
 func RunRedCaseCalibration(ctx context.Context, colPriv ed25519.PrivateKey, canaryID, canaryValue string) (RedCaseResult, error) {
+	res, _, err := runRedCaseCalibrationCore(ctx, colPriv, canaryID, canaryValue, canaryValue)
+	return res, err
+}
+
+// RunRedCaseCalibrationWithWitness is the artifact-producing form used by live
+// runs. It returns both the signed summary embedded in the green witness and the
+// signed red witness artifact the offline verifier can independently check.
+func RunRedCaseCalibrationWithWitness(ctx context.Context, colPriv ed25519.PrivateKey, canaryID, canaryValue string) (RedCaseResult, Witness, error) {
 	return runRedCaseCalibrationCore(ctx, colPriv, canaryID, canaryValue, canaryValue)
 }
 
@@ -41,19 +49,20 @@ func RunRedCaseCalibration(ctx context.Context, colPriv ed25519.PrivateKey, cana
 // match the collector's canary, observed stays 0 and the function returns
 // ErrRedCaseNotDetected.
 func RunRedCaseCalibrationWithValue(ctx context.Context, colPriv ed25519.PrivateKey, canaryID, collectorExpectsValue, actuallySentValue string) (RedCaseResult, error) {
-	return runRedCaseCalibrationCore(ctx, colPriv, canaryID, collectorExpectsValue, actuallySentValue)
+	res, _, err := runRedCaseCalibrationCore(ctx, colPriv, canaryID, collectorExpectsValue, actuallySentValue)
+	return res, err
 }
 
 // runRedCaseCalibrationCore is the shared implementation for both public
 // calibration functions. collectorCanary is what the collector scans for;
 // sentValue is what gets POSTed.
-func runRedCaseCalibrationCore(ctx context.Context, colPriv ed25519.PrivateKey, canaryID, collectorCanary, sentValue string) (RedCaseResult, error) {
+func runRedCaseCalibrationCore(ctx context.Context, colPriv ed25519.PrivateKey, canaryID, collectorCanary, sentValue string) (RedCaseResult, Witness, error) {
 	calibNonce := calibrationNoncePrefix + canaryID
 
 	// Stand up a fresh collector scanning for collectorCanary.
 	c := NewCollector(canaryID, collectorCanary)
 	if err := c.OpenRun(calibNonce, "redcase"); err != nil {
-		return RedCaseResult{}, fmt.Errorf("red-case calibration: open run: %w", err)
+		return RedCaseResult{}, Witness{}, fmt.Errorf("red-case calibration: open run: %w", err)
 	}
 
 	// Spin up an httptest server so we can POST through the real Handler.
@@ -65,11 +74,11 @@ func runRedCaseCalibrationCore(ctx context.Context, colPriv ed25519.PrivateKey, 
 	body := strings.NewReader("payload=" + sentValue)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/?run="+calibNonce, body)
 	if err != nil {
-		return RedCaseResult{}, fmt.Errorf("red-case calibration: build request: %w", err)
+		return RedCaseResult{}, Witness{}, fmt.Errorf("red-case calibration: build request: %w", err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return RedCaseResult{}, fmt.Errorf("red-case calibration: POST canary: %w", err)
+		return RedCaseResult{}, Witness{}, fmt.Errorf("red-case calibration: POST canary: %w", err)
 	}
 	_ = resp.Body.Close()
 
@@ -77,12 +86,12 @@ func runRedCaseCalibrationCore(ctx context.Context, colPriv ed25519.PrivateKey, 
 	const drainWindow = 200 * time.Millisecond
 	witness, err := c.SealAndSign(calibNonce, colPriv, drainWindow)
 	if err != nil {
-		return RedCaseResult{}, fmt.Errorf("red-case calibration: seal: %w", err)
+		return RedCaseResult{}, Witness{}, fmt.Errorf("red-case calibration: seal: %w", err)
 	}
 
 	// Fail closed: the collector MUST have observed the canary.
 	if witness.ObservedCount < 1 {
-		return RedCaseResult{}, ErrRedCaseNotDetected
+		return RedCaseResult{}, Witness{}, ErrRedCaseNotDetected
 	}
 
 	// Build the verifiable result.
@@ -95,5 +104,5 @@ func runRedCaseCalibrationCore(ctx context.Context, colPriv ed25519.PrivateKey, 
 		At:               witness.RunClosedAt,
 		CollectorPubKey:  hex.EncodeToString(colPub),
 		RedWitnessDigest: hex.EncodeToString(digest[:]),
-	}, nil
+	}, witness, nil
 }

@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -61,6 +62,8 @@ type agentConfig struct {
 	// DryRun suppresses all subprocess invocations and network calls; only
 	// narration is emitted.  Used by tests.
 	DryRun bool
+	// ExpectBypassBlocked makes step 3 fail if the direct-egress request connects.
+	ExpectBypassBlocked bool
 }
 
 func main() {
@@ -105,6 +108,7 @@ agent's stdout, argv, or any URL.`,
 	root.Flags().StringVar(&cfg.BypassURL, "bypass-url", "", "target URL for the step-3 direct-egress bypass attempt")
 	root.Flags().StringVar(&cfg.WebToolPath, "webtool", "pipelock-playground-webtool", "path to the pipelock-playground-webtool binary")
 	root.Flags().BoolVar(&cfg.DryRun, "dry-run", false, "narrate only, do not invoke the web tool or make network calls")
+	root.Flags().BoolVar(&cfg.ExpectBypassBlocked, "expect-bypass-blocked", false, "fail if the direct-egress bypass connects")
 
 	return root
 }
@@ -245,6 +249,7 @@ func runStep3(ctx context.Context, n narrator, cfg agentConfig) error {
 	// Explicitly nil Proxy: this transport does NOT consult HTTPS_PROXY / HTTP_PROXY.
 	// In a kernel-contained deployment, the direct TCP connection is blocked by nftables.
 	directClient := &http.Client{
+		Timeout: probeTimeout,
 		Transport: &http.Transport{
 			Proxy: nil, // explicitly bypass proxy env
 		},
@@ -265,8 +270,13 @@ func runStep3(ctx context.Context, n narrator, cfg agentConfig) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	n.say("bypass CONNECTED (not running in contained environment): HTTP %d", resp.StatusCode)
+	if cfg.ExpectBypassBlocked {
+		return fmt.Errorf("bypass connected but contained mode expected a kernel block")
+	}
 	return nil
 }
+
+const probeTimeout = 2 * time.Second
 
 // invokeWebTool shells out to the configured web tool binary with the supplied
 // arguments.  The agent's environment is inherited by the subprocess, so the

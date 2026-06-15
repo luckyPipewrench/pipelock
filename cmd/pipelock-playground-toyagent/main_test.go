@@ -6,6 +6,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -112,6 +114,26 @@ func TestToyAgent_Step3_DryRun(t *testing.T) {
 	if !strings.Contains(strings.ToLower(out), "bypass") &&
 		!strings.Contains(strings.ToLower(out), "direct") {
 		t.Fatalf("step 3 narration should mention bypass attempt; got: %q", out)
+	}
+}
+
+func TestToyAgent_Step3_ExpectedBlockFailsOnConnectedBypass(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	err := runAgent(t.Context(), &buf, agentConfig{
+		Step:                "3",
+		BypassURL:           srv.URL,
+		ExpectBypassBlocked: true,
+	})
+	if err == nil {
+		t.Fatal("expected contained bypass check to fail when direct egress connects")
+	}
+	if strings.Contains(buf.String(), canaryValue()) {
+		t.Fatal("step 3 must not print the canary value")
 	}
 }
 

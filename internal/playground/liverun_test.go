@@ -44,7 +44,7 @@ func buildBinaries(t *testing.T) (agentBin, webtoolBin string) {
 		// untrusted input.
 		buildCtx := context.Background()
 		agentArgs := []string{"build", "-o", agentOut, "./cmd/pipelock-playground-toyagent"}
-		cmd := exec.CommandContext(buildCtx, "go", agentArgs...) //nolint:gosec // G204: test-controlled build output path.
+		cmd := exec.CommandContext(buildCtx, "go", agentArgs...)
 		cmd.Dir = repoRoot(t)
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -54,7 +54,7 @@ func buildBinaries(t *testing.T) (agentBin, webtoolBin string) {
 
 		// Build web tool.
 		wtArgs := []string{"build", "-o", webtoolOut, "./cmd/pipelock-playground-webtool"}
-		cmd = exec.CommandContext(buildCtx, "go", wtArgs...) //nolint:gosec // G204: test-controlled build output path.
+		cmd = exec.CommandContext(buildCtx, "go", wtArgs...)
 		cmd.Dir = repoRoot(t)
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -156,7 +156,7 @@ func assertNoLoopbackInArtifacts(t *testing.T, runDir string) {
 		}
 
 		cleanPath := filepath.Clean(path)
-		data, readErr := os.ReadFile(cleanPath) //nolint:gosec // G122: path is within a test-owned temp dir, no symlink TOCTOU risk.
+		data, readErr := os.ReadFile(cleanPath)
 		if readErr != nil {
 			t.Errorf("cannot read %s: %v", path, readErr)
 			return nil

@@ -39,6 +39,20 @@ linters:
       # by CLAUDE.md do not regress on tests.
       - path: _test\.go$
         linters: [goconst]
+      # Playground demo/evidence tooling (not production firewall code) launches
+      # operator-configured binaries — the toy agent, the web tool, `pipelock
+      # contain`, and `go build` (G204) — provisions a cross-user-traversable temp
+      # dir so the contained agent user can execute those binaries (G302), and
+      # reads artifacts from its own temp/packet dirs (G122). These are by-design
+      # for the demo harness; scoped to the playground paths only.
+      - path: (internal/playground/|cmd/pipelock-playground-)
+        linters: [gosec]
+        text: "(G204|G302|G122)"
+      # liverun.go pins an RFC 5737 reserved IP literal as the bypass target;
+      # gosec G101 false-positives on the IP string — it is not a credential.
+      - path: internal/playground/liverun\.go
+        linters: [gosec]
+        text: "G101"
   settings:
     gosec:
       excludes:

@@ -128,7 +128,7 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 	if err != nil {
 		return VerifyReport{}, fmt.Errorf("bin temp dir: %w", err)
 	}
-	if err := os.Chmod(binDir, 0o755); err != nil { //nolint:gosec // G302: contained agent user needs traverse/execute access to demo binaries.
+	if err := os.Chmod(binDir, 0o755); err != nil {
 		return VerifyReport{}, fmt.Errorf("bin temp dir permissions: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(binDir) }()
@@ -385,7 +385,7 @@ func findRepoRoot() (string, error) {
 func goBuild(ctx context.Context, dir, pkg, outPath string) error {
 	// All arguments are operator-controlled paths from DemoOpts, not untrusted input.
 	args := []string{"build", "-o", outPath, pkg}
-	cmd := exec.CommandContext(ctx, "go", args...) //nolint:gosec // G204: operator-controlled build paths, not untrusted input.
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -407,7 +407,7 @@ func hashDir(dir string) (string, error) {
 			return nil
 		}
 		cleanPath := filepath.Clean(path)
-		data, err := os.ReadFile(cleanPath) //nolint:gosec // G122: path is within an operator-controlled packet dir, no symlink TOCTOU risk.
+		data, err := os.ReadFile(cleanPath)
 		if err != nil {
 			return err
 		}

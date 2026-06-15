@@ -289,7 +289,7 @@ func invokeWebTool(ctx context.Context, n narrator, cfg agentConfig, args ...str
 		return errors.New("webtool path is not configured")
 	}
 
-	cmd := exec.CommandContext(ctx, cfg.WebToolPath, args...) //nolint:gosec // G204: web tool path is an operator-configured flag (demo tooling), not untrusted network input.
+	cmd := exec.CommandContext(ctx, cfg.WebToolPath, args...)
 	cmd.Stdout = cfg.webToolWriter(n)
 	cmd.Stderr = cfg.webToolWriter(n)
 	// Env is inherited from the parent process (includes PLAYGROUND_CANARY_VALUE).

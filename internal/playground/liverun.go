@@ -37,7 +37,11 @@ import (
 const (
 	liveRunSafeHost  = "safe.target.test"
 	liveRunExfilHost = "exfil.target.test"
-	liveRunBypassURL = "http://93.184.216.34/" //nolint:gosec // G101: reserved example.com IP, not a credential.
+	// RFC 5737 TEST-NET-3 reserved address: a synthetic "external" target. In
+	// contained mode the kernel blocks all egress except the proxy, so this is
+	// never actually contacted; it only needs to be a non-proxy, non-loopback
+	// destination the bypass attempt aims at.
+	liveRunBypassURL = "http://203.0.113.1/"
 )
 
 // liveRunPrincipal and liveRunActor use the same values as the replaycapture
@@ -342,7 +346,7 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 }
 
 func (lr *LiveRun) agentCommand(args []string) (*exec.Cmd, error) {
-	cmd := exec.CommandContext(lr.ctx, lr.agentBin, args...) //nolint:gosec // G204: agentBin is an operator-configured path from LiveRunOpts, not untrusted input.
+	cmd := exec.CommandContext(lr.ctx, lr.agentBin, args...)
 	if !lr.opts.Contained {
 		return cmd, nil
 	}

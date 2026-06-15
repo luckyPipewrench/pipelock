@@ -217,7 +217,7 @@ func (h *RealContainmentHook) Setup(ctx context.Context, opts DemoOpts) error {
 	}
 
 	// --- Verify containment is installed (pipelock contain verify) ---
-	verifyCmd := exec.CommandContext(ctx, resolvedBin, "contain", "verify") //nolint:gosec // G204: resolvedBin is operator-configured, not untrusted input.
+	verifyCmd := exec.CommandContext(ctx, resolvedBin, "contain", "verify")
 	verifyOut, verifyErr := verifyCmd.CombinedOutput()
 	if verifyErr != nil {
 		return fmt.Errorf("containment setup: 'pipelock contain verify' failed "+
@@ -263,7 +263,7 @@ func ContainmentAvailable() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "pipelock", "contain", "verify") //nolint:gosec // G204: hardcoded "pipelock" binary name, not untrusted input.
+	cmd := exec.CommandContext(ctx, "pipelock", "contain", "verify")
 	if err := cmd.Run(); err != nil {
 		return false
 	}

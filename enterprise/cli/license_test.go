@@ -1358,3 +1358,107 @@ func TestAppendLedger_Symlink(t *testing.T) {
 		t.Errorf("expected symlink error, got: %v", err)
 	}
 }
+
+// TestLicenseStatusEnvRequireIntermediateMaterialization covers applyLicenseStatusEnv's
+// require-intermediate env branches: a valid bool is materialized, and a
+// malformed value fails CLOSED to require=true with a recorded error (status must
+// report what the runtime actually enforces, not a display-vs-reality divergence).
+func TestLicenseStatusEnvRequireIntermediateMaterialization(t *testing.T) {
+	t.Run("env_true_materializes", func(t *testing.T) {
+		t.Setenv(license.EnvLicenseRequireIntermediate, "true")
+		cfg := config.Defaults()
+		applyLicenseStatusEnv(cfg)
+		if !cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("env=true must materialize require=true")
+		}
+		if cfg.LicenseRequireIntermediateEnvError != "" {
+			t.Fatalf("valid env must not record an error, got %q", cfg.LicenseRequireIntermediateEnvError)
+		}
+	})
+
+	t.Run("env_false_materializes", func(t *testing.T) {
+		t.Setenv(license.EnvLicenseRequireIntermediate, "false")
+		cfg := config.Defaults()
+		applyLicenseStatusEnv(cfg)
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("env=false must materialize require=false")
+		}
+	})
+
+	t.Run("env_blank_is_false", func(t *testing.T) {
+		t.Setenv(license.EnvLicenseRequireIntermediate, "   ")
+		cfg := config.Defaults()
+		applyLicenseStatusEnv(cfg)
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("blank env must resolve require=false")
+		}
+	})
+
+	t.Run("env_malformed_fails_closed_to_true", func(t *testing.T) {
+		t.Setenv(license.EnvLicenseRequireIntermediate, "treu")
+		cfg := config.Defaults()
+		applyLicenseStatusEnv(cfg)
+		if !cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("malformed require env must fail CLOSED to true, never silently to false")
+		}
+		if cfg.LicenseRequireIntermediateEnvError == "" {
+			t.Fatal("malformed require env must record an error for the status report")
+		}
+	})
+
+	t.Run("explicit_config_field_skips_env", func(t *testing.T) {
+		t.Setenv(license.EnvLicenseRequireIntermediate, "true")
+		cfg := config.Defaults()
+		explicitFalse := false
+		cfg.LicenseRequireIntermediate = &explicitFalse // config set it; env must be ignored
+		applyLicenseStatusEnv(cfg)
+		if cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("an explicit config field must take precedence over the env")
+		}
+	})
+}
+
+// TestLicenseStatusEnvCRLMaxAgeMaterialization covers applyLicenseStatusEnv's
+// CRL-freshness-window env branches: a valid positive duration is materialized,
+// and a malformed/non-positive value clamps to DefaultCRLMaxAge (never disabling
+// the freshness check) with a recorded error.
+func TestLicenseStatusEnvCRLMaxAgeMaterialization(t *testing.T) {
+	t.Run("env_valid_duration_materializes", func(t *testing.T) {
+		t.Setenv(config.EnvLicenseCRLMaxAge, "3h")
+		cfg := config.Defaults()
+		cfg.LicenseCRLMaxAge = "" // force the env branch
+		applyLicenseStatusEnv(cfg)
+		if cfg.LicenseCRLMaxAgeResolved != 3*time.Hour {
+			t.Fatalf("env 3h must materialize, got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+		if cfg.LicenseCRLMaxAgeError != "" {
+			t.Fatalf("valid env must not record an error, got %q", cfg.LicenseCRLMaxAgeError)
+		}
+	})
+
+	t.Run("env_malformed_clamps_to_default", func(t *testing.T) {
+		t.Setenv(config.EnvLicenseCRLMaxAge, "not-a-duration")
+		cfg := config.Defaults()
+		cfg.LicenseCRLMaxAge = ""
+		applyLicenseStatusEnv(cfg)
+		if cfg.LicenseCRLMaxAgeResolved != license.DefaultCRLMaxAge {
+			t.Fatalf("malformed env must clamp to DefaultCRLMaxAge, got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+		if cfg.LicenseCRLMaxAgeError == "" {
+			t.Fatal("malformed env must record an error")
+		}
+	})
+
+	t.Run("env_zero_clamps_to_default", func(t *testing.T) {
+		t.Setenv(config.EnvLicenseCRLMaxAge, "0s")
+		cfg := config.Defaults()
+		cfg.LicenseCRLMaxAge = ""
+		applyLicenseStatusEnv(cfg)
+		if cfg.LicenseCRLMaxAgeResolved != license.DefaultCRLMaxAge {
+			t.Fatalf("non-positive env must clamp to DefaultCRLMaxAge (never disable), got %s", cfg.LicenseCRLMaxAgeResolved)
+		}
+		if cfg.LicenseCRLMaxAgeError == "" {
+			t.Fatal("non-positive env must record an error")
+		}
+	})
+}

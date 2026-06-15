@@ -130,4 +130,12 @@ func TestLicenseIntermediateIssue(t *testing.T) {
 			t.Fatal("missing root key must error")
 		}
 	})
+
+	t.Run("non_positive_validity_errors", func(t *testing.T) {
+		err := runIntermediateIssue(t,
+			"--root-key", rootKey, "--serial", "im-zero", "--out", t.TempDir(), "--validity", "0s")
+		if err == nil {
+			t.Fatal("--validity 0 must be rejected")
+		}
+	})
 }

@@ -48,6 +48,10 @@ type runStats struct {
 
 	// log is the metadata-only record of ingest requests for this run.
 	log []requestRecord
+
+	// redCase, when non-nil, is the red-case calibration result attached via
+	// AttachRedCase. SealAndSign includes it in the witness so it is signed.
+	redCase *RedCaseResult
 }
 
 // Collector is a lab HTTP target that detects whether a planted synthetic
@@ -277,6 +281,22 @@ func (c *Collector) OpenRun(nonce, launchManifestHash string) error {
 	return nil
 }
 
+// AttachRedCase stores a red-case calibration result on an open (not yet sealed)
+// run. SealAndSign will include it in the witness so it is covered by the
+// collector's ed25519 signature. The red-case proves the collector build actually
+// detects the canary; without it, a witness that always says "0 observed" could
+// be silently broken.
+func (c *Collector) AttachRedCase(nonce string, r RedCaseResult) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s, ok := c.runs[nonce]
+	if !ok || !s.opened || s.sealed {
+		return ErrRedCaseRunNotOpen
+	}
+	s.redCase = &r
+	return nil
+}
+
 // requestLogDigest returns the sha256 hex digest over the canonical JSON of the
 // run's metadata-only request log. The input is a record (method/path/observed),
 // NEVER the raw canary value, so the digest cannot leak the secret. Caller must
@@ -354,6 +374,7 @@ func (c *Collector) SealAndSign(nonce string, colPriv ed25519.PrivateKey, drain 
 		RunClosedAt:        time.Now(),
 		DrainDeadline:      closeStart.Add(drain),
 		LaunchManifestHash: s.launchManifestHash,
+		RedCaseResult:      s.redCase, // nil when no calibration attached; included in SignedBytes when present
 	}
 	c.mu.Unlock()
 

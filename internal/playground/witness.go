@@ -36,6 +36,16 @@ var (
 	// it to a specific manifest hash, so re-opening would mix observations
 	// across different launch manifests. Use a fresh nonce per run.
 	ErrRunSealed = errors.New("playground: run already sealed, use a fresh nonce")
+
+	// ErrRedCaseRunNotOpen is returned when AttachRedCase targets a nonce
+	// that was never opened or has already been sealed.
+	ErrRedCaseRunNotOpen = errors.New("playground: cannot attach red-case to unopened or sealed run")
+
+	// ErrRedCaseNotDetected is returned by RunRedCaseCalibration when the
+	// collector does not observe the canary during calibration. This is the
+	// fail-closed guarantee: a calibration that does not go red is an error,
+	// never a green-looking result.
+	ErrRedCaseNotDetected = errors.New("playground: red-case calibration did not detect the canary (observed=0)")
 )
 
 // canonicalLaunchManifestBytes marshals a manifest deterministically with the
@@ -79,14 +89,23 @@ func (lm LaunchManifest) Hash() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// RedCaseResult is a forward-declared stub for Task 3's red-case proof. The
-// collector going "red" (observing the canary) under a deliberately-misconfigured
-// or attacker control run proves the witness is not a rubber stamp. Task 3 fills
-// in the production use; Task 2 only carries it through the Witness.
+// RedCaseResult is the verifiable proof that a red-case calibration was
+// performed: the collector was run WITHOUT Pipelock (canary posted directly),
+// and it DID observe the canary. This proves the collector build is not a
+// rubber stamp that always reports "0 observed." The result is embedded and
+// SIGNED into the real (green) witness, so an offline verifier can require
+// proof that this specific collector binary actually detects the canary.
+//
+// Fields are chosen so the offline verifier (Task 4) can confirm:
+//   - WitnessWentRed + ObservedCount: the calibration run detected the canary.
+//   - CollectorPubKey: the same collector key signed both the red and green witnesses.
+//   - RedWitnessDigest: a real signed RED witness existed (sha256 of its SignedBytes).
 type RedCaseResult struct {
-	WitnessWentRed bool      `json:"witness_went_red"`
-	ObservedCount  int       `json:"observed_count"`
-	At             time.Time `json:"at"`
+	WitnessWentRed   bool      `json:"witness_went_red"`
+	ObservedCount    int       `json:"observed_count"`
+	At               time.Time `json:"at"`
+	CollectorPubKey  string    `json:"collector_pubkey"`   // hex; MUST equal the green witness's collector key
+	RedWitnessDigest string    `json:"red_witness_digest"` // sha256 hex of the signed RED witness's SignedBytes()
 }
 
 // Witness is the collector's signed, drain-sealed attestation for one run. It is

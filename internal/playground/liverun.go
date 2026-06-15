@@ -442,6 +442,12 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	// outDir. VerifyRun expects the packet at <runDir>/packet/, so we pass
 	// runDir as outDir and then rename the result.
 	sc := lr.scenario
+	// Make re-runs on the same run dir idempotent: clear any stale assembly
+	// output (a prior packet/, or a partially-written scenario subdir from an
+	// aborted run) so the operator can re-run `run --run-dir X` without a
+	// manual reset. The manifest/witness JSON files are overwritten in place.
+	_ = os.RemoveAll(filepath.Join(runDir, "packet"))
+	_ = os.RemoveAll(filepath.Join(runDir, sc.ID))
 	asmResult, asmErr := AssembleFromEvidenceWithScenario(
 		evidenceFile,
 		hex.EncodeToString(lr.pipelockPub),

@@ -184,3 +184,21 @@ func TestRunDemo_PrintedVerifyKey_ActuallyVerifies(t *testing.T) {
 		t.Fatalf("the PRINTED verify key must verify the run standalone, but it failed: %+v", got.Checks)
 	}
 }
+
+// TestRunDemo_RerunSameDir_Idempotent guards the operator-hit bug where a second
+// `run --run-dir X` on the same dir failed at "rename packet dir: file exists".
+// Re-running on the same dir without a manual reset must succeed.
+func TestRunDemo_RerunSameDir_Idempotent(t *testing.T) {
+	runDir := t.TempDir()
+	for i := 0; i < 2; i++ {
+		rep, err := playground.RunDemo(t.Context(), io.Discard, playground.DemoOpts{
+			Contained: false, ScenarioID: "secret-exfil-body-blocked", RunDir: runDir,
+		})
+		if err != nil {
+			t.Fatalf("run %d on reused dir must succeed: %v", i, err)
+		}
+		if !rep.OK {
+			t.Fatalf("run %d must verify: %+v", i, rep)
+		}
+	}
+}

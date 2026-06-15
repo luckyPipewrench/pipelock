@@ -173,9 +173,14 @@ revocable, a break-glass paid mint **requires `--export <path>`**: it writes a
 **signed issuance export** that the license service imports into its durable
 signed import table (keyed by license ID and the **full** token hash, with
 replay and conflict rejection). The local issuance ledger stores only a
-truncated, unsigned hash and **cannot** be the import source. Import the export
-into the service after the emergency so the break-glass token can be revoked like
-any other paid license.
+truncated, unsigned hash and **cannot** be the import source.
+
+Import the export into the service after the emergency so the break-glass token
+can be revoked like any other paid license — the service operator runs
+`license-service import-issuance --export <file> --issuer-pubkey <key>` and can
+review the import table with `license-service list-imported-issuances`. See the
+full issue → export → import → inspect flow in the
+[intermediate-key migration guide](../guides/license-intermediate-migration.md#break-glass-tokens-issue-offline-then-import-so-they-stay-revocable).
 
 ## `pipelock license intermediate issue`
 

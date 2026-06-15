@@ -176,6 +176,50 @@ generation (it never lowers it). The next published CRL is then strictly higher,
 so a consumer that accepted the old generation accepts the new one and the
 restore cannot un-revoke anything.
 
+## Break-glass tokens: issue offline, then import so they stay revocable
+
+A paid license is a **revocable** credential: the license service records every
+token it mints so it can later revoke a still-valid one via the signed CRL. The
+standalone `pipelock license issue` command refuses to mint a paid/revocable
+token (any non-free feature, paid tier, subscription, or perpetual paid token)
+unless `--break-glass` is set — otherwise an offline mint would be invisible to
+revocation. See [`pipelock license issue`](../cli/license.md#pipelock-license-issue).
+
+The full operator flow — **issue → export → import → inspect**:
+
+```bash
+# 1. ISSUE the break-glass token offline (e.g. from the offline root on the USB),
+#    emitting a SIGNED export alongside the token:
+pipelock license issue --key <offline-signing-key> \
+  --email customer@example.com --features fleet --tier enterprise \
+  --expires 2028-01-01 --break-glass --export break-glass-export.json
+
+# 2. IMPORT the export into the license service so the token becomes revocable.
+#    --issuer-pubkey is the PUBLIC half of the key that signed the token+export
+#    (hex string or a path to a .pub file). The service verifies the export's
+#    signature and the bound full token hash, then records it in the durable
+#    signed import table:
+license-service import-issuance --export break-glass-export.json \
+  --issuer-pubkey <signer-public-key-hex-or-path>
+
+# 3. INSPECT the import table to confirm the token is now in the revocation surface:
+license-service list-imported-issuances
+```
+
+Import outcomes (also written to the audit ledger):
+
+- **imported** — a new record was written; the token is now revocable.
+- **replay** — the identical export was already imported (idempotent no-op,
+  exit 0). Re-running the same import is safe.
+- **conflict** — the import collided with a *different* existing record on a
+  unique key (same license ID with a different token, a reused token hash, or a
+  reused import ID). This is **rejected** (non-zero exit); the existing record is
+  never overwritten.
+
+A malformed, tampered, or wrong-key export **fails closed** — it never enters the
+import table. Revoke an imported break-glass token the same way as any other
+license (it appears in the published CRL once revoked).
+
 ## Rollback
 
 Before step 6, rollback is just "set `license_require_intermediate` back to off /

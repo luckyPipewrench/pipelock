@@ -567,6 +567,66 @@ func (h *WebhookHandler) RevokeIntermediate(ctx context.Context, serial, reason 
 	return nil
 }
 
+// ImportSignedIssuance verifies a SIGNED issuance export and durably records the
+// externally-minted license token in the import table so it becomes revocable.
+// This is the consumer of the break-glass / standalone-CLI export: a paid token
+// minted outside the service is invisible to revocation until it is imported.
+//
+// issuerPub is the public half of the key that signed BOTH the token and the
+// export (the offline root, an intermediate, or the online signer, depending on
+// how the break-glass token was minted). The operator supplies it. Verification
+// fails closed on a bad signature, an issuer-key-id mismatch, or a malformed
+// export — a forged or tampered export cannot enter the revocation surface.
+//
+// Outcomes: ImportOutcomeImported (new record written), ImportOutcomeReplay (the
+// identical export was already imported — idempotent, returns a nil error), and
+// ImportOutcomeConflict (collides with a DIFFERENT record on a unique key —
+// returns ErrIssuanceConflict). Every attempt is recorded in the audit ledger.
+func (h *WebhookHandler) ImportSignedIssuance(
+	ctx context.Context,
+	signedExport []byte,
+	issuerPub ed25519.PublicKey,
+	importID string,
+	now time.Time,
+) (license.IssuanceExportPayload, ImportOutcome, error) {
+	if importID == "" {
+		return license.IssuanceExportPayload{}, "", errors.New("import id is required")
+	}
+	verified, err := license.ParseAndVerifyIssuanceExport(signedExport, issuerPub)
+	if err != nil {
+		// Fail closed: a malformed / forged / wrong-key export never imports.
+		return license.IssuanceExportPayload{}, "", fmt.Errorf("verify issuance export: %w", err)
+	}
+	rec := importedIssuanceFromExport(verified.Payload, importID)
+	rec.ImportedAt = now.UTC()
+
+	switch err := h.db.ImportIssuance(ctx, rec); {
+	case err == nil:
+		_ = h.ledger.LogIssuanceImported(rec.LicenseID, importID, string(ImportOutcomeImported))
+		return verified.Payload, ImportOutcomeImported, nil
+	case errors.Is(err, ErrIssuanceReplay):
+		_ = h.ledger.LogIssuanceImported(rec.LicenseID, importID, string(ImportOutcomeReplay))
+		return verified.Payload, ImportOutcomeReplay, nil
+	case errors.Is(err, ErrIssuanceConflict):
+		_ = h.ledger.LogIssuanceImported(rec.LicenseID, importID, string(ImportOutcomeConflict))
+		return verified.Payload, ImportOutcomeConflict, err
+	default:
+		return verified.Payload, "", fmt.Errorf("import issuance: %w", err)
+	}
+}
+
+// ListImportedIssuances returns every imported (externally-minted) issuance for
+// operator inspection.
+func (h *WebhookHandler) ListImportedIssuances(ctx context.Context) ([]ImportedIssuance, error) {
+	return h.db.ListImportedIssuances(ctx)
+}
+
+// GetImportedIssuance returns a single imported issuance by license id, or
+// (nil, nil) when not found.
+func (h *WebhookHandler) GetImportedIssuance(ctx context.Context, licenseID string) (*ImportedIssuance, error) {
+	return h.db.GetImportedIssuance(ctx, licenseID)
+}
+
 // HandleOrderEvent processes a Polar order.created webhook event for
 // one-time purchases (e.g., trial tier). Subscription-related billing
 // reasons are ignored because subscription.* events handle those.

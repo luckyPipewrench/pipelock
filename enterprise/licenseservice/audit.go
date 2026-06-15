@@ -29,8 +29,13 @@ const (
 	// AuditIntermediateRevoked records an intermediate signing-cert serial being
 	// revoked and added to the published CRL (rotation or compromise).
 	AuditIntermediateRevoked = "intermediate_revoked"
-	AuditFoundingCapHit      = "founding_cap_hit"
-	AuditError               = "error"
+	// AuditIssuanceImported records an externally-minted (break-glass /
+	// standalone-CLI) license token being imported into the durable signed
+	// import table so it becomes revocable. Detail carries the outcome
+	// (imported / replay / conflict) and the import id.
+	AuditIssuanceImported = "issuance_imported"
+	AuditFoundingCapHit   = "founding_cap_hit"
+	AuditError            = "error"
 
 	// Enterprise Eval fulfillment events.
 	AuditEvalMinted        = "eval_minted"
@@ -188,6 +193,22 @@ func (a *AuditLedger) LogIntermediateRevoked(serial, reason string) error {
 	return a.Log(AuditEntry{
 		Event:  AuditIntermediateRevoked,
 		Detail: detail,
+	})
+}
+
+// LogIssuanceImported records an externally-minted license token being imported
+// into the signed import table. outcome is the human-readable result
+// (imported / replay / conflict). A conflict is a rejection (fail closed) and
+// still gets logged so the operator has a durable record of the attempt.
+func (a *AuditLedger) LogIssuanceImported(licenseID, importID, outcome string) error {
+	detail := outcome
+	if importID != "" {
+		detail = outcome + " (import " + importID + ")"
+	}
+	return a.Log(AuditEntry{
+		Event:     AuditIssuanceImported,
+		LicenseID: licenseID,
+		Detail:    detail,
 	})
 }
 

@@ -6,10 +6,15 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/licenseservice"
@@ -21,8 +26,10 @@ import (
 // mutate revocation / high-water state without bringing up the HTTP server, so
 // an operator can run them as one-shot jobs against the live database.
 var adminSubcommands = map[string]bool{
-	"revoke-intermediate":    true,
-	"recover-crl-generation": true,
+	"revoke-intermediate":     true,
+	"recover-crl-generation":  true,
+	"import-issuance":         true,
+	"list-imported-issuances": true,
 }
 
 // dispatchAdmin runs an admin subcommand if os.Args names one, returning
@@ -39,6 +46,10 @@ func dispatchAdmin(log zerolog.Logger) (bool, error) {
 		return true, runRevokeIntermediate(log, args)
 	case "recover-crl-generation":
 		return true, runRecoverCRLGeneration(log, args)
+	case "import-issuance":
+		return true, runImportIssuance(log, args)
+	case "list-imported-issuances":
+		return true, runListImportedIssuances(log, args)
 	default:
 		return true, fmt.Errorf("unknown admin subcommand %q", sub)
 	}
@@ -131,4 +142,150 @@ func runRecoverCRLGeneration(log zerolog.Logger, args []string) error {
 	}
 	log.Info().Uint64("generation", recovered).Msg("CRL generation high-water recovered; next CRL will be strictly higher")
 	return nil
+}
+
+// runImportIssuance imports a SIGNED issuance export (produced by
+// `pipelock license issue --break-glass --export`) into the durable signed
+// import table, making an externally-minted paid token revocable. It verifies
+// the export's Ed25519 signature against the operator-supplied issuer public key
+// (the key that minted the break-glass token) and fails closed on a bad
+// signature, key-id mismatch, or malformed export. Replaying the identical
+// export is an idempotent no-op; a conflicting import (a unique-key collision
+// with a different record) is rejected.
+func runImportIssuance(log zerolog.Logger, args []string) error {
+	fs := flag.NewFlagSet("import-issuance", flag.ContinueOnError)
+	exportPath := fs.String("export", "", "path to the signed issuance export file (required)")
+	issuerKey := fs.String("issuer-pubkey", "", "issuer public key that signed the export: hex string or path to a .pub file (required)")
+	importID := fs.String("import-id", "", "unique import id (default: a random imp_ id)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *exportPath == "" {
+		return errors.New("--export is required")
+	}
+	if *issuerKey == "" {
+		return errors.New("--issuer-pubkey is required")
+	}
+	issuerPub, err := loadIssuerPublicKey(*issuerKey)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(filepath.Clean(*exportPath)) // #nosec G304 -- operator-supplied admin path
+	if err != nil {
+		return fmt.Errorf("read export %s: %w", *exportPath, err)
+	}
+	id := *importID
+	if id == "" {
+		id, err = randomImportID()
+		if err != nil {
+			return err
+		}
+	}
+
+	ctx := context.Background()
+	handler, cleanup, err := adminHandler(ctx, log)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	payload, outcome, importErr := handler.ImportSignedIssuance(ctx, data, issuerPub, id, time.Now())
+	switch outcome {
+	case licenseservice.ImportOutcomeImported:
+		log.Info().
+			Str("license_id", payload.LicenseID).
+			Str("import_id", id).
+			Msg("issuance imported; token is now revocable via the CRL")
+		return nil
+	case licenseservice.ImportOutcomeReplay:
+		log.Info().
+			Str("license_id", payload.LicenseID).
+			Str("import_id", id).
+			Msg("issuance already imported (idempotent no-op)")
+		return nil
+	case licenseservice.ImportOutcomeConflict:
+		// Rejected, fail closed. Surface as an error so the operator sees a
+		// non-zero exit and does not assume the token was recorded.
+		return fmt.Errorf("import rejected: %w", importErr)
+	default:
+		return fmt.Errorf("import issuance: %w", importErr)
+	}
+}
+
+// runListImportedIssuances prints every externally-minted issuance recorded in
+// the import table so an operator can SEE the revocation surface, not just the
+// Go methods. Output is one line per record with the load-bearing fields.
+func runListImportedIssuances(log zerolog.Logger, args []string) error {
+	fs := flag.NewFlagSet("list-imported-issuances", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	handler, cleanup, err := adminHandler(ctx, log)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	records, err := handler.ListImportedIssuances(ctx)
+	if err != nil {
+		return fmt.Errorf("list imported issuances: %w", err)
+	}
+	if len(records) == 0 {
+		_, _ = fmt.Fprintln(os.Stdout, "no imported issuances")
+		return nil
+	}
+	for _, r := range records {
+		expires := "never"
+		if r.ExpiresAt != nil {
+			expires = r.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		_, _ = fmt.Fprintf(os.Stdout,
+			"license_id=%s import_id=%s issuer_key_id=%s sub=%s issued=%s expires=%s token_sha256=%s imported=%s\n",
+			r.LicenseID, r.ImportID, r.IssuerKeyID, r.SubscriptionID,
+			r.IssuedAt.UTC().Format(time.RFC3339), expires, r.TokenSHA256,
+			r.ImportedAt.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
+// loadIssuerPublicKey resolves the issuer public key from either a hex string
+// (64 hex chars = 32-byte Ed25519 key) or a path to a .pub file containing the
+// hex-encoded key. Fails closed on any malformed input.
+func loadIssuerPublicKey(spec string) (ed25519.PublicKey, error) {
+	raw := strings.TrimSpace(spec)
+	// Treat it as a hex key first; if that fails and it looks like a path, read
+	// the file and try again.
+	if key, err := decodeEd25519PublicHex(raw); err == nil {
+		return key, nil
+	}
+	data, readErr := os.ReadFile(filepath.Clean(raw)) // #nosec G304 -- operator-supplied admin path
+	if readErr != nil {
+		return nil, fmt.Errorf("issuer-pubkey is neither a valid hex key nor a readable file: %w", readErr)
+	}
+	key, err := decodeEd25519PublicHex(strings.TrimSpace(string(data)))
+	if err != nil {
+		return nil, fmt.Errorf("issuer-pubkey file %s does not contain a valid hex Ed25519 public key: %w", raw, err)
+	}
+	return key, nil
+}
+
+func decodeEd25519PublicHex(s string) (ed25519.PublicKey, error) {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("expected %d-byte Ed25519 public key, got %d bytes", ed25519.PublicKeySize, len(b))
+	}
+	return ed25519.PublicKey(b), nil
+}
+
+// randomImportID generates a unique import id (imp_ + 12 hex chars).
+func randomImportID() (string, error) {
+	idBytes := make([]byte, 6)
+	if _, err := rand.Read(idBytes); err != nil {
+		return "", fmt.Errorf("generate import id: %w", err)
+	}
+	return "imp_" + hex.EncodeToString(idBytes), nil
 }

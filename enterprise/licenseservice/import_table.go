@@ -28,6 +28,21 @@ type ImportedIssuance struct {
 	ImportedAt     time.Time
 }
 
+// ImportOutcome is the result of an import attempt, for operator-facing
+// reporting and audit logging.
+type ImportOutcome string
+
+const (
+	// ImportOutcomeImported means a new record was durably written.
+	ImportOutcomeImported ImportOutcome = "imported"
+	// ImportOutcomeReplay means the identical issuance was already imported
+	// (idempotent no-op, not an error).
+	ImportOutcomeReplay ImportOutcome = "replay"
+	// ImportOutcomeConflict means the import collided with a different existing
+	// record on a unique key (rejected, fail closed).
+	ImportOutcomeConflict ImportOutcome = "conflict"
+)
+
 var (
 	// ErrIssuanceReplay means the exact same issuance (same license id, token
 	// hash, and import id) was already imported. Re-importing is a no-op, not a

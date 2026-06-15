@@ -24,15 +24,70 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// ResponseScanOptions carries per-server suppression context for stdio MCP
+// response scanning. It mirrors GenericSSEScanOptions (the SSE transport) so
+// the stdio transport reaches suppression parity: an operator can suppress a
+// named response-scan pattern for a specific MCP server's responses without
+// weakening scanning for any other server. The zero value preserves prior
+// (no-suppression) behavior, so existing callers are unaffected.
+type ResponseScanOptions struct {
+	// Target identifies the MCP server's response surface for suppress-rule
+	// matching, e.g. "mcp://code-assistant/response". Empty disables target-scoped
+	// suppression (an empty target matches no path-scoped suppress entry).
+	Target string
+	// Suppress holds the operator's suppress rules (config Suppress list).
+	Suppress []config.SuppressEntry
+}
+
+// filterSuppressedResponse drops matches the operator has suppressed for
+// opts.Target, mirroring the SSE (internal/mcp/sse_generic.go) and HTTP
+// (internal/proxy/proxy.go) response-suppression contract via
+// config.IsSuppressed. Suppression is a deliberate, operator-scoped allowlist:
+// it never alters what the scanner inspects, only whether an already-detected
+// match is enforced for THIS destination. It returns the kept matches and
+// whether the verdict is now clean (no unsuppressed match remains).
+//
+// Known limitation (shared by ALL three transports, not specific to stdio):
+// suppression runs on the matches sc.ScanResponse returned, and that scanner
+// returns on the first pass/layer that matches. Suppressing a pattern the
+// operator has allowlisted for this destination therefore cannot, by itself,
+// surface a different pattern that a later pass would have caught on the same
+// content. This is the accepted tradeoff of any post-scan allowlist; the
+// exception is deliberate, destination-scoped, and operator-chosen.
+func filterSuppressedResponse(matches []scanner.ResponseMatch, opts ResponseScanOptions) (kept []scanner.ResponseMatch, clean bool) {
+	if len(matches) == 0 {
+		return matches, true
+	}
+	if len(opts.Suppress) == 0 {
+		return matches, false
+	}
+	kept = make([]scanner.ResponseMatch, 0, len(matches))
+	for _, m := range matches {
+		if !config.IsSuppressed(m.PatternName, opts.Target, opts.Suppress) {
+			kept = append(kept, m)
+		}
+	}
+	return kept, len(kept) == 0
+}
+
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
 // content for prompt injection. Parse errors produce a verdict with Clean=false
 // and the Error field set. Both result content and error messages are scanned.
 // Server notifications (method+params, no id) are also scanned.
 // Batch responses (JSON arrays) are detected and each element scanned individually.
 func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
+	return ScanResponseOpts(line, sc, ResponseScanOptions{})
+}
+
+// ScanResponseOpts is ScanResponse with per-server suppression context. The
+// stdio MCP forwarding path passes the server's Target and the operator's
+// Suppress rules so a response-scan false positive can be remediated for one
+// server without a global config change. ScanResponse delegates here with an
+// empty options value (no suppression).
+func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
 	if len(line) > 0 && line[0] == '[' {
-		return scanBatch(line, sc)
+		return scanBatch(line, sc, opts)
 	}
 
 	var rpc jsonrpc.RPCResponse
@@ -97,12 +152,51 @@ func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
+	matches, clean := filterSuppressedResponse(result.Matches, opts)
+	if clean {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
+	}
+
 	return jsonrpc.ScanVerdict{
 		ID:      rpc.ID,
 		Clean:   false,
 		Action:  sc.ResponseAction(),
-		Matches: result.Matches,
+		Matches: matches,
 	}
+}
+
+// ScanResponseDispatch scans an MCP response the way ForwardScanned does, so a
+// diagnostic caller (pipelock explain mcp-response) reports the same verdict the
+// runtime proxy would. When tool scanning is enabled and the response is a
+// tools/list payload, the tool-description fields are scanned by the dedicated
+// tool scanner (not the injection scanner), so only the non-tool sibling fields
+// go through response scanning here; otherwise the full response is scanned.
+// Per-server suppression applies in both paths. ForwardScanned implements the
+// equivalent dispatch inline (it computes isToolsList via tools.ScanTools, which
+// also drives provenance/baseline side effects this read-only path omits).
+func ScanResponseDispatch(line []byte, sc *scanner.Scanner, toolScanning bool, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+	if toolScanning && isToolsListResponse(line) {
+		return scanToolsListNonToolFields(line, sc, opts)
+	}
+	return ScanResponseOpts(line, sc, opts)
+}
+
+// isToolsListResponse reports whether line is a JSON-RPC response whose result
+// carries a non-empty "tools" array (the tools/list shape). It mirrors the
+// shape detection in internal/mcp/tools (isToolsListResult); kept here as a
+// lightweight check so the explain path need not run the full tool scanner.
+func isToolsListResponse(line []byte) bool {
+	var rpc jsonrpc.RPCResponse
+	if json.Unmarshal(line, &rpc) != nil || len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
+		return false
+	}
+	var probe struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if json.Unmarshal(rpc.Result, &probe) != nil {
+		return false
+	}
+	return len(probe.Tools) > 0
 }
 
 // scanToolsListNonToolFields scans a tools/list response for injection in
@@ -111,7 +205,7 @@ func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 // subsystem (internal/mcp/tools), so we skip result.tools to avoid FPs from
 // instructional text. However, a malicious server can inject into sibling fields
 // like result.note or result.cursor, so those must be scanned.
-func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
+func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
 	var rpc jsonrpc.RPCResponse
 	if err := json.Unmarshal(line, &rpc); err != nil {
 		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
@@ -189,17 +283,24 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner) jsonrpc.ScanVe
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
+	matches, clean := filterSuppressedResponse(result.Matches, opts)
+	if clean {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
+	}
+
 	return jsonrpc.ScanVerdict{
 		ID:      rpc.ID,
 		Clean:   false,
 		Action:  sc.ResponseAction(),
-		Matches: result.Matches,
+		Matches: matches,
 	}
 }
 
 // scanBatch scans a JSON-RPC 2.0 batch response (array of responses).
-// Returns a combined verdict aggregating matches from all elements.
-func scanBatch(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
+// Returns a combined verdict aggregating matches from all elements. The
+// suppression options apply to every element so a per-server suppress rule
+// covers batched responses too.
+func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
 	var batch []json.RawMessage
 	if err := json.Unmarshal(line, &batch); err != nil {
 		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON batch: %v", err)}
@@ -215,7 +316,7 @@ func scanBatch(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 	var hasError bool
 
 	for _, elem := range batch {
-		v := ScanResponse(elem, sc)
+		v := ScanResponseOpts(elem, sc, opts)
 		if firstID == nil && len(v.ID) > 0 {
 			firstID = v.ID
 		}

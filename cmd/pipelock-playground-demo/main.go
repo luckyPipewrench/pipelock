@@ -57,23 +57,67 @@ Pipelock Playground.`,
 }
 
 func newRunCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		contained bool
+		runDir    string
+		scenario  string
+		color     bool
+		runNonce  string
+	)
+	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Drive the demo agent and produce evidence",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented")
+		Long: `Runs the playground demo: boots a real Pipelock proxy, drives a
+deterministic toy agent through it, captures signed decision receipts, assembles
+an offline-verifiable Audit Packet, and renders the mediator timeline.
+
+Exit 0 = run verified successfully. Non-zero = verification failed or run error.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			w := cmd.OutOrStdout()
+			rep, err := playground.RunDemo(cmd.Context(), w, playground.DemoOpts{
+				Contained:  contained,
+				ScenarioID: scenario,
+				RunNonce:   runNonce,
+				RunDir:     runDir,
+				Color:      color,
+			})
+			if err != nil {
+				return err
+			}
+			if !rep.OK {
+				return fmt.Errorf("demo run verification failed")
+			}
+			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&contained, "contained", false, "run in kernel-containment mode (requires Task 7 hook)")
+	cmd.Flags().StringVar(&runDir, "run-dir", "", "directory for run artifacts (required)")
+	cmd.Flags().StringVar(&scenario, "scenario", "secret-exfil-url-blocked", "scenario ID to run")
+	cmd.Flags().BoolVar(&color, "color", false, "enable ANSI color output")
+	cmd.Flags().StringVar(&runNonce, "run-nonce", "", "unique run identifier (default: generated)")
+	_ = cmd.MarkFlagRequired("run-dir")
+	return cmd
 }
 
 func newResetCmd() *cobra.Command {
-	return &cobra.Command{
+	var runDir string
+	cmd := &cobra.Command{
 		Use:   "reset",
 		Short: "Clear state from a previous demo run",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented")
+		Long: `Removes all artifacts from a previous demo run directory, making it safe
+to reuse for a new run. Idempotent: calling reset on an empty or nonexistent
+directory succeeds.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := playground.Reset(runDir); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Reset complete: %s\n", runDir)
+			return nil
 		},
 	}
+	cmd.Flags().StringVar(&runDir, "run-dir", "", "directory to reset (required)")
+	_ = cmd.MarkFlagRequired("run-dir")
+	return cmd
 }
 
 func newVerifyCmd() *cobra.Command {
@@ -118,11 +162,29 @@ Exit code 0 = every check passed. Non-zero = at least one check failed.`,
 }
 
 func newFallbackCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "fallback",
-		Short: "Run the demo in fallback (offline/replay) mode",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("not implemented")
+	var orchKey string
+	cmd := &cobra.Command{
+		Use:   "fallback <rundir>",
+		Short: "Replay a pre-recorded demo run with REPLAY watermark",
+		Long: `Replays a pre-recorded run directory with a visible REPLAY watermark,
+the packet hash, and the verifier command. Re-runs offline verification to
+confirm the recorded evidence is still valid.
+
+Exit 0 = recorded run verifies. Non-zero = verification failed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := cmd.OutOrStdout()
+			rep, err := playground.Fallback(w, args[0], orchKey)
+			if err != nil {
+				return err
+			}
+			if !rep.OK {
+				return fmt.Errorf("fallback: recorded run verification failed")
+			}
+			return nil
 		},
 	}
+	cmd.Flags().StringVar(&orchKey, "orchestrator-key", "", "hex-encoded orchestrator Ed25519 public key (trust root)")
+	_ = cmd.MarkFlagRequired("orchestrator-key")
+	return cmd
 }

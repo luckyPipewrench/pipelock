@@ -484,6 +484,14 @@ type Config struct {
 	// instances are treated as immutable after Load(); any mutation after
 	// a hash has been computed will return a stale value.
 	canonicalHashCache *canonicalHashCacheHolder `yaml:"-"`
+
+	// canonicalRedactionKeyCache memoises CanonicalRedactionKey() the same way
+	// canonicalHashCache memoises CanonicalPolicyHash(): the canonical redaction
+	// key requires a YAML round-trip + JSON marshal that is allocation-heavy and
+	// recomputed on the request-body hot path. Same immutability and copy
+	// semantics as canonicalHashCache - a fresh holder is installed on
+	// Defaults(), Load(), and Clone().
+	canonicalRedactionKeyCache *canonicalHashCacheHolder `yaml:"-"`
 }
 
 const (

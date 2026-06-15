@@ -195,6 +195,7 @@ func (c *Config) Clone() *Config {
 	// starts with an empty cache and computes against its own
 	// post-resolve state.
 	clone.canonicalHashCache = &canonicalHashCacheHolder{}
+	clone.canonicalRedactionKeyCache = &canonicalHashCacheHolder{}
 
 	// Copy rawBytes so mutations to the clone's byte buffer do not alias
 	// back to the receiver. Hash() on the clone continues to reflect the

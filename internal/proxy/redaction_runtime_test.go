@@ -48,7 +48,7 @@ func TestCurrentRedactionRuntimeForConfig_MatchingRuntime(t *testing.T) {
 	applyRedactionTestProfile(cfg)
 	rt := &redactionRuntime{
 		matcher:   &redact.Matcher{},
-		configKey: redactionConfigKey(cfg),
+		configKey: mustRedactionKey(t, cfg),
 		required:  true,
 	}
 
@@ -129,7 +129,7 @@ func TestCurrentRedactionRuntimeForConfig_ScannerSecretMismatchFailsClosed(t *te
 
 	stored := &redactionRuntime{
 		matcher:   &redact.Matcher{},
-		configKey: redactionConfigKeyForScanner(cfg, oldScanner),
+		configKey: mustRedactionKeyForScanner(t, cfg, oldScanner),
 		required:  true,
 	}
 	var ptr atomic.Pointer[redactionRuntime]
@@ -381,7 +381,7 @@ func assertRedactionRuntimeMatchesScanner(t *testing.T, cfg *config.Config, sc *
 	if rt.matcher == nil {
 		t.Fatal("current redaction runtime has nil matcher")
 	}
-	want := redactionConfigKeyForScanner(cfg, sc)
+	want := mustRedactionKeyForScanner(t, cfg, sc)
 	if rt.configKey != want {
 		t.Fatalf("redaction runtime configKey = %q, want %q", rt.configKey, want)
 	}

@@ -47,13 +47,17 @@ func (p *Proxy) buildRedactionRuntimeWithScanner(cfg *config.Config, sc *scanner
 	}
 	allowlist := append([]string(nil), cfg.Redaction.AllowlistUnparseable...)
 	routes := append([]redact.UnparseableRouteSpec(nil), cfg.Redaction.AllowlistUnparseableRoutes...)
+	configKey, err := redactionConfigKeyForScanner(cfg, sc)
+	if err != nil {
+		return nil, fmt.Errorf("compute redaction config key: %w", err)
+	}
 	rt := &redactionRuntime{
 		matcher:                    matcher,
 		limits:                     cfg.Redaction.Limits.ToLimits(),
 		allowlistUnparseable:       allowlist,
 		allowlistUnparseableRoutes: routes,
 		providers:                  providers,
-		configKey:                  redactionConfigKeyForScanner(cfg, sc),
+		configKey:                  configKey,
 		required:                   cfg.Redaction.Enabled,
 	}
 	if previous := p.redactionRuntimePtr.Load(); previous != nil && previous.matcher != nil && previous.configKey != rt.configKey {
@@ -98,11 +102,16 @@ func (p *Proxy) CurrentRedactionConfigFor(cfg *config.Config) (*redact.Matcher, 
 }
 
 func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[redactionRuntime], scanners ...*scanner.Scanner) *redactionRuntime {
-	expectedKey := redactionConfigKey(cfg)
+	var (
+		expectedKey string
+		keyErr      error
+	)
 	if len(scanners) > 0 && scanners[0] != nil {
-		expectedKey = redactionConfigKeyForScanner(cfg, scanners[0])
+		expectedKey, keyErr = redactionConfigKeyForScanner(cfg, scanners[0])
+	} else {
+		expectedKey, keyErr = redactionConfigKey(cfg)
 	}
-	if ptr != nil {
+	if keyErr == nil && ptr != nil {
 		if rt := ptr.Load(); rt != nil && rt.matcher != nil {
 			for candidate := rt; candidate != nil; candidate = candidate.previous {
 				if candidate.matcher == nil {
@@ -114,17 +123,19 @@ func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[re
 			}
 		}
 	}
-	// No runtime published yet (startup, or cfg disables redaction). Fall
-	// back to cfg so callers see the intended operator state. A populated
-	// runtime whose configKey does not match cfg is treated the same way:
-	// fail closed instead of mixing one policy's matcher with another
-	// policy's receipts and canonical hash.
+	// No matching runtime: startup before setup, cfg disables redaction, a
+	// reload-window key mismatch, or a key-computation error (keyErr != nil).
+	// Fall back to cfg intent. A populated runtime whose configKey does not
+	// match is treated the same way: fail closed instead of mixing one
+	// policy's matcher with another policy's receipts and canonical hash.
 	if cfg == nil || !cfg.Redaction.Enabled {
 		return nil
 	}
-	// cfg says redaction is required but no matcher is available - this can
-	// only happen before startup setup runs. Keep the fail-closed sentinel
-	// so request handlers block instead of silently skipping.
+	// cfg requires redaction but no matching matcher is available (startup not
+	// yet run, or the key could not be computed). Return the fail-closed
+	// sentinel so request handlers block instead of silently skipping. On a
+	// key error expectedKey is empty; the sentinel's nil matcher is what
+	// enforces the block, not its key.
 	return &redactionRuntime{
 		limits:                     cfg.Redaction.Limits.ToLimits(),
 		allowlistUnparseable:       append([]string(nil), cfg.Redaction.AllowlistUnparseable...),
@@ -135,23 +146,27 @@ func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[re
 	}
 }
 
-func redactionConfigKey(cfg *config.Config) string {
-	if cfg == nil || !cfg.Redaction.Enabled {
-		return ""
+// redactionConfigKey returns the canonical redaction-policy key for cfg, or ""
+// when redaction is disabled. The canonicalization that makes the key invariant
+// to the per-agent deep-copy YAML round-trip, plus its memoisation, live on
+// config.Config; see Config.CanonicalRedactionKey. A non-nil error means the
+// key could not be computed and callers must fail closed rather than treat the
+// empty string as "disabled".
+func redactionConfigKey(cfg *config.Config) (string, error) {
+	if cfg == nil {
+		return "", nil
 	}
-	payload, err := json.Marshal(cfg.Redaction)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
+	return cfg.CanonicalRedactionKey()
 }
 
-func redactionConfigKeyForScanner(cfg *config.Config, sc *scanner.Scanner) string {
-	base := redactionConfigKey(cfg)
+func redactionConfigKeyForScanner(cfg *config.Config, sc *scanner.Scanner) (string, error) {
+	base, err := redactionConfigKey(cfg)
+	if err != nil {
+		return "", err
+	}
 	scannerKey := scannerRedactionKey(sc)
 	if base == "" || scannerKey == "" {
-		return base
+		return base, nil
 	}
 	payload, err := json.Marshal(struct {
 		Config  string `json:"config"`
@@ -161,10 +176,10 @@ func redactionConfigKeyForScanner(cfg *config.Config, sc *scanner.Scanner) strin
 		Scanner: scannerKey,
 	})
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("marshal redaction config+scanner key: %w", err)
 	}
 	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func scannerRedactionKey(sc *scanner.Scanner) string {

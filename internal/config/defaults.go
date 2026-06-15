@@ -20,9 +20,10 @@ const CredentialSolicitationRegex = `(?i)(\b(?:send|provide|paste|return|supply|
 // Defaults returns a Config with sensible defaults for balanced mode.
 func Defaults() *Config {
 	cfg := &Config{
-		Version:            1,
-		Mode:               ModeBalanced,
-		canonicalHashCache: &canonicalHashCacheHolder{},
+		Version:                    1,
+		Mode:                       ModeBalanced,
+		canonicalHashCache:         &canonicalHashCacheHolder{},
+		canonicalRedactionKeyCache: &canonicalHashCacheHolder{},
 		// CRL freshness window default (consulted only under require-intermediate
 		// mode). The license_crl_max_age knob and EnvLicenseCRLMaxAge override it;
 		// a missing/non-positive value clamps back to this default in Load and at

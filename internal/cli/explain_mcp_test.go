@@ -54,6 +54,11 @@ func TestBuildMCPExplainReport_NoServerNamePlaceholderAndNote(t *testing.T) {
 	if got := report.Remediation.SuppressEntries[0].Path; got != "mcp://<server-name>/response" {
 		t.Fatalf("placeholder path = %q", got)
 	}
+	// The Target field shows the same placeholder so text/JSON output stays
+	// consistent with the remediation entries.
+	if report.Target != "mcp://<server-name>/response" {
+		t.Fatalf("placeholder Target = %q, want mcp://<server-name>/response", report.Target)
+	}
 	joined := strings.Join(report.Notes, " ")
 	if !strings.Contains(joined, "--server-name") {
 		t.Fatalf("expected a note about --server-name, got %q", joined)

@@ -1006,8 +1006,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	childPgid := captureChildPgid(cmd.Process.Pid)
 
 	// Drain adopted-descendant zombies live, while the direct child is
-	// still running. Without this, long-running MCP wraps (codex
-	// mcp-server, playwright MCP - multi-hour direct children) accumulate
+	// still running. Without this, long-running MCP wraps (e.g. a code-assistant
+	// or browser-automation MCP server - multi-hour direct children) accumulate
 	// zombies under pipelock because the post-Wait killAdoptedDescendants
 	// sweep below only fires when the direct child exits. PR_SET_CHILD_SUBREAPER
 	// turned on above causes orphan adoption from minute one; this goroutine

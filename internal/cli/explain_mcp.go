@@ -136,13 +136,25 @@ func mcpResponseTarget(serverName string) string {
 	return "mcp://" + serverName + "/response"
 }
 
+// mcpResponseTargetDisplay is the suppress target shown to the operator and
+// used in the suggested suppress entries. With no --server-name it returns the
+// placeholder mcp://<server-name>/response so the report's Target field and the
+// remediation entries stay consistent and the operator sees the exact shape to
+// produce.
+func mcpResponseTargetDisplay(serverName string) string {
+	if t := mcpResponseTarget(serverName); t != "" {
+		return t
+	}
+	return "mcp://<server-name>/response"
+}
+
 func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line []byte) mcpExplainReport {
 	report := mcpExplainReport{
 		ConfigFile: cfgLabel,
 		Mode:       cfg.Mode,
 		Version:    cliutil.Version,
 		ServerName: serverName,
-		Target:     mcpResponseTarget(serverName),
+		Target:     mcpResponseTargetDisplay(serverName),
 	}
 
 	// Merge installed rule bundles exactly as the runtime scanner would so
@@ -159,8 +171,11 @@ func buildMCPExplainReport(cfg *config.Config, cfgLabel, serverName string, line
 	defer sc.Close()
 
 	// Scan with NO suppression so explain reports what WOULD block; the
-	// remediation then names the suppress entry that lifts it.
-	verdict := mcp.ScanResponse(line, sc)
+	// remediation then names the suppress entry that lifts it. Dispatch exactly
+	// as the runtime proxy does (tools/list responses bypass generic response
+	// scanning when tool scanning is enabled) so explain never reports a block
+	// the proxy would not produce.
+	verdict := mcp.ScanResponseDispatch(line, sc, cfg.MCPToolScanning.Enabled, mcp.ResponseScanOptions{})
 
 	if verdict.Error != "" {
 		report.Error = verdict.Error
@@ -202,11 +217,7 @@ func dedupePatternNames(matches []scanner.ResponseMatch) []string {
 // mcpExplainRemediationFor builds the per-server suppress remediation: one
 // entry per blocking pattern, scoped to this server's response target.
 func mcpExplainRemediationFor(patterns []string, serverName string) *mcpExplainRemediation {
-	target := mcpResponseTarget(serverName)
-	if target == "" {
-		// Use a placeholder so the operator sees the shape they must produce.
-		target = "mcp://<server-name>/response"
-	}
+	target := mcpResponseTargetDisplay(serverName)
 	entries := make([]config.SuppressEntry, 0, len(patterns))
 	for _, p := range patterns {
 		entries = append(entries, config.SuppressEntry{

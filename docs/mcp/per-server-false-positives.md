@@ -61,7 +61,7 @@ pipelock mcp proxy --server-name code-assistant --config code-assistant-pipelock
 `--server-name <name>` assigns the wrapped server a stable identity. Pipelock
 uses it to build a per-server suppression **target** of the form:
 
-```
+```text
 mcp://<name>/response
 ```
 
@@ -133,7 +133,7 @@ echo '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"To con
 
 Output (text mode):
 
-```
+```text
 Pipelock Explain - MCP Response
 ==============================
 Config:  built-in defaults
@@ -232,10 +232,13 @@ removed** with a warning, fail-safe.
 > could create its own reset file would self-clear its own escalation and defeat
 > it. The owner/mode checks block a different-uid contained agent from planting a
 > file the proxy honors; in a same-user (bare) deployment the agent shares the
-> proxy's uid, so the directory must not be agent-writable. On Windows, file mode
-> bits are not security-meaningful (they do not reflect the NTFS ACL), so the
-> directory's ACL is the control - consistent with the rest of Pipelock's
-> secret-file handling.
+> proxy's uid, so the directory must not be agent-writable.
+>
+> **Windows.** File mode bits there are not security-meaningful (they do not
+> reflect the NTFS ACL), so the proxy cannot verify the reset file's owner. Since
+> the reset authorizes a de-escalation, this control fails closed on Windows:
+> `--adaptive-reset-file` is rejected at startup. Restart the proxy to clear an
+> adaptive escalation on Windows.
 
 ## Tier
 

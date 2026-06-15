@@ -7,10 +7,13 @@ package mcp
 
 import "os"
 
-// resetFileOwnedBySelf cannot inspect ownership via fs.FileMode on Windows (the
-// bits never reflect the NTFS ACL). Consistent with secperm's documented
-// Windows fail-open, ownership of the reset file is the deployment's ACL
-// responsibility on this platform.
+// resetFileOwnedBySelf cannot verify ownership via fs.FileMode on Windows (the
+// bits never reflect the NTFS ACL), and mode-bit checks are also no-ops there.
+// The reset file authorizes a privilege DE-escalation (clearing an airlock), so
+// for this control path it fails CLOSED: ownership cannot be confirmed, so it is
+// not honored. The CLI also rejects --adaptive-reset-file on Windows up front,
+// so this is a defense-in-depth backstop. (A real owner-SID check could make it
+// fail-open-when-verified in future.)
 func resetFileOwnedBySelf(_ os.FileInfo) bool {
-	return true
+	return false
 }

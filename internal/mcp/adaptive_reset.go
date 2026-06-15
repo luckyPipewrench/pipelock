@@ -51,6 +51,12 @@ func consumeAdaptiveResetFile(path string, logW io.Writer) bool {
 	}
 	if !info.Mode().IsRegular() {
 		warnResetFile(logW, path, "is not a regular file")
+		// Best-effort cleanup so a persistent invalid path (FIFO, device,
+		// socket) is not re-checked and re-warned on every message. Never
+		// remove a directory.
+		if info.Mode()&os.ModeDir == 0 {
+			_ = os.Remove(path)
+		}
 		return false
 	}
 	// secperm.TooPermissive is a no-op on Windows (mode bits there do not

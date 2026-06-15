@@ -165,6 +165,40 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	}
 }
 
+// ScanResponseDispatch scans an MCP response the way ForwardScanned does, so a
+// diagnostic caller (pipelock explain mcp-response) reports the same verdict the
+// runtime proxy would. When tool scanning is enabled and the response is a
+// tools/list payload, the tool-description fields are scanned by the dedicated
+// tool scanner (not the injection scanner), so only the non-tool sibling fields
+// go through response scanning here; otherwise the full response is scanned.
+// Per-server suppression applies in both paths. ForwardScanned implements the
+// equivalent dispatch inline (it computes isToolsList via tools.ScanTools, which
+// also drives provenance/baseline side effects this read-only path omits).
+func ScanResponseDispatch(line []byte, sc *scanner.Scanner, toolScanning bool, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+	if toolScanning && isToolsListResponse(line) {
+		return scanToolsListNonToolFields(line, sc, opts)
+	}
+	return ScanResponseOpts(line, sc, opts)
+}
+
+// isToolsListResponse reports whether line is a JSON-RPC response whose result
+// carries a non-empty "tools" array (the tools/list shape). It mirrors the
+// shape detection in internal/mcp/tools (isToolsListResult); kept here as a
+// lightweight check so the explain path need not run the full tool scanner.
+func isToolsListResponse(line []byte) bool {
+	var rpc jsonrpc.RPCResponse
+	if json.Unmarshal(line, &rpc) != nil || len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
+		return false
+	}
+	var probe struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if json.Unmarshal(rpc.Result, &probe) != nil {
+		return false
+	}
+	return len(probe.Tools) > 0
+}
+
 // scanToolsListNonToolFields scans a tools/list response for injection in
 // non-tool fields (error, params, and any sibling keys in result besides "tools").
 // Tool descriptions are scanned separately by the dedicated tool scanning

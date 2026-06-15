@@ -471,6 +471,14 @@ Key-free evidence capture:
 			if adaptiveResetFile != "" && (hasUpstream || hasListen) {
 				return errors.New("--adaptive-reset-file is only supported with local subprocess MCP servers")
 			}
+			if adaptiveResetFile != "" && runtime.GOOS == "windows" {
+				// The reset file authorizes a privilege de-escalation; its owner
+				// cannot be verified via file mode on Windows (the bits never
+				// reflect the NTFS ACL), so honoring it would not be secure.
+				// Fail closed at the door rather than silently no-op. Restart the
+				// proxy to clear an escalation on Windows.
+				return errors.New("--adaptive-reset-file is not supported on Windows: file ownership cannot be verified; restart the proxy to clear an adaptive escalation")
+			}
 			// Reject sandbox CLI flag with remote modes.
 			if sandboxEnabled {
 				if hasUpstream {

@@ -193,6 +193,14 @@ func TestWebTool_MissingURL(t *testing.T) {
 	}
 }
 
+func TestWebTool_PostMissingURL(t *testing.T) {
+	var buf bytes.Buffer
+	err := runWebTool(t.Context(), &buf, []string{"post"}, func(_ string) string { return "" })
+	if err == nil {
+		t.Fatal("expected error for missing POST URL")
+	}
+}
+
 func TestWebTool_GetRejectsExtraArgs(t *testing.T) {
 	var buf bytes.Buffer
 	err := runWebTool(t.Context(), &buf, []string{"get", "http://x.example", "--include-canary"}, func(_ string) string { return "" })
@@ -206,6 +214,32 @@ func TestWebTool_PostRejectsUnknownArg(t *testing.T) {
 	err := runWebTool(t.Context(), &buf, []string{"post", "http://x.example", "--include-canery"}, func(_ string) string { return "" })
 	if err == nil {
 		t.Fatal("expected error for unknown POST argument")
+	}
+}
+
+func TestWebTool_RequestBuildErrors(t *testing.T) {
+	for _, args := range [][]string{
+		{"get", "http://[::1"},
+		{"post", "http://[::1"},
+	} {
+		var buf bytes.Buffer
+		err := runWebTool(t.Context(), &buf, args, func(_ string) string { return "" })
+		if err == nil {
+			t.Fatalf("expected request build error for args %v", args)
+		}
+	}
+}
+
+func TestWebTool_HTTPDoErrors(t *testing.T) {
+	for _, args := range [][]string{
+		{"get", "ftp://example.test/resource"},
+		{"post", "ftp://example.test/resource"},
+	} {
+		var buf bytes.Buffer
+		err := runWebTool(t.Context(), &buf, args, func(_ string) string { return "" })
+		if err == nil {
+			t.Fatalf("expected HTTP client error for args %v", args)
+		}
 	}
 }
 

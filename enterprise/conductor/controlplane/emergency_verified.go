@@ -342,6 +342,13 @@ func (v *verifiedEmergencyStore) verifiedRemoteKills(ctx context.Context, now ti
 // and stream-status enumeration both operate on the verified subset. The
 // verification time is now() so a key that has expired/been revoked at read time
 // quarantines.
+//
+// Using time.Now() here (rather than threading a caller-supplied instant) is
+// intentional: these enumerator entry points feed advisory paths (startup
+// reconcile, read-only stream-status display), and "is this signer trusted
+// right now" is the correct question for them. The Latest*/Active* paths, which
+// drive the served decision, verify and validity-check at the SAME caller now,
+// so there is no exploitable valid-at-A-selected-at-B gap on the decision path.
 func (v *verifiedEmergencyStore) RollbackAuthorizations(ctx context.Context) ([]StoredRollbackAuthorization, error) {
 	return v.verifiedRollbacks(ctx, time.Now().UTC())
 }
@@ -377,6 +384,13 @@ func (v *verifiedEmergencyStore) ClearRollbackAuthorization(ctx context.Context,
 // [conductor.ErrSignatureVerification] sentinel, so the error alone cannot
 // distinguish them. A nil resolver is handled by the callers before reaching
 // here. If any signer id fails to resolve, treat it as the rotation case.
+//
+// This labeling is observability-only and best-effort: it never affects the
+// drop decision (the record is already being quarantined). A mixed record
+// (one trusted-but-bad-signature signer plus one unknown signer id) is
+// conservatively labeled rotation, which is the safer triage signal — it
+// prompts the operator to check for a key they rotated out rather than
+// silently treating a partly-forged record as routine.
 func (v *verifiedEmergencyStore) classifyQuarantine(signatures []conductor.SignatureProof, baseEvent, rotationEvent string) (event, reason string) {
 	if v.resolve != nil {
 		for _, sig := range signatures {

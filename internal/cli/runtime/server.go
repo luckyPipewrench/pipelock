@@ -352,6 +352,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			IntermediateCert: cfg.LicenseIntermediateCert,
 			RequireSet:       true,
 			Require:          cfg.LicenseRequireIntermediateResolved,
+			MaxAge:           cfg.LicenseCRLMaxAgeResolved,
 		})
 		if err != nil {
 			s.cleanup()

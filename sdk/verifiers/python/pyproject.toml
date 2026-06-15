@@ -24,7 +24,7 @@ classifiers = [
 ]
 # The only runtime dependency is `cryptography` (Ed25519 verification). CI installs
 # the hash-pinned transitive tree from requirements.txt with --require-hashes.
-dependencies = ["cryptography>=46.0.0"]
+dependencies = ["cryptography>=48.0.1"]
 
 # No [project.scripts] console entry on purpose: this reference verifier is
 # invoked as `python -m pipelock_aarp_verify aarp` by the conformance gate and

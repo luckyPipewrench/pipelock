@@ -46,18 +46,22 @@ type VerifyReport struct {
 //	  launch-manifest.json   # signed LaunchManifest (JSON)
 //	  witness.json           # signed Witness (JSON)
 const (
-	packetSubdir          = "packet"
-	launchManifestFile    = "launch-manifest.json"
-	witnessFile           = "witness.json"
-	redWitnessFile        = "red-witness.json"
-	checkManifestSig      = "launch-manifest-signature"
-	checkPinnedPipelock   = "pinned-pipelock-key"
-	checkAuditPacket      = "audit-packet-chain"
-	checkPinnedCollector  = "pinned-collector-key"
-	checkWitnessSig       = "collector-witness-signature"
-	checkWitnessBinding   = "witness-binds-run"
-	checkRedCaseCalibrate = "red-case-calibration"
-	checkLiveSemantics    = "live-demo-semantics"
+	packetSubdir               = "packet"
+	launchManifestFile         = "launch-manifest.json"
+	witnessFile                = "witness.json"
+	redWitnessFile             = "red-witness.json"
+	hostContainmentWitnessFile = "host-containment-witness.json"
+	checkManifestSig           = "launch-manifest-signature"
+	checkPinnedPipelock        = "pinned-pipelock-key"
+	checkAuditPacket           = "audit-packet-chain"
+	checkPinnedCollector       = "pinned-collector-key"
+	checkWitnessSig            = "collector-witness-signature"
+	checkWitnessBinding        = "witness-binds-run"
+	checkRedCaseCalibrate      = "red-case-calibration"
+	checkLiveSemantics         = "live-demo-semantics"
+	checkHostContainSig        = "host-containment-witness-signature"
+	checkHostContainBinding    = "host-containment-binds-run"
+	checkHostContainEnforced   = "host-containment-enforced"
 )
 
 // requiredChecks is the full set of check names that must all appear and pass
@@ -73,6 +77,16 @@ var requiredChecks = []string{
 	checkWitnessBinding,
 	checkRedCaseCalibrate,
 	checkLiveSemantics,
+}
+
+// containmentChecks are the additional checks required when the signed manifest
+// declares Contained=true. They are appended to requiredChecks for contained
+// runs so a contained run cannot be verified without a valid, run-bound,
+// enforced host-containment witness.
+var containmentChecks = []string{
+	checkHostContainSig,
+	checkHostContainBinding,
+	checkHostContainEnforced,
 }
 
 // VerifyRun performs the all-or-nothing offline verification of a playground
@@ -95,6 +109,10 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 	rep := VerifyReport{OrchestratorKey: orchestratorPubHex}
 	cleanDir := filepath.Clean(dir)
 
+	// required is the base check set until the manifest reveals whether this was
+	// a contained run, at which point the containment checks are appended.
+	required := requiredChecks
+
 	// --- Load files (fail closed on missing/malformed) ---
 
 	lmBytes, err := os.ReadFile(filepath.Clean(filepath.Join(cleanDir, launchManifestFile)))
@@ -104,7 +122,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: fmt.Sprintf("cannot read launch-manifest.json: %v", err),
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	var lm LaunchManifest
 	if err := json.Unmarshal(lmBytes, &lm); err != nil {
@@ -113,7 +131,15 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: fmt.Sprintf("malformed launch-manifest.json: %v", err),
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
+	}
+	// A contained run additionally requires the host-containment checks. The
+	// flag is read from the (not-yet-signature-verified) manifest, but it is
+	// covered by the manifest signature: any tamper -- flipping Contained to
+	// false to skip the checks, or to true on an uncontained run -- breaks the
+	// signature and fails step 1 below, so this can only fail closed.
+	if lm.Contained {
+		required = append(append([]string{}, requiredChecks...), containmentChecks...)
 	}
 
 	wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(cleanDir, witnessFile)))
@@ -127,7 +153,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: fmt.Sprintf("cannot read witness.json: %v", err),
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	var witness Witness
 	if err := json.Unmarshal(wBytes, &witness); err != nil {
@@ -140,7 +166,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: fmt.Sprintf("malformed witness.json: %v", err),
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 
 	// --- Step 1: Verify launch manifest signature under orchestrator key ---
@@ -152,7 +178,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: "invalid orchestrator public key",
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	if !VerifyLaunchManifest(ed25519.PublicKey(orchPub), lm) {
 		rep.Checks = append(rep.Checks, Check{
@@ -160,7 +186,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: "launch manifest signature invalid under orchestrator key",
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	rep.Checks = append(rep.Checks, Check{
 		Name: checkManifestSig,
@@ -181,7 +207,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: "manifest pins no valid pipelock public key",
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	rep.Checks = append(rep.Checks, Check{
 		Name: checkPinnedPipelock,
@@ -197,14 +223,14 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: fmt.Sprintf("audit packet verification failed: %v", err),
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	rep.Checks = append(rep.Checks, Check{
 		Name: checkAuditPacket,
 		OK:   true,
 	})
 
-	// --- Pinned collector key gate (before step 3) ---
+	// --- Pinned collector key gate (before witness verification) ---
 	// Belt-and-suspenders: VerifyWitness also rejects empty/short keys, but
 	// an explicit gate here documents the trust-chain intent and is robust
 	// to future refactoring of VerifyWitness.
@@ -214,7 +240,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: "manifest pins no valid collector public key",
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	rep.Checks = append(rep.Checks, Check{
 		Name: checkPinnedCollector,
@@ -229,7 +255,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: "witness signature invalid under manifest's collector key",
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	rep.Checks = append(rep.Checks, Check{
 		Name: checkWitnessSig,
@@ -244,7 +270,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: fmt.Sprintf("witness nonce=%q manifestHash=%q does not match manifest nonce=%q hash=%q", witness.RunNonce, witness.LaunchManifestHash, lm.RunNonce, lm.Hash()),
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	rep.Checks = append(rep.Checks, Check{
 		Name: checkWitnessBinding,
@@ -260,7 +286,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: "red-case result missing from witness",
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	redWitness, redReasons := verifyRedWitnessArtifact(cleanDir, lm, rc)
 	if !rc.WitnessWentRed {
@@ -284,7 +310,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: fmt.Sprintf("red-case check failed: %v", redReasons),
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	rep.Checks = append(rep.Checks, Check{
 		Name: checkRedCaseCalibrate,
@@ -299,15 +325,85 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 			OK:     false,
 			Reason: err.Error(),
 		})
-		return finalize(rep), nil
+		return finalize(rep, required), nil
 	}
 	rep.Checks = append(rep.Checks, Check{
 		Name: checkLiveSemantics,
 		OK:   true,
 	})
 
+	// --- Step 7: Host-containment witness (contained runs only) ---
+	// Split-proof: the steps above prove the proxy's mediated allow/block
+	// decision; this proves the kernel owner-match drop from the contained
+	// network position. Required only when the signed manifest says Contained.
+	if lm.Contained {
+		verifyHostContainment(cleanDir, lm, orchestratorPubHex, &rep)
+	}
+
 	rep.ObservedCount = witness.ObservedCount
-	return finalize(rep), nil
+	return finalize(rep, required), nil
+}
+
+// verifyHostContainment loads and checks the host-containment witness for a
+// contained run, appending the three containment checks to rep. It fails closed
+// on a missing/malformed witness, a signature invalid under the orchestrator
+// key, a witness bound to a different run, or a witness whose probes do not
+// prove enforcement (the differential + no-leak gate). It returns early after
+// the first failing check so later checks are absent and finalize reports the
+// run as not verified.
+func verifyHostContainment(runDir string, lm LaunchManifest, orchestratorPubHex string, rep *VerifyReport) {
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, hostContainmentWitnessFile)))
+	if err != nil {
+		rep.Checks = append(rep.Checks, Check{
+			Name:   checkHostContainSig,
+			OK:     false,
+			Reason: fmt.Sprintf("cannot read %s: %v", hostContainmentWitnessFile, err),
+		})
+		return
+	}
+	var hcw HostContainmentWitness
+	if err := json.Unmarshal(data, &hcw); err != nil {
+		rep.Checks = append(rep.Checks, Check{
+			Name:   checkHostContainSig,
+			OK:     false,
+			Reason: fmt.Sprintf("malformed %s: %v", hostContainmentWitnessFile, err),
+		})
+		return
+	}
+
+	// Signature under the orchestrator key (the run's trust root).
+	if !VerifyHostContainmentWitness(orchestratorPubHex, hcw) {
+		rep.Checks = append(rep.Checks, Check{
+			Name:   checkHostContainSig,
+			OK:     false,
+			Reason: "host-containment witness signature invalid under orchestrator key",
+		})
+		return
+	}
+	rep.Checks = append(rep.Checks, Check{Name: checkHostContainSig, OK: true})
+
+	// Binding to this exact run (nonce + manifest hash) -- non-replayable.
+	if !HostContainmentBindsRun(hcw, lm.RunNonce, lm.Hash()) {
+		rep.Checks = append(rep.Checks, Check{
+			Name:   checkHostContainBinding,
+			OK:     false,
+			Reason: fmt.Sprintf("witness nonce=%q manifestHash=%q does not match manifest nonce=%q hash=%q", hcw.RunNonce, hcw.LaunchManifestHash, lm.RunNonce, lm.Hash()),
+		})
+		return
+	}
+	rep.Checks = append(rep.Checks, Check{Name: checkHostContainBinding, OK: true})
+
+	// Enforcement: the differential holds (operator reaches the control target,
+	// the contained agent does not) AND every contained-agent probe was blocked.
+	if !hcw.Enforced() {
+		rep.Checks = append(rep.Checks, Check{
+			Name:   checkHostContainEnforced,
+			OK:     false,
+			Reason: "host-containment not proven: differential failed, target suite missing/substituted, or a direct-egress route was open",
+		})
+		return
+	}
+	rep.Checks = append(rep.Checks, Check{Name: checkHostContainEnforced, OK: true})
 }
 
 func verifyRedWitnessArtifact(runDir string, lm LaunchManifest, rc *RedCaseResult) (Witness, []string) {
@@ -418,11 +514,12 @@ func verifyURLExfilReplayCompatible(receipts []receipt.Receipt, witness Witness)
 }
 
 // finalize computes the top-level OK. It is affirmative: OK=true requires
-// that every entry in requiredChecks appeared AND none failed. An empty
-// Checks slice, a missing check name, or any failed check all produce
-// OK=false. This invariant means a future early-return that forgets to
-// append a Check cannot silently produce OK=true.
-func finalize(rep VerifyReport) VerifyReport {
+// that every entry in required appeared AND none failed. An empty Checks slice,
+// a missing check name, or any failed check all produce OK=false. This
+// invariant means a future early-return that forgets to append a Check cannot
+// silently produce OK=true. The required set is computed by VerifyRun and
+// includes the containment checks for contained runs.
+func finalize(rep VerifyReport, required []string) VerifyReport {
 	if len(rep.Checks) == 0 {
 		rep.OK = false
 		return rep
@@ -438,7 +535,7 @@ func finalize(rep VerifyReport) VerifyReport {
 	}
 
 	// Every required check must be present.
-	for _, name := range requiredChecks {
+	for _, name := range required {
 		if !present[name] {
 			allPassed = false
 			break

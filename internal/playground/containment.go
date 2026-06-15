@@ -19,14 +19,17 @@ import (
 // classify it as Open (reachable) or Blocked (refused / timeout / no route).
 // --------------------------------------------------------------------------
 
-// ProbeResult holds the outcome of a single direct-egress probe.
+// ProbeResult holds the outcome of a single direct-egress probe. It is
+// serialized into the signed HostContainmentWitness, so its JSON shape is part
+// of the evidence model: the field tags must stay stable for SignedBytes
+// determinism.
 type ProbeResult struct {
 	// Target is the host:port that was probed.
-	Target string
+	Target string `json:"target"`
 	// Open is true when the probe connected successfully (egress is NOT blocked).
-	Open bool
+	Open bool `json:"open"`
 	// Detail is a human-readable classification (e.g. "connected", "connection refused").
-	Detail string
+	Detail string `json:"detail"`
 }
 
 // probeTimeout is the per-target TCP dial timeout for egress probes. Short
@@ -123,8 +126,10 @@ type SelfTestResult struct {
 // if EVERY target was blocked. Any single open route means containment is
 // not active (or is incomplete).
 //
-// This function is the per-run gate: in contained mode, the demo calls this
-// BEFORE the bypass beat (step 3) and aborts if AllBlocked is false.
+// This diagnostic helper is useful for checking a target list from the current
+// process's network position. The split-proof live demo's production
+// containment gate is buildHostContainmentWitness, which drops the probe
+// subprocess to the contained agent user before probing.
 func RunContainmentSelfTest(ctx context.Context, targets []string) SelfTestResult {
 	probes := make([]ProbeResult, 0, len(targets))
 	allBlocked := true
@@ -271,19 +276,12 @@ func ContainmentAvailable() bool {
 }
 
 // --------------------------------------------------------------------------
-// Wiring point for RunDemo: where to call RunContainmentSelfTest.
+// Production containment gate.
 //
-// T9's RunDemo uses the actual step 3 toy-agent bypass attempt as the contained
-// egress gate. The older RunContainmentSelfTest helper remains useful for
-// diagnostics, but it runs in the caller's process and is not representative of
-// UID-scoped containment when the caller is root. If a future hook can execute
-// probes as the contained user, it should call:
-//
-//   result := RunContainmentSelfTest(ctx, DirectEgressTargets())
-//   if !result.AllBlocked {
-//       return VerifyReport{}, ErrContainmentSelfTestFailed
-//   }
-//
-// The production path's fail-closed check is the contained toy-agent process
-// running with --expect-bypass-blocked.
+// RunContainmentSelfTest remains a diagnostic helper: it probes from the
+// caller's process, which is not representative of UID-scoped containment when
+// the caller is root. The live demo's production gate is the signed
+// HostContainmentWitness built by LiveRun.buildHostContainmentWitness: that path
+// first proves an operator-vs-agent control differential, then requires the
+// contained agent user to block the exact DirectEgressTargets suite.
 // --------------------------------------------------------------------------

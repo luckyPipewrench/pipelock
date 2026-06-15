@@ -74,6 +74,13 @@ an offline-verifiable Audit Packet, and renders the mediator timeline.
 Exit 0 = run verified successfully. Non-zero = verification failed or run error.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			w := cmd.OutOrStdout()
+			if contained {
+				// Register the real (host-only) containment hook. Its Setup
+				// requires root + an installed `pipelock contain` and enforces
+				// the fail-closed egress self-test; without privileges it fails
+				// loudly rather than silently running uncontained.
+				playground.SetContainmentHook(playground.NewRealContainmentHook(""))
+			}
 			rep, err := playground.RunDemo(cmd.Context(), w, playground.DemoOpts{
 				Contained:  contained,
 				ScenarioID: scenario,

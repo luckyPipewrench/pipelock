@@ -262,7 +262,7 @@ func (c *Config) validateLicenseIntermediate(warnings *[]Warning) {
 	if c.LicenseRequireIntermediateEnvError != "" {
 		*warnings = append(*warnings, Warning{
 			Field:   "license_require_intermediate",
-			Message: fmt.Sprintf("environment value %s could not be parsed (%s) — require-intermediate treated as off; set license_require_intermediate in config or fix the env value", EnvLicenseRequireIntermediate, c.LicenseRequireIntermediateEnvError),
+			Message: fmt.Sprintf("environment value %s could not be parsed (%s) — require-intermediate fails closed to ON (a malformed enable-toggle must not silently re-open the direct-root fallback); set license_require_intermediate in config or fix the env value", EnvLicenseRequireIntermediate, c.LicenseRequireIntermediateEnvError),
 		})
 	}
 	if c.LicenseRequireIntermediateResolved && len(c.LicenseIntermediateCert) == 0 {

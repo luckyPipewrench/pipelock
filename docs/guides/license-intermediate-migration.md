@@ -98,6 +98,14 @@ root-signed (legacy) tokens. Nothing breaks; you are staging trust. Make sure a
 fresh signed CRL is also distributed (`license_crl_file`) — require mode will
 demand it.
 
+> **CRL cadence (required before you flip require on).** Under require mode the
+> CRL is subject to a 25-hour freshness check (`DefaultCRLMaxAge`): a CRL whose
+> signed issue time is older than 25h is rejected as stale and fails closed, even
+> though its own signed validity window is longer. You **must** republish the CRL
+> on at least a **daily cadence** while require mode is active. A weekly-expiry
+> CRL published once is not enough — require-mode consumers will block ~25h after
+> the last publish. Wire CRL republishing into a daily job before step 6.
+
 ### 5. Re-issue live licenses under the intermediate
 
 Roll customers/agents onto intermediate-signed tokens (re-issue on the normal

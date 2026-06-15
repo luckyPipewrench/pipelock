@@ -182,12 +182,15 @@ func (c *Config) resolveLicenseRuntimeVerification() {
 
 // resolveLicenseRequireIntermediate materializes the effective
 // require-intermediate value into LicenseRequireIntermediateResolved so runtime
-// consumers (CRL watcher, reload classifier) read the same value the startup
-// gate uses. An explicit config field wins; otherwise the env is consulted. A
-// malformed env value is recorded (LicenseRequireIntermediateEnvError) and
-// resolved to false — Validate surfaces it as a WARNING; the free proxy never
-// crashes on a license-trust misconfiguration, and paid surfaces fail closed at
-// their own verify (which re-parses the env via ResolveVerifyOptions).
+// consumers (CRL watcher, reload classifier, EnforceLicenseGate) read the same
+// value the startup gate uses. An explicit config field wins; otherwise the env
+// is consulted. A malformed env value is recorded
+// (LicenseRequireIntermediateEnvError) and resolved to TRUE — fail closed to the
+// strictest interpretation: an operator who set this env was trying to ENABLE
+// require mode, so a typo must never silently re-open the direct-root fallback.
+// Validate surfaces the error as a WARNING and the free proxy never crashes on a
+// license-trust misconfiguration (require=true + no intermediate just disables
+// paid surfaces), so failing closed here is safe and matches operator intent.
 func (c *Config) resolveLicenseRequireIntermediate() {
 	if c.LicenseRequireIntermediate != nil {
 		c.LicenseRequireIntermediateResolved = *c.LicenseRequireIntermediate
@@ -208,7 +211,9 @@ func (c *Config) resolveLicenseRequireIntermediate() {
 	}
 	v, err := strconv.ParseBool(raw)
 	if err != nil {
-		c.LicenseRequireIntermediateResolved = false
+		// Fail closed: a malformed enable-toggle resolves to ON, never OFF, so a
+		// typo cannot silently re-enable the legacy direct-root fallback.
+		c.LicenseRequireIntermediateResolved = true
 		c.LicenseRequireIntermediateEnvError = fmt.Sprintf("%q is not a boolean", raw)
 		return
 	}

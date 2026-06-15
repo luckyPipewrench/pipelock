@@ -13206,11 +13206,13 @@ func TestLicenseRequireIntermediateConfigStates(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid_env_recorded_not_crashing", func(t *testing.T) {
+	t.Run("invalid_env_fails_closed_to_on_not_crashing", func(t *testing.T) {
 		t.Setenv(EnvLicenseRequireIntermediate, "treu")
 		cfg := writeCfg(t, "mode: balanced\n")
-		if cfg.LicenseRequireIntermediateResolved {
-			t.Fatal("invalid env must resolve to false, NOT crash and NOT default-on")
+		// Fail closed: a malformed enable-toggle resolves to ON (true), never OFF.
+		// A typo must not silently re-open the legacy direct-root fallback.
+		if !cfg.LicenseRequireIntermediateResolved {
+			t.Fatal("invalid env must fail CLOSED (resolve to true), NOT default to false")
 		}
 		if cfg.LicenseRequireIntermediateEnvError == "" {
 			t.Fatal("invalid env must record an env error for the validate WARNING")

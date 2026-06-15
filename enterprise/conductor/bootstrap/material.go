@@ -341,6 +341,9 @@ func generateLicense(layout Layout, opts Options, identity controlplane.Follower
 	// VerifyFleet, which prefers a build-embedded production key and would
 	// reject this dev token on an official binary). Proves the issued token
 	// is signature-valid and carries the fleet entitlement before we write it.
+	// Self-check only; NOT a consumer trust path — require-intermediate is N/A
+	// here (we verify the token against the keypair that just minted it), so this
+	// deliberately uses the legacy entry point rather than VerifyTokenWithOptions.
 	verified, err := license.VerifyTokenWithOptionalIntermediate(token, nil, pub, nil, now)
 	if err != nil {
 		return "", fmt.Errorf("generated fleet license failed self-verification: %w", err)

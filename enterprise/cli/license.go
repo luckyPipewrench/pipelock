@@ -438,13 +438,20 @@ func applyLicenseStatusEnv(cfg *config.Config) {
 		cfg.LicenseCRLFile = strings.TrimSpace(os.Getenv(config.EnvLicenseCRLFile))
 	}
 	// Materialize require-intermediate from env when the config did not set it,
-	// so status agrees with the runtime resolver. A malformed env value is
-	// treated as off (status is a read-only inspector; the runtime gate is the
-	// fail-closed authority).
+	// so status agrees with the runtime resolver. A malformed env value resolves
+	// to TRUE and records the error, mirroring resolveLicenseRequireIntermediate
+	// in config/load.go — status must report what the runtime actually enforces
+	// (fail closed), not a display-vs-reality divergence.
 	if cfg.LicenseRequireIntermediate == nil {
 		if raw, ok := os.LookupEnv(license.EnvLicenseRequireIntermediate); ok {
-			if v, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed == "" {
+				cfg.LicenseRequireIntermediateResolved = false
+			} else if v, err := strconv.ParseBool(trimmed); err == nil {
 				cfg.LicenseRequireIntermediateResolved = v
+			} else {
+				cfg.LicenseRequireIntermediateResolved = true
+				cfg.LicenseRequireIntermediateEnvError = fmt.Sprintf("%q is not a boolean", trimmed)
 			}
 		}
 	}

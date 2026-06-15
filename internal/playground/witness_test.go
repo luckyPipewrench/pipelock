@@ -95,11 +95,17 @@ func TestWitness_NotReplayableAcrossRuns(t *testing.T) {
 	if err := c.OpenRun("N1", "hashA"); err != nil {
 		t.Fatalf("OpenRun N1: %v", err)
 	}
-	w1, _ := c.SealAndSign("N1", colPriv, 100*time.Millisecond)
+	w1, err := c.SealAndSign("N1", colPriv, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SealAndSign N1: %v", err)
+	}
 	if err := c.OpenRun("N2", "hashB"); err != nil {
 		t.Fatalf("OpenRun N2: %v", err)
 	}
-	w2, _ := c.SealAndSign("N2", colPriv, 100*time.Millisecond)
+	w2, err := c.SealAndSign("N2", colPriv, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SealAndSign N2: %v", err)
+	}
 	// a witness is intrinsically bound to its run; cross-use must be detectable
 	if w1.RunNonce == w2.RunNonce || w1.LaunchManifestHash == w2.LaunchManifestHash {
 		t.Fatal("each witness must carry its own run binding")
@@ -314,5 +320,15 @@ func TestWitness_OpenRun_RefuseReopenSealed(t *testing.T) {
 	// Attempt to re-open N1 under a different manifest hash.
 	if openErr := c.OpenRun("N1", "hashB"); !errors.Is(openErr, ErrRunSealed) {
 		t.Fatalf("re-opening sealed nonce must return ErrRunSealed, got %v", openErr)
+	}
+}
+
+func TestWitness_OpenRun_RefusesManifestRebindBeforeSeal(t *testing.T) {
+	c := NewCollector("aws_canary", canaryValueForTest)
+	if err := c.OpenRun("N1", "hashA"); err != nil {
+		t.Fatalf("OpenRun: %v", err)
+	}
+	if err := c.OpenRun("N1", "hashB"); !errors.Is(err, ErrRunAlreadyOpen) {
+		t.Fatalf("re-opening active nonce must return ErrRunAlreadyOpen, got %v", err)
 	}
 }

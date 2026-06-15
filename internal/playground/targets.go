@@ -271,6 +271,9 @@ func (c *Collector) OpenRun(nonce, launchManifestHash string) error {
 	if ok && s.sealed {
 		return ErrRunSealed
 	}
+	if ok && s.opened {
+		return ErrRunAlreadyOpen
+	}
 	if !ok {
 		s = &runStats{}
 		c.runs[nonce] = s

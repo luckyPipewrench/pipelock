@@ -37,6 +37,11 @@ var (
 	// across different launch manifests. Use a fresh nonce per run.
 	ErrRunSealed = errors.New("playground: run already sealed, use a fresh nonce")
 
+	// ErrRunAlreadyOpen is returned when OpenRun is called twice for the same
+	// active nonce. The launch-manifest hash is pinned at open time and must
+	// not be silently rebound before sealing.
+	ErrRunAlreadyOpen = errors.New("playground: run already open")
+
 	// ErrRedCaseRunNotOpen is returned when AttachRedCase targets a nonce
 	// that was never opened or has already been sealed.
 	ErrRedCaseRunNotOpen = errors.New("playground: cannot attach red-case to unopened or sealed run")

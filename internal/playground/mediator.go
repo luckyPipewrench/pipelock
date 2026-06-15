@@ -75,16 +75,10 @@ func RenderMediator(w io.Writer, events []MediatorEvent, color bool) {
 // renderPipelockDecision formats a ClassPipelockDecision event.
 // Block verdicts use the ">>> BLOCKED <<<" marker so they visually pop.
 func renderPipelockDecision(w io.Writer, ev MediatorEvent, color bool) {
+	_ = color
 	verdict := strings.ToLower(ev.Verdict)
 	if verdict == verdictBlock {
-		if color {
-			// Even with color disabled in most callers, preserve the hook for
-			// future ANSI support. Currently we just uppercase — the BLOCKED
-			// text is what the honesty test requires.
-			_, _ = fmt.Fprintf(w, "[pipelock_decision] >>> BLOCKED <<< %s\n", ev.Summary)
-		} else {
-			_, _ = fmt.Fprintf(w, "[pipelock_decision] >>> BLOCKED <<< %s\n", ev.Summary)
-		}
+		_, _ = fmt.Fprintf(w, "[pipelock_decision] >>> BLOCKED <<< %s\n", ev.Summary)
 	} else {
 		_, _ = fmt.Fprintf(w, "[pipelock_decision] %s %s\n",
 			strings.ToUpper(verdict), ev.Summary)

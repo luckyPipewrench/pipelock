@@ -70,7 +70,7 @@ func assembleFromEvidenceCore(evidenceFile, pubKeyHex string, sc *replaycapture.
 		scenario = *sc
 	} else {
 		scenarioID := filepath.Base(filepath.Dir(cleanPath))
-		if scenarioID == "." || scenarioID == "/" {
+		if scenarioID == "" || scenarioID == "." || scenarioID == ".." || scenarioID == "/" {
 			scenarioID = "live-evidence"
 		}
 		scenario = replaycapture.Scenario{ID: scenarioID}

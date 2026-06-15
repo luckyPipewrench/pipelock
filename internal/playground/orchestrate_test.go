@@ -68,6 +68,28 @@ func TestReset_ThreeTimesClean(t *testing.T) {
 	}
 }
 
+func TestFallback_VerifiesAndPrintsReplayEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fallback test builds a recorded evidence dir")
+	}
+
+	dir, orchKey := goodRunDir(t)
+	var buf bytes.Buffer
+	rep, err := playground.Fallback(&buf, dir, orchKey)
+	if err != nil {
+		t.Fatalf("Fallback: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("fallback verify must pass: %+v", rep)
+	}
+	out := buf.String()
+	for _, want := range []string{"REPLAY", "Packet hash: sha256:", "VERIFY OK", "verify"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("fallback output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestReset_RefusesEvidenceDirReuse(t *testing.T) {
 	if testing.Short() {
 		t.Skip("orchestrate test builds binaries and boots a real proxy")

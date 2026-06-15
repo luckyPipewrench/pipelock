@@ -16,46 +16,14 @@ func TestFallbackCmd_ShowsReplayWatermarkAndHash(t *testing.T) {
 		t.Skip("fallback test requires a pre-recorded run dir from a real live run")
 	}
 
-	// Produce a pre-recorded run dir via RunDemo.
-	recordedDir := t.TempDir()
-	var runBuf bytes.Buffer
-	rep, err := playground.RunDemo(t.Context(), &runBuf, playground.DemoOpts{
-		Contained:  false,
-		ScenarioID: playground.LiveDemoScenarioID,
-		RunDir:     recordedDir,
-	})
-	if err != nil {
-		t.Fatalf("pre-record run: %v", err)
-	}
-	if !rep.OK {
-		t.Fatalf("pre-record run must verify: %+v", rep)
-	}
-
-	// Now run the fallback command against the recorded dir.
-	cmd := newRootCmd()
 	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	// The orchestrator key is in the verify report; use the pipelock key from the run
-	// since that's what the manifest pins. But the fallback command needs the
-	// orchestrator key. We need to extract it. Since RunDemo's verify prints it,
-	// use the verify report's PipelockKey... but actually we need the orchestrator key.
-	// The fallback cmd reads from launch-manifest.json which was signed by the orchestrator.
-	// We need to pass the right key. Let's re-verify to get the orchestrator key.
-	//
-	// Actually, the fallback subcommand takes the orchestrator key as a flag.
-	// We can extract it by running verify first.
-	// For testing, let's just use the cmdTestRunDir helper pattern.
-
-	// Simpler approach: produce a proper run dir with known orchestrator key.
 	dir, orchKey := cmdTestRunDir(t)
 
-	cmd = newRootCmd()
-	buf.Reset()
+	cmd := newRootCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"fallback", dir, "--orchestrator-key", orchKey})
-	err = cmd.Execute()
+	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("fallback must exit 0 on valid recorded dir, got: %v\noutput:\n%s", err, buf.String())
 	}

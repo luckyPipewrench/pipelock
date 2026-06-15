@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // agentIDEnvVar, when set, causes the web tool to add an X-Pipelock-Agent
@@ -45,6 +46,8 @@ const agentIDEnvVar = "PLAYGROUND_AGENT_ID"
 
 // agentHeader is the canonical Pipelock agent identity header.
 const agentHeader = "X-Pipelock-Agent"
+
+const webToolHTTPTimeout = 5 * time.Second
 
 func main() {
 	err := runWebTool(context.Background(), os.Stdout, os.Args[1:], os.Getenv)
@@ -82,8 +85,7 @@ func runWebTool(ctx context.Context, out io.Writer, args []string, lookupEnv fun
 	}
 }
 
-// doGet performs an HTTP GET to the URL in args[0].  The default http.Client
-// is used, which respects HTTPS_PROXY / HTTP_PROXY from the environment.
+// doGet performs an HTTP GET to the URL in args[0].
 func doGet(ctx context.Context, out io.Writer, args []string, lookupEnv func(string) string) error {
 	if len(args) == 0 {
 		return errors.New("get requires a URL")
@@ -96,7 +98,7 @@ func doGet(ctx context.Context, out io.Writer, args []string, lookupEnv func(str
 	}
 	setAgentHeader(req, lookupEnv)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := webToolHTTPClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", targetURL, err)
 	}
@@ -104,6 +106,10 @@ func doGet(ctx context.Context, out io.Writer, args []string, lookupEnv func(str
 
 	_, _ = fmt.Fprintf(out, "[webtool] GET %s -> HTTP %d\n", targetURL, resp.StatusCode)
 	return nil
+}
+
+func webToolHTTPClient() *http.Client {
+	return &http.Client{Timeout: webToolHTTPTimeout}
 }
 
 // doPost performs an HTTP POST to the URL in args[0].  If args contains
@@ -144,7 +150,7 @@ func doPost(ctx context.Context, out io.Writer, args []string, lookupEnv func(st
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	setAgentHeader(req, lookupEnv)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := webToolHTTPClient().Do(req)
 	if err != nil {
 		return fmt.Errorf("POST %s: %w", targetURL, err)
 	}

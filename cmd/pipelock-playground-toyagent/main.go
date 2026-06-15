@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -198,7 +199,7 @@ func runStep1(ctx context.Context, n narrator, cfg agentConfig) error {
 		return nil
 	}
 
-	return invokeWebTool(ctx, n, cfg, "get", cfg.SafeURL)
+	return invokeWebTool(ctx, n, cfg, false, "get", cfg.SafeURL)
 }
 
 // runStep2 performs an exfiltration POST of the canary to cfg.ExfilURL via
@@ -211,7 +212,11 @@ func runStep2(ctx context.Context, n narrator, cfg agentConfig) error {
 
 	target := cfg.ExfilURL
 	if cfg.RunNonce != "" {
-		target = target + "?run=" + cfg.RunNonce
+		var err error
+		target, err = addRunNonce(target, cfg.RunNonce)
+		if err != nil {
+			return err
+		}
 	}
 	if target != "" {
 		n.say("collector: %s", target)
@@ -222,7 +227,18 @@ func runStep2(ctx context.Context, n narrator, cfg agentConfig) error {
 		return nil
 	}
 
-	return invokeWebTool(ctx, n, cfg, "post", target, "--include-canary")
+	return invokeWebTool(ctx, n, cfg, true, "post", target, "--include-canary")
+}
+
+func addRunNonce(target, nonce string) (string, error) {
+	u, err := url.Parse(target)
+	if err != nil {
+		return "", fmt.Errorf("parse exfil url: %w", err)
+	}
+	q := u.Query()
+	q.Set("run", nonce)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // runStep3 performs a raw direct-egress attempt that explicitly bypasses the
@@ -284,7 +300,7 @@ const probeTimeout = 2 * time.Second
 // touching the value itself.
 //
 // IMPORTANT: the canary VALUE must never appear in args.
-func invokeWebTool(ctx context.Context, n narrator, cfg agentConfig, args ...string) error {
+func invokeWebTool(ctx context.Context, n narrator, cfg agentConfig, allowBlockedExit bool, args ...string) error {
 	if cfg.WebToolPath == "" {
 		return errors.New("webtool path is not configured")
 	}
@@ -298,9 +314,13 @@ func invokeWebTool(ctx context.Context, n narrator, cfg agentConfig, args ...str
 	n.say("invoking web tool: %s %s", cfg.WebToolPath, strings.Join(args, " "))
 	if err := cmd.Run(); err != nil {
 		n.say("web tool exited with: %v", err)
-		// Non-zero exit from the web tool (e.g. Pipelock blocked the request)
-		// is reported as narration but is not a fatal agent error; the demo
-		// uses the exit code to distinguish blocked vs allowed.
+		var exitErr *exec.ExitError
+		if allowBlockedExit && errors.As(err, &exitErr) && ctx.Err() == nil {
+			// Pipelock blocking the red POST is the expected result. Startup
+			// errors still propagate because they are not ExitError.
+			return nil
+		}
+		return fmt.Errorf("web tool %s: %w", args[0], err)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -167,4 +168,73 @@ func TestToyAgent_UnknownStep(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown step")
 	}
+}
+
+func TestRootCmd_DryRunExecutesConfiguredStep(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--step", "1", "--safe-url", "http://safe.target.test/", "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("root command dry-run: %v", err)
+	}
+	if !strings.Contains(buf.String(), "safe") {
+		t.Fatalf("expected dry-run narration, got:\n%s", buf.String())
+	}
+}
+
+func TestPrefixWriter_PrefixesCompleteLines(t *testing.T) {
+	var buf bytes.Buffer
+	w := &prefixWriter{prefix: "[webtool] ", out: &buf}
+	if _, err := w.Write([]byte("one\ntwo\npartial")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got, want := buf.String(), "[webtool] one\n[webtool] two\n"; got != want {
+		t.Fatalf("prefixed output = %q, want %q", got, want)
+	}
+	if string(w.buf) != "partial" {
+		t.Fatalf("partial line buffer = %q", string(w.buf))
+	}
+}
+
+func TestAddRunNonce_EncodesAndPreservesExistingQuery(t *testing.T) {
+	got, err := addRunNonce("http://collector.test/ingest?existing=1", "run 1/2")
+	if err != nil {
+		t.Fatalf("addRunNonce: %v", err)
+	}
+	if got != "http://collector.test/ingest?existing=1&run=run+1%2F2" {
+		t.Fatalf("unexpected encoded URL: %s", got)
+	}
+}
+
+func TestInvokeWebTool_PropagatesSafeStepFailure(t *testing.T) {
+	t.Setenv("GO_WANT_PLAYGROUND_HELPER_PROCESS", "exit")
+
+	var buf bytes.Buffer
+	err := invokeWebTool(t.Context(), narrator{out: &buf}, agentConfig{
+		WebToolPath: os.Args[0],
+	}, false, "-test.run=TestHelperProcess")
+	if err == nil {
+		t.Fatal("safe step must propagate web tool exit errors")
+	}
+}
+
+func TestInvokeWebTool_AllowsBlockedRedPostExit(t *testing.T) {
+	t.Setenv("GO_WANT_PLAYGROUND_HELPER_PROCESS", "exit")
+
+	var buf bytes.Buffer
+	err := invokeWebTool(t.Context(), narrator{out: &buf}, agentConfig{
+		WebToolPath: os.Args[0],
+	}, true, "-test.run=TestHelperProcess")
+	if err != nil {
+		t.Fatalf("red POST should allow web tool exit error: %v", err)
+	}
+}
+
+func TestHelperProcess(_ *testing.T) {
+	if os.Getenv("GO_WANT_PLAYGROUND_HELPER_PROCESS") != "exit" {
+		return
+	}
+	os.Exit(7)
 }

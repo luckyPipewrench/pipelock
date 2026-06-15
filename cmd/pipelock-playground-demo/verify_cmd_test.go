@@ -23,6 +23,8 @@ import (
 // cmdCanaryValue builds the canary at runtime (gosec G101).
 const cmdCanaryValue = "AKIA" + "IOSFODNN7EXAMPLE"
 
+const cmdReplayFixtureScenarioID = "secret-exfil-url-blocked"
+
 // cmdTestRunDir builds a good run dir for command-level testing.
 func cmdTestRunDir(t *testing.T) (string, string) {
 	t.Helper()
@@ -45,7 +47,7 @@ func cmdTestRunDir(t *testing.T) (string, string) {
 	scenarios := replaycapture.DefaultScenarios()
 	var exfil replaycapture.Scenario
 	for _, s := range scenarios {
-		if s.ID == "secret-exfil-url-blocked" {
+		if s.ID == cmdReplayFixtureScenarioID {
 			exfil = s
 			break
 		}

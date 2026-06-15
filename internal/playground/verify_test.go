@@ -565,6 +565,10 @@ func goodRunDirWithSignedCollectorLeak(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatalf("post leak to collector: %v", err)
 	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		_ = resp.Body.Close()
+		t.Fatalf("post leak to collector returned HTTP %d", resp.StatusCode)
+	}
 	_ = resp.Body.Close()
 
 	witness, err := collector.SealAndSign(lm.RunNonce, colPriv, 200*time.Millisecond)

@@ -170,7 +170,7 @@ func assertNoLoopbackInArtifacts(t *testing.T, runDir string) {
 			// launch-manifest.json, or witness.json.
 			baseName := filepath.Base(path)
 			switch baseName {
-			case "packet.json", "manifest.json", "launch-manifest.json", "witness.json":
+			case "packet.json", "manifest.json", "launch-manifest.json", "witness.json", "red-witness.json":
 				t.Errorf("loopback IP found in signed artifact %s", path)
 			default:
 				// evidence.jsonl: check each line's receipt fields

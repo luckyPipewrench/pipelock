@@ -15,11 +15,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -353,24 +350,8 @@ func (lr *LiveRun) agentCommand(args []string) (*exec.Cmd, error) {
 	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("contained toy-agent execution requires root (euid=%d)", os.Geteuid())
 	}
-	agentUser := lr.opts.AgentUser
-	if agentUser == "" {
-		agentUser = defaultContainedAgentUser
-	}
-	u, err := user.Lookup(agentUser)
-	if err != nil {
-		return nil, fmt.Errorf("lookup contained agent user %q: %w", agentUser, err)
-	}
-	uid, err := strconv.ParseUint(u.Uid, 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("parse uid for %q: %w", agentUser, err)
-	}
-	gid, err := strconv.ParseUint(u.Gid, 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("parse gid for %q: %w", agentUser, err)
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)},
+	if err := configureContainedCommand(cmd, lr.opts.AgentUser); err != nil {
+		return nil, err
 	}
 	return cmd, nil
 }

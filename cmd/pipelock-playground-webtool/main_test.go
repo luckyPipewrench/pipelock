@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // canaryPart1 + canaryPart2 compose the synthetic canary; split so the full
@@ -99,6 +100,29 @@ func TestWebTool_GetDoesNotSendCanary(t *testing.T) {
 	}
 }
 
+func TestWebTool_GetSendsAgentHeaderWhenConfigured(t *testing.T) {
+	var gotAgent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAgent = r.Header.Get(agentHeader)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	err := runWebTool(t.Context(), &buf, []string{"get", srv.URL}, func(key string) string {
+		if key == agentIDEnvVar {
+			return "lab-agent"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("runWebTool GET: %v", err)
+	}
+	if gotAgent != "lab-agent" {
+		t.Fatalf("agent header = %q", gotAgent)
+	}
+}
+
 // TestWebTool_PostWithoutCanaryFlagOmitsCanary verifies that without
 // --include-canary the POST body does NOT contain the canary, even if the env
 // var is set.
@@ -166,5 +190,11 @@ func TestWebTool_MissingURL(t *testing.T) {
 	err := runWebTool(t.Context(), &buf, []string{"get"}, func(_ string) string { return "" })
 	if err == nil {
 		t.Fatal("expected error for missing URL")
+	}
+}
+
+func TestWebTool_HTTPClientHasTimeout(t *testing.T) {
+	if webToolHTTPClient().Timeout != 5*time.Second {
+		t.Fatalf("web tool HTTP timeout = %s", webToolHTTPClient().Timeout)
 	}
 }

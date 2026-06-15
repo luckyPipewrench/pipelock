@@ -54,3 +54,4 @@ pipelock-audit.log
 
 # Temp build dir for generate.sh
 .gen-shadow-*
+/pipelock-playground-demo

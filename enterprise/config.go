@@ -296,6 +296,7 @@ func EnforceLicenseGate(c *config.Config) {
 		CRL:                 crl,
 		RootPub:             pubKey,
 		Now:                 time.Now(),
+		MaxAge:              c.LicenseCRLMaxAgeResolved,
 	})
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license verification failed: %v\n"+
@@ -346,7 +347,7 @@ func loadLicenseCRL(c *config.Config, pubKey ed25519.PublicKey) (*license.CRL, b
 	var crl license.CRL
 	var err error
 	if require {
-		crl, err = license.LoadAndVerifyCRLMonotonicFresh(c.LicenseCRLFile, pubKey, time.Now())
+		crl, err = license.LoadAndVerifyCRLMonotonicFresh(c.LicenseCRLFile, pubKey, time.Now(), c.LicenseCRLMaxAgeResolved)
 	} else {
 		crl, err = license.LoadAndVerifyCRLMonotonic(c.LicenseCRLFile, pubKey, time.Now())
 	}

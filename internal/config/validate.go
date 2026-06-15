@@ -271,6 +271,16 @@ func (c *Config) validateLicenseIntermediate(warnings *[]Warning) {
 			Message: "is enabled but no license_intermediate_file is configured — licensed features will be disabled until an intermediate certificate is provided",
 		})
 	}
+	// A malformed/non-positive license_crl_max_age is a WARNING, never fatal: the
+	// resolver already clamped the effective window to DefaultCRLMaxAge (the
+	// freshness check stays ON), so the proxy keeps running and require mode keeps
+	// its floor — the operator just gets told their value did not take.
+	if c.LicenseCRLMaxAgeError != "" {
+		*warnings = append(*warnings, Warning{
+			Field:   "license_crl_max_age",
+			Message: fmt.Sprintf("could not be parsed (%s) — using the default %s freshness window instead", c.LicenseCRLMaxAgeError, c.LicenseCRLMaxAgeResolved),
+		})
+	}
 
 	if len(c.LicenseIntermediateCert) == 0 {
 		return

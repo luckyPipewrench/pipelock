@@ -182,7 +182,11 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			// MATERIALIZED value so a reload that turns require on/off (via config
 			// or env) re-verifies and can tear down a surface that no longer
 			// satisfies the required trust tier.
-			oldCfg.LicenseRequireIntermediateResolved != newCfg.LicenseRequireIntermediateResolved
+			oldCfg.LicenseRequireIntermediateResolved != newCfg.LicenseRequireIntermediateResolved ||
+			// A CRL freshness-window change is also a license-trust change: shrinking
+			// it can make a previously-fresh CRL stale, which under require mode is
+			// proven loss. Compare the materialized window.
+			oldCfg.LicenseCRLMaxAgeResolved != newCfg.LicenseCRLMaxAgeResolved
 
 		// Re-verify the NEW license inputs ONCE and classify the result so both
 		// paid surfaces — agent listeners and the Conductor follower — make the
@@ -212,6 +216,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 				IntermediateCert: newCfg.LicenseIntermediateCert,
 				RequireSet:       true,
 				Require:          newCfg.LicenseRequireIntermediateResolved,
+				MaxAge:           newCfg.LicenseCRLMaxAgeResolved,
 			})
 		}
 		conductorFleetLost := oldCfg.Conductor.Enabled && reloadLicenseChecked &&
@@ -390,6 +395,10 @@ func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
 	newCfg.LicenseRequireIntermediate = oldCfg.LicenseRequireIntermediate
 	newCfg.LicenseRequireIntermediateResolved = oldCfg.LicenseRequireIntermediateResolved
 	newCfg.LicenseRequireIntermediateEnvError = oldCfg.LicenseRequireIntermediateEnvError
+	// The CRL freshness window is part of the restart-only license input set.
+	newCfg.LicenseCRLMaxAge = oldCfg.LicenseCRLMaxAge
+	newCfg.LicenseCRLMaxAgeResolved = oldCfg.LicenseCRLMaxAgeResolved
+	newCfg.LicenseCRLMaxAgeError = oldCfg.LicenseCRLMaxAgeError
 }
 
 // cleanup closes all owned resources. Safe to call multiple times: each

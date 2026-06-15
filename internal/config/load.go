@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
@@ -178,6 +179,43 @@ func (c *Config) resolveLicenseRuntimeVerification() {
 		}
 	}
 	c.resolveLicenseRequireIntermediate()
+	c.resolveLicenseCRLMaxAge()
+}
+
+// resolveLicenseCRLMaxAge materializes the effective CRL freshness window into
+// LicenseCRLMaxAgeResolved so runtime consumers read the same window the startup
+// gate uses. An explicit config field wins; otherwise the env
+// (EnvLicenseCRLMaxAge) is consulted. Unlike the require toggle, the fail-safe
+// here is the DEFAULT, never "no check": a malformed or non-positive value is
+// recorded (LicenseCRLMaxAgeError, surfaced as a WARNING) and clamped to
+// DefaultCRLMaxAge. A value that parses but is <= 0 would DISABLE freshness if
+// passed through, so it is treated as a misconfiguration and clamped too — a
+// configured knob must never be able to turn the freshness gate off.
+func (c *Config) resolveLicenseCRLMaxAge() {
+	raw := strings.TrimSpace(c.LicenseCRLMaxAge)
+	if raw == "" {
+		if env := strings.TrimSpace(os.Getenv(EnvLicenseCRLMaxAge)); env != "" {
+			raw = env
+		}
+	}
+	if raw == "" {
+		c.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+		c.LicenseCRLMaxAgeError = ""
+		return
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		c.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+		c.LicenseCRLMaxAgeError = fmt.Sprintf("%q is not a valid duration", raw)
+		return
+	}
+	if d <= 0 {
+		c.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+		c.LicenseCRLMaxAgeError = fmt.Sprintf("%q must be a positive duration", raw)
+		return
+	}
+	c.LicenseCRLMaxAgeResolved = d
+	c.LicenseCRLMaxAgeError = ""
 }
 
 // resolveLicenseRequireIntermediate materializes the effective

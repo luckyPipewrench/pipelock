@@ -276,10 +276,15 @@ func doctorVerifiedLicense(cfg *config.Config) (license.License, bool, error) {
 		}
 		return lic, false, nil
 	}
-	opts, optErr := license.ResolveVerifyOptions(
-		pubKey, cfg.LicenseCRLFile, cfg.LicenseIntermediateCert, cfg.LicenseIntermediateFile,
-		true, cfg.LicenseRequireIntermediateResolved,
-	)
+	opts, optErr := license.ResolveVerifyOptions(license.ResolveInputs{
+		RootPub:          pubKey,
+		CRLFile:          cfg.LicenseCRLFile,
+		IntermediateCert: cfg.LicenseIntermediateCert,
+		IntermediateFile: cfg.LicenseIntermediateFile,
+		RequireSet:       true,
+		Require:          cfg.LicenseRequireIntermediateResolved,
+		MaxAge:           cfg.LicenseCRLMaxAgeResolved,
+	})
 	if optErr != nil {
 		return license.License{}, true, optErr
 	}

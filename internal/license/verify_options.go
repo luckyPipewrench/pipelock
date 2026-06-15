@@ -54,6 +54,11 @@ type VerifyOptions struct {
 	// Now is the verification clock. Zero falls back to time.Now() so callers
 	// that do not inject a clock keep working.
 	Now time.Time
+	// MaxAge is the CRL freshness window (IssuedAt-age). Zero (or negative) falls
+	// back to DefaultCRLMaxAge so callers that do not set it keep today's
+	// behaviour. It is consulted ONLY under require mode (freshness is
+	// require-only), matching ResolveVerifyOptions.
+	MaxAge time.Duration
 }
 
 func (o VerifyOptions) now() time.Time {
@@ -61,6 +66,17 @@ func (o VerifyOptions) now() time.Time {
 		return time.Now()
 	}
 	return o.Now
+}
+
+// maxAge resolves the freshness window, clamping a zero/negative value to
+// DefaultCRLMaxAge. A configured value must never be able to DISABLE the
+// freshness check (which CheckFreshness treats maxAge<=0 as), so the floor here
+// is fail-safe: a misconfigured 0 becomes the 25h default, never "no check".
+func (o VerifyOptions) maxAge() time.Duration {
+	if o.MaxAge <= 0 {
+		return DefaultCRLMaxAge
+	}
+	return o.MaxAge
 }
 
 // VerifyTokenWithOptions is the options-based verification entry point. It
@@ -121,26 +137,42 @@ func verifyChainStrict(token string, im Intermediate, crl *CRL) (License, error)
 	return VerifyWithCRL(token, im.PublicKey(), crl)
 }
 
+// ResolveInputs are the config/env-resolved inputs ResolveVerifyOptions turns
+// into a fail-closed VerifyOptions. It is an options struct (per the
+// options-struct rule) so new verify knobs — like MaxAge — thread through
+// without growing a positional signature.
+type ResolveInputs struct {
+	// RootPub is the trust anchor (already resolved by the caller; required).
+	RootPub ed25519.PublicKey
+	// CRLFile is the signed CRL path; "" falls back to EnvLicenseCRLFile.
+	CRLFile string
+	// IntermediateCert is raw cert bytes the caller already loaded (config path);
+	// non-empty wins over IntermediateFile.
+	IntermediateCert []byte
+	// IntermediateFile is a cert path; "" falls back to EnvLicenseIntermediateFile.
+	IntermediateFile string
+	// RequireSet distinguishes "config did not specify" (consult env) from an
+	// explicit config require value.
+	RequireSet bool
+	// Require is the explicit config require value (used only when RequireSet).
+	Require bool
+	// MaxAge is the configured CRL freshness window. Zero/negative falls back to
+	// DefaultCRLMaxAge (a configured value can never DISABLE the check).
+	MaxAge time.Duration
+}
+
 // ResolveVerifyOptions builds VerifyOptions from configured values and the
 // environment, failing CLOSED on every malformed input. It is the ONE resolver
 // the build-spec mandates so every entry point derives require-mode, the CRL,
-// and the intermediate identically.
-//
-// Inputs (all "" = fall back to env, then unset):
-//
-//   - rootPub: the trust anchor (already resolved by the caller; required).
-//   - crlFile: signed CRL path; env fallback EnvLicenseCRLFile.
-//   - intermediateCert: raw cert bytes the caller already loaded (config path),
-//     OR empty to load from intermediateFile / EnvLicenseIntermediateFile.
-//   - requireSet/require: an explicit config-level require value. When
-//     requireSet is false the env EnvLicenseRequireIntermediate is consulted.
+// the freshness window, and the intermediate identically.
 //
 // Fail-closed conditions (all return an error, never a silently-relaxed opts):
 //
 //   - invalid boolean env (ErrInvalidRequireIntermediateEnv)
 //   - require==true but no CRL configured (a stale/forged CRL is the rollback
 //     vector require mode is meant to close; missing CRL = no rollback floor)
-//   - CRL load/verify/freshness failure
+//   - CRL load/verify/freshness failure (freshness uses in.MaxAge, clamped to
+//     DefaultCRLMaxAge when zero/negative)
 //   - malformed intermediate cert
 //
 // Note: require==true with NO intermediate is NOT a resolver error — the
@@ -148,10 +180,10 @@ func verifyChainStrict(token string, im Intermediate, crl *CRL) (License, error)
 // VerifyTokenWithOptions then returns ErrIntermediateRequired, which the free
 // proxy treats as a warning (never crashing detection) while paid surfaces fail
 // closed. This split keeps the "never gate detection behind a license" rule.
-func ResolveVerifyOptions(rootPub ed25519.PublicKey, crlFile string, intermediateCert []byte, intermediateFile string, requireSet, require bool) (VerifyOptions, error) {
-	opts := VerifyOptions{RootPub: rootPub, Now: time.Now()}
+func ResolveVerifyOptions(in ResolveInputs) (VerifyOptions, error) {
+	opts := VerifyOptions{RootPub: in.RootPub, Now: time.Now(), MaxAge: in.MaxAge}
 
-	resolvedRequire, err := resolveRequireIntermediate(requireSet, require)
+	resolvedRequire, err := resolveRequireIntermediate(in.RequireSet, in.Require)
 	if err != nil {
 		return VerifyOptions{}, err
 	}
@@ -161,6 +193,7 @@ func ResolveVerifyOptions(rootPub ed25519.PublicKey, crlFile string, intermediat
 	// stale-but-unexpired CRL is a compromise-response gap that require mode must
 	// close, but enforcing freshness on the legacy path would be a behaviour
 	// change (and could brick an unattended deployment whose publisher paused).
+	crlFile := in.CRLFile
 	if crlFile == "" {
 		crlFile = strings.TrimSpace(os.Getenv(EnvLicenseCRLFile))
 	}
@@ -168,9 +201,9 @@ func ResolveVerifyOptions(rootPub ed25519.PublicKey, crlFile string, intermediat
 		var loaded CRL
 		var crlErr error
 		if resolvedRequire {
-			loaded, crlErr = LoadAndVerifyCRLMonotonicFresh(crlFile, rootPub, opts.Now)
+			loaded, crlErr = LoadAndVerifyCRLMonotonicFresh(crlFile, in.RootPub, opts.Now, opts.maxAge())
 		} else {
-			loaded, crlErr = LoadAndVerifyCRLMonotonic(crlFile, rootPub, opts.Now)
+			loaded, crlErr = LoadAndVerifyCRLMonotonic(crlFile, in.RootPub, opts.Now)
 		}
 		if crlErr != nil {
 			return VerifyOptions{}, fmt.Errorf("loading license CRL: %w", crlErr)
@@ -183,9 +216,10 @@ func ResolveVerifyOptions(rootPub ed25519.PublicKey, crlFile string, intermediat
 	}
 
 	// Intermediate.
-	if len(intermediateCert) > 0 {
-		opts.Intermediate = intermediateCert
+	if len(in.IntermediateCert) > 0 {
+		opts.Intermediate = in.IntermediateCert
 	} else {
+		intermediateFile := in.IntermediateFile
 		if intermediateFile == "" {
 			intermediateFile = strings.TrimSpace(os.Getenv(EnvLicenseIntermediateFile))
 		}

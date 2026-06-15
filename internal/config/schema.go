@@ -145,6 +145,12 @@ const (
 	// package and the two MUST match (asserted by a parity test).
 	EnvLicenseRequireIntermediate = "PIPELOCK_LICENSE_REQUIRE_INTERMEDIATE"
 
+	// EnvLicenseCRLMaxAge is the env override for the CRL freshness window
+	// (license_crl_max_age), parsed via time.ParseDuration. It bounds how old (by
+	// IssuedAt) a signed CRL may be and still be trusted under require-intermediate
+	// mode. Unset/empty falls back to the configured field, then DefaultCRLMaxAge.
+	EnvLicenseCRLMaxAge = "PIPELOCK_LICENSE_CRL_MAX_AGE"
+
 	// EnvKillSwitchAPIToken is the environment variable for admin API bearer
 	// token override. Takes priority over kill_switch.api_token.
 	EnvKillSwitchAPIToken = "PIPELOCK_KILLSWITCH_API_TOKEN" //nolint:gosec // env var name, not a credential
@@ -404,12 +410,18 @@ type Config struct {
 	// tier). A *bool distinguishes omitted (nil -> env fallback, default false)
 	// from an explicit false. Excluded from the canonical policy hash: it is a
 	// license-trust knob, not effective request policy.
-	LicenseRequireIntermediate *bool    `yaml:"license_require_intermediate,omitempty" json:"-"`
-	LicensePublicKey           string   `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
-	Internal                   []string `yaml:"internal"`
-	TrustedDomains             []string `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
-	SSRF                       SSRF     `yaml:"ssrf"`
-	DNS                        DNS      `yaml:"dns"`
+	LicenseRequireIntermediate *bool `yaml:"license_require_intermediate,omitempty" json:"-"`
+	// LicenseCRLMaxAge is the CRL freshness window (IssuedAt-age) as a duration
+	// string (e.g. "25h"). Consulted only under require-intermediate mode. Empty /
+	// omitted / non-positive falls back to DefaultCRLMaxAge — a configured value
+	// can never DISABLE the freshness check. Excluded from the canonical policy
+	// hash: it is a license-trust knob, not effective request policy.
+	LicenseCRLMaxAge string   `yaml:"license_crl_max_age,omitempty" json:"-"`
+	LicensePublicKey string   `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
+	Internal         []string `yaml:"internal"`
+	TrustedDomains   []string `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
+	SSRF             SSRF     `yaml:"ssrf"`
+	DNS              DNS      `yaml:"dns"`
 
 	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
 	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
@@ -444,6 +456,17 @@ type Config struct {
 	// WARNING and treats require as false; paid surfaces fail closed at their own
 	// verify call.
 	LicenseRequireIntermediateEnvError string `yaml:"-" json:"-"`
+	// LicenseCRLMaxAgeResolved is the effective CRL freshness window after folding
+	// the env (EnvLicenseCRLMaxAge) over the config field and clamping a
+	// missing/non-positive value to DefaultCRLMaxAge. Runtime consumers (CRL
+	// watcher, reload classifier, status, doctor) read this so they see the same
+	// window the startup gate uses. Set by Load(); DefaultCRLMaxAge for Defaults().
+	LicenseCRLMaxAgeResolved time.Duration `yaml:"-" json:"-"`
+	// LicenseCRLMaxAgeError records a malformed license_crl_max_age value (config
+	// field or EnvLicenseCRLMaxAge). The free proxy must NOT crash on it; Load
+	// surfaces it as a validate WARNING and clamps the resolved window to
+	// DefaultCRLMaxAge (never to "no freshness check").
+	LicenseCRLMaxAgeError string `yaml:"-" json:"-"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().

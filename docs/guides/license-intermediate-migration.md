@@ -99,12 +99,17 @@ fresh signed CRL is also distributed (`license_crl_file`) — require mode will
 demand it.
 
 > **CRL cadence (required before you flip require on).** Under require mode the
-> CRL is subject to a 25-hour freshness check (`DefaultCRLMaxAge`): a CRL whose
-> signed issue time is older than 25h is rejected as stale and fails closed, even
-> though its own signed validity window is longer. You **must** republish the CRL
-> on at least a **daily cadence** while require mode is active. A weekly-expiry
-> CRL published once is not enough — require-mode consumers will block ~25h after
-> the last publish. Wire CRL republishing into a daily job before step 6.
+> CRL is subject to a freshness check: a CRL whose signed issue time is older than
+> the freshness window is rejected as stale and fails closed, even though its own
+> signed validity window is longer. The window is **tunable** via
+> `license_crl_max_age` (env `PIPELOCK_LICENSE_CRL_MAX_AGE`); the **default is
+> 25h**, and a missing/malformed/non-positive value fails safe back to 25h (it can
+> never disable the check). You **must** republish the CRL on a cadence shorter
+> than `license_crl_max_age` while require mode is active. A weekly-expiry CRL
+> published once is not enough — require-mode consumers will block once the last
+> publish ages past the window. Wire CRL republishing into a job (default: daily,
+> to stay under the 25h window) before step 6, and if you widen or narrow
+> `license_crl_max_age`, adjust the republish cadence to match.
 
 ### 5. Re-issue live licenses under the intermediate
 

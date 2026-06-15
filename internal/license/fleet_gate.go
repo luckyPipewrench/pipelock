@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 )
 
 // EnvLicenseKey is the env variable carrying the signed license token. The
@@ -96,6 +97,9 @@ type FleetVerifyInputs struct {
 	IntermediateCert []byte // already-loaded cert bytes (config path); wins over IntermediateFile
 	RequireSet       bool
 	Require          bool
+	// MaxAge is the configured CRL freshness window (license_crl_max_age). Zero
+	// falls back to DefaultCRLMaxAge.
+	MaxAge time.Duration
 }
 
 // verifyLicenseInputsOpts resolves the verifier public key, builds the
@@ -129,7 +133,15 @@ func verifyLicenseInputsOpts(in FleetVerifyInputs) (License, error) {
 	if pubKey == nil {
 		return License{}, errNoVerifierKey
 	}
-	opts, err := ResolveVerifyOptions(pubKey, in.CRLFile, in.IntermediateCert, in.IntermediateFile, in.RequireSet, in.Require)
+	opts, err := ResolveVerifyOptions(ResolveInputs{
+		RootPub:          pubKey,
+		CRLFile:          in.CRLFile,
+		IntermediateCert: in.IntermediateCert,
+		IntermediateFile: in.IntermediateFile,
+		RequireSet:       in.RequireSet,
+		Require:          in.Require,
+		MaxAge:           in.MaxAge,
+	})
 	if err != nil {
 		return License{}, err
 	}

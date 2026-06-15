@@ -77,10 +77,15 @@ func (s *Server) checkLicenseCRL() (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	opts, err := license.ResolveVerifyOptions(
-		pubKey, cfg.LicenseCRLFile, cfg.LicenseIntermediateCert, cfg.LicenseIntermediateFile,
-		true, require,
-	)
+	opts, err := license.ResolveVerifyOptions(license.ResolveInputs{
+		RootPub:          pubKey,
+		CRLFile:          cfg.LicenseCRLFile,
+		IntermediateCert: cfg.LicenseIntermediateCert,
+		IntermediateFile: cfg.LicenseIntermediateFile,
+		RequireSet:       true,
+		Require:          require,
+		MaxAge:           cfg.LicenseCRLMaxAgeResolved,
+	})
 	if err != nil {
 		return true, err
 	}

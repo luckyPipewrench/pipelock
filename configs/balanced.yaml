@@ -588,6 +588,10 @@ seed_phrase_detection:
 # configured license_intermediate_file and a fresh signed CRL; see
 # docs/guides/license-intermediate-migration.md for the migration runbook.
 # license_require_intermediate: false
+# The CRL freshness window (max IssuedAt age) under require mode is tunable
+# via license_crl_max_age (default 25h); a stale CRL fails closed only when
+# require mode is on.
+# license_crl_max_age: 25h
 #
 # agents:
 #   claude-code:

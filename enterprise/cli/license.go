@@ -337,13 +337,14 @@ func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, 
 	report.Intermediate = len(cfg.LicenseIntermediateCert) > 0
 	report.RequireIntermediate = cfg.LicenseRequireIntermediateResolved
 	require := cfg.LicenseRequireIntermediateResolved
+	maxAge := cfg.LicenseCRLMaxAgeResolved
 	var crl *license.CRL
 	if crlFile != "" {
 		report.CRLConfigured = true
 		var loaded license.CRL
 		var crlErr error
 		if require {
-			loaded, crlErr = license.LoadAndVerifyCRLMonotonicFresh(crlFile, pubKey, time.Now())
+			loaded, crlErr = license.LoadAndVerifyCRLMonotonicFresh(crlFile, pubKey, time.Now(), maxAge)
 		} else {
 			loaded, crlErr = license.LoadAndVerifyCRLMonotonic(crlFile, pubKey, time.Now())
 		}
@@ -368,6 +369,7 @@ func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, 
 		CRL:                 crl,
 		RootPub:             pubKey,
 		Now:                 time.Now(),
+		MaxAge:              maxAge,
 	})
 	report.LicenseID = lic.ID
 	report.Tier = lic.Tier
@@ -452,6 +454,21 @@ func applyLicenseStatusEnv(cfg *config.Config) {
 			} else {
 				cfg.LicenseRequireIntermediateResolved = true
 				cfg.LicenseRequireIntermediateEnvError = fmt.Sprintf("%q is not a boolean", trimmed)
+			}
+		}
+	}
+	// Materialize the CRL freshness window from env when the config did not set
+	// it, so status reports the window the runtime actually enforces. A
+	// malformed/non-positive value clamps to DefaultCRLMaxAge (never disables the
+	// check), mirroring resolveLicenseCRLMaxAge in config/load.go.
+	if strings.TrimSpace(cfg.LicenseCRLMaxAge) == "" {
+		if raw, ok := os.LookupEnv(config.EnvLicenseCRLMaxAge); ok {
+			trimmed := strings.TrimSpace(raw)
+			if d, err := time.ParseDuration(trimmed); err == nil && d > 0 {
+				cfg.LicenseCRLMaxAgeResolved = d
+			} else if trimmed != "" {
+				cfg.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+				cfg.LicenseCRLMaxAgeError = fmt.Sprintf("%q is not a valid positive duration", trimmed)
 			}
 		}
 	}

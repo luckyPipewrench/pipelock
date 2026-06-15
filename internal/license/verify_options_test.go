@@ -195,7 +195,7 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 
 	t.Run("invalid_bool_env_rejected_not_defaulted_false", func(t *testing.T) {
 		t.Setenv(EnvLicenseRequireIntermediate, "treu")
-		_, err := ResolveVerifyOptions(rootPub, "", intCertBytes, "", false, false)
+		_, err := ResolveVerifyOptions(ResolveInputs{RootPub: rootPub, IntermediateCert: intCertBytes})
 		if !errors.Is(err, ErrInvalidRequireIntermediateEnv) {
 			t.Fatalf("invalid bool env must be rejected, got %v", err)
 		}
@@ -204,7 +204,7 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 	t.Run("env_true_sets_require", func(t *testing.T) {
 		t.Setenv(EnvLicenseRequireIntermediate, "true")
 		crlPath := writeCRL(t, time.Hour)
-		opts, err := ResolveVerifyOptions(rootPub, crlPath, intCertBytes, "", false, false)
+		opts, err := ResolveVerifyOptions(ResolveInputs{RootPub: rootPub, CRLFile: crlPath, IntermediateCert: intCertBytes})
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
@@ -216,7 +216,7 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 	t.Run("config_explicit_wins_over_env", func(t *testing.T) {
 		t.Setenv(EnvLicenseRequireIntermediate, "true")
 		// requireSet=true, require=false: config explicitly disables.
-		opts, err := ResolveVerifyOptions(rootPub, "", intCertBytes, "", true, false)
+		opts, err := ResolveVerifyOptions(ResolveInputs{RootPub: rootPub, IntermediateCert: intCertBytes, RequireSet: true, Require: false})
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
@@ -226,7 +226,7 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 	})
 
 	t.Run("require_true_missing_crl_fails_closed", func(t *testing.T) {
-		_, err := ResolveVerifyOptions(rootPub, "", intCertBytes, "", true, true)
+		_, err := ResolveVerifyOptions(ResolveInputs{RootPub: rootPub, IntermediateCert: intCertBytes, RequireSet: true, Require: true})
 		if err == nil {
 			t.Fatal("require=true with no CRL must fail closed")
 		}
@@ -234,7 +234,7 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 
 	t.Run("require_true_stale_crl_fails_closed", func(t *testing.T) {
 		crlPath := writeCRL(t, DefaultCRLMaxAge+time.Hour)
-		_, err := ResolveVerifyOptions(rootPub, crlPath, intCertBytes, "", true, true)
+		_, err := ResolveVerifyOptions(ResolveInputs{RootPub: rootPub, CRLFile: crlPath, IntermediateCert: intCertBytes, RequireSet: true, Require: true})
 		if !errors.Is(err, ErrCRLStale) {
 			t.Fatalf("stale CRL under require must fail closed with ErrCRLStale, got %v", err)
 		}
@@ -242,7 +242,7 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 
 	t.Run("require_true_fresh_crl_ok", func(t *testing.T) {
 		crlPath := writeCRL(t, time.Hour)
-		opts, err := ResolveVerifyOptions(rootPub, crlPath, intCertBytes, "", true, true)
+		opts, err := ResolveVerifyOptions(ResolveInputs{RootPub: rootPub, CRLFile: crlPath, IntermediateCert: intCertBytes, RequireSet: true, Require: true})
 		if err != nil {
 			t.Fatalf("fresh CRL under require must resolve: %v", err)
 		}
@@ -261,7 +261,7 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 		// LoadIntermediateCertFile only rejects oversize/non-regular, so a junk file
 		// loads as bytes here. The malformed-bytes rejection lands at verify time;
 		// confirm load succeeds but parse fails downstream.
-		opts, err := ResolveVerifyOptions(rootPub, crlPath, nil, p, true, true)
+		opts, err := ResolveVerifyOptions(ResolveInputs{RootPub: rootPub, CRLFile: crlPath, IntermediateFile: p, RequireSet: true, Require: true})
 		if err != nil {
 			t.Fatalf("resolve should load junk bytes: %v", err)
 		}
@@ -271,7 +271,7 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 	})
 
 	t.Run("default_off_no_crl_no_intermediate_ok (brick-guard)", func(t *testing.T) {
-		opts, err := ResolveVerifyOptions(rootPub, "", nil, "", false, false)
+		opts, err := ResolveVerifyOptions(ResolveInputs{RootPub: rootPub})
 		if err != nil {
 			t.Fatalf("default-off resolver must not fail with no inputs: %v", err)
 		}
@@ -279,6 +279,101 @@ func TestResolveVerifyOptions_FailClosed(t *testing.T) {
 			t.Fatal("default-off resolver must produce empty opts")
 		}
 	})
+}
+
+// TestResolveVerifyOptions_ConfiguredMaxAgeDrivesGate proves the configured
+// freshness window — not the hardcoded const — drives the resolver's staleness
+// gate: a CRL issued 2h ago is rejected under a custom 1h window but accepted
+// under the default 25h window. It also confirms a zero MaxAge clamps to the
+// default (never disables the check), the fail-safe behaviour.
+func TestResolveVerifyOptions_ConfiguredMaxAgeDrivesGate(t *testing.T) {
+	rootPub, rootPriv, intPub, _ := vroKeys(t)
+	now := time.Now()
+	_, intCertBytes := testIntermediate(t, rootPriv, intPub, now.Add(-time.Hour), now.Add(30*24*time.Hour))
+
+	// CRL issued 2h ago: stale under a 1h window, fresh under 25h.
+	crl := vroCRL(t, rootPriv, now, 2*time.Hour, nil, nil)
+	data, err := json.Marshal(crl)
+	if err != nil {
+		t.Fatalf("marshal CRL: %v", err)
+	}
+	crlPath := filepath.Join(t.TempDir(), "crl.json")
+	if err := os.WriteFile(crlPath, data, 0o600); err != nil {
+		t.Fatalf("write CRL: %v", err)
+	}
+
+	base := ResolveInputs{
+		RootPub: rootPub, CRLFile: crlPath, IntermediateCert: intCertBytes,
+		RequireSet: true, Require: true,
+	}
+
+	t.Run("custom_1h_rejects_2h_old_crl", func(t *testing.T) {
+		in := base
+		in.MaxAge = time.Hour
+		if _, err := ResolveVerifyOptions(in); !errors.Is(err, ErrCRLStale) {
+			t.Fatalf("custom 1h window must reject a 2h-old CRL with ErrCRLStale, got %v", err)
+		}
+	})
+
+	t.Run("default_25h_accepts_2h_old_crl", func(t *testing.T) {
+		in := base // MaxAge unset -> clamps to DefaultCRLMaxAge (25h)
+		opts, err := ResolveVerifyOptions(in)
+		if err != nil {
+			t.Fatalf("default 25h window must accept a 2h-old CRL, got %v", err)
+		}
+		if opts.CRL == nil {
+			t.Fatal("CRL must be loaded under the default window")
+		}
+	})
+
+	t.Run("zero_maxage_clamps_to_default_not_disabled", func(t *testing.T) {
+		// A configured 0 must NOT disable the freshness check; it clamps to the
+		// default. A 2h CRL is fresh under the default, so it resolves — proving
+		// the check is still ON (the gate ran, it just passed), not skipped.
+		in := base
+		in.MaxAge = 0
+		if _, err := ResolveVerifyOptions(in); err != nil {
+			t.Fatalf("zero MaxAge must clamp to default and accept a 2h CRL, got %v", err)
+		}
+		// And a CRL older than the default IS rejected even with MaxAge=0, proving
+		// the check was never disabled.
+		staleCRL := vroCRL(t, rootPriv, now, DefaultCRLMaxAge+time.Hour, nil, nil)
+		staleData, mErr := json.Marshal(staleCRL)
+		if mErr != nil {
+			t.Fatalf("marshal stale CRL: %v", mErr)
+		}
+		stalePath := filepath.Join(t.TempDir(), "stale.json")
+		if wErr := os.WriteFile(stalePath, staleData, 0o600); wErr != nil {
+			t.Fatalf("write stale CRL: %v", wErr)
+		}
+		in.CRLFile = stalePath
+		if _, err := ResolveVerifyOptions(in); !errors.Is(err, ErrCRLStale) {
+			t.Fatalf("zero MaxAge must still reject a CRL older than the default, got %v", err)
+		}
+	})
+}
+
+// TestResolveVerifyOptions_MaxAgeEnvParity confirms VerifyOptions.maxAge() and
+// the resolver honour an explicit window passed through ResolveInputs (the env
+// fold itself lives in config.Load and is covered there).
+func TestVerifyOptions_MaxAgeClamp(t *testing.T) {
+	cases := []struct {
+		name string
+		set  time.Duration
+		want time.Duration
+	}{
+		{"zero_clamps_to_default", 0, DefaultCRLMaxAge},
+		{"negative_clamps_to_default", -time.Hour, DefaultCRLMaxAge},
+		{"positive_used", 90 * time.Minute, 90 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := VerifyOptions{MaxAge: tc.set}.maxAge()
+			if got != tc.want {
+				t.Fatalf("maxAge() = %s, want %s", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestVerifyFleetWithOptions_RequireHonored(t *testing.T) {

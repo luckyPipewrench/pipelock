@@ -4,11 +4,11 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/luckypipewrench/pipelock
-  # Default tag tracks the chart appVersion. To pin by digest, set image.digest
-  # to a sha256 string and the chart will render repository@digest. The tag
-  # value falls through to .Chart.AppVersion when empty.
-  tag: "@sha256:e8e249d2dd1b579f995f0f5a75cfab13fb8505a8ffc33c2cec7a6418290d9098"  # defaults to .Chart.AppVersion
-  digest: ""  # optional sha256 multi-arch manifest digest
+  # Tag falls through to .Chart.AppVersion when empty. To pin by digest instead,
+  # set image.digest to a sha256 string and the chart renders repository@digest.
+  # A digest and a tag are never combined; a digest must not go in tag.
+  tag: ""  # defaults to .Chart.AppVersion
+  digest: ""  # optional sha256 multi-arch manifest digest, e.g. sha256:abc123...
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

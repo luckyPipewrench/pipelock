@@ -1,0 +1,553 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package playground
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
+)
+
+// .test hostnames used by the live run. RFC 2606 reserved, safe to publish.
+const (
+	liveRunSafeHost  = "safe.target.test"
+	liveRunExfilHost = "exfil.target.test"
+	// RFC 5737 TEST-NET-3 reserved address: a synthetic "external" target. In
+	// contained mode the kernel blocks all egress except the proxy, so this is
+	// never actually contacted; it only needs to be a non-proxy, non-loopback
+	// destination the bypass attempt aims at.
+	liveRunBypassURL = "http://203.0.113.1/"
+)
+
+// liveRunPrincipal and liveRunActor use the same values as the replaycapture
+// lab so that the assembled audit packet passes the public-safe field
+// allowlist. These are synthetic, non-identifying labels.
+const (
+	liveRunPrincipal = "pipelock-lab"
+	liveRunActor     = "lab-agent"
+)
+
+// canaryEnvVar is the env var the toy agent/webtool reads.
+const canaryEnvVar = "PLAYGROUND_CANARY_VALUE"
+
+// LiveRunOpts configures a live playground run.
+type LiveRunOpts struct {
+	// Contained selects kernel-containment mode (requires sudo). When false
+	// (uncontained), step 3 (bypass) is skipped.
+	Contained bool
+	// ScenarioID selects the scenario from DefaultScenarios.
+	ScenarioID string
+	// RunNonce is the unique identifier for this run.
+	RunNonce string
+	// ToyAgentBin and WebToolBin are paths to the compiled binaries. When
+	// empty, StartLiveRun builds them into a temp dir.
+	ToyAgentBin string
+	WebToolBin  string
+	// AgentUser is the OS user used for contained-mode toy-agent execution.
+	// Empty means pipelock-agent.
+	AgentUser string
+}
+
+// LiveRun holds the state of a running live playground demo. All resources
+// (listeners, proxy, targets) are cleaned up by Close.
+type LiveRun struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// Keys
+	orchestratorPub  ed25519.PublicKey
+	orchestratorPriv ed25519.PrivateKey
+	collectorPub     ed25519.PublicKey
+	collectorPriv    ed25519.PrivateKey
+	pipelockPub      ed25519.PublicKey
+	pipelockPriv     ed25519.PrivateKey
+
+	// Infrastructure
+	safeTarget   *SafeTarget
+	safeLn       net.Listener
+	safeSrv      *http.Server
+	collector    *Collector
+	collectorLn  net.Listener
+	collectorSrv *http.Server
+	proxyLn      net.Listener
+	proxySrv     *http.Server
+	proxyObj     *proxy.Proxy
+	rec          *recorder.Recorder
+	sc           *scanner.Scanner
+
+	// Scenario / config
+	scenario    replaycapture.Scenario
+	manifest    LaunchManifest
+	opts        LiveRunOpts
+	evidenceDir string
+	policyHash  string
+
+	// Binaries
+	agentBin   string
+	webtoolBin string
+
+	// Canary
+	canaryID    string
+	canaryValue string
+}
+
+// StartLiveRun boots a complete live demo environment: lab targets, a real
+// Pipelock proxy with receipt emission, and prepares everything for running
+// the toy agent through it.
+func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	lr := &LiveRun{
+		ctx:    ctx,
+		cancel: cancel,
+		opts:   opts,
+	}
+
+	var err error
+	defer func() {
+		if err != nil {
+			lr.Close()
+		}
+	}()
+
+	// --- Key generation ---
+	lr.orchestratorPub, lr.orchestratorPriv, err = signing.GenerateKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator keygen: %w", err)
+	}
+	lr.collectorPub, lr.collectorPriv, err = signing.GenerateKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("collector keygen: %w", err)
+	}
+	lr.pipelockPub, lr.pipelockPriv, err = signing.GenerateKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("pipelock keygen: %w", err)
+	}
+
+	// --- Canary ---
+	lr.canaryID = "playground-canary"
+	lr.canaryValue = liveCanaryValue(opts.RunNonce)
+
+	// --- Look up the scenario ---
+	if s, ok := lookupPlaygroundScenario(opts.ScenarioID); ok {
+		lr.scenario = s
+	} else {
+		err = fmt.Errorf("unknown scenario %q", opts.ScenarioID)
+		return nil, err
+	}
+
+	// --- Start safe target on loopback :0 ---
+	lr.safeTarget = NewSafeTarget()
+	lr.safeLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("safe target listen: %w", err)
+	}
+	lr.safeSrv = &http.Server{
+		Handler:           lr.safeTarget.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = lr.safeSrv.Serve(lr.safeLn) }()
+
+	// --- Start collector on loopback :0 ---
+	lr.collector = NewCollector(lr.canaryID, lr.canaryValue)
+	lr.collectorLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("collector listen: %w", err)
+	}
+	lr.collectorSrv = &http.Server{
+		Handler:           lr.collector.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = lr.collectorSrv.Serve(lr.collectorLn) }()
+
+	// --- Build pipelock config ---
+	cfg := config.Defaults()
+	cfg.Internal = nil // disable SSRF/DNS lookups
+	cfg.ForwardProxy.Enabled = true
+
+	// DNS host overrides: .test hosts -> loopback
+	cfg.DNS.HostOverrides = map[string][]string{
+		liveRunSafeHost:  {"127.0.0.1"},
+		liveRunExfilHost: {"127.0.0.1"},
+	}
+
+	// Trust the .test hosts so they pass the domain check
+	cfg.TrustedDomains = append(cfg.TrustedDomains, liveRunSafeHost, liveRunExfilHost)
+
+	cfg.ApplyDefaults()
+
+	// --- Policy hash ---
+	lr.policyHash = liveRunConfigHash(cfg)
+
+	// --- Evidence dir ---
+	lr.evidenceDir, err = os.MkdirTemp("", "playground-live-evidence-*")
+	if err != nil {
+		return nil, fmt.Errorf("evidence dir: %w", err)
+	}
+
+	// --- Scanner + Recorder + Emitter ---
+	lr.sc = scanner.New(cfg)
+
+	lr.rec, err = recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                lr.evidenceDir,
+		CheckpointInterval: 1000,
+		Redact:             true,
+	}, lr.sc.ScanTextForDLP, lr.pipelockPriv)
+	if err != nil {
+		return nil, fmt.Errorf("recorder: %w", err)
+	}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   lr.rec,
+		PrivKey:    lr.pipelockPriv,
+		ConfigHash: lr.policyHash,
+		Principal:  liveRunPrincipal,
+		Actor:      liveRunActor,
+	})
+	if emitter == nil {
+		err = fmt.Errorf("emitter construction failed")
+		return nil, err
+	}
+
+	// --- Proxy ---
+	lr.proxyObj, err = proxy.New(cfg, audit.NewNop(), lr.sc, metrics.New(),
+		proxy.WithRecorder(lr.rec),
+		proxy.WithReceiptEmitter(emitter),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("proxy: %w", err)
+	}
+
+	// Start proxy listening on loopback :0
+	lr.proxyLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("proxy listen: %w", err)
+	}
+	lr.proxySrv = &http.Server{
+		Handler:           lr.proxyObj.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = lr.proxySrv.Serve(lr.proxyLn) }()
+
+	// --- Build + sign launch manifest ---
+	lr.manifest = LaunchManifest{
+		RunNonce:        opts.RunNonce,
+		ScenarioID:      opts.ScenarioID,
+		CanaryID:        lr.canaryID,
+		PipelockPubKey:  hex.EncodeToString(lr.pipelockPub),
+		CollectorPubKey: hex.EncodeToString(lr.collectorPub),
+		PolicyHash:      lr.policyHash,
+		TargetHost:      liveRunExfilHost,
+		StartedAt:       time.Now().UTC(),
+	}
+	lr.manifest = SignLaunchManifest(lr.orchestratorPriv, lr.manifest)
+
+	// Open the collector run with the manifest hash
+	if openErr := lr.collector.OpenRun(opts.RunNonce, lr.manifest.Hash()); openErr != nil {
+		err = fmt.Errorf("open collector run: %w", openErr)
+		return nil, err
+	}
+
+	// --- Binaries ---
+	lr.agentBin = opts.ToyAgentBin
+	lr.webtoolBin = opts.WebToolBin
+
+	return lr, nil
+}
+
+// RunSteps executes the specified toy-agent steps. Step 1 = safe GET, Step 2 =
+// exfil POST, Step 3 = bypass (skipped in uncontained mode).
+func (lr *LiveRun) RunSteps(steps ...int) error {
+	safePort := portFromAddr(lr.safeLn.Addr())
+	collectorPort := portFromAddr(lr.collectorLn.Addr())
+	proxyAddr := lr.proxyLn.Addr().String()
+
+	safeURL := fmt.Sprintf("http://%s:%s/", liveRunSafeHost, safePort)
+	exfilURL := fmt.Sprintf("http://%s:%s/", liveRunExfilHost, collectorPort)
+
+	for _, step := range steps {
+		if step == 3 && !lr.opts.Contained {
+			continue // bypass is only meaningful under containment
+		}
+
+		args := []string{
+			"--step", fmt.Sprintf("%d", step),
+			"--run-nonce", lr.opts.RunNonce,
+			"--canary-label", lr.canaryID,
+			"--safe-url", safeURL,
+			"--exfil-url", exfilURL,
+			"--webtool", lr.webtoolBin,
+		}
+		if step == 3 {
+			args = append(args, "--bypass-url", liveRunBypassURL)
+			if lr.opts.Contained {
+				args = append(args, "--expect-bypass-blocked")
+			}
+		}
+
+		cmd, err := lr.agentCommand(args)
+		if err != nil {
+			return fmt.Errorf("step %d command: %w", step, err)
+		}
+		// Minimal, controlled environment: the demo agent holds ONLY the
+		// synthetic canary plus the demo plumbing -- NEVER the operator's real
+		// environment (which could contain real secrets). This enforces the
+		// capability-separation story instead of merely narrating it: the agent
+		// genuinely possesses nothing sensitive except the planted synthetic canary.
+		cmd.Env = []string{
+			"PATH=/usr/local/bin:/usr/bin:/bin",
+			canaryEnvVar + "=" + lr.canaryValue,
+			"PLAYGROUND_AGENT_ID=" + liveRunActor,
+			"HTTP_PROXY=http://" + proxyAddr,
+			"HTTPS_PROXY=http://" + proxyAddr,
+		}
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			// Non-zero exit from the agent is expected when pipelock blocks;
+			// except for the contained bypass beat, where non-zero means the
+			// direct-egress check connected or could not run honestly.
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				return fmt.Errorf("step %d exec: %w", step, err)
+			}
+			if step == 3 && lr.opts.Contained {
+				return fmt.Errorf("step %d contained bypass check failed: %w", step, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (lr *LiveRun) agentCommand(args []string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(lr.ctx, lr.agentBin, args...)
+	if !lr.opts.Contained {
+		return cmd, nil
+	}
+	if os.Geteuid() != 0 {
+		return nil, fmt.Errorf("contained toy-agent execution requires root (euid=%d)", os.Geteuid())
+	}
+	if err := configureContainedCommand(cmd, lr.opts.AgentUser); err != nil {
+		return nil, err
+	}
+	return cmd, nil
+}
+
+// HasReceipt reports whether the evidence JSONL contains at least one receipt
+// with the given verdict (e.g. "allow", "block").
+func (lr *LiveRun) HasReceipt(verdict string) bool {
+	for _, v := range lr.Verdicts() {
+		if strings.EqualFold(v, verdict) {
+			return true
+		}
+	}
+	return false
+}
+
+// Verdicts returns all receipt verdicts from the evidence JSONL.
+func (lr *LiveRun) Verdicts() []string {
+	// Close the recorder so evidence is flushed before reading.
+	if lr.rec != nil {
+		_ = lr.rec.Close()
+		lr.rec = nil
+	}
+
+	evidenceFile, err := singleLiveEvidenceFile(lr.evidenceDir)
+	if err != nil {
+		return nil
+	}
+
+	receipts, err := receipt.ExtractReceipts(evidenceFile)
+	if err != nil {
+		return nil
+	}
+
+	var verdicts []string
+	for _, r := range receipts {
+		verdicts = append(verdicts, receipt.NormalizeVerdict(r.ActionRecord.Verdict))
+	}
+	return verdicts
+}
+
+// AssembleAndVerify performs the full end-to-end: red-case calibration, witness
+// seal, packet assembly, and offline verification. Returns the VerifyReport.
+func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
+	// Ensure recorder is closed so evidence is flushed.
+	if lr.rec != nil {
+		_ = lr.rec.Close()
+		lr.rec = nil
+	}
+
+	// --- Red-case calibration ---
+	rcResult, redWitness, err := RunRedCaseCalibrationWithWitness(lr.ctx, lr.collectorPriv, lr.canaryID, lr.canaryValue)
+	if err != nil {
+		return VerifyReport{}, fmt.Errorf("red-case calibration: %w", err)
+	}
+	if err := lr.collector.AttachRedCase(lr.opts.RunNonce, rcResult); err != nil {
+		return VerifyReport{}, fmt.Errorf("attach red-case: %w", err)
+	}
+
+	// --- Seal witness ---
+	witness, err := lr.collector.SealAndSign(lr.opts.RunNonce, lr.collectorPriv, 2*time.Second)
+	if err != nil {
+		return VerifyReport{}, fmt.Errorf("seal witness: %w", err)
+	}
+
+	// --- Evidence file ---
+	evidenceFile, err := singleLiveEvidenceFile(lr.evidenceDir)
+	if err != nil {
+		return VerifyReport{}, fmt.Errorf("evidence file: %w", err)
+	}
+
+	// --- Assemble packet ---
+	// AssemblePacket creates a subdirectory named after the scenario ID inside
+	// outDir. VerifyRun expects the packet at <runDir>/packet/, so we pass
+	// runDir as outDir and then rename the result.
+	sc := lr.scenario
+	// Make re-runs on the same run dir idempotent: clear any stale assembly
+	// output (a prior packet/, or a partially-written scenario subdir from an
+	// aborted run) so the operator can re-run `run --run-dir X` without a
+	// manual reset. The manifest/witness JSON files are overwritten in place.
+	_ = os.RemoveAll(filepath.Join(runDir, "packet"))
+	_ = os.RemoveAll(filepath.Join(runDir, sc.ID))
+	asmResult, asmErr := AssembleFromEvidenceWithScenario(
+		evidenceFile,
+		hex.EncodeToString(lr.pipelockPub),
+		&sc,
+		runDir,
+		time.Now().UTC(),
+	)
+	if asmErr != nil {
+		return VerifyReport{}, fmt.Errorf("assemble: %w", asmErr)
+	}
+	// Rename the assembly output dir to the canonical "packet/" location
+	// expected by VerifyRun.
+	packetDir := filepath.Join(runDir, "packet")
+	if asmResult.PacketDir != packetDir {
+		if renameErr := os.Rename(asmResult.PacketDir, packetDir); renameErr != nil {
+			return VerifyReport{}, fmt.Errorf("rename packet dir: %w", renameErr)
+		}
+	}
+
+	// --- Write launch manifest ---
+	lmBytes, err := json.Marshal(lr.manifest)
+	if err != nil {
+		return VerifyReport{}, fmt.Errorf("marshal launch manifest: %w", err)
+	}
+	lmPath := filepath.Join(runDir, "launch-manifest.json")
+	if err := os.WriteFile(lmPath, lmBytes, 0o600); err != nil {
+		return VerifyReport{}, fmt.Errorf("write launch manifest: %w", err)
+	}
+
+	// --- Write witness ---
+	wBytes, err := json.Marshal(witness)
+	if err != nil {
+		return VerifyReport{}, fmt.Errorf("marshal witness: %w", err)
+	}
+	wPath := filepath.Join(runDir, "witness.json")
+	if err := os.WriteFile(wPath, wBytes, 0o600); err != nil {
+		return VerifyReport{}, fmt.Errorf("write witness: %w", err)
+	}
+
+	// --- Write red-case witness ---
+	redBytes, err := json.Marshal(redWitness)
+	if err != nil {
+		return VerifyReport{}, fmt.Errorf("marshal red witness: %w", err)
+	}
+	redPath := filepath.Join(runDir, redWitnessFile)
+	if err := os.WriteFile(redPath, redBytes, 0o600); err != nil {
+		return VerifyReport{}, fmt.Errorf("write red witness: %w", err)
+	}
+
+	// --- Verify ---
+	rep, err := VerifyRun(runDir, hex.EncodeToString(lr.orchestratorPub))
+	if err != nil {
+		return VerifyReport{}, fmt.Errorf("verify run: %w", err)
+	}
+
+	return rep, nil
+}
+
+// Close shuts down all infrastructure. Safe to call multiple times.
+func (lr *LiveRun) Close() {
+	lr.cancel()
+
+	if lr.proxySrv != nil {
+		_ = lr.proxySrv.Close()
+	}
+	if lr.proxyObj != nil {
+		lr.proxyObj.Close()
+	}
+	if lr.sc != nil {
+		lr.sc.Close()
+		lr.sc = nil
+	}
+	if lr.rec != nil {
+		_ = lr.rec.Close()
+		lr.rec = nil
+	}
+	if lr.safeSrv != nil {
+		_ = lr.safeSrv.Close()
+	}
+	if lr.collectorSrv != nil {
+		_ = lr.collectorSrv.Close()
+	}
+	if lr.evidenceDir != "" {
+		_ = os.RemoveAll(lr.evidenceDir)
+	}
+}
+
+// portFromAddr extracts the port string from a net.Addr.
+func portFromAddr(addr net.Addr) string {
+	_, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "0"
+	}
+	return port
+}
+
+// singleLiveEvidenceFile returns the lone evidence JSONL file from the dir.
+func singleLiveEvidenceFile(dir string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(dir, "evidence-proxy-*.jsonl"))
+	if err != nil {
+		return "", fmt.Errorf("globbing evidence: %w", err)
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no evidence files in %s", dir)
+	}
+	// Use the first one (there should be exactly one per recorder session).
+	return matches[0], nil
+}
+
+// liveRunConfigHash returns a deterministic policy hash for the live-run config.
+func liveRunConfigHash(cfg *config.Config) string {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		data = []byte(cfg.Mode)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}

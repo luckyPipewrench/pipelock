@@ -80,6 +80,60 @@ pipelock conductor store dump \
   --client-cert client.crt --client-key client.key --ca-file ca.pem
 ```
 
+## `store inspect-offline` and `store repair` (offline recovery)
+
+`store dump`, `stream inspect`, `stream status`, and `stream reset` are all
+client-side: they require a live Conductor reachable over mTLS. If a corrupt
+bundle store crashes the Conductor at startup, none of those live-server commands
+can run, so recovery needs an offline path.
+
+`store inspect-offline` and `store repair` operate directly on `--storage-dir`
+with **no running server**. `--storage-dir` is the same directory passed to
+`conductor serve`; the policy-bundle store lives under its `policy-bundles/`
+subdirectory.
+
+### `store inspect-offline`
+
+Read-only analysis of the on-disk bundle store. Reports each stream's head and
+chain, any record files that could not be parsed, and any provably-orphaned
+records that would fail startup validation. Always exits without modifying state.
+
+```sh
+pipelock conductor store inspect-offline --storage-dir /var/lib/pipelock/conductor
+```
+
+An *orphaned* record is one that is NOT reachable from its stream's head, NOT
+covered by a durable rollback marker, and NOT a tolerated historical fork sibling
+(a branch abandoned by an authorized rollback-then-publish cycle, which the store
+loads as audit history). Add `--json` for machine-readable output.
+
+### `store repair`
+
+Removes provably-orphaned records to unbrick startup. It mirrors the safety
+posture of `stream reset`:
+
+- **Without `--confirm` it is a dry run**: it lists what it would remove and
+  changes nothing.
+
+```sh
+pipelock conductor store repair --storage-dir /var/lib/pipelock/conductor
+```
+
+- **With `--confirm` it removes the orphans**, copying each removed record to a
+  backup directory first (default
+  `<storage-dir>/policy-bundles/offline-repair-backup/<timestamp>`; override with
+  `--backup-dir`).
+
+```sh
+pipelock conductor store repair --storage-dir /var/lib/pipelock/conductor --confirm
+```
+
+`store repair` NEVER removes a record reachable from a head, a rollback-covered
+record, a tolerated historical fork sibling, an unreadable record, an off-chain
+record whose own ancestry chain is corrupt (flagged for manual review), the
+stream-head markers, or the audit store. Records flagged for manual review are
+reported but left in place for the operator to investigate.
+
 ## Rollback authorization TTL enforcement
 
 The rollback authorization's `expires_at` field (set via `--ttl` at publish time,

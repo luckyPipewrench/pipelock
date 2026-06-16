@@ -242,9 +242,9 @@ func copyBounded(w io.Writer, r io.Reader) error {
 	return nil
 }
 
-// checkWritable confirms the target binary and its directory are writable by
-// the current user BEFORE any destructive step. Returns ErrNotWritable
-// otherwise so the caller can abort cleanly with a privileged-path message.
+// checkWritable confirms the target directory can accept the temp+rename update
+// path BEFORE any destructive step. Returns ErrNotWritable otherwise so the
+// caller can abort cleanly with a privileged-path message.
 func checkWritable(target string) error {
 	dir := filepath.Dir(target)
 	// Directory must be writable for the atomic temp+rename.
@@ -254,15 +254,6 @@ func checkWritable(target string) error {
 	}
 	_ = probe.Close()
 	_ = os.Remove(probe.Name())
-
-	// The target file itself must be writable if it already exists.
-	if info, statErr := os.Stat(target); statErr == nil && info.Mode().IsRegular() {
-		f, openErr := os.OpenFile(target, os.O_WRONLY, info.Mode().Perm()) // #nosec G304 -- target is the resolved running binary path
-		if openErr != nil {
-			return fmt.Errorf("%w: file %q: %s", ErrNotWritable, target, openErr.Error())
-		}
-		_ = f.Close()
-	}
 	return nil
 }
 

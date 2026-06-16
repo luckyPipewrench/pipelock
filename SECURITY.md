@@ -4,7 +4,7 @@ Pipelock is a security boundary for agent egress and tool traffic. This policy e
 
 ## Vulnerability Reporting
 
-Report security vulnerabilities privately through the [private security advisory form](/luckyPipewrench/pipelock/security/advisories/new).
+Report security vulnerabilities privately through the [private security advisory form](https://github.com/luckyPipewrench/pipelock/security/advisories/new).
 
 Do not open a public issue for a security vulnerability. Public reports may expose users before a fix or mitigation is available.
 
@@ -150,7 +150,7 @@ Receipt emission is evidence by default, not enforcement by itself. `flight_reco
 
 ## Reporter Credit
 
-Reporters are credited by name, handle, organisation, or anonymous credit in the published advisory unless they request otherwise. The published advisory is the canonical credit record.
+Reporters are credited by name, handle, organization, or anonymous credit in the published advisory unless they request otherwise. The published advisory is the canonical credit record.
 
 ## Advisory History
 

@@ -268,7 +268,9 @@ func writeFleetReportEnvelopeTo(w io.Writer, envelope any) error {
 	if err != nil {
 		return err
 	}
-	if _, err := w.Write(data); err != nil {
+	// io.Copy loops until all bytes are written, guarding against a short write
+	// that would emit a truncated DSSE envelope and break offline verification.
+	if _, err := io.Copy(w, bytes.NewReader(data)); err != nil {
 		return fmt.Errorf("write fleet report to stdout: %w", err)
 	}
 	return nil

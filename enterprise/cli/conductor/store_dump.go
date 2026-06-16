@@ -27,6 +27,8 @@ func storeCmd() *cobra.Command {
 		Short: "Inspect Conductor control-plane store state",
 	}
 	cmd.AddCommand(storeDumpCmd())
+	cmd.AddCommand(storeInspectOfflineCmd())
+	cmd.AddCommand(storeRepairOfflineCmd())
 	return cmd
 }
 

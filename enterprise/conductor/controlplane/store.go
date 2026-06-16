@@ -665,12 +665,16 @@ func (s *FileBundleStore) loadStreamHeadRecordsLocked() error {
 }
 
 // verifyStreamChainsLocked walks each stream head back through
-// previous_bundle_hash, ensuring every non-superseded same-stream record on disk
-// is reachable from the selected head in strictly decreasing version order. Gap
-// publication (e.g., v1 then v3 with previous_bundle_hash=v1) is explicitly
-// allowed. Authorized rollback keeps superseded records on disk for audit, so a
-// same-stream record may be historical without being reachable when a durable
-// rollback marker covers its version.
+// previous_bundle_hash, ensuring every same-stream record on disk is either
+// reachable from the selected head in strictly decreasing version order, covered
+// by a durable rollback marker, or a tolerated historical fork sibling (see
+// isToleratedHistoricalForkLocked). Gap publication (e.g., v1 then v3 with
+// previous_bundle_hash=v1) is explicitly allowed.
+//
+// Genuine corruption stays fatal: a record whose chain references a missing
+// previous_bundle_hash, an ancestor in a different stream, a non-decreasing
+// version, or a cycle is rejected, as is a head whose own chain is broken and a
+// record that does not share a common ancestor with the head.
 //
 // The seen-map check is structurally unreachable for chains that pass the
 // strict-decrease check (a decreasing integer sequence cannot loop), but is
@@ -680,30 +684,8 @@ func (s *FileBundleStore) loadStreamHeadRecordsLocked() error {
 func (s *FileBundleStore) verifyStreamChainsLocked() error {
 	for streamKey, head := range s.streams {
 		seen := make(map[string]struct{}, 4)
-		cursor := head
-		for {
-			if _, cycle := seen[cursor.BundleHash]; cycle {
-				return fmt.Errorf("%w: stream %q chain has cycle at %s",
-					ErrInvalidStoreRecord, streamKey, cursor.BundleHash)
-			}
-			seen[cursor.BundleHash] = struct{}{}
-			if cursor.Bundle.PreviousBundleHash == "" {
-				break
-			}
-			prev, ok := s.records[cursor.Bundle.PreviousBundleHash]
-			if !ok {
-				return fmt.Errorf("%w: stream %q references missing previous_bundle_hash %s",
-					ErrInvalidStoreRecord, streamKey, cursor.Bundle.PreviousBundleHash)
-			}
-			if prev.StreamKey != cursor.StreamKey {
-				return fmt.Errorf("%w: stream %q ancestor %s belongs to different stream",
-					ErrInvalidStoreRecord, streamKey, prev.BundleHash)
-			}
-			if prev.Bundle.Version >= cursor.Bundle.Version {
-				return fmt.Errorf("%w: stream %q ancestor %s version %d does not decrease from %d",
-					ErrInvalidStoreRecord, streamKey, prev.BundleHash, prev.Bundle.Version, cursor.Bundle.Version)
-			}
-			cursor = prev
+		if err := s.walkChainLocked(streamKey, head, seen); err != nil {
+			return err
 		}
 		for hash, record := range s.records {
 			if record.StreamKey != streamKey {
@@ -715,11 +697,132 @@ func (s *FileBundleStore) verifyStreamChainsLocked() error {
 			if s.rollbackSupersedesRecordLocked(record) {
 				continue
 			}
+			tolerated, err := s.isToleratedHistoricalForkLocked(streamKey, record, head, seen)
+			if err != nil {
+				return err
+			}
+			if tolerated {
+				continue
+			}
 			return fmt.Errorf("%w: stream %q record %s is not reachable from stream head %s",
 				ErrInvalidStoreRecord, streamKey, hash, head.BundleHash)
 		}
 	}
 	return nil
+}
+
+// walkChainLocked follows record's previous_bundle_hash chain to its root,
+// recording every visited bundle hash in seen, and enforcing the structural
+// invariants of a valid chain: no cycle, every previous_bundle_hash present in
+// the store, every ancestor in the same stream, and strictly decreasing version
+// along the chain. Any violation is a genuine-corruption error. On success seen
+// holds the full set of hashes on this chain, which the fork-sibling check reuses
+// to test whether a sibling shares an ancestor with the head.
+func (s *FileBundleStore) walkChainLocked(streamKey string, record PublishedBundle, seen map[string]struct{}) error {
+	cursor := record
+	for {
+		if _, cycle := seen[cursor.BundleHash]; cycle {
+			return fmt.Errorf("%w: stream %q chain has cycle at %s",
+				ErrInvalidStoreRecord, streamKey, cursor.BundleHash)
+		}
+		seen[cursor.BundleHash] = struct{}{}
+		if cursor.Bundle.PreviousBundleHash == "" {
+			return nil
+		}
+		prev, ok := s.records[cursor.Bundle.PreviousBundleHash]
+		if !ok {
+			return fmt.Errorf("%w: stream %q references missing previous_bundle_hash %s",
+				ErrInvalidStoreRecord, streamKey, cursor.Bundle.PreviousBundleHash)
+		}
+		if prev.StreamKey != cursor.StreamKey {
+			return fmt.Errorf("%w: stream %q ancestor %s belongs to different stream",
+				ErrInvalidStoreRecord, streamKey, prev.BundleHash)
+		}
+		if prev.Bundle.Version >= cursor.Bundle.Version {
+			return fmt.Errorf("%w: stream %q ancestor %s version %d does not decrease from %d",
+				ErrInvalidStoreRecord, streamKey, prev.BundleHash, prev.Bundle.Version, cursor.Bundle.Version)
+		}
+		cursor = prev
+	}
+}
+
+// isToleratedHistoricalForkLocked decides whether an off-head, rollback-uncovered
+// same-stream record is a legitimately-superseded fork sibling that should be
+// treated as historical (non-fatal) rather than as corruption that bricks startup.
+//
+// This closes the gap where repeated "rollback-to-vN then publish" cycles leave
+// abandoned fork branches below the live head: the durable rollback marker records
+// only the LAST superseded version, so an earlier abandoned sibling (e.g. a v5 that
+// diverged from v3 while the head later advanced to v6 with the marker still at
+// superseded=4) is neither on the head chain nor covered by the marker. Such a
+// sibling is genuine audit history, not a broken store.
+//
+// The predicate is deliberately narrow. ALL of these must hold; any failure is
+// either fatal corruption (returned as err) or a non-tolerated orphan (false, nil):
+//
+//  1. The stream has a durable rollback marker. A fork sibling can only arise as a
+//     byproduct of authorized rollback, which always leaves a marker; tolerating an
+//     off-chain record on a stream that never underwent rollback would mask a graft.
+//  2. The record's version is strictly below the head version. The head is the
+//     highest forward version; an off-chain record at or above the head version is a
+//     real conflict (two live heads), not a superseded historical sibling.
+//  3. The record's own ancestry chain is structurally valid — walking it back
+//     re-runs every corruption check (missing prev, cross-stream, non-monotonic,
+//     cycle). A broken sibling chain is FATAL, returned as err.
+//  4. The record's chain rejoins the head's chain at a common ancestor. This proves
+//     the sibling forked from a shared point on THIS stream rather than being a
+//     disconnected graft.
+func (s *FileBundleStore) isToleratedHistoricalForkLocked(
+	streamKey string,
+	record PublishedBundle,
+	head PublishedBundle,
+	headSeen map[string]struct{},
+) (bool, error) {
+	if _, ok := s.rollbackHeads[streamKey]; !ok {
+		return false, nil
+	}
+	if record.Bundle.Version >= head.Bundle.Version {
+		return false, nil
+	}
+	// Walk the sibling's chain into its own seen set so a broken sibling chain is
+	// reported as corruption, and detect whether it rejoins the head chain at a
+	// shared ancestor. Each link is validated with the same structural checks the
+	// head walk applies; once a validated parent is found on the head chain the
+	// sibling has rejoined a chain the head walk already verified, so it is accepted.
+	forkSeen := make(map[string]struct{}, 4)
+	cursor := record
+	for {
+		if _, cycle := forkSeen[cursor.BundleHash]; cycle {
+			return false, fmt.Errorf("%w: stream %q fork sibling chain has cycle at %s",
+				ErrInvalidStoreRecord, streamKey, cursor.BundleHash)
+		}
+		forkSeen[cursor.BundleHash] = struct{}{}
+		if cursor.Bundle.PreviousBundleHash == "" {
+			// Reached a stream root without crossing the head chain: the sibling does
+			// not share an ancestor with the head, so it is a disconnected graft, not a
+			// tolerable historical fork.
+			return false, nil
+		}
+		prev, ok := s.records[cursor.Bundle.PreviousBundleHash]
+		if !ok {
+			return false, fmt.Errorf("%w: stream %q references missing previous_bundle_hash %s",
+				ErrInvalidStoreRecord, streamKey, cursor.Bundle.PreviousBundleHash)
+		}
+		if prev.StreamKey != cursor.StreamKey {
+			return false, fmt.Errorf("%w: stream %q ancestor %s belongs to different stream",
+				ErrInvalidStoreRecord, streamKey, prev.BundleHash)
+		}
+		if prev.Bundle.Version >= cursor.Bundle.Version {
+			return false, fmt.Errorf("%w: stream %q ancestor %s version %d does not decrease from %d",
+				ErrInvalidStoreRecord, streamKey, prev.BundleHash, prev.Bundle.Version, cursor.Bundle.Version)
+		}
+		if _, shared := headSeen[prev.BundleHash]; shared {
+			// The validated parent is on the head chain: the sibling forks from a
+			// shared, head-verified ancestor. Accept it as historical.
+			return true, nil
+		}
+		cursor = prev
+	}
 }
 
 func (s *FileBundleStore) rollbackSupersedesRecordLocked(record PublishedBundle) bool {

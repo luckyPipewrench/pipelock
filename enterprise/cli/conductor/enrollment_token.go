@@ -282,16 +282,19 @@ func runEnrollmentTokenStatus(cmd *cobra.Command, opts enrollmentTokenReadOption
 	if err != nil {
 		return err
 	}
-	if opts.jsonOut {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(body))
-		return nil
-	}
 	var parsed enrollmentTokensResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return fmt.Errorf("decode enrollment tokens response: %w", err)
 	}
+	// Check not-found BEFORE the --json early return so `status --json` fails
+	// (non-zero exit) on a missing token instead of printing an empty result
+	// set and exiting 0, which would silently break scripts.
 	if parsed.Count == 0 {
 		return fmt.Errorf("no enrollment token found with id %q", opts.tokenID)
+	}
+	if opts.jsonOut {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(body))
+		return nil
 	}
 	return writeEnrollmentTokenTable(cmd, parsed)
 }

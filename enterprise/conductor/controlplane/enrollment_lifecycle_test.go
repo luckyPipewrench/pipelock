@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -146,7 +147,9 @@ func TestHandlerEnrollmentTokenListAndStatusNeverLeakSecret(t *testing.T) {
 	if statusW.Code != http.StatusOK {
 		t.Fatalf("status status = %d body=%s, want 200", statusW.Code, statusW.Body.String())
 	}
-	if strings.Contains(statusW.Body.String(), minted.Token) || strings.Contains(statusW.Body.String(), "token_hash") {
+	if strings.Contains(statusW.Body.String(), minted.Token) ||
+		strings.Contains(statusW.Body.String(), "token_hash") ||
+		strings.Contains(statusW.Body.String(), `"token"`) {
 		t.Fatalf("status response leaked secret: %s", statusW.Body.String())
 	}
 }
@@ -224,6 +227,95 @@ func TestHandlerEnrollmentTokenRevokeInvalidatesPendingToken(t *testing.T) {
 	}
 }
 
+func TestEnrollmentTokenRecordStateDerivation(t *testing.T) {
+	consumed := testNow
+	revoked := testNow
+	cases := []struct {
+		name string
+		rec  enrollmentTokenRecord
+		now  time.Time
+		want EnrollmentTokenState
+	}{
+		{"pending", enrollmentTokenRecord{ExpiresAt: testNow.Add(time.Hour)}, testNow, EnrollmentTokenStatePending},
+		{"expired", enrollmentTokenRecord{ExpiresAt: testNow.Add(time.Hour)}, testNow.Add(2 * time.Hour), EnrollmentTokenStateExpired},
+		{"consumed-wins-past-expiry", enrollmentTokenRecord{ExpiresAt: testNow.Add(time.Hour), ConsumedAt: &consumed}, testNow.Add(2 * time.Hour), EnrollmentTokenStateConsumed},
+		{"revoked-wins-over-expiry", enrollmentTokenRecord{ExpiresAt: testNow.Add(time.Hour), RevokedAt: &revoked}, testNow.Add(2 * time.Hour), EnrollmentTokenStateRevoked},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.rec.tokenState(tc.now); got != tc.want {
+				t.Fatalf("tokenState() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandlerEnrollmentTokenListAppliesFiltersAndLimit(t *testing.T) {
+	handler, _ := newLifecycleTestHandler(t, 0)
+	mintToken(t, handler, "tok-a", testNow.Add(time.Hour))
+	mintToken(t, handler, "tok-b", testNow.Add(time.Hour))
+
+	// limit=1 bounds the result; the fleet_id filter matches both minted tokens.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, EnrollmentTokensPath+"?fleet_id=prod&limit=1", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("filtered list status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp listEnrollmentTokensResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode filtered list: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Fatalf("limit=1 returned count=%d, want 1", resp.Count)
+	}
+
+	// A non-matching filter yields an empty set, not an error.
+	missReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, EnrollmentTokensPath+"?fleet_id=nope", nil)
+	missReq.Header.Set("Authorization", "Bearer admin-token")
+	missW := httptest.NewRecorder()
+	handler.ServeHTTP(missW, missReq)
+	if missW.Code != http.StatusOK {
+		t.Fatalf("non-matching filter status = %d, want 200", missW.Code)
+	}
+}
+
+func TestHandlerEnrollmentTokenListRejectsBadQueryParams(t *testing.T) {
+	handler, _ := newLifecycleTestHandler(t, 0)
+	for _, q := range []string{"?limit=0", "?limit=999999", "?limit=abc", "?org_id=bad%20id"} {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, EnrollmentTokensPath+q, nil)
+		req.Header.Set("Authorization", "Bearer admin-token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("query %q status = %d body=%s, want 400", q, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestHandlerEnrollmentTokenMethodNotAllowed(t *testing.T) {
+	handler, _ := newLifecycleTestHandler(t, 0)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, EnrollmentTokensPath, strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT status = %d, want 405", w.Code)
+	}
+}
+
+func TestHandlerEnrollmentTokenRevokeRejectsBadBody(t *testing.T) {
+	handler, _ := newLifecycleTestHandler(t, 0)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, EnrollmentTokensPath, strings.NewReader("not-json"))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("revoke bad body status = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+}
+
 func TestFileEnrollmentStoreRevokeIsDurableAndConsumedNotRevokable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enrollments.json")
 	store, err := OpenFileEnrollmentStore(path)
@@ -257,7 +349,7 @@ func TestFileEnrollmentStoreRevokeIsDurableAndConsumedNotRevokable(t *testing.T)
 	}
 
 	// A second store cannot re-revoke a revoked token.
-	if _, err := reopened.RevokeEnrollmentToken(context.Background(), RevokeEnrollmentTokenRequest{TokenID: "durable-token", Now: testNow}); err == nil {
-		t.Fatalf("re-revoke after restart: want ErrEnrollmentTokenNotPending, got nil")
+	if _, err := reopened.RevokeEnrollmentToken(context.Background(), RevokeEnrollmentTokenRequest{TokenID: "durable-token", Now: testNow}); !errors.Is(err, ErrEnrollmentTokenNotPending) {
+		t.Fatalf("re-revoke after restart error = %v, want ErrEnrollmentTokenNotPending", err)
 	}
 }

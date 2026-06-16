@@ -302,6 +302,14 @@ already dead), and a revoked token fails closed if a leaked copy is later
 presented to `POST /api/v1/conductor/enroll`. The revocation is durable across a
 Conductor restart.
 
+Note the connection flags differ between `mint` and the read commands. `mint`
+takes `--conductor-url`, `--admin-token-file`, `--server-ca`, `--tls-cert`, and
+`--tls-key`; `list`, `status`, and `revoke` take `--server`, `--token-file`,
+`--ca-file`, `--client-cert`, and `--client-key`. The read commands share the
+common operator-client flags used across all read endpoints (`fleet status`,
+`audit query`), while `mint` is a dedicated write operation with its own options.
+Use each command's flag names as written above rather than copying them across.
+
 ## Operator Bearer Tokens (generation and rotation)
 
 The publisher, auditor, and admin bearer tokens are read from files on

@@ -81,6 +81,13 @@ type DemoOpts struct {
 
 	// Color enables ANSI color in the mediator timeline output.
 	Color bool
+
+	// OrchestratorKeyPath, when non-empty, points at a hex-encoded ed25519
+	// private key used as the run's orchestrator (trust-root) signer instead of
+	// a freshly generated ephemeral key. This is how a run signs under the
+	// stable published demo key so "verify with our published key" is real. An
+	// empty value keeps the ephemeral per-run key (the dev default).
+	OrchestratorKeyPath string
 }
 
 // defaultDemoNonce is used when DemoOpts.RunNonce is empty.
@@ -149,11 +156,12 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 
 	// --- Start live run ---
 	lr, err := StartLiveRun(ctx, LiveRunOpts{
-		Contained:   opts.Contained,
-		ScenarioID:  opts.ScenarioID,
-		RunNonce:    opts.RunNonce,
-		ToyAgentBin: agentBin,
-		WebToolBin:  webtoolBin,
+		Contained:           opts.Contained,
+		ScenarioID:          opts.ScenarioID,
+		RunNonce:            opts.RunNonce,
+		ToyAgentBin:         agentBin,
+		WebToolBin:          webtoolBin,
+		OrchestratorKeyPath: opts.OrchestratorKeyPath,
 	})
 	if err != nil {
 		return VerifyReport{}, fmt.Errorf("start live run: %w", err)

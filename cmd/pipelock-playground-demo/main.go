@@ -15,8 +15,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -52,17 +55,124 @@ Pipelock Playground.`,
 	root.AddCommand(newResetCmd())
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newFallbackCmd())
+	root.AddCommand(newBundleCmd())
+	root.AddCommand(newKeygenOrchestratorCmd())
 
 	return root
 }
 
+// resolveOrchestratorKeyPath decides which orchestrator signing key a run uses.
+// An explicitly-set --orchestrator-key-file is honored verbatim (the load fails
+// closed if unreadable). When the flag is unset, the installed stable key is
+// used automatically if present, otherwise an ephemeral per-run key (empty path).
+func resolveOrchestratorKeyPath(flagVal string, changed bool) string {
+	if changed {
+		return flagVal
+	}
+	def := playground.DefaultOrchestratorKeyPath()
+	if def == "" {
+		return ""
+	}
+	if _, err := os.Stat(def); err == nil {
+		return def
+	}
+	return ""
+}
+
+func newKeygenOrchestratorCmd() *cobra.Command {
+	var (
+		out   string
+		force bool
+	)
+	cmd := &cobra.Command{
+		Use:   "keygen-orchestrator",
+		Short: "Generate the stable orchestrator signing key for the playground demo",
+		Long: `Generates the stable "Pipelock Playground" demo orchestrator keypair and
+writes the hex-encoded private key to --out (default: the standard config path).
+Prints the public key hex to publish as PublishedOrchestratorPubKeyHex.
+
+The demo key has no security stakes (it proves the mechanism, not an identity),
+but it is generated once and never rotated so "verify with our published key"
+stays stable. This command refuses to overwrite an existing key unless --force.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if out == "" {
+				out = playground.DefaultOrchestratorKeyPath()
+			}
+			if out == "" {
+				return fmt.Errorf("could not determine a key path; pass --out")
+			}
+			pubHex, err := playground.GenerateOrchestratorKey(out, force)
+			if err != nil {
+				return err
+			}
+			w := cmd.OutOrStdout()
+			_, _ = fmt.Fprintf(w, "wrote orchestrator private key: %s\n", out)
+			_, _ = fmt.Fprintf(w, "public key (publish as PublishedOrchestratorPubKeyHex):\n  %s\n", pubHex)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&out, "out", "", "output path for the private key (default: standard config path)")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing key (rotates the stable demo key)")
+	return cmd
+}
+
+func newBundleCmd() *cobra.Command {
+	var (
+		orchKey string
+		outPath string
+	)
+	cmd := &cobra.Command{
+		Use:   "bundle <rundir>",
+		Short: "Generate the viewer bundle.json from a verified demo run",
+		Long: `Generates the offline-verifiable viewer bundle from a completed run
+directory. The scripted narrative is hydrated with the run's REAL signed proof:
+the receipt chain, the collector witness, the host-containment witness (contained
+runs), and the offline verification result. The run must verify under the
+published orchestrator key (or an explicit --orchestrator-key), so the bundle can
+never overstate what was proven.
+
+Output goes to --out (default: stdout).`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			b, err := playground.GenerateBundle(args[0], orchKey)
+			if err != nil {
+				return err
+			}
+			// SetEscapeHTML(false): the chat HTML carries literal <code> tags;
+			// the default encoder would emit <code>, which is valid but
+			// unreadable and diverges from the viewer's hand-authored bundle.
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			enc.SetEscapeHTML(false)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(b); err != nil {
+				return fmt.Errorf("marshal bundle: %w", err)
+			}
+			data := bytes.TrimRight(buf.Bytes(), "\n")
+			if outPath == "" {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+				return nil
+			}
+			if err := os.WriteFile(filepath.Clean(outPath), data, 0o600); err != nil {
+				return fmt.Errorf("write bundle: %w", err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", outPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&orchKey, "orchestrator-key", playground.PublishedOrchestratorPubKeyHex, "hex-encoded orchestrator Ed25519 public key (trust root)")
+	cmd.Flags().StringVar(&outPath, "out", "", "output file (default: stdout)")
+	return cmd
+}
+
 func newRunCmd() *cobra.Command {
 	var (
-		contained bool
-		runDir    string
-		scenario  string
-		color     bool
-		runNonce  string
+		contained   bool
+		runDir      string
+		scenario    string
+		color       bool
+		runNonce    string
+		orchKeyFile string
 	)
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -83,11 +193,12 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 				playground.SetContainmentHook(playground.NewRealContainmentHook(""))
 			}
 			rep, err := playground.RunDemo(cmd.Context(), w, playground.DemoOpts{
-				Contained:  contained,
-				ScenarioID: scenario,
-				RunNonce:   runNonce,
-				RunDir:     runDir,
-				Color:      color,
+				Contained:           contained,
+				ScenarioID:          scenario,
+				RunNonce:            runNonce,
+				RunDir:              runDir,
+				Color:               color,
+				OrchestratorKeyPath: resolveOrchestratorKeyPath(orchKeyFile, cmd.Flags().Changed("orchestrator-key-file")),
 			})
 			if err != nil {
 				return err
@@ -99,6 +210,7 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 		},
 	}
 	cmd.Flags().BoolVar(&contained, "contained", false, "run in kernel-containment mode (requires Task 7 hook)")
+	cmd.Flags().StringVar(&orchKeyFile, "orchestrator-key-file", "", "path to the stable orchestrator signing key (default: the installed published demo key, else an ephemeral per-run key)")
 	cmd.Flags().StringVar(&runDir, "run-dir", "", "directory for run artifacts (required)")
 	cmd.Flags().StringVar(&scenario, "scenario", playground.LiveDemoScenarioID, "scenario ID to run")
 	cmd.Flags().BoolVar(&color, "color", false, "enable ANSI color output")
@@ -164,8 +276,7 @@ Exit code 0 = every check passed. Non-zero = at least one check failed.`,
 			return fmt.Errorf("VERIFY FAILED: one or more checks did not pass")
 		},
 	}
-	cmd.Flags().StringVar(&orchKey, "orchestrator-key", "", "hex-encoded orchestrator Ed25519 public key (trust root)")
-	_ = cmd.MarkFlagRequired("orchestrator-key")
+	cmd.Flags().StringVar(&orchKey, "orchestrator-key", playground.PublishedOrchestratorPubKeyHex, "hex-encoded orchestrator Ed25519 public key (trust root)")
 	return cmd
 }
 
@@ -192,7 +303,6 @@ Exit 0 = recorded run verifies. Non-zero = verification failed.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&orchKey, "orchestrator-key", "", "hex-encoded orchestrator Ed25519 public key (trust root)")
-	_ = cmd.MarkFlagRequired("orchestrator-key")
+	cmd.Flags().StringVar(&orchKey, "orchestrator-key", playground.PublishedOrchestratorPubKeyHex, "hex-encoded orchestrator Ed25519 public key (trust root)")
 	return cmd
 }

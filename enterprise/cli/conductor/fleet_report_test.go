@@ -10,8 +10,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,6 +305,104 @@ func TestRunFleetReportWritesVerifiedEnvelope(t *testing.T) {
 	if verified.Statement.Predicate.ReportID == "" || verified.Statement.Predicate.Summary.TotalActions != 1 {
 		t.Fatalf("verified predicate = %+v", verified.Statement.Predicate)
 	}
+}
+
+func TestRunFleetReportStdoutRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := controlplane.OpenSQLiteAuditStore(context.Background(), filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteAuditStore() error = %v", err)
+	}
+	auditPub, auditPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(audit) error = %v", err)
+	}
+	if _, err := store.IngestAuditBatch(context.Background(), cliTestAcceptedAuditBatch(t, auditPriv)); err != nil {
+		t.Fatalf("IngestAuditBatch() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close(store) error = %v", err)
+	}
+
+	reportPub, reportPriv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(report) error = %v", err)
+	}
+	keyPath := writeFleetReportKeyFile(t, dir, "report.key", "report-key-1", signing.PurposeFleetReportSigning, reportPriv)
+
+	cmd := fleetReportCmd()
+	cmd.SetContext(context.Background())
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	err = runFleetReport(cmd, fleetReportOptions{
+		storageDir:       dir,
+		orgID:            "org-main",
+		fleetID:          "prod",
+		from:             "2026-06-13T00:00:00Z",
+		to:               "2026-06-13T01:00:00Z",
+		signingKey:       keyPath,
+		out:              "-",
+		conductorID:      "conductor-1",
+		trustedAuditKeys: []string{"id=audit-key-1,inline=" + hex.EncodeToString(auditPub) + ",org=org-main,fleet=prod,instance=pl-1"},
+		limit:            10,
+		signingKeyID:     "stdout-report-key",
+	})
+	if err != nil {
+		t.Fatalf("runFleetReport(--out -) error = %v", err)
+	}
+
+	// stdout must be a clean DSSE envelope with no summary text mixed in;
+	// the human-readable summary belongs on stderr.
+	if strings.Contains(stdout.String(), "fleet receipt report written") {
+		t.Fatalf("stdout leaked summary text: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "fleet receipt report written: <stdout>") || !strings.Contains(stderr.String(), "total_actions: 1") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+
+	envelopeBytes := stdout.Bytes()
+	var envelope fleetreceipt.Envelope
+	if err := json.Unmarshal(envelopeBytes, &envelope); err != nil {
+		t.Fatalf("Unmarshal(stdout envelope) error = %v", err)
+	}
+	trusted := map[string]ed25519.PublicKey{"stdout-report-key": reportPub}
+	verified, err := fleetreceipt.VerifyEnvelope(envelope, trusted)
+	if err != nil {
+		t.Fatalf("VerifyEnvelope(stdout) error = %v", err)
+	}
+	if verified.Statement.Predicate.Summary.TotalActions != 1 {
+		t.Fatalf("verified predicate = %+v", verified.Statement.Predicate)
+	}
+
+	// Tamper one byte of the signed payload: verification must fail closed.
+	tampered := envelope
+	payloadRaw, err := base64.StdEncoding.DecodeString(tampered.Payload)
+	if err != nil {
+		t.Fatalf("DecodeString(payload) error = %v", err)
+	}
+	payloadRaw[0] ^= 0x01
+	tampered.Payload = base64.StdEncoding.EncodeToString(payloadRaw)
+	if _, err := fleetreceipt.VerifyEnvelope(tampered, trusted); err == nil {
+		t.Fatal("VerifyEnvelope(tampered) succeeded, want fail-closed error")
+	}
+}
+
+func TestWriteFleetReportEnvelopeToPropagatesWriterError(t *testing.T) {
+	err := writeFleetReportEnvelopeTo(failingWriter{}, map[string]any{"ok": 1})
+	if err == nil || !strings.Contains(err.Error(), "write fleet report to stdout") {
+		t.Fatalf("writeFleetReportEnvelopeTo(failing writer) error = %v, want write error", err)
+	}
+	if err := writeFleetReportEnvelopeTo(&bytes.Buffer{}, map[string]any{"bad": make(chan int)}); err == nil ||
+		!strings.Contains(err.Error(), "marshal fleet report envelope") {
+		t.Fatalf("writeFleetReportEnvelopeTo(unmarshalable) error = %v, want marshal error", err)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("boom")
 }
 
 func TestRunFleetReportPropagatesWriteFailure(t *testing.T) {

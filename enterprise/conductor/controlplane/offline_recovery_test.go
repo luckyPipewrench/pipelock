@@ -102,6 +102,39 @@ func TestInspectOfflineStoreCleanStoreHasNoOrphans(t *testing.T) {
 	}
 }
 
+func TestInspectOfflineStoreAppliesActiveRollbackMarkerToHead(t *testing.T) {
+	pb := newOfflineStoreDir(t)
+	signer := newTestSigner(t)
+	recs := buildForkRecords(t, signer)
+	bundlesDir := filepath.Join(pb, bundlesDirName)
+	headsDir := filepath.Join(pb, streamHeadsDirName)
+	for _, v := range []uint64{1, 2, 3, 4} {
+		writeForkRecord(t, bundlesDir, recs[v].bundle, testNow)
+	}
+	writeForkRollbackMarker(t, headsDir, PublishedBundle{
+		Bundle: recs[3].bundle, BundleHash: recs[3].hash, StreamKey: recs[3].stream,
+	}, testNow.Add(time.Hour))
+
+	report, err := InspectOfflineStore(pb)
+	if err != nil {
+		t.Fatalf("InspectOfflineStore() error = %v", err)
+	}
+	if len(report.Streams) != 1 {
+		t.Fatalf("streams = %d, want 1", len(report.Streams))
+	}
+	stream := report.Streams[0]
+	if stream.HeadBundleHash != recs[3].hash || stream.HeadVersion != 3 {
+		t.Fatalf("offline head version=%d hash=%s, want rollback target v3 %s",
+			stream.HeadVersion, stream.HeadBundleHash, recs[3].hash)
+	}
+	if stream.MaxVersion != 4 {
+		t.Fatalf("max version = %d, want 4", stream.MaxVersion)
+	}
+	if len(report.Orphans) != 0 {
+		t.Fatalf("orphans = %+v, want none (superseded v4 is rollback-covered)", report.Orphans)
+	}
+}
+
 func TestRepairOfflineStoreDryRunChangesNothing(t *testing.T) {
 	pb := newOfflineStoreDir(t)
 	signer := newTestSigner(t)

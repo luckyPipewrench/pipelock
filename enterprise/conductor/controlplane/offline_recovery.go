@@ -189,7 +189,18 @@ func loadOfflineStore(policyBundlesDir string) (*FileBundleStore, []OfflineUnrea
 			unreadable = append(unreadable, OfflineUnreadableRecord{FileName: name, Err: err.Error()})
 			continue
 		}
+		rawHead, ok := store.streams[marker.StreamKey]
+		if !ok {
+			unreadable = append(unreadable, OfflineUnreadableRecord{
+				FileName: name,
+				Err:      "stream-head marker references unknown stream",
+			})
+			continue
+		}
 		store.rollbackHeads[marker.StreamKey] = marker
+		if rawHead.Bundle.Version <= marker.SupersededVersion {
+			store.streams[marker.StreamKey] = target
+		}
 	}
 	return store, unreadable, nil
 }

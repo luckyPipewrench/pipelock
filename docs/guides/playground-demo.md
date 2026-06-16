@@ -86,7 +86,7 @@ a separate probe phase drops to the `pipelock-agent` uid to build the signed hos
 witness. This split is deliberate: the proxy's allow/block decision does not depend on the
 agent's uid, and on a host with global owner-match containment the contained user cannot reach
 the demo's ephemeral lab proxy at all, so running the mediated steps contained would simply
-time out. Off a prepared host the contained run fails loudly — it never silently falls back to
+time out. Off a prepared host, the contained run fails loudly — it never silently falls back to
 uncontained while claiming containment.
 
 ## Verify it yourself

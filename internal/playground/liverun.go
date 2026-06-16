@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -108,6 +107,8 @@ type LiveRun struct {
 	// Canary
 	canaryID    string
 	canaryValue string
+
+	egressProbe func(targets []string, asAgent bool) ([]ProbeResult, error)
 }
 
 // StartLiveRun boots a complete live demo environment: lab targets, a real
@@ -288,6 +289,12 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 	exfilURL := fmt.Sprintf("http://%s:%s/", liveRunExfilHost, collectorPort)
 
 	for _, step := range steps {
+		switch step {
+		case 1, 2:
+		default:
+			return fmt.Errorf("unsupported mediated step %d", step)
+		}
+
 		// The mediated steps (1 = allow, 2 = body-DLP block) always run as the
 		// operator through the demo's lab proxy. Under the split-proof model the
 		// kernel-containment property is proven separately by the
@@ -323,13 +330,7 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			// Non-zero exit from the agent is expected when pipelock blocks the
-			// red POST. Only non-ExitError failures (binary missing, etc.) are
-			// real errors.
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) {
-				return fmt.Errorf("step %d exec: %w", step, err)
-			}
+			return fmt.Errorf("step %d exec: %w", step, err)
 		}
 	}
 	return nil
@@ -391,6 +392,11 @@ func decodeProbeResults(stdout []byte, expectedTargets []string) ([]ProbeResult,
 // contained position (all must be blocked). The witness is signed by the
 // orchestrator key, the run's trust root.
 func (lr *LiveRun) buildHostContainmentWitness() (HostContainmentWitness, error) {
+	runProbe := lr.runEgressProbe
+	if lr.egressProbe != nil {
+		runProbe = lr.egressProbe
+	}
+
 	ctrlLn, err := (&net.ListenConfig{}).Listen(lr.ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return HostContainmentWitness{}, fmt.Errorf("control listener: %w", err)
@@ -408,7 +414,7 @@ func (lr *LiveRun) buildHostContainmentWitness() (HostContainmentWitness, error)
 	ctrlTarget := ctrlLn.Addr().String()
 
 	// Operator probe of the control target: proves the probe can see "open".
-	opProbes, err := lr.runEgressProbe([]string{ctrlTarget}, false)
+	opProbes, err := runProbe([]string{ctrlTarget}, false)
 	if err != nil {
 		return HostContainmentWitness{}, fmt.Errorf("operator control probe: %w", err)
 	}
@@ -416,7 +422,7 @@ func (lr *LiveRun) buildHostContainmentWitness() (HostContainmentWitness, error)
 	// Contained-agent probes: control target first, then the real suite.
 	realTargets := DirectEgressTargets()
 	agentTargets := append([]string{ctrlTarget}, realTargets...)
-	agProbes, err := lr.runEgressProbe(agentTargets, true)
+	agProbes, err := runProbe(agentTargets, true)
 	if err != nil {
 		return HostContainmentWitness{}, fmt.Errorf("contained agent probe: %w", err)
 	}

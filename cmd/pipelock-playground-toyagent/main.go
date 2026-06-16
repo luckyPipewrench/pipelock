@@ -5,14 +5,18 @@
 // deterministic scripted agent used in the Pipelock Playground live demo.
 //
 // The agent holds a synthetic canary secret in its environment
-// (PLAYGROUND_CANARY_VALUE) and executes three scripted steps that demonstrate
-// what Pipelock mediates:
+// (PLAYGROUND_CANARY_VALUE) and executes scripted steps that demonstrate what
+// Pipelock mediates:
 //
 //   - step 1: a safe, allowed GET request via the web tool
 //   - step 2: an attempted exfiltration POST (the canary goes in the request
 //     body via the web tool — Pipelock is meant to catch it)
-//   - step 3: a raw direct-egress bypass attempt that skips the proxy entirely
-//     (kernel containment blocks this in a real contained deployment)
+//   - step 3: a raw direct-egress bypass attempt for manual experiments
+//
+// In split-proof contained demo runs, kernel containment is proven by probe
+// mode (--probe-targets) after the orchestrator drops this binary to the
+// contained agent uid. The live demo does not depend on step 3 narration for
+// the containment claim.
 //
 // Security property: the canary VALUE is read from env (PLAYGROUND_CANARY_VALUE)
 // by the web tool subprocess. It NEVER appears in the agent's stdout, in any
@@ -21,6 +25,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +39,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
 
 // agentConfig holds all parameters for a runAgent invocation.  The canary
@@ -65,6 +71,14 @@ type agentConfig struct {
 	DryRun bool
 	// ExpectBypassBlocked makes step 3 fail if the direct-egress request connects.
 	ExpectBypassBlocked bool
+	// ProbeTargets, when non-empty, switches the agent into probe mode: it
+	// performs a direct (proxy-less) TCP probe of each comma-separated
+	// host:port target and emits a JSON array of probe results to stdout, then
+	// exits. This is the uid-scoped egress probe used to build the signed
+	// host-containment witness: the orchestrator spawns this binary dropped to
+	// the contained agent user so the probes run from the contained network
+	// position. No other steps run in probe mode.
+	ProbeTargets string
 }
 
 func main() {
@@ -84,11 +98,14 @@ func newRootCmd() *cobra.Command {
 demonstrates Pipelock's mediation boundary in the Pipelock Playground.
 
 The agent holds a synthetic canary secret in env (PLAYGROUND_CANARY_VALUE) and
-drives three scripted steps through the pipelock-playground-webtool:
+drives mediated steps through the pipelock-playground-webtool:
 
   step 1 — safe allowed GET (should be permitted)
   step 2 — exfiltration POST of the canary (Pipelock should block this)
-  step 3 — raw direct-egress bypass attempt (kernel containment blocks this)
+
+It also has a manual step 3 raw direct-egress bypass attempt, and a structured
+--probe-targets mode used by the split-proof contained demo to build the signed
+host-containment witness from the contained agent uid.
 
 The canary VALUE is read from env by the web tool; it never appears in the
 agent's stdout, argv, or any URL.`,
@@ -96,6 +113,9 @@ agent's stdout, argv, or any URL.`,
 		SilenceErrors: false,
 		Version:       cliutil.Version,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cfg.ProbeTargets != "" {
+				return runProbe(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg.ProbeTargets)
+			}
 			return runAgent(cmd.Context(), cmd.OutOrStdout(), cfg)
 		},
 	}
@@ -110,8 +130,39 @@ agent's stdout, argv, or any URL.`,
 	root.Flags().StringVar(&cfg.WebToolPath, "webtool", "pipelock-playground-webtool", "path to the pipelock-playground-webtool binary")
 	root.Flags().BoolVar(&cfg.DryRun, "dry-run", false, "narrate only, do not invoke the web tool or make network calls")
 	root.Flags().BoolVar(&cfg.ExpectBypassBlocked, "expect-bypass-blocked", false, "fail if the direct-egress bypass connects")
+	root.Flags().StringVar(&cfg.ProbeTargets, "probe-targets", "", "comma-separated host:port list to direct-probe; emits JSON results and exits (used to build the host-containment witness)")
 
 	return root
+}
+
+// runProbe performs a direct (proxy-less) TCP probe of each comma-separated
+// host:port target and writes a JSON array of playground.ProbeResult to out.
+// Narration goes to errOut so stdout carries ONLY the JSON, which the
+// orchestrator parses. It always exits 0 (a blocked target is data, not an
+// error); a malformed target list is the only failure.
+func runProbe(ctx context.Context, out, errOut io.Writer, targetsCSV string) error {
+	targets := make([]string, 0)
+	for _, t := range strings.Split(targetsCSV, ",") {
+		if trimmed := strings.TrimSpace(t); trimmed != "" {
+			targets = append(targets, trimmed)
+		}
+	}
+	if len(targets) == 0 {
+		return errors.New("probe-targets is empty after trimming")
+	}
+
+	_, _ = fmt.Fprintf(errOut, "[agent] probing %d direct-egress target(s) from this network position\n", len(targets))
+
+	results := make([]playground.ProbeResult, 0, len(targets))
+	for _, t := range targets {
+		results = append(results, playground.ProbeDirectEgress(ctx, t))
+	}
+
+	enc := json.NewEncoder(out)
+	if err := enc.Encode(results); err != nil {
+		return fmt.Errorf("encode probe results: %w", err)
+	}
+	return nil
 }
 
 // narrator is a helper that writes step narration to out with a consistent prefix.

@@ -67,6 +67,31 @@ Return the chart deployment mode.
 {{- end }}
 
 {{/*
+Build the container image reference. A digest pins by manifest hash
+(repository@sha256:...); otherwise the image is referenced by tag
+(repository:tag), with the tag falling through to .Chart.AppVersion when empty.
+A digest and a tag are never combined, so the ":@sha256:" malformed reference
+cannot be rendered. Fails loudly if image.tag itself contains a digest, the
+misconfiguration that produced ":@sha256:" before image.digest existed.
+*/}}
+{{- define "pipelock.image" -}}
+{{- $repository := required "image.repository is required" .Values.image.repository -}}
+{{- $digest := default "" .Values.image.digest -}}
+{{- $tag := default "" .Values.image.tag -}}
+{{- if or (hasPrefix "sha256:" $tag) (contains "@" $tag) -}}
+{{- fail "image.tag must not contain a digest; set the sha256 string in image.digest instead" -}}
+{{- end -}}
+{{- if $digest -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $digest) -}}
+{{- fail "image.digest must be a sha256 digest like sha256:<64 lowercase hex chars>" -}}
+{{- end -}}
+{{- printf "%s@%s" $repository $digest -}}
+{{- else -}}
+{{- printf "%s:%s" $repository (default .Chart.AppVersion $tag) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate mode and security-critical enterprise chart requirements.
 */}}
 {{- define "pipelock.validate" -}}

@@ -54,7 +54,14 @@ audit batches.
 
 This command reads the local SQLite audit store under --storage-dir. It does not
 use the remote audit query API and does not expose raw audit payloads over the
-network.`,
+network.
+
+Pass --out - to write the DSSE envelope to stdout instead of a file. The
+human-readable summary then goes to stderr, so the report can be piped straight
+into the offline verifier:
+
+  pipelock conductor fleet report --out - ... | \
+    pipelock verify-receipt /dev/stdin --fleet-report --key fleet-report.pub`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
@@ -70,7 +77,7 @@ network.`,
 	cmd.Flags().StringVar(&opts.to, "to", "", "exclusive received-at window end, RFC3339 (required)")
 	cmd.Flags().StringVar(&opts.signingKey, "signing-key", "", "fleet-report-signing private key file (required)")
 	cmd.Flags().StringVar(&opts.signingKeyID, "signing-key-id", "", "override fleet report signing key id")
-	cmd.Flags().StringVar(&opts.out, "out", "", "output DSSE envelope path (required)")
+	cmd.Flags().StringVar(&opts.out, "out", "", "output DSSE envelope path (required); use \"-\" to write the envelope to stdout for piping out of a distroless pod")
 	cmd.Flags().StringVar(&opts.conductorID, "conductor-id", opts.conductorID, "Conductor id to stamp into the report")
 	cmd.Flags().StringVar(&opts.conductorVersion, "conductor-version", "", "Conductor version to stamp into the report")
 	cmd.Flags().StringArrayVar(&opts.trustedAuditKeys, "trusted-audit-key", nil,
@@ -128,6 +135,21 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 	if err != nil {
 		return err
 	}
+	// "--out -" writes the DSSE envelope to stdout so an operator can pipe the
+	// report out of a distroless pod (which has no shell/cat/tar to extract a
+	// file). The human-readable summary then goes to stderr to keep stdout a
+	// clean DSSE envelope for piping into the offline verifier.
+	if opts.out == stdoutSentinel {
+		if err := writeFleetReportEnvelopeTo(cmd.OutOrStdout(), result.Envelope); err != nil {
+			return err
+		}
+		summary := cmd.ErrOrStderr()
+		_, _ = fmt.Fprintln(summary, "fleet receipt report written: <stdout>")
+		_, _ = fmt.Fprintf(summary, "  report_id: %s\n", result.Statement.Predicate.ReportID)
+		_, _ = fmt.Fprintf(summary, "  source_batches: %d\n", len(result.Statement.Predicate.SourceBatches))
+		_, _ = fmt.Fprintf(summary, "  total_actions: %d\n", result.Statement.Predicate.Summary.TotalActions)
+		return nil
+	}
 	if err := writeFleetReportEnvelope(opts.out, result.Envelope); err != nil {
 		return err
 	}
@@ -137,6 +159,10 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  total_actions: %d\n", result.Statement.Predicate.Summary.TotalActions)
 	return nil
 }
+
+// stdoutSentinel is the conventional "-" value for --out meaning "write to
+// stdout" rather than a file path.
+const stdoutSentinel = "-"
 
 func openFleetReportAuditStore(cmd *cobra.Command, storageDir string) (*controlplane.SQLiteAuditStore, error) {
 	auditPath := filepath.Join(storageDir, "audit.db")
@@ -218,13 +244,34 @@ func loadFleetReportSigningKey(path string) (string, ed25519.PrivateKey, error) 
 	return kf.KeyID, priv, nil
 }
 
-func writeFleetReportEnvelope(path string, envelope any) error {
+func marshalFleetReportEnvelope(envelope any) ([]byte, error) {
 	data, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal fleet report envelope: %w", err)
+		return nil, fmt.Errorf("marshal fleet report envelope: %w", err)
 	}
-	if err := os.WriteFile(filepath.Clean(path), append(data, '\n'), 0o600); err != nil {
+	return append(data, '\n'), nil
+}
+
+func writeFleetReportEnvelope(path string, envelope any) error {
+	data, err := marshalFleetReportEnvelope(envelope)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Clean(path), data, 0o600); err != nil {
 		return fmt.Errorf("write --out: %w", err)
+	}
+	return nil
+}
+
+func writeFleetReportEnvelopeTo(w io.Writer, envelope any) error {
+	data, err := marshalFleetReportEnvelope(envelope)
+	if err != nil {
+		return err
+	}
+	// io.Copy loops until all bytes are written, guarding against a short write
+	// that would emit a truncated DSSE envelope and break offline verification.
+	if _, err := io.Copy(w, bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("write fleet report to stdout: %w", err)
 	}
 	return nil
 }

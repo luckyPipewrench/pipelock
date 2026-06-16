@@ -247,6 +247,7 @@ func TestKeyGenerate_HelpListsConductorPurposes(t *testing.T) {
 		domsigning.PurposeTrustRootRotation,
 		domsigning.PurposeAuditBatchSigning,
 		domsigning.PurposeEnrollmentTokenSigning,
+		domsigning.PurposeFleetReportSigning,
 	} {
 		if !strings.Contains(help, purpose.String()) {
 			t.Errorf("help missing %q:\n%s", purpose, help)

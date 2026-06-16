@@ -118,6 +118,7 @@ The --purpose flag binds the key to one of the recognised wire purposes:
   trust-root-rotation            reserved Conductor trust-root rotation signing
   audit-batch-signing            Conductor follower audit batch signing
   enrollment-token-signing       reserved Conductor enrollment-token signing
+  fleet-report-signing           Fleet Receipt Report signing (verify is free; mint is Enterprise)
 
 Conductor rollback, remote-kill, and trust-root-rotation keys are threshold
 keys: generate independent keys for separate approvers and configure the

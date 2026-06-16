@@ -82,13 +82,26 @@ included signed audit batches and carry the mediated-fraction completeness
 metric. They do not claim non-bypass; they prove the signed report's source set
 and arithmetic for mediated actions inside that source set.
 
+Generate a dedicated fleet-report signing key once (the `fleet-report-signing`
+purpose is what `conductor fleet report --signing-key` requires):
+
+```bash
+pipelock signing key generate \
+  --purpose fleet-report-signing \
+  --out /etc/pipelock/keys/fleet-report.key \
+  --id fleet-report-key
+```
+
+The key file embeds the public key; distribute its hex to verifiers. Generating
+the key is free; minting a report is Enterprise-gated, verifying is free.
+
 Enterprise operators mint a report from the local Conductor audit store:
 
 ```bash
 pipelock conductor fleet report \
   --storage-dir /var/lib/pipelock/conductor \
-  --org-id pipelab \
-  --fleet-id dogfood \
+  --org-id example-org \
+  --fleet-id prod \
   --from 2026-06-13T00:00:00Z \
   --to 2026-06-14T00:00:00Z \
   --signing-key /etc/pipelock/keys/fleet-report.key \
@@ -98,9 +111,30 @@ pipelock conductor fleet report \
 The mint command reads stored audit-batch envelopes and payloads locally. The
 remote `conductor audit query` API stays metadata-only.
 
-Pin the fleet-report public key:
+Pin the fleet-report public key. Pass the signer's 64-hex Ed25519 public key (or
+a file containing it) to `--key`; the verifier binds it to the report's signer
+key id and checks the Ed25519 signature, so the report's key id can be a human
+label like `fleet-report-key` rather than the public-key hex:
 
 ```bash
+pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub
+```
+
+### Piping a report out of a distroless pod
+
+The Conductor ships as a distroless image with no shell, `cat`, or `tar`, so an
+operator cannot extract a minted file from the pod. Pass `--out -` to write the
+DSSE envelope to stdout (the human-readable summary then goes to stderr) and pipe
+it straight into the offline verifier:
+
+```bash
+kubectl exec deploy/conductor -- pipelock conductor fleet report \
+  --storage-dir /var/lib/pipelock/conductor \
+  --org-id example-org --fleet-id prod \
+  --from 2026-06-13T00:00:00Z --to 2026-06-14T00:00:00Z \
+  --signing-key /etc/pipelock/keys/fleet-report.key \
+  --out - > fleet-receipt.dsse.json
+
 pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub
 ```
 
@@ -108,9 +142,9 @@ Output on success:
 
 ```text
 FLEET RECEIPT OK: fleet-receipt.dsse.json
-  Signer:           70b991eb...
+  Signer:           fleet-report-key
   Payload SHA-256:  9c46a3...
-  Org/Fleet:        pipelab/dogfood
+  Org/Fleet:        example-org/prod
   Report ID:        019...
   Level:            L1
   Source batches:   12

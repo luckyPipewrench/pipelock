@@ -147,11 +147,16 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 	if err != nil {
 		return fmt.Errorf("reading fleet receipt: %w", err)
 	}
-	keyMap, err := fleetTrustedKeyMap(trustedKeys)
+	env, err := fleetreceipt.UnmarshalEnvelope(data)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
+		return fmt.Errorf("fleet receipt verification failed: %w", err)
+	}
+	keyMap, err := fleetTrustedKeyMap(env, trustedKeys)
 	if err != nil {
 		return err
 	}
-	result, err := fleetreceipt.Verify(data, keyMap)
+	result, err := fleetreceipt.VerifyEnvelope(env, keyMap)
 	if err != nil {
 		_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
 		return fmt.Errorf("fleet receipt verification failed: %w", err)
@@ -176,11 +181,29 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 	return nil
 }
 
-func fleetTrustedKeyMap(keys []string) (map[string]ed25519.PublicKey, error) {
+// fleetTrustedKeyMap builds the verifier's trusted-key map from the operator's
+// --key hex public keys. The verifier resolves the trusted public key by the
+// envelope's signer key id, which is an operator-chosen label (e.g.
+// "fleet-report-2026") that is NOT the hex of the public key. So a supplied key
+// is registered under BOTH the envelope's actual signer key id and its own hex
+// string: the former is what makes a real, human-labelled key id verify; the
+// latter preserves the historical hex-keyid convention. This stays fail-closed
+// because the signature must still verify against the resolved public key
+// (ed25519.Verify), so trusting a key for the wrong report id only succeeds if
+// the bytes genuinely signed the payload.
+func fleetTrustedKeyMap(env fleetreceipt.Envelope, keys []string) (map[string]ed25519.PublicKey, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	out := make(map[string]ed25519.PublicKey, len(keys))
+	// A Fleet Receipt Report carries exactly one signature. Bind a lone --key to
+	// that signature's key id so a human-labelled key id verifies; with multiple
+	// keys we cannot pick which one the label maps to, so we register only by
+	// hex and leave id-binding to the historical hex==keyid convention.
+	var signerKeyID string
+	if len(keys) == 1 && len(env.Signatures) == 1 {
+		signerKeyID = strings.TrimSpace(env.Signatures[0].KeyID)
+	}
+	out := make(map[string]ed25519.PublicKey, len(keys)+1)
 	for _, key := range keys {
 		raw, err := hex.DecodeString(key)
 		if err != nil {
@@ -189,7 +212,11 @@ func fleetTrustedKeyMap(keys []string) (map[string]ed25519.PublicKey, error) {
 		if len(raw) != ed25519.PublicKeySize {
 			return nil, fmt.Errorf("trusted fleet report key length=%d want %d", len(raw), ed25519.PublicKeySize)
 		}
-		out[key] = ed25519.PublicKey(raw)
+		pub := ed25519.PublicKey(raw)
+		out[key] = pub
+		if signerKeyID != "" {
+			out[signerKeyID] = pub
+		}
 	}
 	return out, nil
 }

@@ -48,6 +48,16 @@ func testGenKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 // Returns (dir, orchestratorPubHex).
 func goodRunDir(t *testing.T) (string, string) {
 	t.Helper()
+	dir, pubHex, _ := buildRunDir(t, false)
+	return dir, pubHex
+}
+
+// buildRunDir is the parameterized core of goodRunDir. When contained is true it
+// marks the signed manifest Contained=true and additionally writes a valid,
+// run-bound, enforced host-containment-witness.json signed by the orchestrator
+// key. It returns the orchestrator private key so callers can re-sign or tamper.
+func buildRunDir(t *testing.T, contained bool) (string, string, ed25519.PrivateKey) {
+	t.Helper()
 
 	// 1. Generate keys.
 	orchPub, orchPriv := testGenKey(t)
@@ -110,6 +120,7 @@ func goodRunDir(t *testing.T) (string, string) {
 		PolicyHash:      captured.PolicyHash,
 		TargetHost:      "exfil.target.test",
 		StartedAt:       time.Now().UTC(),
+		Contained:       contained,
 	}
 	lm = playground.SignLaunchManifest(orchPriv, lm)
 
@@ -159,7 +170,39 @@ func goodRunDir(t *testing.T) (string, string) {
 		t.Fatalf("write red witness: %v", err)
 	}
 
-	return runDir, hex.EncodeToString(orchPub)
+	// For contained runs, also write a valid, run-bound, enforced
+	// host-containment witness signed by the orchestrator key.
+	if contained {
+		hcw := validHostContainmentWitness(nonce, lm.Hash())
+		hcw = playground.SignHostContainmentWitness(orchPriv, hcw)
+		hcwBytes, err := json.Marshal(hcw)
+		if err != nil {
+			t.Fatalf("marshal host-containment witness: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "host-containment-witness.json"), hcwBytes, 0o600); err != nil {
+			t.Fatalf("write host-containment witness: %v", err)
+		}
+	}
+
+	return runDir, hex.EncodeToString(orchPub), orchPriv
+}
+
+// validHostContainmentWitness builds an unsigned witness that passes Enforced():
+// the control target is operator-reachable and agent-blocked (the differential),
+// and every real direct-egress probe is blocked.
+func validHostContainmentWitness(nonce, manifestHash string) playground.HostContainmentWitness {
+	const ctrl = "127.0.0.1:54321"
+	return playground.HostContainmentWitness{
+		RunNonce:             nonce,
+		LaunchManifestHash:   manifestHash,
+		AgentUser:            "pipelock-agent",
+		AgentUID:             966,
+		ControlTarget:        ctrl,
+		ControlOperatorProbe: playground.ProbeResult{Target: ctrl, Open: true, Blocked: false, Detail: "connected"},
+		ControlAgentProbe:    playground.ProbeResult{Target: ctrl, Open: false, Blocked: true, Detail: "blocked: timeout"},
+		AgentProbes:          blockedDirectProbes(),
+		ProbedAt:             time.Unix(1_700_000_000, 0).UTC(),
+	}
 }
 
 // mustFailVerify builds a good run dir, applies a mutation, and asserts that
@@ -208,7 +251,7 @@ func TestVerify_AllGood_Passes(t *testing.T) {
 func TestVerify_TamperedWitnessByte_FailsClosed(t *testing.T) {
 	t.Parallel()
 	mustFailVerify(t, func(dir string) {
-		flipByteInFile(t, filepath.Join(dir, "witness.json"), "signature")
+		flipByteInFile(t, filepath.Join(dir, "witness.json"))
 	})
 }
 
@@ -311,14 +354,14 @@ func TestVerify_BrokenReceiptChain_FailsClosed(t *testing.T) {
 		// Corrupt a byte in the receipt signature inside the evidence JSONL
 		// to break the chain verification.
 		evidencePath := findEvidenceFile(t, filepath.Join(dir, "packet"))
-		flipByteInFile(t, evidencePath, "signature")
+		flipByteInFile(t, evidencePath)
 	})
 }
 
 func TestVerify_TamperedManifestSig_FailsClosed(t *testing.T) {
 	t.Parallel()
 	mustFailVerify(t, func(dir string) {
-		flipByteInFile(t, filepath.Join(dir, "launch-manifest.json"), "signature")
+		flipByteInFile(t, filepath.Join(dir, "launch-manifest.json"))
 	})
 }
 
@@ -605,8 +648,10 @@ func goodRunDirWithSignedCollectorLeak(t *testing.T) (string, string) {
 
 // flipByteInFile reads a JSON file, finds the first occurrence of fieldHint in
 // the raw bytes, and flips a byte near it to corrupt the data.
-func flipByteInFile(t *testing.T, path, fieldHint string) {
+func flipByteInFile(t *testing.T, path string) {
 	t.Helper()
+	// All callers tamper with the JSON "signature" field's value.
+	const fieldHint = "signature"
 	cleanPath := filepath.Clean(path)
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {

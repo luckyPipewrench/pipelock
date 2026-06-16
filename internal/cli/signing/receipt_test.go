@@ -8,7 +8,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,6 +199,49 @@ func TestVerifyReceiptCmd_FleetReportWithExpectedKey(t *testing.T) {
 	}
 }
 
+// TestVerifyReceiptCmd_FleetReportHumanKeyID proves --key <hex> verifies a
+// report whose signer key id is a human label (not the hex of the public key).
+// The trusted-key map is resolved by the envelope's signer key id, so a bare
+// hex key must be bound to that id; otherwise the offline-verify flow only ever
+// worked when the key id happened to equal the public-key hex.
+func TestVerifyReceiptCmd_FleetReportHumanKeyID(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	_, path := writeFleetReportFixtureSigned(t, "fleet-report-2026", pub, priv)
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--fleet-report", "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "FLEET RECEIPT OK:") || !strings.Contains(buf.String(), "Signer:           fleet-report-2026") {
+		t.Fatalf("output:\n%s", buf.String())
+	}
+
+	// The same human key id with the WRONG public key must still fail closed:
+	// binding to the signer id does not bypass the Ed25519 signature check.
+	wrongPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(wrong): %v", err)
+	}
+	wrongCmd := VerifyReceiptCmd()
+	var wrongBuf bytes.Buffer
+	wrongCmd.SetOut(&wrongBuf)
+	wrongCmd.SetArgs([]string{path, "--fleet-report", "--key", hex.EncodeToString(wrongPub)})
+	if err := wrongCmd.Execute(); err == nil {
+		t.Fatalf("expected wrong-key verification to fail closed:\n%s", wrongBuf.String())
+	}
+	if !strings.Contains(wrongBuf.String(), "FAILED:") {
+		t.Fatalf("wrong-key output missing FAILED:\n%s", wrongBuf.String())
+	}
+}
+
 func TestVerifyReceiptCmd_FleetReportRequiresPinByDefault(t *testing.T) {
 	t.Parallel()
 
@@ -227,6 +272,64 @@ func TestVerifyReceiptCmd_FleetReportRejectsSessionSelector(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--fleet-report cannot be combined with --session") {
 		t.Fatalf("Execute error = %v, want --session conflict", err)
+	}
+}
+
+func TestVerifyReceiptCmd_FleetReportFailsClosedOnTamper(t *testing.T) {
+	t.Parallel()
+
+	pub, path := writeFleetReportFixture(t)
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var env fleetreceipt.Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	// Flip one byte of the signed payload; the Ed25519 signature must no
+	// longer verify and the command must exit non-zero with FAILED.
+	payload, err := base64.StdEncoding.DecodeString(env.Payload)
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	payload[0] ^= 0x01
+	env.Payload = base64.StdEncoding.EncodeToString(payload)
+	tamperedBytes, err := fleetreceipt.MarshalEnvelope(env)
+	if err != nil {
+		t.Fatalf("MarshalEnvelope: %v", err)
+	}
+	tamperedPath := filepath.Join(t.TempDir(), "tampered.dsse.json")
+	if err := os.WriteFile(tamperedPath, tamperedBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{tamperedPath, "--fleet-report", "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected tampered fleet report verification to exit non-zero")
+	}
+	if !strings.Contains(buf.String(), "FAILED:") {
+		t.Fatalf("output missing FAILED marker:\n%s", buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_FleetReportRejectsChainSelector(t *testing.T) {
+	t.Parallel()
+
+	_, path := writeFleetReportFixture(t)
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--fleet-report", "--chain", filepath.Dir(path)})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected --fleet-report with --chain to fail")
+	}
+	if !strings.Contains(err.Error(), "--fleet-report cannot be combined with --chain") {
+		t.Fatalf("Execute error = %v, want --chain conflict", err)
 	}
 }
 
@@ -920,7 +1023,11 @@ func writeFleetReportFixture(t *testing.T) (ed25519.PublicKey, string) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	keyID := hex.EncodeToString(pub)
+	return writeFleetReportFixtureSigned(t, hex.EncodeToString(pub), pub, priv)
+}
+
+func writeFleetReportFixtureSigned(t *testing.T, keyID string, pub ed25519.PublicKey, priv ed25519.PrivateKey) (ed25519.PublicKey, string) {
+	t.Helper()
 	statement := fleetreceipt.Statement{
 		Type: fleetreceipt.StatementType,
 		Subject: []fleetreceipt.Subject{{

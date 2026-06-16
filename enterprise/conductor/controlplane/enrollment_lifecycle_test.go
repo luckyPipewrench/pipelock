@@ -279,6 +279,13 @@ func TestHandlerEnrollmentTokenListAppliesFiltersAndLimit(t *testing.T) {
 	if missW.Code != http.StatusOK {
 		t.Fatalf("non-matching filter status = %d, want 200", missW.Code)
 	}
+	var missResp listEnrollmentTokensResponse
+	if err := json.Unmarshal(missW.Body.Bytes(), &missResp); err != nil {
+		t.Fatalf("decode non-matching filter response: %v", err)
+	}
+	if missResp.Count != 0 || len(missResp.Tokens) != 0 {
+		t.Fatalf("non-matching filter resp = %+v, want empty result set", missResp)
+	}
 }
 
 func TestHandlerEnrollmentTokenListRejectsBadQueryParams(t *testing.T) {

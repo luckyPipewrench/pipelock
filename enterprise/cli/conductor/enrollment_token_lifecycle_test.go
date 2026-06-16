@@ -227,8 +227,12 @@ func TestEnrollmentTokenReadCmds_LicenseGatedRunE(t *testing.T) {
 	for name, build := range builders {
 		t.Run(name, func(t *testing.T) {
 			cmd := build()
-			if err := cmd.RunE(cmd, nil); err == nil {
+			err := cmd.RunE(cmd, nil)
+			if err == nil {
 				t.Fatalf("%s RunE without a license: want gate error, got nil", name)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "license") {
+				t.Fatalf("%s RunE without a license: got non-license error: %v", name, err)
 			}
 		})
 	}

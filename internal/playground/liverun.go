@@ -64,6 +64,9 @@ type LiveRunOpts struct {
 	// AgentUser is the OS user used for contained-mode toy-agent execution.
 	// Empty means pipelock-agent.
 	AgentUser string
+	// OrchestratorKeyPath, when non-empty, loads the run's orchestrator
+	// (trust-root) signing key from disk instead of generating an ephemeral one.
+	OrchestratorKeyPath string
 }
 
 // LiveRun holds the state of a running live playground demo. All resources
@@ -130,9 +133,29 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	}()
 
 	// --- Key generation ---
-	lr.orchestratorPub, lr.orchestratorPriv, err = signing.GenerateKeyPair()
-	if err != nil {
-		return nil, fmt.Errorf("orchestrator keygen: %w", err)
+	// The orchestrator key is the run's trust root. When a stable key path is
+	// supplied, load it (so the run signs under the published demo key and is
+	// verifiable against PublishedOrchestratorPubKeyHex); otherwise generate an
+	// ephemeral per-run key (the dev default).
+	if opts.OrchestratorKeyPath != "" {
+		var loadErr error
+		lr.orchestratorPriv, loadErr = LoadOrchestratorSigningKey(opts.OrchestratorKeyPath)
+		if loadErr != nil {
+			err = fmt.Errorf("load orchestrator key: %w", loadErr)
+			return nil, err
+		}
+		lr.orchestratorPub = lr.orchestratorPriv.Public().(ed25519.PublicKey)
+		if defaultPath := DefaultOrchestratorKeyPath(); defaultPath != "" &&
+			filepath.Clean(opts.OrchestratorKeyPath) == filepath.Clean(defaultPath) &&
+			!OrchestratorKeyMatchesPublished(lr.orchestratorPriv) {
+			err = fmt.Errorf("default orchestrator key %s does not match PublishedOrchestratorPubKeyHex", opts.OrchestratorKeyPath)
+			return nil, err
+		}
+	} else {
+		lr.orchestratorPub, lr.orchestratorPriv, err = signing.GenerateKeyPair()
+		if err != nil {
+			return nil, fmt.Errorf("orchestrator keygen: %w", err)
+		}
 	}
 	lr.collectorPub, lr.collectorPriv, err = signing.GenerateKeyPair()
 	if err != nil {

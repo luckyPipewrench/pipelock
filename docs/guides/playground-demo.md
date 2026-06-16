@@ -94,11 +94,12 @@ uncontained while claiming containment.
 From the run directory, on a clean machine, with the Pipelock process stopped:
 
 ```bash
-pipelock-playground-demo verify ./demo-run --orchestrator-key <published orchestrator key hex>
+pipelock-playground-demo verify ./demo-run
 ```
 
-This is one all-or-nothing check rooted in a single published key. It passes only when **all**
-of the following hold: the launch manifest is signed by the orchestrator key; the Audit Packet's
+This is one all-or-nothing check rooted in the compiled-in published key by default. For
+ephemeral/custom-key development runs, pass `--orchestrator-key <hex>`. It passes only when
+**all** of the following hold: the launch manifest is signed by the orchestrator key; the Audit Packet's
 receipt chain and totals verify under the Pipelock key the manifest pins; the packet manifest
 matches the launch manifest's scenario and policy hash; the collector witness verifies under
 the collector key the manifest pins; the witness binds this run's nonce and manifest; the
@@ -131,12 +132,59 @@ what it claims to have not observed.
 
 ```bash
 pipelock-playground-demo reset --run-dir ./demo-run        # idempotent clean slate
-pipelock-playground-demo fallback ./demo-run --orchestrator-key <hex>   # replay a recorded run
+pipelock-playground-demo fallback ./demo-run               # replay a recorded run
 ```
 
 `fallback` replays a previously recorded run with a prominent `*** REPLAY MODE ***` watermark,
 the recorded packet hash, and the verifier command — so a replayed run is never mistaken for a
 live one.
+
+## The published orchestrator key
+
+Every run's launch manifest and host-containment witness are signed by an **orchestrator key**,
+and `verify` checks a run against the *public* half of that key. The point of publishing the key
+is that a verifier looks it up ahead of time — from the docs or the compiled-in
+`PublishedOrchestratorPubKeyHex` — rather than trusting a key the bundle hands it. A `VERIFY OK`
+then means "signed by the key you already trust", not merely "internally consistent".
+
+This is a **fixed demo identity with no security stakes**: the demo proves the Pipelock
+mechanism, so the key only needs to be stable and published. It is generated once and never
+rotated, and it is deliberately **not** any production signing key. `run` uses the installed
+stable key automatically when present (otherwise it falls back to an ephemeral per-run key for
+local iteration). The default key file must derive `PublishedOrchestratorPubKeyHex`; if it does
+not, the run fails loudly rather than producing evidence that cannot verify under the published
+trust root. Pass `--orchestrator-key-file <path>` to select an explicit custom signer.
+
+Generate or rotate it with:
+
+```bash
+pipelock-playground-demo keygen-orchestrator        # writes the private key, prints the public hex
+```
+
+The private key is written to the standard config path (e.g.
+`~/.config/pipelock/playground-demo-signing.key`, mode `0600`) and is never committed; publish
+the printed public hex as `PublishedOrchestratorPubKeyHex`. The command refuses to overwrite an
+existing key unless `--force`, so the stable demo key is not rotated by accident.
+
+## Generate the viewer bundle
+
+The Playground viewer renders a run from a `bundle.json`. Produce it from a verified run with:
+
+```bash
+pipelock-playground-demo bundle ./demo-run --out bundle.json
+```
+
+The bundle splits **scripted narrative** from **real proof**. The beat labels, chat dialogue, and
+agent action cards are authored and deterministic — a run directory cannot produce human
+dialogue, so these are scripted for a repeatable demo. Everything in the proof column is lifted
+from the run's signed artifacts: the allow/block verdicts and the signed block-receipt envelope
+come from the receipt chain; the host-containment decision (contained runs only) from the signed
+host-containment witness; the collector observation count from the signed witness; the check list
+from the offline verification; and the verifier block carries the real published key and the exact
+`verify` command. Like `verify` and `fallback`, `bundle` uses the compiled-in published key by
+default; pass `--orchestrator-key <hex>` only for ephemeral/custom-key development runs. `bundle`
+runs the same offline verification first and **fails closed** if the run does not verify, so a
+generated bundle can never overstate what was proven.
 
 ## Public-safety model
 

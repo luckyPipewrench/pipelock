@@ -10,11 +10,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
@@ -134,6 +137,152 @@ func TestVerifyCmd_GoodDir_ExitZero(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "VERIFY OK") {
 		t.Fatalf("expected VERIFY OK in output, got:\n%s", buf.String())
+	}
+}
+
+func TestOfflineCommandsDefaultToPublishedOrchestratorKey(t *testing.T) {
+	t.Parallel()
+
+	for name, newCmd := range map[string]func() *cobra.Command{
+		"verify":   newVerifyCmd,
+		"fallback": newFallbackCmd,
+		"bundle":   newBundleCmd,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cmd := newCmd()
+			flag := cmd.Flags().Lookup("orchestrator-key")
+			if flag == nil {
+				t.Fatal("missing orchestrator-key flag")
+			}
+			if flag.DefValue != playground.PublishedOrchestratorPubKeyHex {
+				t.Fatalf("default orchestrator-key = %q, want published key", flag.DefValue)
+			}
+		})
+	}
+}
+
+func TestResolveOrchestratorKeyPath(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "config")
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	explicit := filepath.Join(t.TempDir(), "custom.key")
+	if got := resolveOrchestratorKeyPath(explicit, true); got != explicit {
+		t.Fatalf("explicit key path = %q, want %q", got, explicit)
+	}
+
+	if got := resolveOrchestratorKeyPath("", false); got != "" {
+		t.Fatalf("missing default key path = %q, want empty", got)
+	}
+
+	def := playground.DefaultOrchestratorKeyPath()
+	if err := os.MkdirAll(filepath.Dir(def), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(def, []byte("present"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveOrchestratorKeyPath("", false); got != def {
+		t.Fatalf("default key path = %q, want %q", got, def)
+	}
+}
+
+func TestKeygenOrchestratorCmd_DefaultPathForceAndRefuse(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "config")
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	def := playground.DefaultOrchestratorKeyPath()
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"keygen-orchestrator"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("keygen default path: %v\noutput:\n%s", err, buf.String())
+	}
+	if _, err := playground.LoadOrchestratorSigningKey(def); err != nil {
+		t.Fatalf("generated default key must load: %v", err)
+	}
+	if !strings.Contains(buf.String(), "public key") {
+		t.Fatalf("keygen output missing public key:\n%s", buf.String())
+	}
+
+	cmd = newRootCmd()
+	buf.Reset()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"keygen-orchestrator"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("keygen must refuse to overwrite without --force\noutput:\n%s", buf.String())
+	}
+
+	cmd = newRootCmd()
+	buf.Reset()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"keygen-orchestrator", "--force"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("keygen --force: %v\noutput:\n%s", err, buf.String())
+	}
+}
+
+func TestBundleCmd_FailsClosedOnUnverifiedRun(t *testing.T) {
+	t.Parallel()
+
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"bundle", t.TempDir()})
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("bundle must fail on an unverified run\noutput:\n%s", buf.String())
+	}
+}
+
+func TestBundleCmd_LiveDemo_WritesFileAndStdout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("bundle command test builds binaries and boots a real proxy")
+	}
+
+	runDir := t.TempDir()
+	rep, err := playground.RunDemo(t.Context(), io.Discard, playground.DemoOpts{
+		ScenarioID: playground.LiveDemoScenarioID,
+		RunDir:     runDir,
+	})
+	if err != nil {
+		t.Fatalf("RunDemo: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("run must verify: %+v", rep.Checks)
+	}
+
+	outPath := filepath.Join(t.TempDir(), "bundle.json")
+	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"bundle", runDir, "--orchestrator-key", rep.OrchestratorKey, "--out", outPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("bundle --out: %v\noutput:\n%s", err, buf.String())
+	}
+	data, err := os.ReadFile(outPath) // #nosec G304 -- test file under t.TempDir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"mode": "replay"`) || !strings.Contains(string(data), rep.RunNonce) {
+		t.Fatalf("bundle file missing real run data:\n%s", string(data))
+	}
+
+	cmd = newRootCmd()
+	buf.Reset()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"bundle", runDir, "--orchestrator-key", rep.OrchestratorKey})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("bundle stdout: %v\noutput:\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), rep.RunNonce) {
+		t.Fatalf("stdout bundle missing run nonce:\n%s", buf.String())
 	}
 }
 

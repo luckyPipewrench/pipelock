@@ -13,7 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
 
-func TestRunProbe_OpenAndBlocked(t *testing.T) {
+func TestRunProbe_OpenAndRefused(t *testing.T) {
 	t.Parallel()
 
 	// An open loopback listener (reachable) ...
@@ -33,7 +33,8 @@ func TestRunProbe_OpenAndBlocked(t *testing.T) {
 	}()
 	openTarget := ln.Addr().String()
 
-	// ... and a port nothing listens on (connection refused -> blocked).
+	// ... and a port nothing listens on. Connection refused is reachable, not
+	// kernel containment.
 	const closedTarget = "127.0.0.1:1"
 
 	var out, errOut bytes.Buffer
@@ -56,8 +57,11 @@ func TestRunProbe_OpenAndBlocked(t *testing.T) {
 	if results[0].Target != openTarget || !results[0].Open {
 		t.Errorf("open target: got %+v, want Open=true", results[0])
 	}
-	if results[1].Target != closedTarget || results[1].Open {
-		t.Errorf("closed target: got %+v, want Open=false", results[1])
+	if results[0].Blocked {
+		t.Errorf("open target: got Blocked=true")
+	}
+	if results[1].Target != closedTarget || results[1].Open || results[1].Blocked {
+		t.Errorf("closed target: got %+v, want Open=false Blocked=false", results[1])
 	}
 }
 

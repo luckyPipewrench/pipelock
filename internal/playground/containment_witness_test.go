@@ -28,9 +28,10 @@ func blockedDirectProbes() []playground.ProbeResult {
 	probes := make([]playground.ProbeResult, 0, len(targets))
 	for _, target := range targets {
 		probes = append(probes, playground.ProbeResult{
-			Target: target,
-			Open:   false,
-			Detail: "blocked",
+			Target:  target,
+			Open:    false,
+			Blocked: true,
+			Detail:  "blocked",
 		})
 	}
 	return probes
@@ -44,8 +45,8 @@ func validWitness() playground.HostContainmentWitness {
 		AgentUser:            "pipelock-agent",
 		AgentUID:             966,
 		ControlTarget:        testCtrlTarget,
-		ControlOperatorProbe: playground.ProbeResult{Target: testCtrlTarget, Open: true, Detail: "connected"},
-		ControlAgentProbe:    playground.ProbeResult{Target: testCtrlTarget, Open: false, Detail: "blocked: timeout"},
+		ControlOperatorProbe: playground.ProbeResult{Target: testCtrlTarget, Open: true, Blocked: false, Detail: "connected"},
+		ControlAgentProbe:    playground.ProbeResult{Target: testCtrlTarget, Open: false, Blocked: true, Detail: "blocked: timeout"},
 		AgentProbes:          blockedDirectProbes(),
 		ProbedAt:             time.Unix(1_700_000_000, 0).UTC(),
 	}
@@ -194,6 +195,17 @@ func TestHostContainmentWitness_Enforced(t *testing.T) {
 			name: "control agent probe open (no block)",
 			mutate: func(w playground.HostContainmentWitness) playground.HostContainmentWitness {
 				w.ControlAgentProbe.Open = true
+				w.ControlAgentProbe.Blocked = false
+				return w
+			},
+			want: false,
+		},
+		{
+			name: "control agent probe refused is reachable not blocked",
+			mutate: func(w playground.HostContainmentWitness) playground.HostContainmentWitness {
+				w.ControlAgentProbe.Open = false
+				w.ControlAgentProbe.Blocked = false
+				w.ControlAgentProbe.Detail = "reachable: connection refused"
 				return w
 			},
 			want: false,
@@ -202,6 +214,7 @@ func TestHostContainmentWitness_Enforced(t *testing.T) {
 			name: "control operator probe blocked (broken probe / unreachable control)",
 			mutate: func(w playground.HostContainmentWitness) playground.HostContainmentWitness {
 				w.ControlOperatorProbe.Open = false
+				w.ControlOperatorProbe.Blocked = true
 				return w
 			},
 			want: false,

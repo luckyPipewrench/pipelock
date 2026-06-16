@@ -198,8 +198,8 @@ func validHostContainmentWitness(nonce, manifestHash string) playground.HostCont
 		AgentUser:            "pipelock-agent",
 		AgentUID:             966,
 		ControlTarget:        ctrl,
-		ControlOperatorProbe: playground.ProbeResult{Target: ctrl, Open: true, Detail: "connected"},
-		ControlAgentProbe:    playground.ProbeResult{Target: ctrl, Open: false, Detail: "blocked: timeout"},
+		ControlOperatorProbe: playground.ProbeResult{Target: ctrl, Open: true, Blocked: false, Detail: "connected"},
+		ControlAgentProbe:    playground.ProbeResult{Target: ctrl, Open: false, Blocked: true, Detail: "blocked: timeout"},
 		AgentProbes:          blockedDirectProbes(),
 		ProbedAt:             time.Unix(1_700_000_000, 0).UTC(),
 	}

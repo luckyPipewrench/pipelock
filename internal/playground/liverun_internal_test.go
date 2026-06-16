@@ -13,12 +13,14 @@ func TestDecodeProbeResults(t *testing.T) {
 		expectedTargets []string
 		wantErr         bool
 		wantOpen        []bool
+		wantBlocked     []bool
 	}{
 		{
 			name:            "valid two results",
-			stdout:          `[{"target":"127.0.0.1:1","open":false,"detail":"blocked"},{"target":"127.0.0.1:2","open":true,"detail":"connected"}]`,
+			stdout:          `[{"target":"127.0.0.1:1","open":false,"blocked":true,"detail":"blocked"},{"target":"127.0.0.1:2","open":true,"blocked":false,"detail":"connected"}]`,
 			expectedTargets: []string{"127.0.0.1:1", "127.0.0.1:2"},
 			wantOpen:        []bool{false, true},
+			wantBlocked:     []bool{true, false},
 		},
 		{
 			name:            "malformed json",
@@ -65,6 +67,9 @@ func TestDecodeProbeResults(t *testing.T) {
 				if got[i].Open != open {
 					t.Errorf("result[%d].Open=%v want %v", i, got[i].Open, open)
 				}
+				if got[i].Blocked != tc.wantBlocked[i] {
+					t.Errorf("result[%d].Blocked=%v want %v", i, got[i].Blocked, tc.wantBlocked[i])
+				}
 			}
 		})
 	}
@@ -75,11 +80,15 @@ func TestDecodeProbeResults(t *testing.T) {
 func TestAllAgentBlocked_HappyAndEmpty(t *testing.T) {
 	t.Parallel()
 	w := HostContainmentWitness{
-		ControlAgentProbe: ProbeResult{Open: false},
-		AgentProbes:       []ProbeResult{{Open: false}, {Open: false}},
+		ControlAgentProbe: ProbeResult{Open: false, Blocked: true},
+		AgentProbes:       []ProbeResult{{Open: false, Blocked: true}, {Open: false, Blocked: true}},
 	}
 	if !w.AllAgentBlocked() {
 		t.Error("all-blocked suite should report AllAgentBlocked=true")
+	}
+	w.AgentProbes = []ProbeResult{{Open: false, Blocked: false}}
+	if w.AllAgentBlocked() {
+		t.Error("reachable-but-closed suite must not report AllAgentBlocked=true")
 	}
 	w.AgentProbes = nil
 	if w.AllAgentBlocked() {

@@ -22,7 +22,8 @@ import (
 //
 // The honesty hinges on a DIFFERENTIAL: ControlTarget is a host-local listener
 // that is genuinely reachable absent containment. The operator probe of it must
-// be Open and the contained-agent probe of the SAME target must be Blocked.
+// be Open and the contained-agent probe of the SAME target must be explicitly
+// Blocked.
 // Because only the source uid differs between the two probes, a block can only
 // be attributed to the kernel owner-match rule -- never to an unroutable or
 // down target (the weakness of probing a single reserved IP).
@@ -47,13 +48,15 @@ type HostContainmentWitness struct {
 	// "blocked" result elsewhere is meaningful and not a broken probe.
 	ControlOperatorProbe ProbeResult `json:"control_operator_probe"`
 	// ControlAgentProbe is the contained agent's probe of the SAME ControlTarget.
-	// It MUST be blocked (Open=false). Together with ControlOperatorProbe being
-	// Open, this is the differential that isolates the kernel owner-match drop.
+	// It MUST be explicitly blocked (Open=false, Blocked=true). Together with
+	// ControlOperatorProbe being Open, this is the differential that isolates
+	// the kernel owner-match drop.
 	ControlAgentProbe ProbeResult `json:"control_agent_probe"`
 
 	// AgentProbes are the contained agent's probes of the real direct-egress
 	// target suite (cloud metadata, RFC-1918, public DNS, public HTTPS). Every
-	// one MUST be blocked (Open=false); any open route means containment leaks.
+	// one MUST be explicitly blocked (Open=false, Blocked=true); any open,
+	// refused, or ambiguous route means containment is not proven.
 	AgentProbes []ProbeResult `json:"agent_probes"`
 
 	ProbedAt time.Time `json:"probed_at"`
@@ -89,17 +92,19 @@ func (w HostContainmentWitness) DirectSuiteProven() bool {
 
 // AllAgentBlocked reports whether every contained-agent probe -- the control
 // target probe AND every direct-egress probe present in the witness -- was
-// blocked. It requires at least one real direct-egress probe so an empty suite
-// cannot pass vacuously. Enforced additionally requires DirectSuiteProven.
+// explicitly classified as blocked. Open=false alone is not enough: a
+// connection-refused response is reachable-but-closed, not containment. It
+// requires at least one real direct-egress probe so an empty suite cannot pass
+// vacuously. Enforced additionally requires DirectSuiteProven.
 func (w HostContainmentWitness) AllAgentBlocked() bool {
 	if len(w.AgentProbes) == 0 {
 		return false
 	}
-	if w.ControlAgentProbe.Open {
+	if w.ControlAgentProbe.Open || !w.ControlAgentProbe.Blocked {
 		return false
 	}
 	for _, p := range w.AgentProbes {
-		if p.Open {
+		if p.Open || !p.Blocked {
 			return false
 		}
 	}
@@ -117,14 +122,14 @@ func (w HostContainmentWitness) DifferentialProven() bool {
 	if w.ControlOperatorProbe.Target != w.ControlTarget || w.ControlAgentProbe.Target != w.ControlTarget {
 		return false
 	}
-	return w.ControlOperatorProbe.Open && !w.ControlAgentProbe.Open
+	return w.ControlOperatorProbe.Open && !w.ControlAgentProbe.Open && w.ControlAgentProbe.Blocked
 }
 
 // Enforced is the fail-closed gate: containment is proven for this run ONLY when
 // the differential holds, the exact direct-egress suite was probed, and every
-// contained-agent probe was blocked. Any open agent route, a missing or
-// substituted target, a missing/unreachable control target, or an empty probe
-// suite fails closed.
+// contained-agent probe was explicitly blocked. Any open, refused, or ambiguous
+// agent route, a missing or substituted target, a missing/unreachable control
+// target, or an empty probe suite fails closed.
 func (w HostContainmentWitness) Enforced() bool {
 	return w.DifferentialProven() && w.DirectSuiteProven() && w.AllAgentBlocked()
 }

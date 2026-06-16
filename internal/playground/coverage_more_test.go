@@ -62,31 +62,25 @@ func TestLiveRunHelperBranches(t *testing.T) {
 	}
 }
 
-func TestLiveRunAgentCommandBranches(t *testing.T) {
+func TestRunEgressProbeRequiresRootWhenContained(t *testing.T) {
 	t.Parallel()
+
+	// Split-proof refactor removed LiveRun.agentCommand: mediated steps now exec
+	// inline as the operator, and the only uid-dropped path is the egress probe.
+	// The equivalent root-requirement branch lives in runEgressProbe(asAgent=true).
+	if os.Geteuid() == 0 {
+		t.Skip("non-root contained error branch requires non-root test process")
+	}
 
 	lr := &LiveRun{
 		ctx:      t.Context(),
 		agentBin: "/bin/echo",
 		opts:     LiveRunOpts{},
 	}
-	cmd, err := lr.agentCommand([]string{"hello"})
-	if err != nil {
-		t.Fatalf("uncontained agentCommand: %v", err)
-	}
-	if cmd.Path != "/bin/echo" {
-		t.Fatalf("cmd path = %q", cmd.Path)
-	}
-	if len(cmd.Args) != 2 || cmd.Args[1] != "hello" {
-		t.Fatalf("cmd args = %v", cmd.Args)
-	}
-
-	if os.Geteuid() == 0 {
-		t.Skip("non-root contained error branch requires non-root test process")
-	}
-	lr.opts.Contained = true
-	if _, err := lr.agentCommand(nil); err == nil || !strings.Contains(err.Error(), rootRequirement) {
-		t.Fatalf("contained non-root error = %v, want root requirement", err)
+	// asAgent=true drops to the contained uid, which requires root; as a non-root
+	// test process it must fail closed with the root requirement.
+	if _, err := lr.runEgressProbe([]string{"127.0.0.1:1"}, true); err == nil || !strings.Contains(err.Error(), rootRequirement) {
+		t.Fatalf("contained egress probe non-root error = %v, want root requirement", err)
 	}
 }
 

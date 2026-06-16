@@ -24,8 +24,10 @@ request body, mediates each action, and signs each decision:
    (dropped to the `pipelock-agent` uid) against a host-local control target and the real
    direct-egress suite (cloud metadata, RFC-1918, public DNS/HTTPS). The result is a **signed
    host-containment witness**. Its honesty rests on a **differential**: the same control target
-   is reachable for the operator but blocked for the contained agent — so a block can only be
-   attributed to the kernel owner-match rule, never to an unroutable or down target.
+   is reachable for the operator but explicitly blocked for the contained agent, which isolates
+   the kernel owner-match rule for the host-local control proof. The direct-egress suite must
+   also be explicitly blocked from the contained position; reachable-but-closed responses such
+   as TCP connection refusal do not count as containment.
 4. **Offline verification** — the run's evidence verifies with one command after the Pipelock
    process is stopped.
 
@@ -108,7 +110,7 @@ For **contained** runs (the signed manifest records this), three additional chec
 and must also pass: the host-containment witness is signed by the orchestrator key; it binds
 this run's nonce and manifest hash; and it proves enforcement — the operator-vs-agent
 differential holds, the exact direct-egress suite was probed from the contained position, and
-every route in that suite was blocked. A contained run therefore reports **11** checks; an
+every route in that suite was explicitly blocked. A contained run therefore reports **11** checks; an
 uncontained run reports 8. The `Contained` flag is covered by the manifest signature, so an
 attacker cannot strip the containment requirement without invalidating the manifest.
 

@@ -76,9 +76,10 @@ Exit 0 = run verified successfully. Non-zero = verification failed or run error.
 			w := cmd.OutOrStdout()
 			if contained {
 				// Register the real (host-only) containment hook. Its Setup
-				// requires root + an installed `pipelock contain`; the bypass
-				// beat itself runs as the contained agent user and fails loudly
-				// rather than silently running uncontained.
+				// requires root + an installed `pipelock contain`; the
+				// host-containment witness probe runs as the contained agent
+				// user and fails loudly rather than silently running
+				// uncontained.
 				playground.SetContainmentHook(playground.NewRealContainmentHook(""))
 			}
 			rep, err := playground.RunDemo(cmd.Context(), w, playground.DemoOpts{

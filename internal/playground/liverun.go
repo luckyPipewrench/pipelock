@@ -4,12 +4,12 @@
 package playground
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -34,11 +34,6 @@ import (
 const (
 	liveRunSafeHost  = "safe.target.test"
 	liveRunExfilHost = "exfil.target.test"
-	// RFC 5737 TEST-NET-3 reserved address: a synthetic "external" target. In
-	// contained mode the kernel blocks all egress except the proxy, so this is
-	// never actually contacted; it only needs to be a non-proxy, non-loopback
-	// destination the bypass attempt aims at.
-	liveRunBypassURL = "http://203.0.113.1/"
 )
 
 // liveRunPrincipal and liveRunActor use the same values as the replaycapture
@@ -54,8 +49,9 @@ const canaryEnvVar = "PLAYGROUND_CANARY_VALUE"
 
 // LiveRunOpts configures a live playground run.
 type LiveRunOpts struct {
-	// Contained selects kernel-containment mode (requires sudo). When false
-	// (uncontained), step 3 (bypass) is skipped.
+	// Contained selects kernel-containment mode (requires sudo). When true, the
+	// mediated demo steps still run through the proxy as the operator, and a
+	// separate uid-dropped probe phase builds the host-containment witness.
 	Contained bool
 	// ScenarioID selects the scenario from DefaultScenarios.
 	ScenarioID string
@@ -111,6 +107,8 @@ type LiveRun struct {
 	// Canary
 	canaryID    string
 	canaryValue string
+
+	egressProbe func(targets []string, asAgent bool) ([]ProbeResult, error)
 }
 
 // StartLiveRun boots a complete live demo environment: lab targets, a real
@@ -261,6 +259,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		PolicyHash:      lr.policyHash,
 		TargetHost:      liveRunExfilHost,
 		StartedAt:       time.Now().UTC(),
+		Contained:       opts.Contained,
 	}
 	lr.manifest = SignLaunchManifest(lr.orchestratorPriv, lr.manifest)
 
@@ -277,8 +276,10 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	return lr, nil
 }
 
-// RunSteps executes the specified toy-agent steps. Step 1 = safe GET, Step 2 =
-// exfil POST, Step 3 = bypass (skipped in uncontained mode).
+// RunSteps executes the specified toy-agent mediated steps. Step 1 = safe GET,
+// Step 2 = exfil POST. Step 3 remains in the toy agent for manual/raw bypass
+// experiments, but the split-proof live demo proves containment through
+// buildHostContainmentWitness instead.
 func (lr *LiveRun) RunSteps(steps ...int) error {
 	safePort := portFromAddr(lr.safeLn.Addr())
 	collectorPort := portFromAddr(lr.collectorLn.Addr())
@@ -288,10 +289,21 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 	exfilURL := fmt.Sprintf("http://%s:%s/", liveRunExfilHost, collectorPort)
 
 	for _, step := range steps {
-		if step == 3 && !lr.opts.Contained {
-			continue // bypass is only meaningful under containment
+		switch step {
+		case 1, 2:
+		default:
+			return fmt.Errorf("unsupported mediated step %d", step)
 		}
 
+		// The mediated steps (1 = allow, 2 = body-DLP block) always run as the
+		// operator through the demo's lab proxy. Under the split-proof model the
+		// kernel-containment property is proven separately by the
+		// HostContainmentWitness (see buildHostContainmentWitness), NOT by
+		// dropping these steps to the contained user. That is deliberate: the
+		// proxy's allow/block decision is orthogonal to the agent's uid, and on a
+		// host with global owner-match containment the contained user cannot
+		// reach the demo's ephemeral lab proxy at all -- so running these steps
+		// contained would just time out and produce no receipts.
 		args := []string{
 			"--step", fmt.Sprintf("%d", step),
 			"--run-nonce", lr.opts.RunNonce,
@@ -300,17 +312,8 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 			"--exfil-url", exfilURL,
 			"--webtool", lr.webtoolBin,
 		}
-		if step == 3 {
-			args = append(args, "--bypass-url", liveRunBypassURL)
-			if lr.opts.Contained {
-				args = append(args, "--expect-bypass-blocked")
-			}
-		}
 
-		cmd, err := lr.agentCommand(args)
-		if err != nil {
-			return fmt.Errorf("step %d command: %w", step, err)
-		}
+		cmd := exec.CommandContext(lr.ctx, lr.agentBin, args...)
 		// Minimal, controlled environment: the demo agent holds ONLY the
 		// synthetic canary plus the demo plumbing -- NEVER the operator's real
 		// environment (which could contain real secrets). This enforces the
@@ -327,33 +330,115 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			// Non-zero exit from the agent is expected when pipelock blocks;
-			// except for the contained bypass beat, where non-zero means the
-			// direct-egress check connected or could not run honestly.
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) {
-				return fmt.Errorf("step %d exec: %w", step, err)
-			}
-			if step == 3 && lr.opts.Contained {
-				return fmt.Errorf("step %d contained bypass check failed: %w", step, err)
-			}
+			return fmt.Errorf("step %d exec: %w", step, err)
 		}
 	}
 	return nil
 }
 
-func (lr *LiveRun) agentCommand(args []string) (*exec.Cmd, error) {
+// runEgressProbe spawns the toy agent in probe mode against the given targets
+// and parses its JSON results. When asAgent is true, the probe subprocess is
+// dropped to the contained agent user (uid-scoped), so it probes from the
+// contained network position; this requires root and an installed containment.
+// When false it runs as the current (operator) user.
+func (lr *LiveRun) runEgressProbe(targets []string, asAgent bool) ([]ProbeResult, error) {
+	args := []string{"--probe-targets", strings.Join(targets, ",")}
 	cmd := exec.CommandContext(lr.ctx, lr.agentBin, args...)
-	if !lr.opts.Contained {
-		return cmd, nil
+	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
+	if asAgent {
+		if os.Geteuid() != 0 {
+			return nil, fmt.Errorf("contained egress probe requires root (euid=%d)", os.Geteuid())
+		}
+		if err := configureContainedCommand(cmd, lr.opts.AgentUser); err != nil {
+			return nil, err
+		}
 	}
-	if os.Geteuid() != 0 {
-		return nil, fmt.Errorf("contained toy-agent execution requires root (euid=%d)", os.Geteuid())
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("egress probe exec: %w", err)
 	}
-	if err := configureContainedCommand(cmd, lr.opts.AgentUser); err != nil {
-		return nil, err
+
+	return decodeProbeResults(stdout.Bytes(), targets)
+}
+
+// decodeProbeResults parses the toy agent's probe-mode JSON output and verifies
+// it carries exactly the requested target set, in order. Extracted from
+// runEgressProbe so the parsing/validation logic is unit-testable without
+// spawning a privileged subprocess (the exec itself is host-only).
+func decodeProbeResults(stdout []byte, expectedTargets []string) ([]ProbeResult, error) {
+	var results []ProbeResult
+	if err := json.Unmarshal(stdout, &results); err != nil {
+		return nil, fmt.Errorf("parse egress probe output: %w", err)
 	}
-	return cmd, nil
+	if len(results) != len(expectedTargets) {
+		return nil, fmt.Errorf("egress probe returned %d results for %d targets", len(results), len(expectedTargets))
+	}
+	for i, expected := range expectedTargets {
+		if results[i].Target != expected {
+			return nil, fmt.Errorf("egress probe result %d target=%q, want %q", i, results[i].Target, expected)
+		}
+	}
+	return results, nil
+}
+
+// buildHostContainmentWitness produces the signed host-containment witness for
+// a contained run. It stands up a host-local control listener (reachable absent
+// containment), probes it as the operator (must connect) and as the contained
+// agent (must be blocked) -- the differential that isolates the kernel
+// owner-match drop -- then probes the real direct-egress target suite from the
+// contained position (all must be blocked). The witness is signed by the
+// orchestrator key, the run's trust root.
+func (lr *LiveRun) buildHostContainmentWitness() (HostContainmentWitness, error) {
+	runProbe := lr.runEgressProbe
+	if lr.egressProbe != nil {
+		runProbe = lr.egressProbe
+	}
+
+	ctrlLn, err := (&net.ListenConfig{}).Listen(lr.ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return HostContainmentWitness{}, fmt.Errorf("control listener: %w", err)
+	}
+	defer func() { _ = ctrlLn.Close() }()
+	go func() {
+		for {
+			c, acceptErr := ctrlLn.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	ctrlTarget := ctrlLn.Addr().String()
+
+	// Operator probe of the control target: proves the probe can see "open".
+	opProbes, err := runProbe([]string{ctrlTarget}, false)
+	if err != nil {
+		return HostContainmentWitness{}, fmt.Errorf("operator control probe: %w", err)
+	}
+
+	// Contained-agent probes: control target first, then the real suite.
+	realTargets := DirectEgressTargets()
+	agentTargets := append([]string{ctrlTarget}, realTargets...)
+	agProbes, err := runProbe(agentTargets, true)
+	if err != nil {
+		return HostContainmentWitness{}, fmt.Errorf("contained agent probe: %w", err)
+	}
+
+	w := HostContainmentWitness{
+		RunNonce:             lr.opts.RunNonce,
+		LaunchManifestHash:   lr.manifest.Hash(),
+		AgentUser:            containedAgentUserName(lr.opts.AgentUser),
+		AgentUID:             containedAgentUID(lr.opts.AgentUser),
+		ControlTarget:        ctrlTarget,
+		ControlOperatorProbe: opProbes[0],
+		ControlAgentProbe:    agProbes[0],
+		AgentProbes:          agProbes[1:],
+		ProbedAt:             time.Now().UTC(),
+	}
+	return SignHostContainmentWitness(lr.orchestratorPriv, w), nil
 }
 
 // HasReceipt reports whether the evidence JSONL contains at least one receipt
@@ -480,6 +565,25 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	redPath := filepath.Join(runDir, redWitnessFile)
 	if err := os.WriteFile(redPath, redBytes, 0o600); err != nil {
 		return VerifyReport{}, fmt.Errorf("write red witness: %w", err)
+	}
+
+	// --- Host-containment witness (contained mode only, split-proof) ---
+	// The mediated receipts above prove the proxy's allow/block decision; this
+	// separate witness proves the kernel owner-match drop from the contained
+	// network position. Each property is attested where it is actually enforced.
+	if lr.opts.Contained {
+		hcw, hcwErr := lr.buildHostContainmentWitness()
+		if hcwErr != nil {
+			return VerifyReport{}, fmt.Errorf("host-containment witness: %w", hcwErr)
+		}
+		hcwBytes, hcwMErr := json.Marshal(hcw)
+		if hcwMErr != nil {
+			return VerifyReport{}, fmt.Errorf("marshal host-containment witness: %w", hcwMErr)
+		}
+		hcwPath := filepath.Join(runDir, hostContainmentWitnessFile)
+		if writeErr := os.WriteFile(hcwPath, hcwBytes, 0o600); writeErr != nil {
+			return VerifyReport{}, fmt.Errorf("write host-containment witness: %w", writeErr)
+		}
 	}
 
 	// --- Verify ---

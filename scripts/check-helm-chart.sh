@@ -84,7 +84,7 @@ fi
 # Every rendered image reference must be either repo:tag or repo@sha256:...,
 # never a malformed combination. This guards UX-001 (a digest concatenated as a
 # tag produced ":@sha256:") and the related empty-tag / double-separator shapes.
-image_refs="$(grep -Rh -- 'image:' "$render_dir" | grep -v -- 'imagePullSecrets\|imagePullPolicy' || true)"
+image_refs="$(grep -RhE '^[[:space:]]*image:[[:space:]]' "$render_dir" | grep -vE '^[[:space:]]*imagePull(Secrets|Policy):' || true)"
 if [ -z "$image_refs" ]; then
   echo "no image references found in rendered manifests" >&2
   exit 1

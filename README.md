@@ -508,6 +508,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Adaptive CLI](docs/cli/adaptive.md) | Inspect and flush adaptive-enforcement runtime state through the admin API (v2.5) |
 | [Conductor](docs/guides/conductor.md) | The Enterprise fleet control plane: policy distribution, audit sink, remote kill, rollback, mTLS/SPIFFE trust, licensing (v2.7, GA) |
 | [Conductor Operator Runbook](docs/guides/conductor-operator-runbook.md) | Hands-on local fleet walkthrough: bootstrap, serve, sign a batch, verify offline |
+| [Conductor Operator Quickstart](docs/guides/conductor-operator-quickstart.md) | Zero to a read-only fleet audit: license, operator mTLS cert, auditor token, read-only commands |
 | [Kubernetes Enterprise Deployment](docs/guides/kubernetes-enterprise-deployment.md) | Helm-based Conductor fleet: control plane, followers, fleet-sink, PKI Secrets, NetworkPolicies |
 | [`pipelock license`](docs/cli/license.md) | Install, inspect, and check the license that unlocks paid features (Pro `agents`, Enterprise `fleet`) |
 | [`pipelock baseline`](docs/cli/baseline.md) | Inspect, ratify, and relearn behavioral-baseline profiles through the authenticated admin API |

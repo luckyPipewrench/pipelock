@@ -11,22 +11,32 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"strings"
 	"time"
 )
 
 // --------------------------------------------------------------------------
 // Egress probe: attempt a direct (no-proxy) TCP connection to a target and
-// classify it as Open (reachable) or Blocked (refused / timeout / no route).
+// classify it as Open (connected), Blocked (kernel/network denial), or
+// ambiguous/reachable failure (for example connection refused).
 // --------------------------------------------------------------------------
 
-// ProbeResult holds the outcome of a single direct-egress probe.
+// ProbeResult holds the outcome of a single direct-egress probe. It is
+// serialized into the signed HostContainmentWitness, so its JSON shape is part
+// of the evidence model: the field tags must stay stable for SignedBytes
+// determinism.
 type ProbeResult struct {
 	// Target is the host:port that was probed.
-	Target string
+	Target string `json:"target"`
 	// Open is true when the probe connected successfully (egress is NOT blocked).
-	Open bool
+	Open bool `json:"open"`
+	// Blocked is true only when the probe failed in a way consistent with a
+	// kernel/network egress denial. Reachable-but-closed targets (connection
+	// refused) are NOT blocked: they prove packets escaped far enough to get a
+	// response.
+	Blocked bool `json:"blocked"`
 	// Detail is a human-readable classification (e.g. "connected", "connection refused").
-	Detail string
+	Detail string `json:"detail"`
 }
 
 // probeTimeout is the per-target TCP dial timeout for egress probes. Short
@@ -37,8 +47,9 @@ const probeTimeout = 2 * time.Second
 const defaultContainedAgentUser = "pipelock-agent"
 
 // ProbeDirectEgress attempts a direct (proxy-less) TCP connection to target
-// (host:port). It classifies the result as Open (connected) or Blocked
-// (refused, timeout, no route, or any other failure). The probe uses an
+// (host:port). It classifies connected targets as Open, timeout/no-route/
+// permission failures as Blocked, and reachable-but-closed or ambiguous
+// failures as neither. The probe uses an
 // explicit nil-Proxy transport so HTTP_PROXY / HTTPS_PROXY env vars are
 // NOT consulted -- this is testing the raw network path, not the mediated one.
 func ProbeDirectEgress(ctx context.Context, target string) ProbeResult {
@@ -49,18 +60,48 @@ func ProbeDirectEgress(ctx context.Context, target string) ProbeResult {
 
 	conn, err := dialer.DialContext(dialCtx, "tcp", target)
 	if err != nil {
+		blocked := isEgressBlockError(err)
 		return ProbeResult{
-			Target: target,
-			Open:   false,
-			Detail: fmt.Sprintf("blocked: %v", err),
+			Target:  target,
+			Open:    false,
+			Blocked: blocked,
+			Detail:  probeErrorDetail(err, blocked),
 		}
 	}
 	_ = conn.Close()
 	return ProbeResult{
-		Target: target,
-		Open:   true,
-		Detail: "connected",
+		Target:  target,
+		Open:    true,
+		Blocked: false,
+		Detail:  "connected",
 	}
+}
+
+func isEgressBlockError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "no route to host") ||
+		strings.Contains(msg, "host is down") ||
+		strings.Contains(msg, "operation not permitted") ||
+		strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "administratively prohibited")
+}
+
+func probeErrorDetail(err error, blocked bool) string {
+	if strings.Contains(strings.ToLower(err.Error()), "connection refused") {
+		return fmt.Sprintf("reachable: connection refused: %v", err)
+	}
+	if blocked {
+		return fmt.Sprintf("blocked: %v", err)
+	}
+	return fmt.Sprintf("not blocked: %v", err)
 }
 
 // --------------------------------------------------------------------------
@@ -71,18 +112,22 @@ func ProbeDirectEgress(ctx context.Context, target string) ProbeResult {
 // the kernel must block when containment is active. These are the "known-bad"
 // routes that a contained agent should never reach directly.
 //
-// Each entry is a host:port suitable for a TCP dial. The list covers the
-// categories from the playground spec:
+// Each entry is a host:port suitable for a TCP dial. Targets are chosen so that
+// under containment the dial fails with a kernel/network DENIAL (timeout, no
+// route, permission) -- not a client-side malformed-address error. An IPv6
+// link-local literal without a %zone (e.g. [fe80::1]:443) is deliberately NOT
+// used: it fails with EINVAL ("invalid argument") before any packet leaves the
+// host, which is a malformed dial, not an egress block, so it can never honestly
+// prove containment on any host. The list covers the categories from the
+// playground spec:
 //   - Cloud metadata IP (169.254.169.254:80)
 //   - RFC-1918 private IP (10.0.0.1:443)
-//   - IPv6 link-local ([fe80::1]:443)
-//   - Public DNS resolvers (8.8.8.8:53 UDP/TCP, 1.1.1.1:853 DoT)
+//   - Public DNS resolvers (8.8.8.8:53, 1.1.1.1:853 DoT)
 //   - Public HTTPS endpoint (93.184.216.34:443 -- example.com's IP)
 func DirectEgressTargets() []string {
 	return []string{
 		"169.254.169.254:80", // cloud metadata
 		"10.0.0.1:443",       // RFC-1918 private
-		"[fe80::1]:443",      // IPv6 link-local
 		"8.8.8.8:53",         // public DNS (Google)
 		"1.1.1.1:853",        // public DNS over TLS (Cloudflare)
 		"93.184.216.34:443",  // public HTTPS (example.com)
@@ -112,19 +157,22 @@ func MediatedProxyPolicyTargets() []string {
 type SelfTestResult struct {
 	// Probes contains one result per target.
 	Probes []ProbeResult
-	// AllBlocked is true ONLY when every single known-bad route was blocked.
-	// This is the fail-closed gate: any open route -> AllBlocked=false ->
-	// contained demo must abort.
+	// AllBlocked is true ONLY when every single known-bad route was explicitly
+	// classified as blocked. Any open, refused, or ambiguous route means
+	// containment is not proven and the contained demo must abort.
 	AllBlocked bool
 }
 
 // RunContainmentSelfTest probes every target in the provided list via direct
 // (no-proxy) TCP and returns the aggregate result. AllBlocked is true ONLY
-// if EVERY target was blocked. Any single open route means containment is
-// not active (or is incomplete).
+// if EVERY target failed with an egress-block classification. Any connected
+// route, connection-refused response, or ambiguous failure means containment is
+// not proven.
 //
-// This function is the per-run gate: in contained mode, the demo calls this
-// BEFORE the bypass beat (step 3) and aborts if AllBlocked is false.
+// This diagnostic helper is useful for checking a target list from the current
+// process's network position. The split-proof live demo's production
+// containment gate is buildHostContainmentWitness, which drops the probe
+// subprocess to the contained agent user before probing.
 func RunContainmentSelfTest(ctx context.Context, targets []string) SelfTestResult {
 	probes := make([]ProbeResult, 0, len(targets))
 	allBlocked := true
@@ -132,7 +180,7 @@ func RunContainmentSelfTest(ctx context.Context, targets []string) SelfTestResul
 	for _, t := range targets {
 		p := ProbeDirectEgress(ctx, t)
 		probes = append(probes, p)
-		if p.Open {
+		if !p.Blocked {
 			allBlocked = false
 		}
 	}
@@ -271,19 +319,12 @@ func ContainmentAvailable() bool {
 }
 
 // --------------------------------------------------------------------------
-// Wiring point for RunDemo: where to call RunContainmentSelfTest.
+// Production containment gate.
 //
-// T9's RunDemo uses the actual step 3 toy-agent bypass attempt as the contained
-// egress gate. The older RunContainmentSelfTest helper remains useful for
-// diagnostics, but it runs in the caller's process and is not representative of
-// UID-scoped containment when the caller is root. If a future hook can execute
-// probes as the contained user, it should call:
-//
-//   result := RunContainmentSelfTest(ctx, DirectEgressTargets())
-//   if !result.AllBlocked {
-//       return VerifyReport{}, ErrContainmentSelfTestFailed
-//   }
-//
-// The production path's fail-closed check is the contained toy-agent process
-// running with --expect-bypass-blocked.
+// RunContainmentSelfTest remains a diagnostic helper: it probes from the
+// caller's process, which is not representative of UID-scoped containment when
+// the caller is root. The live demo's production gate is the signed
+// HostContainmentWitness built by LiveRun.buildHostContainmentWitness: that path
+// first proves an operator-vs-agent control differential, then requires the
+// contained agent user to block the exact DirectEgressTargets suite.
 // --------------------------------------------------------------------------

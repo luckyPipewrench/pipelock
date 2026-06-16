@@ -19,8 +19,15 @@ request body, mediates each action, and signs each decision:
 2. **Blocked exfiltration** — the agent tries to send the canary to a lab collector; Pipelock
    blocks it before the collector receives it; a signed receipt is recorded, and a separate
    **signed collector witness** independently records that the canary did not arrive.
-3. **Direct-egress bypass** *(contained mode only)* — the agent tries raw egress that ignores
-   the proxy; host containment denies it at the kernel.
+3. **Kernel containment** *(contained mode only)* — proven separately from the mediated
+   decisions (a "split proof"). A probe runs from the **contained agent's network position**
+   (dropped to the `pipelock-agent` uid) against a host-local control target and the real
+   direct-egress suite (cloud metadata, RFC-1918, public DNS/HTTPS). The result is a **signed
+   host-containment witness**. Its honesty rests on a **differential**: the same control target
+   is reachable for the operator but explicitly blocked for the contained agent, which isolates
+   the kernel owner-match rule for the host-local control proof. The direct-egress suite must
+   also be explicitly blocked from the contained position; reachable-but-closed responses such
+   as TCP connection refusal do not count as containment.
 4. **Offline verification** — the run's evidence verifies with one command after the Pipelock
    process is stopped.
 
@@ -37,13 +44,17 @@ as a stronger class than it is:
 |---|---|---|
 | `pipelock_decision` | an allow/block decision in the receipt chain | the Pipelock mediator key |
 | `collector_witness` | the lab collector's target-side observation | the collector key (separate) |
-| `host_containment` | the direct-egress bypass denied by the kernel | not a receipt — operational result |
+| `host_containment` | the contained agent's direct egress denied by the kernel | the orchestrator key (host-containment witness) |
 | `narration` | the agent's printed intent | unsigned playback |
 
-The proxy mediation and the signed receipts/witness are **binary-enforced**. The direct-egress
-block (contained mode) is **host/deployment-enforced** via `pipelock contain` (kernel nftables);
-it is not a property of this tool's binary and is only present when the agent is actually
-contained.
+The proxy mediation and the signed receipts/witness are **binary-enforced**. The kernel
+containment (contained mode) is **host/deployment-enforced** via `pipelock contain` (kernel
+nftables) — it is not a property of this tool's binary, only present when the agent is actually
+contained. The tool's contribution is to *attest* that property for a specific run: the signed,
+offline-verifiable host-containment witness records what was probed from the contained position
+and proves the operator-vs-agent differential. Verifying the witness confirms the attestation;
+the underlying egress block remains host-enforced, not something this binary can guarantee on its
+own.
 
 ## Run it
 
@@ -59,8 +70,8 @@ pipelock-playground-demo run --run-dir ./demo-run --scenario secret-exfil-body-b
 
 This boots a real Pipelock proxy + lab targets on loopback, drives the toy agent through the
 proxy, renders the evidence-class-labeled mediator timeline, assembles the Audit Packet, and
-verifies it. The direct-egress bypass beat is **skipped** here: without containment there is no
-kernel boundary to demonstrate, and the tool says so rather than implying one.
+verifies it. No host-containment witness is produced here: without containment there is no
+kernel boundary to attest, and the tool says so rather than implying one.
 
 ### Contained (the real demo — requires a prepared host)
 
@@ -69,10 +80,14 @@ sudo pipelock-playground-demo run --contained --run-dir ./demo-run --scenario se
 ```
 
 Contained mode requires root, the `pipelock-agent` OS user, and a host where
-`pipelock contain install` has been run. The bypass beat is executed by the toy-agent process
-after dropping to that contained user; if the direct-egress request connects, the run aborts
-rather than claim a containment that is not in effect. Off such a host the command fails loudly
-— it never silently falls back to uncontained while claiming contained.
+`pipelock contain install` has been run. Under the **split-proof** model the mediated steps
+(allow, block) run as the operator through the lab proxy — exactly as in uncontained mode — and
+a separate probe phase drops to the `pipelock-agent` uid to build the signed host-containment
+witness. This split is deliberate: the proxy's allow/block decision does not depend on the
+agent's uid, and on a host with global owner-match containment the contained user cannot reach
+the demo's ephemeral lab proxy at all, so running the mediated steps contained would simply
+time out. Off a prepared host, the contained run fails loudly — it never silently falls back to
+uncontained while claiming containment.
 
 ## Verify it yourself
 
@@ -90,6 +105,14 @@ the collector key the manifest pins; the witness binds this run's nonce and mani
 collector observed zero requests for the blocked exfil run; the packet contains the expected
 allow and `body_dlp` block receipts; and the witness carries a genuine red-case calibration
 backed by a signed `red-witness.json` artifact. Any single failure exits non-zero.
+
+For **contained** runs (the signed manifest records this), three additional checks are required
+and must also pass: the host-containment witness is signed by the orchestrator key; it binds
+this run's nonce and manifest hash; and it proves enforcement — the operator-vs-agent
+differential holds, the exact direct-egress suite was probed from the contained position, and
+every route in that suite was explicitly blocked. A contained run therefore reports **11** checks; an
+uncontained run reports 8. The `Contained` flag is covered by the manifest signature, so an
+attacker cannot strip the containment requirement without invalidating the manifest.
 
 The receipt chain alone is also verifiable with the shipped `pipelock-verifier audit-packet`
 against `./demo-run/packet` — but note that verifier checks the packet and chain only, not the

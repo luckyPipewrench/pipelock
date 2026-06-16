@@ -6,6 +6,13 @@
 mode: proxy
 replicaCount: 2
 
+# Pin the follower image by digest. Leave tag empty so it does not combine with
+# the digest. Replace the digest with the one you have verified for the release
+# you are deploying.
+image:
+  tag: ""
+  digest: "sha256:e8e249d2dd1b579f995f0f5a75cfab13fb8505a8ffc33c2cec7a6418290d9098"
+
 license:
   enabled: true
   existingSecret: pipelock-enterprise-license

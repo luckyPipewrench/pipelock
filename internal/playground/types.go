@@ -26,5 +26,11 @@ type LaunchManifest struct {
 	CollectorConfigDigest string    `json:"collector_config_digest"`
 	TargetHost            string    `json:"target_host"`
 	StartedAt             time.Time `json:"started_at"`
-	Signature             string    `json:"signature,omitempty"`
+	// Contained pins, in the signed manifest, whether this run produced a
+	// host-containment witness. When true, VerifyRun additionally requires the
+	// host-containment checks to be present and pass. Because the manifest is
+	// signed under the orchestrator key, an attacker cannot flip this to skip
+	// the containment checks without invalidating the manifest signature.
+	Contained bool   `json:"contained"`
+	Signature string `json:"signature,omitempty"`
 }

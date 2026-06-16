@@ -38,3 +38,27 @@ func configureContainedCommand(cmd *exec.Cmd, agentUser string) error {
 	}
 	return nil
 }
+
+// containedAgentUserName returns the contained agent username, defaulting to
+// pipelock-agent. Used to record the probe identity in the witness.
+func containedAgentUserName(agentUser string) string {
+	if agentUser == "" {
+		return defaultContainedAgentUser
+	}
+	return agentUser
+}
+
+// containedAgentUID resolves the contained agent user's numeric uid for the
+// witness record. Best-effort: returns -1 if the user cannot be resolved (the
+// privileged probe path resolves and validates the user separately).
+func containedAgentUID(agentUser string) int {
+	u, err := user.Lookup(containedAgentUserName(agentUser))
+	if err != nil {
+		return -1
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return -1
+	}
+	return uid
+}

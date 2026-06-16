@@ -41,31 +41,34 @@ func TestEgressProbe_OpenTarget_ClassifiedOpen(t *testing.T) {
 	if !result.Open {
 		t.Fatalf("probe to an open listener must classify as Open, got: %+v", result)
 	}
+	if result.Blocked {
+		t.Fatalf("probe to an open listener must not classify as Blocked, got: %+v", result)
+	}
 	if result.Target != ln.Addr().String() {
 		t.Fatalf("target mismatch: want %q, got %q", ln.Addr().String(), result.Target)
 	}
 }
 
-func TestEgressProbe_UnroutableTarget_ClassifiedBlocked(t *testing.T) {
+func TestEgressProbe_RefusedTarget_NotBlocked(t *testing.T) {
 	t.Parallel()
 
 	// 127.0.0.1:1 -- port 1 is almost never listening; connection refused is
-	// the expected outcome on loopback.
+	// the expected outcome on loopback. Refused means reachable, not blocked.
 	result := playground.ProbeDirectEgress(t.Context(), "127.0.0.1:1")
-	if result.Open {
-		t.Fatalf("probe to an unroutable/refused target must classify as Blocked, got: %+v", result)
+	if result.Open || result.Blocked {
+		t.Fatalf("probe to a refused target must be Open=false Blocked=false, got: %+v", result)
 	}
 }
 
-func TestEgressProbe_ContextCancelled_ClassifiedBlocked(t *testing.T) {
+func TestEgressProbe_ContextCancelled_NotBlocked(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel immediately
 
 	result := playground.ProbeDirectEgress(ctx, "127.0.0.1:1")
-	if result.Open {
-		t.Fatalf("probe with cancelled context must classify as Blocked, got: %+v", result)
+	if result.Open || result.Blocked {
+		t.Fatalf("probe with cancelled context must be Open=false Blocked=false, got: %+v", result)
 	}
 }
 
@@ -132,10 +135,11 @@ func TestSelfTest_DetectsOpenRoutes_WhenUncontained(t *testing.T) {
 	}
 }
 
-func TestSelfTest_AllBlockedWhenEveryTargetRefused(t *testing.T) {
+func TestSelfTest_RefusedTargetsAreNotBlocked(t *testing.T) {
 	t.Parallel()
 
-	// All targets are definitely-refused loopback ports.
+	// Closed loopback ports are reachable enough to return ECONNREFUSED. That
+	// is not containment: packets left the process and came back with a refusal.
 	targets := []string{
 		"127.0.0.1:1",
 		"127.0.0.1:2",
@@ -143,13 +147,16 @@ func TestSelfTest_AllBlockedWhenEveryTargetRefused(t *testing.T) {
 
 	res := playground.RunContainmentSelfTest(t.Context(), targets)
 
-	if !res.AllBlocked {
-		t.Fatal("when every target is refused, AllBlocked must be true")
+	if res.AllBlocked {
+		t.Fatal("connection-refused targets must NOT prove AllBlocked=true")
 	}
 
 	for _, p := range res.Probes {
 		if p.Open {
 			t.Fatalf("probe %q unexpectedly classified as Open", p.Target)
+		}
+		if p.Blocked {
+			t.Fatalf("probe %q was refused but classified as blocked: %s", p.Target, p.Detail)
 		}
 	}
 }
@@ -201,11 +208,13 @@ func TestDirectEgressTargets_CoversRequiredCategories(t *testing.T) {
 
 	targets := playground.DirectEgressTargets()
 
-	// Check that the required categories are represented.
+	// Check that the required categories are represented. IPv6 link-local is
+	// intentionally NOT a required category: a [fe80::1] literal without a %zone
+	// fails the dial with EINVAL before any packet leaves the host, so it can
+	// never honestly prove an egress block (see DirectEgressTargets doc).
 	categories := map[string]bool{
 		"metadata":    false, // 169.254.169.254
 		"rfc1918":     false, // 10.x.x.x
-		"ipv6":        false, // fe80 or ::
 		"public_dns":  false, // 8.8.8.8 or 1.1.1.1
 		"public_http": false, // any other public IP
 	}
@@ -221,8 +230,6 @@ func TestDirectEgressTargets_CoversRequiredCategories(t *testing.T) {
 			categories["metadata"] = true
 		case len(host) > 3 && host[:3] == "10.":
 			categories["rfc1918"] = true
-		case len(host) >= 4 && (host[:4] == "fe80" || host == "::1"):
-			categories["ipv6"] = true
 		case host == "8.8.8.8" || host == "1.1.1.1":
 			categories["public_dns"] = true
 		case host == "93.184.216.34":
@@ -268,53 +275,23 @@ func TestRealContainmentHook_Teardown_Succeeds(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Contained end-to-end: PRIVILEGE-GATED (host-only, skips in CI)
+// Contained end-to-end: PRIVILEGE-GATED host proof lives in the demo binary
 // --------------------------------------------------------------------------
-
-// requirePrivilegedHost skips the test unless running as root AND
-// containment tooling is available. This is the honest gate: we NEVER
-// fake a pass for contained-mode kernel enforcement.
-func requirePrivilegedHost(t *testing.T) {
-	t.Helper()
-
-	if os.Geteuid() != 0 {
-		t.Skip("SKIPPED: contained end-to-end requires root (euid != 0). " +
-			"Run with sudo on a host where 'pipelock contain install' has been executed. " +
-			"This test verifies kernel-level egress blocking, which CANNOT be faked in CI.")
-	}
-
-	// Check that pipelock contain verify passes.
-	if !playground.ContainmentAvailable() {
-		t.Skip("SKIPPED: 'pipelock contain verify' failed or pipelock not in PATH. " +
-			"Run 'sudo pipelock contain install' first. " +
-			"This test verifies kernel-level egress blocking on a real containment host.")
-	}
-}
-
-func TestContainment_BlocksDirectEgress_HostOnly(t *testing.T) {
-	requirePrivilegedHost(t) // t.Skip if not root / contain unavailable
-
-	// On a properly contained host, EVERY known-bad route must be blocked.
-	targets := playground.DirectEgressTargets()
-	result := playground.RunContainmentSelfTest(t.Context(), targets)
-
-	if !result.AllBlocked {
-		var open []string
-		for _, p := range result.Probes {
-			if p.Open {
-				open = append(open, p.Target)
-			}
-		}
-		t.Fatalf("containment must block ALL direct egress targets, but these were open: %v", open)
-	}
-
-	// Verify every probe was individually classified as blocked.
-	for _, p := range result.Probes {
-		if p.Open {
-			t.Errorf("probe %q must be blocked under containment, but was Open: %s", p.Target, p.Detail)
-		}
-	}
-}
+//
+// The host-only kernel-containment proof is the DIFFERENTIAL split-proof, not
+// an in-process self-test. Running RunContainmentSelfTest from the (root)
+// operator process is the wrong model: containment drops the contained AGENT
+// to uid 966 and kernel-blocks its egress, while the operator/root deliberately
+// RETAINS egress (the control target). A root-process self-test would therefore
+// fail for the wrong reason on a correctly contained host.
+//
+// The honest privileged proof is built and verified end-to-end by the demo
+// binary (HostContainmentWitness, signed from a uid-966-dropped probe set) and
+// is exercised by:
+//   - TestHostContainmentWitness_Enforced       (DifferentialProven && DirectSuiteProven && AllAgentBlocked)
+//   - TestAllAgentBlocked_HappyAndEmpty          (liverun_internal_test.go)
+//   - TestVerify_Contained_NotEnforced_FailsClosed (containment_verify_test.go)
+//   - `pipelock-playground-demo run --contained` + `... verify` on a real host.
 
 func TestContainment_SelfTestGate_AbortsOnOpenRoutes(t *testing.T) {
 	t.Parallel()

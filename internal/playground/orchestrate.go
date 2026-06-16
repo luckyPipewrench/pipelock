@@ -173,13 +173,10 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 		return VerifyReport{}, fmt.Errorf("step 2: %w", err)
 	}
 
-	// Step 3 (bypass) only runs in contained mode.
-	if opts.Contained {
-		timeline = append(timeline, NarrationEvent("Step 3: Direct bypass attempt (expect kernel BLOCK)"))
-		if err := lr.RunSteps(3); err != nil {
-			return VerifyReport{}, fmt.Errorf("step 3: %w", err)
-		}
-	}
+	// Under the split-proof model the direct-egress bypass is no longer a single
+	// in-band agent step; it is proven separately by the host-containment
+	// witness (probes run from the contained network position), which
+	// AssembleAndVerify produces for contained runs.
 
 	// --- Assemble + verify ---
 	rep, err := lr.AssembleAndVerify(opts.RunDir)
@@ -208,9 +205,25 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 	}
 
 	// --- Containment event (contained mode only) ---
+	// Render the event from the verifier's host-containment checks, not a
+	// hardcoded assumption or an unverified parse of the witness file. The raw
+	// witness only supplies display detail after verification has accepted it.
 	if opts.Contained {
-		// In contained mode, step 3 should have been kernel-blocked.
-		timeline = append(timeline, ContainmentEvent(true, "direct egress denied by nft rules"))
+		verified := checksPassed(rep,
+			checkHostContainSig,
+			checkHostContainBinding,
+			checkHostContainEnforced,
+		)
+		detail := "host-containment witness did not pass offline verification"
+		hcwPath := filepath.Clean(filepath.Join(opts.RunDir, hostContainmentWitnessFile))
+		if hcwData, hcwErr := os.ReadFile(hcwPath); hcwErr == nil {
+			var hcw HostContainmentWitness
+			if json.Unmarshal(hcwData, &hcw) == nil && verified {
+				detail = fmt.Sprintf("%d direct-egress routes blocked for %s; control target reachable for operator",
+					len(hcw.AgentProbes), hcw.AgentUser)
+			}
+		}
+		timeline = append(timeline, ContainmentEvent(verified, detail))
 	}
 
 	// --- Render timeline ---
@@ -222,6 +235,19 @@ func RunDemo(ctx context.Context, out io.Writer, opts DemoOpts) (VerifyReport, e
 	renderVerifySummary(out, rep, opts.RunDir)
 
 	return rep, nil
+}
+
+func checksPassed(rep VerifyReport, names ...string) bool {
+	passed := make(map[string]bool, len(rep.Checks))
+	for _, check := range rep.Checks {
+		passed[check.Name] = check.OK
+	}
+	for _, name := range names {
+		if !passed[name] {
+			return false
+		}
+	}
+	return true
 }
 
 // renderVerifySummary prints the VerifyReport checks and the audience verify

@@ -8,6 +8,9 @@ package playground
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -23,10 +26,21 @@ import (
 
 const rootRequirement = "requires root"
 
+// execFixtureMode is the file mode for test fixtures that must be executable
+// (a probe-agent shell script the test then runs). The executable bit is
+// required; using a named constant keeps gosec G302 from flagging the literal.
+const execFixtureMode os.FileMode = 0o700
+
 type badAddr string
 
 func (a badAddr) Network() string { return "bad" }
 func (a badAddr) String() string  { return string(a) }
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return false }
 
 func TestLiveRunHelperBranches(t *testing.T) {
 	t.Parallel()
@@ -62,57 +76,227 @@ func TestLiveRunHelperBranches(t *testing.T) {
 	}
 }
 
-func TestLiveRunAgentCommandBranches(t *testing.T) {
+func TestContainmentErrorHelpers(t *testing.T) {
 	t.Parallel()
+
+	for _, err := range []error{
+		timeoutError{},
+		os.ErrPermission,
+		errors.New("network is unreachable"),
+		errors.New("operation not permitted"),
+		errors.New("administratively prohibited"),
+	} {
+		if !isEgressBlockError(err) {
+			t.Fatalf("isEgressBlockError(%v) = false, want true", err)
+		}
+	}
+	if isEgressBlockError(errors.New("connection refused")) {
+		t.Fatal("connection refused must be reachable, not blocked")
+	}
+	if got := probeErrorDetail(errors.New("connection refused"), false); !strings.Contains(got, "reachable: connection refused") {
+		t.Fatalf("connection refused detail = %q", got)
+	}
+	if got := probeErrorDetail(errors.New("network is unreachable"), true); !strings.Contains(got, "blocked:") {
+		t.Fatalf("blocked detail = %q", got)
+	}
+	if got := probeErrorDetail(errors.New("reset by peer"), false); !strings.Contains(got, "not blocked:") {
+		t.Fatalf("not-blocked detail = %q", got)
+	}
+}
+
+func TestContainedAgentIdentityHelpers(t *testing.T) {
+	t.Parallel()
+
+	if got := containedAgentUserName(""); got != defaultContainedAgentUser {
+		t.Fatalf("default contained agent user = %q, want %q", got, defaultContainedAgentUser)
+	}
+	if got := containedAgentUserName("custom-agent"); got != "custom-agent" {
+		t.Fatalf("custom contained agent user = %q", got)
+	}
+	if got := containedAgentUID("pipelock-missing-test-user"); got != -1 {
+		t.Fatalf("missing contained agent uid = %d, want -1", got)
+	}
+}
+
+func TestChecksPassed(t *testing.T) {
+	t.Parallel()
+
+	rep := VerifyReport{Checks: []Check{
+		{Name: checkHostContainSig, OK: true},
+		{Name: checkHostContainBinding, OK: true},
+		{Name: checkHostContainEnforced, OK: false},
+	}}
+	if !checksPassed(rep, checkHostContainSig, checkHostContainBinding) {
+		t.Fatal("expected selected passing checks to pass")
+	}
+	if checksPassed(rep, checkHostContainSig, checkHostContainEnforced) {
+		t.Fatal("failed check must make checksPassed false")
+	}
+	if checksPassed(rep, "missing-check") {
+		t.Fatal("missing check must make checksPassed false")
+	}
+}
+
+func TestRunEgressProbeRequiresRootWhenContained(t *testing.T) {
+	t.Parallel()
+
+	// Split-proof refactor removed LiveRun.agentCommand: mediated steps now exec
+	// inline as the operator, and the only uid-dropped path is the egress probe.
+	// The equivalent root-requirement branch lives in runEgressProbe(asAgent=true).
+	if os.Geteuid() == 0 {
+		t.Skip("non-root contained error branch requires non-root test process")
+	}
 
 	lr := &LiveRun{
 		ctx:      t.Context(),
 		agentBin: "/bin/echo",
 		opts:     LiveRunOpts{},
 	}
-	cmd, err := lr.agentCommand([]string{"hello"})
-	if err != nil {
-		t.Fatalf("uncontained agentCommand: %v", err)
+	// asAgent=true drops to the contained uid, which requires root; as a non-root
+	// test process it must fail closed with the root requirement.
+	if _, err := lr.runEgressProbe([]string{"127.0.0.1:1"}, true); err == nil || !strings.Contains(err.Error(), rootRequirement) {
+		t.Fatalf("contained egress probe non-root error = %v, want root requirement", err)
 	}
-	if cmd.Path != "/bin/echo" {
-		t.Fatalf("cmd path = %q", cmd.Path)
-	}
-	if len(cmd.Args) != 2 || cmd.Args[1] != "hello" {
-		t.Fatalf("cmd args = %v", cmd.Args)
+}
+
+func TestRunEgressProbeParsesSubprocessOutput(t *testing.T) {
+	t.Parallel()
+
+	agent := filepath.Join(t.TempDir(), "probe-agent")
+	script := `#!/bin/sh
+printf '%s\n' '[{"target":"127.0.0.1:1","open":false,"blocked":true,"detail":"blocked"}]'
+`
+	if err := os.WriteFile(agent, []byte(script), execFixtureMode); err != nil {
+		t.Fatalf("write probe agent: %v", err)
 	}
 
-	if os.Geteuid() == 0 {
-		t.Skip("non-root contained error branch requires non-root test process")
+	lr := &LiveRun{
+		ctx:      t.Context(),
+		agentBin: agent,
 	}
-	lr.opts.Contained = true
-	if _, err := lr.agentCommand(nil); err == nil || !strings.Contains(err.Error(), rootRequirement) {
-		t.Fatalf("contained non-root error = %v, want root requirement", err)
+	got, err := lr.runEgressProbe([]string{"127.0.0.1:1"}, false)
+	if err != nil {
+		t.Fatalf("runEgressProbe: %v", err)
+	}
+	if len(got) != 1 || got[0].Target != "127.0.0.1:1" || !got[0].Blocked || got[0].Open {
+		t.Fatalf("probe results = %+v, want one blocked result", got)
 	}
 }
 
 func TestRunStepsReturnsNonExitExecErrors(t *testing.T) {
 	t.Parallel()
 
-	safeLn := listenLocal(t)
-	defer func() { _ = safeLn.Close() }()
-	collectorLn := listenLocal(t)
-	defer func() { _ = collectorLn.Close() }()
-	proxyLn := listenLocal(t)
-	defer func() { _ = proxyLn.Close() }()
-
-	lr := &LiveRun{
-		ctx:         t.Context(),
-		safeLn:      safeLn,
-		collectorLn: collectorLn,
-		proxyLn:     proxyLn,
-		agentBin:    filepath.Join(t.TempDir(), "missing-agent"),
-		opts: LiveRunOpts{
-			RunNonce: "N1",
-		},
-	}
+	lr := newRunStepsTestLiveRun(t, filepath.Join(t.TempDir(), "missing-agent"))
 	err := lr.RunSteps(1)
 	if err == nil || !strings.Contains(err.Error(), "step 1 exec") {
 		t.Fatalf("RunSteps error = %v, want step 1 exec", err)
+	}
+}
+
+func TestRunStepsReturnsAgentExitErrors(t *testing.T) {
+	t.Parallel()
+
+	lr := newRunStepsTestLiveRun(t, "/bin/false")
+	err := lr.RunSteps(1)
+	if err == nil || !strings.Contains(err.Error(), "step 1 exec") {
+		t.Fatalf("RunSteps error = %v, want step 1 exec", err)
+	}
+}
+
+func TestRunStepsRejectsUnsupportedSteps(t *testing.T) {
+	t.Parallel()
+
+	lr := newRunStepsTestLiveRun(t, "/bin/false")
+	err := lr.RunSteps(99)
+	if err == nil || !strings.Contains(err.Error(), "unsupported mediated step 99") {
+		t.Fatalf("RunSteps error = %v, want unsupported mediated step", err)
+	}
+}
+
+func TestBuildHostContainmentWitnessSignsProbeEvidence(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	lr := &LiveRun{
+		ctx:              t.Context(),
+		orchestratorPub:  pub,
+		orchestratorPriv: priv,
+		manifest: LaunchManifest{
+			RunNonce:   "N1",
+			ScenarioID: LiveDemoScenarioID,
+			Contained:  true,
+		},
+		opts: LiveRunOpts{
+			RunNonce:  "N1",
+			AgentUser: "missing-test-agent-user",
+		},
+	}
+
+	var controlTarget string
+	lr.egressProbe = func(targets []string, asAgent bool) ([]ProbeResult, error) {
+		if len(targets) == 0 {
+			return nil, errors.New("missing targets")
+		}
+		if !asAgent {
+			if len(targets) != 1 {
+				return nil, fmt.Errorf("operator target count = %d", len(targets))
+			}
+			controlTarget = targets[0]
+			return []ProbeResult{{Target: targets[0], Open: true, Blocked: false, Detail: "connected"}}, nil
+		}
+		if targets[0] != controlTarget {
+			return nil, fmt.Errorf("agent control target = %q, want %q", targets[0], controlTarget)
+		}
+		results := make([]ProbeResult, 0, len(targets))
+		for _, target := range targets {
+			results = append(results, ProbeResult{Target: target, Open: false, Blocked: true, Detail: "blocked"})
+		}
+		return results, nil
+	}
+
+	w, err := lr.buildHostContainmentWitness()
+	if err != nil {
+		t.Fatalf("buildHostContainmentWitness: %v", err)
+	}
+	if !VerifyHostContainmentWitness(hex.EncodeToString(pub), w) {
+		t.Fatal("host-containment witness signature must verify")
+	}
+	if !HostContainmentBindsRun(w, "N1", lr.manifest.Hash()) {
+		t.Fatal("host-containment witness must bind run nonce and launch manifest")
+	}
+	if !w.Enforced() {
+		t.Fatalf("host-containment witness must prove enforcement: %+v", w)
+	}
+	if len(w.AgentProbes) != len(DirectEgressTargets()) {
+		t.Fatalf("agent probe count = %d, want %d", len(w.AgentProbes), len(DirectEgressTargets()))
+	}
+}
+
+func TestBuildHostContainmentWitnessFailsClosedOnProbeError(t *testing.T) {
+	t.Parallel()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	lr := &LiveRun{
+		ctx:              t.Context(),
+		orchestratorPriv: priv,
+		opts:             LiveRunOpts{RunNonce: "N1"},
+	}
+	lr.egressProbe = func(_ []string, asAgent bool) ([]ProbeResult, error) {
+		if !asAgent {
+			return nil, errors.New("operator probe failed")
+		}
+		return nil, errors.New("agent probe should not run")
+	}
+
+	_, err = lr.buildHostContainmentWitness()
+	if err == nil || !strings.Contains(err.Error(), "operator control probe") {
+		t.Fatalf("buildHostContainmentWitness error = %v, want operator probe failure", err)
 	}
 }
 
@@ -343,6 +527,27 @@ func listenLocal(t *testing.T) net.Listener {
 		t.Fatalf("listen: %v", err)
 	}
 	return ln
+}
+
+func newRunStepsTestLiveRun(t *testing.T, agentBin string) *LiveRun {
+	t.Helper()
+	safeLn := listenLocal(t)
+	t.Cleanup(func() { _ = safeLn.Close() })
+	collectorLn := listenLocal(t)
+	t.Cleanup(func() { _ = collectorLn.Close() })
+	proxyLn := listenLocal(t)
+	t.Cleanup(func() { _ = proxyLn.Close() })
+
+	return &LiveRun{
+		ctx:         t.Context(),
+		safeLn:      safeLn,
+		collectorLn: collectorLn,
+		proxyLn:     proxyLn,
+		agentBin:    agentBin,
+		opts: LiveRunOpts{
+			RunNonce: "N1",
+		},
+	}
 }
 
 func writePacketManifest(t *testing.T, path, scenarioID, policyHash string) {

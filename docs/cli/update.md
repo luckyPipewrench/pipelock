@@ -83,11 +83,14 @@ using the same atomic rename. If no backup exists, it reports a clear error.
 
 ## Privileged install paths
 
-Before making any change, the updater checks that the target binary **and its
-directory** are writable by the current user. If Pipelock is installed to a
-root-owned location (for example `/usr/local/bin`), the update aborts early with
-a message to re-run with appropriate privileges (for example via `sudo`). The
-update is never partially applied.
+Before making any change, the updater checks that the target binary's
+**directory** can accept the temp-write-and-rename it uses to apply the update.
+It probes the directory because that is what the atomic replace actually
+requires; a writable binary in a non-writable directory could not be replaced
+anyway. If Pipelock is installed to a root-owned location (for example
+`/usr/local/bin`), the update aborts early with a message to re-run with
+appropriate privileges (for example via `sudo`). The update is never partially
+applied.
 
 ## Unsupported platforms
 

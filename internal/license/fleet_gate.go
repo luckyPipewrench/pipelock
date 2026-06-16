@@ -5,11 +5,12 @@ package license
 
 import (
 	"crypto/ed25519"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // EnvLicenseKey is the env variable carrying the signed license token. The
@@ -18,9 +19,12 @@ import (
 // the token from `cfg.LicenseKey` first and falls back to this env variable.
 const EnvLicenseKey = "PIPELOCK_LICENSE_KEY"
 
-// EnvLicensePublicKey is the optional env override for the verifier public key
-// in hex. Official builds embed the production key at build time; this env
-// variable is for development and self-hosted issuance.
+// EnvLicensePublicKey is the optional env override for the verifier public key.
+// It accepts either a raw 64-character hex Ed25519 key or the versioned
+// "pipelock-ed25519-public-v1\n<base64>" format written to license.pub, so a
+// self-hosted issuer can point it straight at the generated file. Official
+// builds embed the production key at build time; this env variable is for
+// development and self-hosted issuance.
 const EnvLicensePublicKey = "PIPELOCK_LICENSE_PUBLIC_KEY"
 
 // EnvLicenseCRLFile is the optional env variable pointing to a signed license
@@ -77,7 +81,9 @@ func VerifyFleet(licenseKey, publicKeyHex, crlFile string) (License, error) {
 var (
 	errNoLicenseToken = errors.New("no license token provided")
 	errNoVerifierKey  = errors.New("no verifier public key available " +
-		"(build-embedded key missing and PIPELOCK_LICENSE_PUBLIC_KEY unset)")
+		"(build-embedded key missing and PIPELOCK_LICENSE_PUBLIC_KEY unset, " +
+		"empty, or unparseable; accepts 64-char raw hex or the versioned " +
+		"\"pipelock-ed25519-public-v1\\n<base64>\" license.pub format)")
 )
 
 // FleetVerifyInputs groups the license-resolution inputs shared by the fleet
@@ -119,14 +125,19 @@ func verifyLicenseInputsOpts(in FleetVerifyInputs) (License, error) {
 	}
 	pubKey := EmbeddedPublicKey()
 	if pubKey == nil {
-		publicKeyHex := in.PublicKeyHex
-		if publicKeyHex == "" {
-			publicKeyHex = os.Getenv(EnvLicensePublicKey)
+		publicKey := in.PublicKeyHex
+		if publicKey == "" {
+			publicKey = os.Getenv(EnvLicensePublicKey)
 		}
-		if publicKeyHex != "" {
-			keyBytes, decErr := hex.DecodeString(publicKeyHex)
-			if decErr == nil && len(keyBytes) == ed25519.PublicKeySize {
-				pubKey = keyBytes
+		if publicKey != "" {
+			// signing.ParsePublicKey accepts BOTH the durable versioned
+			// "pipelock-ed25519-public-v1\n<base64>" form written by the signing
+			// CLI to license.pub AND a raw 64-hex Ed25519 key. It rejects
+			// malformed, short, or otherwise garbage keys, so the verifier still
+			// fails closed below when the override is unparseable.
+			parsed, parseErr := signing.ParsePublicKey(publicKey)
+			if parseErr == nil && len(parsed) == ed25519.PublicKeySize {
+				pubKey = parsed
 			}
 		}
 	}

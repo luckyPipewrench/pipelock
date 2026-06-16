@@ -38,28 +38,29 @@ const (
 )
 
 type serveOptions struct {
-	listen              string
-	probeListen         string
-	storageDir          string
-	conductorID         string
-	followerTrustDomain string
-	publisherTokenFile  string
-	auditorTokenFile    string
-	adminTokenFile      string
-	auditorOrgID        string
-	auditorFleetID      string
-	adminOrgID          string
-	adminFleetID        string
-	trustedAuditKeys    []string
-	trustedControlKeys  []string
-	remoteKillMaxTTL    time.Duration
-	rollbackMaxTTL      time.Duration
-	auditRetention      time.Duration
-	licenseCRLFile      string
-	tlsCert             string
-	tlsKey              string
-	clientCA            string
-	logWriter           io.Writer
+	listen                string
+	probeListen           string
+	storageDir            string
+	conductorID           string
+	followerTrustDomain   string
+	publisherTokenFile    string
+	auditorTokenFile      string
+	adminTokenFile        string
+	auditorOrgID          string
+	auditorFleetID        string
+	adminOrgID            string
+	adminFleetID          string
+	trustedAuditKeys      []string
+	trustedControlKeys    []string
+	remoteKillMaxTTL      time.Duration
+	rollbackMaxTTL        time.Duration
+	enrollmentTokenMaxTTL time.Duration
+	auditRetention        time.Duration
+	licenseCRLFile        string
+	tlsCert               string
+	tlsKey                string
+	clientCA              string
+	logWriter             io.Writer
 }
 
 type auditKeySpec struct {
@@ -105,12 +106,13 @@ func Cmd() *cobra.Command {
 
 func serveCmd() *cobra.Command {
 	opts := serveOptions{
-		listen:              defaultListen,
-		probeListen:         defaultProbeListen,
-		conductorID:         "conductor",
-		followerTrustDomain: defaultTrustDomain,
-		remoteKillMaxTTL:    controlplane.DefaultRemoteKillMaxValidity,
-		rollbackMaxTTL:      controlplane.DefaultRollbackMaxValidity,
+		listen:                defaultListen,
+		probeListen:           defaultProbeListen,
+		conductorID:           "conductor",
+		followerTrustDomain:   defaultTrustDomain,
+		remoteKillMaxTTL:      controlplane.DefaultRemoteKillMaxValidity,
+		rollbackMaxTTL:        controlplane.DefaultRollbackMaxValidity,
+		enrollmentTokenMaxTTL: controlplane.DefaultEnrollmentTokenMaxValidity,
 	}
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -147,6 +149,7 @@ func serveCmd() *cobra.Command {
 		"trusted emergency control key as comma-separated kv pairs: 'id=ID,purpose=(remote-kill-signing|policy-bundle-rollback),(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)'; repeatable")
 	cmd.Flags().DurationVar(&opts.remoteKillMaxTTL, "remote-kill-max-validity", opts.remoteKillMaxTTL, "maximum validity window for published Conductor remote-kill messages")
 	cmd.Flags().DurationVar(&opts.rollbackMaxTTL, "rollback-max-validity", opts.rollbackMaxTTL, "maximum validity window for published Conductor rollback authorizations")
+	cmd.Flags().DurationVar(&opts.enrollmentTokenMaxTTL, "enrollment-token-max-validity", opts.enrollmentTokenMaxTTL, "maximum validity window for minted Conductor follower enrollment tokens")
 	cmd.Flags().StringVar(&opts.licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "TLS server certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "TLS server private key file")
@@ -255,6 +258,9 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if opts.auditRetention < 0 {
 		return nil, nil, nil, errors.New("--audit-retention must be non-negative")
 	}
+	if opts.enrollmentTokenMaxTTL < 0 {
+		return nil, nil, nil, errors.New("--enrollment-token-max-validity must be non-negative")
+	}
 	publisherToken, err := loadTokenFile("--publisher-token-file", opts.publisherTokenFile)
 	if err != nil {
 		return nil, nil, nil, err
@@ -353,24 +359,25 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	}
 	m := metrics.New()
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
-		Store:               store,
-		Capabilities:        controlplane.DefaultCapabilities(opts.conductorID),
-		FollowerIdentity:    identity,
-		AuthorizePublisher:  authorizer,
-		AuthorizeBundle:     publishAuthorizer,
-		AuthorizeAuditQuery: auditQueryAuthorizer,
-		AuthorizeFollowers:  followerListAuthorizer,
-		AuthorizeStream:     streamStatusAuthorizer,
-		AuthorizeAdmin:      adminAuthorizer,
-		AuditSink:           auditStore,
-		AuditKeys:           controlplane.CompositeAuditKeyResolver(enrollments, auditKeys),
-		Enrollments:         enrollments,
-		EmergencyControls:   emergencyControls,
-		EmergencyKeys:       emergencyKeys,
-		RemoteKillMaxTTL:    opts.remoteKillMaxTTL,
-		RollbackMaxTTL:      opts.rollbackMaxTTL,
-		Metrics:             m,
-		Logger:              conductorRequestLogger(opts.logWriter),
+		Store:                 store,
+		Capabilities:          controlplane.DefaultCapabilities(opts.conductorID),
+		FollowerIdentity:      identity,
+		AuthorizePublisher:    authorizer,
+		AuthorizeBundle:       publishAuthorizer,
+		AuthorizeAuditQuery:   auditQueryAuthorizer,
+		AuthorizeFollowers:    followerListAuthorizer,
+		AuthorizeStream:       streamStatusAuthorizer,
+		AuthorizeAdmin:        adminAuthorizer,
+		AuditSink:             auditStore,
+		AuditKeys:             controlplane.CompositeAuditKeyResolver(enrollments, auditKeys),
+		Enrollments:           enrollments,
+		EmergencyControls:     emergencyControls,
+		EmergencyKeys:         emergencyKeys,
+		RemoteKillMaxTTL:      opts.remoteKillMaxTTL,
+		RollbackMaxTTL:        opts.rollbackMaxTTL,
+		EnrollmentTokenMaxTTL: opts.enrollmentTokenMaxTTL,
+		Metrics:               m,
+		Logger:                conductorRequestLogger(opts.logWriter),
 	})
 	if err != nil {
 		return nil, nil, nil, err

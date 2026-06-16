@@ -237,6 +237,93 @@ The live bootstrap proof performs enrollment in-process:
 
 The operator does not have to run separate enrollment commands for the generated dev fleet; bootstrap proves that path before writing its quickstart.
 
+### Enrollment-token lifecycle (mint, list, status, revoke)
+
+For a real fleet you mint enrollment tokens out of band and hand each one to a
+starting follower. The `enrollment-token` subcommands manage that lifecycle. All
+of them are admin-authorized: they use the same mTLS client material plus the
+admin bearer token as the other operator reads.
+
+Mint a one-shot token for a follower identity. The token (the secret) is printed
+to stdout; the summary goes to stderr, so `> token.txt` captures only the token:
+
+```bash
+/tmp/pipelock-ent conductor enrollment-token mint \
+  --conductor-url https://127.0.0.1:8895 \
+  --admin-token-file "$FLEET_DIR/conductor/admin.token" \
+  --server-ca "$FLEET_DIR/ca/ca.crt" \
+  --tls-cert "$FLEET_DIR/follower/client.crt" \
+  --tls-key "$FLEET_DIR/follower/client.key" \
+  --token-id enroll-pl-prod-1 \
+  --org org-local --fleet dev --instance pl-prod-1 --env dev \
+  --ttl 1h
+```
+
+The server rejects an over-long `--ttl`. The maximum is set on `conductor serve`
+with `--enrollment-token-max-validity` (default 24h); a token requested past the
+ceiling is rejected before it is minted, so a leaked-but-unused token cannot have
+a multi-week exposure window.
+
+List, inspect, and revoke tokens by their stable `token_id`. These reads return
+lifecycle metadata only (`pending` / `consumed` / `revoked` / `expired`); the
+token secret is shown only once, at mint, and is never returned again:
+
+```bash
+# List all tokens (or filter by --org-id/--fleet-id/--instance-id/--environment).
+/tmp/pipelock-ent conductor enrollment-token list \
+  --server https://127.0.0.1:8895 \
+  --ca-file "$FLEET_DIR/ca/ca.crt" \
+  --client-cert "$FLEET_DIR/follower/client.crt" \
+  --client-key "$FLEET_DIR/follower/client.key" \
+  --token-file "$FLEET_DIR/conductor/admin.token"
+
+# Inspect one token's state.
+/tmp/pipelock-ent conductor enrollment-token status \
+  --server https://127.0.0.1:8895 \
+  --ca-file "$FLEET_DIR/ca/ca.crt" \
+  --client-cert "$FLEET_DIR/follower/client.crt" \
+  --client-key "$FLEET_DIR/follower/client.key" \
+  --token-file "$FLEET_DIR/conductor/admin.token" \
+  --token-id enroll-pl-prod-1
+
+# Revoke a still-pending token so it can no longer enroll a follower.
+/tmp/pipelock-ent conductor enrollment-token revoke \
+  --server https://127.0.0.1:8895 \
+  --ca-file "$FLEET_DIR/ca/ca.crt" \
+  --client-cert "$FLEET_DIR/follower/client.crt" \
+  --client-key "$FLEET_DIR/follower/client.key" \
+  --token-file "$FLEET_DIR/conductor/admin.token" \
+  --token-id enroll-pl-prod-1
+```
+
+Revoke only succeeds for a still-pending token. A consumed, already-revoked, or
+expired token is rejected (the enrollment already happened, or the token is
+already dead), and a revoked token fails closed if a leaked copy is later
+presented to `POST /api/v1/conductor/enroll`. The revocation is durable across a
+Conductor restart.
+
+## Operator Bearer Tokens (generation and rotation)
+
+The publisher, auditor, and admin bearer tokens are read from files on
+`conductor serve` (`--publisher-token-file`, `--auditor-token-file`,
+`--admin-token-file`). They are opaque shared secrets the Conductor compares in
+constant time; Pipelock does not mint or rotate them for you, so generate and
+rotate them out of band.
+
+Generate a high-entropy token (256 bits, URL-safe), written `0o600`:
+
+```bash
+umask 077
+openssl rand -base64 32 | tr -d '\n' > "$FLEET_DIR/conductor/admin.token"
+```
+
+`bootstrap` writes dev tokens into the generated layout for you; the command
+above is the production path where you control the secret store. To rotate a
+token: write the new value to the token file (or your secret store), then restart
+`conductor serve` so it reloads the file, and distribute the new value to the
+operators or automation that present it. Because the tokens are independent
+files, you can rotate one role without disturbing the others.
+
 ## Policy Publish
 
 Policy publication is an HTTP API surface, not a standalone CLI command in the current help output. The source-verified endpoint is:

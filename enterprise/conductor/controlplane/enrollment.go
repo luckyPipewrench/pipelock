@@ -16,10 +16,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +47,13 @@ var (
 	ErrEnrollmentTokenConsumed  = errors.New("conductor enrollment token consumed")
 	ErrEnrollmentTokenExpired   = errors.New("conductor enrollment token expired")
 	ErrEnrollmentActiveInstance = errors.New("conductor follower instance already enrolled")
+	ErrEnrollmentTokenNotFound  = errors.New("conductor enrollment token not found")
+	// ErrEnrollmentTokenNotPending is returned when a revoke targets a token
+	// that is no longer pending (already consumed or already revoked). Revoke is
+	// only meaningful for an outstanding, unused token; a consumed token has
+	// already done its one job and re-revoking it must fail loud rather than
+	// pretend to undo an enrollment.
+	ErrEnrollmentTokenNotPending = errors.New("conductor enrollment token is not pending")
 )
 
 type EnrollmentStore interface {
@@ -52,6 +61,70 @@ type EnrollmentStore interface {
 	ConsumeEnrollmentToken(context.Context, ConsumeEnrollmentTokenRequest) (EnrolledFollower, error)
 	ResolveEnrolledAuditKey(FollowerIdentity, string) (conductor.SignatureKey, error)
 	ListEnrolledFollowers(context.Context, FollowerListQuery) ([]FollowerSummary, error)
+	// ListEnrollmentTokens returns the metadata-only roster of enrollment
+	// tokens. It MUST NOT return token bytes or the token hash: the secret is
+	// write-once at mint time and never readable again.
+	ListEnrollmentTokens(context.Context, EnrollmentTokenListQuery) ([]EnrollmentTokenSummary, error)
+	// RevokeEnrollmentToken invalidates a single pending token by its stable
+	// token_id so a leaked-but-unused token can be killed before it enrolls a
+	// follower. It fails closed: a consumed or already-revoked token is not
+	// re-revoked (ErrEnrollmentTokenNotPending), and an unknown id is
+	// ErrEnrollmentTokenNotFound.
+	RevokeEnrollmentToken(context.Context, RevokeEnrollmentTokenRequest) (EnrollmentTokenSummary, error)
+}
+
+// EnrollmentTokenState is the lifecycle state reported for an enrollment token.
+// It is derived (not persisted) from the record's consumed/revoked/expiry
+// fields at read time so a single source of truth (the record) drives it.
+type EnrollmentTokenState string
+
+const (
+	EnrollmentTokenStatePending  EnrollmentTokenState = "pending"
+	EnrollmentTokenStateConsumed EnrollmentTokenState = "consumed"
+	EnrollmentTokenStateRevoked  EnrollmentTokenState = "revoked"
+	EnrollmentTokenStateExpired  EnrollmentTokenState = "expired"
+)
+
+// EnrollmentTokenListQuery scopes an enrollment-token metadata read. All filter
+// fields are optional exact-match filters; an empty query lists every token
+// (bounded by Limit). TokenID is the lookup key for the single-token status
+// read. Now is the reference time used to DERIVE each token's lifecycle state
+// (pending vs expired); zero falls back to the wall clock so a direct store
+// caller still works, but the handler passes its injected clock so state is
+// computed against the same clock the rest of the control plane uses.
+type EnrollmentTokenListQuery struct {
+	TokenID     string
+	OrgID       string
+	FleetID     string
+	InstanceID  string
+	Environment string
+	Limit       int
+	Now         time.Time
+}
+
+// RevokeEnrollmentTokenRequest names the token to revoke and the time to stamp
+// the revocation. TokenID is the stable mint-time id, never the secret.
+type RevokeEnrollmentTokenRequest struct {
+	TokenID string
+	Now     time.Time
+}
+
+// EnrollmentTokenSummary is the metadata-only view of one enrollment token. It
+// deliberately omits the token bytes AND the token hash: the secret is only ever
+// returned once, at mint, so an operator listing or inspecting tokens sees
+// lifecycle metadata, never anything that could re-derive or replay the
+// credential.
+type EnrollmentTokenSummary struct {
+	TokenID     string               `json:"token_id"`
+	OrgID       string               `json:"org_id"`
+	FleetID     string               `json:"fleet_id"`
+	InstanceID  string               `json:"instance_id"`
+	Environment string               `json:"environment"`
+	State       EnrollmentTokenState `json:"state"`
+	CreatedAt   time.Time            `json:"created_at"`
+	ExpiresAt   time.Time            `json:"expires_at"`
+	ConsumedAt  *time.Time           `json:"consumed_at,omitempty"`
+	RevokedAt   *time.Time           `json:"revoked_at,omitempty"`
 }
 
 // FollowerListQuery scopes a follower-roster read. OrgID is mandatory at the
@@ -128,6 +201,39 @@ type enrollmentTokenRecord struct {
 	ExpiresAt    time.Time        `json:"expires_at"`
 	ConsumedAt   *time.Time       `json:"consumed_at,omitempty"`
 	ConsumedByID string           `json:"consumed_by_instance_id,omitempty"`
+	RevokedAt    *time.Time       `json:"revoked_at,omitempty"`
+}
+
+// tokenState derives the lifecycle state of a token record relative to now.
+// Order matters: a consumed token stays "consumed" even past expiry (it did its
+// job); a revoked-but-unconsumed token is "revoked"; otherwise expiry wins over
+// pending. This is the single place the four states are decided.
+func (r enrollmentTokenRecord) tokenState(now time.Time) EnrollmentTokenState {
+	switch {
+	case r.ConsumedAt != nil:
+		return EnrollmentTokenStateConsumed
+	case r.RevokedAt != nil:
+		return EnrollmentTokenStateRevoked
+	case !now.Before(r.ExpiresAt):
+		return EnrollmentTokenStateExpired
+	default:
+		return EnrollmentTokenStatePending
+	}
+}
+
+func (r enrollmentTokenRecord) summary(now time.Time) EnrollmentTokenSummary {
+	return EnrollmentTokenSummary{
+		TokenID:     r.TokenID,
+		OrgID:       r.Identity.OrgID,
+		FleetID:     r.Identity.FleetID,
+		InstanceID:  r.Identity.InstanceID,
+		Environment: r.Identity.Environment,
+		State:       r.tokenState(now),
+		CreatedAt:   r.CreatedAt,
+		ExpiresAt:   r.ExpiresAt,
+		ConsumedAt:  r.ConsumedAt,
+		RevokedAt:   r.RevokedAt,
+	}
 }
 
 type enrolledFollowerRecord struct {
@@ -238,6 +344,11 @@ func (s *FileEnrollmentStore) ConsumeEnrollmentToken(_ context.Context, req Cons
 	if token.ConsumedAt != nil {
 		return EnrolledFollower{}, ErrEnrollmentTokenConsumed
 	}
+	if token.RevokedAt != nil {
+		// A revoked token must never enroll a follower. Treat it as invalid so a
+		// leaked-then-revoked token fails closed at consume time.
+		return EnrolledFollower{}, ErrEnrollmentTokenInvalid
+	}
 	if !now.Before(token.ExpiresAt) {
 		return EnrolledFollower{}, ErrEnrollmentTokenExpired
 	}
@@ -337,6 +448,101 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 		return followerSummaryLess(out[i], out[j])
 	})
 	return []FollowerSummary(out), nil
+}
+
+// ListEnrollmentTokens returns the metadata-only roster of enrollment tokens
+// matching q, newest-first by creation time (ties broken by token_id). It NEVER
+// returns the token bytes or token hash; only lifecycle metadata. The result is
+// capped at q.Limit (clamped to [1, maxFollowerListLimit]) to bound the response
+// for a large or pathological store.
+func (s *FileEnrollmentStore) ListEnrollmentTokens(_ context.Context, q EnrollmentTokenListQuery) ([]EnrollmentTokenSummary, error) {
+	if s == nil {
+		return nil, ErrEnrollmentStoreRequired
+	}
+	limit := normalizeFollowerListLimit(q.Limit)
+	now := q.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]EnrollmentTokenSummary, 0, len(s.data.Tokens))
+	for _, token := range s.data.Tokens {
+		if q.TokenID != "" && token.TokenID != q.TokenID {
+			continue
+		}
+		if q.OrgID != "" && token.Identity.OrgID != q.OrgID {
+			continue
+		}
+		if q.FleetID != "" && token.Identity.FleetID != q.FleetID {
+			continue
+		}
+		if q.InstanceID != "" && token.Identity.InstanceID != q.InstanceID {
+			continue
+		}
+		if q.Environment != "" && token.Identity.Environment != q.Environment {
+			continue
+		}
+		out = append(out, token.summary(now))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].TokenID < out[j].TokenID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// RevokeEnrollmentToken marks a single pending token revoked so it can no longer
+// be consumed. It fails closed: an unknown token_id is ErrEnrollmentTokenNotFound
+// and a token that is not pending (already consumed, already revoked, or
+// expired) is ErrEnrollmentTokenNotPending. The persisted RevokedAt stamp is
+// durable across restart, and ConsumeEnrollmentToken rejects a revoked token, so
+// a revoked token stays dead.
+func (s *FileEnrollmentStore) RevokeEnrollmentToken(_ context.Context, req RevokeEnrollmentTokenRequest) (EnrollmentTokenSummary, error) {
+	if s == nil {
+		return EnrollmentTokenSummary{}, ErrEnrollmentStoreRequired
+	}
+	tokenID := strings.TrimSpace(req.TokenID)
+	if err := conductor.ValidateIdentifier("token_id", tokenID); err != nil {
+		return EnrollmentTokenSummary{}, err
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.data.Tokens[tokenID]
+	if !ok {
+		return EnrollmentTokenSummary{}, ErrEnrollmentTokenNotFound
+	}
+	// Only a still-pending token may be revoked. Deriving the gate from
+	// tokenState keeps the "what is pending" decision in one place.
+	if token.tokenState(now) != EnrollmentTokenStatePending {
+		return EnrollmentTokenSummary{}, ErrEnrollmentTokenNotPending
+	}
+	revokedAt := now
+	token.RevokedAt = &revokedAt
+	s.data.Tokens[tokenID] = token
+	if err := s.saveLocked(); err != nil {
+		// Roll back the in-memory mutation so a failed durable write does not
+		// leave a token that looks revoked in memory but is not on disk.
+		token.RevokedAt = nil
+		s.data.Tokens[tokenID] = token
+		return EnrollmentTokenSummary{}, err
+	}
+	return token.summary(now), nil
 }
 
 type followerSummaryMaxHeap []FollowerSummary
@@ -447,10 +653,19 @@ func CompositeAuditKeyResolver(primary EnrollmentStore, fallback AuditKeyResolve
 }
 
 func (h *Handler) handleEnrollmentTokens(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w, http.MethodPost)
-		return
+	switch r.Method {
+	case http.MethodPost:
+		h.handleCreateEnrollmentToken(w, r)
+	case http.MethodGet:
+		h.handleListEnrollmentTokens(w, r)
+	case http.MethodDelete:
+		h.handleRevokeEnrollmentToken(w, r)
+	default:
+		writeMethodNotAllowed(w, http.MethodPost, http.MethodGet, http.MethodDelete)
 	}
+}
+
+func (h *Handler) handleCreateEnrollmentToken(w http.ResponseWriter, r *http.Request) {
 	if h.enrollments == nil {
 		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
 		return
@@ -469,6 +684,18 @@ func (h *Handler) handleEnrollmentTokens(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	now := h.now()
+	// Enforce the server-side maximum validity window BEFORE the store mints a
+	// token. An operator cannot widen their leaked-credential exposure past the
+	// configured ceiling regardless of the --ttl they pass. A zero-width or
+	// already-expired window and an over-long window both surface here as
+	// ErrInvalidValidityWindow; route through writeEnrollmentError so the
+	// enrollment endpoint maps validity-window faults to 400 consistently with
+	// the store's own create-path validation.
+	if err := validateMaxValidity(now, req.ExpiresAt, h.enrollmentTokenMaxTTL); err != nil {
+		writeEnrollmentError(w, err)
+		return
+	}
 	issued, err := h.enrollments.CreateEnrollmentToken(r.Context(), EnrollmentTokenSpec{
 		TokenID: req.TokenID,
 		Identity: FollowerIdentity{
@@ -478,13 +705,127 @@ func (h *Handler) handleEnrollmentTokens(w http.ResponseWriter, r *http.Request)
 			Environment: req.Environment,
 		},
 		Expires: req.ExpiresAt,
-		Now:     h.now(),
+		Now:     now,
 	})
 	if err != nil {
 		writeEnrollmentError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, createEnrollmentTokenResponse(issued))
+}
+
+type listEnrollmentTokensResponse struct {
+	Tokens []EnrollmentTokenSummary `json:"tokens"`
+	Count  int                      `json:"count"`
+}
+
+// handleListEnrollmentTokens serves the admin enrollment-token metadata read
+// (GET). The same endpoint serves single-token "status" via the token_id query
+// filter. It returns lifecycle metadata only; the store never exposes the token
+// bytes or hash.
+func (h *Handler) handleListEnrollmentTokens(w http.ResponseWriter, r *http.Request) {
+	if h.enrollments == nil {
+		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
+		return
+	}
+	if err := h.authorizeAdmin(r); err != nil {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
+		return
+	}
+	query, err := parseEnrollmentTokenListQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	query.Now = h.now()
+	tokens, err := h.enrollments.ListEnrollmentTokens(r.Context(), query)
+	if err != nil {
+		if h.logger != nil {
+			h.logger.ErrorContext(r.Context(), "conductor_enrollment_tokens_list_failed",
+				slog.String("event", "conductor_enrollment_tokens_list_failed"),
+				slog.String("error", err.Error()),
+			)
+		}
+		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
+		return
+	}
+	if tokens == nil {
+		tokens = []EnrollmentTokenSummary{}
+	}
+	writeJSON(w, http.StatusOK, listEnrollmentTokensResponse{Tokens: tokens, Count: len(tokens)})
+}
+
+// handleRevokeEnrollmentToken serves the admin enrollment-token revoke (DELETE).
+// It invalidates a single pending token by token_id and returns the resulting
+// metadata-only summary.
+func (h *Handler) handleRevokeEnrollmentToken(w http.ResponseWriter, r *http.Request) {
+	if h.enrollments == nil {
+		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
+		return
+	}
+	if err := h.authorizeAdmin(r); err != nil {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
+		return
+	}
+	var req revokeEnrollmentTokenRequest
+	if err := decodeStrictJSON(w, r, h.maxRequestBody, &req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	summary, err := h.enrollments.RevokeEnrollmentToken(r.Context(), RevokeEnrollmentTokenRequest{
+		TokenID: req.TokenID,
+		Now:     h.now(),
+	})
+	if err != nil {
+		writeEnrollmentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+type revokeEnrollmentTokenRequest struct {
+	TokenID string `json:"token_id"`
+}
+
+func parseEnrollmentTokenListQuery(r *http.Request) (EnrollmentTokenListQuery, error) {
+	values := r.URL.Query()
+	if err := validateFollowerListValues(values, "token_id", "org_id", "fleet_id", "instance_id", "environment", "limit"); err != nil {
+		return EnrollmentTokenListQuery{}, err
+	}
+	q := EnrollmentTokenListQuery{
+		TokenID:     values.Get("token_id"),
+		OrgID:       values.Get("org_id"),
+		FleetID:     values.Get("fleet_id"),
+		InstanceID:  values.Get("instance_id"),
+		Environment: values.Get("environment"),
+	}
+	for _, c := range []struct{ field, value string }{
+		{"token_id", q.TokenID},
+		{"org_id", q.OrgID},
+		{"fleet_id", q.FleetID},
+		{"instance_id", q.InstanceID},
+		{"environment", q.Environment},
+	} {
+		if c.value == "" {
+			continue
+		}
+		if err := conductor.ValidateIdentifier(c.field, c.value); err != nil {
+			return EnrollmentTokenListQuery{}, err
+		}
+	}
+	if rawLimit := values.Get("limit"); rawLimit != "" {
+		limit, err := strconv.Atoi(rawLimit)
+		if err != nil || limit <= 0 || limit > maxFollowerListLimit {
+			return EnrollmentTokenListQuery{}, fmt.Errorf("invalid limit query parameter: %q (must be 1..%d)", rawLimit, maxFollowerListLimit)
+		}
+		q.Limit = limit
+	}
+	return q, nil
 }
 
 func (h *Handler) handleEnroll(w http.ResponseWriter, r *http.Request) {
@@ -538,7 +879,9 @@ func writeEnrollmentError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrEnrollmentTokenInvalid), errors.Is(err, ErrEnrollmentTokenConsumed), errors.Is(err, ErrEnrollmentTokenExpired):
 		writeError(w, http.StatusUnauthorized, ErrEnrollmentTokenInvalid)
-	case errors.Is(err, ErrEnrollmentActiveInstance), errors.Is(err, ErrEnrollmentTokenConflict):
+	case errors.Is(err, ErrEnrollmentTokenNotFound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrEnrollmentActiveInstance), errors.Is(err, ErrEnrollmentTokenConflict), errors.Is(err, ErrEnrollmentTokenNotPending):
 		writeError(w, http.StatusConflict, err)
 	case errors.Is(err, conductor.ErrInvalidValidityWindow),
 		errors.Is(err, conductor.ErrInvalidIdentifier),

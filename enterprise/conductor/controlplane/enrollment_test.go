@@ -353,7 +353,7 @@ func TestHandlerEnrollmentEndpointErrors(t *testing.T) {
 		path   string
 		want   int
 	}{
-		{"token wrong method", http.MethodGet, EnrollmentTokensPath, http.StatusMethodNotAllowed},
+		{"token wrong method", http.MethodPut, EnrollmentTokensPath, http.StatusMethodNotAllowed},
 		{"enroll wrong method", http.MethodGet, EnrollPath, http.StatusMethodNotAllowed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

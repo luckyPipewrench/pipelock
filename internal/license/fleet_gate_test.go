@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func mustIssue(t *testing.T, priv ed25519.PrivateKey, id string, features []string) string {
@@ -167,6 +169,65 @@ func TestRequireFleet_InvalidSignatureRejected(t *testing.T) {
 	err := RequireFleet(tok, hex.EncodeToString(pub1))
 	if !errors.Is(err, ErrFleetLicenseRequired) {
 		t.Fatalf("wrong-key signature: want ErrFleetLicenseRequired, got %v", err)
+	}
+}
+
+// The verifier public key override (PIPELOCK_LICENSE_PUBLIC_KEY /
+// FleetVerifyInputs.PublicKeyHex) must accept BOTH the durable versioned
+// license.pub format and a raw 64-hex key, while still failing closed on
+// malformed input. These tests exercise the signing.ParsePublicKey routing.
+func TestRequireFleet_AcceptsVersionedPublicKeyFile(t *testing.T) {
+	pub, priv := newKeyPair(t)
+	tok := mustIssue(t, priv, "lic_versioned_pub", []string{FeatureFleet})
+	// The versioned form is exactly what signing.EncodePublicKey writes to a
+	// license.pub file: "pipelock-ed25519-public-v1\n<base64>\n".
+	versioned := signing.EncodePublicKey(pub)
+	if err := RequireFleet(tok, versioned); err != nil {
+		t.Fatalf("RequireFleet with versioned license.pub key: want nil, got %v", err)
+	}
+}
+
+func TestRequireFleet_AcceptsRawHexPublicKey(t *testing.T) {
+	pub, priv := newKeyPair(t)
+	tok := mustIssue(t, priv, "lic_raw_hex_pub", []string{FeatureFleet})
+	// Raw lowercase hex is the historical form and must keep working.
+	if err := RequireFleet(tok, hex.EncodeToString(pub)); err != nil {
+		t.Fatalf("RequireFleet with raw hex key: want nil, got %v", err)
+	}
+}
+
+func TestRequireFleet_GarbagePublicKeyFailsClosed(t *testing.T) {
+	_, priv := newKeyPair(t)
+	tok := mustIssue(t, priv, "lic_garbage_pub", []string{FeatureFleet})
+	t.Setenv(EnvLicensePublicKey, "")
+	cases := map[string]string{
+		"non-hex garbage":      "this-is-not-a-key",
+		"odd-length hex":       "abc",
+		"short hex":            hex.EncodeToString([]byte("too-short")),
+		"versioned bad b64":    "pipelock-ed25519-public-v1\n!!!notbase64!!!",
+		"versioned wrong size": "pipelock-ed25519-public-v1\n" + "QUJD", // base64("ABC"), 3 bytes
+	}
+	for name, key := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := RequireFleet(tok, key)
+			// An unparseable override leaves pubKey nil, so verification fails
+			// closed exactly as a missing key does.
+			if !errors.Is(err, ErrFleetLicenseRequired) {
+				t.Fatalf("garbage public key %q: want ErrFleetLicenseRequired, got %v", key, err)
+			}
+		})
+	}
+}
+
+func TestRequireFleet_VersionedWrongKeyFailsSignature(t *testing.T) {
+	pub1, _ := newKeyPair(t)
+	_, priv2 := newKeyPair(t)
+	tok := mustIssue(t, priv2, "lic_versioned_wrong_key", []string{FeatureFleet}) // signed by key 2
+	// A well-formed versioned key for the WRONG signer must still fail the
+	// signature check; routing through ParsePublicKey must not loosen trust.
+	err := RequireFleet(tok, signing.EncodePublicKey(pub1))
+	if !errors.Is(err, ErrFleetLicenseRequired) {
+		t.Fatalf("versioned wrong-key signature: want ErrFleetLicenseRequired, got %v", err)
 	}
 }
 

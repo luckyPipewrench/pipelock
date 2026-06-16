@@ -42,6 +42,12 @@ const (
 
 	DefaultRemoteKillMaxValidity = 72 * time.Hour
 	DefaultRollbackMaxValidity   = 24 * time.Hour
+	// DefaultEnrollmentTokenMaxValidity caps how far in the future a minted
+	// enrollment token may expire. An enrollment token is a one-shot bearer
+	// credential handed to a starting follower; a multi-week window is a large
+	// leaked-credential exposure with no upside, so the server rejects an
+	// over-long --ttl rather than trusting the operator to keep it short.
+	DefaultEnrollmentTokenMaxValidity = 24 * time.Hour
 )
 
 // Publish-conflict codes. A policy-bundle publish can be rejected with HTTP 409
@@ -126,8 +132,11 @@ type HandlerOptions struct {
 	EmergencyKeys       conductor.SignatureKeyResolver
 	RemoteKillMaxTTL    time.Duration
 	RollbackMaxTTL      time.Duration
-	Metrics             *metrics.Metrics
-	Logger              *slog.Logger
+	// EnrollmentTokenMaxTTL caps the validity window of a minted enrollment
+	// token. Zero falls back to DefaultEnrollmentTokenMaxValidity.
+	EnrollmentTokenMaxTTL time.Duration
+	Metrics               *metrics.Metrics
+	Logger                *slog.Logger
 }
 
 type Handler struct {
@@ -146,15 +155,16 @@ type Handler struct {
 	auditSink           AuditBatchSink
 	// nil auditQuerier means the configured sink does not implement
 	// [AuditBatchQuerier], so GET returns 501 rather than a retryable 500.
-	auditQuerier      AuditBatchQuerier
-	auditKeys         AuditKeyResolver
-	enrollments       EnrollmentStore
-	emergencyControls EmergencyStore
-	emergencyKeys     conductor.SignatureKeyResolver
-	remoteKillMaxTTL  time.Duration
-	rollbackMaxTTL    time.Duration
-	metrics           *metrics.Metrics
-	logger            *slog.Logger
+	auditQuerier          AuditBatchQuerier
+	auditKeys             AuditKeyResolver
+	enrollments           EnrollmentStore
+	emergencyControls     EmergencyStore
+	emergencyKeys         conductor.SignatureKeyResolver
+	remoteKillMaxTTL      time.Duration
+	rollbackMaxTTL        time.Duration
+	enrollmentTokenMaxTTL time.Duration
+	metrics               *metrics.Metrics
+	logger                *slog.Logger
 }
 
 type rollbackAuthorizationEnumerator interface {
@@ -290,6 +300,10 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	if rollbackMaxTTL <= 0 {
 		rollbackMaxTTL = DefaultRollbackMaxValidity
 	}
+	enrollmentTokenMaxTTL := opts.EnrollmentTokenMaxTTL
+	if enrollmentTokenMaxTTL <= 0 {
+		enrollmentTokenMaxTTL = DefaultEnrollmentTokenMaxValidity
+	}
 	authorizeAuditQuery := opts.AuthorizeAuditQuery
 	if authorizeAuditQuery == nil {
 		authorizeAuditQuery = func(*http.Request, AuditBatchQuery) error {
@@ -337,28 +351,29 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		return nil, err
 	}
 	return &Handler{
-		store:               opts.Store,
-		capabilities:        capabilities,
-		now:                 now,
-		maxRequestBody:      maxBody,
-		maxAuditBody:        maxAuditBody,
-		followerIdentity:    opts.FollowerIdentity,
-		authorizePublisher:  opts.AuthorizePublisher,
-		authorizeBundle:     authorizeBundle,
-		authorizeAuditQuery: authorizeAuditQuery,
-		authorizeFollowers:  authorizeFollowers,
-		authorizeStream:     authorizeStream,
-		authorizeAdmin:      authorizeAdmin,
-		auditSink:           opts.AuditSink,
-		auditQuerier:        auditQuerier,
-		auditKeys:           opts.AuditKeys,
-		enrollments:         opts.Enrollments,
-		emergencyControls:   emergencyControls,
-		emergencyKeys:       opts.EmergencyKeys,
-		remoteKillMaxTTL:    remoteKillMaxTTL,
-		rollbackMaxTTL:      rollbackMaxTTL,
-		metrics:             opts.Metrics,
-		logger:              opts.Logger,
+		store:                 opts.Store,
+		capabilities:          capabilities,
+		now:                   now,
+		maxRequestBody:        maxBody,
+		maxAuditBody:          maxAuditBody,
+		followerIdentity:      opts.FollowerIdentity,
+		authorizePublisher:    opts.AuthorizePublisher,
+		authorizeBundle:       authorizeBundle,
+		authorizeAuditQuery:   authorizeAuditQuery,
+		authorizeFollowers:    authorizeFollowers,
+		authorizeStream:       authorizeStream,
+		authorizeAdmin:        authorizeAdmin,
+		auditSink:             opts.AuditSink,
+		auditQuerier:          auditQuerier,
+		auditKeys:             opts.AuditKeys,
+		enrollments:           opts.Enrollments,
+		emergencyControls:     emergencyControls,
+		emergencyKeys:         opts.EmergencyKeys,
+		remoteKillMaxTTL:      remoteKillMaxTTL,
+		rollbackMaxTTL:        rollbackMaxTTL,
+		enrollmentTokenMaxTTL: enrollmentTokenMaxTTL,
+		metrics:               opts.Metrics,
+		logger:                opts.Logger,
 	}, nil
 }
 

@@ -275,53 +275,23 @@ func TestRealContainmentHook_Teardown_Succeeds(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Contained end-to-end: PRIVILEGE-GATED (host-only, skips in CI)
+// Contained end-to-end: PRIVILEGE-GATED host proof lives in the demo binary
 // --------------------------------------------------------------------------
-
-// requirePrivilegedHost skips the test unless running as root AND
-// containment tooling is available. This is the honest gate: we NEVER
-// fake a pass for contained-mode kernel enforcement.
-func requirePrivilegedHost(t *testing.T) {
-	t.Helper()
-
-	if os.Geteuid() != 0 {
-		t.Skip("SKIPPED: contained end-to-end requires root (euid != 0). " +
-			"Run with sudo on a host where 'pipelock contain install' has been executed. " +
-			"This test verifies kernel-level egress blocking, which CANNOT be faked in CI.")
-	}
-
-	// Check that pipelock contain verify passes.
-	if !playground.ContainmentAvailable() {
-		t.Skip("SKIPPED: 'pipelock contain verify' failed or pipelock not in PATH. " +
-			"Run 'sudo pipelock contain install' first. " +
-			"This test verifies kernel-level egress blocking on a real containment host.")
-	}
-}
-
-func TestContainment_BlocksDirectEgress_HostOnly(t *testing.T) {
-	requirePrivilegedHost(t) // t.Skip if not root / contain unavailable
-
-	// On a properly contained host, EVERY known-bad route must be blocked.
-	targets := playground.DirectEgressTargets()
-	result := playground.RunContainmentSelfTest(t.Context(), targets)
-
-	if !result.AllBlocked {
-		var open []string
-		for _, p := range result.Probes {
-			if p.Open {
-				open = append(open, p.Target)
-			}
-		}
-		t.Fatalf("containment must block ALL direct egress targets, but these were open: %v", open)
-	}
-
-	// Verify every probe was individually classified as blocked.
-	for _, p := range result.Probes {
-		if !p.Blocked {
-			t.Errorf("probe %q must be blocked under containment, got Open=%v Detail=%s", p.Target, p.Open, p.Detail)
-		}
-	}
-}
+//
+// The host-only kernel-containment proof is the DIFFERENTIAL split-proof, not
+// an in-process self-test. Running RunContainmentSelfTest from the (root)
+// operator process is the wrong model: containment drops the contained AGENT
+// to uid 966 and kernel-blocks its egress, while the operator/root deliberately
+// RETAINS egress (the control target). A root-process self-test would therefore
+// fail for the wrong reason on a correctly contained host.
+//
+// The honest privileged proof is built and verified end-to-end by the demo
+// binary (HostContainmentWitness, signed from a uid-966-dropped probe set) and
+// is exercised by:
+//   - TestHostContainmentWitness_Enforced       (DifferentialProven && DirectSuiteProven && AllAgentBlocked)
+//   - TestAllAgentBlocked_HappyAndEmpty          (liverun_internal_test.go)
+//   - TestVerify_Contained_NotEnforced_FailsClosed (containment_verify_test.go)
+//   - `pipelock-playground-demo run --contained` + `... verify` on a real host.
 
 func TestContainment_SelfTestGate_AbortsOnOpenRoutes(t *testing.T) {
 	t.Parallel()

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -452,6 +453,33 @@ func TestHandler_ResponseInvariants(t *testing.T) {
 	}
 	if resp.Decision != DecisionAllow && resp.Decision != DecisionDeny {
 		t.Errorf("decision must be %q or %q, got %q", DecisionAllow, DecisionDeny, resp.Decision)
+	}
+}
+
+func TestHandler_ToolCallOverDepthArgumentsDeny(t *testing.T) {
+	h := newTestHandler(t)
+	body := `{"kind":"tool_call","input":{"tool_name":"bash","arguments":` +
+		deepScanAPIJSONObject("depth-regression-sentinel", 100) + `}}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want %q", resp.Decision, DecisionDeny)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("Findings = %+v, want one over-depth finding", resp.Findings)
+	}
+	if resp.Findings[0].RuleID != "UNINSPECTABLE-json-depth" {
+		t.Fatalf("RuleID = %q, want UNINSPECTABLE-json-depth", resp.Findings[0].RuleID)
 	}
 }
 
@@ -1464,4 +1492,16 @@ func TestHandler_RuntimeGetterUnavailablePaths(t *testing.T) {
 	if status != http.StatusServiceUnavailable || resp.Status != StatusError {
 		t.Fatalf("executeScan status=%d resp=%+v, want unavailable error", status, resp)
 	}
+}
+
+func deepScanAPIJSONObject(value string, depth int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(strconv.Quote(value))
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
 }

@@ -6,6 +6,7 @@ package decide
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -178,6 +179,28 @@ func TestDecide_MCPExecution(t *testing.T) {
 				t.Errorf("Decide() outcome = %s, want %s; evidence = %+v", decision.Outcome, tt.want, decision.Evidence)
 			}
 		})
+	}
+}
+
+func TestDecide_MCPOverDepthToolInputFailsClosed(t *testing.T) {
+	cfg, sc, pc := testSetup(t)
+	value := "depth-regression-sentinel"
+
+	action := Action{
+		Source: "cursor",
+		Kind:   EventMCPExecution,
+		MCP: &MCPPayload{
+			Server:    "test-server",
+			ToolName:  "send",
+			ToolInput: deepDecideJSONObject(value, 100),
+		},
+	}
+	decision := Decide(context.Background(), cfg, sc, pc, action)
+	if decision.Outcome != Deny {
+		t.Fatalf("Outcome = %s, want %s; evidence = %+v", decision.Outcome, Deny, decision.Evidence)
+	}
+	if !evidenceContainsPattern(decision.Evidence, "Uninspectable JSON") {
+		t.Fatalf("expected Uninspectable JSON evidence, got %+v", decision.Evidence)
 	}
 }
 
@@ -847,6 +870,27 @@ func TestDecide_ToolUse(t *testing.T) {
 	}
 }
 
+func TestDecide_ToolUseOverDepthToolInputFailsClosed(t *testing.T) {
+	cfg, sc, pc := testSetup(t)
+	value := "depth-regression-sentinel"
+
+	action := Action{
+		Source: "claude-code",
+		Kind:   EventToolUse,
+		ToolUse: &ToolUsePayload{
+			ToolName:  "send",
+			ToolInput: deepDecideJSONObject(value, 100),
+		},
+	}
+	decision := Decide(context.Background(), cfg, sc, pc, action)
+	if decision.Outcome != Deny {
+		t.Fatalf("Outcome = %s, want %s; evidence = %+v", decision.Outcome, Deny, decision.Evidence)
+	}
+	if !evidenceContainsPattern(decision.Evidence, "Uninspectable JSON") {
+		t.Fatalf("expected Uninspectable JSON evidence, got %+v", decision.Evidence)
+	}
+}
+
 func TestDecide_WriteFile_NilPayload(t *testing.T) {
 	cfg, sc, pc := testSetup(t)
 
@@ -1004,4 +1048,25 @@ func TestDecide_File_ArgKey_ScopedBlock(t *testing.T) {
 	if d.Outcome != Deny {
 		t.Errorf("expected deny for file read of /etc/shadow via scoped rule, got %s", d.Outcome)
 	}
+}
+
+func deepDecideJSONObject(value string, depth int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(strconv.Quote(value))
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
+}
+
+func evidenceContainsPattern(evidence []Evidence, pattern string) bool {
+	for _, ev := range evidence {
+		if ev.Pattern == pattern {
+			return true
+		}
+	}
+	return false
 }

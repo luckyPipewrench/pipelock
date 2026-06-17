@@ -2551,6 +2551,84 @@ func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
 	}
 }
 
+func TestScan_DLP_StackedEncodedAWSKeyInURLComponents(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := New(cfg)
+	defer s.Close()
+
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	doubleEncoded := base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString([]byte(secret))))
+	tripleEncoded := base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString([]byte(base64.StdEncoding.EncodeToString([]byte(secret))))))
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "query_value_two_layers",
+			url:  "https://api.vendor.example/endpoint?data=" + doubleEncoded,
+		},
+		{
+			name: "query_key_two_layers",
+			url:  "https://api.vendor.example/endpoint?" + doubleEncoded + "=1",
+		},
+		{
+			name: "path_segment_two_layers",
+			url:  "https://api.vendor.example/endpoint/" + doubleEncoded,
+		},
+		{
+			name: "query_value_three_layers",
+			url:  "https://api.vendor.example/endpoint?data=" + tripleEncoded,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed {
+				t.Fatalf("expected stacked encoded AWS key to be blocked in %s", tt.name)
+			}
+			if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+				t.Fatalf("scanner = %s, want DLP or core_dlp (reason: %s)", result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+func TestScan_DLP_StackedEncodedBenignURLAllows(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := New(cfg)
+	defer s.Close()
+
+	opaque := strings.Repeat("hello-world-", 6)
+	encoded := base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString([]byte(opaque))))
+	result := s.Scan(context.Background(), "https://api.vendor.example/endpoint?data="+encoded)
+	if !result.Allowed {
+		t.Fatalf("benign stacked opaque token blocked: scanner=%s reason=%s", result.Scanner, result.Reason)
+	}
+}
+
+func TestScan_MaxURLLengthPrecedesDLPDecode(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 120
+	s := New(cfg)
+	defer s.Close()
+
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	rawURL := "https://api.vendor.example/endpoint?data=" + secret + strings.Repeat("a", cfg.FetchProxy.Monitoring.MaxURLLength)
+	if len(rawURL) <= cfg.FetchProxy.Monitoring.MaxURLLength {
+		t.Fatalf("test URL length %d is not greater than max %d", len(rawURL), cfg.FetchProxy.Monitoring.MaxURLLength)
+	}
+	result := s.Scan(context.Background(), rawURL)
+	if result.Allowed {
+		t.Fatal("expected over-length URL to be blocked")
+	}
+	if result.Scanner != ScannerLength {
+		t.Fatalf("scanner = %s, want %s (reason: %s)", result.Scanner, ScannerLength, result.Reason)
+	}
+}
+
 func TestScan_DLP_EncodedQueryNoFalsePositives(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)

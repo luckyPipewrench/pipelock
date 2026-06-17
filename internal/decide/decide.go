@@ -188,7 +188,11 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 			})
 			scanText = p.ToolInput
 		} else {
-			argStrings = ExtractAllStringsFromJSON(json.RawMessage(p.ToolInput))
+			extracted := ExtractAllStringsFromJSONResult(json.RawMessage(p.ToolInput))
+			if extracted.Truncated {
+				evidence = append(evidence, uninspectableJSONEvidence())
+			}
+			argStrings = extracted.Strings
 			scanText = strings.Join(argStrings, " ")
 		}
 	}
@@ -283,7 +287,11 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 			scanText = p.ToolInput
 		} else {
 			rawArgs = json.RawMessage(p.ToolInput)
-			argStrings = ExtractAllStringsFromJSON(rawArgs)
+			extracted := ExtractAllStringsFromJSONResult(rawArgs)
+			if extracted.Truncated {
+				evidence = append(evidence, uninspectableJSONEvidence())
+			}
+			argStrings = extracted.Strings
 			scanText = strings.Join(argStrings, " ")
 		}
 	}
@@ -415,6 +423,16 @@ func evidenceFromInjection(result scanner.ResponseScanResult, cfgAction string) 
 		})
 	}
 	return ev
+}
+
+func uninspectableJSONEvidence() Evidence {
+	return Evidence{
+		Scanner:  "decide",
+		Pattern:  "Uninspectable JSON",
+		Severity: config.SeverityCritical,
+		Detail:   "tool_input exceeds maximum inspectable JSON depth or size",
+		Action:   config.ActionBlock,
+	}
 }
 
 func evidenceFromPolicy(verdict policy.Verdict) []Evidence {

@@ -141,7 +141,15 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	// Pass 2: raw DLP fallback for split-secret detection.
 	// Only runs when walker completed within budget.
 	if result.Clean {
-		texts := extract.AllStringsFromJSON(json.RawMessage(body))
+		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
+		if extracted.Truncated {
+			return A2AScanResult{
+				Clean:  false,
+				Action: config.ActionBlock,
+				Reason: "a2a: input exceeds maximum inspectable nesting depth",
+			}
+		}
+		texts := extracted.Strings
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
 			dlpResult := sc.ScanTextForDLP(ctx, joined)
@@ -647,7 +655,10 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 
 		// Rolling tail: concatenate tail + current text, scan for
 		// cross-event injection.
-		currentText := extractTextFromEvent(event)
+		currentText, currentTruncated := extractTextFromEvent(event)
+		if currentTruncated {
+			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrA2AStreamFinding)
+		}
 		if tail != "" && currentText != "" {
 			combined := tail + " " + currentText
 			tailResult := sc.ScanResponse(ctx, combined)
@@ -682,15 +693,16 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 
 // extractTextFromEvent extracts scannable text from an SSE event payload.
 // The payload is JSON - extract all string values for the rolling tail.
-func extractTextFromEvent(event []byte) string {
+func extractTextFromEvent(event []byte) (string, bool) {
 	if len(event) == 0 {
-		return ""
+		return "", false
 	}
-	texts := extract.AllStringsFromJSON(json.RawMessage(event))
+	extracted := extract.AllStringsFromJSONResult(json.RawMessage(event))
+	texts := extracted.Strings
 	if len(texts) == 0 {
-		return ""
+		return "", extracted.Truncated
 	}
-	return strings.Join(texts, " ")
+	return strings.Join(texts, " "), extracted.Truncated
 }
 
 // writeSSEEvent writes a single SSE event to the writer, preserving the

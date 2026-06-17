@@ -828,6 +828,15 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
 func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
+	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
+		return Result{
+			Allowed: false,
+			Reason:  fmt.Sprintf("URL length %d exceeds maximum %d", len(rawURL), s.maxURLLength),
+			Scanner: ScannerLength,
+			Score:   0.8,
+		}
+	}
+
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return Result{Allowed: false, Reason: "invalid URL", Scanner: ScannerParser, Score: 1.0}
@@ -961,16 +970,6 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	// Rate limit check (per-domain)
 	if result := s.checkRateLimit(hostname); !result.Allowed {
 		return result
-	}
-
-	// URL length check
-	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
-		return Result{
-			Allowed: false,
-			Reason:  fmt.Sprintf("URL length %d exceeds maximum %d", len(rawURL), s.maxURLLength),
-			Scanner: ScannerLength,
-			Score:   0.8,
-		}
 	}
 
 	// Data budget check (per-domain sliding window)
@@ -1583,6 +1582,29 @@ func decodeEncodings(s string) []decodedResult {
 	return out
 }
 
+// decodeEncodingsRecursive returns all bounded recursive decoding candidates
+// for a possibly stacked-encoded string.
+func decodeEncodingsRecursive(s string) []decodedResult {
+	seen := map[string]struct{}{s: {}}
+	var out []decodedResult
+	var walk func(string, int)
+	walk = func(text string, depth int) {
+		if depth >= maxDecodeDepth {
+			return
+		}
+		for _, d := range decodeEncodings(text) {
+			if _, ok := seen[d.text]; ok {
+				continue
+			}
+			seen[d.text] = struct{}{}
+			out = append(out, d)
+			walk(d.text, depth+1)
+		}
+	}
+	walk(s, 0)
+	return out
+}
+
 // checkDLP runs DLP regex patterns against the full URL string including hostname.
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
 // and secrets split across query parameters. Iterative URL decoding
@@ -1615,7 +1637,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
 		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key")})
-		for _, d := range decodeEncodings(decodedKey) {
+		for _, d := range decodeEncodingsRecursive(decodedKey) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
 		}
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
@@ -1624,7 +1646,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 		for _, v := range values {
 			decoded := IterativeDecode(v)
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value")})
-			for _, d := range decodeEncodings(decoded) {
+			for _, d := range decodeEncodingsRecursive(decoded) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
 			}
 			if stripped := stripURLNoise(decoded); stripped != decoded {
@@ -1648,7 +1670,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if len(segment) >= 10 { // minimum viable encoded secret length
-			for _, d := range decodeEncodings(segment) {
+			for _, d := range decodeEncodingsRecursive(segment) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
 			}
 		}
@@ -1676,6 +1698,9 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	if parsed.RawQuery != "" && strings.Contains(parsed.RawQuery, "&") {
 		concat := orderedQueryConcat(parsed.RawQuery)
 		targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat")})
+		for _, d := range decodeEncodingsRecursive(concat) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+		}
 		if stripped := stripURLNoise(concat); stripped != concat {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
 		}
@@ -1744,7 +1769,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 			for _, v := range values {
 				decoded := IterativeDecode(v)
 				seedTargets = append(seedTargets, dlpTarget{decoded, spanViewLabel("url_decoded", "url_query_value")})
-				for _, d := range decodeEncodings(decoded) {
+				for _, d := range decodeEncodingsRecursive(decoded) {
 					seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_query_value")})
 				}
 			}
@@ -1771,7 +1796,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 			if len(seg) < 20 {
 				continue
 			}
-			for _, d := range decodeEncodings(IterativeDecode(seg)) {
+			for _, d := range decodeEncodingsRecursive(IterativeDecode(seg)) {
 				seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_path_segment")})
 			}
 		}
@@ -1876,30 +1901,45 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 		}
 		concat := b.String()
 
-		cleaned := normalize.ForDLP(concat)
+		candidates := []struct {
+			text      string
+			viewLabel string
+		}{
+			{concat, dlpViewLabel("query_subsequence")},
+		}
+		for _, d := range decodeEncodingsRecursive(concat) {
+			candidates = append(candidates, struct {
+				text      string
+				viewLabel string
+			}{d.text, dlpViewLabel(d.encoding)})
+		}
 
-		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
-			p := s.dlpPatterns[idx]
-			if start, end, ok := p.matchSpan(cleaned); ok {
-				if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
-					continue
+		for _, candidate := range candidates {
+			cleaned := normalize.ForDLP(candidate.text)
+
+			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
+				p := s.dlpPatterns[idx]
+				if start, end, ok := p.matchSpan(cleaned); ok {
+					if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
+						continue
+					}
+					span := newMatchSpan(start, end, candidate.viewLabel, p.name, p.bundle, p.bundleVersion)
+					if p.warn {
+						warnMatches = append(warnMatches, WarnMatch{
+							PatternName: p.name,
+							Severity:    p.severity,
+							span:        span,
+						})
+						continue
+					}
+					return Result{
+						Allowed: false,
+						Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
+						Scanner: ScannerDLP,
+						Score:   1.0,
+						spans:   []MatchSpan{span},
+					}, warnMatches
 				}
-				span := newMatchSpan(start, end, dlpViewLabel("query_subsequence"), p.name, p.bundle, p.bundleVersion)
-				if p.warn {
-					warnMatches = append(warnMatches, WarnMatch{
-						PatternName: p.name,
-						Severity:    p.severity,
-						span:        span,
-					})
-					continue
-				}
-				return Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
-					Scanner: ScannerDLP,
-					Score:   1.0,
-					spans:   []MatchSpan{span},
-				}, warnMatches
 			}
 		}
 

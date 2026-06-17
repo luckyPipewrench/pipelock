@@ -104,7 +104,11 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	}
 
 	// Extract text from result (handles standard ToolResult and arbitrary shapes).
-	text := jsonrpc.ExtractText(rpc.Result)
+	textResult := jsonrpc.ExtractTextResult(rpc.Result)
+	if textResult.Truncated {
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+	}
+	text := textResult.Text
 
 	// Also scan error messages for prompt injection.
 	// Attackers can inject via error.message and error.data returned by malicious
@@ -118,16 +122,24 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 			}
 			text += rpcErr.Message
 			// Also scan error.data if present.
-			if errData := jsonrpc.ExtractText(rpcErr.Data); errData != "" {
-				text += "\n" + errData
+			errData := jsonrpc.ExtractTextResult(rpcErr.Data)
+			if errData.Truncated {
+				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+			}
+			if errData.Text != "" {
+				text += "\n" + errData.Text
 			}
 		} else {
 			// Fallback: extract all strings from non-standard error shapes.
-			if errText := jsonrpc.ExtractText(rpc.Error); errText != "" {
+			errText := jsonrpc.ExtractTextResult(rpc.Error)
+			if errText.Truncated {
+				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+			}
+			if errText.Text != "" {
 				if text != "" {
 					text += "\n"
 				}
-				text += errText
+				text += errText.Text
 			}
 		}
 	}
@@ -135,11 +147,15 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	// Scan notification params for injection content.
 	// MCP server notifications (method+params, no id) can carry payloads.
 	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
-		if paramsText := jsonrpc.ExtractText(rpc.Params); paramsText != "" {
+		paramsText := jsonrpc.ExtractTextResult(rpc.Params)
+		if paramsText.Truncated {
+			return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+		}
+		if paramsText.Text != "" {
 			if text != "" {
 				text += "\n"
 			}
-			text += paramsText
+			text += paramsText.Text
 		}
 	}
 
@@ -235,11 +251,15 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 			}
 			sort.Strings(keys)
 			for _, key := range keys {
-				if siblingText := jsonrpc.ExtractText(resultMap[key]); siblingText != "" {
+				siblingText := jsonrpc.ExtractTextResult(resultMap[key])
+				if siblingText.Truncated {
+					return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+				}
+				if siblingText.Text != "" {
 					if text != "" {
 						text += "\n"
 					}
-					text += siblingText
+					text += siblingText.Text
 				}
 			}
 		}
@@ -253,24 +273,38 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 				text += "\n"
 			}
 			text += rpcErr.Message
-			if errData := jsonrpc.ExtractText(rpcErr.Data); errData != "" {
-				text += "\n" + errData
+			errData := jsonrpc.ExtractTextResult(rpcErr.Data)
+			if errData.Truncated {
+				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
 			}
-		} else if errText := jsonrpc.ExtractText(rpc.Error); errText != "" {
-			if text != "" {
-				text += "\n"
+			if errData.Text != "" {
+				text += "\n" + errData.Text
 			}
-			text += errText
+		} else {
+			errText := jsonrpc.ExtractTextResult(rpc.Error)
+			if errText.Truncated {
+				return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+			}
+			if errText.Text != "" {
+				if text != "" {
+					text += "\n"
+				}
+				text += errText.Text
+			}
 		}
 	}
 
 	// Scan params (server notifications can carry payloads).
 	if len(rpc.Params) > 0 && string(rpc.Params) != jsonrpc.Null {
-		if paramsText := jsonrpc.ExtractText(rpc.Params); paramsText != "" {
+		paramsText := jsonrpc.ExtractTextResult(rpc.Params)
+		if paramsText.Truncated {
+			return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: false, Error: uninspectableJSONDepthReason}
+		}
+		if paramsText.Text != "" {
 			if text != "" {
 				text += "\n"
 			}
-			text += paramsText
+			text += paramsText.Text
 		}
 	}
 

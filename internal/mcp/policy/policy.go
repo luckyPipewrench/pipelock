@@ -17,6 +17,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
+const uninspectableJSONDepthRule = "uninspectable_json_depth"
+
 // shellExpansionRe matches shell variable expansions used as whitespace substitutes.
 // Attackers use ${IFS} or $IFS to replace spaces: "rm${IFS}-rf" expands to "rm -rf"
 // at runtime, but policy sees the literal "${IFS}" token. Normalizing these to spaces
@@ -281,7 +283,11 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			if len(rawArgs) == 0 {
 				continue // cannot scope without raw JSON - skip rule
 			}
-			scopedStrings := jsonrpc.ExtractStringsForKeys(rawArgs, rule.ArgKey)
+			scoped := jsonrpc.ExtractStringsForKeysResult(rawArgs, rule.ArgKey)
+			if scoped.Truncated {
+				return uninspectableJSONDepthVerdict()
+			}
+			scopedStrings := scoped.Strings
 			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, policyPreNormalize)
 			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy, policyPreNormalize)
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
@@ -422,7 +428,11 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 		// Use values-only extraction (not extractAllStringsFromJSON which
 		// includes map keys). Keys like "cmd","flags","target" would pollute
 		// the joined string and break regex adjacency for policy matching.
-		argStrings = jsonrpc.ExtractStringsFromJSON(tc.Arguments)
+		extracted := jsonrpc.ExtractStringsFromJSONResult(tc.Arguments)
+		if extracted.Truncated {
+			return uninspectableJSONDepthVerdict()
+		}
+		argStrings = extracted.Strings
 	}
 
 	// If any rule uses ArgKey, we need per-rule key-scoped extraction.
@@ -438,6 +448,16 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 	}
 
 	return pc.CheckToolCallWithArgs(tc.Name, argStrings, rawArgs)
+}
+
+// uninspectableJSONDepthVerdict is the synthetic block returned when policy
+// arguments are valid JSON but too deeply nested to inspect.
+func uninspectableJSONDepthVerdict() Verdict {
+	return Verdict{
+		Matched: true,
+		Action:  config.ActionBlock,
+		Rules:   []string{uninspectableJSONDepthRule},
+	}
 }
 
 // checkBatch evaluates a batch of JSON-RPC requests and aggregates policy results.

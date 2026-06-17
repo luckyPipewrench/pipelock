@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -1580,7 +1582,36 @@ func TestCheckRequest_MultipleArgFields(t *testing.T) {
 	}
 }
 
+func TestCheckRequest_OverDepthArgumentsFailClosed(t *testing.T) {
+	pc := defaultConfig(t)
+	cmd := "benign-depth-sentinel"
+	line := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":%s}}`, deepPolicyJSONObject(cmd, 100))
+
+	v := pc.CheckRequest([]byte(line))
+	if !v.Matched {
+		t.Fatal("over-depth tool-policy arguments should fail closed")
+	}
+	if v.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q", v.Action, config.ActionBlock)
+	}
+	if len(v.Rules) != 1 || v.Rules[0] != uninspectableJSONDepthRule {
+		t.Fatalf("Rules = %v, want [%q]", v.Rules, uninspectableJSONDepthRule)
+	}
+}
+
 // --- Helpers ---
+
+func deepPolicyJSONObject(value string, depth int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(strconv.Quote(value))
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
+}
 
 // testConfig returns a Config with a simple rm -rf rule for testing.
 func testConfig(_ *testing.T) *Config {

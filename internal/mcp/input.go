@@ -623,6 +623,7 @@ func ForwardScannedInput(
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (parse error)", lineNum),
+				ErrorCode:      jsonRPCErrorCodeForInputError(verdict.Error),
 			}
 			_ = emitToolReceipt(config.ActionBlock)
 			continue
@@ -1345,6 +1346,15 @@ func joinInputVerdictReasons(verdict InputVerdict) string {
 		return "input scanning"
 	}
 	return joinStrings(reasons)
+}
+
+// jsonRPCErrorCodeForInputError maps scanner parse failures onto JSON-RPC
+// protocol error codes.
+func jsonRPCErrorCodeForInputError(errText string) int {
+	if strings.HasPrefix(errText, "invalid JSON") || strings.HasPrefix(errText, "invalid JSON batch") {
+		return -32700
+	}
+	return -32600
 }
 
 // injectMCPEnvelope injects a mediation envelope into a JSON-RPC message's

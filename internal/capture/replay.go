@@ -383,17 +383,29 @@ func (re *ReplayEngine) replayToolPolicy(summary CaptureSummary) ReplayResult {
 
 	var argStrings []string
 	var rawArgs json.RawMessage
+	var extractionTruncated bool
 	if argsJSON != "" {
 		rawArgs = json.RawMessage(argsJSON)
-		argStrings = jsonrpc.ExtractStringsFromJSON(rawArgs)
+		extracted := jsonrpc.ExtractStringsFromJSONResult(rawArgs)
+		extractionTruncated = extracted.Truncated
+		argStrings = extracted.Strings
 	}
 
 	verdict := pc.CheckToolCallWithArgs(toolName, argStrings, rawArgs)
 
-	candidateAction := config.ActionAllow
+	candidateAction := ""
 	var findings []Finding
+	if extractionTruncated {
+		candidateAction = config.ActionBlock
+		findings = append(findings, Finding{
+			Kind:       KindToolPolicy,
+			Action:     config.ActionBlock,
+			PolicyRule: "uninspectable_json_depth",
+			ToolName:   toolName,
+		})
+	}
 	if verdict.Matched {
-		candidateAction = verdict.Action
+		candidateAction = policy.StricterAction(candidateAction, verdict.Action)
 		for _, ruleName := range verdict.Rules {
 			findings = append(findings, Finding{
 				Kind:       KindToolPolicy,
@@ -402,6 +414,9 @@ func (re *ReplayEngine) replayToolPolicy(summary CaptureSummary) ReplayResult {
 				ToolName:   toolName,
 			})
 		}
+	}
+	if candidateAction == "" {
+		candidateAction = config.ActionAllow
 	}
 
 	return ReplayResult{

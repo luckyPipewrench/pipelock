@@ -175,11 +175,23 @@ type LiveSession struct {
 	recMu        sync.Mutex
 	turnActive   bool
 	turnReceipts []string
+	receiptSig   chan struct{} // per-turn: signaled when a receipt is recorded
+	// receiptSettle bounds how long sendViaModel waits for in-flight receipts to
+	// settle before declaring a receipt-invariant violation. 0 => defaultReceiptSettle.
+	receiptSettle time.Duration
 
 	mu     sync.Mutex
 	closed bool
 	events chan LiveEvent
 }
+
+// defaultReceiptSettle is the backstop wait for in-flight receipt emission. A
+// turn's allow receipt is emitted on the proxy goroutine just AFTER the response
+// is streamed to the subprocess, so the narration can momentarily outrace the
+// bookkeeping. This is a fail-safe ceiling, not the gate: the wait early-exits the
+// instant the tally covers the narrated actions, and a genuinely missing receipt
+// still fails closed once it elapses.
+const defaultReceiptSettle = 3 * time.Second
 
 // StartLiveSession boots a live chat session. It fails closed on containment:
 // if RequireContainment is set and containment cannot be proven, it refuses
@@ -338,12 +350,19 @@ func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
 			s.push(out)
 		}
 	})
-	receipts := s.endReceiptTurn()
-
 	if runErr != nil {
+		s.endReceiptTurn()
 		s.push(LiveEvent{Type: LiveEventError, Message: "agent turn failed"})
 		return fmt.Errorf("model agent turn: %w", runErr)
 	}
+
+	// Wait (bounded) for in-flight receipts to settle: a turn's allow receipt is
+	// emitted on the proxy goroutine just AFTER the response is streamed back, so
+	// the narration can momentarily outrace the tally. The wait early-exits the
+	// instant the tally covers the narrated actions; it does not weaken the
+	// invariant (a genuinely missing receipt still fails once the deadline elapses).
+	s.waitReceiptsSettle(ctx, proxied)
+	receipts := s.endReceiptTurn()
 
 	// Receipt invariant: each destination the agent narrated a proxy-responded
 	// action to must carry at LEAST as many signed receipts this turn as narrated
@@ -354,14 +373,8 @@ func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
 	// toward that host, so a tool action to the model host could be covered by a
 	// model-call receipt; and a compromised subprocess could narrate falsely. The
 	// invariant guards wiring/observation/direct-egress, not subprocess integrity.)
-	receiptCount := make(map[string]int, len(receipts))
-	for _, t := range receipts {
-		receiptCount[t]++
-	}
-	proxiedCount := make(map[string]int, len(proxied))
-	for _, a := range proxied {
-		proxiedCount[a]++
-	}
+	receiptCount := tallyHostPorts(receipts)
+	proxiedCount := tallyHostPorts(proxied)
 	for action, want := range proxiedCount {
 		if receiptCount[action] < want {
 			s.push(LiveEvent{Type: LiveEventError, Message: "unverified agent action blocked"})
@@ -371,26 +384,86 @@ func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
 	return nil
 }
 
+// tallyHostPorts counts occurrences of each host:port in xs.
+func tallyHostPorts(xs []string) map[string]int {
+	out := make(map[string]int, len(xs))
+	for _, x := range xs {
+		out[x]++
+	}
+	return out
+}
+
+// receiptsCover reports whether the recorded receipts cover every narrated
+// proxied action (at least as many receipts per destination as actions).
+func receiptsCover(proxied, receipts []string) bool {
+	have := tallyHostPorts(receipts)
+	for action, want := range tallyHostPorts(proxied) {
+		if have[action] < want {
+			return false
+		}
+	}
+	return true
+}
+
+// waitReceiptsSettle blocks until the per-turn receipt tally covers the narrated
+// proxied actions, the settle deadline elapses, or ctx ends. It is signaled by
+// onReceipt as each receipt lands, so it returns promptly in the common case.
+func (s *LiveSession) waitReceiptsSettle(ctx context.Context, proxied []string) {
+	if len(proxied) == 0 {
+		return
+	}
+	settle := s.receiptSettle
+	if settle <= 0 {
+		settle = defaultReceiptSettle
+	}
+	timer := time.NewTimer(settle)
+	defer timer.Stop()
+	for {
+		receipts, sig := s.receiptSnapshot()
+		if receiptsCover(proxied, receipts) {
+			return
+		}
+		select {
+		case <-sig:
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// receiptSnapshot returns a copy of the turn's recorded targets plus the current
+// signal channel, both read under recMu.
+func (s *LiveSession) receiptSnapshot() ([]string, chan struct{}) {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	out := make([]string, len(s.turnReceipts))
+	copy(out, s.turnReceipts)
+	return out, s.receiptSig
+}
+
 // beginReceiptTurn opens the per-turn receipt-accounting window. onReceipt records
 // each receipt's target host:port until endReceiptTurn closes it.
 func (s *LiveSession) beginReceiptTurn() {
 	s.recMu.Lock()
 	s.turnActive = true
 	s.turnReceipts = nil
+	s.receiptSig = make(chan struct{}, 1)
 	s.recMu.Unlock()
 }
 
 // endReceiptTurn closes the window and returns the targets recorded during the
-// turn. Because the subprocess emits turn_done only after every HTTP call it made
-// has returned -- and each proxy decision (onReceipt) fires before the proxy
-// returns that call's response -- all of the turn's receipts are recorded by the
-// time RunTurn returns.
+// turn. Callers should waitReceiptsSettle first: an allow receipt can be emitted
+// just after the proxy streams the response to the subprocess, so the tally may
+// still be filling in for an instant after RunTurn returns.
 func (s *LiveSession) endReceiptTurn() []string {
 	s.recMu.Lock()
 	defer s.recMu.Unlock()
 	s.turnActive = false
 	out := s.turnReceipts
 	s.turnReceipts = nil
+	s.receiptSig = nil
 	return out
 }
 
@@ -473,10 +546,17 @@ func (s *LiveSession) onReceipt(rcpt *receipt.Receipt) {
 	if rcpt == nil {
 		return
 	}
-	// Record the target for the model-driver receipt invariant, if a turn is open.
+	// Record the target for the model-driver receipt invariant, if a turn is open,
+	// and signal any settle-wait that the tally advanced.
 	s.recMu.Lock()
 	if s.turnActive {
 		s.turnReceipts = append(s.turnReceipts, targetHostPort(rcpt.ActionRecord.Target))
+		if s.receiptSig != nil {
+			select {
+			case s.receiptSig <- struct{}{}:
+			default:
+			}
+		}
 	}
 	s.recMu.Unlock()
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/llmagent"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 func TestMapModelEvent(t *testing.T) {
@@ -156,6 +157,75 @@ func TestModelHostname(t *testing.T) {
 	}
 }
 
+func TestReceiptsCover(t *testing.T) {
+	t.Parallel()
+	if !receiptsCover([]string{"a:1", "a:1", "b:2"}, []string{"b:2", "a:1", "a:1"}) {
+		t.Error("equal multisets should cover")
+	}
+	if receiptsCover([]string{"a:1", "a:1"}, []string{"a:1"}) {
+		t.Error("two actions to one host need two receipts (count, not set)")
+	}
+	if receiptsCover([]string{"x:9"}, []string{"y:9"}) {
+		t.Error("a different host:port must not cover")
+	}
+	if !receiptsCover(nil, nil) {
+		t.Error("no actions is trivially covered")
+	}
+}
+
+// TestWaitReceiptsSettle_CatchesLateReceipt is the regression test for the race
+// the invariant false-fired on: a turn's allow receipt is recorded AFTER RunTurn
+// returns (the proxy emits it just after streaming the response), and the
+// settle-wait must pick it up rather than fail the turn.
+func TestWaitReceiptsSettle_CatchesLateReceipt(t *testing.T) {
+	t.Parallel()
+	s := &LiveSession{
+		events:        make(chan LiveEvent, 8),
+		receiptSettle: time.Second,
+	}
+	s.beginReceiptTurn()
+	proxied := []string{"safe.target.test:9999"}
+
+	done := make(chan struct{})
+	go func() {
+		s.waitReceiptsSettle(t.Context(), proxied)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("settle-wait returned before the matching receipt arrived")
+	default:
+	}
+
+	s.onReceipt(&receipt.Receipt{
+		ActionRecord: receipt.ActionRecord{Target: "http://safe.target.test:9999/"},
+	})
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("settle-wait did not return after the matching receipt arrived")
+	}
+
+	if !receiptsCover(proxied, s.endReceiptTurn()) {
+		t.Fatal("settle-wait must catch a receipt that lands after RunTurn returns")
+	}
+}
+
+// TestWaitReceiptsSettle_DeadlineWhenMissing: a genuinely missing receipt still
+// fails closed once the settle deadline elapses (the wait does not weaken it).
+func TestWaitReceiptsSettle_DeadlineWhenMissing(t *testing.T) {
+	t.Parallel()
+	s := &LiveSession{receiptSettle: 50 * time.Millisecond}
+	s.beginReceiptTurn()
+	proxied := []string{"never.test:1"}
+	s.waitReceiptsSettle(context.Background(), proxied)
+	if receiptsCover(proxied, s.endReceiptTurn()) {
+		t.Fatal("a missing receipt must remain uncovered after the deadline")
+	}
+}
+
 // scriptedRunner is a fake modelTurnRunner driven by a closure.
 type scriptedRunner struct {
 	run    func(ctx context.Context, msg string, onEvent func(llmagent.Event)) error
@@ -186,6 +256,9 @@ func newModelSession(t *testing.T, runner modelTurnRunner, modelBaseURL string, 
 	}
 	s.lr = lr
 	s.runner = runner
+	// Keep the receipt-settle backstop short so fail-closed tests don't wait the
+	// production default; covered turns still early-exit immediately.
+	s.receiptSettle = 200 * time.Millisecond
 	s.push(LiveEvent{Type: LiveEventStatus, State: LiveStateDev, RunID: "TESTLLM"})
 	t.Cleanup(func() { s.Close() })
 	return s

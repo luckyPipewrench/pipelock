@@ -6,6 +6,8 @@ package deferred
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -104,15 +106,151 @@ func TestManagerCapacityRejectsOverflowSize(t *testing.T) {
 }
 
 func TestValidateActionRejectsUnsupportedSurface(t *testing.T) {
-	err := ValidateAction(SurfaceFetch, "defer")
+	err := ValidateAction(SurfaceFetch, config.ActionDefer)
 	if err == nil {
 		t.Fatal("ValidateAction(fetch, defer) succeeded, want error")
 	}
 	if !strings.Contains(err.Error(), "defer is not yet supported on fetch:") {
 		t.Fatalf("error = %q, want registry rejection wording", err.Error())
 	}
-	if err := ValidateAction(SurfaceMCPStdio, "defer"); err != nil {
+	if err := ValidateAction(SurfaceMCPStdio, config.ActionDefer); err != nil {
 		t.Fatalf("ValidateAction(mcp_stdio, defer) = %v", err)
+	}
+}
+
+func TestSurfaceRegistryUnknownAndCopy(t *testing.T) {
+	support := LookupSurface("new_surface")
+	if support.Status != StatusNotYetSupported || !strings.Contains(support.RejectReason, "not registered") {
+		t.Fatalf("unknown surface support = %+v", support)
+	}
+	first := SupportedSurfaces()
+	if len(first) == 0 {
+		t.Fatal("SupportedSurfaces returned no entries")
+	}
+	first[0].Surface = "mutated"
+	second := SupportedSurfaces()
+	if second[0].Surface == "mutated" {
+		t.Fatal("SupportedSurfaces returned shared backing storage")
+	}
+	if err := ValidateAction(SurfaceFetch, config.ActionAllow); err != nil {
+		t.Fatalf("ValidateAction non-defer = %v", err)
+	}
+}
+
+func TestPolicyStringHelpers(t *testing.T) {
+	policy := ResolutionPolicy{
+		Timeout:              2 * time.Second,
+		MaxPending:           3,
+		MaxPendingPerSession: 2,
+		MaxPendingBytes:      512,
+	}
+	got := policy.String()
+	for _, want := range []string{`"max_pending":3`, `"max_pending_per_session":2`, `"max_pending_bytes":512`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ResolutionPolicy.String() = %q, want %s", got, want)
+		}
+	}
+	receiptPolicy := ReceiptPolicyString(policy, config.DeferResolutionPolicy{
+		AllowOn:  config.DeferAllowOn{Approval: true},
+		StepUpOn: config.DeferStepUpOn{ApprovalRequestsHuman: true},
+	})
+	for _, want := range []string{"approval", "approval_requests_human"} {
+		if !strings.Contains(receiptPolicy, want) {
+			t.Fatalf("ReceiptPolicyString() = %q, want %s", receiptPolicy, want)
+		}
+	}
+}
+
+func TestManagerDefaultsNilHelpersAndValidation(t *testing.T) {
+	m := NewManager(Config{})
+	policy := m.Policy()
+	if policy.Timeout != DefaultTimeoutSeconds*time.Second ||
+		policy.MaxPending != DefaultMaxPending ||
+		policy.MaxPendingPerSession != DefaultMaxPendingSession ||
+		policy.MaxPendingBytes != DefaultMaxPendingBytes {
+		t.Fatalf("default policy = %+v", policy)
+	}
+	if m.Enabled() {
+		t.Fatal("zero config manager should be disabled")
+	}
+	if err := m.Hold(HeldAction{}); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("disabled Hold error = %v, want ErrDisabled", err)
+	}
+
+	var nilManager *Manager
+	if nilManager.Enabled() {
+		t.Fatal("nil manager enabled")
+	}
+	if got := nilManager.Policy(); got != (ResolutionPolicy{}) {
+		t.Fatalf("nil Policy = %+v, want zero", got)
+	}
+	if got := nilManager.JournalPath(); got != "" {
+		t.Fatalf("nil JournalPath = %q, want empty", got)
+	}
+	if got := nilManager.Snapshot(); got != nil {
+		t.Fatalf("nil Snapshot = %+v, want nil", got)
+	}
+	if _, ok := nilManager.Held("missing"); ok {
+		t.Fatal("nil Held returned ok")
+	}
+	nilManager.ResolveAll(config.ActionBlock, SourceCancel)
+	nilManager.ResolveToolInventory("sess", config.ActionBlock)
+	nilManager.ResolvePolicyReload(func(HeldAction) (string, error) { return config.ActionBlock, nil })
+	if err := nilManager.RecordRestartRecovery(HeldAction{}); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("nil RecordRestartRecovery = %v, want ErrDisabled", err)
+	}
+	if err := nilManager.Resolve("missing", "", ""); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("nil Resolve = %v, want ErrDisabled", err)
+	}
+}
+
+func TestManagerHoldValidationAndSnapshotCopies(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Hour})
+	base := HeldAction{
+		DeferID:   "d1",
+		ActionID:  "d1",
+		Target:    "tool",
+		SizeBytes: -10,
+		Payload:   []byte("payload"),
+		Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "orig"},
+		Resolve:   func(Resolution) {},
+	}
+	missingID := base
+	missingID.DeferID = ""
+	if err := m.Hold(missingID); err == nil || !strings.Contains(err.Error(), "defer_id is required") {
+		t.Fatalf("missing id Hold error = %v", err)
+	}
+	missingResolve := base
+	missingResolve.Resolve = nil
+	if err := m.Hold(missingResolve); err == nil || !strings.Contains(err.Error(), "resolve callback is required") {
+		t.Fatalf("missing resolve Hold error = %v", err)
+	}
+	if err := m.Hold(base); err != nil {
+		t.Fatalf("Hold valid returned error: %v", err)
+	}
+	if err := m.Hold(base); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("duplicate Hold error = %v", err)
+	}
+	held, ok := m.Held("d1")
+	if !ok {
+		t.Fatal("Held(d1) returned false")
+	}
+	if held.SizeBytes != 0 {
+		t.Fatalf("negative SizeBytes normalized to %d, want 0", held.SizeBytes)
+	}
+	held.Payload[0] = 'X'
+	again, ok := m.Held("d1")
+	if !ok || string(again.Payload) != "payload" {
+		t.Fatalf("Held returned shared payload or missing hold: %+v ok=%v", again, ok)
+	}
+	if _, ok := m.Held("missing"); ok {
+		t.Fatal("Held(missing) returned true")
+	}
+	if err := m.Resolve("d1", "", ""); err != nil {
+		t.Fatalf("Resolve default returned error: %v", err)
+	}
+	if _, ok := m.Held("d1"); ok {
+		t.Fatal("Held returned true after resolve")
 	}
 }
 
@@ -365,6 +503,48 @@ func TestRecordRestartRecoveryClearsPendingJournal(t *testing.T) {
 		t.Fatalf("pending count after recovery = %d, want 0", len(pending))
 	}
 	_ = m.Resolve("d1", config.ActionBlock, SourceCancel)
+}
+
+func TestPendingJournalEmptyMissingMalformedAndLongLine(t *testing.T) {
+	pending, err := PendingJournal("")
+	if err != nil || pending != nil {
+		t.Fatalf("PendingJournal empty = (%+v,%v), want nil nil", pending, err)
+	}
+	pending, err = PendingJournal(filepath.Join(t.TempDir(), "missing.jsonl"))
+	if err != nil || pending != nil {
+		t.Fatalf("PendingJournal missing = (%+v,%v), want nil nil", pending, err)
+	}
+	malformed := filepath.Join(t.TempDir(), "bad.jsonl")
+	if err := os.WriteFile(malformed, []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile malformed: %v", err)
+	}
+	if _, err := PendingJournal(malformed); err == nil || !strings.Contains(err.Error(), "parse defer journal") {
+		t.Fatalf("PendingJournal malformed error = %v, want parse error", err)
+	}
+	longLine := filepath.Join(t.TempDir(), "long.jsonl")
+	if err := os.WriteFile(longLine, []byte(strings.Repeat("x", 1024*1024+1)), 0o600); err != nil {
+		t.Fatalf("WriteFile long: %v", err)
+	}
+	if _, err := PendingJournal(longLine); err == nil || !strings.Contains(err.Error(), "scan defer journal") {
+		t.Fatalf("PendingJournal long line error = %v, want scan error", err)
+	}
+}
+
+func TestAppendJournalFailsClosedOnPathErrors(t *testing.T) {
+	parentFile := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile parent: %v", err)
+	}
+	m := NewManager(Config{Enabled: true, JournalPath: filepath.Join(parentFile, "journal.jsonl")})
+	if err := m.appendJournal(journalEntry{DeferID: "d1"}); err == nil {
+		t.Fatal("appendJournal with file parent succeeded, want mkdir error")
+	}
+
+	dirPath := t.TempDir()
+	m = NewManager(Config{Enabled: true, JournalPath: dirPath})
+	if err := m.appendJournal(journalEntry{DeferID: "d1"}); err == nil {
+		t.Fatal("appendJournal with directory path succeeded, want open/write error")
+	}
 }
 
 func TestManagerTimerRace(t *testing.T) {

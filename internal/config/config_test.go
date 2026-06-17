@@ -10202,6 +10202,7 @@ func TestLoad_NullBooleanDefaultsToTrue(t *testing.T) {
 		{"GitProtection.PrePushScan", cfg.GitProtection.PrePushScan},
 		{"Logging.IncludeAllowed", cfg.Logging.IncludeAllowed},
 		{"Logging.IncludeBlocked", cfg.Logging.IncludeBlocked},
+		{"Defer.Enabled", cfg.Defer.Enabled},
 	}
 
 	for _, c := range checks {

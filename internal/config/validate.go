@@ -921,8 +921,10 @@ func (c *Config) validateMCPToolPolicy() error {
 				}
 			}
 		}
-		if effectiveAction == ActionDefer && !r.ResolutionPolicy.HasAffirmativeSignal() {
-			return fmt.Errorf("mcp_tool_policy rule %q has action=defer but no affirmative resolution_policy", r.Name)
+		if effectiveAction == ActionDefer {
+			if r.ResolutionPolicy == nil || !r.ResolutionPolicy.HasAffirmativeSignal() {
+				return fmt.Errorf("mcp_tool_policy rule %q has action=defer but no affirmative resolution_policy", r.Name)
+			}
 		}
 	}
 	return nil

@@ -133,6 +133,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				emitTarget = mcpMethod
 			}
 		}
+		requiredReceipt := (requireReceipts && result.Blocked == nil) || receiptVerdict == config.ActionDefer
 		receiptOpts := mcpToolReceiptOpts{
 			Emitter:           receiptEmitter,
 			V2Emitter:         v2ReceiptEmitter,
@@ -150,7 +151,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			Decision:          taintEval,
 			Report:            redactionReport,
 			ContractGate:      receiptContractGate,
-			RequireReceipt:    (requireReceipts && result.Blocked == nil) || receiptVerdict == config.ActionDefer,
+			RequireReceipt:    requiredReceipt,
 			DecisionPhase:     receiptDecisionPhase,
 			DeferID:           receiptDeferID,
 			ResolutionPolicy:  receiptResolutionPolicy,
@@ -158,7 +159,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			SessionID:         receiptSessionID,
 			SessionIDOriginal: receiptSessionIDOriginal,
 		}
-		if err := emitMCPToolReceipt(receiptOpts); err != nil && requireReceipts && result.Blocked == nil {
+		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
+			result.Deferred = nil
 			result.Blocked = &BlockedRequest{
 				ID:             frame.ID,
 				IsNotification: isRPCNotification(frame.ID),

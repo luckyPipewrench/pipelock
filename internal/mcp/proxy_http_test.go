@@ -5600,6 +5600,124 @@ func TestScanHTTPInputDecision_RequireReceiptsBlocksEmissionFailure(t *testing.T
 	}
 }
 
+func TestScanHTTPInputDecision_DeferReceiptFailureBlocksWithoutRequireReceipts(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(jsonToolsCallDangerous)
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	policyCfg := &policy.Config{
+		Action: config.ActionWarn,
+		Rules: []*policy.CompiledRule{{
+			Name:             "defer-dangerous",
+			ToolPattern:      regexp.MustCompile(`dangerous_tool`),
+			Action:           config.ActionDefer,
+			ResolutionPolicy: config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{ToolInventoryBaseline: true}},
+		}},
+	}
+	manager := deferred.NewManager(deferred.Config{
+		Enabled:              true,
+		Timeout:              time.Second,
+		MaxPending:           4,
+		MaxPendingPerSession: 4,
+		MaxPendingBytes:      1024,
+	})
+
+	decision := scanHTTPInputDecision(msg, io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:        sc,
+		PolicyCfg:      policyCfg,
+		ReceiptEmitter: receiptEmitter,
+		DeferManager:   manager,
+		Transport:      deferred.SurfaceMCPHTTPUpstream,
+	})
+	if decision.Blocked == nil {
+		t.Fatal("expected defer receipt emission failure to block")
+	}
+	if decision.Deferred != nil {
+		t.Fatalf("deferred request was created despite receipt failure: %+v", decision.Deferred)
+	}
+	if decision.Blocked.ErrorCode != -32007 {
+		t.Fatalf("error code = %d, want -32007", decision.Blocked.ErrorCode)
+	}
+	if !strings.Contains(string(decision.Blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
+		t.Fatalf("error data = %s, want %s", decision.Blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+}
+
+func TestScanHTTPInputDecision_DeferUnsupportedOrDisabledBlocks(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(jsonToolsCallDangerous)
+	policyCfg := &policy.Config{
+		Action: config.ActionWarn,
+		Rules: []*policy.CompiledRule{{
+			Name:             "defer-dangerous",
+			ToolPattern:      regexp.MustCompile(`dangerous_tool`),
+			Action:           config.ActionDefer,
+			ResolutionPolicy: config.DeferResolutionPolicy{AllowOn: config.DeferAllowOn{ToolInventoryBaseline: true}},
+		}},
+	}
+	enabledManager := deferred.NewManager(deferred.Config{
+		Enabled:              true,
+		Timeout:              time.Second,
+		MaxPending:           4,
+		MaxPendingPerSession: 4,
+		MaxPendingBytes:      1024,
+	})
+
+	tests := []struct {
+		name          string
+		transport     string
+		manager       *deferred.Manager
+		wantLog       string
+		wantErr       string
+		wantLogOutput string
+	}{
+		{
+			name:          "unsupported surface",
+			transport:     deferred.SurfaceMCPWS,
+			manager:       enabledManager,
+			wantLog:       "blocked (defer unsupported)",
+			wantErr:       "defer is not yet supported",
+			wantLogOutput: "policy:defer-dangerous",
+		},
+		{
+			name:          "disabled manager",
+			transport:     deferred.SurfaceMCPHTTPUpstream,
+			manager:       nil,
+			wantLog:       "blocked (defer disabled)",
+			wantErr:       "pipelock: defer is disabled",
+			wantLogOutput: "defer manager disabled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			decision := scanHTTPInputDecision(msg, &logBuf, "sess", "sess", MCPProxyOpts{
+				Scanner:      sc,
+				PolicyCfg:    policyCfg,
+				DeferManager: tt.manager,
+				Transport:    tt.transport,
+			})
+			if decision.Blocked == nil {
+				t.Fatal("expected defer decision to block")
+			}
+			if decision.Blocked.LogMessage != tt.wantLog {
+				t.Fatalf("LogMessage = %q, want %q", decision.Blocked.LogMessage, tt.wantLog)
+			}
+			if !strings.Contains(decision.Blocked.ErrorMessage, tt.wantErr) {
+				t.Fatalf("ErrorMessage = %q, want substring %q", decision.Blocked.ErrorMessage, tt.wantErr)
+			}
+			if decision.Deferred != nil {
+				t.Fatalf("deferred request created despite block: %+v", decision.Deferred)
+			}
+			if !strings.Contains(logBuf.String(), tt.wantLogOutput) {
+				t.Fatalf("log output = %q, want substring %q", logBuf.String(), tt.wantLogOutput)
+			}
+		})
+	}
+}
+
 func TestScanHTTPInputDecision_ReceiptBackfillWhenInputScanningDisabledAndBlocked(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	msg := []byte(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"expensive_tool","arguments":{"path":"/tmp/readme.md"}}}`)

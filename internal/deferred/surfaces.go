@@ -3,7 +3,11 @@
 
 package deferred
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+)
 
 const (
 	SurfaceMCPStdio        = "mcp_stdio"
@@ -95,7 +99,7 @@ func SupportedSurfaces() []SurfaceSupport {
 
 // ValidateAction rejects defer on transports that cannot enforce it.
 func ValidateAction(surface, action string) error {
-	if action != "defer" {
+	if action != config.ActionDefer {
 		return nil
 	}
 	support := LookupSurface(surface)

@@ -11,12 +11,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -590,6 +592,86 @@ func buildChainJSONL(t *testing.T, count int) (string, ed25519.PublicKey) {
 	return "", nil
 }
 
+func buildDeferredCleanChainJSONL(t *testing.T) (string, ed25519.PublicKey) {
+	t.Helper()
+
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "test-chain-hash",
+		Principal:  "operator",
+		Actor:      "agent",
+	})
+
+	deferID := receipt.NewActionID()
+	if err := emitter.Emit(receipt.EmitOpts{
+		ActionID:         deferID,
+		Verdict:          config.ActionDefer,
+		Transport:        "mcp_stdio",
+		Method:           "tools/call",
+		Target:           "dangerous_tool",
+		DecisionPhase:    receipt.DecisionPhaseDefer,
+		DeferID:          deferID,
+		ResolutionPolicy: `{"allow_on":{"approval":true}}`,
+		SessionID:        "sess-1",
+	}); err != nil {
+		t.Fatalf("Emit defer: %v", err)
+	}
+	if err := emitter.Emit(receipt.EmitOpts{
+		ActionID:         receipt.NewActionID(),
+		ParentActionID:   deferID,
+		Verdict:          config.ActionBlock,
+		Transport:        "mcp_stdio",
+		Method:           "tools/call",
+		Target:           "dangerous_tool",
+		DecisionPhase:    receipt.DecisionPhaseResolution,
+		DeferID:          deferID,
+		ResolutionSource: "approval",
+		SessionID:        "sess-1",
+	}); err != nil {
+		t.Fatalf("Emit resolution: %v", err)
+	}
+	if err := emitter.Emit(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "fetch",
+		Method:    "GET",
+		Target:    "https://example.com/ok",
+	}); err != nil {
+		t.Fatalf("Emit allow: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, de := range entries {
+		if strings.HasSuffix(de.Name(), ".jsonl") {
+			return filepath.Join(dir, de.Name()), priv.Public().(ed25519.PublicKey)
+		}
+	}
+	t.Fatal("no JSONL file found")
+	return "", nil
+}
+
 func buildRestartChainDir(t *testing.T, counts ...int) (string, ed25519.PublicKey) {
 	t.Helper()
 
@@ -701,6 +783,245 @@ func TestVerifyReceiptCmd_ChainWithKey(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "CHAIN VALID") {
 		t.Errorf("expected CHAIN VALID, got: %s", buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_CleanReportJSONLWithDeferPair(t *testing.T) {
+	t.Parallel()
+
+	path, pubKey := buildDeferredCleanChainJSONL(t)
+	reportPath := filepath.Join(t.TempDir(), "clean-report.json")
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", hex.EncodeToString(pubKey), "--clean-report", reportPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "CLEAN REPORT VALID") {
+		t.Fatalf("output missing clean report success:\n%s", buf.String())
+	}
+	raw, err := os.ReadFile(filepath.Clean(reportPath))
+	if err != nil {
+		t.Fatalf("ReadFile(report): %v", err)
+	}
+	var report cleanActionReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("Unmarshal(report): %v", err)
+	}
+	if report.Chain.ReceiptCount != 3 || report.Chain.FinalSeq != 2 {
+		t.Fatalf("chain summary = %+v, want 3 receipts seq 2", report.Chain)
+	}
+	if len(report.Actions) != 3 {
+		t.Fatalf("actions = %d, want 3", len(report.Actions))
+	}
+	if report.Actions[0].DecisionPhase != receipt.DecisionPhaseDefer || report.Actions[1].DecisionPhase != receipt.DecisionPhaseResolution {
+		t.Fatalf("defer pair phases = (%q,%q)", report.Actions[0].DecisionPhase, report.Actions[1].DecisionPhase)
+	}
+}
+
+func TestVerifyReceiptCmd_CleanReportRejectsSingleReceipt(t *testing.T) {
+	t.Parallel()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	ar := receipt.ActionRecord{
+		Version:    receipt.ActionRecordVersion,
+		ActionID:   receipt.NewActionID(),
+		ActionType: receipt.ActionRead,
+		Timestamp:  time.Now().UTC(),
+		Target:     "https://example.com/api",
+		Verdict:    config.ActionAllow,
+		Transport:  "fetch",
+	}
+	rcpt, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	data, err := receipt.Marshal(rcpt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{path, "--allow-unpinned", "--clean-report", filepath.Join(t.TempDir(), "report.json")})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--clean-report requires --chain or a JSONL receipt file") {
+		t.Fatalf("Execute error = %v, want clean-report input rejection", err)
+	}
+}
+
+func TestBuildCleanActionReportRejectsBadDeferPairs(t *testing.T) {
+	t.Parallel()
+
+	baseTime := time.Date(2026, 6, 17, 2, 30, 0, 0, time.UTC)
+	deferRecord := receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      "defer-action",
+		ActionType:    receipt.ActionWrite,
+		Timestamp:     baseTime,
+		Target:        "dangerous_tool",
+		Verdict:       config.ActionDefer,
+		Transport:     "mcp_stdio",
+		Method:        "tools/call",
+		DecisionPhase: receipt.DecisionPhaseDefer,
+		DeferID:       "defer-1",
+		Principal:     "operator",
+		Actor:         "agent",
+		SessionID:     "sess-1",
+		PolicyHash:    "policy",
+		ChainSeq:      1,
+	}
+	resolutionRecord := deferRecord
+	resolutionRecord.ActionID = "resolution-action"
+	resolutionRecord.ParentActionID = deferRecord.ActionID
+	resolutionRecord.Verdict = config.ActionBlock
+	resolutionRecord.DecisionPhase = receipt.DecisionPhaseResolution
+	resolutionRecord.ResolutionSource = "approval"
+	resolutionRecord.ChainSeq = 2
+	result := receipt.ChainResult{
+		Valid:        true,
+		ReceiptCount: 2,
+		FinalSeq:     2,
+		RootHash:     "root",
+		SignerKeys:   []string{"key"},
+	}
+
+	report, err := buildCleanActionReport("valid", []receipt.Receipt{
+		{ActionRecord: deferRecord},
+		{ActionRecord: resolutionRecord},
+	}, result)
+	if err != nil {
+		t.Fatalf("buildCleanActionReport valid pair: %v", err)
+	}
+	if len(report.Actions) != 2 || report.Actions[1].ResolutionSource != "approval" {
+		t.Fatalf("report actions = %+v", report.Actions)
+	}
+
+	tests := []struct {
+		name     string
+		records  []receipt.ActionRecord
+		wantText string
+	}{
+		{
+			name: "missing_defer_id",
+			records: []receipt.ActionRecord{
+				func() receipt.ActionRecord {
+					r := deferRecord
+					r.DeferID = ""
+					return r
+				}(),
+			},
+			wantText: "missing defer_id",
+		},
+		{
+			name: "duplicate_defer_id",
+			records: []receipt.ActionRecord{
+				deferRecord,
+				func() receipt.ActionRecord {
+					r := deferRecord
+					r.ActionID = "second-defer"
+					r.ChainSeq = 2
+					return r
+				}(),
+			},
+			wantText: "duplicate defer_id",
+		},
+		{
+			name: "resolution_missing_linkage",
+			records: []receipt.ActionRecord{
+				func() receipt.ActionRecord {
+					r := resolutionRecord
+					r.ParentActionID = ""
+					return r
+				}(),
+			},
+			wantText: "missing defer linkage",
+		},
+		{
+			name:     "missing_resolution",
+			records:  []receipt.ActionRecord{deferRecord},
+			wantText: "has 0 resolution receipts",
+		},
+		{
+			name: "parent_mismatch",
+			records: []receipt.ActionRecord{
+				deferRecord,
+				func() receipt.ActionRecord {
+					r := resolutionRecord
+					r.ParentActionID = "other"
+					return r
+				}(),
+			},
+			wantText: "resolution parent mismatch",
+		},
+		{
+			name: "resolution_before_defer",
+			records: []receipt.ActionRecord{
+				deferRecord,
+				func() receipt.ActionRecord {
+					r := resolutionRecord
+					r.ChainSeq = 1
+					return r
+				}(),
+			},
+			wantText: "appears before defer receipt",
+		},
+		{
+			name: "identity_changed",
+			records: []receipt.ActionRecord{
+				deferRecord,
+				func() receipt.ActionRecord {
+					r := resolutionRecord
+					r.Actor = "other-agent"
+					return r
+				}(),
+			},
+			wantText: "resolution identity changed",
+		},
+		{
+			name: "non_terminal_verdict",
+			records: []receipt.ActionRecord{
+				deferRecord,
+				func() receipt.ActionRecord {
+					r := resolutionRecord
+					r.Verdict = config.ActionDefer
+					return r
+				}(),
+			},
+			wantText: "resolved to non-terminal verdict",
+		},
+		{
+			name: "unknown_defer_resolution",
+			records: []receipt.ActionRecord{
+				func() receipt.ActionRecord {
+					r := resolutionRecord
+					r.DeferID = "unknown"
+					return r
+				}(),
+			},
+			wantText: "resolution for unknown defer",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			receipts := make([]receipt.Receipt, 0, len(tc.records))
+			for _, record := range tc.records {
+				receipts = append(receipts, receipt.Receipt{ActionRecord: record})
+			}
+			_, err := buildCleanActionReport(tc.name, receipts, result)
+			if err == nil || !strings.Contains(err.Error(), tc.wantText) {
+				t.Fatalf("buildCleanActionReport() error = %v, want %q", err, tc.wantText)
+			}
+		})
 	}
 }
 

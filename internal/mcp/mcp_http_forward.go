@@ -298,9 +298,11 @@ func RunHTTPProxy(
 		}
 
 		// POST to upstream.
-		upstreamMu.Lock()
-		respReader, err := httpClient.SendMessage(ctx, decision.ForwardMessage)
-		upstreamMu.Unlock()
+		respReader, err := func() (transport.MessageReader, error) {
+			upstreamMu.Lock()
+			defer upstreamMu.Unlock()
+			return httpClient.SendMessage(ctx, decision.ForwardMessage)
+		}()
 		if err != nil {
 			// Log full upstream error details to stderr for debugging.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)

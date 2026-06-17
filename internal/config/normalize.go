@@ -90,6 +90,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.HealthWatchdog.Enabled = true
 		cfg.Conductor.HonorRemoteKillSwitch = true
 		cfg.FlightRecorder.Enabled = true
+		cfg.Defer.Enabled = true
 		return
 	}
 

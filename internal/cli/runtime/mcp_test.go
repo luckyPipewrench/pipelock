@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -90,6 +91,127 @@ func TestMCPReceiptParityOpts(t *testing.T) {
 	}
 	if opts.ConfigHash != "config-hash" {
 		t.Fatalf("ConfigHash = %q, want config-hash", opts.ConfigHash)
+	}
+}
+
+func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
+	if got := buildDeferManager(nil); got != nil {
+		t.Fatalf("buildDeferManager(nil) = %+v, want nil", got)
+	}
+	cfg := config.Defaults()
+	cfg.Defer.Enabled = false
+	if got := buildDeferManager(cfg); got != nil {
+		t.Fatalf("disabled buildDeferManager = %+v, want nil", got)
+	}
+
+	cfg.Defer.Enabled = true
+	cfg.Defer.TimeoutSeconds = 7
+	cfg.Defer.MaxPending = 5
+	cfg.Defer.MaxPendingPerSession = 3
+	cfg.Defer.MaxPendingBytes = 2048
+	cfg.FlightRecorder.Dir = t.TempDir()
+	manager := buildDeferManager(cfg)
+	if manager == nil {
+		t.Fatal("buildDeferManager enabled returned nil")
+	}
+	if got, want := manager.JournalPath(), filepath.Join(cfg.FlightRecorder.Dir, "deferred-actions.jsonl"); got != want {
+		t.Fatalf("JournalPath = %q, want %q", got, want)
+	}
+	policy := manager.Policy()
+	if policy.Timeout != 7*time.Second || policy.MaxPending != 5 || policy.MaxPendingPerSession != 3 || policy.MaxPendingBytes != 2048 {
+		t.Fatalf("manager policy = %+v", policy)
+	}
+
+	cfg.MCPToolPolicy.Action = config.ActionWarn
+	cfg.MCPToolPolicy.Rules = nil
+	if err := validateMCPDeferSurface(deferred.SurfaceMCPWS, cfg); err != nil {
+		t.Fatalf("validate no-defer surface = %v", err)
+	}
+	cfg.MCPToolPolicy.Action = config.ActionDefer
+	if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPUpstream, cfg); err != nil {
+		t.Fatalf("validate supported defer surface = %v", err)
+	}
+	if err := validateMCPDeferSurface(deferred.SurfaceMCPWS, cfg); err == nil || !strings.Contains(err.Error(), "defer is not yet supported on mcp_ws") {
+		t.Fatalf("validate unsupported defer surface = %v", err)
+	}
+
+	cfg.MCPToolPolicy.Action = config.ActionWarn
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{{Name: "hold", Action: config.ActionDefer}}
+	if !mcpToolPolicyUsesDefer(cfg.MCPToolPolicy) {
+		t.Fatal("mcpToolPolicyUsesDefer did not detect rule-level defer")
+	}
+}
+
+func TestRecoverDeferredActionsBlocksPendingJournal(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Defer.Enabled = true
+	cfg.FlightRecorder.Dir = dir
+	manager := buildDeferManager(cfg)
+	if manager == nil {
+		t.Fatal("buildDeferManager returned nil")
+	}
+	if err := manager.Hold(deferred.HeldAction{
+		DeferID:   "d1",
+		ActionID:  "a1",
+		Target:    "dangerous_tool",
+		Surface:   deferred.SurfaceMCPStdio,
+		Method:    "tools/call",
+		Reason:    "policy",
+		SizeBytes: 1,
+		Authority: deferred.AuthoritySnapshot{
+			SessionID:         "sess",
+			SessionIDOriginal: "sess",
+		},
+		Resolve: func(deferred.Resolution) {},
+	}); err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+	pending, err := deferred.PendingJournal(manager.JournalPath())
+	if err != nil {
+		t.Fatalf("PendingJournal before recovery: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending before recovery = %d, want 1", len(pending))
+	}
+
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                filepath.Join(dir, "receipts"),
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "config-hash",
+		Principal:  "local",
+		Actor:      "pipelock",
+	})
+	if emitter == nil {
+		t.Fatal("receipt.NewEmitter returned nil")
+	}
+
+	var log bytes.Buffer
+	if err := recoverDeferredActions(manager, emitter, nil, "policy-hash", &log); err != nil {
+		t.Fatalf("recoverDeferredActions: %v", err)
+	}
+	pending, err = deferred.PendingJournal(manager.JournalPath())
+	if err != nil {
+		t.Fatalf("PendingJournal after recovery: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending after recovery = %d, want 0", len(pending))
+	}
+	if log.String() != "" {
+		t.Fatalf("recovery log = %q, want empty", log.String())
 	}
 }
 

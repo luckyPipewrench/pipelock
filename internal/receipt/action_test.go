@@ -284,6 +284,7 @@ func TestNormalizeVerdict(t *testing.T) {
 		{name: "ask", input: config.ActionAsk, want: "ask"},
 		{name: "strip", input: config.ActionStrip, want: "strip"},
 		{name: "forward", input: config.ActionForward, want: "forward"},
+		{name: "defer", input: config.ActionDefer, want: "defer"},
 		{name: "unknown_passthrough", input: "custom_verdict", want: "custom_verdict"},
 		{name: "empty_passthrough", input: "", want: ""},
 	}

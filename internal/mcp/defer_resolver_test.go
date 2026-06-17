@@ -23,7 +23,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
-func deferApprovalPolicy(profileName string, profile config.DeferResolverProfile) *policy.Config {
+func deferApprovalPolicy(profile config.DeferResolverProfile) *policy.Config {
+	const profileName = "approve"
 	return &policy.Config{
 		Action: config.ActionWarn,
 		DeferResolverProfiles: map[string]config.DeferResolverProfile{
@@ -162,7 +163,7 @@ func TestForwardScannedInput_DeferResolverAllowsAndMinimizesManifest(t *testing.
 			MCPProxyOpts{
 				Scanner:        sc,
 				Transport:      deferred.SurfaceMCPStdio,
-				PolicyCfg:      deferApprovalPolicy("approve", profile),
+				PolicyCfg:      deferApprovalPolicy(profile),
 				DeferManager:   manager,
 				ReceiptEmitter: emitter,
 			},
@@ -215,7 +216,7 @@ func TestRunHTTPProxy_DeferResolverAllowsBridge(t *testing.T) {
 	go func() {
 		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil, MCPProxyOpts{
 			Scanner:        sc,
-			PolicyCfg:      deferApprovalPolicy("approve", config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf allow"}}),
+			PolicyCfg:      deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf allow"}}),
 			DeferManager:   manager,
 			ReceiptEmitter: emitter,
 		})
@@ -239,6 +240,175 @@ func TestRunHTTPProxy_DeferResolverAllowsBridge(t *testing.T) {
 	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("RunHTTPProxy returned error: %v", err)
 	}
+}
+
+func TestRunHTTPProxy_DeferResolverBlocksBridge(t *testing.T) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Second, MaxPending: 4, MaxPendingPerSession: 4, MaxPendingBytes: 4096})
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	upstreamHit := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit <- struct{}{}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inputR, inputW := io.Pipe()
+	var stdout, stderr syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil, MCPProxyOpts{
+			Scanner:        sc,
+			PolicyCfg:      deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf block"}}),
+			DeferManager:   manager,
+			ReceiptEmitter: emitter,
+		})
+	}()
+	_, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{"token":"bridge-secret"}}}` + "\n"))
+	if err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool {
+		return strings.Contains(stdout.String(), "deferred action denied")
+	}, "deferred HTTP call to be denied; stderr=%s stdout=%s", &stderr, &stdout)
+	select {
+	case <-upstreamHit:
+		t.Fatal("blocked deferred call reached upstream")
+	default:
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("RunHTTPProxy returned error: %v", err)
+	}
+}
+
+func TestRunHTTPProxy_DeferCapacityBlocksBridge(t *testing.T) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Hour, MaxPending: 1, MaxPendingPerSession: 1, MaxPendingBytes: 4096})
+	sessionID := captureSessionID(deferred.SurfaceMCPHTTPUpstream)
+	if err := manager.Hold(deferred.HeldAction{
+		DeferID:   "occupied",
+		ActionID:  "occupied",
+		Target:    "send_tool",
+		SizeBytes: 1,
+		Authority: deferred.AuthoritySnapshot{
+			SessionID:         sessionID,
+			SessionIDOriginal: sessionID,
+		},
+		Resolve: func(deferred.Resolution) {},
+	}); err != nil {
+		t.Fatalf("preload Hold: %v", err)
+	}
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	upstreamHit := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit <- struct{}{}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inputR, inputW := io.Pipe()
+	var stdout, stderr syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil, MCPProxyOpts{
+			Scanner:        sc,
+			PolicyCfg:      deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf allow"}}),
+			DeferManager:   manager,
+			ReceiptEmitter: emitter,
+		})
+	}()
+	_, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{"token":"bridge-secret"}}}` + "\n"))
+	if err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	testwait.For(t, time.Second, func() bool {
+		return strings.Contains(stdout.String(), "defer capacity exceeded")
+	}, "deferred HTTP call to fail capacity; stderr=%s stdout=%s", &stderr, &stdout)
+	select {
+	case <-upstreamHit:
+		t.Fatal("capacity-blocked deferred call reached upstream")
+	default:
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("RunHTTPProxy returned error: %v", err)
+	}
+}
+
+func TestForwardScannedInput_DeferCapacityBlocks(t *testing.T) {
+	sc := testInputScanner(t)
+	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Hour, MaxPending: 1, MaxPendingPerSession: 1, MaxPendingBytes: 4096})
+	sessionID := captureSessionID(deferred.SurfaceMCPStdio)
+	if err := manager.Hold(deferred.HeldAction{
+		DeferID:   "occupied",
+		ActionID:  "occupied",
+		Target:    "send_tool",
+		SizeBytes: 1,
+		Authority: deferred.AuthoritySnapshot{
+			SessionID:         sessionID,
+			SessionIDOriginal: sessionID,
+		},
+		Resolve: func(deferred.Resolution) {},
+	}); err != nil {
+		t.Fatalf("preload Hold: %v", err)
+	}
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	inputR, inputW := io.Pipe()
+	defer func() { _ = inputW.Close() }()
+	var serverBuf, logBuf syncBuffer
+	blockedCh := make(chan BlockedRequest, 4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ForwardScannedInput(
+			transport.NewStdioReader(inputR),
+			transport.NewStdioWriter(&serverBuf),
+			&logBuf,
+			config.ActionWarn,
+			config.ActionBlock,
+			blockedCh,
+			nil,
+			nil,
+			MCPProxyOpts{
+				Scanner:        sc,
+				Transport:      deferred.SurfaceMCPStdio,
+				PolicyCfg:      deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf allow"}}),
+				DeferManager:   manager,
+				ReceiptEmitter: emitter,
+			},
+		)
+	}()
+	if _, err := inputW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_tool","arguments":{"token":"secret"}}}` + "\n")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	select {
+	case blocked := <-blockedCh:
+		if !strings.Contains(blocked.ErrorMessage, "defer capacity exceeded") {
+			t.Fatalf("blocked = %+v, want defer capacity exceeded", blocked)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for capacity block; log=%s", &logBuf)
+	}
+	if strings.Contains(serverBuf.String(), "send_tool") {
+		t.Fatalf("capacity-blocked stdio call was forwarded: %s", &serverBuf)
+	}
+	if err := inputW.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+	<-done
 }
 
 func TestForwardScanned_ToolInventoryResolvesHeldActions(t *testing.T) {
@@ -327,7 +497,7 @@ func TestForwardScannedInput_DeferResolverShutdownDoesNotPanic(t *testing.T) {
 				MCPProxyOpts{
 					Scanner:      sc,
 					Transport:    deferred.SurfaceMCPStdio,
-					PolicyCfg:    deferApprovalPolicy("approve", config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "sleep 0.01; printf allow"}}),
+					PolicyCfg:    deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "sleep 0.01; printf allow"}}),
 					DeferManager: manager,
 				},
 			)

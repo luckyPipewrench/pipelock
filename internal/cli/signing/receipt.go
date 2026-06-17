@@ -376,6 +376,16 @@ func buildCleanActionReport(label string, receipts []receipt.Receipt, result rec
 			if ar.DeferID == "" {
 				return cleanActionReport{}, fmt.Errorf("defer receipt %s missing defer_id", ar.ActionID)
 			}
+			// A defer_id identifies exactly one held action, so two defer
+			// receipts sharing it is never legitimate. Rejecting fails closed:
+			// silently overwriting would let a duplicate pass the per-defer
+			// resolution-pairing check below against only the last record.
+			if prior, exists := deferByID[ar.DeferID]; exists {
+				return cleanActionReport{}, fmt.Errorf(
+					"duplicate defer_id %s in receipts %s and %s",
+					ar.DeferID, prior.ActionID, ar.ActionID,
+				)
+			}
 			deferByID[ar.DeferID] = ar
 		}
 		if ar.DecisionPhase == receipt.DecisionPhaseResolution {

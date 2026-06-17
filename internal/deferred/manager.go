@@ -4,6 +4,7 @@
 package deferred
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -218,9 +219,6 @@ func (m *Manager) Hold(action HeldAction) error {
 	journalAction := action
 	stored := action
 	held := &stored
-	held.timer = time.AfterFunc(m.cfg.Timeout, func() {
-		_ = m.Resolve(action.DeferID, "block", SourceTimeout)
-	})
 	m.holds[action.DeferID] = held
 	m.bySession[action.Authority.SessionID]++
 	m.totalBytes += action.SizeBytes
@@ -230,6 +228,13 @@ func (m *Manager) Hold(action HeldAction) error {
 		_ = m.Resolve(action.DeferID, "block", SourceCancel)
 		return fmt.Errorf("journal defer hold: %w", err)
 	}
+	m.mu.Lock()
+	if live := m.holds[action.DeferID]; live != nil && live.state == StateHeld {
+		live.timer = time.AfterFunc(m.cfg.Timeout, func() {
+			_ = m.Resolve(action.DeferID, "block", SourceTimeout)
+		})
+	}
+	m.mu.Unlock()
 	return nil
 }
 
@@ -489,17 +494,20 @@ func PendingJournal(path string) ([]HeldAction, error) {
 	if path == "" {
 		return nil, nil
 	}
-	data, err := os.ReadFile(filepath.Clean(path))
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	defer func() { _ = f.Close() }()
 	pending := map[string]journalEntry{}
-	for _, line := range splitLines(data) {
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
 		var entry journalEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			return nil, fmt.Errorf("parse defer journal: %w", err)
 		}
 		switch entry.State {
@@ -508,6 +516,9 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		default:
 			delete(pending, entry.DeferID)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan defer journal: %w", err)
 	}
 	out := make([]HeldAction, 0, len(pending))
 	for _, entry := range pending {
@@ -525,21 +536,4 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		})
 	}
 	return out, nil
-}
-
-func splitLines(data []byte) [][]byte {
-	var lines [][]byte
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			if i > start {
-				lines = append(lines, data[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, data[start:])
-	}
-	return lines
 }

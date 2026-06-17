@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1646,6 +1647,28 @@ func TestScanRequestBody_InvalidJSON_FailClosed(t *testing.T) {
 	}
 }
 
+func TestScanRequestBody_OverDepthJSON_FailClosed(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(deepProxyJSONObject("depth-regression-sentinel", 100)),
+		ContentType: "application/json",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected fail-closed block for over-depth JSON body")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
+	}
+	if result.Reason != "JSON body exceeds maximum inspectable nesting depth" {
+		t.Fatalf("Reason = %q, want over-depth JSON reason", result.Reason)
+	}
+}
+
 // --- extractFormURLEncoded edge cases ---
 
 func TestScanRequestBody_FormURLEncoded_ParseFailure(t *testing.T) {
@@ -2090,4 +2113,16 @@ func TestIsResponseScanExempt(t *testing.T) {
 			}
 		})
 	}
+}
+
+func deepProxyJSONObject(value string, depth int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(strconv.Quote(value))
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
 }

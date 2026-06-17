@@ -106,10 +106,13 @@ func ExtractText(raw json.RawMessage) string {
 }
 
 // ExtractTextResult extracts text content and reports uninspectable depth in
-// the arbitrary-shape fallback path.
+// the complete JSON value.
 func ExtractTextResult(raw json.RawMessage) TextResult {
 	if len(raw) == 0 || string(raw) == Null {
 		return TextResult{}
+	}
+	if jsonDepthTruncated(raw) {
+		return TextResult{Truncated: true}
 	}
 
 	// Try standard ToolResult structure first.
@@ -138,6 +141,39 @@ func ExtractTextResult(raw json.RawMessage) TextResult {
 	}
 
 	return TextResult{Truncated: extracted.Truncated}
+}
+
+// jsonDepthTruncated reports whether raw JSON exceeds the recursive extraction
+// depth cap without returning any extracted strings.
+func jsonDepthTruncated(raw json.RawMessage) bool {
+	var parsed interface{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return false
+	}
+	return valueDepthTruncated(parsed, 0)
+}
+
+// valueDepthTruncated walks arbitrary decoded JSON and stops when depth exceeds
+// maxExtractDepth.
+func valueDepthTruncated(v interface{}, depth int) bool {
+	if depth > maxExtractDepth {
+		return true
+	}
+	switch val := v.(type) {
+	case []interface{}:
+		for _, item := range val {
+			if valueDepthTruncated(item, depth+1) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for _, item := range val {
+			if valueDepthTruncated(item, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // SortedKeys returns the keys of a map in sorted order. Used by JSON extraction

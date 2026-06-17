@@ -469,6 +469,7 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 	var allAddr []addressprotect.Finding
 	var firstID json.RawMessage
 	var hasError bool
+	var firstError string
 	var batchAction string // track strictest action across batch elements
 
 	for _, elem := range batch {
@@ -476,26 +477,33 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 		if firstID == nil && len(v.ID) > 0 {
 			firstID = v.ID
 		}
+		if v.Action != "" {
+			if batchAction == "" {
+				batchAction = v.Action
+			} else if v.Action == config.ActionBlock {
+				batchAction = config.ActionBlock
+			}
+		}
 		if v.Error != "" {
 			hasError = true
+			if firstError == "" {
+				firstError = v.Error
+			}
 		}
 		if !v.Clean && v.Error == "" {
 			allDLP = append(allDLP, v.Matches...)
 			allInj = append(allInj, v.Inject...)
 			allAddr = append(allAddr, v.AddressFindings...)
-			if v.Action != "" {
-				if batchAction == "" {
-					batchAction = v.Action
-				} else if v.Action == config.ActionBlock {
-					batchAction = config.ActionBlock
-				}
-			}
 		}
 	}
 
 	if len(allDLP) == 0 && len(allInj) == 0 && len(allAddr) == 0 {
 		if hasError {
-			return InputVerdict{ID: firstID, Clean: false, Error: "one or more batch elements failed to parse"}
+			errText := "one or more batch elements failed to parse"
+			if firstError == uninspectableJSONDepthReason {
+				errText = uninspectableJSONDepthReason
+			}
+			return InputVerdict{ID: firstID, Clean: false, Action: batchAction, Error: errText}
 		}
 		return InputVerdict{ID: firstID, Clean: true}
 	}

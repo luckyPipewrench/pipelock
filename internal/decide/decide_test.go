@@ -184,7 +184,7 @@ func TestDecide_MCPExecution(t *testing.T) {
 
 func TestDecide_MCPOverDepthToolInputFailsClosed(t *testing.T) {
 	cfg, sc, pc := testSetup(t)
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	value := "depth-regression-sentinel"
 
 	action := Action{
 		Source: "cursor",
@@ -192,12 +192,15 @@ func TestDecide_MCPOverDepthToolInputFailsClosed(t *testing.T) {
 		MCP: &MCPPayload{
 			Server:    "test-server",
 			ToolName:  "send",
-			ToolInput: deepDecideJSONObject(secret, 100),
+			ToolInput: deepDecideJSONObject(value, 100),
 		},
 	}
 	decision := Decide(context.Background(), cfg, sc, pc, action)
 	if decision.Outcome != Deny {
 		t.Fatalf("Outcome = %s, want %s; evidence = %+v", decision.Outcome, Deny, decision.Evidence)
+	}
+	if !evidenceContainsPattern(decision.Evidence, "Uninspectable JSON") {
+		t.Fatalf("expected Uninspectable JSON evidence, got %+v", decision.Evidence)
 	}
 }
 
@@ -869,19 +872,22 @@ func TestDecide_ToolUse(t *testing.T) {
 
 func TestDecide_ToolUseOverDepthToolInputFailsClosed(t *testing.T) {
 	cfg, sc, pc := testSetup(t)
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	value := "depth-regression-sentinel"
 
 	action := Action{
 		Source: "claude-code",
 		Kind:   EventToolUse,
 		ToolUse: &ToolUsePayload{
 			ToolName:  "send",
-			ToolInput: deepDecideJSONObject(secret, 100),
+			ToolInput: deepDecideJSONObject(value, 100),
 		},
 	}
 	decision := Decide(context.Background(), cfg, sc, pc, action)
 	if decision.Outcome != Deny {
 		t.Fatalf("Outcome = %s, want %s; evidence = %+v", decision.Outcome, Deny, decision.Evidence)
+	}
+	if !evidenceContainsPattern(decision.Evidence, "Uninspectable JSON") {
+		t.Fatalf("expected Uninspectable JSON evidence, got %+v", decision.Evidence)
 	}
 }
 
@@ -1054,4 +1060,13 @@ func deepDecideJSONObject(value string, depth int) string {
 		b.WriteByte('}')
 	}
 	return b.String()
+}
+
+func evidenceContainsPattern(evidence []Evidence, pattern string) bool {
+	for _, ev := range evidence {
+		if ev.Pattern == pattern {
+			return true
+		}
+	}
+	return false
 }

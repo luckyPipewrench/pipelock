@@ -450,6 +450,8 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 	return pc.CheckToolCallWithArgs(tc.Name, argStrings, rawArgs)
 }
 
+// uninspectableJSONDepthVerdict is the synthetic block returned when policy
+// arguments are valid JSON but too deeply nested to inspect.
 func uninspectableJSONDepthVerdict() Verdict {
 	return Verdict{
 		Matched: true,

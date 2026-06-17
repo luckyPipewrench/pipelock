@@ -1348,6 +1348,8 @@ func joinInputVerdictReasons(verdict InputVerdict) string {
 	return joinStrings(reasons)
 }
 
+// jsonRPCErrorCodeForInputError maps scanner parse failures onto JSON-RPC
+// protocol error codes.
 func jsonRPCErrorCodeForInputError(errText string) int {
 	if strings.HasPrefix(errText, "invalid JSON") || strings.HasPrefix(errText, "invalid JSON batch") {
 		return -32700

@@ -191,6 +191,8 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	return frame
 }
 
+// recoverTopLevelJSONRPCID reads a top-level JSON-RPC id without requiring the
+// whole frame to unmarshal successfully.
 func recoverTopLevelJSONRPCID(msg []byte) json.RawMessage {
 	dec := json.NewDecoder(bytes.NewReader(msg))
 	dec.UseNumber()
@@ -221,6 +223,8 @@ func recoverTopLevelJSONRPCID(msg []byte) json.RawMessage {
 	return nil
 }
 
+// readTopLevelIDValue returns the next decoder value when it is a scalar
+// JSON-RPC id type.
 func readTopLevelIDValue(dec *json.Decoder) json.RawMessage {
 	tok, err := dec.Token()
 	if err != nil {
@@ -248,6 +252,7 @@ func readTopLevelIDValue(dec *json.Decoder) json.RawMessage {
 	}
 }
 
+// skipTopLevelJSONValue consumes the next JSON value from dec.
 func skipTopLevelJSONValue(dec *json.Decoder) error {
 	tok, err := dec.Token()
 	if err != nil {

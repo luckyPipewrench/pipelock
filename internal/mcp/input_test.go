@@ -1191,6 +1191,26 @@ func TestScanRequest_BatchWithParseErrorOnly(t *testing.T) {
 	}
 }
 
+func TestScanRequest_BatchWithOverDepthElementKeepsBlockAction(t *testing.T) {
+	sc := testInputScanner(t)
+	overDepth := fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"send","arguments":%s}}`, deepJSONObject("depth-regression-sentinel", 100))
+	batch := "[" + overDepth + "]"
+
+	verdict := ScanRequest(context.Background(), []byte(batch), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("expected non-clean for batch with over-depth element")
+	}
+	if verdict.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q", verdict.Action, config.ActionBlock)
+	}
+	if verdict.Error != uninspectableJSONDepthReason {
+		t.Fatalf("Error = %q, want %q", verdict.Error, uninspectableJSONDepthReason)
+	}
+	if string(verdict.ID) != "7" {
+		t.Fatalf("ID = %s, want 7", string(verdict.ID))
+	}
+}
+
 func TestScanRequest_BatchWithParseErrorAndDLP(t *testing.T) {
 	sc := testInputScanner(t)
 

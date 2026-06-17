@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -70,6 +71,21 @@ func TestExtractText_MixedBlockTypes(t *testing.T) {
 	want := "first second third"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestExtractTextResult_ToolResultOverDepthSiblingFailsClosed(t *testing.T) {
+	raw := json.RawMessage(fmt.Sprintf(
+		`{"content":[{"type":"text","text":"hello"}],"hidden":%s}`,
+		deepJSONRPCObject(depthGuardLeaf, maxExtractDepth+2),
+	))
+
+	got := ExtractTextResult(raw)
+	if !got.Truncated {
+		t.Fatalf("Truncated = false, want true; text = %q", got.Text)
+	}
+	if got.Text != "" {
+		t.Fatalf("Text = %q, want empty when JSON is uninspectable", got.Text)
 	}
 }
 
@@ -282,16 +298,7 @@ func TestExtractStringsFromJSON_DepthGuard(t *testing.T) {
 	// Build JSON nested deeper than maxExtractDepth (64).
 	// Structure: {"k":{"k":{"k":...{"k":"leaf"}...}}}
 	// At depth 65, the value "leaf" should NOT be reached.
-	depth := maxExtractDepth + 2
-	var b strings.Builder
-	for i := 0; i < depth; i++ {
-		b.WriteString(`{"k":`)
-	}
-	b.WriteString(`"leaf"`)
-	for i := 0; i < depth; i++ {
-		b.WriteString(`}`)
-	}
-	raw := json.RawMessage(b.String())
+	raw := json.RawMessage(deepJSONRPCObject(depthGuardLeaf, maxExtractDepth+2))
 	got := ExtractStringsFromJSON(raw)
 	// The string "leaf" is at depth = depth (66), which exceeds maxExtractDepth (64).
 	// It should not be extracted.
@@ -308,16 +315,7 @@ func TestExtractStringsFromJSON_ExactlyAtDepthLimit(t *testing.T) {
 	// So at nesting level N, extract is called with depth=N.
 	// The guard is: if depth > maxExtractDepth { return }.
 	// A string at depth=maxExtractDepth (64) should still be extracted.
-	depth := maxExtractDepth
-	var b strings.Builder
-	for i := 0; i < depth; i++ {
-		b.WriteString(`{"k":`)
-	}
-	b.WriteString(`"leaf"`)
-	for i := 0; i < depth; i++ {
-		b.WriteString(`}`)
-	}
-	raw := json.RawMessage(b.String())
+	raw := json.RawMessage(deepJSONRPCObject(depthGuardLeaf, maxExtractDepth))
 	got := ExtractStringsFromJSON(raw)
 	found := false
 	for _, s := range got {
@@ -629,4 +627,16 @@ func TestExtractStringsForKeys_DepthGuard(t *testing.T) {
 			t.Error("depth guard failed: extracted string beyond maxExtractDepth")
 		}
 	}
+}
+
+func deepJSONRPCObject(value string, depth int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(strconv.Quote(value))
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
 }

@@ -1584,7 +1584,7 @@ func TestCheckRequest_MultipleArgFields(t *testing.T) {
 
 func TestCheckRequest_OverDepthArgumentsFailClosed(t *testing.T) {
 	pc := defaultConfig(t)
-	cmd := "rm" + " -rf /tmp/vendor-neutral"
+	cmd := "benign-depth-sentinel"
 	line := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":%s}}`, deepPolicyJSONObject(cmd, 100))
 
 	v := pc.CheckRequest([]byte(line))
@@ -1593,6 +1593,9 @@ func TestCheckRequest_OverDepthArgumentsFailClosed(t *testing.T) {
 	}
 	if v.Action != config.ActionBlock {
 		t.Fatalf("Action = %q, want %q", v.Action, config.ActionBlock)
+	}
+	if len(v.Rules) != 1 || v.Rules[0] != uninspectableJSONDepthRule {
+		t.Fatalf("Rules = %v, want [%q]", v.Rules, uninspectableJSONDepthRule)
 	}
 }
 

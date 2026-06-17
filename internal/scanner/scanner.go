@@ -1582,6 +1582,8 @@ func decodeEncodings(s string) []decodedResult {
 	return out
 }
 
+// decodeEncodingsRecursive returns all bounded recursive decoding candidates
+// for a possibly stacked-encoded string.
 func decodeEncodingsRecursive(s string) []decodedResult {
 	seen := map[string]struct{}{s: {}}
 	var out []decodedResult

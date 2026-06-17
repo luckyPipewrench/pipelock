@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -431,6 +433,78 @@ func TestReplayToolPolicy(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected finding with PolicyRule='Block rm -rf'")
+	}
+}
+
+func TestReplayToolPolicy_WarnMatchPreservesWarnAction(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
+	cfg.DLP.ScanEnv = false
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionWarn
+	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
+		{
+			Name:        "warn shell",
+			ToolPattern: `(?i)^bash$`,
+			ArgPattern:  `(?i)\becho\b`,
+			Action:      config.ActionWarn,
+		},
+	}
+
+	re := NewReplayEngine(cfg, nil)
+	result := re.ReplayRecord(CaptureSummary{
+		Surface:         SurfaceToolPolicy,
+		EffectiveAction: config.ActionAllow,
+		Request: CaptureRequest{
+			ToolName:     "bash",
+			ToolArgsJSON: `{"command": "echo ok"}`,
+		},
+	}, "")
+
+	if !result.Changed {
+		t.Fatal("expected Changed=true: warn policy differs from original allow")
+	}
+	if result.CandidateAction != config.ActionWarn {
+		t.Fatalf("CandidateAction = %q, want %q", result.CandidateAction, config.ActionWarn)
+	}
+	if len(result.CandidateFindings) != 1 || result.CandidateFindings[0].PolicyRule != "warn shell" {
+		t.Fatalf("CandidateFindings = %+v, want warn shell finding", result.CandidateFindings)
+	}
+}
+
+func TestReplayToolPolicy_OverDepthArgsBlock(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
+	cfg.DLP.ScanEnv = false
+	cfg.MCPToolPolicy.Enabled = true
+	cfg.MCPToolPolicy.Action = config.ActionWarn
+
+	re := NewReplayEngine(cfg, nil)
+	result := re.ReplayRecord(CaptureSummary{
+		Surface:         SurfaceToolPolicy,
+		EffectiveAction: config.ActionAllow,
+		Request: CaptureRequest{
+			ToolName:     "bash",
+			ToolArgsJSON: deepCaptureJSONObject("depth-regression-sentinel", 100),
+		},
+	}, "")
+
+	if !result.Changed {
+		t.Fatal("expected Changed=true: over-depth args must block")
+	}
+	if result.CandidateAction != config.ActionBlock {
+		t.Fatalf("CandidateAction = %q, want %q", result.CandidateAction, config.ActionBlock)
+	}
+	found := false
+	for _, finding := range result.CandidateFindings {
+		if finding.Kind == KindToolPolicy && finding.PolicyRule == "uninspectable_json_depth" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("CandidateFindings = %+v, want uninspectable_json_depth", result.CandidateFindings)
 	}
 }
 
@@ -925,4 +999,16 @@ func TestLoadAndReplay_SkipsFiles(t *testing.T) {
 	if dropped != 10 {
 		t.Fatalf("expected dropped=10, got %d", dropped)
 	}
+}
+
+func deepCaptureJSONObject(value string, depth int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(strconv.Quote(value))
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
 }

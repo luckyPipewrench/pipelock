@@ -165,8 +165,8 @@ func TestScanResponse_OverDepthResultFailsClosed(t *testing.T) {
 	if string(v.ID) != "44" {
 		t.Fatalf("ID = %s, want 44", string(v.ID))
 	}
-	if v.Error == "" {
-		t.Fatal("over-depth response block should explain that input was uninspectable")
+	if v.Error != uninspectableJSONDepthReason {
+		t.Fatalf("Error = %q, want %q", v.Error, uninspectableJSONDepthReason)
 	}
 }
 

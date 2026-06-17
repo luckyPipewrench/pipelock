@@ -393,7 +393,7 @@ func (re *ReplayEngine) replayToolPolicy(summary CaptureSummary) ReplayResult {
 
 	verdict := pc.CheckToolCallWithArgs(toolName, argStrings, rawArgs)
 
-	candidateAction := config.ActionAllow
+	candidateAction := ""
 	var findings []Finding
 	if extractionTruncated {
 		candidateAction = config.ActionBlock
@@ -414,6 +414,9 @@ func (re *ReplayEngine) replayToolPolicy(summary CaptureSummary) ReplayResult {
 				ToolName:   toolName,
 			})
 		}
+	}
+	if candidateAction == "" {
+		candidateAction = config.ActionAllow
 	}
 
 	return ReplayResult{

@@ -67,6 +67,13 @@ type LiveRunOpts struct {
 	// OrchestratorKeyPath, when non-empty, loads the run's orchestrator
 	// (trust-root) signing key from disk instead of generating an ephemeral one.
 	OrchestratorKeyPath string
+	// OnReceipt, when non-nil, is invoked with each signed receipt as it is
+	// recorded, in chain order. The live-chat stream uses this to surface
+	// decisions in real time. The receipt's secret-bearing fields are already
+	// sanitized (the recorder runs with redaction on), so streamed decisions
+	// carry the redacted shape, never the canary. The observer must not block
+	// (see receipt.EmitterConfig.OnReceipt). Nil leaves the batch path unchanged.
+	OnReceipt func(rcpt *receipt.Receipt)
 }
 
 // LiveRun holds the state of a running live playground demo. All resources
@@ -246,6 +253,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		ConfigHash: lr.policyHash,
 		Principal:  liveRunPrincipal,
 		Actor:      liveRunActor,
+		OnReceipt:  opts.OnReceipt,
 	})
 	if emitter == nil {
 		err = fmt.Errorf("emitter construction failed")

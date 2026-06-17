@@ -1,0 +1,7 @@
+{
+  "key_id": "fleet-report-test-signer",
+  "key_purpose": "fleet-report-signing",
+  "note": "TEST KEY ONLY. Derived from sha256(seed_phrase). Never use for production signing.",
+  "public_key_hex": "917443604f8b06cd18f2cee66a2c49ef23e8aa4f9e674c364f19216926685bea",
+  "seed_phrase": "pipelock-fleet-receipt-corpus-signer-v1"
+}

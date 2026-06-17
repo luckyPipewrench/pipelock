@@ -115,21 +115,38 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	frame := ParseMCPFrame(msg)
 	defer func() {
 		// A2A methods are not tools/call, so actionID stays empty on the
-		// tools/call path above. When such a request is BLOCKED (receiptVerdict
-		// set), mint an actionID here so the block still leaves a
-		// policy-hash-bearing receipt, matching the other applicable block
-		// surfaces. Clean or allowed A2A requests leave receiptVerdict empty and
-		// emit nothing, and tools/call already carries its own actionID, so
-		// neither path changes.
+		// tools/call path above. Mint an actionID lazily only when an A2A request
+		// needs a receipt: always for blocks, and for clean allows only when
+		// require_receipts is on. tools/call already carries its own actionID, so
+		// that path keeps its existing receipt behavior.
 		emitActionID := actionID
 		emitTarget := toolName
-		if emitActionID == "" && receiptVerdict != "" && IsA2AMethod(mcpMethod) {
-			emitActionID = receipt.NewActionID()
+		emitVerdict := receiptVerdict
+		if emitActionID == "" && IsA2AMethod(mcpMethod) {
+			switch {
+			case receiptVerdict != "":
+				// A2A block path: mint an actionID here so the block still leaves a
+				// policy-hash-bearing receipt, matching the other applicable block
+				// surfaces. tools/call already carries its own actionID, so that
+				// path never reaches this branch.
+				emitActionID = receipt.NewActionID()
+			case requireReceipts && result.Blocked == nil:
+				// A clean A2A allow otherwise leaves both actionID and receiptVerdict
+				// empty, so emitMCPToolReceipt drops the emission (ActionID == "") and
+				// the request forwards with no receipt. Under require_receipts that is
+				// a hole in the every-allow-is-provable guarantee, so mint an actionID
+				// and record an explicit allow verdict. The emission-failure guard
+				// below then fails closed before the caller forwards. When
+				// require_receipts is off this branch is skipped, preserving the
+				// default of no receipt on a clean A2A allow (no receipt spam).
+				emitActionID = receipt.NewActionID()
+				emitVerdict = config.ActionAllow
+			}
 			// A2A frames carry no tool name, but the receipt record requires a
-			// non-empty target. Use the A2A method name (e.g. SendMessage) as
-			// the action target. ClassifyMCPTool only consults the tool name
-			// for tools/call, so this leaves the action type unaffected.
-			if emitTarget == "" {
+			// non-empty target. Use the A2A method name (e.g. SendMessage) as the
+			// action target. ClassifyMCPTool only consults the tool name for
+			// tools/call, so this leaves the action type unaffected.
+			if emitActionID != "" && emitTarget == "" {
 				emitTarget = mcpMethod
 			}
 		}
@@ -144,7 +161,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			ActionID:          emitActionID,
 			MCPMethod:         mcpMethod,
 			ToolName:          emitTarget,
-			Verdict:           receiptVerdict,
+			Verdict:           emitVerdict,
 			Layer:             receiptLayer,
 			Pattern:           receiptPattern,
 			Severity:          receiptSeverity,

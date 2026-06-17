@@ -5600,6 +5600,38 @@ func TestScanHTTPInputDecision_RequireReceiptsBlocksEmissionFailure(t *testing.T
 	}
 }
 
+// A clean A2A allow whose required allow-receipt emission fails must fail closed
+// (block before forwarding), exactly like the tools/call require_receipts path.
+// This proves the synthesized A2A allow receipt is wired into the same
+// fail-closed emission guard, not a best-effort emit.
+func TestScanHTTPInputDecision_A2ACleanRequireReceiptsEmitFailureFailsClosed(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	body := makeRequest(19, "SendMessage", map[string]any{
+		"message": map[string]any{"parts": []map[string]any{{"text": "hello peer"}}},
+	})
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	decision := scanHTTPInputDecision([]byte(body), io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:         sc,
+		A2ACfg:          &config.A2AScanning{Enabled: true, Action: config.ActionBlock},
+		ReceiptEmitter:  receiptEmitter,
+		RequireReceipts: true,
+		Transport:       "mcp_http",
+	})
+	if decision.Blocked == nil {
+		t.Fatal("expected clean A2A allow to fail closed when required receipt emission fails")
+	}
+	if decision.Blocked.ErrorCode != -32007 {
+		t.Fatalf("error code = %d, want -32007", decision.Blocked.ErrorCode)
+	}
+	if !strings.Contains(string(decision.Blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
+		t.Fatalf("error data = %s, want %s", decision.Blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+}
+
 func TestScanHTTPInputDecision_DeferReceiptFailureBlocksWithoutRequireReceipts(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	msg := []byte(jsonToolsCallDangerous)

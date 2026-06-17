@@ -353,6 +353,52 @@ func TestA2ACleanRequest_EmitsNoReceipt(t *testing.T) {
 	}
 }
 
+// Under require_receipts, a clean A2A allow must still produce exactly one
+// provable allow receipt. Without the fix, A2A clean allows leave both actionID
+// and verdict empty, so emission is dropped and the request forwards with no
+// receipt -- a hole in the every-allow-is-provable guarantee. tools/call clean
+// allows are unaffected because they always mint an actionID.
+func TestA2ACleanRequest_RequireReceipts_EmitsAllowReceipt(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	h := newMCPDecisionReceiptHarness(t)
+
+	body := makeRequest(11, "SendMessage", map[string]any{
+		"message": map[string]any{"parts": []map[string]any{{"text": "hello peer"}}},
+	})
+	opts := MCPProxyOpts{
+		Scanner:          sc,
+		InputCfg:         &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
+		A2ACfg:           &config.A2AScanning{Enabled: true, Action: config.ActionBlock},
+		ReceiptEmitter:   h.v1,
+		V2ReceiptEmitter: h.v2,
+		PolicyHash:       mcpTestPolicyHash,
+		Transport:        a2aReceiptListenerTrans,
+		RequireReceipts:  true,
+	}
+	var logBuf bytes.Buffer
+	decision := scanHTTPInputDecision([]byte(body), &logBuf, "s", "s", opts)
+	if decision.Blocked != nil {
+		t.Fatalf("expected clean A2A allow to pass under require_receipts, got blocked: %+v", decision.Blocked)
+	}
+
+	var allow []receipt.Receipt
+	for _, r := range decisionReceiptLogFor(t, h.dir) {
+		if r.ActionRecord.Verdict == config.ActionAllow {
+			allow = append(allow, r)
+		}
+	}
+	if len(allow) != 1 {
+		t.Fatalf("expected exactly 1 allow receipt for clean A2A allow under require_receipts, got %d", len(allow))
+	}
+	ar := allow[0].ActionRecord
+	if ar.ActionID == "" {
+		t.Error("A2A allow receipt has empty ActionID")
+	}
+	if ar.Target != "SendMessage" {
+		t.Errorf("A2A allow receipt Target = %q, want SendMessage", ar.Target)
+	}
+}
+
 // Regression: a blocked tools/call still emits exactly one block receipt with a
 // real actionID. The A2A fix must not change tools/call.
 func TestToolsCallBlock_ReceiptUnchanged(t *testing.T) {

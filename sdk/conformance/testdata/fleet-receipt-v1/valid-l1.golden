@@ -1,0 +1,12 @@
+FLEET RECEIPT OK: testdata/fleet-receipt-v1/valid-l1.dsse.json
+  Signer:           fleet-report-test-signer
+  Payload SHA-256:  689009d961102bead1ed378f25f2a4fe5f7695b3695d3111bd69d6b9306c629e
+  Org/Fleet:        org-example/fleet-example
+  Report ID:        rpt-frozen-001
+  Level:            L1
+  Source batches:   1
+  Total actions:    10
+  Mediated fraction: 1
+  Limit:            L1 verifies the signed report, source-batch anchors, ordering, summary arithmetic, and completeness arithmetic.
+  Limit:            L1 does not replay raw audit-batch payloads during offline verification.
+  Limit:            Actions outside included signed audit batches are not claimed by this report.

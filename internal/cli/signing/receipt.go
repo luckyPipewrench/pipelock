@@ -195,6 +195,14 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 	_, _ = fmt.Fprintf(out, "  Source batches:   %d\n", result.SourceBatches)
 	_, _ = fmt.Fprintf(out, "  Total actions:    %d\n", result.TotalActions)
 	_, _ = fmt.Fprintf(out, "  Mediated fraction: %s\n", result.MediatedFraction)
+	// Print the predicate's declared verification limits (e.g. "L1 does not
+	// replay raw audit-batch payloads during offline verification") so an
+	// operator reading a passing report cannot over-read what the level proves.
+	// Without this, a PASS looks like full replay verification when L1 only
+	// checks the signed report, anchors, ordering, and arithmetic.
+	for _, limit := range result.Statement.Predicate.Limits {
+		_, _ = fmt.Fprintf(out, "  Limit:            %s\n", limit)
+	}
 	if result.Unpinned && !allowUnpinned {
 		return fmt.Errorf("fleet receipt verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 	}

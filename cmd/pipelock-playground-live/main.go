@@ -21,8 +21,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -69,8 +72,14 @@ type serveFlags struct {
 	allowOrigin        string
 	trustForwardedFor  bool
 	secretB64          string
+	secretFile         string
 	staticDir          string
 }
+
+// defaultMaxPerCode is the safe default lifetime session budget per invite code.
+// Unlimited reuse (0) must be opted into explicitly so a leaked code cannot mint
+// sessions forever.
+const defaultMaxPerCode = 25
 
 func newServeCmd() *cobra.Command {
 	f := &serveFlags{}
@@ -84,7 +93,7 @@ func newServeCmd() *cobra.Command {
 	fl := cmd.Flags()
 	fl.StringVar(&f.listen, "listen", "127.0.0.1:8099", "address to listen on (use 0.0.0.0:PORT for LAN/Tailscale)")
 	fl.StringArrayVar(&f.codes, "code", nil, "invite code (repeatable); in --dev one is generated if omitted")
-	fl.IntVar(&f.maxPerCode, "max-per-code", 0, "max sessions per invite code (0 = unlimited)")
+	fl.IntVar(&f.maxPerCode, "max-per-code", defaultMaxPerCode, "max sessions per invite code (0 = unlimited, opt-in)")
 	fl.IntVar(&f.concurrency, "concurrency", 3, "global cap on simultaneous live sessions")
 	fl.BoolVar(&f.requireContainment, "require-containment", true, "refuse sessions unless kernel containment is established")
 	fl.BoolVar(&f.dev, "dev", false, "DEV ONLY: run uncontained (disables --require-containment); never use for public exposure")
@@ -99,14 +108,32 @@ func newServeCmd() *cobra.Command {
 	fl.Float64Var(&f.codeBurst, "code-burst", 10, "per-code burst")
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser (e.g. https://pipelab.org)")
 	fl.BoolVar(&f.trustForwardedFor, "trust-forwarded-for", false, "read client IP from X-Forwarded-For (only behind a trusted proxy/CDN)")
-	fl.StringVar(&f.secretB64, "secret", "", "base64 gate-signing secret (default: generated, printed at startup)")
+	fl.StringVar(&f.secretFile, "secret-file", "", "path to a file holding the base64 gate-signing secret (preferred: keeps it out of argv/shell history)")
+	fl.StringVar(&f.secretB64, "secret", "", "base64 gate-signing secret (default: generated; prefer --secret-file to avoid argv exposure)")
 	fl.StringVar(&f.staticDir, "static-dir", "", "serve the viewer static files at / from this dir (same-origin demo; no CORS needed)")
 	return cmd
 }
 
 func runServe(cmd *cobra.Command, f *serveFlags) error {
-	out := cmd.OutOrStdout()
+	srv, handler, err := buildServer(cmd.OutOrStdout(), f)
+	if err != nil {
+		return err
+	}
+	defer srv.Close()
 
+	httpSrv := &http.Server{
+		Addr:              f.listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	return httpSrv.ListenAndServe()
+}
+
+// buildServer assembles the live-chat server and its HTTP handler from the
+// flags, without binding a port. Split out from runServe so the wiring
+// (containment posture, secret, codes, gate, static-dir mux) is testable
+// without a blocking ListenAndServe. The caller owns srv.Close().
+func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, error) {
 	// Containment posture. --dev turns off the requirement and shouts about it.
 	requireContainment := f.requireContainment
 	if f.dev {
@@ -114,16 +141,14 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		_, _ = fmt.Fprintln(out, "WARNING: --dev set: running UNCONTAINED. Visitors are not kernel-isolated. Never use for public exposure.")
 	}
 
-	// Gate secret.
-	secret, err := resolveSecret(f.secretB64)
+	secret, err := resolveSecret(f.secretB64, f.secretFile)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	// Invite codes.
 	codes, err := resolveCodes(out, f)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	gate, err := livechat.NewGate(livechat.GateConfig{
@@ -132,7 +157,7 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		TokenTTL: f.sessionTTL,
 	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	var verifier playground.ContainmentVerifier
@@ -155,9 +180,8 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		AllowOrigin:         f.allowOrigin,
 	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer srv.Close()
 
 	posture := "CONTAINED"
 	if !requireContainment {
@@ -175,16 +199,24 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		handler = mux
 		_, _ = fmt.Fprintf(out, "serving viewer from %s at /\n", f.staticDir)
 	}
-
-	httpSrv := &http.Server{
-		Addr:              f.listen,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	return httpSrv.ListenAndServe()
+	return srv, handler, nil
 }
 
-func resolveSecret(b64 string) ([]byte, error) {
+// resolveSecret picks the gate-signing secret. A --secret-file (base64 contents)
+// takes precedence and keeps the secret out of argv; then --secret (base64); then
+// a freshly generated secret. The file is the preferred path for any non-dev run.
+func resolveSecret(b64, file string) ([]byte, error) {
+	if file != "" {
+		data, err := os.ReadFile(filepath.Clean(file))
+		if err != nil {
+			return nil, fmt.Errorf("read --secret-file: %w", err)
+		}
+		secret, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, fmt.Errorf("decode --secret-file: %w", err)
+		}
+		return secret, nil
+	}
 	if b64 == "" {
 		return livechat.NewSecret()
 	}

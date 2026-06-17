@@ -189,10 +189,12 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The session outlives the request, so give it its own context bounded by
-	// the session TTL — never r.Context(), which cancels when this handler
-	// returns.
-	sessCtx, cancel := context.WithTimeout(context.Background(), s.limits.SessionTTL)
+	// The session outlives the request, so give it its own context. Bound it by
+	// the token's actual expiry (claims.ExpiresAt), the SAME instant used for the
+	// response, the TTL timer below, and token validation — one effective expiry,
+	// no drift between when the token dies and when the session is torn down.
+	// Never r.Context(), which cancels when this handler returns.
+	sessCtx, cancel := context.WithDeadline(context.Background(), claims.ExpiresAt)
 	runDir, err := os.MkdirTemp("", "livechat-run-*")
 	if err != nil {
 		s.cfg.Gate.Refund(claims)
@@ -228,7 +230,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		runDir:  runDir,
 		expires: claims.ExpiresAt,
 	}
-	entry.timer = time.AfterFunc(s.limits.SessionTTL, func() { s.finalize(sid) })
+	entry.timer = time.AfterFunc(time.Until(claims.ExpiresAt), func() { s.finalize(sid) })
 
 	s.mu.Lock()
 	s.sessions[sid] = entry

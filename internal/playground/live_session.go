@@ -39,6 +39,11 @@ const (
 // the live agent is never run uncontained while presenting as a live session.
 var ErrContainmentUnavailable = fmt.Errorf("playground: containment required but not established")
 
+// ErrSessionClosed is returned by Send after the session has been finalized.
+// Once Finalize seals and verifies the run, no further receipt-producing action
+// may be admitted, or it would fall outside the sealed evidence packet.
+var ErrSessionClosed = fmt.Errorf("playground: live session is closed")
+
 // ContainmentVerifier proves the live agent's environment is kernel-contained
 // before a public session starts. Verify returns nil only when containment is
 // established AND enforced. The server wires this to the real host-containment
@@ -119,6 +124,7 @@ type LiveSession struct {
 	contained bool
 
 	sendMu sync.Mutex // serializes Send so the event stream is ordered
+	done   bool       // set by Finalize under sendMu; rejects later sends
 
 	mu     sync.Mutex
 	closed bool
@@ -205,6 +211,12 @@ func (s *LiveSession) Send(ctx context.Context, msg string) error {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
 
+	// Once finalized, the run is sealed; admitting another action would produce
+	// receipts outside the verified packet. Refuse fail-closed.
+	if s.done {
+		return ErrSessionClosed
+	}
+
 	s.push(LiveEvent{Type: LiveEventChat, Role: "user", Text: msg})
 
 	turn := s.agent.Plan(msg)
@@ -261,6 +273,10 @@ func (s *LiveSession) execute(ctx context.Context, act AgentAction) {
 func (s *LiveSession) Finalize(runDir string) (VerifyReport, error) {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
+
+	// Mark terminal before sealing: any send that was waiting on this lock will
+	// observe done and refuse, so no action lands outside the sealed packet.
+	s.done = true
 
 	rep, err := s.lr.AssembleAndVerify(runDir)
 	if err != nil {

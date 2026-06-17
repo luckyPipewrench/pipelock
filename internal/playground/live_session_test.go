@@ -155,3 +155,33 @@ func TestLiveSession_DevFlow_StreamsDecisions(t *testing.T) {
 		t.Error("missing verified event with checks")
 	}
 }
+
+func TestLiveSession_SendAfterFinalizeRefused(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a real proxy")
+	}
+	sess, err := playground.StartLiveSession(t.Context(), playground.LiveSessionConfig{
+		RunNonce:           "FIN1",
+		RequireContainment: false,
+	})
+	if err != nil {
+		t.Fatalf("StartLiveSession: %v", err)
+	}
+	collected := drainEvents(sess.Events())
+
+	ctx := context.Background()
+	if err := sess.Send(ctx, "grab the lab config"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, err := sess.Finalize(t.TempDir()); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	// A send after finalize must be refused so it cannot land outside the
+	// sealed, verified evidence packet.
+	if err := sess.Send(ctx, "one more thing"); !errors.Is(err, playground.ErrSessionClosed) {
+		t.Errorf("Send after Finalize err = %v, want ErrSessionClosed", err)
+	}
+
+	sess.Close()
+	<-collected
+}

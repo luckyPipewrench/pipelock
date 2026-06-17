@@ -259,6 +259,9 @@ func (s *LiveSession) execute(ctx context.Context, act AgentAction) {
 // the check names, then returns the report. Call after the visitor's session is
 // done (or on timeout) and before Close.
 func (s *LiveSession) Finalize(runDir string) (VerifyReport, error) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+
 	rep, err := s.lr.AssembleAndVerify(runDir)
 	if err != nil {
 		s.push(LiveEvent{Type: LiveEventError, Message: "verification failed"})

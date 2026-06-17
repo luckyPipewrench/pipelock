@@ -108,8 +108,9 @@ type Gate struct {
 	ttl    time.Duration
 	now    func() time.Time
 
-	mu    sync.Mutex
-	codes map[[32]byte]*codeState
+	mu          sync.Mutex
+	codes       map[[32]byte]*codeState
+	redemptions map[string]*codeState
 }
 
 // NewGate builds a Gate. It returns an error (so the caller fails closed at
@@ -131,10 +132,11 @@ func NewGate(cfg GateConfig) (*Gate, error) {
 		now = time.Now
 	}
 	g := &Gate{
-		secret: append([]byte(nil), cfg.Secret...),
-		ttl:    ttl,
-		now:    now,
-		codes:  make(map[[32]byte]*codeState, len(cfg.Codes)),
+		secret:      append([]byte(nil), cfg.Secret...),
+		ttl:         ttl,
+		now:         now,
+		codes:       make(map[[32]byte]*codeState, len(cfg.Codes)),
+		redemptions: make(map[string]*codeState),
 	}
 	for _, c := range cfg.Codes {
 		if c.Code == "" {
@@ -205,7 +207,43 @@ func (g *Gate) Redeem(code, sessionID string) (token string, claims SessionClaim
 		g.mu.Unlock()
 		return "", SessionClaims{}, err
 	}
+	g.mu.Lock()
+	if sessionID != "" {
+		g.redemptions[sessionID] = st
+	}
+	g.mu.Unlock()
 	return token, claims, nil
+}
+
+// Commit marks a redeemed token as having started a real session. After this
+// point the invite budget is intentionally consumed. It is safe to call more
+// than once.
+func (g *Gate) Commit(claims SessionClaims) {
+	if g == nil || claims.SessionID == "" {
+		return
+	}
+	g.mu.Lock()
+	delete(g.redemptions, claims.SessionID)
+	g.mu.Unlock()
+}
+
+// Refund returns a just-redeemed session to its invite-code budget when the
+// server refuses before a live session is installed. It is idempotent: only a
+// redemption still tracked by this gate can be refunded.
+func (g *Gate) Refund(claims SessionClaims) {
+	if g == nil || claims.SessionID == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st := g.redemptions[claims.SessionID]
+	if st == nil {
+		return
+	}
+	if st.issued > 0 {
+		st.issued--
+	}
+	delete(g.redemptions, claims.SessionID)
 }
 
 // Validate parses and verifies a session token, returning its claims. It checks

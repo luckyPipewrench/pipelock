@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -69,6 +70,9 @@ type liveEntry struct {
 	expires time.Time
 	timer   *time.Timer
 	finOnce sync.Once
+
+	streamMu sync.Mutex
+	streamOn bool
 }
 
 // Server is the live-chat HTTP/SSE front door.
@@ -134,6 +138,10 @@ type createResp struct {
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	s.setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -162,7 +170,12 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sid := newSessionID()
+	sid, err := newSessionID()
+	if err != nil {
+		release()
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	token, claims, err := s.cfg.Gate.Redeem(body.Code, sid)
 	if err != nil {
 		release()
@@ -170,6 +183,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.codeRate.Allow("code:" + claims.CodeID) {
+		s.cfg.Gate.Refund(claims)
 		release()
 		writeErr(w, http.StatusTooManyRequests, "rate limited")
 		return
@@ -181,6 +195,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	sessCtx, cancel := context.WithTimeout(context.Background(), s.limits.SessionTTL)
 	runDir, err := os.MkdirTemp("", "livechat-run-*")
 	if err != nil {
+		s.cfg.Gate.Refund(claims)
 		cancel()
 		release()
 		writeErr(w, http.StatusInternalServerError, "internal error")
@@ -197,6 +212,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		_ = os.RemoveAll(runDir)
+		s.cfg.Gate.Refund(claims)
 		cancel()
 		release()
 		// Containment refusal is the most likely cause and is fail-closed.
@@ -217,6 +233,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.sessions[sid] = entry
 	s.mu.Unlock()
+	s.cfg.Gate.Commit(claims)
 
 	state := playground.LiveStateDev
 	if s.cfg.RequireContainment {
@@ -232,6 +249,14 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	s.setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
@@ -247,6 +272,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return
 	}
+	if !entry.acquireStream() {
+		writeErr(w, http.StatusConflict, "stream already connected")
+		return
+	}
+	defer entry.releaseStream()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
@@ -283,6 +313,10 @@ type messageReq struct {
 
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	s.setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -378,6 +412,8 @@ func (s *Server) take(sid string) *liveEntry {
 func (s *Server) setCORS(w http.ResponseWriter) {
 	if s.cfg.AllowOrigin != "" {
 		w.Header().Set("Access-Control-Allow-Origin", s.cfg.AllowOrigin)
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Vary", "Origin")
 	}
 }
@@ -411,7 +447,14 @@ func gateErrStatus(err error) int {
 func decodeJSON(r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxRequestBody))
 	dec.DisallowUnknownFields()
-	return dec.Decode(v)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return errors.New("livechat: request body must contain exactly one JSON object")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -424,12 +467,26 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func newSessionID() string {
+func newSessionID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// Extremely unlikely; fall back to a time-free constant-shape id. The id
-		// is a lookup handle, not a secret (the token is the credential).
-		return "sid-fallback"
+		return "", fmt.Errorf("livechat: generate session id: %w", err)
 	}
-	return hex.EncodeToString(b[:])
+	return hex.EncodeToString(b[:]), nil
+}
+
+func (e *liveEntry) acquireStream() bool {
+	e.streamMu.Lock()
+	defer e.streamMu.Unlock()
+	if e.streamOn {
+		return false
+	}
+	e.streamOn = true
+	return true
+}
+
+func (e *liveEntry) releaseStream() {
+	e.streamMu.Lock()
+	e.streamOn = false
+	e.streamMu.Unlock()
 }

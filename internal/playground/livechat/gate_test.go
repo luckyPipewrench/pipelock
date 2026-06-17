@@ -130,6 +130,37 @@ func TestGate_Redeem_BudgetEnforced(t *testing.T) {
 	}
 }
 
+func TestGate_RefundRestoresFiniteBudget(t *testing.T) {
+	t.Parallel()
+	g, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: "one", MaxSessions: 1}}})
+	if _, claims, err := g.Redeem("one", "s1"); err != nil {
+		t.Fatalf("Redeem: %v", err)
+	} else {
+		g.Refund(claims)
+		g.Refund(claims) // idempotent: must not underflow the budget
+	}
+	if _, _, err := g.Redeem("one", "s2"); err != nil {
+		t.Fatalf("Redeem after refund: %v", err)
+	}
+	if _, _, err := g.Redeem("one", "s3"); !errors.Is(err, ErrCodeExhausted) {
+		t.Fatalf("third Redeem err = %v, want ErrCodeExhausted", err)
+	}
+}
+
+func TestGate_CommitPreventsRefund(t *testing.T) {
+	t.Parallel()
+	g, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: "one", MaxSessions: 1}}})
+	_, claims, err := g.Redeem("one", "s1")
+	if err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+	g.Commit(claims)
+	g.Refund(claims)
+	if _, _, err := g.Redeem("one", "s2"); !errors.Is(err, ErrCodeExhausted) {
+		t.Fatalf("Redeem after committed refund err = %v, want ErrCodeExhausted", err)
+	}
+}
+
 func TestGate_Redeem_UnlimitedWhenMaxZero(t *testing.T) {
 	t.Parallel()
 	g, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: "open", MaxSessions: 0}}})

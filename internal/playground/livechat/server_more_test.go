@@ -76,6 +76,27 @@ func TestServer_CORSAndForwardedFor(t *testing.T) {
 	}
 }
 
+func TestServer_CORSPreflight(t *testing.T) {
+	t.Parallel()
+	ts := newTestServer(t, ServerConfig{AllowOrigin: "https://pipelab.org"})
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodOptions, ts.URL+RouteMessage, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Methods"); got != "GET, POST, OPTIONS" {
+		t.Errorf("methods = %q, want GET, POST, OPTIONS", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Content-Type" {
+		t.Errorf("headers = %q, want Content-Type", got)
+	}
+}
+
 func TestServer_Session_BadJSON(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t, ServerConfig{})
@@ -88,5 +109,20 @@ func TestServer_Session_BadJSON(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad-json status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestServer_Session_RejectsTrailingJSON(t *testing.T) {
+	t.Parallel()
+	ts := newTestServer(t, ServerConfig{})
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+RouteSession, strings.NewReader(`{"code":"good"} {}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("trailing-json status = %d, want 400", resp.StatusCode)
 	}
 }

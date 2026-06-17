@@ -18,6 +18,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
 
+type failingContainmentVerifier struct{}
+
+func (failingContainmentVerifier) Verify(_ context.Context) error {
+	return errors.New("containment unavailable")
+}
+
 func newTestServer(t *testing.T, cfg ServerConfig) *httptest.Server {
 	t.Helper()
 	if cfg.Gate == nil {
@@ -119,6 +125,50 @@ func TestServer_Session_RateLimitedBeforeBoot(t *testing.T) {
 	}
 }
 
+func TestServer_Session_CodeRateLimitRefundsInvite(t *testing.T) {
+	t.Parallel()
+	g, _ := NewGate(GateConfig{
+		Secret: testSecret(t),
+		Codes:  []CodeSpec{{Code: "good", MaxSessions: 1}},
+	})
+	ts := newTestServer(t, ServerConfig{
+		Gate:     g,
+		IPRate:   RateConfig{RefillPerSec: 1000, Burst: 1000},
+		CodeRate: RateConfig{RefillPerSec: 1000, Burst: 0.5}, // always below one token
+	})
+
+	resp := postJSON(t, ts.URL+RouteSession, createReq{Code: "good"})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+	if _, _, err := g.Redeem("good", "after-rate-limit"); err != nil {
+		t.Fatalf("invite budget was not refunded after code-rate refusal: %v", err)
+	}
+}
+
+func TestServer_Session_StartFailureRefundsInvite(t *testing.T) {
+	t.Parallel()
+	g, _ := NewGate(GateConfig{
+		Secret: testSecret(t),
+		Codes:  []CodeSpec{{Code: "good", MaxSessions: 1}},
+	})
+	ts := newTestServer(t, ServerConfig{
+		Gate:               g,
+		RequireContainment: true,
+		Containment:        failingContainmentVerifier{},
+	})
+
+	resp := postJSON(t, ts.URL+RouteSession, createReq{Code: "good"})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if _, _, err := g.Redeem("good", "after-start-failure"); err != nil {
+		t.Fatalf("invite budget was not refunded after failed session start: %v", err)
+	}
+}
+
 func TestServer_Message_AuthAndSizeChecks(t *testing.T) {
 	t.Parallel()
 	g, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: "good"}}, TokenTTL: time.Minute})
@@ -157,9 +207,20 @@ func TestServer_Stream_AuthChecks(t *testing.T) {
 	g, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: "good"}}, TokenTTL: time.Minute})
 	ts := newTestServer(t, ServerConfig{Gate: g})
 
-	// No token.
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream, nil)
+	// Only GET/OPTIONS may reach the stream path.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+RouteStream, nil)
 	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST stream status = %d, want 405", resp.StatusCode)
+	}
+
+	// No token.
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream, nil)
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,6 +316,15 @@ func TestServer_FullFlow_StreamsSignedDecisions(t *testing.T) {
 	defer func() { _ = streamResp.Body.Close() }()
 	if streamResp.StatusCode != http.StatusOK {
 		t.Fatalf("stream status = %d, want 200", streamResp.StatusCode)
+	}
+	secondReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream+"?token="+cr.Token, nil)
+	secondResp, err := http.DefaultClient.Do(secondReq)
+	if err != nil {
+		t.Fatalf("second stream: %v", err)
+	}
+	_ = secondResp.Body.Close()
+	if secondResp.StatusCode != http.StatusConflict {
+		t.Fatalf("second stream status = %d, want 409", secondResp.StatusCode)
 	}
 
 	// Collect decisions off the stream in the background.

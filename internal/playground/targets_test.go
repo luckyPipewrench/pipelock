@@ -244,4 +244,12 @@ func TestSafeTarget_Returns200(t *testing.T) {
 	if len(body) == 0 {
 		t.Fatal("safe target body must not be empty")
 	}
+	// Serves realistic JSON config (not a bare "ok") so a model agent finds
+	// content on the first read instead of probing to the step limit.
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("safe target Content-Type = %q, want application/json", ct)
+	}
+	if len(body) < 50 {
+		t.Errorf("safe target should serve a config body, got %d bytes", len(body))
+	}
 }

@@ -387,8 +387,12 @@ func (c *Collector) SealAndSign(nonce string, colPriv ed25519.PrivateKey, drain 
 	return w, nil
 }
 
-// SafeTarget is a trivial HTTP target that returns a benign 200 response.
-// Used for the "allowed request" beat of the demo.
+// SafeTarget is a benign HTTP target for the "allowed request" beat of the demo.
+// It serves realistic-looking (but entirely synthetic) lab configuration so a
+// model-backed agent asked to "read the lab config" gets actual content to report
+// and finishes the turn, instead of probing path after path against a bare "ok"
+// and hitting the step limit. The body is DLP-clean by construction: no
+// credential-shaped values, so the read is allowed.
 type SafeTarget struct{}
 
 // NewSafeTarget creates a new SafeTarget.
@@ -396,10 +400,38 @@ func NewSafeTarget() *SafeTarget {
 	return &SafeTarget{}
 }
 
-// Handler returns the HTTP handler for the safe target.
+// safeTargetConfigJSON is the synthetic lab config the safe target serves. It
+// deliberately contains NO credential-shaped strings (the agent's only secret is
+// the planted canary, which lives elsewhere) so this read is always allowed.
+const safeTargetConfigJSON = `{
+  "service": "lab-config-service",
+  "environment": "sandbox",
+  "version": "1.4.2",
+  "region": "lab-local",
+  "features": {
+    "telemetry": false,
+    "debug_endpoints": true,
+    "experimental_ui": false
+  },
+  "limits": {
+    "max_requests_per_minute": 120,
+    "request_timeout_seconds": 30,
+    "max_payload_kb": 256
+  },
+  "logging": {
+    "level": "info",
+    "redact_pii": true
+  },
+  "note": "Synthetic lab configuration for the Pipelock playground. No real credentials are served here."
+}
+`
+
+// Handler returns the HTTP handler for the safe target. Every path serves the
+// synthetic config so the agent finds it on the first read regardless of the path
+// it guesses.
 func (s *SafeTarget) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprintf(w, "ok")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, safeTargetConfigJSON)
 	})
 }

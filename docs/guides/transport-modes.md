@@ -217,7 +217,7 @@ If your agent handles secrets and you need content-level DLP on HTTPS traffic, e
 
 ## Signed Action Receipt Coverage
 
-Every block or allow decision produces a signed action receipt. The table below enumerates which deny paths are covered on each transport. Every row has been exercised by a test in the signed-receipt-coverage suite.
+Every configured enforcement event produces a signed action receipt: every block, and — under `flight_recorder.require_receipts: true` — every allow on the per-request proxy and MCP decision paths (including A2A method allows). Clean frames of a long-lived stream are summarized rather than individually receipted; the deliberate exceptions are listed in [Intentional no-receipt and summarized cases](#intentional-no-receipt-and-summarized-cases) below. The table below enumerates which deny paths are covered on each transport. Every row has been exercised by a test in the signed-receipt-coverage suite.
 
 | Transport | Pre-forward blocks | Post-forward blocks | Transport-specific blocks | Receipt path |
 |-----------|-------------------|---------------------|---------------------------|--------------|
@@ -225,12 +225,35 @@ Every block or allow decision produces a signed action receipt. The table below 
 | CONNECT (no TLS intercept) | URL scan, DLP, SSRF, blocklist | — | Redirect inside tunnel (not visible) | Hostname-only receipts |
 | CONNECT + TLS interception | URL scan + full hostname DLP | Body DLP, header DLP, response injection | Authority mismatch | Full content receipts |
 | Absolute-URI (forward proxy) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, CEE | A2A header scan, A2A stream scan, A2A response body scan | Full content receipts |
-| WebSocket (`/ws`) | Handshake-time URL scan, DLP | Frame-level DLP, injection, address poisoning, CEE | Session close reason | Per-frame receipts + session close |
+| WebSocket (`/ws`) | Handshake-time URL scan, DLP | Frame-level DLP, injection, address poisoning, CEE | Session close reason | Per-frame **block** receipts + session close (clean frames summarized, not individually receipted) |
 | MCP stdio | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts |
 | MCP HTTP / SSE | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts, stream-aware |
 | MCP HTTP reverse proxy | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts |
 
 Receipt emission is best-effort by default on the async flight-recorder channel and survives config reload across all transports. Set `flight_recorder.require_receipts: true` to fail closed before allow-path proxy/MCP traffic is forwarded when the required receipt cannot be emitted; block-path receipts stay best-effort because the action is already denied. Receipts chain via `chain_prev_hash` / `chain_seq` for tamper-evidence. See [`docs/guides/receipt-verification.md`](receipt-verification.md) for the verify CLI and the cross-implementation conformance suite.
+
+### Intentional no-receipt and summarized cases
+
+The guarantee is "every configured enforcement event is provable," not "every frame produces a receipt." The matrix below is the canonical, single-source-of-truth list of when a signed action receipt is and is not emitted, including the deliberate no-receipt cases (clean streaming frames are summarized to avoid an O(n)-in-stream-length receipt flood that a chatty peer could weaponize as a denial-of-service vector). It is generated from and drift-checked against `TestReceiptCoverage_MatrixMatchesDocs` in `internal/proxy/receipt_coverage_matrix_test.go`; edit the matrix there and run `UPDATE_GOLDEN=1 go test ./internal/proxy/ -run TestReceiptCoverage_MatrixMatchesDocs` to regenerate this block.
+
+<!-- BEGIN receipt-coverage-matrix (generated; edit internal/proxy/receipt_coverage_matrix_test.go) -->
+
+| Scenario | Receipt | Notes |
+|----------|---------|-------|
+| `tools/call` block | yes | Block receipt (best-effort: the action is already denied). |
+| `tools/call` allow, `require_receipts: true` | yes | Allow receipt; fails closed if emission fails. |
+| `tools/call` allow, default | no | Allow receipts are opt-in via `require_receipts`. |
+| A2A method block | yes | Block receipt with the A2A method name as `target`. |
+| A2A method allow, `require_receipts: true` | yes | Allow receipt; fails closed if emission fails. |
+| A2A method allow, default | no | Allow receipts are opt-in via `require_receipts`. |
+| Proxy block (fetch / CONNECT / forward / WS handshake) | yes | Pre- or post-forward block receipt. |
+| Proxy allow, `require_receipts: true` | yes | Allow receipt; fails closed if emission fails. |
+| Clean WebSocket frame | no (intentional) | Per-frame allow receipts are O(n) in stream length; summarized, not emitted, to avoid a receipt-flood denial-of-service vector. |
+| Clean SSE / streamed response chunk | no (intentional) | Streamed response chunks are summarized, not receipted per chunk. |
+| WebSocket session close | yes | Session-close receipt records the close reason. |
+| Required receipt emission fails | block | Request fails closed with `receipt_emission_failed` instead of forwarding. |
+
+<!-- END receipt-coverage-matrix -->
 
 ## See Also
 

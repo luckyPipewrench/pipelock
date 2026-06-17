@@ -1,4 +1,4 @@
-FLEET RECEIPT OK
+FLEET RECEIPT OK: testdata/fleet-receipt-v1/valid-l1.dsse.json
   Signer:           fleet-report-test-signer
   Payload SHA-256:  689009d961102bead1ed378f25f2a4fe5f7695b3695d3111bd69d6b9306c629e
   Org/Fleet:        org-example/fleet-example

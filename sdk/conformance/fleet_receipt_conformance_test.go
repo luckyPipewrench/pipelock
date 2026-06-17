@@ -193,12 +193,13 @@ func fleetReceiptTrustedKeyMap(pub ed25519.PublicKey) map[string]ed25519.PublicK
 // formatFleetGoldenOutput renders the human verifier output for a passing L1
 // report. It MUST mirror verifyFleetReportWithOptions in internal/cli/signing
 // (the shipped `pipelock verify-receipt --fleet-report` path) field-for-field,
-// including the predicate Limits block, so the auditor-facing golden sample
-// matches what the real CLI emits. A single helper keeps the generation and
-// check sides from drifting apart.
-func formatFleetGoldenOutput(result fleetreceipt.Verification) string {
+// including the "FLEET RECEIPT OK: <path>" banner (the CLI prints the verified
+// file path) and the predicate Limits block, so the auditor-facing golden
+// sample matches what the real CLI emits. A single helper keeps the generation
+// and check sides from drifting apart.
+func formatFleetGoldenOutput(result fleetreceipt.Verification, path string) string {
 	var b strings.Builder
-	_, _ = fmt.Fprintf(&b, "FLEET RECEIPT OK\n")
+	_, _ = fmt.Fprintf(&b, "FLEET RECEIPT OK: %s\n", path)
 	_, _ = fmt.Fprintf(&b, "  Signer:           %s\n", result.SignerKeyID)
 	_, _ = fmt.Fprintf(&b, "  Payload SHA-256:  %s\n", result.PayloadSHA256)
 	_, _ = fmt.Fprintf(&b, "  Org/Fleet:        %s/%s\n", result.Statement.Predicate.OrgID, result.Statement.Predicate.FleetID)
@@ -414,7 +415,8 @@ func TestGenerateFleetReceiptCorpus(t *testing.T) {
 	}
 
 	// Write the golden output for the valid fixture.
-	validData, err := os.ReadFile(filepath.Clean(filepath.Join(fleetReceiptFixtureDir, "valid-l1.dsse.json")))
+	validPath := filepath.Join(fleetReceiptFixtureDir, "valid-l1.dsse.json")
+	validData, err := os.ReadFile(filepath.Clean(validPath))
 	if err != nil {
 		t.Fatalf("read valid fixture: %v", err)
 	}
@@ -423,7 +425,7 @@ func TestGenerateFleetReceiptCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify valid fixture for golden output: %v", err)
 	}
-	golden := formatFleetGoldenOutput(result)
+	golden := formatFleetGoldenOutput(result, validPath)
 	goldenPath := filepath.Join(fleetReceiptFixtureDir, "valid-l1.golden")
 	if err := os.WriteFile(goldenPath, []byte(golden), 0o600); err != nil {
 		t.Fatalf("write golden: %v", err)
@@ -505,7 +507,7 @@ func TestFleetReceiptV1Conformance(t *testing.T) {
 			t.Fatalf("verify valid fixture: %v", err)
 		}
 
-		actualOutput := formatFleetGoldenOutput(result)
+		actualOutput := formatFleetGoldenOutput(result, validPath)
 
 		goldenPath := filepath.Join(fleetReceiptFixtureDir, "valid-l1.golden")
 		goldenData, err := os.ReadFile(filepath.Clean(goldenPath))

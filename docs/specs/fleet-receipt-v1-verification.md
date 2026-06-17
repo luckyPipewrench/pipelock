@@ -26,7 +26,7 @@ pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-repor
 
 Successful output:
 
-```
+```text
 FLEET RECEIPT OK: fleet-receipt.dsse.json
   Signer:           fleet-report-test-signer
   Payload SHA-256:  <hex>

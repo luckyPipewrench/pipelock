@@ -54,32 +54,34 @@ func newRootCmd() *cobra.Command {
 }
 
 type serveFlags struct {
-	listen             string
-	codes              []string
-	maxPerCode         int
-	concurrency        int
-	requireContainment bool
-	dev                bool
-	orchestratorKey    string
-	toyAgentBin        string
-	webToolBin         string
-	sessionTTL         time.Duration
-	maxInputBytes      int
-	ipRate             float64
-	ipBurst            float64
-	codeRate           float64
-	codeBurst          float64
-	allowOrigin        string
-	trustForwardedFor  bool
-	secretB64          string
-	secretFile         string
-	staticDir          string
-	llmAgentBin        string
-	modelBaseURL       string
-	model              string
-	modelSecretFile    string
-	modelMaxSteps      int
-	modelTimeout       time.Duration
+	listen                string
+	codes                 []string
+	maxPerCode            int
+	concurrency           int
+	requireContainment    bool
+	dev                   bool
+	orchestratorKey       string
+	toyAgentBin           string
+	webToolBin            string
+	sessionTTL            time.Duration
+	maxInputBytes         int
+	ipRate                float64
+	ipBurst               float64
+	codeRate              float64
+	codeBurst             float64
+	allowOrigin           string
+	trustForwardedFor     bool
+	secretB64             string
+	secretFile            string
+	staticDir             string
+	llmAgentBin           string
+	modelBaseURL          string
+	model                 string
+	modelSecretFile       string
+	modelMaxSteps         int
+	modelTimeout          time.Duration
+	dailyTurnBudget       int
+	maxMessagesPerSession int
 }
 
 // defaultMaxPerCode is the safe default lifetime session budget per invite code.
@@ -123,6 +125,8 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.modelSecretFile, "model-secret-file", "", "path to a file holding the model API key (kept out of argv); required to enable the model-backed agent")
 	fl.IntVar(&f.modelMaxSteps, "model-max-steps", 0, "max model/tool steps per turn (0 = default)")
 	fl.DurationVar(&f.modelTimeout, "model-timeout", 0, "per model/tool request timeout (0 = default)")
+	fl.IntVar(&f.dailyTurnBudget, "daily-turn-budget", 0, "hard global ceiling on total visitor turns (model calls) per UTC day, the spend kill switch (0 = unlimited; set a positive value for public exposure)")
+	fl.IntVar(&f.maxMessagesPerSession, "max-messages-per-session", 0, "max messages one session may send (0 = default of 40)")
 	return cmd
 }
 
@@ -183,19 +187,21 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 	}
 
 	srv, err := livechat.NewServer(livechat.ServerConfig{
-		Gate:                gate,
-		Limits:              livechat.Limits{MaxInputBytes: f.maxInputBytes, SessionTTL: f.sessionTTL},
-		IPRate:              livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
-		CodeRate:            livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},
-		MaxConcurrent:       f.concurrency,
-		RequireContainment:  requireContainment,
-		Containment:         verifier,
-		OrchestratorKeyPath: f.orchestratorKey,
-		ToyAgentBin:         f.toyAgentBin,
-		WebToolBin:          f.webToolBin,
-		TrustForwardedFor:   f.trustForwardedFor,
-		AllowOrigin:         f.allowOrigin,
-		LLMAgent:            llmAgent,
+		Gate:                  gate,
+		Limits:                livechat.Limits{MaxInputBytes: f.maxInputBytes, SessionTTL: f.sessionTTL},
+		IPRate:                livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
+		CodeRate:              livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},
+		MaxConcurrent:         f.concurrency,
+		RequireContainment:    requireContainment,
+		Containment:           verifier,
+		OrchestratorKeyPath:   f.orchestratorKey,
+		ToyAgentBin:           f.toyAgentBin,
+		WebToolBin:            f.webToolBin,
+		TrustForwardedFor:     f.trustForwardedFor,
+		AllowOrigin:           f.allowOrigin,
+		LLMAgent:              llmAgent,
+		DailyTurnBudget:       f.dailyTurnBudget,
+		MaxMessagesPerSession: f.maxMessagesPerSession,
 	})
 	if err != nil {
 		return nil, nil, err

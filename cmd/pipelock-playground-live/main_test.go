@@ -25,8 +25,21 @@ func TestBuildLLMAgentConfig(t *testing.T) {
 	}
 
 	// Partial: a single model flag set must fail loudly, not silently fall back.
-	if _, err := buildLLMAgentConfig(&serveFlags{modelBaseURL: "http://provider.example/v1"}); err == nil {
-		t.Fatal("partial model flags should error")
+	partials := []struct {
+		name string
+		in   serveFlags
+	}{
+		{name: "base_url_only", in: serveFlags{modelBaseURL: "http://provider.example/v1"}},
+		{name: "max_steps_only", in: serveFlags{modelMaxSteps: 4}},
+		{name: "timeout_only", in: serveFlags{modelTimeout: 20 * time.Second}},
+		{name: "tuning_only", in: serveFlags{modelMaxSteps: 4, modelTimeout: 20 * time.Second}},
+	}
+	for _, tc := range partials {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := buildLLMAgentConfig(&tc.in); err == nil {
+				t.Fatal("partial model flags should error")
+			}
+		})
 	}
 
 	// Full set: builds the config. keyPath is a filesystem path (not a credential);

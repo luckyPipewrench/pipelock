@@ -229,7 +229,12 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 // when ANY model flag is set, and then requires the full set, so a partial config
 // fails loudly instead of silently falling back to the deterministic agent.
 func buildLLMAgentConfig(f *serveFlags) (*playground.LLMAgentConfig, error) {
-	if f.llmAgentBin == "" && f.modelBaseURL == "" && f.model == "" && f.modelSecretFile == "" {
+	if f.llmAgentBin == "" &&
+		f.modelBaseURL == "" &&
+		f.model == "" &&
+		f.modelSecretFile == "" &&
+		f.modelMaxSteps == 0 &&
+		f.modelTimeout == 0 {
 		return nil, nil
 	}
 	var missing []string

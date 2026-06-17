@@ -189,15 +189,27 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 	switch event.HookEventName {
 	case HookPreToolCall:
 		// Outbound: the agent is invoking a tool; arguments may egress.
-		return scanCombined(ctx, sc, extractToolInputText(event.ToolInput),
+		text, truncated := extractToolInputText(event.ToolInput)
+		if truncated {
+			return blockDecision("pipelock: tool arguments exceed maximum inspectable nesting depth")
+		}
+		return scanCombined(ctx, sc, text,
 			fmt.Sprintf("tool %q arguments", event.ToolName), directionOutbound)
 	case HookTransformToolResult:
 		// Inbound: a tool result flowing back to the agent.
-		return scanCombined(ctx, sc, extractToolInputText(event.ToolInput),
+		text, truncated := extractToolInputText(event.ToolInput)
+		if truncated {
+			return blockDecision("pipelock: tool result exceeds maximum inspectable nesting depth")
+		}
+		return scanCombined(ctx, sc, text,
 			fmt.Sprintf("tool %q result", event.ToolName), directionInbound)
 	case HookPreGatewayDispatch:
 		// Inbound: an operator->agent message being dispatched.
-		return scanCombined(ctx, sc, extractToolInputText(event.ToolInput),
+		text, truncated := extractToolInputText(event.ToolInput)
+		if truncated {
+			return blockDecision("pipelock: gateway dispatch exceeds maximum inspectable nesting depth")
+		}
+		return scanCombined(ctx, sc, text,
 			"inbound gateway dispatch", directionInbound)
 	case HookOnSessionStart, HookOnSessionEnd:
 		// Observer hooks. The current release emits no decision; a follow-up
@@ -271,22 +283,23 @@ func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string
 // in argument names just as easily as in values. Strings are joined with
 // newlines so adjacent values aren't concatenated into a substring no field
 // actually contains.
-func extractToolInputText(raw json.RawMessage) string {
+func extractToolInputText(raw json.RawMessage) (string, bool) {
 	if len(raw) == 0 {
-		return ""
+		return "", false
 	}
 	// Some Hermes events carry tool_input as a plain JSON string (gateway
 	// text, simple shell commands). Try the string case first so we don't
 	// drop into the recursive walker for what is already a leaf value.
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		return asString
+		return asString, false
 	}
-	strs := extract.AllStringsFromJSON(raw)
+	extracted := extract.AllStringsFromJSONResult(raw)
+	strs := extracted.Strings
 	if len(strs) == 0 {
-		return ""
+		return "", extracted.Truncated
 	}
-	return strings.Join(strs, "\n")
+	return strings.Join(strs, "\n"), extracted.Truncated
 }
 
 // readAllWithCtx is io.ReadAll bounded by ctx and a byte ceiling. If ctx fires

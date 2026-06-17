@@ -61,6 +61,18 @@ func TestScanA2ARequestBody_DLPInTextPart(t *testing.T) {
 	}
 }
 
+func TestScanA2ARequestBody_OverDepthPayloadFailsClosed(t *testing.T) {
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	body := []byte(deepJSONObject(key, 100))
+	result := ScanA2ARequestBody(context.Background(), body, testA2AScanner(t), enabledA2ACfg())
+	if result.Clean {
+		t.Fatal("over-depth A2A payload should fail closed")
+	}
+	if result.Reason == "" {
+		t.Fatal("over-depth A2A block should explain that input was uninspectable")
+	}
+}
+
 func TestScanA2ARequestBody_HostnameExfilHardBlocksInWarnMode(t *testing.T) {
 	cfg := enabledA2ACfg()
 	cfg.Action = config.ActionWarn

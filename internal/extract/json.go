@@ -18,16 +18,32 @@ import (
 // overflow from deeply-nested payloads crafted by malicious agents.
 const maxExtractDepth = 64
 
+// JSONStringsResult is the bounded extraction result. Truncated is true when
+// the JSON contains content beyond maxExtractDepth, meaning callers that make
+// allow/block decisions must fail closed instead of trusting partial strings.
+type JSONStringsResult struct {
+	Strings   []string
+	Truncated bool
+}
+
 // AllStringsFromJSON recursively extracts all string values AND keys from
 // arbitrary JSON. Unlike jsonrpc.ExtractStringsFromJSON (values only), this
 // version also extracts map keys because an agent can exfiltrate secrets by
 // encoding them as JSON object keys. Numeric and boolean values are
 // stringified so DLP patterns can match them.
 func AllStringsFromJSON(raw json.RawMessage) []string {
+	return AllStringsFromJSONResult(raw).Strings
+}
+
+// AllStringsFromJSONResult recursively extracts all string values AND keys from
+// arbitrary JSON and reports whether extraction hit the nesting cap.
+func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 	var result []string
+	truncated := false
 	var extract func(v interface{}, depth int)
 	extract = func(v interface{}, depth int) {
 		if depth > maxExtractDepth {
+			truncated = true
 			return
 		}
 		switch val := v.(type) {
@@ -60,7 +76,7 @@ func AllStringsFromJSON(raw json.RawMessage) []string {
 	if err := json.Unmarshal(raw, &parsed); err == nil {
 		extract(parsed, 0)
 	}
-	return result
+	return JSONStringsResult{Strings: result, Truncated: truncated}
 }
 
 // AllStringsFromJSONOrdered extracts string-ish JSON tokens in source order,
@@ -68,27 +84,37 @@ func AllStringsFromJSON(raw json.RawMessage) []string {
 // split-secret DLP wants deterministic sorted traversal, while prompt
 // injection phrase reconstruction benefits from the sender's original order.
 func AllStringsFromJSONOrdered(raw json.RawMessage) []string {
+	return AllStringsFromJSONOrderedResult(raw).Strings
+}
+
+// AllStringsFromJSONOrderedResult extracts string-ish JSON tokens in source
+// order and reports whether any token was skipped past the depth cap.
+func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 	if len(raw) == 0 {
-		return nil
+		return JSONStringsResult{}
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 
 	var result []string
 	depth := 0
+	truncated := false
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil
+			return JSONStringsResult{}
 		}
 		switch v := tok.(type) {
 		case json.Delim:
 			switch v {
 			case '{', '[':
 				depth++
+				if depth > maxExtractDepth {
+					truncated = true
+				}
 			case '}', ']':
 				if depth > 0 {
 					depth--
@@ -108,5 +134,5 @@ func AllStringsFromJSONOrdered(raw json.RawMessage) []string {
 			}
 		}
 	}
-	return result
+	return JSONStringsResult{Strings: result, Truncated: truncated}
 }

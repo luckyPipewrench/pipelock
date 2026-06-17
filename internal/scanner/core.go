@@ -588,7 +588,7 @@ func (s *Scanner) decodeCoreDLPTextSegments(text string) []TextDLPMatch {
 		if len(seg) < 10 {
 			continue
 		}
-		for _, d := range decodeEncodings(seg) {
+		for _, d := range decodeEncodingsRecursive(seg) {
 			if m := s.matchCoreDLPPatterns(d.text, d.encoding); len(m) > 0 {
 				return m
 			}
@@ -735,12 +735,18 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	for key, values := range parsed.Query() {
 		decodedKey := IterativeDecode(key)
 		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key")})
+		for _, d := range decodeEncodingsRecursive(decodedKey) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+		}
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 		}
 		for _, v := range values {
 			decoded := IterativeDecode(v)
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value")})
+			for _, d := range decodeEncodingsRecursive(decoded) {
+				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+			}
 			if stripped := stripURLNoise(decoded); stripped != decoded {
 				targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 			}
@@ -770,7 +776,7 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	// Path segment decoding (hex/base64/base32).
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if len(segment) >= 10 {
-			for _, d := range decodeEncodings(segment) {
+			for _, d := range decodeEncodingsRecursive(segment) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
 			}
 		}
@@ -780,6 +786,9 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 	if parsed.RawQuery != "" && strings.Contains(parsed.RawQuery, "&") {
 		concat := orderedQueryConcat(parsed.RawQuery)
 		targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat")})
+		for _, d := range decodeEncodingsRecursive(concat) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding)})
+		}
 		if stripped := stripURLNoise(concat); stripped != concat {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
 		}

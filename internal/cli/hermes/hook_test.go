@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -337,24 +338,32 @@ func TestExtractToolInputText(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name  string
-		input string
-		want  string
+		name          string
+		input         string
+		want          string
+		wantTruncated bool
 	}{
-		{"empty", "", ""},
-		{"plain-string", `"hello world"`, "hello world"},
-		{"object", `{"a":"first","b":"second"}`, "a\nfirst\nb\nsecond"},
-		{"object-keys", `{"secret_key":"value"}`, "secret_key\nvalue"},
-		{"nested", `{"outer":{"inner":"deep"}}`, "outer\ninner\ndeep"},
-		{"array", `["x","y","z"]`, "x\ny\nz"},
-		{"numbers", `{"count":42,"ratio":0.5}`, "count\n42\nratio\n0.5"},
-		{"null-value", `null`, ""},
+		{name: "empty", input: "", want: ""},
+		{name: "plain-string", input: `"hello world"`, want: "hello world"},
+		{name: "object", input: `{"a":"first","b":"second"}`, want: "a\nfirst\nb\nsecond"},
+		{name: "object-keys", input: `{"secret_key":"value"}`, want: "secret_key\nvalue"},
+		{name: "nested", input: `{"outer":{"inner":"deep"}}`, want: "outer\ninner\ndeep"},
+		{name: "array", input: `["x","y","z"]`, want: "x\ny\nz"},
+		{name: "numbers", input: `{"count":42,"ratio":0.5}`, want: "count\n42\nratio\n0.5"},
+		{name: "null-value", input: `null`, want: ""},
+		{name: "over-depth", input: deepHermesJSONObject("depth-regression-sentinel", 100), want: "", wantTruncated: true},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := extractToolInputText([]byte(tc.input))
+			got, truncated := extractToolInputText([]byte(tc.input))
+			if truncated != tc.wantTruncated {
+				t.Fatalf("truncated = %v, want %v", truncated, tc.wantTruncated)
+			}
+			if tc.wantTruncated {
+				return
+			}
 			if got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
@@ -362,11 +371,63 @@ func TestExtractToolInputText(t *testing.T) {
 	}
 }
 
+func deepHermesJSONObject(value string, depth int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(strconv.Quote(value))
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
+}
+
 func TestEvaluate_EmptyToolInputAllows(t *testing.T) {
 	t.Parallel()
 	event := &HookEvent{HookEventName: HookOnSessionStart}
 	if dec := evaluate(context.Background(), nil, event); dec.Decision != "" {
 		t.Fatalf("observer hook produced decision=%q, want allow", dec.Decision)
+	}
+}
+
+func TestEvaluate_OverDepthToolInputBlocksBySurface(t *testing.T) {
+	t.Parallel()
+
+	deepInput := json.RawMessage(deepHermesJSONObject("depth-regression-sentinel", 100))
+	cases := []struct {
+		name     string
+		event    *HookEvent
+		wantText string
+	}{
+		{
+			name:     "tool arguments",
+			event:    &HookEvent{HookEventName: HookPreToolCall, ToolName: "shell", ToolInput: deepInput},
+			wantText: "tool arguments exceed maximum inspectable nesting depth",
+		},
+		{
+			name:     "tool result",
+			event:    &HookEvent{HookEventName: HookTransformToolResult, ToolName: "read_file", ToolInput: deepInput},
+			wantText: "tool result exceeds maximum inspectable nesting depth",
+		},
+		{
+			name:     "gateway dispatch",
+			event:    &HookEvent{HookEventName: HookPreGatewayDispatch, ToolName: "gateway", ToolInput: deepInput},
+			wantText: "gateway dispatch exceeds maximum inspectable nesting depth",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dec := evaluate(context.Background(), nil, tc.event)
+			if dec.Decision != DecisionBlock {
+				t.Fatalf("Decision = %q, want %q", dec.Decision, DecisionBlock)
+			}
+			if !strings.Contains(dec.Reason, tc.wantText) {
+				t.Fatalf("Reason = %q, want substring %q", dec.Reason, tc.wantText)
+			}
+		})
 	}
 }
 

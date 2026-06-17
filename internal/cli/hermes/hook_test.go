@@ -354,7 +354,10 @@ func TestExtractToolInputText(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := extractToolInputText([]byte(tc.input))
+			got, truncated := extractToolInputText([]byte(tc.input))
+			if truncated {
+				t.Fatal("extractToolInputText marked inspectable input as truncated")
+			}
 			if got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}

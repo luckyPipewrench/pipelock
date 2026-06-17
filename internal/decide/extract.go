@@ -20,27 +20,44 @@ const (
 	maxExtractBytes = 1 << 20
 )
 
+// ExtractStringsResult is a bounded JSON extraction result. Truncated is true
+// when depth, string-count, or byte caps prevented full inspection.
+type ExtractStringsResult struct {
+	Strings   []string
+	Truncated bool
+}
+
 // ExtractAllStringsFromJSON recursively extracts all string keys and values
 // from arbitrary JSON. Unlike jsonrpc.ExtractStringsFromJSON (values-only),
 // this includes map keys because secrets can be encoded as JSON keys
 // (e.g., {"sk-ant-api03-xxx": "value"}).
 func ExtractAllStringsFromJSON(raw json.RawMessage) []string {
+	return ExtractAllStringsFromJSONResult(raw).Strings
+}
+
+// ExtractAllStringsFromJSONResult recursively extracts all string keys and
+// values from arbitrary JSON and reports whether caps prevented full inspection.
+func ExtractAllStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 	if len(raw) == 0 {
-		return nil
+		return ExtractStringsResult{}
 	}
 	var result []string
 	var totalBytes int
-	capped := false
+	truncated := false
 
 	var extract func(v interface{}, depth int)
 	extract = func(v interface{}, depth int) {
-		if capped || depth > maxExtractDepth {
+		if truncated {
+			return
+		}
+		if depth > maxExtractDepth {
+			truncated = true
 			return
 		}
 		switch val := v.(type) {
 		case string:
 			if len(result) >= maxExtractStrings || totalBytes+len(val) > maxExtractBytes {
-				capped = true
+				truncated = true
 				return
 			}
 			result = append(result, val)
@@ -57,7 +74,7 @@ func ExtractAllStringsFromJSON(raw json.RawMessage) []string {
 			sort.Strings(keys)
 			for _, k := range keys {
 				if len(result) >= maxExtractStrings || totalBytes+len(k) > maxExtractBytes {
-					capped = true
+					truncated = true
 					return
 				}
 				result = append(result, k)
@@ -70,5 +87,5 @@ func ExtractAllStringsFromJSON(raw json.RawMessage) []string {
 	if err := json.Unmarshal(raw, &parsed); err == nil {
 		extract(parsed, 0)
 	}
-	return result
+	return ExtractStringsResult{Strings: result, Truncated: truncated}
 }

@@ -18,6 +18,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+const uninspectableJSONDepthReason = "input exceeds maximum inspectable nesting depth"
+
 // extractToolCallName extracts the tool name from a tools/call JSON-RPC request.
 // Returns "" if the message is not a tools/call or the name cannot be extracted.
 func extractToolCallName(line []byte) string {
@@ -122,6 +124,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		ctx = withMCPRequestWarnContext(ctx, "batch")
 		return scanRequestBatch(ctx, trimmed, sc, action, onParseError, agentID)
 	}
+	recoveredID := recoverTopLevelJSONRPCID(trimmed)
 
 	// Fail closed on duplicate envelope keys before json.Unmarshal would
 	// silently collapse them. A duplicate `method` or `params` lets an
@@ -142,7 +145,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 			// Still scan raw text for secrets/injection before forwarding.
 			return scanRawBeforeForward(ctx, trimmed, sc, action)
 		}
-		return InputVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
+		return InputVerdict{ID: recoveredID, Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 
 	if rpc.JSONRPC != jsonrpc.Version {
@@ -168,7 +171,11 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		raw := string(trimmed)
 
 		// Extract individual strings for per-field encoded DLP checks.
-		strs := extract.AllStringsFromJSON(trimmed)
+		extracted := extract.AllStringsFromJSONResult(trimmed)
+		if extracted.Truncated {
+			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
+		}
+		strs := extracted.Strings
 		joined := joinStrings(strs)
 
 		// Run DLP on joined strings first (catches raw patterns).
@@ -259,7 +266,11 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	}
 
 	// Extract all strings (keys + values) from params.
-	strs := extract.AllStringsFromJSON(rpc.Params)
+	extracted := extract.AllStringsFromJSONResult(rpc.Params)
+	if extracted.Truncated {
+		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
+	}
+	strs := extracted.Strings
 	if len(strs) == 0 {
 		// Fallback: serialize params to string for non-string JSON values.
 		strs = []string{string(rpc.Params)}
@@ -359,9 +370,14 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 // Extracts individual strings for per-field encoded DLP checks (base64, hex).
 func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, action string) InputVerdict {
 	text := string(raw)
+	recoveredID := recoverTopLevelJSONRPCID(bytes.TrimSpace(raw))
 
 	// Extract individual strings for encoded DLP checks.
-	strs := extract.AllStringsFromJSON(raw)
+	extracted := extract.AllStringsFromJSONResult(raw)
+	if extracted.Truncated {
+		return InputVerdict{ID: recoveredID, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
+	}
+	strs := extracted.Strings
 	joined := joinStrings(strs)
 
 	dlpResult := sc.ScanTextForDLP(ctx, joined)
@@ -422,10 +438,11 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	}
 
 	if len(dlpMatches) == 0 && len(injMatches) == 0 {
-		return InputVerdict{Clean: true}
+		return InputVerdict{ID: recoveredID, Clean: true}
 	}
 
 	return InputVerdict{
+		ID:      recoveredID,
 		Clean:   false,
 		Action:  mcpInputVerdictAction(action, dlpMatches, injMatches),
 		Matches: dlpMatches,
@@ -512,7 +529,17 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 	if !result.Clean {
 		return result
 	}
-	vals := jsonrpc.ExtractStringsFromJSON(raw)
+	extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+	if extracted.Truncated {
+		return scanner.TextDLPResult{
+			Clean: false,
+			Matches: []scanner.TextDLPMatch{{
+				PatternName: uninspectableJSONDepthReason,
+				Severity:    config.SeverityCritical,
+			}},
+		}
+	}
+	vals := extracted.Strings
 	if len(vals) <= 1 {
 		return result
 	}

@@ -112,6 +112,7 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 		frame.IsBatch = true
 		return frame
 	}
+	frame.ID = recoverTopLevelJSONRPCID(trimmed)
 
 	// Fail closed on duplicate envelope keys before json.Unmarshal would
 	// silently collapse them. A duplicate `method` would let an attacker
@@ -188,4 +189,95 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 		}
 	}
 	return frame
+}
+
+func recoverTopLevelJSONRPCID(msg []byte) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(msg))
+	dec.UseNumber()
+
+	tok, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil
+		}
+		if key == "id" {
+			return readTopLevelIDValue(dec)
+		}
+		if err := skipTopLevelJSONValue(dec); err != nil {
+			return nil
+		}
+	}
+	return nil
+}
+
+func readTopLevelIDValue(dec *json.Decoder) json.RawMessage {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	switch v := tok.(type) {
+	case nil:
+		return nil
+	case string:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		return data
+	case json.Number:
+		return json.RawMessage(v.String())
+	case bool:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		return data
+	default:
+		return nil
+	}
+}
+
+func skipTopLevelJSONValue(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		for dec.More() {
+			if _, err := dec.Token(); err != nil {
+				return err
+			}
+			if err := skipTopLevelJSONValue(dec); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	case '[':
+		for dec.More() {
+			if err := skipTopLevelJSONValue(dec); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token()
+		return err
+	default:
+		return nil
+	}
 }

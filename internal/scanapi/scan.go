@@ -141,7 +141,18 @@ func (h *Handler) scanToolCall(
 	// can be encoded as JSON object keys. See spec: tool_call wiring detail.
 	var argStrings []string
 	if len(req.Input.Arguments) > 0 && string(req.Input.Arguments) != jsonNull {
-		argStrings = extract.AllStringsFromJSON(json.RawMessage(req.Input.Arguments))
+		extracted := extract.AllStringsFromJSONResult(json.RawMessage(req.Input.Arguments))
+		if extracted.Truncated {
+			resp.Decision = DecisionDeny
+			resp.Findings = append(resp.Findings, Finding{
+				Scanner:  "tool_call",
+				RuleID:   "UNINSPECTABLE-json-depth",
+				Severity: "critical",
+				Message:  "Tool call arguments exceed maximum inspectable nesting depth",
+			})
+			return resp, http.StatusOK
+		}
+		argStrings = extracted.Strings
 	}
 	scanText := strings.Join(argStrings, " ")
 

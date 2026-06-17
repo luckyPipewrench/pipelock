@@ -113,7 +113,12 @@ func TestHostContainmentWitness_Verify_FailsClosed(t *testing.T) {
 			name:   "tampered signature bytes",
 			pubHex: hex.EncodeToString(pub),
 			mutate: func(w playground.HostContainmentWitness) playground.HostContainmentWitness {
-				w.Signature = "00" + w.Signature[2:]
+				sig, err := hex.DecodeString(w.Signature)
+				if err != nil || len(sig) == 0 {
+					panic("test signed witness has invalid signature")
+				}
+				sig[0] ^= 0xff
+				w.Signature = hex.EncodeToString(sig)
 				return w
 			},
 		},

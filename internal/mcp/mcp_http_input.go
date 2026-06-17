@@ -414,6 +414,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			ID:             verdict.ID,
 			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked (parse error)",
+			ErrorCode:      jsonRPCErrorCodeForInputError(verdict.Error),
 		}
 		return result
 	case blockingGateTaintBlock, blockingGateTaintAskDenied:

@@ -711,7 +711,11 @@ func extractBodyText(body []byte, req BodyScanRequest) ([]string, string) {
 		if !json.Valid(body) {
 			return nil, "invalid JSON body"
 		}
-		return extract.AllStringsFromJSONOrdered(json.RawMessage(body)), ""
+		extracted := extract.AllStringsFromJSONOrderedResult(json.RawMessage(body))
+		if extracted.Truncated {
+			return nil, "JSON body exceeds maximum inspectable nesting depth"
+		}
+		return extracted.Strings, ""
 
 	case mediaType == "application/x-www-form-urlencoded":
 		return extractFormURLEncoded(body)

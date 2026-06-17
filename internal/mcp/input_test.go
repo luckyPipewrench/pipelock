@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -981,6 +982,47 @@ func TestForwardScannedInput_ParseErrorBlocked(t *testing.T) {
 	}
 	if !gotBlocked {
 		t.Error("expected blocked request for parse error")
+	}
+}
+
+func TestForwardScannedInput_ParseErrorWithIDProducesErrorResponse(t *testing.T) {
+	sc := testInputScanner(t)
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(`{"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"send","arguments":` + "\n")
+	fwdScannedInput(clientIn, &serverIn, &logW, sc, config.ActionBlock, config.ActionBlock, blockedCh)
+
+	if serverIn.Len() > 0 {
+		t.Fatal("expected malformed request not to be forwarded")
+	}
+
+	var got *BlockedRequest
+	for br := range blockedCh {
+		br := br
+		got = &br
+		break
+	}
+	if got == nil {
+		t.Fatal("expected blocked request for id-bearing parse error")
+	}
+	if got.IsNotification {
+		t.Fatal("id-bearing parse error should not be treated as notification")
+	}
+	if string(got.ID) != "104" {
+		t.Fatalf("ID = %s, want 104", string(got.ID))
+	}
+	if got.ErrorCode != -32700 {
+		t.Fatalf("ErrorCode = %d, want -32700", got.ErrorCode)
+	}
+	resp := blockRequestResponse(*got)
+	if !bytes.Contains(resp, []byte(`"id":104`)) {
+		t.Fatalf("response %s does not preserve recovered id", string(resp))
+	}
+	if !bytes.Contains(resp, []byte(`"code":-32700`)) {
+		t.Fatalf("response %s does not use JSON-RPC parse error code", string(resp))
 	}
 }
 
@@ -3194,6 +3236,88 @@ func TestExtractAllStringsFromJSON_DepthLimit(t *testing.T) {
 		if s == "leaf" {
 			t.Error("expected depth limit to prevent extracting deeply nested leaf")
 		}
+	}
+}
+
+func deepJSONObject(value string, depth int) string {
+	var b strings.Builder
+	for range depth {
+		b.WriteString(`{"k":`)
+	}
+	b.WriteString(strconv.Quote(value))
+	for range depth {
+		b.WriteByte('}')
+	}
+	return b.String()
+}
+
+func TestScanRequest_OverDepthArgumentsFailClosed(t *testing.T) {
+	sc := testInputScanner(t)
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	line := fmt.Sprintf(`{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"send","arguments":%s}}`, deepJSONObject(secret, 100))
+
+	verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("over-depth tool arguments should fail closed")
+	}
+	if string(verdict.ID) != "101" {
+		t.Fatalf("ID = %s, want 101", string(verdict.ID))
+	}
+	if verdict.Error == "" {
+		t.Fatal("over-depth block should explain that input was uninspectable")
+	}
+}
+
+func TestScanRequest_InspectableNestedArgumentsStillScan(t *testing.T) {
+	sc := testInputScanner(t)
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	line := fmt.Sprintf(`{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"send","arguments":%s}}`, deepJSONObject(secret, 1))
+
+	verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("shallow secret should still be blocked by DLP")
+	}
+	if len(verdict.Matches) == 0 {
+		t.Fatal("shallow secret should produce DLP matches")
+	}
+}
+
+func TestScanRequest_InspectableBenignNestedArgumentsAllow(t *testing.T) {
+	sc := testInputScanner(t)
+	line := fmt.Sprintf(`{"jsonrpc":"2.0","id":103,"method":"tools/call","params":{"name":"send","arguments":%s}}`, deepJSONObject("vendor neutral benign text", 10))
+
+	verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionBlock, config.ActionBlock)
+	if !verdict.Clean {
+		t.Fatalf("benign inspectable nested arguments blocked: %+v", verdict)
+	}
+}
+
+func TestScanRequest_ParseErrorRecoversTopLevelID(t *testing.T) {
+	sc := testInputScanner(t)
+	line := []byte(`{"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"send","arguments":`)
+
+	verdict := ScanRequest(context.Background(), line, sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("malformed JSON should fail closed")
+	}
+	if string(verdict.ID) != "104" {
+		t.Fatalf("ID = %s, want 104", string(verdict.ID))
+	}
+	if isRPCNotification(verdict.ID) {
+		t.Fatal("id-bearing parse error must not be treated as a notification")
+	}
+}
+
+func TestScanRequest_ParseErrorNotificationStaysSilent(t *testing.T) {
+	sc := testInputScanner(t)
+	line := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"send","arguments":`)
+
+	verdict := ScanRequest(context.Background(), line, sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("malformed JSON should fail closed")
+	}
+	if !isRPCNotification(verdict.ID) {
+		t.Fatalf("notification parse error recovered unexpected ID %s", string(verdict.ID))
 	}
 }
 

@@ -191,10 +191,10 @@ func TestBuildServer_DevDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
 	}
-	defer srv.Close()
 	if srv == nil || handler == nil {
 		t.Fatal("nil server/handler")
 	}
+	defer srv.Close()
 	if !strings.Contains(out.String(), "UNCONTAINED") {
 		t.Error("--dev must print the uncontained warning")
 	}
@@ -212,6 +212,9 @@ func TestBuildServer_StaticDirMux(t *testing.T) {
 	srv, handler, err := buildServer(&out, f)
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
+	}
+	if srv == nil || handler == nil {
+		t.Fatal("nil server/handler")
 	}
 	defer srv.Close()
 

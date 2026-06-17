@@ -66,6 +66,7 @@ type Emitter struct {
 	principal  string
 	actor      string
 	metrics    MetricsSink
+	onReceipt  func(rcpt *Receipt)
 	initErr    error
 	runNonce   string
 
@@ -94,6 +95,16 @@ type EmitterConfig struct {
 	Actor      string
 	// Metrics, when non-nil, receives emit-failure observability signals.
 	Metrics MetricsSink
+	// OnReceipt, when non-nil, is invoked with a copy of each signed receipt
+	// AFTER it has been durably recorded, in chain order (the call happens
+	// under the chain mutex, so observers see receipts in the same order they
+	// were written). It is an OBSERVER only: the durable JSONL evidence file
+	// remains the source of truth, and a panicking or slow observer must not be
+	// able to corrupt the chain. Implementations MUST NOT block (push to a
+	// buffered channel and drop on overflow) and MUST NOT mutate the receipt.
+	// The default (nil) is a no-op, so the batch evidence path is unchanged.
+	// Used by the live playground stream to surface decisions in real time.
+	OnReceipt func(rcpt *Receipt)
 }
 
 // NewEmitter creates a receipt emitter. Returns nil if the recorder is nil
@@ -112,6 +123,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		principal:     cfg.Principal,
 		actor:         cfg.Actor,
 		metrics:       cfg.Metrics,
+		onReceipt:     cfg.OnReceipt,
 		runNonce:      runNonce,
 		chainPrevHash: GenesisHash,
 	}
@@ -340,6 +352,16 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	}); err != nil {
 		e.recordFailure(FailReasonRecord)
 		return fmt.Errorf("recording receipt: %w", err)
+	}
+
+	// Notify the observer (if any) AFTER the receipt is durably recorded, so a
+	// streamed decision can never appear before it exists on disk. The call is
+	// under the chain mutex, preserving chain order for observers. A copy is
+	// passed so the observer cannot mutate emitter state, and the observer is
+	// contractually non-blocking (see EmitterConfig.OnReceipt).
+	if e.onReceipt != nil {
+		rc := rcpt
+		e.onReceipt(&rc)
 	}
 
 	return nil

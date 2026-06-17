@@ -246,6 +246,9 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 	if r.closed {
 		return fmt.Errorf("playground: model agent runner is closed")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -262,6 +265,9 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 		Message string `json:"message"`
 	}{Message: msg}
 	if err := r.enc.Encode(req); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("playground: write message to model agent: %w", err)
 	}
 

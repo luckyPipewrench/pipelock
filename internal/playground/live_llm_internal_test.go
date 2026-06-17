@@ -111,32 +111,48 @@ func TestMapModelEvent(t *testing.T) {
 
 func TestTargetHostPort(t *testing.T) {
 	tests := []struct {
+		name     string
 		in, want string
 	}{
-		{"", ""},
-		{"http://safe.target.test:8080/x", "safe.target.test:8080"},
-		{"https://api.provider.example/v1/chat", "api.provider.example"},
-		{"host.only:443", "host.only:443"}, // CONNECT synthetic target, returned as-is
+		{name: "empty", in: "", want: ""},
+		{name: "absolute_url_with_port", in: "http://safe.target.test:8080/x", want: "safe.target.test:8080"},
+		{name: "absolute_url_without_port", in: "https://api.provider.example/v1/chat", want: "api.provider.example"},
+		{name: "connect_synthetic_target", in: "host.only:443", want: "host.only:443"},
 	}
 	for _, tc := range tests {
-		if got := targetHostPort(tc.in); got != tc.want {
-			t.Errorf("targetHostPort(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := targetHostPort(tc.in); got != tc.want {
+				t.Errorf("targetHostPort(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
 func TestModelHostname(t *testing.T) {
-	if h, err := modelHostname("http://model.api.test:9000/v1"); err != nil || h != "model.api.test" {
-		t.Fatalf("modelHostname = %q, %v; want model.api.test", h, err)
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{name: "valid_http_with_port", in: "http://model.api.test:9000/v1", want: "model.api.test"},
+		{name: "non_http_scheme", in: "ftp://nope/", wantErr: true},
+		{name: "missing_host", in: "http:///v1", wantErr: true},
+		{name: "unparseable", in: "://bad\x00url", wantErr: true},
 	}
-	if _, err := modelHostname("ftp://nope/"); err == nil {
-		t.Error("non-http scheme should error")
-	}
-	if _, err := modelHostname("http:///v1"); err == nil {
-		t.Error("missing host should error")
-	}
-	if _, err := modelHostname("://bad\x00url"); err == nil {
-		t.Error("unparseable url should error")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := modelHostname(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("want error")
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("modelHostname = %q, %v; want %q", got, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -533,11 +549,12 @@ func TestSubprocessTurnRunner_ContextCancelledWhileWaitingForOutput(t *testing.T
 	}
 	dir := t.TempDir()
 	src := `package main
-import ("bufio";"os";"time")
+import ("bufio";"os")
 func main() {
 	sc := bufio.NewScanner(os.Stdin)
 	if sc.Scan() {
-		time.Sleep(5 * time.Second)
+		buf := make([]byte, 1)
+		_, _ = os.Stdin.Read(buf)
 	}
 }
 `
@@ -754,8 +771,15 @@ func TestSubprocessTurnRunner_CloseCancelsStuckChild(t *testing.T) {
 	}
 	dir := t.TempDir()
 	src := `package main
-import "time"
-func main() { time.Sleep(5 * time.Second) }
+import "net"
+func main() {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return
+	}
+	defer func() { _ = ln.Close() }()
+	_, _ = ln.Accept()
+}
 `
 	bin := buildLLMHelper(t, src)
 	runner, err := newSubprocessTurnRunner(t.Context(), subprocessRunnerOpts{

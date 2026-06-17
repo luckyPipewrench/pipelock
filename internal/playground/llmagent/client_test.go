@@ -285,6 +285,18 @@ func TestLabToolsWithConfig_BlocksReservedHost(t *testing.T) {
 	if !toolTargetBlocked("https://api.deepseek.com:443/v1", []string{"api.deepseek.com"}) {
 		t.Fatal("hostname reservation must block the host regardless of port")
 	}
+	if !toolTargetBlocked("https://api.deepseek.com/v1", []string{"api.deepseek.com:443"}) {
+		t.Fatal("default HTTPS port must match an explicit host:443 reservation")
+	}
+	if !toolTargetBlocked("https://api.deepseek.com./v1", []string{"api.deepseek.com"}) {
+		t.Fatal("trailing-dot hostname spelling must not bypass a reservation")
+	}
+	if !toolTargetBlocked("http://api.deepseek.com/v1", []string{"api.deepseek.com:80"}) {
+		t.Fatal("default HTTP port must match an explicit host:80 reservation")
+	}
+	if toolTargetBlocked("https://api.deepseek.com:8443/v1", []string{"api.deepseek.com:443"}) {
+		t.Fatal("host:port reservation must not block a non-default different port")
+	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

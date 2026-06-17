@@ -71,6 +71,13 @@ func TestResolveAPIKey(t *testing.T) {
 	if err != nil || got != "sk-from-file" {
 		t.Fatalf("file key = %q, err = %v", got, err)
 	}
+	blankPath := filepath.Join(dir, "blank-key")
+	if err := os.WriteFile(blankPath, []byte(" \n\t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveAPIKey(blankPath, noEnv); err == nil {
+		t.Fatal("want error when secret-file is whitespace-only")
+	}
 	// From env fallback.
 	env := func(k string) string {
 		if k == envModelKey {

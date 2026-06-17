@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,8 +18,10 @@ import (
 // Lab tool names. fetch_url reads; post_data sends. The model picks; Pipelock
 // mediates whatever destination it picks.
 const (
-	ToolFetchURL      = "fetch_url"
-	ToolPostData      = "post_data"
+	ToolFetchURL = "fetch_url"
+	ToolPostData = "post_data"
+	// CanaryPlaceholder is expanded inside the local tool runtime, never in the
+	// prompt sent to the model API.
 	CanaryPlaceholder = "{{CANARY}}"
 )
 
@@ -37,6 +40,8 @@ type postArgs struct {
 	Data string `json:"data"`
 }
 
+// ToolRuntimeConfig controls local lab-tool behavior that must stay outside the
+// model API request path.
 type ToolRuntimeConfig struct {
 	// Canary is expanded only from CanaryPlaceholder inside post_data bodies.
 	Canary string
@@ -68,6 +73,8 @@ func LabToolsWithCanary(client *http.Client, reqHeaders map[string]string, canar
 	return LabToolsWithConfig(client, reqHeaders, ToolRuntimeConfig{Canary: canary})
 }
 
+// LabToolsWithConfig returns the lab tools with local-only guardrails such as
+// canary expansion and reserved model-host blocking.
 func LabToolsWithConfig(client *http.Client, reqHeaders map[string]string, cfg ToolRuntimeConfig) []Tool {
 	headers := cloneHeaders(reqHeaders)
 	return []Tool{
@@ -115,6 +122,9 @@ func LabToolsWithConfig(client *http.Client, reqHeaders map[string]string, cfg T
 	}
 }
 
+// toolTargetBlocked reports whether rawURL targets a reserved model API host or
+// authority. It canonicalizes hostnames and default ports so spelling variants
+// like "host.", "https://host", and "https://host:443" cannot bypass the guard.
 func toolTargetBlocked(rawURL string, blockedHosts []string) bool {
 	if len(blockedHosts) == 0 {
 		return false
@@ -123,27 +133,54 @@ func toolTargetBlocked(rawURL string, blockedHosts []string) bool {
 	if err != nil {
 		return false
 	}
-	targetHost := u.Hostname()
-	targetAuthority := u.Host
+	targetHost := normalizeHost(u.Hostname())
 	if targetHost == "" {
 		return false
 	}
+	targetPort := effectivePort(u)
 	for _, blocked := range blockedHosts {
 		blocked = strings.TrimSpace(blocked)
 		if blocked == "" {
 			continue
 		}
-		if strings.Contains(blocked, ":") {
-			if strings.EqualFold(targetAuthority, blocked) {
+		if host, port, err := net.SplitHostPort(blocked); err == nil {
+			if normalizeHost(host) == targetHost && port == targetPort {
 				return true
 			}
 			continue
 		}
-		if strings.EqualFold(targetHost, blocked) {
+		if normalizeHost(blocked) == targetHost {
 			return true
 		}
 	}
 	return false
+}
+
+// normalizeHost returns the comparison form for URL hostnames and authority
+// hosts, including trailing-dot FQDN spellings and bracketed IPv6 literals.
+func normalizeHost(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.TrimSuffix(host, ".")
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	}
+	return strings.ToLower(host)
+}
+
+// effectivePort returns the explicit URL port, or the scheme default when the
+// URL omits one.
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
 }
 
 // doRequest issues one tool request through the proxy client and renders the

@@ -152,7 +152,11 @@ func resolveAPIKey(secretFile string, getenv func(string) string) (string, error
 		if err != nil {
 			return "", fmt.Errorf("read --secret-file: %w", err)
 		}
-		return strings.TrimSpace(string(data)), nil
+		key := strings.TrimSpace(string(data))
+		if key == "" {
+			return "", fmt.Errorf("--secret-file is empty or whitespace-only")
+		}
+		return key, nil
 	}
 	if k := strings.TrimSpace(getenv(envModelKey)); k != "" {
 		return k, nil

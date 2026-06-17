@@ -16,6 +16,38 @@ import (
 	"time"
 )
 
+func TestBuildLLMAgentConfig(t *testing.T) {
+	t.Parallel()
+
+	// No model flags: deterministic agent (nil config, no error).
+	if cfg, err := buildLLMAgentConfig(&serveFlags{}); err != nil || cfg != nil {
+		t.Fatalf("no flags: got cfg=%v err=%v, want nil,nil", cfg, err)
+	}
+
+	// Partial: a single model flag set must fail loudly, not silently fall back.
+	if _, err := buildLLMAgentConfig(&serveFlags{modelBaseURL: "http://provider.example/v1"}); err == nil {
+		t.Fatal("partial model flags should error")
+	}
+
+	// Full set: builds the config. keyPath is a filesystem path (not a credential);
+	// assigning via a variable avoids a gosec G101 false positive on the field name.
+	keyPath := filepath.Join(t.TempDir(), "model.key")
+	cfg, err := buildLLMAgentConfig(&serveFlags{
+		llmAgentBin:     "/usr/local/bin/pipelock-playground-llm-agent",
+		modelBaseURL:    "http://provider.example/v1",
+		model:           "test-model",
+		modelSecretFile: keyPath,
+		modelMaxSteps:   4,
+		modelTimeout:    20 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("full flags: %v", err)
+	}
+	if cfg == nil || cfg.Model != "test-model" || cfg.Bin == "" || cfg.SecretFile == "" {
+		t.Fatalf("full flags: unexpected cfg %+v", cfg)
+	}
+}
+
 func TestResolveSecret_Generated(t *testing.T) {
 	t.Parallel()
 	got, err := resolveSecret("", "")

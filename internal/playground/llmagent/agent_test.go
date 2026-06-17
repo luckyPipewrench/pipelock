@@ -23,6 +23,7 @@ type scriptedModel struct {
 	calls     int
 	bodies    []completionRequest
 	status    int    // override status for the next response (0 => 200)
+	errorBody string // override non-200 body
 	rawBody   string // override raw body (for malformed-response tests)
 }
 
@@ -39,6 +40,10 @@ func (m *scriptedModel) handler() http.HandlerFunc {
 
 		if m.status != 0 {
 			w.WriteHeader(m.status)
+			if m.errorBody != "" {
+				_, _ = io.WriteString(w, m.errorBody)
+				return
+			}
 			_, _ = io.WriteString(w, `{"error":{"message":"boom"}}`)
 			return
 		}

@@ -6,6 +6,8 @@ package llmagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,6 +71,85 @@ func TestComplete_ModelErrorField(t *testing.T) {
 	}
 }
 
+func TestComplete_RedactsAPIKeyFromStatusErrorAndEvent(t *testing.T) {
+	apiKey := "sk-test-secret-value"
+	model := &scriptedModel{
+		status:    http.StatusUnauthorized,
+		errorBody: `{"error":{"message":"bad key sk-test-secret-value"}}`,
+	}
+	srv := httptest.NewServer(model.handler())
+	t.Cleanup(srv.Close)
+	emit, evs := collectEvents()
+	a := New(ModelConfig{BaseURL: srv.URL, Model: "m", APIKey: apiKey}, srv.Client(), nil, emit)
+
+	_, err := a.Run(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("want model status error")
+	}
+	if strings.Contains(err.Error(), apiKey) || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("err = %q, want API key redacted", err.Error())
+	}
+	if len(*evs) != 1 || (*evs)[0].Kind != EventError {
+		t.Fatalf("events = %+v, want one error event", *evs)
+	}
+	if strings.Contains((*evs)[0].Text, apiKey) || !strings.Contains((*evs)[0].Text, "[redacted]") {
+		t.Fatalf("event text = %q, want API key redacted", (*evs)[0].Text)
+	}
+}
+
+func TestComplete_RedactsAPIKeyFromModelErrorField(t *testing.T) {
+	apiKey := "sk-test-secret-value"
+	model := &scriptedModel{rawBody: `{"error":{"message":"provider echoed sk-test-secret-value"}}`}
+	a := newAgent(t, model, nil, nil)
+	a.cfg.APIKey = apiKey
+
+	_, err := a.Run(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("want model error")
+	}
+	if strings.Contains(err.Error(), apiKey) || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("err = %q, want API key redacted", err.Error())
+	}
+}
+
+func TestRedactSecrets(t *testing.T) {
+	if got := (ModelConfig{}).redactSecrets("nothing to redact"); got != "nothing to redact" {
+		t.Fatalf("empty key should no-op, got %q", got)
+	}
+	// A key carrying surrounding whitespace must redact both the raw and the
+	// trimmed form (a provider may echo either). Build the fake key at runtime so
+	// gosec G101 does not flag it.
+	key := "sk" + "-pad-key"
+	cfg := ModelConfig{APIKey: "  " + key + "  "}
+	got := cfg.redactSecrets("raw=  " + key + "   trimmed=" + key + " end")
+	if strings.Contains(got, key) {
+		t.Fatalf("key not fully redacted: %q", got)
+	}
+}
+
+func TestComplete_RedactsAPIKeyAcrossSnippetBoundary(t *testing.T) {
+	// The key straddles the snippet truncation point: padding pushes it so only a
+	// prefix would survive truncation. Redacting the full body before truncating
+	// must leave no key prefix in the error.
+	apiKey := "ZZSECRETKEYabcdef0123456789"
+	pad := strings.Repeat("x", 190) // key prefix lands inside the 200-char snippet
+	model := &scriptedModel{
+		status:    http.StatusBadGateway,
+		errorBody: pad + apiKey + strings.Repeat("y", 50),
+	}
+	srv := httptest.NewServer(model.handler())
+	t.Cleanup(srv.Close)
+	a := New(ModelConfig{BaseURL: srv.URL, Model: "m", APIKey: apiKey}, srv.Client(), nil, nil)
+
+	_, err := a.Run(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("want status error")
+	}
+	if strings.Contains(err.Error(), apiKey[:10]) {
+		t.Fatalf("err leaks a key prefix: %q", err.Error())
+	}
+}
+
 func TestComplete_NoChoices(t *testing.T) {
 	model := &scriptedModel{rawBody: `{"choices":[]}`}
 	a := newAgent(t, model, nil, nil)
@@ -110,6 +191,35 @@ func TestDoRequest_TransportError(t *testing.T) {
 	}
 }
 
+func TestDoRequest_ResponseReadErrorFailsClosed(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(errorReader{}),
+		}, nil
+	})}
+	tools := LabTools(client, nil)
+	fetch := tools[0]
+
+	result, ev := fetch.Invoke(context.Background(), json.RawMessage(`{"url":"http://target.test/"}`))
+	if strings.Contains(result, "HTTP 200") || !strings.Contains(result, "could not be read") {
+		t.Fatalf("result = %q, want read error without HTTP 200 success", result)
+	}
+	if ev.Status != http.StatusOK || ev.Note != "response read error" {
+		t.Fatalf("ev = %+v, want response read error with status", ev)
+	}
+}
+
+func TestLabTools_NilClientNoPanic(t *testing.T) {
+	tools := LabTools(nil, nil)
+	fetch := tools[0]
+
+	result, ev := fetch.Invoke(context.Background(), json.RawMessage(`{"url":"http://target.test/"}`))
+	if !strings.Contains(result, "no http client") || ev.Note != "missing http client" {
+		t.Fatalf("result=%q ev=%+v", result, ev)
+	}
+}
+
 func TestLabTools_BadPostArgs(t *testing.T) {
 	tools := LabTools(http.DefaultClient, nil)
 	post := tools[1]
@@ -117,4 +227,16 @@ func TestLabTools_BadPostArgs(t *testing.T) {
 	if !strings.Contains(result, "needs") || ev.Note != "bad arguments" {
 		t.Fatalf("result=%q ev=%+v", result, ev)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) {
+	return 0, errors.New("read broke")
 }

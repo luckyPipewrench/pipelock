@@ -108,7 +108,7 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage) (chatMessa
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return chatMessage{}, fmt.Errorf("model request: %w", err)
+		return chatMessage{}, fmt.Errorf("model request: %s", a.cfg.redactSecrets(err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -117,7 +117,9 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage) (chatMessa
 		return chatMessage{}, fmt.Errorf("read model response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return chatMessage{}, fmt.Errorf("model returned %d: %s", resp.StatusCode, snippet(body))
+		// Redact BEFORE truncating: if the key sat near the snippet boundary,
+		// redacting the already-truncated string could miss a surviving prefix.
+		return chatMessage{}, fmt.Errorf("model returned %d: %s", resp.StatusCode, snippet([]byte(a.cfg.redactSecrets(string(body)))))
 	}
 
 	var parsed completionResponse
@@ -125,7 +127,7 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage) (chatMessa
 		return chatMessage{}, fmt.Errorf("decode model response: %w", err)
 	}
 	if parsed.Error != nil {
-		return chatMessage{}, fmt.Errorf("model error: %s", parsed.Error.Message)
+		return chatMessage{}, fmt.Errorf("model error: %s", a.cfg.redactSecrets(parsed.Error.Message))
 	}
 	if len(parsed.Choices) == 0 {
 		return chatMessage{}, fmt.Errorf("model returned no choices")
@@ -157,6 +159,19 @@ func snippet(b []byte) string {
 	s := strings.TrimSpace(string(b))
 	if len(s) > limit {
 		return s[:limit] + "…"
+	}
+	return s
+}
+
+func (c ModelConfig) redactSecrets(s string) string {
+	rawKey := c.APIKey
+	key := strings.TrimSpace(rawKey)
+	if key == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, rawKey, "[redacted]")
+	if rawKey != key {
+		s = strings.ReplaceAll(s, key, "[redacted]")
 	}
 	return s
 }

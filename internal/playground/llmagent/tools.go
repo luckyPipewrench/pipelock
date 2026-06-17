@@ -45,6 +45,7 @@ var postParams = json.RawMessage(`{"type":"object","properties":{"url":{"type":"
 // receipt correctly. The returned tools never panic on malformed model
 // arguments: they report the problem back to the model as the result string.
 func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
+	headers := cloneHeaders(reqHeaders)
 	return []Tool{
 		{
 			Name:        ToolFetchURL,
@@ -57,7 +58,7 @@ func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
 						Kind: EventToolResult, Tool: ToolFetchURL, Note: "bad arguments",
 					}
 				}
-				return doRequest(ctx, client, reqHeaders, http.MethodGet, args.URL, nil)
+				return doRequest(ctx, client, headers, http.MethodGet, args.URL, nil)
 			},
 		},
 		{
@@ -71,7 +72,7 @@ func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
 						Kind: EventToolResult, Tool: ToolPostData, Note: "bad arguments",
 					}
 				}
-				return doRequest(ctx, client, reqHeaders, http.MethodPost, args.URL, []byte(args.Data))
+				return doRequest(ctx, client, headers, http.MethodPost, args.URL, []byte(args.Data))
 			},
 		},
 	}
@@ -83,6 +84,10 @@ func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
 // reason), not a transport error; that status is exactly what the demo shows.
 func doRequest(ctx context.Context, client *http.Client, headers map[string]string, method, rawURL string, body []byte) (string, Event) {
 	ev := Event{Kind: EventToolResult, Method: method, URL: rawURL}
+	if client == nil {
+		ev.Note = "missing http client"
+		return "error: no http client configured for tool request", ev
+	}
 
 	var rdr io.Reader
 	if body != nil {
@@ -109,12 +114,27 @@ func doRequest(ctx context.Context, client *http.Client, headers map[string]stri
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxToolBodyBytes))
 	ev.Status = resp.StatusCode
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxToolBodyBytes))
+	if err != nil {
+		ev.Note = "response read error"
+		return fmt.Sprintf("error: response from %s could not be read: %v", rawURL, err), ev
+	}
 	if resp.StatusCode >= http.StatusBadRequest {
 		ev.Note = "blocked"
 	} else {
 		ev.Note = "allowed"
 	}
 	return fmt.Sprintf("HTTP %d\n%s", resp.StatusCode, snippet(respBody)), ev
+}
+
+func cloneHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

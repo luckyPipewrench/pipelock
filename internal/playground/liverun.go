@@ -233,15 +233,16 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	// Trust the .test hosts so they pass the domain check
 	cfg.TrustedDomains = append(cfg.TrustedDomains, liveRunSafeHost, liveRunExfilHost)
 
-	// Model-agent runs enforce a TRUE egress allowlist: a jailbroken model must
+	// Model-agent runs enforce a strict host allowlist: a jailbroken model must
 	// not reach any host beyond the two lab targets and its own model API. The
 	// model host is the single real-egress destination (tool calls to the .test
 	// hosts stay loopback; a test override resolves the model host to a loopback
 	// fake, absent an override it resolves for real). Allowlist enforcement is
 	// gated to strict mode in the scanner, so model runs run strict; the
 	// deterministic IntentAgent path (no ModelBaseURL) keeps its balanced config
-	// unchanged. DLP/content scanning still runs on allowlisted hosts, so a
-	// canary-bearing body is blocked regardless of destination.
+	// unchanged. HTTPS model traffic may be an opaque CONNECT tunnel, so the
+	// subprocess tool runtime also refuses the model host as a tool target; the
+	// allowlist entry is for model API traffic only, not lab exfil actions.
 	if opts.ModelBaseURL != "" {
 		modelHost, mhErr := modelHostname(opts.ModelBaseURL)
 		if mhErr != nil {

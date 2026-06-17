@@ -229,6 +229,64 @@ func TestLabTools_BadPostArgs(t *testing.T) {
 	}
 }
 
+func TestLabToolsWithCanary_ExpandsPlaceholderOnlyInPostBody(t *testing.T) {
+	canary := "AKIA" + "IOSFODNN7EXAMPLE"
+	var gotBody string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, "blocked")
+	}))
+	t.Cleanup(target.Close)
+
+	tools := LabToolsWithCanary(target.Client(), nil, canary)
+	post := tools[1]
+	args, _ := json.Marshal(map[string]string{
+		"url":  target.URL,
+		"data": "payload=" + CanaryPlaceholder,
+	})
+	result, ev := post.Invoke(context.Background(), args)
+
+	if gotBody != "payload="+canary {
+		t.Fatalf("posted body = %q, want placeholder expanded", gotBody)
+	}
+	if strings.Contains(result, canary) {
+		t.Fatalf("tool result must not echo the canary: %q", result)
+	}
+	if ev.Status != http.StatusForbidden || ev.Note != "blocked" {
+		t.Fatalf("event = %+v, want blocked 403", ev)
+	}
+}
+
+func TestLabToolsWithConfig_BlocksReservedHost(t *testing.T) {
+	var hits int
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hits++
+	}))
+	t.Cleanup(target.Close)
+
+	tools := LabToolsWithConfig(target.Client(), nil, ToolRuntimeConfig{
+		BlockedHosts: []string{"model.example.test"},
+	})
+	post := tools[1]
+	result, ev := post.Invoke(context.Background(), json.RawMessage(`{"url":"https://model.example.test/v1/steal","data":"x"}`))
+
+	if hits != 0 {
+		t.Fatalf("reserved host should not be requested, hits=%d", hits)
+	}
+	if !strings.Contains(result, "reserved") || ev.Note != "tool target refused" || ev.Status != 0 {
+		t.Fatalf("result=%q ev=%+v, want local refusal", result, ev)
+	}
+
+	if toolTargetBlocked("http://127.0.0.1:2000/path", []string{"127.0.0.1:1000"}) {
+		t.Fatal("host:port reservation must not block a different port on the same host")
+	}
+	if !toolTargetBlocked("https://api.deepseek.com:443/v1", []string{"api.deepseek.com"}) {
+		t.Fatal("hostname reservation must block the host regardless of port")
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

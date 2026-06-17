@@ -135,6 +135,7 @@ type subprocessRunnerOpts struct {
 // guarantee.
 type subprocessTurnRunner struct {
 	cmd    *exec.Cmd
+	cancel context.CancelFunc
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	enc    *json.Encoder
@@ -177,7 +178,8 @@ func newSubprocessTurnRunner(ctx context.Context, opts subprocessRunnerOpts) (*s
 		args = append(args, "--timeout", opts.Timeout.String())
 	}
 
-	cmd := exec.CommandContext(ctx, opts.Bin, args...)
+	procCtx, cancel := context.WithCancel(ctx)
+	cmd := exec.CommandContext(procCtx, opts.Bin, args...)
 	// Minimal, controlled environment. The agent holds ONLY the synthetic canary
 	// plus the demo plumbing -- never the operator's real environment. --proxy-url
 	// is authoritative; HTTP_PROXY/HTTPS_PROXY are belt-and-suspenders and NO_PROXY
@@ -194,14 +196,17 @@ func newSubprocessTurnRunner(ctx context.Context, opts subprocessRunnerOpts) (*s
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("playground: model agent stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		_ = stdin.Close()
 		return nil, fmt.Errorf("playground: model agent stdout: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		cancel()
 		_ = stdin.Close()
 		_ = stdout.Close()
 		return nil, fmt.Errorf("playground: model agent start: %w", err)
@@ -211,6 +216,7 @@ func newSubprocessTurnRunner(ctx context.Context, opts subprocessRunnerOpts) (*s
 	sc.Buffer(make([]byte, 0, 4096), maxModelEventLine)
 	return &subprocessTurnRunner{
 		cmd:    cmd,
+		cancel: cancel,
 		stdin:  stdin,
 		stdout: stdout,
 		enc:    json.NewEncoder(stdin),
@@ -240,6 +246,17 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 	if r.closed {
 		return fmt.Errorf("playground: model agent runner is closed")
 	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if r.cancel != nil {
+				r.cancel()
+			}
+		case <-done:
+		}
+	}()
+	defer close(done)
 
 	req := struct {
 		Message string `json:"message"`
@@ -261,6 +278,9 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 		}
 		onEvent(ev)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := r.sc.Err(); err != nil {
 		return fmt.Errorf("playground: read model agent: %w", err)
 	}
@@ -271,6 +291,9 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 // Close shuts the subprocess down: closing stdin ends its read loop, then it is
 // reaped. Safe to call multiple times.
 func (r *subprocessTurnRunner) Close() error {
+	if r.cancel != nil {
+		r.cancel()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {

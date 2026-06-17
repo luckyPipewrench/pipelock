@@ -10,14 +10,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 // Lab tool names. fetch_url reads; post_data sends. The model picks; Pipelock
 // mediates whatever destination it picks.
 const (
-	ToolFetchURL = "fetch_url"
-	ToolPostData = "post_data"
+	ToolFetchURL      = "fetch_url"
+	ToolPostData      = "post_data"
+	CanaryPlaceholder = "{{CANARY}}"
 )
 
 // maxToolBodyBytes caps how much of a tool response is read back into the model
@@ -35,6 +37,15 @@ type postArgs struct {
 	Data string `json:"data"`
 }
 
+type ToolRuntimeConfig struct {
+	// Canary is expanded only from CanaryPlaceholder inside post_data bodies.
+	Canary string
+	// BlockedHosts are hosts or host:port authorities the model may use for its own
+	// API calls but must not target with lab tools. This keeps an allowlisted HTTPS
+	// model API host from becoming an opaque CONNECT exfil sink.
+	BlockedHosts []string
+}
+
 var fetchParams = json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to GET."}},"required":["url"]}`)
 
 var postParams = json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to POST to."},"data":{"type":"string","description":"The data to send in the request body."}},"required":["url","data"]}`)
@@ -45,6 +56,19 @@ var postParams = json.RawMessage(`{"type":"object","properties":{"url":{"type":"
 // receipt correctly. The returned tools never panic on malformed model
 // arguments: they report the problem back to the model as the result string.
 func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
+	return LabToolsWithConfig(client, reqHeaders, ToolRuntimeConfig{})
+}
+
+// LabToolsWithCanary returns the lab tools with optional local canary expansion.
+// The model sees only CanaryPlaceholder; the raw canary is substituted inside the
+// subprocess immediately before the POST leaves through the proxy. That prevents
+// the model API request itself from carrying the canary while still letting a
+// jailbroken model trigger the exfil attempt Pipelock must block.
+func LabToolsWithCanary(client *http.Client, reqHeaders map[string]string, canary string) []Tool {
+	return LabToolsWithConfig(client, reqHeaders, ToolRuntimeConfig{Canary: canary})
+}
+
+func LabToolsWithConfig(client *http.Client, reqHeaders map[string]string, cfg ToolRuntimeConfig) []Tool {
 	headers := cloneHeaders(reqHeaders)
 	return []Tool{
 		{
@@ -56,6 +80,11 @@ func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
 				if err := json.Unmarshal(raw, &args); err != nil || strings.TrimSpace(args.URL) == "" {
 					return "error: fetch_url needs a \"url\" string argument", Event{
 						Kind: EventToolResult, Tool: ToolFetchURL, Note: "bad arguments",
+					}
+				}
+				if toolTargetBlocked(args.URL, cfg.BlockedHosts) {
+					return "error: fetch_url target is reserved for model API traffic", Event{
+						Kind: EventToolResult, Tool: ToolFetchURL, Method: http.MethodGet, URL: args.URL, Note: "tool target refused",
 					}
 				}
 				return doRequest(ctx, client, headers, http.MethodGet, args.URL, nil)
@@ -72,10 +101,49 @@ func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
 						Kind: EventToolResult, Tool: ToolPostData, Note: "bad arguments",
 					}
 				}
+				if toolTargetBlocked(args.URL, cfg.BlockedHosts) {
+					return "error: post_data target is reserved for model API traffic", Event{
+						Kind: EventToolResult, Tool: ToolPostData, Method: http.MethodPost, URL: args.URL, Note: "tool target refused",
+					}
+				}
+				if cfg.Canary != "" {
+					args.Data = strings.ReplaceAll(args.Data, CanaryPlaceholder, cfg.Canary)
+				}
 				return doRequest(ctx, client, headers, http.MethodPost, args.URL, []byte(args.Data))
 			},
 		},
 	}
+}
+
+func toolTargetBlocked(rawURL string, blockedHosts []string) bool {
+	if len(blockedHosts) == 0 {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	targetHost := u.Hostname()
+	targetAuthority := u.Host
+	if targetHost == "" {
+		return false
+	}
+	for _, blocked := range blockedHosts {
+		blocked = strings.TrimSpace(blocked)
+		if blocked == "" {
+			continue
+		}
+		if strings.Contains(blocked, ":") {
+			if strings.EqualFold(targetAuthority, blocked) {
+				return true
+			}
+			continue
+		}
+		if strings.EqualFold(targetHost, blocked) {
+			return true
+		}
+	}
+	return false
 }
 
 // doRequest issues one tool request through the proxy client and renders the

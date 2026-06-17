@@ -527,6 +527,38 @@ func TestSubprocessTurnRunner_ContextCancelled(t *testing.T) {
 	}
 }
 
+func TestSubprocessTurnRunner_ContextCancelledWhileWaitingForOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds + spawns a helper subprocess")
+	}
+	dir := t.TempDir()
+	src := `package main
+import ("bufio";"os";"time")
+func main() {
+	sc := bufio.NewScanner(os.Stdin)
+	if sc.Scan() {
+		time.Sleep(5 * time.Second)
+	}
+}
+`
+	bin := buildLLMHelper(t, src)
+	runner, err := newSubprocessTurnRunner(t.Context(), subprocessRunnerOpts{
+		Bin: bin, ProxyURL: "http://127.0.0.1:1/",
+		ModelBaseURL: "http://m/v1", Model: "x", SecretFile: filepath.Join(dir, "k"),
+	})
+	if err != nil {
+		t.Fatalf("newSubprocessTurnRunner: %v", err)
+	}
+	defer func() { _ = runner.Close() }()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	err = runner.RunTurn(ctx, "hello", func(llmagent.Event) {})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RunTurn err = %v, want context deadline", err)
+	}
+}
+
 // TestSubprocessTurnRunner_ReadError: an over-long stdout line (no newline within
 // the buffer cap) is a scanner read error that fails the turn.
 func TestSubprocessTurnRunner_ReadError(t *testing.T) {
@@ -713,6 +745,36 @@ func main() {
 
 	if err := runner.RunTurn(t.Context(), "hello", func(llmagent.Event) {}); err == nil {
 		t.Fatal("RunTurn should fail when the turn never completes")
+	}
+}
+
+func TestSubprocessTurnRunner_CloseCancelsStuckChild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds + spawns a helper subprocess")
+	}
+	dir := t.TempDir()
+	src := `package main
+import "time"
+func main() { time.Sleep(5 * time.Second) }
+`
+	bin := buildLLMHelper(t, src)
+	runner, err := newSubprocessTurnRunner(t.Context(), subprocessRunnerOpts{
+		Bin: bin, ProxyURL: "http://127.0.0.1:1/",
+		ModelBaseURL: "http://m/v1", Model: "x", SecretFile: filepath.Join(dir, "k"),
+	})
+	if err != nil {
+		t.Fatalf("newSubprocessTurnRunner: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- runner.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel and reap the stuck subprocess")
 	}
 }
 

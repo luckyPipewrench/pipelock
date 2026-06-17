@@ -60,6 +60,11 @@ type config struct {
 	dev          bool
 }
 
+type eventWriter struct {
+	enc *json.Encoder
+	err error
+}
+
 func main() {
 	cfg, err := parseFlags(os.Args[1:], os.Getenv)
 	if err != nil {
@@ -81,13 +86,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "WARNING: running uncontained (--dev): agent egress is NOT mediated by Pipelock")
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	agent, err := buildAgent(cfg, apiKey, func(ev llmagent.Event) { _ = enc.Encode(ev) })
+	out := &eventWriter{enc: json.NewEncoder(os.Stdout)}
+	agent, err := buildAgent(cfg, apiKey, out.Emit)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "build agent:", err)
 		os.Exit(1)
 	}
-	if err := runLoop(context.Background(), agent, os.Stdin, enc); err != nil {
+	if err := runLoop(context.Background(), agent, os.Stdin, out); err != nil {
 		fmt.Fprintln(os.Stderr, "run:", err)
 		os.Exit(1)
 	}
@@ -113,6 +118,24 @@ func parseFlags(args []string, getenv func(string) string) (config, error) {
 	cfg.canary = getenv(envCanary)
 	if cfg.modelBaseURL == "" || cfg.model == "" {
 		return config{}, fmt.Errorf("--model-base-url and --model are required")
+	}
+	if err := validateHTTPURL("--model-base-url", cfg.modelBaseURL); err != nil {
+		return config{}, err
+	}
+	if cfg.proxyURL != "" {
+		if err := validateHTTPURL("--proxy-url", cfg.proxyURL); err != nil {
+			return config{}, err
+		}
+	}
+	if cfg.safeURL != "" {
+		if err := validateHTTPURL("--safe-url", cfg.safeURL); err != nil {
+			return config{}, err
+		}
+	}
+	if cfg.exfilURL != "" {
+		if err := validateHTTPURL("--exfil-url", cfg.exfilURL); err != nil {
+			return config{}, err
+		}
 	}
 	return cfg, nil
 }
@@ -170,8 +193,14 @@ func buildAgent(cfg config, apiKey string, emit func(llmagent.Event)) (*llmagent
 }
 
 func buildClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
 	tr := &http.Transport{}
 	if proxyURL != "" {
+		if err := validateHTTPURL("--proxy-url", proxyURL); err != nil {
+			return nil, err
+		}
 		u, err := url.Parse(proxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("parse proxy url: %w", err)
@@ -181,22 +210,67 @@ func buildClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
 	return &http.Client{Transport: tr, Timeout: timeout}, nil
 }
 
+func validateHTTPURL(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s: parse: %w", name, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s: must use http or https", name)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s: host is required", name)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s: must not include credentials", name)
+	}
+	return nil
+}
+
+func (w *eventWriter) Emit(ev llmagent.Event) {
+	_ = w.Encode(ev)
+}
+
+func (w *eventWriter) Encode(v any) error {
+	if w.err != nil {
+		return w.err
+	}
+	if err := w.enc.Encode(v); err != nil {
+		w.err = err
+	}
+	return w.err
+}
+
+func (w *eventWriter) Err() error {
+	return w.err
+}
+
 // runLoop reads one visitor message per line, runs it as a turn (narration is
-// emitted via the agent's emit, which the caller wired to enc), and writes a
+// emitted via the agent's emit, which the caller wired to out), and writes a
 // turn_done marker after each. It returns when stdin closes.
-func runLoop(ctx context.Context, a *llmagent.Agent, in io.Reader, enc *json.Encoder) error {
+func runLoop(ctx context.Context, a *llmagent.Agent, in io.Reader, out *eventWriter) error {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 4096), maxInputLine)
 	for sc.Scan() {
+		if err := out.Err(); err != nil {
+			return fmt.Errorf("write event: %w", err)
+		}
 		var req struct {
 			Message string `json:"message"`
 		}
 		if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
-			_ = enc.Encode(llmagent.Event{Kind: llmagent.EventError, Text: "could not parse input message"})
+			if err := out.Encode(llmagent.Event{Kind: llmagent.EventError, Text: "could not parse input message"}); err != nil {
+				return fmt.Errorf("write error event: %w", err)
+			}
 		} else if strings.TrimSpace(req.Message) != "" {
 			_, _ = a.Run(ctx, req.Message)
+			if err := out.Err(); err != nil {
+				return fmt.Errorf("write agent event: %w", err)
+			}
 		}
-		_ = enc.Encode(llmagent.Event{Kind: llmagent.EventTurnDone})
+		if err := out.Encode(llmagent.Event{Kind: llmagent.EventTurnDone}); err != nil {
+			return fmt.Errorf("write turn_done event: %w", err)
+		}
 	}
 	return sc.Err()
 }

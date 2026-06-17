@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,6 +43,18 @@ func TestParseFlags(t *testing.T) {
 	}
 	if cfg.actor != defaultActor {
 		t.Fatalf("actor default = %q", cfg.actor)
+	}
+	if _, err := parseFlags([]string{"--model-base-url", "http://", "--model", "m"}, noEnv); err == nil {
+		t.Fatal("want error on model URL without host")
+	}
+	if _, err := parseFlags([]string{"--model-base-url", "http://m", "--model", "m", "--proxy-url", "file:///tmp/proxy"}, noEnv); err == nil {
+		t.Fatal("want error on non-http proxy URL")
+	}
+	if _, err := parseFlags([]string{"--model-base-url", "http://user:pass@m", "--model", "m"}, noEnv); err == nil {
+		t.Fatal("want error on model URL with credentials")
+	}
+	if _, err := parseFlags([]string{"--model-base-url", "http://m", "--model", "m", "--safe-url", "://bad"}, noEnv); err == nil {
+		t.Fatal("want error on invalid safe URL")
 	}
 }
 
@@ -98,6 +111,9 @@ func TestBuildClient(t *testing.T) {
 	if c.Transport.(*http.Transport).Proxy == nil {
 		t.Fatal("expected proxy on transport")
 	}
+	if c.Timeout == 0 {
+		t.Fatal("expected timeout default when zero is passed")
+	}
 	if _, err := buildClient("://bad", 0); err == nil {
 		t.Fatal("want error on bad proxy url")
 	}
@@ -111,6 +127,31 @@ func TestBuildAgent_BadProxy(t *testing.T) {
 	cfg := config{modelBaseURL: "http://m", model: "m", proxyURL: "://bad"}
 	if _, err := buildAgent(cfg, "k", func(llmagent.Event) {}); err == nil {
 		t.Fatal("want error when proxy url is invalid")
+	}
+}
+
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("pipe broke") }
+
+func TestRunLoop_FailsClosedOnWriteError(t *testing.T) {
+	// If the parent stops reading stdout, the subprocess must stop, not keep
+	// processing turns with a broken narration stream.
+	cfg := config{modelBaseURL: "http://127.0.0.1:0", model: "m", dev: true}
+
+	// Bad input forces an error-event write, which fails on the broken pipe.
+	out1 := &eventWriter{enc: json.NewEncoder(failWriter{})}
+	a1, _ := buildAgent(cfg, "k", out1.Emit)
+	if err := runLoop(context.Background(), a1, strings.NewReader("not json\n"), out1); err == nil {
+		t.Fatal("want fail-closed error on bad-input write failure")
+	}
+
+	// A valid message runs the agent (model unreachable -> error narration), and
+	// the broken stdout must surface as a fail-closed error after the turn.
+	out2 := &eventWriter{enc: json.NewEncoder(failWriter{})}
+	a2, _ := buildAgent(cfg, "k", out2.Emit)
+	if err := runLoop(context.Background(), a2, strings.NewReader(`{"message":"hi"}`+"\n"), out2); err == nil {
+		t.Fatal("want fail-closed error on post-run write failure")
 	}
 }
 
@@ -154,14 +195,14 @@ func TestRunLoop_EndToEnd(t *testing.T) {
 
 	cfg := config{modelBaseURL: model.URL, model: "m", safeURL: target.URL, dev: true}
 	var out bytes.Buffer
-	enc := json.NewEncoder(&out)
-	agent, err := buildAgent(cfg, "k", func(ev llmagent.Event) { _ = enc.Encode(ev) })
+	events := &eventWriter{enc: json.NewEncoder(&out)}
+	agent, err := buildAgent(cfg, "k", events.Emit)
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
 
 	in := strings.NewReader(`{"message":"read the config"}` + "\n")
-	if err := runLoop(context.Background(), agent, in, enc); err != nil {
+	if err := runLoop(context.Background(), agent, in, events); err != nil {
 		t.Fatalf("runLoop: %v", err)
 	}
 
@@ -180,18 +221,84 @@ func TestRunLoop_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestRunLoop_EndToEndUsesProxyForModelAndTool(t *testing.T) {
+	var seen []string
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !r.URL.IsAbs() {
+			t.Errorf("proxied request URL is not absolute: %q", r.RequestURI)
+		}
+		seen = append(seen, r.Method+" "+r.URL.String())
+		switch {
+		case r.Method == http.MethodPost && r.URL.Host == "model.example.test" && r.URL.Path == "/v1/chat/completions" && len(seen) == 1:
+			argURL, _ := json.Marshal(map[string]string{"url": "http://tool.example.test/config"})
+			_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[`+
+				`{"id":"c1","type":"function","function":{"name":"fetch_url","arguments":%q}}]}}]}`, string(argURL))
+		case r.Method == http.MethodGet && r.URL.Host == "tool.example.test" && r.URL.Path == "/config":
+			_, _ = io.WriteString(w, "lab config via proxy")
+		case r.Method == http.MethodPost && r.URL.Host == "model.example.test" && r.URL.Path == "/v1/chat/completions":
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"}}]}`)
+		default:
+			t.Errorf("unexpected proxied request: %s %s", r.Method, r.URL.String())
+			http.Error(w, "unexpected request", http.StatusBadGateway)
+		}
+	}))
+	t.Cleanup(proxySrv.Close)
+
+	cfg := config{
+		modelBaseURL: "http://model.example.test/v1",
+		model:        "m",
+		proxyURL:     proxySrv.URL,
+	}
+	var out bytes.Buffer
+	events := &eventWriter{enc: json.NewEncoder(&out)}
+	agent, err := buildAgent(cfg, "k", events.Emit)
+	if err != nil {
+		t.Fatalf("buildAgent: %v", err)
+	}
+
+	in := strings.NewReader(`{"message":"read the config"}` + "\n")
+	if err := runLoop(context.Background(), agent, in, events); err != nil {
+		t.Fatalf("runLoop: %v", err)
+	}
+	want := []string{
+		"POST http://model.example.test/v1/chat/completions",
+		"GET http://tool.example.test/config",
+		"POST http://model.example.test/v1/chat/completions",
+	}
+	if strings.Join(seen, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("proxied requests = %#v, want %#v", seen, want)
+	}
+}
+
 func TestRunLoop_BadInputEmitsErrorThenDone(t *testing.T) {
 	cfg := config{modelBaseURL: "http://unused", model: "m", dev: true}
 	var out bytes.Buffer
-	enc := json.NewEncoder(&out)
-	agent, _ := buildAgent(cfg, "k", func(ev llmagent.Event) { _ = enc.Encode(ev) })
+	events := &eventWriter{enc: json.NewEncoder(&out)}
+	agent, _ := buildAgent(cfg, "k", events.Emit)
 
 	in := strings.NewReader("not json\n")
-	if err := runLoop(context.Background(), agent, in, enc); err != nil {
+	if err := runLoop(context.Background(), agent, in, events); err != nil {
 		t.Fatalf("runLoop: %v", err)
 	}
 	evs := decodeEvents(t, out.Bytes())
 	if len(evs) != 2 || evs[0].Kind != llmagent.EventError || evs[1].Kind != llmagent.EventTurnDone {
 		t.Fatalf("events = %+v, want [error, turn_done]", evs)
 	}
+}
+
+func TestRunLoop_OutputErrorFailsClosed(t *testing.T) {
+	cfg := config{modelBaseURL: "http://unused", model: "m", dev: true}
+	events := &eventWriter{enc: json.NewEncoder(errorWriter{})}
+	agent, _ := buildAgent(cfg, "k", events.Emit)
+
+	err := runLoop(context.Background(), agent, strings.NewReader("not json\n"), events)
+	if err == nil || !strings.Contains(err.Error(), "write error event") {
+		t.Fatalf("err = %v, want write error", err)
+	}
+}
+
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write broke")
 }

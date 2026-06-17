@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -226,6 +227,12 @@ func decodePrivateKeyJSON(data []byte) (ed25519.PrivateKey, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&kf); err != nil {
+		return nil, fmt.Errorf("decoding JSON private key file: %w", err)
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err == nil {
+		return nil, fmt.Errorf("decoding JSON private key file: trailing data after key object")
+	} else if !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("decoding JSON private key file: %w", err)
 	}
 	if kf.SchemaVersion != 1 {

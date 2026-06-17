@@ -626,12 +626,26 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Next:       "set flight_recorder.dir to a writable directory so receipts are persisted",
 		}
 	}
+	readable := pathReadable(cfg.FlightRecorder.Dir)
+	writable := pathWritableDir(cfg.FlightRecorder.Dir)
+	if !readable || !writable {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusFail,
+			Configured: true,
+			Reachable:  readable,
+			Enforcing:  false,
+			Detail:     "flight_recorder.dir is configured but is not readable and writable; receipts will not persist reliably",
+			Next:       "create the directory and grant the pipelock service user read/write/execute access",
+		}
+	}
 	return doctorReportCheck{
 		Name:       "flight_recorder",
 		Surface:    doctorSurfaceConfig,
 		Status:     doctorStatusOK,
 		Configured: true,
-		Reachable:  pathReadable(cfg.FlightRecorder.Dir),
+		Reachable:  true,
 		Enforcing:  true,
 		Detail:     "flight_recorder is enabled with a configured directory",
 	}
@@ -719,6 +733,21 @@ func pathReadable(path string) bool {
 		return false
 	}
 	return openReadable(path)
+}
+
+func pathWritableDir(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	probe, err := os.CreateTemp(filepath.Clean(path), ".pipelock-doctor-writability-*") //nolint:gosec // doctor checks operator-visible config paths from local configuration.
+	if err != nil {
+		return false
+	}
+	probePath := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(probePath)
+	return true
 }
 
 func openReadable(path string) bool {

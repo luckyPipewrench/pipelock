@@ -55,7 +55,7 @@ Secret handling before inclusion:
   - License tokens, bearer tokens, API keys → <redacted>
   - Private key material (CA key, signing keys) → presence noted only
   - Environment variable values → names only, never values
-  - Webhook URLs → userinfo and token query params → <redacted>
+  - Webhook URLs → userinfo, path, fragment, and token query params → <redacted>
   - Audit-log lines with remaining secret-shaped content → <redacted>
 
 The archive contains:

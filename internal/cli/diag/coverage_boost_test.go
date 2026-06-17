@@ -523,19 +523,23 @@ func TestDoctorCmd_FlightRecorderInert(t *testing.T) {
 }
 
 // TestCheckDoctorFlightRecorder_AllBranches exercises every status branch of
-// checkDoctorFlightRecorder: disabled (info), enabled-but-no-dir (warn), and
-// enabled-with-dir (ok).
+// checkDoctorFlightRecorder: disabled (info), enabled-but-no-dir (warn),
+// enabled-with-dir (ok), and configured-but-unusable (fail).
 func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 	dir := t.TempDir()
+	missingDir := filepath.Join(t.TempDir(), "missing")
 	tests := []struct {
 		name    string
 		enabled bool
 		dir     string
 		want    string
+		reach   bool
+		enforce bool
 	}{
 		{name: "disabled", enabled: false, dir: "", want: doctorStatusInfo},
 		{name: "enabled_no_dir", enabled: true, dir: "", want: doctorStatusWarn},
-		{name: "enabled_with_dir", enabled: true, dir: dir, want: doctorStatusOK},
+		{name: "enabled_with_dir", enabled: true, dir: dir, want: doctorStatusOK, reach: true, enforce: true},
+		{name: "enabled_missing_dir", enabled: true, dir: missingDir, want: doctorStatusFail},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -548,6 +552,12 @@ func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 			}
 			if got.Status != tc.want {
 				t.Errorf("Status = %q, want %q", got.Status, tc.want)
+			}
+			if got.Reachable != tc.reach {
+				t.Errorf("Reachable = %v, want %v", got.Reachable, tc.reach)
+			}
+			if got.Enforcing != tc.enforce {
+				t.Errorf("Enforcing = %v, want %v", got.Enforcing, tc.enforce)
 			}
 		})
 	}

@@ -323,6 +323,8 @@ func TestDecodePrivateKey_JSONKeyFileMalformed(t *testing.T) {
 		name  string
 		input string
 	}{
+		{"malformed JSON syntax", `{broken json`},
+		{"trailing JSON data", `{"schema_version":1,"private":"aa"} true`},
 		{"wrong schema version", `{"schema_version":99,"private":"aa","public":"bb"}`},
 		{"empty private field", `{"schema_version":1,"private":"","public":"bb"}`},
 		{"bad hex in private", `{"schema_version":1,"private":"not-hex","public":"bb"}`},

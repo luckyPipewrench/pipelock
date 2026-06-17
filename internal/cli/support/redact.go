@@ -126,9 +126,9 @@ func redactConfig(cfg *config.Config) map[string]any {
 	return out
 }
 
-// redactURL replaces userinfo (user:pass@) and known secret query params in
-// a URL with redactedPlaceholder, then returns the sanitised URL string.
-// Returns the original string unchanged if it cannot be parsed as a URL.
+// redactURL replaces userinfo (user:pass@), path, fragment, and known secret
+// query params in a URL with redactedPlaceholder, then returns the sanitised
+// URL string. Parse failures redact the whole value.
 func redactURL(raw string) string {
 	if raw == "" {
 		return ""

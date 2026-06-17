@@ -141,6 +141,9 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		Addr:              f.listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
 	}
 	return httpSrv.ListenAndServe()
 }
@@ -183,6 +186,9 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 
 	llmAgent, err := buildLLMAgentConfig(f)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateServeSafety(f, llmAgent != nil); err != nil {
 		return nil, nil, err
 	}
 
@@ -228,6 +234,25 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 		_, _ = fmt.Fprintf(out, "serving viewer from %s at /\n", f.staticDir)
 	}
 	return srv, handler, nil
+}
+
+func validateServeSafety(f *serveFlags, modelBacked bool) error {
+	if f.maxPerCode < 0 {
+		return errors.New("--max-per-code must be >= 0")
+	}
+	if f.dailyTurnBudget < 0 {
+		return errors.New("--daily-turn-budget must be >= 0")
+	}
+	if f.maxMessagesPerSession < 0 {
+		return errors.New("--max-messages-per-session must be >= 0")
+	}
+	if !f.dev && !f.requireContainment {
+		return errors.New("non-dev serve requires containment; use --dev for local uncontained testing")
+	}
+	if modelBacked && !f.dev && f.dailyTurnBudget <= 0 {
+		return errors.New("model-backed public serve requires --daily-turn-budget > 0 (or --dev for local testing)")
+	}
+	return nil
 }
 
 // buildLLMAgentConfig assembles the model-backed agent config from the model
@@ -297,6 +322,9 @@ func resolveSecret(b64, file string) ([]byte, error) {
 func resolveCodes(out interface{ Write([]byte) (int, error) }, f *serveFlags) ([]livechat.CodeSpec, error) {
 	specs := make([]livechat.CodeSpec, 0, len(f.codes))
 	for _, c := range f.codes {
+		if strings.TrimSpace(c) == "" {
+			return nil, errors.New("invite code cannot be empty or whitespace")
+		}
 		specs = append(specs, livechat.CodeSpec{Code: c, MaxSessions: f.maxPerCode})
 	}
 	if len(specs) == 0 {

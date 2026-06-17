@@ -80,20 +80,22 @@ func TestServer_CORSPreflight(t *testing.T) {
 	t.Parallel()
 	ts := newTestServer(t, ServerConfig{AllowOrigin: "https://pipelab.org"})
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodOptions, ts.URL+RouteMessage, nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("preflight status = %d, want 204", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Access-Control-Allow-Methods"); got != "GET, POST, OPTIONS" {
-		t.Errorf("methods = %q, want GET, POST, OPTIONS", got)
-	}
-	if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Content-Type" {
-		t.Errorf("headers = %q, want Content-Type", got)
+	for _, route := range []string{RouteMessage, RouteHealth} {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodOptions, ts.URL+route, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("%s preflight status = %d, want 204", route, resp.StatusCode)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Methods"); got != "GET, POST, OPTIONS" {
+			t.Errorf("%s methods = %q, want GET, POST, OPTIONS", route, got)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Content-Type" {
+			t.Errorf("%s headers = %q, want Content-Type", route, got)
+		}
 	}
 }
 

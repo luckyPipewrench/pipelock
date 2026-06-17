@@ -64,6 +64,30 @@ func TestDailyBudget_CapAndDailyReset(t *testing.T) {
 	}
 }
 
+func TestDailyBudget_RefundSameDayOnly(t *testing.T) {
+	t.Parallel()
+	day1 := time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC)
+	b := NewDailyBudget(2)
+	b.now = func() time.Time { return day1 }
+
+	if !b.Charge() || b.Remaining() != 1 {
+		t.Fatalf("initial charge failed or remaining = %d, want 1", b.Remaining())
+	}
+	b.Refund()
+	if b.Remaining() != 2 {
+		t.Fatalf("refund remaining = %d, want 2", b.Remaining())
+	}
+
+	if !b.Charge() {
+		t.Fatal("second charge failed")
+	}
+	b.now = func() time.Time { return day1.Add(24 * time.Hour) }
+	b.Refund()
+	if b.Remaining() != 2 {
+		t.Fatalf("cross-day refund must not affect new day, remaining = %d", b.Remaining())
+	}
+}
+
 func TestLiveEntry_TryMessage(t *testing.T) {
 	t.Parallel()
 	e := &liveEntry{}
@@ -75,6 +99,10 @@ func TestLiveEntry_TryMessage(t *testing.T) {
 	}
 	if e.tryMessage(2) {
 		t.Error("third message must be refused at the cap")
+	}
+	e.refundMessage(2)
+	if !e.tryMessage(2) {
+		t.Error("refund should return one message slot")
 	}
 	// cap 0 is unlimited.
 	u := &liveEntry{}
@@ -121,6 +149,31 @@ func TestServer_DailyTurnBudget_KillSwitch(t *testing.T) {
 	// The day's single-turn budget is spent: the next message is refused (paused).
 	if st := sendLiveMessage(t, ts.URL, token, "again"); st != http.StatusServiceUnavailable {
 		t.Errorf("over-budget message status = %d, want 503", st)
+	}
+	resp := postJSON(t, ts.URL+RouteSession, createReq{Code: "good"})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("new session after spent budget status = %d, want 503", resp.StatusCode)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+RouteHealth, nil)
+	if err != nil {
+		t.Fatalf("new health request: %v", err)
+	}
+	healthResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	defer func() { _ = healthResp.Body.Close() }()
+	var health map[string]any
+	if err := json.NewDecoder(healthResp.Body).Decode(&health); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if ok, _ := health["ok"].(bool); ok {
+		t.Fatalf("health ok after spent budget = true, want false: %+v", health)
+	}
+	if rem, _ := health["budget_remaining"].(float64); rem != 0 {
+		t.Fatalf("budget_remaining = %v, want 0", health["budget_remaining"])
 	}
 }
 

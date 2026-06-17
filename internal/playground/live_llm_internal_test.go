@@ -485,6 +485,18 @@ func TestModelRun_EgressAllowlistEnforced(t *testing.T) {
 	if st := doProxiedGet(t.Context(), client, modelRoot); st != http.StatusOK {
 		t.Errorf("GET allowlisted model host status = %d, want 200", st)
 	}
+	providerKey := "sk-" + "proj-" + strings.Repeat("a", 24)
+	modelHeaders := map[string]string{
+		"Authorization": "Bearer " + providerKey,
+		"Content-Type":  "application/json",
+	}
+	modelChatURL := strings.TrimRight(modelBase, "/") + "/chat/completions"
+	if st := doProxiedRequest(t.Context(), client, http.MethodPost, modelChatURL, []byte(`{"model":"test"}`), modelHeaders); st != http.StatusOK {
+		t.Errorf("POST model chat endpoint with provider auth status = %d, want 200", st)
+	}
+	if st := doProxiedRequest(t.Context(), client, http.MethodGet, lr.liveSafeURL(), nil, map[string]string{"Authorization": "Bearer " + providerKey}); st < http.StatusBadRequest {
+		t.Errorf("provider-shaped auth header to lab target status = %d, want a 4xx DLP block", st)
+	}
 
 	// Blocked: a host outside the allowlist is refused (pre-DNS), so a jailbroken
 	// model cannot egress to an arbitrary destination through the lab proxy.
@@ -878,27 +890,28 @@ func main() {
 // --- small request helpers ---
 
 func doProxiedGet(ctx context.Context, client *http.Client, rawURL string) int {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return 0
-	}
-	req.Header.Set(proxy.AgentHeader, liveRunActor)
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	return resp.StatusCode
+	return doProxiedRequest(ctx, client, http.MethodGet, rawURL, nil, nil)
 }
 
 func doProxiedPost(ctx context.Context, client *http.Client, rawURL string, body []byte) int {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(body))
+	return doProxiedRequest(ctx, client, http.MethodPost, rawURL, body, map[string]string{
+		"Content-Type": "application/x-www-form-urlencoded",
+	})
+}
+
+func doProxiedRequest(ctx context.Context, client *http.Client, method, rawURL string, body []byte, headers map[string]string) int {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, rdr)
 	if err != nil {
 		return 0
 	}
 	req.Header.Set(proxy.AgentHeader, liveRunActor)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0

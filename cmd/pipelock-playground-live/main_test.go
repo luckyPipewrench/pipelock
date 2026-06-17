@@ -144,6 +144,14 @@ func TestResolveCodes_NoCodesNotDev(t *testing.T) {
 	}
 }
 
+func TestResolveCodes_BlankCodeRejected(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if _, err := resolveCodes(&out, &serveFlags{codes: []string{" \t"}, maxPerCode: defaultMaxPerCode}); err == nil {
+		t.Error("expected error: blank invite code")
+	}
+}
+
 func TestResolveCodes_DevGenerates(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
@@ -203,7 +211,7 @@ func TestNewRootCmd_HasSubcommands(t *testing.T) {
 func TestNewServeCmd_RegistersFlags(t *testing.T) {
 	t.Parallel()
 	cmd := newServeCmd()
-	for _, name := range []string{"listen", "code", "max-per-code", "dev", "require-containment", "secret", "secret-file", "static-dir", "session-ttl"} {
+	for _, name := range []string{"listen", "code", "max-per-code", "dev", "require-containment", "secret", "secret-file", "static-dir", "session-ttl", "daily-turn-budget", "max-messages-per-session"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("serve missing --%s flag", name)
 		}
@@ -274,6 +282,63 @@ func TestBuildServer_StaticDirMux(t *testing.T) {
 	handler.ServeHTTP(rec2, httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/live/health", nil))
 	if rec2.Code != http.StatusOK {
 		t.Errorf("api/live/health under static mux: code=%d", rec2.Code)
+	}
+}
+
+func TestBuildServer_PublicModelRequiresDailyBudget(t *testing.T) {
+	t.Parallel()
+	f := devServeFlags()
+	f.dev = false
+	f.requireContainment = true
+	f.codes = []string{"good"}
+	f.llmAgentBin = "/usr/local/bin/pipelock-playground-llm-agent"
+	f.modelBaseURL = "http://provider.example/v1"
+	f.model = "test-model"
+	f.modelSecretFile = filepath.Join(t.TempDir(), "model.key")
+
+	var out bytes.Buffer
+	if _, _, err := buildServer(&out, f); err == nil {
+		t.Fatal("model-backed non-dev server without daily budget should fail closed")
+	}
+
+	f.dailyTurnBudget = 10
+	srv, handler, err := buildServer(&out, f)
+	if err != nil {
+		t.Fatalf("model-backed non-dev server with daily budget: %v", err)
+	}
+	if srv == nil || handler == nil {
+		t.Fatal("nil server/handler")
+	}
+	defer srv.Close()
+}
+
+func TestBuildServer_NonDevRequiresContainment(t *testing.T) {
+	t.Parallel()
+	f := devServeFlags()
+	f.dev = false
+	f.requireContainment = false
+	f.codes = []string{"good"}
+	var out bytes.Buffer
+	if _, _, err := buildServer(&out, f); err == nil {
+		t.Fatal("non-dev uncontained server should fail closed")
+	}
+}
+
+func TestValidateServeSafety_RejectsNegativeCaps(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		f    serveFlags
+	}{
+		{name: "max_per_code", f: serveFlags{maxPerCode: -1}},
+		{name: "daily_budget", f: serveFlags{dailyTurnBudget: -1}},
+		{name: "session_messages", f: serveFlags{maxMessagesPerSession: -1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateServeSafety(&tc.f, false); err == nil {
+				t.Fatal("expected error")
+			}
+		})
 	}
 }
 

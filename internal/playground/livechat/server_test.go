@@ -75,6 +75,12 @@ func TestServer_NewServer_FailsClosed(t *testing.T) {
 	if _, err := NewServer(ServerConfig{Gate: g, RequireContainment: true}); err == nil {
 		t.Error("NewServer RequireContainment with nil verifier succeeded; want error (fail-closed)")
 	}
+	if _, err := NewServer(ServerConfig{Gate: g, DailyTurnBudget: -1}); err == nil {
+		t.Error("NewServer accepted negative DailyTurnBudget; want error")
+	}
+	if _, err := NewServer(ServerConfig{Gate: g, MaxMessagesPerSession: -1}); err == nil {
+		t.Error("NewServer accepted negative MaxMessagesPerSession; want error")
+	}
 }
 
 func TestServer_Session_MethodAndCodeChecks(t *testing.T) {

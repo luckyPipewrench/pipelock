@@ -16,7 +16,7 @@ import (
 // cap, Charge fails closed until the next UTC day, so a busy (or abusive) day
 // cannot run an unbounded model bill.
 //
-// A cap of 0 means unlimited (no global ceiling) — only for --dev / local runs.
+// A cap of 0 means unlimited (no global ceiling) - only for --dev / local runs.
 // Public exposure MUST set a positive cap.
 type DailyBudget struct {
 	mu    sync.Mutex
@@ -58,6 +58,22 @@ func (b *DailyBudget) Charge() bool {
 	}
 	b.count++
 	return true
+}
+
+// Refund returns one already-admitted charge to today's budget. It is used only
+// when the server reserved budget but the session was already sealed before the
+// turn could start. Refund never creates extra headroom: it only decrements a
+// positive count for the same UTC day.
+func (b *DailyBudget) Refund() {
+	if b == nil || b.cap <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if dayKey(b.now()) != b.day || b.count <= 0 {
+		return
+	}
+	b.count--
 }
 
 // Remaining reports today's remaining budget, or -1 when unlimited.

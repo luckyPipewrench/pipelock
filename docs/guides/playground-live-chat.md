@@ -51,7 +51,13 @@ under its own per-client limit, still adds up to an unbounded model bill. The
 daily turn budget is the hard backstop. Once the day's budget is spent, the demo
 refuses further messages (HTTP 503, "paused until tomorrow") and resets at the UTC
 day boundary. A value of `0` means unlimited and must only be used for local/dev
-runs. `/api/live/health` reports `budget_remaining`.
+runs. The server refuses to enable the model-backed agent outside `--dev` unless
+`--daily-turn-budget` is positive. `/api/live/health` reports
+`budget_remaining`.
+
+The in-process budget protects one live server process. Public deployments should
+also set an account/provider spend cap, because a process restart or a multi-node
+deployment is outside that local counter.
 
 ## Containment posture
 
@@ -67,7 +73,9 @@ may dial only the Pipelock proxy, so its model calls and tool calls are all
 mediated. This is a transport-level guarantee; where the host provides kernel
 containment, that no-bypass property is attested separately. Egress for a
 model-agent run is restricted to the lab targets and the model API host; any other
-destination is refused.
+destination is refused. The model provider authorization header is allowed only to
+the configured `/chat/completions` endpoint; lab target requests remain scanned
+and blocked on credential-shaped payloads.
 
 ## Deployment guidance
 
@@ -76,3 +84,10 @@ not on shared or homelab hardware: the demo is a deliberately jailbreakable agen
 behind a public endpoint, so its blast radius should be disposable and account-
 isolated. The frontend is static and can be served separately. See the playground
 cost/hosting plan for the recommended topology.
+
+For the reverse proxy/CDN in front of the server:
+
+- Do not log query strings for `/api/live/stream`; the SSE token is a short-lived
+  bearer token in the URL query.
+- Set `--trust-forwarded-for` only when the server is reachable exclusively
+  through that trusted proxy/CDN.

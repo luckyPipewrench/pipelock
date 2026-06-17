@@ -221,7 +221,6 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 
 	// --- Build pipelock config ---
 	cfg := config.Defaults()
-	cfg.Internal = nil // disable SSRF/DNS lookups
 	cfg.ForwardProxy.Enabled = true
 
 	// DNS host overrides: .test hosts -> loopback
@@ -255,6 +254,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		}
 		cfg.Mode = config.ModeStrict
 		cfg.APIAllowlist = append(cfg.APIAllowlist, liveRunSafeHost, liveRunExfilHost, modelHost)
+		cfg.Suppress = append(cfg.Suppress, modelProviderAuthSuppressions(opts.ModelBaseURL)...)
 	}
 
 	cfg.ApplyDefaults()
@@ -703,7 +703,36 @@ func modelHostname(raw string) (string, error) {
 	if host == "" {
 		return "", fmt.Errorf("host is required")
 	}
-	return host, nil
+	return strings.TrimSuffix(strings.ToLower(host), "."), nil
+}
+
+var modelProviderAuthDLPPatterns = []string{
+	"Anthropic API Key",
+	"OpenAI API Key",
+	"OpenAI Service Key",
+	"Fireworks API Key",
+	"Google API Key",
+	"Hugging Face Token",
+	"Replicate API Token",
+	"Groq API Key",
+	"xAI API Key",
+}
+
+// modelProviderAuthSuppressions allows the playground's own model-provider
+// Authorization key to reach exactly the configured chat-completions endpoint.
+// Tool calls still cannot target the model host, and the lab collector/safe
+// targets remain fully scanned.
+func modelProviderAuthSuppressions(baseURL string) []config.SuppressEntry {
+	target := strings.TrimRight(baseURL, "/") + "/chat/completions"
+	out := make([]config.SuppressEntry, 0, len(modelProviderAuthDLPPatterns))
+	for _, rule := range modelProviderAuthDLPPatterns {
+		out = append(out, config.SuppressEntry{
+			Rule:   rule,
+			Path:   target,
+			Reason: "playground model provider authorization header",
+		})
+	}
+	return out
 }
 
 // portFromAddr extracts the port string from a net.Addr.

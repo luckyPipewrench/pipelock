@@ -51,7 +51,7 @@ type ServerConfig struct {
 	// further messages are refused until the next UTC day.
 	DailyTurnBudget int
 	// MaxMessagesPerSession caps how many messages one session may send (each is a
-	// real model call). 0 = unlimited. Defaults applied in NewServer.
+	// real model call). 0 = the conservative default applied in NewServer.
 	MaxMessagesPerSession int
 	// RequireContainment is passed to each session. Public exposure MUST be true.
 	RequireContainment bool
@@ -106,6 +106,19 @@ func (e *liveEntry) tryMessage(limit int) bool {
 	return true
 }
 
+// refundMessage returns one reserved message slot. It is intentionally narrow:
+// only call it when no turn could have started.
+func (e *liveEntry) refundMessage(limit int) {
+	if limit <= 0 {
+		return
+	}
+	e.msgMu.Lock()
+	defer e.msgMu.Unlock()
+	if e.msgCount > 0 {
+		e.msgCount--
+	}
+}
+
 // Server is the live-chat HTTP/SSE front door.
 type Server struct {
 	cfg              ServerConfig
@@ -134,6 +147,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.RequireContainment && cfg.Containment == nil {
 		return nil, errors.New("livechat: RequireContainment set but no ContainmentVerifier supplied")
 	}
+	if cfg.DailyTurnBudget < 0 {
+		return nil, errors.New("livechat: DailyTurnBudget must be >= 0")
+	}
+	if cfg.MaxMessagesPerSession < 0 {
+		return nil, errors.New("livechat: MaxMessagesPerSession must be >= 0")
+	}
 	maxMsg := cfg.MaxMessagesPerSession
 	if maxMsg == 0 {
 		maxMsg = defaultMaxMessagesPerSession
@@ -160,7 +179,16 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	s.setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":               s.cfg.Gate.Open() && s.budget.Open(),
 		"in_use":           s.conc.InUse(),
@@ -204,6 +232,10 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Code == "" {
 		writeErr(w, http.StatusUnauthorized, "invite code required")
+		return
+	}
+	if !s.budget.Open() {
+		writeErr(w, http.StatusServiceUnavailable, "daily limit reached, the demo is paused until tomorrow")
 		return
 	}
 
@@ -408,10 +440,15 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// Global daily spend kill switch: hard ceiling on total turns per UTC day.
 	if !s.budget.Charge() {
+		entry.refundMessage(s.maxMsgPerSession)
 		writeErr(w, http.StatusServiceUnavailable, "daily limit reached, the demo is paused until tomorrow")
 		return
 	}
 	if err := entry.sess.Send(r.Context(), body.Message); err != nil {
+		if errors.Is(err, playground.ErrSessionClosed) {
+			entry.refundMessage(s.maxMsgPerSession)
+			s.budget.Refund()
+		}
 		writeErr(w, http.StatusInternalServerError, "send failed")
 		return
 	}

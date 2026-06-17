@@ -139,6 +139,42 @@ pipelock-playground-demo fallback ./demo-run               # replay a recorded r
 the recorded packet hash, and the verifier command — so a replayed run is never mistaken for a
 live one.
 
+## Interactive mode with a model-backed agent
+
+The batch engine above drives a deterministic agent. The **interactive playground**
+(`pipelock-playground-live`) can instead drive a real, OpenAI-compatible model, so a visitor
+types to a live model-backed agent and watches Pipelock mediate every request it makes. Point
+the live server at a model to enable it:
+
+```bash
+pipelock-playground-live \
+  --llm-agent-bin     ./pipelock-playground-llm-agent \  # the model-agent subprocess
+  --model-base-url    https://api.provider.example/v1 \  # any OpenAI-compatible /chat/completions
+  --model             your-model-name \
+  --model-secret-file ./model.key                        # API key file, kept out of argv
+```
+
+Without the model flags the interactive playground falls back to the deterministic agent. The
+model-backed agent is held to the same fail-closed boundary as everything else:
+
+- **Subprocess isolation.** The agent runs as a separate process, never in-process with the
+  server, because a jailbroken model can be talked into arbitrary actions.
+- **Proxy-only egress.** A transport guard lets the agent dial only the Pipelock proxy; any
+  direct connection fails closed.
+- **Per-turn receipt invariant.** Every mediated agent request that gets a proxy response must
+  be backed by a signed receipt for that turn, or the turn fails closed. There is no narrated
+  mediated action without a receipt to prove it.
+- **Pre-DNS host allowlist.** A model run permits only the lab targets and the model API host;
+  any other destination is refused before DNS, so a jailbroken model cannot reach an arbitrary
+  host through the lab proxy. The allowlist does not bypass content scanning: a credential-shaped
+  body to an allowlisted host is still blocked by DLP.
+- **Secret stays in the box.** The synthetic canary is never written into the model prompt, and
+  the lab tools refuse the model API host as a target, so an allowlisted model endpoint cannot be
+  turned into an opaque exfiltration tunnel.
+
+The production firewall imports no playground code; the model-backed agent ships as a separate
+side-binary.
+
 ## The published orchestrator key
 
 Every run's launch manifest and host-containment witness are signed by an **orchestrator key**,

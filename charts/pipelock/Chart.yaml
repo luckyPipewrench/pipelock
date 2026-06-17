@@ -2,8 +2,8 @@ apiVersion: v2
 name: pipelock
 description: Agent firewall for AI agents. Network scanning, process containment, and tool policy enforcement.
 type: application
-version: 0.4.0
-appVersion: "2.7.0"
+version: 0.5.0
+appVersion: "2.8.0"
 home: https://pipelab.org
 sources:
   - https://github.com/luckyPipewrench/pipelock
@@ -20,7 +20,7 @@ keywords:
 icon: https://raw.githubusercontent.com/luckyPipewrench/pipelock/main/assets/pipelock-logo.svg
 annotations:
   artifacthub.io/license: Apache-2.0
-  artifacthub.io/containsSecurityUpdates: "false"
+  artifacthub.io/containsSecurityUpdates: "true"
   artifacthub.io/changesURL: https://github.com/luckyPipewrench/pipelock/releases
   artifacthub.io/links: |
     - name: Documentation
@@ -31,24 +31,10 @@ annotations:
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
     - kind: added
-      description: Enterprise chart modes for Conductor, standalone fleet-sink, and Conductor follower wiring.
+      description: Pipelock appVersion 2.8.0 with defer authorization, fleet receipt reporting, and operator lifecycle tooling.
     - kind: added
-      description: File-mounted Secret refs for Conductor publisher, auditor, admin, TLS, mTLS, trust roster, and license CRL inputs.
-    - kind: added
-      description: PersistentVolumeClaims for Conductor storage, fleet audit storage, follower bundle cache, and durable audit queue.
-    - kind: added
-      description: NetworkPolicy presets for dev, restricted, and airgapped deployments with explicit override hooks.
-    - kind: added
-      description: Health-watchdog-backed liveness and readiness probes with timeout and threshold tuning.
-    - kind: added
-      description: License, Sentry DSN, and admin API token plumbing via Kubernetes Secrets.
-    - kind: added
-      description: Admin API port template and Service entry for pipelock adaptive and pipelock session.
-    - kind: added
-      description: PodDisruptionBudget template, topologySpreadConstraints, and priorityClassName support.
-    - kind: added
-      description: extraEnv, extraEnvFrom, extraVolumes, and extraVolumeMounts hooks.
-    - kind: added
-      description: values.schema.json type validation.
-    - kind: added
-      description: Example values files for Pro, MCP sidecar, and admin API configurations.
+      description: Free verifier support for offline Fleet Receipt Reports.
+    - kind: fixed
+      description: Image digest rendering now uses repository@sha256 instead of placing a digest in the tag field.
+    - kind: fixed
+      description: Security fixes for scanner fail-closed behavior, support-bundle redaction, and signing-key loading.

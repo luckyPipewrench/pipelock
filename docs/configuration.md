@@ -927,10 +927,46 @@ mcp_tool_policy:
 - `tool_pattern:` regex matching tool name
 - `arg_pattern:` regex matching argument values (optional; omit for tool-name-only rules)
 - `arg_key:` regex scoping `arg_pattern` to specific top-level argument keys (optional; requires `arg_pattern`). Without `arg_key`, `arg_pattern` checks values from all argument keys. Values under matching keys are extracted recursively.
-- `action:` per-rule override (warn, block, or redirect)
+- `action:` per-rule override (warn, block, redirect, or defer)
 - `redirect_profile:` reference to a named redirect profile (required when `action: redirect`)
+- `resolution_policy:` affirmative-clearing policy (required when `action: defer`; see below)
 
 Shell obfuscation detection is built-in: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
+
+### Defer Action
+
+`action: defer` withholds a matched tool call instead of forwarding or blocking it, and resolves the held action to a terminal decision later. Defer is **fail-closed and affirmative-clearing**: the held action resolves to **allow only on an explicit positive signal**; timeout, cancellation, parse error, kill switch, capacity overflow, resolver error, process restart, and any non-affirmative result all resolve to **block**. The absence of an adverse signal is never treated as permission.
+
+Defer is supported on **MCP stdio and the stdio-to-HTTP bridge**. On any other MCP transport, a `defer`-matched tool call is blocked (fail-closed) rather than held, because those transports cannot enforce a held-action resume.
+
+A defer rule must declare a `resolution_policy` with at least one affirmative signal, or config load fails. The held-action bounds live in a **top-level `defer:`** section (sibling to `mcp_tool_policy`); the resolver programs and the per-rule `resolution_policy` live under `mcp_tool_policy`:
+
+```yaml
+defer:                            # top-level section
+  enabled: true
+  timeout_seconds: 2              # hard per-hold timeout; resolves to block on expiry
+  max_pending: 64                 # total concurrent holds (overflow denies the new action)
+  max_pending_per_session: 8      # per-session concurrent holds
+  max_pending_bytes: 1048576      # total held-payload budget
+
+mcp_tool_policy:
+  enabled: true
+  defer_resolver_profiles:
+    approve-writes:
+      exec: ["/usr/local/bin/approve-resolver"]   # audited program; emits the affirmative signal
+      reason: "human approval for write tools"
+  rules:
+    - name: "defer-risky-writes"
+      tool_pattern: "^fs_write$"
+      action: defer
+      resolution_policy:
+        resolver_profile: approve-writes   # required for allow_on.approval or step_up_on.approval_requests_human
+        allow_on:
+          approval: true                   # allow only when the resolver returns an affirmative result
+          tool_inventory_baseline: false   # or: re-confirm against the pinned tool inventory baseline
+```
+
+`resolution_policy.allow_on.policy_permits` is rejected on the supported defer transports because they do not own a live config-reload callback. Each held action emits a hash-chained defer receipt and a resolution receipt bound to the original call; `pipelock verify-receipt --clean-report` derives a minimal offline-verifiable report that fails closed on any incomplete, duplicate, identity-changed, or non-terminal defer pair. Defer is free-tier.
 
 ## MCP Session Binding
 
@@ -2782,7 +2818,7 @@ conductor:
 
 When `enabled: true`, validation additionally requires the [flight recorder](#flight-recorder-v21) enabled with `sign_checkpoints: true` and a configured `signing_key_path` (a follower must produce signed evidence to participate), all file paths absolute, and no world-writable ancestor directory on any configured path.
 
-**Reserved fields.** The fields marked reserved are parsed and validated at startup but not yet enforced by the follower runtime in v2.7; they reserve the config surface for upcoming bundle-staleness and capability-negotiation work. This includes `emergency_stream`, `created_skew_seconds`, `max_min_version_major_skew` (`MaxMinVersionMajorSkew`), `max_min_version_minor_skew` (`MaxMinVersionMinorSkew`), `max_capability_threshold`, and `stale_policy.*` (`StalePolicy`). Today a bundle's validity window is enforced when the bundle is verified and applied (an expired bundle fails verification), and a follower that cannot reach Conductor keeps enforcing the policy it already has.
+**Reserved fields.** The fields marked reserved are parsed and validated at startup but not yet enforced by the follower runtime in v2.8; they reserve the config surface for upcoming bundle-staleness and capability-negotiation work. This includes `emergency_stream`, `created_skew_seconds`, `max_min_version_major_skew` (`MaxMinVersionMajorSkew`), `max_min_version_minor_skew` (`MaxMinVersionMinorSkew`), `max_capability_threshold`, and `stale_policy.*` (`StalePolicy`). Today a bundle's validity window is enforced when the bundle is verified and applied (an expired bundle fails verification), and a follower that cannot reach Conductor keeps enforcing the policy it already has.
 
 See the [Conductor guide](guides/conductor.md) for the full architecture, server-side flags, and licensing.
 

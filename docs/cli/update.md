@@ -16,7 +16,7 @@ the update and leaves the installed binary untouched.
 pipelock update              # interactive update to the latest release
 pipelock update --check      # report current vs latest; change nothing
 pipelock update --yes        # update without the confirmation prompt
-pipelock update --version v2.7.0   # install a specific release tag
+pipelock update --version v2.8.0   # install a specific release tag
 pipelock update --rollback   # restore the previous binary from <binary>.bak
 pipelock update --json       # machine-readable status
 pipelock update --insecure-skip-signature   # checksum-only fallback if cosign is unavailable

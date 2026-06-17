@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/support"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -664,6 +665,18 @@ func TestRedactURL(t *testing.T) {
 			wantSub: "region=us-east-1",
 			wantNot: []string{},
 		},
+		{
+			name:    "path secret stripped",
+			input:   "https://hooks.provider.example/services/T0123/B4567/pathsecretvalue",
+			wantSub: "hooks.provider.example",
+			wantNot: []string{"pathsecretvalue", "T0123", "B4567"},
+		},
+		{
+			name:    "fragment stripped",
+			input:   "https://hooks.provider.example/events#fragsecretvalue",
+			wantSub: "hooks.provider.example",
+			wantNot: []string{"fragsecretvalue"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -733,6 +746,71 @@ func TestRedactHeaders(t *testing.T) {
 	// Non-secret header value SHOULD appear (used as a correlation ID in traces).
 	if !bytes.Contains(all, []byte("trace-123")) {
 		t.Errorf("non-secret X-Request-ID value 'trace-123' unexpectedly absent from bundle")
+	}
+}
+
+// TestBundle_NoFutureTimestamps verifies that all tar entry mtimes are at or
+// before the current time (no future timestamps that cause extract warnings).
+func TestBundle_NoFutureTimestamps(t *testing.T) {
+	t.Parallel()
+
+	archivePath := runBundleCmd(t, "")
+	now := time.Now().Add(time.Second) // 1s grace for test execution
+
+	f, err := os.Open(filepath.Clean(archivePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = gr.Close() }()
+
+	tr := tar.NewReader(gr)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.ModTime.After(now) {
+			t.Errorf("entry %q has future mtime %v (now=%v)", hdr.Name, hdr.ModTime, now)
+		}
+	}
+}
+
+// TestBundle_NoSecretLeaks_WebhookURLPath verifies that webhook URL path
+// segments carrying provider secrets (e.g. /services/<T>/<B>/<SECRET>) are
+// redacted from config-summary.json and manifest.json in the bundle.
+func TestBundle_NoSecretLeaks_WebhookURLPath(t *testing.T) {
+	t.Parallel()
+
+	// Build a webhook URL with the secret in the path, not the query or userinfo.
+	pathSecret := "xoxb-" + "path-secret-value-1234"
+	webhookURL := "https://hooks.provider.example/services/T0123/B4567/" + pathSecret
+
+	tmp := t.TempDir()
+	yamlContent := "mode: balanced\ninternal: null\nemit:\n  webhook:\n    url: '" + webhookURL + "'\n"
+	cfgPath := filepath.Join(tmp, "pipelock.yaml")
+	if err := os.WriteFile(filepath.Clean(cfgPath), []byte(yamlContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	archivePath := runBundleCmd(t, cfgPath)
+	files := readArchive(t, archivePath)
+	all := archiveBytes(files)
+
+	if bytes.Contains(all, []byte(pathSecret)) {
+		t.Errorf("webhook URL path secret %q leaked into bundle", pathSecret)
+	}
+	// The host must still be visible for diagnostics.
+	if !bytes.Contains(all, []byte("hooks.provider.example")) {
+		t.Error("webhook URL host was unexpectedly stripped from bundle")
 	}
 }
 

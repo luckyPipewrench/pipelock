@@ -172,6 +172,21 @@ func TestRunCommand_ErrorJSONEmitsStatus(t *testing.T) {
 	}
 }
 
+func TestCmd_CheckAndRollbackMutuallyExclusive(t *testing.T) {
+	cmd := Cmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--check", "--rollback"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --check and --rollback are both set")
+	}
+	if !strings.Contains(err.Error(), "use only one of --check / --rollback") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // readFile is a tiny test helper.
 func readFile(path string) (string, error) {
 	b, err := os.ReadFile(path) // #nosec G304 -- test reads its own temp file

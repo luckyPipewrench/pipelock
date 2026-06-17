@@ -53,6 +53,12 @@ Examples:
 				cmd.Println("Using default config (no --config specified)")
 			}
 
+			// Surface semantic advisories (same checks as doctor,
+			// non-fatal so exit 0 is preserved unless already failing).
+			for _, advisory := range checkConfigAdvisories(cfg) {
+				cmd.Printf("\n  [ADVISORY] %s\n", advisory)
+			}
+
 			// Optionally scan a URL
 			if scanURL != "" {
 				cmd.Printf("\nScanning URL: %s\n", scanURL)
@@ -84,4 +90,25 @@ Examples:
 	cmd.Flags().StringVar(&scanURL, "url", "", "URL to scan through the configured scanners")
 
 	return cmd
+}
+
+// checkConfigAdvisories returns non-fatal advisory messages for the loaded
+// config. These mirror doctor checks but are surfaced in check so that CI
+// running only "pipelock check" still sees semantic inertness warnings.
+func checkConfigAdvisories(cfg *config.Config) []string {
+	var advisories []string
+
+	// Inert suppress entries (mirrors checkDoctorSuppressEntries).
+	for _, check := range checkDoctorConfigSemantics(cfg) {
+		if check.Status == doctorStatusWarn && check.Detail != "" {
+			advisories = append(advisories, check.Detail)
+		}
+	}
+
+	// Flight recorder enabled but inert (no dir configured).
+	if cfg.FlightRecorder.Enabled && cfg.FlightRecorder.Dir == "" {
+		advisories = append(advisories, "flight_recorder is enabled but dir is unset; no receipts will be written")
+	}
+
+	return advisories
 }

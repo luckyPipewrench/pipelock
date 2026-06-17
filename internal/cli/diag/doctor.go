@@ -151,6 +151,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		checkDoctorMCPBinaryIntegrity(cfg),
 		checkDoctorMCPToolProvenance(cfg),
 		checkDoctorFileSentry(cfg),
+		checkDoctorFlightRecorder(cfg),
 		checkDoctorLicense(cfg),
 		checkDoctorSentry(cfg),
 		checkDoctorDeploymentBoundary(cfg),
@@ -603,6 +604,37 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 	check.Reachable = true
 	check.Detail = "watch paths are readable, but wrapper/sidecar lifecycle still must be proven"
 	return check
+}
+
+func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
+	if !cfg.FlightRecorder.Enabled {
+		return doctorReportCheck{
+			Name:    "flight_recorder",
+			Surface: doctorSurfaceConfig,
+			Status:  doctorStatusInfo,
+			Detail:  "disabled",
+			Next:    "enable flight_recorder to emit signed decision receipts",
+		}
+	}
+	if cfg.FlightRecorder.Dir == "" {
+		return doctorReportCheck{
+			Name:       "flight_recorder",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusWarn,
+			Configured: true,
+			Detail:     "flight_recorder is enabled but dir is unset; no receipts will be written",
+			Next:       "set flight_recorder.dir to a writable directory so receipts are persisted",
+		}
+	}
+	return doctorReportCheck{
+		Name:       "flight_recorder",
+		Surface:    doctorSurfaceConfig,
+		Status:     doctorStatusOK,
+		Configured: true,
+		Reachable:  pathReadable(cfg.FlightRecorder.Dir),
+		Enforcing:  true,
+		Detail:     "flight_recorder is enabled with a configured directory",
+	}
 }
 
 func checkDoctorSentry(cfg *config.Config) doctorReportCheck {

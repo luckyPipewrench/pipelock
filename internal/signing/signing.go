@@ -6,10 +6,12 @@
 package signing
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -185,10 +187,21 @@ func EncodePrivateKey(key ed25519.PrivateKey) string {
 }
 
 // DecodePrivateKey deserializes a private key from the versioned format.
+// DecodePrivateKey accepts two formats:
+//  1. The 2-line versioned format: "pipelock-ed25519-private-v1\n<base64>"
+//  2. The JSON keyfile produced by "pipelock signing key generate":
+//     {"schema_version":1,"purpose":"...","private":"<hex>", ...}
+//
+// Detection is by content: a leading '{' (after whitespace trim) selects JSON.
 func DecodePrivateKey(encoded string) (ed25519.PrivateKey, error) {
-	lines := strings.SplitN(strings.TrimSpace(encoded), "\n", 2)
+	trimmed := strings.TrimSpace(encoded)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		return decodePrivateKeyJSON([]byte(trimmed))
+	}
+
+	lines := strings.SplitN(trimmed, "\n", 2)
 	if len(lines) != 2 || lines[0] != privateKeyHeader {
-		return nil, fmt.Errorf("invalid private key format (expected %s header)", privateKeyHeader)
+		return nil, fmt.Errorf("invalid private key format (expected %s header or JSON keyfile)", privateKeyHeader)
 	}
 
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(lines[1]))
@@ -199,6 +212,53 @@ func DecodePrivateKey(encoded string) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("invalid private key length: got %d, want %d", len(raw), ed25519.PrivateKeySize)
 	}
 	return ed25519.PrivateKey(raw), nil
+}
+
+// decodePrivateKeyJSON extracts an ed25519 private key from the JSON keyfile
+// format produced by "pipelock signing key generate". The private key is
+// stored as a 128-char hex string.
+func decodePrivateKeyJSON(data []byte) (ed25519.PrivateKey, error) {
+	// Minimal struct matching the keyfile schema fields we need.
+	var kf struct {
+		SchemaVersion int    `json:"schema_version"`
+		Private       string `json:"private"`
+		Public        string `json:"public"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&kf); err != nil {
+		return nil, fmt.Errorf("decoding JSON private key file: %w", err)
+	}
+	if kf.SchemaVersion != 1 {
+		return nil, fmt.Errorf("unsupported JSON key file schema_version %d (expected 1)", kf.SchemaVersion)
+	}
+	if kf.Private == "" {
+		return nil, fmt.Errorf("JSON key file missing private field")
+	}
+	privBytes, err := hex.DecodeString(kf.Private)
+	if err != nil {
+		return nil, fmt.Errorf("decoding JSON key file private hex: %w", err)
+	}
+	if len(privBytes) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("JSON key file private key has wrong size: got %d, want %d", len(privBytes), ed25519.PrivateKeySize)
+	}
+	priv := ed25519.PrivateKey(privBytes)
+	// Cross-check the public key if provided to detect tampered keyfiles.
+	// A present-but-malformed public field is itself a tamper signal, so we
+	// fail closed on it rather than silently skipping the check.
+	if kf.Public != "" {
+		pubBytes, pubErr := hex.DecodeString(kf.Public)
+		if pubErr != nil {
+			return nil, fmt.Errorf("decoding JSON key file public hex: %w", pubErr)
+		}
+		if len(pubBytes) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("JSON key file public key has wrong size: got %d, want %d", len(pubBytes), ed25519.PublicKeySize)
+		}
+		derivedPub, ok := priv.Public().(ed25519.PublicKey)
+		if !ok || !bytes.Equal(derivedPub, pubBytes) {
+			return nil, fmt.Errorf("JSON key file private key does not match public key")
+		}
+	}
+	return priv, nil
 }
 
 // atomicWrite writes data to path via a temporary file and rename.

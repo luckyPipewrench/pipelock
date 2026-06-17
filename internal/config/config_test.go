@@ -13476,3 +13476,35 @@ func TestEnvLicenseCRLMaxAgeDefaultParity(t *testing.T) {
 			cfg.LicenseCRLMaxAgeResolved, license.DefaultCRLMaxAge)
 	}
 }
+
+// TestLoad_StdinDash verifies that Load("-") reads config from stdin.
+func TestLoad_StdinDash(t *testing.T) {
+	yamlData := []byte("mode: balanced\ninternal: null\n")
+
+	// Create a pipe to simulate stdin.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write the config data and close the write end.
+	if _, err := w.Write(yamlData); err != nil {
+		_ = r.Close()
+		_ = w.Close()
+		t.Fatal(err)
+	}
+	_ = w.Close()
+
+	// Replace os.Stdin for the duration of this call.
+	origStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = origStdin }()
+
+	cfg, err := Load("-")
+	_ = r.Close()
+	if err != nil {
+		t.Fatalf("Load('-') error: %v", err)
+	}
+	if cfg.Mode != ModeBalanced {
+		t.Fatalf("Load('-') mode = %q, want %q", cfg.Mode, ModeBalanced)
+	}
+}

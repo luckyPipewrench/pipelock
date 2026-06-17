@@ -52,6 +52,9 @@ Examples:
   pipelock update --rollback           # restore the previous binary
   pipelock update --insecure-skip-signature`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if checkOnly && doRollOut {
+				return fmt.Errorf("use only one of --check / --rollback")
+			}
 			opts := &Options{
 				CurrentVersion:         cliutil.Version,
 				TargetVersion:          strings.TrimSpace(version),

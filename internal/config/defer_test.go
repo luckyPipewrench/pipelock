@@ -4,6 +4,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -79,11 +81,6 @@ func TestValidateDeferSettingsRejectInvalidValues(t *testing.T) {
 			name: "max pending bytes",
 			mut:  func(c *Config) { c.Defer.MaxPendingBytes = 0 },
 			want: "defer.max_pending_bytes must be positive",
-		},
-		{
-			name: "unknown resolution trigger",
-			mut:  func(c *Config) { c.Defer.ResolutionTriggers = []string{"unknown"} },
-			want: "invalid defer resolution_triggers value",
 		},
 	}
 	for _, tt := range tests {
@@ -251,6 +248,24 @@ func TestValidateDeferDisabledRejectsMCPToolPolicy(t *testing.T) {
 	_, err := cfg.ValidateWithWarnings()
 	if err == nil || !strings.Contains(err.Error(), "defer.enabled must be true") {
 		t.Fatalf("ValidateWithWarnings() error = %v, want defer.enabled error", err)
+	}
+}
+
+func TestDeferResolutionTriggersFieldRemoved(t *testing.T) {
+	// A config that sets defer.resolution_triggers must fail the strict
+	// unknown-field decode, proving the vestigial field has been removed.
+	yaml := []byte("mode: balanced\ndefer:\n  resolution_triggers:\n    - tool_inventory_updated\n")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("Load() succeeded, want error for unknown field resolution_triggers")
+	}
+	if !strings.Contains(err.Error(), "resolution_triggers") {
+		t.Fatalf("Load() error = %v, want error mentioning resolution_triggers", err)
 	}
 }
 

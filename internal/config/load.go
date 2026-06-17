@@ -22,10 +22,20 @@ import (
 )
 
 // Load reads, parses, defaults, and validates a Pipelock config file.
+// If path is "-", the config is read from stdin.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return nil, fmt.Errorf("reading config %s: %w", path, err)
+	var data []byte
+	var err error
+	if path == "-" {
+		data, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, fmt.Errorf("reading config from stdin: %w", err)
+		}
+	} else {
+		data, err = os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			return nil, fmt.Errorf("reading config %s: %w", path, err)
+		}
 	}
 
 	cfg := &Config{}

@@ -295,9 +295,6 @@ func (c *Config) ApplyDefaults() {
 	if c.Defer.MaxPendingBytes <= 0 {
 		c.Defer.MaxPendingBytes = 1024 * 1024
 	}
-	if len(c.Defer.ResolutionTriggers) == 0 {
-		c.Defer.ResolutionTriggers = []string{"tool_inventory_updated", "policy_reload", "session_context_updated"}
-	}
 	if c.RequestPolicy.OnParseError == "" {
 		c.RequestPolicy.OnParseError = ActionBlock
 	}

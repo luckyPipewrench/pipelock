@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -286,6 +287,137 @@ func TestDecodePrivateKey_InvalidFormat(t *testing.T) {
 				t.Fatalf("expected error for input %q", tt.name)
 			}
 		})
+	}
+}
+
+// TestDecodePrivateKey_JSONKeyFile verifies that DecodePrivateKey accepts the
+// JSON keyfile format produced by "pipelock signing key generate".
+func TestDecodePrivateKey_JSONKeyFile(t *testing.T) {
+	_, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+
+	jsonKeyFile := fmt.Sprintf(`{
+  "schema_version": 1,
+  "purpose": "receipt-signing",
+  "key_id": "receipt-signing-test",
+  "public": %q,
+  "private": %q,
+  "created_at": "2026-01-01T00:00:00Z"
+}`, hex.EncodeToString(pub), hex.EncodeToString(priv))
+
+	loaded, err := DecodePrivateKey(jsonKeyFile)
+	if err != nil {
+		t.Fatalf("DecodePrivateKey(JSON keyfile) error: %v", err)
+	}
+	if !bytes.Equal(priv, loaded) {
+		t.Fatal("loaded key does not match original")
+	}
+}
+
+// TestDecodePrivateKey_JSONKeyFileMalformed verifies fail-closed for bad JSON keyfiles.
+func TestDecodePrivateKey_JSONKeyFileMalformed(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"wrong schema version", `{"schema_version":99,"private":"aa","public":"bb"}`},
+		{"empty private field", `{"schema_version":1,"private":"","public":"bb"}`},
+		{"bad hex in private", `{"schema_version":1,"private":"not-hex","public":"bb"}`},
+		{"wrong private length", `{"schema_version":1,"private":"aabb","public":"cc"}`},
+		{"public key mismatch", func() string {
+			// Generate a real key, then pair it with a different public key.
+			_, p, _ := GenerateKeyPair()
+			wrongPub := make([]byte, ed25519.PublicKeySize)
+			wrongPub[0] = 0xff // guaranteed to differ from derived pub
+			return fmt.Sprintf(`{"schema_version":1,"private":"%s","public":"%s"}`,
+				hex.EncodeToString(p), hex.EncodeToString(wrongPub))
+		}()},
+		{"bad hex in public", func() string {
+			// Valid private key but a present, non-hex public field: a tamper
+			// signal that must fail closed, not be silently skipped.
+			_, p, _ := GenerateKeyPair()
+			return fmt.Sprintf(`{"schema_version":1,"private":"%s","public":"not-hex"}`,
+				hex.EncodeToString(p))
+		}()},
+		{"wrong size public", func() string {
+			// Valid private key but a present public field of the wrong length.
+			_, p, _ := GenerateKeyPair()
+			return fmt.Sprintf(`{"schema_version":1,"private":"%s","public":"aabb"}`,
+				hex.EncodeToString(p))
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := DecodePrivateKey(tt.input)
+			if err == nil {
+				t.Fatalf("expected error for %s", tt.name)
+			}
+		})
+	}
+}
+
+// TestLoadPrivateKeyFile_JSONKeyFile verifies that LoadPrivateKeyFile (the consumer
+// used by flight_recorder.signing_key_path) accepts the JSON keyfile format
+// produced by "pipelock signing key generate".
+func TestLoadPrivateKeyFile_JSONKeyFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission check uses Unix mode bits")
+	}
+	_, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+
+	jsonKeyFile := fmt.Sprintf(`{
+  "schema_version": 1,
+  "purpose": "receipt-signing",
+  "key_id": "receipt-signing-test",
+  "public": %q,
+  "private": %q,
+  "created_at": "2026-01-01T00:00:00Z"
+}`, hex.EncodeToString(pub), hex.EncodeToString(priv))
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "receipt-key.json")
+	if err := os.WriteFile(path, []byte(jsonKeyFile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPrivateKeyFile(path)
+	if err != nil {
+		t.Fatalf("LoadPrivateKeyFile(JSON keyfile) error: %v", err)
+	}
+	if !bytes.Equal(priv, loaded) {
+		t.Fatal("loaded key does not match original")
+	}
+}
+
+// TestLoadPrivateKeyFile_TwoLineFormat confirms the existing 2-line format still works.
+func TestLoadPrivateKeyFile_TwoLineFormat(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission check uses Unix mode bits")
+	}
+	_, priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "receipt.key")
+	if err := SavePrivateKey(priv, path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadPrivateKeyFile(path)
+	if err != nil {
+		t.Fatalf("LoadPrivateKeyFile(2-line format) error: %v", err)
+	}
+	if !bytes.Equal(priv, loaded) {
+		t.Fatal("loaded key does not match original")
 	}
 }
 

@@ -943,16 +943,6 @@ func (c *Config) validateDefer() error {
 	if c.Defer.MaxPendingBytes <= 0 {
 		return fmt.Errorf("defer.max_pending_bytes must be positive")
 	}
-	allowedTriggers := map[string]bool{
-		"tool_inventory_updated":  true,
-		"policy_reload":           true,
-		"session_context_updated": true,
-	}
-	for _, trigger := range c.Defer.ResolutionTriggers {
-		if !allowedTriggers[trigger] {
-			return fmt.Errorf("invalid defer resolution_triggers value %q", trigger)
-		}
-	}
 	return nil
 }
 

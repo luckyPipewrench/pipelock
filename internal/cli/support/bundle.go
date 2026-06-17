@@ -397,13 +397,17 @@ func writeArchive(path string, m manifest, entries []bundleEntry) error {
 		return fmt.Errorf("marshalling manifest: %w", err)
 	}
 	manifestBytes = append(manifestBytes, '\n')
-	if err := tarWrite(tw, "manifest.json", manifestBytes); err != nil {
+	// Use a single timestamp for all entries so mtimes are consistent
+	// and never in the future (avoids "time stamp in the future" warnings
+	// on extract). Truncate to seconds — tar headers have second resolution.
+	archiveTime := time.Now().UTC().Truncate(time.Second)
+	if err := tarWrite(tw, "manifest.json", manifestBytes, archiveTime); err != nil {
 		return err
 	}
 
 	// Write each collected entry.
 	for _, entry := range entries {
-		if err := tarWrite(tw, entry.name, entry.data); err != nil {
+		if err := tarWrite(tw, entry.name, entry.data, archiveTime); err != nil {
 			return err
 		}
 	}
@@ -414,13 +418,14 @@ func writeArchive(path string, m manifest, entries []bundleEntry) error {
 	return gw.Close()
 }
 
-// tarWrite adds a single file to the tar archive.
-func tarWrite(tw *tar.Writer, name string, data []byte) error {
+// tarWrite adds a single file to the tar archive. The mtime is set to the
+// provided timestamp so all entries share a consistent, non-future time.
+func tarWrite(tw *tar.Writer, name string, data []byte, mtime time.Time) error {
 	hdr := &tar.Header{
 		Name:    name,
 		Mode:    int64(bundleFileMode),
 		Size:    int64(len(data)),
-		ModTime: time.Now().UTC(),
+		ModTime: mtime,
 	}
 	if err := tw.WriteHeader(hdr); err != nil {
 		return fmt.Errorf("writing tar header for %s: %w", name, err)

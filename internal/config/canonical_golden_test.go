@@ -181,7 +181,10 @@ const (
 	// hard-blocked ordinary credential setup documentation ("provide your API
 	// key in config"). Imperative solicitations to the requester still block.
 	// Detection-relevant change.
-	goldenHashDefaults = "61c5bd3f1f3ef4b7c2adf22599528ca1efdd738b2ecbb49d1076bac1b92c6933"
+	// Re-bumped for removal of vestigial DeferConfig.ResolutionTriggers
+	// field. The field had zero runtime consumers (only validated/defaulted)
+	// and was dropped in v2.8 before any release shipped it.
+	goldenHashDefaults = "4d15bb5d19674cbf21f45b43b36035406d9d730e09ae71399042e72cdb310cbd"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -271,7 +274,7 @@ const (
 	// response-scanning pattern set, so the hash shifts in lockstep.
 	// Re-bumped for the defer section: held-action timeout and capacity
 	// bounds are policy semantics for action enforcement.
-	goldenHashRichConfig = "94d5487d33f8e748733e52f9f3354c5bdcd34b90c6bda428ce56ad225b5af64e"
+	goldenHashRichConfig = "26d7dbb0b32a79971a46119afcb2d51bb117a62832ff9d98a2e31530677ff595"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

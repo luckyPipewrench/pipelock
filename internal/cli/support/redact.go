@@ -140,7 +140,21 @@ func redactURL(raw string) string {
 	}
 	// Strip userinfo (Basic auth credentials in URL).
 	if u.User != nil {
-		u.User = url.User("<redacted>")
+		u.User = url.User(redactedPlaceholder)
+	}
+	// Redact the path segment. Webhook providers encode their routing
+	// secret in the URL path (e.g. /services/<T>/<B>/<SECRET>), so
+	// shipping the path verbatim in a support bundle leaks the secret.
+	// Keep scheme+host for diagnostics; replace everything after.
+	if u.Path != "" && u.Path != "/" {
+		u.Path = "/" + redactedPlaceholder
+		u.RawPath = ""
+	}
+	// Strip the fragment — an operator could place routing or diagnostic
+	// metadata there, and the redactor's contract is to scrub the whole URL.
+	if u.Fragment != "" || u.RawFragment != "" {
+		u.Fragment = ""
+		u.RawFragment = ""
 	}
 	// Redact known secret query params, matching param NAMES case-insensitively
 	// (a key may be spelled Token or API_KEY just as easily as lowercase).

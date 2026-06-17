@@ -604,12 +604,11 @@ type MCPToolPolicy struct {
 // DeferConfig configures per-action held authorization for supported MCP
 // transports. Unsupported synchronous transports reject action=defer.
 type DeferConfig struct {
-	Enabled              bool     `yaml:"enabled"`
-	TimeoutSeconds       int      `yaml:"timeout_seconds"`
-	MaxPending           int      `yaml:"max_pending"`
-	MaxPendingPerSession int      `yaml:"max_pending_per_session"`
-	MaxPendingBytes      int      `yaml:"max_pending_bytes"`
-	ResolutionTriggers   []string `yaml:"resolution_triggers"`
+	Enabled              bool `yaml:"enabled"`
+	TimeoutSeconds       int  `yaml:"timeout_seconds"`
+	MaxPending           int  `yaml:"max_pending"`
+	MaxPendingPerSession int  `yaml:"max_pending_per_session"`
+	MaxPendingBytes      int  `yaml:"max_pending_bytes"`
 }
 
 // DeferResolutionPolicy defines which affirmative signals may turn a held

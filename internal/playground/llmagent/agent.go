@@ -30,6 +30,9 @@ const (
 	EventToolCall   = "tool_call"   // the agent is about to invoke a tool
 	EventToolResult = "tool_result" // a tool returned (or the proxy blocked it)
 	EventError      = "error"       // a model/transport error ended the turn
+	// EventTurnDone is emitted by the subprocess wrapper (not the Agent) after a
+	// turn's narration, so the driver knows the turn is complete.
+	EventTurnDone = "turn_done"
 )
 
 // Event is one narration item emitted as the agent works. Fields are sparse:

@@ -10,6 +10,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -183,6 +184,12 @@ type MCPProxyOpts struct {
 	V2ReceiptEmitterFn func() *proxydecision.Emitter
 	PolicyHash         string
 	PolicyHashFn       func() string
+
+	DeferManager   *deferred.Manager
+	DeferManagerFn func() *deferred.Manager
+	// DeferResolverRuntime owns async DEFER resolver subprocess lifetime for
+	// one proxy invocation. It is wired by proxy entry points, not config.
+	DeferResolverRuntime *DeferResolverRuntime
 
 	// Learn-lock contract enforcement for MCP transports. HTTP listener and
 	// stdio-to-HTTP modes gate the configured upstream URL; every transport
@@ -411,6 +418,17 @@ func (o MCPProxyOpts) withReceiptPolicyHash(opts receipt.EmitOpts) receipt.EmitO
 		opts.PolicyHash = o.receiptPolicyHash()
 	}
 	return opts
+}
+
+func (o MCPProxyOpts) deferManager() *deferred.Manager {
+	if o.DeferManagerFn != nil {
+		return o.DeferManagerFn()
+	}
+	return o.DeferManager
+}
+
+func (o MCPProxyOpts) deferResolverRuntime() *DeferResolverRuntime {
+	return o.DeferResolverRuntime
 }
 
 func (o MCPProxyOpts) contractLoader() *contractruntime.Loader {

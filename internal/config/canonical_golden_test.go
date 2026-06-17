@@ -181,7 +181,7 @@ const (
 	// hard-blocked ordinary credential setup documentation ("provide your API
 	// key in config"). Imperative solicitations to the requester still block.
 	// Detection-relevant change.
-	goldenHashDefaults = "1a92ec956d0ee2e605ccdb523f8088ce7277675989ef617ad9697b0c1dabf9ab"
+	goldenHashDefaults = "61c5bd3f1f3ef4b7c2adf22599528ca1efdd738b2ecbb49d1076bac1b92c6933"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -269,7 +269,9 @@ const (
 	// Re-bumped for "Credential Solicitation" direction-anchoring: see
 	// goldenHashDefaults note above. The rich fixture inherits the default
 	// response-scanning pattern set, so the hash shifts in lockstep.
-	goldenHashRichConfig = "970f1850a72693cac6d95ee0f29e882aa433dbb7529cb555fb70ed7969baa18f"
+	// Re-bumped for the defer section: held-action timeout and capacity
+	// bounds are policy semantics for action enforcement.
+	goldenHashRichConfig = "94d5487d33f8e748733e52f9f3354c5bdcd34b90c6bda428ce56ad225b5af64e"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

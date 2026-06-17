@@ -107,6 +107,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMCPToolPolicy(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateDefer(); err != nil {
+		return warnings, err
+	}
 	if err := c.validateGitProtection(); err != nil {
 		return warnings, err
 	}
@@ -832,10 +835,13 @@ func (c *Config) validateMCPToolPolicy() error {
 		return fmt.Errorf("mcp_tool_policy is enabled but has no rules; add rules or set enabled: false")
 	}
 	switch c.MCPToolPolicy.Action {
-	case ActionWarn, ActionBlock, ActionRedirect:
+	case ActionWarn, ActionBlock, ActionRedirect, ActionDefer:
 		// valid
 	default:
-		return fmt.Errorf("invalid mcp_tool_policy action %q: must be warn, block, or redirect", c.MCPToolPolicy.Action)
+		return fmt.Errorf("invalid mcp_tool_policy action %q: must be warn, block, redirect, or defer", c.MCPToolPolicy.Action)
+	}
+	if c.MCPToolPolicy.Action == ActionDefer && !c.Defer.Enabled {
+		return fmt.Errorf("invalid mcp_tool_policy action %q: defer.enabled must be true", c.MCPToolPolicy.Action)
 	}
 	// Validate redirect profiles.
 	for name, profile := range c.MCPToolPolicy.RedirectProfiles {
@@ -844,6 +850,14 @@ func (c *Config) validateMCPToolPolicy() error {
 		}
 		if profile.MatchAbsPath && !filepath.IsAbs(profile.Exec[0]) {
 			return fmt.Errorf("mcp_tool_policy redirect_profile %q: match_abs_path is true but exec[0] %q is not absolute", name, profile.Exec[0])
+		}
+	}
+	for name, profile := range c.MCPToolPolicy.DeferResolverProfiles {
+		if len(profile.Exec) == 0 || profile.Exec[0] == "" {
+			return fmt.Errorf("mcp_tool_policy defer_resolver_profile %q has empty exec", name)
+		}
+		if profile.MatchAbsPath && !filepath.IsAbs(profile.Exec[0]) {
+			return fmt.Errorf("mcp_tool_policy defer_resolver_profile %q: match_abs_path is true but exec[0] %q is not absolute", name, profile.Exec[0])
 		}
 	}
 	for i, r := range c.MCPToolPolicy.Rules {
@@ -871,10 +885,13 @@ func (c *Config) validateMCPToolPolicy() error {
 		}
 		if r.Action != "" {
 			switch r.Action {
-			case ActionWarn, ActionBlock, ActionRedirect:
+			case ActionWarn, ActionBlock, ActionRedirect, ActionDefer:
 				// valid
 			default:
-				return fmt.Errorf("mcp_tool_policy rule %q has invalid action %q: must be warn, block, or redirect", r.Name, r.Action)
+				return fmt.Errorf("mcp_tool_policy rule %q has invalid action %q: must be warn, block, redirect, or defer", r.Name, r.Action)
+			}
+			if r.Action == ActionDefer && !c.Defer.Enabled {
+				return fmt.Errorf("mcp_tool_policy rule %q has action=defer but defer.enabled is false", r.Name)
 			}
 		}
 		// Redirect rules must reference an existing redirect profile.
@@ -889,6 +906,49 @@ func (c *Config) validateMCPToolPolicy() error {
 			if _, ok := c.MCPToolPolicy.RedirectProfiles[r.RedirectProfile]; !ok {
 				return fmt.Errorf("mcp_tool_policy rule %q references unknown redirect_profile %q", r.Name, r.RedirectProfile)
 			}
+		}
+		if effectiveAction == ActionDefer && r.ResolutionPolicy != nil {
+			if r.ResolutionPolicy.AllowOn.PolicyPermits {
+				return fmt.Errorf("mcp_tool_policy rule %q has resolution_policy.allow_on.policy_permits but policy_reload cannot fire on supported defer transports yet", r.Name)
+			}
+			approvalRequested := r.ResolutionPolicy.AllowOn.Approval || r.ResolutionPolicy.StepUpOn.ApprovalRequestsHuman
+			if approvalRequested {
+				if r.ResolutionPolicy.ResolverProfile == "" {
+					return fmt.Errorf("mcp_tool_policy rule %q uses approval resolution but has no resolution_policy.resolver_profile", r.Name)
+				}
+				if _, ok := c.MCPToolPolicy.DeferResolverProfiles[r.ResolutionPolicy.ResolverProfile]; !ok {
+					return fmt.Errorf("mcp_tool_policy rule %q references unknown defer resolver profile %q", r.Name, r.ResolutionPolicy.ResolverProfile)
+				}
+			}
+		}
+		if effectiveAction == ActionDefer && !r.ResolutionPolicy.HasAffirmativeSignal() {
+			return fmt.Errorf("mcp_tool_policy rule %q has action=defer but no affirmative resolution_policy", r.Name)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateDefer() error {
+	if c.Defer.TimeoutSeconds <= 0 {
+		return fmt.Errorf("defer.timeout_seconds must be positive")
+	}
+	if c.Defer.MaxPending <= 0 {
+		return fmt.Errorf("defer.max_pending must be positive")
+	}
+	if c.Defer.MaxPendingPerSession <= 0 {
+		return fmt.Errorf("defer.max_pending_per_session must be positive")
+	}
+	if c.Defer.MaxPendingBytes <= 0 {
+		return fmt.Errorf("defer.max_pending_bytes must be positive")
+	}
+	allowedTriggers := map[string]bool{
+		"tool_inventory_updated":  true,
+		"policy_reload":           true,
+		"session_context_updated": true,
+	}
+	for _, trigger := range c.Defer.ResolutionTriggers {
+		if !allowedTriggers[trigger] {
+			return fmt.Errorf("invalid defer resolution_triggers value %q", trigger)
 		}
 	}
 	return nil

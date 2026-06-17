@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -851,6 +852,72 @@ func TestScanHTTPInput_PolicyOnlyBlock(t *testing.T) {
 	}
 	if blocked.ErrorCode != -32002 {
 		t.Errorf("ErrorCode = %d, want -32002", blocked.ErrorCode)
+	}
+}
+
+func TestScanHTTPInputDecision_PolicyDeferEmitsReceipt(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	resolutionPolicy := config.DeferResolutionPolicy{
+		AllowOn: config.DeferAllowOn{PolicyPermits: true},
+	}
+	policyCfg := &policy.Config{
+		Action: config.ActionWarn,
+		Rules: []*policy.CompiledRule{
+			{
+				Name:             "defer-dangerous",
+				ToolPattern:      regexp.MustCompile(`dangerous_tool`),
+				Action:           config.ActionDefer,
+				ResolutionPolicy: resolutionPolicy,
+			},
+		},
+	}
+	receiptEmitter, receiptRecorder, receiptDir := newTestReceiptEmitter(t)
+	manager := deferred.NewManager(deferred.Config{
+		Enabled:              true,
+		Timeout:              time.Second,
+		MaxPending:           4,
+		MaxPendingPerSession: 4,
+		MaxPendingBytes:      1024,
+	})
+
+	decision := scanHTTPInputDecision([]byte(jsonToolsCallDangerous), io.Discard, "sess", "orig", MCPProxyOpts{
+		Scanner:        sc,
+		PolicyCfg:      policyCfg,
+		ReceiptEmitter: receiptEmitter,
+		DeferManager:   manager,
+		Transport:      deferred.SurfaceMCPHTTPUpstream,
+	})
+	if decision.Blocked != nil {
+		t.Fatalf("defer decision blocked: %+v", decision.Blocked)
+	}
+	if decision.Deferred == nil {
+		t.Fatal("expected deferred request")
+	}
+	if decision.Deferred.SessionID != "sess" || decision.Deferred.SessionIDOriginal != "orig" {
+		t.Fatalf("deferred identity = (%q,%q), want (sess,orig)", decision.Deferred.SessionID, decision.Deferred.SessionIDOriginal)
+	}
+	if !decision.Deferred.ResolutionPolicy.AllowOn.PolicyPermits {
+		t.Fatal("deferred request lost policy_permits resolver")
+	}
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	record := findActionReceiptHTTP(t, readReceiptEntriesHTTP(t, receiptDir)).ActionRecord
+	if record.Verdict != config.ActionDefer {
+		t.Fatalf("receipt verdict = %q, want defer", record.Verdict)
+	}
+	if record.DecisionPhase != receipt.DecisionPhaseDefer {
+		t.Fatalf("receipt decision_phase = %q, want defer", record.DecisionPhase)
+	}
+	if record.SessionID != "sess" || record.SessionIDOriginal != "orig" {
+		t.Fatalf("receipt identity = (%q,%q), want (sess,orig)", record.SessionID, record.SessionIDOriginal)
+	}
+	if !strings.Contains(record.ResolutionPolicy, "policy_permits") {
+		t.Fatalf("receipt resolution_policy = %q, want policy_permits", record.ResolutionPolicy)
 	}
 }
 

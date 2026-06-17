@@ -101,6 +101,7 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	// Build per-invocation opts with session-specific recorder.
 	inputOpts := opts
 	inputOpts.Rec = rec
+	inputOpts.WarnContext = ctx
 
 	var wg sync.WaitGroup
 	wg.Add(1)

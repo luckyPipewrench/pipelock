@@ -178,6 +178,9 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	taint, _ := raw["taint"].(map[string]interface{})
 	setBoolDefault(taint, "enabled", &cfg.Taint.Enabled)
 
+	deferSection, _ := raw["defer"].(map[string]interface{})
+	setBoolDefault(deferSection, "enabled", &cfg.Defer.Enabled)
+
 	// Learn privacy: public_allowlist_default defaults to true so the
 	// canonical seed allowlist ships when the operator omits the privacy
 	// section or the field. Fail-closed for the privacy enforcer.
@@ -278,6 +281,21 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.MCPToolPolicy.Enabled && c.MCPToolPolicy.Action == "" {
 		c.MCPToolPolicy.Action = ActionWarn
+	}
+	if c.Defer.TimeoutSeconds <= 0 {
+		c.Defer.TimeoutSeconds = 2
+	}
+	if c.Defer.MaxPending <= 0 {
+		c.Defer.MaxPending = 64
+	}
+	if c.Defer.MaxPendingPerSession <= 0 {
+		c.Defer.MaxPendingPerSession = 8
+	}
+	if c.Defer.MaxPendingBytes <= 0 {
+		c.Defer.MaxPendingBytes = 1024 * 1024
+	}
+	if len(c.Defer.ResolutionTriggers) == 0 {
+		c.Defer.ResolutionTriggers = []string{"tool_inventory_updated", "policy_reload", "session_context_updated"}
 	}
 	if c.RequestPolicy.OnParseError == "" {
 		c.RequestPolicy.OnParseError = ActionBlock

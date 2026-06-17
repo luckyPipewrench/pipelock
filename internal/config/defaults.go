@@ -357,6 +357,14 @@ func Defaults() *Config {
 			Enabled:       false,
 			QuarantineDir: filepath.Join(os.TempDir(), "pipelock-quarantine"),
 		},
+		Defer: DeferConfig{
+			Enabled:              true,
+			TimeoutSeconds:       2,
+			MaxPending:           64,
+			MaxPendingPerSession: 8,
+			MaxPendingBytes:      1024 * 1024,
+			ResolutionTriggers:   []string{"tool_inventory_updated", "policy_reload", "session_context_updated"},
+		},
 		GitProtection: GitProtection{
 			Enabled:         false,
 			AllowedBranches: []string{"feature/*", "fix/*", "main", "master"},

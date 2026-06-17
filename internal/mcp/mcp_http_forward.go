@@ -13,6 +13,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -67,6 +68,7 @@ func RunHTTPProxy(
 	safeLogW := &syncWriter{w: logW}
 
 	httpClient := transport.NewHTTPClient(upstreamURL, extraHeaders)
+	var upstreamMu sync.Mutex
 
 	// Tool scanning baseline for this session. Clone the caller's ToolCfg
 	// with a fresh per-session baseline so drift detection is scoped to
@@ -91,6 +93,15 @@ func RunHTTPProxy(
 	fwdOpts.ToolCfg = fwdToolCfg
 	fwdOpts.ToolCfgFn = nil
 	fwdOpts.WarnContext = ctx
+	resolverRuntime := newDeferResolverRuntime(ctx)
+	fwdOpts.DeferResolverRuntime = resolverRuntime
+	defer func() {
+		resolverRuntime.Cancel()
+		if manager := fwdOpts.deferManager(); manager != nil {
+			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
+		}
+		resolverRuntime.Wait()
+	}()
 
 	clientReader := transport.NewStdioReader(clientIn)
 
@@ -121,6 +132,9 @@ func RunHTTPProxy(
 		// Kill switch: deny all messages when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
+				if manager := fwdOpts.deferManager(); manager != nil {
+					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
+				}
 				if d.IsNotification {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
@@ -148,6 +162,102 @@ func RunHTTPProxy(
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 				}
+			}
+			continue
+		}
+		if decision.Deferred != nil {
+			manager := fwdOpts.deferManager()
+			if manager == nil || !manager.Enabled() {
+				resp := blockRequestResponse(BlockedRequest{
+					ID:             decision.Deferred.ID,
+					IsNotification: decision.Deferred.IsNotification,
+					ErrorCode:      -32002,
+					ErrorMessage:   "pipelock: defer is disabled",
+				})
+				if !decision.Deferred.IsNotification {
+					_ = safeClientOut.WriteMessage(resp)
+				}
+				continue
+			}
+			deferredReq := decision.Deferred
+			holdErr := manager.Hold(deferred.HeldAction{
+				DeferID:    deferredReq.DeferID,
+				ActionID:   deferredReq.DeferID,
+				Target:     deferredReq.ToolName,
+				Reason:     deferredReq.Reason,
+				Surface:    opts.Transport,
+				Method:     deferredReq.Method,
+				SizeBytes:  len(deferredReq.ForwardMessage),
+				RulePolicy: deferredReq.ResolutionPolicy,
+				Payload:    append([]byte(nil), deferredReq.ForwardMessage...),
+				ArgDigest:  deferredReq.ArgDigest,
+				Authority: deferred.AuthoritySnapshot{
+					SessionID:         deferredReq.SessionID,
+					SessionIDOriginal: deferredReq.SessionIDOriginal,
+				},
+				Resolve: func(res deferred.Resolution) {
+					if emitErr := emitDeferredResolutionReceipt(fwdOpts, safeLogW, res); emitErr != nil {
+						if !deferredReq.IsNotification {
+							_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
+								ID:           deferredReq.ID,
+								ErrorCode:    -32007,
+								ErrorMessage: "pipelock: receipt emission failed",
+							}))
+						}
+						return
+					}
+					switch res.FinalDecision {
+					case config.ActionAllow:
+						upstreamMu.Lock()
+						defer upstreamMu.Unlock()
+						if isRequest(deferredReq.ForwardMessage) {
+							tracker.Track(deferredReq.ID)
+						}
+						respReader, sendErr := httpClient.SendMessage(ctx, deferredReq.ForwardMessage)
+						if sendErr != nil {
+							if !deferredReq.IsNotification {
+								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
+							}
+							return
+						}
+						_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
+						if scanErr != nil {
+							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+						}
+					default:
+						if !deferredReq.IsNotification {
+							_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
+								ID:           deferredReq.ID,
+								ErrorCode:    -32002,
+								ErrorMessage: "pipelock: deferred action denied",
+							}))
+						}
+					}
+				},
+			})
+			if holdErr != nil {
+				_ = emitDeferredResolutionReceipt(fwdOpts, safeLogW, deferred.Resolution{
+					DeferID:          deferredReq.DeferID,
+					ParentActionID:   deferredReq.DeferID,
+					FinalDecision:    config.ActionBlock,
+					ResolutionSource: deferred.SourceCapacity,
+					Authority: deferred.AuthoritySnapshot{
+						SessionID:         deferredReq.SessionID,
+						SessionIDOriginal: deferredReq.SessionIDOriginal,
+					},
+					Target: deferredReq.ToolName,
+					Method: deferredReq.Method,
+					Reason: deferredReq.Reason,
+				})
+				if !deferredReq.IsNotification {
+					_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
+						ID:           deferredReq.ID,
+						ErrorCode:    -32002,
+						ErrorMessage: "pipelock: defer capacity exceeded",
+					}))
+				}
+			} else if held, ok := manager.Held(deferredReq.DeferID); ok && deferredReq.ResolverProfileName != "" {
+				maybeStartDeferApprovalResolver(resolverRuntime, manager, held, deferredReq.ResolverProfileName, deferredReq.ResolverProfile, deferredReq.Arguments, fwdOpts.IntegrityCfg, safeLogW)
 			}
 			continue
 		}
@@ -188,7 +298,9 @@ func RunHTTPProxy(
 		}
 
 		// POST to upstream.
+		upstreamMu.Lock()
 		respReader, err := httpClient.SendMessage(ctx, decision.ForwardMessage)
+		upstreamMu.Unlock()
 		if err != nil {
 			// Log full upstream error details to stderr for debugging.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)

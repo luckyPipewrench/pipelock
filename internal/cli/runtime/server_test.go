@@ -170,6 +170,37 @@ func TestNewServer_ValidatesListenerFlagPairs(t *testing.T) {
 	}
 }
 
+func TestNewServer_RejectsDeferOnMCPListener(t *testing.T) {
+	cfgPath := writeServerTestConfig(t, `
+mcp_tool_policy:
+  enabled: true
+  action: defer
+  defer_resolver_profiles:
+    approve:
+      exec: ["/bin/echo", "allow"]
+  rules:
+    - name: hold-tool
+      tool_pattern: "^dangerous_tool$"
+      resolution_policy:
+        resolver_profile: approve
+        allow_on:
+          approval: true
+`)
+	_, err := NewServer(ServerOpts{
+		ConfigFile:  cfgPath,
+		MCPListen:   serverTestEphemeralListen,
+		MCPUpstream: serverTestUpstreamURL,
+		Stdout:      io.Discard,
+		Stderr:      io.Discard,
+	})
+	if err == nil {
+		t.Fatal("NewServer succeeded, want defer surface validation error")
+	}
+	if !strings.Contains(err.Error(), "defer is not yet supported on mcp_http_listener") {
+		t.Fatalf("error = %q, want mcp_http_listener defer rejection", err.Error())
+	}
+}
+
 func TestNewServer_DefaultsWritersAndReverseListen(t *testing.T) {
 	s, err := NewServer(ServerOpts{
 		ReverseProxy:    true,

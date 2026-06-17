@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
@@ -236,6 +238,84 @@ func mcpReceiptParityOpts(
 	opts.PolicyHash = policyHash
 	opts.RequireReceipts = requireReceipts
 	return opts
+}
+
+func buildDeferManager(cfg *config.Config) *deferred.Manager {
+	if cfg == nil || !cfg.Defer.Enabled {
+		return nil
+	}
+	journalPath := ""
+	if cfg.FlightRecorder.Dir != "" {
+		journalPath = filepath.Join(cfg.FlightRecorder.Dir, "deferred-actions.jsonl")
+	}
+	return deferred.NewManager(deferred.Config{
+		Enabled:              cfg.Defer.Enabled,
+		Timeout:              time.Duration(cfg.Defer.TimeoutSeconds) * time.Second,
+		MaxPending:           cfg.Defer.MaxPending,
+		MaxPendingPerSession: cfg.Defer.MaxPendingPerSession,
+		MaxPendingBytes:      cfg.Defer.MaxPendingBytes,
+		JournalPath:          journalPath,
+	})
+}
+
+func recoverDeferredActions(
+	manager *deferred.Manager,
+	receiptEmitter *receipt.Emitter,
+	v2ReceiptEmitter *proxydecision.Emitter,
+	policyHash string,
+	logW io.Writer,
+) error {
+	if manager == nil || manager.JournalPath() == "" {
+		return nil
+	}
+	pending, err := deferred.PendingJournal(manager.JournalPath())
+	if err != nil {
+		return fmt.Errorf("reading deferred action journal: %w", err)
+	}
+	for _, held := range pending {
+		opts := mcp.MCPProxyOpts{
+			ReceiptEmitter:   receiptEmitter,
+			V2ReceiptEmitter: v2ReceiptEmitter,
+			PolicyHash:       policyHash,
+			RequireReceipts:  true,
+			Transport:        held.Surface,
+		}
+		if err := mcp.EmitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
+			DeferID:          held.DeferID,
+			ParentActionID:   held.ActionID,
+			FinalDecision:    config.ActionBlock,
+			ResolutionSource: deferred.SourceRestartRecovery,
+			Authority:        held.Authority,
+			Target:           held.Target,
+			Method:           held.Method,
+			Reason:           held.Reason,
+		}); err != nil {
+			return fmt.Errorf("emitting deferred restart recovery receipt %q: %w", held.DeferID, err)
+		}
+		if err := manager.RecordRestartRecovery(held); err != nil {
+			return fmt.Errorf("recording deferred restart recovery %q: %w", held.DeferID, err)
+		}
+	}
+	return nil
+}
+
+func mcpToolPolicyUsesDefer(cfg config.MCPToolPolicy) bool {
+	if cfg.Action == config.ActionDefer {
+		return true
+	}
+	for _, rule := range cfg.Rules {
+		if rule.Action == config.ActionDefer {
+			return true
+		}
+	}
+	return false
+}
+
+func validateMCPDeferSurface(surface string, cfg *config.Config) error {
+	if cfg == nil || !mcpToolPolicyUsesDefer(cfg.MCPToolPolicy) {
+		return nil
+	}
+	return deferred.ValidateAction(surface, config.ActionDefer)
 }
 
 // ErrInjectionDetected is returned when pipelock mcp scan detects prompt injection.
@@ -868,6 +948,10 @@ Key-free evidence capture:
 			if policyCfg != nil {
 				policyAction = policyCfg.Action
 			}
+			deferManager := buildDeferManager(cfg)
+			if err := recoverDeferredActions(deferManager, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cmd.ErrOrStderr()); err != nil {
+				return err
+			}
 			if hasUpstream {
 				if len(envVars) > 0 {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --env is ignored in HTTP transport mode (no child process)")
@@ -899,6 +983,9 @@ Key-free evidence capture:
 					return err
 				}
 				if hasListen {
+					if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPListener, cfg); err != nil {
+						return err
+					}
 					mcpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 					if lnErr != nil {
 						err := fmt.Errorf("MCP listener bind %s: %w", listenAddr, lnErr)
@@ -948,6 +1035,9 @@ Key-free evidence capture:
 
 				// Stdio-to-WebSocket mode: --upstream ws:// or wss://.
 				if isWSUpstream {
+					if err := validateMCPDeferSurface(deferred.SurfaceMCPWS, cfg); err != nil {
+						return err
+					}
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 					wsOpts := mcp.MCPProxyOpts{
@@ -984,6 +1074,9 @@ Key-free evidence capture:
 				}
 
 				// Stdio-to-HTTP mode: --upstream only.
+				if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPUpstream, cfg); err != nil {
+					return err
+				}
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 				httpOpts := mcp.MCPProxyOpts{
@@ -1007,6 +1100,7 @@ Key-free evidence capture:
 					TaintCfg:               &cfg.Taint,
 					ContractLoader:         contractLoader,
 					ContractAgent:          contractAgent,
+					DeferManager:           deferManager,
 				}
 				applyMCPResponseSuppressOpts(&httpOpts, cfg, serverName)
 				httpOpts = mcpReceiptParityOpts(httpOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
@@ -1066,6 +1160,9 @@ Key-free evidence capture:
 
 			// Sandboxed MCP proxy: child in isolated namespace.
 			if useSandbox {
+				if err := validateMCPDeferSurface(deferred.SurfaceMCPStdio, cfg); err != nil {
+					return err
+				}
 				// File sentry is not yet integrated with sandbox mode.
 				// Warn explicitly so users don't lose coverage silently.
 				if cfg.FileSentry.Enabled {
@@ -1169,6 +1266,7 @@ Key-free evidence capture:
 					ContractLoader:    contractLoader,
 					ContractAgent:     contractAgent,
 					AdaptiveResetFile: adaptiveResetFile,
+					DeferManager:      deferManager,
 				}
 				applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
 				proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)
@@ -1179,6 +1277,9 @@ Key-free evidence capture:
 			}
 
 			// Normal (unsandboxed) subprocess mode.
+			if err := validateMCPDeferSurface(deferred.SurfaceMCPStdio, cfg); err != nil {
+				return err
+			}
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, input=%s, tools=%s, policy=%s)\n",
 				serverCmd, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
 
@@ -1283,6 +1384,7 @@ Key-free evidence capture:
 				ContractLoader:    contractLoader,
 				ContractAgent:     contractAgent,
 				AdaptiveResetFile: adaptiveResetFile,
+				DeferManager:      deferManager,
 			}
 			applyMCPResponseSuppressOpts(&proxyOpts, cfg, serverName)
 			proxyOpts = mcpReceiptParityOpts(proxyOpts, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cfg.FlightRecorder.RequireReceipts)

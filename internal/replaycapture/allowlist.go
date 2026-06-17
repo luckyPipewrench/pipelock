@@ -190,6 +190,12 @@ func validateDisallowedEmpty(ar receipt.ActionRecord) error {
 	}
 	checks := []check{
 		{"parent_action_id", ar.ParentActionID != ""},
+		{"decision_phase", ar.DecisionPhase != ""},
+		{"defer_id", ar.DeferID != ""},
+		{"resolution_policy", ar.ResolutionPolicy != ""},
+		{"resolution_source", ar.ResolutionSource != ""},
+		{"session_id", ar.SessionID != ""},
+		{"session_id_original", ar.SessionIDOriginal != ""},
 		{"intent", ar.Intent != ""},
 		{"data_classes_in", len(ar.DataClassesIn) > 0},
 		{"data_classes_out", len(ar.DataClassesOut) > 0},

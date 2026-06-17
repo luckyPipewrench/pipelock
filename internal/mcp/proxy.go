@@ -341,6 +341,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if toolResult.IsToolsList && provenanceCfg != nil && provenanceCfg.Enabled {
 				pv := VerifyToolsListProvenance(line, provenanceCfg)
 				if pv.Block {
+					if manager := opts.deferManager(); manager != nil {
+						manager.ResolveToolInventory(captureSessionID(opts.Transport), config.ActionBlock)
+					}
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
 					if opts.AuditLogger != nil {
 						opts.AuditLogger.LogBlocked(mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"), "provenance", pv.Error)
@@ -369,13 +372,20 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			// Session binding: capture tool names from tools/list responses.
 			// Runs after provenance so blocked responses don't poison the baseline.
+			toolInventoryDecision := ""
 			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
-				if !toolCfg.Baseline.HasBaseline() {
+				hadBaseline := toolCfg.Baseline.HasBaseline()
+				if !hadBaseline {
 					toolCfg.Baseline.SetKnownTools(toolResult.ToolNames)
 				} else {
 					added := toolCfg.Baseline.CheckNewTools(toolResult.ToolNames)
 					for _, name := range added {
 						_, _ = fmt.Fprintf(logW, "pipelock: tool %q added post-baseline\n", name)
+					}
+					if len(added) > 0 {
+						toolInventoryDecision = config.ActionBlock
+					} else {
+						toolInventoryDecision = config.ActionAllow
 					}
 				}
 			}
@@ -402,6 +412,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					EffectiveAction:   toolCaptureAction,
 					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean),
 				})
+			}
+			if toolResult.IsToolsList && !toolResult.Clean {
+				toolInventoryDecision = config.ActionBlock
+			}
+			if toolInventoryDecision != "" {
+				if manager := opts.deferManager(); manager != nil {
+					manager.ResolveToolInventory(captureSessionID(opts.Transport), toolInventoryDecision)
+				}
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
 				foundInjection = true

@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -332,6 +333,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 	}
 	emitResolveInfoLogs(opts.Stderr, resolveInfo, "listener")
+	if hasMCPListen {
+		if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPListener, cfg); err != nil {
+			return nil, err
+		}
+	}
 
 	sc := scanner.New(cfg)
 	s.scanner = sc

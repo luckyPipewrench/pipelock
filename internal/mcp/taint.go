@@ -264,23 +264,30 @@ func taintApprovalReason(decision taintDecision) string {
 }
 
 type mcpToolReceiptOpts struct {
-	Emitter          *receipt.Emitter
-	V2Emitter        *proxydecision.Emitter
-	PolicyHash       string
-	Log              io.Writer
-	Transport        string
-	RedactionProfile string
-	ActionID         string
-	MCPMethod        string
-	ToolName         string
-	Verdict          string
-	Layer            string
-	Pattern          string
-	Severity         string
-	Decision         taintDecision
-	Report           *redact.Report
-	ContractGate     *mcpContractGateOutput
-	RequireReceipt   bool
+	Emitter           *receipt.Emitter
+	V2Emitter         *proxydecision.Emitter
+	PolicyHash        string
+	Log               io.Writer
+	Transport         string
+	RedactionProfile  string
+	ActionID          string
+	ParentActionID    string
+	MCPMethod         string
+	ToolName          string
+	Verdict           string
+	Layer             string
+	Pattern           string
+	Severity          string
+	Decision          taintDecision
+	Report            *redact.Report
+	ContractGate      *mcpContractGateOutput
+	RequireReceipt    bool
+	DecisionPhase     string
+	DeferID           string
+	ResolutionPolicy  string
+	ResolutionSource  string
+	SessionID         string
+	SessionIDOriginal string
 }
 
 // emitMCPToolReceipt emits the post-decision tool receipt for an MCP
@@ -294,6 +301,7 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 	}
 	emitOpts := receipt.EmitOpts{
 		ActionID:            opts.ActionID,
+		ParentActionID:      opts.ParentActionID,
 		Verdict:             opts.Verdict,
 		Layer:               opts.Layer,
 		Pattern:             opts.Pattern,
@@ -314,6 +322,12 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		TaintDecisionReason: opts.Decision.Result.Reason,
 		TaskOverrideApplied: opts.Decision.TaskOverrideApplied,
 		PolicyHash:          opts.PolicyHash,
+		DecisionPhase:       opts.DecisionPhase,
+		DeferID:             opts.DeferID,
+		ResolutionPolicy:    opts.ResolutionPolicy,
+		ResolutionSource:    opts.ResolutionSource,
+		SessionID:           opts.SessionID,
+		SessionIDOriginal:   opts.SessionIDOriginal,
 	}
 	if opts.ContractGate != nil {
 		emitOpts = mcpWithContractReceipt(emitOpts, *opts.ContractGate)

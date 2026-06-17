@@ -29,6 +29,7 @@ func VerifyReceiptCmd() *cobra.Command {
 	var sessionID string
 	var allowUnpinned bool
 	var fleetReport bool
+	var cleanReport string
 
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
@@ -81,16 +82,34 @@ Examples:
 				return verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned)
 			}
 			if chainDir != "" {
-				return verifyChainFromSessionDirWithOptions(out, chainDir, sessionID, trustedKeys, allowUnpinned)
+				if cleanReport == "" {
+					return verifyChainFromSessionDirWithOptions(out, chainDir, sessionID, trustedKeys, allowUnpinned)
+				}
+				receipts, extractErr := receipt.ExtractReceiptsFromSessionDir(chainDir, sessionID)
+				if extractErr != nil {
+					return fmt.Errorf("extracting session receipts: %w", extractErr)
+				}
+				label := fmt.Sprintf("%s (session %s)", chainDir, sessionID)
+				return verifyCleanReport(out, label, receipts, trustedKeys, allowUnpinned, cleanReport)
 			}
 
 			path := args[0]
 
 			// JSONL files: extract receipts and verify the full chain.
 			if strings.HasSuffix(path, ".jsonl") {
+				if cleanReport != "" {
+					receipts, extractErr := receipt.ExtractReceipts(path)
+					if extractErr != nil {
+						return fmt.Errorf("extracting receipts: %w", extractErr)
+					}
+					return verifyCleanReport(out, path, receipts, trustedKeys, allowUnpinned, cleanReport)
+				}
 				return verifyChainFromFileWithOptions(out, path, trustedKeys, allowUnpinned)
 			}
 
+			if cleanReport != "" {
+				return fmt.Errorf("--clean-report requires --chain or a JSONL receipt file")
+			}
 			// Single receipt JSON file: a lone receipt has no chain to walk,
 			// so it verifies against the first supplied key (or its own).
 			return verifySingleReceiptWithOptions(out, path, firstOrEmpty(trustedKeys), allowUnpinned)
@@ -102,6 +121,7 @@ Examples:
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 	cmd.Flags().BoolVar(&fleetReport, "fleet-report", false, "verify a Fleet Receipt Report DSSE envelope")
+	cmd.Flags().StringVar(&cleanReport, "clean-report", "", "write minimal offline-verifiable action report after chain and defer-pair validation")
 	return cmd
 }
 
@@ -283,6 +303,146 @@ func verifyChainWithOptions(out io.Writer, label string, receipts []receipt.Rece
 		}
 	}
 	return nil
+}
+
+type cleanActionReport struct {
+	Chain   cleanChainSummary  `json:"chain"`
+	Actions []cleanActionEntry `json:"actions"`
+}
+
+type cleanChainSummary struct {
+	Label        string   `json:"label"`
+	ReceiptCount uint64   `json:"receipt_count"`
+	FinalSeq     uint64   `json:"final_seq"`
+	RootHash     string   `json:"root_hash"`
+	SignerKeys   []string `json:"signer_keys"`
+}
+
+type cleanActionEntry struct {
+	ActionID         string `json:"action_id"`
+	ParentActionID   string `json:"parent_action_id,omitempty"`
+	DeferID          string `json:"defer_id,omitempty"`
+	DecisionPhase    string `json:"decision_phase,omitempty"`
+	FinalDecision    string `json:"final_decision"`
+	ActionType       string `json:"action_type"`
+	Target           string `json:"target"`
+	Transport        string `json:"transport"`
+	Method           string `json:"method,omitempty"`
+	RequestID        string `json:"request_id,omitempty"`
+	Principal        string `json:"principal,omitempty"`
+	Actor            string `json:"actor,omitempty"`
+	SessionID        string `json:"session_id,omitempty"`
+	PolicyHash       string `json:"policy_hash,omitempty"`
+	Layer            string `json:"layer,omitempty"`
+	Pattern          string `json:"pattern,omitempty"`
+	Severity         string `json:"severity,omitempty"`
+	Timestamp        string `json:"timestamp"`
+	ResolutionPolicy string `json:"resolution_policy,omitempty"`
+	ResolutionSource string `json:"resolution_source,omitempty"`
+}
+
+func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string, allowUnpinned bool, reportPath string) error {
+	result := receipt.VerifyChainTrusted(receipts, trustedKeys)
+	if !result.Valid {
+		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
+	}
+	if len(trustedKeys) == 0 && !allowUnpinned {
+		return fmt.Errorf("chain verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
+	}
+	report, err := buildCleanActionReport(label, receipts, result)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal clean report: %w", err)
+	}
+	if err := os.WriteFile(filepath.Clean(reportPath), append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write clean report: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "CLEAN REPORT VALID: %s\n", label)
+	_, _ = fmt.Fprintf(out, "  Actions:   %d\n", len(report.Actions))
+	_, _ = fmt.Fprintf(out, "  Report:    %s\n", reportPath)
+	return nil
+}
+
+func buildCleanActionReport(label string, receipts []receipt.Receipt, result receipt.ChainResult) (cleanActionReport, error) {
+	entries := make([]cleanActionEntry, 0, len(receipts))
+	deferByID := map[string]receipt.ActionRecord{}
+	resolutions := map[string][]receipt.ActionRecord{}
+	for _, rcpt := range receipts {
+		ar := rcpt.ActionRecord
+		if ar.DecisionPhase == receipt.DecisionPhaseDefer {
+			if ar.DeferID == "" {
+				return cleanActionReport{}, fmt.Errorf("defer receipt %s missing defer_id", ar.ActionID)
+			}
+			deferByID[ar.DeferID] = ar
+		}
+		if ar.DecisionPhase == receipt.DecisionPhaseResolution {
+			if ar.DeferID == "" || ar.ParentActionID == "" {
+				return cleanActionReport{}, fmt.Errorf("resolution receipt %s missing defer linkage", ar.ActionID)
+			}
+			resolutions[ar.DeferID] = append(resolutions[ar.DeferID], ar)
+		}
+		entries = append(entries, cleanActionEntry{
+			ActionID:         ar.ActionID,
+			ParentActionID:   ar.ParentActionID,
+			DeferID:          ar.DeferID,
+			DecisionPhase:    ar.DecisionPhase,
+			FinalDecision:    ar.Verdict,
+			ActionType:       string(ar.ActionType),
+			Target:           ar.Target,
+			Transport:        ar.Transport,
+			Method:           ar.Method,
+			RequestID:        ar.RequestID,
+			Principal:        ar.Principal,
+			Actor:            ar.Actor,
+			SessionID:        ar.SessionID,
+			PolicyHash:       ar.PolicyHash,
+			Layer:            ar.Layer,
+			Pattern:          ar.Pattern,
+			Severity:         ar.Severity,
+			Timestamp:        ar.Timestamp.Format("2006-01-02T15:04:05Z"),
+			ResolutionPolicy: ar.ResolutionPolicy,
+			ResolutionSource: ar.ResolutionSource,
+		})
+	}
+	for deferID, deferRecord := range deferByID {
+		matches := resolutions[deferID]
+		if len(matches) != 1 {
+			return cleanActionReport{}, fmt.Errorf("defer %s has %d resolution receipts", deferID, len(matches))
+		}
+		resolution := matches[0]
+		if resolution.ParentActionID != deferRecord.ActionID {
+			return cleanActionReport{}, fmt.Errorf("defer %s resolution parent mismatch", deferID)
+		}
+		if resolution.ChainSeq <= deferRecord.ChainSeq {
+			return cleanActionReport{}, fmt.Errorf("defer %s resolution appears before defer receipt", deferID)
+		}
+		if resolution.Principal != deferRecord.Principal || resolution.Actor != deferRecord.Actor || resolution.SessionID != deferRecord.SessionID {
+			return cleanActionReport{}, fmt.Errorf("defer %s resolution identity changed", deferID)
+		}
+		switch resolution.Verdict {
+		case "allow", "block", "ask":
+		default:
+			return cleanActionReport{}, fmt.Errorf("defer %s resolved to non-terminal verdict %q", deferID, resolution.Verdict)
+		}
+	}
+	for deferID := range resolutions {
+		if _, ok := deferByID[deferID]; !ok {
+			return cleanActionReport{}, fmt.Errorf("resolution for unknown defer %s", deferID)
+		}
+	}
+	return cleanActionReport{
+		Chain: cleanChainSummary{
+			Label:        label,
+			ReceiptCount: result.ReceiptCount,
+			FinalSeq:     result.FinalSeq,
+			RootHash:     result.RootHash,
+			SignerKeys:   append([]string(nil), result.SignerKeys...),
+		},
+		Actions: entries,
+	}, nil
 }
 
 // printSignerKeys reports the per-segment signer keys for a verified chain. When

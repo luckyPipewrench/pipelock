@@ -18,6 +18,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+const (
+	DecisionPhaseDefer      = "defer"
+	DecisionPhaseResolution = "resolution"
+)
+
 // NewActionID generates a UUIDv7 for action records. UUIDv7 is time-ordered
 // (millisecond precision in the high bits) and globally unique, suitable for
 // correlation handles in mediation envelopes and receipt lookups.
@@ -132,6 +137,13 @@ type ActionRecord struct {
 	// Policy context
 	PolicyHash string `json:"policy_hash"`
 	Verdict    string `json:"verdict"`
+	// Deferred-decision context.
+	DecisionPhase     string `json:"decision_phase,omitempty"`
+	DeferID           string `json:"defer_id,omitempty"`
+	ResolutionPolicy  string `json:"resolution_policy,omitempty"`
+	ResolutionSource  string `json:"resolution_source,omitempty"`
+	SessionID         string `json:"session_id,omitempty"`
+	SessionIDOriginal string `json:"session_id_original,omitempty"`
 	// Taint-aware policy escalation context.
 	SessionTaintLevel   string                   `json:"session_taint_level,omitempty"`
 	SessionContaminated bool                     `json:"session_contaminated,omitempty"`
@@ -299,6 +311,7 @@ var verdictMap = map[string]string{
 	config.ActionAsk:     "ask",
 	config.ActionStrip:   "strip",
 	config.ActionForward: "forward",
+	config.ActionDefer:   "defer",
 }
 
 // NormalizeVerdict converts a config.Action* constant to a stable verdict string.

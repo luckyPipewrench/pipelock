@@ -174,6 +174,13 @@ type EmitOpts struct {
 	// v1 action receipts keep using the emitter's config hash snapshot.
 	PolicyHash string
 
+	DecisionPhase     string
+	DeferID           string
+	ResolutionPolicy  string
+	ResolutionSource  string
+	SessionID         string
+	SessionIDOriginal string
+
 	// MCP-specific fields
 	ToolName  string
 	MCPMethod string
@@ -218,7 +225,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	// Sanitize secret-bearing fields BEFORE signing. When redaction is enabled
 	// the recorder would otherwise redact target/pattern AFTER signing,
 	// desyncing the on-disk canonical bytes from both the signature and the
-	// recorded ReceiptHash (AARP) binding. Sanitizing pre-sign with the same
+	// recorded receipt-hash binding. Sanitizing pre-sign with the same
 	// DLP function makes the recorder's redaction a no-op, so the receipt
 	// verifies from the evidence file alone. The redactor is read from the
 	// recorder at emit time (not cached at construction) so it is always the
@@ -246,6 +253,12 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Reversibility:         reversibility,
 		PolicyHash:            configHashString(e.configHash.Load()),
 		Verdict:               NormalizeVerdict(opts.Verdict),
+		DecisionPhase:         opts.DecisionPhase,
+		DeferID:               opts.DeferID,
+		ResolutionPolicy:      opts.ResolutionPolicy,
+		ResolutionSource:      opts.ResolutionSource,
+		SessionID:             opts.SessionID,
+		SessionIDOriginal:     opts.SessionIDOriginal,
 		SessionTaintLevel:     opts.SessionTaintLevel,
 		SessionContaminated:   opts.SessionContaminated,
 		RecentTaintSources:    append([]session.TaintSourceRef(nil), opts.RecentTaintSources...),

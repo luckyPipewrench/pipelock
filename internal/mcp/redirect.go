@@ -97,6 +97,13 @@ func extractToolCallFields(line []byte) (toolName string, argsJSON string) {
 //
 // When preserve_argv is true, toolArgs (the extracted params.arguments
 // JSON) is passed as the last argument to the handler command.
+// configValidatedCommand builds an exec.Cmd for a program whose path was
+// validated at config load. Centralizing construction keeps the gosec G204
+// suppression in one audited place; every caller passes a config-validated name.
+func configValidatedCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, name, args...) //nolint:gosec // name is validated at config load
+}
+
 func executeRedirect(profile config.RedirectProfile, profileName string, requestID json.RawMessage, toolArgs, policyRule string, rt *RedirectRuntime) RedirectResult {
 	ctx, cancel := context.WithTimeout(context.Background(), redirectTimeout)
 	defer cancel()
@@ -107,7 +114,7 @@ func executeRedirect(profile config.RedirectProfile, profileName string, request
 		args = append(args, toolArgs)
 	}
 
-	cmd := exec.CommandContext(ctx, profile.Exec[0], args...) //nolint:gosec // exec path is validated at config load
+	cmd := configValidatedCommand(ctx, profile.Exec[0], args...)
 	cmd.Env = safeEnv()
 
 	// Inject redirect manifest for built-in handlers (internal-redirect).

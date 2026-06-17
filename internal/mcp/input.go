@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -20,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -179,8 +181,25 @@ func ForwardScannedInput(
 	policyHash := opts.receiptPolicyHash()
 	envelopeEmitter := opts.envelopeEmitter()
 	redirectRT := opts.redirectRT()
+	resolverRuntime := opts.deferResolverRuntime()
+	if resolverRuntime == nil {
+		resolverRuntime = newDeferResolverRuntime(opts.warnContext())
+	}
 
-	defer close(blockedCh)
+	defer func() {
+		resolverRuntime.Cancel()
+		if manager := opts.deferManager(); manager != nil {
+			manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
+		}
+		resolverRuntime.Wait()
+		close(blockedCh)
+	}()
+	var forwardMu sync.Mutex
+	forwardMessage := func(msg []byte) error {
+		forwardMu.Lock()
+		defer forwardMu.Unlock()
+		return writer.WriteMessage(msg)
+	}
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
@@ -226,6 +245,9 @@ func ForwardScannedInput(
 		// Kill switch: deny all messages when active.
 		if ks != nil {
 			if d := ks.IsActiveMCP(line); d.Active {
+				if manager := opts.deferManager(); manager != nil {
+					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
+				}
 				if d.IsNotification {
 					// Notifications have no ID - silently drop.
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: kill switch dropped notification (source=%s)\n",
@@ -469,28 +491,40 @@ func ForwardScannedInput(
 			}
 		}
 		receiptEmitted := false
+		receiptDecisionPhase := ""
+		receiptDeferID := ""
+		receiptResolutionPolicy := ""
+		receiptResolutionSource := ""
+		receiptSessionID := ""
+		receiptSessionIDOriginal := ""
 
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
 			layer, pattern, severity := pickAttribution(eval)
 			receiptOpts := mcpToolReceiptOpts{
-				Emitter:          receiptEmitter,
-				V2Emitter:        v2ReceiptEmitter,
-				PolicyHash:       policyHash,
-				Log:              logW,
-				Transport:        opts.Transport,
-				RedactionProfile: redactionCfg.Profile,
-				ActionID:         actionID,
-				MCPMethod:        verdict.Method,
-				ToolName:         toolCallName,
-				Verdict:          receiptVerdict,
-				Layer:            layer,
-				Pattern:          pattern,
-				Severity:         severity,
-				Decision:         taintDecision,
-				Report:           redactionReport,
-				RequireReceipt:   opts.requireReceipts() && receiptVerdict != config.ActionBlock,
+				Emitter:           receiptEmitter,
+				V2Emitter:         v2ReceiptEmitter,
+				PolicyHash:        policyHash,
+				Log:               logW,
+				Transport:         opts.Transport,
+				RedactionProfile:  redactionCfg.Profile,
+				ActionID:          actionID,
+				MCPMethod:         verdict.Method,
+				ToolName:          toolCallName,
+				Verdict:           receiptVerdict,
+				Layer:             layer,
+				Pattern:           pattern,
+				Severity:          severity,
+				Decision:          taintDecision,
+				Report:            redactionReport,
+				RequireReceipt:    (opts.requireReceipts() && receiptVerdict != config.ActionBlock) || receiptVerdict == config.ActionDefer,
+				DecisionPhase:     receiptDecisionPhase,
+				DeferID:           receiptDeferID,
+				ResolutionPolicy:  receiptResolutionPolicy,
+				ResolutionSource:  receiptResolutionSource,
+				SessionID:         receiptSessionID,
+				SessionIDOriginal: receiptSessionIDOriginal,
 			}
 			if len(contractGate) > 0 {
 				receiptOpts.ContractGate = &contractGate[0]
@@ -727,7 +761,7 @@ func ForwardScannedInput(
 			// can validate without leaving stale state when a required
 			// receipt fails before the request is written.
 			tracker.Track(verdict.ID)
-			if err := writer.WriteMessage(fwdLine); err != nil {
+			if err := forwardMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
@@ -944,6 +978,136 @@ func ForwardScannedInput(
 					LatencyMs:       result.LatencyMs,
 				})
 			}
+		case config.ActionDefer:
+			manager := opts.deferManager()
+			if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [%v]\n",
+					lineNum, method, reasonStr, err)
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isNotification,
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (defer unsupported)", lineNum),
+					ErrorCode:      -32002,
+					ErrorMessage:   err.Error(),
+				}
+				effectiveAction = config.ActionBlock
+				break
+			}
+			if manager == nil || !manager.Enabled() {
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [defer manager disabled]\n",
+					lineNum, method, reasonStr)
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isNotification,
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (defer disabled)", lineNum),
+					ErrorCode:      -32002,
+					ErrorMessage:   "pipelock: defer is disabled",
+				}
+				effectiveAction = config.ActionBlock
+				break
+			}
+			receiptDecisionPhase = receipt.DecisionPhaseDefer
+			receiptDeferID = actionID
+			receiptResolutionPolicy = deferred.ReceiptPolicyString(manager.Policy(), policyVerdict.ResolutionPolicy)
+			receiptSessionID = captureSessionID(opts.Transport)
+			receiptSessionIDOriginal = captureSessionIDOriginal(opts.Transport)
+			if err := emitToolReceipt(config.ActionDefer); err != nil {
+				blockedCh <- BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isNotification,
+					LogMessage:     "receipt emission failed",
+					ErrorCode:      -32007,
+					ErrorMessage:   "pipelock: receipt emission failed",
+					ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
+				}
+				effectiveAction = config.ActionBlock
+				break
+			}
+			receiptEmitted = true
+			heldLine := append([]byte(nil), line...)
+			heldID := append(json.RawMessage(nil), verdict.ID...)
+			heldNotification := isNotification
+			_, deferToolArgs := extractToolCallFields(line)
+			argDigest := argsDigest(deferToolArgs)
+			holdErr := manager.Hold(deferred.HeldAction{
+				DeferID:    actionID,
+				ActionID:   actionID,
+				Target:     toolCallName,
+				Reason:     reasonStr,
+				Surface:    opts.Transport,
+				Method:     verdict.Method,
+				SizeBytes:  len(heldLine),
+				RulePolicy: policyVerdict.ResolutionPolicy,
+				Payload:    append([]byte(nil), heldLine...),
+				ArgDigest:  argDigest,
+				Authority: deferred.AuthoritySnapshot{
+					SessionID:         receiptSessionID,
+					SessionIDOriginal: receiptSessionIDOriginal,
+				},
+				Resolve: func(res deferred.Resolution) {
+					if emitErr := emitDeferredResolutionReceipt(opts, logW, res); emitErr != nil {
+						if !heldNotification {
+							blockedCh <- BlockedRequest{
+								ID:           heldID,
+								ErrorCode:    -32007,
+								ErrorMessage: "pipelock: receipt emission failed",
+							}
+						}
+						return
+					}
+					switch res.FinalDecision {
+					case config.ActionAllow:
+						tracker.Track(heldID)
+						if err := forwardMessage(heldLine); err != nil {
+							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
+						}
+					default:
+						if !heldNotification {
+							blockedCh <- BlockedRequest{
+								ID:           heldID,
+								ErrorCode:    -32002,
+								ErrorMessage: "pipelock: deferred action denied",
+							}
+						}
+					}
+				},
+			})
+			if holdErr != nil {
+				_ = emitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
+					DeferID:          actionID,
+					ParentActionID:   actionID,
+					FinalDecision:    config.ActionBlock,
+					ResolutionSource: deferred.SourceCapacity,
+					Authority: deferred.AuthoritySnapshot{
+						SessionID:         receiptSessionID,
+						SessionIDOriginal: receiptSessionIDOriginal,
+					},
+					Target: toolCallName,
+					Method: verdict.Method,
+					Reason: reasonStr,
+				})
+				if !isNotification {
+					blockedCh <- BlockedRequest{
+						ID:           verdict.ID,
+						ErrorCode:    -32002,
+						ErrorMessage: "pipelock: defer capacity exceeded",
+					}
+				}
+				effectiveAction = config.ActionBlock
+				break
+			}
+			if held, ok := manager.Held(actionID); ok {
+				profileName := policyVerdict.ResolutionPolicy.ResolverProfile
+				if profileName != "" {
+					profile, found := policyCfg.DeferResolverProfiles[profileName]
+					if !found {
+						_ = manager.Resolve(actionID, config.ActionBlock, deferred.SourceApproval)
+					} else {
+						maybeStartDeferApprovalResolver(resolverRuntime, manager, held, profileName, profile, deferToolArgs, opts.IntegrityCfg, logW)
+					}
+				}
+			}
+			continue
 		case config.ActionAsk:
 			// HITL for input scanning is impractical - fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
@@ -1048,7 +1212,7 @@ func ForwardScannedInput(
 			receiptEmitted = true
 			// Forward anyway (warn mode).
 			tracker.Track(verdict.ID)
-			if err := writer.WriteMessage(fwdLine); err != nil {
+			if err := forwardMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}

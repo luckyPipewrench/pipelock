@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -24,10 +26,30 @@ import (
 
 type httpInputDecision struct {
 	Blocked        *BlockedRequest
+	Deferred       *DeferredRequest
 	ForwardMessage []byte
 }
 
 const redirectResultRedirected = "redirected"
+
+// DeferredRequest is a scanned action that must not reach the target until the
+// held-action manager resolves it.
+type DeferredRequest struct {
+	ID                  json.RawMessage
+	IsNotification      bool
+	DeferID             string
+	ForwardMessage      []byte
+	ToolName            string
+	Method              string
+	Reason              string
+	SessionID           string
+	SessionIDOriginal   string
+	ResolutionPolicy    config.DeferResolutionPolicy
+	ResolverProfile     config.DeferResolverProfile
+	ResolverProfileName string
+	ArgDigest           string
+	Arguments           string
+}
 
 // scanHTTPInput checks a single input message for DLP/injection/policy/CEE.
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
@@ -76,6 +98,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	receiptLayer := ""
 	receiptPattern := ""
 	receiptSeverity := ""
+	receiptDecisionPhase := ""
+	receiptDeferID := ""
+	receiptResolutionPolicy := ""
+	receiptResolutionSource := ""
+	receiptSessionID := ""
+	receiptSessionIDOriginal := ""
 	var receiptContractGate *mcpContractGateOutput
 	requireReceipts := opts.requireReceipts()
 
@@ -106,23 +134,29 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 		}
 		receiptOpts := mcpToolReceiptOpts{
-			Emitter:          receiptEmitter,
-			V2Emitter:        v2ReceiptEmitter,
-			PolicyHash:       opts.receiptPolicyHash(),
-			Log:              logW,
-			Transport:        opts.Transport,
-			RedactionProfile: redactionCfg.Profile,
-			ActionID:         emitActionID,
-			MCPMethod:        mcpMethod,
-			ToolName:         emitTarget,
-			Verdict:          receiptVerdict,
-			Layer:            receiptLayer,
-			Pattern:          receiptPattern,
-			Severity:         receiptSeverity,
-			Decision:         taintEval,
-			Report:           redactionReport,
-			ContractGate:     receiptContractGate,
-			RequireReceipt:   requireReceipts && result.Blocked == nil,
+			Emitter:           receiptEmitter,
+			V2Emitter:         v2ReceiptEmitter,
+			PolicyHash:        opts.receiptPolicyHash(),
+			Log:               logW,
+			Transport:         opts.Transport,
+			RedactionProfile:  redactionCfg.Profile,
+			ActionID:          emitActionID,
+			MCPMethod:         mcpMethod,
+			ToolName:          emitTarget,
+			Verdict:           receiptVerdict,
+			Layer:             receiptLayer,
+			Pattern:           receiptPattern,
+			Severity:          receiptSeverity,
+			Decision:          taintEval,
+			Report:            redactionReport,
+			ContractGate:      receiptContractGate,
+			RequireReceipt:    (requireReceipts && result.Blocked == nil) || receiptVerdict == config.ActionDefer,
+			DecisionPhase:     receiptDecisionPhase,
+			DeferID:           receiptDeferID,
+			ResolutionPolicy:  receiptResolutionPolicy,
+			ResolutionSource:  receiptResolutionSource,
+			SessionID:         receiptSessionID,
+			SessionIDOriginal: receiptSessionIDOriginal,
 		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requireReceipts && result.Blocked == nil {
 			result.Blocked = &BlockedRequest{
@@ -801,6 +835,63 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptVerdict = config.ActionBlock
 		}
 		result.Blocked = br
+		return result
+	case config.ActionDefer:
+		manager := opts.deferManager()
+		if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [%v]\n", joinStrings(reasons), err)
+			recordAdaptiveSignal(session.SignalBlock)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isNotification,
+				LogMessage:     "blocked (defer unsupported)",
+				ErrorCode:      -32002,
+				ErrorMessage:   err.Error(),
+			}
+			return result
+		}
+		if manager == nil || !manager.Enabled() {
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [defer manager disabled]\n", joinStrings(reasons))
+			recordAdaptiveSignal(session.SignalBlock)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isNotification,
+				LogMessage:     "blocked (defer disabled)",
+				ErrorCode:      -32002,
+				ErrorMessage:   "pipelock: defer is disabled",
+			}
+			return result
+		}
+		receiptVerdict = config.ActionDefer
+		receiptDecisionPhase = receipt.DecisionPhaseDefer
+		receiptDeferID = actionID
+		receiptResolutionPolicy = deferred.ReceiptPolicyString(manager.Policy(), policyVerdict.ResolutionPolicy)
+		receiptSessionID = sessionKey
+		receiptSessionIDOriginal = auditSessionKey
+		_, toolArgs := extractToolCallFields(result.ForwardMessage)
+		resolverProfileName := policyVerdict.ResolutionPolicy.ResolverProfile
+		var resolverProfile config.DeferResolverProfile
+		if resolverProfileName != "" && policyCfg != nil {
+			resolverProfile = policyCfg.DeferResolverProfiles[resolverProfileName]
+		}
+		result.Deferred = &DeferredRequest{
+			ID:                  verdict.ID,
+			IsNotification:      isNotification,
+			DeferID:             actionID,
+			ForwardMessage:      result.ForwardMessage,
+			ToolName:            toolName,
+			Method:              verdict.Method,
+			Reason:              joinStrings(reasons),
+			SessionID:           sessionKey,
+			SessionIDOriginal:   auditSessionKey,
+			ResolutionPolicy:    policyVerdict.ResolutionPolicy,
+			ResolverProfile:     resolverProfile,
+			ResolverProfileName: resolverProfileName,
+			ArgDigest:           argsDigest(toolArgs),
+			Arguments:           toolArgs,
+		}
 		return result
 	case config.ActionAsk:
 		// HITL for input scanning is impractical - fall back to block (same as stdio proxy).

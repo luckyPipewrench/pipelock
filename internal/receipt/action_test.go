@@ -80,6 +80,16 @@ func TestNewActionID_UUIDv7(t *testing.T) {
 	}
 }
 
+func TestDecisionPhaseConstants(t *testing.T) {
+	t.Parallel()
+	if DecisionPhaseDefer != "defer" {
+		t.Fatalf("DecisionPhaseDefer = %q", DecisionPhaseDefer)
+	}
+	if DecisionPhaseResolution != "resolution" {
+		t.Fatalf("DecisionPhaseResolution = %q", DecisionPhaseResolution)
+	}
+}
+
 func TestNewActionID_Monotonic(t *testing.T) {
 	t.Parallel()
 	ids := make([]string, 100)

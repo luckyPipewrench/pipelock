@@ -41,6 +41,7 @@ const (
 	ActionStrip    = "strip"
 	ActionForward  = "forward"
 	ActionAllow    = "allow"
+	ActionDefer    = "defer"
 	// ActionRedact replaces the matched value with a typed placeholder
 	// (e.g. "<pl:ipv4:1>"). Irreversible: pipelock holds no mapping.
 	// See the redaction-v1 design spec in ops for the semantic model.
@@ -361,6 +362,7 @@ type Config struct {
 	MCPInputScanning         MCPInputScanning        `yaml:"mcp_input_scanning"`
 	MCPToolScanning          MCPToolScanning         `yaml:"mcp_tool_scanning"`
 	MCPToolPolicy            MCPToolPolicy           `yaml:"mcp_tool_policy"`
+	Defer                    DeferConfig             `yaml:"defer"`
 	GitProtection            GitProtection           `yaml:"git_protection"`
 	Logging                  LoggingConfig           `yaml:"logging"`
 	SessionProfiling         SessionProfiling        `yaml:"session_profiling"`
@@ -578,15 +580,63 @@ type RedirectProfile struct {
 	MatchAbsPath bool     `yaml:"match_abs_path"` // require absolute path in exec[0]
 }
 
+// DeferResolverProfile defines a local executable that can resolve a held
+// per-action defer decision from minimized metadata.
+type DeferResolverProfile struct {
+	Exec         []string `yaml:"exec"`         // command + args
+	Reason       string   `yaml:"reason"`       // human-readable justification
+	IncludeArgs  bool     `yaml:"include_args"` // opt in to passing raw tool arguments in the manifest
+	MatchAbsPath bool     `yaml:"match_abs_path"`
+}
+
 // MCPToolPolicy configures pre-execution policy checking on MCP tool calls.
 // Rules match tool names and argument patterns to block or warn on dangerous
 // operations before they reach the MCP server.
 type MCPToolPolicy struct {
-	Enabled          bool                       `yaml:"enabled"`
-	Action           string                     `yaml:"action"` // warn, block, redirect (default for rules without override)
-	Rules            []ToolPolicyRule           `yaml:"rules"`
-	RedirectProfiles map[string]RedirectProfile `yaml:"redirect_profiles,omitempty"`
-	QuarantineDir    string                     `yaml:"quarantine_dir,omitempty"`
+	Enabled               bool                            `yaml:"enabled"`
+	Action                string                          `yaml:"action"` // warn, block, redirect, defer (default for rules without override)
+	Rules                 []ToolPolicyRule                `yaml:"rules"`
+	RedirectProfiles      map[string]RedirectProfile      `yaml:"redirect_profiles,omitempty"`
+	DeferResolverProfiles map[string]DeferResolverProfile `yaml:"defer_resolver_profiles,omitempty" json:"defer_resolver_profiles,omitempty"`
+	QuarantineDir         string                          `yaml:"quarantine_dir,omitempty"`
+}
+
+// DeferConfig configures per-action held authorization for supported MCP
+// transports. Unsupported synchronous transports reject action=defer.
+type DeferConfig struct {
+	Enabled              bool     `yaml:"enabled"`
+	TimeoutSeconds       int      `yaml:"timeout_seconds"`
+	MaxPending           int      `yaml:"max_pending"`
+	MaxPendingPerSession int      `yaml:"max_pending_per_session"`
+	MaxPendingBytes      int      `yaml:"max_pending_bytes"`
+	ResolutionTriggers   []string `yaml:"resolution_triggers"`
+}
+
+// DeferResolutionPolicy defines which affirmative signals may turn a held
+// action into a terminal non-defer decision.
+type DeferResolutionPolicy struct {
+	ResolverProfile string        `yaml:"resolver_profile,omitempty" json:"resolver_profile,omitempty"`
+	AllowOn         DeferAllowOn  `yaml:"allow_on" json:"allow_on,omitempty"`
+	StepUpOn        DeferStepUpOn `yaml:"step_up_on" json:"step_up_on,omitempty"`
+}
+
+type DeferAllowOn struct {
+	PolicyPermits         bool `yaml:"policy_permits" json:"policy_permits,omitempty"`
+	Approval              bool `yaml:"approval" json:"approval,omitempty"`
+	ToolInventoryBaseline bool `yaml:"tool_inventory_baseline" json:"tool_inventory_baseline,omitempty"`
+}
+
+type DeferStepUpOn struct {
+	ApprovalRequestsHuman bool `yaml:"approval_requests_human" json:"approval_requests_human,omitempty"`
+}
+
+func (p *DeferResolutionPolicy) HasAffirmativeSignal() bool {
+	if p == nil {
+		return false
+	}
+	return p.AllowOn.Approval ||
+		p.AllowOn.ToolInventoryBaseline ||
+		p.StepUpOn.ApprovalRequestsHuman
 }
 
 // ToolPolicyRule defines a single tool call policy rule.
@@ -596,12 +646,13 @@ type MCPToolPolicy struct {
 // ArgKey optionally scopes ArgPattern to values under matching top-level argument
 // keys only. Without ArgKey, ArgPattern matches against ALL argument values.
 type ToolPolicyRule struct {
-	Name            string `yaml:"name"`
-	ToolPattern     string `yaml:"tool_pattern"`     // regex matching tool name
-	ArgPattern      string `yaml:"arg_pattern"`      // regex matching argument values (optional)
-	ArgKey          string `yaml:"arg_key"`          // regex scoping arg_pattern to specific argument keys (optional)
-	Action          string `yaml:"action"`           // per-rule override: warn, block, redirect (optional)
-	RedirectProfile string `yaml:"redirect_profile"` // key in redirect_profiles (required when action=redirect)
+	Name             string                 `yaml:"name"`
+	ToolPattern      string                 `yaml:"tool_pattern"`     // regex matching tool name
+	ArgPattern       string                 `yaml:"arg_pattern"`      // regex matching argument values (optional)
+	ArgKey           string                 `yaml:"arg_key"`          // regex scoping arg_pattern to specific argument keys (optional)
+	Action           string                 `yaml:"action"`           // per-rule override: warn, block, redirect, defer (optional)
+	RedirectProfile  string                 `yaml:"redirect_profile"` // key in redirect_profiles (required when action=redirect)
+	ResolutionPolicy *DeferResolutionPolicy `yaml:"resolution_policy,omitempty" json:"resolution_policy,omitempty"`
 }
 
 // ResponseScanning configures scanning of fetched page content for prompt injection.

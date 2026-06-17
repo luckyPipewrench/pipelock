@@ -274,17 +274,17 @@ func TestRunHTTPProxy_DeferResolverBlocksBridge(t *testing.T) {
 	testwait.For(t, time.Second, func() bool {
 		return strings.Contains(stdout.String(), "deferred action denied")
 	}, "deferred HTTP call to be denied; stderr=%s stdout=%s", &stderr, &stdout)
-	select {
-	case <-upstreamHit:
-		t.Fatal("blocked deferred call reached upstream")
-	default:
-	}
 	if err := inputW.Close(); err != nil {
 		t.Fatalf("close input: %v", err)
 	}
 	cancel()
 	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("RunHTTPProxy returned error: %v", err)
+	}
+	select {
+	case <-upstreamHit:
+		t.Fatal("blocked deferred call reached upstream")
+	default:
 	}
 }
 
@@ -334,17 +334,17 @@ func TestRunHTTPProxy_DeferCapacityBlocksBridge(t *testing.T) {
 	testwait.For(t, time.Second, func() bool {
 		return strings.Contains(stdout.String(), "defer capacity exceeded")
 	}, "deferred HTTP call to fail capacity; stderr=%s stdout=%s", &stderr, &stdout)
-	select {
-	case <-upstreamHit:
-		t.Fatal("capacity-blocked deferred call reached upstream")
-	default:
-	}
 	if err := inputW.Close(); err != nil {
 		t.Fatalf("close input: %v", err)
 	}
 	cancel()
 	if err := <-done; err != nil && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("RunHTTPProxy returned error: %v", err)
+	}
+	select {
+	case <-upstreamHit:
+		t.Fatal("capacity-blocked deferred call reached upstream")
+	default:
 	}
 }
 

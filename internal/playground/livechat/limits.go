@@ -177,13 +177,13 @@ type ConcurrencyLimiter struct {
 	cur int
 }
 
-// NewConcurrencyLimiter builds a limiter with the given cap. A cap <= 0 is
+// NewConcurrencyLimiter builds a limiter with the given cap. A limit <= 0 is
 // treated as 1 (at least serialize), never as unlimited.
-func NewConcurrencyLimiter(max int) *ConcurrencyLimiter {
-	if max <= 0 {
-		max = 1
+func NewConcurrencyLimiter(limit int) *ConcurrencyLimiter {
+	if limit <= 0 {
+		limit = 1
 	}
-	return &ConcurrencyLimiter{max: max}
+	return &ConcurrencyLimiter{max: limit}
 }
 
 // Acquire reserves one slot. It returns a release function and ok=true on

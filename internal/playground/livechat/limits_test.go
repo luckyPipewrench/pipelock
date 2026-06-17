@@ -201,8 +201,8 @@ func TestConcurrencyLimiter_NilFailsClosed(t *testing.T) {
 
 func TestConcurrencyLimiter_NeverExceedsCapUnderRace(t *testing.T) {
 	t.Parallel()
-	const cap = 5
-	cl := NewConcurrencyLimiter(cap)
+	const capN = 5
+	cl := NewConcurrencyLimiter(capN)
 	var peak int64
 	var wg sync.WaitGroup
 	const workers = 50
@@ -221,8 +221,8 @@ func TestConcurrencyLimiter_NeverExceedsCapUnderRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if peak > cap {
-		t.Errorf("peak concurrency = %d, exceeded cap %d", peak, cap)
+	if peak > capN {
+		t.Errorf("peak concurrency = %d, exceeded cap %d", peak, capN)
 	}
 }
 

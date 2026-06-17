@@ -69,6 +69,7 @@ type serveFlags struct {
 	allowOrigin        string
 	trustForwardedFor  bool
 	secretB64          string
+	staticDir          string
 }
 
 func newServeCmd() *cobra.Command {
@@ -99,6 +100,7 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser (e.g. https://pipelab.org)")
 	fl.BoolVar(&f.trustForwardedFor, "trust-forwarded-for", false, "read client IP from X-Forwarded-For (only behind a trusted proxy/CDN)")
 	fl.StringVar(&f.secretB64, "secret", "", "base64 gate-signing secret (default: generated, printed at startup)")
+	fl.StringVar(&f.staticDir, "static-dir", "", "serve the viewer static files at / from this dir (same-origin demo; no CORS needed)")
 	return cmd
 }
 
@@ -164,9 +166,19 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	_, _ = fmt.Fprintf(out, "pipelock-playground-live serving on %s · %s · %d code(s) · concurrency %d\n",
 		f.listen, posture, len(codes), f.concurrency)
 
+	handler := srv.Handler()
+	if f.staticDir != "" {
+		// Same-origin demo: API under /api/live/, viewer at /. No CORS needed.
+		mux := http.NewServeMux()
+		mux.Handle("/api/live/", srv.Handler())
+		mux.Handle("/", http.FileServer(http.Dir(f.staticDir)))
+		handler = mux
+		_, _ = fmt.Fprintf(out, "serving viewer from %s at /\n", f.staticDir)
+	}
+
 	httpSrv := &http.Server{
 		Addr:              f.listen,
-		Handler:           srv.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return httpSrv.ListenAndServe()

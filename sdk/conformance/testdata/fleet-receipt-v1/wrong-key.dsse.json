@@ -6,7 +6,7 @@
       "keyid": "fleet-report-test-signer",
       "key_purpose": "fleet-report-signing",
       "algorithm": "ed25519",
-      "sig": "ed25519:fsoYlVAN53GaCe9o2klw2I55WKdhwVA3V1r0kXUlCWo2rgORBnngN1V74hyUYT76nMNcesm1Aof0BavfyXDcCg=="
+      "sig": "ed25519:3MUy6oT+b8r1DYpt9BNuKkV77Jup0aDILA0ZdFBKlbRLd7e7B0y8uN+TpInatoWLM3Fa18vFPR362UEYOUJLBA=="
     }
   ]
 }

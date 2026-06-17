@@ -226,19 +226,15 @@ func fleetReceiptFixtures() []fleetReceiptFixtureSpec {
 		{
 			name:             "wrong-key",
 			wantErrSubstring: "signature verification failed",
-			genFn: func(baseline fleetreceipt.Statement, _ ed25519.PublicKey, priv ed25519.PrivateKey) ([]byte, error) {
-				return signEnvelopeForFixture(baseline, fleetReportSignerKeyID, priv)
-			},
-			// Verify with a different key that did not sign this envelope. The key
-			// resolves (same keyid in the trusted map) but ed25519.Verify fails
-			// because the public key bytes differ.
-			verifyFn: func(data []byte) error {
-				wrongPub, _ := keyFromSeed(seedFleetReportWrong)
-				keyMap := map[string]ed25519.PublicKey{
-					fleetReportSignerKeyID: wrongPub,
-				}
-				_, err := fleetreceipt.Verify(data, keyMap)
-				return err
+			// Sign with an untrusted key under the trusted signer's key id. The
+			// standard verifier resolves the trusted public key for that id, and
+			// ed25519.Verify fails because the signature was produced by a different
+			// key. Signing with the wrong key (rather than re-verifying a valid file
+			// under a swapped trust map) makes this fixture genuinely distinct from
+			// valid-l1 instead of a byte-identical copy.
+			genFn: func(baseline fleetreceipt.Statement, _ ed25519.PublicKey, _ ed25519.PrivateKey) ([]byte, error) {
+				_, wrongPriv := keyFromSeed(seedFleetReportWrong)
+				return signEnvelopeForFixture(baseline, fleetReportSignerKeyID, wrongPriv)
 			},
 		},
 		{
@@ -369,7 +365,7 @@ var pinnedFleetReceiptFixtureHashes = map[string]string{
 	"tampered-summary-arithmetic": "c830783974a68a37d12024821b698bdaa01ef29a7c3f61be97b22d9c7aa920b6",
 	"unpinned-rejected":           "4497ae09d76988e07ccbd2d7824f2f2ff6a568f6ae87631627209eb272bbdc0f",
 	"valid-l1":                    "548eec2cfcd69440a09c2226e78f0d16143c90ba81490c754990ef4ce9a1edb8",
-	"wrong-key":                   "548eec2cfcd69440a09c2226e78f0d16143c90ba81490c754990ef4ce9a1edb8",
+	"wrong-key":                   "edaf00d25f80a8bd4326ccd433f9c416cb175c7e83123e8561ac5c2e08396a2c",
 	"wrong-key-purpose":           "111499c7c99fc9755b0099ddc0706dfd0faf9517fdac39093db5157803d42fe6",
 }
 
@@ -519,9 +515,12 @@ func TestFleetReceiptV1Conformance(t *testing.T) {
 		}
 	})
 
-	// Verify the "wrong-key" fixture actually passes with the correct key (proving
-	// the fixture itself is valid, and only the key mismatch causes rejection).
-	t.Run("wrong-key-passes-with-correct-key", func(t *testing.T) {
+	// The "wrong-key" fixture is a structurally valid report signed by an
+	// untrusted key. It verifies cleanly when the trust map points to the key
+	// that actually signed it, proving the payload is well-formed and that only
+	// the trusted-key mismatch (not a malformed report) causes the standard
+	// rejection above.
+	t.Run("wrong-key-verifies-with-its-signing-key", func(t *testing.T) {
 		t.Parallel()
 
 		path := filepath.Join(fleetReceiptFixtureDir, "wrong-key.dsse.json")
@@ -529,9 +528,10 @@ func TestFleetReceiptV1Conformance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read fixture: %v", err)
 		}
-		_, err = fleetreceipt.Verify(data, keyMap)
-		if err != nil {
-			t.Errorf("wrong-key fixture should pass with correct key: %v", err)
+		wrongPub, _ := keyFromSeed(seedFleetReportWrong)
+		signingKeyMap := map[string]ed25519.PublicKey{fleetReportSignerKeyID: wrongPub}
+		if _, err := fleetreceipt.Verify(data, signingKeyMap); err != nil {
+			t.Errorf("wrong-key fixture should verify with the key that signed it: %v", err)
 		}
 	})
 }

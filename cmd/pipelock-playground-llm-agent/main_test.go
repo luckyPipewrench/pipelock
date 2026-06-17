@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,6 +129,47 @@ func TestBuildAgent_BadProxy(t *testing.T) {
 	cfg := config{modelBaseURL: "http://m", model: "m", proxyURL: "://bad"}
 	if _, err := buildAgent(cfg, "k", func(llmagent.Event) {}); err == nil {
 		t.Fatal("want error when proxy url is invalid")
+	}
+}
+
+func TestProxyDialAddr(t *testing.T) {
+	cases := map[string]string{
+		"http://127.0.0.1:8888": "127.0.0.1:8888",
+		"http://host":           "host:80",
+		"https://host":          "host:443",
+	}
+	for raw, want := range cases {
+		u, _ := url.Parse(raw)
+		if got := proxyDialAddr(u); got != want {
+			t.Fatalf("proxyDialAddr(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestProxyOnlyDialContext(t *testing.T) {
+	const proxyAddr = "127.0.0.1:8888"
+	var dialed string
+	var base dialFunc = func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = addr
+		return nil, errors.New("base-reached")
+	}
+	guard := proxyOnlyDialContext(proxyAddr, base)
+
+	// The proxy address reaches the base dialer.
+	if _, err := guard(context.Background(), "tcp", proxyAddr); err == nil || !strings.Contains(err.Error(), "base-reached") {
+		t.Fatalf("proxy dial should reach base, got %v", err)
+	}
+	if dialed != proxyAddr {
+		t.Fatalf("base dialed %q, want %q", dialed, proxyAddr)
+	}
+
+	// Any other address fails closed without touching the base dialer.
+	dialed = ""
+	if _, err := guard(context.Background(), "tcp", "evil.example:80"); err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("direct dial should be refused, got %v", err)
+	}
+	if dialed != "" {
+		t.Fatal("base dialer must not run on a refused direct dial")
 	}
 }
 

@@ -9,10 +9,12 @@
 // model can be jailbroken into requesting arbitrary destinations. That is the
 // point of the demo: every request it makes is issued through the Pipelock
 // proxy, so Pipelock mediates the agent's own thinking and its actions alike.
-// Because it can be driven to arbitrary actions, this agent MUST run as the
-// kernel-contained subprocess (see cmd/pipelock-playground-llm-agent), never
-// in-process with the server. The httpClient handed to New is the only egress
-// path; in a contained run the kernel blocks every other route.
+// Because it can be driven to arbitrary actions, this agent MUST run as a
+// separate subprocess (see cmd/pipelock-playground-llm-agent), never in-process
+// with the server. The httpClient handed to New is its only egress path; the
+// subprocess wraps it in a proxy-only transport so every route but the Pipelock
+// proxy fails closed. Host kernel containment, where deployed, is attested
+// separately, not assumed here.
 package llmagent
 
 import (

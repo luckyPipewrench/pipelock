@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Command pipelock-playground-llm-agent runs the live playground's model-backed
-// agent as a standalone subprocess. It is meant to run kernel-contained (dropped
-// uid, egress only via the Pipelock proxy): all HTTP it makes, including its own
-// model calls, is forced through the proxy, so a visitor who jailbreaks the model
-// still cannot reach anything Pipelock would not allow.
+// agent as a standalone subprocess (never in-process with the server, because a
+// jailbroken model can be driven to arbitrary actions). The subprocess's only
+// configured network path is the Pipelock proxy: it sets --proxy-url and a
+// proxy-only transport guard that fails closed on any direct dial, so all HTTP it
+// makes (its own model calls included) is mediated by Pipelock. This is a
+// transport-level guarantee, not kernel no-bypass; where the host enforces
+// kernel containment, that property is attested separately (HostContainmentWitness).
 //
 // Protocol: it reads visitor messages as JSON lines on stdin ({"message":"..."})
 // and writes narration as JSON lines on stdout (llmagent.Event), emitting a
@@ -20,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -206,8 +210,41 @@ func buildClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
 			return nil, fmt.Errorf("parse proxy url: %w", err)
 		}
 		tr.Proxy = http.ProxyURL(u)
+		// Proxy-only transport guard: the subprocess's transport may dial ONLY the
+		// proxy address. This is not kernel no-bypass (the host attests that
+		// separately), but it fails closed on a direct dial — catching a NO_PROXY
+		// mistake, an accidental non-proxied client, or future code drift that
+		// would otherwise let a jailbroken model reach a destination unmediated.
+		base := &net.Dialer{Timeout: timeout}
+		tr.DialContext = proxyOnlyDialContext(proxyDialAddr(u), base.DialContext)
 	}
 	return &http.Client{Transport: tr, Timeout: timeout}, nil
+}
+
+type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// proxyDialAddr is the host:port the transport dials for a proxied request,
+// defaulting the port from the scheme when the proxy URL omits it.
+func proxyDialAddr(u *url.URL) string {
+	if u.Port() != "" {
+		return u.Host
+	}
+	if u.Scheme == "https" {
+		return net.JoinHostPort(u.Hostname(), "443")
+	}
+	return net.JoinHostPort(u.Hostname(), "80")
+}
+
+// proxyOnlyDialContext returns a DialContext that permits dialing only want
+// (the proxy). Any other address fails closed: the agent transport must not
+// reach a destination except through the Pipelock proxy.
+func proxyOnlyDialContext(want string, base dialFunc) dialFunc {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr != want {
+			return nil, fmt.Errorf("agent transport: direct dial to %s refused; only the Pipelock proxy (%s) is permitted", addr, want)
+		}
+		return base(ctx, network, addr)
+	}
 }
 
 func validateHTTPURL(name, raw string) error {

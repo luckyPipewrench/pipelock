@@ -17,8 +17,10 @@ import (
 // only SELECTS among a fixed set of pre-authored lab intents; it is never
 // executed as instructions. That is why IntentAgent is safe to run in-process
 // with the server. A future LLM-backed agent — which can be jailbroken into
-// arbitrary actions — MUST instead run as the kernel-contained subprocess, and
-// must not be run in-process. Keep that boundary when adding a new LiveAgent.
+// arbitrary actions — MUST instead run as a separate, proxy-only subprocess
+// (its transport reaches only the Pipelock proxy; host kernel containment, where
+// the host provides it, is attested separately), and must not be run in-process.
+// Keep that boundary when adding a new LiveAgent.
 type LiveAgent interface {
 	Plan(msg string) AgentTurn
 }

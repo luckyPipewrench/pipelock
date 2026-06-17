@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,6 +68,15 @@ type LiveRunOpts struct {
 	// OrchestratorKeyPath, when non-empty, loads the run's orchestrator
 	// (trust-root) signing key from disk instead of generating an ephemeral one.
 	OrchestratorKeyPath string
+	// ModelBaseURL, when non-empty, allowlists the model API host in the lab
+	// proxy so a model-backed agent's chat-completions calls can egress through
+	// it. This is the ONLY real-egress destination the lab proxy permits; the
+	// .test lab targets stay loopback. Empty leaves the proxy loopback-only.
+	ModelBaseURL string
+	// ModelHostOverride, when non-empty, maps the model host to these IPs in the
+	// lab proxy DNS (tests point it at a loopback fake model). Empty => real DNS
+	// resolution of the model host.
+	ModelHostOverride []string
 	// OnReceipt, when non-nil, is invoked with each signed receipt as it is
 	// recorded, in chain order. The live-chat stream uses this to surface
 	// decisions in real time. The receipt's secret-bearing fields are already
@@ -222,6 +232,30 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 
 	// Trust the .test hosts so they pass the domain check
 	cfg.TrustedDomains = append(cfg.TrustedDomains, liveRunSafeHost, liveRunExfilHost)
+
+	// Model-agent runs enforce a strict host allowlist: a jailbroken model must
+	// not reach any host beyond the two lab targets and its own model API. The
+	// model host is the single real-egress destination (tool calls to the .test
+	// hosts stay loopback; a test override resolves the model host to a loopback
+	// fake, absent an override it resolves for real). Allowlist enforcement is
+	// gated to strict mode in the scanner, so model runs run strict; the
+	// deterministic IntentAgent path (no ModelBaseURL) keeps its balanced config
+	// unchanged. HTTPS model traffic may be an opaque CONNECT tunnel, so the
+	// subprocess tool runtime also refuses the model host as a tool target; the
+	// allowlist entry is for model API traffic only, not lab exfil actions.
+	if opts.ModelBaseURL != "" {
+		modelHost, mhErr := modelHostname(opts.ModelBaseURL)
+		if mhErr != nil {
+			err = fmt.Errorf("model base url: %w", mhErr)
+			return nil, err
+		}
+		cfg.TrustedDomains = append(cfg.TrustedDomains, modelHost)
+		if len(opts.ModelHostOverride) > 0 {
+			cfg.DNS.HostOverrides[modelHost] = opts.ModelHostOverride
+		}
+		cfg.Mode = config.ModeStrict
+		cfg.APIAllowlist = append(cfg.APIAllowlist, liveRunSafeHost, liveRunExfilHost, modelHost)
+	}
 
 	cfg.ApplyDefaults()
 
@@ -653,6 +687,23 @@ func (lr *LiveRun) Close() {
 	if lr.evidenceDir != "" {
 		_ = os.RemoveAll(lr.evidenceDir)
 	}
+}
+
+// modelHostname extracts the hostname (no port) from a model API base URL, for
+// allowlisting and DNS-override keying. It requires an http(s) URL with a host.
+func modelHostname(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("must use http or https")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("host is required")
+	}
+	return host, nil
 }
 
 // portFromAddr extracts the port string from a net.Addr.

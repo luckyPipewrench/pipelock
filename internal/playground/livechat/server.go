@@ -54,6 +54,10 @@ type ServerConfig struct {
 	OrchestratorKeyPath string
 	ToyAgentBin         string
 	WebToolBin          string
+	// LLMAgent, when non-nil, drives every session with the model-backed agent
+	// subprocess instead of the deterministic IntentAgent. The same config is
+	// reused for each session (static model/binary/secret settings).
+	LLMAgent *playground.LLMAgentConfig
 	// TrustForwardedFor reads the client IP from X-Forwarded-For (set true only
 	// behind a trusted reverse proxy / CDN).
 	TrustForwardedFor bool
@@ -211,6 +215,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		OrchestratorKeyPath: s.cfg.OrchestratorKeyPath,
 		ToyAgentBin:         s.cfg.ToyAgentBin,
 		WebToolBin:          s.cfg.WebToolBin,
+		LLMAgent:            s.cfg.LLMAgent,
 	})
 	if err != nil {
 		_ = os.RemoveAll(runDir)

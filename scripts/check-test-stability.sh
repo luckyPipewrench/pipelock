@@ -6,15 +6,6 @@ set -euo pipefail
 # `make lint`, so it must FAIL CLOSED: a runner that cannot actually scan has
 # to error loudly, never report "clean" by scanning nothing.
 
-# Fail closed if ripgrep is missing. The scans below would otherwise behave as
-# "no match" when `rg` is absent (exit 127 swallowed) and silently pass,
-# defeating the entire point of the gate. Mirrors scripts/release-audit.sh.
-if ! command -v rg >/dev/null 2>&1; then
-  echo "check-test-stability: ripgrep (rg) is required and is not on PATH." >&2
-  echo "Install ripgrep (e.g., apt-get install -y ripgrep) before running this check." >&2
-  exit 127
-fi
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -34,20 +25,28 @@ filter_allowlist() {
   fi
 }
 
-# scan runs ripgrep and leaves the allowlist-filtered matches in scan_result.
-# It distinguishes "no matches" (rg exit 1, clean) from a real search error
-# (exit >=2) and exits the whole script on the latter — `|| true` alone would
-# mask exit 2 as clean, the fail-open trap this gate exists to prevent. Called
-# as a statement (not in a $() subshell) so `exit` terminates the script.
+# scan runs a real recursive search and leaves the allowlist-filtered matches in
+# scan_result. It distinguishes "no matches" (exit 1, clean) from a real search
+# error and exits the whole script on the latter — `|| true` alone would mask
+# errors as clean, the fail-open trap this gate exists to prevent.
 scan_result=""
 scan() {
-  local out rc
+  local pattern out rc
+  pattern="$1"
   set +e
-  out="$(rg -n "$@" "${roots[@]}" --glob '*_test.go')"
+  if command -v rg >/dev/null 2>&1; then
+    out="$(rg -n "$pattern" "${roots[@]}" --glob '*_test.go')"
+  elif command -v grep >/dev/null 2>&1; then
+    out="$(grep -RInE --include='*_test.go' "$pattern" "${roots[@]}")"
+  else
+    echo "check-test-stability: neither ripgrep (rg) nor grep is on PATH." >&2
+    echo "The stability gate must fail closed when it cannot scan." >&2
+    exit 127
+  fi
   rc=$?
   set -e
   if [[ "$rc" -gt 1 ]]; then
-    echo "check-test-stability: ripgrep exited with $rc while running: rg $* ${roots[*]}" >&2
+    echo "check-test-stability: search exited with $rc while scanning for: $pattern" >&2
     echo "The stability gate must fail closed on scan errors, not pass with zero scans." >&2
     exit "$rc"
   fi

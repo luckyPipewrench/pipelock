@@ -26,11 +26,6 @@ import (
 
 const rootRequirement = "requires root"
 
-// execFixtureMode is the file mode for test fixtures that must be executable
-// (a probe-agent shell script the test then runs). The executable bit is
-// required; using a named constant keeps gosec G302 from flagging the literal.
-const execFixtureMode os.FileMode = 0o700
-
 type badAddr string
 
 func (a badAddr) Network() string { return "bad" }
@@ -162,13 +157,12 @@ func TestRunEgressProbeRequiresRootWhenContained(t *testing.T) {
 func TestRunEgressProbeParsesSubprocessOutput(t *testing.T) {
 	t.Parallel()
 
-	agent := filepath.Join(t.TempDir(), "probe-agent")
-	script := `#!/bin/sh
-printf '%s\n' '[{"target":"127.0.0.1:1","open":false,"blocked":true,"detail":"blocked"}]'
-`
-	if err := os.WriteFile(agent, []byte(script), execFixtureMode); err != nil {
-		t.Fatalf("write probe agent: %v", err)
-	}
+	agent := buildLLMHelper(t, `package main
+import "fmt"
+func main() {
+	fmt.Println(`+"`"+`[{"target":"127.0.0.1:1","open":false,"blocked":true,"detail":"blocked"}]`+"`"+`)
+}
+`)
 
 	lr := &LiveRun{
 		ctx:      t.Context(),

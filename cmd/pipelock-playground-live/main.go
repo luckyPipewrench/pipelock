@@ -74,6 +74,12 @@ type serveFlags struct {
 	secretB64          string
 	secretFile         string
 	staticDir          string
+	llmAgentBin        string
+	modelBaseURL       string
+	model              string
+	modelSecretFile    string
+	modelMaxSteps      int
+	modelTimeout       time.Duration
 }
 
 // defaultMaxPerCode is the safe default lifetime session budget per invite code.
@@ -111,6 +117,12 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.secretFile, "secret-file", "", "path to a file holding the base64 gate-signing secret (preferred: keeps it out of argv/shell history)")
 	fl.StringVar(&f.secretB64, "secret", "", "base64 gate-signing secret (default: generated; prefer --secret-file to avoid argv exposure)")
 	fl.StringVar(&f.staticDir, "static-dir", "", "serve the viewer static files at / from this dir (same-origin demo; no CORS needed)")
+	fl.StringVar(&f.llmAgentBin, "llm-agent-bin", "", "model-agent binary path; setting it (with the model flags) drives sessions with a real model-backed agent instead of the deterministic one")
+	fl.StringVar(&f.modelBaseURL, "model-base-url", "", "model API base URL (OpenAI-compatible /chat/completions); required to enable the model-backed agent")
+	fl.StringVar(&f.model, "model", "", "model name; required to enable the model-backed agent")
+	fl.StringVar(&f.modelSecretFile, "model-secret-file", "", "path to a file holding the model API key (kept out of argv); required to enable the model-backed agent")
+	fl.IntVar(&f.modelMaxSteps, "model-max-steps", 0, "max model/tool steps per turn (0 = default)")
+	fl.DurationVar(&f.modelTimeout, "model-timeout", 0, "per model/tool request timeout (0 = default)")
 	return cmd
 }
 
@@ -165,6 +177,11 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 		verifier = containVerifier{}
 	}
 
+	llmAgent, err := buildLLMAgentConfig(f)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	srv, err := livechat.NewServer(livechat.ServerConfig{
 		Gate:                gate,
 		Limits:              livechat.Limits{MaxInputBytes: f.maxInputBytes, SessionTTL: f.sessionTTL},
@@ -178,9 +195,14 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 		WebToolBin:          f.webToolBin,
 		TrustForwardedFor:   f.trustForwardedFor,
 		AllowOrigin:         f.allowOrigin,
+		LLMAgent:            llmAgent,
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if llmAgent != nil {
+		_, _ = fmt.Fprintf(out, "model-backed agent enabled (model %s)\n", llmAgent.Model)
 	}
 
 	posture := "CONTAINED"
@@ -200,6 +222,45 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 		_, _ = fmt.Fprintf(out, "serving viewer from %s at /\n", f.staticDir)
 	}
 	return srv, handler, nil
+}
+
+// buildLLMAgentConfig assembles the model-backed agent config from the model
+// flags, or returns nil to leave the deterministic agent in place. It is enabled
+// when ANY model flag is set, and then requires the full set, so a partial config
+// fails loudly instead of silently falling back to the deterministic agent.
+func buildLLMAgentConfig(f *serveFlags) (*playground.LLMAgentConfig, error) {
+	if f.llmAgentBin == "" &&
+		f.modelBaseURL == "" &&
+		f.model == "" &&
+		f.modelSecretFile == "" &&
+		f.modelMaxSteps == 0 &&
+		f.modelTimeout == 0 {
+		return nil, nil
+	}
+	var missing []string
+	if f.llmAgentBin == "" {
+		missing = append(missing, "--llm-agent-bin")
+	}
+	if f.modelBaseURL == "" {
+		missing = append(missing, "--model-base-url")
+	}
+	if f.model == "" {
+		missing = append(missing, "--model")
+	}
+	if f.modelSecretFile == "" {
+		missing = append(missing, "--model-secret-file")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("model-backed agent requires %s", strings.Join(missing, ", "))
+	}
+	return &playground.LLMAgentConfig{
+		Bin:          f.llmAgentBin,
+		ModelBaseURL: f.modelBaseURL,
+		Model:        f.model,
+		SecretFile:   f.modelSecretFile,
+		MaxSteps:     f.modelMaxSteps,
+		Timeout:      f.modelTimeout,
+	}, nil
 }
 
 // resolveSecret picks the gate-signing secret. A --secret-file (base64 contents)

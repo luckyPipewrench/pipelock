@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/playground/llmagent"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -34,6 +35,12 @@ const (
 	LiveStateDev       = "dev"
 )
 
+// Chat roles in the live stream.
+const (
+	liveRoleUser  = "user"
+	liveRoleAgent = "agent"
+)
+
 // ErrContainmentUnavailable is returned when a session requires containment but
 // it cannot be established or verified. The session is refused (fail-closed):
 // the live agent is never run uncontained while presenting as a live session.
@@ -43,6 +50,13 @@ var ErrContainmentUnavailable = fmt.Errorf("playground: containment required but
 // Once Finalize seals and verifies the run, no further receipt-producing action
 // may be admitted, or it would fall outside the sealed evidence packet.
 var ErrSessionClosed = fmt.Errorf("playground: live session is closed")
+
+// ErrReceiptInvariant is returned (and fails the turn closed) when a model-backed
+// agent narrates an HTTP action that received a proxy response but produced no
+// matching signed receipt. That means the action egressed unmediated, the proxy
+// wiring is wrong, or a proxy path went unobserved -- any of which breaks the
+// "every mediated action is attested" guarantee the live demo makes.
+var ErrReceiptInvariant = fmt.Errorf("playground: agent action produced no signed receipt")
 
 // ContainmentVerifier proves the live agent's environment is kernel-contained
 // before a public session starts. Verify returns nil only when containment is
@@ -104,7 +118,14 @@ type LiveSessionConfig struct {
 	// verifiable against the published key). Empty => ephemeral per-run key.
 	OrchestratorKeyPath string
 	// Agent overrides the LiveAgent. Nil => the deterministic IntentAgent.
+	// Ignored when LLMAgent is set (the model-backed subprocess drives instead).
 	Agent LiveAgent
+	// LLMAgent, when non-nil, drives each turn with a real model-backed agent run
+	// as a proxy-only subprocess (cmd/pipelock-playground-llm-agent) instead of the
+	// in-process deterministic IntentAgent. The subprocess egresses ONLY through the
+	// live run's proxy, so its model calls and tool calls are all mediated and
+	// produce signed receipts; the session enforces that invariant per turn.
+	LLMAgent *LLMAgentConfig
 	// ToyAgentBin / WebToolBin are needed only for a contained run's
 	// host-containment witness probe; unused in dev (uncontained) sessions.
 	ToyAgentBin string
@@ -112,7 +133,29 @@ type LiveSessionConfig struct {
 	// EventBuffer sizes the event channel. Defaults to 256.
 	EventBuffer int
 	// HTTPTimeout bounds each agent request through the proxy. Defaults to 10s.
+	// Applies only to the in-process IntentAgent path; the subprocess agent uses
+	// LLMAgentConfig.Timeout.
 	HTTPTimeout time.Duration
+}
+
+// LLMAgentConfig configures the model-backed subprocess agent for a live session.
+type LLMAgentConfig struct {
+	// Bin is the path to the cmd/pipelock-playground-llm-agent binary.
+	Bin string
+	// ModelBaseURL is the chat-completions API base URL (e.g. https://provider.example/v1).
+	ModelBaseURL string
+	// Model is the model name passed to the API.
+	Model string
+	// SecretFile is the path to a file holding the model API key (never argv).
+	SecretFile string
+	// MaxSteps bounds the model<->tool loop per turn (0 = wrapper default).
+	MaxSteps int
+	// Timeout bounds each model/tool request (0 = wrapper default).
+	Timeout time.Duration
+	// ModelHostOverride maps the model host to these IPs in the lab proxy's DNS so
+	// the agent's model calls resolve to a test server. Empty => real DNS (the
+	// model host is reached for real, the only allowlisted real-egress destination).
+	ModelHostOverride []string
 }
 
 // LiveSession drives a deterministic agent through a real contained Pipelock
@@ -120,16 +163,35 @@ type LiveSessionConfig struct {
 type LiveSession struct {
 	lr        *LiveRun
 	agent     LiveAgent
+	runner    modelTurnRunner // non-nil => model-backed subprocess drives turns
 	client    *http.Client
 	contained bool
 
 	sendMu sync.Mutex // serializes Send so the event stream is ordered
 	done   bool       // set by Finalize under sendMu; rejects later sends
 
+	// recMu guards the per-turn receipt accounting used by the model-driver path's
+	// receipt invariant. onReceipt records targets while a turn is active.
+	recMu        sync.Mutex
+	turnActive   bool
+	turnReceipts []string
+	receiptSig   chan struct{} // per-turn: signaled when a receipt is recorded
+	// receiptSettle bounds how long sendViaModel waits for in-flight receipts to
+	// settle before declaring a receipt-invariant violation. 0 => defaultReceiptSettle.
+	receiptSettle time.Duration
+
 	mu     sync.Mutex
 	closed bool
 	events chan LiveEvent
 }
+
+// defaultReceiptSettle is the backstop wait for in-flight receipt emission. A
+// turn's allow receipt is emitted on the proxy goroutine just AFTER the response
+// is streamed to the subprocess, so the narration can momentarily outrace the
+// bookkeeping. This is a fail-safe ceiling, not the gate: the wait early-exits the
+// instant the tally covers the narrated actions, and a genuinely missing receipt
+// still fails closed once it elapses.
+const defaultReceiptSettle = 3 * time.Second
 
 // StartLiveSession boots a live chat session. It fails closed on containment:
 // if RequireContainment is set and containment cannot be proven, it refuses
@@ -153,7 +215,7 @@ func StartLiveSession(ctx context.Context, cfg LiveSessionConfig) (*LiveSession,
 		events:    make(chan LiveEvent, buf),
 	}
 
-	lr, err := StartLiveRun(ctx, LiveRunOpts{
+	runOpts := LiveRunOpts{
 		Contained:           cfg.RequireContainment,
 		ScenarioID:          LiveDemoScenarioID,
 		RunNonce:            cfg.RunNonce,
@@ -161,7 +223,15 @@ func StartLiveSession(ctx context.Context, cfg LiveSessionConfig) (*LiveSession,
 		ToyAgentBin:         cfg.ToyAgentBin,
 		WebToolBin:          cfg.WebToolBin,
 		OnReceipt:           s.onReceipt,
-	})
+	}
+	if cfg.LLMAgent != nil {
+		// The agent's model calls egress through the lab proxy, so the model host
+		// must be reachable: allowlist it (the one real-egress destination). Tool
+		// calls to the .test hosts stay loopback.
+		runOpts.ModelBaseURL = cfg.LLMAgent.ModelBaseURL
+		runOpts.ModelHostOverride = cfg.LLMAgent.ModelHostOverride
+	}
+	lr, err := StartLiveRun(ctx, runOpts)
 	if err != nil {
 		return nil, fmt.Errorf("start live run: %w", err)
 	}
@@ -181,7 +251,26 @@ func StartLiveSession(ctx context.Context, cfg LiveSessionConfig) (*LiveSession,
 		Timeout:   timeout,
 	}
 
-	if cfg.Agent != nil {
+	if cfg.LLMAgent != nil {
+		runner, rErr := newSubprocessTurnRunner(ctx, subprocessRunnerOpts{
+			Bin:          cfg.LLMAgent.Bin,
+			ProxyURL:     "http://" + lr.proxyLn.Addr().String(),
+			ModelBaseURL: cfg.LLMAgent.ModelBaseURL,
+			Model:        cfg.LLMAgent.Model,
+			SecretFile:   cfg.LLMAgent.SecretFile,
+			SafeURL:      lr.liveSafeURL(),
+			ExfilURL:     lr.liveExfilURL(),
+			Canary:       lr.canaryValue,
+			Actor:        liveRunActor,
+			MaxSteps:     cfg.LLMAgent.MaxSteps,
+			Timeout:      cfg.LLMAgent.Timeout,
+		})
+		if rErr != nil {
+			lr.Close()
+			return nil, fmt.Errorf("start model agent: %w", rErr)
+		}
+		s.runner = runner
+	} else if cfg.Agent != nil {
 		s.agent = cfg.Agent
 	} else {
 		s.agent = NewIntentAgent(lr.liveSafeURL(), lr.liveExfilURL(), lr.canaryValue)
@@ -217,10 +306,14 @@ func (s *LiveSession) Send(ctx context.Context, msg string) error {
 		return ErrSessionClosed
 	}
 
-	s.push(LiveEvent{Type: LiveEventChat, Role: "user", Text: msg})
+	s.push(LiveEvent{Type: LiveEventChat, Role: liveRoleUser, Text: msg})
+
+	if s.runner != nil {
+		return s.sendViaModel(ctx, msg)
+	}
 
 	turn := s.agent.Plan(msg)
-	s.push(LiveEvent{Type: LiveEventChat, Role: "agent", Text: turn.Reply})
+	s.push(LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: turn.Reply})
 
 	for _, act := range turn.Actions {
 		s.push(LiveEvent{
@@ -237,6 +330,141 @@ func (s *LiveSession) Send(ctx context.Context, msg string) error {
 		s.execute(ctx, act)
 	}
 	return nil
+}
+
+// sendViaModel drives one turn through the model-backed subprocess. It opens a
+// receipt-accounting window, streams the agent's narration to the live stream
+// (decision events arrive concurrently via onReceipt as the subprocess's proxy
+// traffic is mediated), then enforces the receipt invariant: every narrated HTTP
+// action that received a proxy response must be backed by a signed receipt for
+// this turn. A violation fails the turn closed. Called with sendMu held.
+func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
+	s.beginReceiptTurn()
+	var proxied []string
+	runErr := s.runner.RunTurn(ctx, msg, func(ev llmagent.Event) {
+		out, push, target := mapModelEvent(ev)
+		if target != "" {
+			proxied = append(proxied, target)
+		}
+		if push {
+			s.push(out)
+		}
+	})
+	if runErr != nil {
+		s.endReceiptTurn()
+		s.push(LiveEvent{Type: LiveEventError, Message: "agent turn failed"})
+		return fmt.Errorf("model agent turn: %w", runErr)
+	}
+
+	// Wait (bounded) for in-flight receipts to settle: a turn's allow receipt is
+	// emitted on the proxy goroutine just AFTER the response is streamed back, so
+	// the narration can momentarily outrace the tally. The wait early-exits the
+	// instant the tally covers the narrated actions; it does not weaken the
+	// invariant (a genuinely missing receipt still fails once the deadline elapses).
+	s.waitReceiptsSettle(ctx, proxied)
+	receipts := s.endReceiptTurn()
+
+	// Receipt invariant: each destination the agent narrated a proxy-responded
+	// action to must carry at LEAST as many signed receipts this turn as narrated
+	// actions to it. A shortfall means an action egressed unmediated or a proxy
+	// path went unobserved -- fail closed. Counting (not set-membership) catches a
+	// dropped receipt even when an earlier action to the same destination was
+	// mediated. (Residual: the agent's own model-API receipts to a host also count
+	// toward that host, so a tool action to the model host could be covered by a
+	// model-call receipt; and a compromised subprocess could narrate falsely. The
+	// invariant guards wiring/observation/direct-egress, not subprocess integrity.)
+	receiptCount := tallyHostPorts(receipts)
+	proxiedCount := tallyHostPorts(proxied)
+	for action, want := range proxiedCount {
+		if receiptCount[action] < want {
+			s.push(LiveEvent{Type: LiveEventError, Message: "unverified agent action blocked"})
+			return fmt.Errorf("%w: %s", ErrReceiptInvariant, action)
+		}
+	}
+	return nil
+}
+
+// tallyHostPorts counts occurrences of each host:port in xs.
+func tallyHostPorts(xs []string) map[string]int {
+	out := make(map[string]int, len(xs))
+	for _, x := range xs {
+		out[x]++
+	}
+	return out
+}
+
+// receiptsCover reports whether the recorded receipts cover every narrated
+// proxied action (at least as many receipts per destination as actions).
+func receiptsCover(proxied, receipts []string) bool {
+	have := tallyHostPorts(receipts)
+	for action, want := range tallyHostPorts(proxied) {
+		if have[action] < want {
+			return false
+		}
+	}
+	return true
+}
+
+// waitReceiptsSettle blocks until the per-turn receipt tally covers the narrated
+// proxied actions, the settle deadline elapses, or ctx ends. It is signaled by
+// onReceipt as each receipt lands, so it returns promptly in the common case.
+func (s *LiveSession) waitReceiptsSettle(ctx context.Context, proxied []string) {
+	if len(proxied) == 0 {
+		return
+	}
+	settle := s.receiptSettle
+	if settle <= 0 {
+		settle = defaultReceiptSettle
+	}
+	timer := time.NewTimer(settle)
+	defer timer.Stop()
+	for {
+		receipts, sig := s.receiptSnapshot()
+		if receiptsCover(proxied, receipts) {
+			return
+		}
+		select {
+		case <-sig:
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// receiptSnapshot returns a copy of the turn's recorded targets plus the current
+// signal channel, both read under recMu.
+func (s *LiveSession) receiptSnapshot() ([]string, chan struct{}) {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	out := make([]string, len(s.turnReceipts))
+	copy(out, s.turnReceipts)
+	return out, s.receiptSig
+}
+
+// beginReceiptTurn opens the per-turn receipt-accounting window. onReceipt records
+// each receipt's target host:port until endReceiptTurn closes it.
+func (s *LiveSession) beginReceiptTurn() {
+	s.recMu.Lock()
+	s.turnActive = true
+	s.turnReceipts = nil
+	s.receiptSig = make(chan struct{}, 1)
+	s.recMu.Unlock()
+}
+
+// endReceiptTurn closes the window and returns the targets recorded during the
+// turn. Callers should waitReceiptsSettle first: an allow receipt can be emitted
+// just after the proxy streams the response to the subprocess, so the tally may
+// still be filling in for an instant after RunTurn returns.
+func (s *LiveSession) endReceiptTurn() []string {
+	s.recMu.Lock()
+	defer s.recMu.Unlock()
+	s.turnActive = false
+	out := s.turnReceipts
+	s.turnReceipts = nil
+	s.receiptSig = nil
+	return out
 }
 
 // execute issues one planned action through the proxy. A blocked request returns
@@ -304,6 +532,9 @@ func (s *LiveSession) Close() {
 	close(s.events)
 	s.mu.Unlock()
 
+	if s.runner != nil {
+		_ = s.runner.Close()
+	}
 	if s.lr != nil {
 		s.lr.Close()
 	}
@@ -315,6 +546,20 @@ func (s *LiveSession) onReceipt(rcpt *receipt.Receipt) {
 	if rcpt == nil {
 		return
 	}
+	// Record the target for the model-driver receipt invariant, if a turn is open,
+	// and signal any settle-wait that the tally advanced.
+	s.recMu.Lock()
+	if s.turnActive {
+		s.turnReceipts = append(s.turnReceipts, targetHostPort(rcpt.ActionRecord.Target))
+		if s.receiptSig != nil {
+			select {
+			case s.receiptSig <- struct{}{}:
+			default:
+			}
+		}
+	}
+	s.recMu.Unlock()
+
 	verdict := receipt.NormalizeVerdict(rcpt.ActionRecord.Verdict)
 	color := bundleColorAllow
 	label := "ALLOW"

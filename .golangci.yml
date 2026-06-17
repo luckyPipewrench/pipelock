@@ -40,7 +40,8 @@ linters:
       - path: _test\.go$
         linters: [goconst]
       # Playground demo/evidence tooling launches only known local binaries:
-      # the web tool, toy agent, `pipelock contain`, and `go build`.
+      # the web tool, toy agent, the model-agent wrapper, `pipelock contain`,
+      # and `go build`.
       - path: cmd/pipelock-playground-toyagent/main\.go
         linters: [gosec]
         text: "G204"
@@ -51,6 +52,14 @@ linters:
         linters: [gosec]
         text: "G204"
       - path: internal/playground/liverun_test\.go
+        linters: [gosec]
+        text: "G204"
+      # live_llm_driver.go launches the model-agent wrapper binary (operator-
+      # configured path); the internal test builds + runs a local helper.
+      - path: internal/playground/live_llm_driver\.go
+        linters: [gosec]
+        text: "G204"
+      - path: internal/playground/live_llm_internal_test\.go
         linters: [gosec]
         text: "G204"
       - path: internal/playground/orchestrate\.go

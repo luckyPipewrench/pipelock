@@ -415,7 +415,10 @@ func writeArchive(path string, m manifest, entries []bundleEntry) error {
 	if err := tw.Close(); err != nil {
 		return fmt.Errorf("closing tar writer: %w", err)
 	}
-	return gw.Close()
+	if err := gw.Close(); err != nil {
+		return fmt.Errorf("closing gzip writer: %w", err)
+	}
+	return nil
 }
 
 // tarWrite adds a single file to the tar archive. The mtime is set to the

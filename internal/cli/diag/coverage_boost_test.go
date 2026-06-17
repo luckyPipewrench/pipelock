@@ -563,6 +563,47 @@ func TestCheckDoctorFlightRecorder_AllBranches(t *testing.T) {
 	}
 }
 
+func TestFlightRecorderAccessDetail(t *testing.T) {
+	tests := []struct {
+		name       string
+		readable   bool
+		writable   bool
+		wantDetail string
+		wantNext   string
+	}{
+		{
+			name:       "neither_readable_nor_writable",
+			wantDetail: "not readable or writable",
+			wantNext:   "read/write/execute",
+		},
+		{
+			name:       "not_readable",
+			readable:   false,
+			writable:   true,
+			wantDetail: "not readable",
+			wantNext:   "read/execute",
+		},
+		{
+			name:       "not_writable",
+			readable:   true,
+			writable:   false,
+			wantDetail: "not writable",
+			wantNext:   "write/execute",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			detail, next := flightRecorderAccessDetail(tc.readable, tc.writable)
+			if !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("detail = %q, want substring %q", detail, tc.wantDetail)
+			}
+			if !strings.Contains(next, tc.wantNext) {
+				t.Fatalf("next = %q, want substring %q", next, tc.wantNext)
+			}
+		})
+	}
+}
+
 func TestConnectThroughProxy_BadAddress(t *testing.T) {
 	_, err := connectThroughProxy("http://127.0.0.1:1", "example.com:443")
 	if err == nil {

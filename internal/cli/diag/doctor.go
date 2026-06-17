@@ -629,6 +629,7 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 	readable := pathReadable(cfg.FlightRecorder.Dir)
 	writable := pathWritableDir(cfg.FlightRecorder.Dir)
 	if !readable || !writable {
+		detail, next := flightRecorderAccessDetail(readable, writable)
 		return doctorReportCheck{
 			Name:       "flight_recorder",
 			Surface:    doctorSurfaceConfig,
@@ -636,8 +637,8 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 			Configured: true,
 			Reachable:  readable,
 			Enforcing:  false,
-			Detail:     "flight_recorder.dir is configured but is not readable and writable; receipts will not persist reliably",
-			Next:       "create the directory and grant the pipelock service user read/write/execute access",
+			Detail:     detail,
+			Next:       next,
 		}
 	}
 	return doctorReportCheck{
@@ -648,6 +649,20 @@ func checkDoctorFlightRecorder(cfg *config.Config) doctorReportCheck {
 		Reachable:  true,
 		Enforcing:  true,
 		Detail:     "flight_recorder is enabled with a configured directory",
+	}
+}
+
+func flightRecorderAccessDetail(readable, writable bool) (detail, next string) {
+	switch {
+	case !readable && !writable:
+		return "flight_recorder.dir is configured but is not readable or writable; receipts will not persist reliably",
+			"create the directory and grant the pipelock service user read/write/execute access"
+	case !readable:
+		return "flight_recorder.dir is configured but is not readable; existing receipts cannot be inspected reliably",
+			"grant the pipelock service user read/execute access to flight_recorder.dir"
+	default:
+		return "flight_recorder.dir is configured but is not writable; new receipts will not persist",
+			"grant the pipelock service user write/execute access to flight_recorder.dir"
 	}
 }
 

@@ -867,6 +867,51 @@ func (r *errReadCloser) Close() error {
 	return nil
 }
 
+type closeRecordingBody struct {
+	closed atomic.Int32
+}
+
+func (*closeRecordingBody) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (b *closeRecordingBody) Close() error {
+	b.closed.Add(1)
+	return nil
+}
+
+func TestHTTPClient_ResponseReadersCloseBody(t *testing.T) {
+	tests := []struct {
+		name   string
+		reader func(*closeRecordingBody) io.Closer
+	}{
+		{
+			name: "single message reader",
+			reader: func(body *closeRecordingBody) io.Closer {
+				return &SingleMessageReader{Body: body}
+			},
+		},
+		{
+			name: "sse reader",
+			reader: func(body *closeRecordingBody) io.Closer {
+				return &closingSSEReader{sse: NewSSEReader(body), body: body}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := &closeRecordingBody{}
+			reader := tt.reader(body)
+			if err := reader.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if body.closed.Load() != 1 {
+				t.Fatalf("body close count = %d, want 1", body.closed.Load())
+			}
+		})
+	}
+}
+
 func TestHTTPClient_ErrorStatusEmptyBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

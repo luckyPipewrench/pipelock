@@ -169,6 +169,30 @@ func TestRequestTracker_NilTracker(t *testing.T) {
 	if !tr.Validate(json.RawMessage(`999`)) {
 		t.Error("expected nil tracker Validate to return true for any ID")
 	}
+	if got := tr.DrainPending(); got != nil {
+		t.Fatalf("nil tracker DrainPending = %q, want nil", got)
+	}
+}
+
+func TestRequestTracker_DrainPending(t *testing.T) {
+	tr := NewRequestTracker()
+	tr.Track(json.RawMessage(`1`))
+	tr.Track(json.RawMessage(`"two"`))
+	tr.Track(json.RawMessage(`null`))
+
+	got := tr.DrainPending()
+	if len(got) != 2 || string(got[0]) != `1` || string(got[1]) != `"two"` {
+		t.Fatalf("DrainPending = %q, want [1 \"two\"]", got)
+	}
+	if tr.Validate(json.RawMessage(`1`)) {
+		t.Fatal("drained id 1 should no longer validate")
+	}
+	if tr.Validate(json.RawMessage(`"two"`)) {
+		t.Fatal("drained id \"two\" should no longer validate")
+	}
+	if got := tr.DrainPending(); len(got) != 0 {
+		t.Fatalf("second DrainPending = %q, want empty", got)
+	}
 }
 
 func TestRequestTracker_TrackNilID(t *testing.T) {

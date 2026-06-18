@@ -3706,9 +3706,10 @@ func (m *mockRecorderEscalateOnClean) RecordClean(decay float64) {
 	}
 }
 
-// TestForwardScanned_ResponseTimeout verifies that a dead upstream (sends
-// nothing) triggers a JSON-RPC timeout error for pending requests instead
-// of hanging the agent indefinitely.
+// TestForwardScanned_ResponseTimeoutReturnsSentinel verifies that a dead
+// upstream (sends nothing) returns the timeout sentinel instead of hanging the
+// agent indefinitely. The owning transport emits pending timeout responses
+// after it stops request intake.
 func TestForwardScanned_ResponseTimeout(t *testing.T) {
 	sc := testScannerWithAction(t, "warn")
 	tracker := NewRequestTracker()
@@ -3732,16 +3733,11 @@ func TestForwardScanned_ResponseTimeout(t *testing.T) {
 		t.Fatalf("expected ErrResponseTimeout, got: %v", err)
 	}
 
-	// Client output should contain a timeout error response for id 42.
-	outStr := out.String()
-	if !strings.Contains(outStr, `"code":-32000`) {
-		t.Fatalf("expected -32000 timeout code in output, got: %s", outStr)
+	if out.Len() != 0 {
+		t.Fatalf("ForwardScanned must not emit timeout responses directly; got: %s", out.String())
 	}
-	if !strings.Contains(outStr, `"id":42`) {
-		t.Fatalf("expected id 42 in timeout response, got: %s", outStr)
-	}
-	if !strings.Contains(outStr, "upstream response timeout") {
-		t.Fatalf("expected timeout message in output, got: %s", outStr)
+	if got := tracker.DrainPending(); len(got) != 1 || string(got[0]) != `42` {
+		t.Fatalf("ForwardScanned must leave pending ids for the owner to drain; got %q", got)
 	}
 	if !strings.Contains(logBuf.String(), "upstream response timeout") {
 		t.Fatalf("expected timeout log, got: %s", logBuf.String())
@@ -3751,37 +3747,73 @@ func TestForwardScanned_ResponseTimeout(t *testing.T) {
 	ch <- transport.ReadResult{Err: io.EOF}
 }
 
-// TestForwardScanned_ResponseTimeout_SingleScopeDoesNotDrain proves that with
-// TimeoutScopeSingleResponse set (the HTTP bridge per-request path), a timeout
-// does NOT emit or drain the shared tracker — so other concurrently-pending
-// request ids are not falsely timed out. The caller emits the -32000 for its
-// own id.
-func TestForwardScanned_ResponseTimeout_SingleScopeDoesNotDrain(t *testing.T) {
-	sc := testScannerWithAction(t, "warn")
+func TestEmitPendingTimeoutResponses_DrainsTracker(t *testing.T) {
 	tracker := NewRequestTracker()
 	tracker.Track(json.RawMessage(`1`))
 	tracker.Track(json.RawMessage(`2`))
 
-	ch := make(chan transport.ReadResult, 1)
-	br := &chanReader{ch: ch}
-	tr := transport.NewTimeoutReader(br, 50*time.Millisecond)
-
 	var out, logBuf bytes.Buffer
-	opts := buildTestOpts(sc)
-	opts.TimeoutScopeSingleResponse = true
-	_, err := ForwardScanned(tr, transport.NewStdioWriter(&out), &logBuf, tracker, opts)
-	if !errors.Is(err, transport.ErrResponseTimeout) {
-		t.Fatalf("want ErrResponseTimeout, got %v", err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("single-scope timeout must not emit a response; got: %s", out.String())
-	}
-	if got := tracker.DrainPending(); len(got) != 2 {
-		t.Fatalf("single-scope timeout must not drain the tracker; pending=%d want 2", len(got))
-	}
+	emitPendingTimeoutResponses(transport.NewStdioWriter(&out), &logBuf, tracker)
 
-	// Unblock the background goroutine so it does not leak.
-	ch <- transport.ReadResult{Err: io.EOF}
+	outStr := out.String()
+	for _, want := range []string{`"id":1`, `"id":2`, `"code":-32000`, "upstream response timeout"} {
+		if !strings.Contains(outStr, want) {
+			t.Fatalf("timeout output missing %q: %s", want, outStr)
+		}
+	}
+	if got := tracker.DrainPending(); len(got) != 0 {
+		t.Fatalf("tracker still has pending ids after drain: %q", got)
+	}
+}
+
+func TestEmitRequestScopedTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      json.RawMessage
+		trackID bool
+		wantOut string
+	}{
+		{name: "tracked request", id: json.RawMessage(`7`), trackID: true, wantOut: `"id":7`},
+		{name: "explicit null id", id: json.RawMessage(jsonrpc.Null), wantOut: `"id":null`},
+		{name: "notification without id", id: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := NewRequestTracker()
+			if tt.trackID {
+				tracker.Track(tt.id)
+			}
+			reader := &closeTrackingReader{}
+			var out, logBuf bytes.Buffer
+
+			emitRequestScopedTimeout(
+				reader,
+				transport.NewStdioWriter(&out),
+				&logBuf,
+				tracker,
+				tt.id,
+				"pipelock: upstream response timeout; failed request closed, session continues",
+			)
+
+			if !reader.closed {
+				t.Fatal("expected response reader to be closed")
+			}
+			if tt.wantOut == "" {
+				if out.Len() != 0 {
+					t.Fatalf("notification should not receive a response, got: %s", out.String())
+				}
+			} else {
+				for _, want := range []string{tt.wantOut, `"code":-32000`} {
+					if !strings.Contains(out.String(), want) {
+						t.Fatalf("timeout response missing %q: %s", want, out.String())
+					}
+				}
+			}
+			if !strings.Contains(logBuf.String(), "upstream response timeout") {
+				t.Fatalf("expected timeout log, got: %s", logBuf.String())
+			}
+		})
+	}
 }
 
 // chanReader is a MessageReader that returns results from a channel. Used
@@ -3793,6 +3825,19 @@ type chanReader struct {
 func (cr *chanReader) ReadMessage() ([]byte, error) {
 	r := <-cr.ch
 	return r.Msg, r.Err
+}
+
+type closeTrackingReader struct {
+	closed bool
+}
+
+func (*closeTrackingReader) ReadMessage() ([]byte, error) {
+	return nil, io.EOF
+}
+
+func (r *closeTrackingReader) Close() error {
+	r.closed = true
+	return nil
 }
 
 // TestWithResponseTimeout proves the shared helper used by BOTH stdio-fronted

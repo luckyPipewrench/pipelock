@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,25 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+func emitRequestScopedTimeout(
+	respReader transport.MessageReader,
+	writer transport.MessageWriter,
+	logW io.Writer,
+	tracker *RequestTracker,
+	id json.RawMessage,
+	logMessage string,
+) {
+	if c, ok := respReader.(io.Closer); ok {
+		_ = c.Close()
+	}
+	if len(id) != 0 && (tracker == nil || tracker.Validate(id)) {
+		if wErr := writer.WriteMessage(timeoutErrorResponse(id)); wErr != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
+		}
+	}
+	_, _ = fmt.Fprintln(logW, logMessage)
+}
 
 // RunHTTPProxy bridges stdio (client) to an upstream HTTP MCP server with
 // bidirectional scanning. Reads JSON-RPC from clientIn, POSTs to upstreamURL,
@@ -93,10 +113,6 @@ func RunHTTPProxy(
 	fwdOpts.ToolCfg = fwdToolCfg
 	fwdOpts.ToolCfgFn = nil
 	fwdOpts.WarnContext = ctx
-	// The bridge calls ForwardScanned once per request, so a response timeout
-	// must fail only that request (this loop emits the -32000 for its id), not
-	// drain the shared tracker and falsely time out other in-flight requests.
-	fwdOpts.TimeoutScopeSingleResponse = true
 	resolverRuntime := newDeferResolverRuntime(ctx)
 	fwdOpts.DeferResolverRuntime = resolverRuntime
 	defer func() {
@@ -227,27 +243,14 @@ func RunHTTPProxy(
 						respReader = fwdOpts.withResponseTimeout(respReader)
 						_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
 						if errors.Is(scanErr, transport.ErrResponseTimeout) {
-							// Hung upstream on a deferred request. Close the
-							// timed-out response so the wrapped reader's
-							// background read drains (no leak / late double-emit)
-							// and emit a -32000 for THIS request only. This runs
-							// in the async resolution callback, so we fail just
-							// this request closed rather than tearing down the
-							// bridge (the main loop may be blocked on a
-							// non-cancellable stdin read) or draining unrelated
-							// in-flight request ids.
-							if c, ok := respReader.(io.Closer); ok {
-								_ = c.Close()
-							}
-							// Emit only if still pending (Validate untracks and
-							// returns false if the upstream already answered),
-							// so an already-answered id is never double-emitted.
-							if !deferredReq.IsNotification && deferredReq.ID != nil && tracker.Validate(deferredReq.ID) {
-								if wErr := safeClientOut.WriteMessage(timeoutErrorResponse(deferredReq.ID)); wErr != nil {
-									_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send timeout response: %v\n", wErr)
-								}
-							}
-							_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream response timeout on deferred request; failed request closed\n")
+							emitRequestScopedTimeout(
+								respReader,
+								safeClientOut,
+								safeLogW,
+								tracker,
+								deferredReq.ID,
+								"pipelock: upstream response timeout on deferred request; failed request closed",
+							)
 						} else if scanErr != nil {
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 						}
@@ -348,28 +351,14 @@ func RunHTTPProxy(
 		respReader = fwdOpts.withResponseTimeout(respReader)
 		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
 		if errors.Is(scanErr, transport.ErrResponseTimeout) {
-			// Upstream accepted the request but never replied. Close the
-			// timed-out response so the wrapped reader's background read drains
-			// (no goroutine/body leak, no late double-emit), emit a -32000 for
-			// THIS request only (request-scoped, so other in-flight requests
-			// are untouched), then keep serving: one slow HTTP response must not
-			// tear down the whole MCP session. (The stdio subprocess proxy DOES
-			// terminate its child here, because a hung subprocess cannot
-			// recover; an HTTP upstream serving many requests can.)
-			if c, ok := respReader.(io.Closer); ok {
-				_ = c.Close()
-			}
-			// Emit the timeout error only if this id is still pending. Validate
-			// returns true and untracks it when pending; it returns false when
-			// the upstream already answered (e.g. an SSE POST that replied then
-			// held the stream open past the deadline), so we never double-emit
-			// for an already-answered id.
-			if rpcID := frame.ID; rpcID != nil && tracker.Validate(rpcID) {
-				if wErr := safeClientOut.WriteMessage(timeoutErrorResponse(rpcID)); wErr != nil {
-					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send timeout response: %v\n", wErr)
-				}
-			}
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream response timeout; failed request closed, session continues\n")
+			emitRequestScopedTimeout(
+				respReader,
+				safeClientOut,
+				safeLogW,
+				tracker,
+				frame.ID,
+				"pipelock: upstream response timeout; failed request closed, session continues",
+			)
 			lastScanErr = scanErr
 			continue
 		}

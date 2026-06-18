@@ -21,63 +21,84 @@ func (br *blockingReader) ReadMessage() ([]byte, error) {
 	return r.Msg, r.Err
 }
 
-func TestTimeoutReader_PassthroughWhenDisabled(t *testing.T) {
-	br := &blockingReader{responses: make(chan ReadResult, 1)}
-	br.responses <- ReadResult{Msg: []byte(`{"ok":true}`), Err: nil}
-	tr := NewTimeoutReader(br, 0)
-	msg, err := tr.ReadMessage()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestTimeoutReader_ReadMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		timeout    time.Duration
+		initial    *ReadResult
+		wantMsg    string
+		wantErr    error
+		late       *ReadResult
+		lateMsg    string
+		lateErr    error
+		lateReadTO time.Duration
+	}{
+		{
+			name:    "passthrough when disabled",
+			timeout: 0,
+			initial: &ReadResult{Msg: []byte(`{"ok":true}`)},
+			wantMsg: `{"ok":true}`,
+		},
+		{
+			name:    "returns before deadline",
+			timeout: 5 * time.Second,
+			initial: &ReadResult{Msg: []byte(`{"id":1}`)},
+			wantMsg: `{"id":1}`,
+		},
+		{
+			name:       "times out then drains late response",
+			timeout:    50 * time.Millisecond,
+			wantErr:    ErrResponseTimeout,
+			late:       &ReadResult{Msg: []byte(`{"id":1}`)},
+			lateMsg:    `{"id":1}`,
+			lateReadTO: 5 * time.Second,
+		},
+		{
+			name:    "propagates eof",
+			timeout: 5 * time.Second,
+			initial: &ReadResult{Err: io.EOF},
+			wantErr: io.EOF,
+		},
 	}
-	if string(msg) != `{"ok":true}` {
-		t.Fatalf("msg = %q", msg)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			br := &blockingReader{responses: make(chan ReadResult, 1)}
+			if tt.initial != nil {
+				br.responses <- *tt.initial
+			}
+			tr := NewTimeoutReader(br, tt.timeout)
 
-func TestTimeoutReader_ReturnsBeforeDeadline(t *testing.T) {
-	br := &blockingReader{responses: make(chan ReadResult, 1)}
-	br.responses <- ReadResult{Msg: []byte(`{"id":1}`), Err: nil}
-	tr := NewTimeoutReader(br, 5*time.Second)
-	msg, err := tr.ReadMessage()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(msg) != `{"id":1}` {
-		t.Fatalf("msg = %q", msg)
-	}
-}
+			msg, err := tr.ReadMessage()
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("ReadMessage error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("ReadMessage unexpected error: %v", err)
+			}
+			if string(msg) != tt.wantMsg {
+				t.Fatalf("ReadMessage msg = %q, want %q", msg, tt.wantMsg)
+			}
+			if tt.late == nil {
+				return
+			}
 
-func TestTimeoutReader_TimesOut(t *testing.T) {
-	br := &blockingReader{responses: make(chan ReadResult, 1)}
-	// Do not push a response - the reader will block.
-	tr := NewTimeoutReader(br, 50*time.Millisecond)
-	_, err := tr.ReadMessage()
-	if !errors.Is(err, ErrResponseTimeout) {
-		t.Fatalf("expected ErrResponseTimeout, got %v", err)
-	}
-
-	// Push the late response so the goroutine can drain.
-	br.responses <- ReadResult{Msg: []byte(`{"id":1}`), Err: nil}
-
-	// The next read reuses the inflight channel and should return the
-	// buffered late response immediately (well within the 5s deadline).
-	tr.timeout = 5 * time.Second
-	msg, err := tr.ReadMessage()
-	if err != nil {
-		t.Fatalf("expected buffered response, got error: %v", err)
-	}
-	if string(msg) != `{"id":1}` {
-		t.Fatalf("msg = %q", msg)
-	}
-}
-
-func TestTimeoutReader_PropagatesEOF(t *testing.T) {
-	br := &blockingReader{responses: make(chan ReadResult, 1)}
-	br.responses <- ReadResult{Msg: nil, Err: io.EOF}
-	tr := NewTimeoutReader(br, 5*time.Second)
-	_, err := tr.ReadMessage()
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("expected io.EOF, got %v", err)
+			// Push the late response so the goroutine can drain. The next read
+			// reuses the inflight channel and should return the buffered result.
+			br.responses <- *tt.late
+			tr.timeout = tt.lateReadTO
+			msg, err = tr.ReadMessage()
+			if tt.lateErr != nil {
+				if !errors.Is(err, tt.lateErr) {
+					t.Fatalf("late ReadMessage error = %v, want %v", err, tt.lateErr)
+				}
+			} else if err != nil {
+				t.Fatalf("late ReadMessage unexpected error: %v", err)
+			}
+			if string(msg) != tt.lateMsg {
+				t.Fatalf("late ReadMessage msg = %q, want %q", msg, tt.lateMsg)
+			}
+		})
 	}
 }
 
@@ -125,5 +146,12 @@ func TestTimeoutReader_CloseDrainsHungInner(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("ReadMessage hung after Close; background goroutine did not drain")
+	}
+}
+
+func TestTimeoutReader_CloseNoopWhenInnerNotCloser(t *testing.T) {
+	tr := NewTimeoutReader(&blockingReader{responses: make(chan ReadResult, 1)}, time.Second)
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }

@@ -481,6 +481,12 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 		t.Fatal("nil config should not build MCP tool config")
 	}
 	cfg := config.Defaults()
+	cfg.MCPInputScanning.Enabled = false
+	cfg.MCPInputScanning.ResponseTimeoutSeconds = 7
+	timeoutOnlyCfg := buildMCPInputCfg(cfg)
+	if timeoutOnlyCfg == nil || timeoutOnlyCfg.Enabled || timeoutOnlyCfg.ResponseTimeoutSeconds != 7 {
+		t.Fatalf("timeout-only input cfg = %+v, want disabled scanner with timeout", timeoutOnlyCfg)
+	}
 	cfg.MCPInputScanning.Enabled = true
 	cfg.MCPInputScanning.Action = config.ActionBlock
 	cfg.MCPToolScanning.Enabled = true

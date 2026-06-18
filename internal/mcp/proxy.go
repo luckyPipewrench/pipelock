@@ -73,6 +73,18 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 	return nil
 }
 
+func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker) {
+	if tracker == nil {
+		return
+	}
+	for _, id := range tracker.DrainPending() {
+		resp := timeoutErrorResponse(id)
+		if wErr := writer.WriteMessage(resp); wErr != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
+		}
+	}
+}
+
 // isResponse returns true if msg is a JSON-RPC response (has "result" or "error"
 // field). Messages with only a "method" field (server-initiated requests) return
 // false. A message with both "method" and "result" is treated as a response
@@ -162,28 +174,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if wsutil.IsExpectedCloseErr(err) {
 				break
 			}
-			// Upstream response timeout: emit a JSON-RPC error for every
-			// pending (unanswered) request so the agent does not hang, then
-			// return the sentinel so the owning transport tears down the hung
-			// upstream. Returning (not break) is load-bearing: a clean-EOF
-			// break would let RunProxy fall into cmd.Wait() on a still-alive
-			// child (blocking forever) and let the HTTP bridge loop keep
-			// accepting requests against a dead upstream.
+			// Upstream response timeout: return the sentinel so the owning
+			// transport tears down the hung upstream and decides the failure
+			// scope. Returning (not break) is load-bearing: a clean-EOF break
+			// would let RunProxy fall into cmd.Wait() on a still-alive child
+			// (blocking forever) and let the HTTP bridge loop keep accepting
+			// requests against a dead upstream.
 			if errors.Is(err, transport.ErrResponseTimeout) {
 				_, _ = fmt.Fprintf(logW, "pipelock: upstream response timeout\n")
-				// Terminal callers (stdio subprocess / sandbox) fail EVERY
-				// pending request closed here. Single-response callers (the HTTP
-				// bridge) own one request and emit the -32000 for that id
-				// themselves, so they suppress this broad drain to avoid timing
-				// out an unrelated concurrently-pending request.
-				if tracker != nil && !opts.TimeoutScopeSingleResponse {
-					for _, id := range tracker.DrainPending() {
-						resp := timeoutErrorResponse(id)
-						if wErr := writer.WriteMessage(resp); wErr != nil {
-							_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
-						}
-					}
-				}
 				return foundInjection, transport.ErrResponseTimeout
 			}
 			return foundInjection, fmt.Errorf("reading input: %w", err)
@@ -1239,13 +1237,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
 	fwdOpts.ToolCfgFn = nil
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
+	timedOut := errors.Is(scanErr, transport.ErrResponseTimeout)
 
 	// On an upstream response timeout the child is still alive (it accepted a
-	// request and never replied). The agent already received -32000 timeout
-	// errors; terminate the child now so cmd.Wait() below returns instead of
-	// blocking forever on the hung process. The pgid teardown after Wait()
-	// then reaps any descendants.
-	if errors.Is(scanErr, transport.ErrResponseTimeout) && cmd.Process != nil {
+	// request and never replied). Stop request intake before emitting pending
+	// timeout responses below, then terminate the child so cmd.Wait() returns
+	// instead of blocking forever on the hung process. The pgid teardown after
+	// Wait() then reaps any descendants.
+	if timedOut && cmd.Process != nil {
 		_, _ = fmt.Fprintf(safeLogW, "pipelock: terminating MCP subprocess after upstream response timeout\n")
 		if c, ok := clientIn.(io.Closer); ok {
 			_ = c.Close()
@@ -1286,7 +1285,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// non-Linux builds - the stub is a no-op there.
 	killAdoptedDescendants()
 
-	if errors.Is(scanErr, transport.ErrResponseTimeout) {
+	if timedOut {
 		// Closing a closable clientIn above wakes the usual CLI/pipe readers.
 		// If a custom Reader cannot be interrupted, do not let a request that
 		// already failed closed wedge shutdown forever.
@@ -1303,6 +1302,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		case <-drainCtx.Done():
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
+		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker)
 	} else {
 		// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 		wg.Wait()

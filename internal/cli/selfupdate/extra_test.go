@@ -247,9 +247,11 @@ func TestShellQuote(t *testing.T) {
 		{"/it's/here/pipelock", `'/it'\''s/here/pipelock'`},
 	}
 	for _, tt := range tests {
-		if got := shellQuote(tt.in); got != tt.want {
-			t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
-		}
+		t.Run(tt.in, func(t *testing.T) {
+			if got := shellQuote(tt.in); got != tt.want {
+				t.Fatalf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

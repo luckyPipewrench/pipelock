@@ -21,7 +21,10 @@ func buildToolPolicyCfg(cfg *config.Config) *policy.Config {
 }
 
 func buildMCPInputCfg(cfg *config.Config) *mcp.InputScanConfig {
-	if cfg == nil || !cfg.MCPInputScanning.Enabled {
+	if cfg == nil {
+		return nil
+	}
+	if !cfg.MCPInputScanning.Enabled && cfg.MCPInputScanning.ResponseTimeoutSeconds <= 0 {
 		return nil
 	}
 	return &mcp.InputScanConfig{

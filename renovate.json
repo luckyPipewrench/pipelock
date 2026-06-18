@@ -21,6 +21,11 @@
   },
   "packageRules": [
     {
+      "description": "Keep GitHub Actions, Docker, and k8s image refs pinned to digests so the OpenSSF Scorecard pinned-dependencies check stays satisfied. The digest-maintenance PRs this produces are batched into the weekly group below, so pinning costs no extra PR noise.",
+      "matchManagers": ["github-actions", "dockerfile", "docker-compose", "kubernetes", "helm-values", "helmv3"],
+      "pinDigests": true
+    },
+    {
       "description": "Collapse every non-major update (minor, patch, digest, pin) into ONE weekly batched PR so the PR volume stays low. Majors and security alerts are handled separately below.",
       "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest", "bump"],
       "groupName": "weekly dependencies"

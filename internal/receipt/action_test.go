@@ -214,6 +214,36 @@ func TestActionRecord_Canonical(t *testing.T) {
 	})
 }
 
+func TestActionRecord_CanonicalV1GoldenBytes(t *testing.T) {
+	t.Parallel()
+
+	ar := ActionRecord{
+		Version:         ActionRecordVersion,
+		ActionID:        "action-0001",
+		ActionType:      ActionWrite,
+		Timestamp:       time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC),
+		Principal:       "user",
+		Actor:           "agent",
+		DelegationChain: []string{"user", "agent"},
+		Target:          testTarget,
+		SideEffectClass: SideEffectExternalWrite,
+		Reversibility:   ReversibilityCompensatable,
+		PolicyHash:      "policy-sha256",
+		Verdict:         testVerdict,
+		Transport:       "mcp",
+		ChainPrevHash:   "genesis",
+		ChainSeq:        7,
+	}
+	data, err := ar.Canonical()
+	if err != nil {
+		t.Fatalf("Canonical() error: %v", err)
+	}
+	const want = `{"version":1,"action_id":"action-0001","action_type":"write","timestamp":"2026-04-04T12:00:00Z","principal":"user","actor":"agent","delegation_chain":["user","agent"],"target":"https://example.com/api","side_effect_class":"external_write","reversibility":"compensatable","policy_hash":"policy-sha256","verdict":"block","transport":"mcp","chain_prev_hash":"genesis","chain_seq":7}`
+	if string(data) != want {
+		t.Fatalf("canonical v1 bytes changed:\n got: %s\nwant: %s", data, want)
+	}
+}
+
 func TestActionRecord_Hash(t *testing.T) {
 	t.Parallel()
 

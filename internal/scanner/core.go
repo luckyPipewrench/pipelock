@@ -5,7 +5,6 @@ package scanner
 
 import (
 	"context"
-	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -508,8 +507,9 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 		matches = append(matches, s.matchCoreDLPPatterns(compacted, "whitespace")...)
 	}
 
-	// Recursive encoding decode: try base64, hex, base32 and re-check
-	// core DLP patterns on decoded content. Catches base64(secret), hex(secret).
+	// Fixpoint encoding decode: try base64, hex, base32, and URL decoding
+	// until no new bounded candidates appear. Catches stacked encodings while
+	// bounding candidate count and candidate size.
 	matches = append(matches, s.decodeAndMatchCoreRecursive(cleaned, 0)...)
 	if len(matches) == 0 {
 		matches = append(matches, s.decodeCoreDLPTextSegments(cleaned)...)
@@ -536,69 +536,28 @@ func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
 	return matches
 }
 
-// decodeAndMatchCoreRecursive tries base64, hex, and base32 decoding, runs core
-// DLP patterns on decoded content, then recurses on the decoded result to catch
-// multi-layer chains (e.g., base64(hex(secret))). Mirrors the main scanner's
-// decodeAndMatchRecursive but uses only core DLP patterns.
-func (s *Scanner) decodeAndMatchCoreRecursive(text string, depth int) []TextDLPMatch {
-	if depth >= maxDecodeDepth {
-		return nil
-	}
-
+// decodeAndMatchCoreRecursive runs core DLP patterns over every bounded
+// fixpoint decode candidate. The second parameter is kept for older call sites.
+func (s *Scanner) decodeAndMatchCoreRecursive(text string, _ int) []TextDLPMatch {
 	var matches []TextDLPMatch
-
-	// Try base64 decoding (padded and unpadded variants).
-	for _, enc := range []*base64.Encoding{
-		base64.StdEncoding, base64.URLEncoding,
-		base64.RawStdEncoding, base64.RawURLEncoding,
-	} {
-		if decoded, err := enc.DecodeString(text); err == nil && len(decoded) > 0 {
-			d := string(decoded)
-			matches = append(matches, s.matchCoreDLPPatterns(d, "base64")...)
-			matches = append(matches, s.decodeAndMatchCoreRecursive(d, depth+1)...)
-		}
+	for _, d := range decodeEncodingsRecursiveWithURL(text) {
+		matches = append(matches, s.matchCoreDLPPatterns(d.text, d.encoding)...)
 	}
-
-	// Try hex decoding (raw and delimiter-stripped).
-	if decoded, err := hex.DecodeString(text); err == nil && len(decoded) > 0 {
-		d := string(decoded)
-		matches = append(matches, s.matchCoreDLPPatterns(d, "hex")...)
-		matches = append(matches, s.decodeAndMatchCoreRecursive(d, depth+1)...)
-	} else if normalized := normalizeHex(text); normalized != "" {
-		if decoded, err := hex.DecodeString(normalized); err == nil && len(decoded) > 0 {
-			d := string(decoded)
-			matches = append(matches, s.matchCoreDLPPatterns(d, "hex")...)
-			matches = append(matches, s.decodeAndMatchCoreRecursive(d, depth+1)...)
-		}
-	}
-
-	// Try base32 decoding.
-	if decoded, err := base32.StdEncoding.DecodeString(text); err == nil && len(decoded) > 0 {
-		d := string(decoded)
-		matches = append(matches, s.matchCoreDLPPatterns(d, "base32")...)
-		matches = append(matches, s.decodeAndMatchCoreRecursive(d, depth+1)...)
-	}
-
 	return matches
 }
 
 func (s *Scanner) decodeCoreDLPTextSegments(text string) []TextDLPMatch {
-	var matches []TextDLPMatch
 	for _, seg := range strings.FieldsFunc(text, isTextDLPEncodingDelimiter) {
 		if len(seg) < 10 {
 			continue
 		}
-		for _, d := range decodeEncodingsRecursive(seg) {
+		for _, d := range decodeEncodingsRecursiveWithURL(seg) {
 			if m := s.matchCoreDLPPatterns(d.text, d.encoding); len(m) > 0 {
 				return m
 			}
 		}
-		if m := s.decodeAndMatchCoreRecursive(seg, 0); len(m) > 0 {
-			matches = append(matches, m...)
-			return matches
-		}
 	}
-	return matches
+	return nil
 }
 
 // isCoreCIDRBlocked checks whether an IP falls within any core internal CIDR.

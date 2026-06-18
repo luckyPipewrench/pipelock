@@ -1472,6 +1472,21 @@ const (
 	encodingHex    = "hex"
 	encodingBase64 = "base64"
 	encodingBase32 = "base32"
+	encodingURL    = "url"
+)
+
+const (
+	maxDecodeCandidates = 4096
+	// maxDecodeTotalBytes bounds the SUM of decoded-candidate bytes processed in
+	// one fixpoint walk. It is the real work ceiling (decode + DLP match cost),
+	// and it replaces a per-candidate ceiling: a low per-candidate cap is itself
+	// a bypass, because an attacker can pad a stacked-encoded secret past it. The
+	// budget sits above the 5MB request-body scan limit so a secret encoded
+	// inside a large body is still fully decoded, while a bushy decode tree
+	// cannot amplify into unbounded CPU/memory. Standard decodes (base64, hex,
+	// base32, URL) only shrink their input, so no single candidate exceeds the
+	// entry size, which is itself bounded by this budget.
+	maxDecodeTotalBytes = 8 * 1024 * 1024
 )
 
 // hexPrefixReplacer strips two-char hex prefix notations (\x, \X, 0x, 0X).
@@ -1582,26 +1597,54 @@ func decodeEncodings(s string) []decodedResult {
 	return out
 }
 
-// decodeEncodingsRecursive returns all bounded recursive decoding candidates
-// for a possibly stacked-encoded string.
+// decodeEncodingsRecursive returns all bounded fixpoint decoding candidates for
+// a possibly stacked-encoded string.
 func decodeEncodingsRecursive(s string) []decodedResult {
+	return decodeEncodingsFixpoint(s, false)
+}
+
+func decodeEncodingsRecursiveWithURL(s string) []decodedResult {
+	return decodeEncodingsFixpoint(s, true)
+}
+
+func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
+	if s == "" || len(s) > maxDecodeTotalBytes {
+		return nil
+	}
+
 	seen := map[string]struct{}{s: {}}
 	var out []decodedResult
-	var walk func(string, int)
-	walk = func(text string, depth int) {
-		if depth >= maxDecodeDepth {
-			return
-		}
-		for _, d := range decodeEncodings(text) {
+	queue := []string{s}
+	consumed := 0
+	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
+		text := queue[head]
+		for _, d := range decodeEncodingsOnce(text, includeURL) {
+			if d.text == "" {
+				continue
+			}
 			if _, ok := seen[d.text]; ok {
 				continue
 			}
 			seen[d.text] = struct{}{}
 			out = append(out, d)
-			walk(d.text, depth+1)
+			consumed += len(d.text)
+			if len(out) >= maxDecodeCandidates || consumed >= maxDecodeTotalBytes {
+				return out
+			}
+			queue = append(queue, d.text)
 		}
 	}
-	walk(s, 0)
+	return out
+}
+
+func decodeEncodingsOnce(s string, includeURL bool) []decodedResult {
+	out := decodeEncodings(s)
+	if !includeURL {
+		return out
+	}
+	if decoded := IterativeDecode(s); decoded != s && decoded != "" {
+		out = append(out, decodedResult{decoded, encodingURL})
+	}
 	return out
 }
 

@@ -38,7 +38,7 @@ func Sign(ar ActionRecord, privKey ed25519.PrivateKey) (Receipt, error) {
 		return Receipt{}, fmt.Errorf("invalid action record: %w", err)
 	}
 
-	data, err := ar.Canonical()
+	data, err := canonicalActionRecord(ReceiptVersion, ar)
 	if err != nil {
 		return Receipt{}, fmt.Errorf("canonical encoding: %w", err)
 	}
@@ -111,7 +111,7 @@ func VerifyWithKey(r Receipt, expectedKeyHex string) error {
 	}
 
 	// Compute canonical hash and verify
-	data, err := r.ActionRecord.Canonical()
+	data, err := canonicalActionRecord(r.Version, r.ActionRecord)
 	if err != nil {
 		return fmt.Errorf("canonical encoding: %w", err)
 	}

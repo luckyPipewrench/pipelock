@@ -209,14 +209,13 @@ func TestScanRequestBody_Redaction_AllowlistedNonJSONPassthrough(t *testing.T) {
 }
 
 // TestScanRequestBody_Redaction_AllowlistedPassthroughDoesNotMangleHashShapedSecret
-// is the direct regression test for the Jobber bug: a 64-hex client_secret
+// is the direct regression test for a vendor OAuth bug: a 64-hex client_secret
 // in a form-urlencoded body to an allowlist_unparseable host must reach
 // the upstream unmodified, even though the value matches the hash-sha256
 // redaction class. Pre-fix, the legacy raw-text fallback rewrote the value
-// to a placeholder and Jobber returned "client id and secret do not match
-// an existing application" because the upstream saw the placeholder, not
-// the real credential. The fix is the allowlist contract change in
-// applyRedaction.
+// to a placeholder and the upstream rejected the client credentials because it
+// saw the placeholder, not the real credential. The fix is the allowlist
+// contract change in applyRedaction.
 func TestScanRequestBody_Redaction_AllowlistedPassthroughDoesNotMangleHashShapedSecret(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)
@@ -249,9 +248,9 @@ func TestScanRequestBody_Redaction_AllowlistedPassthroughDoesNotMangleHashShaped
 		MaxBytes:                   2048,
 		Scanner:                    sc,
 		RedactMatcher:              matcher,
-		Host:                       "api.getjobber.com",
+		Host:                       "api.vendor.example",
 		Path:                       "/api/oauth/token",
-		RedactAllowlistUnparseable: []string{"api.getjobber.com"},
+		RedactAllowlistUnparseable: []string{"api.vendor.example"},
 	})
 	if !strings.Contains(string(buf), hexSecret) {
 		t.Fatalf("hash-shaped client_secret was modified in transit despite allowlist passthrough: %s", buf)

@@ -9,7 +9,6 @@ package receipt
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -285,11 +284,10 @@ func (ar ActionRecord) Validate() error {
 	return nil
 }
 
-// Canonical returns the deterministic JSON encoding of the action record.
-// Used as the signing input for receipts. Fields are marshalled in Go's
-// default struct-tag order, which is stable across runs.
+// Canonical returns the deterministic JSON encoding for the action record's
+// declared schema version. It is the signing input used by receipts.
 func (ar ActionRecord) Canonical() ([]byte, error) {
-	return json.Marshal(ar)
+	return canonicalActionRecord(ar.Version, ar)
 }
 
 // Hash returns the SHA-256 hex digest of the canonical JSON encoding.

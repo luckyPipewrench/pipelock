@@ -307,8 +307,8 @@ func TestProducer_AdvancesChainTailOnDroppedSegment(t *testing.T) {
 		t.Fatalf("segC PreviousSegmentTail = %q, want dropped-B tail %q", got, segB[1].Hash)
 	}
 	// The carried drop accounting from B must surface in C's signed envelope.
-	if lease.Batch.Envelope.Dropped.Count != uint64(len(segB)) {
-		t.Fatalf("segC dropped count = %d, want %d", lease.Batch.Envelope.Dropped.Count, len(segB))
+	if want := droppedActionReceiptCount(segB); lease.Batch.Envelope.Dropped.Count != want {
+		t.Fatalf("segC dropped action count = %d, want %d", lease.Batch.Envelope.Dropped.Count, want)
 	}
 }
 
@@ -442,8 +442,8 @@ func TestProducer_EnqueueSegmentDropPaths(t *testing.T) {
 				t.Fatalf("enqueueSegment() = %v, want substring %q", err, tc.want)
 			}
 			accounting := p.droppedAccounting()
-			if accounting.Count != uint64(len(seg)) {
-				t.Fatalf("dropped count = %d, want %d", accounting.Count, len(seg))
+			if want := droppedActionReceiptCount(seg); accounting.Count != want {
+				t.Fatalf("dropped action count = %d, want %d", accounting.Count, want)
 			}
 		})
 	}

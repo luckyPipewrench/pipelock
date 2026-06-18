@@ -26,7 +26,8 @@ import (
 const (
 	defaultProducerBuffer = 4096
 
-	checkpointEntryType = "checkpoint"
+	actionReceiptEntryType = "action_receipt"
+	checkpointEntryType    = "checkpoint"
 
 	producerDropChannelFull       = "producer_channel_full"
 	producerDropEnqueueError      = "enqueue_error"
@@ -126,8 +127,8 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 }
 
 // ObserveRecorderEntry accepts a post-flush recorder entry without blocking
-// enforcement. If the producer falls behind, the dropped entry is accounted in
-// the next successfully enqueued signed batch.
+// enforcement. If the producer falls behind, dropped action receipts are
+// accounted in the next successfully enqueued signed batch.
 func (p *Producer) ObserveRecorderEntry(entry recorder.Entry) {
 	if p == nil || p.closed.Load() {
 		return
@@ -140,7 +141,7 @@ func (p *Producer) ObserveRecorderEntry(entry recorder.Entry) {
 	select {
 	case p.entries <- entry:
 	default:
-		p.drop(producerDropChannelFull, 1)
+		p.drop(producerDropChannelFull, droppedActionReceiptCount([]recorder.Entry{entry}))
 	}
 }
 
@@ -163,11 +164,11 @@ func (p *Producer) run() {
 	var pending []recorder.Entry
 	for entry := range p.entries {
 		if entry.Version != recorder.EntryVersion {
-			p.drop(producerDropInvalidCheckpoint, 1)
+			p.drop(producerDropInvalidCheckpoint, droppedActionReceiptCount([]recorder.Entry{entry}))
 			continue
 		}
 		if len(pending) > 0 && entry.Sequence != pending[len(pending)-1].Sequence+1 {
-			p.drop(producerDropSequenceGap, uint64(len(pending)))
+			p.drop(producerDropSequenceGap, droppedActionReceiptCount(pending))
 			pending = nil
 		}
 		pending = append(pending, entry)
@@ -180,7 +181,7 @@ func (p *Producer) run() {
 		pending = nil
 	}
 	if len(pending) > 0 {
-		p.drop(producerDropShutdownPartial, uint64(len(pending)))
+		p.drop(producerDropShutdownPartial, droppedActionReceiptCount(pending))
 	}
 }
 
@@ -201,26 +202,26 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 	// verifier replaying the local recorder file would reject the chain.
 	defer func() { p.previousSegmentTail = checkpoint.Hash }()
 
-	span := uint64(len(entries))
+	droppedActions := droppedActionReceiptCount(entries)
 	cp, err := checkpointDetail(checkpoint)
 	if err != nil {
-		p.drop(producerDropInvalidCheckpoint, span)
+		p.drop(producerDropInvalidCheckpoint, droppedActions)
 		return fmt.Errorf("%s: %w", producerDropInvalidCheckpoint, err)
 	}
 	payload, err := marshalEntriesJSONL(entries)
 	if err != nil {
-		p.drop(producerDropEnqueueError, span)
+		p.drop(producerDropEnqueueError, droppedActions)
 		return fmt.Errorf("%s: %w", producerDropEnqueueError, err)
 	}
 	if len(payload) > conductor.MaxAuditPayloadBytes {
-		p.drop(producerDropPayloadTooLarge, span)
+		p.drop(producerDropPayloadTooLarge, droppedActions)
 		return fmt.Errorf("%s: payload=%d max=%d", producerDropPayloadTooLarge, len(payload), conductor.MaxAuditPayloadBytes)
 	}
 	includedDrops := p.droppedAccounting()
 	envelope := p.envelope(entries, checkpoint, cp, payload, includedDrops)
 	signed, err := SignEnvelope(envelope, p.auditSignerKeyID, p.auditSigner)
 	if err != nil {
-		p.drop(producerDropEnqueueError, span)
+		p.drop(producerDropEnqueueError, droppedActions)
 		return fmt.Errorf("%s: %w", producerDropEnqueueError, err)
 	}
 	if _, err := p.queue.Enqueue(Batch{Envelope: signed, Payload: payload}); err != nil {
@@ -228,7 +229,7 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 		if errors.Is(err, ErrQueueFull) {
 			reason = producerDropQueueFull
 		}
-		p.drop(reason, span)
+		p.drop(reason, droppedActions)
 		return fmt.Errorf("%s: %w", reason, err)
 	}
 	p.releaseDropped(includedDrops)
@@ -278,10 +279,20 @@ func (p *Producer) nextBatchID() string {
 	return fmt.Sprintf("audit-%020d-%s", p.now().UTC().UnixNano(), hex.EncodeToString(random[:]))
 }
 
-// drop records a dropped-span count in one place: the in-memory accounting
-// that feeds the next envelope's DroppedAccounting AND the Prometheus drop
-// metric. Keeping them together prevents the map and the metric from ever
-// disagreeing on the reason label.
+func droppedActionReceiptCount(entries []recorder.Entry) uint64 {
+	var count uint64
+	for _, entry := range entries {
+		if entry.Type == actionReceiptEntryType {
+			count++
+		}
+	}
+	return count
+}
+
+// drop records a dropped action-receipt count in one place: the in-memory
+// accounting that feeds the next envelope's DroppedAccounting AND the
+// Prometheus drop metric. Keeping them together prevents the map and the metric
+// from ever disagreeing on the reason label.
 func (p *Producer) drop(reason string, count uint64) {
 	if count == 0 {
 		return

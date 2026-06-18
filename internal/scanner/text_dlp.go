@@ -379,9 +379,9 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 		}
 	}
 
-	// Recursive encoding decode: try base64, hex, base32 decoding and re-check
-	// DLP patterns on decoded content. Recurse up to 3 rounds to catch multi-layer
-	// chains (e.g., base64(hex(secret)), URL-encode(base64(secret))).
+	// Fixpoint encoding decode: try base64, hex, base32, and URL decoding
+	// until no new bounded candidates appear. Catches base64(secret),
+	// hex(secret), and nested chains (e.g., base64(hex(secret))).
 	matches = append(matches, s.decodeAndMatchRecursive(cleaned, 0)...)
 
 	// Segment-level encoding detection: split text on URL/path delimiters and
@@ -452,62 +452,14 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 	}
 }
 
-// maxDecodeDepth bounds recursive encoding decode to prevent CPU exhaustion.
-const maxDecodeDepth = 3
-
-// decodeAndMatchRecursive tries base64, hex, and base32 decoding, runs DLP
-// patterns on decoded content, then recurses on the decoded result to catch
-// multi-layer chains (e.g., base64(hex(secret))). Stops at maxDecodeDepth.
-func (s *Scanner) decodeAndMatchRecursive(text string, depth int) []TextDLPMatch {
-	if depth >= maxDecodeDepth {
-		return nil
-	}
-
+// decodeAndMatchRecursive runs DLP patterns over every bounded fixpoint decode
+// candidate. The second parameter is kept for older call sites; decode bounding
+// is now candidate-count and candidate-size based instead of depth based.
+func (s *Scanner) decodeAndMatchRecursive(text string, _ int) []TextDLPMatch {
 	var matches []TextDLPMatch
-
-	// Try base64 decoding (padded and unpadded variants).
-	for _, enc := range []struct {
-		e *base64.Encoding
-	}{
-		{base64.StdEncoding},
-		{base64.URLEncoding},
-		{base64.RawStdEncoding},
-		{base64.RawURLEncoding},
-	} {
-		if decoded, err := enc.e.DecodeString(text); err == nil && len(decoded) > 0 {
-			d := string(decoded)
-			matches = append(matches, s.matchDLPPatterns(d, "base64")...)
-			// Recurse: the decoded content may itself be encoded.
-			matches = append(matches, s.decodeAndMatchRecursive(d, depth+1)...)
-		}
+	for _, d := range decodeEncodingsRecursiveWithURL(text) {
+		matches = append(matches, s.matchDLPPatterns(d.text, d.encoding)...)
 	}
-
-	// Try hex decoding (raw and delimiter-stripped).
-	if decoded, err := hex.DecodeString(text); err == nil && len(decoded) > 0 {
-		d := string(decoded)
-		matches = append(matches, s.matchDLPPatterns(d, "hex")...)
-		matches = append(matches, s.decodeAndMatchRecursive(d, depth+1)...)
-	} else if normalized := normalizeHex(text); normalized != "" {
-		if decoded, err := hex.DecodeString(normalized); err == nil && len(decoded) > 0 {
-			d := string(decoded)
-			matches = append(matches, s.matchDLPPatterns(d, "hex")...)
-			matches = append(matches, s.decodeAndMatchRecursive(d, depth+1)...)
-		}
-	}
-
-	// Try base32 decoding.
-	if decoded, err := base32.StdEncoding.DecodeString(text); err == nil && len(decoded) > 0 {
-		d := string(decoded)
-		matches = append(matches, s.matchDLPPatterns(d, "base32")...)
-		matches = append(matches, s.decodeAndMatchRecursive(d, depth+1)...)
-	}
-
-	// Iterative URL-decode on decoded content (catches URL(base64(secret))).
-	if decoded := IterativeDecode(text); decoded != text {
-		matches = append(matches, s.matchDLPPatterns(decoded, "url")...)
-		matches = append(matches, s.decodeAndMatchRecursive(decoded, depth+1)...)
-	}
-
 	return matches
 }
 
@@ -619,17 +571,11 @@ func (s *Scanner) decodeTextSegments(text string) []TextDLPMatch {
 		if len(seg) < 10 {
 			continue // too short to be a meaningful encoded secret
 		}
-		// Try direct decode + DLP match.
-		for _, d := range decodeEncodings(seg) {
+		for _, d := range decodeEncodingsRecursiveWithURL(seg) {
 			if m := s.matchDLPPatterns(d.text, d.encoding); len(m) > 0 {
 				matches = append(matches, m...)
 				return matches // short-circuit on first match
 			}
-		}
-		// Try recursive decode on the segment (catches multi-layer within a segment).
-		if m := s.decodeAndMatchRecursive(seg, 0); len(m) > 0 {
-			matches = append(matches, m...)
-			return matches
 		}
 	}
 	return matches

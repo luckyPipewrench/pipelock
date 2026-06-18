@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -24,6 +25,19 @@ const (
 	testIBANName        = "IBAN"
 	testABARoutingName  = "ABA Routing Number"
 )
+
+func stackedDLPFixture(secret string, layers int) string {
+	out := secret
+	for i := 0; i < layers; i++ {
+		remaining := layers - i
+		if remaining%2 == 1 {
+			out = hex.EncodeToString([]byte(out))
+			continue
+		}
+		out = base64.StdEncoding.EncodeToString([]byte(out))
+	}
+	return out
+}
 
 func TestScanTextForDLP(t *testing.T) {
 	tests := []struct {
@@ -1365,6 +1379,48 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected AWS Access ID pattern match, got: %v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_StackedDecodeFixpoint(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	for _, layers := range []int{4, 5} {
+		t.Run(strconv.Itoa(layers)+"_layers", func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), "token="+stackedDLPFixture(secret, layers))
+			if result.Clean {
+				t.Fatalf("expected DLP to catch %d-layer encoded AWS key", layers)
+			}
+		})
+	}
+}
+
+// TestScanTextForDLP_StackedDecodePastFormerByteCeiling proves the bounded
+// fixpoint decoder no longer skips a stacked-encoded secret padded past the old
+// per-candidate byte ceiling. An attacker who could inflate the encoded payload
+// (e.g. inside a multi-MB request body) past a low ceiling would otherwise evade
+// recursive decode entirely. The total-bytes budget keeps work bounded while
+// still decoding large candidates.
+func TestScanTextForDLP_StackedDecodePastFormerByteCeiling(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	// Pad so the outer encoded form is well over the former 64 KiB per-candidate
+	// ceiling but well under the total-bytes budget.
+	padded := strings.Repeat("A", 100*1024) + secret
+	encoded := stackedDLPFixture(padded, 2) // hex(base64(padded)) ~ >64 KiB
+	if len(encoded) <= 64*1024 {
+		t.Fatalf("fixture too small (%d bytes); test would not exercise the former ceiling", len(encoded))
+	}
+
+	result := s.ScanTextForDLP(context.Background(), "token="+encoded)
+	if result.Clean {
+		t.Fatalf("expected DLP to catch a stacked AWS key padded past the former 64 KiB ceiling (encoded=%d bytes)", len(encoded))
 	}
 }
 

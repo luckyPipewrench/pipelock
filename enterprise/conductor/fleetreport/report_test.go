@@ -59,9 +59,10 @@ func TestBuildFleetReceiptReport(t *testing.T) {
 	first := testEvidence(t, auditPriv, "audit-1", 1, []receipt.Receipt{
 		testActionReceipt(t, "a1", receipt.ActionRead, "allow", "fetch", "url", "low"),
 	}, 0)
+	const droppedActionReceipts = 1
 	second := testEvidence(t, auditPriv, "audit-2", 3, []receipt.Receipt{
 		testActionReceipt(t, "a2", receipt.ActionWrite, "block", "mcp", "dlp", "high"),
-	}, 2)
+	}, droppedActionReceipts)
 
 	result, err := Build(context.Background(), staticEvidenceSource{evidence: []controlplane.AuditBatchEvidence{first, second}}, Options{
 		OrgID:            testOrgID,
@@ -82,7 +83,7 @@ func TestBuildFleetReceiptReport(t *testing.T) {
 		t.Fatalf("VerifyEnvelope() error = %v", err)
 	}
 	p := verified.Statement.Predicate
-	if p.Summary.TotalActions != 2 || p.Completeness.DroppedObservedActions != 2 || p.Completeness.MediatedFraction != "1" {
+	if p.Summary.TotalActions != 2 || p.Completeness.DroppedObservedActions != droppedActionReceipts || p.Completeness.MediatedFraction != "1" {
 		t.Fatalf("predicate totals = actions %d dropped %d fraction %q", p.Summary.TotalActions, p.Completeness.DroppedObservedActions, p.Completeness.MediatedFraction)
 	}
 	if p.Summary.ByFollower[testInstanceID] != 2 || p.Summary.ByVerdict["allow"] != 1 || p.Summary.ByVerdict["block"] != 1 {
@@ -90,6 +91,10 @@ func TestBuildFleetReceiptReport(t *testing.T) {
 	}
 	if len(verified.Statement.Subject) != 2 || len(p.SourceBatches) != 2 {
 		t.Fatalf("source set = subjects %d batches %d", len(verified.Statement.Subject), len(p.SourceBatches))
+	}
+	if p.SourceBatches[1].EventCount <= droppedActionReceipts || p.SourceBatches[1].DroppedCount != droppedActionReceipts {
+		t.Fatalf("source batch event/dropped counts = %d/%d, want event count greater than dropped action count %d",
+			p.SourceBatches[1].EventCount, p.SourceBatches[1].DroppedCount, droppedActionReceipts)
 	}
 }
 

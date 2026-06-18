@@ -6,6 +6,8 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"runtime"
@@ -18,6 +20,19 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func stackedMCPDLPFixture(secret string, layers int) string {
+	out := secret
+	for i := 0; i < layers; i++ {
+		remaining := layers - i
+		if remaining%2 == 1 {
+			out = hex.EncodeToString([]byte(out))
+			continue
+		}
+		out = base64.StdEncoding.EncodeToString([]byte(out))
+	}
+	return out
+}
 
 // ---------------------------------------------------------------------------
 // RunProxy - test additional code paths (85.9% -> higher)
@@ -162,6 +177,30 @@ func TestScanHTTPInput_DLPBlocksSecret(t *testing.T) {
 	})
 	if blocked == nil {
 		t.Fatal("expected blocked for secret in tool args")
+	}
+}
+
+func TestScanHTTPInput_DLPBlocksStackedEncodedSecret(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       config.ActionBlock,
+		OnParseError: config.ActionBlock,
+	}
+
+	for _, layers := range []int{4, 5} {
+		t.Run(fmt.Sprintf("%d_layers", layers), func(t *testing.T) {
+			msg := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write","arguments":{"content":"%s"}}}`, stackedMCPDLPFixture(secret, layers)))
+			var logBuf bytes.Buffer
+			blocked := scanHTTPInput(msg, &logBuf, "session-1", "audit-1", MCPProxyOpts{
+				Scanner:  sc,
+				InputCfg: inputCfg,
+			})
+			if blocked == nil {
+				t.Fatalf("expected blocked for %d-layer encoded secret in MCP input", layers)
+			}
+		})
 	}
 }
 

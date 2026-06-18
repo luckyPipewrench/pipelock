@@ -5,6 +5,8 @@ package scanapi
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +22,19 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func stackedScanAPIDLPFixture(secret string, layers int) string {
+	out := secret
+	for i := 0; i < layers; i++ {
+		remaining := layers - i
+		if remaining%2 == 1 {
+			out = hex.EncodeToString([]byte(out))
+			continue
+		}
+		out = base64.StdEncoding.EncodeToString([]byte(out))
+	}
+	return out
+}
 
 // delayedCancelCtx returns nil from Err() for the first N calls, then returns
 // context.DeadlineExceeded. This exercises post-scan context checks: the scan
@@ -426,6 +441,35 @@ func TestHandler_ToolCallDLPRunsWhenInputScanningDisabled(t *testing.T) {
 	}
 	if len(resp.Findings) == 0 {
 		t.Error("expected DLP findings for tool_call carrying a secret")
+	}
+}
+
+func TestHandler_ToolCallDLPStackedDecodeFixpoint(t *testing.T) {
+	h := newTestHandler(t)
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+
+	for _, layers := range []int{4, 5} {
+		t.Run(strconv.Itoa(layers)+"_layers", func(t *testing.T) {
+			body := `{"kind":"tool_call","input":{"tool_name":"http_post","arguments":{"token":"` + stackedScanAPIDLPFixture(secret, layers) + `"}}}`
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp Response
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if resp.Decision != DecisionDeny {
+				t.Fatalf("expected deny for %d-layer encoded secret in tool_call args, got %q", layers, resp.Decision)
+			}
+			if len(resp.Findings) == 0 {
+				t.Fatalf("expected DLP findings for %d-layer encoded tool_call secret", layers)
+			}
+		})
 	}
 }
 

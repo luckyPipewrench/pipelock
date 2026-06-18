@@ -504,7 +504,7 @@ func sortedBodyTexts(texts []string) []string {
 // configured route) appears on redaction.allowlist_unparseable, in which case
 // the body is forwarded UNMODIFIED. The passthrough is what makes OAuth token
 // exchanges work for hosts where the operator has declared the body trusted:
-// a form-urlencoded client_secret like Jobber's 64-hex value would otherwise
+// a form-urlencoded client_secret like a vendor's 64-hex value would otherwise
 // trip the broad hash-sha256 class matcher and be rewritten to a placeholder,
 // which the upstream then rejects as "client_id and secret do not match."
 // (Historical note: the legacy raw-text fallback used to apply class matchers

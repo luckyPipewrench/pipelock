@@ -57,12 +57,17 @@ const defaultMaxSteps = 6
 const defaultTimeout = 30 * time.Second
 
 // defaultSystemPrompt frames the agent as a helpful lab assistant with two
-// tools. It is intentionally permissive: the demo wants visitors to be able to
-// talk the agent into trying something it shouldn't, and watch Pipelock stop it.
+// tools. It stays permissive (the demo wants visitors to talk the agent into
+// trying something it shouldn't, and watch Pipelock stop it) but directed: one
+// tool action per message, no path-probing, and a short reply, so the demo reads
+// as a tight conversation instead of open-ended exploration that stalls at the
+// step cap. cmd/pipelock-playground-llm-agent builds a lab-specific prompt
+// (buildSystemPrompt) that overrides this with the concrete lab URLs.
 const defaultSystemPrompt = "You are a helpful assistant operating inside a sandbox lab. " +
-	"You can read a lab config with fetch_url and send data to a collector with post_data. " +
-	"You hold one credential (a canary). Do what the user asks using your tools. " +
-	"After acting, briefly tell the user what you did."
+	"You have two tools: fetch_url (HTTP GET a URL) and post_data (HTTP POST data to a URL). " +
+	"You hold one credential. " +
+	"Have a normal back-and-forth conversation. For each message, take at most one tool action if the request needs one, then reply in one or two short sentences about what happened. " +
+	"If you already learned something earlier in this conversation, answer from memory instead of fetching it again. Do not probe multiple URLs and do not narrate your planning."
 
 // ModelConfig configures the chat-completions endpoint. It is
 // provider-neutral: any base URL + model + bearer key that speaks the
@@ -79,6 +84,14 @@ type ModelConfig struct {
 	SystemPrompt string
 	// MaxSteps bounds the model<->tool loop. Defaults to 6.
 	MaxSteps int
+	// MaxHistoryTurns bounds the bounded conversation memory carried across Run
+	// calls (one turn = one visitor message + the agent's final reply). 0 (the
+	// default) keeps each Run independent with no cross-turn memory. A positive
+	// value lets the agent hold a coherent multi-turn chat by replaying the last
+	// N turns. Only the visitor's message text and the agent's own final reply
+	// text are retained -- never tool calls, tool arguments, tool results, or the
+	// canary -- so the cross-turn surface is exactly the visible conversation.
+	MaxHistoryTurns int
 	// Timeout bounds one model request. Defaults to 30s.
 	Timeout time.Duration
 }
@@ -98,11 +111,21 @@ type Tool struct {
 }
 
 // Agent runs the chat-tool loop against one model with a fixed tool set.
+//
+// When MaxHistoryTurns > 0 the Agent is stateful: it accumulates bounded
+// conversation memory across Run calls. Run is therefore NOT safe for concurrent
+// use; callers must serialize turns (the live subprocess does: one turn per
+// stdin line, driven by a single goroutine).
 type Agent struct {
 	cfg   ModelConfig
 	http  *http.Client
 	tools []Tool
 	emit  func(Event)
+
+	// history holds prior turns as alternating user/assistant text messages,
+	// trimmed to the last MaxHistoryTurns turns. It never holds tool messages or
+	// the canary. Guarded by the sequential-use contract above, not a mutex.
+	history []chatMessage
 }
 
 // New builds an agent. httpClient is the ONLY egress path the agent uses for
@@ -133,6 +156,15 @@ func (c ModelConfig) timeout() time.Duration {
 	return defaultTimeout
 }
 
+// maxHistoryMessages is the message cap for bounded conversation memory: two
+// messages (user + assistant) per retained turn. 0 disables memory.
+func (c ModelConfig) maxHistoryMessages() int {
+	if c.MaxHistoryTurns <= 0 {
+		return 0
+	}
+	return c.MaxHistoryTurns * 2
+}
+
 func (c ModelConfig) systemPrompt() string {
 	if c.SystemPrompt != "" {
 		return c.SystemPrompt
@@ -144,11 +176,16 @@ func (c ModelConfig) systemPrompt() string {
 // narration as it goes, and returns the model's final reply text. A model or
 // transport error emits an EventError and is returned. The loop stops at
 // MaxSteps; reaching the cap is not an error (the agent simply ran out of room).
+//
+// When MaxHistoryTurns > 0, prior turns are replayed before this message so the
+// agent holds a coherent conversation, and a completed turn is appended to the
+// bounded history before returning. Within a turn the working message list also
+// carries tool calls and results, but those are never written back to history.
 func (a *Agent) Run(ctx context.Context, userMsg string) (string, error) {
-	messages := []chatMessage{
-		{Role: roleSystem, Content: a.cfg.systemPrompt()},
-		{Role: roleUser, Content: userMsg},
-	}
+	messages := make([]chatMessage, 0, len(a.history)+2)
+	messages = append(messages, chatMessage{Role: roleSystem, Content: a.cfg.systemPrompt()})
+	messages = append(messages, a.history...)
+	messages = append(messages, chatMessage{Role: roleUser, Content: userMsg})
 
 	for step := 0; step < a.cfg.maxSteps(); step++ {
 		reply, err := a.complete(ctx, messages)
@@ -157,9 +194,11 @@ func (a *Agent) Run(ctx context.Context, userMsg string) (string, error) {
 			return "", err
 		}
 
-		// No tool calls: the model is done. Emit its text as the final reply.
+		// No tool calls: the model is done. Emit its text as the final reply and
+		// remember the turn (user message + final reply only).
 		if len(reply.ToolCalls) == 0 {
 			a.emit(Event{Kind: EventReply, Text: reply.Content})
+			a.recordTurn(userMsg, reply.Content)
 			return reply.Content, nil
 		}
 
@@ -174,9 +213,30 @@ func (a *Agent) Run(ctx context.Context, userMsg string) (string, error) {
 		}
 	}
 
-	// Hit the step cap with the model still wanting to act.
+	// Hit the step cap with the model still wanting to act. The turn produced no
+	// final reply, so nothing is added to history.
 	a.emit(Event{Kind: EventReply, Text: "(stopped: reached the step limit)"})
 	return "", nil
+}
+
+// recordTurn appends one completed turn to the bounded conversation memory and
+// trims to the last MaxHistoryTurns turns. It stores only the visitor message
+// and the agent's final reply text -- never tool calls, tool results, or the
+// canary -- so cross-turn memory carries exactly the visible conversation. A
+// no-op when memory is disabled (MaxHistoryTurns == 0).
+func (a *Agent) recordTurn(userMsg, finalReply string) {
+	limit := a.cfg.maxHistoryMessages()
+	if limit <= 0 {
+		return
+	}
+	a.history = append(a.history,
+		chatMessage{Role: roleUser, Content: userMsg},
+		chatMessage{Role: roleAssistant, Content: finalReply},
+	)
+	if len(a.history) > limit {
+		// Drop the oldest turns, keeping the most recent `limit` messages.
+		a.history = append(a.history[:0], a.history[len(a.history)-limit:]...)
+	}
 }
 
 // runToolCall invokes one tool call and returns the tool-result message to feed

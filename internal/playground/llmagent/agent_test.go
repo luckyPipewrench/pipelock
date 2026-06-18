@@ -314,3 +314,134 @@ func TestRun_MalformedModelResponse(t *testing.T) {
 		t.Fatal("want decode error on malformed model response")
 	}
 }
+
+// newAgentCfg builds an agent against a scripted model with an explicit config
+// (so memory/step settings can be exercised) and returns it.
+func newAgentCfg(t *testing.T, model *scriptedModel, tools []Tool, emit func(Event), cfg ModelConfig) *Agent {
+	t.Helper()
+	srv := httptest.NewServer(model.handler())
+	t.Cleanup(srv.Close)
+	cfg.BaseURL = srv.URL
+	if cfg.Model == "" {
+		cfg.Model = "test-model"
+	}
+	cfg.APIKey = "k"
+	return New(cfg, srv.Client(), tools, emit)
+}
+
+// roleSeq returns the role of each message, for compact assertions.
+func roleSeq(msgs []chatMessage) []string {
+	out := make([]string, len(msgs))
+	for i, m := range msgs {
+		out[i] = m.Role
+	}
+	return out
+}
+
+func TestRun_NoHistoryByDefault(t *testing.T) {
+	// MaxHistoryTurns unset (0): each Run is independent, no prior turn replayed.
+	model := &scriptedModel{responses: []chatMessage{textMsg("one"), textMsg("two")}}
+	emit, _ := collectEvents()
+	a := newAgentCfg(t, model, nil, emit, ModelConfig{})
+
+	if _, err := a.Run(context.Background(), "first"); err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	if _, err := a.Run(context.Background(), "second"); err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	// The second request must carry only system + the new user message.
+	got := roleSeq(model.bodies[1].Messages)
+	if strings.Join(got, ",") != roleSystem+","+roleUser {
+		t.Fatalf("second request roles = %v, want [system user] (no memory)", got)
+	}
+	if model.bodies[1].Messages[1].Content != "second" {
+		t.Fatalf("second request user = %q, want %q", model.bodies[1].Messages[1].Content, "second")
+	}
+}
+
+func TestRun_HistoryReplayedAcrossTurns(t *testing.T) {
+	model := &scriptedModel{responses: []chatMessage{textMsg("reply one"), textMsg("reply two")}}
+	emit, _ := collectEvents()
+	a := newAgentCfg(t, model, nil, emit, ModelConfig{MaxHistoryTurns: 8})
+
+	if _, err := a.Run(context.Background(), "first"); err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	if _, err := a.Run(context.Background(), "second"); err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	// The second request replays the first turn: system, prior user, prior
+	// assistant reply, then the new user message.
+	msgs := model.bodies[1].Messages
+	if got := strings.Join(roleSeq(msgs), ","); got != strings.Join([]string{roleSystem, roleUser, roleAssistant, roleUser}, ",") {
+		t.Fatalf("second request roles = %v", roleSeq(msgs))
+	}
+	if msgs[1].Content != "first" || msgs[2].Content != "reply one" || msgs[3].Content != "second" {
+		t.Fatalf("history not replayed correctly: %+v", msgs)
+	}
+}
+
+func TestRun_HistoryExcludesToolData(t *testing.T) {
+	// Turn 1 makes a tool call then a final reply. Turn 2 must replay ONLY the
+	// visible user/assistant text -- never the tool call or the tool result.
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "lab config: ok")
+	}))
+	t.Cleanup(target.Close)
+
+	model := &scriptedModel{responses: []chatMessage{
+		toolMsg("c1", ToolFetchURL, `{"url":"`+target.URL+`"}`),
+		textMsg("I read the config."),
+		textMsg("Nothing else to do."),
+	}}
+	emit, _ := collectEvents()
+	a := newAgentCfg(t, model, LabTools(http.DefaultClient, nil), emit, ModelConfig{MaxHistoryTurns: 8})
+
+	if _, err := a.Run(context.Background(), "read the config"); err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+	if _, err := a.Run(context.Background(), "anything else?"); err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+	// Turn 2 is the third model call (turn 1 used two: tool, then reply).
+	msgs := model.bodies[2].Messages
+	if got := strings.Join(roleSeq(msgs), ","); got != strings.Join([]string{roleSystem, roleUser, roleAssistant, roleUser}, ",") {
+		t.Fatalf("turn-2 roles = %v, want no tool messages", roleSeq(msgs))
+	}
+	for _, m := range msgs {
+		if m.Role == roleTool || len(m.ToolCalls) > 0 {
+			t.Fatalf("history leaked tool data into turn 2: %+v", m)
+		}
+		if strings.Contains(m.Content, "HTTP 200") || strings.Contains(m.Content, target.URL) {
+			t.Fatalf("history leaked a tool result/URL into turn 2: %q", m.Content)
+		}
+	}
+	if msgs[2].Content != "I read the config." {
+		t.Fatalf("turn-2 replayed assistant = %q", msgs[2].Content)
+	}
+}
+
+func TestRun_HistoryBounded(t *testing.T) {
+	// Keep only the last 2 turns. After four turns, the oldest turn must be gone.
+	model := &scriptedModel{responses: []chatMessage{textMsg("r1"), textMsg("r2"), textMsg("r3"), textMsg("r4")}}
+	emit, _ := collectEvents()
+	a := newAgentCfg(t, model, nil, emit, ModelConfig{MaxHistoryTurns: 2})
+
+	for _, msg := range []string{"t1", "t2", "t3", "t4"} {
+		if _, err := a.Run(context.Background(), msg); err != nil {
+			t.Fatalf("run %q: %v", msg, err)
+		}
+	}
+	// The fourth request replays the last 2 completed turns (t2, t3) + the new
+	// user (t4): system, u:t2, a:r2, u:t3, a:r3, u:t4 = 6 messages, no t1/r1.
+	msgs := model.bodies[3].Messages
+	if len(msgs) != 6 {
+		t.Fatalf("fourth request has %d messages, want 6: %+v", len(msgs), roleSeq(msgs))
+	}
+	for _, m := range msgs {
+		if m.Content == "t1" || m.Content == "r1" {
+			t.Fatalf("bounded history still carried the oldest turn: %+v", msgs)
+		}
+	}
+}

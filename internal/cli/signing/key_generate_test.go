@@ -282,6 +282,49 @@ func TestLoadKeyFile_DetectsPurposeMismatch(t *testing.T) {
 	}
 }
 
+func TestLoadKeyFile_RejectsDegeneratePrivateKeyWithContext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "k.json")
+
+	gen := keyGenerateCmd()
+	gen.SetOut(&bytes.Buffer{})
+	gen.SetErr(&bytes.Buffer{})
+	gen.SetArgs([]string{"--purpose", string(domsigning.PurposeRosterRoot), "--out", path})
+	if err := gen.Execute(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var kf keyFile
+	if err := json.Unmarshal(raw, &kf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	kf.Private = hex.EncodeToString(make([]byte, ed25519.PrivateKeySize))
+	tampered, err := json.Marshal(kf)
+	if err != nil {
+		t.Fatalf("marshal tampered: %v", err)
+	}
+	if err := os.WriteFile(path, tampered, 0o600); err != nil {
+		t.Fatalf("write tampered: %v", err)
+	}
+
+	_, _, _, err = loadKeyFile(path, domsigning.PurposeRosterRoot)
+	if err == nil {
+		t.Fatalf("expected degenerate private-key error")
+	}
+	for _, want := range []string{
+		"validate private key consistency",
+		filepath.Clean(path),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err %q does not contain %q", err.Error(), want)
+		}
+	}
+}
+
 func TestLoadKeyFile_RejectsMismatchedPrivatePublic(t *testing.T) {
 	dir := t.TempDir()
 	rootPath := filepath.Join(dir, "root.json")

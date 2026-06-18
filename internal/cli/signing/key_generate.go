@@ -253,7 +253,7 @@ func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, 
 	}
 	priv := ed25519.PrivateKey(privBytes)
 	if err := domsigning.ValidatePrivateKeyConsistency(priv); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("validate private key consistency for %q: %w", cleanPath, err)
 	}
 	derivedPub, ok := priv.Public().(ed25519.PublicKey)
 	if !ok || !bytes.Equal(derivedPub, pubBytes) {

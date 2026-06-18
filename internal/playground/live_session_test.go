@@ -5,6 +5,8 @@ package playground_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -106,10 +108,11 @@ func TestLiveSession_DevFlow_StreamsDecisions(t *testing.T) {
 	if !rep.OK {
 		t.Fatalf("dev run must verify offline end-to-end: %+v", rep)
 	}
-	// The trust-root key the downloaded bundle is verified against is a 32-byte
-	// ed25519 public key rendered as 64 hex chars.
-	if pub := sess.OrchestratorPubHex(); len(pub) != 64 {
-		t.Errorf("OrchestratorPubHex = %q (len %d), want 64 hex chars", pub, len(pub))
+	// The trust-root key the downloaded bundle is verified against must be a real
+	// 32-byte ed25519 public key, rendered as hex (not merely a 64-char string).
+	pub := sess.OrchestratorPubHex()
+	if raw, decErr := hex.DecodeString(pub); decErr != nil || len(raw) != ed25519.PublicKeySize {
+		t.Errorf("OrchestratorPubHex = %q, want a 32-byte ed25519 key as hex (decoded %d bytes, err=%v)", pub, len(raw), decErr)
 	}
 
 	sess.Close()

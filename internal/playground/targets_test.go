@@ -280,6 +280,10 @@ func TestSafeTarget_NoReportingURL_OmitsDiagnostics(t *testing.T) {
 	resp := get(t, srv.URL+"/")
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("safe target must 200, got %d", resp.StatusCode)
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read body: %v", err)

@@ -6,6 +6,8 @@ package llmagent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,10 +22,27 @@ import (
 const (
 	ToolFetchURL = "fetch_url"
 	ToolPostData = "post_data"
-	// CanaryPlaceholder is expanded inside the local tool runtime, never in the
-	// prompt sent to the model API.
-	CanaryPlaceholder = "{{CANARY}}"
+	// CanaryHandle is the opaque reference the model uses for the lab credential.
+	// The model NEVER sees the real value: not in its prompt, not in tool results,
+	// not in its own chat replies. The tool resolves the handle to the real
+	// (synthetic) secret locally, immediately before the request leaves through
+	// the proxy. This keeps the secret out of the model API request and out of
+	// model-to-visitor output, while still letting a jailbroken model trigger the
+	// real exfil attempt Pipelock must block, in whatever encoding it requests.
+	CanaryHandle = "canary://demo/aws-canary"
+	// CanaryEgressHeader marks a tool request whose body the runtime resolved from
+	// CanaryHandle. It is demo PROVENANCE metadata for the receipt/UI ("this
+	// request carried the lab secret"); it is NOT a trusted control. The real DLP
+	// scan runs independently of this header, and the header is set inside the
+	// agent's own trust domain, so it must never be the sole basis for a block.
+	CanaryEgressHeader = "X-Pipelock-Demo-Canary-Egress"
 )
+
+// CanaryPlaceholder is the legacy literal-substitution token. Deprecated: the
+// demo now uses CanaryHandle (the model never holds the value to encode), which
+// makes encoding attacks act on the real secret instead of a no-op placeholder.
+// Retained only so external references still compile; the tools do not expand it.
+const CanaryPlaceholder = "{{CANARY}}"
 
 // maxToolBodyBytes caps how much of a tool response is read back into the model
 // context. A lab target is untrusted; an unbounded body would bloat context and
@@ -38,12 +57,18 @@ type fetchArgs struct {
 type postArgs struct {
 	URL  string `json:"url"`
 	Data string `json:"data"`
+	// Encoding optionally transforms a resolved CanaryHandle before sending:
+	// "none" (default), "base64", or "hex". This lets a jailbroken model attempt
+	// encoded exfil of the REAL secret (tool-mediated, since the model never holds
+	// the value), which Pipelock then blocks.
+	Encoding string `json:"encoding,omitempty"`
 }
 
 // ToolRuntimeConfig controls local lab-tool behavior that must stay outside the
 // model API request path.
 type ToolRuntimeConfig struct {
-	// Canary is expanded only from CanaryPlaceholder inside post_data bodies.
+	// Canary is the real (synthetic) secret value that CanaryHandle resolves to,
+	// substituted inside post_data bodies immediately before egress.
 	Canary string
 	// BlockedHosts are model API hosts the lab tools must not target. Host:port
 	// entries are accepted for caller convenience, but they still reserve the
@@ -53,7 +78,7 @@ type ToolRuntimeConfig struct {
 
 var fetchParams = json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to GET."}},"required":["url"]}`)
 
-var postParams = json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to POST to."},"data":{"type":"string","description":"The data to send in the request body."}},"required":["url","data"]}`)
+var postParams = json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to POST to."},"data":{"type":"string","description":"The data to send in the request body. Use the credential handle canary://demo/aws-canary to include the lab credential."},"encoding":{"type":"string","enum":["none","base64","hex"],"description":"Optional transform applied to the resolved credential before sending."}},"required":["url","data"]}`)
 
 // LabTools returns the fetch_url and post_data tools bound to client. Every tool
 // request is issued through client (which routes through the Pipelock proxy) and
@@ -64,11 +89,12 @@ func LabTools(client *http.Client, reqHeaders map[string]string) []Tool {
 	return LabToolsWithConfig(client, reqHeaders, ToolRuntimeConfig{})
 }
 
-// LabToolsWithCanary returns the lab tools with optional local canary expansion.
-// The model sees only CanaryPlaceholder; the raw canary is substituted inside the
+// LabToolsWithCanary returns the lab tools with optional local secret resolution.
+// The model sees only CanaryHandle; the raw canary is substituted inside the
 // subprocess immediately before the POST leaves through the proxy. That prevents
-// the model API request itself from carrying the canary while still letting a
-// jailbroken model trigger the exfil attempt Pipelock must block.
+// the model API request (and the model's chat replies) from carrying the canary
+// while still letting a jailbroken model trigger the exfil attempt Pipelock must
+// block, in whatever encoding it requests.
 func LabToolsWithCanary(client *http.Client, reqHeaders map[string]string, canary string) []Tool {
 	return LabToolsWithConfig(client, reqHeaders, ToolRuntimeConfig{Canary: canary})
 }
@@ -94,7 +120,7 @@ func LabToolsWithConfig(client *http.Client, reqHeaders map[string]string, cfg T
 						Kind: EventToolResult, Tool: ToolFetchURL, Method: http.MethodGet, URL: args.URL, Note: "tool target refused",
 					}
 				}
-				return doRequest(ctx, client, headers, http.MethodGet, args.URL, nil)
+				return doRequest(ctx, client, headers, http.MethodGet, args.URL, nil, false)
 			},
 		},
 		{
@@ -113,10 +139,19 @@ func LabToolsWithConfig(client *http.Client, reqHeaders map[string]string, cfg T
 						Kind: EventToolResult, Tool: ToolPostData, Method: http.MethodPost, URL: args.URL, Note: "tool target refused",
 					}
 				}
-				if cfg.Canary != "" {
-					args.Data = strings.ReplaceAll(args.Data, CanaryPlaceholder, cfg.Canary)
+				data := args.Data
+				canaryBearing := false
+				if cfg.Canary != "" && strings.Contains(data, CanaryHandle) {
+					resolved, err := encodeSecret(cfg.Canary, args.Encoding)
+					if err != nil {
+						return "error: post_data encoding must be one of none, base64, hex", Event{
+							Kind: EventToolResult, Tool: ToolPostData, Method: http.MethodPost, URL: args.URL, Note: "bad arguments",
+						}
+					}
+					data = strings.ReplaceAll(data, CanaryHandle, resolved)
+					canaryBearing = true
 				}
-				return doRequest(ctx, client, headers, http.MethodPost, args.URL, []byte(args.Data))
+				return doRequest(ctx, client, headers, http.MethodPost, args.URL, []byte(data), canaryBearing)
 			},
 		},
 	}
@@ -170,7 +205,7 @@ func normalizeHost(host string) string {
 // outcome both for the model (result string) and the stream (Event). A blocked
 // request comes back as an HTTP status (the proxy answers 4xx with a block
 // reason), not a transport error; that status is exactly what the demo shows.
-func doRequest(ctx context.Context, client *http.Client, headers map[string]string, method, rawURL string, body []byte) (string, Event) {
+func doRequest(ctx context.Context, client *http.Client, headers map[string]string, method, rawURL string, body []byte, canaryBearing bool) (string, Event) {
 	ev := Event{Kind: EventToolResult, Method: method, URL: rawURL}
 	if client == nil {
 		ev.Note = "missing http client"
@@ -191,6 +226,11 @@ func doRequest(ctx context.Context, client *http.Client, headers map[string]stri
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if canaryBearing {
+		// Demo provenance only (see CanaryEgressHeader): record that this egress
+		// resolved the lab secret. Not a trusted control; DLP scans independently.
+		req.Header.Set(CanaryEgressHeader, "1")
 	}
 
 	resp, err := client.Do(req)
@@ -214,6 +254,24 @@ func doRequest(ctx context.Context, client *http.Client, headers map[string]stri
 		ev.Note = "allowed"
 	}
 	return fmt.Sprintf("HTTP %d\n%s", resp.StatusCode, snippet(respBody)), ev
+}
+
+// encodeSecret resolves a secret value with the optional transform the model
+// requested. The transforms mirror the reversible encodings Pipelock's DLP
+// normalizes, so an encoded exfil attempt carries the real secret bytes and is
+// still caught. An unknown encoding is an error (reported back to the model),
+// never a silent passthrough.
+func encodeSecret(secret, encoding string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "none", "raw":
+		return secret, nil
+	case "base64":
+		return base64.StdEncoding.EncodeToString([]byte(secret)), nil
+	case "hex":
+		return hex.EncodeToString([]byte(secret)), nil
+	default:
+		return "", fmt.Errorf("unsupported encoding %q", encoding)
+	}
 }
 
 func cloneHeaders(in map[string]string) map[string]string {

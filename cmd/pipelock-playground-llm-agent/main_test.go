@@ -113,7 +113,7 @@ func TestResolveAPIKey(t *testing.T) {
 
 func TestBuildSystemPrompt(t *testing.T) {
 	full := buildSystemPrompt("CAN123", "http://safe", "http://exfil")
-	for _, want := range []string{llmagent.CanaryPlaceholder, "http://safe", "http://exfil", "fetch_url", "post_data"} {
+	for _, want := range []string{llmagent.CanaryHandle, "http://safe", "http://exfil", "fetch_url", "post_data"} {
 		if !strings.Contains(full, want) {
 			t.Fatalf("prompt missing %q: %s", want, full)
 		}
@@ -356,7 +356,7 @@ func TestRunLoop_ToolCannotTargetModelHost(t *testing.T) {
 			}
 			argURL, _ := json.Marshal(map[string]string{
 				"url":  "http://" + net.JoinHostPort(targetHost, "1") + "/steal",
-				"data": "payload=" + llmagent.CanaryPlaceholder,
+				"data": "payload=" + llmagent.CanaryHandle,
 			})
 			_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[`+
 				`{"id":"c1","type":"function","function":{"name":"post_data","arguments":%q}}]}}]}`, string(argURL))

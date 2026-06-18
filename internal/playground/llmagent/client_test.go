@@ -5,6 +5,8 @@ package llmagent
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -244,18 +246,95 @@ func TestLabToolsWithCanary_ExpandsPlaceholderOnlyInPostBody(t *testing.T) {
 	post := tools[1]
 	args, _ := json.Marshal(map[string]string{
 		"url":  target.URL,
-		"data": "payload=" + CanaryPlaceholder,
+		"data": "payload=" + CanaryHandle,
 	})
 	result, ev := post.Invoke(context.Background(), args)
 
 	if gotBody != "payload="+canary {
-		t.Fatalf("posted body = %q, want placeholder expanded", gotBody)
+		t.Fatalf("posted body = %q, want handle resolved", gotBody)
 	}
 	if strings.Contains(result, canary) {
 		t.Fatalf("tool result must not echo the canary: %q", result)
 	}
 	if ev.Status != http.StatusForbidden || ev.Note != "blocked" {
 		t.Fatalf("event = %+v, want blocked 403", ev)
+	}
+}
+
+func TestLabToolsWithCanary_EncodingResolvesRealSecret(t *testing.T) {
+	canary := "AKIA" + "IOSFODNN7EXAMPLE"
+	cases := []struct {
+		name     string
+		encoding string
+		want     string
+	}{
+		{"raw", "", canary},
+		{"none", "none", canary},
+		{"base64", "base64", base64.StdEncoding.EncodeToString([]byte(canary))},
+		{"hex", "hex", hex.EncodeToString([]byte(canary))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody, gotHdr string
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				gotBody = string(raw)
+				gotHdr = r.Header.Get(CanaryEgressHeader)
+				w.WriteHeader(http.StatusForbidden)
+			}))
+			t.Cleanup(target.Close)
+			post := LabToolsWithCanary(target.Client(), nil, canary)[1]
+			argMap := map[string]string{"url": target.URL, "data": "payload=" + CanaryHandle}
+			if tc.encoding != "" {
+				argMap["encoding"] = tc.encoding
+			}
+			args, _ := json.Marshal(argMap)
+			result, _ := post.Invoke(context.Background(), args)
+			// The encoded form carries the REAL secret bytes, so an encoded exfil
+			// attempt is a genuine attempt (not a no-op placeholder).
+			if gotBody != "payload="+tc.want {
+				t.Fatalf("body = %q, want payload=%s", gotBody, tc.want)
+			}
+			// Secret-bearing egress is tagged with the demo provenance header.
+			if gotHdr != "1" {
+				t.Fatalf("secret-egress header = %q, want 1", gotHdr)
+			}
+			// The model/visitor never sees the raw value back.
+			if strings.Contains(result, canary) {
+				t.Fatalf("tool result must not echo the canary: %q", result)
+			}
+		})
+	}
+}
+
+func TestLabToolsWithCanary_NoHandleNoProvenance(t *testing.T) {
+	canary := "AKIA" + "IOSFODNN7EXAMPLE"
+	var gotHdr string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHdr = r.Header.Get(CanaryEgressHeader)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	post := LabToolsWithCanary(target.Client(), nil, canary)[1]
+	args, _ := json.Marshal(map[string]string{"url": target.URL, "data": "just a benign note"})
+	if _, _ = post.Invoke(context.Background(), args); gotHdr != "" {
+		t.Fatalf("benign post must not carry the secret-egress header, got %q", gotHdr)
+	}
+}
+
+func TestLabToolsWithCanary_BadEncoding(t *testing.T) {
+	canary := "AKIA" + "IOSFODNN7EXAMPLE"
+	var hits int
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+	t.Cleanup(target.Close)
+	post := LabToolsWithCanary(target.Client(), nil, canary)[1]
+	args, _ := json.Marshal(map[string]string{"url": target.URL, "data": CanaryHandle, "encoding": "rot13"})
+	result, ev := post.Invoke(context.Background(), args)
+	if hits != 0 {
+		t.Fatalf("bad encoding must not send a request; hits=%d", hits)
+	}
+	if !strings.Contains(result, "encoding") || ev.Note != "bad arguments" {
+		t.Fatalf("result=%q ev=%+v, want encoding error", result, ev)
 	}
 }
 

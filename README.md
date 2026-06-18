@@ -520,7 +520,6 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [TLS Interception](docs/guides/tls-interception.md) | CONNECT-tunnel MITM: CA setup, body/header/response scanning, passthrough domains |
 | [Canary Tokens](docs/guides/canary-tokens.md) | Synthetic secrets that trip an alert the moment an agent tries to exfiltrate one |
 | [Detection Integration](docs/guides/detection-integration.md) | Feed Pipelock decisions and evidence into external detection / SIEM pipelines |
-| [Playground Replay Capture](docs/guides/playground-replay-capture.md) | Drive controlled synthetic attack scenarios and capture the evidence |
 | [PR Review](docs/guides/pr-review.md) | Manual-trigger AI security review for pull requests (`/review` comment) |
 | [MCP Inspector Front](docs/guides/mcp-inspector-front.md) | Front MCP dev tools (Inspector, test servers) through Pipelock scanning |
 | [`pipelock demo`](docs/cli/demo.md) | Self-contained attack scenarios with signed, offline-verifiable receipts — no config or network needed |

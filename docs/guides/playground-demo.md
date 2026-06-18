@@ -1,5 +1,7 @@
 # Playground live demo engine
 
+> **Demonstration tooling, not a shipped product feature.** The playground binaries live under `cmd/` and are built from source; they are **not packaged in Pipelock releases**, and the production firewall does not depend on them. This guide documents evaluation/demonstration tooling.
+
 `pipelock-playground-demo` drives a **deterministic toy agent** through a real Pipelock
 proxy and produces an offline-verifiable evidence bundle. It is the live counterpart to the
 [replay-capture rig](playground-replay-capture.md): instead of pre-recording scenarios, it

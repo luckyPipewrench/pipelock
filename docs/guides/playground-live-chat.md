@@ -1,5 +1,7 @@
 # Playground live chat: operator controls
 
+> **Demonstration tooling, not a shipped product feature.** The playground binaries live under `cmd/` and are built from source; they are **not packaged in Pipelock releases**, and the production firewall does not depend on them. This guide documents evaluation/demonstration tooling.
+
 The live-chat playground (`pipelock-playground-live serve`) lets a visitor talk to
 a real model-backed agent and watch Pipelock mediate the agent's actual requests
 in real time, streaming a signed decision for every action. Unlike the recorded

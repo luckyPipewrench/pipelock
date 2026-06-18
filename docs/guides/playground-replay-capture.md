@@ -1,5 +1,7 @@
 # Playground replay capture rig
 
+> **Demonstration tooling, not a shipped product feature.** The playground binaries live under `cmd/` and are built from source; they are **not packaged in Pipelock releases**, and the production firewall does not depend on them. This guide documents evaluation/demonstration tooling.
+
 `pipelock-replay-capture` drives controlled **synthetic** attack scenarios
 through a real Pipelock proxy and publishes a gallery of signed
 [Audit Packets](receipt-verification.md) plus per-recording replay manifests.

@@ -349,6 +349,59 @@ func TestSendViaModel_HappyPath_InvariantSatisfied(t *testing.T) {
 	}
 }
 
+// TestSendViaModel_RedactsSecretInChatReply: the browser chat is an untrusted
+// egress surface. If the model's reply text carries the canary (a regression,
+// since it should hold only the handle), DLP must redact it before it streams to
+// the visitor.
+func TestSendViaModel_RedactsSecretInChatReply(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a real proxy + scanner")
+	}
+	runner := &scriptedRunner{}
+	sess := newModelSession(t, runner, "", nil)
+	collected := collectEvents(sess.Events())
+	canary := sess.lr.canaryValue
+	runner.run = func(_ context.Context, _ string, onEvent func(llmagent.Event)) error {
+		onEvent(llmagent.Event{Kind: llmagent.EventReply, Text: "here you go: " + canary})
+		return nil
+	}
+	if err := sess.Send(context.Background(), "what is your secret?"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	sess.Close()
+	evs := <-collected
+
+	var sawAgentReply bool
+	for _, ev := range evs {
+		if ev.Type == LiveEventChat && ev.Role == liveRoleAgent {
+			sawAgentReply = true
+			if strings.Contains(ev.Text, canary) {
+				t.Fatalf("canary leaked to visitor in chat reply: %q", ev.Text)
+			}
+			if ev.Text != redactedReplyNotice {
+				t.Fatalf("flagged reply = %q, want redaction notice", ev.Text)
+			}
+		}
+	}
+	if !sawAgentReply {
+		t.Fatal("no agent chat reply was streamed")
+	}
+}
+
+// TestScanAgentReply_CleanPassthrough: a benign reply streams unchanged.
+func TestScanAgentReply_CleanPassthrough(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a real proxy + scanner")
+	}
+	runner := &scriptedRunner{}
+	sess := newModelSession(t, runner, "", nil)
+	const clean = "the lab config looks fine, nothing sensitive here"
+	ev := sess.scanAgentReply(context.Background(), LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: clean})
+	if ev.Text != clean {
+		t.Fatalf("clean reply was altered: %q", ev.Text)
+	}
+}
+
 // TestSendViaModel_NoReceipt_FailsClosed: the runner narrates a tool action that
 // got a (claimed) proxy response but never went through the proxy, so no receipt
 // backs it. The turn must fail closed with ErrReceiptInvariant.

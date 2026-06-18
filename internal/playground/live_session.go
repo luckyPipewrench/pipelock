@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -313,7 +314,7 @@ func (s *LiveSession) Send(ctx context.Context, msg string) error {
 	}
 
 	turn := s.agent.Plan(msg)
-	s.push(LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: turn.Reply})
+	s.push(s.scanAgentReply(ctx, LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: turn.Reply}))
 
 	for _, act := range turn.Actions {
 		s.push(LiveEvent{
@@ -332,6 +333,27 @@ func (s *LiveSession) Send(ctx context.Context, msg string) error {
 	return nil
 }
 
+// redactedReplyNotice replaces a model reply the DLP flags. The model holds only
+// the secret handle, so a non-clean reply means a regression or some other secret
+// reached the model's output; fail closed and never stream the raw text.
+const redactedReplyNotice = "[Pipelock redacted this reply: it contained a secret]"
+
+// scanAgentReply runs the agent's outbound chat reply through DLP before it
+// reaches the visitor. The browser chat is an untrusted egress surface: a reply
+// that carries a secret is a leak regardless of the collector. This is defense in
+// depth on top of the secret handle (which already keeps the value out of the
+// model's hands); a flagged reply is redacted, not streamed, fail-closed. Quiet
+// scan: this is our own output, not adversarial input, so it skips warn-telemetry.
+func (s *LiveSession) scanAgentReply(ctx context.Context, ev LiveEvent) LiveEvent {
+	if s.lr == nil || s.lr.sc == nil || strings.TrimSpace(ev.Text) == "" {
+		return ev
+	}
+	if res := s.lr.sc.ScanTextForDLPQuiet(ctx, ev.Text); !res.Clean {
+		ev.Text = redactedReplyNotice
+	}
+	return ev
+}
+
 // sendViaModel drives one turn through the model-backed subprocess. It opens a
 // receipt-accounting window, streams the agent's narration to the live stream
 // (decision events arrive concurrently via onReceipt as the subprocess's proxy
@@ -347,6 +369,9 @@ func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
 			proxied = append(proxied, target)
 		}
 		if push {
+			if out.Type == LiveEventChat && out.Role == liveRoleAgent {
+				out = s.scanAgentReply(ctx, out)
+			}
 			s.push(out)
 		}
 	})

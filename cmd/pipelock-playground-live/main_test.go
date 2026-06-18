@@ -59,6 +59,27 @@ func TestBuildLLMAgentConfig(t *testing.T) {
 	if cfg == nil || cfg.Model != "test-model" || cfg.Bin == "" || cfg.SecretFile == "" {
 		t.Fatalf("full flags: unexpected cfg %+v", cfg)
 	}
+
+	credentialModelURL := "http://user:" + strings.ToLower("PASS") + "@provider.example/v1"
+	queryModelURL := "http://provider.example/v1?api_key=" + strings.ToLower("SECRET")
+	fragmentModelURL := "http://provider.example/v1#" + strings.ToLower("SECRET")
+	for _, raw := range []string{
+		credentialModelURL,
+		queryModelURL,
+		fragmentModelURL,
+	} {
+		t.Run("bad_model_url_"+raw, func(t *testing.T) {
+			_, err := buildLLMAgentConfig(&serveFlags{
+				llmAgentBin:     "/usr/local/bin/pipelock-playground-llm-agent",
+				modelBaseURL:    raw,
+				model:           "test-model",
+				modelSecretFile: keyPath,
+			})
+			if err == nil {
+				t.Fatal("want error for unsafe model base URL")
+			}
+		})
+	}
 }
 
 func TestResolveSecret_Generated(t *testing.T) {
@@ -337,6 +358,33 @@ func TestValidateServeSafety_RejectsNegativeCaps(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := validateServeSafety(&tc.f, false); err == nil {
 				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestValidateServeSafety_AllowOrigin(t *testing.T) {
+	t.Parallel()
+	if err := validateServeSafety(&serveFlags{allowOrigin: "https://pipelab.org", dev: true}, false); err != nil {
+		t.Fatalf("exact origin rejected: %v", err)
+	}
+	if err := validateServeSafety(&serveFlags{allowOrigin: "*", dev: true}, false); err != nil {
+		t.Fatalf("dev wildcard rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		f    serveFlags
+	}{
+		{name: "wildcard_nondev", f: serveFlags{allowOrigin: "*", requireContainment: true}},
+		{name: "path", f: serveFlags{allowOrigin: "https://pipelab.org/app", dev: true}},
+		{name: "query", f: serveFlags{allowOrigin: "https://pipelab.org?x=1", dev: true}},
+		{name: "fragment", f: serveFlags{allowOrigin: "https://pipelab.org#x", dev: true}},
+		{name: "whitespace", f: serveFlags{allowOrigin: " https://pipelab.org", dev: true}},
+		{name: "non_http", f: serveFlags{allowOrigin: "file:///tmp/viewer", dev: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateServeSafety(&tc.f, false); err == nil {
+				t.Fatal("expected unsafe allow-origin to be rejected")
 			}
 		})
 	}

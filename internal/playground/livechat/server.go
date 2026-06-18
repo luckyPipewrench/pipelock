@@ -342,6 +342,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
+	ip := s.clientIP(r)
+	if !s.ipRate.Allow("ip:" + ip) {
+		writeErr(w, http.StatusTooManyRequests, "rate limited")
+		return
+	}
 	claims, err := s.cfg.Gate.Validate(r.URL.Query().Get("token"))
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "invalid or expired token")

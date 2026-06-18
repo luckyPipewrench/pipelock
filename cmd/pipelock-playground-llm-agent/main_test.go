@@ -52,8 +52,21 @@ func TestParseFlags(t *testing.T) {
 	if _, err := parseFlags([]string{"--model-base-url", "http://m", "--model", "m", "--proxy-url", "file:///tmp/proxy"}, noEnv); err == nil {
 		t.Fatal("want error on non-http proxy URL")
 	}
-	if _, err := parseFlags([]string{"--model-base-url", "http://user:pass@m", "--model", "m"}, noEnv); err == nil {
+	credentialModelURL := "http://user:" + strings.ToLower("PASS") + "@m"
+	queryModelURL := "http://m/v1?api_key=" + strings.ToLower("SECRET")
+	fragmentModelURL := "http://m/v1#" + strings.ToLower("SECRET")
+	proxyQueryURL := "http://proxy.local:8080/?token=" + strings.ToLower("SECRET")
+	if _, err := parseFlags([]string{"--model-base-url", credentialModelURL, "--model", "m"}, noEnv); err == nil {
 		t.Fatal("want error on model URL with credentials")
+	}
+	if _, err := parseFlags([]string{"--model-base-url", queryModelURL, "--model", "m"}, noEnv); err == nil {
+		t.Fatal("want error on model URL with query string")
+	}
+	if _, err := parseFlags([]string{"--model-base-url", fragmentModelURL, "--model", "m"}, noEnv); err == nil {
+		t.Fatal("want error on model URL with fragment")
+	}
+	if _, err := parseFlags([]string{"--model-base-url", "http://m", "--model", "m", "--proxy-url", proxyQueryURL}, noEnv); err == nil {
+		t.Fatal("want error on proxy URL with query string")
 	}
 	if _, err := parseFlags([]string{"--model-base-url", "http://m", "--model", "m", "--safe-url", "://bad"}, noEnv); err == nil {
 		t.Fatal("want error on invalid safe URL")
@@ -135,10 +148,55 @@ func TestBuildClient(t *testing.T) {
 	}
 }
 
+func TestBuildClient_DoesNotFollowRedirects(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHits++
+	}))
+	t.Cleanup(target.Close)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	c, err := buildClient("", 0)
+	if err != nil {
+		t.Fatalf("buildClient: %v", err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, redirector.URL, nil)
+	if err != nil {
+		t.Fatalf("new redirect request: %v", err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("GET redirector: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302 without following redirect", resp.StatusCode)
+	}
+	if targetHits != 0 {
+		t.Fatalf("redirect target was reached %d time(s)", targetHits)
+	}
+}
+
 func TestBuildAgent_BadProxy(t *testing.T) {
 	cfg := config{modelBaseURL: "http://m", model: "m", proxyURL: "://bad"}
 	if _, err := buildAgent(cfg, "k", func(llmagent.Event) {}); err == nil {
 		t.Fatal("want error when proxy url is invalid")
+	}
+}
+
+func TestHostnameFromHTTPURL(t *testing.T) {
+	got, err := hostnameFromHTTPURL("https://API.DeepSeek.com.:8443/v1")
+	if err != nil {
+		t.Fatalf("hostnameFromHTTPURL: %v", err)
+	}
+	if got != "api.deepseek.com" {
+		t.Fatalf("hostnameFromHTTPURL = %q, want normalized hostname", got)
+	}
+	if _, err := hostnameFromHTTPURL("http://"); err == nil {
+		t.Fatal("want error when URL has no hostname")
 	}
 }
 
@@ -292,8 +350,12 @@ func TestRunLoop_ToolCannotTargetModelHost(t *testing.T) {
 		modelCalls++
 		bodies = append(bodies, string(raw))
 		if modelCalls == 1 {
+			targetHost, _, err := net.SplitHostPort(r.Host)
+			if err != nil {
+				t.Fatalf("split model host: %v", err)
+			}
 			argURL, _ := json.Marshal(map[string]string{
-				"url":  "http://" + r.Host + "/steal",
+				"url":  "http://" + net.JoinHostPort(targetHost, "1") + "/steal",
 				"data": "payload=" + llmagent.CanaryPlaceholder,
 			})
 			_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","tool_calls":[`+

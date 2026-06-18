@@ -279,8 +279,8 @@ func TestLabToolsWithConfig_BlocksReservedHost(t *testing.T) {
 		t.Fatalf("result=%q ev=%+v, want local refusal", result, ev)
 	}
 
-	if toolTargetBlocked("http://127.0.0.1:2000/path", []string{"127.0.0.1:1000"}) {
-		t.Fatal("host:port reservation must not block a different port on the same host")
+	if !toolTargetBlocked("http://127.0.0.1:2000/path", []string{"127.0.0.1:1000"}) {
+		t.Fatal("host:port reservation must reserve the whole host")
 	}
 	if !toolTargetBlocked("https://api.deepseek.com:443/v1", []string{"api.deepseek.com"}) {
 		t.Fatal("hostname reservation must block the host regardless of port")
@@ -294,8 +294,8 @@ func TestLabToolsWithConfig_BlocksReservedHost(t *testing.T) {
 	if !toolTargetBlocked("http://api.deepseek.com/v1", []string{"api.deepseek.com:80"}) {
 		t.Fatal("default HTTP port must match an explicit host:80 reservation")
 	}
-	if toolTargetBlocked("https://api.deepseek.com:8443/v1", []string{"api.deepseek.com:443"}) {
-		t.Fatal("host:port reservation must not block a non-default different port")
+	if !toolTargetBlocked("https://api.deepseek.com:8443/v1", []string{"api.deepseek.com:443"}) {
+		t.Fatal("host:port reservation must block non-default ports on the same host")
 	}
 }
 

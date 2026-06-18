@@ -25,6 +25,31 @@ func TestServer_Message_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestServer_Stream_RateLimitedBeforeTokenValidation(t *testing.T) {
+	t.Parallel()
+	ts := newTestServer(t, ServerConfig{IPRate: RateConfig{RefillPerSec: 1, Burst: 1}})
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("first stream status = %d, want 401", resp.StatusCode)
+	}
+
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+RouteStream, nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second stream status = %d, want 429", resp.StatusCode)
+	}
+}
+
 func TestServer_Message_CodeRateLimited(t *testing.T) {
 	t.Parallel()
 	g, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: "good"}}, TokenTTL: time.Minute})

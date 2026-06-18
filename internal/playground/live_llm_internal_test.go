@@ -130,6 +130,9 @@ func TestTargetHostPort(t *testing.T) {
 }
 
 func TestModelHostname(t *testing.T) {
+	credentialURL := "https://user:" + strings.ToLower("PASS") + "@model.api.test/v1"
+	queryURL := "https://model.api.test/v1?api_key=" + strings.ToLower("SECRET")
+	fragmentURL := "https://model.api.test/v1#" + strings.ToLower("SECRET")
 	tests := []struct {
 		name    string
 		in      string
@@ -137,8 +140,12 @@ func TestModelHostname(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "valid_http_with_port", in: "http://model.api.test:9000/v1", want: "model.api.test"},
+		{name: "trailing_dot_normalized", in: "https://MODEL.API.TEST.:8443/v1", want: "model.api.test"},
 		{name: "non_http_scheme", in: "ftp://nope/", wantErr: true},
 		{name: "missing_host", in: "http:///v1", wantErr: true},
+		{name: "credentials_rejected", in: credentialURL, wantErr: true},
+		{name: "query_rejected", in: queryURL, wantErr: true},
+		{name: "fragment_rejected", in: fragmentURL, wantErr: true},
 		{name: "unparseable", in: "://bad\x00url", wantErr: true},
 	}
 	for _, tc := range tests {

@@ -145,11 +145,19 @@ func NewGate(cfg GateConfig) (*Gate, error) {
 		sum := sha256.Sum256([]byte(c.Code))
 		id := c.ID
 		if id == "" {
-			id = "code-" + base64.RawURLEncoding.EncodeToString(sum[:6])
+			id = defaultCodeID(g.secret, c.Code)
 		}
 		g.codes[sum] = &codeState{id: id, maxIssued: c.MaxSessions}
 	}
 	return g, nil
+}
+
+func defaultCodeID(secret []byte, code string) string {
+	m := hmac.New(sha256.New, secret)
+	m.Write([]byte("pipelock-livechat-code-id\x00"))
+	m.Write([]byte(code))
+	sum := m.Sum(nil)
+	return "code-" + base64.RawURLEncoding.EncodeToString(sum[:9])
 }
 
 // Open reports whether the gate can currently mint any session (has at least

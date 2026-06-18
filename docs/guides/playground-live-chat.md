@@ -27,7 +27,10 @@ pipelock-playground-live serve \
 
 Omitting the `--llm-agent-bin`/`--model-*` flags runs the deterministic
 (non-model) agent instead. The model API key is read from `--model-secret-file`
-(a path), never passed on the command line.
+(a path), never passed on the command line. `--model-base-url` must be a plain
+HTTP(S) API root such as `https://api.provider.example/v1`; query strings,
+fragments, and URL credentials are rejected so provider secrets cannot end up in
+request URLs, logs, or receipts.
 
 ## Safety and abuse controls
 
@@ -91,3 +94,6 @@ For the reverse proxy/CDN in front of the server:
   bearer token in the URL query.
 - Set `--trust-forwarded-for` only when the server is reachable exclusively
   through that trusted proxy/CDN.
+- If the browser is served from a different origin, set `--allow-origin` to that
+  exact origin, such as `https://pipelab.org`. Wildcard CORS is rejected outside
+  `--dev`.

@@ -45,9 +45,9 @@ type postArgs struct {
 type ToolRuntimeConfig struct {
 	// Canary is expanded only from CanaryPlaceholder inside post_data bodies.
 	Canary string
-	// BlockedHosts are hosts or host:port authorities the model may use for its own
-	// API calls but must not target with lab tools. This keeps an allowlisted HTTPS
-	// model API host from becoming an opaque CONNECT exfil sink.
+	// BlockedHosts are model API hosts the lab tools must not target. Host:port
+	// entries are accepted for caller convenience, but they still reserve the
+	// whole host because the playground model allowlist is host-scoped.
 	BlockedHosts []string
 }
 
@@ -122,9 +122,9 @@ func LabToolsWithConfig(client *http.Client, reqHeaders map[string]string, cfg T
 	}
 }
 
-// toolTargetBlocked reports whether rawURL targets a reserved model API host or
-// authority. It canonicalizes hostnames and default ports so spelling variants
-// like "host.", "https://host", and "https://host:443" cannot bypass the guard.
+// toolTargetBlocked reports whether rawURL targets a reserved model API host.
+// It canonicalizes hostname spellings so variants like "host.", "host:443",
+// and "[::1]" cannot bypass the host-wide guard.
 func toolTargetBlocked(rawURL string, blockedHosts []string) bool {
 	if len(blockedHosts) == 0 {
 		return false
@@ -137,14 +137,13 @@ func toolTargetBlocked(rawURL string, blockedHosts []string) bool {
 	if targetHost == "" {
 		return false
 	}
-	targetPort := effectivePort(u)
 	for _, blocked := range blockedHosts {
 		blocked = strings.TrimSpace(blocked)
 		if blocked == "" {
 			continue
 		}
-		if host, port, err := net.SplitHostPort(blocked); err == nil {
-			if normalizeHost(host) == targetHost && port == targetPort {
+		if host, _, err := net.SplitHostPort(blocked); err == nil {
+			if normalizeHost(host) == targetHost {
 				return true
 			}
 			continue
@@ -165,22 +164,6 @@ func normalizeHost(host string) string {
 		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 	}
 	return strings.ToLower(host)
-}
-
-// effectivePort returns the explicit URL port, or the scheme default when the
-// URL omits one.
-func effectivePort(u *url.URL) string {
-	if port := u.Port(); port != "" {
-		return port
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http":
-		return "80"
-	case "https":
-		return "443"
-	default:
-		return ""
-	}
 }
 
 // doRequest issues one tool request through the proxy client and renders the

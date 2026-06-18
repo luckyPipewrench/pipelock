@@ -699,6 +699,12 @@ func modelHostname(raw string) (string, error) {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return "", fmt.Errorf("must use http or https")
 	}
+	if u.User != nil {
+		return "", fmt.Errorf("must not include credentials")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("must not include query strings or fragments")
+	}
 	host := u.Hostname()
 	if host == "" {
 		return "", fmt.Errorf("host is required")

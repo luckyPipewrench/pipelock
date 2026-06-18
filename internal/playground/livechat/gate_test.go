@@ -4,6 +4,8 @@
 package livechat
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"sync"
@@ -301,12 +303,28 @@ func flipFirstChar(s string) string {
 // sanity: ensure codes are not stored or surfaced in the clear anywhere obvious.
 func TestGate_CodeIDNotEqualToCode(t *testing.T) {
 	t.Parallel()
-	g, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: "super-secret-code"}}})
-	_, claims, err := g.Redeem("super-secret-code", "s1")
+	code := "super-secret-code"
+	g, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: code}}})
+	_, claims, err := g.Redeem(code, "s1")
 	if err != nil {
 		t.Fatalf("Redeem: %v", err)
 	}
-	if strings.Contains(claims.CodeID, "super-secret-code") {
+	if strings.Contains(claims.CodeID, code) {
 		t.Errorf("CodeID %q leaks the raw code", claims.CodeID)
+	}
+
+	rawHash := sha256.Sum256([]byte(code))
+	oldPublicID := "code-" + base64.RawURLEncoding.EncodeToString(rawHash[:6])
+	if claims.CodeID == oldPublicID {
+		t.Fatalf("CodeID %q must not be a public truncated hash of the invite code", claims.CodeID)
+	}
+
+	g2, _ := NewGate(GateConfig{Secret: testSecret(t), Codes: []CodeSpec{{Code: code}}})
+	_, claims2, err := g2.Redeem(code, "s2")
+	if err != nil {
+		t.Fatalf("Redeem second gate: %v", err)
+	}
+	if claims.CodeID == claims2.CodeID {
+		t.Fatalf("default CodeID should be bound to the gate secret, got %q twice", claims.CodeID)
 	}
 }

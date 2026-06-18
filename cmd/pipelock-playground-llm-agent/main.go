@@ -191,13 +191,13 @@ func buildAgent(cfg config, apiKey string, emit func(llmagent.Event)) (*llmagent
 	if err != nil {
 		return nil, err
 	}
-	modelAuthority, err := authorityFromHTTPURL(cfg.modelBaseURL)
+	modelHost, err := hostnameFromHTTPURL(cfg.modelBaseURL)
 	if err != nil {
 		return nil, err
 	}
 	tools := llmagent.LabToolsWithConfig(client, map[string]string{proxy.AgentHeader: cfg.actor}, llmagent.ToolRuntimeConfig{
 		Canary:       cfg.canary,
-		BlockedHosts: []string{modelAuthority},
+		BlockedHosts: []string{modelHost},
 	})
 	mc := llmagent.ModelConfig{
 		BaseURL:      cfg.modelBaseURL,
@@ -210,15 +210,16 @@ func buildAgent(cfg config, apiKey string, emit func(llmagent.Event)) (*llmagent
 	return llmagent.New(mc, client, tools, emit), nil
 }
 
-func authorityFromHTTPURL(raw string) (string, error) {
+func hostnameFromHTTPURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("parse model base url: %w", err)
 	}
-	if u.Host == "" {
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
 		return "", fmt.Errorf("model base url host is required")
 	}
-	return u.Host, nil
+	return host, nil
 }
 
 func buildClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
@@ -243,7 +244,13 @@ func buildClient(proxyURL string, timeout time.Duration) (*http.Client, error) {
 		base := &net.Dialer{Timeout: timeout}
 		tr.DialContext = proxyOnlyDialContext(proxyDialAddr(u), base.DialContext)
 	}
-	return &http.Client{Transport: tr, Timeout: timeout}, nil
+	return &http.Client{
+		Transport: tr,
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}, nil
 }
 
 type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -285,6 +292,9 @@ func validateHTTPURL(name, raw string) error {
 	}
 	if u.User != nil {
 		return fmt.Errorf("%s: must not include credentials", name)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s: must not include query strings or fragments", name)
 	}
 	return nil
 }

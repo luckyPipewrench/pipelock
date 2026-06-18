@@ -317,7 +317,7 @@ func buildLLMAgentConfig(f *serveFlags) (*playground.LLMAgentConfig, error) {
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("model-backed agent requires %s", strings.Join(missing, ", "))
 	}
-	if err := validateModelBaseURL(f.modelBaseURL); err != nil {
+	if _, err := playground.ValidatePlainHTTPURL(f.modelBaseURL); err != nil {
 		return nil, fmt.Errorf("--model-base-url: %w", err)
 	}
 	return &playground.LLMAgentConfig{
@@ -328,26 +328,6 @@ func buildLLMAgentConfig(f *serveFlags) (*playground.LLMAgentConfig, error) {
 		MaxSteps:     f.modelMaxSteps,
 		Timeout:      f.modelTimeout,
 	}, nil
-}
-
-func validateModelBaseURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("parse: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("must use http or https")
-	}
-	if u.Host == "" {
-		return errors.New("host is required")
-	}
-	if u.User != nil {
-		return errors.New("must not include credentials")
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("must not include query strings or fragments")
-	}
-	return nil
 }
 
 // resolveSecret picks the gate-signing secret. A --secret-file (base64 contents)

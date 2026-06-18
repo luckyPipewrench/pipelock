@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/llmagent"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
@@ -211,14 +212,11 @@ func buildAgent(cfg config, apiKey string, emit func(llmagent.Event)) (*llmagent
 }
 
 func hostnameFromHTTPURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
+	u, err := playground.ValidatePlainHTTPURL(raw)
 	if err != nil {
-		return "", fmt.Errorf("parse model base url: %w", err)
+		return "", fmt.Errorf("model base url: %w", err)
 	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-	if host == "" {
-		return "", fmt.Errorf("model base url host is required")
-	}
 	return host, nil
 }
 
@@ -280,21 +278,8 @@ func proxyOnlyDialContext(want string, base dialFunc) dialFunc {
 }
 
 func validateHTTPURL(name, raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("%s: parse: %w", name, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("%s: must use http or https", name)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("%s: host is required", name)
-	}
-	if u.User != nil {
-		return fmt.Errorf("%s: must not include credentials", name)
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("%s: must not include query strings or fragments", name)
+	if _, err := playground.ValidatePlainHTTPURL(raw); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
 }

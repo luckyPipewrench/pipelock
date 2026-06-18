@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -692,23 +691,11 @@ func (lr *LiveRun) Close() {
 // modelHostname extracts the hostname (no port) from a model API base URL, for
 // allowlisting and DNS-override keying. It requires an http(s) URL with a host.
 func modelHostname(raw string) (string, error) {
-	u, err := url.Parse(raw)
+	u, err := ValidatePlainHTTPURL(raw)
 	if err != nil {
-		return "", fmt.Errorf("parse: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("must use http or https")
-	}
-	if u.User != nil {
-		return "", fmt.Errorf("must not include credentials")
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("must not include query strings or fragments")
+		return "", err
 	}
 	host := u.Hostname()
-	if host == "" {
-		return "", fmt.Errorf("host is required")
-	}
 	return strings.TrimSuffix(strings.ToLower(host), "."), nil
 }
 

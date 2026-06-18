@@ -103,6 +103,10 @@ type LiveEvent struct {
 	Key      string   `json:"key,omitempty"`
 	Seq      uint64   `json:"seq,omitempty"`
 	Envelope []string `json:"envelope,omitempty"`
+	// DestinationClass labels the decision target as trusted_model (the model
+	// provider, the agent's reasoning channel) or untrusted (every
+	// visitor-controllable destination, where Pipelock enforces).
+	DestinationClass string `json:"destination_class,omitempty"`
 
 	// verified
 	Checks []string `json:"checks,omitempty"`
@@ -173,6 +177,9 @@ type LiveSession struct {
 	runner    modelTurnRunner // non-nil => model-backed subprocess drives turns
 	client    *http.Client
 	contained bool
+	// modelHost is the model provider host (empty for the deterministic agent).
+	// onReceipt uses it to label decisions trusted_model vs untrusted.
+	modelHost string
 
 	sendMu sync.Mutex // serializes Send so the event stream is ordered
 	done   bool       // set by Finalize under sendMu; rejects later sends
@@ -237,6 +244,7 @@ func StartLiveSession(ctx context.Context, cfg LiveSessionConfig) (*LiveSession,
 		// calls to the .test hosts stay loopback.
 		runOpts.ModelBaseURL = cfg.LLMAgent.ModelBaseURL
 		runOpts.ModelHostOverride = cfg.LLMAgent.ModelHostOverride
+		s.modelHost = hostFromTarget(cfg.LLMAgent.ModelBaseURL)
 	}
 	lr, err := StartLiveRun(ctx, runOpts)
 	if err != nil {
@@ -266,7 +274,6 @@ func StartLiveSession(ctx context.Context, cfg LiveSessionConfig) (*LiveSession,
 			Model:        cfg.LLMAgent.Model,
 			SecretFile:   cfg.LLMAgent.SecretFile,
 			SafeURL:      lr.liveSafeURL(),
-			ExfilURL:     lr.liveExfilURL(),
 			Canary:       lr.canaryValue,
 			Actor:        liveRunActor,
 			MaxSteps:     cfg.LLMAgent.MaxSteps,
@@ -575,6 +582,12 @@ func (s *LiveSession) Finalize(runDir string) (VerifyReport, error) {
 	return rep, nil
 }
 
+// OrchestratorPubHex returns the run's trust-root public key as hex, for naming
+// the verify key in a downloaded session bundle.
+func (s *LiveSession) OrchestratorPubHex() string {
+	return s.lr.OrchestratorPubHex()
+}
+
 // Close shuts down the run and closes the event stream. Safe to call multiple
 // times. After Close, onReceipt becomes a no-op so no producer touches the
 // closed channel.
@@ -629,16 +642,17 @@ func (s *LiveSession) onReceipt(rcpt *receipt.Receipt) {
 		short = short[:16] + "…"
 	}
 	s.push(LiveEvent{
-		Type:     LiveEventDecision,
-		Verdict:  label,
-		Color:    color,
-		Layer:    rcpt.ActionRecord.Layer,
-		Pattern:  rcpt.ActionRecord.Pattern,
-		Target:   rcpt.ActionRecord.Target,
-		Signer:   "pipelock",
-		Key:      short,
-		Seq:      rcpt.ActionRecord.ChainSeq,
-		Envelope: receiptEnvelopeLines(*rcpt),
+		Type:             LiveEventDecision,
+		Verdict:          label,
+		Color:            color,
+		Layer:            rcpt.ActionRecord.Layer,
+		Pattern:          rcpt.ActionRecord.Pattern,
+		Target:           rcpt.ActionRecord.Target,
+		Signer:           "pipelock",
+		Key:              short,
+		Seq:              rcpt.ActionRecord.ChainSeq,
+		Envelope:         receiptEnvelopeLines(*rcpt),
+		DestinationClass: classifyDestination(rcpt.ActionRecord.Target, s.modelHost),
 	})
 }
 

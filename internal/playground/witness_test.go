@@ -55,7 +55,7 @@ func TestWitness_SignedAfterDrain_BindsManifest(t *testing.T) {
 	pipePub, _ := genKey(t)
 	lm := signLaunchManifest(t, orchPriv, LaunchManifest{
 		RunNonce: "N1", ScenarioID: "exfil-canary", CanaryID: "aws_canary",
-		PipelockPubKey: hexEnc(pipePub), CollectorPubKey: hexEnc(colPub), TargetHost: "exfil.target.test",
+		PipelockPubKey: hexEnc(pipePub), CollectorPubKey: hexEnc(colPub), TargetHost: "intake.lab.test",
 	})
 	c := NewCollector("aws_canary", canaryValueForTest)
 	if err := c.OpenRun("N1", lm.Hash()); err != nil {

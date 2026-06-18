@@ -74,6 +74,18 @@ func TestGenerateBundle_LiveDemo_RealData(t *testing.T) {
 		t.Error("uncontained run must not emit a host-containment decision")
 	}
 
+	// Honest trust boundary: the bundle states the model channel is trusted
+	// infra, and every mediated (visitor-controllable) decision is labeled
+	// untrusted -- the enforced channel.
+	if b.TrustBoundary == "" {
+		t.Error("bundle must carry the trust-boundary statement")
+	}
+	for _, d := range b.Decisions {
+		if (d.Verdict == "ALLOW" || d.Verdict == "BLOCKED") && d.DestinationClass != "untrusted" {
+			t.Errorf("mediated decision %q destination_class=%q, want untrusted", d.Verdict, d.DestinationClass)
+		}
+	}
+
 	// Checks reflect the real verify report.
 	if len(b.Checks) != len(rep.Checks) {
 		t.Errorf("checks=%d want %d", len(b.Checks), len(rep.Checks))

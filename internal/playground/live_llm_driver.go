@@ -131,7 +131,6 @@ type subprocessRunnerOpts struct {
 	Model        string
 	SecretFile   string
 	SafeURL      string
-	ExfilURL     string
 	Canary       string
 	Actor        string
 	MaxSteps     int
@@ -180,9 +179,6 @@ func newSubprocessTurnRunner(ctx context.Context, opts subprocessRunnerOpts) (*s
 	}
 	if opts.SafeURL != "" {
 		args = append(args, "--safe-url", opts.SafeURL)
-	}
-	if opts.ExfilURL != "" {
-		args = append(args, "--exfil-url", opts.ExfilURL)
 	}
 	if opts.MaxSteps > 0 {
 		args = append(args, "--max-steps", fmt.Sprintf("%d", opts.MaxSteps))

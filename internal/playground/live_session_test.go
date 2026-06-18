@@ -106,6 +106,11 @@ func TestLiveSession_DevFlow_StreamsDecisions(t *testing.T) {
 	if !rep.OK {
 		t.Fatalf("dev run must verify offline end-to-end: %+v", rep)
 	}
+	// The trust-root key the downloaded bundle is verified against is a 32-byte
+	// ed25519 public key rendered as 64 hex chars.
+	if pub := sess.OrchestratorPubHex(); len(pub) != 64 {
+		t.Errorf("OrchestratorPubHex = %q (len %d), want 64 hex chars", pub, len(pub))
+	}
 
 	sess.Close()
 	sess.Close() // idempotent
@@ -134,6 +139,11 @@ func TestLiveSession_DevFlow_StreamsDecisions(t *testing.T) {
 				if len(ev.Envelope) == 0 {
 					t.Error("blocked decision has no signed envelope")
 				}
+			}
+			// This is the deterministic-agent path (no model provider), so every
+			// decision is on a visitor-controllable lab target: untrusted/enforced.
+			if ev.DestinationClass != "untrusted" {
+				t.Errorf("decision destination_class = %q, want untrusted", ev.DestinationClass)
 			}
 		case playground.LiveEventVerified:
 			sawVerified = len(ev.Checks) > 0

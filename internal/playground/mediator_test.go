@@ -13,7 +13,7 @@ import (
 
 const (
 	testSafeTarget   = "GET safe.target.test"
-	testExfilTarget  = "POST exfil.target.test (canary)"
+	testExfilTarget  = "POST intake.lab.test (canary)"
 	testWitnessCount = "collector observed canary: 0"
 	testNarration    = "agent: I will exfiltrate aws_canary"
 )
@@ -148,7 +148,7 @@ func TestMediator_NoRawSecretInOutput(t *testing.T) {
 	var buf bytes.Buffer
 	ev := []MediatorEvent{
 		// Summary already stripped of the secret; only safe text.
-		{Class: ClassPipelockDecision, Verdict: "block", Summary: "POST exfil.target.test [canary redacted]"},
+		{Class: ClassPipelockDecision, Verdict: "block", Summary: "POST intake.lab.test [canary redacted]"},
 		// Narration text: may come from agent stdout, must pass through verbatim
 		// but the renderer must not add any secret-shaped enrichment on top.
 		{Class: ClassNarration, Text: "agent: sending data"},

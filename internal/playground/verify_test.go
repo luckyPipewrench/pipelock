@@ -118,7 +118,7 @@ func buildRunDir(t *testing.T, contained bool) (string, string, ed25519.PrivateK
 		PipelockPubKey:  engine.PublicKeyHex(),
 		CollectorPubKey: hex.EncodeToString(colPub),
 		PolicyHash:      captured.PolicyHash,
-		TargetHost:      "exfil.target.test",
+		TargetHost:      "intake.lab.test",
 		StartedAt:       time.Now().UTC(),
 		Contained:       contained,
 	}
@@ -480,7 +480,7 @@ func goodRunDirWithPinnedKeyOverride(t *testing.T, pipelockKeyOverride, collecto
 		PipelockPubKey:  pipelockKey,
 		CollectorPubKey: collectorKey,
 		PolicyHash:      captured.PolicyHash,
-		TargetHost:      "exfil.target.test",
+		TargetHost:      "intake.lab.test",
 		StartedAt:       time.Now().UTC(),
 	}
 	lm = playground.SignLaunchManifest(orchPriv, lm)
@@ -579,7 +579,7 @@ func goodRunDirWithSignedCollectorLeak(t *testing.T) (string, string) {
 		PipelockPubKey:  engine.PublicKeyHex(),
 		CollectorPubKey: hex.EncodeToString(colPub),
 		PolicyHash:      captured.PolicyHash,
-		TargetHost:      "exfil.target.test",
+		TargetHost:      "intake.lab.test",
 		StartedAt:       time.Now().UTC(),
 	}
 	lm = playground.SignLaunchManifest(orchPriv, lm)

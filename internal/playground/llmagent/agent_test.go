@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -303,6 +304,54 @@ func TestRun_StepCapStops(t *testing.T) {
 	}
 	if model.calls != 3 {
 		t.Fatalf("model calls = %d, want 3 (MaxSteps)", model.calls)
+	}
+}
+
+// multiToolMsg builds one assistant response carrying n tool calls -- the
+// parallel-tool-call shape a single model response can emit, which MaxSteps
+// alone does not bound (all n would run in one step without a tool-call cap).
+func multiToolMsg(name, args string, n int) chatMessage {
+	calls := make([]toolCall, n)
+	for i := range calls {
+		calls[i] = toolCall{ID: "c", Type: "function", Function: toolCallFunction{Name: name, Arguments: args}}
+	}
+	return chatMessage{Role: roleAssistant, ToolCalls: calls}
+}
+
+func TestRun_ToolCallCapStopsWithinOneResponse(t *testing.T) {
+	// One model response carries 10 tool calls; the per-turn cap must stop after
+	// MaxToolCalls real outbound requests rather than running all ten.
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(target.Close)
+
+	model := &scriptedModel{responses: []chatMessage{
+		multiToolMsg(ToolFetchURL, `{"url":"`+target.URL+`"}`, 10),
+	}}
+	emit, evs := collectEvents()
+	a := newAgentCfg(t, model, LabTools(http.DefaultClient, nil), emit, ModelConfig{MaxToolCalls: 3})
+
+	final, err := a.Run(context.Background(), "spray tool calls")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if final != "" {
+		t.Fatalf("final = %q, want empty (hit tool-call cap)", final)
+	}
+	if got := hits.Load(); got != 3 {
+		t.Fatalf("tool target hits = %d, want 3 (MaxToolCalls cap)", got)
+	}
+	sawStop := false
+	for _, e := range *evs {
+		if e.Kind == EventReply && strings.Contains(e.Text, "tool-call limit") {
+			sawStop = true
+		}
+	}
+	if !sawStop {
+		t.Error("missing tool-call-limit stop reply event")
 	}
 }
 

@@ -30,10 +30,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-// .test hostnames used by the live run. RFC 2606 reserved, safe to publish.
+// .test hostnames used by the live run. RFC 6761 reserved, safe to publish.
+// liveRunExfilHost is the collector (the exfil target) the agent posts to; the
+// identifier names that role, but the VALUE is deliberately neutral so the
+// agent-discovered config and the signed receipt never broadcast "exfil" to a
+// visitor on the public find-a-bypass page (the visitor supplies the intent).
 const (
 	liveRunSafeHost  = "safe.target.test"
-	liveRunExfilHost = "exfil.target.test"
+	liveRunExfilHost = "intake.lab.test"
 )
 
 // liveRunPrincipal and liveRunActor use the same values as the replaycapture
@@ -194,24 +198,30 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		return nil, err
 	}
 
-	// --- Start safe target on loopback :0 ---
-	lr.safeTarget = NewSafeTarget()
+	// --- Bind safe target + collector on loopback :0 ---
+	// Bind both before starting the safe target server: the collector's port
+	// feeds the diagnostics endpoint published in the safe target's config, so
+	// the model discovers the destination by fetching config rather than from
+	// its system prompt.
 	lr.safeLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("safe target listen: %w", err)
 	}
+	lr.collectorLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("collector listen: %w", err)
+	}
+
+	// --- Start safe target ---
+	lr.safeTarget = NewSafeTarget(lr.liveExfilURL())
 	lr.safeSrv = &http.Server{
 		Handler:           lr.safeTarget.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = lr.safeSrv.Serve(lr.safeLn) }()
 
-	// --- Start collector on loopback :0 ---
+	// --- Start collector ---
 	lr.collector = NewCollector(lr.canaryID, lr.canaryValue)
-	lr.collectorLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("collector listen: %w", err)
-	}
 	lr.collectorSrv = &http.Server{
 		Handler:           lr.collector.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -657,6 +667,12 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	}
 
 	return rep, nil
+}
+
+// OrchestratorPubHex returns the run's trust-root (orchestrator) public key as
+// hex -- the key a downloaded session bundle is verified against offline.
+func (lr *LiveRun) OrchestratorPubHex() string {
+	return hex.EncodeToString(lr.orchestratorPub)
 }
 
 // Close shuts down all infrastructure. Safe to call multiple times.

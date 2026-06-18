@@ -112,8 +112,8 @@ func TestResolveAPIKey(t *testing.T) {
 }
 
 func TestBuildSystemPrompt(t *testing.T) {
-	full := buildSystemPrompt("CAN123", "http://safe", "http://exfil")
-	for _, want := range []string{llmagent.CanaryHandle, "http://safe", "http://exfil", "fetch_url", "post_data"} {
+	full := buildSystemPrompt("CAN123", "http://safe")
+	for _, want := range []string{llmagent.CanaryHandle, "http://safe", "fetch_url", "post_data"} {
 		if !strings.Contains(full, want) {
 			t.Fatalf("prompt missing %q: %s", want, full)
 		}
@@ -121,9 +121,16 @@ func TestBuildSystemPrompt(t *testing.T) {
 	if strings.Contains(full, "CAN123") {
 		t.Fatalf("prompt must not contain the raw canary: %s", full)
 	}
+	// The prompt must not pre-aim the agent at any destination to post to: it
+	// discovers endpoints by fetching config or from the visitor, never here.
+	for _, banned := range []string{"collector", "exfil"} {
+		if strings.Contains(strings.ToLower(full), banned) {
+			t.Fatalf("prompt must not name a destination (%q): %s", banned, full)
+		}
+	}
 	// Empty values are omitted, not rendered blank.
-	bare := buildSystemPrompt("", "", "")
-	if strings.Contains(bare, "canary") || strings.Contains(bare, "collector is at") {
+	bare := buildSystemPrompt("", "")
+	if strings.Contains(bare, "canary") || strings.Contains(bare, "config is served") {
 		t.Fatalf("bare prompt leaked empty fields: %s", bare)
 	}
 }

@@ -80,14 +80,15 @@ func buildDecisions(narr scenarioNarrative, receipts []receipt.Receipt, rep Veri
 	if allowR, ok := findReceipt(receipts, liveDemoAllowedVerdict, ""); ok {
 		ar := allowR.ActionRecord
 		decisions = append(decisions, BundleDecision{
-			Beat:    narr.allowDecision.beat,
-			Class:   string(ClassPipelockDecision),
-			Color:   narr.allowDecision.color,
-			Verdict: "ALLOW",
-			Target:  requestLine(ar),
-			Meta:    fmt.Sprintf("verdict=allow · transport=%s", ar.Transport),
-			Signer:  bundleSignerPipelock,
-			Key:     shortKey(allowR.SignerKey),
+			Beat:             narr.allowDecision.beat,
+			Class:            string(ClassPipelockDecision),
+			Color:            narr.allowDecision.color,
+			Verdict:          "ALLOW",
+			Target:           requestLine(ar),
+			Meta:             fmt.Sprintf("verdict=allow · transport=%s", ar.Transport),
+			Signer:           bundleSignerPipelock,
+			Key:              shortKey(allowR.SignerKey),
+			DestinationClass: DestinationClassUntrusted,
 		})
 	}
 
@@ -99,17 +100,18 @@ func buildDecisions(narr scenarioNarrative, receipts []receipt.Receipt, rep Veri
 			meta += " · " + ar.Pattern
 		}
 		decisions = append(decisions, BundleDecision{
-			Beat:     narr.blockDecision.beat,
-			Class:    string(ClassPipelockDecision),
-			Color:    narr.blockDecision.color,
-			Verdict:  "BLOCKED",
-			Pop:      true,
-			Banner:   narr.blockDecision.banner,
-			Target:   requestLine(ar),
-			Meta:     meta,
-			Signer:   bundleSignerPipelock,
-			Key:      shortKey(blockR.SignerKey),
-			Envelope: receiptEnvelopeLines(blockR),
+			Beat:             narr.blockDecision.beat,
+			Class:            string(ClassPipelockDecision),
+			Color:            narr.blockDecision.color,
+			Verdict:          "BLOCKED",
+			Pop:              true,
+			Banner:           narr.blockDecision.banner,
+			Target:           requestLine(ar),
+			Meta:             meta,
+			Signer:           bundleSignerPipelock,
+			Key:              shortKey(blockR.SignerKey),
+			Envelope:         receiptEnvelopeLines(blockR),
+			DestinationClass: DestinationClassUntrusted,
 		})
 	}
 
@@ -153,7 +155,7 @@ func receiptEnvelopeLines(r receipt.Receipt) []string {
 
 func buildVerifier(cleanDir, orchestratorPubHex string) BundleVerifier {
 	return BundleVerifier{
-		Status:      "verified offline against the published orchestrator key",
+		Status:      "verified offline against the session trust-root key",
 		Key:         orchestratorPubHex,
 		Fingerprint: shortKey(orchestratorPubHex),
 		Command: fmt.Sprintf("pipelock-playground-demo verify %s --orchestrator-key %s",

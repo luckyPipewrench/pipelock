@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
 
 func TestBuildLLMAgentConfig(t *testing.T) {
@@ -258,6 +260,37 @@ func devServeFlags() *serveFlags {
 	}
 }
 
+func testOrchestratorKeyPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "demo-signing.key")
+	if _, err := playground.GenerateOrchestratorKey(path, false); err != nil {
+		t.Fatalf("GenerateOrchestratorKey: %v", err)
+	}
+	return path
+}
+
+func testExecutablePath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pipelock-playground-llm-agent")
+	// requireExecutableFile needs the owner-exec bit; keep it owner-only. The
+	// mode is variable-ized so gosec's octal-literal heuristic does not flag a
+	// fixture that legitimately must be executable.
+	perm := os.FileMode(0o700)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), perm); err != nil {
+		t.Fatalf("write executable: %v", err)
+	}
+	return path
+}
+
+func testModelSecretPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "model.key")
+	if err := os.WriteFile(path, []byte("sk-"+"test\n"), 0o600); err != nil {
+		t.Fatalf("write model key: %v", err)
+	}
+	return path
+}
+
 func TestBuildServer_DevDefault(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
@@ -312,10 +345,11 @@ func TestBuildServer_PublicModelRequiresDailyBudget(t *testing.T) {
 	f.dev = false
 	f.requireContainment = true
 	f.codes = []string{"good"}
-	f.llmAgentBin = "/usr/local/bin/pipelock-playground-llm-agent"
+	f.llmAgentBin = testExecutablePath(t)
 	f.modelBaseURL = "http://provider.example/v1"
 	f.model = "test-model"
-	f.modelSecretFile = filepath.Join(t.TempDir(), "model.key")
+	f.modelSecretFile = testModelSecretPath(t)
+	f.orchestratorKey = testOrchestratorKeyPath(t)
 
 	var out bytes.Buffer
 	if _, _, err := buildServer(&out, f); err == nil {
@@ -333,6 +367,31 @@ func TestBuildServer_PublicModelRequiresDailyBudget(t *testing.T) {
 	defer srv.Close()
 }
 
+func TestBuildServer_PublicModelValidatesRuntimeFiles(t *testing.T) {
+	t.Parallel()
+	f := devServeFlags()
+	f.dev = false
+	f.requireContainment = true
+	f.codes = []string{"good"}
+	f.llmAgentBin = testExecutablePath(t)
+	f.modelBaseURL = "http://provider.example/v1"
+	f.model = "test-model"
+	f.modelSecretFile = filepath.Join(t.TempDir(), "missing-model.key")
+	f.orchestratorKey = testOrchestratorKeyPath(t)
+	f.dailyTurnBudget = 10
+
+	var out bytes.Buffer
+	if _, _, err := buildServer(&out, f); err == nil {
+		t.Fatal("model-backed non-dev server with missing model key should fail before listening")
+	}
+
+	f.modelSecretFile = testModelSecretPath(t)
+	f.llmAgentBin = filepath.Join(t.TempDir(), "missing-agent-bin")
+	if _, _, err := buildServer(&out, f); err == nil {
+		t.Fatal("model-backed non-dev server with missing agent binary should fail before listening")
+	}
+}
+
 func TestBuildServer_NonDevRequiresContainment(t *testing.T) {
 	t.Parallel()
 	f := devServeFlags()
@@ -342,6 +401,31 @@ func TestBuildServer_NonDevRequiresContainment(t *testing.T) {
 	var out bytes.Buffer
 	if _, _, err := buildServer(&out, f); err == nil {
 		t.Fatal("non-dev uncontained server should fail closed")
+	}
+}
+
+func TestBuildServer_NonDevValidatesOrchestratorKey(t *testing.T) {
+	t.Parallel()
+	f := devServeFlags()
+	f.dev = false
+	f.requireContainment = true
+	f.codes = []string{"good"}
+	f.orchestratorKey = filepath.Join(t.TempDir(), "missing.key")
+	var out bytes.Buffer
+	if _, _, err := buildServer(&out, f); err == nil {
+		t.Fatal("non-dev server with missing orchestrator key should fail before listening")
+	}
+}
+
+func TestValidateServeSafety_NonDevRequiresOrchestratorKey(t *testing.T) {
+	t.Parallel()
+	f := serveFlags{requireContainment: true}
+	if err := validateServeSafety(&f, false); err == nil {
+		t.Fatal("non-dev server without orchestrator key should fail closed")
+	}
+	f.orchestratorKey = filepath.Join(t.TempDir(), "demo-signing.key")
+	if err := validateServeSafety(&f, false); err != nil {
+		t.Fatalf("non-dev server with orchestrator key rejected: %v", err)
 	}
 }
 

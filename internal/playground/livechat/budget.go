@@ -18,6 +18,13 @@ import (
 //
 // A cap of 0 means unlimited (no global ceiling) - only for --dev / local runs.
 // Public exposure MUST set a positive cap.
+//
+// The count is held in memory and is PROCESS-LOCAL: a server restart resets it
+// to the full cap for the current UTC day (there is no on-disk persistence by
+// design - the demo run dirs are ephemeral). So this is the in-app layer of a
+// double cap; the durable backstop against a restart loop spending more than
+// intended is the model PROVIDER's own account/spend cap, which must also be set
+// for public exposure.
 type DailyBudget struct {
 	mu    sync.Mutex
 	cap   int

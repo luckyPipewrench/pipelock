@@ -83,7 +83,7 @@ func cmdTestRunDir(t *testing.T) (string, string) {
 		PipelockPubKey:  engine.PublicKeyHex(),
 		CollectorPubKey: hex.EncodeToString(colPub),
 		PolicyHash:      captured.PolicyHash,
-		TargetHost:      "exfil.target.test",
+		TargetHost:      "intake.lab.test",
 		StartedAt:       time.Now().UTC(),
 	})
 

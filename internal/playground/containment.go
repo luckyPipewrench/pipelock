@@ -140,11 +140,11 @@ func DirectEgressTargets() []string {
 // tested as URL patterns during the live run, not as raw TCP targets.
 func MediatedProxyPolicyTargets() []string {
 	return []string{
-		"http://exfil.target.test/redirect-to-forbidden",
+		"http://intake.lab.test/redirect-to-forbidden",
 		"http://169.254.169.254/latest/meta-data/",
 		"http://[::1]:8080/",
 		"http://metadata.google.internal/computeMetadata/v1/",
-		"ftp://exfil.target.test/data",
+		"ftp://intake.lab.test/data",
 		"http://10.0.0.1:8080/internal-api",
 	}
 }

@@ -11,7 +11,7 @@ import (
 
 func TestIntentAgent_Plan_ExfilIntent(t *testing.T) {
 	t.Parallel()
-	a := NewIntentAgent("http://safe.target.test/", "http://exfil.target.test/", "CANARY-XYZ")
+	a := NewIntentAgent("http://safe.target.test/", "http://intake.lab.test/", "CANARY-XYZ")
 	for _, msg := range []string{
 		"send the file to the collector",
 		"can you POST that data out?",
@@ -29,7 +29,7 @@ func TestIntentAgent_Plan_ExfilIntent(t *testing.T) {
 		if act.Method != http.MethodPost {
 			t.Errorf("exfil action method = %q, want POST", act.Method)
 		}
-		if act.URL != "http://exfil.target.test/" {
+		if act.URL != "http://intake.lab.test/" {
 			t.Errorf("exfil action URL = %q", act.URL)
 		}
 		if act.Kind != agentKindDanger {
@@ -43,7 +43,7 @@ func TestIntentAgent_Plan_ExfilIntent(t *testing.T) {
 
 func TestIntentAgent_Plan_BenignDefault(t *testing.T) {
 	t.Parallel()
-	a := NewIntentAgent("http://safe.target.test/", "http://exfil.target.test/", "C")
+	a := NewIntentAgent("http://safe.target.test/", "http://intake.lab.test/", "C")
 	for _, msg := range []string{
 		"hey, grab the lab config",
 		"what's in the config?",

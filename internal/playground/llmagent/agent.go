@@ -53,6 +53,12 @@ type Event struct {
 // cannot spin forever. Each step is one model round trip.
 const defaultMaxSteps = 6
 
+// defaultMaxToolCalls bounds the TOTAL tool calls a single turn may execute,
+// across all steps. MaxSteps alone does not cap this: one model response can
+// carry many tool calls, and each tool call is a real outbound request through
+// the proxy. This is the per-turn DoS/cost ceiling on tool actions.
+const defaultMaxToolCalls = 8
+
 // defaultTimeout bounds a single model request.
 const defaultTimeout = 30 * time.Second
 
@@ -89,6 +95,11 @@ type ModelConfig struct {
 	SystemPrompt string
 	// MaxSteps bounds the model<->tool loop. Defaults to 6.
 	MaxSteps int
+	// MaxToolCalls bounds the TOTAL tool calls one turn may execute across all
+	// steps (each is a real outbound request). 0 => defaultMaxToolCalls. This caps
+	// a model that emits many tool calls in a single response, which MaxSteps does
+	// not bound on its own.
+	MaxToolCalls int
 	// MaxHistoryTurns bounds the bounded conversation memory carried across Run
 	// calls (one turn = one visitor message + the agent's final reply). 0 (the
 	// default) keeps each Run independent with no cross-turn memory. A positive
@@ -157,6 +168,13 @@ func (c ModelConfig) maxSteps() int {
 	return defaultMaxSteps
 }
 
+func (c ModelConfig) maxToolCalls() int {
+	if c.MaxToolCalls > 0 {
+		return c.MaxToolCalls
+	}
+	return defaultMaxToolCalls
+}
+
 func (c ModelConfig) timeout() time.Duration {
 	if c.Timeout > 0 {
 		return c.Timeout
@@ -202,6 +220,8 @@ func (a *Agent) Run(ctx context.Context, userMsg string) (string, error) {
 	messages = append(messages, a.history...)
 	messages = append(messages, chatMessage{Role: roleUser, Content: userMsg})
 
+	toolsUsed := 0
+	maxTools := a.cfg.maxToolCalls()
 	for step := 0; step < a.cfg.maxSteps(); step++ {
 		reply, err := a.complete(ctx, messages)
 		if err != nil {
@@ -224,7 +244,16 @@ func (a *Agent) Run(ctx context.Context, userMsg string) (string, error) {
 		}
 		messages = append(messages, reply)
 		for _, tc := range reply.ToolCalls {
+			// Per-turn tool-call ceiling: a single response can carry many tool
+			// calls, each a real outbound request. Stop the turn the moment the
+			// budget is spent rather than executing the rest. End immediately --
+			// there is no next model round, so the unanswered tool calls are moot.
+			if toolsUsed >= maxTools {
+				a.emit(Event{Kind: EventReply, Text: "(stopped: reached the tool-call limit)"})
+				return "", nil
+			}
 			messages = append(messages, a.runToolCall(ctx, tc))
+			toolsUsed++
 		}
 	}
 

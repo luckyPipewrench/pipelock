@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -106,7 +107,7 @@ func newServeCmd() *cobra.Command {
 	fl.IntVar(&f.concurrency, "concurrency", 3, "global cap on simultaneous live sessions")
 	fl.BoolVar(&f.requireContainment, "require-containment", true, "refuse sessions unless kernel containment is established")
 	fl.BoolVar(&f.dev, "dev", false, "DEV ONLY: run uncontained (disables --require-containment); never use for public exposure")
-	fl.StringVar(&f.orchestratorKey, "orchestrator-key", "", "path to the published demo signing key (empty = ephemeral per-run key)")
+	fl.StringVar(&f.orchestratorKey, "orchestrator-key", "", "path to the published demo signing key (required outside --dev; empty = ephemeral per-run key in --dev)")
 	fl.StringVar(&f.toyAgentBin, "toyagent-bin", "", "toy-agent binary path (needed for the contained host-containment witness)")
 	fl.StringVar(&f.webToolBin, "webtool-bin", "", "web-tool binary path (needed for the contained host-containment witness)")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", 90*time.Second, "per-session wall-clock cap")
@@ -137,6 +138,12 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		return err
 	}
 	defer srv.Close()
+
+	// Operator kill switch: on Unix, SIGUSR1 terminates active sessions and
+	// refuses new ones; SIGUSR2 resumes. No-op where those signals are absent.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchKillSwitch(ctx, srv)
 
 	httpSrv := &http.Server{
 		Addr:              f.listen,
@@ -191,6 +198,14 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 	}
 	if err := validateServeSafety(f, llmAgent != nil); err != nil {
 		return nil, nil, err
+	}
+	if !f.dev {
+		if _, err := playground.LoadOrchestratorSigningKey(f.orchestratorKey); err != nil {
+			return nil, nil, fmt.Errorf("--orchestrator-key: %w", err)
+		}
+		if err := validateModelAgentRuntime(llmAgent); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	srv, err := livechat.NewServer(livechat.ServerConfig{
@@ -249,6 +264,9 @@ func validateServeSafety(f *serveFlags, modelBacked bool) error {
 	}
 	if !f.dev && !f.requireContainment {
 		return errors.New("non-dev serve requires containment; use --dev for local uncontained testing")
+	}
+	if !f.dev && strings.TrimSpace(f.orchestratorKey) == "" {
+		return errors.New("non-dev serve requires --orchestrator-key so bundles verify against the published demo key")
 	}
 	if modelBacked && !f.dev && f.dailyTurnBudget <= 0 {
 		return errors.New("model-backed public serve requires --daily-turn-budget > 0 (or --dev for local testing)")
@@ -328,6 +346,37 @@ func buildLLMAgentConfig(f *serveFlags) (*playground.LLMAgentConfig, error) {
 		MaxSteps:     f.modelMaxSteps,
 		Timeout:      f.modelTimeout,
 	}, nil
+}
+
+func validateModelAgentRuntime(cfg *playground.LLMAgentConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if err := requireExecutableFile("--llm-agent-bin", cfg.Bin); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(filepath.Clean(cfg.SecretFile))
+	if err != nil {
+		return fmt.Errorf("--model-secret-file: %w", err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return errors.New("--model-secret-file is empty")
+	}
+	return nil
+}
+
+func requireExecutableFile(name, path string) error {
+	info, err := os.Stat(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s: is a directory", name)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%s: file is not executable", name)
+	}
+	return nil
 }
 
 // resolveSecret picks the gate-signing secret. A --secret-file (base64 contents)

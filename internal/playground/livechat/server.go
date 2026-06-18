@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
@@ -26,6 +27,7 @@ const (
 	RouteSession = "/api/live/session"
 	RouteStream  = "/api/live/stream"
 	RouteMessage = "/api/live/message"
+	RouteBundle  = "/api/live/bundle"
 	RouteHealth  = "/api/live/health"
 )
 
@@ -81,7 +83,15 @@ type liveEntry struct {
 	runDir  string
 	expires time.Time
 	timer   *time.Timer
-	finOnce sync.Once
+
+	// seal (assemble + offline-verify + build the downloadable archive) runs at
+	// most once, whether triggered by a bundle download or by teardown. bundle
+	// holds the assembled .tar.gz bytes in memory so serving never races
+	// teardown's run-dir removal. teardown (close + delete) is separately once-d.
+	sealOnce     sync.Once
+	sealErr      error
+	bundle       []byte
+	teardownOnce sync.Once
 
 	streamMu sync.Mutex
 	streamOn bool
@@ -129,6 +139,11 @@ type Server struct {
 	budget           *DailyBudget
 	maxMsgPerSession int
 
+	// killed is the operator emergency stop. Unlike the daily budget (which caps
+	// spend by refusing new charges), tripping this terminates every ACTIVE
+	// session immediately and refuses all new sessions and messages until Resume.
+	killed atomic.Bool
+
 	mu       sync.Mutex
 	sessions map[string]*liveEntry
 }
@@ -175,6 +190,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(RouteSession, s.handleSession)
 	mux.HandleFunc(RouteStream, s.handleStream)
 	mux.HandleFunc(RouteMessage, s.handleMessage)
+	mux.HandleFunc(RouteBundle, s.handleBundle)
 	mux.HandleFunc(RouteHealth, s.handleHealth)
 	return mux
 }
@@ -190,11 +206,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":               s.cfg.Gate.Open() && s.budget.Open(),
+		"ok":               s.cfg.Gate.Open() && s.budget.Open() && !s.killed.Load(),
 		"in_use":           s.conc.InUse(),
 		"capacity":         s.conc.Cap(),
 		"contained":        s.cfg.RequireContainment,
 		"budget_remaining": s.budget.Remaining(),
+		"killed":           s.killed.Load(),
 	})
 }
 
@@ -222,6 +239,10 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
 	if !s.ipRate.Allow("ip:" + ip) {
 		writeErr(w, http.StatusTooManyRequests, "rate limited")
+		return
+	}
+	if s.killed.Load() {
+		writeErr(w, http.StatusServiceUnavailable, "the demo is paused")
 		return
 	}
 
@@ -308,10 +329,29 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		runDir:  runDir,
 		expires: claims.ExpiresAt,
 	}
-	entry.timer = time.AfterFunc(time.Until(claims.ExpiresAt), func() { s.finalize(sid) })
+	cleanupStartedSession := func() {
+		sess.Close()
+		_ = os.RemoveAll(runDir)
+		s.cfg.Gate.Refund(claims)
+		cancel()
+		release()
+	}
+	ttl := time.Until(claims.ExpiresAt)
+	if ttl <= 0 {
+		cleanupStartedSession()
+		writeErr(w, http.StatusServiceUnavailable, "session expired before start")
+		return
+	}
 
 	s.mu.Lock()
+	if s.killed.Load() {
+		s.mu.Unlock()
+		cleanupStartedSession()
+		writeErr(w, http.StatusServiceUnavailable, "the demo is paused")
+		return
+	}
 	s.sessions[sid] = entry
+	entry.timer = time.AfterFunc(ttl, func() { s.finalize(sid) })
 	s.mu.Unlock()
 	s.cfg.Gate.Commit(claims)
 
@@ -411,6 +451,10 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusTooManyRequests, "rate limited")
 		return
 	}
+	if s.killed.Load() {
+		writeErr(w, http.StatusServiceUnavailable, "the demo is paused")
+		return
+	}
 	var body messageReq
 	if err := decodeJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad request")
@@ -453,6 +497,8 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, playground.ErrSessionClosed) {
 			entry.refundMessage(s.maxMsgPerSession)
 			s.budget.Refund()
+			writeErr(w, http.StatusConflict, "session is closed")
+			return
 		}
 		writeErr(w, http.StatusInternalServerError, "send failed")
 		return
@@ -460,19 +506,82 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
-// finalize seals, verifies, and tears down a session exactly once.
-func (s *Server) finalize(sid string) {
-	entry := s.take(sid)
-	if entry == nil {
+// handleBundle serves the downloadable, offline-verifiable session bundle. It
+// seals the run on demand (the visitor signalling "I'm done, prove it") and
+// returns the .tar.gz the visitor re-verifies with the shipped verifier. The
+// archive is served from in-memory bytes captured at seal time, so there is no
+// path-traversal surface and no race with the run dir's eventual removal.
+// Token-gated and rate-limited like every other route; an expired token (or a
+// session already torn down) cannot download.
+func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
+	s.setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	entry.finOnce.Do(func() {
-		if entry.timer != nil {
-			entry.timer.Stop()
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ip := s.clientIP(r)
+	if !s.ipRate.Allow("ip:" + ip) {
+		writeErr(w, http.StatusTooManyRequests, "rate limited")
+		return
+	}
+	claims, err := s.cfg.Gate.Validate(r.URL.Query().Get("token"))
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	entry := s.lookup(claims.SessionID)
+	if entry == nil {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	// Seal on demand: assemble + offline-verify + build the archive. Sealing
+	// marks the session terminal (no further messages), which is the intended
+	// "finish and prove it" semantic. Fail closed if the run did not verify.
+	if err := s.seal(entry); err != nil {
+		s.releaseSessionResources(entry)
+		writeErr(w, http.StatusServiceUnavailable, "session bundle is not available")
+		return
+	}
+	s.releaseSessionResources(entry)
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "pipelock-session-"+claims.SessionID+".tar.gz"))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(entry.bundle)
+}
+
+// seal assembles, offline-verifies, and archives the run exactly once. It does
+// NOT tear the session down: the entry stays in the live set and the archive
+// bytes are retained so the visitor can download the verified bundle until the
+// session expires. The verified event reaches any connected stream as a side
+// effect of Finalize. Idempotent; the stored sealErr is returned on every call.
+func (s *Server) seal(entry *liveEntry) error {
+	entry.sealOnce.Do(func() {
+		if _, err := entry.sess.Finalize(entry.runDir); err != nil {
+			entry.sealErr = err
+			return
 		}
-		// Best-effort seal + offline verify; the verified event reaches any
-		// connected stream before Close shuts the channel.
-		_, _ = entry.sess.Finalize(entry.runDir)
+		arc, err := playground.ArchiveRunForDownload(entry.runDir, entry.sess.OrchestratorPubHex())
+		if err != nil {
+			entry.sealErr = fmt.Errorf("archive session bundle: %w", err)
+			return
+		}
+		entry.bundle = arc
+	})
+	return entry.sealErr
+}
+
+// releaseSessionResources closes the session, releases its concurrency slot,
+// and deletes its run dir exactly once. It intentionally does not remove the
+// entry from the live map: after a visitor downloads a sealed bundle, the slot
+// should be freed immediately while the in-memory archive remains downloadable
+// until the token/session TTL removes the map entry.
+func (s *Server) releaseSessionResources(entry *liveEntry) {
+	entry.teardownOnce.Do(func() {
 		entry.sess.Close()
 		entry.cancel()
 		entry.release()
@@ -480,8 +589,37 @@ func (s *Server) finalize(sid string) {
 	})
 }
 
-// Close finalizes all live sessions. Call on server shutdown.
-func (s *Server) Close() {
+// teardown stops the timer, closes the session, releases the global slot, and
+// deletes the run dir exactly once, removing the entry from the live set. The
+// archive bytes captured by seal live on the entry, so a download already in
+// flight is unaffected by run-dir removal.
+func (s *Server) teardown(sid string) {
+	entry := s.take(sid)
+	if entry == nil {
+		return
+	}
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+	s.releaseSessionResources(entry)
+}
+
+// finalize seals (best-effort) then tears a session down. Used by the TTL timer
+// and server shutdown. seal runs while the entry is still in the live set so the
+// archive bytes are captured before teardown removes the entry and run dir.
+func (s *Server) finalize(sid string) {
+	entry := s.lookup(sid)
+	if entry == nil {
+		return
+	}
+	_ = s.seal(entry)
+	s.teardown(sid)
+}
+
+// finalizeAll seals and tears down every currently-active session. The snapshot
+// of ids is taken under the lock; finalize re-checks membership, so a session
+// that ends concurrently is simply skipped.
+func (s *Server) finalizeAll() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.sessions))
 	for id := range s.sessions {
@@ -491,6 +629,33 @@ func (s *Server) Close() {
 	for _, id := range ids {
 		s.finalize(id)
 	}
+}
+
+// Close finalizes all live sessions. Call on server shutdown.
+func (s *Server) Close() {
+	s.finalizeAll()
+}
+
+// Kill trips the operator emergency stop: it refuses all new sessions and
+// messages and immediately seals + terminates every active session. It is the
+// runtime kill switch a demo operator reaches for to stop everything now --
+// distinct from the daily budget, which only caps new spend and lets active
+// sessions run to their TTL. Idempotent.
+func (s *Server) Kill() {
+	s.killed.Store(true)
+	s.finalizeAll()
+}
+
+// Resume clears the kill switch so the server accepts new sessions again. Active
+// sessions are not restored (they were terminated by Kill); this only reopens
+// the door.
+func (s *Server) Resume() {
+	s.killed.Store(false)
+}
+
+// Killed reports whether the emergency stop is currently engaged.
+func (s *Server) Killed() bool {
+	return s.killed.Load()
 }
 
 func (s *Server) lookup(sid string) *liveEntry {

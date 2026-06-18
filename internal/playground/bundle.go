@@ -39,6 +39,10 @@ type Bundle struct {
 	Decisions  []BundleDecision `json:"decisions"`
 	Checks     []string         `json:"checks"`
 	Verifier   BundleVerifier   `json:"verifier"`
+	// TrustBoundary states, in one honest line, that the model provider is
+	// trusted infrastructure (not an exfil destination) while every
+	// visitor-controllable destination is untrusted and enforced.
+	TrustBoundary string `json:"trust_boundary"`
 }
 
 // BundleChatTurn is one scripted chat line (user or agent) pinned to a beat.
@@ -80,10 +84,16 @@ type BundleDecision struct {
 	Signer   string   `json:"signer,omitempty"`
 	Key      string   `json:"key,omitempty"`
 	Envelope []string `json:"envelope,omitempty"`
+	// DestinationClass labels a target-bearing decision as untrusted (the
+	// enforced, visitor-controllable channel) vs trusted_model. Every mediated
+	// decision in a bundle is on a lab target, so it is untrusted; the trusted
+	// model channel produces no bundle decisions (see TrustBoundary).
+	DestinationClass string `json:"destination_class,omitempty"`
 }
 
 // BundleVerifier is the "verify this yourself" block. Key and Command are the
-// real published orchestrator key and the exact offline verify invocation.
+// trust-root key used for this run and the exact offline verify invocation. In
+// the public demo, this key must match the separately published demo key.
 type BundleVerifier struct {
 	Status      string `json:"status"`
 	Key         string `json:"key"`
@@ -155,15 +165,16 @@ func GenerateBundle(runDir, orchestratorPubHex string) (Bundle, error) {
 	}
 
 	return Bundle{
-		Mode:       "replay",
-		RunID:      lm.RunNonce,
-		TotalBeats: len(narr.beats),
-		Beats:      append([]string{}, narr.beats...),
-		Chat:       append([]BundleChatTurn{}, narr.chat...),
-		Agent:      hydrateAgentActs(narr, receipts, hcw),
-		Decisions:  buildDecisions(narr, receipts, rep, witness, hcw),
-		Checks:     checkNames(rep),
-		Verifier:   buildVerifier(cleanDir, orchestratorPubHex),
+		Mode:          "replay",
+		RunID:         lm.RunNonce,
+		TotalBeats:    len(narr.beats),
+		Beats:         append([]string{}, narr.beats...),
+		Chat:          append([]BundleChatTurn{}, narr.chat...),
+		Agent:         hydrateAgentActs(narr, receipts, hcw),
+		Decisions:     buildDecisions(narr, receipts, rep, witness, hcw),
+		Checks:        checkNames(rep),
+		Verifier:      buildVerifier(cleanDir, orchestratorPubHex),
+		TrustBoundary: TrustBoundaryStatement,
 	}, nil
 }
 

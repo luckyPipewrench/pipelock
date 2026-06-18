@@ -45,7 +45,7 @@ func bundleTestReceipt(verdict, layer, method, target, pattern string) receipt.R
 func bundleTestReceipts() []receipt.Receipt {
 	return []receipt.Receipt{
 		bundleTestReceipt(liveDemoAllowedVerdict, "", "GET", "http://safe.target.test:1/", ""),
-		bundleTestReceipt(liveDemoExpectedVerdict, liveDemoExpectedBlockLayer, "POST", "http://exfil.target.test:2/?run=x", "request body contains secret: AWS Access ID"),
+		bundleTestReceipt(liveDemoExpectedVerdict, liveDemoExpectedBlockLayer, "POST", "http://intake.lab.test:2/?run=x", "request body contains secret: AWS Access ID"),
 	}
 }
 

@@ -59,6 +59,12 @@ var ErrSessionClosed = fmt.Errorf("playground: live session is closed")
 // "every mediated action is attested" guarantee the live demo makes.
 var ErrReceiptInvariant = fmt.Errorf("playground: agent action produced no signed receipt")
 
+// ErrAgentReplyDLP is returned when the agent's browser-bound reply is flagged
+// by DLP. The raw reply is not streamed. In the model-backed path the subprocess
+// is also closed, because it may already have recorded that raw reply in bounded
+// history before the parent process could redact it for the visitor.
+var ErrAgentReplyDLP = fmt.Errorf("playground: agent reply contained a secret")
+
 // ContainmentVerifier proves the live agent's environment is kernel-contained
 // before a public session starts. Verify returns nil only when containment is
 // established AND enforced. The server wires this to the real host-containment
@@ -172,7 +178,7 @@ type LiveSession struct {
 	done   bool       // set by Finalize under sendMu; rejects later sends
 
 	// recMu guards the per-turn receipt accounting used by the model-driver path's
-	// receipt invariant. onReceipt records targets while a turn is active.
+	// receipt invariant. onReceipt records method+target keys while a turn is active.
 	recMu        sync.Mutex
 	turnActive   bool
 	turnReceipts []string
@@ -314,7 +320,13 @@ func (s *LiveSession) Send(ctx context.Context, msg string) error {
 	}
 
 	turn := s.agent.Plan(msg)
-	s.push(s.scanAgentReply(ctx, LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: turn.Reply}))
+	reply, blocked := s.scanAgentReply(ctx, LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: turn.Reply})
+	s.push(reply)
+	if blocked {
+		s.done = true
+		s.push(LiveEvent{Type: LiveEventError, Message: agentReplyDLPMessage})
+		return ErrAgentReplyDLP
+	}
 
 	for _, act := range turn.Actions {
 		s.push(LiveEvent{
@@ -338,43 +350,65 @@ func (s *LiveSession) Send(ctx context.Context, msg string) error {
 // reached the model's output; fail closed and never stream the raw text.
 const redactedReplyNotice = "[Pipelock redacted this reply: it contained a secret]"
 
+const agentReplyDLPMessage = "agent reply contained a secret; session stopped"
+
 // scanAgentReply runs the agent's outbound chat reply through DLP before it
 // reaches the visitor. The browser chat is an untrusted egress surface: a reply
 // that carries a secret is a leak regardless of the collector. This is defense in
-// depth on top of the secret handle (which already keeps the value out of the
-// model's hands); a flagged reply is redacted, not streamed, fail-closed. Quiet
-// scan: this is our own output, not adversarial input, so it skips warn-telemetry.
-func (s *LiveSession) scanAgentReply(ctx context.Context, ev LiveEvent) LiveEvent {
+// depth on top of the secret handle. A flagged reply is redacted and reported to
+// the caller so the session can fail closed before any dirty model history is
+// reused. Quiet scan: this is our own output, not adversarial input, so it skips
+// warn-telemetry.
+func (s *LiveSession) scanAgentReply(ctx context.Context, ev LiveEvent) (LiveEvent, bool) {
 	if s.lr == nil || s.lr.sc == nil || strings.TrimSpace(ev.Text) == "" {
-		return ev
+		return ev, false
 	}
 	if res := s.lr.sc.ScanTextForDLPQuiet(ctx, ev.Text); !res.Clean {
 		ev.Text = redactedReplyNotice
+		return ev, true
 	}
-	return ev
+	return ev, false
 }
 
 // sendViaModel drives one turn through the model-backed subprocess. It opens a
 // receipt-accounting window, streams the agent's narration to the live stream
 // (decision events arrive concurrently via onReceipt as the subprocess's proxy
 // traffic is mediated), then enforces the receipt invariant: every narrated HTTP
-// action that received a proxy response must be backed by a signed receipt for
-// this turn. A violation fails the turn closed. Called with sendMu held.
+// action that received a proxy response must be backed by a signed receipt with
+// the same method+destination key for this turn. A violation fails the turn
+// closed. Called with sendMu held.
 func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
 	s.beginReceiptTurn()
 	var proxied []string
-	runErr := s.runner.RunTurn(ctx, msg, func(ev llmagent.Event) {
+	replyBlocked := false
+	turnCtx, cancelTurn := context.WithCancel(ctx)
+	defer cancelTurn()
+	runErr := s.runner.RunTurn(turnCtx, msg, func(ev llmagent.Event) {
 		out, push, target := mapModelEvent(ev)
 		if target != "" {
 			proxied = append(proxied, target)
 		}
 		if push {
 			if out.Type == LiveEventChat && out.Role == liveRoleAgent {
-				out = s.scanAgentReply(ctx, out)
+				var blocked bool
+				out, blocked = s.scanAgentReply(ctx, out)
+				if blocked {
+					replyBlocked = true
+					cancelTurn()
+				}
 			}
 			s.push(out)
 		}
 	})
+	if replyBlocked {
+		s.endReceiptTurn()
+		s.done = true
+		if s.runner != nil {
+			_ = s.runner.Close()
+		}
+		s.push(LiveEvent{Type: LiveEventError, Message: agentReplyDLPMessage})
+		return ErrAgentReplyDLP
+	}
 	if runErr != nil {
 		s.endReceiptTurn()
 		s.push(LiveEvent{Type: LiveEventError, Message: "agent turn failed"})
@@ -389,17 +423,13 @@ func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
 	s.waitReceiptsSettle(ctx, proxied)
 	receipts := s.endReceiptTurn()
 
-	// Receipt invariant: each destination the agent narrated a proxy-responded
-	// action to must carry at LEAST as many signed receipts this turn as narrated
-	// actions to it. A shortfall means an action egressed unmediated or a proxy
+	// Receipt invariant: each action the agent narrated as proxy-responded must
+	// carry at LEAST as many signed receipts this turn as narrated actions with the
+	// same method+destination key. A shortfall means an action egressed unmediated or a proxy
 	// path went unobserved -- fail closed. Counting (not set-membership) catches a
-	// dropped receipt even when an earlier action to the same destination was
-	// mediated. (Residual: the agent's own model-API receipts to a host also count
-	// toward that host, so a tool action to the model host could be covered by a
-	// model-call receipt; and a compromised subprocess could narrate falsely. The
-	// invariant guards wiring/observation/direct-egress, not subprocess integrity.)
-	receiptCount := tallyHostPorts(receipts)
-	proxiedCount := tallyHostPorts(proxied)
+	// dropped receipt even when an earlier matching action was mediated.
+	receiptCount := tallyValues(receipts)
+	proxiedCount := tallyValues(proxied)
 	for action, want := range proxiedCount {
 		if receiptCount[action] < want {
 			s.push(LiveEvent{Type: LiveEventError, Message: "unverified agent action blocked"})
@@ -409,8 +439,8 @@ func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
 	return nil
 }
 
-// tallyHostPorts counts occurrences of each host:port in xs.
-func tallyHostPorts(xs []string) map[string]int {
+// tallyValues counts occurrences of each comparison key in xs.
+func tallyValues(xs []string) map[string]int {
 	out := make(map[string]int, len(xs))
 	for _, x := range xs {
 		out[x]++
@@ -419,10 +449,11 @@ func tallyHostPorts(xs []string) map[string]int {
 }
 
 // receiptsCover reports whether the recorded receipts cover every narrated
-// proxied action (at least as many receipts per destination as actions).
+// proxied action (at least as many receipts per method+destination key as
+// actions).
 func receiptsCover(proxied, receipts []string) bool {
-	have := tallyHostPorts(receipts)
-	for action, want := range tallyHostPorts(proxied) {
+	have := tallyValues(receipts)
+	for action, want := range tallyValues(proxied) {
 		if have[action] < want {
 			return false
 		}
@@ -469,7 +500,7 @@ func (s *LiveSession) receiptSnapshot() ([]string, chan struct{}) {
 }
 
 // beginReceiptTurn opens the per-turn receipt-accounting window. onReceipt records
-// each receipt's target host:port until endReceiptTurn closes it.
+// each receipt's method+target key until endReceiptTurn closes it.
 func (s *LiveSession) beginReceiptTurn() {
 	s.recMu.Lock()
 	s.turnActive = true
@@ -571,11 +602,11 @@ func (s *LiveSession) onReceipt(rcpt *receipt.Receipt) {
 	if rcpt == nil {
 		return
 	}
-	// Record the target for the model-driver receipt invariant, if a turn is open,
-	// and signal any settle-wait that the tally advanced.
+	// Record the method+target key for the model-driver receipt invariant, if a
+	// turn is open, and signal any settle-wait that the tally advanced.
 	s.recMu.Lock()
 	if s.turnActive {
-		s.turnReceipts = append(s.turnReceipts, targetHostPort(rcpt.ActionRecord.Target))
+		s.turnReceipts = append(s.turnReceipts, actionReceiptKey(rcpt.ActionRecord.Method, rcpt.ActionRecord.Target))
 		if s.receiptSig != nil {
 			select {
 			case s.receiptSig <- struct{}{}:

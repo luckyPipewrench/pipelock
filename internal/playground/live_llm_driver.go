@@ -44,16 +44,16 @@ const maxModelEventLine = 1 << 20 // 1 MiB
 
 // mapModelEvent maps one agent narration event to a live-stream event. It returns
 // the mapped event and push=true when the event should be streamed, plus a
-// proxiedTarget host:port when the event represents a tool action that received a
+// proxiedAction key when the event represents a tool action that received a
 // proxy response (Status>0) and therefore MUST be backed by a signed receipt
-// (the session counts these per destination against the turn's receipts).
+// (the session counts these per method+destination against the turn's receipts).
 //
 // Decision events (allow/block) arrive separately via onReceipt, so a successful
 // tool result is not re-pushed here (the decision renders the outcome); only its
 // target is recorded for the receipt invariant. A tool result with no proxy
 // response (Status 0: bad args, unbuildable request, transport error, or a
 // refused direct dial) gets no decision event, so its outcome is surfaced here.
-func mapModelEvent(ev llmagent.Event) (out LiveEvent, push bool, proxiedTarget string) {
+func mapModelEvent(ev llmagent.Event) (out LiveEvent, push bool, proxiedAction string) {
 	switch ev.Kind {
 	case llmagent.EventReply:
 		if strings.TrimSpace(ev.Text) == "" {
@@ -72,7 +72,7 @@ func mapModelEvent(ev llmagent.Event) (out LiveEvent, push bool, proxiedTarget s
 			// The proxy returned a response: the decision event (from onReceipt)
 			// renders allow/block. Record the action for the receipt invariant and
 			// do not double-push.
-			return LiveEvent{}, false, targetHostPort(ev.URL)
+			return LiveEvent{}, false, actionReceiptKey(ev.Method, ev.URL)
 		}
 		// No proxy response: no decision event will arrive, so surface the outcome.
 		note := ev.Note
@@ -91,6 +91,19 @@ func mapModelEvent(ev llmagent.Event) (out LiveEvent, push bool, proxiedTarget s
 	default:
 		return LiveEvent{}, false, ""
 	}
+}
+
+// actionReceiptKey is the comparison key for model-narrated HTTP actions and
+// signed receipt records. It deliberately uses method + host:port rather than
+// only host:port, so a model-call POST receipt cannot cover a narrated GET, and a
+// safe read cannot cover a narrated write to the same destination.
+func actionReceiptKey(method, target string) string {
+	target = targetHostPort(target)
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		return target
+	}
+	return method + " " + target
 }
 
 // targetHostPort extracts the host:port from a tool action URL or a receipt

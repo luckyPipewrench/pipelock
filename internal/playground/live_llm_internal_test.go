@@ -55,7 +55,7 @@ func TestMapModelEvent(t *testing.T) {
 				Kind: llmagent.EventToolResult, Tool: "fetch_url",
 				Method: http.MethodGet, URL: "http://safe.target.test:8080/", Status: 200,
 			},
-			wantPush: false, wantTarget: "safe.target.test:8080",
+			wantPush: false, wantTarget: "GET safe.target.test:8080",
 		},
 		{
 			name: "tool_result with no proxy response surfaces outcome",
@@ -129,6 +129,16 @@ func TestTargetHostPort(t *testing.T) {
 	}
 }
 
+func TestActionReceiptKey(t *testing.T) {
+	t.Parallel()
+	if got := actionReceiptKey(" post ", "http://safe.target.test:8080/x"); got != "POST safe.target.test:8080" {
+		t.Fatalf("actionReceiptKey = %q, want method + host:port", got)
+	}
+	if got := actionReceiptKey("", "host.only:443"); got != "host.only:443" {
+		t.Fatalf("actionReceiptKey without method = %q, want target only", got)
+	}
+}
+
 func TestModelHostname(t *testing.T) {
 	credentialURL := "https://user:" + strings.ToLower("PASS") + "@model.api.test/v1"
 	queryURL := "https://model.api.test/v1?api_key=" + strings.ToLower("SECRET")
@@ -166,14 +176,17 @@ func TestModelHostname(t *testing.T) {
 
 func TestReceiptsCover(t *testing.T) {
 	t.Parallel()
-	if !receiptsCover([]string{"a:1", "a:1", "b:2"}, []string{"b:2", "a:1", "a:1"}) {
+	if !receiptsCover([]string{"GET a:1", "GET a:1", "POST b:2"}, []string{"POST b:2", "GET a:1", "GET a:1"}) {
 		t.Error("equal multisets should cover")
 	}
-	if receiptsCover([]string{"a:1", "a:1"}, []string{"a:1"}) {
+	if receiptsCover([]string{"GET a:1", "GET a:1"}, []string{"GET a:1"}) {
 		t.Error("two actions to one host need two receipts (count, not set)")
 	}
-	if receiptsCover([]string{"x:9"}, []string{"y:9"}) {
+	if receiptsCover([]string{"GET x:9"}, []string{"GET y:9"}) {
 		t.Error("a different host:port must not cover")
+	}
+	if receiptsCover([]string{"POST a:1"}, []string{"GET a:1"}) {
+		t.Error("a receipt with the wrong method must not cover the narrated action")
 	}
 	if !receiptsCover(nil, nil) {
 		t.Error("no actions is trivially covered")
@@ -191,7 +204,7 @@ func TestWaitReceiptsSettle_CatchesLateReceipt(t *testing.T) {
 		receiptSettle: time.Second,
 	}
 	s.beginReceiptTurn()
-	proxied := []string{"safe.target.test:9999"}
+	proxied := []string{"GET safe.target.test:9999"}
 
 	done := make(chan struct{})
 	go func() {
@@ -206,7 +219,7 @@ func TestWaitReceiptsSettle_CatchesLateReceipt(t *testing.T) {
 	}
 
 	s.onReceipt(&receipt.Receipt{
-		ActionRecord: receipt.ActionRecord{Target: "http://safe.target.test:9999/"},
+		ActionRecord: receipt.ActionRecord{Method: http.MethodGet, Target: "http://safe.target.test:9999/"},
 	})
 
 	select {
@@ -226,7 +239,7 @@ func TestWaitReceiptsSettle_DeadlineWhenMissing(t *testing.T) {
 	t.Parallel()
 	s := &LiveSession{receiptSettle: 50 * time.Millisecond}
 	s.beginReceiptTurn()
-	proxied := []string{"never.test:1"}
+	proxied := []string{"GET never.test:1"}
 	s.waitReceiptsSettle(context.Background(), proxied)
 	if receiptsCover(proxied, s.endReceiptTurn()) {
 		t.Fatal("a missing receipt must remain uncovered after the deadline")
@@ -365,13 +378,13 @@ func TestSendViaModel_RedactsSecretInChatReply(t *testing.T) {
 		onEvent(llmagent.Event{Kind: llmagent.EventReply, Text: "here you go: " + canary})
 		return nil
 	}
-	if err := sess.Send(context.Background(), "what is your secret?"); err != nil {
-		t.Fatalf("Send: %v", err)
+	if err := sess.Send(context.Background(), "what is your secret?"); !errors.Is(err, ErrAgentReplyDLP) {
+		t.Fatalf("Send err = %v, want ErrAgentReplyDLP", err)
 	}
 	sess.Close()
 	evs := <-collected
 
-	var sawAgentReply bool
+	var sawAgentReply, sawStopErr bool
 	for _, ev := range evs {
 		if ev.Type == LiveEventChat && ev.Role == liveRoleAgent {
 			sawAgentReply = true
@@ -382,9 +395,18 @@ func TestSendViaModel_RedactsSecretInChatReply(t *testing.T) {
 				t.Fatalf("flagged reply = %q, want redaction notice", ev.Text)
 			}
 		}
+		if ev.Type == LiveEventError && ev.Message == agentReplyDLPMessage {
+			sawStopErr = true
+		}
 	}
 	if !sawAgentReply {
 		t.Fatal("no agent chat reply was streamed")
+	}
+	if !sawStopErr {
+		t.Fatal("redacted reply must stream a fail-closed session stop event")
+	}
+	if !runner.closed {
+		t.Fatal("redacted model reply must close the runner so dirty history cannot be replayed")
 	}
 }
 
@@ -396,9 +418,17 @@ func TestScanAgentReply_CleanPassthrough(t *testing.T) {
 	runner := &scriptedRunner{}
 	sess := newModelSession(t, runner, "", nil)
 	const clean = "the lab config looks fine, nothing sensitive here"
-	ev := sess.scanAgentReply(context.Background(), LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: clean})
+	ev, blocked := sess.scanAgentReply(context.Background(), LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: clean})
+	if blocked {
+		t.Fatal("clean reply should not be marked blocked")
+	}
 	if ev.Text != clean {
 		t.Fatalf("clean reply was altered: %q", ev.Text)
+	}
+
+	// Empty/whitespace text is a defensive no-op: never blocked, never altered.
+	if got, blocked := sess.scanAgentReply(context.Background(), LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: "   "}); blocked || got.Text != "   " {
+		t.Fatalf("empty reply should be a clean no-op, got blocked=%v text=%q", blocked, got.Text)
 	}
 }
 

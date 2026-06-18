@@ -666,9 +666,10 @@ Key-free evidence capture:
 			}
 
 			inputCfg := &mcp.InputScanConfig{
-				Enabled:      cfg.MCPInputScanning.Enabled,
-				Action:       cfg.MCPInputScanning.Action,
-				OnParseError: cfg.MCPInputScanning.OnParseError,
+				Enabled:                cfg.MCPInputScanning.Enabled,
+				Action:                 cfg.MCPInputScanning.Action,
+				OnParseError:           cfg.MCPInputScanning.OnParseError,
+				ResponseTimeoutSeconds: cfg.MCPInputScanning.ResponseTimeoutSeconds,
 			}
 
 			var mcpRedactMatcher *redact.Matcher

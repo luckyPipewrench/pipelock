@@ -4162,6 +4162,30 @@ func TestApplyDefaults_MCPInputScanningOnParseErrorDefaulted(t *testing.T) {
 	}
 }
 
+func TestValidate_MCPInputScanningResponseTimeoutNegative(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.ResponseTimeoutSeconds = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for negative response_timeout_seconds")
+	}
+}
+
+func TestValidate_MCPInputScanningResponseTimeoutZero(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.ResponseTimeoutSeconds = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error for zero response_timeout_seconds: %v", err)
+	}
+}
+
+func TestValidate_MCPInputScanningResponseTimeoutPositive(t *testing.T) {
+	cfg := Defaults()
+	cfg.MCPInputScanning.ResponseTimeoutSeconds = 30
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error for positive response_timeout_seconds: %v", err)
+	}
+}
+
 // --- Default DLP Pattern Tests ---
 
 func TestDefaults_ContainsNewDLPPatterns(t *testing.T) {

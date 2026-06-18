@@ -114,6 +114,24 @@ func (t *RequestTracker) Seeded() bool {
 	return t.seeded
 }
 
+// DrainPending returns and removes all pending request IDs. Used when a
+// response timeout fires and the proxy needs to emit error responses for
+// every unanswered request before shutting down.
+func (t *RequestTracker) DrainPending() []json.RawMessage {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ids := make([]json.RawMessage, 0, len(t.order))
+	for _, key := range t.order {
+		ids = append(ids, json.RawMessage(key))
+	}
+	t.pending = make(map[string]struct{})
+	t.order = nil
+	return ids
+}
+
 // canonicalID normalizes a JSON-RPC ID to a canonical string for map
 // lookup. Returns "" for nil, empty, or "null" IDs (notifications).
 // The canonical form preserves the raw JSON representation so numeric

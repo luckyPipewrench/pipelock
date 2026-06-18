@@ -558,6 +558,20 @@ type MCPInputScanning struct {
 	Enabled      bool   `yaml:"enabled"`
 	Action       string `yaml:"action"`         // warn, block
 	OnParseError string `yaml:"on_parse_error"` // block (default), forward
+	// ResponseTimeoutSeconds is an optional per-read timeout (in seconds) for
+	// the wrapped MCP server's response stream. When set to a positive value,
+	// the proxy emits a JSON-RPC error (-32000 "upstream response timeout")
+	// if no complete response message arrives from the upstream within this
+	// window, instead of the agent hanging. The deadline is per response
+	// message and resets as each arrives, so a steady stream is not severed;
+	// set it above the slowest legitimate tool latency. Applies to the stdio
+	// subprocess proxy (RunProxy, incl. sandbox) and the stdio-to-HTTP bridge
+	// (RunHTTPForward); the HTTP reverse-proxy listener uses its own HTTP
+	// timeouts. On the subprocess proxy a timeout terminates the hung child; on
+	// the bridge it fails the affected request closed and the session
+	// continues. Default 0 = disabled, preserving current behavior. Consumed
+	// independently of Enabled.
+	ResponseTimeoutSeconds int `yaml:"response_timeout_seconds"`
 }
 
 // MCPToolScanning configures scanning of MCP tool descriptions for poisoning

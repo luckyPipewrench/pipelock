@@ -184,7 +184,10 @@ const (
 	// Re-bumped for removal of vestigial DeferConfig.ResolutionTriggers
 	// field. The field had zero runtime consumers (only validated/defaulted)
 	// and was dropped in v2.8 before any release shipped it.
-	goldenHashDefaults = "4d15bb5d19674cbf21f45b43b36035406d9d730e09ae71399042e72cdb310cbd"
+	// Re-bumped for mcp_input_scanning.response_timeout_seconds field
+	// (v2.8 stress-followup Finding 12). New policy-semantic field that
+	// changes upstream response timeout behavior. Zero default = disabled.
+	goldenHashDefaults = "0d8fb5014d616d5207afd946094b98561f564d6394aa1d6c99f739c01c572728"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -274,7 +277,9 @@ const (
 	// response-scanning pattern set, so the hash shifts in lockstep.
 	// Re-bumped for the defer section: held-action timeout and capacity
 	// bounds are policy semantics for action enforcement.
-	goldenHashRichConfig = "26d7dbb0b32a79971a46119afcb2d51bb117a62832ff9d98a2e31530677ff595"
+	// Re-bumped for mcp_input_scanning.response_timeout_seconds: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "a182adbf13fcf2add0e10480aeeba79586e64ae017b9ad45fb06bad9bc13bfee"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -160,6 +160,99 @@ func TestCmd_RunE_CheckEndToEnd(t *testing.T) {
 	}
 }
 
+func TestLacksUpdateCommand(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{"v2.7.0", true},
+		{"v2.7.5", true},
+		{"v2.6.0", true},
+		{"v1.0.0", true},
+		{"v2.8.0", false},
+		{"v2.8.1", false},
+		{"v3.0.0", false},
+		{"v2.8.0-rc1", false}, // pre-release of v2.8.0 still parses as 2.8.0
+	}
+	for _, tc := range tests {
+		t.Run(tc.version, func(t *testing.T) {
+			got := lacksUpdateCommand(tc.version)
+			if got != tc.want {
+				t.Fatalf("lacksUpdateCommand(%q) = %v, want %v", tc.version, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRun_DowngradeWarnsAboutMissingRollback(t *testing.T) {
+	const downgradeTarget = "v2.7.0"
+	assets, _ := standardAssets(t, downgradeTarget, testGOOS)
+	rs := newReleaseServer(t, downgradeTarget, assets)
+	target := writeTargetBinary(t, "CURRENT")
+
+	stderr := &bytes.Buffer{}
+	opts := baseOptions(rs, target)
+	opts.CurrentVersion = "v2.8.0"
+	opts.TargetVersion = downgradeTarget
+	opts.Stderr = stderr
+
+	st, err := opts.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !st.Applied {
+		t.Fatal("expected update to be applied")
+	}
+
+	// Must warn about missing rollback command.
+	warn := stderr.String()
+	if !strings.Contains(warn, "predates the 'update' command") {
+		t.Fatalf("expected downgrade warning, got stderr: %q", warn)
+	}
+	if !strings.Contains(warn, "mv") {
+		t.Fatalf("expected manual recovery command in warning, got: %q", warn)
+	}
+	if !strings.Contains(warn, st.BackupPath) {
+		t.Fatalf("expected backup path in warning, got: %q", warn)
+	}
+}
+
+func TestRun_UpgradeDoesNotWarnAboutRollback(t *testing.T) {
+	// Upgrading to v2.8.0+ should NOT emit the downgrade warning.
+	assets, _ := standardAssets(t, testLatest, testGOOS)
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "OLD")
+
+	stderr := &bytes.Buffer{}
+	opts := baseOptions(rs, target)
+	opts.Stderr = stderr
+
+	st, err := opts.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !st.Applied {
+		t.Fatal("expected update to be applied")
+	}
+	if strings.Contains(stderr.String(), "predates") {
+		t.Fatalf("unexpected downgrade warning on upgrade: %q", stderr.String())
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"/usr/local/bin/pipelock", `'/usr/local/bin/pipelock'`},
+		{"/path with spaces/pipelock", `'/path with spaces/pipelock'`},
+		{"/odd/$(rm -rf ~)/pipelock", `'/odd/$(rm -rf ~)/pipelock'`},
+		{"/it's/here/pipelock", `'/it'\''s/here/pipelock'`},
+	}
+	for _, tt := range tests {
+		if got := shellQuote(tt.in); got != tt.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestStageAndVerifySignature_StageError(t *testing.T) {
 	// dir does not exist -> writeFileQuiet fails.
 	opts := &Options{CosignAvailable: func() bool { return false }, RunCommand: stubVersionRunner("")}

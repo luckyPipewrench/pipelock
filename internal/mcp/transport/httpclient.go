@@ -249,6 +249,13 @@ func (r *SingleMessageReader) ReadMessage() ([]byte, error) {
 	return data, nil
 }
 
+// Close releases the underlying body so a caller can abort a read blocked on a
+// slow or hung upstream (e.g. an MCP response timeout). Safe to call more than
+// once; a redundant close on an already-closed body is ignored.
+func (r *SingleMessageReader) Close() error {
+	return r.Body.Close()
+}
+
 // closingSSEReader wraps an SSEReader with the response body so that
 // the body is closed when the SSE stream returns EOF or any error.
 type closingSSEReader struct {
@@ -268,6 +275,13 @@ func (r *closingSSEReader) ReadMessage() ([]byte, error) {
 		return nil, err
 	}
 	return msg, nil
+}
+
+// Close releases the underlying body so a caller can abort a read blocked on a
+// slow or hung SSE upstream (e.g. an MCP response timeout). Safe to call more
+// than once; a redundant close is ignored.
+func (r *closingSSEReader) Close() error {
+	return r.body.Close()
 }
 
 // OpenGETStream opens a GET SSE connection for server-initiated messages.

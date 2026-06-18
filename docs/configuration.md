@@ -862,6 +862,7 @@ mcp_input_scanning:
   enabled: true
   action: warn
   on_parse_error: block         # block or forward
+  response_timeout_seconds: 0   # 0 = disabled (stdio MCP proxy only)
 ```
 
 | Field | Default | Description |
@@ -869,8 +870,9 @@ mcp_input_scanning:
 | `enabled` | `false` | Enable input scanning |
 | `action` | `"warn"` | warn or block |
 | `on_parse_error` | `"block"` | What to do with malformed JSON-RPC |
+| `response_timeout_seconds` | `0` | Per-read timeout (seconds) for upstream MCP server responses. `0` disables it (default). When set, a wrapped server that accepts a request but never replies no longer hangs the agent: the proxy fails closed, emitting a JSON-RPC `-32000` error for every pending request. The deadline is per complete response message (one JSON-RPC message, or one SSE data event on the bridge): it resets when each message arrives, so a steady stream of responses is never severed, but it does bound the wait for the *next* message — set it above your slowest legitimate tool's response latency. Applies to the **stdio subprocess proxy** (`-- COMMAND`, including sandboxed mode) and the **stdio-to-HTTP bridge** (`--upstream URL`). On the subprocess proxy a timeout **terminates the hung child** (a stuck subprocess cannot recover); on the HTTP bridge it **fails the affected request closed and the session keeps serving** (one slow response should not kill a shared HTTP upstream). The HTTP reverse-proxy listener (`--listen`) instead uses its own HTTP client/server timeouts. |
 
-Auto-enabled when running `pipelock mcp proxy`.
+Auto-enabled when running `pipelock mcp proxy`. `response_timeout_seconds` applies independently of `enabled`; it governs the response read path whenever the stdio-fronted proxy is running.
 
 If top-level `redaction.enabled` is also set, `tools/call` `params.arguments` are rewritten through the same matcher before input DLP runs. The behavior is identical across stdio, HTTP/SSE upstream mode, HTTP listener mode, and MCP-over-WebSocket.
 

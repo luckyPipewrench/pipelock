@@ -42,7 +42,9 @@ If cosign is absent, the updater fails closed by default. Use
 --insecure-skip-signature only for an explicit checksum-only recovery flow.
 
 The previous binary is saved to <binary>.bak so "pipelock update --rollback"
-can restore it.
+can restore it. When downgrading to a release that predates the update command
+(before v2.8.0), the updater warns that --rollback will not be available from
+the downgraded binary and prints the manual recovery command.
 
 Examples:
   pipelock update --check              # report current vs latest, change nothing

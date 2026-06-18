@@ -54,20 +54,28 @@ type MCPRedactionConfig struct {
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
 	// Scanning
-	Scanner        *scanner.Scanner
-	ScannerFn      func() *scanner.Scanner
-	Approver       *hitl.Approver
-	InputCfg       *InputScanConfig
-	InputCfgFn     func() *InputScanConfig
-	RequestBodyCfg *config.RequestBodyScanning
-	RequestBodyFn  func() *config.RequestBodyScanning
-	ToolCfg        *tools.ToolScanConfig
-	ToolCfgFn      func() *tools.ToolScanConfig
-	PolicyCfg      *policy.Config
-	PolicyCfgFn    func() *policy.Config
-	KillSwitch     *killswitch.Controller
-	ChainMatcher   *chains.Matcher
-	ChainMatcherFn func() *chains.Matcher
+	Scanner    *scanner.Scanner
+	ScannerFn  func() *scanner.Scanner
+	Approver   *hitl.Approver
+	InputCfg   *InputScanConfig
+	InputCfgFn func() *InputScanConfig
+	// TimeoutScopeSingleResponse marks a ForwardScanned call as owning exactly
+	// one request's response (the HTTP bridge per-request path). When set, an
+	// upstream response timeout does NOT drain the shared request tracker (that
+	// would falsely time out other concurrently-pending requests); the caller
+	// emits the -32000 for its own request id instead. Subprocess/sandbox
+	// proxies leave this false: their timeout is a terminal teardown that fails
+	// every pending request closed.
+	TimeoutScopeSingleResponse bool
+	RequestBodyCfg             *config.RequestBodyScanning
+	RequestBodyFn              func() *config.RequestBodyScanning
+	ToolCfg                    *tools.ToolScanConfig
+	ToolCfgFn                  func() *tools.ToolScanConfig
+	PolicyCfg                  *policy.Config
+	PolicyCfgFn                func() *policy.Config
+	KillSwitch                 *killswitch.Controller
+	ChainMatcher               *chains.Matcher
+	ChainMatcherFn             func() *chains.Matcher
 
 	// Session and adaptive enforcement
 	Store         session.Store

@@ -810,6 +810,9 @@ func (c *Config) validateMCPInputScanning() error {
 	default:
 		return fmt.Errorf("invalid mcp_input_scanning on_parse_error %q: must be block or forward", c.MCPInputScanning.OnParseError)
 	}
+	if c.MCPInputScanning.ResponseTimeoutSeconds < 0 {
+		return fmt.Errorf("invalid mcp_input_scanning response_timeout_seconds %d: must be non-negative", c.MCPInputScanning.ResponseTimeoutSeconds)
+	}
 	return nil
 }
 

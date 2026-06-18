@@ -12,6 +12,11 @@ import (
 	"strings"
 )
 
+// firstVersionWithUpdate is the earliest release that ships the "update"
+// subcommand. Any target version strictly older than this lacks the rollback
+// command, so the operator needs a manual recovery path printed.
+const firstVersionWithUpdate = "v2.8.0"
+
 // versionTag strips only a leading "v" and surrounding whitespace, PRESERVING
 // any pre-release/build suffix. Use this for asset-name resolution and the
 // extracted-binary version check, where "v2.8.0-rc1" must stay "2.8.0-rc1"
@@ -71,6 +76,13 @@ func isNewer(current, latest string) bool {
 	default:
 		return lPatch > cPatch
 	}
+}
+
+// lacksUpdateCommand reports whether the given release version predates the
+// "update" subcommand. When true, "pipelock update --rollback" will not be
+// available from the downgraded binary.
+func lacksUpdateCommand(version string) bool {
+	return isNewer(version, firstVersionWithUpdate)
 }
 
 // Check resolves the latest (or pinned) release and reports status WITHOUT
@@ -195,7 +207,27 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	}
 	st.BackupPath = backup
 	st.Applied = true
+
+	// Warn when the installed version predates the "update" command. The
+	// downgraded binary has no "pipelock update --rollback" so the operator
+	// needs the manual recovery path printed before they lose this binary.
+	if lacksUpdateCommand(rel.TagName) {
+		_, _ = fmt.Fprintf(o.Stderr,
+			"\nWARNING: %s predates the 'update' command.\n"+
+				"'pipelock update --rollback' will NOT be available from the downgraded binary.\n"+
+				"To restore manually, run:\n  mv %s %s\n",
+			rel.TagName, shellQuote(st.BackupPath), shellQuote(o.TargetPath))
+	}
+
 	return st, nil
+}
+
+// shellQuote single-quotes a path so the printed manual-recovery command is
+// safe to paste verbatim even when the path contains spaces or shell
+// metacharacters. Embedded single quotes are escaped by closing the quoted
+// string, adding an escaped quote, and reopening the quoted string.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Rollback restores the previous binary from <target>.bak.

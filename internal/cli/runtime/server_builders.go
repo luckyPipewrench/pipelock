@@ -25,9 +25,10 @@ func buildMCPInputCfg(cfg *config.Config) *mcp.InputScanConfig {
 		return nil
 	}
 	return &mcp.InputScanConfig{
-		Enabled:      cfg.MCPInputScanning.Enabled,
-		Action:       cfg.MCPInputScanning.Action,
-		OnParseError: cfg.MCPInputScanning.OnParseError,
+		Enabled:                cfg.MCPInputScanning.Enabled,
+		Action:                 cfg.MCPInputScanning.Action,
+		OnParseError:           cfg.MCPInputScanning.OnParseError,
+		ResponseTimeoutSeconds: cfg.MCPInputScanning.ResponseTimeoutSeconds,
 	}
 }
 

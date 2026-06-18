@@ -56,6 +56,11 @@ const defaultMaxSteps = 6
 // defaultTimeout bounds a single model request.
 const defaultTimeout = 30 * time.Second
 
+// defaultMaxResponseTokens caps how many tokens the model may generate per round
+// trip (the max_tokens request field). The demo's replies are short, so this
+// bounds cost and runaway output without truncating normal answers.
+const defaultMaxResponseTokens = 1024
+
 // defaultSystemPrompt frames the agent as a helpful lab assistant with two
 // tools. It stays permissive (the demo wants visitors to talk the agent into
 // trying something it shouldn't, and watch Pipelock stop it) but directed: one
@@ -92,6 +97,9 @@ type ModelConfig struct {
 	// text are retained -- never tool calls, tool arguments, tool results, or the
 	// canary -- so the cross-turn surface is exactly the visible conversation.
 	MaxHistoryTurns int
+	// MaxResponseTokens caps tokens the model may generate per round trip (the
+	// max_tokens request field), bounding cost and runaway output. Defaults to 1024.
+	MaxResponseTokens int
 	// Timeout bounds one model request. Defaults to 30s.
 	Timeout time.Duration
 }
@@ -154,6 +162,13 @@ func (c ModelConfig) timeout() time.Duration {
 		return c.Timeout
 	}
 	return defaultTimeout
+}
+
+func (c ModelConfig) maxResponseTokens() int {
+	if c.MaxResponseTokens > 0 {
+		return c.MaxResponseTokens
+	}
+	return defaultMaxResponseTokens
 }
 
 // maxHistoryMessages is the message cap for bounded conversation memory: two

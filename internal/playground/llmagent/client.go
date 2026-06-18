@@ -67,6 +67,7 @@ type completionRequest struct {
 	Messages   []chatMessage `json:"messages"`
 	Tools      []toolSpec    `json:"tools,omitempty"`
 	ToolChoice string        `json:"tool_choice,omitempty"`
+	MaxTokens  int           `json:"max_tokens,omitempty"`
 }
 
 type completionResponse struct {
@@ -83,8 +84,9 @@ type completionResponse struct {
 // message. It advertises the agent's tools so the model can call them.
 func (a *Agent) complete(ctx context.Context, messages []chatMessage) (chatMessage, error) {
 	reqBody := completionRequest{
-		Model:    a.cfg.Model,
-		Messages: messages,
+		Model:     a.cfg.Model,
+		Messages:  messages,
+		MaxTokens: a.cfg.maxResponseTokens(),
 	}
 	if len(a.tools) > 0 {
 		reqBody.Tools = a.toolSpecs()

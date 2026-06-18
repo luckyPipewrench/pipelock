@@ -338,6 +338,27 @@ func roleSeq(msgs []chatMessage) []string {
 	return out
 }
 
+func TestComplete_SetsMaxTokens(t *testing.T) {
+	model := &scriptedModel{responses: []chatMessage{textMsg("ok")}}
+	emit, _ := collectEvents()
+	a := newAgent(t, model, nil, emit) // default config
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := model.bodies[0].MaxTokens; got != defaultMaxResponseTokens {
+		t.Fatalf("default max_tokens = %d, want %d", got, defaultMaxResponseTokens)
+	}
+
+	model2 := &scriptedModel{responses: []chatMessage{textMsg("ok")}}
+	a2 := newAgentCfg(t, model2, nil, emit, ModelConfig{MaxResponseTokens: 256})
+	if _, err := a2.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run (custom): %v", err)
+	}
+	if got := model2.bodies[0].MaxTokens; got != 256 {
+		t.Fatalf("custom max_tokens = %d, want 256", got)
+	}
+}
+
 func TestRun_NoHistoryByDefault(t *testing.T) {
 	// MaxHistoryTurns unset (0): each Run is independent, no prior turn replayed.
 	model := &scriptedModel{responses: []chatMessage{textMsg("one"), textMsg("two")}}

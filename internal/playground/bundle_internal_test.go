@@ -401,6 +401,14 @@ func TestLoadOrchestratorSigningKey_Errors(t *testing.T) {
 		t.Fatal("wrong key size must error")
 	}
 
+	degenerate := filepath.Join(dir, "degenerate")
+	if err := os.WriteFile(degenerate, []byte(hex.EncodeToString(make([]byte, ed25519.PrivateKeySize))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrchestratorSigningKey(degenerate); err == nil {
+		t.Fatal("degenerate orchestrator key must error")
+	}
+
 	loosePerms := filepath.Join(dir, "loose")
 	if err := os.WriteFile(loosePerms, []byte(hex.EncodeToString(make([]byte, ed25519.PrivateKeySize))), 0o600); err != nil {
 		t.Fatal(err)

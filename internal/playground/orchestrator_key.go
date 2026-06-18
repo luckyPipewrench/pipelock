@@ -63,8 +63,8 @@ func DefaultOrchestratorKeyPath() string {
 }
 
 // LoadOrchestratorSigningKey reads a hex-encoded ed25519 private key from path.
-// It fails closed on a missing file, unsafe Unix permissions, malformed hex, or
-// wrong key length.
+// It fails closed on a missing file, unsafe Unix permissions, malformed hex,
+// wrong key length, or a seed/public-inconsistent private key.
 func LoadOrchestratorSigningKey(path string) (ed25519.PrivateKey, error) {
 	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
@@ -88,7 +88,11 @@ func LoadOrchestratorSigningKey(path string) (ed25519.PrivateKey, error) {
 	if len(decoded) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("orchestrator key wrong size: got %d bytes, want %d", len(decoded), ed25519.PrivateKeySize)
 	}
-	return ed25519.PrivateKey(decoded), nil
+	priv := ed25519.PrivateKey(decoded)
+	if err := signing.ValidatePrivateKeyConsistency(priv); err != nil {
+		return nil, fmt.Errorf("orchestrator key: %w", err)
+	}
+	return priv, nil
 }
 
 // OrchestratorKeyMatchesPublished reports whether priv derives the compiled

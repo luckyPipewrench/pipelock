@@ -141,6 +141,10 @@ func loadSigningKeyFile(path string, requiredPurpose signing.KeyPurpose) (loaded
 		return loadedSigningKey{}, fmt.Errorf("signing key %q has a malformed private key", clean)
 	}
 	priv := ed25519.PrivateKey(privBytes)
+	if err := signing.ValidatePrivateKeyConsistency(priv); err != nil {
+		zeroBytes(privBytes)
+		return loadedSigningKey{}, fmt.Errorf("signing key %q: %w", clean, err)
+	}
 	derived, ok := priv.Public().(ed25519.PublicKey)
 	if !ok || !bytes.Equal(derived, pubBytes) {
 		zeroBytes(privBytes)

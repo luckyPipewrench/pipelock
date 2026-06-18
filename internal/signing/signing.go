@@ -182,6 +182,26 @@ func ParsePublicKey(encoded string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(raw), nil
 }
 
+// ValidatePrivateKeyConsistency verifies that an Ed25519 private key's seed
+// actually derives its stored public half. Go represents an ed25519.PrivateKey
+// as seed(32)||public(32), and priv.Public() returns the STORED public half
+// verbatim, so a length-valid but degenerate or tampered key (e.g. all-zero
+// bytes, or one whose public half was swapped) otherwise loads as "valid" and
+// would sign receipts under a key no verifier can validate. Re-deriving the
+// public key from the seed and comparing closes that gap: a key produced by
+// ed25519.GenerateKey or ed25519.NewKeyFromSeed always passes; an all-zero or
+// seed/public-inconsistent key is rejected. Fails closed.
+func ValidatePrivateKeyConsistency(priv ed25519.PrivateKey) error {
+	if len(priv) != ed25519.PrivateKeySize {
+		return fmt.Errorf("invalid private key length: got %d, want %d", len(priv), ed25519.PrivateKeySize)
+	}
+	derived := ed25519.NewKeyFromSeed(priv.Seed())
+	if !bytes.Equal(derived[ed25519.SeedSize:], priv[ed25519.SeedSize:]) {
+		return errors.New("private key seed does not derive its stored public half (corrupt or degenerate key)")
+	}
+	return nil
+}
+
 // EncodePrivateKey serializes a private key with a versioned header.
 func EncodePrivateKey(key ed25519.PrivateKey) string {
 	return privateKeyHeader + "\n" + base64.StdEncoding.EncodeToString(key) + "\n"
@@ -212,7 +232,11 @@ func DecodePrivateKey(encoded string) (ed25519.PrivateKey, error) {
 	if len(raw) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("invalid private key length: got %d, want %d", len(raw), ed25519.PrivateKeySize)
 	}
-	return ed25519.PrivateKey(raw), nil
+	priv := ed25519.PrivateKey(raw)
+	if err := ValidatePrivateKeyConsistency(priv); err != nil {
+		return nil, err
+	}
+	return priv, nil
 }
 
 // decodePrivateKeyJSON extracts an ed25519 private key from the JSON keyfile
@@ -249,6 +273,13 @@ func decodePrivateKeyJSON(data []byte) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("JSON key file private key has wrong size: got %d, want %d", len(privBytes), ed25519.PrivateKeySize)
 	}
 	priv := ed25519.PrivateKey(privBytes)
+	// Reject a degenerate or seed/public-inconsistent key (e.g. all-zero bytes)
+	// before any optional declared-public cross-check: the declared check only
+	// proves the file's two halves agree with each other, not that the seed
+	// derives the stored public half.
+	if err := ValidatePrivateKeyConsistency(priv); err != nil {
+		return nil, err
+	}
 	// Cross-check the public key if provided to detect tampered keyfiles.
 	// A present-but-malformed public field is itself a tamper signal, so we
 	// fail closed on it rather than silently skipping the check.

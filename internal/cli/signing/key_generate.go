@@ -252,6 +252,9 @@ func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, 
 		return nil, nil, nil, fmt.Errorf("private key has wrong size: got %d, want %d", len(privBytes), ed25519.PrivateKeySize)
 	}
 	priv := ed25519.PrivateKey(privBytes)
+	if err := domsigning.ValidatePrivateKeyConsistency(priv); err != nil {
+		return nil, nil, nil, err
+	}
 	derivedPub, ok := priv.Public().(ed25519.PublicKey)
 	if !ok || !bytes.Equal(derivedPub, pubBytes) {
 		return nil, nil, nil, fmt.Errorf("private key does not match public key")

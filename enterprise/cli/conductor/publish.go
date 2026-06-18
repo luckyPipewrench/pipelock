@@ -525,6 +525,9 @@ func loadPolicySigningKey(path string) (string, ed25519.PrivateKey, error) {
 		return "", nil, fmt.Errorf("--signing-key %q: malformed private key", cleanPath)
 	}
 	priv := ed25519.PrivateKey(privBytes)
+	if err := signing.ValidatePrivateKeyConsistency(priv); err != nil {
+		return "", nil, fmt.Errorf("--signing-key %q: %w", cleanPath, err)
+	}
 	derived, ok := priv.Public().(ed25519.PublicKey)
 	if !ok || !bytes.Equal(derived, pubBytes) {
 		return "", nil, fmt.Errorf("--signing-key %q: private key does not match its public key", cleanPath)

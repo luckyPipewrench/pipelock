@@ -144,14 +144,16 @@ live one.
 The batch engine above drives a deterministic agent. The **interactive playground**
 (`pipelock-playground-live`) can instead drive a real, OpenAI-compatible model, so a visitor
 types to a live model-backed agent and watches Pipelock mediate every request it makes. Point
-the live server at a model to enable it:
+the live server at a model to enable it. `--llm-agent-bin` selects the model-agent
+subprocess, `--model-base-url` accepts any OpenAI-compatible `/chat/completions`
+endpoint, and `--model-secret-file` keeps the API key out of argv:
 
 ```bash
 pipelock-playground-live \
-  --llm-agent-bin     ./pipelock-playground-llm-agent \  # the model-agent subprocess
-  --model-base-url    https://api.provider.example/v1 \  # any OpenAI-compatible /chat/completions
+  --llm-agent-bin     ./pipelock-playground-llm-agent \
+  --model-base-url    https://api.provider.example/v1 \
   --model             your-model-name \
-  --model-secret-file ./model.key                        # API key file, kept out of argv
+  --model-secret-file ./model.key
 ```
 
 Without the model flags the interactive playground falls back to the deterministic agent. The

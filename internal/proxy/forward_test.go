@@ -1748,68 +1748,49 @@ func TestConnectDialFailure(t *testing.T) {
 	}
 }
 
-func TestCopyWithIdleTimeoutRespectsDeadline(t *testing.T) {
-	// Verify that copyWithIdleTimeout caps per-read deadlines at the absolute
-	// deadline. A 10s idle timeout should be capped by a near-immediate deadline.
+func TestBidirectionalCopyRespectsAbsoluteDeadline(t *testing.T) {
+	// The absolute deadline caps total tunnel lifetime even when the idle
+	// timeout is far longer. Neither side sends, so only the deadline (via the
+	// watchdog) can end the relay; it must not wait out the 10s idle timeout.
 	server, client := net.Pipe()
 	defer func() { _ = server.Close() }()
 	defer func() { _ = client.Close() }()
 
-	// Set deadline to 50ms from now, idle timeout much longer (10s)
-	deadline := time.Now().Add(50 * time.Millisecond)
-	var dst strings.Builder
-	dstConn := &writerConn{Writer: &dst, Conn: client}
-
+	deadline := time.Now().Add(100 * time.Millisecond)
 	start := time.Now()
-	// Server never sends data, so copyWithIdleTimeout blocks on Read.
-	// With deadline capping, it should return after ~50ms (the deadline),
-	// not after 10s (the idle timeout).
-	_ = copyWithIdleTimeout(dstConn, server, 10*time.Second, deadline, nil)
+	_ = bidirectionalCopy(client, server, 10*time.Second, deadline, nil)
 	elapsed := time.Since(start)
 
 	if elapsed > 2*time.Second {
-		t.Errorf("copyWithIdleTimeout took %v; expected it to respect the ~50ms deadline", elapsed)
+		t.Errorf("bidirectionalCopy took %v; expected it to honor the ~100ms absolute deadline, not the 10s idle timeout", elapsed)
 	}
 }
 
-func TestCopyWithIdleTimeout_KillSwitchTerminatesTunnel(t *testing.T) {
+func TestBidirectionalCopy_KillSwitchTerminatesTunnel(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	ks := killswitch.New(cfg)
 
-	// Create a TCP pipe. Server side will block on read forever.
 	client, server := net.Pipe()
 	defer func() { _ = client.Close() }()
 	defer func() { _ = server.Close() }()
 
-	// Activate kill switch before starting copy.
+	// Activate the kill switch before starting the relay.
 	ks.SetAPI(true)
 
-	deadline := time.Now().Add(5 * time.Second)
 	start := time.Now()
-	total := copyWithIdleTimeout(server, client, time.Second, deadline, ks)
+	total := bidirectionalCopy(client, server, time.Second, time.Now().Add(5*time.Second), ks)
 	elapsed := time.Since(start)
 
-	// With kill switch active, copyWithIdleTimeout should return immediately
-	// (first loop iteration checks ks.IsActive() before reading).
+	// With the kill switch active, both copy directions return on their first
+	// iteration (ks checked before any read), so the relay ends immediately.
 	if elapsed > time.Second {
-		t.Errorf("copyWithIdleTimeout with kill switch took %v; expected immediate return", elapsed)
+		t.Errorf("bidirectionalCopy with kill switch took %v; expected immediate return", elapsed)
 	}
 	if total != 0 {
 		t.Errorf("expected 0 bytes transferred, got %d", total)
 	}
-}
-
-// writerConn wraps an io.Writer into a net.Conn for testing copyWithIdleTimeout's
-// write path. Only Write is used; all net.Conn methods delegate to the embedded Conn.
-type writerConn struct {
-	io.Writer
-	net.Conn
-}
-
-func (w *writerConn) Write(p []byte) (int, error) {
-	return w.Writer.Write(p)
 }
 
 func TestConnectDefaultPort(t *testing.T) {

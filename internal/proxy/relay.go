@@ -4,9 +4,13 @@
 package proxy
 
 import (
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -49,78 +53,169 @@ func removeHopByHopHeaders(h http.Header) {
 	}
 }
 
-// bidirectionalCopy relays data between two connections with idle timeout.
-// When deadline is non-zero, per-read deadlines are capped at that absolute
-// time; a zero deadline means the tunnel is governed by idle timeout only.
-// When ks is non-nil, the kill switch is checked after each read so activation
-// mid-stream terminates already-open tunnels immediately.
-// Returns the total bytes transferred in both directions.
-func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadline time.Time, ks *killswitch.Controller) int64 {
-	if !deadline.IsZero() {
-		_ = client.SetDeadline(deadline)
-		_ = target.SetDeadline(deadline)
-	}
-
-	var clientToTarget, targetToClient int64
-	done := make(chan struct{})
-
-	go func() {
-		clientToTarget = copyWithIdleTimeout(target, client, idleTimeout, deadline, ks)
-		// Half-close: signal target that no more data is coming
-		if tc, ok := target.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
-		}
-		close(done)
-	}()
-
-	targetToClient = copyWithIdleTimeout(client, target, idleTimeout, deadline, ks)
-	// Half-close: signal client that no more data is coming
-	if tc, ok := client.(*net.TCPConn); ok {
-		_ = tc.CloseWrite()
-	}
-
-	<-done
-	return clientToTarget + targetToClient
-}
-
 // tunnelBufSize is the buffer size for tunnel relay reads.
 const tunnelBufSize = 32 * 1024
 
-// copyWithIdleTimeout copies from src to dst, resetting the read deadline on
-// src after each successful read. When deadline is non-zero, the per-read
-// deadline is capped at that absolute time; otherwise active tunnels are
-// governed by idle timeout only.
-// When ks is non-nil, the kill switch is checked after each successful read
-// so activation mid-tunnel terminates the connection immediately.
-// Returns total bytes copied.
-func copyWithIdleTimeout(dst, src net.Conn, idleTimeout time.Duration, deadline time.Time, ks *killswitch.Controller) int64 {
+// watchdogPollInterval is how often the tunnel watchdog re-checks the shared
+// idle clock, the absolute deadline, and the kill switch. It is capped at the
+// idle timeout so very short idle timeouts still reap promptly.
+const watchdogPollInterval = 250 * time.Millisecond
+
+// bidirectionalCopy relays data between two connections until the tunnel goes
+// idle, an absolute deadline passes, the kill switch activates, or a side
+// closes.
+//
+// Idle is measured across the WHOLE tunnel via a single shared activity clock:
+// bytes flowing in EITHER direction keep the tunnel alive. This is the
+// liveness contract long-lived streaming responses depend on (an LLM token
+// stream keeps the upstream->client direction busy while client->upstream is
+// legitimately silent for the whole response). Measuring idle per-direction
+// would reap the silent direction at idle_timeout and half-close the upstream,
+// killing the active stream.
+//
+// A single watchdog owns liveness: it force-closes both connections when the
+// shared clock expires (or the deadline/kill switch fires), which wakes any
+// blocked read. A genuine EOF on one direction still half-closes the peer so
+// bidirectional teardown is preserved; only a spurious idle reap is avoided.
+//
+// When deadline is non-zero it caps total tunnel lifetime. When ks is non-nil
+// the kill switch terminates the tunnel mid-stream. Returns the total bytes
+// transferred in both directions.
+func bidirectionalCopy(client, target net.Conn, idleTimeout time.Duration, deadline time.Time, ks *killswitch.Controller) int64 {
+	now := time.Now()
+	tr := &tunnelRelay{
+		client:      client,
+		target:      target,
+		idleTimeout: idleTimeout,
+		deadline:    deadline,
+		ks:          ks,
+		clockStart:  now,
+	}
+	return tr.run()
+}
+
+// tunnelRelay carries the shared state for one bidirectional relay: the two
+// connections, the liveness bounds, and the shared activity clock that both
+// copy directions update and the watchdog reads.
+type tunnelRelay struct {
+	client, target net.Conn
+	idleTimeout    time.Duration
+	deadline       time.Time
+	ks             *killswitch.Controller
+
+	clockStart   time.Time
+	lastActivity atomic.Int64 // monotonic nanoseconds since clockStart of the last byte seen in either direction
+	closeOnce    sync.Once
+}
+
+// touch records activity on the shared clock. Called on every successful read
+// in either direction so the watchdog treats the tunnel as alive while bytes
+// move on either side.
+func (tr *tunnelRelay) touch() {
+	tr.lastActivity.Store(time.Since(tr.clockStart).Nanoseconds())
+}
+
+// closeBoth tears the tunnel down exactly once, closing both connections. This
+// is what wakes a read blocked on the silent direction.
+func (tr *tunnelRelay) closeBoth() {
+	tr.closeOnce.Do(func() {
+		_ = tr.client.Close()
+		_ = tr.target.Close()
+	})
+}
+
+func (tr *tunnelRelay) run() int64 {
+	done := make(chan struct{})
+	go tr.watchdog(done)
+
+	var clientToTarget, targetToClient int64
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		clientToTarget = tr.copyDir(tr.target, tr.client)
+	}()
+	targetToClient = tr.copyDir(tr.client, tr.target)
+
+	wg.Wait()
+	close(done)    // stop the watchdog
+	tr.closeBoth() // ensure both ends are closed (idempotent)
+	return clientToTarget + targetToClient
+}
+
+// watchdog owns tunnel liveness. It force-closes both connections when the
+// shared idle clock expires, the absolute deadline passes, or the kill switch
+// activates, and exits when both copy directions have finished.
+func (tr *tunnelRelay) watchdog(done <-chan struct{}) {
+	interval := watchdogPollInterval
+	if tr.idleTimeout > 0 && tr.idleTimeout < interval {
+		interval = tr.idleTimeout
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if tr.ks != nil && tr.ks.IsActive() {
+				tr.closeBoth()
+				return
+			}
+			if !tr.deadline.IsZero() && time.Now().After(tr.deadline) {
+				tr.closeBoth()
+				return
+			}
+			if tr.idleTimeout > 0 {
+				idleFor := time.Since(tr.clockStart) - time.Duration(tr.lastActivity.Load())
+				if idleFor >= tr.idleTimeout {
+					tr.closeBoth()
+					return
+				}
+			}
+		}
+	}
+}
+
+// copyDir copies src->dst until EOF, error, or the watchdog closes the
+// connections. It updates the shared activity clock on every read and checks
+// the kill switch before and after each read so a chunk read while the switch
+// is flipping is not forwarded. A genuine EOF half-closes the peer (preserving
+// bidirectional teardown); any other read/write error tears the tunnel down.
+func (tr *tunnelRelay) copyDir(dst, src net.Conn) int64 {
 	buf := make([]byte, tunnelBufSize)
 	var total int64
 	for {
-		// Kill switch: terminate tunnel immediately when activated mid-stream.
-		if ks != nil && ks.IsActive() {
+		if tr.ks != nil && tr.ks.IsActive() {
+			tr.closeBoth()
 			return total
 		}
-
-		rd := time.Now().Add(idleTimeout)
-		if !deadline.IsZero() && rd.After(deadline) {
-			rd = deadline
-		}
-		_ = src.SetReadDeadline(rd)
 		n, err := src.Read(buf)
 		if n > 0 {
-			// Re-check kill switch after Read returns. Without this, one
-			// chunk read while the switch was flipping gets forwarded.
-			if ks != nil && ks.IsActive() {
+			tr.touch()
+			if tr.ks != nil && tr.ks.IsActive() {
+				tr.closeBoth()
 				return total
 			}
 			written, wErr := dst.Write(buf[:n])
 			total += int64(written)
 			if wErr != nil {
+				tr.closeBoth()
 				return total
 			}
 		}
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				// Genuine end of this direction: signal the peer that no more
+				// data is coming, but leave the other direction free to drain.
+				if tc, ok := dst.(*net.TCPConn); ok {
+					_ = tc.CloseWrite()
+				}
+			} else {
+				// Read error (watchdog/airlock close, reset, timeout): tear down.
+				tr.closeBoth()
+			}
 			return total
 		}
 	}

@@ -34,8 +34,10 @@ func wsPushServer(t *testing.T, gap time.Duration, nChunks int) (string, func())
 				return
 			}
 			defer func() { _ = conn.Close() }()
+			ticker := time.NewTicker(gap)
+			defer ticker.Stop()
 			for i := 0; i < nChunks; i++ {
-				time.Sleep(gap)
+				<-ticker.C
 				if wErr := wsutil.WriteServerMessage(conn, ws.OpText, []byte("token")); wErr != nil {
 					return
 				}

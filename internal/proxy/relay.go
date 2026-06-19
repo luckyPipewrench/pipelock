@@ -200,6 +200,13 @@ func (tr *tunnelRelay) copyDir(dst, src net.Conn) int64 {
 			}
 			written, wErr := dst.Write(buf[:n])
 			total += int64(written)
+			// A conforming io.Writer never returns written < n without an
+			// error, but treat a short write as a teardown anyway (matching
+			// io.Copy's ErrShortWrite) so a misbehaving conn cannot silently
+			// drop the unwritten bytes when the next read overwrites buf.
+			if wErr == nil && written < n {
+				wErr = io.ErrShortWrite
+			}
 			if wErr != nil {
 				tr.closeBoth()
 				return total

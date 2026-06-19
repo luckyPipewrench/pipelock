@@ -198,8 +198,10 @@ func streamThenCloseBackend(t *testing.T, gap time.Duration, nChunks int) net.Li
 			return
 		}
 		defer func() { _ = conn.Close() }()
+		ticker := time.NewTicker(gap)
+		defer ticker.Stop()
 		for i := 0; i < nChunks; i++ {
-			time.Sleep(gap)
+			<-ticker.C
 			if _, err := conn.Write([]byte(streamChunk)); err != nil {
 				return
 			}
@@ -334,6 +336,42 @@ func TestCopyDirWriteErrorTearsDownTunnel(t *testing.T) {
 	<-sentOnce
 }
 
+// TestCopyDirShortWriteTearsDownTunnel covers the short-write guard: a writer
+// that returns written < n without an error must still tear the tunnel down
+// rather than silently drop the unwritten bytes on the next read.
+func TestCopyDirShortWriteTearsDownTunnel(t *testing.T) {
+	var clientReadOnce sync.Once
+	sent := make(chan struct{})
+
+	target := newScriptConn(nil, func(p []byte) (int, error) {
+		return len(p) - 1, nil // short write, no error (contract-violating)
+	})
+	client := newScriptConn(func(b []byte) (int, error) {
+		first := false
+		clientReadOnce.Do(func() {
+			b[0], b[1] = 'x', 'y'
+			first = true
+			close(sent)
+		})
+		if first {
+			return 2, nil
+		}
+		return 0, errors.New("blocked read")
+	}, nil)
+	target.readFn = func(_ []byte) (int, error) { return target.blockUntilClosed() }
+	client.writeFn = func(_ []byte) (int, error) { return client.blockUntilClosed() }
+
+	doneCh := make(chan struct{})
+	go func() { _ = bidirectionalCopy(client, target, 10*time.Second, time.Time{}, nil); close(doneCh) }()
+
+	select {
+	case <-doneCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("bidirectionalCopy did not return after a short write")
+	}
+	<-sent
+}
+
 // TestCopyDirPostReadKillSwitch covers the post-read kill-switch check: the
 // switch flips active during a read, so the freshly read chunk must NOT be
 // forwarded.
@@ -386,23 +424,34 @@ func TestWatchdogKillSwitchOnIdleTunnel(t *testing.T) {
 	cfg.Internal = nil
 	ks := killswitch.New(cfg)
 
+	// Signal when each direction has entered Read so the kill switch is flipped
+	// only after both copy loops are parked (so the watchdog, not a copyDir
+	// pre-read check, is what terminates the tunnel). Deterministic, no sleep.
+	clientReading := make(chan struct{})
+	targetReading := make(chan struct{})
+	var cOnce, tOnce sync.Once
 	client := newScriptConn(nil, nil)
 	target := newScriptConn(nil, nil)
-	client.readFn = func(_ []byte) (int, error) { return client.blockUntilClosed() }
+	client.readFn = func(_ []byte) (int, error) {
+		cOnce.Do(func() { close(clientReading) })
+		return client.blockUntilClosed()
+	}
 	client.writeFn = func(_ []byte) (int, error) { return client.blockUntilClosed() }
-	target.readFn = func(_ []byte) (int, error) { return target.blockUntilClosed() }
+	target.readFn = func(_ []byte) (int, error) {
+		tOnce.Do(func() { close(targetReading) })
+		return target.blockUntilClosed()
+	}
 	target.writeFn = func(_ []byte) (int, error) { return target.blockUntilClosed() }
-
-	// Activate the kill switch after the relay is parked on idle reads.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		ks.SetAPI(true)
-	}()
 
 	doneCh := make(chan struct{})
 	start := time.Now()
 	// Long idle timeout: only the watchdog kill-switch path can end this.
 	go func() { _ = bidirectionalCopy(client, target, 1*time.Hour, time.Time{}, ks); close(doneCh) }()
+
+	// Once both directions are parked in Read, activate the kill switch.
+	<-clientReading
+	<-targetReading
+	ks.SetAPI(true)
 
 	select {
 	case <-doneCh:

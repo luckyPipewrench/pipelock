@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -76,6 +77,36 @@ type wsRelay struct {
 	redactionLog     *redact.Report
 	rec              session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
 	terminalOnce     sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
+
+	// lastActivity is the shared idle clock, updated by BOTH relay directions
+	// on every frame read as monotonic nanoseconds since clockStart. Idle is
+	// measured across the whole connection, not per-direction: a server
+	// pushing frames while the client is silent (or vice versa) keeps the
+	// connection alive. Measuring idle per-direction would reap the silent side
+	// at idle_timeout and tear down an actively streaming socket.
+	clockStart   time.Time
+	lastActivity atomic.Int64
+}
+
+// touch records frame activity on the shared idle clock. Called by both relay
+// directions so either side's traffic (including ping/pong keepalives) keeps
+// the connection alive.
+func (r *wsRelay) touch() {
+	r.lastActivity.Store(time.Since(r.clockStart).Nanoseconds())
+}
+
+// idleDeadline returns the next read deadline based on the shared activity
+// clock. A read that wakes at this deadline re-checks idleExpired before
+// tearing down, so activity on the OTHER direction (which advanced
+// lastActivity) re-arms instead of reaping.
+func (r *wsRelay) idleDeadline(idleTimeout time.Duration) time.Time {
+	return r.clockStart.Add(time.Duration(r.lastActivity.Load()) + idleTimeout)
+}
+
+// idleExpired reports whether the whole connection has been idle (no frame in
+// either direction) for at least idleTimeout.
+func (r *wsRelay) idleExpired(idleTimeout time.Duration) bool {
+	return time.Since(r.clockStart)-time.Duration(r.lastActivity.Load()) >= idleTimeout
 }
 
 // escalationLevel returns the live escalation level from the session recorder.
@@ -946,6 +977,8 @@ func (p *Proxy) wsDialUpstream(ctx context.Context, targetURL string, fwdHeaders
 // run starts bidirectional frame relay. Returns stats when both directions complete.
 func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	idleTimeout := time.Duration(r.cfg.WebSocketProxy.IdleTimeoutSeconds) * time.Second
+	r.clockStart = time.Now()
+	r.lastActivity.Store(0)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1680,15 +1713,24 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			return
 		}
 
-		_ = r.clientConn.SetReadDeadline(time.Now().Add(idleTimeout))
+		_ = r.clientConn.SetReadDeadline(r.idleDeadline(idleTimeout))
 
 		hdr, err := ws.ReadHeader(r.clientConn)
 		if err != nil {
+			// A read-deadline wake is only a real idle timeout when the WHOLE
+			// connection has been idle. If the upstream->client direction was
+			// active (it advanced the shared clock), re-arm instead of tearing
+			// down an actively streaming socket.
+			var nerr net.Error
+			if errors.As(err, &nerr) && nerr.Timeout() && !r.idleExpired(idleTimeout) {
+				continue
+			}
 			if !plwsutil.IsExpectedCloseErr(err) {
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "client disconnected")
 			}
 			return
 		}
+		r.touch()
 
 		// Guard against OOM: reject frames exceeding limits before allocating.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
@@ -2038,15 +2080,24 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			return
 		}
 
-		_ = r.upstreamConn.SetReadDeadline(time.Now().Add(idleTimeout))
+		_ = r.upstreamConn.SetReadDeadline(r.idleDeadline(idleTimeout))
 
 		hdr, err := ws.ReadHeader(r.upstreamConn)
 		if err != nil {
+			// A read-deadline wake is only a real idle timeout when the WHOLE
+			// connection has been idle. If the client->upstream direction was
+			// active (it advanced the shared clock), re-arm instead of tearing
+			// down an actively streaming socket.
+			var nerr net.Error
+			if errors.As(err, &nerr) && nerr.Timeout() && !r.idleExpired(idleTimeout) {
+				continue
+			}
 			if !plwsutil.IsExpectedCloseErr(err) {
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "upstream disconnected")
 			}
 			return
 		}
+		r.touch()
 
 		// Guard against OOM: reject frames exceeding limits before allocating.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {

@@ -314,20 +314,30 @@ func actionDisablePipelockService() step {
 	}
 }
 
-// actionRemoveNFTRules deletes the table, removes the rules file, and
-// restores/removes the managed persistence include. We do NOT disable
-// nftables.service: the operator may have had it enabled before our install.
+// actionRemoveNFTRules deletes the table, removes the rules file, and removes
+// the Pipelock-owned boot-time unit. It never disables a distro nftables.service:
+// the operator may have had that enabled before our install.
 func actionRemoveNFTRules() step {
 	return step{
 		name: "remove-nft-rules",
-		desc: "drop pipelock_containment table and remove nftables persistence include",
+		desc: "drop pipelock_containment table and remove Pipelock nft persistence unit",
 		undo: func(ctx context.Context, env *installEnv) error {
-			_, _, _ = env.runCmd(ctx, "nft", "delete", "table", "inet", defaultNFTTable)
+			unit := filepath.Base(env.nftPersistUnitPath)
+			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
+			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
 			if err := env.removeFile(env.nftRulesPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", env.nftRulesPath, err)
 			}
 			_ = env.removeFile(env.nftRulesPath + ".bak")
-			return restoreOrRemoveNFTMainInclude(env)
+			if err := env.removeFile(env.nftPersistUnitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove %s: %w", env.nftPersistUnitPath, err)
+			}
+			_ = env.removeFile(env.nftPersistUnitPath + ".bak")
+			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			if env.nftMainPath != "" {
+				return restoreOrRemoveNFTMainInclude(env)
+			}
+			return nil
 		},
 	}
 }

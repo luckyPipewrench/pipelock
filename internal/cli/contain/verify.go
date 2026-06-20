@@ -48,7 +48,8 @@ const (
 	// max time so a slow handshake still returns within probe budget.
 	curlConnectTimeout = "3"
 	curlMaxTime        = "5"
-	curlPath           = "/usr/bin/curl"
+	defaultCurlPath    = "/usr/bin/curl"
+	curlPath           = defaultCurlPath
 	canaryURL          = "https://example.com/"
 
 	// Probe status values. Strings (not an enum type) so JSON
@@ -96,23 +97,26 @@ type lookupUserFunc func(name string) (*user.User, error)
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
 type probeEnv struct {
-	port           int
-	operatorUser   string
-	proxyUserName  string
-	agentUserName  string
-	wrapperDir     string
-	toolWrappers   []string
-	caBundlePath   string
-	launchPath     string
-	nftTable       string
-	nftChain       string
-	nftRulesPath   string
-	nftMainPath    string
-	serviceName    string
-	pinPath        string
-	wrapperInvPath string
-	toolsListPath  string
-	workspacePaths []string
+	port               int
+	operatorUser       string
+	proxyUserName      string
+	agentUserName      string
+	wrapperDir         string
+	toolWrappers       []string
+	caBundlePath       string
+	launchPath         string
+	nftTable           string
+	nftChain           string
+	nftRulesPath       string
+	nftMainPath        string
+	nftPersistUnitPath string
+	nftPath            string
+	serviceName        string
+	curlPath           string
+	pinPath            string
+	wrapperInvPath     string
+	toolsListPath      string
+	workspacePaths     []string
 
 	runCmd     runCommand
 	dialCtx    dialFunc
@@ -128,30 +132,33 @@ type probeEnv struct {
 // present; otherwise probe 9 runs curl as the current process user
 // directly. See probe 9 implementation for the runtime branch.
 func defaultProbeEnv() *probeEnv {
+	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &probeEnv{
-		port:           defaultProxyPort,
-		operatorUser:   os.Getenv("SUDO_USER"),
-		proxyUserName:  defaultProxyUser,
-		agentUserName:  defaultAgentUser,
-		wrapperDir:     defaultWrapperDir,
-		toolWrappers:   append([]string(nil), defaultToolWrappers...),
-		caBundlePath:   defaultCABundlePath,
-		launchPath:     defaultLaunchScript,
-		nftTable:       defaultNFTTable,
-		nftChain:       defaultNFTChain,
-		nftRulesPath:   defaultNFTRulesPath,
-		nftMainPath:    defaultNFTMainConfigPath,
-		serviceName:    defaultServiceName,
-		pinPath:        defaultIntegrityPin,
-		wrapperInvPath: defaultWrapperInvPath,
-		toolsListPath:  defaultToolsListPath,
-		runCmd:         realRunCommand,
-		dialCtx:        realDial,
-		lookupUser:     user.Lookup,
-		stat:           os.Stat,
-		readFile:       os.ReadFile,
-		selfPath:       os.Executable,
-		hashFile:       sha256HexOfFile,
+		port:               defaultProxyPort,
+		operatorUser:       os.Getenv("SUDO_USER"),
+		proxyUserName:      defaultProxyUser,
+		agentUserName:      defaultAgentUser,
+		wrapperDir:         defaultWrapperDir,
+		toolWrappers:       append([]string(nil), defaultToolWrappers...),
+		caBundlePath:       defaultCABundlePath,
+		launchPath:         defaultLaunchScript,
+		nftTable:           defaultNFTTable,
+		nftChain:           defaultNFTChain,
+		nftRulesPath:       defaultNFTRulesPath,
+		nftPersistUnitPath: defaultNFTPersistUnitPath,
+		nftPath:            platform.nftPath,
+		serviceName:        defaultServiceName,
+		curlPath:           platform.curlPath,
+		pinPath:            defaultIntegrityPin,
+		wrapperInvPath:     defaultWrapperInvPath,
+		toolsListPath:      defaultToolsListPath,
+		runCmd:             realRunCommand,
+		dialCtx:            realDial,
+		lookupUser:         user.Lookup,
+		stat:               os.Stat,
+		readFile:           os.ReadFile,
+		selfPath:           os.Executable,
+		hashFile:           sha256HexOfFile,
 	}
 }
 
@@ -718,7 +725,7 @@ func parseSystemdShow(out string) map[string]string {
 // ---------------------------------------------------------------------------
 
 func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
-	out, code, err := env.runCmd(ctx, "nft", "list", "table", "inet", env.nftTable)
+	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "list", "table", "inet", env.nftTable)
 	if err != nil {
 		return statusSkip, fmt.Sprintf("nft unavailable: %v", err)
 	}
@@ -747,25 +754,42 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if chainHasBroadLoopbackAccept(out, env.nftChain) {
 		return statusFail, "chain contains broad loopback accept before agent drop"
 	}
-	if env.nftMainPath != "" && env.nftRulesPath != "" {
+	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
 		if err := verifyNFTPersistence(env); err != nil {
 			return statusFail, err.Error()
 		}
 	}
-	return statusPass, fmt.Sprintf("table inet %s has chain %s with skuid drop rule, proxy-only loopback allow, and persistence include",
+	return statusPass, fmt.Sprintf("table inet %s has chain %s with skuid drop rule, proxy-only loopback allow, and persistence unit",
 		env.nftTable, env.nftChain)
 }
 
 func verifyNFTPersistence(env *probeEnv) error {
-	data, err := env.readFile(env.nftMainPath)
+	data, err := env.readFile(env.nftPersistUnitPath)
 	if err != nil {
-		return fmt.Errorf("read nftables persistence config %s: %w", env.nftMainPath, err)
+		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
 	}
-	includeLine := nftRulesIncludeLine(env.nftRulesPath)
-	if !nftMainHasInclude(string(data), includeLine) {
-		return fmt.Errorf("%s missing persistence include %q", env.nftMainPath, includeLine)
+	body := string(data)
+	if !execStartLineContains(body, env.nftRulesPath) {
+		return fmt.Errorf("%s missing ExecStart for %s", env.nftPersistUnitPath, env.nftRulesPath)
 	}
 	return nil
+}
+
+func execStartLineContains(body, needle string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ExecStart=") && strings.Contains(line, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func probeNFTExecutable(env *probeEnv) string {
+	if env != nil && env.nftPath != "" {
+		return env.nftPath
+	}
+	return "nft"
 }
 
 func chainHasSkuidDrop(out, chainName string) bool {
@@ -1058,12 +1082,12 @@ func extractNoProxy(data []byte) string {
 // Probe 8: cc_agent_egress_denied
 // ---------------------------------------------------------------------------
 
-// curlNoProxyArgs is the argv tail shared by probes 8 and 9: try to
-// reach the canary URL, never proxy, return only the HTTP status code
-// or zero on failure.
-func curlNoProxyArgs() []string {
+func curlNoProxyArgsFor(curl string) []string {
+	if curl == "" {
+		curl = defaultCurlPath
+	}
 	return []string{
-		curlPath,
+		curl,
 		"--connect-timeout", curlConnectTimeout,
 		"--max-time", curlMaxTime,
 		"--noproxy", "*",
@@ -1075,7 +1099,9 @@ func curlNoProxyArgs() []string {
 }
 
 func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, string) {
-	args := append([]string{"-n", "-u", env.agentUserName, "--"}, curlNoProxyArgs()...)
+	curlArgs := curlNoProxyArgsFor(env.curlPath)
+	curlPath := curlArgs[0]
+	args := append([]string{"-n", "-u", env.agentUserName, "--"}, curlArgs...)
 	out, code, err := env.runCmd(ctx, "sudo", args...)
 	if err != nil {
 		return statusSkip, fmt.Sprintf("sudo/curl unavailable: %v", err)
@@ -1087,7 +1113,7 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 		return statusSkip, fmt.Sprintf("%s user not present; install containment model first", env.agentUserName)
 	}
 	if isSudoTargetCommandMissing(out) {
-		return statusSkip, "sudo could not execute /usr/bin/curl; install curl to enable canary"
+		return statusSkip, fmt.Sprintf("sudo could not execute %s; install curl to enable canary", curlPath)
 	}
 	if code == 0 {
 		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from example.com", oneLine(out))
@@ -1105,9 +1131,10 @@ func probeOperatorEgress(ctx context.Context, env *probeEnv) (string, string) {
 	var err error
 
 	if env.operatorUser == "" {
-		out, code, err = env.runCmd(ctx, curlPath, curlNoProxyArgs()[1:]...)
+		curlArgs := curlNoProxyArgsFor(env.curlPath)
+		out, code, err = env.runCmd(ctx, curlArgs[0], curlArgs[1:]...)
 	} else {
-		args := append([]string{"-n", "-u", env.operatorUser, "--"}, curlNoProxyArgs()...)
+		args := append([]string{"-n", "-u", env.operatorUser, "--"}, curlNoProxyArgsFor(env.curlPath)...)
 		out, code, err = env.runCmd(ctx, "sudo", args...)
 	}
 

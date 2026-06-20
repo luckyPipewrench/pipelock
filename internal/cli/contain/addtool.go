@@ -69,7 +69,7 @@ Exit codes:
 	}
 
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "print planned actions without mutating state")
-	cmd.Flags().StringVar(&opts.target, "target", "", "explicit path to the target tool (default: which <name> from pipelock-agent's PATH)")
+	cmd.Flags().StringVar(&opts.target, "target", "", "explicit path to the target tool (default: command -v <name> from pipelock-agent's PATH)")
 
 	return cmd
 }
@@ -91,11 +91,16 @@ func runAddTool(ctx context.Context, env *installEnv, name string, opts addToolO
 	existing, readErr := env.readFile(wrapperPath)
 	alreadyInInventory := wrapperInInventory(env, wrapperName)
 
-	// Target resolution. --target trumps. Otherwise we run `which` AS
-	// pipelock-agent so the lookup uses pipelock-agent's PATH, not root's.
+	// Target resolution. --target trumps. Otherwise we run `command -v` AS
+	// pipelock-agent so the lookup uses pipelock-agent's PATH, not root's,
+	// and does not depend on a separate which(1) package.
 	target := opts.target
 	if target == "" {
-		out, code, _ := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--", "which", name)
+		out, code, err := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--",
+			"env", "PATH="+agentExecPath(env.agentUserName), "sh", "-c", `command -v -- "$1"`, "sh", name)
+		if err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve tool %q in pipelock-agent's PATH: %w", name, err))
+		}
 		if code != 0 {
 			return cliutil.ExitCodeError(
 				cliutil.ExitConfig,

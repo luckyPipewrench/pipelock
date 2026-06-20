@@ -329,7 +329,7 @@ func stepWriteCredentialGuard() step {
 				body string
 				mode os.FileMode
 			}{
-				{env.guardScriptPath, renderCredentialGuardScript(env.agentUserName, home), modeWrapperExec},
+				{env.guardScriptPath, renderCredentialGuardScript(env.agentUserName, home, env.bashPath), modeWrapperExec},
 				{env.guardServiceUnit, renderCredentialGuardService(env.guardScriptPath), modeUnitFile},
 				{env.guardPathUnit, renderCredentialGuardPathUnit(home, filepath.Base(env.guardServiceUnit)), modeUnitFile},
 			}
@@ -384,14 +384,17 @@ func stepWriteCredentialGuard() step {
 	}
 }
 
-func renderCredentialGuardScript(agentUser, operatorHome string) string {
+func renderCredentialGuardScript(agentUser, operatorHome, bashPath string) string {
+	if bashPath == "" {
+		bashPath = "/usr/bin/env bash"
+	}
 	roots := []string{
 		filepath.Join(operatorHome, ".claude"),
 		filepath.Join(operatorHome, ".claude-cc2"),
 		filepath.Join(operatorHome, ".codex"),
 	}
 	var b strings.Builder
-	b.WriteString("#!/usr/bin/env bash\nset -euo pipefail\n\n")
+	b.WriteString("#!" + bashPath + "\nset -euo pipefail\n\n")
 	b.WriteString("AGENT_USER=" + shellQuote(agentUser) + "\n")
 	b.WriteString("lock_matches() {\n")
 	b.WriteString("  local root=\"$1\"\n")
@@ -680,12 +683,23 @@ func toolsListEntriesEqual(a, b []toolsListEntry) bool {
 func stepPreflight(_ installOpts) step {
 	return step{
 		name: "preflight",
-		desc: "preflight: required binaries present (useradd / systemctl / nft / visudo)",
-		apply: func(_ context.Context, _ *installEnv) (bool, error) {
-			for _, b := range []string{"useradd", "userdel", "systemctl", "nft", "visudo"} {
+		desc: "preflight: required binaries present (useradd / systemctl / visudo / sudo / setfacl)",
+		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			for _, b := range []string{"useradd", "userdel", "systemctl", "visudo", "sudo", "setfacl", "find", "chmod"} {
 				if err := expectExec(b); err != nil {
 					return false, err
 				}
+			}
+			for label, path := range map[string]string{
+				"bash":    env.bashPath,
+				"nologin": env.nologinPath,
+			} {
+				if err := expectExecutablePath(env.stat, label, path); err != nil {
+					return false, err
+				}
+			}
+			if err := expectPrivilegedExecutablePath(env.stat, "nft", env.nftPath); err != nil {
+				return false, err
 			}
 			return true, nil
 		},
@@ -705,9 +719,9 @@ func stepPreflight(_ installOpts) step {
 func stepCreateUser(proxyUser bool) step {
 	pick := func(env *installEnv) (name, shell, home string) {
 		if proxyUser {
-			return env.proxyUserName, "/usr/sbin/nologin", "/var/lib/" + env.proxyUserName
+			return env.proxyUserName, env.nologinPath, "/var/lib/" + env.proxyUserName
 		}
-		return env.agentUserName, "/bin/bash", "/home/" + env.agentUserName
+		return env.agentUserName, env.bashPath, "/home/" + env.agentUserName
 	}
 	return step{
 		name: func() string {
@@ -1224,9 +1238,9 @@ func stepWriteCombinedCABundle() step {
 		name: "write-combined-ca",
 		desc: "build /etc/pipelock/combined-ca.pem (system bundle + pipelock CA)",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
-			sys, err := env.readFile(defaultSystemCABundle)
+			sys, err := env.readFile(env.systemCABundlePath)
 			if err != nil {
-				return false, fmt.Errorf("read system CA bundle %s: %w", defaultSystemCABundle, err)
+				return false, fmt.Errorf("read system CA bundle %s: %w", env.systemCABundlePath, err)
 			}
 			pl, err := env.readFile(env.caExportPath)
 			if err != nil {
@@ -1259,7 +1273,7 @@ func stepWriteCombinedCABundle() step {
 func stepInstallNFTRules() step {
 	return step{
 		name: "install-nft-rules",
-		desc: "write + load /etc/nftables.d/50-pipelock-containment.nft + persist via nftables.service",
+		desc: "write + load /etc/nftables.d/50-pipelock-containment.nft + persist via pipelock-containment-nft.service",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			// Check nft version before generating rules. The containment
 			// ruleset requires "meta skuid" (available since nftables 0.4)
@@ -1288,7 +1302,7 @@ func stepInstallNFTRules() step {
 			}
 			tableLoaded := false
 			liveRulesDrifted := false
-			if out, code, _ := env.runCmd(ctx, "nft", "list", "table", "inet", env.nftTableOrDefault()); code == 0 {
+			if out, code, _ := env.runCmd(ctx, nftExecutable(env), "list", "table", "inet", env.nftTableOrDefault()); code == 0 {
 				tableLoaded = true
 				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), env.proxyPort)
 			}
@@ -1306,83 +1320,88 @@ func stepInstallNFTRules() step {
 				}
 				rulesChanged = true
 			}
-			mainChanged, err := ensureNFTMainIncludesRules(env)
+			unitChanged, err := ensureNFTPersistUnit(env)
 			if err != nil {
 				return false, err
 			}
-			if mainChanged {
-				_, _ = fmt.Fprintf(env.out, "WARN: added %s include to %s for nftables.service persistence\n", env.nftRulesPath, env.nftMainPath)
-			}
-			if !rulesChanged && !mainChanged && tableLoaded && !liveRulesDrifted {
+			if !rulesChanged && !unitChanged && tableLoaded && !liveRulesDrifted {
 				return false, nil
 			}
 			// Validate before loading.
-			if err := runOrErr(ctx, env, "nft", "-c", "-f", env.nftRulesPath); err != nil {
+			if err := runOrErr(ctx, env, nftExecutable(env), "-c", "-f", env.nftRulesPath); err != nil {
 				return false, fmt.Errorf("nft validation failed: %w", err)
-			}
-			if err := runOrErr(ctx, env, "nft", "-c", "-f", env.nftMainPath); err != nil {
-				return false, fmt.Errorf("nft persistence validation failed: %w", err)
-			}
-			if tableLoaded && (rulesChanged || liveRulesDrifted) {
-				captureNFTPreState(ctx, env)
-				// nft -f merges into an existing table. Drop our managed table
-				// first so stale rules from an older contain install cannot
-				// survive beside the new ruleset.
-				_, _, _ = env.runCmd(ctx, "nft", "delete", "table", "inet", env.nftTableOrDefault())
-				tableLoaded = false
 			}
 			if !tableLoaded || rulesChanged || liveRulesDrifted {
 				captureNFTPreState(ctx, env)
-				if err := runOrErr(ctx, env, "nft", "-f", env.nftRulesPath); err != nil {
+			}
+			if tableLoaded && (rulesChanged || liveRulesDrifted) {
+				// nft -f merges into an existing table. Drop our managed table
+				// first so stale rules from an older contain install cannot
+				// survive beside the new ruleset.
+				_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
+				tableLoaded = false
+			}
+			if !tableLoaded || rulesChanged || liveRulesDrifted {
+				if err := runOrErr(ctx, env, nftExecutable(env), "-f", env.nftRulesPath); err != nil {
 					return false, fmt.Errorf("nft load failed: %w", err)
 				}
 			}
 			captureNFTPreState(ctx, env)
-			if err := runOrErr(ctx, env, "systemctl", "enable", "nftables.service"); err != nil {
-				return false, fmt.Errorf("enable nftables.service: %w", err)
+			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
+				return false, fmt.Errorf("systemctl daemon-reload: %w", err)
+			}
+			if err := runOrErr(ctx, env, "systemctl", "enable", filepath.Base(env.nftPersistUnitPath)); err != nil {
+				return false, fmt.Errorf("enable %s: %w", filepath.Base(env.nftPersistUnitPath), err)
 			}
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
 			// Drop the managed table best-effort, restore any previous live
 			// table captured during this install attempt, then restore files.
-			_, _, _ = env.runCmd(ctx, "nft", "delete", "table", "inet", env.nftTableOrDefault())
+			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
 			if err := restorePreviousNFTState(ctx, env); err != nil {
 				return err
 			}
 			if err := restoreBackup(env, env.nftRulesPath); err != nil {
 				return err
 			}
-			if err := restoreOrRemoveNFTMainInclude(env); err != nil {
+			if err := restoreBackup(env, env.nftPersistUnitPath); err != nil {
 				return err
 			}
-			if env.prevNftablesStateKnown && !env.prevNftablesEnabled {
-				if err := runOrErr(ctx, env, "systemctl", "disable", "nftables.service"); err != nil {
-					return fmt.Errorf("restore nftables.service disabled state: %w", err)
+			if env.prevNFTPersistStateKnown && !env.prevNFTPersistEnabled {
+				if err := runOrErr(ctx, env, "systemctl", "disable", filepath.Base(env.nftPersistUnitPath)); err != nil {
+					return fmt.Errorf("restore %s disabled state: %w", filepath.Base(env.nftPersistUnitPath), err)
 				}
 			}
+			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
 			return nil
 		},
 	}
 }
 
 func captureNFTPreState(ctx context.Context, env *installEnv) {
-	if env.prevNFTTableDump == "" {
-		out, code, err := env.runCmd(ctx, "nft", "list", "table", "inet", env.nftTableOrDefault())
-		if err == nil && code == 0 {
-			env.prevNFTTableDump = out
+	if !env.prevNFTTableStateKnown {
+		out, code, err := env.runCmd(ctx, nftExecutable(env), "list", "table", "inet", env.nftTableOrDefault())
+		if err == nil {
+			env.prevNFTTableStateKnown = true
+			if code == 0 {
+				env.prevNFTTableDump = out
+			}
 		}
 	}
-	if !env.prevNftablesStateKnown {
-		_, code, err := env.runCmd(ctx, "systemctl", "is-enabled", "nftables.service")
+	if !env.prevNFTPersistStateKnown {
+		_, code, err := env.runCmd(ctx, "systemctl", "is-enabled", filepath.Base(env.nftPersistUnitPath))
 		if err == nil {
-			env.prevNftablesEnabled = code == 0
-			env.prevNftablesStateKnown = true
+			env.prevNFTPersistEnabled = code == 0
+			env.prevNFTPersistStateKnown = true
 		}
 	}
 }
 
 func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
+	if !env.prevNFTTableStateKnown {
+		return nil
+	}
 	if strings.TrimSpace(env.prevNFTTableDump) == "" {
 		return nil
 	}
@@ -1391,7 +1410,7 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 		return fmt.Errorf("write nft restore file %s: %w", restorePath, err)
 	}
 	defer func() { _ = env.removeFile(restorePath) }()
-	if err := runOrErr(ctx, env, "nft", "-f", restorePath); err != nil {
+	if err := runOrErr(ctx, env, nftExecutable(env), "-f", restorePath); err != nil {
 		return fmt.Errorf("restore previous nft table: %w", err)
 	}
 	return nil
@@ -1407,42 +1426,55 @@ func nftRulesIncludeLine(path string) string {
 	return fmt.Sprintf("include %q", path)
 }
 
-func ensureNFTMainIncludesRules(env *installEnv) (bool, error) {
-	if err := env.mkdirAll(filepath.Dir(env.nftMainPath), modeDirReadable); err != nil {
-		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(env.nftMainPath), err)
+func ensureNFTPersistUnit(env *installEnv) (bool, error) {
+	if err := env.mkdirAll(filepath.Dir(env.nftPersistUnitPath), modeDirReadable); err != nil {
+		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(env.nftPersistUnitPath), err)
 	}
-	if err := env.chmod(filepath.Dir(env.nftMainPath), modeDirReadable); err != nil {
-		return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.nftMainPath), err)
+	if err := env.chmod(filepath.Dir(env.nftPersistUnitPath), modeDirReadable); err != nil {
+		return false, fmt.Errorf("chmod %s: %w", filepath.Dir(env.nftPersistUnitPath), err)
 	}
-
-	includeLine := nftRulesIncludeLine(env.nftRulesPath)
-	data, err := env.readFile(env.nftMainPath)
-	if err == nil && nftMainHasInclude(string(data), includeLine) {
+	body := renderNFTPersistUnit(env)
+	if existing, err := env.readFile(env.nftPersistUnitPath); err == nil && string(existing) == body {
+		if err := env.chmod(env.nftPersistUnitPath, modeUnitFile); err != nil {
+			return false, fmt.Errorf("chmod %s: %w", env.nftPersistUnitPath, err)
+		}
 		return false, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read %s: %w", env.nftPersistUnitPath, err)
 	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("read %s: %w", env.nftMainPath, err)
-	}
-
-	var body string
-	if errors.Is(err, os.ErrNotExist) || len(data) == 0 {
-		body = "# Pipelock containment persistence\n" + includeLine + "\n"
-	} else {
-		body = strings.TrimRight(string(data), "\n") + "\n\n# Pipelock containment persistence\n" + includeLine + "\n"
-	}
-	if err := backupAndWrite(env, env.nftMainPath, []byte(body), modeNFTMainConfig); err != nil {
-		return false, fmt.Errorf("write %s: %w", env.nftMainPath, err)
+	if err := backupAndWrite(env, env.nftPersistUnitPath, []byte(body), modeUnitFile); err != nil {
+		return false, err
 	}
 	return true, nil
 }
 
-func nftMainHasInclude(body, includeLine string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		if strings.TrimSpace(line) == includeLine {
-			return true
-		}
+func renderNFTPersistUnit(env *installEnv) string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Pipelock containment nftables rules",
+		"Documentation=https://github.com/luckyPipewrench/pipelock",
+		"DefaultDependencies=no",
+		"After=local-fs.target",
+		"Before=network-pre.target",
+		"Wants=network-pre.target",
+		"ConditionPathExists=" + env.nftRulesPath,
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"ExecStart=" + nftExecutable(env) + " -f " + env.nftRulesPath,
+		"RemainAfterExit=yes",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
+func nftExecutable(env *installEnv) string {
+	if env != nil && env.nftPath != "" {
+		return env.nftPath
 	}
-	return false
+	return "nft"
 }
 
 func restoreOrRemoveNFTMainInclude(env *installEnv) error {
@@ -1650,7 +1682,7 @@ func stepWriteLaunchWrapper() step {
 // sudo, plk-launch already runs AS pipelock-agent, no nested sudo here.
 func renderLaunchWrapper(env *installEnv) string {
 	return strings.Join([]string{
-		"#!/bin/bash",
+		shebangBash(env),
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
 		"# Runs AS pipelock-agent. Validates the tool name against the install-time",
 		"# allow-list (root-mutated, pipelock-agent-readable at " + env.toolsListPath + ") before exec.",
@@ -1773,7 +1805,7 @@ func stepWriteMetaWrapper() step {
 
 func renderMetaWrapper(env *installEnv) string {
 	return strings.Join([]string{
-		"#!/bin/bash",
+		shebangBash(env),
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
 		"set -euo pipefail",
 		"",
@@ -1885,11 +1917,18 @@ func wrapperNamesForEntries(entries []toolsListEntry) []string {
 // install is NOPASSWD-scoped so the legitimate case never prompts.
 func renderToolWrapper(env *installEnv, tool string) string {
 	return strings.Join([]string{
-		"#!/bin/bash",
+		shebangBash(env),
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
 		"exec sudo -n -u " + env.agentUserName + " " + filepath.Join(env.wrapperDir, "plk-launch") + " " + tool + ` "$@"`,
 		"",
 	}, "\n")
+}
+
+func shebangBash(env *installEnv) string {
+	if env != nil && env.bashPath != "" {
+		return "#!" + env.bashPath
+	}
+	return "#!/usr/bin/env bash"
 }
 
 // ---------------------------------------------------------------------------

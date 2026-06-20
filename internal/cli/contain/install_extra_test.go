@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -504,6 +505,41 @@ func TestStepInstallNFTRules_UndoDropsTable(t *testing.T) {
 	}
 }
 
+func TestStepInstallNFTRules_UndoDoesNotRestoreNewlyCreatedTable(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), "", 1, nil)
+	runner.on(argvFor(testNFT, "-c", "-f", env.nftRulesPath), "", 0, nil)
+	runner.on(argvFor(testNFT, "-f", env.nftRulesPath), "", 0, nil)
+	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
+	runner.on(argvFor(testSystemctl, "enable", filepath.Base(env.nftPersistUnitPath)), "", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "disabled\n", 1, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected nft rules to apply")
+	}
+	if !env.prevNFTTableStateKnown {
+		t.Fatal("previous absent nft table state was not captured")
+	}
+	if env.prevNFTTableDump != "" {
+		t.Fatalf("expected no previous table dump, got %q", env.prevNFTTableDump)
+	}
+
+	if err := s.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	restorePath := env.nftRulesPath + ".restore"
+	for _, c := range runner.calls {
+		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
+			t.Fatalf("undo restored a table that did not exist before install: %v", runner.calls)
+		}
+	}
+}
+
 func TestStepInstallNFTRules_ValidationFailureSurfaces(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	// Force nft validate to fail.
@@ -738,7 +774,7 @@ func TestActionRemoveNFTRules_DropsAndCleans(t *testing.T) {
 	}
 	var sawDelete bool
 	for _, c := range runner.calls {
-		if c.name == testNFT && containsArg(c.args, "delete") {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+env.nftTableOrDefault() {
 			sawDelete = true
 		}
 	}
@@ -753,8 +789,46 @@ func TestActionRemoveNFTRules_DropsAndCleans(t *testing.T) {
 	}
 }
 
+// TestActionRemoveNFTRules_CleansLegacyMainInclude proves the rollback
+// action actually reaches restoreOrRemoveNFTMainInclude when nftMainPath is
+// populated the way defaultInstallEnv now wires it. The pre-portability
+// install appended an `include` line to the distro nft config; if rollback
+// skips this cleanup, the dangling include breaks the host nftables.service
+// at the next boot once the rules file is gone. A direct unit test of the
+// cleanup helper (which sets nftMainPath itself) would mask a regression
+// where the production env stops wiring the path.
+func TestActionRemoveNFTRules_CleansLegacyMainInclude(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	// Mirror defaultInstallEnv wiring: rollback must know the legacy path.
+	if defaultInstallEnv(io.Discard).nftMainPath == "" {
+		t.Fatal("defaultInstallEnv no longer wires nftMainPath; rollback legacy cleanup is unreachable")
+	}
+	env.nftMainPath = filepath.Join(t.TempDir(), "nftables.conf")
+	if err := os.MkdirAll(filepath.Dir(env.nftMainPath), 0o750); err != nil {
+		t.Fatalf("mkdir main config parent: %v", err)
+	}
+	includeLine := nftRulesIncludeLine(env.nftRulesPath)
+	body := "flush ruleset\n\n# Pipelock containment persistence\n" + includeLine + "\n"
+	if err := os.WriteFile(env.nftMainPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write legacy main config: %v", err)
+	}
+
+	a := actionRemoveNFTRules()
+	if err := a.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+
+	got, err := os.ReadFile(env.nftMainPath)
+	if err != nil {
+		t.Fatalf("read legacy main config: %v", err)
+	}
+	if strings.Contains(string(got), includeLine) {
+		t.Fatalf("rollback left dangling legacy include:\n%s", got)
+	}
+}
+
 func TestRenderCredentialGuardScriptLocksCredentialNames(t *testing.T) {
-	body := renderCredentialGuardScript("pipelock-agent", "/home/operator")
+	body := renderCredentialGuardScript("pipelock-agent", "/home/operator", "/bin/bash")
 	for _, want := range []string{
 		"AGENT_USER='pipelock-agent'",
 		"lock_home_root '/home/operator'",

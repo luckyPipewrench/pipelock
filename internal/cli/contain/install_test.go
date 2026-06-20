@@ -24,6 +24,7 @@ import (
 
 type fakeFileInfo struct {
 	mode os.FileMode
+	sys  any
 }
 
 func (f fakeFileInfo) Name() string       { return "fake" }
@@ -31,7 +32,7 @@ func (f fakeFileInfo) Size() int64        { return 0 }
 func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
 func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
 func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
-func (f fakeFileInfo) Sys() any           { return nil }
+func (f fakeFileInfo) Sys() any           { return f.sys }
 
 func TestDefaultInstallEnvWiresContainmentDefaults(t *testing.T) {
 	env := defaultInstallEnv(io.Discard)
@@ -43,6 +44,13 @@ func TestDefaultInstallEnvWiresContainmentDefaults(t *testing.T) {
 	}
 	if env.configDir != defaultConfigDir || env.nftRulesPath != defaultNFTRulesPath {
 		t.Fatalf("paths not wired to defaults: config=%q nft=%q", env.configDir, env.nftRulesPath)
+	}
+	// nftMainPath must be populated so rollback's legacy-include cleanup
+	// (gated on env.nftMainPath != "") is reachable for systems upgraded
+	// from a pre-portability build. A regression here silently orphans the
+	// `include` line in the distro nft config on rollback.
+	if env.nftMainPath != defaultNFTMainConfigPath {
+		t.Fatalf("nftMainPath: got %q, want %q (legacy rollback cleanup must stay wired)", env.nftMainPath, defaultNFTMainConfigPath)
 	}
 	if env.proxyPort != defaultProxyPort {
 		t.Fatalf("proxy port: got %d want %d", env.proxyPort, defaultProxyPort)
@@ -182,8 +190,10 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		systemUnitPath:     filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
 		nftRulesPath:       filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
 		nftMainPath:        filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
+		nftPersistUnitPath: filepath.Join(root, "etc", "systemd", "system", "pipelock-containment-nft.service"),
 		sudoersPath:        filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
 		caBundlePath:       filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
+		systemCABundlePath: filepath.Join(root, "etc", "ssl", "certs", "ca-certificates.crt"),
 		caExportPath:       filepath.Join(root, "etc", "pipelock", "ca.pem"),
 		integrityDir:       filepath.Join(root, "etc", "pipelock", "integrity"),
 		integrityPin:       filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
@@ -198,6 +208,10 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		profileScriptPath:  filepath.Join(root, "etc", "profile.d", "pipelock-contain.sh"),
 		agentHome:          filepath.Join(root, "home", "pipelock-agent"),
 		pipelockTarget:     filepath.Join(root, "usr", "local", "bin", "pipelock"),
+		bashPath:           "/bin/bash",
+		nologinPath:        "/usr/sbin/nologin",
+		nftPath:            testNFT,
+		curlPath:           "/usr/bin/curl",
 		proxyPort:          8888,
 	}
 
@@ -221,7 +235,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		t.Fatalf("mkdir unit parent: %v", err)
 	}
 	// Plant a fake system CA bundle the install will read.
-	systemBundle := filepath.Join(root, "etc", "ssl", "certs", "ca-bundle.crt")
+	systemBundle := env.systemCABundlePath
 	if err := os.MkdirAll(filepath.Dir(systemBundle), 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("mkdir system bundle parent: %v", err)
 	}
@@ -233,16 +247,6 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	// subprocess writing through pipelock).
 	if err := os.MkdirAll(env.configDir, 0o750); err != nil {
 		t.Fatalf("mkdir configDir: %v", err)
-	}
-
-	// Patch defaultSystemCABundle indirection by overriding readFile so
-	// the canonical path resolves to our test path.
-	origReadFile := env.readFile
-	env.readFile = func(p string) ([]byte, error) {
-		if p == defaultSystemCABundle {
-			return os.ReadFile(systemBundle) //nolint:gosec // tmpdir-scoped test path
-		}
-		return origReadFile(p)
 	}
 
 	return env, runner, out
@@ -401,7 +405,8 @@ func TestRunInstall_DryRunPrintsPlan(t *testing.T) {
 
 func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 	env, runner, buf := newFakeEnv(t)
-	installContainCommandFixtures(t)
+	binDir := installContainCommandFixtures(t)
+	env.nftPath = filepath.Join(binDir, "nft")
 
 	// Let the default allow-list find one agent tool without depending on
 	// host-global /usr/local/bin contents.
@@ -409,6 +414,9 @@ func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 	env.stat = func(path string) (os.FileInfo, error) {
 		if path == "/usr/local/bin/claude" {
 			return origStat(env.pipelockBinary)
+		}
+		if path == env.nftPath {
+			return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
 		}
 		return origStat(path)
 	}
@@ -441,7 +449,8 @@ func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 
 func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	installContainCommandFixtures(t)
+	binDir := installContainCommandFixtures(t)
+	env.nftPath = filepath.Join(binDir, "nft")
 
 	cfgDir := t.TempDir()
 	cfg1 := filepath.Join(cfgDir, "pipelock-1.yaml")
@@ -456,6 +465,9 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 	enabledTools := map[string]bool{"claude": true}
 	origStat := env.stat
 	env.stat = func(path string) (os.FileInfo, error) {
+		if path == env.nftPath {
+			return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
+		}
 		for _, tool := range defaultToolNames() {
 			for _, dir := range filepath.SplitList(agentExecPath(env.agentUserName)) {
 				if path != filepath.Join(dir, tool) {
@@ -485,7 +497,7 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 	systemBundle := []byte("# system bundle v1\n")
 	origReadFile := env.readFile
 	env.readFile = func(path string) ([]byte, error) {
-		if path == defaultSystemCABundle {
+		if path == env.systemCABundlePath {
 			return append([]byte(nil), systemBundle...), nil
 		}
 		return origReadFile(path)
@@ -584,16 +596,27 @@ func legacyBody(path string, overrides map[string][]byte) []byte {
 	return []byte("legacy:" + filepath.Base(path) + "\n")
 }
 
-func installContainCommandFixtures(t *testing.T) {
+func installContainCommandFixtures(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()
-	for _, name := range []string{"useradd", "userdel", "systemctl", "nft", "visudo"} {
+	for _, name := range []string{"useradd", "userdel", "systemctl", "nft", "visudo", "sudo", "setfacl", "find", "chmod"} {
 		path := filepath.Join(binDir, name)
 		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture required for preflight PATH lookup.
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
 	t.Setenv("PATH", binDir)
+	return binDir
+}
+
+func writeNFTPersistUnitFixture(t *testing.T, env *installEnv) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(env.nftPersistUnitPath), 0o750); err != nil {
+		t.Fatalf("mkdir persistence unit parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftPersistUnitPath, []byte(renderNFTPersistUnit(env)), 0o600); err != nil {
+		t.Fatalf("write persistence unit: %v", err)
+	}
 }
 
 func seedLegacyInstallFiles(t *testing.T, paths []string, overrides map[string][]byte) {
@@ -690,11 +713,19 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		binDir := t.TempDir()
-		for _, name := range []string{"useradd", "userdel", "systemctl", "nft", "visudo"} {
+		for _, name := range []string{"useradd", "userdel", "systemctl", "nft", "visudo", "sudo", "setfacl", "find", "chmod"} {
 			path := filepath.Join(binDir, name)
 			if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture required for preflight PATH lookup.
 				t.Fatalf("write %s: %v", name, err)
 			}
+		}
+		env.nftPath = filepath.Join(binDir, "nft")
+		origStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if path == env.nftPath {
+				return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
+			}
+			return origStat(path)
 		}
 		t.Setenv("PATH", binDir)
 		applied, err := s.apply(context.Background(), env)
@@ -719,6 +750,60 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 			t.Fatalf("err: %v", err)
 		}
 	})
+}
+
+func TestStepPreflightRejectsUntrustedNFTPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		mode    os.FileMode
+		uid     uint32
+		wantErr string
+	}{
+		{
+			name:    "relative path",
+			path:    "nft",
+			mode:    0o700,
+			uid:     0,
+			wantErr: "absolute path",
+		},
+		{
+			name:    "operator owned",
+			path:    "/tmp/nft",
+			mode:    0o700,
+			uid:     1000,
+			wantErr: "root-owned",
+		},
+		{
+			name:    "world writable",
+			path:    "/tmp/nft",
+			mode:    0o722,
+			uid:     0,
+			wantErr: "group- or world-writable",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			binDir := installContainCommandFixtures(t)
+			env.nftPath = tc.path
+			env.stat = func(path string) (os.FileInfo, error) {
+				if path == filepath.Clean(tc.path) {
+					return fakeFileInfo{mode: tc.mode, sys: fakeFileSysWithUID(tc.uid)}, nil
+				}
+				return os.Stat(path)
+			}
+			t.Setenv("PATH", binDir)
+
+			_, err := stepPreflight(installOpts{}).apply(context.Background(), env)
+			if err == nil {
+				t.Fatal("expected preflight error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error: got %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
 }
 
 func TestStepCreateUser_CallsUseradd(t *testing.T) {
@@ -1175,12 +1260,7 @@ func TestStepInstallNFTRules_SkipsWhenLoaded(t *testing.T) {
 	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write rules: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(env.nftMainPath), 0o755); err != nil { //nolint:gosec // tmpdir
-		t.Fatalf("mkdir main config parent: %v", err)
-	}
-	if err := os.WriteFile(env.nftMainPath, []byte(nftRulesIncludeLine(env.nftRulesPath)+"\n"), 0o600); err != nil {
-		t.Fatalf("write main config: %v", err)
-	}
+	writeNFTPersistUnitFixture(t, env)
 	// Make `nft list table` succeed with a healthy live table.
 	runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), body, 0, nil)
 
@@ -1204,12 +1284,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write rules: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(env.nftMainPath), 0o755); err != nil { //nolint:gosec // tmpdir
-		t.Fatalf("mkdir main config parent: %v", err)
-	}
-	if err := os.WriteFile(env.nftMainPath, []byte(nftRulesIncludeLine(env.nftRulesPath)+"\n"), 0o600); err != nil {
-		t.Fatalf("write main config: %v", err)
-	}
+	writeNFTPersistUnitFixture(t, env)
 	drifted := `table inet pipelock_containment {
 		chain output_filter {
 			meta oif "lo" accept
@@ -1243,7 +1318,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	}
 }
 
-func TestStepInstallNFTRules_RepairsMissingPersistenceOnRerun(t *testing.T) {
+func TestStepInstallNFTRules_RepairsMissingPersistenceUnitOnRerun(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
@@ -1261,14 +1336,14 @@ func TestStepInstallNFTRules_RepairsMissingPersistenceOnRerun(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	if !applied {
-		t.Fatal("expected rerun to repair missing persistence include")
+		t.Fatal("expected rerun to repair missing persistence unit")
 	}
-	mainBody, err := os.ReadFile(env.nftMainPath)
+	unitBody, err := os.ReadFile(env.nftPersistUnitPath)
 	if err != nil {
-		t.Fatalf("read main config: %v", err)
+		t.Fatalf("read persistence unit: %v", err)
 	}
-	if !strings.Contains(string(mainBody), nftRulesIncludeLine(env.nftRulesPath)) {
-		t.Fatalf("main config missing include:\n%s", mainBody)
+	if !strings.Contains(string(unitBody), env.nftRulesPath) {
+		t.Fatalf("persistence unit missing rules path:\n%s", unitBody)
 	}
 }
 
@@ -1342,14 +1417,14 @@ func TestStepInstallNFTRules_DropsLoadedTableBeforeChangedReload(t *testing.T) {
 	}
 }
 
-func TestStepInstallNFTRules_PersistsViaMainConfigAndRestores(t *testing.T) {
+func TestStepInstallNFTRules_PersistsViaOwnedSystemdUnitAndRestores(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	original := "flush ruleset\n"
-	if err := os.MkdirAll(filepath.Dir(env.nftMainPath), 0o755); err != nil { //nolint:gosec // tmpdir
-		t.Fatalf("mkdir main config parent: %v", err)
+	original := "[Unit]\nDescription=old unit\n"
+	if err := os.MkdirAll(filepath.Dir(env.nftPersistUnitPath), 0o750); err != nil {
+		t.Fatalf("mkdir unit parent: %v", err)
 	}
-	if err := os.WriteFile(env.nftMainPath, []byte(original), 0o600); err != nil {
-		t.Fatalf("write main config: %v", err)
+	if err := os.WriteFile(env.nftPersistUnitPath, []byte(original), 0o600); err != nil {
+		t.Fatalf("write unit: %v", err)
 	}
 	runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), "", 1, fmt.Errorf("not loaded"))
 
@@ -1362,33 +1437,23 @@ func TestStepInstallNFTRules_PersistsViaMainConfigAndRestores(t *testing.T) {
 		t.Fatal("expected apply=true")
 	}
 
-	mainBody, err := os.ReadFile(env.nftMainPath)
+	unitBody, err := os.ReadFile(env.nftPersistUnitPath)
 	if err != nil {
-		t.Fatalf("read main config: %v", err)
+		t.Fatalf("read persistence unit: %v", err)
 	}
-	if !strings.Contains(string(mainBody), nftRulesIncludeLine(env.nftRulesPath)) {
-		t.Fatalf("main config missing include:\n%s", mainBody)
-	}
-
-	var sawMainValidation bool
-	for _, c := range runner.calls {
-		if c.name == testNFT && len(c.args) == 3 && c.args[0] == "-c" && c.args[1] == "-f" && c.args[2] == env.nftMainPath {
-			sawMainValidation = true
-		}
-	}
-	if !sawMainValidation {
-		t.Fatalf("expected nft -c -f main config validation, got %v", runner.calls)
+	if !strings.Contains(string(unitBody), "ExecStart="+env.nftPath+" -f "+env.nftRulesPath) {
+		t.Fatalf("unit missing ExecStart:\n%s", unitBody)
 	}
 
 	if err := s.undo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)
 	}
-	restored, err := os.ReadFile(env.nftMainPath)
+	restored, err := os.ReadFile(env.nftPersistUnitPath)
 	if err != nil {
-		t.Fatalf("read restored main config: %v", err)
+		t.Fatalf("read restored unit: %v", err)
 	}
 	if string(restored) != original {
-		t.Fatalf("main config not restored: got %q want %q", restored, original)
+		t.Fatalf("unit not restored: got %q want %q", restored, original)
 	}
 }
 
@@ -1402,7 +1467,7 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 }
 `
 	runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), previousTable, 0, nil)
-	runner.on(argvFor(testSystemctl, "is-enabled", "nftables.service"), "disabled\n", 1, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "disabled\n", 1, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
@@ -1415,8 +1480,8 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 	if env.prevNFTTableDump != previousTable {
 		t.Fatalf("previous table not captured: %q", env.prevNFTTableDump)
 	}
-	if !env.prevNftablesStateKnown || env.prevNftablesEnabled {
-		t.Fatalf("previous nftables service state not captured as disabled")
+	if !env.prevNFTPersistStateKnown || env.prevNFTPersistEnabled {
+		t.Fatalf("previous nft persistence unit state not captured as disabled")
 	}
 
 	if err := s.undo(context.Background(), env); err != nil {
@@ -1431,7 +1496,7 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
 			sawRestore = true
 		}
-		if c.name == testSystemctl && strings.Join(c.args, " ") == "disable nftables.service" {
+		if c.name == testSystemctl && strings.Join(c.args, " ") == "disable "+filepath.Base(env.nftPersistUnitPath) {
 			sawDisable = true
 		}
 	}
@@ -1439,12 +1504,13 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 		t.Fatalf("expected nft restore from captured table, got %v", runner.calls)
 	}
 	if !sawDisable {
-		t.Fatalf("expected nftables.service disabled-state restore, got %v", runner.calls)
+		t.Fatalf("expected persistence unit disabled-state restore, got %v", runner.calls)
 	}
 }
 
 func TestStepInstallNFTRules_UndoRemovesManagedIncludeWhenNoBackup(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
+	env.nftMainPath = filepath.Join(t.TempDir(), "nftables.conf")
 	if err := os.MkdirAll(filepath.Dir(env.nftMainPath), 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("mkdir main config parent: %v", err)
 	}

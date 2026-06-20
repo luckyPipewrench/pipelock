@@ -83,7 +83,7 @@ Exit codes:
 	cmd.Flags().BoolVar(&opts.regenerateOnSnapshotRestore, "regenerate-on-snapshot-restore", false, "force-generate a fresh contain-managed CA before rebuilding the bundle")
 	cmd.Flags().StringVar(&opts.caOutput, "ca-output", "", "destination for the Pipelock-only CA (default /etc/pipelock/ca.pem)")
 	cmd.Flags().StringVar(&opts.bundleOutput, "bundle-output", "", "destination for the combined bundle (default /etc/pipelock/combined-ca.pem)")
-	cmd.Flags().StringVar(&opts.systemBundle, "system-bundle", defaultSystemCABundle, "source system CA bundle to combine with")
+	cmd.Flags().StringVar(&opts.systemBundle, "system-bundle", "", "source system CA bundle to combine with (default: auto-detect for this Linux distro)")
 
 	return cmd
 }
@@ -96,7 +96,7 @@ func runCARefresh(ctx context.Context, env *installEnv, opts caRefreshOpts) erro
 	// this function directly with fakes.
 	systemBundle := opts.systemBundle
 	if systemBundle == "" {
-		systemBundle = defaultSystemCABundle
+		systemBundle = env.systemCABundlePath
 	}
 	systemBundle = filepath.Clean(systemBundle)
 	resolvedSystemBundle, err := resolveSystemBundlePath(env, systemBundle)

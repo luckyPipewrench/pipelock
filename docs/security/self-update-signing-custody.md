@@ -17,8 +17,9 @@ referenced by the release workflow.
 
 ## Offline Signing Runbook
 
-1. Download `release.json` from the draft GitHub release onto the offline signing
-   machine.
+1. On a networked machine, download `release.json` from the draft GitHub release,
+   then transfer it to the offline signing machine on removable media. The signing
+   machine stays air-gapped and never connects to the network.
 
 2. Unlock the offline release signing key from USB `PIPELOCK-KEYS2`, using the
    same custody handling as the license signer.
@@ -35,7 +36,8 @@ go run ./cmd/pipelock-release-manifest \
 unset PIPELOCK_RELEASE_PRIVATE_KEY_HEX
 ```
 
-4. Upload the generated `release.json.sig` to the same release assets as
+4. Transfer the generated `release.json.sig` off the signing machine on removable
+   media, then from a networked machine upload it to the same release assets as
    `release.json`.
 
 5. Confirm the release contains both files:

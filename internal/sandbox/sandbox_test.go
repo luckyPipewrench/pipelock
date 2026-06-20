@@ -6,6 +6,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -357,6 +358,10 @@ func TestDefaultPolicy_NoHostTmp(t *testing.T) {
 }
 
 func TestDefaultPolicy_HasDevShm(t *testing.T) {
+	if runtime.GOOS != osLinux {
+		t.Skip("/dev/shm is Linux-specific")
+	}
+
 	dir := t.TempDir()
 	p := DefaultPolicy(dir)
 	assertContains(t, "AllowRWDirs", p.AllowRWDirs, "/dev/shm/")

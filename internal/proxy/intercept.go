@@ -195,6 +195,18 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 	return nil
 }
 
+func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, actx audit.LogContext, opts receipt.EmitOpts) bool {
+	if err := interceptEmitReceipt(ic, opts); err != nil && ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+		blockedErr := newReceiptEmissionBlockedRequest(err)
+		ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			receiptEmissionBlockReason, http.StatusForbidden)
+		return true
+	}
+	return false
+}
+
 // interceptReadHeaderTimeout is the maximum time to read request headers on an
 // intercepted TLS connection. 30 seconds is generous for local proxy traffic.
 const interceptReadHeaderTimeout = 30 * time.Second
@@ -1527,6 +1539,17 @@ func newInterceptHandler(
 		if interceptRespExempt && ic.Config.ResponseScanning.Enabled {
 			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
+			if interceptEmitReceiptOrBlock(ic, w, actx, withInterceptRedaction(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionAllow,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			})) {
+				return
+			}
 			for k, vv := range resp.Header {
 				for _, v := range vv {
 					w.Header().Add(k, v)
@@ -1563,15 +1586,6 @@ func newInterceptHandler(
 				ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
 			}
 			ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
-			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionAllow,
-				Transport: "intercept",
-				Method:    r.Method,
-				Target:    targetURL,
-				RequestID: ic.RequestID,
-				Agent:     ic.Agent,
-			}))
 			return
 		}
 
@@ -1602,6 +1616,17 @@ func newInterceptHandler(
 		}
 		if int64(len(respBody)) > maxResp {
 			if isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains) {
+				if interceptEmitReceiptOrBlock(ic, w, actx, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionAllow,
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				})) {
+					return
+				}
 				for k, vv := range resp.Header {
 					for _, v := range vv {
 						w.Header().Add(k, v)
@@ -1615,15 +1640,6 @@ func newInterceptHandler(
 				totalWritten := int64(written) + copied
 				ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(totalWritten))
 				ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
-				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-					ActionID:  actionID,
-					Verdict:   config.ActionAllow,
-					Transport: "intercept",
-					Method:    r.Method,
-					Target:    targetURL,
-					RequestID: ic.RequestID,
-					Agent:     ic.Agent,
-				}))
 				return
 			}
 			reason := responseSizeBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes")
@@ -1945,12 +1961,7 @@ func newInterceptHandler(
 			RequestID: ic.RequestID,
 			Agent:     ic.Agent,
 		})
-		if err := interceptEmitReceipt(ic, allowReceipt); err != nil && ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
-			blockedErr := newReceiptEmissionBlockedRequest(err)
-			ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-			writeBlockedError(w,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
-				receiptEmissionBlockReason, http.StatusForbidden)
+		if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
 			return
 		}
 

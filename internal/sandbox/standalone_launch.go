@@ -85,7 +85,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	}
 	policy, err := ResolvePolicyPaths(policy)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve policy paths: %w", err)
 	}
 	if err := ValidatePolicy(policy); err != nil {
 		return err

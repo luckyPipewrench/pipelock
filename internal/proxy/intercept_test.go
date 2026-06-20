@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -61,6 +62,50 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 	logger := audit.NewNop()
 	m := metrics.New()
 	return cache, pool, cfg, sc, logger, m
+}
+
+func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.Internal = nil
+	cfg.ApplyDefaults()
+
+	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	rph := newReceiptProxyHelper(t)
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	ic := &InterceptContext{
+		Proxy:     p,
+		Config:    cfg,
+		Logger:    audit.NewNop(),
+		RequestID: "req-intercept-receipt",
+		Agent:     "agent",
+	}
+	rr := httptest.NewRecorder()
+	blocked := interceptEmitReceiptOrBlock(ic, rr, audit.NewRequestLogContext(ic.RequestID), receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "intercept",
+		Method:    http.MethodGet,
+		Target:    "https://example.test/",
+		RequestID: ic.RequestID,
+		Agent:     ic.Agent,
+	})
+	if !blocked {
+		t.Fatal("receipt emission failure did not fail closed")
+	}
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+	if got := rr.Header().Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
 }
 
 func testInterceptRedactProxy(t *testing.T, cfg *config.Config) *Proxy {

@@ -256,11 +256,21 @@ func writeCRLHighWater(crlFile string, generation uint64) error {
 
 func readCRLHighWaterContext(crlFile string) (bool, error) {
 	path := crlHighWaterContextPath(crlFile)
-	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- path derives from operator-configured CRL file and protected state root
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
 			return false, nil
 		}
+		return false, fmt.Errorf("stat license CRL high-water context: %w", statErr)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("license CRL high-water context must be a regular file")
+	}
+	if info.Size() > crlHighWaterMaxSize {
+		return false, fmt.Errorf("license CRL high-water context exceeds maximum size")
+	}
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- path derives from operator-configured CRL file and protected state root
+	if err != nil {
 		return false, fmt.Errorf("read license CRL high-water context: %w", err)
 	}
 	var ctx crlHighWaterContext

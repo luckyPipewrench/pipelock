@@ -3705,6 +3705,10 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 	updated.MCPInputScanning.Action = ActionWarn
 	old.MCPInputScanning.OnParseError = ActionBlock
 	updated.MCPInputScanning.OnParseError = ActionForward
+	old.RequestPolicy.OnParseError = ActionBlock
+	updated.RequestPolicy.OnParseError = ActionWarn
+	old.RequestPolicy.OnOpaqueOperation = ActionBlock
+	updated.RequestPolicy.OnOpaqueOperation = ActionAllow
 	old.MCPToolScanning.Enabled = true
 	updated.MCPToolScanning.Enabled = true
 	old.MCPToolScanning.Action = ActionBlock
@@ -3746,6 +3750,8 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 
 	warnings := ValidateReload(old, updated)
 	for _, field := range []string{
+		"request_policy.on_parse_error",
+		"request_policy.on_opaque_operation",
 		"response_scanning.action",
 		"response_scanning.sse_streaming.action",
 		"request_body_scanning.action",
@@ -3766,6 +3772,36 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 		if !hasReloadWarning(warnings, field) {
 			t.Fatalf("missing reload warning for %s; warnings=%+v", field, warnings)
 		}
+	}
+}
+
+func TestValidateReload_ResponseActionDowngradeIgnoresDisabledScanner(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.ResponseScanning.Enabled = false
+	updated.ResponseScanning.Enabled = false
+	old.ResponseScanning.Action = ActionBlock
+	updated.ResponseScanning.Action = ActionWarn
+
+	warnings := ValidateReload(old, updated)
+	if hasReloadWarning(warnings, "response_scanning.action") {
+		t.Fatalf("disabled response scanner produced stale action warning: %+v", warnings)
+	}
+}
+
+func TestValidateReload_ToolChainRemovedOverrideFallsBackToDefault(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.ToolChainDetection.Enabled = true
+	updated.ToolChainDetection.Enabled = true
+	old.ToolChainDetection.Action = ActionBlock
+	old.ToolChainDetection.PatternOverrides = map[string]string{"lethal-trifecta": ActionBlock}
+	updated.ToolChainDetection.Action = ActionWarn
+	updated.ToolChainDetection.PatternOverrides = nil
+
+	warnings := ValidateReload(old, updated)
+	if !hasReloadWarning(warnings, "tool_chain_detection.pattern_overrides.lethal-trifecta") {
+		t.Fatalf("missing removed override downgrade warning: %+v", warnings)
 	}
 }
 

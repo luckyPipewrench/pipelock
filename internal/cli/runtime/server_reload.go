@@ -403,6 +403,9 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 	appendCleared("mode", oldCfg.Mode, newCfg.Mode)
 	appendCleared("fetch_proxy.listen", oldCfg.FetchProxy.Listen, newCfg.FetchProxy.Listen)
 	appendCleared("license_file", oldCfg.LicenseFile, newCfg.LicenseFile)
+	if oldCfg.EnforceEnabled() && !newCfg.EnforceEnabled() {
+		reasons = append(reasons, "enforce disabled")
+	}
 	if len(oldCfg.Internal) > 0 && len(newCfg.Internal) == 0 {
 		reasons = append(reasons, "internal CIDR list emptied")
 	}

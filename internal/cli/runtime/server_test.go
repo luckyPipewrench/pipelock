@@ -752,6 +752,32 @@ func TestServer_Reload_RejectsResponseAndBodyScannerTeardown(t *testing.T) {
 	}
 }
 
+func TestServer_Reload_RejectsGlobalEnforceDisableTeardown(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	oldScanner := s.proxy.ScannerPtr().Load()
+
+	enforce := true
+	oldCfg.Enforce = &enforce
+	newCfg := oldCfg.Clone()
+	detectOnly := false
+	newCfg.Enforce = &detectOnly
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload should reject enforce=false as an implausible teardown")
+	}
+	if !strings.Contains(err.Error(), "implausibly empty") || !strings.Contains(err.Error(), "enforce disabled") {
+		t.Fatalf("error = %q, want implausibly empty enforce rejection", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldCfg {
+		t.Fatal("live config pointer changed after rejected enforce teardown")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected enforce teardown")
+	}
+}
+
 func TestServer_Reload_StrictRejectsSuppressWidening(t *testing.T) {
 	s, buf := newTestServer(t, func(o *ServerOpts) {
 		o.Mode = config.ModeStrict

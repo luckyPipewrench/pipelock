@@ -75,6 +75,29 @@ func TestReadCRLHighWater(t *testing.T) {
 		}
 	})
 
+	t.Run("non-regular context file fails closed", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.MkdirAll(crlHighWaterContextPath(crlFile), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readCRLHighWaterContext(crlFile); err == nil {
+			t.Fatal("non-regular high-water context must error, got nil")
+		}
+	})
+
+	t.Run("oversized context file fails closed", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.MkdirAll(filepath.Dir(crlHighWaterContextPath(crlFile)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(crlHighWaterContextPath(crlFile), make([]byte, crlHighWaterMaxSize+1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readCRLHighWaterContext(crlFile); err == nil {
+			t.Fatal("oversized high-water context must error, got nil")
+		}
+	})
+
 	t.Run("corrupt json fails closed", func(t *testing.T) {
 		crlFile := filepath.Join(t.TempDir(), "crl.json")
 		if err := os.WriteFile(CRLHighWaterPath(crlFile), []byte("{not json"), 0o600); err != nil {

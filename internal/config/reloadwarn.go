@@ -712,7 +712,11 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 }
 
 func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Config) {
-	appendActionDowngradeWarning(warnings, "response_scanning.action", old.ResponseScanning.Action, updated.ResponseScanning.Action)
+	appendActionDowngradeWarning(warnings, "request_policy.on_parse_error", old.RequestPolicy.OnParseError, updated.RequestPolicy.OnParseError)
+	appendActionDowngradeWarning(warnings, "request_policy.on_opaque_operation", old.RequestPolicy.OnOpaqueOperation, updated.RequestPolicy.OnOpaqueOperation)
+	if old.ResponseScanning.Enabled && updated.ResponseScanning.Enabled {
+		appendActionDowngradeWarning(warnings, "response_scanning.action", old.ResponseScanning.Action, updated.ResponseScanning.Action)
+	}
 	if old.ResponseScanning.SSEStreaming.Enabled && updated.ResponseScanning.SSEStreaming.Enabled {
 		appendActionDowngradeWarning(warnings, "response_scanning.sse_streaming.action", old.ResponseScanning.SSEStreaming.Action, updated.ResponseScanning.SSEStreaming.Action)
 	}
@@ -790,9 +794,12 @@ func appendToolPolicyRuleActionDowngrades(warnings *[]ReloadWarning, oldPolicy, 
 
 func appendToolChainActionDowngrades(warnings *[]ReloadWarning, oldChain, updatedChain ToolChainDetection) {
 	for name, oldAction := range oldChain.PatternOverrides {
+		if strings.TrimSpace(oldAction) == "" {
+			oldAction = oldChain.Action
+		}
 		newAction, ok := updatedChain.PatternOverrides[name]
-		if !ok {
-			continue
+		if !ok || strings.TrimSpace(newAction) == "" {
+			newAction = updatedChain.Action
 		}
 		appendActionDowngradeWarning(warnings, "tool_chain_detection.pattern_overrides."+name, oldAction, newAction)
 	}

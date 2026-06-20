@@ -83,7 +83,7 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 	}
 	policy, err := ResolvePolicyPaths(policy)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve policy paths: %w", err)
 	}
 	if err := ValidatePolicy(policy); err != nil {
 		return nil, err

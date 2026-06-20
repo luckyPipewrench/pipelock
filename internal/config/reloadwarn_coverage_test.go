@@ -51,6 +51,20 @@ func TestReloadActionDowngradeHelpersEdgeCases(t *testing.T) {
 	if len(warnings) != 2 {
 		t.Fatalf("tool-chain warnings = %#v, want two downgrade warnings", warnings)
 	}
+	wantFields := map[string]bool{
+		"tool_chain_detection.pattern_overrides.empty-override": false,
+		"tool_chain_detection.custom_patterns.existing.action":  false,
+	}
+	for _, warning := range warnings {
+		if _, ok := wantFields[warning.Field]; ok {
+			wantFields[warning.Field] = true
+		}
+	}
+	for field, found := range wantFields {
+		if !found {
+			t.Fatalf("expected warning field %q not found in %#v", field, warnings)
+		}
+	}
 }
 
 func TestReloadActionStrengthCoversAllOrderedActions(t *testing.T) {
@@ -71,28 +85,59 @@ func TestReloadActionStrengthCoversAllOrderedActions(t *testing.T) {
 		{"bogus", false},
 	}
 	for _, tc := range tests {
-		if _, ok := reloadActionStrength(tc.action); ok != tc.valid {
-			t.Fatalf("reloadActionStrength(%q) valid = %v, want %v", tc.action, ok, tc.valid)
-		}
+		t.Run(tc.action, func(t *testing.T) {
+			t.Parallel()
+
+			if _, ok := reloadActionStrength(tc.action); ok != tc.valid {
+				t.Fatalf("reloadActionStrength(%q) valid = %v, want %v", tc.action, ok, tc.valid)
+			}
+		})
 	}
 }
 
 func TestSuppressCoverageHelpersEdgeCases(t *testing.T) {
 	t.Parallel()
 
-	if suppressEntryCoveredByAny([]SuppressEntry{{Rule: "other", Path: "*"}}, SuppressEntry{Rule: "body_dlp", Path: "api.example"}) {
-		t.Fatal("different rule must not cover suppress entry")
+	tests := []struct {
+		name string
+		got  func() bool
+		want bool
+	}{
+		{
+			name: "different rule does not cover",
+			got: func() bool {
+				return suppressEntryCoveredByAny([]SuppressEntry{{Rule: "other", Path: "*"}}, SuppressEntry{Rule: "body_dlp", Path: "api.example"})
+			},
+			want: false,
+		},
+		{
+			name: "empty path covers empty path",
+			got:  func() bool { return suppressPathCovers("", "") },
+			want: true,
+		},
+		{
+			name: "empty path does not cover non-empty path",
+			got:  func() bool { return suppressPathCovers("", "api.example") },
+			want: false,
+		},
+		{
+			name: "multi-glob old path does not cover",
+			got:  func() bool { return suppressPathCovers("api.*.example*", "api.prod.example") },
+			want: false,
+		},
+		{
+			name: "multi-glob updated path is not covered",
+			got:  func() bool { return suppressPathCovers("api.*", "api.*.example*") },
+			want: false,
+		},
 	}
-	if !suppressPathCovers("", "") {
-		t.Fatal("empty suppress path should only cover another empty path")
-	}
-	if suppressPathCovers("", "api.example") {
-		t.Fatal("empty suppress path must not cover non-empty path")
-	}
-	if suppressPathCovers("api.*.example*", "api.prod.example") {
-		t.Fatal("multi-glob suppress path must not be treated as covering")
-	}
-	if suppressPathCovers("api.*", "api.*.example*") {
-		t.Fatal("updated multi-glob suppress path must not be treated as covered")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tc.got(); got != tc.want {
+				t.Fatalf("coverage = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

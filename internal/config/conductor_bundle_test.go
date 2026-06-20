@@ -65,6 +65,9 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	if newCfg.DefaultAgentIdentity != oldCfg.DefaultAgentIdentity {
 		t.Fatalf("DefaultAgentIdentity = %q, want %q", newCfg.DefaultAgentIdentity, oldCfg.DefaultAgentIdentity)
 	}
+	if !reflect.DeepEqual(newCfg.Agents, oldCfg.Agents) {
+		t.Fatalf("Agents = %#v, want %#v", newCfg.Agents, oldCfg.Agents)
+	}
 	if !newCfg.Conductor.Enabled || newCfg.Conductor.FleetID != "fleet-from-bundle" {
 		t.Fatalf("Conductor should remain bundle-owned, got %#v", newCfg.Conductor)
 	}
@@ -72,6 +75,7 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	oldCfg.Internal[0] = "172.16.0.0/12"
 	oldCfg.TrustedDomains[0] = "mutated.example"
 	oldCfg.Suppress[0].Path = "mutated.example/*"
+	oldCfg.Agents["builder"] = AgentProfile{Sandbox: &AgentSandboxOverride{Enabled: boolPtr(false)}}
 	if newCfg.Internal[0] == oldCfg.Internal[0] {
 		t.Fatal("Internal slice aliases old config")
 	}
@@ -80,5 +84,8 @@ func TestPreserveConductorBundleLocalRuntimeStateCopiesFollowerLocalFields(t *te
 	}
 	if newCfg.Suppress[0].Path == oldCfg.Suppress[0].Path {
 		t.Fatal("Suppress slice aliases old config")
+	}
+	if reflect.DeepEqual(newCfg.Agents["builder"], oldCfg.Agents["builder"]) {
+		t.Fatal("Agents map aliases old config")
 	}
 }

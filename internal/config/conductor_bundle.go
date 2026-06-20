@@ -33,7 +33,14 @@ func PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg *Config) {
 	newCfg.Sandbox = oldCfg.Sandbox
 	newCfg.FlightRecorder = oldCfg.FlightRecorder
 
-	newCfg.Agents = oldCfg.Agents
+	if oldCfg.Agents != nil {
+		newCfg.Agents = make(map[string]AgentProfile, len(oldCfg.Agents))
+		for name, profile := range oldCfg.Agents {
+			newCfg.Agents[name] = profile
+		}
+	} else {
+		newCfg.Agents = nil
+	}
 	newCfg.LicenseKey = oldCfg.LicenseKey
 	newCfg.LicenseFile = oldCfg.LicenseFile
 

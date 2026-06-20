@@ -79,10 +79,12 @@ func TestMatchesPath_HostGlobAnchorsToHost(t *testing.T) {
 		{"https://api.example.com.:8443/v1/messages", "*.example.com:8443*", true},
 		// Scheme-qualified full-URL glob still matches its own URL.
 		{"https://api.x.com/v1/chat", "https://api.x.com/*", true},
-		// Generic dotted URL/path globs are not host globs.
+		// Dotted version URL/path globs are not host globs.
 		{"https://example.com/downloads/pipelock-v1.2.3/manifest.json", "*v1.2.3*", true},
-		{"https://example.com/releases/pipelock.tar.gz", "*.tar.gz*", true},
-		{"https://example.com/assets/app.min.js", "*.min.js*", true},
+		// Ambiguous double-sided dotted globs stay host-scoped because
+		// extension-looking labels can also be real TLDs.
+		{"https://api.example.zip/v1/messages", "*.example.zip*", true},
+		{"https://attacker.test/?x=.example.zip", "*.example.zip*", false},
 		// Bare relative path patterns are unaffected.
 		{"https://example.com/robots.txt", "robots.txt", true},
 		{"https://example.com/releases/pipelock.tar.gz", "*.tar.gz", true},

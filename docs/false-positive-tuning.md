@@ -84,7 +84,7 @@ See [docs/guides/suppression.md](guides/suppression.md) for the full suppression
 
 ### Using only your own patterns
 
-By default, pipelock merges your custom patterns with the 67 built-in defaults. To use only your own patterns (disabling all built-ins), set `include_defaults: false`:
+By default, pipelock merges your custom patterns with the 65 built-in defaults. To use only your own patterns (disabling all built-ins), set `include_defaults: false`:
 
 ```yaml
 dlp:

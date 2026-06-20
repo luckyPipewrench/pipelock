@@ -159,8 +159,9 @@ func matchGlobSubstring(s, pattern string) bool {
 // discriminator is intentionally limited to the host-substring style used by
 // provider suppressions: wildcard on both sides, no scheme, no path separator,
 // and a stripped core that is itself a dotted domain rather than a dotted
-// version/file-extension path glob. Basename and path globs like "*.tar.gz",
-// "*.tar.gz*", and "*v1.2.3*" must still reach the path matchers below.
+// version path glob. Basename globs like "*.tar.gz" still reach the path
+// matchers below; ambiguous double-sided dotted globs like "*.tar.gz*" stay
+// host-scoped because extensions and TLDs overlap.
 func isHostDomainGlob(p string) bool {
 	if strings.Contains(p, "://") || strings.Contains(p, "/") || !strings.HasPrefix(p, "*") || !strings.HasSuffix(p, "*") {
 		return false
@@ -169,8 +170,9 @@ func isHostDomainGlob(p string) bool {
 	return strings.Contains(core, ".") && !strings.Contains(core, "*") && !looksLikeDottedPathGlob(core)
 }
 
-// looksLikeDottedPathGlob excludes the common dotted path-glob forms that are
-// otherwise indistinguishable from a two-label hostname by syntax alone.
+// looksLikeDottedPathGlob excludes dotted version path-glob forms that are safe
+// to distinguish from hostnames by syntax alone. File-extension names are not a
+// safe discriminator because many extensions are also real TLDs.
 func looksLikeDottedPathGlob(core string) bool {
 	labels := strings.Split(core, ".")
 	for _, label := range labels {
@@ -178,12 +180,7 @@ func looksLikeDottedPathGlob(core string) bool {
 			return true
 		}
 	}
-	switch labels[len(labels)-1] {
-	case "css", "csv", "gif", "gz", "html", "jpeg", "jpg", "js", "json", "log", "map", "md", "pdf", "png", "tar", "tgz", "txt", "wasm", "xml", "yaml", "yml", "zip":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 // isAllDigits reports whether s is non-empty and every rune is ASCII decimal.

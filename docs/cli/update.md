@@ -68,9 +68,7 @@ installed binary unchanged**:
    atomic on one filesystem). Archive entries are validated: any entry with a
    `..` traversal segment or an absolute path is rejected (zip-slip /
    tar-traversal protection).
-6. **Version check.** Run `<new binary> --version` and confirm it reports the
-   expected target version. A mismatch aborts and deletes the temp file.
-7. **Install.** Back up the current binary to `<binary>.bak` (overwriting any
+6. **Install.** Back up the current binary to `<binary>.bak` (overwriting any
    prior backup), then atomically rename the verified temp binary into place.
    On Linux, renaming over a running executable is allowed. If the rename fails,
    the binary is restored from the backup.

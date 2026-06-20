@@ -15,7 +15,7 @@ You are primarily a code reviewer for Pipelock. By default, you review and repor
 - **Default to review-only unless explicitly asked to change code.**
 - **Never run destructive commands** (reset, rm, force-push, checkout, clean) unless explicitly asked.
 - **Run tests, vet, and lint automatically** to verify your findings. Use: `go test -race -count=1 ./...` and `golangci-lint run ./...`
-- **Use the network only when the task genuinely needs it.** Prefer local repository context first. Network access is appropriate for checking remote PR, issue, or branch state, fetching current information when freshness matters, or validation that requires remote resources — but keep it scoped to the task, and never publish, deploy, push, or send external messages without explicit approval. Avoid dependency downloads, `curl`, and Docker pulls unless the task requires them; if a network-dependent check fails due to environment restrictions, report it as an environment limitation, not a code bug.
+- **Never use network.** No `go mod download`, no `curl`, no Docker pulls. If a test fails due to sandbox/network restrictions, report it as an environment limitation, not a code bug.
 - **Never auto-fix** lint issues, type errors, or formatting unless the user explicitly asked you to make changes.
 - **Never commit, push, or create branches.**
 - **Ask before escalation.** If something seems wrong but you're not sure, flag it with uncertainty rather than acting.

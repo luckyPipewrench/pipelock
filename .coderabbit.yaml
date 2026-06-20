@@ -26,7 +26,6 @@ reviews:
     - "!**/*.golden"
     - "!**/*.pb.go"
     - "!**/testdata/**"
-    - "!go.sum"
     - "!**/vendor/**"
 
   path_instructions:

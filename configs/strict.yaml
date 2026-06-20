@@ -103,7 +103,7 @@ dlp:
       exempt_domains:
         - "*.fireworks.ai"
     - name: "LLM Router API Key"
-      regex: '\bsk-or-v1-[A-Za-z0-9_-]{20,}\b'
+      regex: '\bsk-or-v1-[A-Fa-f0-9]{20,}\b'
       severity: critical
       exempt_domains:
         - "*.openrouter.ai"

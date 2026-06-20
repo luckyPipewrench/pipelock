@@ -110,7 +110,7 @@ func tokenClasses() []classPattern {
 		{class: ClassAzureSAS, pattern: regexp.MustCompile(`(?i)\bsig=[A-Za-z0-9%]{43,}%3d\b`), priority: 100},
 		{class: ClassSlackToken, pattern: regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
 		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)\bfw_[A-Za-z0-9]{22}\b`), priority: 100},
-		{class: ClassAIProviderKey, pattern: regexp.MustCompile(`(?i)\b(?:sk-or-v1-[A-Za-z0-9_-]{20,}|pplx-[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9]{20,})\b`), priority: 100},
+		{class: ClassAIProviderKey, pattern: regexp.MustCompile(`(?i)\b(?:sk-or-v1-[A-Fa-f0-9]{20,}|pplx-[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9]{20,})\b`), priority: 100},
 		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)\bhf_[A-Za-z0-9]{34,37}\b`), priority: 100},
 		{class: ClassReplicateAPIToken, pattern: regexp.MustCompile(`(?i)\br8_[a-f0-9]{40}\b`), priority: 100},
 		{class: ClassTogetherAIKey, pattern: regexp.MustCompile(`(?i)\btok_[a-z0-9]{40,}\b`), priority: 100},

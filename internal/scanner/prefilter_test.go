@@ -19,7 +19,7 @@ func TestExtractLiteralPrefix(t *testing.T) {
 		{"anthropic", "(?i)sk-ant-[a-zA-Z0-9]{10,}", "sk-ant-"},
 		{"openai", "(?i)sk-proj-[a-zA-Z0-9]{10,}", "sk-proj-"},
 		{"fireworks", "(?i)fw_[A-Za-z0-9]{22}\\b", "fw_"},
-		{"llm router", `(?i)\bsk-or-v1-[A-Za-z0-9_-]{20,}\b`, "sk-or-v1-"},
+		{"llm router", `(?i)\bsk-or-v1-[A-Fa-f0-9]{20,}\b`, "sk-or-v1-"},
 		{"answer engine", `(?i)\bpplx-[A-Za-z0-9]{20,}\b`, "pplx-"},
 		{"web research", `(?i)\btvly-[A-Za-z0-9]{20,}\b`, "tvly-"},
 		{"google api", "(?i)AIza[0-9A-Za-z]{35}", "aiza"},

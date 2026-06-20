@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"mime"
+	"net"
 	"net/url"
 	"path"
 	"strings"
@@ -56,6 +57,18 @@ func matchesPath(target, pattern string) bool {
 	if normalized == p || target == p {
 		return true
 	}
+	// Host-domain glob (e.g. "*.anthropic.com*", "*chatgpt.com*") against a URL
+	// target: match the destination HOST only, with proper domain semantics, and
+	// do NOT fall through to path/basename/substring globbing. Those operate on
+	// the full URL string and can be satisfied by the domain appearing in a path,
+	// query, or basename of an UNRELATED host -- a suppression bypass that would
+	// let "*.provider.com*" suppress a DLP finding on an exfil request to any
+	// host (allowlist/suppression must not bypass content scanning).
+	if isHostDomainGlob(p) && strings.Contains(normalized, "://") {
+		hostname, authority := urlHostParts(normalized)
+		return (hostname != "" && hostMatchesDomainGlob(hostname, p)) ||
+			(authority != "" && hostMatchesDomainGlob(authority, p))
+	}
 	// Glob on full path.
 	if matched, _ := path.Match(p, normalized); matched {
 		return true
@@ -65,8 +78,10 @@ func matchesPath(target, pattern string) bool {
 		return true
 	}
 	// Substring match for URL-style patterns containing "://".
-	// Enables "*.anthropic.com*" to match "https://api.anthropic.com/v1/messages"
-	// where path.Match fails because "*" doesn't cross "/" boundaries.
+	// Enables "https://api.x.com/v1/*" to match a full URL where path.Match
+	// fails because "*" doesn't cross "/" boundaries. Host-domain globs
+	// ("*.anthropic.com*") are handled earlier (host-scoped) and never reach
+	// here, so this cannot be fooled by a domain in a path or query.
 	if strings.Contains(p, "://") || (strings.Contains(p, ".") && strings.Contains(normalized, "://")) {
 		if matchGlobSubstring(normalized, p) {
 			return true
@@ -135,6 +150,68 @@ func matchGlobSubstring(s, pattern string) bool {
 		}
 	}
 	return true
+}
+
+// isHostDomainGlob reports whether a suppress pattern is a wildcarded host glob
+// over a multi-label domain (e.g. "*.anthropic.com*", "*chatgpt.com*") rather
+// than a file/path glob ("*.txt", "*.tar.gz") or a scheme/path-qualified
+// pattern. Such patterns are matched against the destination host only. The
+// discriminator is intentionally limited to the host-substring style used by
+// provider suppressions: wildcard on both sides, no scheme, no path separator,
+// and a stripped core that is itself a dotted domain. One-sided basename globs
+// like "*.tar.gz" must still reach the basename matcher below.
+func isHostDomainGlob(p string) bool {
+	if strings.Contains(p, "://") || strings.Contains(p, "/") || !strings.HasPrefix(p, "*") || !strings.HasSuffix(p, "*") {
+		return false
+	}
+	core := strings.TrimPrefix(strings.Trim(p, "*"), ".")
+	return strings.Contains(core, ".") && !strings.Contains(core, "*")
+}
+
+// urlHostParts returns the lowercased bare hostname and the lowercased
+// authority (host[:port]) of a URL target, or ("","") if it does not parse as a
+// URL with a host. Matching a host glob against the bare hostname covers
+// portless patterns even on a ported URL; matching against the authority covers
+// port-qualified patterns like "*.example.com:8443*".
+func urlHostParts(target string) (hostname, authority string) {
+	u, err := url.Parse(target)
+	if err != nil {
+		return "", ""
+	}
+	hostname = normalizeHostTrailingDot(strings.ToLower(u.Hostname()))
+	if hostname == "" {
+		return "", ""
+	}
+	if port := u.Port(); port != "" {
+		return hostname, strings.ToLower(net.JoinHostPort(hostname, port))
+	}
+	return hostname, hostname
+}
+
+// hostMatchesDomainGlob matches a destination host against a bare host glob such
+// as "*.anthropic.com*" or "*chatgpt.com*". Surrounding "*" and a leading "."
+// are stripped to the bare domain, then matched as an exact host or a
+// dot-bounded subdomain suffix, mirroring scanner domain-list semantics
+// ("*.example.com" covers example.com and sub.example.com). Because it is
+// host-scoped, the domain appearing elsewhere in a URL (path or query) cannot
+// satisfy it.
+func hostMatchesDomainGlob(host, pattern string) bool {
+	d := strings.ToLower(pattern)
+	d = strings.TrimPrefix(d, "*")
+	d = strings.TrimSuffix(d, "*")
+	d = strings.TrimPrefix(d, ".")
+	d = normalizeHostTrailingDot(d)
+	if d == "" || strings.ContainsAny(d, "*/") {
+		return false
+	}
+	return host == d || strings.HasSuffix(host, "."+d)
+}
+
+func normalizeHostTrailingDot(host string) string {
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		return net.JoinHostPort(strings.TrimSuffix(h, "."), p)
+	}
+	return strings.TrimSuffix(host, ".")
 }
 
 // toSlash normalizes path separators to forward slashes.

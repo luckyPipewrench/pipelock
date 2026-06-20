@@ -652,7 +652,7 @@ For built-in provider-key patterns, the default config already exempts the provi
 | OpenAI API Key | `sk-proj-` + 20+ token chars | critical |
 | OpenAI Service Key | `sk-svcacct-` + 20+ token chars | critical |
 | Fireworks API Key | `fw_` | critical |
-| LLM Router API Key | `sk-or-v1-` + 20+ token chars | critical |
+| LLM Router API Key | `sk-or-v1-` + 20+ hex chars | critical |
 | Answer Engine API Key | `pplx-` + 20+ token chars | critical |
 | Web Research API Key | `tvly-` + 20+ token chars | critical |
 | AWS Access Key ID | `AKIA\|A3T\|AGPA\|AIDA\|AROA\|AIPA\|ANPA\|ANVA\|ASIA` | critical |

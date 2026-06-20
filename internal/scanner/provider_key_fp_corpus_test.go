@@ -40,18 +40,23 @@ var providerKeyBenignCorpus = map[string]string{
 	"openai svcacct short":    "sk-svcacct-" + strings.Repeat("c", 8),
 	"fireworks under 22":      "fw_" + strings.Repeat("d", 10),
 	"llm router under floor":  "sk-or-v1-" + strings.Repeat("e", 10),
-	"answer engine short":     "pplx-" + strings.Repeat("f", 8),
-	"answer engine embedded":  "prefix_pplx-" + strings.Repeat("g", 24),
-	"web research short":      "tvly-" + strings.Repeat("j", 8),
-	"web research charset":    "tvly-" + strings.Repeat("k", 19) + "_",
-	"google wrong length":     "AIza" + strings.Repeat("e", 10),
-	"huggingface too short":   "hf_abc",
-	"databricks non-hex":      "dapi" + strings.Repeat("z", 32), // z is not hex
-	"replicate non-hex":       "r8_" + strings.Repeat("g", 40),  // g is not hex
-	"together longer token":   "tok_" + strings.Repeat("a", 40) + "_suffix",
-	"pinecone short":          "pcsk_" + strings.Repeat("h", 8),
-	"groq short":              "gsk_" + strings.Repeat("i", 8),
-	"prefix inside a word":    "risk-projection-summary-table-v2-output",
+	// Permanent tripwire: the LLM Router suffix charset must stay hex-only.
+	// Hyphens/underscores and arbitrary letters let "sk-or-v1-" followed by
+	// ordinary prose/slugs false-positive.
+	"llm router hyphenated prose": "sk-or-v1-but-then-words-not-a-key-just-text",
+	"llm router long word prose":  "sk-or-v1-thisisaverylongwordnotakey",
+	"answer engine short":         "pplx-" + strings.Repeat("f", 8),
+	"answer engine embedded":      "prefix_pplx-" + strings.Repeat("g", 24),
+	"web research short":          "tvly-" + strings.Repeat("j", 8),
+	"web research charset":        "tvly-" + strings.Repeat("k", 19) + "_",
+	"google wrong length":         "AIza" + strings.Repeat("e", 10),
+	"huggingface too short":       "hf_abc",
+	"databricks non-hex":          "dapi" + strings.Repeat("z", 32), // z is not hex
+	"replicate non-hex":           "r8_" + strings.Repeat("g", 40),  // g is not hex
+	"together longer token":       "tok_" + strings.Repeat("a", 40) + "_suffix",
+	"pinecone short":              "pcsk_" + strings.Repeat("h", 8),
+	"groq short":                  "gsk_" + strings.Repeat("i", 8),
+	"prefix inside a word":        "risk-projection-summary-table-v2-output",
 
 	// Permanent tripwires: these benign identifiers were demonstrated to false
 	// positive against the removed `sk_car_` ("Voice AI") and `jina_` ("Neural

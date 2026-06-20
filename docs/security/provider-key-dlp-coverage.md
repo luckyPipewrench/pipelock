@@ -17,7 +17,7 @@ provider-bound credentials:
 | OpenAI API Key | `sk-proj-` + 20+ token chars | `*.openai.com` |
 | OpenAI Service Key | `sk-svcacct-` + 20+ token chars | `*.openai.com` |
 | Fireworks API Key | `fw_` + 22 alphanumeric chars | `*.fireworks.ai` |
-| LLM Router API Key | `sk-or-v1-` + 20+ token chars | `*.openrouter.ai` |
+| LLM Router API Key | `sk-or-v1-` + 20+ hex chars | `*.openrouter.ai` |
 | Answer Engine API Key | `pplx-` + 20+ alphanumeric chars | `*.perplexity.ai` |
 | Web Research API Key | `tvly-` + 20+ alphanumeric chars | `*.tavily.com` |
 | Google API Key | `AIza` + 35 token chars | `*.googleapis.com` |

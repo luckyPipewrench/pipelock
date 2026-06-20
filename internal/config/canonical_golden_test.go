@@ -203,7 +203,13 @@ const (
 	// Search" (jina_) default DLP patterns plus their suppress entries: their
 	// key formats are undisclosed so the prefixes false-positive on common
 	// identifiers. Detection/enforcement-relevant change.
-	goldenHashDefaults = "4948d11d65f4e6ed711da1772619c3b68b07c250f67ba154c2a4778d41e6da8c"
+	// Re-bumped for the LLM Router (sk-or-v1-) DLP suffix tightening: the suffix
+	// charset dropped "-"/"_" (was matching hyphenated prose), a policy-semantic
+	// pattern change, so the hash shifts.
+	// Re-bumped again for the LLM Router suffix narrowing from alphanumeric to
+	// hex-only, matching the documented key shape and preventing long ordinary
+	// words after "sk-or-v1-" from false-positive matching.
+	goldenHashDefaults = "3fd8fa0662cde0ddaa694d2b2fb270b445a64cc527425dbaa9424051ac25e182"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -303,7 +309,9 @@ const (
 	// sets, so the hash shifts in lockstep.
 	// Re-bumped for dropping the FP-prone "Voice AI" (sk_car_) and "Neural
 	// Search" (jina_) default DLP patterns + their suppress entries.
-	goldenHashRichConfig = "8b48966d2487ed8d9b8ea0154c169488bca8128d0cde56dc75ec8a8926f4a18a"
+	// Re-bumped for the LLM Router hex-only suffix narrowing: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "d01993539c02491ec0916460e1456011ee94c17ab903c42554ccd3ee5b082903"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -148,7 +148,7 @@ Inline `// pipelock:ignore` comments work automatically with no action config ne
 | OpenAI API Key | `sk-proj-*` with 20+ token chars | critical |
 | OpenAI Service Key | `sk-svcacct-*` with 20+ token chars | critical |
 | Fireworks API Key | `fw_*` | critical |
-| LLM Router API Key | `sk-or-v1-*` with 20+ token chars | critical |
+| LLM Router API Key | `sk-or-v1-*` with 20+ hex chars | critical |
 | Answer Engine API Key | `pplx-*` with 20+ token chars | critical |
 | Web Research API Key | `tvly-*` with 20+ token chars | critical |
 | Google API Key | `AIza*` | high |

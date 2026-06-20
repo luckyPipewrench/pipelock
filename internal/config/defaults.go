@@ -119,7 +119,10 @@ func Defaults() *Config {
 				// opaque base64-ish IDs do not match a 22-character prefix.
 				// Source: https://docs.fireworks.ai/api-reference/authentication
 				{Name: "Fireworks API Key", Regex: `\bfw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.fireworks.ai"}},
-				{Name: "LLM Router API Key", Regex: `\bsk-or-v1-[A-Za-z0-9_-]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.openrouter.ai"}},
+				// OpenRouter keys are "sk-or-v1-" + a hex token. Keep the suffix
+				// hex-only: allowing hyphens, underscores, or arbitrary letters lets
+				// the pattern match ordinary prose/slugs after the prefix.
+				{Name: "LLM Router API Key", Regex: `\bsk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.openrouter.ai"}},
 				{Name: "Answer Engine API Key", Regex: `\bpplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.perplexity.ai"}},
 				{Name: "Web Research API Key", Regex: `\btvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.tavily.com"}},
 				{Name: "Google API Key", Regex: `\bAIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, ExemptDomains: []string{"*.googleapis.com"}},

@@ -215,6 +215,139 @@ func TestAdvanceCRLHighWater(t *testing.T) {
 	})
 }
 
+func TestDurableCRLHighWaterCopyRecovery(t *testing.T) {
+	t.Run("primary only backfills anchor and context", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := writeCRLHighWaterFileForCRL(CRLHighWaterPath(crlFile), crlFile, 21); err != nil {
+			t.Fatalf("write primary high-water: %v", err)
+		}
+
+		gen, found, err := readDurableCRLHighWater(crlFile)
+		if err != nil || !found || gen != 21 {
+			t.Fatalf("readDurableCRLHighWater = (%d, %v, %v), want (21, true, nil)", gen, found, err)
+		}
+		anchor, anchorFound, err := readCRLHighWaterFileForContext(CRLHighWaterAnchorPath(crlFile), "test anchor", crlFile)
+		if err != nil || !anchorFound || anchor != 21 {
+			t.Fatalf("anchor after backfill = (%d, %v, %v), want (21, true, nil)", anchor, anchorFound, err)
+		}
+		if contextFound, err := readCRLHighWaterContext(crlFile); err != nil || !contextFound {
+			t.Fatalf("context after backfill = (%v, %v), want (true, nil)", contextFound, err)
+		}
+	})
+
+	t.Run("anchor only restores primary and context", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := writeCRLHighWaterFileForCRL(CRLHighWaterAnchorPath(crlFile), crlFile, 34); err != nil {
+			t.Fatalf("write anchor high-water: %v", err)
+		}
+
+		gen, found, err := readDurableCRLHighWater(crlFile)
+		if err != nil || !found || gen != 34 {
+			t.Fatalf("readDurableCRLHighWater = (%d, %v, %v), want (34, true, nil)", gen, found, err)
+		}
+		primary, primaryFound, err := ReadCRLHighWater(crlFile)
+		if err != nil || !primaryFound || primary != 34 {
+			t.Fatalf("primary after restore = (%d, %v, %v), want (34, true, nil)", primary, primaryFound, err)
+		}
+		if contextFound, err := readCRLHighWaterContext(crlFile); err != nil || !contextFound {
+			t.Fatalf("context after restore = (%v, %v), want (true, nil)", contextFound, err)
+		}
+	})
+
+	t.Run("mismatched copies fail closed", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := writeCRLHighWaterFileForCRL(CRLHighWaterPath(crlFile), crlFile, 40); err != nil {
+			t.Fatalf("write primary high-water: %v", err)
+		}
+		if err := writeCRLHighWaterFileForCRL(CRLHighWaterAnchorPath(crlFile), crlFile, 41); err != nil {
+			t.Fatalf("write anchor high-water: %v", err)
+		}
+
+		_, _, err := readDurableCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "high-water mismatch") {
+			t.Fatalf("readDurableCRLHighWater mismatch error = %v, want mismatch", err)
+		}
+	})
+}
+
+func TestCRLHighWaterContextAndDigestMismatchFailClosed(t *testing.T) {
+	t.Run("state context mismatch", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		state := crlHighWaterState{
+			Generation: 9,
+			Context:    "wrong-context",
+			Digest:     crlHighWaterDigest(crlFile, 9),
+		}
+		data, err := json.Marshal(state)
+		if err != nil {
+			t.Fatalf("marshal state: %v", err)
+		}
+		if err := os.WriteFile(CRLHighWaterPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+
+		_, _, err = ReadCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "context mismatch") {
+			t.Fatalf("ReadCRLHighWater context error = %v, want context mismatch", err)
+		}
+	})
+
+	t.Run("state digest mismatch", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		state := crlHighWaterState{
+			Generation: 9,
+			Context:    crlHighWaterContextID(crlFile),
+			Digest:     "wrong-digest",
+		}
+		data, err := json.Marshal(state)
+		if err != nil {
+			t.Fatalf("marshal state: %v", err)
+		}
+		if err := os.WriteFile(CRLHighWaterPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+
+		_, _, err = ReadCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+			t.Fatalf("ReadCRLHighWater digest error = %v, want digest mismatch", err)
+		}
+	})
+
+	t.Run("context json parse failure", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.MkdirAll(filepath.Dir(crlHighWaterContextPath(crlFile)), 0o750); err != nil {
+			t.Fatalf("mkdir context dir: %v", err)
+		}
+		if err := os.WriteFile(crlHighWaterContextPath(crlFile), []byte("{not json"), 0o600); err != nil {
+			t.Fatalf("write context: %v", err)
+		}
+
+		_, _, err := readDurableCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "parse license CRL high-water context") {
+			t.Fatalf("readDurableCRLHighWater context error = %v, want parse failure", err)
+		}
+	})
+
+	t.Run("context identity mismatch", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.MkdirAll(filepath.Dir(crlHighWaterContextPath(crlFile)), 0o750); err != nil {
+			t.Fatalf("mkdir context dir: %v", err)
+		}
+		data, err := json.Marshal(crlHighWaterContext{Context: "wrong-context"})
+		if err != nil {
+			t.Fatalf("marshal context: %v", err)
+		}
+		if err := os.WriteFile(crlHighWaterContextPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write context: %v", err)
+		}
+
+		_, _, err = readDurableCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "context mismatch") {
+			t.Fatalf("readDurableCRLHighWater context error = %v, want context mismatch", err)
+		}
+	})
+}
+
 func TestReadCRLHighWaterStatError(t *testing.T) {
 	// A path component that is a regular file makes os.Stat fail with a
 	// non-ErrNotExist error (ENOTDIR). That must surface fail-closed rather than

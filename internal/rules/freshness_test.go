@@ -274,6 +274,158 @@ func TestFreshnessState_LoadMissing(t *testing.T) {
 	}
 }
 
+func TestFreshnessState_PrimaryOnlyBackfillsSecondaryAndContext(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	state := &FreshnessState{HighestSeen: map[string]uint64{"community:test-bundle": 17}}
+	if err := writeFreshnessStateFile(filepath.Join(dir, freshnessFilename), dir, state); err != nil {
+		t.Fatalf("write primary freshness state: %v", err)
+	}
+
+	loaded, err := LoadFreshnessState(dir)
+	if err != nil {
+		t.Fatalf("LoadFreshnessState: %v", err)
+	}
+	if got := loaded.HighestSeen["community:test-bundle"]; got != 17 {
+		t.Fatalf("loaded floor = %d, want 17", got)
+	}
+	if _, err := os.Stat(freshnessSecondaryPath(dir)); err != nil {
+		t.Fatalf("secondary freshness state not backfilled: %v", err)
+	}
+	if found, err := readFreshnessContext(dir); err != nil || !found {
+		t.Fatalf("freshness context after primary-only load = (%v, %v), want (true, nil)", found, err)
+	}
+}
+
+func TestFreshnessState_SecondaryOnlyRestoresPrimaryAndContext(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	state := &FreshnessState{HighestSeen: map[string]uint64{"standard:pipelock-standard": 23}}
+	if err := writeFreshnessStateFile(freshnessSecondaryPath(dir), dir, state); err != nil {
+		t.Fatalf("write secondary freshness state: %v", err)
+	}
+
+	loaded, err := LoadFreshnessState(dir)
+	if err != nil {
+		t.Fatalf("LoadFreshnessState: %v", err)
+	}
+	if got := loaded.HighestSeen["standard:pipelock-standard"]; got != 23 {
+		t.Fatalf("loaded floor = %d, want 23", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, freshnessFilename)); err != nil {
+		t.Fatalf("primary freshness state not restored: %v", err)
+	}
+	if found, err := readFreshnessContext(dir); err != nil || !found {
+		t.Fatalf("freshness context after secondary-only load = (%v, %v), want (true, nil)", found, err)
+	}
+}
+
+func TestFreshnessState_MismatchedCopiesFailClosed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := writeFreshnessStateFile(filepath.Join(dir, freshnessFilename), dir, &FreshnessState{
+		HighestSeen: map[string]uint64{"community:test-bundle": 10},
+	}); err != nil {
+		t.Fatalf("write primary freshness state: %v", err)
+	}
+	if err := writeFreshnessStateFile(freshnessSecondaryPath(dir), dir, &FreshnessState{
+		HighestSeen: map[string]uint64{"community:test-bundle": 11},
+	}); err != nil {
+		t.Fatalf("write secondary freshness state: %v", err)
+	}
+
+	_, err := LoadFreshnessState(dir)
+	if err == nil || !strings.Contains(err.Error(), "freshness state mismatch") {
+		t.Fatalf("LoadFreshnessState mismatch error = %v, want mismatch", err)
+	}
+}
+
+func TestFreshnessState_ContextAndDigestMismatchFailClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "context mismatch",
+			body: `{"highest_seen":{"community:test-bundle":10},"context":"wrong-context"}`,
+			want: "context mismatch",
+		},
+		{
+			name: "digest mismatch",
+			body: `{"highest_seen":{"community:test-bundle":10},"digest":"wrong-digest"}`,
+			want: "digest mismatch",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, freshnessFilename), []byte(tc.body), 0o600); err != nil {
+				t.Fatalf("write freshness state: %v", err)
+			}
+
+			_, err := LoadFreshnessState(dir)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadFreshnessState error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestFreshnessState_ContextFileErrorsFailClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "invalid json", body: "{not json", want: "parse freshness context"},
+		{name: "wrong context", body: `{"context":"wrong-context"}`, want: "freshness context mismatch"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Dir(freshnessContextPath(dir)), 0o750); err != nil {
+				t.Fatalf("mkdir context dir: %v", err)
+			}
+			if err := os.WriteFile(freshnessContextPath(dir), []byte(tc.body), 0o600); err != nil {
+				t.Fatalf("write context: %v", err)
+			}
+
+			_, err := LoadFreshnessState(dir)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadFreshnessState error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestResetFreshnessStateFromInstalledBundlesNoV2WritesEmptyState(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "rules")
+	if err := ResetFreshnessStateFromInstalledBundles(dir); err != nil {
+		t.Fatalf("ResetFreshnessStateFromInstalledBundles: %v", err)
+	}
+	loaded, err := LoadFreshnessState(dir)
+	if err != nil {
+		t.Fatalf("LoadFreshnessState: %v", err)
+	}
+	if len(loaded.HighestSeen) != 0 {
+		t.Fatalf("HighestSeen = %#v, want empty", loaded.HighestSeen)
+	}
+}
+
 func TestFreshnessState_DeleteAllWithInstalledV2ContextFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	bundleDir := filepath.Join(dir, "test-bundle")

@@ -231,8 +231,8 @@ func TestMergeIntoConfig_NoBundles_StandardSourceCompiled(t *testing.T) {
 	if result.StandardResponse != StandardSourceCompiled {
 		t.Errorf("expected StandardSourceCompiled for response, got %s", result.StandardResponse)
 	}
-	if len(cfg.DLP.Patterns) != 62 {
-		t.Errorf("expected 62 DLP patterns (compiled fallback), got %d", len(cfg.DLP.Patterns))
+	if len(cfg.DLP.Patterns) != 65 {
+		t.Errorf("expected 65 DLP patterns (compiled fallback), got %d", len(cfg.DLP.Patterns))
 	}
 }
 

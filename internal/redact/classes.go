@@ -110,6 +110,7 @@ func tokenClasses() []classPattern {
 		{class: ClassAzureSAS, pattern: regexp.MustCompile(`(?i)\bsig=[A-Za-z0-9%]{43,}%3d\b`), priority: 100},
 		{class: ClassSlackToken, pattern: regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
 		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)\bfw_[A-Za-z0-9]{22}\b`), priority: 100},
+		{class: ClassAIProviderKey, pattern: regexp.MustCompile(`(?i)\b(?:sk-or-v1-[A-Za-z0-9_-]{20,}|pplx-[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9]{20,})\b`), priority: 100},
 		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)\bhf_[A-Za-z0-9]{34,37}\b`), priority: 100},
 		{class: ClassReplicateAPIToken, pattern: regexp.MustCompile(`(?i)\br8_[a-f0-9]{40}\b`), priority: 100},
 		{class: ClassTogetherAIKey, pattern: regexp.MustCompile(`(?i)\btok_[a-z0-9]{40,}\b`), priority: 100},
@@ -117,8 +118,8 @@ func tokenClasses() []classPattern {
 		{class: ClassVercelToken, pattern: regexp.MustCompile(`(?i)\b(?:vercel|vc[piark])_[A-Za-z0-9]{24,}\b`), priority: 100},
 		{class: ClassSupabaseKey, pattern: regexp.MustCompile(`(?i)\bsb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`), priority: 100},
 		{class: ClassDatabricksPAT, pattern: regexp.MustCompile(`(?i)\bdapi[0-9a-f]{32,}\b`), priority: 100},
-		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{10,}\b`), priority: 100},
-		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{10,}\b`), priority: 100},
+		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}\b`), priority: 100},
+		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}\b`), priority: 100},
 		{class: ClassNPMToken, pattern: regexp.MustCompile(`(?i)\bnpm_[A-Za-z0-9]{36,}\b`), priority: 100},
 		// PyPI API tokens use the stable "pypi-AgE" prefix for v2 macaroons
 		// with empty location. Update this if PyPI rotates token format.

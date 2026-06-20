@@ -190,7 +190,20 @@ const (
 	// Re-bumped for response_scanning.mcp_servers: per-server MCP response
 	// trust classes change response-injection enforcement from the fail-closed
 	// untrusted block default to explicit reasoning/warn.
-	goldenHashDefaults = "734ce147726792a7a9f0a3d4ff1dd6cecbd0dd3861a2e6adea5b232e80f7149a"
+	// Re-bumped for provider-key DLP precision: short `sk-*` suffix floors
+	// moved from 10 to 20 chars, provider-bound URL exemptions were added to
+	// the matching DLP patterns, and default suppress entries now exempt
+	// provider-bound request bodies/headers while preserving blocks to other
+	// destinations. Detection/enforcement-relevant change.
+	// Re-bumped for the second provider-key DLP expansion: five additional
+	// distinctively-prefixed AI provider-key shapes were added with provider
+	// host exemptions and default suppress entries. Detection/enforcement-
+	// relevant change.
+	// Re-bumped for dropping the FP-prone "Voice AI" (sk_car_) and "Neural
+	// Search" (jina_) default DLP patterns plus their suppress entries: their
+	// key formats are undisclosed so the prefixes false-positive on common
+	// identifiers. Detection/enforcement-relevant change.
+	goldenHashDefaults = "4948d11d65f4e6ed711da1772619c3b68b07c250f67ba154c2a4778d41e6da8c"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -285,7 +298,12 @@ const (
 	// Re-bumped for response_scanning.mcp_servers: see goldenHashDefaults note
 	// above. The rich fixture omits the list, but the empty policy field is
 	// still part of the canonical view.
-	goldenHashRichConfig = "11a24da86ba9e0f1ed8686dbe8a2a44a1f48f3492d180b09cbcfd7ecd75d44cb"
+	// Re-bumped for provider-key DLP precision: see goldenHashDefaults note
+	// above. The rich fixture inherits the default DLP pattern and suppress
+	// sets, so the hash shifts in lockstep.
+	// Re-bumped for dropping the FP-prone "Voice AI" (sk_car_) and "Neural
+	// Search" (jina_) default DLP patterns + their suppress entries.
+	goldenHashRichConfig = "8b48966d2487ed8d9b8ea0154c169488bca8128d0cde56dc75ec8a8926f4a18a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

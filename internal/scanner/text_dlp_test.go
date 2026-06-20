@@ -522,6 +522,24 @@ func TestScanTextForDLP(t *testing.T) {
 			wantPattern: "Fireworks API Key",
 		},
 		{
+			name:        "LLM Router API Key",
+			text:        "sk-or-v1-" + strings.Repeat("aB1c", 6),
+			wantClean:   false,
+			wantPattern: "LLM Router API Key",
+		},
+		{
+			name:        "Answer Engine API Key",
+			text:        "pplx-" + strings.Repeat("aB1c", 6),
+			wantClean:   false,
+			wantPattern: "Answer Engine API Key",
+		},
+		{
+			name:        "Web Research API Key",
+			text:        "tvly-" + strings.Repeat("aB1c", 6),
+			wantClean:   false,
+			wantPattern: "Web Research API Key",
+		},
+		{
 			name:        "Google API Key",
 			text:        "AIza" + "SyA1234567890abcdefghijklmnopqrstuv",
 			wantClean:   false,
@@ -1693,28 +1711,53 @@ func TestScanTextForDLP_LatinSmallCapBypass(t *testing.T) {
 
 // --- DLP evasion fixes (short key, credential-in-URL) ---
 
-func TestScanTextForDLP_ShortAnthropicKey(t *testing.T) {
+func TestScanTextForDLP_ShortAnthropicKeyNoFP(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
 	defer s.Close()
 
 	key := testAnthropicPrefix + strings.Repeat("A", 10)
 	result := s.ScanTextForDLP(context.Background(), key)
-	if result.Clean {
-		t.Error("expected text DLP to catch short Anthropic key prefix")
+	if !result.Clean {
+		t.Errorf("false positive on short provider-like token: %v", result.Matches)
 	}
 }
 
-func TestScanTextForDLP_ShortSvcAcctKey(t *testing.T) {
+func TestScanTextForDLP_ShortSvcAcctKeyNoFP(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
 	defer s.Close()
 
 	key := "sk-svcacct-" + strings.Repeat("A", 10)
 	result := s.ScanTextForDLP(context.Background(), key)
-	if result.Clean {
-		t.Error("expected text DLP to catch short service-account key prefix")
+	if !result.Clean {
+		t.Errorf("false positive on short provider-like token: %v", result.Matches)
 	}
+}
+
+func TestScanTextForDLP_LLMProviderKeyTransformLimits(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	key := "sk-proj-" + strings.Repeat("A", 20)
+	encoded := base64.StdEncoding.EncodeToString([]byte(key))
+	if result := s.ScanTextForDLP(context.Background(), encoded); result.Clean {
+		t.Fatal("expected text DLP to catch base64-wrapped provider key")
+	}
+
+	reversed := reverseASCII(key)
+	if result := s.ScanTextForDLP(context.Background(), reversed); !result.Clean {
+		t.Fatalf("reversed provider key is not claimed coverage, got matches=%v", result.Matches)
+	}
+}
+
+func reverseASCII(s string) string {
+	b := []byte(s)
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
+	return string(b)
 }
 
 func TestScanTextForDLP_CredentialInURL(t *testing.T) {
@@ -2758,7 +2801,7 @@ func TestScanTextForDLPInbound_StillCatchesGenericDLP(t *testing.T) {
 	// tests, so it reliably matches a default regex pattern and is not a
 	// redacted documentation example). This is a regex DLP pattern, not an
 	// exfil-class check, so it must fire on inbound too.
-	key := testAnthropicPrefix + strings.Repeat("A", 10)
+	key := testAnthropicPrefix + strings.Repeat("A", 20)
 	carrier := "tool result payload: " + key
 	ctx := context.Background()
 

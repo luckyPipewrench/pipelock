@@ -138,6 +138,7 @@ func TestRedactor_BuiltInClassesFormatCorrectly(t *testing.T) {
 		ClassIPv4, ClassIPv6, ClassCIDR, ClassFQDN, ClassEmail,
 		ClassAWSAccessKey, ClassGoogleAPIKey,
 		ClassGitHubToken, ClassGitLabToken, ClassSlackToken, ClassFireworksAPIKey,
+		ClassAIProviderKey,
 		ClassHuggingFaceToken, ClassReplicateAPIToken, ClassTogetherAIKey,
 		ClassVaultToken, ClassVercelToken, ClassSupabaseKey, ClassDatabricksPAT,
 		ClassOpenAIAPIKey, ClassAnthropicKey, ClassNPMToken, ClassPyPIToken,

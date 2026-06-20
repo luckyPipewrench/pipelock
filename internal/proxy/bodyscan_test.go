@@ -987,6 +987,93 @@ func TestScanRequestHeadersForTarget_SuppressedValueDoesNotMaskLaterUnsuppressed
 	}
 }
 
+func TestScanRequestHeadersForTarget_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	tests := []struct {
+		name   string
+		key    string
+		target string
+	}{
+		{"openai", "sk-proj-" + strings.Repeat("A", 40), "https://api.openai.com/v1/responses"},
+		{"llm-router", "sk-or-v1-" + strings.Repeat("B", 24), "https://api.openrouter.ai/v1/responses"},
+		{"answer-engine", "pplx-" + strings.Repeat("C", 24), "https://api.perplexity.ai/chat/completions"},
+		{"web-research", "tvly-" + strings.Repeat("E", 24), "https://api.tavily.com/search"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set("Authorization", "Bearer "+tt.key)
+
+			ownProvider := scanRequestHeadersForTarget(context.Background(), headers, cfg, sc, tt.target)
+			if ownProvider != nil && !ownProvider.Clean {
+				t.Fatalf("expected own-provider header to pass, got %v", dlpMatchNames(ownProvider.DLPMatches))
+			}
+
+			otherHost := scanRequestHeadersForTarget(context.Background(), headers, cfg, sc, "https://api.vendor.example/v1/responses")
+			if otherHost == nil || otherHost.Clean {
+				t.Fatal("expected same header to block for non-provider host")
+			}
+		})
+	}
+}
+
+func TestScanRequestBody_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	tests := []struct {
+		name   string
+		key    string
+		host   string
+		path   string
+		target string
+	}{
+		{"openai", "sk-proj-" + strings.Repeat("A", 40), "api.openai.com", "/v1/responses", "https://api.openai.com/v1/responses"},
+		{"llm-router", "sk-or-v1-" + strings.Repeat("B", 24), "api.openrouter.ai", "/v1/responses", "https://api.openrouter.ai/v1/responses"},
+		{"answer-engine", "pplx-" + strings.Repeat("C", 24), "api.perplexity.ai", "/chat/completions", "https://api.perplexity.ai/chat/completions"},
+		{"web-research", "tvly-" + strings.Repeat("E", 24), "api.tavily.com", "/search", "https://api.tavily.com/search"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"api_key":"` + tt.key + `"}`
+
+			_, ownProvider := scanRequestBody(context.Background(), BodyScanRequest{
+				Body:        strings.NewReader(body),
+				ContentType: "application/json",
+				MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+				Scanner:     sc,
+				Host:        tt.host,
+				Path:        tt.path,
+				Target:      tt.target,
+				Suppress:    cfg.Suppress,
+			})
+			if !ownProvider.Clean {
+				t.Fatalf("expected own-provider body to pass, got %v", dlpMatchNames(ownProvider.DLPMatches))
+			}
+
+			_, otherHost := scanRequestBody(context.Background(), BodyScanRequest{
+				Body:        strings.NewReader(body),
+				ContentType: "application/json",
+				MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+				Scanner:     sc,
+				Host:        "api.vendor.example",
+				Path:        "/v1/responses",
+				Target:      "https://api.vendor.example/v1/responses",
+				Suppress:    cfg.Suppress,
+			})
+			if otherHost.Clean {
+				t.Fatal("expected same body to block for non-provider host")
+			}
+		})
+	}
+}
+
 // TestScanRequestHeaders_AllowlistedHost verifies that header scanning applies
 // regardless of destination host. The allowlist controls URL-level blocking, not
 // header DLP bypass.

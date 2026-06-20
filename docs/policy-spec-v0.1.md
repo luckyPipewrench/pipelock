@@ -88,7 +88,7 @@ dlp:
   min_env_length: 16           # Min env var value length to flag
   patterns:
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
       severity: critical
       action: block
 

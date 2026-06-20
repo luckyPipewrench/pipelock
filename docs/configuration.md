@@ -583,8 +583,8 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 62 built-in patterns |
-| `patterns` | 62 built-in | DLP credential detection patterns |
+| `include_defaults` | `true` | Merge your patterns with the 67 built-in patterns |
+| `patterns` | 67 built-in | DLP credential detection patterns |
 | `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, or `wif` |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 | `patterns[].action` | `""` | Per-pattern action override. Only `warn` is supported. When set to `warn`, matches allow traffic through without enforcement. See the [false positive tuning guide](guides/false-positive-tuning.md) for the rollout workflow. Built-in default patterns cannot be set to warn. |
@@ -636,22 +636,27 @@ To exempt a built-in pattern, override it by name and add `exempt_domains`:
 dlp:
   patterns:
     - name: "Anthropic API Key"    # same name as built-in — overrides it
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
       severity: critical
       exempt_domains:
         - "*.anthropic.com"
 ```
 
-### Built-in DLP Patterns (62)
+For built-in provider-key patterns, the default config already exempts the provider's own API host for URL DLP and adds matching `suppress` entries for request-body and request-header DLP. The same key is still blocked when sent to any other destination. See [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md) for included shapes, exclusions, and the custom provider-key path.
+
+### Built-in DLP Patterns (67)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
-| Anthropic API Key | `sk-ant-` | critical |
-| OpenAI API Key | `sk-proj-` | critical |
-| OpenAI Service Key | `sk-svcacct-` | critical |
+| Anthropic API Key | `sk-ant-` + 20+ token chars | critical |
+| OpenAI API Key | `sk-proj-` + 20+ token chars | critical |
+| OpenAI Service Key | `sk-svcacct-` + 20+ token chars | critical |
 | Fireworks API Key | `fw_` | critical |
+| LLM Router API Key | `sk-or-v1-` + 20+ token chars | critical |
+| Answer Engine API Key | `pplx-` + 20+ token chars | critical |
+| Web Research API Key | `tvly-` + 20+ token chars | critical |
 | AWS Access Key ID | `AKIA\|A3T\|AGPA\|AIDA\|AROA\|AIPA\|ANPA\|ANVA\|ASIA` | critical |
-| Google API Key | `AIza` | critical |
+| Google API Key | `AIza` | high |
 | Google OAuth Client Secret | `GOCSPX-` | critical |
 | Google OAuth Token | `ya29.` | high |
 | Google OAuth Client ID | `*.apps.googleusercontent.com` | medium |
@@ -671,7 +676,7 @@ dlp:
 | MySQL Connection String | `mysql://user:pass@` | critical |
 | MongoDB Connection String | `mongodb(+srv)://user:pass@` | critical |
 | Redis Connection String | `redis(s)://user:pass@` | critical |
-| GCP Service Account Key (always-on core pattern, not part of the 62 default count) | `"type":"service_account"` | critical |
+| GCP Service Account Key (always-on core pattern, not part of the 67 default count) | `"type":"service_account"` | critical |
 | GCP Service Account Private Key ID | `"private_key_id":"<40 hex>"` | high |
 | Azure Storage Account Key | `AccountKey=<88-char base64>` | critical |
 | Azure SAS Token | `sig=<base64>%3D` | high |

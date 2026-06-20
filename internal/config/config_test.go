@@ -6235,20 +6235,15 @@ suppress:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(cfg.Suppress) != 2 {
-		t.Fatalf("expected 2 suppress entries, got %d", len(cfg.Suppress))
+	if !IsSuppressed("Credential in URL", "app/models/assistant/external/client.rb", cfg.Suppress) {
+		t.Fatal("expected loaded Credential in URL suppress entry to survive defaults")
 	}
-	if cfg.Suppress[0].Rule != "Credential in URL" {
-		t.Errorf("expected rule 'Credential in URL', got %q", cfg.Suppress[0].Rule)
+	reason, ok := SuppressedReason("Anthropic API Key", "config/initializers/provider.rb", cfg.Suppress)
+	if !ok {
+		t.Fatal("expected loaded Anthropic API Key suppress entry to survive defaults")
 	}
-	if cfg.Suppress[0].Path != "app/models/assistant/external/client.rb" {
-		t.Errorf("expected path 'app/models/assistant/external/client.rb', got %q", cfg.Suppress[0].Path)
-	}
-	if cfg.Suppress[0].Reason != "Instance variable storing constructor param" {
-		t.Errorf("expected reason, got %q", cfg.Suppress[0].Reason)
-	}
-	if cfg.Suppress[1].Reason != "Initializers reference env var names" {
-		t.Errorf("expected reason for entry 1, got %q", cfg.Suppress[1].Reason)
+	if reason != "Initializers reference env var names" {
+		t.Errorf("expected loaded reason, got %q", reason)
 	}
 }
 

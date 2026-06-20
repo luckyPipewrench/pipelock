@@ -422,7 +422,7 @@ func TestHandler_ToolCallDLPRunsWhenInputScanningDisabled(t *testing.T) {
 	h := newTestHandler(t)
 	h.cfg.MCPInputScanning.Enabled = false // the toggle that used to fail open
 	// Build the secret at runtime so the test source does not trip self-scan.
-	secret := "sk-ant-" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234"
 	body := `{"kind":"tool_call","input":{"tool_name":"http_post","arguments":{"token":"` + secret + `"}}}`
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -531,7 +531,7 @@ func TestScanURL_Blocked(t *testing.T) {
 	h := newTestHandler(t)
 	// Secret in URL query triggers DLP before DNS resolution.
 	// Split to avoid pipelock self-scan on the test source.
-	secret := "sk-ant-" + "IOSFODNN7EXAMPLE"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234"
 	body := `{"kind":"url","input":{"url":"https://example.com/?token=` + secret + `"}}`
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

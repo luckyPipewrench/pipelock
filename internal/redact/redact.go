@@ -26,6 +26,7 @@ const (
 	ClassGitLabToken       Class = "gitlab-token"
 	ClassSlackToken        Class = "slack-token"
 	ClassFireworksAPIKey   Class = "fireworks-api-key"
+	ClassAIProviderKey     Class = "ai-provider-key"
 	ClassHuggingFaceToken  Class = "huggingface-token"
 	ClassReplicateAPIToken Class = "replicate-api-token"
 	ClassTogetherAIKey     Class = "together-ai-key"

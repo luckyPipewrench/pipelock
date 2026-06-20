@@ -68,6 +68,27 @@ The `reason` field is optional but recommended. It appears in audit logs and hel
 
 **When to use:** Directories with known false positives, third-party code, generated files, documentation directories.
 
+### Custom Provider Keys
+
+Some providers use bare high-entropy strings or undocumented key shapes. Pipelock does not ship generic entropy-as-secret DLP because it would block legitimate IDs, digests, and session values. If you know a provider key shape in your environment, add a named DLP pattern and bind that same rule to the provider's host:
+
+```yaml
+dlp:
+  patterns:
+    - name: "Internal Provider API Key"
+      regex: '\bintprov_[A-Za-z0-9_-]{32,}\b'
+      severity: critical
+      exempt_domains:
+        - "api.provider.example"
+
+suppress:
+  - rule: "Internal Provider API Key"
+    path: "https://api.provider.example/*"
+    reason: "provider-bound credential"
+```
+
+Use both knobs. `exempt_domains` keeps URL DLP from blocking a provider-bound key on the provider's own host. `suppress` silences the same rule for request bodies and headers on the provider endpoint. The key still blocks when it is sent anywhere else.
+
 ## Layer 3: `--exclude` Flag
 
 Remove entire paths from scan results. Available on `pipelock git scan-diff` and `pipelock audit`:
@@ -123,10 +144,13 @@ Inline `// pipelock:ignore` comments work automatically with no action config ne
 
 | Rule Name | What It Detects | Severity |
 |-----------|----------------|----------|
-| Anthropic API Key | `sk-ant-*` | critical |
-| OpenAI API Key | `sk-proj-*` | critical |
-| OpenAI Service Key | `sk-svcacct-*` | critical |
+| Anthropic API Key | `sk-ant-*` with 20+ token chars | critical |
+| OpenAI API Key | `sk-proj-*` with 20+ token chars | critical |
+| OpenAI Service Key | `sk-svcacct-*` with 20+ token chars | critical |
 | Fireworks API Key | `fw_*` | critical |
+| LLM Router API Key | `sk-or-v1-*` with 20+ token chars | critical |
+| Answer Engine API Key | `pplx-*` with 20+ token chars | critical |
+| Web Research API Key | `tvly-*` with 20+ token chars | critical |
 | Google API Key | `AIza*` | high |
 | Google OAuth Client Secret | `GOCSPX-*` | critical |
 | Google OAuth Token | `ya29.*` | critical |

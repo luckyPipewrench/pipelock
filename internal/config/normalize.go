@@ -273,6 +273,7 @@ func (c *Config) ApplyDefaults() {
 		c.DLP.Patterns,
 		Defaults().DLP.Patterns,
 	)
+	c.Suppress = mergeDefaultSuppressions(c.Suppress, defaultProviderKeySuppressions())
 	// Always default OnParseError (fail-closed) regardless of enabled state,
 	// since validation checks it unconditionally.
 	if c.MCPInputScanning.OnParseError == "" {
@@ -773,6 +774,28 @@ func mergeDLPPatterns(includeDefaults *bool, user, defaults []DLPPattern) []DLPP
 		}
 	}
 	merged = append(merged, user...)
+	return merged
+}
+
+func mergeDefaultSuppressions(user, defaults []SuppressEntry) []SuppressEntry {
+	if len(defaults) == 0 {
+		return user
+	}
+	seen := make(map[string]struct{}, len(defaults)+len(user))
+	merged := make([]SuppressEntry, 0, len(defaults)+len(user))
+	for _, e := range defaults {
+		key := strings.ToLower(e.Rule) + "\x00" + e.Path
+		seen[key] = struct{}{}
+		merged = append(merged, e)
+	}
+	for _, e := range user {
+		key := strings.ToLower(e.Rule) + "\x00" + e.Path
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, e)
+	}
 	return merged
 }
 

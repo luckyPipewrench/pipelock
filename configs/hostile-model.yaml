@@ -85,20 +85,45 @@ dlp:
   patterns:
     # Provider API keys
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
       severity: critical
+      exempt_domains:
+        - "*.anthropic.com"
     - name: "OpenAI API Key"
-      regex: 'sk-proj-[a-zA-Z0-9\-_]{10,}'
+      regex: 'sk-proj-[a-zA-Z0-9\-_]{20,}\b'
       severity: critical
+      exempt_domains:
+        - "*.openai.com"
     - name: "OpenAI Service Key"
-      regex: 'sk-svcacct-[a-zA-Z0-9\-]{10,}'
+      regex: 'sk-svcacct-[a-zA-Z0-9\-]{20,}\b'
       severity: critical
+      exempt_domains:
+        - "*.openai.com"
     - name: "Fireworks API Key"
-      regex: 'fw_[A-Za-z0-9]{22}\b'
+      regex: '\bfw_[A-Za-z0-9]{22}\b'
       severity: critical
+      exempt_domains:
+        - "*.fireworks.ai"
+    - name: "LLM Router API Key"
+      regex: '\bsk-or-v1-[A-Za-z0-9_-]{20,}\b'
+      severity: critical
+      exempt_domains:
+        - "*.openrouter.ai"
+    - name: "Answer Engine API Key"
+      regex: '\bpplx-[A-Za-z0-9]{20,}\b'
+      severity: critical
+      exempt_domains:
+        - "*.perplexity.ai"
+    - name: "Web Research API Key"
+      regex: '\btvly-[A-Za-z0-9]{20,}\b'
+      severity: critical
+      exempt_domains:
+        - "*.tavily.com"
     - name: "Google API Key"
-      regex: 'AIza[0-9A-Za-z\-_]{35}'
+      regex: '\bAIza[0-9A-Za-z\-_]{35}\b'
       severity: critical
+      exempt_domains:
+        - "*.googleapis.com"
     - name: "Google OAuth Client Secret"
       regex: 'GOCSPX-[A-Za-z0-9_\-]{28,}'
       severity: critical
@@ -205,26 +230,40 @@ dlp:
       severity: critical
     # AI/ML provider keys
     - name: "Hugging Face Token"
-      regex: 'hf_[A-Za-z0-9]{34,37}\b'
+      regex: '\bhf_[A-Za-z0-9]{34,37}\b'
       severity: critical
+      exempt_domains:
+        - "*.huggingface.co"
     - name: "Databricks Token"
-      regex: 'dapi[0-9a-f]{32,}'
+      regex: '\bdapi[0-9a-f]{32,}\b'
       severity: critical
+      exempt_domains:
+        - "*.databricks.com"
     - name: "Replicate API Token"
-      regex: 'r8_[a-f0-9]{40}\b'
+      regex: '\br8_[a-f0-9]{40}\b'
       severity: critical
+      exempt_domains:
+        - "*.replicate.com"
     - name: "Together AI Key"
-      regex: 'tok_[a-z0-9]{40,}\b'
+      regex: '\btok_[a-z0-9]{40,}\b'
       severity: critical
+      exempt_domains:
+        - "*.together.ai"
     - name: "Pinecone API Key"
-      regex: 'pcsk_[a-zA-Z0-9]{36,}'
+      regex: '\bpcsk_[a-zA-Z0-9]{36,}\b'
       severity: critical
+      exempt_domains:
+        - "*.pinecone.io"
     - name: "Groq API Key"
-      regex: 'gsk_[a-zA-Z0-9]{48,}'
+      regex: '\bgsk_[a-zA-Z0-9]{48,}\b'
       severity: critical
+      exempt_domains:
+        - "*.groq.com"
     - name: "xAI API Key"
-      regex: 'xai-[a-zA-Z0-9\-_]{80,}'
+      regex: '\bxai-[a-zA-Z0-9\-_]{80,}\b'
       severity: critical
+      exempt_domains:
+        - "*.x.ai"
     # Infrastructure and platform tokens
     - name: "DigitalOcean Token"
       regex: 'dop_v1_[a-f0-9]{64}'

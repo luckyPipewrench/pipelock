@@ -33,12 +33,15 @@ func ResolveRulesDir(override string) string {
 // signed standard bundle loads, these are replaced by bundle patterns.
 // Name matching is intentional: if a shipped default DLP rule is renamed or
 // split, update this map in the same change so bundle replacement cannot drift.
-// Must match the 41 non-core DLP names in config.Defaults().
+// Must match the non-core DLP names in config.Defaults().
 var compiledStandardDLPNames = map[string]bool{
 	"Anthropic API Key":           true,
 	"OpenAI API Key":              true,
 	"OpenAI Service Key":          true,
 	"Fireworks API Key":           true,
+	"LLM Router API Key":          true,
+	"Answer Engine API Key":       true,
+	"Web Research API Key":        true,
 	"Google API Key":              true,
 	"Google OAuth Client Secret":  true,
 	"Stripe Key":                  true,

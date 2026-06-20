@@ -84,7 +84,7 @@ See [docs/guides/suppression.md](guides/suppression.md) for the full suppression
 
 ### Using only your own patterns
 
-By default, pipelock merges your custom patterns with the 62 built-in defaults. To use only your own patterns (disabling all built-ins), set `include_defaults: false`:
+By default, pipelock merges your custom patterns with the 67 built-in defaults. To use only your own patterns (disabling all built-ins), set `include_defaults: false`:
 
 ```yaml
 dlp:
@@ -117,6 +117,8 @@ This keeps the pattern active everywhere else while skipping it for the specifie
 ### Suppressing specific findings
 
 For URL-path-level suppression (finer than domain exemption), use `suppress` entries at the top level of your config. See the [Suppressing Specific Findings](#suppressing-specific-findings) section above.
+
+For custom provider API keys, use both controls together: add `exempt_domains` on the DLP pattern for URL scans to the provider's own host, and add a matching `suppress` entry for body/header findings on that provider URL. The built-in provider-key rules already do this for their documented hosts.
 
 ## Tuning Entropy Thresholds
 

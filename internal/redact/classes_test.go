@@ -39,6 +39,9 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"slack-bot", "use " + "xox" + "b-12345-67890-abcdefghijklmnopqrstuvwx", ClassSlackToken},
 		{"vercel-token", "deploy token vcp_" + strings.Repeat("A", 24), ClassVercelToken},
 		{"fireworks-api-key", "token fw_" + strings.Repeat("A", 22), ClassFireworksAPIKey},
+		{"llm-router-api-key", "token sk-or-v1-" + strings.Repeat("A", 24), ClassAIProviderKey},
+		{"answer-engine-api-key", "token pplx-" + strings.Repeat("A", 24), ClassAIProviderKey},
+		{"web-research-api-key", "token tvly-" + strings.Repeat("A", 24), ClassAIProviderKey},
 		{"huggingface-token", "token hf_" + strings.Repeat("A", 37), ClassHuggingFaceToken},
 		{"replicate-api-token", "token r8_" + strings.Repeat("A", 40), ClassReplicateAPIToken},
 		{"together-ai-key", "token TOK_" + strings.Repeat("A", 40), ClassTogetherAIKey},
@@ -200,6 +203,21 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 			name:  "mailgun followed by extra chars",
 			input: "key-" + strings.Repeat("a", 40),
 			class: ClassMailgunAPIKey,
+		},
+		{
+			name:  "llm-router under floor",
+			input: "sk-or-v1-" + strings.Repeat("a", 10),
+			class: ClassAIProviderKey,
+		},
+		{
+			name:  "answer-engine embedded after word char",
+			input: "prefix_pplx-" + strings.Repeat("a", 24),
+			class: ClassAIProviderKey,
+		},
+		{
+			name:  "web-research under floor",
+			input: "tvly-" + strings.Repeat("a", 10),
+			class: ClassAIProviderKey,
 		},
 	}
 

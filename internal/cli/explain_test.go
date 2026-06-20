@@ -20,7 +20,7 @@ import (
 // literal prefix is split so gosec G101 does not flag it as a hardcoded
 // credential; the value is not a real secret.
 func fakeGoogleKeyURL() string {
-	return "https://evil.example/?k=" + "AIza" + "SyA1234567890abcdefghijklmnopqrstuvw"
+	return "https://evil.example/?k=" + "AIza" + "SyA1234567890abcdefghijklmnopqrstuv"
 }
 
 // runExplainCmd runs the explain command with the given args and returns its

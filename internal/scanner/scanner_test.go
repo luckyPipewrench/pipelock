@@ -2343,7 +2343,7 @@ func TestScan_DLP_QueryValueDotSeparatedBypass(t *testing.T) {
 	// Dot-separated key in a query parameter value. Before the fix,
 	// stripURLNoise only ran on paths, not individual query values.
 	prefix := "s.k.-.a.n.t.-."
-	suffix := "A.B.C.D.E.F.G.H.I.J"
+	suffix := "A.B.C.D.E.F.G.H.I.J.K.L.M.N.O.P.Q.R.S.T"
 	result := s.Scan(context.Background(), "https://example.com/api?data="+prefix+suffix)
 	if result.Allowed {
 		t.Error("expected DLP to catch dot-separated key in query value")
@@ -2357,48 +2357,47 @@ func TestScan_DLP_QueryKeyDotSeparatedBypass(t *testing.T) {
 
 	// Dot-separated key stuffed into a query parameter NAME, not value.
 	prefix := "s.k.-.a.n.t.-."
-	suffix := "A.B.C.D.E.F.G.H.I.J"
+	suffix := "A.B.C.D.E.F.G.H.I.J.K.L.M.N.O.P.Q.R.S.T"
 	result := s.Scan(context.Background(), "https://example.com/api?"+prefix+suffix+"=1")
 	if result.Allowed {
 		t.Error("expected DLP to catch dot-separated key in query key")
 	}
 }
 
-func TestScan_DLP_ShortAnthropicKey(t *testing.T) {
+func TestScan_DLP_ShortAnthropicKeyNoFP(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
 	defer s.Close()
 
-	// Key with 10-char suffix (previously needed 20+). The sk-ant- prefix
-	// is distinctive enough that partial fragments should still be caught.
+	// Short prefix-plus-random values are common in benign session/trace IDs.
 	key := "sk-ant-" + strings.Repeat("A", 10)
 	result := s.Scan(context.Background(), "https://example.com/api?key="+key)
-	if result.Allowed {
-		t.Error("expected DLP to catch short Anthropic key prefix")
+	if !result.Allowed {
+		t.Errorf("false positive on short provider-like token: %s", result.Reason)
 	}
 }
 
-func TestScan_DLP_ShortOpenAIKey(t *testing.T) {
+func TestScan_DLP_ShortOpenAIKeyNoFP(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
 	defer s.Close()
 
 	key := "sk-proj-" + strings.Repeat("A", 10)
 	result := s.Scan(context.Background(), "https://example.com/api?key="+key)
-	if result.Allowed {
-		t.Error("expected DLP to catch short OpenAI key prefix")
+	if !result.Allowed {
+		t.Errorf("false positive on short provider-like token: %s", result.Reason)
 	}
 }
 
-func TestScan_DLP_ShortSvcAcctKey(t *testing.T) {
+func TestScan_DLP_ShortSvcAcctKeyNoFP(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
 	defer s.Close()
 
 	key := "sk-svcacct-" + strings.Repeat("A", 10)
 	result := s.Scan(context.Background(), "https://example.com/api?key="+key)
-	if result.Allowed {
-		t.Error("expected DLP to catch short OpenAI service-account key prefix")
+	if !result.Allowed {
+		t.Errorf("false positive on short provider-like token: %s", result.Reason)
 	}
 }
 
@@ -2407,7 +2406,7 @@ func TestScan_DLP_VeryShortKeyNoFP(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Sample/test values under {10,} suffix threshold should not trigger.
+	// Sample/test values under the provider-key suffix floor should not trigger.
 	key := "sk-ant-" + "foobar"
 	result := s.Scan(context.Background(), "https://example.com/api?note="+key)
 	if !result.Allowed {
@@ -5135,6 +5134,98 @@ func TestScan_DLPExemptDomainsOtherPatternsStillFire(t *testing.T) {
 	result = s.Scan(context.Background(), "https://api.telegram.org/path?key="+awsKey)
 	if result.Allowed {
 		t.Errorf("expected AWS key to Telegram to be blocked, got allowed")
+	}
+}
+
+func TestScan_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name        string
+		rawURL      string
+		shouldAllow bool
+	}{
+		{
+			name:        "openai own provider URL is allowed",
+			rawURL:      "https://api.openai.com/v1/responses/" + "sk-proj-" + strings.Repeat("A", 40),
+			shouldAllow: true,
+		},
+		{
+			name:        "openai non-provider URL is blocked",
+			rawURL:      "https://api.vendor.example/v1/responses/" + "sk-proj-" + strings.Repeat("A", 40),
+			shouldAllow: false,
+		},
+		{
+			name:        "llm router own provider URL is allowed",
+			rawURL:      "https://api.openrouter.ai/v1/responses/" + "sk-or-v1-" + strings.Repeat("B", 24),
+			shouldAllow: true,
+		},
+		{
+			name:        "llm router non-provider URL is blocked",
+			rawURL:      "https://api.vendor.example/v1/responses/" + "sk-or-v1-" + strings.Repeat("B", 24),
+			shouldAllow: false,
+		},
+		{
+			name:        "answer engine own provider URL is allowed",
+			rawURL:      "https://api.perplexity.ai/chat/completions/" + "pplx-" + strings.Repeat("C", 24),
+			shouldAllow: true,
+		},
+		{
+			name:        "answer engine non-provider URL is blocked",
+			rawURL:      "https://api.vendor.example/v1/responses/" + "pplx-" + strings.Repeat("C", 24),
+			shouldAllow: false,
+		},
+		{
+			name:        "web research own provider URL is allowed",
+			rawURL:      "https://api.tavily.com/search/" + "tvly-" + strings.Repeat("E", 24),
+			shouldAllow: true,
+		},
+		{
+			name:        "web research non-provider URL is blocked",
+			rawURL:      "https://api.vendor.example/v1/responses/" + "tvly-" + strings.Repeat("E", 24),
+			shouldAllow: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.rawURL)
+			if result.Allowed != tt.shouldAllow {
+				t.Fatalf("Allowed = %v, want %v (reason: %s)", result.Allowed, tt.shouldAllow, result.Reason)
+			}
+		})
+	}
+}
+
+func TestScan_LLMProviderKeyShortPrefixFalsePositiveCorpus(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []string{
+		"https://api.vendor.example/callback?session_id=sk-proj-" + strings.Repeat("A", 10),
+		"https://api.vendor.example/callback?trace=sk-svcacct-" + strings.Repeat("B", 10),
+		"https://api.vendor.example/callback?csrf=sk-ant-" + strings.Repeat("C", 10),
+		"https://api.vendor.example/callback?router=sk-or-v1-" + strings.Repeat("D", 10),
+		"https://api.vendor.example/callback?answer=pplx-" + strings.Repeat("E", 10),
+		"https://api.vendor.example/callback?research=tvly-" + strings.Repeat("G", 10),
+	}
+
+	for _, rawURL := range tests {
+		t.Run(rawURL, func(t *testing.T) {
+			result := s.Scan(context.Background(), rawURL)
+			if !result.Allowed {
+				t.Fatalf("expected benign short opaque token to pass, got %s", result.Reason)
+			}
+		})
 	}
 }
 

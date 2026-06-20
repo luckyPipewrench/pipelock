@@ -39,6 +39,11 @@ var providerKeyBenignCorpus = map[string]string{
 	"openai proj under floor": "sk-proj-" + strings.Repeat("b", 8),
 	"openai svcacct short":    "sk-svcacct-" + strings.Repeat("c", 8),
 	"fireworks under 22":      "fw_" + strings.Repeat("d", 10),
+	"llm router under floor":  "sk-or-v1-" + strings.Repeat("e", 10),
+	"answer engine short":     "pplx-" + strings.Repeat("f", 8),
+	"answer engine embedded":  "prefix_pplx-" + strings.Repeat("g", 24),
+	"web research short":      "tvly-" + strings.Repeat("j", 8),
+	"web research charset":    "tvly-" + strings.Repeat("k", 19) + "_",
 	"google wrong length":     "AIza" + strings.Repeat("e", 10),
 	"huggingface too short":   "hf_abc",
 	"databricks non-hex":      "dapi" + strings.Repeat("z", 32), // z is not hex
@@ -47,6 +52,15 @@ var providerKeyBenignCorpus = map[string]string{
 	"pinecone short":          "pcsk_" + strings.Repeat("h", 8),
 	"groq short":              "gsk_" + strings.Repeat("i", 8),
 	"prefix inside a word":    "risk-projection-summary-table-v2-output",
+
+	// Permanent tripwires: these benign identifiers were demonstrated to false
+	// positive against the removed `sk_car_` ("Voice AI") and `jina_` ("Neural
+	// Search") default patterns (their key formats are undisclosed, so a prefix
+	// rule cannot be anchored precisely). The patterns were dropped; these MUST
+	// keep scanning clean to prevent any FP-prone re-introduction.
+	"car snake_case ref":   "sk_car_rental_booking_reference_2024_summary",
+	"car admin snake_case": "sk_car_admin_panel_settings_layout_config",
+	"jina plausible ident": "jina_clientidentifier1234567890",
 }
 
 func TestProviderKeyPatterns_NoFalsePositivesOnBenignCorpus(t *testing.T) {
@@ -83,7 +97,10 @@ func TestProviderKeyPatterns_PositiveControls(t *testing.T) {
 		"anthropic real shape": testAnthropicPrefix + strings.Repeat("a", 25),
 		"openai proj real":     "sk-proj-" + strings.Repeat("b", 24),
 		"fireworks real 22":    "fw_" + strings.Repeat("c", 22),
-		"groq real":            "gsk_" + strings.Repeat("d", 48),
+		"llm router real":      "sk-or-v1-" + strings.Repeat("d", 24),
+		"answer engine real":   "pplx-" + strings.Repeat("e", 24),
+		"web research real":    "tvly-" + strings.Repeat("g", 24),
+		"groq real":            "gsk_" + strings.Repeat("j", 48),
 	}
 	for name, val := range positives {
 		t.Run(name, func(t *testing.T) {

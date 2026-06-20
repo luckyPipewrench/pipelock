@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	releasetrust "github.com/luckyPipewrench/pipelock/internal/release"
 )
 
 func TestCmd_Construction(t *testing.T) {
@@ -151,7 +153,11 @@ func TestRunCommand_RollbackFlag(t *testing.T) {
 
 func TestRunCommand_ErrorJSONEmitsStatus(t *testing.T) {
 	assets, archiveName := standardAssets(t, testLatest, testGOOS)
-	assets[checksumsFile] = []byte("deadbeef  " + archiveName + "\n")
+	checks := []byte("deadbeef  " + archiveName + "\n")
+	assets[checksumsFile] = checks
+	manifest, sig := signedReleaseManifest(t, testLatest, testGOOS, archiveName, assets[archiveName], checks)
+	assets[releasetrust.ManifestFile] = manifest
+	assets[releasetrust.ManifestSigFile] = sig
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "ORIGINAL")
 	opts := baseOptions(rs, target)

@@ -186,14 +186,6 @@ func TestInstallBinary_RestoreOnRenameFailure(t *testing.T) {
 	}
 }
 
-func TestVerifyBinaryVersion_RunError(t *testing.T) {
-	opts := &Options{RunCommand: stubVersionRunner("boom")}
-	err := opts.verifyBinaryVersion(context.Background(), "/x", "2.8.0")
-	if !errors.Is(err, ErrVersionMismatch) {
-		t.Fatalf("expected ErrVersionMismatch, got %v", err)
-	}
-}
-
 func TestRun_NoArchiveAssetOnPinned(t *testing.T) {
 	// Release exists with checksums but NO archive for our os/arch.
 	assets, _ := standardAssets(t, testLatest, testGOOS)

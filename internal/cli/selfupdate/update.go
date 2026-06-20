@@ -3,8 +3,9 @@
 
 // Package selfupdate implements the "pipelock update" command: a fail-closed
 // self-updater that fetches a release archive from GitHub, verifies it against
-// the published checksums (and, when a cosign binary is available, against the
-// keyless publisher signature), then atomically replaces the running binary.
+// the published checksums and the native Ed25519 release manifest, optionally
+// verifies the legacy cosign keyless signature when cosign is available, then
+// atomically replaces the running binary.
 //
 // Every failure in the verification chain aborts and leaves the installed
 // binary untouched. The temp download/extract happens in the SAME directory as
@@ -25,6 +26,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	releasetrust "github.com/luckyPipewrench/pipelock/internal/release"
 )
 
 // GitHub repository coordinates. The host is ours, so naming it is fine.
@@ -77,14 +80,18 @@ var (
 	// ErrChecksumMismatch is returned when a downloaded archive's SHA256 does
 	// not match the published checksum. Fail-closed: no changes applied.
 	ErrChecksumMismatch = errors.New("archive checksum does not match published checksums.txt")
-	// ErrVersionMismatch is returned when the freshly extracted binary does not
-	// report the expected target version. Fail-closed: temp deleted, no changes.
+	// ErrVersionMismatch is retained for callers compiled against older versions.
+	// The updater no longer executes a downloaded candidate to ask its version;
+	// release.json is the signed version/asset binding.
 	ErrVersionMismatch = errors.New("downloaded binary reports an unexpected version")
-	// ErrSignatureVerify is returned when cosign is present and rejects the
-	// publisher signature on checksums.txt. Fail-closed: no changes applied.
+	// ErrSignatureVerify is returned when native release-manifest verification
+	// fails, or when optional cosign verification is attempted and fails.
+	// Fail-closed: no changes applied.
 	ErrSignatureVerify = errors.New("publisher signature verification failed")
-	// ErrSignatureUnavailable is returned when cosign is unavailable and the
-	// caller did not explicitly opt into checksum-only update mode.
+	// ErrSignatureUnavailable is retained for callers compiled against older
+	// versions. Missing native release signing material now returns
+	// ErrSignatureVerify instead; cosign absence is not fatal after native
+	// Ed25519 verification succeeds.
 	ErrSignatureUnavailable = errors.New("publisher signature verification unavailable")
 	// ErrUnsupportedPlatform is returned for an OS/arch with no published asset.
 	ErrUnsupportedPlatform = errors.New("no release asset for this OS/architecture")
@@ -136,10 +143,14 @@ type Options struct {
 	AssumeYes bool
 	// JSON requests machine-readable output (handled by the cobra layer).
 	JSON bool
-	// AllowUnsignedChecksums permits checksum-only updates when cosign is absent.
-	// This is intentionally opt-in because checksums downloaded from the same
-	// release page prove integrity, not publisher authenticity.
+	// AllowUnsignedChecksums is a legacy cobra flag field retained for CLI
+	// compatibility. It never bypasses native Ed25519 release-manifest
+	// verification; checksum-only updates are not allowed.
 	AllowUnsignedChecksums bool
+
+	// ReleaseKeyringHex is the comma-separated Ed25519 public-key keyring used
+	// to verify release.json. Default: internal/release.PublicKeyringHex.
+	ReleaseKeyringHex string
 
 	// CosignAvailable reports whether a cosign binary is usable. Default: PATH lookup.
 	CosignAvailable func() bool
@@ -174,6 +185,9 @@ func (o *Options) fillDefaults() error {
 	}
 	if o.RunCommand == nil {
 		o.RunCommand = defaultCommandRunner
+	}
+	if o.ReleaseKeyringHex == "" {
+		o.ReleaseKeyringHex = releasetrust.PublicKeyringHex
 	}
 	if o.Stdout == nil {
 		o.Stdout = os.Stdout

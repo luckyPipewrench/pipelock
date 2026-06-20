@@ -36,10 +36,11 @@ replacing the running binary in place.
 
 The update is FAIL-CLOSED: it aborts and leaves the installed binary untouched
 on any verification failure. Every release archive is verified against the
-published SHA256 checksums; when a cosign binary is on PATH the checksums file
-is also verified against its keyless publisher signature (GitHub Actions OIDC).
-If cosign is absent, the updater fails closed by default. Use
---insecure-skip-signature only for an explicit checksum-only recovery flow.
+published SHA256 checksums and a native Ed25519-signed release manifest using
+Pipelock's embedded release key. When a cosign binary is on PATH the checksums
+file is also verified against its keyless publisher signature (GitHub Actions
+OIDC) for ecosystem auditors. Cosign absence is allowed after native Ed25519
+verification succeeds; checksum-only updates are never allowed.
 
 The previous binary is saved to <binary>.bak so "pipelock update --rollback"
 can restore it. When downgrading to a release that predates the update command
@@ -51,8 +52,7 @@ Examples:
   pipelock update                      # interactive update to the latest release
   pipelock update --yes                # update without the confirmation prompt
   pipelock update --version v2.7.0     # install a specific release tag
-  pipelock update --rollback           # restore the previous binary
-  pipelock update --insecure-skip-signature`,
+  pipelock update --rollback           # restore the previous binary`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if checkOnly && doRollOut {
 				return fmt.Errorf("use only one of --check / --rollback")
@@ -76,7 +76,7 @@ Examples:
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "skip the interactive confirmation prompt")
 	cmd.Flags().BoolVar(&doRollOut, "rollback", false, "restore the previous binary from the backup saved by a prior update")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON status")
-	cmd.Flags().BoolVar(&insecure, "insecure-skip-signature", false, "allow checksum-only update if cosign is unavailable (publisher identity is not verified)")
+	cmd.Flags().BoolVar(&insecure, "insecure-skip-signature", false, "deprecated compatibility no-op; native Ed25519 release verification is always required")
 
 	return cmd
 }

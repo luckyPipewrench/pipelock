@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,8 +19,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	releasetrust "github.com/luckyPipewrench/pipelock/internal/release"
 )
 
 const (
@@ -27,6 +32,11 @@ const (
 	testCurrent = "v2.7.0"
 	testGOOS    = "linux"
 	testGOARCH  = "amd64"
+)
+
+var (
+	testReleasePriv   = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
+	testReleasePubHex = hex.EncodeToString(testReleasePriv.Public().(ed25519.PublicKey))
 )
 
 // fakeBinaryScript is the payload we pack into the fake archive. The test
@@ -141,7 +151,9 @@ func newReleaseServer(t *testing.T, tag string, assets map[string][]byte) *relea
 	return rs
 }
 
-// standardAssets builds a coherent release: archive + matching checksums.txt.
+// standardAssets builds a coherent release: archive + matching checksums.txt +
+// native Ed25519-signed release.json. The manifest is the in-process publisher
+// identity check; checksums.txt is only integrity data.
 func standardAssets(t *testing.T, version, goos string) (assets map[string][]byte, archiveName string) {
 	t.Helper()
 	bare := strings.TrimPrefix(version, "v")
@@ -155,12 +167,40 @@ func standardAssets(t *testing.T, version, goos string) (assets map[string][]byt
 	}
 	archiveName = assetName(bare, goos, testGOARCH)
 	checks := fmt.Sprintf("%s  %s\n", sum(archive), archiveName)
+	manifest, sig := signedReleaseManifest(t, version, goos, archiveName, archive, []byte(checks))
 	return map[string][]byte{
-		archiveName:   archive,
-		checksumsFile: []byte(checks),
-		checksumsSig:  []byte("fake-signature"),
-		checksumsPEM:  []byte("fake-certificate"),
+		archiveName:                  archive,
+		checksumsFile:                []byte(checks),
+		checksumsSig:                 []byte("fake-signature"),
+		checksumsPEM:                 []byte("fake-certificate"),
+		releasetrust.ManifestFile:    manifest,
+		releasetrust.ManifestSigFile: sig,
 	}, archiveName
+}
+
+func signedReleaseManifest(t *testing.T, version, goos, archiveName string, archive, checksums []byte) ([]byte, []byte) {
+	t.Helper()
+	manifest := releasetrust.Manifest{
+		Schema:             "pipelock-release-v1",
+		Repo:               "github.com/luckyPipewrench/pipelock",
+		Tag:                version,
+		Commit:             strings.Repeat("a", 40),
+		CreatedUTC:         time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		ChecksumFileSHA256: sum(checksums),
+		Assets: []releasetrust.Asset{{
+			Name:   archiveName,
+			SHA256: sum(archive),
+			GOOS:   goos,
+			GOARCH: testGOARCH,
+			Binary: archiveBinaryName(goos),
+		}},
+		SignerKeyID: "test-release-key",
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal release manifest: %v", err)
+	}
+	return data, []byte(releasetrust.SignManifest(data, testReleasePriv))
 }
 
 // writeTargetBinary creates a stand-in installed binary in a temp dir and
@@ -179,16 +219,17 @@ func writeTargetBinary(t *testing.T, contents string) string {
 // present by default so success paths exercise publisher verification.
 func baseOptions(rs *releaseServer, target string) *Options {
 	return &Options{
-		APIBase:         rs.srv.URL,
-		HTTPClient:      rs.srv.Client(),
-		TargetPath:      target,
-		CurrentVersion:  testCurrent,
-		GOOS:            testGOOS,
-		GOARCH:          testGOARCH,
-		CosignAvailable: func() bool { return true },
-		RunCommand:      stubVersionRunner(""),
-		Stdout:          &bytes.Buffer{},
-		Stderr:          &bytes.Buffer{},
+		APIBase:           rs.srv.URL,
+		HTTPClient:        rs.srv.Client(),
+		TargetPath:        target,
+		CurrentVersion:    testCurrent,
+		GOOS:              testGOOS,
+		GOARCH:            testGOARCH,
+		ReleaseKeyringHex: testReleasePubHex,
+		CosignAvailable:   func() bool { return true },
+		RunCommand:        stubVersionRunner(""),
+		Stdout:            &bytes.Buffer{},
+		Stderr:            &bytes.Buffer{},
 	}
 }
 
@@ -296,10 +337,45 @@ func TestRun_PinnedVersion(t *testing.T) {
 	}
 }
 
+func TestRun_DoesNotExecuteDownloadedBinaryBeforeInstall(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("shell-script execution PoC is linux-only")
+	}
+	marker := filepath.Join(t.TempDir(), "candidate-executed")
+	payload := []byte("#!/bin/sh\nprintf executed > " + shellQuote(marker) + "\necho pipelock version 2.8.0\n")
+	archive := makeTarGz(t, map[string][]byte{binaryName: payload})
+	archiveName := assetName(strings.TrimPrefix(testLatest, "v"), testGOOS, testGOARCH)
+	checks := fmt.Sprintf("%s  %s\n", sum(archive), archiveName)
+	manifest, sig := signedReleaseManifest(t, testLatest, testGOOS, archiveName, archive, []byte(checks))
+	assets := map[string][]byte{
+		archiveName:                  archive,
+		checksumsFile:                []byte(checks),
+		releasetrust.ManifestFile:    manifest,
+		releasetrust.ManifestSigFile: sig,
+	}
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "ORIGINAL")
+	opts := baseOptions(rs, target)
+	opts.CosignAvailable = func() bool { return false }
+	opts.AllowUnsignedChecksums = true
+	opts.RunCommand = defaultCommandRunner
+
+	if _, err := opts.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("downloaded candidate executed before install; marker stat err=%v contents=%q", err, readT(marker))
+	}
+}
+
 func TestRun_ChecksumMismatchAborts(t *testing.T) {
 	assets, archiveName := standardAssets(t, testLatest, testGOOS)
 	// Corrupt the checksums entry so it no longer matches the archive.
-	assets[checksumsFile] = []byte("deadbeef  " + archiveName + "\n")
+	checks := []byte("deadbeef  " + archiveName + "\n")
+	assets[checksumsFile] = checks
+	manifest, sig := signedReleaseManifest(t, testLatest, testGOOS, archiveName, assets[archiveName], checks)
+	assets[releasetrust.ManifestFile] = manifest
+	assets[releasetrust.ManifestSigFile] = sig
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "ORIGINAL")
 	opts := baseOptions(rs, target)
@@ -334,23 +410,24 @@ func TestRun_NetworkErrorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestRun_ExtractedVersionMismatchAborts(t *testing.T) {
-	// Archive binary reports the WRONG version.
-	bin := fakeBinaryBytes("9.9.9")
-	archive := makeTarGz(t, map[string][]byte{binaryName: bin})
+func TestRun_ManifestTagMismatchAborts(t *testing.T) {
+	assets, _ := standardAssets(t, testLatest, testGOOS)
 	archiveName := assetName(strings.TrimPrefix(testLatest, "v"), testGOOS, testGOARCH)
-	checks := fmt.Sprintf("%s  %s\n", sum(archive), archiveName)
-	assets := map[string][]byte{archiveName: archive, checksumsFile: []byte(checks)}
+	archive := assets[archiveName]
+	checks := assets[checksumsFile]
+	manifest, sig := signedReleaseManifest(t, "v9.9.9", testGOOS, archiveName, archive, checks)
+	assets[releasetrust.ManifestFile] = manifest
+	assets[releasetrust.ManifestSigFile] = sig
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "ORIGINAL")
 	opts := baseOptions(rs, target)
 
 	_, err := opts.Run(context.Background())
-	if !errors.Is(err, ErrVersionMismatch) {
-		t.Fatalf("expected ErrVersionMismatch, got %v", err)
+	if !errors.Is(err, ErrSignatureVerify) {
+		t.Fatalf("expected ErrSignatureVerify, got %v", err)
 	}
 	if string(readT(target)) != "ORIGINAL" {
-		t.Fatalf("target mutated on version mismatch: %q", readT(target))
+		t.Fatalf("target mutated on manifest mismatch: %q", readT(target))
 	}
 	// Temp file should be cleaned up (no leftover .pipelock-update-* in dir).
 	assertNoTempLeftovers(t, filepath.Dir(target))

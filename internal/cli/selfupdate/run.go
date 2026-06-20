@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	releasetrust "github.com/luckyPipewrench/pipelock/internal/release"
 )
 
 // firstVersionWithUpdate is the earliest release that ships the "update"
@@ -104,10 +106,11 @@ func (o *Options) Check(ctx context.Context) (*Status, error) {
 	return st, nil
 }
 
-// Run performs the full verified update: resolve release -> verify publisher
-// signature (best-effort) -> download archive -> checksum match -> extract ->
-// verify version -> back up -> atomic replace. FAIL-CLOSED at every step: any
-// error aborts and leaves the installed binary untouched.
+// Run performs the full verified update: resolve release -> verify the native
+// Ed25519 release manifest -> optionally verify legacy cosign material ->
+// download archive -> checksum match -> extract -> back up -> atomic replace.
+// FAIL-CLOSED at every step: any error aborts and leaves the installed binary
+// untouched.
 //
 // The cobra layer is responsible for any interactive confirmation before
 // calling Run; Run itself always proceeds (it is the "yes" path).
@@ -151,29 +154,57 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	if err != nil {
 		return st, fmt.Errorf("resolving checksums asset: %w", err)
 	}
+	manifestURL, err := assetURL(rel, releasetrust.ManifestFile)
+	if err != nil {
+		return st, fmt.Errorf("%w: resolving release manifest: %w", ErrSignatureVerify, err)
+	}
+	manifestSigURL, err := assetURL(rel, releasetrust.ManifestSigFile)
+	if err != nil {
+		return st, fmt.Errorf("%w: resolving release manifest signature: %w", ErrSignatureVerify, err)
+	}
 
 	// Stage checksums + signature material in the target directory's tempdir so
 	// cosign can read them by path and the extracted binary lands on the same FS.
 	dir := filepath.Dir(o.TargetPath)
 
-	// --- 1. checksums.txt + cosign authenticity (fail-closed unless --insecure-skip-signature) ---
+	// --- 1. release.json native Ed25519 authenticity (mandatory fail-closed) ---
+	manifestData, err := o.httpGet(ctx, manifestURL)
+	if err != nil {
+		return st, fmt.Errorf("%w: downloading %s: %w", ErrSignatureVerify, releasetrust.ManifestFile, err)
+	}
+	manifestSig, err := o.httpGet(ctx, manifestSigURL)
+	if err != nil {
+		return st, fmt.Errorf("%w: downloading %s: %w", ErrSignatureVerify, releasetrust.ManifestSigFile, err)
+	}
+	verification, err := releasetrust.VerifyManifest(manifestData, manifestSig, o.ReleaseKeyringHex)
+	if err != nil {
+		return st, fmt.Errorf("%w: native release manifest: %w", ErrSignatureVerify, err)
+	}
+	if verification.Manifest.Tag != rel.TagName {
+		return st, fmt.Errorf("%w: release metadata tag %q does not match manifest tag %q", ErrSignatureVerify, rel.TagName, verification.Manifest.Tag)
+	}
+	assetMeta, err := releasetrust.FindAsset(verification.Manifest, asset, o.GOOS, o.GOARCH, archiveBinaryName(o.GOOS))
+	if err != nil {
+		return st, fmt.Errorf("%w: %w", ErrSignatureVerify, err)
+	}
+
+	// --- 2. checksums.txt integrity, anchored by the signed manifest ---
 	sums, err := o.httpGet(ctx, sumsURL)
 	if err != nil {
 		return st, fmt.Errorf("downloading %s: %w", checksumsFile, err)
 	}
-	skipped, err := o.stageAndVerifySignature(ctx, rel, dir, sums)
-	if err != nil {
-		return st, err // ErrSignatureVerify -> fail-closed, no changes
-	}
-	st.SignatureSkipped = skipped
-	st.SignatureVerified = !skipped
-	if skipped {
-		_, _ = fmt.Fprintln(o.Stderr,
-			"WARNING: --insecure-skip-signature is set and cosign was not found on PATH. "+
-				"Publisher identity was NOT verified; proceeding with checksum integrity only.")
+	if got := sha256Hex(sums); got != verification.Manifest.ChecksumFileSHA256 {
+		return st, fmt.Errorf("%w: %s got %s want %s", ErrSignatureVerify, checksumsFile, got, verification.Manifest.ChecksumFileSHA256)
 	}
 
-	// --- 2. download archive + exact checksum match ---
+	// --- 3. optional cosign verification for external auditors ---
+	if err := o.stageAndVerifySignature(ctx, rel, dir, sums); err != nil {
+		return st, err // ErrSignatureVerify -> fail-closed, no changes
+	}
+	st.SignatureSkipped = false
+	st.SignatureVerified = true
+
+	// --- 4. download archive + exact checksum match ---
 	archive, err := o.httpGet(ctx, archiveURL)
 	if err != nil {
 		return st, fmt.Errorf("downloading %s: %w", asset, err)
@@ -182,24 +213,22 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	if !ok {
 		return st, fmt.Errorf("%w: %s has no entry in %s", ErrChecksumMismatch, asset, checksumsFile)
 	}
-	if got := sha256Hex(archive); got != wantSum {
-		return st, fmt.Errorf("%w: %s got %s want %s", ErrChecksumMismatch, asset, got, wantSum)
+	gotArchiveSum := sha256Hex(archive)
+	if gotArchiveSum != wantSum {
+		return st, fmt.Errorf("%w: %s got %s want %s", ErrChecksumMismatch, asset, gotArchiveSum, wantSum)
+	}
+	if gotArchiveSum != assetMeta.SHA256 {
+		return st, fmt.Errorf("%w: %s got %s want manifest %s", ErrChecksumMismatch, asset, gotArchiveSum, assetMeta.SHA256)
 	}
 
-	// --- 3. extract the pipelock binary into the target dir (atomic-rename ready) ---
+	// --- 5. extract the pipelock binary into the target dir (atomic-rename ready) ---
 	tmpPath, err := extractBinary(archive, isZip, dir, archiveBinaryName(o.GOOS))
 	if err != nil {
 		return st, err
 	}
 	// From here, any failure must delete tmpPath and leave target untouched.
 
-	// --- 4. verify the extracted binary self-reports the expected version ---
-	if err := o.verifyBinaryVersion(ctx, tmpPath, assetVer); err != nil {
-		_ = removeQuiet(tmpPath)
-		return st, err
-	}
-
-	// --- 5. back up current + atomic replace ---
+	// --- 6. back up current + atomic replace ---
 	backup, err := installBinary(o.TargetPath, tmpPath)
 	if err != nil {
 		_ = removeQuiet(tmpPath)
@@ -252,18 +281,21 @@ func (o *Options) Rollback(_ context.Context) (*Status, error) {
 }
 
 // stageAndVerifySignature writes checksums.txt (+ .sig + .pem if present) into
-// a private temp dir under dir, then runs cosign verification. Returns
-// skipped=true when cosign is absent (integrity-only), or an error when cosign
-// is present and rejects the signature.
-func (o *Options) stageAndVerifySignature(ctx context.Context, rel *release, dir string, sums []byte) (skipped bool, err error) {
+// a private temp dir under dir, then runs cosign verification when cosign is
+// available. Native release.json verification is mandatory and happens before
+// this helper, so cosign absence is no longer a checksum-only bypass.
+func (o *Options) stageAndVerifySignature(ctx context.Context, rel *release, dir string, sums []byte) error {
+	if !o.CosignAvailable() {
+		return nil
+	}
 	stageDir, err := os.MkdirTemp(dir, ".pipelock-verify-*")
 	if err != nil {
-		return false, fmt.Errorf("creating verification temp dir: %w", err)
+		return fmt.Errorf("creating verification temp dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(stageDir) }()
 
 	if err := writeFileQuiet(filepath.Join(stageDir, checksumsFile), sums); err != nil {
-		return false, fmt.Errorf("staging %s: %w", checksumsFile, err)
+		return fmt.Errorf("staging %s: %w", checksumsFile, err)
 	}
 
 	// Best-effort fetch of signature + certificate. If they're missing from the
@@ -279,5 +311,8 @@ func (o *Options) stageAndVerifySignature(ctx context.Context, rel *release, dir
 		}
 	}
 
-	return o.verifyPublisherSignature(ctx, stageDir, rel.TagName)
+	if err := o.verifyPublisherSignature(ctx, stageDir, rel.TagName); err != nil {
+		return err
+	}
+	return nil
 }

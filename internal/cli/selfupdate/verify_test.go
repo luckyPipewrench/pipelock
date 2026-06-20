@@ -15,46 +15,47 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	releasetrust "github.com/luckyPipewrench/pipelock/internal/release"
 )
 
-func TestRun_CosignAbsentFailsClosedByDefault(t *testing.T) {
-	assets, _ := standardAssets(t, testLatest, testGOOS)
-	rs := newReleaseServer(t, testLatest, assets)
-	target := writeTargetBinary(t, "ORIGINAL")
-	opts := baseOptions(rs, target)
-	opts.CosignAvailable = func() bool { return false }
-
-	_, err := opts.Run(context.Background())
-	if !errors.Is(err, ErrSignatureUnavailable) {
-		t.Fatalf("expected ErrSignatureUnavailable, got %v", err)
-	}
-	if string(readT(target)) != "ORIGINAL" {
-		t.Fatalf("target mutated when cosign unavailable: %q", readT(target))
-	}
-	if _, err := os.Stat(target + backupSuffix); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("backup should not exist after signature-unavailable abort")
-	}
-}
-
-func TestRun_InsecureSkipSignatureAllowsChecksumOnly(t *testing.T) {
+func TestRun_CosignAbsentStillVerifiesNativeManifest(t *testing.T) {
 	assets, _ := standardAssets(t, testLatest, testGOOS)
 	rs := newReleaseServer(t, testLatest, assets)
 	target := writeTargetBinary(t, "OLD")
+	opts := baseOptions(rs, target)
+	opts.CosignAvailable = func() bool { return false }
+
+	st, err := opts.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !st.Applied || st.SignatureSkipped || !st.SignatureVerified {
+		t.Fatalf("expected native-signature verified update, got %+v", st)
+	}
+}
+
+func TestRun_InsecureSkipSignatureDoesNotBypassNativeManifest(t *testing.T) {
+	assets, _ := standardAssets(t, testLatest, testGOOS)
+	delete(assets, releasetrust.ManifestFile)
+	delete(assets, releasetrust.ManifestSigFile)
+	rs := newReleaseServer(t, testLatest, assets)
+	target := writeTargetBinary(t, "ORIGINAL")
 	opts := baseOptions(rs, target)
 	stderr := &bytes.Buffer{}
 	opts.Stderr = stderr
 	opts.CosignAvailable = func() bool { return false }
 	opts.AllowUnsignedChecksums = true
 
-	st, err := opts.Run(context.Background())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	_, err := opts.Run(context.Background())
+	if !errors.Is(err, ErrSignatureVerify) {
+		t.Fatalf("expected ErrSignatureVerify, got %v", err)
 	}
-	if !st.Applied || !st.SignatureSkipped || st.SignatureVerified {
-		t.Fatalf("expected applied + skipped, got %+v", st)
+	if string(readT(target)) != "ORIGINAL" {
+		t.Fatalf("target mutated without native release signature: %q", readT(target))
 	}
-	if !strings.Contains(stderr.String(), "--insecure-skip-signature") {
-		t.Fatalf("expected insecure warning, got %q", stderr.String())
+	if stderr.String() != "" {
+		t.Fatalf("unexpected insecure warning: %q", stderr.String())
 	}
 }
 
@@ -65,13 +66,14 @@ func TestRun_CosignPresentAndPasses(t *testing.T) {
 	opts := baseOptions(rs, target)
 	opts.CosignAvailable = func() bool { return true }
 	var cosignArgs []string
-	// Runner: cosign verify-blob succeeds; --version echoes the binary file.
+	// Runner: cosign verify-blob succeeds. The updater must not execute the
+	// downloaded candidate for a version probe.
 	opts.RunCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		if name == cosignBinary {
 			cosignArgs = append([]string(nil), args...)
 			return []byte("Verified OK"), nil
 		}
-		return stubVersionRunner("")(ctx, name, args...)
+		return nil, fmt.Errorf("unexpected command execution: %s %v", name, args)
 	}
 
 	st, err := opts.Run(context.Background())
@@ -206,31 +208,9 @@ func TestCopyBounded_RejectsOversize(t *testing.T) {
 	}
 }
 
-func TestVersionOutputMatchesWholeTokenOnly(t *testing.T) {
-	if !versionOutputMatches("pipelock version 2.8.0\n", "2.8.0") {
-		t.Fatal("expected exact bare version token to match")
-	}
-	if !versionOutputMatches("pipelock version v2.8.0\n", "2.8.0") {
-		t.Fatal("expected exact v-prefixed version token to match")
-	}
-	if versionOutputMatches("pipelock version 12.8.0\n", "2.8.0") {
-		t.Fatal("substring version match should fail")
-	}
-	// Pre-release pins must match EXACTLY, not collapse to the core version.
-	if !versionOutputMatches("pipelock version 2.8.0-rc1\n", "v2.8.0-rc1") {
-		t.Fatal("expected exact pre-release token to match")
-	}
-	if versionOutputMatches("pipelock version 2.8.0\n", "2.8.0-rc1") {
-		t.Fatal("a stable binary must NOT satisfy a pre-release pin")
-	}
-	if versionOutputMatches("pipelock version 2.8.0-rc2\n", "2.8.0-rc1") {
-		t.Fatal("rc2 binary must NOT satisfy an rc1 pin")
-	}
-}
-
 // TestVersionTagPreservesPrerelease guards the bareVersion-vs-versionTag split:
-// asset names and version checks must keep the pre-release suffix so a pinned
-// "v2.8.0-rc1" resolves the rc archive, not the stable one.
+// asset names must keep the pre-release suffix so a pinned "v2.8.0-rc1"
+// resolves the rc archive, not the stable one.
 func TestVersionTagPreservesPrerelease(t *testing.T) {
 	if got := versionTag("v2.8.0-rc1"); got != "2.8.0-rc1" {
 		t.Fatalf("versionTag should keep pre-release: got %q", got)

@@ -36,22 +36,10 @@ func parseChecksums(data []byte) map[string]string {
 }
 
 // verifyPublisherSignature checks checksums.txt against its keyless cosign
-// signature. Behavior:
-//   - cosign NOT on PATH: returns ErrSignatureUnavailable unless the caller
-//     explicitly enabled checksum-only mode.
-//   - cosign present and verification FAILS: returns (false, ErrSignatureVerify)
-//     — fail-closed, caller aborts with no changes.
-//   - cosign present and verification PASSES: returns (false-skipped, nil).
-//
-// It is a single helper with injected availability + runner so tests cover
-// all three paths without a real cosign binary.
-func (o *Options) verifyPublisherSignature(ctx context.Context, dir, tagName string) (skipped bool, err error) {
-	if !o.CosignAvailable() {
-		if !o.AllowUnsignedChecksums {
-			return false, ErrSignatureUnavailable
-		}
-		return true, nil
-	}
+// signature. This is an optional secondary ecosystem check; native release.json
+// verification is the mandatory publisher-authentication path. If cosign is
+// present and rejects the signature, the updater still fails closed.
+func (o *Options) verifyPublisherSignature(ctx context.Context, dir, tagName string) error {
 	// #nosec G204 -- all args are fixed consts or paths we constructed in our temp dir.
 	out, runErr := o.RunCommand(ctx, cosignBinary,
 		"verify-blob",
@@ -62,9 +50,9 @@ func (o *Options) verifyPublisherSignature(ctx context.Context, dir, tagName str
 		filepath.Join(dir, checksumsFile),
 	)
 	if runErr != nil {
-		return false, fmt.Errorf("%w: cosign verify-blob: %s: %s", ErrSignatureVerify, runErr.Error(), strings.TrimSpace(string(out)))
+		return fmt.Errorf("%w: cosign verify-blob: %s: %s", ErrSignatureVerify, runErr.Error(), strings.TrimSpace(string(out)))
 	}
-	return false, nil
+	return nil
 }
 
 // sha256Hex returns the lowercase hex SHA256 of data.
@@ -201,34 +189,6 @@ func extractZip(archive []byte, w io.Writer, expectedBinary string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %s not found in archive", ErrAssetNotFound, expectedBinary)
-}
-
-// verifyBinaryVersion runs "<path> --version" and confirms the output mentions
-// the expected bare version. Fail-closed: any error or a missing version match
-// returns ErrVersionMismatch.
-func (o *Options) verifyBinaryVersion(ctx context.Context, path, wantVersion string) error {
-	// #nosec G204 -- path is a temp file we just extracted into our own dir.
-	out, err := o.RunCommand(ctx, path, "--version")
-	if err != nil {
-		return fmt.Errorf("%w: running --version: %s", ErrVersionMismatch, err.Error())
-	}
-	got := string(out)
-	if !versionOutputMatches(got, wantVersion) {
-		return fmt.Errorf("%w: expected %q in %q", ErrVersionMismatch, wantVersion, strings.TrimSpace(got))
-	}
-	return nil
-}
-
-func versionOutputMatches(output, wantVersion string) bool {
-	// Exact match including any pre-release suffix: a "2.8.0" binary must NOT
-	// satisfy a "2.8.0-rc1" pin. Strip only the leading "v".
-	want := versionTag(wantVersion)
-	for _, field := range strings.Fields(output) {
-		if field == want || field == "v"+want {
-			return true
-		}
-	}
-	return false
 }
 
 func copyBounded(w io.Writer, r io.Reader) error {

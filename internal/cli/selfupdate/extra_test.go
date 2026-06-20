@@ -257,9 +257,8 @@ func TestShellQuote(t *testing.T) {
 
 func TestStageAndVerifySignature_StageError(t *testing.T) {
 	// dir does not exist -> writeFileQuiet fails.
-	opts := &Options{CosignAvailable: func() bool { return false }, RunCommand: stubVersionRunner("")}
-	_, err := opts.stageAndVerifySignature(context.Background(), &release{}, filepath.Join(t.TempDir(), "nope"), []byte("x"))
-	if err == nil {
+	opts := &Options{CosignAvailable: func() bool { return true }, RunCommand: stubVersionRunner("")}
+	if err := opts.stageAndVerifySignature(context.Background(), &release{}, filepath.Join(t.TempDir(), "nope"), []byte("x")); err == nil {
 		t.Fatal("expected staging error")
 	}
 }

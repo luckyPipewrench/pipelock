@@ -77,6 +77,7 @@ jobs:
         env:
           LICENSE_PUBLIC_KEY: ${{ secrets.LICENSE_PUBLIC_KEY }}
           RULES_KEYRING_HEX: ${{ secrets.RULES_KEYRING_HEX }}
+          RELEASE_KEYRING_HEX: ${{ secrets.RELEASE_KEYRING_HEX }}
         run: |
           test -n "$LICENSE_PUBLIC_KEY" || {
             echo "::error::LICENSE_PUBLIC_KEY secret is required for release builds"
@@ -84,6 +85,10 @@ jobs:
           }
           test -n "$RULES_KEYRING_HEX" || {
             echo "::error::RULES_KEYRING_HEX secret is required for release builds"
+            exit 1
+          }
+          test -n "$RELEASE_KEYRING_HEX" || {
+            echo "::error::RELEASE_KEYRING_HEX secret is required for self-update release verification"
             exit 1
           }
           case "$LICENSE_PUBLIC_KEY" in
@@ -98,6 +103,10 @@ jobs:
           }
           if [[ ! "$RULES_KEYRING_HEX" =~ ^[0-9A-Fa-f]{64}(,[0-9A-Fa-f]{64})*$ ]]; then
             echo "::error::RULES_KEYRING_HEX must be one or more 64-hex Ed25519 public keys separated by commas"
+            exit 1
+          fi
+          if [[ ! "$RELEASE_KEYRING_HEX" =~ ^[0-9A-Fa-f]{64}(,[0-9A-Fa-f]{64})*$ ]]; then
+            echo "::error::RELEASE_KEYRING_HEX must be one or more 64-hex Ed25519 public keys separated by commas"
             exit 1
           fi
           license_public_key_normalized="${LICENSE_PUBLIC_KEY,,}"
@@ -116,6 +125,27 @@ jobs:
               exit 1
             }
           done
+          IFS=',' read -r -a release_keys <<< "$RELEASE_KEYRING_HEX"
+          for key in "${release_keys[@]}"; do
+            test -n "$key" || {
+              echo "::error::RELEASE_KEYRING_HEX contains an empty key entry"
+              exit 1
+            }
+            test "${#key}" -eq 64 || {
+              echo "::error::RELEASE_KEYRING_HEX entries must be 64 hex characters"
+              exit 1
+            }
+            test "${key,,}" != "$license_public_key_normalized" || {
+              echo "::error::LICENSE_PUBLIC_KEY must not appear in RELEASE_KEYRING_HEX"
+              exit 1
+            }
+            for rules_key in "${rules_keys[@]}"; do
+              test "${key,,}" != "${rules_key,,}" || {
+                echo "::error::RELEASE_KEYRING_HEX must not reuse a rules signing key"
+                exit 1
+              }
+            done
+          done
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@1a80836c5c9d9e5755a25cb59ec6f45a3b5f41a8 # v7.2.1
@@ -129,6 +159,18 @@ jobs:
           GOVERSION: ${{ env.GOVERSION }}
           LICENSE_PUBLIC_KEY: ${{ secrets.LICENSE_PUBLIC_KEY }}
           RULES_KEYRING_HEX: ${{ secrets.RULES_KEYRING_HEX }}
+          RELEASE_KEYRING_HEX: ${{ secrets.RELEASE_KEYRING_HEX }}
+
+      - name: Generate and upload self-update release manifest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_KEYRING_HEX: ${{ secrets.RELEASE_KEYRING_HEX }}
+        run: |
+          go run ./cmd/pipelock-release-manifest \
+            -dist dist \
+            -tag "$GITHUB_REF_NAME" \
+            -commit "$GITHUB_SHA"
+          gh release upload "$GITHUB_REF_NAME" dist/release.json --clobber
 
       - name: Generate SBOM
         run: |

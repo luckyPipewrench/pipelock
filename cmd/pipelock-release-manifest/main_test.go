@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -109,6 +110,141 @@ func TestRunGenKeyFailsWhenStdoutWriteFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "write generated release keypair") {
 		t.Fatalf("error = %v, want write generated release keypair", err)
+	}
+}
+
+func TestRunRejectsMissingInputs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing tag", args: nil, want: "--tag is required"},
+		{name: "missing commit", args: []string{"-tag", "v2.8.0"}, want: "--commit is required"},
+		{name: "missing signer", args: []string{"-tag", "v2.8.0", "-commit", strings.Repeat("a", 40)}, want: "--signer-key-id"},
+		{name: "bad signer", args: []string{"-tag", "v2.8.0", "-commit", strings.Repeat("a", 40), "-signer-key-id", "bad"}, want: "32-byte Ed25519 public key"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := run(tc.args, ioDiscard{}, ioDiscard{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("run error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunUsesReleaseKeyringEnvForSignerDefault(t *testing.T) {
+	dist := t.TempDir()
+	archiveName := "pipelock_2.8.0_windows_amd64.zip"
+	archive := []byte("fake windows archive")
+	if err := os.WriteFile(filepath.Join(dist, archiveName), archive, 0o600); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "checksums.txt"), []byte(sha256Hex(archive)+"  "+archiveName+"\n"), 0o600); err != nil {
+		t.Fatalf("write checksums: %v", err)
+	}
+	pubHex := strings.Repeat("a", 64)
+	t.Setenv("RELEASE_KEYRING_HEX", " "+pubHex+" ,"+strings.Repeat("b", 64))
+
+	if err := run([]string{
+		"-dist", dist,
+		"-tag", "v2.8.0",
+		"-commit", strings.Repeat("c", 40),
+	}, ioDiscard{}, ioDiscard{}); err != nil {
+		t.Fatalf("run with RELEASE_KEYRING_HEX signer default: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dist, releasetrust.ManifestFile)) // #nosec G304 -- test reads its own temp dist dir
+	if err != nil {
+		t.Fatalf("read release.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"signer_key_id": "`+pubHex+`"`) {
+		t.Fatalf("release.json did not use first keyring key: %s", data)
+	}
+}
+
+func TestRunSignOnlyRejectsKeyMismatch(t *testing.T) {
+	dist := t.TempDir()
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x44}, ed25519.SeedSize))
+	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x45}, ed25519.SeedSize))
+	manifest := releasetrust.Manifest{
+		Schema:             "pipelock-release-v1",
+		Repo:               "github.com/luckyPipewrench/pipelock",
+		Tag:                "v2.8.0",
+		Commit:             strings.Repeat("d", 40),
+		CreatedUTC:         "2026-06-19T12:00:00Z",
+		ChecksumFileSHA256: strings.Repeat("0", 64),
+		Assets: []releasetrust.Asset{{
+			Name:   "pipelock_2.8.0_linux_amd64.tar.gz",
+			SHA256: strings.Repeat("1", 64),
+			GOOS:   "linux",
+			GOARCH: "amd64",
+			Binary: "pipelock",
+		}},
+		SignerKeyID: publicKeyHex(other.Public().(ed25519.PublicKey)),
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestPath := filepath.Join(dist, releasetrust.ManifestFile)
+	if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	err = run([]string{"-sign-only", "-manifest", manifestPath, "-private-key-hex", hex.EncodeToString(priv)}, ioDiscard{}, ioDiscard{})
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("run -sign-only mismatch error = %v, want mismatch", err)
+	}
+}
+
+func TestParsePrivateKeyForms(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x55}, ed25519.SeedSize)
+	privFromSeed := ed25519.NewKeyFromSeed(seed)
+	got, err := parsePrivateKey(hex.EncodeToString(seed))
+	if err != nil {
+		t.Fatalf("parse seed: %v", err)
+	}
+	if !bytes.Equal(got, privFromSeed) {
+		t.Fatal("seed form did not derive expected private key")
+	}
+	got, err = parsePrivateKey(hex.EncodeToString(privFromSeed))
+	if err != nil {
+		t.Fatalf("parse private key: %v", err)
+	}
+	if !bytes.Equal(got, privFromSeed) {
+		t.Fatal("private-key form did not round-trip")
+	}
+	for _, value := range []string{"", "not-hex", "abcd"} {
+		if _, err := parsePrivateKey(value); err == nil {
+			t.Fatalf("parsePrivateKey(%q) succeeded, want error", value)
+		}
+	}
+}
+
+func TestParseChecksumFileAndManifestAssetsErrors(t *testing.T) {
+	if _, err := parseChecksumFile([]byte("nothex  file\n")); err == nil {
+		t.Fatal("parseChecksumFile accepted malformed checksum")
+	}
+	dist := t.TempDir()
+	if _, err := manifestAssets(dist, map[string]string{"README.txt": strings.Repeat("0", 64)}); err == nil {
+		t.Fatal("manifestAssets accepted no pipelock archives")
+	}
+	archiveName := "pipelock_2.8.0_linux_amd64.tar.gz"
+	if err := os.WriteFile(filepath.Join(dist, archiveName), []byte("archive"), 0o600); err != nil {
+		t.Fatalf("write archive: %v", err)
+	}
+	if _, err := manifestAssets(dist, map[string]string{archiveName: strings.Repeat("0", 64)}); err == nil {
+		t.Fatal("manifestAssets accepted checksum mismatch")
+	}
+}
+
+func TestArchiveBinaryName(t *testing.T) {
+	if got := archiveBinaryName("windows"); got != "pipelock.exe" {
+		t.Fatalf("windows binary = %q", got)
+	}
+	if got := archiveBinaryName("linux"); got != "pipelock" {
+		t.Fatalf("linux binary = %q", got)
 	}
 }
 

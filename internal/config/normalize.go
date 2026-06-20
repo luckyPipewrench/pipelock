@@ -781,15 +781,18 @@ func mergeDefaultSuppressions(user, defaults []SuppressEntry) []SuppressEntry {
 	if len(defaults) == 0 {
 		return user
 	}
+	keyFor := func(e SuppressEntry) string {
+		return strings.ToLower(e.Rule) + "\x00" + strings.ToLower(e.Path)
+	}
 	seen := make(map[string]struct{}, len(defaults)+len(user))
 	merged := make([]SuppressEntry, 0, len(defaults)+len(user))
 	for _, e := range defaults {
-		key := strings.ToLower(e.Rule) + "\x00" + e.Path
+		key := keyFor(e)
 		seen[key] = struct{}{}
 		merged = append(merged, e)
 	}
 	for _, e := range user {
-		key := strings.ToLower(e.Rule) + "\x00" + e.Path
+		key := keyFor(e)
 		if _, ok := seen[key]; ok {
 			continue
 		}

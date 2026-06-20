@@ -158,14 +158,45 @@ func matchGlobSubstring(s, pattern string) bool {
 // pattern. Such patterns are matched against the destination host only. The
 // discriminator is intentionally limited to the host-substring style used by
 // provider suppressions: wildcard on both sides, no scheme, no path separator,
-// and a stripped core that is itself a dotted domain. One-sided basename globs
-// like "*.tar.gz" must still reach the basename matcher below.
+// and a stripped core that is itself a dotted domain rather than a dotted
+// version/file-extension path glob. Basename and path globs like "*.tar.gz",
+// "*.tar.gz*", and "*v1.2.3*" must still reach the path matchers below.
 func isHostDomainGlob(p string) bool {
 	if strings.Contains(p, "://") || strings.Contains(p, "/") || !strings.HasPrefix(p, "*") || !strings.HasSuffix(p, "*") {
 		return false
 	}
 	core := strings.TrimPrefix(strings.Trim(p, "*"), ".")
-	return strings.Contains(core, ".") && !strings.Contains(core, "*")
+	return strings.Contains(core, ".") && !strings.Contains(core, "*") && !looksLikeDottedPathGlob(core)
+}
+
+// looksLikeDottedPathGlob excludes the common dotted path-glob forms that are
+// otherwise indistinguishable from a two-label hostname by syntax alone.
+func looksLikeDottedPathGlob(core string) bool {
+	labels := strings.Split(core, ".")
+	for _, label := range labels {
+		if label == "" || isAllDigits(label) {
+			return true
+		}
+	}
+	switch labels[len(labels)-1] {
+	case "css", "csv", "gif", "gz", "html", "jpeg", "jpg", "js", "json", "log", "map", "md", "pdf", "png", "tar", "tgz", "txt", "wasm", "xml", "yaml", "yml", "zip":
+		return true
+	default:
+		return false
+	}
+}
+
+// isAllDigits reports whether s is non-empty and every rune is ASCII decimal.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // urlHostParts returns the lowercased bare hostname and the lowercased

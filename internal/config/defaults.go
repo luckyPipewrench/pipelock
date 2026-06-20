@@ -17,24 +17,48 @@ import (
 // value; preset YAML files are guarded by a parity test.
 const CredentialSolicitationRegex = `(?i)(\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^.!?]|\.\S){0,40}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b(?:[^\n.!?]|\.\S){0,40}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)|\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^\n.!?]|\.\S){0,30}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)(?:[^\n.!?]|\.\S){0,30}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH solicitation text, not a hardcoded credential
 
-func defaultProviderKeySuppressions() []SuppressEntry {
-	return []SuppressEntry{
-		{Rule: "Anthropic API Key", Path: "*.anthropic.com*", Reason: "provider-bound credential"},
-		{Rule: "OpenAI API Key", Path: "*.openai.com*", Reason: "provider-bound credential"},
-		{Rule: "OpenAI Service Key", Path: "*.openai.com*", Reason: "provider-bound credential"},
-		{Rule: "Fireworks API Key", Path: "*.fireworks.ai*", Reason: "provider-bound credential"},
-		{Rule: "LLM Router API Key", Path: "*.openrouter.ai*", Reason: "provider-bound credential"},
-		{Rule: "Answer Engine API Key", Path: "*.perplexity.ai*", Reason: "provider-bound credential"},
-		{Rule: "Web Research API Key", Path: "*.tavily.com*", Reason: "provider-bound credential"},
-		{Rule: "Google API Key", Path: "*.googleapis.com*", Reason: "provider-bound credential"},
-		{Rule: "Hugging Face Token", Path: "*.huggingface.co*", Reason: "provider-bound credential"},
-		{Rule: "Databricks Token", Path: "*.databricks.com*", Reason: "provider-bound credential"},
-		{Rule: "Replicate API Token", Path: "*.replicate.com*", Reason: "provider-bound credential"},
-		{Rule: "Together AI Key", Path: "*.together.ai*", Reason: "provider-bound credential"},
-		{Rule: "Pinecone API Key", Path: "*.pinecone.io*", Reason: "provider-bound credential"},
-		{Rule: "Groq API Key", Path: "*.groq.com*", Reason: "provider-bound credential"},
-		{Rule: "xAI API Key", Path: "*.x.ai*", Reason: "provider-bound credential"},
+type providerKeyDomainDefault struct {
+	rule   string
+	domain string
+}
+
+var defaultProviderKeyDomains = []providerKeyDomainDefault{
+	{rule: "Anthropic API Key", domain: "*.anthropic.com"},
+	{rule: "OpenAI API Key", domain: "*.openai.com"},
+	{rule: "OpenAI Service Key", domain: "*.openai.com"},
+	{rule: "Fireworks API Key", domain: "*.fireworks.ai"},
+	{rule: "LLM Router API Key", domain: "*.openrouter.ai"},
+	{rule: "Answer Engine API Key", domain: "*.perplexity.ai"},
+	{rule: "Web Research API Key", domain: "*.tavily.com"},
+	{rule: "Google API Key", domain: "*.googleapis.com"},
+	{rule: "Hugging Face Token", domain: "*.huggingface.co"},
+	{rule: "Databricks Token", domain: "*.databricks.com"},
+	{rule: "Replicate API Token", domain: "*.replicate.com"},
+	{rule: "Together AI Key", domain: "*.together.ai"},
+	{rule: "Pinecone API Key", domain: "*.pinecone.io"},
+	{rule: "Groq API Key", domain: "*.groq.com"},
+	{rule: "xAI API Key", domain: "*.x.ai"},
+}
+
+func providerKeyExemptDomains(rule string) []string {
+	for _, d := range defaultProviderKeyDomains {
+		if d.rule == rule {
+			return []string{d.domain}
+		}
 	}
+	return nil
+}
+
+func defaultProviderKeySuppressions() []SuppressEntry {
+	out := make([]SuppressEntry, 0, len(defaultProviderKeyDomains))
+	for _, d := range defaultProviderKeyDomains {
+		out = append(out, SuppressEntry{
+			Rule:   d.rule,
+			Path:   d.domain + "*",
+			Reason: "provider-bound credential",
+		})
+	}
+	return out
 }
 
 // Defaults returns a Config with sensible defaults for balanced mode.
@@ -111,21 +135,21 @@ func Defaults() *Config {
 			ScanEnv: true,
 			Patterns: []DLPPattern{
 				// Provider API keys
-				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.anthropic.com"}},
-				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.openai.com"}},
-				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.openai.com"}},
+				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Anthropic API Key")},
+				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI API Key")},
+				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("OpenAI Service Key")},
 				// Fireworks API keys use an "fw_" prefix with a 22-character
 				// alphanumeric suffix. Keep the trailing word boundary so longer
 				// opaque base64-ish IDs do not match a 22-character prefix.
 				// Source: https://docs.fireworks.ai/api-reference/authentication
-				{Name: "Fireworks API Key", Regex: `\bfw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.fireworks.ai"}},
+				{Name: "Fireworks API Key", Regex: `\bfw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Fireworks API Key")},
 				// OpenRouter keys are "sk-or-v1-" + a hex token. Keep the suffix
 				// hex-only: allowing hyphens, underscores, or arbitrary letters lets
 				// the pattern match ordinary prose/slugs after the prefix.
-				{Name: "LLM Router API Key", Regex: `\bsk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.openrouter.ai"}},
-				{Name: "Answer Engine API Key", Regex: `\bpplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.perplexity.ai"}},
-				{Name: "Web Research API Key", Regex: `\btvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.tavily.com"}},
-				{Name: "Google API Key", Regex: `\bAIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, ExemptDomains: []string{"*.googleapis.com"}},
+				{Name: "LLM Router API Key", Regex: `\bsk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("LLM Router API Key")},
+				{Name: "Answer Engine API Key", Regex: `\bpplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Answer Engine API Key")},
+				{Name: "Web Research API Key", Regex: `\btvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Web Research API Key")},
+				{Name: "Google API Key", Regex: `\bAIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, ExemptDomains: providerKeyExemptDomains("Google API Key")},
 				{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: SeverityCritical},
 				// Stripe keys use underscores (sk_test_) or hyphens (sk-test-) depending on version.
 				{Name: "Stripe Key", Regex: `[sr]k[-_](live|test)[-_][a-zA-Z0-9]{20,}`, Severity: SeverityCritical},
@@ -230,23 +254,23 @@ func Defaults() *Config {
 				// bounded alphanumeric suffix. Keep the boundary so longer
 				// opaque IDs do not match a valid token prefix.
 				// Source: https://huggingface.co/docs/hub/security-tokens
-				{Name: "Hugging Face Token", Regex: `\bhf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.huggingface.co"}},
+				{Name: "Hugging Face Token", Regex: `\bhf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Hugging Face Token")},
 				// Databricks personal access tokens use a 32-character hex suffix.
 				// Keep this narrow: the previous lowercase-alphanumeric suffix
 				// produced false positives on base64 image payloads.
-				{Name: "Databricks Token", Regex: `\bdapi[0-9a-f]{32,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.databricks.com"}},
+				{Name: "Databricks Token", Regex: `\bdapi[0-9a-f]{32,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Databricks Token")},
 				// Replicate API tokens use an "r8_" prefix with a 40-character
 				// hex suffix. The previous broad alphanumeric suffix was the same
 				// short-prefix FP shape as Fireworks and Databricks.
 				// Source: https://replicate.com/docs/topics/authentication
-				{Name: "Replicate API Token", Regex: `\br8_[a-f0-9]{40}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.replicate.com"}},
-				{Name: "Together AI Key", Regex: `\btok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.together.ai"}},
+				{Name: "Replicate API Token", Regex: `\br8_[a-f0-9]{40}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Replicate API Token")},
+				{Name: "Together AI Key", Regex: `\btok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Together AI Key")},
 				// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
-				{Name: "Pinecone API Key", Regex: `\bpcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.pinecone.io"}},
+				{Name: "Pinecone API Key", Regex: `\bpcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Pinecone API Key")},
 				// Groq inference API keys: "gsk_" prefix, 48+ alphanumeric chars.
-				{Name: "Groq API Key", Regex: `\bgsk_[a-zA-Z0-9]{48,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.groq.com"}},
+				{Name: "Groq API Key", Regex: `\bgsk_[a-zA-Z0-9]{48,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Groq API Key")},
 				// xAI (Grok) API keys: "xai-" prefix, 80+ chars including hyphens.
-				{Name: "xAI API Key", Regex: `\bxai-[a-zA-Z0-9\-_]{80,}\b`, Severity: SeverityCritical, ExemptDomains: []string{"*.x.ai"}},
+				{Name: "xAI API Key", Regex: `\bxai-[a-zA-Z0-9\-_]{80,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("xAI API Key")},
 
 				// Infrastructure and platform tokens
 				// DigitalOcean personal access tokens: 64 hex chars after prefix.

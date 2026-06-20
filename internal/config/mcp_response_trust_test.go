@@ -85,6 +85,12 @@ func TestMCPResponseTrustValidationRejectsUnknownAndInertConfigWarns(t *testing.
 	}
 
 	cfg = Defaults()
+	cfg.ResponseScanning.MCPServers = []MCPResponseServerTrust{{Server: `codex\prod`, Trust: ResponseTrustReasoning}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "without URL syntax or slashes") {
+		t.Fatalf("Validate err = %v, want backslash separator rejection", err)
+	}
+
+	cfg = Defaults()
 	cfg.ResponseScanning.Enabled = false
 	cfg.ResponseScanning.MCPServers = []MCPResponseServerTrust{{Server: "codex", Trust: ResponseTrustReasoning}}
 	warnings, err := cfg.ValidateWithWarnings()
@@ -110,6 +116,38 @@ func TestValidateReload_MCPResponseTrustReasoningAddedWarns(t *testing.T) {
 		}
 	}
 	t.Fatal("missing reload warning when MCP response trust changes to reasoning")
+}
+
+func TestValidateReload_MCPResponseTrustMultipleReasoningWarnings(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.ResponseScanning.MCPServers = []MCPResponseServerTrust{
+		{Server: "codex", Trust: ResponseTrustReasoning},
+		{Server: "security-reviewer", Trust: ResponseTrustReasoning},
+	}
+
+	warnings := ValidateReload(old, updated)
+	var got []string
+	for _, warning := range warnings {
+		if warning.Field == "response_scanning.mcp_servers" {
+			got = append(got, warning.Message)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("MCP trust reload warning count = %d, want 2: %#v", len(got), got)
+	}
+	for _, server := range []string{"codex", "security-reviewer"} {
+		found := false
+		for _, message := range got {
+			if strings.Contains(message, server) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing reload warning for %s in %#v", server, got)
+		}
+	}
 }
 
 func TestValidateReload_MCPResponseTrustUnchangedNoWarning(t *testing.T) {

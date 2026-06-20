@@ -781,7 +781,7 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 		if entry.Server == "" {
 			return fmt.Errorf("%s.server is empty", field)
 		}
-		if strings.Contains(entry.Server, "://") || strings.Contains(entry.Server, "/") || strings.ContainsAny(entry.Server, "\r\n\t") {
+		if strings.Contains(entry.Server, "://") || strings.ContainsAny(entry.Server, "/\\\r\n\t") {
 			return fmt.Errorf("%s.server %q: use the MCP --server-name value without URL syntax or slashes", field, entry.Server)
 		}
 		if _, ok := seenMCPServers[entry.Server]; ok {

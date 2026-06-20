@@ -99,7 +99,6 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 				Field:   "response_scanning.mcp_servers",
 				Message: fmt.Sprintf("MCP server %q response trust changed from %s to %s", entry.Server, defaultMCPResponseTrust(oldTrust, existed), entry.Trust),
 			})
-			break
 		}
 	}
 

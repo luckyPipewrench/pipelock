@@ -252,7 +252,11 @@ func TestValidatePolicy_AcceptsDefault(t *testing.T) {
 
 func TestValidatePolicy_AcceptsNarrowPaths(t *testing.T) {
 	p := DefaultPolicy(t.TempDir())
-	p.AllowReadDirs = append(p.AllowReadDirs, "/opt/my-tool/")
+	toolDir := filepath.Join(t.TempDir(), "my-tool")
+	if err := os.Mkdir(toolDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	p.AllowReadDirs = append(p.AllowReadDirs, toolDir)
 	if err := ValidatePolicy(p); err != nil {
 		t.Errorf("narrow path should pass: %v", err)
 	}
@@ -336,7 +340,11 @@ func TestValidatePolicy_RejectsFileInsideProtectedDir(t *testing.T) {
 
 func TestValidatePolicy_AcceptsFileOutsideProtectedDir(t *testing.T) {
 	p := DefaultPolicy(t.TempDir())
-	p.AllowReadFiles = append(p.AllowReadFiles, "/opt/app/config.json")
+	cfgFile := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfgFile, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p.AllowReadFiles = append(p.AllowReadFiles, cfgFile)
 	if err := ValidatePolicy(p); err != nil {
 		t.Errorf("file outside protected dirs should pass: %v", err)
 	}

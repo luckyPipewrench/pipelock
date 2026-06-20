@@ -131,6 +131,52 @@ func TestAdvanceCRLHighWater(t *testing.T) {
 		}
 	})
 
+	t.Run("deleted primary uses durable anchor", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if _, err := AdvanceCRLHighWater(crlFile, 12); err != nil {
+			t.Fatalf("seed advance: %v", err)
+		}
+		if err := os.Remove(CRLHighWaterPath(crlFile)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AdvanceCRLHighWater(crlFile, 4); err == nil || !strings.Contains(err.Error(), "rollback rejected") {
+			t.Fatalf("lower advance after primary deletion err = %v, want rollback rejected", err)
+		}
+		if got, err := AdvanceCRLHighWater(crlFile, 13); err != nil || got != 13 {
+			t.Fatalf("higher advance after primary deletion = (%d, %v), want (13, nil)", got, err)
+		}
+		gen, found, err := ReadCRLHighWater(crlFile)
+		if err != nil || !found || gen != 13 {
+			t.Fatalf("primary after forward progress = (%d, %v, %v), want (13, true, nil)", gen, found, err)
+		}
+		anchor, anchorFound, err := readCRLHighWaterFile(CRLHighWaterAnchorPath(crlFile), "test anchor")
+		if err != nil || !anchorFound || anchor != 13 {
+			t.Fatalf("anchor after forward progress = (%d, %v, %v), want (13, true, nil)", anchor, anchorFound, err)
+		}
+	})
+
+	t.Run("deleted primary and secondary with context fails closed until reset", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if _, err := AdvanceCRLHighWater(crlFile, 12); err != nil {
+			t.Fatalf("seed advance: %v", err)
+		}
+		if err := os.Remove(CRLHighWaterPath(crlFile)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(CRLHighWaterAnchorPath(crlFile)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AdvanceCRLHighWater(crlFile, 4); err == nil || !strings.Contains(err.Error(), "high-water missing") {
+			t.Fatalf("lower advance after delete-all err = %v, want missing high-water fail-closed", err)
+		}
+		if err := ResetCRLHighWater(crlFile, 12); err != nil {
+			t.Fatalf("ResetCRLHighWater: %v", err)
+		}
+		if got, err := AdvanceCRLHighWater(crlFile, 13); err != nil || got != 13 {
+			t.Fatalf("higher advance after reset = (%d, %v), want (13, nil)", got, err)
+		}
+	})
+
 	t.Run("non-directory parent fails closed", func(t *testing.T) {
 		dir := t.TempDir()
 		blocker := filepath.Join(dir, "blocker")

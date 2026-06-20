@@ -81,6 +81,7 @@ func Cmd() *cobra.Command {
 		rulesVerifyCmd(),
 		rulesDiffCmd(),
 		rulesRemoveCmd(),
+		rulesResetFreshnessCmd(),
 	)
 	return cmd
 }
@@ -728,6 +729,9 @@ func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName 
 	if err := stageBundle(rulesDir, bundle.Name, bundleData, sigData, lf); err != nil {
 		return err
 	}
+	if err := resetFreshnessStateAfterBundleChange(rulesDir); err != nil {
+		return err
+	}
 
 	_, _ = fmt.Fprintf(out, "Installed %s v%s (%s)\n", bundle.Name, bundle.Version, result.Tier)
 	_, _ = fmt.Fprintf(out, "  %d rules, signer: %s\n", len(bundle.Rules), result.SignerFingerprint[:16]+"...")
@@ -1011,9 +1015,41 @@ func updateBundle(out io.Writer, rulesDir, name string, trustedKeys []config.Tru
 	if err := stageBundle(rulesDir, name, bundleData, sigData, newLF); err != nil {
 		return err
 	}
+	if err := resetFreshnessStateAfterBundleChange(rulesDir); err != nil {
+		return err
+	}
 
 	_, _ = fmt.Fprintf(out, "Updated %s: v%s -> v%s\n", name, lf.InstalledVersion, bundle.Version)
 	return nil
+}
+
+func resetFreshnessStateAfterBundleChange(rulesDir string) error {
+	return domrules.WithFreshnessLock(rulesDir, func() error {
+		if err := domrules.ResetFreshnessStateFromInstalledBundles(rulesDir); err != nil {
+			return fmt.Errorf("updating rules freshness state: %w", err)
+		}
+		return nil
+	})
+}
+
+func rulesResetFreshnessCmd() *cobra.Command {
+	var rulesDir string
+	cmd := &cobra.Command{
+		Use:   "reset-freshness",
+		Short: "Reset rules rollback freshness state from installed bundles",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			dir := domrules.ResolveRulesDir(rulesDir)
+			if err := domrules.WithFreshnessLock(dir, func() error {
+				return domrules.ResetFreshnessStateFromInstalledBundles(dir)
+			}); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Reset rules freshness state from installed bundles in %s\n", dir)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&rulesDir, "rules-dir", "", "override rules directory")
+	return cmd
 }
 
 // ---------- rules verify ----------

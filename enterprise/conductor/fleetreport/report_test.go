@@ -52,16 +52,16 @@ func TestBuildFleetReceiptReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKeyPair(report): %v", err)
 	}
-	_, auditPriv, err := ed25519.GenerateKey(rand.Reader)
+	auditPub, auditPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey(audit): %v", err)
 	}
 	first := testEvidence(t, auditPriv, "audit-1", 1, []receipt.Receipt{
-		testActionReceipt(t, "a1", receipt.ActionRead, "allow", "fetch", "url", "low"),
+		testActionReceipt(t, auditPriv, "a1", receipt.ActionRead, "allow", "fetch", "url", "low"),
 	}, 0)
 	const droppedActionReceipts = 1
 	second := testEvidence(t, auditPriv, "audit-2", 3, []receipt.Receipt{
-		testActionReceipt(t, "a2", receipt.ActionWrite, "block", "mcp", "dlp", "high"),
+		testActionReceipt(t, auditPriv, "a2", receipt.ActionWrite, "block", "mcp", "dlp", "high"),
 	}, droppedActionReceipts)
 
 	result, err := Build(context.Background(), staticEvidenceSource{evidence: []controlplane.AuditBatchEvidence{first, second}}, Options{
@@ -73,6 +73,7 @@ func TestBuildFleetReceiptReport(t *testing.T) {
 		ConductorVersion: "v2.8.0-test",
 		SignerKeyID:      testReportKeyID,
 		Signer:           reportPriv,
+		AuditKeys:        staticAuditKeyResolver(auditPub),
 		GeneratedAt:      testWindowStart.Add(time.Minute),
 	})
 	if err != nil {
@@ -98,6 +99,41 @@ func TestBuildFleetReceiptReport(t *testing.T) {
 	}
 }
 
+func TestBuildFleetReceiptReportRejectsReceiptSignedByUnenrolledKey(t *testing.T) {
+	_, reportPriv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair(report): %v", err)
+	}
+	auditPub, auditPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(audit): %v", err)
+	}
+	_, attackerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(attacker): %v", err)
+	}
+	forgedByUnenrolledKey := testActionReceipt(t, attackerPriv, "forged", receipt.ActionWrite, "allow", "fetch", "url", "low")
+	ev := testEvidence(t, auditPriv, "audit-forged", 1, []receipt.Receipt{forgedByUnenrolledKey}, 0)
+
+	_, err = Build(context.Background(), staticEvidenceSource{evidence: []controlplane.AuditBatchEvidence{ev}}, Options{
+		OrgID:       testOrgID,
+		FleetID:     testFleetID,
+		WindowStart: testWindowStart,
+		WindowEnd:   testWindowStart.Add(time.Hour),
+		ConductorID: "conductor",
+		SignerKeyID: testReportKeyID,
+		Signer:      reportPriv,
+		AuditKeys:   staticAuditKeyResolver(auditPub),
+		GeneratedAt: testWindowStart.Add(time.Minute),
+	})
+	if err == nil {
+		t.Fatal("Build() accepted an action receipt signed by an unenrolled key")
+	}
+	if !strings.Contains(err.Error(), "expected key") {
+		t.Fatalf("Build() error = %v, want enrolled-key verification failure", err)
+	}
+}
+
 func TestBuildFleetReceiptReportNegativeCases(t *testing.T) {
 	_, reportPriv, err := signing.GenerateKeyPair()
 	if err != nil {
@@ -108,7 +144,7 @@ func TestBuildFleetReceiptReportNegativeCases(t *testing.T) {
 		t.Fatalf("GenerateKey(audit): %v", err)
 	}
 	base := testEvidence(t, auditPriv, "audit-1", 1, []receipt.Receipt{
-		testActionReceipt(t, "a1", receipt.ActionRead, "allow", "fetch", "url", "low"),
+		testActionReceipt(t, auditPriv, "a1", receipt.ActionRead, "allow", "fetch", "url", "low"),
 	}, 0)
 	baseOpts := Options{
 		OrgID:       testOrgID,
@@ -118,6 +154,7 @@ func TestBuildFleetReceiptReportNegativeCases(t *testing.T) {
 		ConductorID: "conductor",
 		SignerKeyID: testReportKeyID,
 		Signer:      reportPriv,
+		AuditKeys:   staticAuditKeyResolver(auditPub),
 		GeneratedAt: testWindowStart.Add(time.Minute),
 	}
 	cases := []struct {
@@ -151,7 +188,7 @@ func TestBuildFleetReceiptReportNegativeCases(t *testing.T) {
 			evidence: []controlplane.AuditBatchEvidence{
 				base,
 				testEvidence(t, auditPriv, "audit-2", 2, []receipt.Receipt{
-					testActionReceipt(t, "a2", receipt.ActionRead, "allow", "fetch", "url", "low"),
+					testActionReceipt(t, auditPriv, "a2", receipt.ActionRead, "allow", "fetch", "url", "low"),
 				}, 0),
 			},
 			opts: baseOpts,
@@ -216,6 +253,12 @@ func TestBuildFleetReceiptReportNegativeCases(t *testing.T) {
 				t.Fatalf("Build() error = %v, want substring %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func staticAuditKeyResolver(pub ed25519.PublicKey) controlplane.AuditKeyResolver {
+	return func(controlplane.FollowerIdentity, string) (conductorcore.SignatureKey, error) {
+		return conductorcore.SignatureKey{PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning}, nil
 	}
 }
 
@@ -354,12 +397,8 @@ func TestValueOrUnspecified(t *testing.T) {
 	}
 }
 
-func testActionReceipt(t *testing.T, id string, actionType receipt.ActionType, verdict, transport, layer, severity string) receipt.Receipt {
+func testActionReceipt(t *testing.T, priv ed25519.PrivateKey, id string, actionType receipt.ActionType, verdict, transport, layer, severity string) receipt.Receipt {
 	t.Helper()
-	_, priv, err := signing.GenerateKeyPair()
-	if err != nil {
-		t.Fatalf("GenerateKeyPair(receipt): %v", err)
-	}
 	rcpt, err := receipt.Sign(receipt.ActionRecord{
 		Version:         receipt.ActionRecordVersion,
 		ActionID:        id,

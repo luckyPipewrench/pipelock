@@ -550,27 +550,24 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			lineNum, strings.Join(names, ", "), action)
 
 		effectiveAction := action
+		var outbound []byte
+		var writeContext string
 		switch action {
 		case config.ActionBlock:
+			writeContext = "writing block response"
 			// Escalation-driven blocks use -32001 (session deny code) to
 			// distinguish them from direct injection blocks (-32000).
-			var resp []byte
 			if escalationDriven {
-				resp = blockSessionDenyResponse(verdict.ID, session.EscalationLabel(rec.EscalationLevel()))
+				outbound = blockSessionDenyResponse(verdict.ID, session.EscalationLabel(rec.EscalationLevel()))
 			} else {
-				resp = blockResponse(verdict.ID)
-			}
-			if err := writer.WriteMessage(resp); err != nil {
-				return foundInjection, fmt.Errorf("writing block response: %w", err)
+				outbound = blockResponse(verdict.ID)
 			}
 		case config.ActionAsk:
 			if approver == nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: no HITL approver configured, blocking\n", lineNum)
 				effectiveAction = config.ActionBlock
-				resp := blockResponse(verdict.ID)
-				if err := writer.WriteMessage(resp); err != nil {
-					return foundInjection, fmt.Errorf("writing block response: %w", err)
-				}
+				outbound = blockResponse(verdict.ID)
+				writeContext = "writing block response"
 			} else {
 				preview := ""
 				if len(verdict.Matches) > 0 {
@@ -586,69 +583,70 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				case hitl.DecisionAllow:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator allowed\n", lineNum)
 					effectiveAction = config.ActionAllow
-					if err := writer.WriteMessage(line); err != nil {
-						return foundInjection, fmt.Errorf("writing line: %w", err)
-					}
+					outbound = line
+					writeContext = "writing line"
 					observeMCPResponseTaint(taintOpts, true)
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
-					actualAction, err := stripOrBlock(line, sc, writer, logW, verdict.ID)
-					if err != nil {
-						return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
-					}
+					actualAction, msg := stripOrBlockMessage(line, sc, logW, verdict.ID)
 					effectiveAction = actualAction
+					outbound = msg
+					writeContext = "writing strip/block response"
 					if actualAction == config.ActionStrip {
 						observeMCPResponseTaint(taintOpts, true)
 					}
 				default: // DecisionBlock
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator blocked\n", lineNum)
 					effectiveAction = config.ActionBlock
-					resp := blockResponse(verdict.ID)
-					if err := writer.WriteMessage(resp); err != nil {
-						return foundInjection, fmt.Errorf("writing block response: %w", err)
-					}
+					outbound = blockResponse(verdict.ID)
+					writeContext = "writing block response"
 				}
 			}
 		case config.ActionStrip:
-			actualAction, err := stripOrBlock(line, sc, writer, logW, verdict.ID)
-			if err != nil {
-				return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
-			}
+			actualAction, msg := stripOrBlockMessage(line, sc, logW, verdict.ID)
 			effectiveAction = actualAction
+			outbound = msg
+			writeContext = "writing strip/block response"
 			if actualAction == config.ActionStrip {
 				observeMCPResponseTaint(taintOpts, true)
 			}
 		default: // warn
-			if err := writer.WriteMessage(line); err != nil {
-				return foundInjection, fmt.Errorf("writing line: %w", err)
-			}
+			outbound = line
+			writeContext = "writing line"
 			observeMCPResponseTaint(taintOpts, true)
 		}
 
-		if receiptEmitter != nil {
-			requestID := canonicalID(verdict.ID)
-			target := "server_response"
-			if requestID != "" {
-				target = "response:" + requestID
+		requestID := canonicalID(verdict.ID)
+		target := "server_response"
+		if requestID != "" {
+			target = "response:" + requestID
+		}
+		pattern := ""
+		if len(names) > 0 {
+			pattern = names[0]
+		}
+		if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+			Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   effectiveAction,
+				Transport: opts.Transport,
+				Target:    target,
+				RequestID: requestID,
+				Layer:     "mcp_response_scan",
+				Pattern:   pattern,
+				Severity:  config.SeverityHigh,
+			}),
+			RequireReceipt: opts.requireReceipts() && effectiveAction != config.ActionBlock,
+		}); emitErr != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
+			if opts.requireReceipts() && effectiveAction != config.ActionBlock {
+				outbound = blockResponseReason(verdict.ID, "receipt emission failed")
+				effectiveAction = config.ActionBlock
+				writeContext = "writing block response"
 			}
-			pattern := ""
-			if len(names) > 0 {
-				pattern = names[0]
-			}
-			if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
-				Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
-					ActionID:  receipt.NewActionID(),
-					Verdict:   effectiveAction,
-					Transport: opts.Transport,
-					Target:    target,
-					RequestID: requestID,
-					Layer:     "mcp_response_scan",
-					Pattern:   pattern,
-					Severity:  config.SeverityHigh,
-				}),
-			}); emitErr != nil {
-				_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
-			}
+		}
+		if err := writer.WriteMessage(outbound); err != nil {
+			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
 		}
 
 		// Signal recording: record after action is taken.
@@ -694,12 +692,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 // it falls back to blocking (fail-closed). Returns the actual enforced action
 // ("strip" or "block") plus any writer error.
 func stripOrBlock(line []byte, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer, rpcID json.RawMessage) (string, error) {
+	actualAction, msg := stripOrBlockMessage(line, sc, logW, rpcID)
+	return actualAction, writer.WriteMessage(msg)
+}
+
+func stripOrBlockMessage(line []byte, sc *scanner.Scanner, logW io.Writer, rpcID json.RawMessage) (string, []byte) {
 	stripped, sErr := stripResponse(line, sc)
 	if sErr != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", sErr)
-		return config.ActionBlock, writer.WriteMessage(blockResponse(rpcID))
+		return config.ActionBlock, blockResponse(rpcID)
 	}
-	return config.ActionStrip, writer.WriteMessage(stripped)
+	return config.ActionStrip, stripped
 }
 
 // rpcError is a JSON-RPC 2.0 error response sent when a response is blocked.

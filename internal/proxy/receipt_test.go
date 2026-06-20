@@ -135,7 +135,7 @@ func TestProxy_ReceiptEmission_FetchBlock(t *testing.T) {
 		t.Fatalf("unmarshal receipt: %v", err)
 	}
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("receipt verification failed: %v", err)
 	}
 
@@ -235,7 +235,7 @@ func TestProxy_ReceiptEmission_FetchAllow(t *testing.T) {
 			}
 			if r.ActionRecord.Verdict == actionAllow {
 				found = true
-				if err := receipt.Verify(r); err != nil {
+				if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 					t.Fatalf("receipt verification failed: %v", err)
 				}
 				break
@@ -384,7 +384,7 @@ func TestProxy_ReloadCreatesReceiptEmitter(t *testing.T) {
 			if uErr != nil {
 				t.Fatalf("unmarshal receipt: %v", uErr)
 			}
-			if err := receipt.Verify(r); err != nil {
+			if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)
 			}
 			break
@@ -948,7 +948,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 				t.Fatalf("unmarshal receipt: %v", uErr)
 			}
 			// Verify the receipt is valid.
-			if err := receipt.Verify(r); err != nil {
+			if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)
 			}
 			// Verify it was signed with key B, not key A.
@@ -1045,7 +1045,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseScan(t *testing.T) {
 		}
 		if r.ActionRecord.Verdict == actionBlock && r.ActionRecord.Layer == "response_scan" {
 			found = true
-			if err := receipt.Verify(r); err != nil {
+			if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)
 			}
 			if r.ActionRecord.Transport != TransportFetch {
@@ -1145,7 +1145,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseSize(t *testing.T) {
 		}
 		if r.ActionRecord.Verdict == actionBlock && r.ActionRecord.Layer == "response_size" {
 			found = true
-			if err := receipt.Verify(r); err != nil {
+			if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)
 			}
 			break
@@ -1249,7 +1249,7 @@ func TestProxy_ReceiptEmission_ForwardResponseSize(t *testing.T) {
 		}
 		if r.ActionRecord.Verdict == actionBlock && r.ActionRecord.Layer == "response_scan" {
 			found = true
-			if err := receipt.Verify(r); err != nil {
+			if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)
 			}
 			if r.ActionRecord.Transport != TransportForward {

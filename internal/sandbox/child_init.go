@@ -81,6 +81,16 @@ func RunInit() {
 		// parent listener and dies with the per-invocation directory.
 		policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Dir(socketPath))
 	}
+	resolvedPolicy, err := ResolvePolicyPaths(policy)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: resolve policy: %v\n", err)
+		os.Exit(1)
+	}
+	if err := ValidatePolicy(resolvedPolicy); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: validate policy: %v\n", err)
+		os.Exit(1)
+	}
+	policy = resolvedPolicy
 	llStatus, llErr := ApplyLandlock(policy)
 	reportLayer(os.Stderr, llStatus, llErr)
 

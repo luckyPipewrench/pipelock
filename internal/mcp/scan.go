@@ -39,37 +39,6 @@ type ResponseScanOptions struct {
 	Suppress []config.SuppressEntry
 }
 
-// filterSuppressedResponse drops matches the operator has suppressed for
-// opts.Target, mirroring the SSE (internal/mcp/sse_generic.go) and HTTP
-// (internal/proxy/proxy.go) response-suppression contract via
-// config.IsSuppressed. Suppression is a deliberate, operator-scoped allowlist:
-// it never alters what the scanner inspects, only whether an already-detected
-// match is enforced for THIS destination. It returns the kept matches and
-// whether the verdict is now clean (no unsuppressed match remains).
-//
-// Known limitation (shared by ALL three transports, not specific to stdio):
-// suppression runs on the matches sc.ScanResponse returned, and that scanner
-// returns on the first pass/layer that matches. Suppressing a pattern the
-// operator has allowlisted for this destination therefore cannot, by itself,
-// surface a different pattern that a later pass would have caught on the same
-// content. This is the accepted tradeoff of any post-scan allowlist; the
-// exception is deliberate, destination-scoped, and operator-chosen.
-func filterSuppressedResponse(matches []scanner.ResponseMatch, opts ResponseScanOptions) (kept []scanner.ResponseMatch, clean bool) {
-	if len(matches) == 0 {
-		return matches, true
-	}
-	if len(opts.Suppress) == 0 {
-		return matches, false
-	}
-	kept = make([]scanner.ResponseMatch, 0, len(matches))
-	for _, m := range matches {
-		if !config.IsSuppressed(m.PatternName, opts.Target, opts.Suppress) {
-			kept = append(kept, m)
-		}
-	}
-	return kept, len(kept) == 0
-}
-
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
 // content for prompt injection. Parse errors produce a verdict with Clean=false
 // and the Error field set. Both result content and error messages are scanned.
@@ -163,13 +132,8 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	result := sc.ScanResponse(context.Background(), text)
+	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
 	if result.Clean {
-		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
-	}
-
-	matches, clean := filterSuppressedResponse(result.Matches, opts)
-	if clean {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
@@ -177,7 +141,7 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 		ID:      rpc.ID,
 		Clean:   false,
 		Action:  sc.ResponseAction(),
-		Matches: matches,
+		Matches: result.Matches,
 	}
 }
 
@@ -312,13 +276,8 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
-	result := sc.ScanResponse(context.Background(), text)
+	result := sc.ScanResponseWithSuppress(context.Background(), text, opts.Target, opts.Suppress)
 	if result.Clean {
-		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
-	}
-
-	matches, clean := filterSuppressedResponse(result.Matches, opts)
-	if clean {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}
 
@@ -326,7 +285,7 @@ func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseS
 		ID:      rpc.ID,
 		Clean:   false,
 		Action:  sc.ResponseAction(),
-		Matches: matches,
+		Matches: result.Matches,
 	}
 }
 

@@ -152,9 +152,8 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 				Reason: err.Error(),
 			})
 			result.Degraded = true
-			freshnessState = &FreshnessState{HighestSeen: make(map[string]uint64)}
+			return nil
 		}
-
 		bctx := &bundleExecCtx{
 			MinRank:        minRank,
 			Result:         result,
@@ -178,18 +177,8 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 		return nil
 	})
 	if lockErr != nil {
-		// Flock failure: load bundles without freshness protection.
-		result.Warnings = append(result.Warnings, fmt.Sprintf("freshness lock: %v (continuing without cross-process protection)", lockErr))
-		bctx := &bundleExecCtx{
-			MinRank:        minRank,
-			Result:         result,
-			FreshnessState: freshnessState,
-			Now:            now,
-		}
-		for _, d := range dirs {
-			bundleDir := filepath.Join(rulesDir, d.Name())
-			loadOneBundle(bundleDir, d.Name(), opts, bctx)
-		}
+		result.Errors = append(result.Errors, BundleError{Name: ".freshness.json", Reason: fmt.Sprintf("freshness lock: %v", lockErr)})
+		result.Degraded = true
 	}
 
 	// Detect standard pack degradation: if any official bundle failed

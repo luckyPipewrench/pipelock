@@ -140,7 +140,14 @@ func TestRunConductorAutoEnrollExistingMarkerSkipsPost(t *testing.T) {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
 	cfg := conductorEnrollmentTestConfig(t)
-	if err := os.WriteFile(filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName), []byte("{}\n"), 0o600); err != nil {
+	if err := writeConductorEnrollmentMarker(filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName), enrollmentclient.Response{
+		OrgID:       cfg.Conductor.OrgID,
+		FleetID:     cfg.Conductor.FleetID,
+		InstanceID:  cfg.Conductor.InstanceID,
+		Environment: "prod",
+		AuditKeyID:  cfg.Conductor.AuditSigningKeyID,
+		EnrolledAt:  time.Now().UTC(),
+	}); err != nil {
 		t.Fatalf("write marker: %v", err)
 	}
 	client := &conductorEnrollmentStubClient{}
@@ -156,7 +163,36 @@ func TestRunConductorAutoEnrollExistingMarkerSkipsPost(t *testing.T) {
 	}
 }
 
-func TestInitConductorEnrollmentFailureDoesNotBlockStartup(t *testing.T) {
+func TestRunConductorAutoEnrollStaleMarkerDoesNotSkipPost(t *testing.T) {
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	cfg := conductorEnrollmentTestConfig(t)
+	if err := writeConductorEnrollmentMarker(filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName), enrollmentclient.Response{
+		OrgID:       cfg.Conductor.OrgID,
+		FleetID:     "old-fleet",
+		InstanceID:  cfg.Conductor.InstanceID,
+		Environment: "prod",
+		AuditKeyID:  cfg.Conductor.AuditSigningKeyID,
+		EnrolledAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("write stale marker: %v", err)
+	}
+	client := &conductorEnrollmentStubClient{}
+	enrolled, err := runConductorAutoEnroll(t.Context(), cfg, priv, client)
+	if err != nil {
+		t.Fatalf("runConductorAutoEnroll(stale marker) error = %v", err)
+	}
+	if !enrolled {
+		t.Fatal("runConductorAutoEnroll(stale marker) enrolled=false, want true")
+	}
+	if client.count() != 1 {
+		t.Fatalf("request count = %d, want 1", client.count())
+	}
+}
+
+func TestInitConductorEnrollmentFailureBlocksConfiguredFollowerStartup(t *testing.T) {
 	_, priv, err := signing.GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
@@ -170,17 +206,59 @@ func TestInitConductorEnrollmentFailureDoesNotBlockStartup(t *testing.T) {
 	t.Cleanup(func() { newConductorEnrollmentHTTPClient = old })
 
 	var stderr bytes.Buffer
-	if err := (&Server{}).initConductorEnrollment(cfg, priv, &stderr); err != nil {
-		t.Fatalf("initConductorEnrollment() error = %v, want nil", err)
+	err = (&Server{}).initConductorEnrollment(cfg, priv, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "conductor enrollment failed") {
+		t.Fatalf("initConductorEnrollment() error = %v, want fatal enrollment error", err)
 	}
-	if !strings.Contains(stderr.String(), "conductor enrollment failed (continuing") {
-		t.Fatalf("stderr = %q, want non-blocking warning", stderr.String())
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want no continuing warning", stderr.String())
 	}
 	if client.count() != 1 {
 		t.Fatalf("request count = %d, want 1", client.count())
 	}
 	if _, err := os.Stat(filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName)); !os.IsNotExist(err) {
 		t.Fatalf("marker stat err = %v, want not exist", err)
+	}
+}
+
+func TestConductorEnrollmentCorruptMarkerConsumedTokenCanRecoverWithNewToken(t *testing.T) {
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	cfg := conductorEnrollmentTestConfig(t)
+	markerPath := filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName)
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(markerPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := &conductorEnrollmentStubClient{status: http.StatusUnauthorized, body: `{"error":"token already consumed"}`}
+	if _, err := runConductorAutoEnroll(t.Context(), cfg, priv, client); err == nil ||
+		!strings.Contains(err.Error(), "parse conductor enrollment marker") {
+		t.Fatalf("corrupt marker err = %v, want marker parse failure before consumed token retry", err)
+	}
+	if client.count() != 0 {
+		t.Fatalf("request count with corrupt marker = %d, want 0", client.count())
+	}
+
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.Conductor.EnrollmentTokenPath, []byte("pl_enroll_reissued\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client = &conductorEnrollmentStubClient{}
+	enrolled, err := runConductorAutoEnroll(t.Context(), cfg, priv, client)
+	if err != nil {
+		t.Fatalf("runConductorAutoEnroll(reissued token) error = %v", err)
+	}
+	if !enrolled || client.count() != 1 {
+		t.Fatalf("reissued token enrolled=%v requests=%d, want true/1", enrolled, client.count())
+	}
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("reissued enrollment did not write marker: %v", err)
 	}
 }
 
@@ -289,6 +367,9 @@ func conductorEnrollmentTestConfig(t *testing.T) *config.Config {
 	return &config.Config{Conductor: config.Conductor{
 		Enabled:             true,
 		ConductorURL:        "https://conductor.example",
+		OrgID:               "org-main",
+		FleetID:             "prod",
+		InstanceID:          "pl-prod-1",
 		BundleCacheDir:      dir,
 		EnrollmentTokenPath: tokenPath,
 		AuditSigningKeyID:   "audit-key-1",

@@ -94,8 +94,8 @@ func TestVerify_HappyPath(t *testing.T) {
 	_, priv := generateTestKey(t)
 	r := signValidReceipt(t, priv)
 
-	if err := Verify(r); err != nil {
-		t.Fatalf("Verify() error: %v", err)
+	if err := VerifyInternalConsistencyOnly(r); err != nil {
+		t.Fatalf("VerifyInternalConsistencyOnly() error: %v", err)
 	}
 }
 
@@ -108,12 +108,12 @@ func TestVerify_TamperedRecord(t *testing.T) {
 	// Tamper with the action record after signing.
 	r.ActionRecord.Target = "https://evil.example.com"
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for tampered record, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for tampered record, got nil")
 	}
 	if !strings.Contains(err.Error(), "signature verification failed") {
-		t.Errorf("Verify() error = %q, want substring \"signature verification failed\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"signature verification failed\"", err)
 	}
 }
 
@@ -129,12 +129,12 @@ func TestVerify_TamperedRunNonceFails(t *testing.T) {
 	}
 
 	r.ActionRecord.RunNonce = "1123456789abcdef0123456789abcdef"
-	err = Verify(r)
+	err = VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for tampered run_nonce, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for tampered run_nonce, got nil")
 	}
 	if !strings.Contains(err.Error(), "signature verification failed") {
-		t.Errorf("Verify() error = %q, want substring \"signature verification failed\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"signature verification failed\"", err)
 	}
 }
 
@@ -150,8 +150,8 @@ func TestVerify_LegacyReceiptWithoutRunNonceStillVerifies(t *testing.T) {
 	if r.ActionRecord.RunNonce != "" {
 		t.Fatalf("legacy fixture run_nonce = %q, want empty", r.ActionRecord.RunNonce)
 	}
-	if err := Verify(r); err != nil {
-		t.Fatalf("Verify() legacy receipt without run_nonce: %v", err)
+	if err := VerifyInternalConsistencyOnly(r); err != nil {
+		t.Fatalf("VerifyInternalConsistencyOnly() legacy receipt without run_nonce: %v", err)
 	}
 }
 
@@ -166,12 +166,12 @@ func TestVerify_TamperedSignature(t *testing.T) {
 	flipped := flipHexByte(sigHex)
 	r.Signature = testSigPrefix + flipped
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for tampered signature, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for tampered signature, got nil")
 	}
 	if !strings.Contains(err.Error(), "signature verification failed") {
-		t.Errorf("Verify() error = %q, want substring \"signature verification failed\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"signature verification failed\"", err)
 	}
 }
 
@@ -212,12 +212,12 @@ func TestVerify_MissingSignature(t *testing.T) {
 	r := signValidReceipt(t, priv)
 	r.Signature = ""
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for missing signature, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for missing signature, got nil")
 	}
 	if !strings.Contains(err.Error(), "no signature") {
-		t.Errorf("Verify() error = %q, want substring \"no signature\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"no signature\"", err)
 	}
 }
 
@@ -228,12 +228,12 @@ func TestVerify_MissingSignerKey(t *testing.T) {
 	r := signValidReceipt(t, priv)
 	r.SignerKey = ""
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for missing signer_key, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for missing signer_key, got nil")
 	}
 	if !strings.Contains(err.Error(), "no signer_key") {
-		t.Errorf("Verify() error = %q, want substring \"no signer_key\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"no signer_key\"", err)
 	}
 }
 
@@ -244,12 +244,12 @@ func TestVerify_WrongVersion(t *testing.T) {
 	r := signValidReceipt(t, priv)
 	r.Version = 99
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for wrong version, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for wrong version, got nil")
 	}
 	if !strings.Contains(err.Error(), "unsupported receipt version") {
-		t.Errorf("Verify() error = %q, want substring \"unsupported receipt version\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"unsupported receipt version\"", err)
 	}
 }
 
@@ -260,12 +260,12 @@ func TestVerify_BadHexSignerKey(t *testing.T) {
 	r := signValidReceipt(t, priv)
 	r.SignerKey = "not-valid-hex!"
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for bad hex signer_key, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for bad hex signer_key, got nil")
 	}
 	if !strings.Contains(err.Error(), "decoding signer_key") {
-		t.Errorf("Verify() error = %q, want substring \"decoding signer_key\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"decoding signer_key\"", err)
 	}
 }
 
@@ -276,12 +276,12 @@ func TestVerify_BadHexSignature(t *testing.T) {
 	r := signValidReceipt(t, priv)
 	r.Signature = testSigPrefix + "not-valid-hex!"
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for bad hex signature, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for bad hex signature, got nil")
 	}
 	if !strings.Contains(err.Error(), "decoding signature") {
-		t.Errorf("Verify() error = %q, want substring \"decoding signature\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"decoding signature\"", err)
 	}
 }
 
@@ -293,12 +293,12 @@ func TestVerify_WrongSignatureLength(t *testing.T) {
 	// Set signature to valid hex but wrong length (16 bytes instead of 64).
 	r.Signature = testSigPrefix + hex.EncodeToString(make([]byte, 16))
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for wrong signature length, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for wrong signature length, got nil")
 	}
 	if !strings.Contains(err.Error(), "invalid signature length") {
-		t.Errorf("Verify() error = %q, want substring \"invalid signature length\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"invalid signature length\"", err)
 	}
 }
 
@@ -310,12 +310,12 @@ func TestVerify_WrongKeyLength(t *testing.T) {
 	// Set signer_key to valid hex but wrong length (16 bytes instead of 32).
 	r.SignerKey = hex.EncodeToString(make([]byte, 16))
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for wrong key length, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for wrong key length, got nil")
 	}
 	if !strings.Contains(err.Error(), "invalid signer_key length") {
-		t.Errorf("Verify() error = %q, want substring \"invalid signer_key length\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"invalid signer_key length\"", err)
 	}
 }
 
@@ -327,12 +327,12 @@ func TestVerify_MissingSignaturePrefix(t *testing.T) {
 	// Remove the ed25519: prefix.
 	r.Signature = strings.TrimPrefix(r.Signature, testSigPrefix)
 
-	err := Verify(r)
+	err := VerifyInternalConsistencyOnly(r)
 	if err == nil {
-		t.Fatal("Verify() expected error for missing signature prefix, got nil")
+		t.Fatal("VerifyInternalConsistencyOnly() expected error for missing signature prefix, got nil")
 	}
 	if !strings.Contains(err.Error(), "missing") {
-		t.Errorf("Verify() error = %q, want substring \"missing\"", err)
+		t.Errorf("VerifyInternalConsistencyOnly() error = %q, want substring \"missing\"", err)
 	}
 }
 
@@ -353,8 +353,8 @@ func TestMarshal_Unmarshal_RoundTrip(t *testing.T) {
 	}
 
 	// Verify the unmarshaled receipt still verifies.
-	if err := Verify(r2); err != nil {
-		t.Fatalf("Verify(unmarshaled) error: %v", err)
+	if err := VerifyInternalConsistencyOnly(r2); err != nil {
+		t.Fatalf("VerifyInternalConsistencyOnly(unmarshaled) error: %v", err)
 	}
 
 	// Check key fields survived the round trip.
@@ -395,8 +395,8 @@ func TestUnmarshal_EmptyJSON(t *testing.T) {
 		t.Fatalf("Unmarshal() error: %v", err)
 	}
 	// Empty JSON produces zero-value receipt. Verify should fail on it.
-	if err := Verify(r); err == nil {
-		t.Error("Verify() on empty receipt expected error, got nil")
+	if err := VerifyInternalConsistencyOnly(r); err == nil {
+		t.Error("VerifyInternalConsistencyOnly() on empty receipt expected error, got nil")
 	}
 }
 

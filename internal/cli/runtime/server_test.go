@@ -662,18 +662,213 @@ func TestServer_Reload_StrictRejectsDowngrade(t *testing.T) {
 	}
 }
 
+func TestServer_Reload_StrictRejectsActionDowngrade(t *testing.T) {
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.ResponseScanning.Enabled = true
+	oldCfg.ResponseScanning.Action = config.ActionBlock
+	oldScanner := s.proxy.ScannerPtr().Load()
+
+	buf.reset()
+	newCfg := oldCfg.Clone()
+	newCfg.ResponseScanning.Action = config.ActionWarn
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload should reject strict response action downgrade, got nil error")
+	}
+	if !strings.Contains(err.Error(), "security downgrade") {
+		t.Fatalf("error = %q, want security downgrade", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldCfg {
+		t.Fatal("live config pointer changed after rejected action downgrade")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("live scanner changed after rejected action downgrade")
+	}
+	if !buf.contains("response_scanning.action") {
+		t.Fatalf("stderr missing action downgrade warning:\n%s", buf.String())
+	}
+}
+
+func TestServer_Reload_BalancedAllowsActionTuningWithWarning(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.ResponseScanning.Enabled = true
+	oldCfg.ResponseScanning.Action = config.ActionBlock
+
+	buf.reset()
+	newCfg := oldCfg.Clone()
+	newCfg.ResponseScanning.Action = config.ActionWarn
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("balanced reload should allow explicit action tuning, got: %v", err)
+	}
+	if live := s.proxy.CurrentConfig(); live.ResponseScanning.Action != config.ActionWarn {
+		t.Fatalf("live response action = %q, want %q", live.ResponseScanning.Action, config.ActionWarn)
+	}
+	if !buf.contains("response_scanning.action") {
+		t.Fatalf("balanced reload did not make action downgrade explicit:\n%s", buf.String())
+	}
+}
+
+// In balanced mode ValidateReload only WARNS on response/body scanning being
+// disabled, so the mode-independent implausible-teardown guard must catch it.
+// Regression for the guard omitting response_scanning.enabled and
+// request_body_scanning.enabled (a spurious/partial reload that explicitly
+// disables them would otherwise silently turn off injection + body DLP).
+func TestServer_Reload_RejectsResponseAndBodyScannerTeardown(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.ResponseScanning.Enabled = true
+	oldCfg.RequestBodyScanning.Enabled = true
+	oldScanner := s.proxy.ScannerPtr().Load()
+
+	newCfg := oldCfg.Clone()
+	newCfg.ResponseScanning.Enabled = false
+	newCfg.RequestBodyScanning.Enabled = false
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload should reject disabling response/body scanning as an implausible teardown")
+	}
+	if !strings.Contains(err.Error(), "implausibly empty") {
+		t.Fatalf("error = %q, want implausibly empty rejection", err.Error())
+	}
+	for _, want := range []string{"response_scanning.enabled", "request_body_scanning.enabled"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want reason mentioning %q", err.Error(), want)
+		}
+	}
+	live := s.proxy.CurrentConfig()
+	if !live.ResponseScanning.Enabled || !live.RequestBodyScanning.Enabled {
+		t.Fatal("response/body scanning disabled despite rejected reload")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("scanner swapped despite rejected reload")
+	}
+}
+
+func TestServer_Reload_StrictRejectsSuppressWidening(t *testing.T) {
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Mode = config.ModeStrict
+		o.ModeChanged = true
+	})
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.ResponseScanning.Enabled = true
+	oldCfg.ResponseScanning.Action = config.ActionBlock
+	oldScanner := s.proxy.ScannerPtr().Load()
+
+	buf.reset()
+	newCfg := oldCfg.Clone()
+	newCfg.Suppress = append(newCfg.Suppress, config.SuppressEntry{
+		Rule:   "Prompt Injection",
+		Path:   "*",
+		Reason: "review repro",
+	})
+
+	err := s.Reload(newCfg)
+	if err == nil {
+		t.Fatal("Reload should reject strict suppress widening, got nil error")
+	}
+	if !strings.Contains(err.Error(), "security downgrade") {
+		t.Fatalf("error = %q, want security downgrade", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldCfg {
+		t.Fatal("live config pointer changed after rejected suppress widening")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("live scanner changed after rejected suppress widening")
+	}
+	if !buf.contains("suppress") {
+		t.Fatalf("stderr missing suppress widening warning:\n%s", buf.String())
+	}
+}
+
+func TestServer_Reload_RejectsImplausiblyEmptySecurityTeardown(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.MCPInputScanning.Enabled = true
+	oldCfg.MCPToolScanning.Enabled = true
+	oldCfg.MCPToolPolicy.Enabled = true
+	oldCfg.ForwardProxy.Enabled = true
+	oldCfg.WebSocketProxy.Enabled = true
+	oldCfg.MCPToolPolicy.Rules = append(oldCfg.MCPToolPolicy.Rules, config.ToolPolicyRule{
+		Name:        "deny-shell",
+		ToolPattern: `(?i)\b(sh|bash)\b`,
+		Action:      config.ActionBlock,
+	})
+	oldCfg.SessionProfiling.Enabled = true
+	oldCfg.AdaptiveEnforcement.Enabled = true
+	oldCfg.MCPSessionBinding.Enabled = true
+	oldCfg.A2AScanning.Enabled = true
+	oldCfg.ToolChainDetection.Enabled = true
+	oldCfg.CrossRequestDetection.Enabled = true
+	oldCfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	oldCfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	oldCfg.AddressProtection.Enabled = true
+	oldCfg.LicenseFile = "/etc/pipelock/license.token"
+	oldCfg.ApplyDefaults()
+
+	oldScanner := s.proxy.ScannerPtr().Load()
+	buf.reset()
+
+	nearEmpty := &config.Config{}
+	err := s.Reload(nearEmpty)
+	if err == nil {
+		t.Fatal("Reload should reject an implausibly empty security teardown, got nil error")
+	}
+	if !strings.Contains(err.Error(), "implausibly empty") {
+		t.Fatalf("error = %q, want implausibly empty rejection", err.Error())
+	}
+	if s.proxy.CurrentConfig() != oldCfg {
+		t.Fatal("live config pointer changed after rejected near-empty reload")
+	}
+	if s.proxy.ScannerPtr().Load() != oldScanner {
+		t.Fatal("live scanner changed after rejected near-empty reload")
+	}
+	live := s.proxy.CurrentConfig()
+	for _, tt := range []struct {
+		name string
+		got  bool
+	}{
+		{"forward_proxy", live.ForwardProxy.Enabled},
+		{"websocket_proxy", live.WebSocketProxy.Enabled},
+		{"mcp_input_scanning", live.MCPInputScanning.Enabled},
+		{"mcp_tool_scanning", live.MCPToolScanning.Enabled},
+		{"mcp_tool_policy", live.MCPToolPolicy.Enabled},
+		{"adaptive_enforcement", live.AdaptiveEnforcement.Enabled},
+		{"mcp_session_binding", live.MCPSessionBinding.Enabled},
+		{"a2a_scanning", live.A2AScanning.Enabled},
+		{"tool_chain_detection", live.ToolChainDetection.Enabled},
+		{"cross_request_detection", live.CrossRequestDetection.Enabled},
+		{"address_protection", live.AddressProtection.Enabled},
+	} {
+		if !tt.got {
+			t.Fatalf("%s was disabled despite rejected near-empty reload", tt.name)
+		}
+	}
+	if !buf.contains("implausibly empty") {
+		t.Fatalf("stderr/audit path missing implausibly empty rejection:\n%s", buf.String())
+	}
+}
+
 func TestServer_Reload_DedupSkipsValidateWarnings(t *testing.T) {
 	s, buf := newTestServer(t, nil)
 	buf.reset()
 
+	// Add an exempt domain to trigger a ValidateReload warning WITHOUT disabling
+	// the scanner (disabling response_scanning is now a rejected teardown).
 	newCfg := s.proxy.CurrentConfig().Clone()
-	newCfg.ResponseScanning.Enabled = false
 	newCfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
 
 	if err := s.Reload(newCfg); err != nil {
 		t.Fatalf("first Reload: %v", err)
 	}
-	if !buf.contains("WARNING: response_scanning.exempt_domains") {
+	if !buf.contains("response_scanning.exempt_domains") {
 		t.Fatalf("first reload stderr missing validation warning:\n%s", buf.String())
 	}
 
@@ -814,6 +1009,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	})
 
 	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.FetchProxy.Listen = "127.0.0.1:18079"
 	oldCfg.KillSwitch.APIListen = "127.0.0.1:18081"
 	oldCfg.MetricsListen = "127.0.0.1:18082"
 	oldCfg.ScanAPI.Listen = "127.0.0.1:18083"
@@ -826,6 +1022,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	oldCfg.FileSentry.Action = config.ActionWarn
 
 	newCfg := oldCfg.Clone()
+	newCfg.FetchProxy.Listen = "127.0.0.1:28079"
 	newCfg.KillSwitch.APIListen = "127.0.0.1:28081"
 	newCfg.MetricsListen = "127.0.0.1:28082"
 	newCfg.ScanAPI.Listen = "127.0.0.1:28083"
@@ -842,6 +1039,9 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 	live := s.proxy.CurrentConfig()
+	if live.FetchProxy.Listen != oldCfg.FetchProxy.Listen {
+		t.Fatalf("fetch proxy listen = %q, want %q", live.FetchProxy.Listen, oldCfg.FetchProxy.Listen)
+	}
 	if live.KillSwitch.APIListen != oldCfg.KillSwitch.APIListen {
 		t.Fatalf("kill switch API listen = %q, want %q", live.KillSwitch.APIListen, oldCfg.KillSwitch.APIListen)
 	}
@@ -869,6 +1069,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 		t.Fatalf("reverse proxy settings not preserved: %+v", live.ReverseProxy)
 	}
 	for _, want := range []string{
+		"fetch_proxy.listen changed",
 		"kill_switch.api_listen changed",
 		"metrics_listen changed",
 		"scan_api listener settings changed",

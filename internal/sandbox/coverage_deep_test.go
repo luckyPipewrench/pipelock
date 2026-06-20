@@ -314,7 +314,7 @@ func TestValidatePolicy_SecretDirSymlinkFallback(t *testing.T) {
 	}
 }
 
-func TestValidatePolicy_AllowDirEvalSymlinksFallback(t *testing.T) {
+func TestValidatePolicy_AllowDirEvalSymlinksRejectsMissing(t *testing.T) {
 	home := os.Getenv("HOME")
 	if home == "" {
 		t.Skip("HOME not set")
@@ -326,8 +326,8 @@ func TestValidatePolicy_AllowDirEvalSymlinksFallback(t *testing.T) {
 	p.AllowReadDirs = append(p.AllowReadDirs, "/opt/nonexistent-tool/data/")
 
 	err := ValidatePolicy(p)
-	if err != nil {
-		t.Errorf("non-existent allow_read dir should pass: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("non-existent allow_read dir err = %v, want rejected missing path", err)
 	}
 }
 
@@ -903,7 +903,11 @@ func TestValidatePolicy_RejectsRWFileInsideProtectedDir(t *testing.T) {
 
 func TestValidatePolicy_AcceptsRWFileOutsideProtectedDir(t *testing.T) {
 	p := DefaultPolicy(t.TempDir())
-	p.AllowRWFiles = append(p.AllowRWFiles, "/opt/app/state.db")
+	stateFile := filepath.Join(t.TempDir(), "state.db")
+	if err := os.WriteFile(stateFile, []byte("state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p.AllowRWFiles = append(p.AllowRWFiles, stateFile)
 	if err := ValidatePolicy(p); err != nil {
 		t.Errorf("RW file outside protected dirs should pass: %v", err)
 	}
@@ -911,10 +915,18 @@ func TestValidatePolicy_AcceptsRWFileOutsideProtectedDir(t *testing.T) {
 
 func TestValidatePolicy_EmptySecretDirs(t *testing.T) {
 	t.Setenv("HOME", "")
+	readDir := filepath.Join(t.TempDir(), "anything")
+	rwDir := filepath.Join(t.TempDir(), "whatever")
+	if err := os.Mkdir(readDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(rwDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
 	p := Policy{
 		Workspace:     t.TempDir(),
-		AllowReadDirs: []string{"/anything/"},
-		AllowRWDirs:   []string{"/whatever/"},
+		AllowReadDirs: []string{readDir},
+		AllowRWDirs:   []string{rwDir},
 	}
 	if err := ValidatePolicy(p); err != nil {
 		t.Errorf("expected nil error when no secret dirs: %v", err)

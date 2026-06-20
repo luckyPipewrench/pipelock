@@ -154,7 +154,7 @@ func TestEmitter_SecretTargetVerifiesAfterRedaction(t *testing.T) {
 	got := receipts[0]
 
 	// 1. Verifies from the evidence file alone (no escrow needed).
-	if err := Verify(got); err != nil {
+	if err := VerifyInternalConsistencyOnly(got); err != nil {
 		t.Fatalf("on-disk receipt does not verify: %v", err)
 	}
 	if err := VerifyWithKey(got, hex.EncodeToString(pub)); err != nil {
@@ -349,7 +349,7 @@ func TestEmitter_AARPDigestBindingHoldsAfterRedaction(t *testing.T) {
 	}
 
 	got := readReceiptsRaw(t, dir)[0]
-	if err := Verify(got); err != nil {
+	if err := VerifyInternalConsistencyOnly(got); err != nil {
 		t.Fatalf("on-disk receipt must verify: %v", err)
 	}
 

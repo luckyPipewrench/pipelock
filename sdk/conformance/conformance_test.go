@@ -237,7 +237,7 @@ func TestConformance_InvalidSignature(t *testing.T) {
 
 	r := readReceipt(t, filepath.Join(testdataDir, goldenInvalidSignature))
 
-	err := receipt.Verify(r)
+	err := receipt.VerifyInternalConsistencyOnly(r)
 	if err == nil {
 		t.Fatal("Verify() unexpectedly succeeded on tampered signature")
 	}

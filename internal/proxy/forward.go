@@ -1232,6 +1232,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
+				setBodyBlockHint(w, scannerLabel)
 				writeBlockedError(w,
 					blockInfo(scannerLabel),
 					"blocked: "+reason, http.StatusForbidden)
@@ -1273,6 +1274,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
+				setBodyBlockHint(w, scannerLabel)
 				writeBlockedError(w,
 					blockInfo(scannerLabel),
 					"blocked: "+reason, http.StatusForbidden)
@@ -1301,6 +1303,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
+				setBodyBlockHint(w, scannerLabel)
 				writeBlockedError(w,
 					blockInfo(scannerLabel),
 					"blocked: "+reason+" (escalated)", http.StatusForbidden)

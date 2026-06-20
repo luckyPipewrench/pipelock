@@ -80,9 +80,15 @@ func (r *Reloader) Start(ctx context.Context) error {
 	}
 	defer func() { _ = watcher.Close() }()
 
+	watchPath, err := filepath.Abs(filepath.Clean(r.path))
+	if err != nil {
+		return fmt.Errorf("resolving config watch path %s: %w", r.path, err)
+	}
 	// Watch the directory (not the file) so we catch editors that
-	// write-to-temp-then-rename (vim, sed -i, etc.).
-	dir := filepath.Dir(r.path)
+	// write-to-temp-then-rename (vim, sed -i, etc.). Event matching below is
+	// still narrowed to this exact config path; watching the parent is only a
+	// portability requirement for atomic replacement.
+	dir := filepath.Dir(watchPath)
 	if err := watcher.Add(dir); err != nil {
 		return fmt.Errorf("watching directory %s: %w", dir, err)
 	}
@@ -94,8 +100,6 @@ func (r *Reloader) Start(ctx context.Context) error {
 	// closes Changes() on return and rejects later calls before touching
 	// watcher/channel state.
 	r.readyOnce.Do(func() { close(r.ready) })
-
-	baseName := filepath.Base(r.path)
 
 	// Debounce: editors may fire multiple events in quick succession.
 	var debounce <-chan time.Time
@@ -110,10 +114,11 @@ func (r *Reloader) Start(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			// Only react to writes/creates/renames of our config file.
-			if filepath.Base(event.Name) != baseName {
+			eventPath, err := filepath.Abs(filepath.Clean(event.Name))
+			if err != nil || eventPath != watchPath {
 				continue
 			}
+			// Only react to writes/creates/renames of our exact config file.
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
 				debounce = time.After(100 * time.Millisecond)
 			}

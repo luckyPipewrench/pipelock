@@ -55,15 +55,22 @@ func Sign(ar ActionRecord, privKey ed25519.PrivateKey) (Receipt, error) {
 	}, nil
 }
 
-// Verify checks the receipt's signature against the embedded signer key.
-// Returns nil if the signature is valid and the action record is well-formed.
+// Verify is intentionally unusable without an external trust anchor. Receipt
+// signatures prove only that the action record was signed by a key; callers that
+// care about trust MUST call VerifyWithKey with the expected public key from
+// enrollment/configuration. Use VerifyInternalConsistencyOnly only for local
+// chain-recovery code that deliberately needs to distinguish corruption from a
+// legitimate signing-key rotation.
 func Verify(r Receipt) error {
-	return VerifyWithKey(r, "")
+	_ = r
+	return fmt.Errorf("receipt verification requires a trusted public key; use VerifyWithKey")
 }
 
 // VerifyWithKey checks the receipt's signature against the given public key hex.
-// If expectedKeyHex is empty, the embedded signer_key is used.
 func VerifyWithKey(r Receipt, expectedKeyHex string) error {
+	if expectedKeyHex == "" {
+		return fmt.Errorf("receipt verification requires a trusted public key")
+	}
 	if r.Version != ReceiptVersion {
 		return fmt.Errorf("unsupported receipt version %d (expected %d)", r.Version, ReceiptVersion)
 	}
@@ -77,12 +84,9 @@ func VerifyWithKey(r Receipt, expectedKeyHex string) error {
 		return fmt.Errorf("receipt has no signer_key")
 	}
 
-	// Determine which key to verify against
 	keyHex := r.SignerKey
-	if expectedKeyHex != "" {
-		if keyHex != expectedKeyHex {
-			return fmt.Errorf("signer_key %s does not match expected key %s", keyHex, expectedKeyHex)
-		}
+	if keyHex != expectedKeyHex {
+		return fmt.Errorf("signer_key %s does not match expected key %s", keyHex, expectedKeyHex)
 	}
 
 	pubKeyBytes, err := hex.DecodeString(keyHex)
@@ -121,6 +125,16 @@ func VerifyWithKey(r Receipt, expectedKeyHex string) error {
 	}
 
 	return nil
+}
+
+// VerifyInternalConsistencyOnly checks that the receipt is structurally valid
+// and self-signed by its embedded signer_key. It does NOT prove the signer is
+// trusted. Production trust decisions must use VerifyWithKey.
+func VerifyInternalConsistencyOnly(r Receipt) error {
+	if r.SignerKey == "" {
+		return fmt.Errorf("receipt has no signer_key")
+	}
+	return VerifyWithKey(r, r.SignerKey)
 }
 
 // Marshal returns the JSON encoding of a receipt.

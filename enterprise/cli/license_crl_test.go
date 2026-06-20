@@ -121,6 +121,26 @@ func exitCode(t *testing.T, err error) int {
 	return -1
 }
 
+func TestLicenseCRLResetHighWater(t *testing.T) {
+	crlPath := filepath.Join(t.TempDir(), "crl.json")
+	out, err := runCRLCmd(t, "reset-highwater", crlPath, "--generation", "17")
+	if err != nil {
+		t.Fatalf("reset-highwater error = %v output=%s", err, out)
+	}
+	gen, found, readErr := license.ReadCRLHighWater(crlPath)
+	if readErr != nil || !found || gen != 17 {
+		t.Fatalf("high-water = (%d, %v, %v), want (17, true, nil)", gen, found, readErr)
+	}
+	if !strings.Contains(out, "Generation: 17") {
+		t.Fatalf("output = %q, want generation", out)
+	}
+
+	_, err = runCRLCmd(t, "reset-highwater", filepath.Join(t.TempDir(), "crl.json"))
+	if exitCode(t, err) != 1 {
+		t.Fatalf("reset-highwater without generation exit = %d, want 1", exitCode(t, err))
+	}
+}
+
 func TestLicenseCRLInspect(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {

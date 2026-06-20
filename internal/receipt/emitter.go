@@ -609,7 +609,7 @@ func (e *Emitter) resumeChain() error {
 	//     weakened into a silent reset.
 	//
 	// Why case 2 is safe: we require the tail to be self-consistently signed
-	// by the key embedded in it (Verify). An attacker who can only write a
+	// by the key embedded in it (VerifyInternalConsistencyOnly). An attacker who can only write a
 	// forged tail with a bad signature lands in case 3 and is rejected, so a
 	// forged tail cannot force a silent segment reset that hides history. A
 	// rotation reset preserves continuity two ways: the new segment's first
@@ -622,7 +622,7 @@ func (e *Emitter) resumeChain() error {
 	// outer chain for cross-segment evidence.
 	if e.privKey != nil {
 		// Case 3 first: self-signature must be valid no matter the key.
-		if verifyErr := Verify(*lastReceipt); verifyErr != nil {
+		if verifyErr := VerifyInternalConsistencyOnly(*lastReceipt); verifyErr != nil {
 			return fmt.Errorf("tail receipt signature invalid (seq %d): %w", lastReceipt.ActionRecord.ChainSeq, verifyErr)
 		}
 

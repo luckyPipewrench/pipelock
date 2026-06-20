@@ -89,6 +89,11 @@ response_scanning:
 - **SSE comment lines are not scanned.** Generic SSE scanning inspects the
   `data:` payload plus `event:`, `id:`, and `retry:` metadata fields. Comment
   lines are protocol keep-alives and are not exposed to clients as event data.
+- **Receipt failures after response start cannot unsend bytes.** Pipelock
+  still blocks before forwarding when a required pre-forward receipt cannot be
+  emitted. Once a streaming response has sent its first byte, a later receipt
+  write failure cannot be taken back from the client; the stream is terminated
+  and audited best-effort.
 
 ## See also
 

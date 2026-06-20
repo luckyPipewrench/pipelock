@@ -133,13 +133,13 @@ func runActionReceipt(stdout, stderr io.Writer, clean string, data []byte, keyHe
 		ChainSeq:   r.ActionRecord.ChainSeq,
 	}
 
-	if err := actionreceipt.VerifyWithKey(r, keyHex); err != nil {
-		report.Valid = false
-		report.Error = err.Error()
-		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify: %w", err))
-	}
 	if keyHex == "" {
+		if err := actionreceipt.VerifyInternalConsistencyOnly(r); err != nil {
+			report.Valid = false
+			report.Error = err.Error()
+			emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify: %w", err))
+		}
 		report.Unpinned = true
 		report.Error = unpinnedReceiptBanner
 		report.Valid = opts.allowUnpinned
@@ -148,6 +148,12 @@ func runActionReceipt(stdout, stderr io.Writer, clean string, data []byte, keyHe
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify: unpinned receipt"))
 		}
 		return nil
+	}
+	if err := actionreceipt.VerifyWithKey(r, keyHex); err != nil {
+		report.Valid = false
+		report.Error = err.Error()
+		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("verify: %w", err))
 	}
 	report.Valid = true
 	report.SignaturesVerified = true

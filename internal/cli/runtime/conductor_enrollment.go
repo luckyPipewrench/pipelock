@@ -41,8 +41,11 @@ type conductorEnrollmentMarker struct {
 func (s *Server) initConductorEnrollment(cfg *config.Config, recPrivKey ed25519.PrivateKey, stderr io.Writer) error {
 	enrolled, err := runConductorAutoEnroll(context.Background(), cfg, recPrivKey, nil)
 	if err != nil {
+		if conductorEnrollmentRequired(cfg) {
+			return fmt.Errorf("conductor enrollment failed: %w", err)
+		}
 		if stderr != nil {
-			_, _ = fmt.Fprintf(stderr, "pipelock: conductor enrollment failed (continuing without fleet enrollment): %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "pipelock: conductor enrollment skipped: %v\n", err)
 		}
 		return nil
 	}
@@ -57,7 +60,7 @@ func runConductorAutoEnroll(ctx context.Context, cfg *config.Config, recPrivKey 
 		return false, nil
 	}
 	markerPath := filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName)
-	marked, err := conductorEnrollmentMarked(markerPath)
+	marked, err := conductorEnrollmentMarked(markerPath, cfg.Conductor)
 	if err != nil {
 		return false, err
 	}
@@ -99,15 +102,32 @@ func runConductorAutoEnroll(ctx context.Context, cfg *config.Config, recPrivKey 
 	return true, nil
 }
 
-func conductorEnrollmentMarked(path string) (bool, error) {
-	_, err := os.Stat(filepath.Clean(path))
-	if err == nil {
-		return true, nil
-	}
+func conductorEnrollmentRequired(cfg *config.Config) bool {
+	return cfg != nil && cfg.Conductor.Enabled && strings.TrimSpace(cfg.Conductor.EnrollmentTokenPath) != ""
+}
+
+func conductorEnrollmentMarked(path string, cfg config.Conductor) (bool, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
 	if os.IsNotExist(err) {
 		return false, nil
 	}
-	return false, fmt.Errorf("stat conductor enrollment marker: %w", err)
+	if err != nil {
+		return false, fmt.Errorf("read conductor enrollment marker: %w", err)
+	}
+	var marker conductorEnrollmentMarker
+	if err := json.Unmarshal(data, &marker); err != nil {
+		return false, fmt.Errorf("parse conductor enrollment marker: %w", err)
+	}
+	if marker.Version != 1 {
+		return false, fmt.Errorf("conductor enrollment marker has unsupported version %d", marker.Version)
+	}
+	if marker.OrgID == cfg.OrgID &&
+		marker.FleetID == cfg.FleetID &&
+		marker.InstanceID == cfg.InstanceID &&
+		marker.AuditKeyID == cfg.AuditSigningKeyID {
+		return true, nil
+	}
+	return false, nil
 }
 
 func readConductorEnrollmentToken(path string) (string, error) {

@@ -95,10 +95,15 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		if err := validateEvidence(opts, ev); err != nil {
 			return Result{}, err
 		}
+		identity := controlplane.FollowerIdentity{OrgID: ev.Envelope.OrgID, FleetID: ev.Envelope.FleetID, InstanceID: ev.Envelope.InstanceID}
+		var auditKey conductorcore.SignatureKey
 		if opts.AuditKeys != nil {
-			identity := controlplane.FollowerIdentity{OrgID: ev.Envelope.OrgID, FleetID: ev.Envelope.FleetID, InstanceID: ev.Envelope.InstanceID}
 			if err := ev.Envelope.VerifySignaturesAt(ev.Summary.ReceivedAt, func(signerKeyID string) (conductorcore.SignatureKey, error) {
-				return opts.AuditKeys(identity, signerKeyID)
+				key, err := opts.AuditKeys(identity, signerKeyID)
+				if err == nil {
+					auditKey = key
+				}
+				return key, err
 			}); err != nil {
 				return Result{}, fmt.Errorf("fleet report: verify audit batch %s: %w", ev.Envelope.BatchID, err)
 			}
@@ -113,7 +118,7 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		if err := verifySegment(ev.Envelope.BatchID, ev.Envelope.SeqStart, ev.Envelope.SeqEnd, ev.Envelope.Chain.SegmentHeadHash, ev.Envelope.Chain.SegmentTailHash, entries); err != nil {
 			return Result{}, err
 		}
-		if err := agg.addBatch(ev, entries); err != nil {
+		if err := agg.addBatch(ev, entries, auditKey); err != nil {
 			return Result{}, err
 		}
 		batch := sourceBatch(ev)
@@ -253,7 +258,7 @@ func newAggregator() *aggregator {
 	}
 }
 
-func (a *aggregator) addBatch(ev controlplane.AuditBatchEvidence, entries []recorder.Entry) error {
+func (a *aggregator) addBatch(ev controlplane.AuditBatchEvidence, entries []recorder.Entry, auditKey conductorcore.SignatureKey) error {
 	if ev.Envelope.Dropped.Count > math.MaxUint64-a.droppedActions {
 		return fmt.Errorf("fleet report: dropped action count overflow")
 	}
@@ -266,12 +271,19 @@ func (a *aggregator) addBatch(ev controlplane.AuditBatchEvidence, entries []reco
 		if err != nil {
 			return fmt.Errorf("fleet report: parse action receipt in batch %s seq %d: %w", ev.Envelope.BatchID, entry.Sequence, err)
 		}
-		if err := receipt.Verify(rcpt); err != nil {
+		if len(auditKey.PublicKey) != ed25519.PublicKeySize {
+			return fmt.Errorf("fleet report: no enrolled audit key available for action receipt in batch %s seq %d", ev.Envelope.BatchID, entry.Sequence)
+		}
+		if err := receipt.VerifyWithKey(rcpt, hexPublicKey(auditKey.PublicKey)); err != nil {
 			return fmt.Errorf("fleet report: verify action receipt in batch %s seq %d: %w", ev.Envelope.BatchID, entry.Sequence, err)
 		}
 		a.addReceipt(ev.Envelope.InstanceID, rcpt.ActionRecord)
 	}
 	return nil
+}
+
+func hexPublicKey(pub ed25519.PublicKey) string {
+	return fmt.Sprintf("%x", []byte(pub))
 }
 
 func decodeReceiptDetail(detail any) (receipt.Receipt, error) {

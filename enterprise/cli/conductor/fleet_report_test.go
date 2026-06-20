@@ -488,7 +488,7 @@ func fleetReportKeyJSON(t *testing.T, k publishKeyFile) string {
 func cliTestAcceptedAuditBatch(t *testing.T, auditPriv ed25519.PrivateKey) controlplane.AcceptedAuditBatch {
 	t.Helper()
 	now := time.Date(2026, 6, 13, 0, 15, 0, 0, time.UTC)
-	rcpt := cliTestActionReceipt(t, now)
+	rcpt := cliTestActionReceipt(t, now, auditPriv)
 	entry := recorder.Entry{
 		Version:   recorder.EntryVersion,
 		Sequence:  1,
@@ -574,12 +574,8 @@ func cliTestAcceptedAuditBatch(t *testing.T, auditPriv ed25519.PrivateKey) contr
 	}
 }
 
-func cliTestActionReceipt(t *testing.T, now time.Time) receipt.Receipt {
+func cliTestActionReceipt(t *testing.T, now time.Time, priv ed25519.PrivateKey) receipt.Receipt {
 	t.Helper()
-	_, priv, err := signing.GenerateKeyPair()
-	if err != nil {
-		t.Fatalf("GenerateKeyPair(receipt) error = %v", err)
-	}
 	rcpt, err := receipt.Sign(receipt.ActionRecord{
 		Version:         receipt.ActionRecordVersion,
 		ActionID:        "action-1",

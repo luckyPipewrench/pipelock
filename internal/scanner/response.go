@@ -60,8 +60,28 @@ func (m ResponseMatch) Span() MatchSpan {
 // Zero-width Unicode characters are stripped before scanning to prevent
 // evasion via invisible character insertion.
 // For "strip" action, replaces matches with [REDACTED: PatternName].
-func (s *Scanner) ScanResponse(ctx context.Context, content string) (out ResponseScanResult) {
+func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScanResult {
+	return s.ScanResponseWithSuppress(ctx, content, "", nil)
+}
+
+// ScanResponseWithSuppress checks fetched content like ScanResponse, but applies
+// destination-scoped suppressions inside each normalization pass. This prevents
+// a suppressed first-pass hit from masking a later unsuppressed encoded or
+// normalized hit on the same content.
+func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
 	original := content
+	filterSuppressed := func(matches []ResponseMatch) []ResponseMatch {
+		if len(matches) == 0 || len(suppress) == 0 || suppressTarget == "" {
+			return matches
+		}
+		kept := matches[:0]
+		for _, match := range matches {
+			if !config.IsSuppressed(match.PatternName, suppressTarget, suppress) {
+				kept = append(kept, match)
+			}
+		}
+		return kept
+	}
 
 	// Stego exposure signal. Computed on the raw content before normalization
 	// strips combining marks. The deferred setter stamps every return path -
@@ -95,7 +115,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 		// Defensive anti-solicitation filtering happens per-pass inside
 		// scanCoreResponse (not here), so an all-defensive early pass cannot
 		// mask an encoded solicitation that only a later pass catches.
-		coreMatches := filterEducationalQuotedResponseMatches(coreSet.content, coreSet.matches)
+		coreMatches := filterSuppressed(filterEducationalQuotedResponseMatches(coreSet.content, coreSet.matches))
 		if len(coreMatches) == 0 {
 			if !s.responseEnabled {
 				return ResponseScanResult{Clean: true}
@@ -138,7 +158,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// cascade) so an all-defensive early pass cannot mask an encoded
 	// solicitation that only a later pass catches. See scanCoreResponse.
 	var matches []ResponseMatch
-	matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, s.matchResponsePatternsPreFiltered(content)), ViewForMatching)
+	matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, s.matchResponsePatternsPreFiltered(content)), ViewForMatching))
 
 	// Secondary: replace invisible chars with spaces, then normalize. Catches
 	// word-boundary collapse where the attacker uses ZW instead of space:
@@ -147,7 +167,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 {
 		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 		if spaced != content {
-			matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, s.matchResponsePatternsPreFiltered(spaced)), ViewInvisibleSpaced)
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, s.matchResponsePatternsPreFiltered(spaced)), ViewInvisibleSpaced))
 			if len(matches) > 0 {
 				matchContent = spaced
 				content = spaced // use spaced version for strip action
@@ -160,7 +180,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 {
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
-			matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, s.matchResponsePatternsPreFiltered(leeted)), ViewLeetspeak)
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(leeted, s.matchResponsePatternsPreFiltered(leeted)), ViewLeetspeak))
 			if len(matches) > 0 {
 				matchContent = leeted
 			}
@@ -172,7 +192,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// "i\u200bgnore\u200ball\u200bprevious" -> strip ZW -> "ignoreallprevious"
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
 	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 {
-		matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)), ViewForMatching)
+		matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)), ViewForMatching))
 		if len(matches) > 0 {
 			matchContent = content
 		}
@@ -185,7 +205,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 && len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			matches = withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold)
+			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)), ViewVowelFold))
 			if len(matches) > 0 {
 				matchContent = folded
 			}
@@ -198,7 +218,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	// normal text content.
 	if len(matches) == 0 && hasEncodedRun(content) {
 		decodedSet := s.matchDecodedResponse(content)
-		matches = decodedSet.matches
+		matches = filterSuppressed(decodedSet.matches)
 		if len(matches) > 0 {
 			matchContent = decodedSet.content
 		}
@@ -218,7 +238,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	if len(matches) == 0 {
 		return ResponseScanResult{Clean: true}
 	}
-	matches = filterEducationalQuotedResponseMatches(matchContent, matches)
+	matches = filterSuppressed(filterEducationalQuotedResponseMatches(matchContent, matches))
 	if len(matches) == 0 {
 		return ResponseScanResult{Clean: true}
 	}

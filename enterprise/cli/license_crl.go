@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -45,6 +46,7 @@ see what it revokes, and verify its signature and expiry against a public key.`,
 	cmd.AddCommand(
 		licenseCRLInspectCmd(),
 		licenseCRLVerifyCmd(),
+		licenseCRLResetHighWaterCmd(),
 	)
 	return cmd
 }
@@ -206,6 +208,35 @@ Exit code 1: invalid signature, expired, malformed, or no public key available.`
 
 	cmd.Flags().StringVar(&publicKey, "public-key", "", "public key file path or hex value (default: embedded key, then configured key)")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file used to resolve the license public key")
+	return cmd
+}
+
+func licenseCRLResetHighWaterCmd() *cobra.Command {
+	var generation uint64
+
+	cmd := &cobra.Command{
+		Use:   "reset-highwater FILE --generation N",
+		Short: "Explicitly reset the local CRL rollback high-water",
+		Long: `Explicitly reset the local CRL rollback high-water.
+
+Use this only for an operator-approved migration or recovery after restoring
+trusted CRL state. The reset writes both durable local high-water records; normal
+verification never resets them implicitly.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.Flags().Changed("generation") {
+				return cliutil.ExitCodeError(1, errors.New("--generation is required"))
+			}
+			if err := license.ResetCRLHighWater(args[0], generation); err != nil {
+				return cliutil.ExitCodeError(1, err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "CRL high-water reset\n")
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  File:       %s\n", filepath.Clean(args[0]))
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Generation: %s\n", strconv.FormatUint(generation, 10))
+			return nil
+		},
+	}
+	cmd.Flags().Uint64Var(&generation, "generation", 0, "trusted CRL generation to seed as the rollback floor")
 	return cmd
 }
 

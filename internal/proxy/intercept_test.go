@@ -268,6 +268,8 @@ func TestInterceptLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionBlock
+	explainOn := true
+	cfg.ExplainBlocks = &explainOn
 	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
 	proxy := interceptLiveLockProxy(testContractLoader(t, contractruntime.ModeLive, rule), nil, m)
 	fakeToken := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
@@ -742,6 +744,13 @@ func TestInterceptTunnel_BlocksSecretInBody(t *testing.T) {
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (body DLP should block)", resp.StatusCode)
+	}
+	hint := resp.Header.Get("X-Pipelock-Hint")
+	if !strings.Contains(hint, "suppress:") {
+		t.Fatalf("body DLP hint = %q, want suppress: remediation", hint)
+	}
+	if strings.Contains(hint, "exempt_domains") {
+		t.Fatalf("body DLP hint = %q, must not point to URL-DLP exempt_domains", hint)
 	}
 }
 

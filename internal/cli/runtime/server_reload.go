@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -39,6 +40,14 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 
 	oldCfg := s.proxy.CurrentConfig()
 	if oldCfg != nil {
+		// Block fetch_proxy.listen changes via reload. The listener binds at
+		// startup and cannot rebind at runtime; preserve the live address so the
+		// config object does not drift from the actual socket.
+		if oldCfg.FetchProxy.Listen != newCfg.FetchProxy.Listen {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: fetch_proxy.listen changed from %q to %q - requires restart, ignoring\n",
+				oldCfg.FetchProxy.Listen, newCfg.FetchProxy.Listen)
+			newCfg.FetchProxy.Listen = oldCfg.FetchProxy.Listen
+		}
 		// Block enabling forward proxy via reload. WriteTimeout is set
 		// at server start and cannot change at runtime; tunnels would
 		// be killed prematurely. Restart to enable.
@@ -315,6 +324,12 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// Compare resolved-vs-resolved configs so bundle merges and
 		// MCP listener auto-enable do not look like policy downgrades
 		// during hot reload.
+		if reasons := implausibleReloadTeardownReasons(oldCfg, newCfg); len(reasons) > 0 {
+			rejectErr := fmt.Errorf("rejected: implausibly empty config reload would weaken security posture: %s", strings.Join(reasons, ", "))
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v\n", rejectErr)
+			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+			return rejectErr
+		}
 		warnings := config.ValidateReload(oldCfg, newCfg)
 		for _, w := range warnings {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %s - %s\n", w.Field, w.Message)
@@ -363,6 +378,60 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
 	s.recordReloadSuccess(reloadHash)
 	return nil
+}
+
+func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
+	if oldCfg == nil {
+		return nil
+	}
+	if newCfg == nil {
+		return []string{"new config is nil"}
+	}
+
+	var reasons []string
+	appendCleared := func(field, oldValue, newValue string) {
+		if oldValue != "" && newValue == "" {
+			reasons = append(reasons, field+" cleared")
+		}
+	}
+	appendDisabled := func(field string, oldEnabled, newEnabled bool) {
+		if oldEnabled && !newEnabled {
+			reasons = append(reasons, field+" disabled")
+		}
+	}
+
+	appendCleared("mode", oldCfg.Mode, newCfg.Mode)
+	appendCleared("fetch_proxy.listen", oldCfg.FetchProxy.Listen, newCfg.FetchProxy.Listen)
+	appendCleared("license_file", oldCfg.LicenseFile, newCfg.LicenseFile)
+	if len(oldCfg.Internal) > 0 && len(newCfg.Internal) == 0 {
+		reasons = append(reasons, "internal CIDR list emptied")
+	}
+
+	appendDisabled("dlp.scan_env", oldCfg.DLP.ScanEnv, newCfg.DLP.ScanEnv)
+	appendDisabled("forward_proxy.enabled", oldCfg.ForwardProxy.Enabled, newCfg.ForwardProxy.Enabled)
+	appendDisabled("websocket_proxy.enabled", oldCfg.WebSocketProxy.Enabled, newCfg.WebSocketProxy.Enabled)
+	appendDisabled("tls_interception.enabled", oldCfg.TLSInterception.Enabled, newCfg.TLSInterception.Enabled)
+	appendDisabled("mcp_input_scanning.enabled", oldCfg.MCPInputScanning.Enabled, newCfg.MCPInputScanning.Enabled)
+	appendDisabled("mcp_tool_scanning.enabled", oldCfg.MCPToolScanning.Enabled, newCfg.MCPToolScanning.Enabled)
+	appendDisabled("mcp_tool_policy.enabled", oldCfg.MCPToolPolicy.Enabled, newCfg.MCPToolPolicy.Enabled)
+	appendDisabled("session_profiling.enabled", oldCfg.SessionProfiling.Enabled, newCfg.SessionProfiling.Enabled)
+	appendDisabled("adaptive_enforcement.enabled", oldCfg.AdaptiveEnforcement.Enabled, newCfg.AdaptiveEnforcement.Enabled)
+	appendDisabled("mcp_session_binding.enabled", oldCfg.MCPSessionBinding.Enabled, newCfg.MCPSessionBinding.Enabled)
+	appendDisabled("a2a_scanning.enabled", oldCfg.A2AScanning.Enabled, newCfg.A2AScanning.Enabled)
+	appendDisabled("tool_chain_detection.enabled", oldCfg.ToolChainDetection.Enabled, newCfg.ToolChainDetection.Enabled)
+	appendDisabled("cross_request_detection.enabled", oldCfg.CrossRequestDetection.Enabled, newCfg.CrossRequestDetection.Enabled)
+	appendDisabled("address_protection.enabled", oldCfg.AddressProtection.Enabled, newCfg.AddressProtection.Enabled)
+	appendDisabled("taint.enabled", oldCfg.Taint.Enabled, newCfg.Taint.Enabled)
+	appendDisabled("response_scanning.enabled", oldCfg.ResponseScanning.Enabled, newCfg.ResponseScanning.Enabled)
+	appendDisabled("request_body_scanning.enabled", oldCfg.RequestBodyScanning.Enabled, newCfg.RequestBodyScanning.Enabled)
+	// Configurable/default DLP patterns vanishing is a teardown even though the
+	// compiled-in core DLP floor (scanner/core.go) still runs. ValidateReload
+	// only WARNS on this, which strict rejects but balanced does not.
+	if len(oldCfg.DLP.Patterns) > 0 && len(newCfg.DLP.Patterns) == 0 {
+		reasons = append(reasons, "dlp.patterns emptied")
+	}
+
+	return reasons
 }
 
 func hasNamedAgentProfiles(agents map[string]config.AgentProfile) bool {

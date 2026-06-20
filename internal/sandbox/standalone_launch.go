@@ -83,6 +83,10 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if cfg.Policy != nil {
 		policy = *cfg.Policy
 	}
+	policy, err := ResolvePolicyPaths(policy)
+	if err != nil {
+		return err
+	}
 	if err := ValidatePolicy(policy); err != nil {
 		return err
 	}
@@ -172,13 +176,11 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	if len(cfg.ExtraEnv) > 0 {
 		cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_EXTRA_ENV="+strings.Join(cfg.ExtraEnv, "\x1f"))
 	}
-	if cfg.Policy != nil {
-		policyJSON, jsonErr := encodePolicyJSON(cfg.Policy)
-		if jsonErr != nil {
-			return fmt.Errorf("encoding sandbox policy: %w", jsonErr)
-		}
-		cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
+	policyJSON, jsonErr := encodePolicyJSON(&policy)
+	if jsonErr != nil {
+		return fmt.Errorf("encoding sandbox policy: %w", jsonErr)
 	}
+	cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
 
 	if hasNamespaces {
 		cloneFlags := uintptr(syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET)

@@ -71,6 +71,9 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	appendActionDowngradeWarnings(&warnings, old, updated)
+	appendSuppressWideningWarnings(&warnings, old.Suppress, updated.Suppress)
+
 	// Response scanning disabled
 	if old.ResponseScanning.Enabled && !updated.ResponseScanning.Enabled {
 		warnings = append(warnings, ReloadWarning{
@@ -225,12 +228,6 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "a2a_scanning.enabled",
 			Message: "A2A scanning disabled",
-		})
-	}
-	if old.A2AScanning.Action == ActionBlock && updated.A2AScanning.Action == ActionWarn {
-		warnings = append(warnings, ReloadWarning{
-			Field:   "a2a_scanning.action",
-			Message: "A2A scanning action downgraded from block to warn",
 		})
 	}
 	if old.A2AScanning.ScanAgentCards && !updated.A2AScanning.ScanAgentCards {
@@ -712,6 +709,222 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	}
 
 	return warnings
+}
+
+func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Config) {
+	appendActionDowngradeWarning(warnings, "response_scanning.action", old.ResponseScanning.Action, updated.ResponseScanning.Action)
+	if old.ResponseScanning.SSEStreaming.Enabled && updated.ResponseScanning.SSEStreaming.Enabled {
+		appendActionDowngradeWarning(warnings, "response_scanning.sse_streaming.action", old.ResponseScanning.SSEStreaming.Action, updated.ResponseScanning.SSEStreaming.Action)
+	}
+	if old.RequestBodyScanning.Enabled && updated.RequestBodyScanning.Enabled {
+		appendActionDowngradeWarning(warnings, "request_body_scanning.action", old.RequestBodyScanning.Action, updated.RequestBodyScanning.Action)
+	}
+	if old.MCPInputScanning.Enabled && updated.MCPInputScanning.Enabled {
+		appendActionDowngradeWarning(warnings, "mcp_input_scanning.action", old.MCPInputScanning.Action, updated.MCPInputScanning.Action)
+	}
+	appendActionDowngradeWarning(warnings, "mcp_input_scanning.on_parse_error", old.MCPInputScanning.OnParseError, updated.MCPInputScanning.OnParseError)
+	if old.MCPToolScanning.Enabled && updated.MCPToolScanning.Enabled {
+		appendActionDowngradeWarning(warnings, "mcp_tool_scanning.action", old.MCPToolScanning.Action, updated.MCPToolScanning.Action)
+	}
+	if old.MCPToolPolicy.Enabled && updated.MCPToolPolicy.Enabled {
+		appendActionDowngradeWarning(warnings, "mcp_tool_policy.action", old.MCPToolPolicy.Action, updated.MCPToolPolicy.Action)
+		appendToolPolicyRuleActionDowngrades(warnings, old.MCPToolPolicy, updated.MCPToolPolicy)
+	}
+	if old.AddressProtection.Enabled && updated.AddressProtection.Enabled {
+		appendActionDowngradeWarning(warnings, "address_protection.action", old.AddressProtection.Action, updated.AddressProtection.Action)
+		appendActionDowngradeWarning(warnings, "address_protection.unknown_action", old.AddressProtection.UnknownAction, updated.AddressProtection.UnknownAction)
+	}
+	if old.A2AScanning.Enabled && updated.A2AScanning.Enabled {
+		appendActionDowngradeWarning(warnings, "a2a_scanning.action", old.A2AScanning.Action, updated.A2AScanning.Action)
+	}
+	if old.CrossRequestDetection.Enabled && updated.CrossRequestDetection.Enabled {
+		appendActionDowngradeWarning(warnings, "cross_request_detection.action", old.CrossRequestDetection.Action, updated.CrossRequestDetection.Action)
+		if old.CrossRequestDetection.EntropyBudget.Enabled && updated.CrossRequestDetection.EntropyBudget.Enabled {
+			appendActionDowngradeWarning(warnings, "cross_request_detection.entropy_budget.action", old.CrossRequestDetection.EntropyBudget.Action, updated.CrossRequestDetection.EntropyBudget.Action)
+		}
+	}
+	if old.MCPSessionBinding.Enabled && updated.MCPSessionBinding.Enabled {
+		appendActionDowngradeWarning(warnings, "mcp_session_binding.unknown_tool_action", old.MCPSessionBinding.UnknownToolAction, updated.MCPSessionBinding.UnknownToolAction)
+		appendActionDowngradeWarning(warnings, "mcp_session_binding.no_baseline_action", old.MCPSessionBinding.NoBaselineAction, updated.MCPSessionBinding.NoBaselineAction)
+	}
+	if old.ToolChainDetection.Enabled && updated.ToolChainDetection.Enabled {
+		appendActionDowngradeWarning(warnings, "tool_chain_detection.action", old.ToolChainDetection.Action, updated.ToolChainDetection.Action)
+		appendToolChainActionDowngrades(warnings, old.ToolChainDetection, updated.ToolChainDetection)
+	}
+}
+
+func appendActionDowngradeWarning(warnings *[]ReloadWarning, field, oldAction, newAction string) {
+	if !actionDowngraded(oldAction, newAction) {
+		return
+	}
+	*warnings = append(*warnings, ReloadWarning{
+		Field:   field,
+		Message: fmt.Sprintf("action downgraded from %s to %s", oldAction, newAction),
+	})
+}
+
+func appendToolPolicyRuleActionDowngrades(warnings *[]ReloadWarning, oldPolicy, updatedPolicy MCPToolPolicy) {
+	oldByName := make(map[string]ToolPolicyRule, len(oldPolicy.Rules))
+	for _, rule := range oldPolicy.Rules {
+		if strings.TrimSpace(rule.Name) == "" {
+			continue
+		}
+		oldByName[rule.Name] = rule
+	}
+	for _, updatedRule := range updatedPolicy.Rules {
+		oldRule, ok := oldByName[updatedRule.Name]
+		if !ok {
+			continue
+		}
+		oldAction := oldRule.Action
+		if oldAction == "" {
+			oldAction = oldPolicy.Action
+		}
+		newAction := updatedRule.Action
+		if newAction == "" {
+			newAction = updatedPolicy.Action
+		}
+		appendActionDowngradeWarning(warnings, "mcp_tool_policy.rules."+updatedRule.Name+".action", oldAction, newAction)
+	}
+}
+
+func appendToolChainActionDowngrades(warnings *[]ReloadWarning, oldChain, updatedChain ToolChainDetection) {
+	for name, oldAction := range oldChain.PatternOverrides {
+		newAction, ok := updatedChain.PatternOverrides[name]
+		if !ok {
+			continue
+		}
+		appendActionDowngradeWarning(warnings, "tool_chain_detection.pattern_overrides."+name, oldAction, newAction)
+	}
+	oldByName := make(map[string]ChainPattern, len(oldChain.CustomPatterns))
+	for _, pattern := range oldChain.CustomPatterns {
+		if strings.TrimSpace(pattern.Name) == "" {
+			continue
+		}
+		oldByName[pattern.Name] = pattern
+	}
+	for _, updatedPattern := range updatedChain.CustomPatterns {
+		oldPattern, ok := oldByName[updatedPattern.Name]
+		if !ok {
+			continue
+		}
+		oldAction := oldPattern.Action
+		if oldAction == "" {
+			oldAction = oldChain.Action
+		}
+		newAction := updatedPattern.Action
+		if newAction == "" {
+			newAction = updatedChain.Action
+		}
+		appendActionDowngradeWarning(warnings, "tool_chain_detection.custom_patterns."+updatedPattern.Name+".action", oldAction, newAction)
+	}
+}
+
+func actionDowngraded(oldAction, newAction string) bool {
+	oldStrength, oldOK := reloadActionStrength(oldAction)
+	newStrength, newOK := reloadActionStrength(newAction)
+	return oldOK && newOK && newStrength < oldStrength
+}
+
+// reloadActionStrength ranks terminal enforcement outcomes for reload-downgrade
+// detection. Block is strongest because it denies the risky operation outright.
+// Defer and ask both stop automatic forwarding, but defer is stronger because it
+// requires a resolver policy path while ask is direct HITL. Redirect contains the
+// action by replacing the destination/tool, strip mutates and forwards sanitized
+// content, warn observes only, and allow/forward are weakest because they proceed.
+func reloadActionStrength(action string) (int, bool) {
+	switch strings.TrimSpace(action) {
+	case "":
+		return 0, false
+	case ActionAllow, ActionForward:
+		return 1, true
+	case ActionWarn:
+		return 2, true
+	case ActionStrip:
+		return 3, true
+	case ActionRedirect:
+		return 4, true
+	case ActionAsk:
+		return 5, true
+	case ActionDefer:
+		return 6, true
+	case ActionBlock:
+		return 7, true
+	default:
+		return 0, false
+	}
+}
+
+func appendSuppressWideningWarnings(warnings *[]ReloadWarning, oldSuppress, updatedSuppress []SuppressEntry) {
+	for _, updated := range updatedSuppress {
+		if suppressEntryCoveredByAny(oldSuppress, updated) {
+			continue
+		}
+		*warnings = append(*warnings, ReloadWarning{
+			Field:   "suppress",
+			Message: fmt.Sprintf("suppress entry widened or added for rule %q path %q", updated.Rule, updated.Path),
+		})
+		return
+	}
+}
+
+func suppressEntryCoveredByAny(oldSuppress []SuppressEntry, updated SuppressEntry) bool {
+	for _, old := range oldSuppress {
+		if strings.TrimSpace(old.Rule) != strings.TrimSpace(updated.Rule) {
+			continue
+		}
+		if suppressPathCovers(old.Path, updated.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+func suppressPathCovers(oldPath, updatedPath string) bool {
+	oldPath = strings.TrimSpace(oldPath)
+	updatedPath = strings.TrimSpace(updatedPath)
+	if oldPath == "" || updatedPath == "" {
+		return oldPath == updatedPath
+	}
+	if oldPath == "*" || oldPath == updatedPath {
+		return true
+	}
+	// Only single-wildcard shapes are decidable: an exact match (handled above),
+	// a single prefix glob ("foo*"), or a single suffix glob ("*.host.com").
+	// A non-matching literal, or more than one wildcard (mid-string/contains
+	// globs like "*host*"), cannot be proven to cover the updated entry, so it is
+	// treated as NOT covering — a widening then surfaces a warning instead of
+	// slipping through (fail-closed for the guard). The previous prefix-only
+	// model gave a leading "*" an empty prefix that strings.HasPrefix matched
+	// against everything, silently covering any path (the bypass this closes).
+	oldPre, oldSuf, ok := singleGlobParts(oldPath)
+	if !ok {
+		return false
+	}
+	if !strings.ContainsRune(updatedPath, '*') {
+		// Literal updated path: covered iff it satisfies old's fixed prefix+suffix.
+		return len(updatedPath) >= len(oldPre)+len(oldSuf) &&
+			strings.HasPrefix(updatedPath, oldPre) &&
+			strings.HasSuffix(updatedPath, oldSuf)
+	}
+	uPre, uSuf, uok := singleGlobParts(updatedPath)
+	if !uok {
+		return false
+	}
+	// updated = uPre*uSuf is a subset of old = oldPre*oldSuf iff old's fixed parts
+	// sit at the matching ends of updated's fixed parts.
+	return strings.HasPrefix(uPre, oldPre) && strings.HasSuffix(uSuf, oldSuf)
+}
+
+// singleGlobParts splits a pattern containing exactly one "*" into its fixed
+// prefix and suffix. It returns ok=false for patterns with zero or multiple
+// wildcards, which the suppress-coverage check cannot decide.
+func singleGlobParts(pattern string) (prefix, suffix string, ok bool) {
+	idx := strings.IndexByte(pattern, '*')
+	if idx < 0 || idx != strings.LastIndexByte(pattern, '*') {
+		return "", "", false
+	}
+	return pattern[:idx], pattern[idx+1:], true
 }
 
 // sandboxChanged returns true if any sandbox-related config field differs.

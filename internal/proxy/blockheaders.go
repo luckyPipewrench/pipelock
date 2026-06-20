@@ -131,6 +131,12 @@ func writeBlockedError(w http.ResponseWriter, info blockreason.Info, body string
 	http.Error(w, body, status)
 }
 
+func setBodyBlockHint(w http.ResponseWriter, scannerLabel string) {
+	if hint := scanner.HintForScanner(scannerLabel); hint != "" {
+		w.Header().Set("X-Pipelock-Hint", hint)
+	}
+}
+
 // writeBlockedJSON is the fetch-handler analogue of writeBlockedError. The
 // fetch endpoint emits a JSON FetchResponse on every block via writeJSON;
 // this helper sets the X-Pipelock-Block-Reason header set first so the

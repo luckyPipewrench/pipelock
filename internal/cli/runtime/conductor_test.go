@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -620,10 +621,66 @@ func TestNewServer_WiresConductorBundlePoller(t *testing.T) {
 
 func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	s, signer := newConductorApplyTestServer(t)
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.FetchProxy.Listen = "127.0.0.1:18897"
+	oldCfg.ForwardProxy.Enabled = true
+	oldCfg.WebSocketProxy.Enabled = true
+	oldCfg.MCPInputScanning.Enabled = true
+	oldCfg.MCPToolScanning.Enabled = true
+	oldCfg.MCPToolPolicy.Enabled = true
+	oldCfg.MCPToolPolicy.Rules = append(oldCfg.MCPToolPolicy.Rules, config.ToolPolicyRule{
+		Name:        "deny-shell",
+		ToolPattern: `(?i)\b(sh|bash)\b`,
+		Action:      config.ActionBlock,
+	})
+	oldCfg.DLP.Patterns = []config.DLPPattern{{Name: "local-secret", Regex: `LOCAL_SECRET_[A-Z]+`, Severity: config.SeverityHigh}}
+	oldCfg.ResponseScanning.Enabled = true
+	oldCfg.ResponseScanning.Action = config.ActionBlock
+	oldCfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "local-response", Regex: `IGNORE_ALL_PREVIOUS_INSTRUCTIONS`}}
+	oldCfg.RequestBodyScanning.Enabled = true
+	oldCfg.RequestBodyScanning.Action = config.ActionBlock
+	oldCfg.Suppress = []config.SuppressEntry{{Rule: "local-fp", Path: "/safe/*", Reason: "local false positive"}}
+	oldCfg.TrustedDomains = []string{"local-fixture.internal"}
+	oldCfg.SSRF.IPAllowlist = []string{"192.0.2.0/24"}
+	oldCfg.FetchProxy.Monitoring.MaxReqPerMinute = 12
+	oldCfg.FetchProxy.Monitoring.MaxDataPerMinute = 4096
+	oldCfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.local"}
+	oldCfg.SessionProfiling.Enabled = true
+	oldCfg.AdaptiveEnforcement.Enabled = true
+	oldCfg.MCPSessionBinding.Enabled = true
+	oldCfg.A2AScanning.Enabled = true
+	oldCfg.A2AScanning.Action = config.ActionBlock
+	oldCfg.ToolChainDetection.Enabled = true
+	oldCfg.CrossRequestDetection.Enabled = true
+	oldCfg.CrossRequestDetection.Action = config.ActionBlock
+	oldCfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	oldCfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 512
+	oldCfg.CrossRequestDetection.EntropyBudget.Action = config.ActionBlock
+	oldCfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	oldCfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 8192
+	oldCfg.AddressProtection.Enabled = true
+	oldCfg.AddressProtection.Action = config.ActionBlock
+	oldCfg.AddressProtection.UnknownAction = config.ActionBlock
+	oldCfg.FileSentry.Enabled = true
+	oldCfg.FileSentry.Action = config.ActionBlock
+	oldCfg.FileSentry.WatchPaths = []config.WatchPath{{Path: "/tmp/pipelock-watch"}}
+	oldCfg.BrowserShield.Enabled = true
+	oldCfg.BrowserShield.Strictness = config.ShieldStrictnessAggressive
+	oldCfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+	oldCfg.Agents = map[string]config.AgentProfile{"local-agent": {Mode: config.ModeStrict, APIAllowlist: []string{"agent-api.example.com"}}}
+	oldCfg.DefaultAgentIdentity = "local-agent"
+	oldCfg.BindDefaultAgentIdentity = true
+	oldCfg.Emit.Syslog.Address = "udp://127.0.0.1:1514"
+	oldCfg.Sandbox.Enabled = true
+	oldCfg.Sandbox.Workspace = "/tmp/pipelock-sandbox"
+	oldCfg.LicenseFile = "/etc/pipelock/license.token"
+	oldCfg.ApplyDefaults()
+
 	// Enforcement-only bundle: policy bundles may carry only enforcement-policy
 	// sections (default-deny allowlist), so flight_recorder/conductor/etc. are
 	// NOT included here. The follower's existing flight_recorder + conductor
-	// config must survive the reload for the apply to succeed.
+	// config and locally enabled scanner baseline must survive the reload for
+	// the apply to succeed.
 	bundle := signedRuntimePolicyBundle(t, signer, "bundle-1", 1, "", strings.Join([]string{
 		"mode: strict",
 		"api_allowlist:",
@@ -649,8 +706,81 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	if active.Bundle.BundleID != "bundle-1" || active.ConfigPath != applied.ConfigPath {
 		t.Fatalf("active bundle = %q path=%q, want bundle-1 path=%q", active.Bundle.BundleID, active.ConfigPath, applied.ConfigPath)
 	}
-	if live := s.proxy.CurrentConfig(); live == nil || live.Mode != config.ModeStrict {
+	live := s.proxy.CurrentConfig()
+	if live == nil || live.Mode != config.ModeStrict {
 		t.Fatalf("live mode = %v, want strict", live)
+	}
+	for _, tt := range []struct {
+		name string
+		got  bool
+	}{
+		{"forward_proxy", live.ForwardProxy.Enabled},
+		{"websocket_proxy", live.WebSocketProxy.Enabled},
+		{"mcp_input_scanning", live.MCPInputScanning.Enabled},
+		{"mcp_tool_scanning", live.MCPToolScanning.Enabled},
+		{"mcp_tool_policy", live.MCPToolPolicy.Enabled},
+		{"adaptive_enforcement", live.AdaptiveEnforcement.Enabled},
+		{"mcp_session_binding", live.MCPSessionBinding.Enabled},
+		{"a2a_scanning", live.A2AScanning.Enabled},
+		{"tool_chain_detection", live.ToolChainDetection.Enabled},
+		{"cross_request_detection", live.CrossRequestDetection.Enabled},
+		{"address_protection", live.AddressProtection.Enabled},
+	} {
+		if !tt.got {
+			t.Fatalf("%s was disabled by enforcement-only conductor bundle", tt.name)
+		}
+	}
+	if live.FetchProxy.Listen != oldCfg.FetchProxy.Listen {
+		t.Fatalf("fetch_proxy.listen = %q, want preserved %q", live.FetchProxy.Listen, oldCfg.FetchProxy.Listen)
+	}
+	if live.LicenseFile != oldCfg.LicenseFile {
+		t.Fatalf("license_file = %q, want preserved %q", live.LicenseFile, oldCfg.LicenseFile)
+	}
+	if live.Emit.Syslog.Address != oldCfg.Emit.Syslog.Address {
+		t.Fatalf("emit.syslog.address = %q, want preserved %q", live.Emit.Syslog.Address, oldCfg.Emit.Syslog.Address)
+	}
+	if !reflect.DeepEqual(live.Sandbox, oldCfg.Sandbox) {
+		t.Fatalf("sandbox config = %+v, want preserved %+v", live.Sandbox, oldCfg.Sandbox)
+	}
+	if !reflect.DeepEqual(live.DLP, oldCfg.DLP) {
+		t.Fatalf("dlp config = %+v, want preserved %+v", live.DLP, oldCfg.DLP)
+	}
+	if !reflect.DeepEqual(live.ResponseScanning, oldCfg.ResponseScanning) {
+		t.Fatalf("response_scanning = %+v, want preserved %+v", live.ResponseScanning, oldCfg.ResponseScanning)
+	}
+	if !reflect.DeepEqual(live.RequestBodyScanning, oldCfg.RequestBodyScanning) {
+		t.Fatalf("request_body_scanning = %+v, want preserved %+v", live.RequestBodyScanning, oldCfg.RequestBodyScanning)
+	}
+	if !reflect.DeepEqual(live.Suppress, oldCfg.Suppress) {
+		t.Fatalf("suppress = %+v, want preserved %+v", live.Suppress, oldCfg.Suppress)
+	}
+	if !reflect.DeepEqual(live.TrustedDomains, oldCfg.TrustedDomains) {
+		t.Fatalf("trusted_domains = %+v, want preserved %+v", live.TrustedDomains, oldCfg.TrustedDomains)
+	}
+	if !reflect.DeepEqual(live.SSRF, oldCfg.SSRF) {
+		t.Fatalf("ssrf = %+v, want preserved %+v", live.SSRF, oldCfg.SSRF)
+	}
+	if !reflect.DeepEqual(live.FetchProxy.Monitoring, oldCfg.FetchProxy.Monitoring) {
+		t.Fatalf("fetch_proxy.monitoring = %+v, want preserved %+v", live.FetchProxy.Monitoring, oldCfg.FetchProxy.Monitoring)
+	}
+	if !reflect.DeepEqual(live.CrossRequestDetection, oldCfg.CrossRequestDetection) {
+		t.Fatalf("cross_request_detection = %+v, want preserved %+v", live.CrossRequestDetection, oldCfg.CrossRequestDetection)
+	}
+	if !reflect.DeepEqual(live.AddressProtection, oldCfg.AddressProtection) {
+		t.Fatalf("address_protection = %+v, want preserved %+v", live.AddressProtection, oldCfg.AddressProtection)
+	}
+	if !reflect.DeepEqual(live.FileSentry, oldCfg.FileSentry) {
+		t.Fatalf("file_sentry = %+v, want preserved %+v", live.FileSentry, oldCfg.FileSentry)
+	}
+	if !reflect.DeepEqual(live.BrowserShield, oldCfg.BrowserShield) {
+		t.Fatalf("browser_shield = %+v, want preserved %+v", live.BrowserShield, oldCfg.BrowserShield)
+	}
+	if !reflect.DeepEqual(live.Agents, oldCfg.Agents) ||
+		live.DefaultAgentIdentity != oldCfg.DefaultAgentIdentity ||
+		live.BindDefaultAgentIdentity != oldCfg.BindDefaultAgentIdentity {
+		t.Fatalf("agent identity config = agents=%+v default=%q bind=%v, want agents=%+v default=%q bind=%v",
+			live.Agents, live.DefaultAgentIdentity, live.BindDefaultAgentIdentity,
+			oldCfg.Agents, oldCfg.DefaultAgentIdentity, oldCfg.BindDefaultAgentIdentity)
 	}
 }
 

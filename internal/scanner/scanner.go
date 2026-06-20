@@ -782,6 +782,13 @@ var scannerHints = map[string]string{
 	ScannerCoreDLP:          "Core DLP pattern matched. This is a critical credential detection that cannot be disabled.",
 	ScannerCoreSSRF:         "Core SSRF protection blocked this URL. Private IP ranges are always blocked.",
 	ScannerCoreResponse:     "Core response scanning detected a prompt injection pattern. This cannot be disabled.",
+	"body_dlp":              "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path.",
+}
+
+// HintForScanner returns actionable guidance for a scanner label.
+// Returns empty string for unknown scanner labels.
+func HintForScanner(label string) string {
+	return scannerHints[label]
 }
 
 // HintForBlock returns actionable guidance for a blocked scan result.
@@ -790,7 +797,7 @@ func HintForBlock(r *Result) string {
 	if r == nil || r.Allowed {
 		return ""
 	}
-	return scannerHints[r.Scanner]
+	return HintForScanner(r.Scanner)
 }
 
 // Scan checks a URL against all scanners and returns the result.

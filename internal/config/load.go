@@ -32,7 +32,7 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("reading config from stdin: %w", err)
 		}
 	} else {
-		data, err = os.ReadFile(filepath.Clean(path))
+		data, err = readStableRegularFile(filepath.Clean(path))
 		if err != nil {
 			return nil, fmt.Errorf("reading config %s: %w", path, err)
 		}
@@ -143,6 +143,34 @@ func Load(path string) (*Config, error) {
 	_ = cfg.CanonicalPolicyHash()
 
 	return cfg, nil
+}
+
+func readStableRegularFile(path string) ([]byte, error) {
+	path = filepath.Clean(path)
+	before, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !after.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file after read")
+	}
+	if before.Size() != after.Size() ||
+		!before.ModTime().Equal(after.ModTime()) ||
+		before.Mode().Perm() != after.Mode().Perm() {
+		return nil, fmt.Errorf("file changed while reading; retrying on next reload event")
+	}
+	return data, nil
 }
 
 // resolveLicenseIntermediate populates LicenseIntermediateCert from

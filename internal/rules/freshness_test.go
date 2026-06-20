@@ -6,6 +6,7 @@ package rules
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -270,6 +271,45 @@ func TestFreshnessState_LoadMissing(t *testing.T) {
 	}
 	if state.HighestSeen == nil {
 		t.Error("expected initialized HighestSeen map")
+	}
+}
+
+func TestFreshnessState_DeleteAllWithInstalledV2ContextFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "test-bundle")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatalf("mkdir bundle dir: %v", err)
+	}
+	writeUnsignedBundle(t, bundleDir, testBundleV2("test-bundle", TierCommunity, 10, []Rule{testDLPRule("one", confidenceHigh, StatusStable)}))
+
+	state := &FreshnessState{HighestSeen: map[string]uint64{"community:test-bundle": 10}}
+	if err := SaveFreshnessState(dir, state); err != nil {
+		t.Fatalf("SaveFreshnessState: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, freshnessFilename)); err != nil {
+		t.Fatalf("remove primary freshness: %v", err)
+	}
+	if err := os.Remove(freshnessSecondaryPath(dir)); err != nil {
+		t.Fatalf("remove secondary freshness: %v", err)
+	}
+
+	if _, err := LoadFreshnessState(dir); err == nil || !strings.Contains(err.Error(), "freshness state missing") {
+		t.Fatalf("LoadFreshnessState after delete-all error = %v, want missing freshness state", err)
+	}
+
+	if err := ResetFreshnessStateFromInstalledBundles(dir); err != nil {
+		t.Fatalf("ResetFreshnessStateFromInstalledBundles: %v", err)
+	}
+	loaded, err := LoadFreshnessState(dir)
+	if err != nil {
+		t.Fatalf("LoadFreshnessState after reset: %v", err)
+	}
+	if got := loaded.HighestSeen["community:test-bundle"]; got != 10 {
+		t.Fatalf("reset floor = %d, want 10", got)
+	}
+	rolledBack := testBundleV2("test-bundle", TierCommunity, 4, nil)
+	if result := CheckFreshness(rolledBack, loaded, time.Now().UTC(), false); result.OK || !result.Rollback {
+		t.Fatalf("rolled-back bundle after reset = %+v, want rollback rejection", result)
 	}
 }
 

@@ -161,7 +161,7 @@ func ValidateWorkspace(workspace string) error {
 func DefaultPolicy(workspace string) Policy {
 	return Policy{
 		Workspace: workspace,
-		AllowReadDirs: []string{
+		AllowReadDirs: existingPaths([]string{
 			"/usr/",
 			"/lib/",
 			"/lib64/",
@@ -170,8 +170,8 @@ func DefaultPolicy(workspace string) Policy {
 			"/etc/ssl/",
 			"/etc/pki/",
 			"/proc/self/",
-		},
-		AllowReadFiles: []string{
+		}),
+		AllowReadFiles: existingPaths([]string{
 			"/etc/resolv.conf",
 			"/etc/hosts",
 			"/etc/nsswitch.conf",
@@ -180,8 +180,8 @@ func DefaultPolicy(workspace string) Policy {
 			"/etc/passwd",
 			"/etc/group",
 			"/usr/bin/env",
-		},
-		AllowRWDirs: []string{
+		}),
+		AllowRWDirs: existingPaths([]string{
 			workspace,
 			// NOTE: /tmp/ is NOT included. The child dynamically adds its
 			// per-sandbox temp dir (e.g., /tmp/pipelock-sandbox-<pid>/) before
@@ -192,17 +192,27 @@ func DefaultPolicy(workspace string) Policy {
 			// This is a known limitation - sandboxed processes can access
 			// same-user shared memory segments. Future: private tmpfs mount.
 			"/dev/shm/",
-		},
-		AllowRWFiles: []string{
+		}),
+		AllowRWFiles: existingPaths([]string{
 			"/dev/null",
 			"/dev/zero",
 			"/dev/urandom",
-		},
+		}),
 		// Note: execute access follows from RODirs (grants execute on /usr/*)
 		// and RWDirs (grants execute on workspace, /tmp/). No separate exec
 		// field needed - Landlock bundles execute with read.
 		DenyReadDirs: secretDirs(),
 	}
+}
+
+func existingPaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // secretDirs returns paths that should never be readable inside the sandbox.
@@ -239,6 +249,12 @@ func secretDirs() []string {
 // a symlink like /tmp/link → $HOME would pass string-prefix validation
 // but grant access to the real home directory.
 func ValidatePolicy(p Policy) error {
+	resolved, err := ResolvePolicyPaths(p)
+	if err != nil {
+		return err
+	}
+	p = resolved
+
 	secrets := secretDirs()
 	if len(secrets) == 0 {
 		return nil
@@ -256,13 +272,9 @@ func ValidatePolicy(p Policy) error {
 
 	checkDirs := func(paths []string, label string) error {
 		for _, allowed := range paths {
-			resolved, err := filepath.EvalSymlinks(allowed)
-			if err != nil {
-				resolved = filepath.Clean(allowed)
-			}
 			for _, denied := range resolvedSecrets {
-				if pathCovers(resolved, denied) {
-					return fmt.Errorf("sandbox %s %q (resolves to %q) covers protected directory %q — remove it or use a narrower path", label, allowed, resolved, denied)
+				if pathCovers(allowed, denied) {
+					return fmt.Errorf("sandbox %s %q covers protected directory %q — remove it or use a narrower path", label, allowed, denied)
 				}
 			}
 		}
@@ -272,13 +284,9 @@ func ValidatePolicy(p Policy) error {
 	// Check file allowlists: reject if a file is inside a protected dir.
 	checkFiles := func(paths []string, label string) error {
 		for _, allowed := range paths {
-			resolved, err := filepath.EvalSymlinks(allowed)
-			if err != nil {
-				resolved = filepath.Clean(allowed)
-			}
 			for _, denied := range resolvedSecrets {
-				if pathCovers(denied, resolved) {
-					return fmt.Errorf("sandbox %s %q (resolves to %q) is inside protected directory %q", label, allowed, resolved, denied)
+				if pathCovers(denied, allowed) {
+					return fmt.Errorf("sandbox %s %q is inside protected directory %q", label, allowed, denied)
 				}
 			}
 		}
@@ -295,6 +303,83 @@ func ValidatePolicy(p Policy) error {
 		return err
 	}
 	return checkFiles(p.AllowRWFiles, "allow_write_file")
+}
+
+// ResolvePolicyPaths canonicalizes all filesystem allow rules before launch.
+// Missing allow paths are rejected because Landlock resolves paths when rules
+// are added; accepting a missing string lets a later symlink redirect the grant.
+func ResolvePolicyPaths(p Policy) (Policy, error) {
+	var err error
+	if p.Workspace != "" {
+		p.Workspace, err = resolveExistingPath(p.Workspace, "workspace", true)
+		if err != nil {
+			return Policy{}, err
+		}
+	}
+	if p.AllowReadDirs, err = resolveExistingPaths(p.AllowReadDirs, "allow_read", true); err != nil {
+		return Policy{}, err
+	}
+	if p.AllowRWDirs, err = resolveExistingPaths(p.AllowRWDirs, "allow_write", true); err != nil {
+		return Policy{}, err
+	}
+	if p.AllowReadFiles, err = resolveExistingPaths(p.AllowReadFiles, "allow_read_file", false); err != nil {
+		return Policy{}, err
+	}
+	if p.AllowRWFiles, err = resolveExistingPaths(p.AllowRWFiles, "allow_write_file", false); err != nil {
+		return Policy{}, err
+	}
+	p.DenyReadDirs = resolveExistingPathsBestEffort(p.DenyReadDirs)
+	return p, nil
+}
+
+func resolveExistingPaths(paths []string, label string, wantDir bool) ([]string, error) {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		resolved, err := resolveExistingPath(p, label, wantDir)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resolved)
+	}
+	return out, nil
+}
+
+func resolveExistingPath(p, label string, wantDir bool) (string, error) {
+	clean := filepath.Clean(p)
+	if clean == "/proc/self" && wantDir {
+		return clean, nil
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("sandbox %s path does not exist: %s", label, p)
+		}
+		return "", fmt.Errorf("resolve sandbox %s path %q: %w", label, p, err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat sandbox %s path %q: %w", label, resolved, err)
+	}
+	if wantDir && !info.IsDir() {
+		return "", fmt.Errorf("sandbox %s path is not a directory: %s", label, p)
+	}
+	if !wantDir && info.IsDir() {
+		return "", fmt.Errorf("sandbox %s path is not a file: %s", label, p)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func resolveExistingPathsBestEffort(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			out = append(out, filepath.Clean(p))
+			continue
+		}
+		out = append(out, filepath.Clean(resolved))
+	}
+	return out
 }
 
 // pathCovers returns true if the allowed path would grant access to the

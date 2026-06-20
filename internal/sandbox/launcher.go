@@ -81,6 +81,10 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 	if cfg.Policy != nil {
 		policy = *cfg.Policy
 	}
+	policy, err := ResolvePolicyPaths(policy)
+	if err != nil {
+		return nil, err
+	}
 	if err := ValidatePolicy(policy); err != nil {
 		return nil, err
 	}
@@ -131,14 +135,11 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 		cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_EXTRA_ENV="+strings.Join(cfg.ExtraEnv, "\x1f"))
 	}
 
-	// Pass custom policy as JSON if provided. Otherwise child uses DefaultPolicy.
-	if cfg.Policy != nil {
-		policyJSON, jsonErr := encodePolicyJSON(cfg.Policy)
-		if jsonErr != nil {
-			return nil, fmt.Errorf("encoding sandbox policy: %w", jsonErr)
-		}
-		cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
+	policyJSON, jsonErr := encodePolicyJSON(&policy)
+	if jsonErr != nil {
+		return nil, fmt.Errorf("encoding sandbox policy: %w", jsonErr)
 	}
+	cmd.Env = append(cmd.Env, "__PIPELOCK_SANDBOX_POLICY="+policyJSON)
 
 	if hasNamespaces {
 		// Full isolation: user + network namespace.

@@ -143,21 +143,27 @@ func verifySingleReceiptWithOptions(out io.Writer, path, expectedKey string, all
 		return fmt.Errorf("parsing receipt: %w", err)
 	}
 
-	if err := receipt.VerifyWithKey(r, expectedKey); err != nil {
-		_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
-		return fmt.Errorf("verification failed: %w", err)
-	}
-
 	if expectedKey == "" {
+		if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
+			_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
+			return fmt.Errorf("verification failed: %w", err)
+		}
 		_, _ = fmt.Fprintf(out, "UNPINNED: %s\n", path)
 		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
 		if !allowUnpinned {
 			printReceiptDetails(out, r)
 			return fmt.Errorf("verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 		}
-	} else {
-		_, _ = fmt.Fprintf(out, "OK: %s\n", path)
+		printReceiptDetails(out, r)
+		return nil
 	}
+
+	if err := receipt.VerifyWithKey(r, expectedKey); err != nil {
+		_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
+		return fmt.Errorf("verification failed: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(out, "OK: %s\n", path)
 	printReceiptDetails(out, r)
 	return nil
 }

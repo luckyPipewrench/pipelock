@@ -144,11 +144,17 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
-	if err := receipt.VerifyWithKey(r, keyHex); err != nil {
+	var verifyErr error
+	if keyHex == "" {
+		verifyErr = receipt.VerifyInternalConsistencyOnly(r)
+	} else {
+		verifyErr = receipt.VerifyWithKey(r, keyHex)
+	}
+	if verifyErr != nil {
 		report.ReceiptValid = false
-		report.Error = fmt.Sprintf("verify receipt: %v", err)
+		report.Error = fmt.Sprintf("verify receipt: %v", verifyErr)
 		emitReplayReport(stdout, stderr, report, opts.jsonOutput)
-		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, verifyErr)
 	}
 	report.ReceiptValid = true
 

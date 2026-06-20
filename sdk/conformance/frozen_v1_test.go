@@ -86,9 +86,10 @@ func TestFrozenV1ReceiptFixtures(t *testing.T) {
 				if err != nil {
 					return fmt.Errorf("Unmarshal: %w", err)
 				}
-				// Pass empty key: VerifyWithKey uses the embedded signer_key field.
-				if err := receipt.VerifyWithKey(r, ""); err != nil {
-					return fmt.Errorf("VerifyWithKey: %w", err)
+				// Frozen v1 fixtures are structural compatibility checks, not
+				// provenance checks against an external trusted key.
+				if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
+					return fmt.Errorf("VerifyInternalConsistencyOnly: %w", err)
 				}
 				return nil
 			},
@@ -122,9 +123,10 @@ func TestFrozenV1ReceiptFixtures(t *testing.T) {
 					if err != nil {
 						return fmt.Errorf("line %d: Unmarshal: %w", n+1, err)
 					}
-					// Pass empty key: VerifyWithKey uses the embedded signer_key field.
-					if err := receipt.VerifyWithKey(r, ""); err != nil {
-						return fmt.Errorf("line %d: VerifyWithKey: %w", n+1, err)
+					// Frozen v1 fixtures are structural compatibility checks, not
+					// provenance checks against an external trusted key.
+					if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
+						return fmt.Errorf("line %d: VerifyInternalConsistencyOnly: %w", n+1, err)
 					}
 					receipts = append(receipts, r)
 					n++

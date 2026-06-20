@@ -46,6 +46,10 @@ var contentScanners = map[string]struct{}{
 	"cross_request_entropy": {},
 }
 
+var blockRemediationHints = map[string]string{
+	"body_dlp": "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path.",
+}
+
 // IsContentScanner reports whether blocks attributed to the given scanner
 // name imply the URL/target contains the secret-shaped bytes that fired
 // the match. Callers constructing client-facing block responses (fetch,
@@ -54,6 +58,21 @@ var contentScanners = map[string]struct{}{
 func IsContentScanner(name string) bool {
 	_, ok := contentScanners[name]
 	return ok
+}
+
+func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTarget, loggedResource string) {
+	loggedURL = ctx.url
+	loggedTarget = ctx.target
+	loggedResource = ctx.resource
+	if _, redact := contentScanners[scanner]; !redact {
+		return loggedURL, loggedTarget, loggedResource
+	}
+	loggedURL = redactContentBearingURL(ctx.url)
+	loggedTarget = redactContentBearingURL(ctx.target)
+	if loggedResource != "" {
+		loggedResource = "[redacted]"
+	}
+	return loggedURL, loggedTarget, loggedResource
 }
 
 // RedactContentBearingURL returns a URL safe to echo when a
@@ -646,16 +665,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 	// likely contains the very bytes that triggered the match. Emit the
 	// scheme+host only so the credential is not echoed back into the
 	// audit stream. See contentScanners for the eligible sources.
-	loggedURL := ctx.url
-	loggedTarget := ctx.target
-	loggedResource := ctx.resource
-	if _, redact := contentScanners[scanner]; redact {
-		loggedURL = redactContentBearingURL(ctx.url)
-		loggedTarget = redactContentBearingURL(ctx.target)
-		if loggedResource != "" {
-			loggedResource = "[redacted]"
-		}
-	}
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, scanner)
 
 	e := newLogEntry(l.zl.Warn(), EventBlocked).
 		str("method", ctx.method).
@@ -668,6 +678,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		str("reason", reason).
 		optStr("agent", ctx.agent).
 		optStr("display_label", displayLabel).
+		optStr("remediation_hint", blockRemediationHints[scanner]).
 		optStr("mitre_technique", technique)
 
 	// includeBlocked gates local audit log only - external emission always fires
@@ -1357,12 +1368,13 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 // When bundleRules is non-empty, bundle provenance is included in the audit event.
 func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
 	technique := TechniqueForScanner(ScannerDLP)
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, string(EventBodyDLP))
 
 	e := newLogEntry(l.zl.Warn(), EventBodyDLP).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
-		optStr("resource", ctx.resource).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		str("action", action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
@@ -1384,11 +1396,12 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 // Used to distinguish address_protection from body_dlp in audit output.
 func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string, matchCount int, findingNames []string) {
 	technique := TechniqueForScanner(string(eventType))
+	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, string(eventType))
 	e := newLogEntry(l.zl.Warn(), eventType).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
-		optStr("resource", ctx.resource).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		str("action", action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).

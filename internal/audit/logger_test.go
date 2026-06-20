@@ -2358,7 +2358,7 @@ func TestLogBodyDLP_JSONFormat(t *testing.T) {
 	if entry["method"] != "POST" {
 		t.Errorf("expected method=POST, got %v", entry["method"])
 	}
-	if entry["url"] != "https://api.example.com/v1/chat" {
+	if entry["url"] != "https://api.example.com/[redacted]" {
 		t.Errorf("expected url, got %v", entry["url"])
 	}
 	if entry["action"] != testActionWarn {
@@ -2380,6 +2380,34 @@ func TestLogBodyDLP_JSONFormat(t *testing.T) {
 	}
 	if entry["mitre_technique"] != mitreT1048 {
 		t.Errorf("expected mitre_technique=T1048, got %v", entry["mitre_technique"])
+	}
+}
+
+func TestLogBlockedBodyDLPIncludesRemediationHint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogBlocked(LogContext{method: "POST", url: "https://api.example.com/submit", clientIP: testClientIP, requestID: "req-51"}, "body_dlp", "request body contains secret: test_rule")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if entry["url"] != "https://api.example.com/[redacted]" {
+		t.Fatalf("body_dlp blocked url = %v, want redacted scheme+host", entry["url"])
+	}
+	hint, _ := entry["remediation_hint"].(string)
+	if !strings.Contains(hint, "suppress:") {
+		t.Fatalf("remediation_hint = %q, want suppress: remediation", hint)
+	}
+	if strings.Contains(hint, "exempt_domains") {
+		t.Fatalf("remediation_hint = %q, must not point to URL-DLP exempt_domains", hint)
 	}
 }
 

@@ -226,28 +226,40 @@ func TestCRLRollbackGen0AfterHigherRejected(t *testing.T) {
 	}
 }
 
-// TestCRLRollbackSidecarDeletionResidual documents the KNOWN residual: deleting
-// the high-water sidecar makes "absent" look like a first run, so a subsequent
-// lower-generation CRL is accepted. The control defends against CRL-file swaps,
-// not against deletion of the sidecar (same write-trust boundary). This test
-// pins the documented behavior so a future change that closes the gap is a
-// deliberate, visible decision rather than a silent surprise.
-func TestCRLRollbackSidecarDeletionResidual(t *testing.T) {
+func TestCRLRollbackSidecarDeletionRejected(t *testing.T) {
 	f := newCRLRollbackFixture(t)
 	f.writeCRL(t, 50)
 	if failClosed, err := mustCheck(t, f.newServer(t)); err != nil || failClosed {
 		t.Fatalf("gen 50 should be accepted: failClosed=%v err=%v", failClosed, err)
 	}
-	// Attacker deletes the sidecar and rolls the CRL back.
+	// Attacker deletes the primary sidecar and rolls the CRL back. The durable
+	// anchor must keep the accepted generation from silently resetting to 0.
 	if err := os.Remove(license.CRLHighWaterPath(f.crlPath)); err != nil {
 		t.Fatal(err)
 	}
 	f.writeCRL(t, 2)
 	failClosed, err := mustCheck(t, f.newServer(t))
-	// Documented residual: this is currently ACCEPTED (treated as first run).
-	if err != nil || failClosed {
-		t.Fatalf("documented residual changed: sidecar-deletion rollback now blocked "+
-			"(failClosed=%v err=%v); update the residual docs in license_crl_highwater.go", failClosed, err)
+	if err == nil || !failClosed || !strings.Contains(err.Error(), "rollback rejected") {
+		t.Fatalf("sidecar-deletion rollback must fail closed: failClosed=%v err=%v", failClosed, err)
+	}
+}
+
+func TestCRLRollbackSidecarDeletionForwardProgress(t *testing.T) {
+	f := newCRLRollbackFixture(t)
+	f.writeCRL(t, 10)
+	if failClosed, err := mustCheck(t, f.newServer(t)); err != nil || failClosed {
+		t.Fatalf("gen 10 should be accepted: failClosed=%v err=%v", failClosed, err)
+	}
+	if err := os.Remove(license.CRLHighWaterPath(f.crlPath)); err != nil {
+		t.Fatal(err)
+	}
+	f.writeCRL(t, 11)
+	if failClosed, err := mustCheck(t, f.newServer(t)); err != nil || failClosed {
+		t.Fatalf("higher generation after sidecar deletion should be accepted: failClosed=%v err=%v", failClosed, err)
+	}
+	gen, found, err := license.ReadCRLHighWater(f.crlPath)
+	if err != nil || !found || gen != 11 {
+		t.Fatalf("primary high-water after forward progress = (%d, %v, %v), want (11, true, nil)", gen, found, err)
 	}
 }
 

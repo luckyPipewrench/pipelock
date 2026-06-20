@@ -254,7 +254,7 @@ func TestReceiptCoverage_VerifierRoundTrip_WebSocketBlock(t *testing.T) {
 	r := receipts[0]
 
 	// Verify with embedded key.
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestReceiptCoverage_VerifierRoundTrip_WebSocketSessionClose(t *testing.T) {
 
 	r := receipts[0]
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
@@ -365,7 +365,7 @@ func TestReceiptCoverage_VerifierRoundTrip_FetchHeaderDLP(t *testing.T) {
 
 	r := receipts[0]
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
@@ -422,7 +422,7 @@ func TestReceiptCoverage_VerifierRoundTrip_A2ABlock(t *testing.T) {
 
 	r := receipts[0]
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
@@ -478,7 +478,7 @@ func TestReceiptCoverage_VerifierRoundTrip_ConnectBlock(t *testing.T) {
 
 	r := receipts[0]
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
@@ -756,7 +756,7 @@ func TestReceiptCoverage_MarshalUnmarshalRoundTrip(t *testing.T) {
 	}
 
 	// The round-tripped receipt must still verify.
-	if err := receipt.Verify(roundTripped); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(roundTripped); err != nil {
 		t.Fatalf("Verify after round-trip failed: %v", err)
 	}
 }
@@ -861,7 +861,7 @@ func TestReceiptCoverage_VerifierRoundTrip_MCPBlock(t *testing.T) {
 
 	r := receipts[0]
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
@@ -939,7 +939,7 @@ func TestReceiptCoverage_ReceiptDetailSurvivesRecorderRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal receipt: %v", err)
 	}
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 
@@ -1233,7 +1233,7 @@ func TestReceiptCoverage_FetchHeaderDLP_EmitsReceipt(t *testing.T) {
 
 	r := rph.requireReceipt(t, "dlp_header")
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 	if r.ActionRecord.Transport != TransportFetch {
@@ -1269,7 +1269,7 @@ func TestReceiptCoverage_FetchBlocklist_EmitsReceipt(t *testing.T) {
 
 	r := rph.requireReceipt(t, "blocklist")
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 	if r.ActionRecord.Transport != TransportFetch {
@@ -1305,7 +1305,7 @@ func TestReceiptCoverage_WSBlockedDomain_EmitsReceipt(t *testing.T) {
 
 	r := rph.requireReceipt(t, "blocklist")
 
-	if err := receipt.Verify(r); err != nil {
+	if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 		t.Fatalf("Verify failed: %v", err)
 	}
 	if r.ActionRecord.Transport != TransportWS {
@@ -1357,7 +1357,7 @@ func TestReceiptCoverage_WSDLPBlock_EmitsReceipt(t *testing.T) {
 	for _, r := range receipts {
 		if r.ActionRecord.Layer == "dlp" {
 			found = true
-			if verr := receipt.Verify(r); verr != nil {
+			if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 				t.Fatalf("Verify failed: %v", verr)
 			}
 			if r.ActionRecord.Transport != TransportWS {
@@ -1411,7 +1411,7 @@ func TestReceiptCoverage_WSBinaryBlock_EmitsReceipt(t *testing.T) {
 
 	r := rph.requireReceipt(t, "ws_protocol")
 
-	if verr := receipt.Verify(r); verr != nil {
+	if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 		t.Fatalf("Verify failed: %v", verr)
 	}
 	if r.ActionRecord.Transport != TransportWS {
@@ -1472,7 +1472,7 @@ func TestReceiptCoverage_WSBinaryMediaBlock_EmitsReceipt(t *testing.T) {
 
 	r := rph.requireReceipt(t, "media_policy")
 
-	if verr := receipt.Verify(r); verr != nil {
+	if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 		t.Fatalf("Verify failed: %v", verr)
 	}
 	if r.ActionRecord.Transport != TransportWS {
@@ -1527,7 +1527,7 @@ func TestReceiptCoverage_WSSessionClose_EmitsReceipt(t *testing.T) {
 
 	r := rph.requireReceipt(t, "session_close")
 
-	if verr := receipt.Verify(r); verr != nil {
+	if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 		t.Fatalf("Verify failed: %v", verr)
 	}
 	if r.ActionRecord.Transport != TransportWS {
@@ -1629,7 +1629,7 @@ func TestReceiptCoverage_WSInjectionBlock_EmitsReceipt(t *testing.T) {
 	for _, r := range receipts {
 		if r.ActionRecord.Layer == "response_scan" {
 			found = true
-			if verr := receipt.Verify(r); verr != nil {
+			if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 				t.Fatalf("Verify failed: %v", verr)
 			}
 			if r.ActionRecord.Transport != TransportWS {
@@ -1679,7 +1679,7 @@ func TestReceiptCoverage_ForwardBlocklist_EmitsReceipt(t *testing.T) {
 
 	r := rph.requireReceipt(t, "blocklist")
 
-	if verr := receipt.Verify(r); verr != nil {
+	if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 		t.Fatalf("Verify failed: %v", verr)
 	}
 	if r.ActionRecord.Transport != TransportConnect {
@@ -1756,7 +1756,7 @@ func TestReceiptCoverage_ForwardA2AResponseBlock_EmitsReceipt(t *testing.T) {
 	for _, r := range receipts {
 		if r.ActionRecord.Layer == "a2a_response" {
 			found = true
-			if verr := receipt.Verify(r); verr != nil {
+			if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 				t.Fatalf("Verify failed: %v", verr)
 			}
 			if r.ActionRecord.Transport != TransportForward {
@@ -1829,7 +1829,7 @@ func TestReceiptCoverage_ForwardA2AHeaderBlock_EmitsReceipt(t *testing.T) {
 
 	r := rph.requireReceipt(t, "a2a_header")
 
-	if verr := receipt.Verify(r); verr != nil {
+	if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 		t.Fatalf("Verify failed: %v", verr)
 	}
 	if r.ActionRecord.Transport != TransportForward {
@@ -1899,7 +1899,7 @@ func TestReceiptCoverage_ForwardA2ACompressedStream_EmitsReceipt(t *testing.T) {
 	for _, r := range receipts {
 		if r.ActionRecord.Layer == LayerA2AStream && r.ActionRecord.Verdict == config.ActionBlock {
 			found = true
-			if verr := receipt.Verify(r); verr != nil {
+			if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 				t.Fatalf("Verify failed: %v", verr)
 			}
 			if r.ActionRecord.Transport != TransportForward {
@@ -1971,7 +1971,7 @@ func TestReceiptCoverage_ForwardA2AStreamFinding_EmitsReceipt(t *testing.T) {
 	for _, r := range receipts {
 		if r.ActionRecord.Layer == LayerA2AStream && r.ActionRecord.Verdict == config.ActionBlock {
 			found = true
-			if verr := receipt.Verify(r); verr != nil {
+			if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 				t.Fatalf("Verify failed: %v", verr)
 			}
 			if r.ActionRecord.Transport != TransportForward {
@@ -2039,7 +2039,7 @@ func TestReceiptCoverage_WSAddressPoisoning_EmitsReceipt(t *testing.T) {
 	for _, r := range receipts {
 		if r.ActionRecord.Layer == "address_protection" && r.ActionRecord.Verdict == config.ActionBlock {
 			found = true
-			if verr := receipt.Verify(r); verr != nil {
+			if verr := receipt.VerifyInternalConsistencyOnly(r); verr != nil {
 				t.Fatalf("Verify failed: %v", verr)
 			}
 			if r.ActionRecord.Transport != TransportWS {

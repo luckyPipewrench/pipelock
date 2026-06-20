@@ -3678,6 +3678,166 @@ func TestValidateReload_ResponseScanningDisabled(t *testing.T) {
 	}
 }
 
+func hasReloadWarning(warnings []ReloadWarning, field string) bool {
+	for _, w := range warnings {
+		if w.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+
+	old.ResponseScanning.Action = ActionBlock
+	updated.ResponseScanning.Action = ActionWarn
+	old.ResponseScanning.SSEStreaming.Enabled = true
+	old.ResponseScanning.SSEStreaming.Action = ActionBlock
+	updated.ResponseScanning.SSEStreaming.Action = ActionWarn
+	old.RequestBodyScanning.Action = ActionBlock
+	updated.RequestBodyScanning.Enabled = true
+	updated.RequestBodyScanning.Action = ActionWarn
+	old.MCPInputScanning.Enabled = true
+	updated.MCPInputScanning.Enabled = true
+	old.MCPInputScanning.Action = ActionBlock
+	updated.MCPInputScanning.Action = ActionWarn
+	old.MCPInputScanning.OnParseError = ActionBlock
+	updated.MCPInputScanning.OnParseError = ActionForward
+	old.MCPToolScanning.Enabled = true
+	updated.MCPToolScanning.Enabled = true
+	old.MCPToolScanning.Action = ActionBlock
+	updated.MCPToolScanning.Action = ActionWarn
+	old.MCPToolPolicy.Enabled = true
+	updated.MCPToolPolicy.Enabled = true
+	old.MCPToolPolicy.Action = ActionBlock
+	old.MCPToolPolicy.Rules = []ToolPolicyRule{{Name: "deny-shell", ToolPattern: "shell", Action: ActionBlock}}
+	updated.MCPToolPolicy.Action = ActionWarn
+	updated.MCPToolPolicy.Rules = []ToolPolicyRule{{Name: "deny-shell", ToolPattern: "shell", Action: ActionWarn}}
+	old.AddressProtection.Enabled = true
+	updated.AddressProtection.Enabled = true
+	old.AddressProtection.Action = ActionBlock
+	old.AddressProtection.UnknownAction = ActionBlock
+	updated.AddressProtection.Action = ActionWarn
+	updated.AddressProtection.UnknownAction = ActionAllow
+	old.A2AScanning.Enabled = true
+	updated.A2AScanning.Enabled = true
+	old.A2AScanning.Action = ActionBlock
+	updated.A2AScanning.Action = ActionWarn
+	old.CrossRequestDetection.Enabled = true
+	updated.CrossRequestDetection.Enabled = true
+	old.CrossRequestDetection.Action = ActionBlock
+	old.CrossRequestDetection.EntropyBudget.Enabled = true
+	updated.CrossRequestDetection.EntropyBudget.Enabled = true
+	old.CrossRequestDetection.EntropyBudget.Action = ActionBlock
+	updated.CrossRequestDetection.Action = ActionWarn
+	updated.CrossRequestDetection.EntropyBudget.Action = ActionWarn
+	old.MCPSessionBinding.Enabled = true
+	updated.MCPSessionBinding.Enabled = true
+	old.MCPSessionBinding.UnknownToolAction = ActionBlock
+	old.MCPSessionBinding.NoBaselineAction = ActionBlock
+	updated.MCPSessionBinding.UnknownToolAction = ActionWarn
+	updated.MCPSessionBinding.NoBaselineAction = ActionWarn
+	old.ToolChainDetection.Enabled = true
+	updated.ToolChainDetection.Enabled = true
+	old.ToolChainDetection.Action = ActionBlock
+	updated.ToolChainDetection.Action = ActionWarn
+
+	warnings := ValidateReload(old, updated)
+	for _, field := range []string{
+		"response_scanning.action",
+		"response_scanning.sse_streaming.action",
+		"request_body_scanning.action",
+		"mcp_input_scanning.action",
+		"mcp_input_scanning.on_parse_error",
+		"mcp_tool_scanning.action",
+		"mcp_tool_policy.action",
+		"mcp_tool_policy.rules.deny-shell.action",
+		"address_protection.action",
+		"address_protection.unknown_action",
+		"a2a_scanning.action",
+		"cross_request_detection.action",
+		"cross_request_detection.entropy_budget.action",
+		"mcp_session_binding.unknown_tool_action",
+		"mcp_session_binding.no_baseline_action",
+		"tool_chain_detection.action",
+	} {
+		if !hasReloadWarning(warnings, field) {
+			t.Fatalf("missing reload warning for %s; warnings=%+v", field, warnings)
+		}
+	}
+}
+
+func TestValidateReload_ActionStrengtheningNoWarning(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.ResponseScanning.Action = ActionWarn
+	updated.ResponseScanning.Action = ActionBlock
+
+	warnings := ValidateReload(old, updated)
+	if hasReloadWarning(warnings, "response_scanning.action") {
+		t.Fatalf("strengthening response action should not warn: %+v", warnings)
+	}
+}
+
+func TestValidateReload_SuppressWideningWarns(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.Suppress = []SuppressEntry{{Rule: "Prompt Injection", Path: "/docs/private", Reason: "fp"}}
+	updated.Suppress = []SuppressEntry{{Rule: "Prompt Injection", Path: "*", Reason: "too broad"}}
+
+	warnings := ValidateReload(old, updated)
+	if !hasReloadWarning(warnings, "suppress") {
+		t.Fatalf("missing suppress widening warning: %+v", warnings)
+	}
+}
+
+func TestValidateReload_SuppressNarrowingNoWarning(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.Suppress = []SuppressEntry{{Rule: "Prompt Injection", Path: "*", Reason: "legacy broad fp"}}
+	updated.Suppress = []SuppressEntry{{Rule: "Prompt Injection", Path: "/docs/private", Reason: "narrowed"}}
+
+	warnings := ValidateReload(old, updated)
+	if hasReloadWarning(warnings, "suppress") {
+		t.Fatalf("narrowing suppress should not warn: %+v", warnings)
+	}
+}
+
+// A pre-existing leading-glob (suffix) suppress such as "*.host.com" must not
+// mask a newly added broader entry for the same rule. Regression for the
+// suppressPathCovers empty-prefix bypass: the old prefix-only model treated a
+// leading "*" as covering ANY path, so adding "*" slipped past the guard.
+func TestValidateReload_SuppressLeadingGlobWideningWarns(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.Suppress = []SuppressEntry{{Rule: "Prompt Injection", Path: "*.host.com", Reason: "host fp"}}
+	updated.Suppress = []SuppressEntry{
+		{Rule: "Prompt Injection", Path: "*.host.com", Reason: "host fp"},
+		{Rule: "Prompt Injection", Path: "*", Reason: "too broad"},
+	}
+
+	warnings := ValidateReload(old, updated)
+	if !hasReloadWarning(warnings, "suppress") {
+		t.Fatalf("missing suppress widening warning for wildcard added under leading-glob entry: %+v", warnings)
+	}
+}
+
+// Narrowing a leading-glob suffix suppress to a specific host it already covers
+// is genuinely no broader and must NOT warn (no fail-closed false positive).
+func TestValidateReload_SuppressLeadingGlobNarrowingNoWarning(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.Suppress = []SuppressEntry{{Rule: "Prompt Injection", Path: "*.host.com", Reason: "host fp"}}
+	updated.Suppress = []SuppressEntry{{Rule: "Prompt Injection", Path: "api.host.com", Reason: "narrowed"}}
+
+	warnings := ValidateReload(old, updated)
+	if hasReloadWarning(warnings, "suppress") {
+		t.Fatalf("narrowing a leading-glob suppress to a covered host should not warn: %+v", warnings)
+	}
+}
+
 const (
 	reloadFieldResponseExempt      = "response_scanning.exempt_domains"
 	reloadFieldTaintAllowlisted    = "taint.allowlisted_domains"

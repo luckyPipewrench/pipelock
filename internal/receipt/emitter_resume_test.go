@@ -297,7 +297,7 @@ func TestResume_ForgedTailDifferentKey_CannotForceSilentReset(t *testing.T) {
 	}
 
 	// Forge: replace the embedded signer_key with an attacker key but leave
-	// the (now mismatched) signature in place. Verify(tail) must fail.
+	// the (now mismatched) signature in place. VerifyInternalConsistencyOnly(tail) must fail.
 	forgeTailSignerKeyOnly(t, dir)
 
 	rec2 := newTestRecorder(t, dir, priv)
@@ -388,7 +388,7 @@ func corruptTailSignaturePayload(t *testing.T, dir string) {
 }
 
 // forgeTailSignerKeyOnly swaps the embedded signer_key to a fresh attacker key
-// while leaving the original signature bytes, so Verify(tail) fails.
+// while leaving the original signature bytes, so VerifyInternalConsistencyOnly(tail) fails.
 func forgeTailSignerKeyOnly(t *testing.T, dir string) {
 	t.Helper()
 	attackerPub, _ := generateTestKey(t)

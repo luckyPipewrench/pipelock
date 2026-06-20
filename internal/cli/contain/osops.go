@@ -756,7 +756,7 @@ func expectPrivilegedExecutablePath(stat func(string) (os.FileInfo, error), labe
 	if info.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("required %s executable %q must not be group- or world-writable", label, path)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid != 0 {
+	if uid, ok := fileOwnerUID(info); ok && uid != 0 {
 		return fmt.Errorf("required %s executable %q must be root-owned", label, path)
 	}
 	return nil

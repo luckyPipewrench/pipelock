@@ -324,7 +324,7 @@ func actionRemoveNFTRules() step {
 		undo: func(ctx context.Context, env *installEnv) error {
 			unit := filepath.Base(env.nftPersistUnitPath)
 			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", unit)
-			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", defaultNFTTable)
+			_, _, _ = env.runCmd(ctx, nftExecutable(env), "delete", "table", "inet", env.nftTableOrDefault())
 			if err := env.removeFile(env.nftRulesPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", env.nftRulesPath, err)
 			}

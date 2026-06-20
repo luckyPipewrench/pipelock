@@ -774,7 +774,7 @@ func TestActionRemoveNFTRules_DropsAndCleans(t *testing.T) {
 	}
 	var sawDelete bool
 	for _, c := range runner.calls {
-		if c.name == testNFT && containsArg(c.args, "delete") {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+env.nftTableOrDefault() {
 			sawDelete = true
 		}
 	}

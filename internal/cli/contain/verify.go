@@ -769,10 +769,20 @@ func verifyNFTPersistence(env *probeEnv) error {
 		return fmt.Errorf("read nftables persistence unit %s: %w", env.nftPersistUnitPath, err)
 	}
 	body := string(data)
-	if !strings.Contains(body, "ExecStart=") || !strings.Contains(body, env.nftRulesPath) {
+	if !execStartLineContains(body, env.nftRulesPath) {
 		return fmt.Errorf("%s missing ExecStart for %s", env.nftPersistUnitPath, env.nftRulesPath)
 	}
 	return nil
+}
+
+func execStartLineContains(body, needle string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ExecStart=") && strings.Contains(line, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func probeNFTExecutable(env *probeEnv) string {
@@ -1089,7 +1099,9 @@ func curlNoProxyArgsFor(curl string) []string {
 }
 
 func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, string) {
-	args := append([]string{"-n", "-u", env.agentUserName, "--"}, curlNoProxyArgsFor(env.curlPath)...)
+	curlArgs := curlNoProxyArgsFor(env.curlPath)
+	curlPath := curlArgs[0]
+	args := append([]string{"-n", "-u", env.agentUserName, "--"}, curlArgs...)
 	out, code, err := env.runCmd(ctx, "sudo", args...)
 	if err != nil {
 		return statusSkip, fmt.Sprintf("sudo/curl unavailable: %v", err)
@@ -1101,7 +1113,7 @@ func probeCCAgentEgressDenied(ctx context.Context, env *probeEnv) (string, strin
 		return statusSkip, fmt.Sprintf("%s user not present; install containment model first", env.agentUserName)
 	}
 	if isSudoTargetCommandMissing(out) {
-		return statusSkip, fmt.Sprintf("sudo could not execute %s; install curl to enable canary", env.curlPath)
+		return statusSkip, fmt.Sprintf("sudo could not execute %s; install curl to enable canary", curlPath)
 	}
 	if code == 0 {
 		return statusFail, fmt.Sprintf("unexpected curl success: HTTP %s from example.com", oneLine(out))

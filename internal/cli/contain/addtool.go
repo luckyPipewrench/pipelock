@@ -96,8 +96,11 @@ func runAddTool(ctx context.Context, env *installEnv, name string, opts addToolO
 	// and does not depend on a separate which(1) package.
 	target := opts.target
 	if target == "" {
-		out, code, _ := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--",
-			"sh", "-c", `command -v -- "$1"`, "sh", name)
+		out, code, err := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--",
+			"env", "PATH="+agentExecPath(env.agentUserName), "sh", "-c", `command -v -- "$1"`, "sh", name)
+		if err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve tool %q in pipelock-agent's PATH: %w", name, err))
+		}
 		if code != 0 {
 			return cliutil.ExitCodeError(
 				cliutil.ExitConfig,

@@ -68,7 +68,7 @@ func TestRunAddTool_UsesCommandVToResolveTarget(t *testing.T) {
 	if err := os.WriteFile(resolvedTarget, []byte("x"), 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("plant: %v", err)
 	}
-	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "sh", "-c", "command -v -- \"$1\"", "sh", "discovered"), resolvedTarget+"\n", 0, nil)
+	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "env", "PATH="+agentExecPath("pipelock-agent"), "sh", "-c", "command -v -- \"$1\"", "sh", "discovered"), resolvedTarget+"\n", 0, nil)
 	err := runAddTool(context.Background(), env, "discovered", addToolOpts{})
 	if err != nil {
 		t.Fatalf("addTool: %v", err)
@@ -80,7 +80,7 @@ func TestRunAddTool_UsesCommandVToResolveTarget(t *testing.T) {
 
 func TestRunAddTool_FailsWhenCommandVFindsNoTarget(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "sh", "-c", "command -v -- \"$1\"", "sh", "nopath"), "", 1, nil)
+	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "env", "PATH="+agentExecPath("pipelock-agent"), "sh", "-c", "command -v -- \"$1\"", "sh", "nopath"), "", 1, nil)
 	err := runAddTool(context.Background(), env, "nopath", addToolOpts{})
 	if err == nil {
 		t.Fatal("expected error")
@@ -89,6 +89,21 @@ func TestRunAddTool_FailsWhenCommandVFindsNoTarget(t *testing.T) {
 		t.Errorf("exit: %d", cliutil.ExitCodeOf(err))
 	}
 	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("err: %v", err)
+	}
+}
+
+func TestRunAddTool_FailsWhenCommandVCannotStart(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "env", "PATH="+agentExecPath("pipelock-agent"), "sh", "-c", "command -v -- \"$1\"", "sh", "broken"), "", -1, errors.New("fork/exec sudo: permission denied"))
+	err := runAddTool(context.Background(), env, "broken", addToolOpts{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if cliutil.ExitCodeOf(err) != cliutil.ExitConfig {
+		t.Errorf("exit: %d", cliutil.ExitCodeOf(err))
+	}
+	if !strings.Contains(err.Error(), "resolve tool") {
 		t.Errorf("err: %v", err)
 	}
 }

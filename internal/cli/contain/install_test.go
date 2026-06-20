@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -417,7 +416,7 @@ func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 			return origStat(env.pipelockBinary)
 		}
 		if path == env.nftPath {
-			return fakeFileInfo{mode: 0o700, sys: &syscall.Stat_t{Uid: 0}}, nil
+			return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
 		}
 		return origStat(path)
 	}
@@ -467,7 +466,7 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 	origStat := env.stat
 	env.stat = func(path string) (os.FileInfo, error) {
 		if path == env.nftPath {
-			return fakeFileInfo{mode: 0o700, sys: &syscall.Stat_t{Uid: 0}}, nil
+			return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
 		}
 		for _, tool := range defaultToolNames() {
 			for _, dir := range filepath.SplitList(agentExecPath(env.agentUserName)) {
@@ -612,7 +611,7 @@ func installContainCommandFixtures(t *testing.T) string {
 
 func writeNFTPersistUnitFixture(t *testing.T, env *installEnv) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(env.nftPersistUnitPath), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(env.nftPersistUnitPath), 0o750); err != nil {
 		t.Fatalf("mkdir persistence unit parent: %v", err)
 	}
 	if err := os.WriteFile(env.nftPersistUnitPath, []byte(renderNFTPersistUnit(env)), 0o600); err != nil {
@@ -724,7 +723,7 @@ func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
 		origStat := env.stat
 		env.stat = func(path string) (os.FileInfo, error) {
 			if path == env.nftPath {
-				return fakeFileInfo{mode: 0o700, sys: &syscall.Stat_t{Uid: 0}}, nil
+				return fakeFileInfo{mode: 0o700, sys: fakeFileSysWithUID(0)}, nil
 			}
 			return origStat(path)
 		}
@@ -790,7 +789,7 @@ func TestStepPreflightRejectsUntrustedNFTPath(t *testing.T) {
 			env.nftPath = tc.path
 			env.stat = func(path string) (os.FileInfo, error) {
 				if path == filepath.Clean(tc.path) {
-					return fakeFileInfo{mode: tc.mode, sys: &syscall.Stat_t{Uid: tc.uid}}, nil
+					return fakeFileInfo{mode: tc.mode, sys: fakeFileSysWithUID(tc.uid)}, nil
 				}
 				return os.Stat(path)
 			}
@@ -1421,7 +1420,7 @@ func TestStepInstallNFTRules_DropsLoadedTableBeforeChangedReload(t *testing.T) {
 func TestStepInstallNFTRules_PersistsViaOwnedSystemdUnitAndRestores(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	original := "[Unit]\nDescription=old unit\n"
-	if err := os.MkdirAll(filepath.Dir(env.nftPersistUnitPath), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(env.nftPersistUnitPath), 0o750); err != nil {
 		t.Fatalf("mkdir unit parent: %v", err)
 	}
 	if err := os.WriteFile(env.nftPersistUnitPath, []byte(original), 0o600); err != nil {

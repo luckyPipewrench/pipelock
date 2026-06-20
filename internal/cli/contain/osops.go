@@ -75,9 +75,11 @@ type installEnv struct {
 	wrapperDir         string
 	systemUnitPath     string
 	nftRulesPath       string
-	nftMainPath        string
+	nftMainPath        string // legacy distro nft service config path; new installs never write it, but rollback cleans up a legacy include here.
+	nftPersistUnitPath string
 	sudoersPath        string
 	caBundlePath       string
+	systemCABundlePath string
 	caExportPath       string
 	integrityDir       string
 	integrityPin       string
@@ -93,12 +95,17 @@ type installEnv struct {
 	agentHome          string // contained agent home (per-tool config destination)
 	pipelockBinary     string // source binary path passed to --pipelock-binary
 	pipelockTarget     string // destination, default /usr/local/bin/pipelock
+	bashPath           string
+	nologinPath        string
+	nftPath            string
+	curlPath           string
 	proxyPort          int
 
-	prevNFTTableDump       string
-	prevNftablesEnabled    bool
-	prevNftablesStateKnown bool
-	archivedBackups        map[string][]string
+	prevNFTTableDump         string
+	prevNFTTableStateKnown   bool
+	prevNFTPersistEnabled    bool
+	prevNFTPersistStateKnown bool
+	archivedBackups          map[string][]string
 }
 
 // defaultInstallEnv wires installEnv to the real OS. Callers fill in
@@ -107,6 +114,7 @@ type installEnv struct {
 // - step1 (preflight) errors out cleanly if root invoked install without
 // sudo (where $SUDO_USER is empty) and -- no override flag was passed.
 func defaultInstallEnv(out io.Writer) *installEnv {
+	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &installEnv{
 		runCmd:             realRunCommand,
 		stat:               os.Stat,
@@ -133,9 +141,13 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		wrapperDir:         defaultWrapperDir,
 		systemUnitPath:     defaultSystemUnitPath,
 		nftRulesPath:       defaultNFTRulesPath,
+		nftPersistUnitPath: defaultNFTPersistUnitPath,
+		// Populated so rollback can clean up a legacy `include` line a
+		// pre-portability build appended here. New installs never write it.
 		nftMainPath:        defaultNFTMainConfigPath,
 		sudoersPath:        defaultSudoersPath,
 		caBundlePath:       defaultCABundlePath,
+		systemCABundlePath: platform.systemCABundlePath,
 		caExportPath:       defaultCAExportPath,
 		integrityDir:       defaultIntegrityDir,
 		integrityPin:       defaultIntegrityPin,
@@ -150,6 +162,10 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		profileScriptPath:  defaultProfileScriptPath,
 		agentHome:          "/home/" + defaultAgentUser,
 		pipelockTarget:     defaultPipelockTarget,
+		bashPath:           platform.bashPath,
+		nologinPath:        platform.nologinPath,
+		nftPath:            platform.nftPath,
+		curlPath:           platform.curlPath,
 		proxyPort:          defaultProxyPort,
 	}
 }
@@ -162,6 +178,14 @@ const (
 	defaultDataDir            = "/var/lib/pipelock"
 	defaultSystemUnitPath     = "/etc/systemd/system/pipelock.service"
 	defaultNFTRulesPath       = "/etc/nftables.d/50-pipelock-containment.nft"
+	defaultNFTPersistUnitPath = "/etc/systemd/system/pipelock-containment-nft.service"
+	// defaultNFTMainConfigPath is the distro nft service config that
+	// pre-portability installs appended a managed `include` line to. New
+	// installs persist via defaultNFTPersistUnitPath and never touch this
+	// file, but rollback must still clean up a legacy include left by an
+	// older build (otherwise the dangling include breaks the distro
+	// nftables.service after the rules file is removed). See
+	// restoreOrRemoveNFTMainInclude.
 	defaultNFTMainConfigPath  = "/etc/sysconfig/nftables.conf"
 	defaultSudoersPath        = "/etc/sudoers.d/50-pipelock-agent"
 	defaultCAExportPath       = "/etc/pipelock/ca.pem"
@@ -175,7 +199,7 @@ const (
 	defaultGuardServiceUnit   = "/etc/systemd/system/pipelock-cred-guard.service" //nolint:gosec // G101: unit filename, not a credential value.
 	defaultGuardPathUnit      = "/etc/systemd/system/pipelock-cred-guard.path"    //nolint:gosec // G101: unit filename, not a credential value.
 	defaultPipelockTarget     = "/usr/local/bin/pipelock"
-	defaultSystemCABundle     = "/etc/ssl/certs/ca-bundle.crt"
+	defaultSystemCABundle     = "/etc/ssl/certs/ca-certificates.crt"
 
 	// File modes. The model is "pipelock-agent UID must be able to read every
 	// non-secret file the wrappers depend on at runtime, but cannot read
@@ -694,6 +718,46 @@ func pathExists(env *installEnv, path string) bool {
 func expectExec(name string) error {
 	if _, err := exec.LookPath(name); err != nil {
 		return fmt.Errorf("required executable %q not found in PATH: %w", name, err)
+	}
+	return nil
+}
+
+func expectExecutablePath(stat func(string) (os.FileInfo, error), label, path string) error {
+	if path == "" {
+		return fmt.Errorf("required %s path is empty", label)
+	}
+	if stat == nil {
+		stat = os.Stat
+	}
+	info, err := stat(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("required %s executable %q not found: %w", label, path, err)
+	}
+	if info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("required %s executable %q is not executable", label, path)
+	}
+	return nil
+}
+
+func expectPrivilegedExecutablePath(stat func(string) (os.FileInfo, error), label, path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("required %s executable %q must be an absolute path", label, path)
+	}
+	if stat == nil {
+		stat = os.Stat
+	}
+	info, err := stat(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("required %s executable %q not found: %w", label, path, err)
+	}
+	if info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("required %s executable %q is not executable", label, path)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("required %s executable %q must not be group- or world-writable", label, path)
+	}
+	if uid, ok := fileOwnerUID(info); ok && uid != 0 {
+		return fmt.Errorf("required %s executable %q must be root-owned", label, path)
 	}
 	return nil
 }

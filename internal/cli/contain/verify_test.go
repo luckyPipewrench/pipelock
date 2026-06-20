@@ -124,6 +124,7 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		launchPath:    "", // populated below
 		nftTable:      testTable,
 		nftChain:      testChain,
+		nftPath:       testNFT,
 		serviceName:   testService,
 		pinPath:       filepath.Join(t.TempDir(), "binary-pin.sha256"),
 		toolsListPath: filepath.Join(t.TempDir(), "tools.list"),
@@ -436,51 +437,63 @@ func TestProbeNFTContainment(t *testing.T) {
 	}
 }
 
-func TestProbeNFTContainment_ChecksPersistenceInclude(t *testing.T) {
-	tmp := t.TempDir()
-	mainPath := filepath.Join(tmp, "nftables.conf")
-	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
-	if err := os.WriteFile(mainPath, []byte(nftRulesIncludeLine(rulesPath)+"\n"), 0o600); err != nil {
-		t.Fatalf("write main config: %v", err)
+func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
+	tests := []struct {
+		name       string
+		unitBody   func(string) string
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name: "exec start points at managed rules",
+			unitBody: func(rulesPath string) string {
+				return "[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"
+			},
+			wantStatus: statusPass,
+			wantDetail: "persistence unit",
+		},
+		{
+			name: "exec start points elsewhere",
+			unitBody: func(_ string) string {
+				return "[Service]\nExecStart=/usr/sbin/nft -f /other/rules.nft\n"
+			},
+			wantStatus: statusFail,
+			wantDetail: "missing ExecStart",
+		},
+		{
+			name: "rules path outside exec start does not satisfy check",
+			unitBody: func(rulesPath string) string {
+				return "[Unit]\nConditionPathExists=" + rulesPath + "\n[Service]\nExecStart=/usr/sbin/nft -f /other/rules.nft\n"
+			},
+			wantStatus: statusFail,
+			wantDetail: "missing ExecStart",
+		},
 	}
-	env := makeProbeEnv(t, func(e *probeEnv) {
-		e.nftRulesPath = rulesPath
-		e.nftMainPath = mainPath
-		e.readFile = os.ReadFile
-		e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
-			return goodNFTContainmentOutput, 0, nil
-		}
-	})
-	gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
-	if gotStatus != statusPass {
-		t.Fatalf("status: got %q, want pass (detail=%q)", gotStatus, gotDetail)
-	}
-	if !strings.Contains(gotDetail, "persistence include") {
-		t.Fatalf("detail: got %q, want persistence include", gotDetail)
-	}
-}
 
-func TestProbeNFTContainment_FailsWhenPersistenceIncludeMissing(t *testing.T) {
-	tmp := t.TempDir()
-	mainPath := filepath.Join(tmp, "nftables.conf")
-	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
-	if err := os.WriteFile(mainPath, []byte("flush ruleset\n"), 0o600); err != nil {
-		t.Fatalf("write main config: %v", err)
-	}
-	env := makeProbeEnv(t, func(e *probeEnv) {
-		e.nftRulesPath = rulesPath
-		e.nftMainPath = mainPath
-		e.readFile = os.ReadFile
-		e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
-			return goodNFTContainmentOutput, 0, nil
-		}
-	})
-	gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
-	if gotStatus != statusFail {
-		t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
-	}
-	if !strings.Contains(gotDetail, "missing persistence include") {
-		t.Fatalf("detail: got %q, want missing persistence include", gotDetail)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			unitPath := filepath.Join(tmp, "pipelock-containment-nft.service")
+			rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
+			if err := os.WriteFile(unitPath, []byte(tc.unitBody(rulesPath)), 0o600); err != nil {
+				t.Fatalf("write persistence unit: %v", err)
+			}
+			env := makeProbeEnv(t, func(e *probeEnv) {
+				e.nftRulesPath = rulesPath
+				e.nftPersistUnitPath = unitPath
+				e.readFile = os.ReadFile
+				e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+					return goodNFTContainmentOutput, 0, nil
+				}
+			})
+			gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
+			if gotStatus != tc.wantStatus {
+				t.Fatalf("status: got %q, want %q (detail=%q)", gotStatus, tc.wantStatus, gotDetail)
+			}
+			if !strings.Contains(gotDetail, tc.wantDetail) {
+				t.Fatalf("detail: got %q, want substring %q", gotDetail, tc.wantDetail)
+			}
+		})
 	}
 }
 
@@ -929,6 +942,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		stdout     string
 		code       int
 		runErr     error
+		curlPath   string
 		wantStatus string
 		wantDetail string
 	}{
@@ -982,16 +996,26 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		},
 		{
 			name:       "target curl missing",
+			stdout:     "sudo: /custom/bin/curl: command not found\n",
+			code:       1,
+			curlPath:   "/custom/bin/curl",
+			wantStatus: statusSkip,
+			wantDetail: "sudo could not execute /custom/bin/curl",
+		},
+		{
+			name:       "fallback curl missing",
 			stdout:     "sudo: /usr/bin/curl: command not found\n",
 			code:       1,
+			curlPath:   "",
 			wantStatus: statusSkip,
-			wantDetail: "install curl",
+			wantDetail: "sudo could not execute /usr/bin/curl",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			env := makeProbeEnv(t, func(e *probeEnv) {
+				e.curlPath = tc.curlPath
 				e.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 					if name != testSudoCmd {
 						t.Fatalf("unexpected cmd %q", name)
@@ -1682,8 +1706,11 @@ func TestDefaultProbeEnv(t *testing.T) {
 	if env.nftRulesPath != defaultNFTRulesPath {
 		t.Errorf("nftRulesPath: got %q, want %q", env.nftRulesPath, defaultNFTRulesPath)
 	}
-	if env.nftMainPath != defaultNFTMainConfigPath {
-		t.Errorf("nftMainPath: got %q, want %q", env.nftMainPath, defaultNFTMainConfigPath)
+	if env.nftMainPath != "" {
+		t.Errorf("nftMainPath: got %q, want empty legacy path", env.nftMainPath)
+	}
+	if env.nftPersistUnitPath != defaultNFTPersistUnitPath {
+		t.Errorf("nftPersistUnitPath: got %q, want %q", env.nftPersistUnitPath, defaultNFTPersistUnitPath)
 	}
 	if env.runCmd == nil || env.dialCtx == nil || env.lookupUser == nil || env.readFile == nil {
 		t.Errorf("hooks: runCmd=%v dialCtx=%v lookupUser=%v readFile=%v",

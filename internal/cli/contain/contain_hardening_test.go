@@ -39,7 +39,7 @@ func TestRunAddToolAutoResolvedTargetIsPinned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executable: %v", err)
 	}
-	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "which", "discovered"), target+"\n", 0, nil)
+	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "env", "PATH="+agentExecPath("pipelock-agent"), "sh", "-c", "command -v -- \"$1\"", "sh", "discovered"), target+"\n", 0, nil)
 	if err := runAddTool(context.Background(), env, "discovered", addToolOpts{}); err != nil {
 		t.Fatalf("add tool: %v", err)
 	}

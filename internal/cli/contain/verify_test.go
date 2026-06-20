@@ -124,6 +124,7 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		launchPath:    "", // populated below
 		nftTable:      testTable,
 		nftChain:      testChain,
+		nftPath:       testNFT,
 		serviceName:   testService,
 		pinPath:       filepath.Join(t.TempDir(), "binary-pin.sha256"),
 		toolsListPath: filepath.Join(t.TempDir(), "tools.list"),
@@ -436,16 +437,17 @@ func TestProbeNFTContainment(t *testing.T) {
 	}
 }
 
-func TestProbeNFTContainment_ChecksPersistenceInclude(t *testing.T) {
+func TestProbeNFTContainment_ChecksPersistenceUnit(t *testing.T) {
 	tmp := t.TempDir()
-	mainPath := filepath.Join(tmp, "nftables.conf")
+	unitPath := filepath.Join(tmp, "pipelock-containment-nft.service")
 	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
-	if err := os.WriteFile(mainPath, []byte(nftRulesIncludeLine(rulesPath)+"\n"), 0o600); err != nil {
-		t.Fatalf("write main config: %v", err)
+	unitBody := "[Service]\nExecStart=/usr/sbin/nft -f " + rulesPath + "\n"
+	if err := os.WriteFile(unitPath, []byte(unitBody), 0o600); err != nil {
+		t.Fatalf("write persistence unit: %v", err)
 	}
 	env := makeProbeEnv(t, func(e *probeEnv) {
 		e.nftRulesPath = rulesPath
-		e.nftMainPath = mainPath
+		e.nftPersistUnitPath = unitPath
 		e.readFile = os.ReadFile
 		e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
 			return goodNFTContainmentOutput, 0, nil
@@ -455,21 +457,21 @@ func TestProbeNFTContainment_ChecksPersistenceInclude(t *testing.T) {
 	if gotStatus != statusPass {
 		t.Fatalf("status: got %q, want pass (detail=%q)", gotStatus, gotDetail)
 	}
-	if !strings.Contains(gotDetail, "persistence include") {
-		t.Fatalf("detail: got %q, want persistence include", gotDetail)
+	if !strings.Contains(gotDetail, "persistence unit") {
+		t.Fatalf("detail: got %q, want persistence unit", gotDetail)
 	}
 }
 
-func TestProbeNFTContainment_FailsWhenPersistenceIncludeMissing(t *testing.T) {
+func TestProbeNFTContainment_FailsWhenPersistenceUnitMissingExecStart(t *testing.T) {
 	tmp := t.TempDir()
-	mainPath := filepath.Join(tmp, "nftables.conf")
+	unitPath := filepath.Join(tmp, "pipelock-containment-nft.service")
 	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
-	if err := os.WriteFile(mainPath, []byte("flush ruleset\n"), 0o600); err != nil {
-		t.Fatalf("write main config: %v", err)
+	if err := os.WriteFile(unitPath, []byte("[Service]\nExecStart=/usr/sbin/nft -f /other/rules.nft\n"), 0o600); err != nil {
+		t.Fatalf("write persistence unit: %v", err)
 	}
 	env := makeProbeEnv(t, func(e *probeEnv) {
 		e.nftRulesPath = rulesPath
-		e.nftMainPath = mainPath
+		e.nftPersistUnitPath = unitPath
 		e.readFile = os.ReadFile
 		e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
 			return goodNFTContainmentOutput, 0, nil
@@ -479,8 +481,8 @@ func TestProbeNFTContainment_FailsWhenPersistenceIncludeMissing(t *testing.T) {
 	if gotStatus != statusFail {
 		t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
 	}
-	if !strings.Contains(gotDetail, "missing persistence include") {
-		t.Fatalf("detail: got %q, want missing persistence include", gotDetail)
+	if !strings.Contains(gotDetail, "missing ExecStart") {
+		t.Fatalf("detail: got %q, want missing ExecStart", gotDetail)
 	}
 }
 
@@ -1682,8 +1684,11 @@ func TestDefaultProbeEnv(t *testing.T) {
 	if env.nftRulesPath != defaultNFTRulesPath {
 		t.Errorf("nftRulesPath: got %q, want %q", env.nftRulesPath, defaultNFTRulesPath)
 	}
-	if env.nftMainPath != defaultNFTMainConfigPath {
-		t.Errorf("nftMainPath: got %q, want %q", env.nftMainPath, defaultNFTMainConfigPath)
+	if env.nftMainPath != "" {
+		t.Errorf("nftMainPath: got %q, want empty legacy path", env.nftMainPath)
+	}
+	if env.nftPersistUnitPath != defaultNFTPersistUnitPath {
+		t.Errorf("nftPersistUnitPath: got %q, want %q", env.nftPersistUnitPath, defaultNFTPersistUnitPath)
 	}
 	if env.runCmd == nil || env.dialCtx == nil || env.lookupUser == nil || env.readFile == nil {
 		t.Errorf("hooks: runCmd=%v dialCtx=%v lookupUser=%v readFile=%v",

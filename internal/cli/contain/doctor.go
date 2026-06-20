@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -49,6 +50,7 @@ type doctorEnv struct {
 	caBundlePath   string
 	undiciShimPath string
 	canaryURL      string
+	curlPath       string
 
 	runCmd   runCommand
 	dialCtx  dialFunc
@@ -62,6 +64,7 @@ type doctorEnv struct {
 var doctorEnvFactory = defaultDoctorEnv
 
 func defaultDoctorEnv() *doctorEnv {
+	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &doctorEnv{
 		port:           defaultProxyPort,
 		agentUserName:  defaultAgentUser,
@@ -69,6 +72,7 @@ func defaultDoctorEnv() *doctorEnv {
 		caBundlePath:   defaultCABundlePath,
 		undiciShimPath: defaultUndiciShimPath,
 		canaryURL:      canaryURL,
+		curlPath:       platform.curlPath,
 		runCmd:         realRunCommand,
 		dialCtx:        realDial,
 		readFile:       os.ReadFile,
@@ -147,8 +151,12 @@ func classifyAgentRun(out string, err error, tool string) (doctorResult, bool) {
 // --proxy/--cacert (rather than relying on env) makes the check definitive:
 // success means the proxy + CA path itself works, independent of env plumbing.
 func (env *doctorEnv) curlProxyArgs(url string) []string {
+	curl := env.curlPath
+	if curl == "" {
+		curl = defaultCurlPath
+	}
 	return []string{
-		curlPath,
+		curl,
 		"--proxy", proxyURLFor(env.port),
 		"--cacert", env.caBundlePath,
 		"--connect-timeout", curlConnectTimeout,
@@ -351,8 +359,12 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 // ---------------------------------------------------------------------------
 
 func (env *doctorEnv) curlDirectArgs(url string) []string {
+	curl := env.curlPath
+	if curl == "" {
+		curl = defaultCurlPath
+	}
 	return []string{
-		curlPath,
+		curl,
 		"--connect-timeout", curlConnectTimeout,
 		"--max-time", curlMaxTime,
 		"--noproxy", "*",

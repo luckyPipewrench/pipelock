@@ -59,17 +59,16 @@ func TestRunAddTool_DryRunNonMutating(t *testing.T) {
 	}
 }
 
-func TestRunAddTool_UsesWhichToResolveTarget(t *testing.T) {
+func TestRunAddTool_UsesCommandVToResolveTarget(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	if err := os.WriteFile(filepath.Join(env.wrapperDir, "plk-launch"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("plant: %v", err)
 	}
-	whichTarget := filepath.Join(t.TempDir(), "discovered-tool")
-	if err := os.WriteFile(whichTarget, []byte("x"), 0o755); err != nil { //nolint:gosec // tmpdir
+	resolvedTarget := filepath.Join(t.TempDir(), "discovered-tool")
+	if err := os.WriteFile(resolvedTarget, []byte("x"), 0o755); err != nil { //nolint:gosec // tmpdir
 		t.Fatalf("plant: %v", err)
 	}
-	// Pre-bake the which response.
-	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "which", "discovered"), whichTarget+"\n", 0, nil)
+	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "sh", "-c", "command -v -- \"$1\"", "sh", "discovered"), resolvedTarget+"\n", 0, nil)
 	err := runAddTool(context.Background(), env, "discovered", addToolOpts{})
 	if err != nil {
 		t.Fatalf("addTool: %v", err)
@@ -79,9 +78,9 @@ func TestRunAddTool_UsesWhichToResolveTarget(t *testing.T) {
 	}
 }
 
-func TestRunAddTool_FailsWhenWhichNotInPath(t *testing.T) {
+func TestRunAddTool_FailsWhenCommandVFindsNoTarget(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "which", "nopath"), "", 1, nil)
+	runner.on(argvFor(testSudoCmd, "-n", "-u", "pipelock-agent", "--", "sh", "-c", "command -v -- \"$1\"", "sh", "nopath"), "", 1, nil)
 	err := runAddTool(context.Background(), env, "nopath", addToolOpts{})
 	if err == nil {
 		t.Fatal("expected error")

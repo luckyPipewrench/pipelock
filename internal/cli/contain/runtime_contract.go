@@ -276,7 +276,7 @@ func renderUtilityWrapper(env *installEnv, tool string) string {
 		assigns = append(assigns, "    "+envAssign(v.name, v.value)+" \\")
 	}
 	header := []string{
-		"#!/bin/bash",
+		shebangBash(env),
 		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
 		"# Forces the Pipelock proxy + CA runtime contract, then execs " + tool + ".",
 		"set -euo pipefail",

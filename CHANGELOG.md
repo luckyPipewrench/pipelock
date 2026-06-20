@@ -15,6 +15,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+## [2.8.1] - 2026-06-20
+
+### Highlights
+
+A hardening and coverage release. Self-update is now anchored to a signed release
+manifest verified with an embedded Ed25519 keyring (no external tools required),
+several security fixes close fail-open and bypass edges, and detection gains
+provider-API-key DLP coverage plus per-server control over how much an MCP server's
+responses are trusted.
+
+### ⚠️ Breaking Changes / Upgrade Notes
+
+- **Self-update now requires a signed release manifest.** `pipelock update` verifies
+  a signed `release.json` with the release keyring embedded in the binary
+  (`RELEASE_KEYRING_HEX`) **before** any download is trusted; this native Ed25519
+  check is mandatory and fail-closed. `cosign` is demoted to an optional secondary
+  cross-check whose absence is no longer a bypass, and `--insecure-skip-signature` is
+  now a deprecated no-op. A stock pre-2.8.1 binary still uses the older cosign-only
+  path; the mandatory native check applies once you are running 2.8.1 or later. (#818)
+
+### New Features
+
+- **Provider-key DLP coverage.** Adds false-positive-safe DLP detection for
+  distinctively prefixed LLM/provider API-key shapes, with default provider-host
+  exemptions (a provider credential sent to that provider's own API endpoint is not
+  treated as exfiltration) and matching request-body/header suppressions anchored to
+  the normalized destination host. Includes a standing false-positive corpus guard,
+  documented coverage and intentionally excluded FP-prone shapes, and an updated
+  custom-provider path. (#821)
+- **Per-server MCP response trust classes.** Configure how much each MCP server's
+  responses are trusted, so response scanning can be tuned per upstream server. (#820)
+
+### Changed
+
+- **Portable `contain install` across Linux distributions.** Containment install no
+  longer assumes a single distro layout; the nftables step checks the installed `nft`
+  version and fails with a clear, distro-appropriate error on too-old versions rather
+  than a cryptic load-time parse error. (#817)
+
+### Security
+
+- **Receipt trust anchor, fail-closed config reload, scan-masking fix, sandbox TOCTOU
+  fix.** Receipt verification is bound to a trust anchor; a config reload that would
+  disable the proxy or scanners is now rejected (fail-closed) instead of silently
+  applied; a response-scan masking bypass and a sandbox time-of-check/time-of-use
+  window are closed. (#819)
+
+### Fixed
+
+- **Idle timeout measured across both tunnel directions.** CONNECT and WebSocket
+  tunnels now track idle activity in both directions, preventing premature or
+  incorrect idle closure when traffic flows only one way. (#816)
+
 ## [2.8.0] - 2026-06-18
 
 ### Highlights

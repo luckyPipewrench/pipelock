@@ -43,7 +43,7 @@ unset PIPELOCK_RELEASE_PRIVATE_KEY_HEX
 5. Confirm the release contains both files:
 
 ```bash
-gh release view v2.8.0 --json assets --jq '.assets[].name' | sort
+gh release view v2.8.1 --json assets --jq '.assets[].name' | sort
 ```
 
 The client verification path is unchanged: `pipelock update` downloads

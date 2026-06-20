@@ -15,7 +15,7 @@ Healthy response (HTTP 200):
 ```json
 {
   "status": "healthy",
-  "version": "v2.6.0",
+  "version": "v2.8.1",
   "mode": "balanced",
   "uptime_seconds": 1234.56,
   "dlp_patterns": 65,
@@ -42,7 +42,7 @@ Unhealthy response (HTTP 503):
 ```json
 {
   "status": "unhealthy",
-  "version": "v2.6.0",
+  "version": "v2.8.1",
   ...
   "subsystems": {
     "scanner": false,

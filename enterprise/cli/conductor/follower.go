@@ -56,6 +56,9 @@ Safety posture (mirrors 'conductor store repair'):
     follower, never on a healthy one.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateFollowerResetReplayStateOptions(opts); err != nil {
+				return err
+			}
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
@@ -69,10 +72,10 @@ Safety posture (mirrors 'conductor store repair'):
 }
 
 func runFollowerResetReplayState(cmd *cobra.Command, opts followerResetReplayOptions) error {
-	if opts.stateDir == "" {
-		return fmt.Errorf("--state-dir is required")
+	if err := validateFollowerResetReplayStateOptions(opts); err != nil {
+		return err
 	}
-	statePath := filepath.Join(filepath.Clean(opts.stateDir), emergency.RemoteKillStateFileName)
+	statePath := filepath.Join(opts.stateDir, emergency.RemoteKillStateFileName)
 	out := cmd.OutOrStdout()
 	if !opts.confirm {
 		_, _ = fmt.Fprintf(out, "DRY RUN: would reset remote-kill replay state at %s to a clean baseline (counter 0, no decision).\n", statePath)
@@ -83,5 +86,12 @@ func runFollowerResetReplayState(cmd *cobra.Command, opts followerResetReplayOpt
 		return fmt.Errorf("reset remote-kill replay state: %w", err)
 	}
 	_, _ = fmt.Fprintf(out, "reset remote-kill replay state at %s to a clean baseline; restart the follower if it is wedged.\n", statePath)
+	return nil
+}
+
+func validateFollowerResetReplayStateOptions(opts followerResetReplayOptions) error {
+	if opts.stateDir == "" {
+		return fmt.Errorf("--state-dir is required")
+	}
 	return nil
 }

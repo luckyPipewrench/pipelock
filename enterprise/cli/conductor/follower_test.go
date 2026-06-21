@@ -6,6 +6,7 @@ package conductor
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,12 +15,30 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
 func TestFollowerResetReplayState_RequiresStateDir(t *testing.T) {
 	if err := runFollowerResetReplayState(&cobra.Command{}, followerResetReplayOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "--state-dir is required") {
 		t.Fatalf("missing --state-dir error = %v, want required", err)
+	}
+}
+
+func TestFollowerResetReplayState_RequiresStateDirBeforeLicense(t *testing.T) {
+	t.Setenv(license.EnvLicenseKey, "")
+	t.Setenv(license.EnvLicensePublicKey, "")
+	t.Setenv(license.EnvLicenseCRLFile, "")
+
+	cmd := followerResetReplayStateCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--state-dir is required") {
+		t.Fatalf("missing --state-dir command error = %v, want required", err)
+	}
+	if errors.Is(err, license.ErrFleetLicenseRequired) {
+		t.Fatalf("missing --state-dir checked license first: %v", err)
 	}
 }
 
@@ -52,5 +71,18 @@ func TestFollowerResetReplayState_ConfirmWritesBaseline(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "reset remote-kill replay state") {
 		t.Fatalf("confirm output = %q, want reset confirmation", out.String())
+	}
+}
+
+func TestFollowerResetReplayState_ConfirmSurfacesResetError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	cmd := &cobra.Command{}
+	err := runFollowerResetReplayState(cmd, followerResetReplayOptions{stateDir: blocker, confirm: true})
+	if err == nil || !strings.Contains(err.Error(), "reset remote-kill replay state") {
+		t.Fatalf("confirm reset error = %v, want wrapped reset context", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,5 +167,54 @@ func TestInitializeReplayBaselineIdempotent(t *testing.T) {
 	}
 	if st.LastCounter != 0 || st.LastMessageHash != "" || st.State != conductor.KillSwitchInactive {
 		t.Fatalf("baseline drifted after second call: counter=%d hash=%q state=%q", st.LastCounter, st.LastMessageHash, st.State)
+	}
+}
+
+func TestInitializeReplayBaselineConcurrentApplyPreservesKillState(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 17, conductor.KillSwitchActive)
+	statePath := filepath.Join(t.TempDir(), RemoteKillStateFileName)
+	writeEnrolledMarker(t, statePath)
+
+	start := make(chan struct{})
+	errs := make(chan error, 17)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- InitializeReplayBaseline(statePath, testNow)
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		applier := &RemoteKillApplier{
+			OrgID:      "org-main",
+			FleetID:    "prod",
+			InstanceID: "pl-prod-1",
+			Resolver:   resolver,
+			KillSwitch: &captureKillSwitch{},
+			StatePath:  statePath,
+			Now:        func() time.Time { return testNow },
+		}
+		errs <- applier.Apply(msg)
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent baseline/apply error = %v", err)
+		}
+	}
+	st, err := readDurableRemoteKillState(statePath)
+	if err != nil {
+		t.Fatalf("readDurableRemoteKillState: %v", err)
+	}
+	if st.LastCounter != msg.Counter || st.State != conductor.KillSwitchActive || st.Reason != msg.Reason {
+		t.Fatalf("state after concurrent baseline/apply = counter=%d state=%q reason=%q, want applied kill", st.LastCounter, st.State, st.Reason)
 	}
 }

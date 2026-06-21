@@ -26,6 +26,8 @@ var (
 	ErrRemoteKillSuperseded    = errors.New("conductor remote kill message superseded")
 	ErrRemoteKillStateRequired = errors.New("conductor remote kill replay state path required")
 	ErrRemoteKillStateMismatch = errors.New("conductor remote kill replay state mismatch")
+
+	remoteKillStateLocks sync.Map
 )
 
 const (
@@ -339,15 +341,29 @@ func remoteKillStatesEqual(a, b remoteKillState) bool {
 		a.AppliedAt.Equal(b.AppliedAt)
 }
 
-func writeRemoteKillState(path string, state remoteKillState) error {
+func withRemoteKillStateLock(path string, fn func(canonical string) error) error {
 	canonical := filepath.Clean(path)
+	value, _ := remoteKillStateLocks.LoadOrStore(canonical, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	return fn(canonical)
+}
+
+func writeRemoteKillState(path string, state remoteKillState) error {
+	return withRemoteKillStateLock(path, func(canonical string) error {
+		return writeRemoteKillStateLocked(canonical, state)
+	})
+}
+
+func writeRemoteKillStateLocked(canonical string, state remoteKillState) error {
 	if err := writeRemoteKillStateFileForContext(canonical, canonical, state); err != nil {
 		return err
 	}
-	if err := writeRemoteKillStateFileForContext(remoteKillStateAnchorPath(path), canonical, state); err != nil {
+	if err := writeRemoteKillStateFileForContext(remoteKillStateAnchorPath(canonical), canonical, state); err != nil {
 		return err
 	}
-	if err := writeRemoteKillStateContext(path); err != nil {
+	if err := writeRemoteKillStateContext(canonical); err != nil {
 		return err
 	}
 	return nil
@@ -493,23 +509,24 @@ func ResetRemoteKillReplayState(path string, counter uint64, state conductor.Kil
 // decision and reset the counter. A corrupt/unreadable existing state fails
 // loud rather than being silently overwritten.
 func InitializeReplayBaseline(path string, now time.Time) error {
-	canonical := filepath.Clean(path)
-	if _, found, err := readOptionalRemoteKillState(canonical, canonical); err != nil {
-		return err
-	} else if found {
-		return nil
-	}
-	if _, found, err := readOptionalRemoteKillState(remoteKillStateAnchorPath(canonical), canonical); err != nil {
-		return err
-	} else if found {
-		return nil
-	}
-	if found, err := readRemoteKillStateContext(canonical); err != nil {
-		return err
-	} else if found {
-		return nil
-	}
-	return writeReplayBaseline(canonical, now)
+	return withRemoteKillStateLock(path, func(canonical string) error {
+		if _, found, err := readOptionalRemoteKillState(canonical, canonical); err != nil {
+			return err
+		} else if found {
+			return nil
+		}
+		if _, found, err := readOptionalRemoteKillState(remoteKillStateAnchorPath(canonical), canonical); err != nil {
+			return err
+		} else if found {
+			return nil
+		}
+		if found, err := readRemoteKillStateContext(canonical); err != nil {
+			return err
+		} else if found {
+			return nil
+		}
+		return writeReplayBaselineLocked(canonical, now)
+	})
 }
 
 // ResetReplayStateToBaseline force-writes a clean, no-decision replay baseline,
@@ -533,10 +550,16 @@ func ResetReplayStateToBaseline(path string, now time.Time) error {
 // hash as "no decision to apply" so the follower boots clean, and the first real
 // remote-kill (counter > 0) still advances normally.
 func writeReplayBaseline(canonical string, now time.Time) error {
+	return withRemoteKillStateLock(canonical, func(canonical string) error {
+		return writeReplayBaselineLocked(canonical, now)
+	})
+}
+
+func writeReplayBaselineLocked(canonical string, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	return writeRemoteKillState(canonical, remoteKillState{
+	return writeRemoteKillStateLocked(canonical, remoteKillState{
 		LastCounter:     0,
 		LastMessageHash: "",
 		State:           conductor.KillSwitchInactive,

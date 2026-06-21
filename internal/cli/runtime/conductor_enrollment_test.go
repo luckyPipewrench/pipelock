@@ -173,6 +173,15 @@ func TestRunConductorAutoEnrollExistingMarkerSkipsPost(t *testing.T) {
 	if client.count() != 0 {
 		t.Fatalf("request count = %d, want 0", client.count())
 	}
+	baselinePath := filepath.Join(cfg.Conductor.BundleCacheDir, emergency.RemoteKillStateFileName)
+	ks := &stubKillSwitch{}
+	applier := &emergency.RemoteKillApplier{KillSwitch: ks, StatePath: baselinePath}
+	if err := applier.RestorePersistedState(); err != nil {
+		t.Fatalf("RestorePersistedState() after marked baseline retry error = %v, want nil", err)
+	}
+	if ks.active {
+		t.Fatal("kill switch active after marked baseline retry, want inactive")
+	}
 }
 
 func TestRunConductorAutoEnrollStaleMarkerDoesNotSkipPost(t *testing.T) {

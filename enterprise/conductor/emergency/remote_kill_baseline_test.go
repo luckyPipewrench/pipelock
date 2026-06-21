@@ -173,7 +173,6 @@ func TestInitializeReplayBaselineIdempotent(t *testing.T) {
 func TestInitializeReplayBaselineConcurrentApplyPreservesKillState(t *testing.T) {
 	msg, resolver := signedRemoteKill(t, 17, conductor.KillSwitchActive)
 	statePath := filepath.Join(t.TempDir(), RemoteKillStateFileName)
-	writeEnrolledMarker(t, statePath)
 
 	start := make(chan struct{})
 	errs := make(chan error, 17)

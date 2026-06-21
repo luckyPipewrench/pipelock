@@ -120,30 +120,33 @@ func (a *RemoteKillApplier) Apply(msg conductor.RemoteKillMessage) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	state, err := readDurableRemoteKillState(a.StatePath)
-	if err != nil {
-		return err
-	}
-	if hash == state.LastMessageHash {
-		// Idempotent re-apply (also backfills legacy/loose persisted state): the
-		// incoming message was just signature-verified above, so re-apply it and
-		// persist the signed message so a later restart re-verifies it.
-		return a.applyAndPersistLocked(msg, hash, signedJSON, now)
-	}
-	if msg.Counter <= state.LastCounter {
-		err := fmt.Errorf("%w: counter=%d last=%d", ErrRemoteKillSuperseded, msg.Counter, state.LastCounter)
-		a.logReject("stale_counter", err)
-		return err
-	}
-	return a.applyAndPersistLocked(msg, hash, signedJSON, now)
+	return withRemoteKillStateLock(a.StatePath, func(canonical string) error {
+		state, err := readDurableRemoteKillStateLocked(canonical)
+		if err != nil {
+			return err
+		}
+		if hash == state.LastMessageHash {
+			// Idempotent re-apply (also backfills legacy/loose persisted state): the
+			// incoming message was just signature-verified above, so re-apply it and
+			// persist the signed message so a later restart re-verifies it.
+			return a.applyAndPersistLocked(canonical, msg, hash, signedJSON, now)
+		}
+		if msg.Counter <= state.LastCounter {
+			err := fmt.Errorf("%w: counter=%d last=%d", ErrRemoteKillSuperseded, msg.Counter, state.LastCounter)
+			a.logReject("stale_counter", err)
+			return err
+		}
+		return a.applyAndPersistLocked(canonical, msg, hash, signedJSON, now)
+	})
 }
 
 // applyAndPersistLocked applies a freshly signature-verified message to the kill
-// switch and persists the decision together with its signed message. Callers MUST
-// hold a.mu and MUST have verified msg before calling.
-func (a *RemoteKillApplier) applyAndPersistLocked(msg conductor.RemoteKillMessage, hash string, signedJSON json.RawMessage, now time.Time) error {
+// switch and persists the decision together with its signed message. Callers
+// MUST hold a.mu and the per-path remote-kill state lock, and MUST have verified
+// msg before calling.
+func (a *RemoteKillApplier) applyAndPersistLocked(canonical string, msg conductor.RemoteKillMessage, hash string, signedJSON json.RawMessage, now time.Time) error {
 	a.KillSwitch.SetConductorRemote(msg.State == conductor.KillSwitchActive, msg.Reason)
-	return writeRemoteKillState(a.StatePath, remoteKillState{
+	return writeRemoteKillStateLocked(canonical, remoteKillState{
 		LastCounter:     msg.Counter,
 		LastMessageHash: hash,
 		State:           msg.State,
@@ -175,14 +178,16 @@ func (a *RemoteKillApplier) RestorePersistedState() error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	state, err := readDurableRemoteKillState(a.StatePath)
-	if err != nil {
-		return err
-	}
-	if state.LastMessageHash == "" {
-		return nil
-	}
-	return a.applyPersistedDecisionLocked(state)
+	return withRemoteKillStateLock(a.StatePath, func(canonical string) error {
+		state, err := readDurableRemoteKillStateLocked(canonical)
+		if err != nil {
+			return err
+		}
+		if state.LastMessageHash == "" {
+			return nil
+		}
+		return a.applyPersistedDecisionLocked(state)
+	})
 }
 
 func (a *RemoteKillApplier) applyPersistedDecisionLocked(state remoteKillState) error {

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,17 @@ type captureKillSwitch struct {
 func (c *captureKillSwitch) SetConductorRemote(active bool, message string) {
 	c.active = active
 	c.message = message
+}
+
+type blockingKillSwitch struct {
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingKillSwitch) SetConductorRemote(bool, string) {
+	b.once.Do(func() { close(b.reached) })
+	<-b.release
 }
 
 func TestRemoteKillApplier(t *testing.T) {
@@ -380,6 +392,82 @@ func TestRemoteKillApplierRejectsStaleCounter(t *testing.T) {
 	}
 	if err := applier.Apply(msg); !errors.Is(err, ErrRemoteKillSuperseded) {
 		t.Fatalf("Apply(stale counter) error = %v, want ErrRemoteKillSuperseded", err)
+	}
+}
+
+func TestRemoteKillApplierSerializesCounterCheckAcrossInstances(t *testing.T) {
+	lowMsg, lowResolver := signedRemoteKill(t, 11, conductor.KillSwitchActive)
+	highMsg, highResolver := signedRemoteKill(t, 12, conductor.KillSwitchInactive)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := ResetRemoteKillReplayState(statePath, 10, conductor.KillSwitchActive, "operator floor", testNow); err != nil {
+		t.Fatalf("ResetRemoteKillReplayState: %v", err)
+	}
+
+	blockingKS := &blockingKillSwitch{
+		reached: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	lowApplier := &RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   lowResolver,
+		KillSwitch: blockingKS,
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}
+	highApplier := &RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   highResolver,
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow.Add(time.Second) },
+	}
+
+	lowErr := make(chan error, 1)
+	go func() {
+		lowErr <- lowApplier.Apply(lowMsg)
+	}()
+	select {
+	case <-blockingKS.reached:
+	case <-time.After(time.Second):
+		t.Fatal("lower-counter Apply did not reach kill switch")
+	}
+
+	highErr := make(chan error, 1)
+	go func() {
+		highErr <- highApplier.Apply(highMsg)
+	}()
+	select {
+	case err := <-highErr:
+		close(blockingKS.release)
+		if lowApplyErr := <-lowErr; lowApplyErr != nil {
+			t.Fatalf("lower-counter Apply error after early higher-counter completion = %v", lowApplyErr)
+		}
+		if err != nil {
+			t.Fatalf("higher-counter Apply returned early with error: %v", err)
+		}
+		t.Fatal("higher-counter Apply completed while lower-counter Apply held the replay-state critical section")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(blockingKS.release)
+	if err := <-lowErr; err != nil {
+		t.Fatalf("lower-counter Apply error = %v", err)
+	}
+	if err := <-highErr; err != nil {
+		t.Fatalf("higher-counter Apply error = %v", err)
+	}
+
+	state, err := readDurableRemoteKillState(statePath)
+	if err != nil {
+		t.Fatalf("readDurableRemoteKillState: %v", err)
+	}
+	if state.LastCounter != highMsg.Counter || state.State != highMsg.State || state.Reason != highMsg.Reason {
+		t.Fatalf("state after concurrent appliers = counter=%d state=%q reason=%q, want counter=%d state=%q reason=%q",
+			state.LastCounter, state.State, state.Reason, highMsg.Counter, highMsg.State, highMsg.Reason)
 	}
 }
 

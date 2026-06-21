@@ -539,10 +539,12 @@ func waitForPortOrCommandExitResult(addr string, cmdErr <-chan error, stderr fmt
 func doMCPPostWithStartupRetry(t *testing.T, addr string, body string, cmdErr <-chan error, stderr fmt.Stringer) *http.Response {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
 	var lastErr error
 	for {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+addr+"/", strings.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/", strings.NewReader(body))
 		if err != nil {
 			t.Fatalf("new mcp request: %v", err)
 		}
@@ -553,11 +555,10 @@ func doMCPPostWithStartupRetry(t *testing.T, addr string, body string, cmdErr <-
 			return resp
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
-			t.Fatalf("mcp listener POST: %v\nstderr:\n%s", lastErr, stderr.String())
-		}
 
 		select {
+		case <-ctx.Done():
+			t.Fatalf("mcp listener POST: %v\nstderr:\n%s", lastErr, stderr.String())
 		case err := <-cmdErr:
 			t.Fatalf("RunCmd exited before MCP listener accepted POST: %v\nlast POST error: %v\nstderr:\n%s", err, lastErr, stderr.String())
 		case <-time.After(20 * time.Millisecond):

@@ -217,3 +217,62 @@ func TestInitializeReplayBaselineConcurrentApplyPreservesKillState(t *testing.T)
 		t.Fatalf("state after concurrent baseline/apply = counter=%d state=%q reason=%q, want applied kill", st.LastCounter, st.State, st.Reason)
 	}
 }
+
+func TestReadDurableRemoteKillStateConcurrentBackfillAndApply(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 17, conductor.KillSwitchActive)
+	statePath := filepath.Join(t.TempDir(), RemoteKillStateFileName)
+
+	if err := writeRemoteKillStateFileForContext(statePath, filepath.Clean(statePath), remoteKillState{
+		LastCounter:     11,
+		LastMessageHash: strings.Repeat("d", 64),
+		State:           conductor.KillSwitchInactive,
+		Reason:          "primary only",
+		AppliedAt:       testNow.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("write primary-only remote kill state: %v", err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 17)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := readDurableRemoteKillState(statePath)
+			errs <- err
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		applier := &RemoteKillApplier{
+			OrgID:      "org-main",
+			FleetID:    "prod",
+			InstanceID: "pl-prod-1",
+			Resolver:   resolver,
+			KillSwitch: &captureKillSwitch{},
+			StatePath:  statePath,
+			Now:        func() time.Time { return testNow },
+		}
+		errs <- applier.Apply(msg)
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent backfill/apply error = %v", err)
+		}
+	}
+	st, err := readDurableRemoteKillState(statePath)
+	if err != nil {
+		t.Fatalf("readDurableRemoteKillState: %v", err)
+	}
+	if st.LastCounter != msg.Counter || st.State != conductor.KillSwitchActive || st.Reason != msg.Reason {
+		t.Fatalf("state after concurrent backfill/apply = counter=%d state=%q reason=%q, want applied kill", st.LastCounter, st.State, st.Reason)
+	}
+}

@@ -108,6 +108,45 @@ func TestInitializeReplayBaselineDoesNotClobberExistingState(t *testing.T) {
 	}
 }
 
+// TestResetReplayStateToBaseline is the operator recovery: force-overwrite an
+// existing (even active-kill) replay state with a clean baseline so a wedged
+// follower can boot. The Conductor re-syncs the authoritative state on next poll.
+func TestResetReplayStateToBaseline(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), RemoteKillStateFileName)
+	// Pre-existing active kill state (the thing the operator is deliberately resetting).
+	if err := writeRemoteKillState(statePath, remoteKillState{
+		LastCounter:     5,
+		LastMessageHash: strings.Repeat("c", 64),
+		State:           conductor.KillSwitchActive,
+		Reason:          "stuck kill",
+		AppliedAt:       testNow,
+	}); err != nil {
+		t.Fatalf("writeRemoteKillState: %v", err)
+	}
+
+	if err := ResetReplayStateToBaseline(statePath, testNow.Add(time.Hour)); err != nil {
+		t.Fatalf("ResetReplayStateToBaseline: %v", err)
+	}
+
+	st, err := readRemoteKillStateFile(statePath)
+	if err != nil {
+		t.Fatalf("readRemoteKillStateFile: %v", err)
+	}
+	if st.LastCounter != 0 || st.LastMessageHash != "" || st.State != conductor.KillSwitchInactive {
+		t.Fatalf("reset baseline = counter=%d hash=%q state=%q, want 0/empty/inactive", st.LastCounter, st.LastMessageHash, st.State)
+	}
+
+	// The follower now boots clean (no wedge, kill switch not spuriously active).
+	ks := &captureKillSwitch{}
+	applier := &RemoteKillApplier{KillSwitch: ks, StatePath: statePath}
+	if err := applier.RestorePersistedState(); err != nil {
+		t.Fatalf("RestorePersistedState() after reset error = %v, want nil", err)
+	}
+	if ks.active {
+		t.Fatal("kill switch active after reset-to-baseline, want inactive (re-sync from Conductor restores a live kill)")
+	}
+}
+
 // TestInitializeReplayBaselineIdempotent: a second call is a no-op and never
 // errors, so repeated enrollment attempts cannot reset the counter.
 func TestInitializeReplayBaselineIdempotent(t *testing.T) {

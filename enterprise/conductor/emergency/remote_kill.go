@@ -509,6 +509,30 @@ func InitializeReplayBaseline(path string, now time.Time) error {
 	} else if found {
 		return nil
 	}
+	return writeReplayBaseline(canonical, now)
+}
+
+// ResetReplayStateToBaseline force-writes a clean, no-decision replay baseline,
+// OVERWRITING any existing remote-kill replay state. It is the explicit operator
+// recovery for a follower that cannot start because it is enrolled but its replay
+// state is missing or partial ("replay state missing while follower context is
+// present") and there is otherwise no shipped way out.
+//
+// Unlike InitializeReplayBaseline this is intentionally NOT replay-safe on its own:
+// it resets the local replay counter to 0. That is acceptable ONLY as a deliberate,
+// operator-invoked action because the Conductor remains the source of truth — on the
+// next poll the follower re-fetches and re-applies the authoritative kill state
+// (whose counter exceeds 0), so a genuinely-active fleet kill is restored. Callers
+// MUST gate this behind an explicit operator command, never an automatic path.
+func ResetReplayStateToBaseline(path string, now time.Time) error {
+	return writeReplayBaseline(filepath.Clean(path), now)
+}
+
+// writeReplayBaseline writes the canonical no-decision baseline (counter 0, empty
+// message hash, inactive) bound to path. RestorePersistedState treats the empty
+// hash as "no decision to apply" so the follower boots clean, and the first real
+// remote-kill (counter > 0) still advances normally.
+func writeReplayBaseline(canonical string, now time.Time) error {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}

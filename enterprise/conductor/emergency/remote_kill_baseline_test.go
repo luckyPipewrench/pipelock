@@ -76,15 +76,19 @@ func TestInitializeReplayBaselinePreventsRestartWedge(t *testing.T) {
 // no-op. Overwriting it would reset the replay counter — a kill-switch replay
 // hole.
 func TestInitializeReplayBaselineDoesNotClobberExistingState(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
 	statePath := filepath.Join(t.TempDir(), RemoteKillStateFileName)
-	if err := writeRemoteKillState(statePath, remoteKillState{
-		LastCounter:     9,
-		LastMessageHash: strings.Repeat("b", 64),
-		State:           conductor.KillSwitchActive,
-		Reason:          "real kill",
-		AppliedAt:       testNow,
-	}); err != nil {
-		t.Fatalf("writeRemoteKillState: %v", err)
+	// A real, signature-verified kill decision already exists.
+	if err := (&RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}).Apply(msg); err != nil {
+		t.Fatalf("Apply(existing kill): %v", err)
 	}
 
 	if err := InitializeReplayBaseline(statePath, testNow.Add(time.Hour)); err != nil {
@@ -95,16 +99,24 @@ func TestInitializeReplayBaselineDoesNotClobberExistingState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readRemoteKillStateFile: %v", err)
 	}
-	if st.LastCounter != 9 || st.State != conductor.KillSwitchActive || st.Reason != "real kill" {
+	if st.LastCounter != 9 || st.State != conductor.KillSwitchActive || st.Reason != msg.Reason {
 		t.Fatalf("existing kill state clobbered: counter=%d state=%q reason=%q", st.LastCounter, st.State, st.Reason)
 	}
 
 	ks := &captureKillSwitch{}
-	applier := &RemoteKillApplier{KillSwitch: ks, StatePath: statePath}
+	applier := &RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: ks,
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}
 	if err := applier.RestorePersistedState(); err != nil {
 		t.Fatalf("RestorePersistedState: %v", err)
 	}
-	if !ks.active || ks.message != "real kill" {
+	if !ks.active || ks.message != msg.Reason {
 		t.Fatalf("restored kill switch = active=%v message=%q, want preserved active kill", ks.active, ks.message)
 	}
 }

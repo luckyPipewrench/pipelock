@@ -6,6 +6,7 @@
 package emergency
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -47,8 +48,14 @@ type remoteKillState struct {
 	State           conductor.KillSwitchState `json:"state"`
 	Reason          string                    `json:"reason"`
 	AppliedAt       time.Time                 `json:"applied_at"`
-	Context         string                    `json:"context,omitempty"`
-	Digest          string                    `json:"digest,omitempty"`
+	// SignedMessage is the canonical JSON of the signed Conductor
+	// RemoteKillMessage that authorized this decision. It is re-verified against
+	// the trust roster on restore, so a persisted decision cannot be forged by an
+	// attacker who can write the (non-secret) replay-state binding. Empty only for
+	// the no-decision baseline (LastMessageHash == "").
+	SignedMessage json.RawMessage `json:"signed_message,omitempty"`
+	Context       string          `json:"context,omitempty"`
+	Digest        string          `json:"digest,omitempty"`
 }
 
 type remoteKillStateContext struct {
@@ -84,10 +91,7 @@ func (a *RemoteKillApplier) Apply(msg conductor.RemoteKillMessage) error {
 	if a.StatePath == "" {
 		return ErrRemoteKillStateRequired
 	}
-	now := time.Now().UTC()
-	if a.Now != nil {
-		now = a.Now().UTC()
-	}
+	now := a.nowUTC()
 	if a.DisableRemoteKill {
 		a.logReject("disabled", ErrRemoteKillDisabled)
 		return ErrRemoteKillDisabled
@@ -108,6 +112,12 @@ func (a *RemoteKillApplier) Apply(msg conductor.RemoteKillMessage) error {
 	if err != nil {
 		return err
 	}
+	// Persist the just-verified signed message so the decision can be
+	// re-verified against the trust roster on restart (anti-forgery).
+	signedJSON, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal verified conductor remote kill message: %w", err)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	state, err := readDurableRemoteKillState(a.StatePath)
@@ -115,25 +125,23 @@ func (a *RemoteKillApplier) Apply(msg conductor.RemoteKillMessage) error {
 		return err
 	}
 	if hash == state.LastMessageHash {
-		switch state.State {
-		case conductor.KillSwitchActive, conductor.KillSwitchInactive:
-			return a.applyPersistedDecisionLocked(state)
-		default:
-			a.KillSwitch.SetConductorRemote(msg.State == conductor.KillSwitchActive, msg.Reason)
-			return writeRemoteKillState(a.StatePath, remoteKillState{
-				LastCounter:     msg.Counter,
-				LastMessageHash: hash,
-				State:           msg.State,
-				Reason:          msg.Reason,
-				AppliedAt:       now,
-			})
-		}
+		// Idempotent re-apply (also backfills legacy/loose persisted state): the
+		// incoming message was just signature-verified above, so re-apply it and
+		// persist the signed message so a later restart re-verifies it.
+		return a.applyAndPersistLocked(msg, hash, signedJSON, now)
 	}
 	if msg.Counter <= state.LastCounter {
 		err := fmt.Errorf("%w: counter=%d last=%d", ErrRemoteKillSuperseded, msg.Counter, state.LastCounter)
 		a.logReject("stale_counter", err)
 		return err
 	}
+	return a.applyAndPersistLocked(msg, hash, signedJSON, now)
+}
+
+// applyAndPersistLocked applies a freshly signature-verified message to the kill
+// switch and persists the decision together with its signed message. Callers MUST
+// hold a.mu and MUST have verified msg before calling.
+func (a *RemoteKillApplier) applyAndPersistLocked(msg conductor.RemoteKillMessage, hash string, signedJSON json.RawMessage, now time.Time) error {
 	a.KillSwitch.SetConductorRemote(msg.State == conductor.KillSwitchActive, msg.Reason)
 	return writeRemoteKillState(a.StatePath, remoteKillState{
 		LastCounter:     msg.Counter,
@@ -141,7 +149,15 @@ func (a *RemoteKillApplier) Apply(msg conductor.RemoteKillMessage) error {
 		State:           msg.State,
 		Reason:          msg.Reason,
 		AppliedAt:       now,
+		SignedMessage:   signedJSON,
 	})
+}
+
+func (a *RemoteKillApplier) nowUTC() time.Time {
+	if a.Now != nil {
+		return a.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (a *RemoteKillApplier) RestorePersistedState() error {
@@ -178,7 +194,51 @@ func (a *RemoteKillApplier) applyPersistedDecisionLocked(state remoteKillState) 
 	if len(state.Reason) > conductor.MaxReasonBytes {
 		return fmt.Errorf("invalid conductor remote kill persisted reason: %d bytes > cap %d", len(state.Reason), conductor.MaxReasonBytes)
 	}
-	a.KillSwitch.SetConductorRemote(state.State == conductor.KillSwitchActive, state.Reason)
+	// A persisted decision MUST be backed by a re-verifiable signed Conductor
+	// message. The replay-state Context/Digest binding is deterministic and
+	// non-secret, so without re-verification an attacker who can write the
+	// follower replay-state dir could forge a decision and flip (or pin) the kill
+	// switch on restart. Re-verify the signature against the trust roster and fail
+	// CLOSED on any mismatch; the operator recovers with
+	// `conductor follower reset-replay-state`.
+	//
+	// Residual (documented, not closed here): an attacker with replay-state write
+	// access who also possesses a genuine OLDER signed resume (inactive) message
+	// could roll the persisted state back to it; it re-verifies. This is bounded —
+	// the live poller re-fetches the authoritative higher-counter state and
+	// re-asserts within one poll interval — and write access to pipelock's own
+	// state store already implies host compromise. The signature requirement
+	// closes the trivial, total, no-message-needed forgery.
+	if len(state.SignedMessage) == 0 {
+		return errors.New("conductor remote kill persisted decision is not backed by a signed message; refusing to apply unauthenticated kill state (run conductor follower reset-replay-state)")
+	}
+	if a.Resolver == nil {
+		return errors.New("conductor remote kill applier resolver required to verify persisted decision")
+	}
+	var msg conductor.RemoteKillMessage
+	if err := json.Unmarshal(state.SignedMessage, &msg); err != nil {
+		return fmt.Errorf("decode persisted conductor remote kill message: %w", err)
+	}
+	now := a.nowUTC()
+	if err := msg.VerifySignaturesAt(now, a.Resolver); err != nil {
+		a.logReject("persisted_signature", err)
+		return fmt.Errorf("verify persisted conductor remote kill signature: %w", err)
+	}
+	if err := msg.ValidateForFollower(a.OrgID, a.FleetID, a.InstanceID, a.Labels); err != nil {
+		a.logReject("persisted_audience", err)
+		return fmt.Errorf("verify persisted conductor remote kill audience: %w", err)
+	}
+	hash, err := msg.CanonicalHash()
+	if err != nil {
+		return err
+	}
+	// The signed message must match the persisted decision it claims to authorize;
+	// otherwise an attacker could pair a valid signed message with a different
+	// on-disk State/Counter/Reason.
+	if hash != state.LastMessageHash || msg.State != state.State || msg.Counter != state.LastCounter || msg.Reason != state.Reason {
+		return errors.New("persisted conductor remote kill decision does not match its signed message")
+	}
+	a.KillSwitch.SetConductorRemote(msg.State == conductor.KillSwitchActive, msg.Reason)
 	return nil
 }
 
@@ -254,14 +314,32 @@ func remoteKillContextID(path string) string {
 }
 
 func remoteKillDigest(path string, state remoteKillState) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("remote-kill-replay-v1\n%s\n%d\n%s\n%s\n%s\n%s",
+	sum := sha256.Sum256([]byte(fmt.Sprintf("remote-kill-replay-v1\n%s\n%d\n%s\n%s\n%s\n%s\n%s",
 		remoteKillContextID(path),
 		state.LastCounter,
 		state.LastMessageHash,
 		state.State,
 		state.Reason,
 		state.AppliedAt.UTC().Format(time.RFC3339Nano),
+		signedMessageDigest(state.SignedMessage),
 	)))
+	return hex.EncodeToString(sum[:])
+}
+
+// signedMessageDigest hashes the signed message in a whitespace-invariant way.
+// json.MarshalIndent re-indents an embedded json.RawMessage when writing the
+// state file, so the bytes differ from the compact form passed in; compacting
+// first keeps the digest stable across the write/read round-trip.
+func signedMessageDigest(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		sum := sha256.Sum256(b)
+		return hex.EncodeToString(sum[:])
+	}
+	sum := sha256.Sum256(buf.Bytes())
 	return hex.EncodeToString(sum[:])
 }
 
@@ -348,7 +426,8 @@ func remoteKillStatesEqual(a, b remoteKillState) bool {
 		a.LastMessageHash == b.LastMessageHash &&
 		a.State == b.State &&
 		a.Reason == b.Reason &&
-		a.AppliedAt.Equal(b.AppliedAt)
+		a.AppliedAt.Equal(b.AppliedAt) &&
+		bytes.Equal(a.SignedMessage, b.SignedMessage)
 }
 
 func withRemoteKillStateLock(path string, fn func(canonical string) error) error {

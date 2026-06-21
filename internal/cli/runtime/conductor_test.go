@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -506,12 +507,7 @@ func TestBuildConductorRemoteKillPollerRejectsInvalidConfig(t *testing.T) {
 
 func TestBuildConductorRemoteKillPollerRestoresPersistedState(t *testing.T) {
 	dir := t.TempDir()
-	remotePub, _, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
 	trustPath := filepath.Join(dir, "trust-roster.json")
-	rootFingerprint := writeRuntimeTrustRoster(t, trustPath, remotePub, "remote-kill-1", signing.PurposeRemoteKillSigning)
 	clientPEM, clientKeyPEM := testTLSClientCert(t)
 	caPath := filepath.Join(dir, "boss-ca.pem")
 	clientCertPath := filepath.Join(dir, "client.crt")
@@ -524,13 +520,10 @@ func TestBuildConductorRemoteKillPollerRestoresPersistedState(t *testing.T) {
 	if err := os.MkdirAll(bundleCacheDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll(bundle cache): %v", err)
 	}
-	writePrivateTestFile(t, statePath, []byte(`{
-  "last_counter": 7,
-  "last_message_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "state": "active",
-  "reason": "persisted emergency stop",
-  "applied_at": "2026-05-23T12:00:00Z"
-}`))
+	// Seed a properly signed, re-verifiable persisted kill (threshold = 2 signers
+	// in the roster the poller will build). A persisted decision is honored on
+	// restore only if its signed message re-verifies against the trust roster.
+	rootFingerprint, reason := seedSignedRemoteKillState(t, trustPath, statePath)
 	ks := &testRuntimeKillSwitch{}
 	poller, err := buildConductorRemoteKillPoller(&config.Config{
 		Conductor: config.Conductor{
@@ -555,9 +548,104 @@ func TestBuildConductorRemoteKillPollerRestoresPersistedState(t *testing.T) {
 	if poller == nil {
 		t.Fatal("poller = nil")
 	}
-	if !ks.active || ks.message != "persisted emergency stop" {
+	if !ks.active || ks.message != reason {
 		t.Fatalf("kill switch = active=%v message=%q, want restored active", ks.active, ks.message)
 	}
+}
+
+// seedSignedRemoteKillState writes a 2-signer remote-kill trust roster to
+// trustPath and seeds a properly signed, re-verifiable persisted kill decision
+// at statePath (via the real Apply path, so the on-disk binding is correct). It
+// returns the roster root fingerprint and the kill reason. This mirrors what a
+// follower's on-disk state looks like after the Conductor signed and the
+// follower applied a real kill.
+func seedSignedRemoteKillState(t *testing.T, trustPath, statePath string) (rootFingerprint, reason string) {
+	t.Helper()
+	rootPub, rootPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey(root): %v", err)
+	}
+	pub1, priv1, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey(signer 1): %v", err)
+	}
+	pub2, priv2, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey(signer 2): %v", err)
+	}
+	rootFingerprint, err = signing.Fingerprint(rootPub)
+	if err != nil {
+		t.Fatalf("Fingerprint(root): %v", err)
+	}
+	body := contract.KeyRoster{
+		SchemaVersion:  1,
+		RosterSignedBy: "roster-root-1",
+		DataClassRoot:  string(contract.DataClassInternal),
+		Keys: []contract.KeyInfo{
+			{KeyID: "roster-root-1", KeyPurpose: signing.PurposeRosterRoot.String(), PublicKeyHex: hex.EncodeToString(rootPub), ValidFrom: "2026-01-01T00:00:00Z", Status: contract.KeyStatusRoot},
+			{KeyID: "remote-kill-1", KeyPurpose: signing.PurposeRemoteKillSigning.String(), PublicKeyHex: hex.EncodeToString(pub1), ValidFrom: "2026-01-01T00:00:00Z", Status: contract.KeyStatusActive},
+			{KeyID: "remote-kill-2", KeyPurpose: signing.PurposeRemoteKillSigning.String(), PublicKeyHex: hex.EncodeToString(pub2), ValidFrom: "2026-01-01T00:00:00Z", Status: contract.KeyStatusActive},
+		},
+	}
+	rosterPreimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(roster): %v", err)
+	}
+	envelope := contract.RosterEnvelope{
+		Body:      body,
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(rootPriv, rosterPreimage)),
+	}
+	rosterData, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("Marshal(roster): %v", err)
+	}
+	writePrivateTestFile(t, trustPath, rosterData)
+
+	reason = "persisted emergency stop"
+	seedNow := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	msg := conductor.RemoteKillMessage{
+		SchemaVersion: conductor.SchemaVersion,
+		MessageID:     "kill-runtime-1",
+		OrgID:         "org-main",
+		FleetID:       "prod",
+		Audience:      conductor.Audience{InstanceIDs: []string{"pl-prod-1"}},
+		State:         conductor.KillSwitchActive,
+		Counter:       7,
+		Reason:        reason,
+		CreatedAt:     seedNow,
+		NotBefore:     seedNow.Add(-time.Minute),
+		ExpiresAt:     seedNow.Add(time.Hour),
+	}
+	msgPreimage, err := msg.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(kill): %v", err)
+	}
+	msg.Signatures = []conductor.SignatureProof{
+		{SignerKeyID: "remote-kill-1", KeyPurpose: signing.PurposeRemoteKillSigning, Algorithm: conductor.SignatureAlgorithmEd25519, Signature: conductor.SignaturePrefixEd25519 + hex.EncodeToString(ed25519.Sign(priv1, msgPreimage))},
+		{SignerKeyID: "remote-kill-2", KeyPurpose: signing.PurposeRemoteKillSigning, Algorithm: conductor.SignatureAlgorithmEd25519, Signature: conductor.SignaturePrefixEd25519 + hex.EncodeToString(ed25519.Sign(priv2, msgPreimage))},
+	}
+	resolver := func(keyID string) (conductor.SignatureKey, error) {
+		switch keyID {
+		case "remote-kill-1":
+			return conductor.SignatureKey{PublicKey: pub1, KeyPurpose: signing.PurposeRemoteKillSigning}, nil
+		case "remote-kill-2":
+			return conductor.SignatureKey{PublicKey: pub2, KeyPurpose: signing.PurposeRemoteKillSigning}, nil
+		default:
+			return conductor.SignatureKey{}, conductor.ErrSignatureVerification
+		}
+	}
+	if err := (&emergency.RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: &testRuntimeKillSwitch{},
+		StatePath:  statePath,
+		Now:        func() time.Time { return seedNow },
+	}).Apply(msg); err != nil {
+		t.Fatalf("seed Apply: %v", err)
+	}
+	return rootFingerprint, reason
 }
 
 func TestConductorRuntimeChanged(t *testing.T) {

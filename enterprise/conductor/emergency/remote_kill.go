@@ -164,16 +164,6 @@ func (a *RemoteKillApplier) RestorePersistedState() error {
 	if state.LastMessageHash == "" {
 		return nil
 	}
-	// Applying a persisted decision here is BLIND: unlike Apply (which re-verifies a
-	// signed Conductor message before reconciling), RestorePersistedState trusts the
-	// on-disk decision as-is. So the decision MUST be cryptographically bound to this
-	// state path (non-empty context+digest, already validated for match on read by
-	// readOptionalRemoteKillState). An unbound decision could be a forged or copied
-	// state planted to flip or pin a follower's kill switch; refuse it and fail closed.
-	// Recover an over-tight follower with `pipelock conductor follower reset-replay-state`.
-	if state.Context == "" || state.Digest == "" {
-		return fmt.Errorf("conductor remote kill persisted decision is not bound to this follower; refusing to apply unverified state (run an explicit replay-state reset to recover)")
-	}
 	return a.applyPersistedDecisionLocked(state)
 }
 

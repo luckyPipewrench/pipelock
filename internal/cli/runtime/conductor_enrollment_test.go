@@ -16,10 +16,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/enrollmentclient"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+// stubKillSwitch satisfies emergency.KillSwitchSetter for restore tests.
+type stubKillSwitch struct {
+	active  bool
+	message string
+}
+
+func (s *stubKillSwitch) SetConductorRemote(active bool, message string) {
+	s.active = active
+	s.message = message
+}
 
 type conductorEnrollmentStubClient struct {
 	mu     sync.Mutex
@@ -375,4 +387,46 @@ func conductorEnrollmentTestConfig(t *testing.T) *config.Config {
 		AuditSigningKeyID:   "audit-key-1",
 		PollInterval:        time.Second.String(),
 	}}
+}
+
+// TestRunConductorAutoEnrollWritesReplayBaseline proves the restart-wedge fix
+// end to end at the runtime layer: a successful auto-enroll writes the initial
+// remote-kill replay baseline next to the enrollment marker, so an enrolled
+// follower that has never received a kill restores cleanly on restart instead
+// of failing closed.
+func TestRunConductorAutoEnrollWritesReplayBaseline(t *testing.T) {
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	cfg := conductorEnrollmentTestConfig(t)
+	client := &conductorEnrollmentStubClient{}
+	enrolled, err := runConductorAutoEnroll(t.Context(), cfg, priv, client)
+	if err != nil {
+		t.Fatalf("runConductorAutoEnroll error = %v", err)
+	}
+	if !enrolled {
+		t.Fatal("runConductorAutoEnroll enrolled=false, want true")
+	}
+
+	baselinePath := filepath.Join(cfg.Conductor.BundleCacheDir, emergency.RemoteKillStateFileName)
+	info, err := os.Stat(baselinePath)
+	if err != nil {
+		t.Fatalf("stat replay baseline: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("replay baseline mode = %v, want 0600", got)
+	}
+
+	// Simulate the next pod start: an enrolled follower with the baseline must
+	// restore cleanly (no wedge) and must NOT spuriously activate the kill
+	// switch (the baseline is a no-decision counter-0 state).
+	ks := &stubKillSwitch{}
+	applier := &emergency.RemoteKillApplier{KillSwitch: ks, StatePath: baselinePath}
+	if err := applier.RestorePersistedState(); err != nil {
+		t.Fatalf("RestorePersistedState() after enroll baseline error = %v, want nil", err)
+	}
+	if ks.active {
+		t.Fatal("kill switch active after baseline restore, want inactive")
+	}
 }

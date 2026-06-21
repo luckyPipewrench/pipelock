@@ -470,3 +470,53 @@ func ResetRemoteKillReplayState(path string, counter uint64, state conductor.Kil
 		AppliedAt:       now.UTC(),
 	})
 }
+
+// InitializeReplayBaseline writes an initial, no-decision remote-kill replay
+// baseline for a freshly enrolled follower that has never received a kill.
+//
+// Why this exists: an enrolled follower is treated as "follower context
+// present" (the enrollment marker sits next to the replay state). On restart,
+// readDurableRemoteKillState refuses to start when that context is present but
+// no replay state exists — a deliberate anti-replay guard against someone
+// deleting the state file to reset the kill counter. A follower that enrolled
+// cleanly but was never killed has no replay state yet, so without this
+// baseline it would wedge (fail closed) on its first restart with no shipped
+// recovery path. Writing the baseline at enrollment closes that gap.
+//
+// The baseline carries counter 0 and an empty LastMessageHash, so
+// RestorePersistedState treats it as "no decision to apply" (boots clean, kill
+// switch untouched) while the first real remote-kill (counter > 0) still
+// advances the replay counter normally.
+//
+// It is replay-safe: if ANY replay state already exists (primary file, anchor,
+// or context) the call is a no-op, so it can never overwrite a real kill
+// decision and reset the counter. A corrupt/unreadable existing state fails
+// loud rather than being silently overwritten.
+func InitializeReplayBaseline(path string, now time.Time) error {
+	canonical := filepath.Clean(path)
+	if _, found, err := readOptionalRemoteKillState(canonical, canonical); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
+	if _, found, err := readOptionalRemoteKillState(remoteKillStateAnchorPath(canonical), canonical); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
+	if found, err := readRemoteKillStateContext(canonical); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return writeRemoteKillState(canonical, remoteKillState{
+		LastCounter:     0,
+		LastMessageHash: "",
+		State:           conductor.KillSwitchInactive,
+		Reason:          "",
+		AppliedAt:       now.UTC(),
+	})
+}

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/enrollmentclient"
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -98,6 +99,15 @@ func runConductorAutoEnroll(ctx context.Context, cfg *config.Config, recPrivKey 
 	}
 	if err := writeConductorEnrollmentMarker(markerPath, resp); err != nil {
 		return false, err
+	}
+	// Write an initial remote-kill replay baseline alongside the enrollment
+	// marker. Without it, this freshly enrolled follower would wedge on its
+	// first restart: the marker counts as "follower context present" but no
+	// replay state exists yet (it is only written on the first remote-kill),
+	// so startup fails closed with no shipped recovery path.
+	baselinePath := filepath.Join(cfg.Conductor.BundleCacheDir, emergency.RemoteKillStateFileName)
+	if err := emergency.InitializeReplayBaseline(baselinePath, time.Now().UTC()); err != nil {
+		return false, fmt.Errorf("initialize conductor remote kill replay baseline: %w", err)
 	}
 	return true, nil
 }

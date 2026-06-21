@@ -5,6 +5,7 @@
 package emergency
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,38 @@ func TestInitializeReplayBaselineDoesNotClobberExistingState(t *testing.T) {
 	}
 	if !ks.active || ks.message != "real kill" {
 		t.Fatalf("restored kill switch = active=%v message=%q, want preserved active kill", ks.active, ks.message)
+	}
+}
+
+// TestRestorePersistedStateRefusesUnboundDecision (G6): RestorePersistedState
+// applies a persisted decision BLINDLY (no signed message to re-verify against),
+// so it must refuse an UNBOUND decision (empty context/digest). Otherwise a forged
+// or copied state planted on the follower's disk could flip its kill switch. The
+// Apply path's legacy reconciliation against a verified message is unaffected.
+func TestRestorePersistedStateRefusesUnboundDecision(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), RemoteKillStateFileName)
+	// Hand-crafted unbound state carrying a decision (un-kill): no context, no digest.
+	unbound, err := json.Marshal(map[string]any{
+		"last_counter":      7,
+		"last_message_hash": strings.Repeat("d", 64),
+		"state":             string(conductor.KillSwitchInactive),
+		"applied_at":        testNow,
+	})
+	if err != nil {
+		t.Fatalf("marshal unbound state: %v", err)
+	}
+	if err := os.WriteFile(statePath, unbound, 0o600); err != nil {
+		t.Fatalf("write unbound state: %v", err)
+	}
+
+	ks := &captureKillSwitch{}
+	applier := &RemoteKillApplier{KillSwitch: ks, StatePath: statePath}
+	err = applier.RestorePersistedState()
+	if err == nil || !strings.Contains(err.Error(), "not bound to this follower") {
+		t.Fatalf("RestorePersistedState(unbound decision) error = %v, want refuse-unbound", err)
+	}
+	if ks.active {
+		t.Fatal("kill switch was flipped by an unbound (unverified) decision — replay/forgery hole")
 	}
 }
 

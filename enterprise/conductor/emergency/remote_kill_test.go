@@ -511,6 +511,17 @@ func TestResetRemoteKillReplayState(t *testing.T) {
 	if state.LastCounter != 21 || state.State != conductor.KillSwitchInactive || state.Reason != "operator reset after restore" {
 		t.Fatalf("state = %+v, want reset counter/state/reason", state)
 	}
+	err = (&RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}).RestorePersistedState()
+	if err == nil || !strings.Contains(err.Error(), "not backed by a signed message") {
+		t.Fatalf("RestorePersistedState(unsigned reset) error = %v, want signed-message rejection", err)
+	}
 	if err := ResetRemoteKillReplayState(filepath.Join(t.TempDir(), "bad.json"), 0, conductor.KillSwitchInactive, "", testNow); err == nil {
 		t.Fatal("counter 0 reset must fail")
 	}

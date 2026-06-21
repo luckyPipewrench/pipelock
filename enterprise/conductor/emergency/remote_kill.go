@@ -555,6 +555,12 @@ func writeRemoteKillStateContext(path string) error {
 	return nil
 }
 
+// ResetRemoteKillReplayState writes an unsigned monotonic replay floor.
+//
+// This is not a boot-recovery path for a persisted kill decision: after signed
+// restore hardening, non-empty decisions without SignedMessage intentionally fail
+// RestorePersistedState. Use ResetReplayStateToBaseline for the shipped operator
+// recovery command that lets a wedged follower boot and re-sync from Conductor.
 func ResetRemoteKillReplayState(path string, counter uint64, state conductor.KillSwitchState, reason string, now time.Time) error {
 	switch state {
 	case conductor.KillSwitchActive, conductor.KillSwitchInactive:

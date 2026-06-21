@@ -266,12 +266,22 @@ func remoteKillDigest(path string, state remoteKillState) string {
 }
 
 func readDurableRemoteKillState(path string) (remoteKillState, error) {
-	canonical := filepath.Clean(path)
+	var state remoteKillState
+	err := withRemoteKillStateLock(path, func(canonical string) error {
+		var err error
+		state, err = readDurableRemoteKillStateLocked(canonical)
+		return err
+	})
+	return state, err
+}
+
+func readDurableRemoteKillStateLocked(canonical string) (remoteKillState, error) {
 	primary, primaryFound, err := readOptionalRemoteKillState(canonical, canonical)
 	if err != nil {
 		return remoteKillState{}, err
 	}
-	anchor, anchorFound, err := readOptionalRemoteKillState(remoteKillStateAnchorPath(path), canonical)
+	anchorPath := remoteKillStateAnchorPath(canonical)
+	anchor, anchorFound, err := readOptionalRemoteKillState(anchorPath, canonical)
 	if err != nil {
 		return remoteKillState{}, err
 	}
@@ -282,10 +292,10 @@ func readDurableRemoteKillState(path string) (remoteKillState, error) {
 		}
 		return primary, nil
 	case primaryFound:
-		if err := writeRemoteKillStateFileForContext(remoteKillStateAnchorPath(path), canonical, primary); err != nil {
+		if err := writeRemoteKillStateFileForContext(anchorPath, canonical, primary); err != nil {
 			return remoteKillState{}, fmt.Errorf("backfill conductor remote kill state anchor: %w", err)
 		}
-		if err := writeRemoteKillStateContext(path); err != nil {
+		if err := writeRemoteKillStateContext(canonical); err != nil {
 			return remoteKillState{}, fmt.Errorf("backfill conductor remote kill state context: %w", err)
 		}
 		return primary, nil
@@ -293,12 +303,12 @@ func readDurableRemoteKillState(path string) (remoteKillState, error) {
 		if err := writeRemoteKillStateFileForContext(canonical, canonical, anchor); err != nil {
 			return remoteKillState{}, fmt.Errorf("restore conductor remote kill state primary: %w", err)
 		}
-		if err := writeRemoteKillStateContext(path); err != nil {
+		if err := writeRemoteKillStateContext(canonical); err != nil {
 			return remoteKillState{}, fmt.Errorf("backfill conductor remote kill state context: %w", err)
 		}
 		return anchor, nil
 	default:
-		contextFound, contextErr := remoteKillReplayContextPresent(path)
+		contextFound, contextErr := remoteKillReplayContextPresent(canonical)
 		if contextErr != nil {
 			return remoteKillState{}, contextErr
 		}

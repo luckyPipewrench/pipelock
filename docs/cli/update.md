@@ -87,11 +87,11 @@ The `--insecure-skip-signature` flag is a **deprecated no-op** retained only for
 backward compatibility; it does not relax native verification or any other
 check.
 
-> **Upgrading from a pre-2.8.1 binary:** releases before 2.8.1 used a
+> **Upgrading from a pre-3.0.0 binary:** releases before 3.0.0 used a
 > cosign-only verification path and had no embedded release keyring, so a stock
-> pre-2.8.1 binary running `pipelock update` follows that older path. The
+> pre-3.0.0 binary running `pipelock update` follows that older path. The
 > mandatory native-manifest verification described here applies once you are
-> running 2.8.1 or later.
+> running 3.0.0 or later.
 
 ## Rollback
 

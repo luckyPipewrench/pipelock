@@ -15,28 +15,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-## [2.8.1] - 2026-06-20
+## [3.0.0] - 2026-06-22
 
 ### Highlights
 
-A hardening and coverage release. Self-update is now anchored to a signed release
-manifest verified with an embedded Ed25519 keyring (no external tools required),
-several security fixes close fail-open and bypass edges, and detection gains
-provider-API-key DLP coverage plus per-server control over how much an MCP server's
-responses are trusted.
+A major release. Pipelock's enforcement defaults are hardened to fail closed across
+the board — a deliberate set of breaking changes, each making the safe choice the
+default — and the Enterprise conductor gains the day-2 fleet operations needed to run
+a fleet for real: decommission a follower, and back up and restore the control plane
+for disaster recovery. Self-update is anchored to a signed release manifest, detection
+adds provider-API-key DLP coverage, and several fail-open and bypass edges are closed.
 
 ### ⚠️ Breaking Changes / Upgrade Notes
 
-- **Self-update now requires a signed release manifest.** `pipelock update` verifies
-  a signed `release.json` with the release keyring embedded in the binary
-  (`RELEASE_KEYRING_HEX`) **before** any download is trusted; this native Ed25519
-  check is mandatory and fail-closed. `cosign` is demoted to an optional secondary
-  cross-check whose absence is no longer a bypass, and `--insecure-skip-signature` is
-  now a deprecated no-op. A stock pre-2.8.1 binary still uses the older cosign-only
-  path; the mandatory native check applies once you are running 2.8.1 or later. (#818)
+Every change in this section fails closed: it blocks or tightens, and none of them
+open a hole. Review before upgrading.
+
+- **MCP response enforcement now blocks by default.** Each MCP server's responses are
+  evaluated against a per-server trust class, and the default is "untrusted," which
+  blocks on a response-injection finding. Previously the configured
+  `response_scanning.action` (for example `warn`) governed MCP responses. To keep the
+  prior warn-through behavior for a specific server, mark it
+  `response_scanning.mcp_servers[].trust: reasoning`. (#820)
+- **Self-update now requires a signed release manifest.** `pipelock update` verifies a
+  signed `release.json` with the release keyring embedded in the binary **before** any
+  download is trusted; this native Ed25519 check is mandatory and fail-closed. `cosign`
+  is demoted to an optional secondary cross-check whose absence is no longer a bypass,
+  and `--insecure-skip-signature` is now a deprecated no-op. A stock binary from before
+  this release still uses the older cosign-only path; the mandatory native check
+  applies once you are running this release or later. (#818)
+- **A config reload that would weaken the security posture is rejected.** A hot reload
+  (file watch, SIGHUP, or conductor policy bundle) that would disable the proxy or any
+  scanner is now refused and the running config is kept, instead of being silently
+  applied. (#819)
+- **`api_allowlist` no longer ships messaging platforms.** Generated defaults and
+  presets no longer include `*.slack.com`, `*.discord.com`, `gateway.discord.gg`, or
+  `api.telegram.org`. In strict mode, where `api_allowlist` is an enforced gate,
+  deployments that relied on the generated default for messaging egress must add those
+  hosts explicitly. Existing on-disk configs are unaffected. Validation now warns when
+  an `api_allowlist` contains messaging platforms. Allowlisting never bypassed content
+  scanning and still does not. (#827)
+- **Require-intermediate license mode now mandates a CRL.** With
+  `PIPELOCK_LICENSE_REQUIRE_INTERMEDIATE` enabled and an intermediate configured,
+  license verification fails closed unless a certificate revocation list is also
+  configured (a warning for the free proxy). A popped root cannot mint a bypass token,
+  but that guarantee is hollow if a revoked intermediate cannot be detected. Affects
+  only deployments that explicitly enable require-intermediate. (#827)
+- **Stricter provider-key DLP.** Provider-API-key patterns dropped a leading word
+  boundary so a key glued to an adjacent character is still caught; this may newly flag
+  tokens that were previously missed. (#827)
+- **Conductor cross-stream retarget requires upgraded followers.** A cross-stream
+  retarget now carries a signed stream-switch authorization; an upgraded follower
+  rejects an old-style retarget that lacks one. Upgrade followers before using the new
+  stream-switch publish path. (#827)
 
 ### New Features
 
+- **Conductor follower decommission (un-enroll).** `pipelock conductor follower remove`
+  deletes a follower's enrollment so it leaves `fleet status` and its future audit
+  evidence, signed with the enrolled key, is rejected. Admin-only, exact-identity,
+  idempotent, and fail-closed (removing a non-existent or wrong-fleet follower returns
+  an error and changes nothing). Completes the operator lifecycle for followers.
+  (Enterprise, requires the `fleet` license feature.)
+- **Conductor disaster recovery: offline control-plane backup and restore.**
+  `pipelock conductor store backup` and `pipelock conductor store restore` capture and
+  recover the control-plane store (enrollments, policy bundles, stream heads, emergency
+  controls). Restore is a dry run unless `--confirm`, moves any existing storage aside
+  before installing, and works whether the target is missing, an empty reprovisioned
+  volume, or populated. (Enterprise, requires the `fleet` license feature.)
+- **Conductor cross-stream retarget authorization with bounded validity.** A follower
+  is moved across policy streams only with a signed stream-switch authorization, capped
+  to a maximum validity window so a long-lived retarget cannot be minted. (#827)
 - **Provider-key DLP coverage.** Adds false-positive-safe DLP detection for
   distinctively prefixed LLM/provider API-key shapes, with default provider-host
   exemptions (a provider credential sent to that provider's own API endpoint is not
@@ -45,10 +94,18 @@ responses are trusted.
   documented coverage and intentionally excluded FP-prone shapes, and an updated
   custom-provider path. (#821)
 - **Per-server MCP response trust classes.** Configure how much each MCP server's
-  responses are trusted, so response scanning can be tuned per upstream server. (#820)
+  responses are trusted, so response scanning can be tuned per upstream server. See the
+  breaking-changes note above for the new default. (#820)
 
 ### Changed
 
+- **Conductor control messages tolerate bounded clock skew on `not_before`.** Control
+  messages (policy bundle, remote-kill, rollback, stream-switch) stamp `not_before` on
+  the operator clock but are validated on the conductor and follower clocks. The check
+  was zero-tolerance, so a multi-host fleet with an operator clock slightly ahead made
+  every kill or rollback fail as "not yet valid." A bounded 60-second tolerance now
+  applies to `not_before` only; expiry stays strict, so a validity window is never
+  extended. (#827)
 - **Portable `contain install` across Linux distributions.** Containment install no
   longer assumes a single distro layout; the nftables step checks the installed `nft`
   version and fails with a clear, distro-appropriate error on too-old versions rather
@@ -56,17 +113,28 @@ responses are trusted.
 
 ### Security
 
-- **Receipt trust anchor, fail-closed config reload, scan-masking fix, sandbox TOCTOU
-  fix.** Receipt verification is bound to a trust anchor; a config reload that would
-  disable the proxy or scanners is now rejected (fail-closed) instead of silently
-  applied; a response-scan masking bypass and a sandbox time-of-check/time-of-use
-  window are closed. (#819)
+- **Provider-key glue-bypass closed.** A provider key glued to a preceding character
+  (one extra character before the prefix) previously evaded detection; the leading
+  boundary was dropped on the affected provider-key DLP patterns, mirrored across
+  presets, and aligned with the redaction patterns so a glued key cannot be blocked by
+  the scanner yet pass through redaction unmasked. (#827)
+- **Release signature binds to the declared signer.** Manifest verification now
+  requires the validating key to match the declared `signer_key_id`, so during a
+  keyring rotation a manifest cannot name one key and be signed by another. (#827)
+- **Receipt trust anchor, scan-masking fix, sandbox TOCTOU fix.** Receipt verification
+  is bound to a trust anchor; a response-scan masking bypass and a sandbox
+  time-of-check/time-of-use window are closed. (See also the fail-closed config-reload
+  change under Breaking Changes.) (#819)
 
 ### Fixed
 
+- **Conductor follower restart-wedge plus replay-state recovery.** A legacy remote-kill
+  replay-state digest is migrated on boot so a follower no longer crashloops on a
+  digest-format change across upgrades, and a recovery command resets a wedged local
+  apply state. (#823, #827)
 - **Idle timeout measured across both tunnel directions.** CONNECT and WebSocket
-  tunnels now track idle activity in both directions, preventing premature or
-  incorrect idle closure when traffic flows only one way. (#816)
+  tunnels now track idle activity in both directions, preventing premature or incorrect
+  idle closure when traffic flows only one way. (#816)
 
 ## [2.8.0] - 2026-06-18
 

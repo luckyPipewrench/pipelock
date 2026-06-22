@@ -48,6 +48,7 @@ var (
 	ErrEnrollmentTokenExpired   = errors.New("conductor enrollment token expired")
 	ErrEnrollmentActiveInstance = errors.New("conductor follower instance already enrolled")
 	ErrEnrollmentTokenNotFound  = errors.New("conductor enrollment token not found")
+	ErrFollowerNotFound         = errors.New("conductor follower not found")
 	// ErrEnrollmentTokenNotPending is returned when a revoke targets a token
 	// that is no longer pending (already consumed or already revoked). Revoke is
 	// only meaningful for an outstanding, unused token; a consumed token has
@@ -61,6 +62,7 @@ type EnrollmentStore interface {
 	ConsumeEnrollmentToken(context.Context, ConsumeEnrollmentTokenRequest) (EnrolledFollower, error)
 	ResolveEnrolledAuditKey(FollowerIdentity, string) (conductor.SignatureKey, error)
 	ListEnrolledFollowers(context.Context, FollowerListQuery) ([]FollowerSummary, error)
+	RemoveEnrolledFollower(context.Context, RemoveEnrolledFollowerRequest) (FollowerSummary, error)
 	// ListEnrollmentTokens returns the metadata-only roster of enrollment
 	// tokens. It MUST NOT return token bytes or the token hash: the secret is
 	// write-once at mint time and never readable again.
@@ -136,6 +138,14 @@ type FollowerListQuery struct {
 	FleetID    string
 	InstanceID string
 	Limit      int
+}
+
+// RemoveEnrolledFollowerRequest names the exact active follower enrollment to
+// retire. Environment is required because the follower identity and audit-key
+// trust are scoped to the full org/fleet/instance/environment tuple.
+type RemoveEnrolledFollowerRequest struct {
+	Identity FollowerIdentity
+	Now      time.Time
 }
 
 // FollowerSummary is the metadata-only view of one enrolled follower returned
@@ -448,6 +458,43 @@ func (s *FileEnrollmentStore) ListEnrolledFollowers(_ context.Context, q Followe
 		return followerSummaryLess(out[i], out[j])
 	})
 	return []FollowerSummary(out), nil
+}
+
+// RemoveEnrolledFollower deletes one active follower enrollment from the
+// Conductor trust store. After the delete, ResolveEnrolledAuditKey no longer
+// returns that follower's audit key, so future audit evidence from the removed
+// follower fails closed. Unknown or already-removed followers return
+// ErrFollowerNotFound; the command is idempotent in side effect but never
+// silently treats a missing follower as success.
+func (s *FileEnrollmentStore) RemoveEnrolledFollower(_ context.Context, req RemoveEnrolledFollowerRequest) (FollowerSummary, error) {
+	if s == nil {
+		return FollowerSummary{}, ErrEnrollmentStoreRequired
+	}
+	if err := req.Identity.Validate(); err != nil {
+		return FollowerSummary{}, err
+	}
+	key := followerEnrollmentKey(req.Identity)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	follower, ok := s.data.Followers[key]
+	if !ok || !follower.Active {
+		return FollowerSummary{}, ErrFollowerNotFound
+	}
+	delete(s.data.Followers, key)
+	if err := s.saveLocked(); err != nil {
+		s.data.Followers[key] = follower
+		return FollowerSummary{}, err
+	}
+	return FollowerSummary{
+		OrgID:       follower.Identity.OrgID,
+		FleetID:     follower.Identity.FleetID,
+		InstanceID:  follower.Identity.InstanceID,
+		Environment: follower.Identity.Environment,
+		AuditKeyID:  follower.AuditKeyID,
+		EnrolledAt:  follower.EnrolledAt,
+		Active:      false,
+	}, nil
 }
 
 // ListEnrollmentTokens returns the metadata-only roster of enrollment tokens
@@ -879,7 +926,7 @@ func writeEnrollmentError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrEnrollmentTokenInvalid), errors.Is(err, ErrEnrollmentTokenConsumed), errors.Is(err, ErrEnrollmentTokenExpired):
 		writeError(w, http.StatusUnauthorized, ErrEnrollmentTokenInvalid)
-	case errors.Is(err, ErrEnrollmentTokenNotFound):
+	case errors.Is(err, ErrEnrollmentTokenNotFound), errors.Is(err, ErrFollowerNotFound):
 		writeError(w, http.StatusNotFound, err)
 	case errors.Is(err, ErrEnrollmentActiveInstance), errors.Is(err, ErrEnrollmentTokenConflict), errors.Is(err, ErrEnrollmentTokenNotPending):
 		writeError(w, http.StatusConflict, err)

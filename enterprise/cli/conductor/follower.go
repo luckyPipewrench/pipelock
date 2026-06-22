@@ -5,6 +5,8 @@
 package conductor
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -12,21 +14,32 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
-// followerCmd groups local, follower-side Conductor recovery commands. These run
-// on the follower host (against its on-disk conductor state), not over the mTLS
-// control-plane API.
+// followerCmd groups follower lifecycle commands. Recovery subcommands run on
+// the follower host against local disk state; remove is an operator control
+// plane action against the Conductor API.
 func followerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "follower",
-		Short: "Local follower-side Conductor recovery commands",
+		Short: "Manage Conductor followers and local follower recovery state",
 	}
+	cmd.AddCommand(followerRemoveCmd())
 	cmd.AddCommand(followerResetReplayStateCmd())
 	cmd.AddCommand(followerResetBundleStateCmd())
 	return cmd
+}
+
+type followerRemoveOptions struct {
+	client      clientOptions
+	orgID       string
+	fleetID     string
+	instanceID  string
+	environment string
+	jsonOut     bool
 }
 
 type followerResetReplayOptions struct {
@@ -39,6 +52,90 @@ type followerResetBundleOptions struct {
 	stateDir       string
 	confirm        bool
 	licenseCRLFile string
+}
+
+type followerRemoveRequest struct {
+	OrgID       string `json:"org_id"`
+	FleetID     string `json:"fleet_id"`
+	InstanceID  string `json:"instance_id"`
+	Environment string `json:"environment"`
+}
+
+func followerRemoveCmd() *cobra.Command {
+	opts := followerRemoveOptions{}
+	cmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove an enrolled follower from Conductor trust",
+		Long: `Remove an enrolled follower from the Conductor enrollment store.
+
+Removal is an admin-only decommission action. It deletes the follower's active
+enrollment record, so the follower no longer appears in fleet status and future
+audit evidence signed with its enrolled audit key is rejected. The exact
+org/fleet/instance/environment tuple is required; an unknown follower fails
+loud instead of being treated as success.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
+				return err
+			}
+			return runFollowerRemove(cmd, opts)
+		},
+	}
+	opts.client.bindFlags(cmd)
+	cmd.Flags().StringVar(&opts.orgID, "org-id", "", "org id of the follower to remove (required)")
+	cmd.Flags().StringVar(&opts.fleetID, "fleet-id", "", "fleet id of the follower to remove (required)")
+	cmd.Flags().StringVar(&opts.instanceID, "instance-id", "", "instance id of the follower to remove (required)")
+	cmd.Flags().StringVar(&opts.environment, "environment", "", "environment of the follower to remove (required)")
+	cmd.Flags().BoolVar(&opts.jsonOut, "json", false, "emit the raw JSON response instead of a human summary")
+	_ = cmd.MarkFlagRequired("org-id")
+	_ = cmd.MarkFlagRequired("fleet-id")
+	_ = cmd.MarkFlagRequired("instance-id")
+	_ = cmd.MarkFlagRequired("environment")
+	return cmd
+}
+
+func runFollowerRemove(cmd *cobra.Command, opts followerRemoveOptions) error {
+	if opts.orgID == "" {
+		return fmt.Errorf("--org-id is required")
+	}
+	if opts.fleetID == "" {
+		return fmt.Errorf("--fleet-id is required")
+	}
+	if opts.instanceID == "" {
+		return fmt.Errorf("--instance-id is required")
+	}
+	if opts.environment == "" {
+		return fmt.Errorf("--environment is required")
+	}
+	client, err := newConductorClient(opts.client)
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	body, err := client.deleteJSON(ctx, controlplane.FollowersPath, followerRemoveRequest{
+		OrgID:       opts.orgID,
+		FleetID:     opts.fleetID,
+		InstanceID:  opts.instanceID,
+		Environment: opts.environment,
+	})
+	if err != nil {
+		return err
+	}
+	if opts.jsonOut {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(body))
+		return nil
+	}
+	var removed controlplane.FollowerSummary
+	if err := json.Unmarshal(body, &removed); err != nil {
+		return fmt.Errorf("decode follower remove response: %w", err)
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+		"removed follower org=%s fleet=%s instance=%s environment=%s audit_key_id=%s\n",
+		removed.OrgID, removed.FleetID, removed.InstanceID, removed.Environment, removed.AuditKeyID)
+	return nil
 }
 
 func followerResetReplayStateCmd() *cobra.Command {

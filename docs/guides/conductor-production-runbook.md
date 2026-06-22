@@ -39,8 +39,10 @@ writing a file. See [`pipelock license`](../cli/license.md).
 | 10. Recover follower bundle state | `pipelock conductor follower reset-bundle-state` | **Shipped** |
 | 11. Mint enrollment tokens | `pipelock conductor enrollment-token mint` | **Shipped** |
 | 12. Fleet status / followers | `pipelock conductor fleet status` / `followers` | **Shipped** |
-| 13. Query the audit sink | `pipelock conductor audit query` | **Shipped** |
-| 14. Rotate certs and keys | cert-manager + `signing key generate` | **Shipped** |
+| 13. Remove / decommission followers | `pipelock conductor follower remove` | **Shipped** |
+| 14. Back up / restore Conductor state | `pipelock conductor store backup` / `restore` | **Shipped** |
+| 15. Query the audit sink | `pipelock conductor audit query` | **Shipped** |
+| 16. Rotate certs and keys | cert-manager + `signing key generate` | **Shipped** |
 
 Every stage uses a shipped CLI; the full lifecycle runs without hand-rolled Go or
 OpenSSL beyond the documented bring-your-own-PKI choice. For the on-wire request
@@ -573,7 +575,89 @@ pipelock conductor fleet status \
   --ca-file /etc/pipelock/conductor-ca.pem
 ```
 
-## 13. Query the audit sink
+## 13. Remove a follower
+
+`pipelock conductor follower remove` decommissions one exact follower identity.
+It deletes the active enrollment record from the Conductor store, so the
+follower disappears from `fleet status` and future audit evidence signed by that
+enrolled audit key is rejected. The command is admin-only and requires the full
+org/fleet/instance/environment tuple; a wrong or already-removed follower fails
+loud instead of being treated as success.
+
+```bash
+pipelock conductor follower remove \
+  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org-id org-acme \
+  --fleet-id prod \
+  --instance-id edge-01 \
+  --environment prod \
+  --token-file /etc/pipelock/conductor/tokens/admin/token \
+  --client-cert /etc/pipelock/operator.crt \
+  --client-key /etc/pipelock/operator.key \
+  --ca-file /etc/pipelock/conductor-ca.pem
+```
+
+Confirm removal:
+
+```bash
+pipelock conductor fleet status \
+  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org-id org-acme --fleet-id prod --instance-id edge-01 \
+  --token-file /etc/pipelock/conductor/tokens/admin/token \
+  --client-cert /etc/pipelock/operator.crt \
+  --client-key /etc/pipelock/operator.key \
+  --ca-file /etc/pipelock/conductor-ca.pem
+```
+
+Expected result: no matching enrolled follower. If the old follower keeps
+running, it can still enforce local policy, but its later audit batches no
+longer verify through the Conductor enrollment resolver.
+
+## 14. Back up and restore Conductor state
+
+Back up the Conductor storage directory as one unit while Conductor is stopped
+or from a crash-consistent read-only volume snapshot:
+
+```bash
+pipelock conductor store backup \
+  --storage-dir /var/lib/pipelock/conductor \
+  --backup-dir /secure-backups/pipelock/conductor-20260622T120000Z
+```
+
+Restore is dry-run by default:
+
+```bash
+pipelock conductor store restore \
+  --storage-dir /var/lib/pipelock/conductor \
+  --backup-dir /secure-backups/pipelock/conductor-20260622T120000Z
+```
+
+Apply the restore only while Conductor is stopped:
+
+```bash
+pipelock conductor store restore \
+  --storage-dir /var/lib/pipelock/conductor \
+  --backup-dir /secure-backups/pipelock/conductor-20260622T120000Z \
+  --confirm
+```
+
+The storage backup includes policy bundles, stream heads, follower enrollments,
+emergency controls, and audit DB files under `--storage-dir`. It does not
+include TLS private keys, operator signing keys, license tokens, or Kubernetes
+Secrets; restore those through the deployment's secret/KMS process before
+starting Conductor. See [Conductor backup and restore](conductor-backup-restore.md).
+
+After restore:
+
+```bash
+pipelock conductor store inspect-offline \
+  --storage-dir /var/lib/pipelock/conductor
+```
+
+Expected result: the restored policy-bundle store reports the expected stream
+heads and no startup-bricking orphan records.
+
+## 15. Query the audit sink
 
 `pipelock conductor audit query` queries the audit sink's stored evidence
 metadata for one org/fleet/instance, read over mTLS with an auditor token:
@@ -611,7 +695,7 @@ Without `--key`, verification is **structural-only** and exits non-zero unless
 you pass `--allow-unpinned` — pin the trusted signer key to get a meaningful
 `CHAIN VALID`. See [receipt verification](receipt-verification.md).
 
-## 14. Rotate certs and keys
+## 16. Rotate certs and keys
 
 The operator-lifecycle rule for every piece of fleet state: prove you can
 **rotate, revoke, and recover** it, not just create it.
@@ -680,3 +764,4 @@ keeps serving its last applied bundle.
 - [Configuration reference: Conductor follower](../configuration.md#conductor-follower-v27-enterprise)
 - [Receipt verification](receipt-verification.md) — verify follower evidence offline
 - [`pipelock license`](../cli/license.md) — install and check the fleet license
+- [Conductor backup and restore](conductor-backup-restore.md) — DR commands and checks

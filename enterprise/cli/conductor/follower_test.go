@@ -7,6 +7,8 @@ package conductor
 import (
 	"bytes"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +20,68 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
+
+func TestFollowerRemoveSendsDeleteAndRendersSummary(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll(request): %v", err)
+		}
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"org_id":"org-main","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod","audit_key_id":"audit-key-1","enrolled_at":"2026-06-22T12:00:00Z","active":false}`))
+	})
+	client := newTestClientServer(t, "admin-token", handler)
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := runFollowerRemove(cmd, followerRemoveOptions{
+		client:      client,
+		orgID:       "org-main",
+		fleetID:     "prod",
+		instanceID:  "pl-prod-1",
+		environment: "prod",
+	})
+	if err != nil {
+		t.Fatalf("runFollowerRemove() error = %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %s, want DELETE", gotMethod)
+	}
+	if gotPath != "/api/v1/conductor/followers" {
+		t.Fatalf("path = %s, want followers endpoint", gotPath)
+	}
+	for _, want := range []string{`"org_id":"org-main"`, `"fleet_id":"prod"`, `"instance_id":"pl-prod-1"`, `"environment":"prod"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Fatalf("body = %s, missing %s", gotBody, want)
+		}
+	}
+	if !strings.Contains(out.String(), "removed follower org=org-main fleet=prod instance=pl-prod-1 environment=prod audit_key_id=audit-key-1") {
+		t.Fatalf("output = %q, want remove summary", out.String())
+	}
+}
+
+func TestFollowerRemoveValidatesExactIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts followerRemoveOptions
+		want string
+	}{
+		{name: "missing org", opts: followerRemoveOptions{fleetID: "prod", instanceID: "i-1", environment: "prod"}, want: "--org-id is required"},
+		{name: "missing fleet", opts: followerRemoveOptions{orgID: "org-main", instanceID: "i-1", environment: "prod"}, want: "--fleet-id is required"},
+		{name: "missing instance", opts: followerRemoveOptions{orgID: "org-main", fleetID: "prod", environment: "prod"}, want: "--instance-id is required"},
+		{name: "missing environment", opts: followerRemoveOptions{orgID: "org-main", fleetID: "prod", instanceID: "i-1"}, want: "--environment is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := runFollowerRemove(&cobra.Command{}, tc.opts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runFollowerRemove() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
 
 func TestFollowerResetReplayState_RequiresStateDir(t *testing.T) {
 	if err := runFollowerResetReplayState(&cobra.Command{}, followerResetReplayOptions{}); err == nil ||

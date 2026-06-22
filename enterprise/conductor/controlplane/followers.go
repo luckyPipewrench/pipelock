@@ -26,10 +26,17 @@ type listFollowersResponse struct {
 // validation; then an authorizer that binds the caller's credential scope to
 // the requested org/fleet BEFORE the store is touched.
 func (h *Handler) handleListFollowers(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeMethodNotAllowed(w, http.MethodGet)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		h.handleGetFollowers(w, r)
+	case http.MethodDelete:
+		h.handleRemoveFollower(w, r)
+	default:
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodDelete)
 	}
+}
+
+func (h *Handler) handleGetFollowers(w http.ResponseWriter, r *http.Request) {
 	if h.enrollments == nil {
 		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
 		return
@@ -64,6 +71,62 @@ func (h *Handler) handleListFollowers(w http.ResponseWriter, r *http.Request) {
 		Followers: followers,
 		Count:     len(followers),
 	})
+}
+
+type removeFollowerRequest struct {
+	OrgID       string `json:"org_id"`
+	FleetID     string `json:"fleet_id"`
+	InstanceID  string `json:"instance_id"`
+	Environment string `json:"environment"`
+}
+
+func (h *Handler) handleRemoveFollower(w http.ResponseWriter, r *http.Request) {
+	if h.enrollments == nil {
+		writeError(w, http.StatusNotImplemented, ErrEnrollmentStoreRequired)
+		return
+	}
+	if err := h.authorizeAdmin(r); err != nil {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
+		return
+	}
+	var req removeFollowerRequest
+	if err := decodeStrictJSON(w, r, h.maxRequestBody, &req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	identity := FollowerIdentity{
+		OrgID:       req.OrgID,
+		FleetID:     req.FleetID,
+		InstanceID:  req.InstanceID,
+		Environment: req.Environment,
+	}
+	if err := identity.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	summary, err := h.enrollments.RemoveEnrolledFollower(r.Context(), RemoveEnrolledFollowerRequest{
+		Identity: identity,
+		Now:      h.now(),
+	})
+	if err != nil {
+		if h.logger != nil {
+			h.logger.ErrorContext(r.Context(), "conductor_follower_remove_failed",
+				slog.String("event", "conductor_follower_remove_failed"),
+				slog.String("error", err.Error()),
+				slog.String("org_id", identity.OrgID),
+				slog.String("fleet_id", identity.FleetID),
+				slog.String("instance_id", identity.InstanceID),
+			)
+		}
+		writeEnrollmentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func parseFollowerListQuery(r *http.Request) (FollowerListQuery, error) {

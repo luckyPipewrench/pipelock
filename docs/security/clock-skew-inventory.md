@@ -3,9 +3,9 @@ Copyright 2026 Josh Waldrep
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# v2.8.1 Clock-Skew Inventory
+# v3.0.0 Clock-Skew Inventory
 
-This inventory records the v2.8.1 sweep for the class where one host stamps a
+This inventory records the v3.0.0 sweep for the class where one host stamps a
 time and another host validates it with its own clock. The rule used here:
 
 - Cross-host `not_before` / created-time gates may tolerate bounded positive
@@ -18,10 +18,10 @@ time and another host validates it with its own clock. The rule used here:
 
 | Surface | Code | Cross-host? | Verdict |
 |---|---|---:|---|
-| Conductor policy bundle validity | `enterprise/conductor/messages.go:NotBeforeReached`, `withinValidity`; `enterprise/conductor/controlplane/store.go:latestBundleForFollower` | Yes | Fixed in v2.8.1. `not_before` uses `MessageNotBeforeSkew`; `expires_at` remains strict. |
-| Conductor remote-kill validity | `enterprise/conductor/messages.go:RemoteKillMessage.ValidateAtTime`; `enterprise/conductor/emergency/remote_kill.go`; `enterprise/conductor/controlplane/emergency_store.go` | Yes | Fixed in v2.8.1 through shared `withinValidity`. |
-| Conductor rollback validity | `enterprise/conductor/messages.go:RollbackAuthorization.ValidateAtTime`; `enterprise/conductor/controlplane/emergency_store.go`; `enterprise/conductor/policysync/rollback_poller.go` | Yes | Fixed in v2.8.1 through shared `withinValidity`. |
-| Conductor stream switch validity | `enterprise/conductor/messages.go:PolicyBundle.ValidateAtTime`; `enterprise/conductor/controlplane/store.go` | Yes | Fixed in v2.8.1 through shared bundle validity and `DefaultStreamSwitchMaxValidity`. |
+| Conductor policy bundle validity | `enterprise/conductor/messages.go:NotBeforeReached`, `withinValidity`; `enterprise/conductor/controlplane/store.go:latestBundleForFollower` | Yes | Fixed in v3.0.0. `not_before` uses `MessageNotBeforeSkew`; `expires_at` remains strict. |
+| Conductor remote-kill validity | `enterprise/conductor/messages.go:RemoteKillMessage.ValidateAtTime`; `enterprise/conductor/emergency/remote_kill.go`; `enterprise/conductor/controlplane/emergency_store.go` | Yes | Fixed in v3.0.0 through shared `withinValidity`. |
+| Conductor rollback validity | `enterprise/conductor/messages.go:RollbackAuthorization.ValidateAtTime`; `enterprise/conductor/controlplane/emergency_store.go`; `enterprise/conductor/policysync/rollback_poller.go` | Yes | Fixed in v3.0.0 through shared `withinValidity`. |
+| Conductor stream switch validity | `enterprise/conductor/messages.go:PolicyBundle.ValidateAtTime`; `enterprise/conductor/controlplane/store.go` | Yes | Fixed in v3.0.0 through shared bundle validity and `DefaultStreamSwitchMaxValidity`. |
 | Conductor audit-batch created time | `enterprise/conductor/messages.go:AuditBatchEnvelope.ValidateForConductor`; `enterprise/conductor/capabilities.go` | Yes | Already bounded by negotiated `MaxCreatedSkew`; future and stale created times fail closed outside the window. |
 | Conductor enrollment-token expiry | `enterprise/conductor/controlplane/enrollment.go:ConsumeEnrollmentToken` | Yes, but bearer-token TTL | No skew relaxation. Expiry is a credential lifetime; accepting past expiry would extend a leaked token. There is no `not_before` side. |
 | Conductor backup manifest timestamp | `enterprise/cli/conductor/store_offline.go:conductorBackupManifest` | No | Local metadata only, not an authorization gate. |
@@ -43,7 +43,7 @@ Run these from the repository root:
 go test -tags enterprise -count=1 ./enterprise/conductor ./enterprise/conductor/controlplane ./enterprise/conductor/emergency ./enterprise/conductor/policysync
 ```
 
-The conductor package includes the v2.8.1 regression coverage for bounded
+The conductor package includes the v3.0.0 regression coverage for bounded
 `not_before` skew while keeping expiry strict. The control-plane, emergency, and
 poller packages exercise the same validity helpers through handler/store/poller
 paths.

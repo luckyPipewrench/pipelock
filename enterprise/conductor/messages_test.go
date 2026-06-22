@@ -401,6 +401,31 @@ func testRollbackAuthorization() RollbackAuthorization {
 	}
 }
 
+func testStreamSwitchAuthorization() StreamSwitchAuthorization {
+	return StreamSwitchAuthorization{
+		SchemaVersion:     SchemaVersion,
+		AuthorizationID:   "switch-0001",
+		OrgID:             "org-test",
+		FleetID:           "fleet-prod",
+		Environment:       "prod",
+		CurrentAudience:   Audience{InstanceIDs: []string{"instance-1"}},
+		CurrentBundleID:   "bundle-0001",
+		CurrentVersion:    1,
+		CurrentBundleHash: testHash("11"),
+		TargetAudience:    Audience{Labels: map[string]string{"ring": "canary"}},
+		TargetBundleID:    "bundle-0002",
+		TargetVersion:     2,
+		TargetBundleHash:  testHash("22"),
+		Reason:            "move canary stream",
+		CreatedAt:         testNow,
+		ExpiresAt:         testNow.Add(10 * time.Minute),
+		Signatures: []SignatureProof{
+			testProof("switch-signer-1", signing.PurposePolicyBundleRollback),
+			testProof("switch-signer-2", signing.PurposePolicyBundleRollback),
+		},
+	}
+}
+
 func testAuditBatch() AuditBatchEnvelope {
 	payload := testAuditPayload()
 	return AuditBatchEnvelope{
@@ -863,6 +888,9 @@ func TestCanonicalHashMethods(t *testing.T) {
 	if got, err := testRollbackAuthorization().CanonicalHash(); err != nil || got == "" {
 		t.Fatalf("RollbackAuthorization.CanonicalHash() = %q, %v; want hash", got, err)
 	}
+	if got, err := testStreamSwitchAuthorization().CanonicalHash(); err != nil || got == "" {
+		t.Fatalf("StreamSwitchAuthorization.CanonicalHash() = %q, %v; want hash", got, err)
+	}
 	if got, err := testAuditBatch().CanonicalHash(); err != nil || got == "" {
 		t.Fatalf("AuditBatchEnvelope.CanonicalHash() = %q, %v; want hash", got, err)
 	}
@@ -902,6 +930,83 @@ func TestRollbackAuthorization_VerifySignatures(t *testing.T) {
 	auth.TargetBundleID = "bundle-other"
 	if err := auth.VerifySignaturesAt(testNow, resolver); !errors.Is(err, ErrSignatureVerification) {
 		t.Fatalf("VerifySignaturesAt(tampered) = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestStreamSwitchAuthorization_SignablePreimageExcludesSignatures(t *testing.T) {
+	authA := testStreamSwitchAuthorization()
+	authB := testStreamSwitchAuthorization()
+	authB.Signatures[0].Signature = testSignature("ab")
+	authB.Signatures[0].SignerKeyID = "different-signer"
+
+	preA, err := authA.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(authA): %v", err)
+	}
+	preB, err := authB.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(authB): %v", err)
+	}
+	if string(preA) != string(preB) {
+		t.Fatalf("preimage changed when detached signatures changed:\na=%s\nb=%s", preA, preB)
+	}
+}
+
+func TestStreamSwitchAuthorization_VerifySignatures(t *testing.T) {
+	auth := testStreamSwitchAuthorization()
+	pub1, proof1 := signedProof(t, auth.SignablePreimage, "switch-signer-1", signing.PurposePolicyBundleRollback)
+	pub2, proof2 := signedProof(t, auth.SignablePreimage, "switch-signer-2", signing.PurposePolicyBundleRollback)
+	auth.Signatures = []SignatureProof{proof1, proof2}
+	resolver := mapResolver(map[string]SignatureKey{
+		"switch-signer-1": {PublicKey: pub1, KeyPurpose: signing.PurposePolicyBundleRollback},
+		"switch-signer-2": {PublicKey: pub2, KeyPurpose: signing.PurposePolicyBundleRollback},
+	})
+
+	if err := auth.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	if err := auth.ValidateAtTime(testNow); err != nil {
+		t.Fatalf("ValidateAtTime() = %v, want nil", err)
+	}
+	if err := auth.VerifySignatures(resolver); err != nil {
+		t.Fatalf("VerifySignatures() = %v, want nil", err)
+	}
+	if err := auth.VerifySignaturesAt(testNow, resolver); err != nil {
+		t.Fatalf("VerifySignaturesAt() = %v, want nil", err)
+	}
+
+	auth.TargetBundleHash = testHash("88")
+	if err := auth.VerifySignaturesAt(testNow, resolver); !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("VerifySignaturesAt(tampered) = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestStreamSwitchAuthorization_ValidateRejectsSameAudience(t *testing.T) {
+	auth := testStreamSwitchAuthorization()
+	auth.TargetAudience = auth.CurrentAudience
+	if err := auth.Validate(); !errors.Is(err, ErrInvalidRollback) {
+		t.Fatalf("Validate(same audience) = %v, want ErrInvalidRollback", err)
+	}
+}
+
+func TestAudiencesEqual(t *testing.T) {
+	if !AudiencesEqual(
+		Audience{InstanceIDs: []string{"instance-b", "instance-a"}, Labels: map[string]string{"ring": "prod"}},
+		Audience{InstanceIDs: []string{"instance-a", "instance-b"}, Labels: map[string]string{"ring": "prod"}},
+	) {
+		t.Fatal("AudiencesEqual() = false for reordered instance IDs and identical labels")
+	}
+	if AudiencesEqual(
+		Audience{InstanceIDs: []string{"instance-a"}, Labels: map[string]string{"ring": "prod"}},
+		Audience{InstanceIDs: []string{"instance-a"}, Labels: map[string]string{"ring": "canary"}},
+	) {
+		t.Fatal("AudiencesEqual() = true for different label values")
+	}
+	if AudiencesEqual(
+		Audience{InstanceIDs: []string{"instance-a"}},
+		Audience{InstanceIDs: []string{"instance-a", "instance-b"}},
+	) {
+		t.Fatal("AudiencesEqual() = true for different instance ID sets")
 	}
 }
 

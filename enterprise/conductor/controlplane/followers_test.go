@@ -5,6 +5,7 @@
 package controlplane
 
 import (
+	"container/heap"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -549,6 +550,23 @@ func TestFollowerSummaryLessOrdersByAllKeys(t *testing.T) {
 				t.Fatalf("followerSummaryLess() = %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFollowerSummaryMaxHeapPopReturnsLargestSummary(t *testing.T) {
+	h := followerSummaryMaxHeap{
+		{OrgID: "org-main", FleetID: "prod", InstanceID: "i-a", Environment: "prod"},
+		{OrgID: "org-main", FleetID: "prod", InstanceID: "i-c", Environment: "prod"},
+		{OrgID: "org-main", FleetID: "prod", InstanceID: "i-b", Environment: "prod"},
+	}
+	heap.Init(&h)
+
+	got := heap.Pop(&h).(FollowerSummary)
+	if got.InstanceID != "i-c" {
+		t.Fatalf("heap.Pop() instance = %q, want i-c", got.InstanceID)
+	}
+	if len(h) != 2 {
+		t.Fatalf("heap length after Pop = %d, want 2", len(h))
 	}
 }
 

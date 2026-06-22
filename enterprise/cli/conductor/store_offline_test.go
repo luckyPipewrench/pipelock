@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -140,6 +141,31 @@ func TestStoreInspectOfflineCmd_CleanStoreReportsNoOrphans(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("inspect-offline output missing %q\n--- output ---\n%s", want, got)
 		}
+	}
+}
+
+func TestRunStoreInspectOffline_JSON(t *testing.T) {
+	storageDir := seedCleanStore(t)
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := runStoreInspectOffline(cmd, storeOfflineOptions{storageDir: storageDir, jsonOut: true}); err != nil {
+		t.Fatalf("inspect-offline json: %v", err)
+	}
+
+	var report controlplane.OfflineReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode inspect JSON: %v\n%s", err, out.String())
+	}
+	if len(report.Streams) != 1 {
+		t.Fatalf("streams = %d, want 1; report=%+v", len(report.Streams), report)
+	}
+	if report.Streams[0].HeadBundleID != "bundle-offline-cli" {
+		t.Fatalf("head bundle = %q, want bundle-offline-cli", report.Streams[0].HeadBundleID)
+	}
+	if len(report.Orphans) != 0 || len(report.UnreadableRecords) != 0 {
+		t.Fatalf("clean store report has orphans=%d unreadable=%d, want none", len(report.Orphans), len(report.UnreadableRecords))
 	}
 }
 

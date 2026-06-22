@@ -92,7 +92,11 @@ func (f *FlyMachines) httpClient() *http.Client {
 	if f.HTTP != nil {
 		return f.HTTP
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	timeout := 30 * time.Second
+	if waitTimeout := f.waitTimeout() + 5*time.Second; waitTimeout > timeout {
+		timeout = waitTimeout
+	}
+	return &http.Client{Timeout: timeout}
 }
 
 func (f *FlyMachines) waitTimeout() time.Duration {

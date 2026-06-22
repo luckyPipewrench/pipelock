@@ -403,7 +403,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeBrokerErr(w, http.StatusNotFound, "session not found")
 		return
 	}
-	s.proxy(w, r, binding, false)
+	s.proxy(w, r, binding, true)
 }
 
 func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
@@ -460,7 +460,7 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec := &statusRecorder{ResponseWriter: w}
-	s.proxy(rec, r, binding, true)
+	s.proxy(rec, r, binding, false)
 	if rec.status == http.StatusOK {
 		s.releaseToken(context.WithoutCancel(r.Context()), token)
 	}

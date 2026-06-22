@@ -164,7 +164,7 @@ func spawnAgentEgressProbe(ctx context.Context, toyAgentBin, agentUser string, t
 	cmd := exec.CommandContext(ctx, toyAgentBin, args...)
 	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
 	if err := configureContainedCommand(cmd, agentUser); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("configure contained egress probe: %w", err)
 	}
 
 	var stdout bytes.Buffer
@@ -189,7 +189,7 @@ func spawnAgentLocalEscapeProbe(ctx context.Context, toyAgentBin, agentUser stri
 	cmd := exec.CommandContext(ctx, toyAgentBin, args...)
 	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
 	if err := configureContainedCommand(cmd, agentUser); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("configure contained local escape probe: %w", err)
 	}
 
 	var stdout bytes.Buffer

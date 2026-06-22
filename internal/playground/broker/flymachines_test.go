@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestFly(srv *httptest.Server) *FlyMachines {
@@ -103,6 +104,24 @@ func TestFlyCreateMachineEmptyImage(t *testing.T) {
 	fly := &FlyMachines{AppName: "a", Token: "t"}
 	if _, err := fly.CreateMachine(context.Background(), MachineSpec{}); err == nil {
 		t.Fatal("want error for empty image")
+	}
+}
+
+func TestFlyHTTPClientTimeoutCoversWaitReady(t *testing.T) {
+	fly := &FlyMachines{AppName: "a", Token: "t"}
+	if got, want := fly.httpClient().Timeout, defaultWaitTimeout+5*time.Second; got != want {
+		t.Fatalf("default client timeout = %s, want %s", got, want)
+	}
+
+	shortWait := &FlyMachines{AppName: "a", Token: "t", WaitTimeout: 10 * time.Second}
+	if got, want := shortWait.httpClient().Timeout, 30*time.Second; got != want {
+		t.Fatalf("short-wait client timeout = %s, want floor %s", got, want)
+	}
+
+	customHTTP := &http.Client{Timeout: time.Second}
+	withCustomHTTP := &FlyMachines{AppName: "a", Token: "t", HTTP: customHTTP}
+	if got := withCustomHTTP.httpClient(); got != customHTTP {
+		t.Fatal("custom HTTP client was not preserved")
 	}
 }
 

@@ -73,7 +73,7 @@ func ClassifyReloadWithOptions(in FleetVerifyInputs) (License, ReloadClass) {
 		return License{}, ReloadRevoked
 	case errors.Is(err, ErrLicenseExpired):
 		return License{}, ReloadExpired
-	case errors.Is(err, ErrIntermediateRequired):
+	case errors.Is(err, ErrIntermediateRequired), errors.Is(err, ErrCRLRequired):
 		// require-intermediate is on but the active inputs no longer satisfy it
 		// (no/empty intermediate under require, or no CRL floor). This is proven
 		// loss of the verifiable entitlement, not an unreadable typo, so tear

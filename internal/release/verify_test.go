@@ -36,7 +36,7 @@ func testManifest() Manifest {
 			GOARCH: "amd64",
 			Binary: "pipelock",
 		}},
-		SignerKeyID: "release-key-a",
+		SignerKeyID: hex.EncodeToString(testPubA),
 	}
 }
 
@@ -49,23 +49,35 @@ func mustManifestJSON(t *testing.T, manifest Manifest) []byte {
 	return data
 }
 
-func TestVerifyManifestAcceptsAnyTrustedKey(t *testing.T) {
+func TestVerifyManifestAcceptsDeclaredSigner(t *testing.T) {
+	// signer_key_id names key A; signature is by key A; both keys trusted -> accepted.
 	data := mustManifestJSON(t, testManifest())
-	sig := []byte(SignManifest(data, testPrivB))
+	sig := []byte(SignManifest(data, testPrivA))
 	keyring := hex.EncodeToString(testPubA) + ", " + hex.EncodeToString(testPubB)
 
 	got, err := VerifyManifest(data, sig, keyring)
 	if err != nil {
 		t.Fatalf("VerifyManifest: %v", err)
 	}
-	if got.SignerKeyIndex != 1 {
-		t.Fatalf("SignerKeyIndex = %d, want 1", got.SignerKeyIndex)
-	}
-	if got.SignerKeyHex != hex.EncodeToString(testPubB) {
-		t.Fatalf("SignerKeyHex = %q, want second key", got.SignerKeyHex)
+	if got.SignerKeyHex != hex.EncodeToString(testPubA) {
+		t.Fatalf("SignerKeyHex = %q, want key A (the declared signer)", got.SignerKeyHex)
 	}
 	if got.Manifest.Tag != "v2.8.0" {
 		t.Fatalf("manifest tag = %q", got.Manifest.Tag)
+	}
+}
+
+func TestVerifyManifestRejectsSignerKeyIDMismatch(t *testing.T) {
+	// signer_key_id names key A but the signature is by key B (also trusted, e.g.
+	// during a keyring rotation). The verifying key must match the declared
+	// signer_key_id, so this is rejected even though B is a trusted key whose
+	// signature validates. Guards release custody/audit.
+	data := mustManifestJSON(t, testManifest()) // signer_key_id = hex(pubA)
+	sig := []byte(SignManifest(data, testPrivB))
+	keyring := hex.EncodeToString(testPubA) + ", " + hex.EncodeToString(testPubB)
+
+	if _, err := VerifyManifest(data, sig, keyring); !errors.Is(err, ErrReleaseSignature) {
+		t.Fatalf("VerifyManifest mismatch error = %v, want ErrReleaseSignature", err)
 	}
 }
 

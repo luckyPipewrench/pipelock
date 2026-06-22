@@ -1225,3 +1225,68 @@ func testHash(seed string) string {
 func testSignature(seed string) string {
 	return SignaturePrefixEd25519 + strings.Repeat(seed, 64)
 }
+
+func TestStreamSwitchAuthorization_ValidateMaxValidity(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name    string
+		created time.Time
+		expires time.Time
+		max     time.Duration
+		wantErr error
+	}{
+		{
+			name:    "within_max",
+			created: now,
+			expires: now.Add(time.Hour),
+			max:     24 * time.Hour,
+			wantErr: nil,
+		},
+		{
+			name:    "exactly_at_max",
+			created: now,
+			expires: now.Add(24 * time.Hour),
+			max:     24 * time.Hour,
+			wantErr: nil,
+		},
+		{
+			name:    "over_max_by_one_second",
+			created: now,
+			expires: now.Add(24*time.Hour + time.Second),
+			max:     24 * time.Hour,
+			wantErr: ErrStreamSwitchWindowTooLong,
+		},
+		{
+			name:    "ten_year_window",
+			created: now,
+			expires: now.Add(10 * 365 * 24 * time.Hour),
+			max:     24 * time.Hour,
+			wantErr: ErrStreamSwitchWindowTooLong,
+		},
+		{
+			name:    "non_positive_max_skips",
+			created: now,
+			expires: now.Add(10 * 365 * 24 * time.Hour),
+			max:     0,
+			wantErr: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := StreamSwitchAuthorization{
+				CreatedAt: tc.created,
+				ExpiresAt: tc.expires,
+			}
+			err := auth.ValidateMaxValidity(tc.max)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("ValidateMaxValidity(%s) = %v, want %v", tc.name, err, tc.wantErr)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("ValidateMaxValidity(%s) = %v, want nil", tc.name, err)
+				}
+			}
+		})
+	}
+}

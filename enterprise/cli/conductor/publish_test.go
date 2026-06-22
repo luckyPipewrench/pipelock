@@ -1178,3 +1178,72 @@ func TestReadPublisherToken(t *testing.T) {
 		t.Fatalf("token = %q", tok)
 	}
 }
+
+func TestBuildStreamSwitchAuthorization_TTLCap(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := writeFile(t, dir, "policy.yaml", testConfigYAML)
+	keyPath, _ := writePolicyKeyFile(t, dir, wantPurposeFlag, "policy-key-cap")
+	rk1Path, _ := writePolicyKeyFile(t, dir, string(signing.PurposePolicyBundleRollback), "rollback-key-1")
+	rk2Path, _ := writePolicyKeyFile(t, dir, string(signing.PurposePolicyBundleRollback), "rollback-key-2")
+
+	makeOpts := func(ttl time.Duration) publishOptions {
+		return publishOptions{
+			conductorURL:       "http://127.0.0.1:1234",
+			configFile:         cfgPath,
+			orgID:              testOrg,
+			fleetID:            testFleet,
+			environment:        testEnv,
+			audience:           []string{"instance-1"},
+			version:            7,
+			validity:           time.Hour,
+			signingKey:         keyPath,
+			insecure:           true,
+			switchFromAudience: []string{"*"},
+			switchFromBundleID: "wildcard-v6",
+			switchFromVersion:  6,
+			switchFromHash:     strings.Repeat("ab", 32),
+			switchReason:       "test retarget",
+			switchTTL:          ttl,
+			switchSigningKeys:  []string{rk1Path, rk2Path},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		ttl     time.Duration
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "over_max",
+			ttl:     conductorcore.DefaultStreamSwitchMaxValidity + time.Second,
+			wantErr: true,
+			errMsg:  "--stream-switch-ttl must not exceed",
+		},
+		{
+			name:    "exactly_at_max",
+			ttl:     conductorcore.DefaultStreamSwitchMaxValidity,
+			wantErr: false,
+		},
+		{
+			name:    "under_max",
+			ttl:     time.Hour,
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := makeOpts(tc.ttl)
+			_, _, _, err := buildSignedBundle(opts)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), tc.errMsg) {
+					t.Fatalf("buildSignedBundle(%s) = %v, want error containing %q", tc.name, err, tc.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("buildSignedBundle(%s) = %v, want success", tc.name, err)
+				}
+			}
+		})
+	}
+}

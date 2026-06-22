@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
@@ -85,6 +86,60 @@ func TestFollowerResetReplayState_ConfirmWritesBaseline(t *testing.T) {
 		t.Fatalf("confirm did not write the baseline state file: %v", err)
 	}
 	if !strings.Contains(out.String(), "reset remote-kill replay state") {
+		t.Fatalf("confirm output = %q, want reset confirmation", out.String())
+	}
+}
+
+func TestFollowerResetBundleState_RequiresStateDir(t *testing.T) {
+	if err := runFollowerResetBundleState(&cobra.Command{}, followerResetBundleOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "--state-dir is required") {
+		t.Fatalf("missing --state-dir error = %v, want required", err)
+	}
+}
+
+func TestFollowerResetBundleState_DryRunWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runFollowerResetBundleState(cmd, followerResetBundleOptions{stateDir: dir, confirm: false}); err != nil {
+		t.Fatalf("dry run error = %v", err)
+	}
+	if !strings.Contains(out.String(), "DRY RUN") {
+		t.Fatalf("dry-run output = %q, want DRY RUN notice", out.String())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(): %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("dry run wrote %d entries, want none", len(entries))
+	}
+}
+
+func TestFollowerResetBundleState_ConfirmResetsBundleStateOnly(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := applycache.Open(applycache.Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+	replayPath := filepath.Join(dir, emergency.RemoteKillStateFileName)
+	if err := os.WriteFile(replayPath, []byte(`{"keep":true}`), 0o600); err != nil {
+		t.Fatalf("write replay state: %v", err)
+	}
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runFollowerResetBundleState(cmd, followerResetBundleOptions{stateDir: dir, confirm: true}); err != nil {
+		t.Fatalf("confirm error = %v", err)
+	}
+	if _, err := os.Stat(replayPath); err != nil {
+		t.Fatalf("remote-kill replay state removed: %v", err)
+	}
+	if _, err := cache.Active(); !errors.Is(err, applycache.ErrNoValidBundle) {
+		t.Fatalf("Active() after reset = %v, want ErrNoValidBundle", err)
+	}
+	if !strings.Contains(out.String(), "reset policy-bundle apply state") {
 		t.Fatalf("confirm output = %q, want reset confirmation", out.String())
 	}
 }

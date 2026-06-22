@@ -78,6 +78,15 @@ func VerifyManifest(data, sig []byte, keyringHex string) (Verification, error) {
 			if err := decodeManifest(data, &manifest); err != nil {
 				return Verification{}, err
 			}
+			// Bind the verifying key to the manifest's declared signer_key_id
+			// (the signer's public key hex, set at sign time). Accepting any
+			// trusted key that validates the signature would let a manifest claim
+			// it was signed by key A while actually signed by key B during a
+			// keyring rotation, weakening release custody/audit. Require the key
+			// that produced the signature to be the one the manifest names.
+			if !strings.EqualFold(hex.EncodeToString(key), strings.TrimSpace(manifest.SignerKeyID)) {
+				return Verification{}, fmt.Errorf("%w: signature verified by a key not matching manifest signer_key_id", ErrReleaseSignature)
+			}
 			return Verification{
 				Manifest:       manifest,
 				SignerKeyHex:   hex.EncodeToString(key),

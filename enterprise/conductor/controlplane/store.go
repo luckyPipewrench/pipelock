@@ -1076,7 +1076,7 @@ func newerRecord(candidate, current PublishedBundle) bool {
 }
 
 func matchingSpecificity(bundle conductor.PolicyBundle, follower FollowerIdentity, now time.Time) int {
-	if bundle.NotBefore.After(now) || bundle.ExpiresAt.Before(now) || bundle.Environment != follower.Environment {
+	if !conductor.NotBeforeReached(now, bundle.NotBefore) || bundle.ExpiresAt.Before(now) || bundle.Environment != follower.Environment {
 		return 0
 	}
 	if bundle.ValidateForFollower(follower.OrgID, follower.FleetID, follower.InstanceID, follower.Labels) != nil {

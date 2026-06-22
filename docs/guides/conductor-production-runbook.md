@@ -33,12 +33,14 @@ writing a file. See [`pipelock license`](../cli/license.md).
 | 4. Deploy Conductor + sink | `pipelock conductor serve` / `pipelock fleet-sink` + Helm | **Shipped** |
 | 5. Enroll followers | `enrollment_token_path` auto-enroll or `pipelock conductor enroll` | **Shipped** |
 | 6. Publish a policy | `pipelock conductor publish` | **Shipped** |
-| 7. Kill / resume the fleet | `pipelock conductor kill` / `resume` | **Shipped** |
-| 8. Roll back a bad bundle | `pipelock conductor rollback` | **Shipped** |
-| 9. Mint enrollment tokens | `pipelock conductor enrollment-token mint` | **Shipped** |
-| 10. Fleet status / followers | `pipelock conductor fleet status` / `followers` | **Shipped** |
-| 11. Query the audit sink | `pipelock conductor audit query` | **Shipped** |
-| 12. Rotate certs and keys | cert-manager + `signing key generate` | **Shipped** |
+| 7. Retarget a follower stream | `pipelock conductor publish --stream-switch-*` | **Shipped** |
+| 8. Kill / resume the fleet | `pipelock conductor kill` / `resume` | **Shipped** |
+| 9. Roll back a bad bundle | `pipelock conductor rollback` | **Shipped** |
+| 10. Recover follower bundle state | `pipelock conductor follower reset-bundle-state` | **Shipped** |
+| 11. Mint enrollment tokens | `pipelock conductor enrollment-token mint` | **Shipped** |
+| 12. Fleet status / followers | `pipelock conductor fleet status` / `followers` | **Shipped** |
+| 13. Query the audit sink | `pipelock conductor audit query` | **Shipped** |
+| 14. Rotate certs and keys | cert-manager + `signing key generate` | **Shipped** |
 
 Every stage uses a shipped CLI; the full lifecycle runs without hand-rolled Go or
 OpenSSL beyond the documented bring-your-own-PKI choice. For the on-wire request
@@ -391,7 +393,45 @@ loopback dev conductor without TLS, `--allow-plaintext-loopback` permits an
 (watch the follower logs for the bundle-apply line, or `pipelock conductor fleet
 status`) before treating the rollout as complete.
 
-## 7. Kill and resume the fleet
+## 7. Retarget a follower stream
+
+A follower can match more than one policy stream, such as the fleet wildcard
+audience (`*`) and its own instance audience. When moving a running follower to a
+more-specific stream, publish the target bundle with a stream-switch
+authorization. The authorization is signed by the `policy-bundle-rollback`
+threshold keys and binds the source bundle hash to the target bundle before the
+target bundle is policy-signed.
+
+```bash
+pipelock conductor publish \
+  --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --config /etc/pipelock/edge-01-policy.yaml \
+  --bundle-id edge-01-canary-v11 \
+  --org org-acme --fleet prod --env prod \
+  --audience edge-01 \
+  --version 11 \
+  --validity 720h \
+  --min-pipelock-version 2.9.0 \
+  --signing-key /etc/pipelock/fleet-keys/policy-signing.json \
+  --stream-switch-from-audience '*' \
+  --stream-switch-from-bundle-id prod-wildcard-v10 \
+  --stream-switch-from-version 10 \
+  --stream-switch-from-hash 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --stream-switch-reason "move edge-01 to canary policy" \
+  --stream-switch-signing-key /etc/pipelock/fleet-keys/rollback-approver-1.json \
+  --stream-switch-signing-key /etc/pipelock/fleet-keys/rollback-approver-2.json \
+  --publisher-token-file /etc/pipelock/conductor/tokens/publisher/token \
+  --tls-cert /etc/pipelock/operator.crt \
+  --tls-key /etc/pipelock/operator.key \
+  --server-ca /etc/pipelock/conductor-ca.pem
+```
+
+Use `pipelock conductor stream status` to inspect the source stream head hash
+before publishing. A follower rejects a cross-stream target without the signed
+authorization, with an expired authorization, or when the authorization names a
+different source hash, target bundle, or audience.
+
+## 8. Kill and resume the fleet
 
 `pipelock conductor kill` pushes a signed, time-bounded fleet-wide kill;
 `pipelock conductor resume` clears it. Followers with
@@ -428,7 +468,7 @@ Conductor rejects a kill whose validity window exceeds
 fail closed within one `poll_interval`; clearing it lets them recover on the
 next poll.
 
-## 8. Roll back a bad bundle
+## 9. Roll back a bad bundle
 
 `pipelock conductor rollback` authorizes a signed revert to a prior bundle
 version:
@@ -453,7 +493,26 @@ rollback whose window exceeds `--rollback-max-validity` (default `24h`). Because
 kill and rollback keys are purpose-scoped, a rollback key cannot issue a kill or
 vice versa.
 
-## 9. Mint enrollment tokens
+## 10. Recover follower bundle state
+
+If a follower's local policy-bundle apply cache is wedged, reset only that local
+bundle state on the follower host. This does not touch remote-kill replay state.
+
+```bash
+# Dry run first.
+pipelock conductor follower reset-bundle-state \
+  --state-dir /var/lib/pipelock/bundles
+
+# Apply after confirming the state dir is conductor.bundle_cache_dir.
+pipelock conductor follower reset-bundle-state \
+  --state-dir /var/lib/pipelock/bundles \
+  --confirm
+```
+
+Restart the follower after a confirmed reset if it is wedged. On the next poll it
+re-fetches and verifies the authoritative bundle for its audience.
+
+## 11. Mint enrollment tokens
 
 Enrollment is token-gated (see [step 5](#5-enroll-followers)).
 `pipelock conductor enrollment-token mint` issues a single-use token scoped to
@@ -497,7 +556,7 @@ pipelock conductor enroll \
   --server-ca /etc/pipelock/conductor-ca.pem
 ```
 
-## 10. Fleet status and followers
+## 12. Fleet status and followers
 
 `pipelock conductor fleet status` lists enrolled instances — identity, audit key
 id, active state, and enrollment time — read over mTLS with an org-scoped
@@ -514,7 +573,7 @@ pipelock conductor fleet status \
   --ca-file /etc/pipelock/conductor-ca.pem
 ```
 
-## 11. Query the audit sink
+## 13. Query the audit sink
 
 `pipelock conductor audit query` queries the audit sink's stored evidence
 metadata for one org/fleet/instance, read over mTLS with an auditor token:
@@ -552,7 +611,7 @@ Without `--key`, verification is **structural-only** and exits non-zero unless
 you pass `--allow-unpinned` — pin the trusted signer key to get a meaningful
 `CHAIN VALID`. See [receipt verification](receipt-verification.md).
 
-## 12. Rotate certs and keys
+## 14. Rotate certs and keys
 
 The operator-lifecycle rule for every piece of fleet state: prove you can
 **rotate, revoke, and recover** it, not just create it.

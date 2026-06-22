@@ -38,12 +38,30 @@ const (
 	MaxReasonBytes              = 4 * 1024
 	DefaultAuditMaxSkew         = 60 * time.Second
 	MaxAllowedAuditSkew         = 300 * time.Second
-	MaxIDBytes                  = 128
-	MaxLabelKeyBytes            = 128
-	MaxLabelValueBytes          = 256
-	MaxDropReasons              = 32
-	MaxDropReasonBytes          = 128
-	MaxCapabilityThreshold      = 7
+	// MessageNotBeforeSkew bounds the clock skew tolerated on the not_before
+	// check for conductor control messages (policy bundles, remote-kill,
+	// rollback, stream-switch). These carry a not_before stamped on the
+	// OPERATOR's clock and are validated on the CONDUCTOR's and FOLLOWER's
+	// clocks, which differ on a real multi-machine fleet. With zero tolerance an
+	// operator clock even slightly ahead of the validator makes every kill /
+	// rollback "not yet valid" so the control fails on prod (reproduced cross-
+	// machine 2026-06-22; same-machine tests never surfaced it). Mirrors the
+	// audit path's DefaultAuditMaxSkew. Applied to not_before ONLY — expiry stays
+	// strict so a message's validity window is never extended past its stated end
+	// (no replay / revocation-evasion widening).
+	MessageNotBeforeSkew   = 60 * time.Second
+	MaxIDBytes             = 128
+	MaxLabelKeyBytes       = 128
+	MaxLabelValueBytes     = 256
+	MaxDropReasons         = 32
+	MaxDropReasonBytes     = 128
+	MaxCapabilityThreshold = 7
+
+	// DefaultStreamSwitchMaxValidity bounds a stream-switch authorization
+	// window, mirroring DefaultRollbackMaxValidity (controlplane), so a
+	// compromised operator CLI cannot mint a long-lived cross-stream retarget
+	// capability that a follower would honor.
+	DefaultStreamSwitchMaxValidity = 24 * time.Hour
 )
 
 // acceptedSchemaVersions mirrors internal/recorder/entry.go's v1+v2 coexistence
@@ -54,32 +72,33 @@ const (
 var acceptedSchemaVersions = map[int]bool{1: true}
 
 var (
-	ErrUnsupportedSchemaVersion = errors.New("unsupported conductor schema_version")
-	ErrMissingField             = errors.New("missing required conductor field")
-	ErrInvalidAudience          = errors.New("invalid conductor audience")
-	ErrAudienceMismatch         = errors.New("conductor audience does not match follower")
-	ErrInvalidHash              = errors.New("invalid conductor hash")
-	ErrInvalidSignature         = errors.New("invalid conductor signature")
-	ErrWrongKeyPurpose          = errors.New("conductor signature key_purpose mismatch")
-	ErrThresholdRequired        = errors.New("conductor signature threshold not met")
-	ErrForbiddenLicenseField    = errors.New("policy bundle contains forbidden license field")
-	ErrForbiddenBundleSection   = errors.New("policy bundle contains a config section not permitted in a signed bundle")
-	ErrInvalidValidityWindow    = errors.New("invalid conductor validity window")
-	ErrInvalidSequenceRange     = errors.New("invalid conductor sequence range")
-	ErrInvalidState             = errors.New("invalid conductor state")
-	ErrInvalidRollback          = errors.New("invalid conductor rollback authorization")
-	ErrNotYetValid              = errors.New("conductor message not yet valid (not_before in future)")
-	ErrExpired                  = errors.New("conductor message expired")
-	ErrSkewExceeded             = errors.New("conductor message exceeds allowed clock skew")
-	ErrInvalidMinVersion        = errors.New("invalid min_pipelock_version")
-	ErrHashMismatch             = errors.New("conductor hash mismatch")
-	ErrPayloadTooLarge          = errors.New("conductor payload exceeds size cap")
-	ErrInvalidAudienceWildcard  = errors.New("conductor audience cannot mix wildcard with explicit instance_ids")
-	ErrInvalidAudienceSelectors = errors.New("conductor audience cannot mix instance_ids with labels")
-	ErrInvalidReason            = errors.New("invalid conductor reason")
-	ErrInvalidIdentifier        = errors.New("invalid conductor identifier")
-	ErrSignatureVerification    = errors.New("conductor signature verification failed")
-	ErrInvalidDroppedAccounting = errors.New("invalid conductor dropped accounting")
+	ErrUnsupportedSchemaVersion  = errors.New("unsupported conductor schema_version")
+	ErrMissingField              = errors.New("missing required conductor field")
+	ErrInvalidAudience           = errors.New("invalid conductor audience")
+	ErrAudienceMismatch          = errors.New("conductor audience does not match follower")
+	ErrInvalidHash               = errors.New("invalid conductor hash")
+	ErrInvalidSignature          = errors.New("invalid conductor signature")
+	ErrWrongKeyPurpose           = errors.New("conductor signature key_purpose mismatch")
+	ErrThresholdRequired         = errors.New("conductor signature threshold not met")
+	ErrForbiddenLicenseField     = errors.New("policy bundle contains forbidden license field")
+	ErrForbiddenBundleSection    = errors.New("policy bundle contains a config section not permitted in a signed bundle")
+	ErrInvalidValidityWindow     = errors.New("invalid conductor validity window")
+	ErrInvalidSequenceRange      = errors.New("invalid conductor sequence range")
+	ErrInvalidState              = errors.New("invalid conductor state")
+	ErrInvalidRollback           = errors.New("invalid conductor rollback authorization")
+	ErrStreamSwitchWindowTooLong = errors.New("conductor stream switch authorization validity window exceeds maximum")
+	ErrNotYetValid               = errors.New("conductor message not yet valid (not_before in future)")
+	ErrExpired                   = errors.New("conductor message expired")
+	ErrSkewExceeded              = errors.New("conductor message exceeds allowed clock skew")
+	ErrInvalidMinVersion         = errors.New("invalid min_pipelock_version")
+	ErrHashMismatch              = errors.New("conductor hash mismatch")
+	ErrPayloadTooLarge           = errors.New("conductor payload exceeds size cap")
+	ErrInvalidAudienceWildcard   = errors.New("conductor audience cannot mix wildcard with explicit instance_ids")
+	ErrInvalidAudienceSelectors  = errors.New("conductor audience cannot mix instance_ids with labels")
+	ErrInvalidReason             = errors.New("invalid conductor reason")
+	ErrInvalidIdentifier         = errors.New("invalid conductor identifier")
+	ErrSignatureVerification     = errors.New("conductor signature verification failed")
+	ErrInvalidDroppedAccounting  = errors.New("invalid conductor dropped accounting")
 )
 
 // allowedPolicyBundleSections is the default-deny allowlist of top-level config
@@ -232,22 +251,23 @@ func (p PolicyBundlePayload) PolicyHash() (string, error) {
 }
 
 type PolicyBundle struct {
-	SchemaVersion      int                 `json:"schema_version"`
-	BundleID           string              `json:"bundle_id"`
-	OrgID              string              `json:"org_id"`
-	FleetID            string              `json:"fleet_id"`
-	Environment        string              `json:"environment"`
-	Audience           Audience            `json:"audience"`
-	Version            uint64              `json:"version"`
-	PreviousBundleHash string              `json:"previous_bundle_hash,omitempty"`
-	CreatedAt          time.Time           `json:"created_at"`
-	NotBefore          time.Time           `json:"not_before"`
-	ExpiresAt          time.Time           `json:"expires_at"`
-	MinPipelockVersion string              `json:"min_pipelock_version"`
-	PolicyHash         string              `json:"policy_hash"`
-	PayloadSHA256      string              `json:"payload_sha256"`
-	Payload            PolicyBundlePayload `json:"payload"`
-	Signatures         []SignatureProof    `json:"signatures,omitempty"`
+	SchemaVersion             int                        `json:"schema_version"`
+	BundleID                  string                     `json:"bundle_id"`
+	OrgID                     string                     `json:"org_id"`
+	FleetID                   string                     `json:"fleet_id"`
+	Environment               string                     `json:"environment"`
+	Audience                  Audience                   `json:"audience"`
+	Version                   uint64                     `json:"version"`
+	PreviousBundleHash        string                     `json:"previous_bundle_hash,omitempty"`
+	StreamSwitchAuthorization *StreamSwitchAuthorization `json:"stream_switch_authorization,omitempty"`
+	CreatedAt                 time.Time                  `json:"created_at"`
+	NotBefore                 time.Time                  `json:"not_before"`
+	ExpiresAt                 time.Time                  `json:"expires_at"`
+	MinPipelockVersion        string                     `json:"min_pipelock_version"`
+	PolicyHash                string                     `json:"policy_hash"`
+	PayloadSHA256             string                     `json:"payload_sha256"`
+	Payload                   PolicyBundlePayload        `json:"payload"`
+	Signatures                []SignatureProof           `json:"signatures,omitempty"`
 }
 
 type KillSwitchState string
@@ -287,6 +307,26 @@ type RollbackAuthorization struct {
 	CreatedAt       time.Time        `json:"created_at"`
 	ExpiresAt       time.Time        `json:"expires_at"`
 	Signatures      []SignatureProof `json:"signatures,omitempty"`
+}
+
+type StreamSwitchAuthorization struct {
+	SchemaVersion     int              `json:"schema_version"`
+	AuthorizationID   string           `json:"authorization_id"`
+	OrgID             string           `json:"org_id"`
+	FleetID           string           `json:"fleet_id"`
+	Environment       string           `json:"environment"`
+	CurrentAudience   Audience         `json:"current_audience"`
+	CurrentBundleID   string           `json:"current_bundle_id"`
+	CurrentVersion    uint64           `json:"current_version"`
+	CurrentBundleHash string           `json:"current_bundle_hash"`
+	TargetAudience    Audience         `json:"target_audience"`
+	TargetBundleID    string           `json:"target_bundle_id"`
+	TargetVersion     uint64           `json:"target_version"`
+	TargetBundleHash  string           `json:"target_bundle_hash"`
+	Reason            string           `json:"reason"`
+	CreatedAt         time.Time        `json:"created_at"`
+	ExpiresAt         time.Time        `json:"expires_at"`
+	Signatures        []SignatureProof `json:"signatures,omitempty"`
 }
 
 type EvidenceChain struct {
@@ -473,6 +513,29 @@ func (a Audience) Matches(instanceID string, labels map[string]string) bool {
 	return true
 }
 
+// AudiencesEqual reports whether two audiences address the identical policy
+// stream (order-insensitive on instance IDs, exact on labels). It is the single
+// source of truth for stream identity; the applycache cross-stream switch logic
+// depends on it, so it lives here rather than being duplicated per package.
+func AudiencesEqual(a, b Audience) bool {
+	aIDs := slices.Clone(a.InstanceIDs)
+	bIDs := slices.Clone(b.InstanceIDs)
+	slices.Sort(aIDs)
+	slices.Sort(bIDs)
+	if !slices.Equal(aIDs, bIDs) {
+		return false
+	}
+	if len(a.Labels) != len(b.Labels) {
+		return false
+	}
+	for key, aVal := range a.Labels {
+		if b.Labels[key] != aVal {
+			return false
+		}
+	}
+	return true
+}
+
 func (b PolicyBundle) SignablePreimage() ([]byte, error) {
 	unsigned := b
 	unsigned.Signatures = nil
@@ -524,6 +587,29 @@ func (b PolicyBundle) Validate() error {
 	if b.PreviousBundleHash != "" {
 		if err := validateHash("previous_bundle_hash", b.PreviousBundleHash); err != nil {
 			return err
+		}
+	}
+	if b.StreamSwitchAuthorization != nil {
+		if err := b.StreamSwitchAuthorization.Validate(); err != nil {
+			return err
+		}
+		if b.StreamSwitchAuthorization.OrgID != b.OrgID ||
+			b.StreamSwitchAuthorization.FleetID != b.FleetID ||
+			b.StreamSwitchAuthorization.Environment != b.Environment ||
+			b.StreamSwitchAuthorization.TargetBundleID != b.BundleID ||
+			b.StreamSwitchAuthorization.TargetVersion != b.Version ||
+			!AudiencesEqual(b.StreamSwitchAuthorization.TargetAudience, b.Audience) {
+			return fmt.Errorf("%w: stream switch authorization does not target bundle", ErrInvalidRollback)
+		}
+		detached := b
+		detached.Signatures = nil
+		detached.StreamSwitchAuthorization = nil
+		targetHash, err := detached.CanonicalHash()
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(b.StreamSwitchAuthorization.TargetBundleHash, targetHash) {
+			return fmt.Errorf("%w: stream switch target_bundle_hash", ErrHashMismatch)
 		}
 	}
 	if strings.TrimSpace(b.Payload.ConfigYAML) == "" {
@@ -756,6 +842,101 @@ func (r RollbackAuthorization) VerifySignaturesAt(now time.Time, resolve Signatu
 		return err
 	}
 	return verifySignatureThreshold(now, preimage, r.Signatures, signing.PurposePolicyBundleRollback, RequiredCatastrophicSigners, resolve)
+}
+
+func (a StreamSwitchAuthorization) SignablePreimage() ([]byte, error) {
+	unsigned := a
+	unsigned.Signatures = nil
+	unsigned.CreatedAt = unsigned.CreatedAt.UTC()
+	unsigned.ExpiresAt = unsigned.ExpiresAt.UTC()
+	return canonicalPreimage(unsigned, "stream_switch_authorization")
+}
+
+func (a StreamSwitchAuthorization) CanonicalHash() (string, error) {
+	return canonicalHash(a.SignablePreimage)
+}
+
+func (a StreamSwitchAuthorization) Validate() error {
+	if err := validateSchemaVersion(a.SchemaVersion); err != nil {
+		return err
+	}
+	if err := validateIdentifier("authorization_id", a.AuthorizationID); err != nil {
+		return err
+	}
+	if err := validateOrgFleet(a.OrgID, a.FleetID); err != nil {
+		return err
+	}
+	if err := validateIdentifier("environment", a.Environment); err != nil {
+		return err
+	}
+	if err := a.CurrentAudience.Validate(); err != nil {
+		return err
+	}
+	if err := a.TargetAudience.Validate(); err != nil {
+		return err
+	}
+	if AudiencesEqual(a.CurrentAudience, a.TargetAudience) {
+		return fmt.Errorf("%w: stream switch target must differ from current audience", ErrInvalidRollback)
+	}
+	if err := validateIdentifier("current_bundle_id", a.CurrentBundleID); err != nil {
+		return err
+	}
+	if err := validateIdentifier("target_bundle_id", a.TargetBundleID); err != nil {
+		return err
+	}
+	if a.CurrentVersion == 0 || a.TargetVersion == 0 {
+		return fmt.Errorf("%w: stream switch versions", ErrMissingField)
+	}
+	if err := validateHash("current_bundle_hash", a.CurrentBundleHash); err != nil {
+		return err
+	}
+	if err := validateHash("target_bundle_hash", a.TargetBundleHash); err != nil {
+		return err
+	}
+	if a.CreatedAt.IsZero() || a.ExpiresAt.IsZero() || !a.ExpiresAt.After(a.CreatedAt) {
+		return fmt.Errorf("%w: stream switch validity", ErrInvalidValidityWindow)
+	}
+	if err := validateReason("reason", a.Reason); err != nil {
+		return err
+	}
+	return validateSignatureThreshold(a.Signatures, signing.PurposePolicyBundleRollback, RequiredCatastrophicSigners)
+}
+
+func (a StreamSwitchAuthorization) ValidateAtTime(now time.Time) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	return withinValidity(now, a.CreatedAt, a.ExpiresAt)
+}
+
+// ValidateMaxValidity rejects a stream-switch authorization whose validity
+// window (ExpiresAt - CreatedAt) exceeds maxTTL. A non-positive or zero window
+// is already rejected by Validate (CreatedAt/ExpiresAt checks), so this method
+// only adds the upper-bound cap. Mirrors the controlplane's
+// validateMaxValidity for rollbacks, but lives on the message type so the
+// follower (applycache) can enforce it without importing the controlplane
+// package.
+func (a StreamSwitchAuthorization) ValidateMaxValidity(maxTTL time.Duration) error {
+	if maxTTL <= 0 {
+		return nil
+	}
+	window := a.ExpiresAt.Sub(a.CreatedAt)
+	if window > maxTTL {
+		return fmt.Errorf("%w: validity %s exceeds max %s", ErrStreamSwitchWindowTooLong, window, maxTTL)
+	}
+	return nil
+}
+
+func (a StreamSwitchAuthorization) VerifySignatures(resolve SignatureKeyResolver) error {
+	return a.VerifySignaturesAt(time.Now(), resolve)
+}
+
+func (a StreamSwitchAuthorization) VerifySignaturesAt(now time.Time, resolve SignatureKeyResolver) error {
+	preimage, err := a.SignablePreimage()
+	if err != nil {
+		return err
+	}
+	return verifySignatureThreshold(now, preimage, a.Signatures, signing.PurposePolicyBundleRollback, RequiredCatastrophicSigners, resolve)
 }
 
 func (a AuditBatchEnvelope) SignablePreimage() ([]byte, error) {
@@ -1113,9 +1294,21 @@ func validateSchemaVersion(v int) error {
 
 // withinValidity reports whether now ∈ [notBefore, expiresAt]. notBefore and
 // expiresAt are presumed already shape-checked by validateWindow.
+// NotBeforeReached reports whether now has reached notBefore, tolerating the
+// bounded MessageNotBeforeSkew clock skew. Every conductor not_before gate -
+// message validation AND policy-bundle serving selection - must use this so the
+// skew tolerance is consistent and an operator clock slightly ahead of the
+// conductor/follower never makes a control message or bundle look "not yet
+// valid" on a multi-host fleet.
+func NotBeforeReached(now, notBefore time.Time) bool {
+	return !now.UTC().Add(MessageNotBeforeSkew).Before(notBefore.UTC())
+}
+
 func withinValidity(now, notBefore, expiresAt time.Time) error {
 	now = now.UTC()
-	if now.Before(notBefore.UTC()) {
+	// Tolerate bounded clock skew on not_before (see NotBeforeReached); expiry
+	// below stays strict so a validity window is never extended past its end.
+	if !NotBeforeReached(now, notBefore) {
 		return fmt.Errorf("%w: now=%s not_before=%s", ErrNotYetValid, now.Format(time.RFC3339), notBefore.UTC().Format(time.RFC3339))
 	}
 	if now.After(expiresAt.UTC()) {

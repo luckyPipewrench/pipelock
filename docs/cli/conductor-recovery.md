@@ -31,6 +31,65 @@ The resolved hash is printed before the publish proceeds. For the first bundle
 in a stream (no existing head), `auto` resolves to an empty string and the
 publish proceeds without a previous hash.
 
+## `publish` with stream-switch authorization
+
+When moving a follower from one policy stream to another, for example from the
+fleet wildcard audience (`*`) to a specific instance audience, the new target
+bundle must carry a signed stream-switch authorization. The authorization is
+signed with the `policy-bundle-rollback` threshold keys and binds the exact
+source bundle hash to the exact target bundle hash before the authorization is
+embedded.
+
+```sh
+pipelock conductor publish \
+  --conductor-url https://conductor.example:8895 \
+  --config policy-instance.yaml \
+  --org acme --fleet prod --env prod \
+  --audience edge-01 \
+  --version 11 \
+  --signing-key /etc/pipelock/keys/policy-signing.json \
+  --stream-switch-from-audience '*' \
+  --stream-switch-from-bundle-id prod-wildcard-v10 \
+  --stream-switch-from-version 10 \
+  --stream-switch-from-hash 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --stream-switch-reason "retarget edge-01 to canary policy" \
+  --stream-switch-signing-key /etc/pipelock/keys/rollback-approver-1.json \
+  --stream-switch-signing-key /etc/pipelock/keys/rollback-approver-2.json \
+  --publisher-token-file /etc/pipelock/publisher.token \
+  --tls-cert client.crt --tls-key client.key --server-ca ca.pem
+```
+
+Followers reject a cross-stream bundle without this authorization, with an
+expired authorization, or when the authorization names a different source hash,
+target bundle, or audience. Same-stream forward publishes still use
+`--previous-bundle-hash` continuity.
+
+## `follower reset-bundle-state`
+
+`follower reset-bundle-state` is an offline follower-side recovery command for a
+wedged local policy-bundle apply cache. It removes only the follower's active
+policy-bundle pointer and cached bundle/config records under
+`conductor.bundle_cache_dir`. It does **not** modify the remote-kill replay
+state.
+
+Dry run:
+
+```sh
+pipelock conductor follower reset-bundle-state \
+  --state-dir /var/lib/pipelock/bundles
+```
+
+Apply:
+
+```sh
+pipelock conductor follower reset-bundle-state \
+  --state-dir /var/lib/pipelock/bundles \
+  --confirm
+```
+
+After a confirmed reset, restart the follower if it is wedged. On the next poll
+it re-fetches and verifies the authoritative bundle for its current audience.
+
 ## `rollback clear`
 
 Clear a single active rollback authorization by its `authorization_id`. This is

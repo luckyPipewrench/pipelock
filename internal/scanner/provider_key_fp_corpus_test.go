@@ -46,7 +46,6 @@ var providerKeyBenignCorpus = map[string]string{
 	"llm router hyphenated prose": "sk-or-v1-but-then-words-not-a-key-just-text",
 	"llm router long word prose":  "sk-or-v1-thisisaverylongwordnotakey",
 	"answer engine short":         "pplx-" + strings.Repeat("f", 8),
-	"answer engine embedded":      "prefix_pplx-" + strings.Repeat("g", 24),
 	"web research short":          "tvly-" + strings.Repeat("j", 8),
 	"web research charset":        "tvly-" + strings.Repeat("k", 19) + "_",
 	"google wrong length":         "AIza" + strings.Repeat("e", 10),

@@ -28,6 +28,16 @@ const EnvLicenseRequireIntermediate = "PIPELOCK_LICENSE_REQUIRE_INTERMEDIATE"
 // sees "you must configure an intermediate" rather than "your cert is broken".
 var ErrIntermediateRequired = errors.New("intermediate certificate required but none configured")
 
+// ErrCRLRequired is returned when require-intermediate mode is on and a valid
+// intermediate is configured, but no certificate revocation list is configured.
+// Require-intermediate means a popped root cannot mint a bypass token; that
+// guarantee is hollow if a revoked intermediate cannot be detected, so require
+// mode also mandates a CRL so revocation is always checkable. It is distinct
+// from ErrIntermediateRequired so the operator sees "configure a CRL" rather
+// than "configure an intermediate". Classified as proven-loss on reload (see
+// ClassifyReloadWithOptions) so the running surface tears down fail-closed.
+var ErrCRLRequired = errors.New("certificate revocation list required in require-intermediate mode but none configured")
+
 // ErrInvalidRequireIntermediateEnv is returned when
 // PIPELOCK_LICENSE_REQUIRE_INTERMEDIATE holds a value that is not a recognized
 // boolean. Resolving fails closed on this rather than defaulting to false: a
@@ -93,11 +103,16 @@ func (o VerifyOptions) maxAge() time.Duration {
 //     have come through an intermediate, so verification fails closed with
 //     ErrIntermediateRequired. (The caller decides whether that is fatal; for the
 //     free proxy it is a warning, see the resolver doc.)
-//   - RequireIntermediate == true, cert present: the cert MUST parse, root-verify,
-//     be within its window, and not be revoked; the token is then verified
-//     against the intermediate key with NO fallback to direct-root. A signature
-//     mismatch against the intermediate fails closed (a root-signed legacy token
-//     is rejected under require mode by design). Expiry/revocation fail closed.
+//   - RequireIntermediate == true, cert present, no CRL: fails closed with
+//     ErrCRLRequired. Require mode mandates a CRL so a revoked intermediate is
+//     detectable; without it the require guarantee is hollow. (Caller decides
+//     fatality, same as ErrIntermediateRequired — warning for the free proxy.)
+//   - RequireIntermediate == true, cert present, CRL present: the cert MUST parse,
+//     root-verify, be within its window, and not be revoked; the token is then
+//     verified against the intermediate key with NO fallback to direct-root. A
+//     signature mismatch against the intermediate fails closed (a root-signed
+//     legacy token is rejected under require mode by design). Expiry/revocation
+//     fail closed.
 func VerifyTokenWithOptions(token string, opts VerifyOptions) (License, error) {
 	if len(opts.RootPub) != ed25519.PublicKeySize {
 		return License{}, errors.New("invalid root public key")
@@ -117,10 +132,14 @@ func VerifyTokenWithOptions(token string, opts VerifyOptions) (License, error) {
 	if err != nil {
 		return License{}, fmt.Errorf("configured intermediate certificate rejected: %w", err)
 	}
-	if opts.CRL != nil {
-		if err := opts.CRL.CheckIntermediate(im.Serial()); err != nil {
-			return License{}, err
-		}
+	// Require mode also mandates a CRL: a revoked intermediate must be
+	// detectable, or the require-intermediate guarantee (a popped root cannot
+	// mint a bypass token) is hollow. Fail closed when none is configured.
+	if opts.CRL == nil {
+		return License{}, ErrCRLRequired
+	}
+	if err := opts.CRL.CheckIntermediate(im.Serial()); err != nil {
+		return License{}, err
 	}
 	// Strict path: token MUST be signed by the active intermediate. No
 	// fall-back to direct-root verification — that is the whole point of require

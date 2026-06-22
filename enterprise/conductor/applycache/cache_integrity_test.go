@@ -953,3 +953,26 @@ func TestStreamSwitchMaxValidityFollower(t *testing.T) {
 		})
 	}
 }
+
+func TestResetActiveBundleStateRejectsWrongEntryKind(t *testing.T) {
+	t.Run("regular file where directory expected", func(t *testing.T) {
+		cache, _ := storeValidActive(t)
+		p := filepath.Join(cache.dir, pipelockStateDirName)
+		_ = os.RemoveAll(p)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %s as file: %v", pipelockStateDirName, err)
+		}
+		if err := ResetActiveBundleState(cache.dir); !errors.Is(err, ErrInvalidActiveRecord) {
+			t.Fatalf("ResetActiveBundleState(file-where-dir) = %v, want ErrInvalidActiveRecord", err)
+		}
+	})
+	t.Run("directory where regular file expected", func(t *testing.T) {
+		cache, _ := storeValidActive(t)
+		if err := os.Mkdir(filepath.Join(cache.dir, enrolledRecordName), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", enrolledRecordName, err)
+		}
+		if err := ResetActiveBundleState(cache.dir); !errors.Is(err, ErrInvalidActiveRecord) {
+			t.Fatalf("ResetActiveBundleState(dir-where-file) = %v, want ErrInvalidActiveRecord", err)
+		}
+	})
+}

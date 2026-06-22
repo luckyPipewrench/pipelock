@@ -1247,3 +1247,28 @@ func TestBuildStreamSwitchAuthorization_TTLCap(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateStreamSwitchInputs_RejectsBlankAndDuplicateSigningKeys(t *testing.T) {
+	base := publishOptions{
+		switchFromAudience: []string{"*"},
+		switchFromBundleID: "wildcard-v6",
+		switchFromVersion:  6,
+		switchFromHash:     strings.Repeat("ab", 32),
+		switchReason:       "test retarget",
+		switchTTL:          time.Hour,
+	}
+	t.Run("blank key", func(t *testing.T) {
+		o := base
+		o.switchSigningKeys = []string{"/k/one.json", "  "}
+		if err := validateStreamSwitchInputs(o); err == nil || !strings.Contains(err.Error(), "must not be blank") {
+			t.Fatalf("validateStreamSwitchInputs(blank) = %v, want blank rejection", err)
+		}
+	})
+	t.Run("duplicate key", func(t *testing.T) {
+		o := base
+		o.switchSigningKeys = []string{"/k/one.json", "/k/one.json"}
+		if err := validateStreamSwitchInputs(o); err == nil || !strings.Contains(err.Error(), "more than once") {
+			t.Fatalf("validateStreamSwitchInputs(dup) = %v, want duplicate rejection", err)
+		}
+	})
+}

@@ -322,3 +322,18 @@ func newCapturingCmd() *cobra.Command {
 	cmd.SetErr(&bytes.Buffer{})
 	return cmd
 }
+
+func TestStoreBackupRejectsNonDirectoryStorage(t *testing.T) {
+	dir := t.TempDir()
+	fileStorage := filepath.Join(dir, "notadir")
+	if err := os.WriteFile(fileStorage, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	err := runStoreBackup(newCapturingCmd(), storeOfflineOptions{
+		storageDir: fileStorage,
+		backupDir:  filepath.Join(dir, "backup"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("runStoreBackup(file) = %v, want not-a-directory rejection", err)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"golang.org/x/sys/unix"
@@ -64,5 +65,9 @@ func TestLocalEscapeProbe_UnixSocketOpen(t *testing.T) {
 	if !result.Open || result.Blocked {
 		t.Fatalf("open unix socket must be Open=true Blocked=false, got: %+v", result)
 	}
-	<-done
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("accept goroutine did not finish")
+	}
 }

@@ -369,7 +369,7 @@ func TestServer_EndToEndProxyAndRelease(t *testing.T) {
 	}
 	select {
 	case <-vm.streamStarted:
-	default:
+	case <-time.After(2 * time.Second):
 		t.Fatal("VM stream did not start")
 	}
 	close(vm.streamRelease)

@@ -369,7 +369,7 @@ func TestRemoteKillStateMigratesLegacySignedDecisionDigest(t *testing.T) {
 		Reason:          msg.Reason,
 		AppliedAt:       testNow,
 		SignedMessage:   signedJSON,
-	}, true); err != nil {
+	}, false); err != nil {
 		t.Fatalf("writeLegacyRemoteKillStateV1: %v", err)
 	}
 	ks := &captureKillSwitch{}

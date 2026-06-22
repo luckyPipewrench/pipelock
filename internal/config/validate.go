@@ -270,7 +270,12 @@ func isMessagingAPIAllowlistDomain(domain string) bool {
 		domain == "*.telegram.org" ||
 		strings.HasSuffix(domain, ".telegram.org") ||
 		domain == "t.me" ||
+		domain == "*.t.me" ||
+		strings.HasSuffix(domain, ".t.me") ||
 		domain == "gateway.discord.gg" ||
+		domain == "discord.gg" ||
+		domain == "*.discord.gg" ||
+		strings.HasSuffix(domain, ".discord.gg") ||
 		domain == "discord.com" ||
 		domain == "*.discord.com" ||
 		strings.HasSuffix(domain, ".discord.com") ||

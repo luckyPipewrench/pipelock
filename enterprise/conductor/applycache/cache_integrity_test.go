@@ -118,7 +118,7 @@ func TestResetActiveBundleStateRemovesOnlyBundleState(t *testing.T) {
 		t.Fatalf("write enrolled.json: %v", err)
 	}
 	replayFloorDir := filepath.Join(cache.dir, ".pipelock-state", "remote-kill-replay")
-	if err := os.MkdirAll(replayFloorDir, 0o700); err != nil {
+	if err := os.MkdirAll(replayFloorDir, 0o750); err != nil {
 		t.Fatalf("mkdir .pipelock-state: %v", err)
 	}
 	replayFloorPath := filepath.Join(replayFloorDir, "floor")

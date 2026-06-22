@@ -434,9 +434,22 @@ func validateStreamSwitchInputs(opts publishOptions) error {
 	if len(opts.switchReason) > conductorcore.MaxReasonBytes {
 		return fmt.Errorf("--stream-switch-reason exceeds %d bytes", conductorcore.MaxReasonBytes)
 	}
-	if len(opts.switchSigningKeys) < conductorcore.RequiredCatastrophicSigners {
+	// Count alone is not enough: blank or duplicate --stream-switch-signing-key
+	// values would otherwise pass the threshold check and reach key loading. The
+	// threshold means N DISTINCT signers, so reject blanks and de-duplicate here.
+	seen := make(map[string]struct{}, len(opts.switchSigningKeys))
+	for _, k := range opts.switchSigningKeys {
+		if strings.TrimSpace(k) == "" {
+			return errors.New("--stream-switch-signing-key must not be blank")
+		}
+		if _, dup := seen[k]; dup {
+			return fmt.Errorf("--stream-switch-signing-key %q specified more than once", k)
+		}
+		seen[k] = struct{}{}
+	}
+	if len(seen) < conductorcore.RequiredCatastrophicSigners {
 		return fmt.Errorf("%w: stream switch requires %d distinct signing keys, got %d",
-			conductorcore.ErrThresholdRequired, conductorcore.RequiredCatastrophicSigners, len(opts.switchSigningKeys))
+			conductorcore.ErrThresholdRequired, conductorcore.RequiredCatastrophicSigners, len(seen))
 	}
 	return nil
 }

@@ -183,6 +183,14 @@ func runStoreBackup(cmd *cobra.Command, opts storeOfflineOptions) error {
 	if err != nil {
 		return err
 	}
+	// The source must be an actual directory: backing up a regular file or a
+	// symlink would produce an archive that restore later rejects, so fail
+	// closed here with a clear message instead of deep in copyDir.
+	if st, err := os.Lstat(storageDir); err != nil {
+		return fmt.Errorf("stat --storage-dir: %w", err)
+	} else if st.Mode()&os.ModeSymlink != 0 || !st.IsDir() {
+		return fmt.Errorf("--storage-dir is not a directory: %s", storageDir)
+	}
 	backupDir, err := resolveBackupDir(opts.backupDir)
 	if err != nil {
 		return err

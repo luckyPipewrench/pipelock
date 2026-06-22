@@ -122,7 +122,7 @@ func runFollowerRemove(cmd *cobra.Command, opts followerRemoveOptions) error {
 		Environment: opts.environment,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("remove follower %s/%s/%s: %w", opts.orgID, opts.fleetID, opts.instanceID, err)
 	}
 	if opts.jsonOut {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(body))

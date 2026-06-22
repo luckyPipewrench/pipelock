@@ -3714,6 +3714,7 @@ func TestStrictMode_AllowlistDoesNotWeakenDLP(t *testing.T) {
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"example.com"}
 	s := New(cfg)
+	defer s.Close()
 
 	secret := testAnthropicPrefix + strings.Repeat("a", 25)
 	result := s.Scan(context.Background(), "https://example.com/api?key="+secret)

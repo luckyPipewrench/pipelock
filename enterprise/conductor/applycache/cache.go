@@ -382,9 +382,19 @@ func (c *Cache) validateResettableBundleStateLocked() error {
 		return err
 	}
 	for _, entry := range rootEntries {
+		// Match by name AND expected kind: a state root with, e.g., a directory
+		// named enrolled.json or a regular file named bundles/ is not a real
+		// apply cache and must not be accepted as resettable. Symlinks are
+		// rejected for every allowed name (IsDir is false for a symlink).
 		switch entry.Name() {
-		case activeRecordName, bundlesDirName, configsDirName,
-			emergency.RemoteKillStateFileName, enrolledRecordName, pipelockStateDirName:
+		case bundlesDirName, configsDirName, pipelockStateDirName:
+			if !entry.IsDir() {
+				return fmt.Errorf("%w: apply cache root entry %q must be a directory", ErrInvalidActiveRecord, entry.Name())
+			}
+		case activeRecordName, emergency.RemoteKillStateFileName, enrolledRecordName:
+			if !entry.Type().IsRegular() {
+				return fmt.Errorf("%w: apply cache root entry %q must be a regular file", ErrInvalidActiveRecord, entry.Name())
+			}
 		default:
 			return fmt.Errorf("%w: unexpected apply cache root entry %q", ErrInvalidActiveRecord, entry.Name())
 		}

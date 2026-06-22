@@ -413,6 +413,48 @@ func TestBuildServerValidation(t *testing.T) {
 	}
 }
 
+func TestRunServeListenErrorAfterBuild(t *testing.T) {
+	dir := t.TempDir()
+	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return fakeProvider{}, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	cmd := newServeCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := runServe(cmd, &serveFlags{
+		listen:                "127.0.0.1:bad-port",
+		provider:              "fake",
+		flyApp:                "playground-test",
+		flyTokenFile:          flyTokenFile,
+		image:                 "registry.example/playground:test",
+		internalPort:          8080,
+		concurrency:           1,
+		codes:                 []string{"outer-code"},
+		maxPerCode:            defaultMaxPerCode,
+		gateSecretFile:        gateSecretFile,
+		ipRate:                defaultIPRate,
+		ipBurst:               defaultIPBurst,
+		codeRate:              defaultCodeRate,
+		codeBurst:             defaultCodeBurst,
+		sessionTTL:            defaultSessionTTL,
+		deadlineGrace:         defaultGrace,
+		requireSessionSecrets: false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "listen 127.0.0.1:bad-port") {
+		t.Fatalf("runServe error = %v, want listen failure", err)
+	}
+	if !strings.Contains(out.String(), "broker configured") {
+		t.Fatalf("runServe should build before listen error, output = %q", out.String())
+	}
+}
+
 func TestResolveGateSecret(t *testing.T) {
 	dir := t.TempDir()
 	want := []byte("fedcba9876543210fedcba9876543210")
@@ -438,6 +480,137 @@ func TestResolveGateSecret(t *testing.T) {
 	}
 }
 
+func TestDefaultMachineProvider(t *testing.T) {
+	provider, err := defaultMachineProvider(context.Background(), &serveFlags{
+		provider: "fly",
+		flyApp:   "playground-test",
+	}, "fly-token")
+	if err != nil {
+		t.Fatalf("defaultMachineProvider fly: %v", err)
+	}
+	fly, ok := provider.(*broker.FlyMachines)
+	if !ok {
+		t.Fatalf("provider type = %T, want *broker.FlyMachines", provider)
+	}
+	if fly.AppName != "playground-test" || fly.Token != "fly-token" {
+		t.Fatalf("fly config = %+v", fly)
+	}
+	if _, err := defaultMachineProvider(context.Background(), &serveFlags{provider: "fake"}, "token"); err == nil {
+		t.Fatal("unsupported provider should error")
+	}
+}
+
+func TestValidateFlagsBranches(t *testing.T) {
+	base := serveFlags{
+		provider:      "fly",
+		flyApp:        "playground-test",
+		flyTokenEnv:   "BROKER_TEST_FLY_TOKEN",
+		image:         "registry.example/playground:test",
+		internalPort:  8080,
+		concurrency:   1,
+		codes:         []string{"outer-code"},
+		maxPerCode:    defaultMaxPerCode,
+		ipRate:        defaultIPRate,
+		ipBurst:       defaultIPBurst,
+		codeRate:      defaultCodeRate,
+		codeBurst:     defaultCodeBurst,
+		sessionTTL:    defaultSessionTTL,
+		deadlineGrace: defaultGrace,
+	}
+	if err := validateFlags(&base); err != nil {
+		t.Fatalf("base validateFlags: %v", err)
+	}
+	if err := validateFlags(nil); err == nil {
+		t.Fatal("nil flags should error")
+	}
+	tests := []struct {
+		name   string
+		mutate func(*serveFlags)
+	}{
+		{name: "missing_fly_app", mutate: func(f *serveFlags) { f.flyApp = "" }},
+		{name: "missing_token_source", mutate: func(f *serveFlags) { f.flyTokenEnv = "" }},
+		{name: "bad_concurrency", mutate: func(f *serveFlags) { f.concurrency = 0 }},
+		{name: "bad_max_per_code", mutate: func(f *serveFlags) { f.maxPerCode = -1 }},
+		{name: "bad_memory", mutate: func(f *serveFlags) { f.memoryMB = -1 }},
+		{name: "bad_cpus", mutate: func(f *serveFlags) { f.cpus = -1 }},
+		{name: "bad_deadline_grace", mutate: func(f *serveFlags) { f.deadlineGrace = -1 }},
+		{name: "bad_cf_combo", mutate: func(f *serveFlags) { f.cfAccessCertsURL = "https://keys.example/certs" }},
+		{name: "bad_cf_aud", mutate: func(f *serveFlags) {
+			f.cfAccessTeamDomain = "team.cloudflareaccess.com"
+			f.cfAccessAUD = "bad aud"
+		}},
+		{name: "bad_cf_certs_scheme", mutate: func(f *serveFlags) {
+			f.cfAccessTeamDomain = "team.cloudflareaccess.com"
+			f.cfAccessAUD = "aud"
+			f.cfAccessCertsURL = "file:///tmp/certs"
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := base
+			f.codes = append([]string(nil), base.codes...)
+			tc.mutate(&f)
+			if err := validateFlags(&f); err == nil {
+				t.Fatal("validateFlags succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestBrokerPublicHosts(t *testing.T) {
+	hosts, err := brokerPublicHosts(&serveFlags{
+		publicHosts: []string{"Playground.Pipelab.Org.", "playground.pipelab.org:443", ""},
+	})
+	if err != nil {
+		t.Fatalf("brokerPublicHosts explicit: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0] != "playground.pipelab.org" {
+		t.Fatalf("hosts = %#v, want one normalized host", hosts)
+	}
+	hosts, err = brokerPublicHosts(&serveFlags{allowOrigin: "https://playground.pipelab.org"})
+	if err != nil {
+		t.Fatalf("brokerPublicHosts allowOrigin: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0] != "playground.pipelab.org" {
+		t.Fatalf("hosts from origin = %#v", hosts)
+	}
+	if _, err := brokerPublicHosts(&serveFlags{publicHosts: []string{"https://bad.example"}}); err == nil {
+		t.Fatal("URL-shaped public host should error")
+	}
+}
+
+func TestNormalizeCFAccessTeamDomain(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "team.cloudflareaccess.com.", want: "https://team.cloudflareaccess.com"},
+		{in: "https://TEAM.cloudflareaccess.com/", want: "https://team.cloudflareaccess.com"},
+		{in: "", wantErr: true},
+		{in: "http://team.cloudflareaccess.com", wantErr: true},
+		{in: "https://team.cloudflareaccess.com/path", wantErr: true},
+		{in: "https://user@team.cloudflareaccess.com", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got, err := normalizeCFAccessTeamDomain(tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("normalizeCFAccessTeamDomain succeeded, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeCFAccessTeamDomain: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalizeCFAccessTeamDomain = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveSessionEnv(t *testing.T) {
 	dir := t.TempDir()
 	modelFile := writeTestFile(t, dir, "model.key", "model-file-value\n")
@@ -454,6 +627,121 @@ func TestResolveSessionEnv(t *testing.T) {
 	}
 	if env[envOrchestratorKey] != "orchestrator-env-value" {
 		t.Fatalf("orchestrator env = %q", env[envOrchestratorKey])
+	}
+}
+
+func TestResolveFlyToken(t *testing.T) {
+	dir := t.TempDir()
+	tokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	t.Setenv("BROKER_TEST_FLY_TOKEN", "fly-env-token")
+	got, err := resolveFlyToken(&serveFlags{flyTokenFile: tokenFile, flyTokenEnv: "BROKER_TEST_FLY_TOKEN"})
+	if err != nil {
+		t.Fatalf("resolveFlyToken file: %v", err)
+	}
+	if got != "fly-file-token" {
+		t.Fatalf("file token = %q", got)
+	}
+	got, err = resolveFlyToken(&serveFlags{flyTokenEnv: "BROKER_TEST_FLY_TOKEN"})
+	if err != nil {
+		t.Fatalf("resolveFlyToken env: %v", err)
+	}
+	if got != "fly-env-token" {
+		t.Fatalf("env token = %q", got)
+	}
+	emptyEnv := "BROKER_TEST_EMPTY"
+	if _, err := resolveFlyToken(&serveFlags{flyTokenEnv: emptyEnv}); err == nil {
+		t.Fatal("empty env token should error")
+	}
+}
+
+func TestResolveSessionSecretBranches(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "session.secret", "file-value\n")
+	t.Setenv("BROKER_TEST_SESSION_SECRET", "env-value")
+	t.Setenv(envModelKey, "default-env-value")
+
+	if got, err := resolveSessionSecret(path, "BROKER_TEST_SESSION_SECRET", "--model-key-file", envModelKey, true); err != nil || got != "file-value" {
+		t.Fatalf("file secret = %q err=%v", got, err)
+	}
+	if got, err := resolveSessionSecret("", "BROKER_TEST_SESSION_SECRET", "--model-key-file", envModelKey, true); err != nil || got != "env-value" {
+		t.Fatalf("named env secret = %q err=%v", got, err)
+	}
+	if got, err := resolveSessionSecret("", "", "--model-key-file", envModelKey, true); err != nil || got != "default-env-value" {
+		t.Fatalf("default env secret = %q err=%v", got, err)
+	}
+	t.Setenv(envModelKey, "")
+	if got, err := resolveSessionSecret("", "", "--model-key-file", envModelKey, false); err != nil || got != "" {
+		t.Fatalf("optional missing secret = %q err=%v", got, err)
+	}
+	if _, err := resolveSessionSecret("", "", "--model-key-file", envModelKey, true); err == nil {
+		t.Fatal("required missing secret should error")
+	}
+	if _, err := readRequiredFile(writeTestFile(t, dir, "empty", " \n"), "--empty"); err == nil {
+		t.Fatal("empty required file should error")
+	}
+}
+
+func TestCFAccessVerifierErrorsAndCache(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	verifier, err := newCFAccessVerifier(&serveFlags{
+		cfAccessTeamDomain: "team.cloudflareaccess.com",
+		cfAccessAUD:        "aud",
+		cfAccessCertsURL:   srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("newCFAccessVerifier: %v", err)
+	}
+	if err := verifier.verify(context.Background(), "not-a-jwt"); err == nil {
+		t.Fatal("invalid JWT should error before JWKS fetch")
+	}
+	if hits != 0 {
+		t.Fatalf("invalid JWT fetched JWKS %d times, want 0", hits)
+	}
+	if _, err := verifier.keySet(context.Background()); err == nil {
+		t.Fatal("empty JWKS should error")
+	}
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	const kid = "cache-key"
+	jwks := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       &priv.PublicKey,
+		KeyID:     kid,
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	}}}
+	hits = 0
+	goodJWKS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		_ = json.NewEncoder(w).Encode(jwks)
+	}))
+	t.Cleanup(goodJWKS.Close)
+	verifier.certsURL = goodJWKS.URL
+	verifier.keys = nil
+	verifier.keysExp = time.Time{}
+	token := signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, time.Now())
+	if err := verifier.verify(context.Background(), token); err != nil {
+		t.Fatalf("valid Access JWT: %v", err)
+	}
+	if err := verifier.verify(context.Background(), token); err != nil {
+		t.Fatalf("cached Access JWT: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("JWKS fetches = %d, want 1 cached fetch", hits)
+	}
+
+	wrongIssuer := signedCFAccessTestJWT(t, priv, kid, "https://wrong.cloudflareaccess.com", verifier.audience, time.Now())
+	if err := verifier.verify(context.Background(), wrongIssuer); err == nil {
+		t.Fatal("wrong issuer should fail claim validation")
 	}
 }
 

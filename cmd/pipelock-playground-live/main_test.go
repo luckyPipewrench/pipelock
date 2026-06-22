@@ -218,7 +218,7 @@ func TestGenSecretCmd(t *testing.T) {
 func TestNewRootCmd_HasSubcommands(t *testing.T) {
 	t.Parallel()
 	root := newRootCmd()
-	want := map[string]bool{"serve": false, "gen-secret": false, "gen-code": false}
+	want := map[string]bool{"serve": false, "gen-secret": false, "gen-code": false, "print-containment-nft": false, "verify-containment": false}
 	for _, c := range root.Commands() {
 		if _, ok := want[c.Name()]; ok {
 			want[c.Name()] = true
@@ -305,6 +305,27 @@ func TestBuildServer_DevDefault(t *testing.T) {
 	if !strings.Contains(out.String(), "UNCONTAINED") {
 		t.Error("--dev must print the uncontained warning")
 	}
+}
+
+func TestBuildServer_SelfManagedContainmentSelectsInVMVerifier(t *testing.T) {
+	t.Parallel()
+	f := devServeFlags()
+	f.dev = false
+	f.requireContainment = true
+	f.selfManagedContainment = true
+	f.codes = []string{"good"}
+	f.toyAgentBin = "/usr/local/bin/pipelock-playground-toyagent"
+	f.orchestratorKey = testOrchestratorKeyPath(t)
+	f.concurrency = 1
+	var out bytes.Buffer
+	srv, handler, err := buildServer(&out, f)
+	if err != nil {
+		t.Fatalf("self-managed buildServer: %v", err)
+	}
+	if srv == nil || handler == nil {
+		t.Fatal("nil server/handler")
+	}
+	defer srv.Close()
 }
 
 func TestBuildServer_StaticDirMux(t *testing.T) {
@@ -447,6 +468,23 @@ func TestValidateServeSafety_RejectsNegativeCaps(t *testing.T) {
 	}
 }
 
+func TestValidateServeSafety_SelfManagedContainment(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		f    serveFlags
+	}{
+		{name: "dev_conflict", f: serveFlags{dev: true, selfManagedContainment: true}},
+		{name: "missing_toyagent", f: serveFlags{requireContainment: true, selfManagedContainment: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateServeSafety(&tc.f, false); err == nil {
+				t.Fatal("expected self-managed containment validation error")
+			}
+		})
+	}
+}
+
 func TestValidateServeSafety_AllowOrigin(t *testing.T) {
 	t.Parallel()
 	if err := validateServeSafety(&serveFlags{allowOrigin: "https://pipelab.org", dev: true}, false); err != nil {
@@ -497,6 +535,46 @@ func TestGenCodeCmd(t *testing.T) {
 	}
 }
 
+func TestPrintNFTCmd(t *testing.T) {
+	t.Parallel()
+	cmd := newPrintNFTCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--agent-uid", "10001", "--proxy-port", "8888"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("print-containment-nft: %v", err)
+	}
+	if body := out.String(); !strings.Contains(body, "table inet pipelock") || !strings.Contains(body, "8888") {
+		t.Fatalf("unexpected nft output: %q", body)
+	}
+
+	cmd = newPrintNFTCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--proxy-port", "8888"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("missing --agent-uid should error")
+	}
+
+	cmd = newPrintNFTCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--agent-uid", "10001", "--proxy-port", "70000"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("bad --proxy-port should error")
+	}
+}
+
+func TestVerifyContainmentCmd_FailsClosedWithoutRoot(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("requires non-root to exercise root-required fail-closed path")
+	}
+	cmd := newVerifyContainmentCmd()
+	cmd.SetArgs([]string{"--toyagent-bin", "/nonexistent/toyagent"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("verify-containment should fail closed without root")
+	}
+}
+
 func TestContainedProxyPort(t *testing.T) {
 	t.Parallel()
 	if got := containedProxyPort(0); got != playground.DefaultContainedProxyPort {
@@ -524,5 +602,16 @@ func TestValidateServeSafety_RejectsBadProxyPort(t *testing.T) {
 				t.Fatalf("--proxy-port %d should be rejected", tc.port)
 			}
 		})
+	}
+}
+
+func TestInVMContainVerifier_FailsClosedWithoutRoot(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("requires non-root to exercise root-required fail-closed path")
+	}
+	err := (inVMContainVerifier{toyAgentBin: "/nonexistent/toyagent", agentUser: "pipelock-agent"}).Verify(context.Background())
+	if err == nil {
+		t.Fatal("inVMContainVerifier should fail closed without root")
 	}
 }

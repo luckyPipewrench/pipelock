@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -145,8 +146,9 @@ func TestFlyWaitReady(t *testing.T) {
 	if gotState != "started" {
 		t.Errorf("state = %q", gotState)
 	}
-	if gotTimeout == "" || gotTimeout == "0" {
-		t.Errorf("timeout = %q, want positive", gotTimeout)
+	wantTimeout := strconv.Itoa(int(defaultWaitTimeout.Seconds()))
+	if gotTimeout != wantTimeout {
+		t.Errorf("timeout = %q, want %q", gotTimeout, wantTimeout)
 	}
 }
 

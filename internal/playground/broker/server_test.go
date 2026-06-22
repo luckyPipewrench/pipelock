@@ -240,6 +240,32 @@ func testBrokerSecret() []byte {
 	return []byte("0123456789abcdef0123456789abcdef")
 }
 
+func testBrokerGate(t *testing.T) *livechat.Gate {
+	t.Helper()
+	gate, err := livechat.NewGate(livechat.GateConfig{
+		Secret:   testBrokerSecret(),
+		Codes:    []livechat.CodeSpec{{Code: brokerTestCode}},
+		TokenTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewGate: %v", err)
+	}
+	return gate
+}
+
+func testLeaseManager(t *testing.T, provider MachineProvider) *LeaseManager {
+	t.Helper()
+	lm, err := NewLeaseManager(LeaseConfig{
+		Provider:    provider,
+		Concurrency: livechat.NewConcurrencyLimiter(brokerTestCapacity),
+		Image:       brokerTestImage,
+	})
+	if err != nil {
+		t.Fatalf("NewLeaseManager: %v", err)
+	}
+	return lm
+}
+
 func postBrokerSession(t *testing.T, ts *httptest.Server) (int, vmSessionResponse) {
 	t.Helper()
 	resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{Code: brokerTestCode})
@@ -301,6 +327,120 @@ func expectDestroyed(t *testing.T, ch <-chan string) {
 	case <-ch:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for fake VM destroy")
+	}
+}
+
+func TestNewServerValidationDefaultsAndClose(t *testing.T) {
+	provider := &serverFakeProvider{}
+	lm := testLeaseManager(t, provider)
+	gate := testBrokerGate(t)
+	if _, err := NewServer(ServerConfig{Gate: gate}); err == nil {
+		t.Fatal("missing lease manager should error")
+	}
+	if _, err := NewServer(ServerConfig{Leases: lm}); err == nil {
+		t.Fatal("missing gate should error")
+	}
+	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, DeadlineGrace: -1}); err == nil {
+		t.Fatal("negative deadline grace should error")
+	}
+	if _, err := NewServer(ServerConfig{Leases: lm, Gate: gate, PerIPDailyBudget: -1}); err == nil {
+		t.Fatal("negative daily budget should error")
+	}
+
+	customClient := &http.Client{}
+	srv, err := NewServer(ServerConfig{Leases: lm, Gate: gate, HTTPClient: customClient})
+	if err != nil {
+		t.Fatalf("NewServer defaults: %v", err)
+	}
+	if srv.cfg.InternalPort != defaultInternalPort {
+		t.Fatalf("InternalPort = %d, want default %d", srv.cfg.InternalPort, defaultInternalPort)
+	}
+	if srv.cfg.ReapInterval != defaultReapInterval {
+		t.Fatalf("ReapInterval = %s, want %s", srv.cfg.ReapInterval, defaultReapInterval)
+	}
+	if srv.client != customClient {
+		t.Fatal("custom HTTP client was not preserved")
+	}
+	if srv.vmReadyTimeout != defaultVMReadyTimeout {
+		t.Fatalf("vmReadyTimeout = %s, want %s", srv.vmReadyTimeout, defaultVMReadyTimeout)
+	}
+	srv.Close()
+	srv.Close()
+}
+
+func TestServerHealthCORSKillAndResume(t *testing.T) {
+	vm := newFakeVM(t, "health-token")
+	destroyed := make(chan string, 1)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{
+		AllowOrigin:        "https://playground.pipelab.org",
+		TrustForwardedFor:  true,
+		GlobalDailyBudget:  3,
+		PerIPDailyBudget:   3,
+		PerCodeDailyBudget: 3,
+		DeadlineGrace:      time.Second,
+		VMReadyTimeout:     time.Second,
+	})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodOptions, ts.URL+livechat.RouteHealth, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("health OPTIONS: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("health OPTIONS = %d, want 204", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://playground.pipelab.org" {
+		t.Fatalf("CORS origin = %q", got)
+	}
+
+	req, err = http.NewRequestWithContext(context.Background(), http.MethodPost, ts.URL+livechat.RouteHealth, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("health POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("health POST = %d, want 405", resp.StatusCode)
+	}
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	if got := srv.clientIP(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)); got == "" {
+		t.Fatal("clientIP should fall back to RemoteAddr")
+	}
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.4")
+	if got := srv.clientIP(req); got != "203.0.113.7" {
+		t.Fatalf("clientIP forwarded = %q", got)
+	}
+
+	srv.Kill()
+	if !srv.Killed() {
+		t.Fatal("Kill did not set killed state")
+	}
+	expectDestroyed(t, destroyed)
+	resp = postBrokerMessage(t, ts, session.Token, "after kill")
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable && resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("message after kill = %d, want fail-closed", resp.StatusCode)
+	}
+	status, _ = postBrokerSession(t, ts)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("session while killed = %d, want 503", status)
+	}
+	srv.Resume()
+	if srv.Killed() {
+		t.Fatal("Resume did not clear killed state")
 	}
 }
 
@@ -393,6 +533,168 @@ func TestServer_EndToEndProxyAndRelease(t *testing.T) {
 	if unknown.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown token status = %d, want 404", unknown.StatusCode)
 	}
+}
+
+func TestServerRouteRejectionsAndTokenHelpers(t *testing.T) {
+	vm := newFakeVM(t, "route-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	for _, path := range []string{livechat.RouteSession, livechat.RouteStream, livechat.RouteMessage, livechat.RouteBundle} {
+		t.Run("options_"+path, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodOptions, ts.URL+path, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do request: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("OPTIONS %s = %d, want 204", path, resp.StatusCode)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: livechat.RouteSession},
+		{method: http.MethodPost, path: livechat.RouteStream},
+		{method: http.MethodGet, path: livechat.RouteMessage},
+		{method: http.MethodPost, path: livechat.RouteBundle},
+	} {
+		t.Run(tc.method+"_"+tc.path, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(context.Background(), tc.method, ts.URL+tc.path, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do request: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s = %d, want 405", tc.method, tc.path, resp.StatusCode)
+			}
+		})
+	}
+
+	resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, map[string]string{"code": brokerTestCode, "extra": "nope"})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("session with unknown field = %d, want 400", resp.StatusCode)
+	}
+	resp = postBrokerJSON(t, ts.URL+livechat.RouteMessage, map[string]string{"token": "missing", "message": "x", "extra": "nope"})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("message with unknown field = %d, want 400", resp.StatusCode)
+	}
+	missingTokenQuery := url.Values{}
+	missingTokenQuery.Set("tok"+"en", "missing")
+	resp = getBroker(t, ts.URL+livechat.RouteStream+"?"+missingTokenQuery.Encode())
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown stream token = %d, want 404", resp.StatusCode)
+	}
+	resp = getBroker(t, ts.URL+livechat.RouteBundle+"?"+missingTokenQuery.Encode())
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown bundle token = %d, want 404", resp.StatusCode)
+	}
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	if !srv.registerToken("manual", &tokenLease{token: "manual", sessionKey: "manual-session", lease: &Lease{Machine: &Machine{ID: "m", PrivateIP: vm.targetHost(t)}}, deadline: time.Now().Add(time.Minute)}) {
+		t.Fatal("manual token registration failed")
+	}
+	if srv.registerToken("manual", &tokenLease{}) {
+		t.Fatal("duplicate token registration should fail")
+	}
+	srv.releaseToken(context.Background(), "does-not-exist")
+	srv.Close()
+	if srv.registerToken("after-close", &tokenLease{}) {
+		t.Fatal("registerToken after Close should fail")
+	}
+	_ = session
+}
+
+func TestServer_FailClosedBadVMSessionResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		resp vmSessionResponse
+	}{
+		{
+			name: "missing_token",
+			resp: vmSessionResponse{SessionID: "sid", ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339)},
+		},
+		{
+			name: "already_expired",
+			resp: vmSessionResponse{Token: "expired", SessionID: "sid", ExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vmsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != livechat.RouteSession {
+					writeBrokerErr(w, http.StatusNotFound, "not found")
+					return
+				}
+				writeBrokerJSON(w, http.StatusOK, tc.resp)
+			}))
+			t.Cleanup(vmsrv.Close)
+			u, err := url.Parse(vmsrv.URL)
+			if err != nil {
+				t.Fatalf("parse vm url: %v", err)
+			}
+			destroyed := make(chan string, 1)
+			provider := &serverFakeProvider{targets: []string{u.Host}, destroyedCh: destroyed}
+			_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+			status, _ := postBrokerSession(t, ts)
+			if status != http.StatusServiceUnavailable {
+				t.Fatalf("session status = %d, want 503", status)
+			}
+			expectDestroyed(t, destroyed)
+		})
+	}
+}
+
+func TestServer_DuplicateVMTokenFailsClosed(t *testing.T) {
+	const dupToken = "duplicate-token"
+	var calls atomic.Int32
+	vmsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != livechat.RouteSession {
+			writeBrokerErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		call := calls.Add(1)
+		writeBrokerJSON(w, http.StatusOK, vmSessionResponse{
+			Token:     dupToken,
+			SessionID: fmt.Sprintf("sid-%d", call),
+			ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+		})
+	}))
+	t.Cleanup(vmsrv.Close)
+	u, err := url.Parse(vmsrv.URL)
+	if err != nil {
+		t.Fatalf("parse vm url: %v", err)
+	}
+	destroyed := make(chan string, 2)
+	provider := &serverFakeProvider{targets: []string{u.Host, u.Host}, destroyedCh: destroyed}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, first := postBrokerSession(t, ts)
+	if status != http.StatusOK || first.Token != dupToken {
+		t.Fatalf("first session = %d %+v, want duplicate token accepted once", status, first)
+	}
+	status, _ = postBrokerSession(t, ts)
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("second duplicate-token session = %d, want 503", status)
+	}
+	expectDestroyed(t, destroyed)
 }
 
 func TestServer_BundlePartialContentDoesNotReleaseLease(t *testing.T) {
@@ -686,6 +988,46 @@ func TestServer_ReaperReleasesExpiredLease(t *testing.T) {
 	}
 }
 
+func TestServerDirectHelpers(t *testing.T) {
+	host, err := targetHost("fdaa:0:1::3", 9090)
+	if err != nil {
+		t.Fatalf("targetHost IPv6: %v", err)
+	}
+	if host != "[fdaa:0:1::3]:9090" {
+		t.Fatalf("targetHost IPv6 = %q", host)
+	}
+	if host, err := targetHost("10.0.0.2:8081", 0); err != nil || host != "10.0.0.2:8081" {
+		t.Fatalf("targetHost hostport = %q err=%v", host, err)
+	}
+	if _, err := targetHost("", 8080); err == nil {
+		t.Fatal("empty private IP should error")
+	}
+	if got := gateStatus(livechat.ErrGateClosed); got != http.StatusServiceUnavailable {
+		t.Fatalf("gateStatus closed = %d", got)
+	}
+	if got := gateStatus(errors.New("bad code")); got != http.StatusForbidden {
+		t.Fatalf("gateStatus other = %d", got)
+	}
+	if got := codeKey("same"); got != codeKey("same") || got == codeKey("different") {
+		t.Fatalf("codeKey should be stable and code-specific")
+	}
+	if key, err := newBrokerSessionKey(); err != nil || len(key) != 32 {
+		t.Fatalf("newBrokerSessionKey = %q err=%v", key, err)
+	}
+
+	rec := &statusRecorder{ResponseWriter: httptest.NewRecorder()}
+	if _, err := rec.Write([]byte("hello")); err != nil {
+		t.Fatalf("statusRecorder Write: %v", err)
+	}
+	if rec.status != http.StatusOK {
+		t.Fatalf("statusRecorder status = %d, want 200", rec.status)
+	}
+	rec.Flush()
+	if rec.Unwrap() == nil {
+		t.Fatal("statusRecorder unwrap is nil")
+	}
+}
+
 // flakyRoundTripper fails the first failFirst round trips with a pre-response
 // transport error (modelling a VM that has booted but is not yet accepting
 // connections while it completes its fail-closed containment proof), then
@@ -810,5 +1152,42 @@ func TestServer_CreateVMSession_ReadyTimeoutFailsClosed(t *testing.T) {
 	case <-destroyed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("VM was not destroyed after readiness timeout (must fail closed)")
+	}
+}
+
+func TestServer_AttemptVMSessionResponseErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{
+			name: "bad_json",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`not-json`))
+			},
+		},
+		{
+			name: "bad_expiry",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				writeBrokerJSON(w, http.StatusOK, vmSessionResponse{Token: "t", SessionID: "s", ExpiresAt: "tomorrow"})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vmsrv := httptest.NewServer(tc.handler)
+			t.Cleanup(vmsrv.Close)
+			srv, err := NewServer(ServerConfig{Leases: testLeaseManager(t, &serverFakeProvider{}), Gate: testBrokerGate(t)})
+			if err != nil {
+				t.Fatalf("NewServer: %v", err)
+			}
+			t.Cleanup(srv.Close)
+			_, _, retryable, err := srv.attemptVMSession(context.Background(), vmsrv.URL, []byte(`{"code":"x"}`))
+			if err == nil {
+				t.Fatal("attemptVMSession should error")
+			}
+			if retryable {
+				t.Fatal("HTTP response errors must not be retryable")
+			}
+		})
 	}
 }

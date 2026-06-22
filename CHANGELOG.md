@@ -99,6 +99,9 @@ open a hole. Review before upgrading.
 
 ### Changed
 
+- **Helm chart metadata follows the v3.0.0 application release.** The chart package
+  version is `0.6.0`, `appVersion` is `3.0.0`, and the default image tag follows
+  `3.0.0` when operators leave `image.tag` and `image.digest` unset.
 - **Conductor control messages tolerate bounded clock skew on `not_before`.** Control
   messages (policy bundle, remote-kill, rollback, stream-switch) stamp `not_before` on
   the operator clock but are validated on the conductor and follower clocks. The check

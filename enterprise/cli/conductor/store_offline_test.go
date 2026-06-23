@@ -342,6 +342,99 @@ func TestStoreBackupRejectsBackupInsideStorage(t *testing.T) {
 	}
 }
 
+func TestStoreBackupRejectsMissingStorageDir(t *testing.T) {
+	err := runStoreBackup(newCapturingCmd(), storeOfflineOptions{backupDir: filepath.Join(t.TempDir(), "backup")})
+	if err == nil || !strings.Contains(err.Error(), "--storage-dir is required") {
+		t.Fatalf("runStoreBackup(missing storage) = %v, want storage-dir required", err)
+	}
+}
+
+func TestStoreBackupRejectsNonEmptyBackupDir(t *testing.T) {
+	storageDir := seedCleanStore(t)
+	backupDir := filepath.Join(t.TempDir(), "backup")
+	if err := os.MkdirAll(backupDir, 0o750); err != nil {
+		t.Fatalf("mkdir backup dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "existing"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write backup dir marker: %v", err)
+	}
+	err := runStoreBackup(newCapturingCmd(), storeOfflineOptions{
+		storageDir: storageDir,
+		backupDir:  backupDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "already exists and is not empty") {
+		t.Fatalf("runStoreBackup(non-empty backup dir) = %v, want non-empty rejection", err)
+	}
+}
+
+func TestStoreRestoreRejectsMissingBackupDir(t *testing.T) {
+	err := runStoreRestore(newCapturingCmd(), storeOfflineOptions{storageDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "--backup-dir is required") {
+		t.Fatalf("runStoreRestore(missing backup) = %v, want backup-dir required", err)
+	}
+}
+
+func TestStoreRestoreRejectsBadBackupManifestAndStorage(t *testing.T) {
+	t.Run("unsupported_schema", func(t *testing.T) {
+		backupDir := t.TempDir()
+		if err := writeBackupManifest(filepath.Join(backupDir, backupManifestFile), conductorBackupManifest{Schema: "future"}); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		if err := os.Mkdir(filepath.Join(backupDir, backupStorageSubdir), 0o750); err != nil {
+			t.Fatalf("mkdir backup storage: %v", err)
+		}
+		err := runStoreRestore(newCapturingCmd(), storeOfflineOptions{
+			storageDir: filepath.Join(t.TempDir(), "restore"),
+			backupDir:  backupDir,
+		})
+		if err == nil || !strings.Contains(err.Error(), "unsupported") {
+			t.Fatalf("runStoreRestore(unsupported schema) = %v, want unsupported schema", err)
+		}
+	})
+
+	t.Run("storage_file", func(t *testing.T) {
+		backupDir := t.TempDir()
+		if err := writeBackupManifest(filepath.Join(backupDir, backupManifestFile), conductorBackupManifest{Schema: conductorBackupSchema}); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(backupDir, backupStorageSubdir), []byte("not a dir"), 0o600); err != nil {
+			t.Fatalf("write backup storage file: %v", err)
+		}
+		err := runStoreRestore(newCapturingCmd(), storeOfflineOptions{
+			storageDir: filepath.Join(t.TempDir(), "restore"),
+			backupDir:  backupDir,
+		})
+		if err == nil || !strings.Contains(err.Error(), "backup storage path is not a directory") {
+			t.Fatalf("runStoreRestore(storage file) = %v, want backup storage directory rejection", err)
+		}
+	})
+}
+
+func TestReadBackupManifestRejectsMalformedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), backupManifestFile)
+	if err := os.WriteFile(path, []byte("{bad"), 0o600); err != nil {
+		t.Fatalf("write malformed manifest: %v", err)
+	}
+	if _, err := readBackupManifest(path); err == nil || !strings.Contains(err.Error(), "decode backup manifest") {
+		t.Fatalf("readBackupManifest(malformed) = %v, want decode error", err)
+	}
+}
+
+func TestCopyDirRejectsSymlink(t *testing.T) {
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "dst")
+	target := filepath.Join(src, "target")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(src, "link")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := copyDir(src, dst); err == nil || !strings.Contains(err.Error(), "refusing to copy symlink") {
+		t.Fatalf("copyDir(symlink) = %v, want symlink rejection", err)
+	}
+}
+
 func newCapturingCmd() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})

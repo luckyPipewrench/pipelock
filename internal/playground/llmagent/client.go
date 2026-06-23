@@ -80,6 +80,24 @@ type completionResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// ModelStatusError reports a non-200 model provider response without losing the
+// status code needed by callers that turn spend/auth failures into operator UX.
+type ModelStatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *ModelStatusError) Error() string {
+	return fmt.Sprintf("model returned %d: %s", e.Status, e.Body)
+}
+
+// IsProviderPausedStatus reports provider responses that should pause the demo
+// cleanly from a visitor's view: bad/expired credentials, exhausted credits, or
+// provider rate limits.
+func IsProviderPausedStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusPaymentRequired || status == http.StatusTooManyRequests
+}
+
 // complete issues one chat-completions round trip and returns the assistant
 // message. It advertises the agent's tools so the model can call them.
 func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools bool) (chatMessage, error) {
@@ -127,7 +145,10 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools
 	if resp.StatusCode != http.StatusOK {
 		// Redact BEFORE truncating: if the key sat near the snippet boundary,
 		// redacting the already-truncated string could miss a surviving prefix.
-		return chatMessage{}, fmt.Errorf("model returned %d: %s", resp.StatusCode, snippet([]byte(a.cfg.redactSecrets(string(body)))))
+		return chatMessage{}, &ModelStatusError{
+			Status: resp.StatusCode,
+			Body:   snippet([]byte(a.cfg.redactSecrets(string(body)))),
+		}
 	}
 
 	var parsed completionResponse

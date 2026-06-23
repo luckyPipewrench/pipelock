@@ -110,6 +110,9 @@ func mapModelEvent(ev llmagent.Event) (out LiveEvent, push bool, proxiedAction s
 		// agent column shows "hit action limit" vs "done" instead of inferring it.
 		return LiveEvent{Type: LiveEventAgentState, State: agentStateEnded, Note: turnEndNote(ev.Reason)}, true, ""
 	case llmagent.EventError:
+		if ev.Code == llmagent.ErrorCodeModelProviderPaused {
+			return LiveEvent{Type: LiveEventError, Message: ModelProviderPausedMessage}, true, ""
+		}
 		return LiveEvent{Type: LiveEventError, Message: ev.Text}, true, ""
 	default:
 		return LiveEvent{}, false, ""
@@ -450,6 +453,7 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 		return fmt.Errorf("playground: write message to model agent: %w", err)
 	}
 
+	var turnErr error
 	for r.sc.Scan() {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -459,7 +463,10 @@ func (r *subprocessTurnRunner) RunTurn(ctx context.Context, msg string, onEvent 
 			return fmt.Errorf("playground: parse model agent event: %w", err)
 		}
 		if ev.Kind == llmagent.EventTurnDone {
-			return nil
+			return turnErr
+		}
+		if ev.Kind == llmagent.EventError && ev.Code == llmagent.ErrorCodeModelProviderPaused {
+			turnErr = ErrModelProviderPaused
 		}
 		onEvent(ev)
 	}

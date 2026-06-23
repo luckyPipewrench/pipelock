@@ -91,6 +91,17 @@ func TestMapModelEvent(t *testing.T) {
 			wantMessage: "model unreachable",
 		},
 		{
+			name: "provider paused error uses clean message",
+			ev: llmagent.Event{
+				Kind: llmagent.EventError,
+				Text: "model returned 429: raw provider details",
+				Code: llmagent.ErrorCodeModelProviderPaused,
+			},
+			wantPush:    true,
+			wantType:    LiveEventError,
+			wantMessage: ModelProviderPausedMessage,
+		},
+		{
 			name:     "turn_done is not pushed",
 			ev:       llmagent.Event{Kind: llmagent.EventTurnDone},
 			wantPush: false,
@@ -531,6 +542,40 @@ func TestSendViaModel_NoReceipt_FailsClosed(t *testing.T) {
 	}
 }
 
+func TestSendViaModel_ModelProviderPausedCleanly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a real proxy")
+	}
+	runner := &scriptedRunner{
+		run: func(_ context.Context, _ string, onEvent func(llmagent.Event)) error {
+			onEvent(llmagent.Event{
+				Kind: llmagent.EventError,
+				Text: "model returned 429: provider raw detail",
+				Code: llmagent.ErrorCodeModelProviderPaused,
+			})
+			return ErrModelProviderPaused
+		},
+	}
+	sess := newModelSession(t, runner, "", nil)
+	collected := collectEvents(sess.Events())
+
+	err := sess.Send(context.Background(), "hello")
+	if !errors.Is(err, ErrModelProviderPaused) {
+		t.Fatalf("Send err = %v, want ErrModelProviderPaused", err)
+	}
+	sess.Close()
+	evs := <-collected
+	var got string
+	for _, ev := range evs {
+		if ev.Type == LiveEventError {
+			got = ev.Message
+		}
+	}
+	if got != ModelProviderPausedMessage {
+		t.Fatalf("error event = %q, want clean provider pause message", got)
+	}
+}
+
 // TestSendViaModel_DuplicateHost_CountedNotSet: two narrated actions to the same
 // destination but only one real proxied request must fail the invariant. A
 // set-membership check would wrongly pass; the count-based check catches it.
@@ -866,6 +911,60 @@ func TestSubprocessTurnRunner_ContextCancelled(t *testing.T) {
 	cancel() // cancel before the turn: the loop returns ctx.Err() after first read
 	if err := runner.RunTurn(ctx, "hello", func(llmagent.Event) {}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RunTurn err = %v, want context.Canceled", err)
+	}
+}
+
+func TestSubprocessTurnRunner_ModelProviderPausedConsumesTurnDone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds + spawns a helper subprocess")
+	}
+	dir := t.TempDir()
+	src := `package main
+import ("bufio";"fmt";"os")
+func main() {
+	sc := bufio.NewScanner(os.Stdin)
+	first := true
+	for sc.Scan() {
+		if first {
+			first = false
+			fmt.Println(` + "`" + `{"kind":"error","text":"model returned 429: provider raw detail","code":"model_provider_paused"}` + "`" + `)
+			fmt.Println(` + "`" + `{"kind":"turn_done"}` + "`" + `)
+			continue
+		}
+		fmt.Println(` + "`" + `{"kind":"reply","text":"ok"}` + "`" + `)
+		fmt.Println(` + "`" + `{"kind":"turn_done"}` + "`" + `)
+	}
+}
+`
+	bin := buildLLMHelper(t, src)
+	runner, err := newSubprocessTurnRunner(t.Context(), subprocessRunnerOpts{
+		Bin: bin, ProxyURL: "http://127.0.0.1:1/",
+		ModelBaseURL: "http://m/v1", Model: "x", SecretFile: filepath.Join(dir, "k"),
+	})
+	if err != nil {
+		t.Fatalf("newSubprocessTurnRunner: %v", err)
+	}
+	defer func() { _ = runner.Close() }()
+
+	var first []llmagent.Event
+	err = runner.RunTurn(t.Context(), "hello", func(ev llmagent.Event) {
+		first = append(first, ev)
+	})
+	if !errors.Is(err, ErrModelProviderPaused) {
+		t.Fatalf("RunTurn first err = %v, want ErrModelProviderPaused", err)
+	}
+	if len(first) != 1 || first[0].Kind != llmagent.EventError || first[0].Code != llmagent.ErrorCodeModelProviderPaused {
+		t.Fatalf("first events = %+v, want provider-paused error event", first)
+	}
+
+	var second []llmagent.Event
+	if err := runner.RunTurn(t.Context(), "again", func(ev llmagent.Event) {
+		second = append(second, ev)
+	}); err != nil {
+		t.Fatalf("RunTurn second: %v", err)
+	}
+	if len(second) != 1 || second[0].Kind != llmagent.EventReply {
+		t.Fatalf("second events = %+v, want reply after turn_done was consumed", second)
 	}
 }
 

@@ -11,10 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -582,6 +580,10 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, "session is closed")
 			return
 		}
+		if errors.Is(err, playground.ErrModelProviderPaused) {
+			writeErr(w, http.StatusServiceUnavailable, playground.ModelProviderPausedMessage)
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "send failed")
 		return
 	}
@@ -770,19 +772,7 @@ func (s *Server) setCORS(w http.ResponseWriter) {
 }
 
 func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.TrustForwardedFor {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.IndexByte(xff, ','); i >= 0 {
-				return strings.TrimSpace(xff[:i])
-			}
-			return strings.TrimSpace(xff)
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return ClientIP(r, s.cfg.TrustForwardedFor)
 }
 
 func gateErrStatus(err error) int {

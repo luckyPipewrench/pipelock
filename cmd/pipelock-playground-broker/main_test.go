@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -88,8 +89,11 @@ func TestBuildServerWithInjectedProvider(t *testing.T) {
 		ipBurst:               defaultIPBurst,
 		codeRate:              defaultCodeRate,
 		codeBurst:             defaultCodeBurst,
+		globalDailyBudget:     10,
+		unsafeNoHumanGate:     true,
 		sessionTTL:            defaultSessionTTL,
 		deadlineGrace:         defaultGrace,
+		vmDailyTurnBudget:     10,
 		modelKeyFile:          modelFile,
 		orchestratorKeyFile:   orchestratorFile,
 		requireSessionSecrets: true,
@@ -134,7 +138,10 @@ func TestBuildServerStaticDir(t *testing.T) {
 			codes: []string{"outer-code"}, maxPerCode: defaultMaxPerCode,
 			gateSecretFile: gateSecretFile, ipRate: defaultIPRate, ipBurst: defaultIPBurst,
 			codeRate: defaultCodeRate, codeBurst: defaultCodeBurst,
-			sessionTTL: defaultSessionTTL, deadlineGrace: defaultGrace,
+			globalDailyBudget: 10,
+			unsafeNoHumanGate: true,
+			sessionTTL:        defaultSessionTTL, deadlineGrace: defaultGrace,
+			vmDailyTurnBudget:     10,
 			requireSessionSecrets: false,
 		}
 	}
@@ -191,7 +198,10 @@ func TestBuildServerHostGuardFromAllowOrigin(t *testing.T) {
 		codes: []string{"outer-code"}, maxPerCode: defaultMaxPerCode,
 		gateSecretFile: gateSecretFile, ipRate: defaultIPRate, ipBurst: defaultIPBurst,
 		codeRate: defaultCodeRate, codeBurst: defaultCodeBurst,
-		sessionTTL: defaultSessionTTL, deadlineGrace: defaultGrace,
+		globalDailyBudget: 10,
+		unsafeNoHumanGate: true,
+		sessionTTL:        defaultSessionTTL, deadlineGrace: defaultGrace,
+		vmDailyTurnBudget:     10,
 		allowOrigin:           "https://playground.pipelab.org",
 		requireSessionSecrets: false,
 	})
@@ -260,7 +270,9 @@ func TestBuildServerCFAccessGuard(t *testing.T) {
 		codes: []string{"outer-code"}, maxPerCode: defaultMaxPerCode,
 		gateSecretFile: gateSecretFile, ipRate: defaultIPRate, ipBurst: defaultIPBurst,
 		codeRate: defaultCodeRate, codeBurst: defaultCodeBurst,
-		sessionTTL: defaultSessionTTL, deadlineGrace: defaultGrace,
+		globalDailyBudget: 10,
+		sessionTTL:        defaultSessionTTL, deadlineGrace: defaultGrace,
+		vmDailyTurnBudget:     10,
 		allowOrigin:           "https://playground.pipelab.org",
 		cfAccessTeamDomain:    issuer,
 		cfAccessAUD:           aud,
@@ -294,6 +306,60 @@ func TestBuildServerCFAccessGuard(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "live demo ui") {
 		t.Fatalf("valid Access JWT status/body = %d %q, want UI", rr.Code, rr.Body.String())
+	}
+}
+
+func TestBuildServerTurnstileRejectsMissingToken(t *testing.T) {
+	dir := t.TempDir()
+	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+	turnstileSecretFile := writeTestFile(t, dir, "turnstile.secret", "turnstile-secret\n")
+	verifyServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("missing-token rejection should not call Turnstile Siteverify")
+	}))
+	t.Cleanup(verifyServer.Close)
+
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return fakeProvider{}, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	srv, handler, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+		listen:                defaultListen,
+		provider:              "fake",
+		flyApp:                "playground-test",
+		flyTokenFile:          flyTokenFile,
+		image:                 "registry.example/playground:test",
+		internalPort:          8080,
+		concurrency:           2,
+		codes:                 []string{"outer-code"},
+		maxPerCode:            defaultMaxPerCode,
+		gateSecretFile:        gateSecretFile,
+		ipRate:                defaultIPRate,
+		ipBurst:               defaultIPBurst,
+		codeRate:              defaultCodeRate,
+		codeBurst:             defaultCodeBurst,
+		globalDailyBudget:     10,
+		turnstileSecretFile:   turnstileSecretFile,
+		turnstileVerifyURL:    verifyServer.URL,
+		sessionTTL:            defaultSessionTTL,
+		deadlineGrace:         defaultGrace,
+		vmDailyTurnBudget:     10,
+		requireSessionSecrets: false,
+	})
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	t.Cleanup(srv.Close)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, livechat.RouteSession, strings.NewReader(`{"code":"outer-code"}`))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("missing Turnstile token status = %d, want 403", rr.Code)
 	}
 }
 
@@ -387,8 +453,11 @@ func TestBuildServerValidation(t *testing.T) {
 		ipBurst:               defaultIPBurst,
 		codeRate:              defaultCodeRate,
 		codeBurst:             defaultCodeBurst,
+		globalDailyBudget:     10,
+		unsafeNoHumanGate:     true,
 		sessionTTL:            defaultSessionTTL,
 		deadlineGrace:         defaultGrace,
+		vmDailyTurnBudget:     10,
 		requireSessionSecrets: false,
 	}
 	tests := []struct {
@@ -400,6 +469,8 @@ func TestBuildServerValidation(t *testing.T) {
 		{name: "bad_origin", mutate: func(f *serveFlags) { f.allowOrigin = "*" }},
 		{name: "bad_port", mutate: func(f *serveFlags) { f.internalPort = 0 }},
 		{name: "negative_budget", mutate: func(f *serveFlags) { f.globalDailyBudget = -1 }},
+		{name: "missing_global_budget", mutate: func(f *serveFlags) { f.globalDailyBudget = 0 }},
+		{name: "missing_vm_budget", mutate: func(f *serveFlags) { f.vmDailyTurnBudget = 0 }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -443,8 +514,11 @@ func TestRunServeListenErrorAfterBuild(t *testing.T) {
 		ipBurst:               defaultIPBurst,
 		codeRate:              defaultCodeRate,
 		codeBurst:             defaultCodeBurst,
+		globalDailyBudget:     10,
+		unsafeNoHumanGate:     true,
 		sessionTTL:            defaultSessionTTL,
 		deadlineGrace:         defaultGrace,
+		vmDailyTurnBudget:     10,
 		requireSessionSecrets: false,
 	})
 	if err == nil || !strings.Contains(err.Error(), "listen 127.0.0.1:bad-port") {
@@ -452,6 +526,111 @@ func TestRunServeListenErrorAfterBuild(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "broker configured") {
 		t.Fatalf("runServe should build before listen error, output = %q", out.String())
+	}
+}
+
+func TestApplyControlSignal(t *testing.T) {
+	srv := newBrokerControlTestServer(t)
+
+	var out bytes.Buffer
+	if shutdown := applyControlSignal(&out, srv, syscall.SIGUSR1); shutdown {
+		t.Fatal("SIGUSR1 requested shutdown, want pause only")
+	}
+	if !srv.Killed() {
+		t.Fatal("SIGUSR1 did not pause broker")
+	}
+	if shutdown := applyControlSignal(&out, srv, syscall.SIGUSR2); shutdown {
+		t.Fatal("SIGUSR2 requested shutdown, want resume only")
+	}
+	if srv.Killed() {
+		t.Fatal("SIGUSR2 did not resume broker")
+	}
+	if shutdown := applyControlSignal(&out, srv, syscall.SIGTERM); !shutdown {
+		t.Fatal("SIGTERM did not request graceful shutdown")
+	}
+	if got := out.String(); !strings.Contains(got, "paused") || !strings.Contains(got, "resumed") {
+		t.Fatalf("operator output = %q, want pause and resume messages", got)
+	}
+}
+
+func newBrokerControlTestServer(t *testing.T) *broker.Server {
+	t.Helper()
+	gate, err := livechat.NewGate(livechat.GateConfig{
+		Secret: []byte("0123456789abcdef0123456789abcdef"),
+		Codes:  []livechat.CodeSpec{{Code: "outer-code"}},
+	})
+	if err != nil {
+		t.Fatalf("new gate: %v", err)
+	}
+	lm, err := broker.NewLeaseManager(broker.LeaseConfig{
+		Provider:    fakeProvider{},
+		Concurrency: livechat.NewConcurrencyLimiter(1),
+		Image:       "registry.example/playground:test",
+	})
+	if err != nil {
+		t.Fatalf("new lease manager: %v", err)
+	}
+	srv, err := broker.NewServer(broker.ServerConfig{
+		Leases:            lm,
+		Gate:              gate,
+		GlobalDailyBudget: 1,
+	})
+	if err != nil {
+		t.Fatalf("new broker server: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestAdminHandlerAuthAndPauseResume(t *testing.T) {
+	srv := newBrokerControlTestServer(t)
+	handler := adminHandler(srv, "operator-value")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/pause", nil)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("missing auth status = %d, want 401", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/pause", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("bad auth status = %d, want 403", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/pause", nil)
+	req.Header.Set("Authorization", "Bearer operator-value")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET pause status = %d, want 405", rr.Code)
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/pause", nil)
+	req.Header.Set("Authorization", "Bearer operator-value")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !srv.Killed() {
+		t.Fatalf("pause status/killed = %d/%v, want 200/true", rr.Code, srv.Killed())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/resume", nil)
+	req.Header.Set("Authorization", "Bearer operator-value")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || srv.Killed() {
+		t.Fatalf("resume status/killed = %d/%v, want 200/false", rr.Code, srv.Killed())
+	}
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/health", nil)
+	req.Header.Set("Authorization", "Bearer operator-value")
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"killed":false`) {
+		t.Fatalf("health status/body = %d/%q, want killed false", rr.Code, rr.Body.String())
 	}
 }
 
@@ -480,6 +659,65 @@ func TestResolveGateSecret(t *testing.T) {
 	}
 }
 
+func TestResolveTurnstileVerifier(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "turnstile.secret", "file-secret\n")
+	got, err := resolveTurnstileVerifier(&serveFlags{turnstileSecretFile: path})
+	if err != nil {
+		t.Fatalf("resolveTurnstileVerifier file: %v", err)
+	}
+	fileVerifier, ok := got.(broker.TurnstileVerifier)
+	if !ok {
+		t.Fatalf("verifier type = %T, want broker.TurnstileVerifier", got)
+	}
+	if fileVerifier.Secret != "file-secret" {
+		t.Fatal("file turnstile secret mismatch")
+	}
+
+	t.Setenv("BROKER_TEST_TURNSTILE", "env-secret")
+	got, err = resolveTurnstileVerifier(&serveFlags{turnstileSecretEnv: "BROKER_TEST_TURNSTILE"})
+	if err != nil {
+		t.Fatalf("resolveTurnstileVerifier env: %v", err)
+	}
+	envVerifier, ok := got.(broker.TurnstileVerifier)
+	if !ok {
+		t.Fatalf("verifier type = %T, want broker.TurnstileVerifier", got)
+	}
+	if envVerifier.Secret != "env-secret" {
+		t.Fatal("env turnstile secret mismatch")
+	}
+	if got, err := resolveTurnstileVerifier(&serveFlags{}); err != nil || got != nil {
+		t.Fatalf("resolveTurnstileVerifier empty = %T %v, want nil nil", got, err)
+	}
+	if _, err := resolveTurnstileVerifier(&serveFlags{turnstileSecretEnv: "BROKER_TEST_EMPTY_VALUE"}); err == nil { //nolint:gosec // Test env var name, not a credential.
+		t.Fatal("empty turnstile env should error")
+	}
+}
+
+func TestResolveAdminToken(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "admin.token", "file-token\n")
+	got, err := resolveAdminToken(&serveFlags{adminTokenFile: path})
+	if err != nil {
+		t.Fatalf("resolveAdminToken file: %v", err)
+	}
+	if got != "file-token" {
+		t.Fatal("file admin token mismatch")
+	}
+
+	t.Setenv("BROKER_TEST_ADMIN_VALUE", "env-token")
+	got, err = resolveAdminToken(&serveFlags{adminTokenEnv: "BROKER_TEST_ADMIN_VALUE"})
+	if err != nil {
+		t.Fatalf("resolveAdminToken env: %v", err)
+	}
+	if got != "env-token" {
+		t.Fatal("env admin token mismatch")
+	}
+	if _, err := resolveAdminToken(&serveFlags{adminTokenEnv: "BROKER_TEST_EMPTY_VALUE"}); err == nil { //nolint:gosec // Test env var name, not a credential.
+		t.Fatal("empty admin token env should error")
+	}
+}
+
 func TestDefaultMachineProvider(t *testing.T) {
 	provider, err := defaultMachineProvider(context.Background(), &serveFlags{
 		provider: "fly",
@@ -502,20 +740,23 @@ func TestDefaultMachineProvider(t *testing.T) {
 
 func TestValidateFlagsBranches(t *testing.T) {
 	base := serveFlags{
-		provider:      "fly",
-		flyApp:        "playground-test",
-		flyTokenEnv:   "BROKER_TEST_FLY_TOKEN",
-		image:         "registry.example/playground:test",
-		internalPort:  8080,
-		concurrency:   1,
-		codes:         []string{"outer-code"},
-		maxPerCode:    defaultMaxPerCode,
-		ipRate:        defaultIPRate,
-		ipBurst:       defaultIPBurst,
-		codeRate:      defaultCodeRate,
-		codeBurst:     defaultCodeBurst,
-		sessionTTL:    defaultSessionTTL,
-		deadlineGrace: defaultGrace,
+		provider:          "fly",
+		flyApp:            "playground-test",
+		flyTokenEnv:       "BROKER_TEST_FLY_TOKEN",
+		image:             "registry.example/playground:test",
+		internalPort:      8080,
+		concurrency:       1,
+		codes:             []string{"outer-code"},
+		maxPerCode:        defaultMaxPerCode,
+		ipRate:            defaultIPRate,
+		ipBurst:           defaultIPBurst,
+		codeRate:          defaultCodeRate,
+		codeBurst:         defaultCodeBurst,
+		globalDailyBudget: 10,
+		unsafeNoHumanGate: true,
+		sessionTTL:        defaultSessionTTL,
+		deadlineGrace:     defaultGrace,
+		vmDailyTurnBudget: 10,
 	}
 	if err := validateFlags(&base); err != nil {
 		t.Fatalf("base validateFlags: %v", err)
@@ -523,17 +764,47 @@ func TestValidateFlagsBranches(t *testing.T) {
 	if err := validateFlags(nil); err == nil {
 		t.Fatal("nil flags should error")
 	}
+	noHumanGate := base
+	noHumanGate.unsafeNoHumanGate = false
+	if err := validateFlags(&noHumanGate); err == nil {
+		t.Fatal("broker without Turnstile, Cloudflare Access, or --unsafe-no-human-gate should fail")
+	}
+	turnstileGate := noHumanGate
+	turnstileGate.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
+	if err := validateFlags(&turnstileGate); err != nil {
+		t.Fatalf("turnstile gate should validate: %v", err)
+	}
+	cfAccessGate := noHumanGate
+	cfAccessGate.cfAccessTeamDomain = "team.cloudflareaccess.com"
+	cfAccessGate.cfAccessAUD = "aud"
+	if err := validateFlags(&cfAccessGate); err != nil {
+		t.Fatalf("Cloudflare Access gate should validate: %v", err)
+	}
+	unsafeUnlimited := base
+	unsafeUnlimited.globalDailyBudget = 0
+	unsafeUnlimited.vmDailyTurnBudget = 0
+	unsafeUnlimited.unsafeUnlimited = true
+	if err := validateFlags(&unsafeUnlimited); err != nil {
+		t.Fatalf("unsafe unlimited budgets should validate: %v", err)
+	}
 	tests := []struct {
 		name   string
 		mutate func(*serveFlags)
 	}{
 		{name: "missing_fly_app", mutate: func(f *serveFlags) { f.flyApp = "" }},
 		{name: "missing_token_source", mutate: func(f *serveFlags) { f.flyTokenEnv = "" }},
+		{name: "admin_token_without_listen", mutate: func(f *serveFlags) { f.adminTokenEnv = "BROKER_ADMIN_VALUE" }},
+		{name: "admin_listen_without_token", mutate: func(f *serveFlags) { f.adminListen = "127.0.0.1:0" }},
 		{name: "bad_concurrency", mutate: func(f *serveFlags) { f.concurrency = 0 }},
 		{name: "bad_max_per_code", mutate: func(f *serveFlags) { f.maxPerCode = -1 }},
 		{name: "bad_memory", mutate: func(f *serveFlags) { f.memoryMB = -1 }},
 		{name: "bad_cpus", mutate: func(f *serveFlags) { f.cpus = -1 }},
 		{name: "bad_deadline_grace", mutate: func(f *serveFlags) { f.deadlineGrace = -1 }},
+		{name: "turnstile_url_without_secret", mutate: func(f *serveFlags) { f.turnstileVerifyURL = "https://turnstile.example/verify" }},
+		{name: "bad_turnstile_verify_url", mutate: func(f *serveFlags) {
+			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
+			f.turnstileVerifyURL = "file:///tmp/siteverify"
+		}},
 		{name: "bad_cf_combo", mutate: func(f *serveFlags) { f.cfAccessCertsURL = "https://keys.example/certs" }},
 		{name: "bad_cf_aud", mutate: func(f *serveFlags) {
 			f.cfAccessTeamDomain = "team.cloudflareaccess.com"

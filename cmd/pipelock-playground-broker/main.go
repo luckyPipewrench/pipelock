@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,10 +18,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -51,6 +54,9 @@ const (
 
 type serveFlags struct {
 	listen                string
+	adminListen           string
+	adminTokenFile        string
+	adminTokenEnv         string
 	staticDir             string
 	provider              string
 	flyApp                string
@@ -73,6 +79,11 @@ type serveFlags struct {
 	perIPDailyBudget      int
 	perCodeDailyBudget    int
 	globalDailyBudget     int
+	unsafeUnlimited       bool
+	unsafeNoHumanGate     bool
+	turnstileSecretFile   string
+	turnstileSecretEnv    string
+	turnstileVerifyURL    string
 	sessionTTL            time.Duration
 	deadlineGrace         time.Duration
 	allowOrigin           string
@@ -129,6 +140,9 @@ func newServeCmd() *cobra.Command {
 	}
 	fl := cmd.Flags()
 	fl.StringVar(&f.listen, "listen", defaultListen, "address to listen on")
+	fl.StringVar(&f.adminListen, "admin-listen", "", "separate admin listen address for authenticated pause/resume endpoints; empty disables")
+	fl.StringVar(&f.adminTokenFile, "admin-token-file", "", "path to bearer token required by --admin-listen")
+	fl.StringVar(&f.adminTokenEnv, "admin-token-env", "", "environment variable holding bearer token required by --admin-listen")
 	fl.StringVar(&f.staticDir, "static-dir", "", "directory of static UI files to serve at / (the /api/live/* API is unaffected); empty disables static serving")
 	fl.StringVar(&f.provider, "provider", "fly", "machine provider")
 	fl.StringVar(&f.flyApp, "fly-app", "", "Fly app that owns per-visitor machines")
@@ -151,6 +165,11 @@ func newServeCmd() *cobra.Command {
 	fl.IntVar(&f.perIPDailyBudget, "per-ip-daily-budget", 0, "per-IP session starts per UTC day (0 = unlimited)")
 	fl.IntVar(&f.perCodeDailyBudget, "per-code-daily-budget", 0, "per-code session starts per UTC day (0 = unlimited)")
 	fl.IntVar(&f.globalDailyBudget, "global-daily-budget", 0, "global session starts per UTC day (0 = unlimited)")
+	fl.BoolVar(&f.unsafeUnlimited, "unsafe-unlimited-budgets", false, "allow unlimited public broker/model budgets; unsafe for public deployments")
+	fl.BoolVar(&f.unsafeNoHumanGate, "unsafe-no-human-gate", false, "allow session creation without Turnstile or Cloudflare Access; unsafe for public deployments")
+	fl.StringVar(&f.turnstileSecretFile, "turnstile-secret-file", "", "path to the Cloudflare Turnstile secret; enables human verification for session creation")
+	fl.StringVar(&f.turnstileSecretEnv, "turnstile-secret-env", "", "environment variable holding the Cloudflare Turnstile secret; enables human verification for session creation")
+	fl.StringVar(&f.turnstileVerifyURL, "turnstile-verify-url", "", "Cloudflare Turnstile Siteverify URL override (tests/dev only; empty uses Cloudflare)")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", defaultSessionTTL, "VM session token TTL")
 	fl.DurationVar(&f.deadlineGrace, "deadline-grace", defaultGrace, "lease teardown grace after VM session expiry")
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser")
@@ -197,6 +216,13 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 		return fmt.Errorf("listen %s: %w", f.listen, err)
 	}
 	defer func() { _ = ln.Close() }()
+	stopSignals := startSignalControlLoop(ctx, cmd.OutOrStdout(), srv, httpSrv)
+	defer stopSignals()
+	stopAdmin, err := startAdminServer(ctx, cmd.OutOrStdout(), f, srv)
+	if err != nil {
+		return err
+	}
+	defer stopAdmin()
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "pipelock-playground-broker serving on %s with provider %s\n", f.listen, f.provider)
 	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -236,6 +262,10 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	if err != nil {
 		return nil, nil, err
 	}
+	humanVerifier, err := resolveTurnstileVerifier(f)
+	if err != nil {
+		return nil, nil, err
+	}
 	lm, err := broker.NewLeaseManager(broker.LeaseConfig{
 		Provider:     provider,
 		Concurrency:  livechat.NewConcurrencyLimiter(f.concurrency),
@@ -252,6 +282,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Leases:             lm,
 		Gate:               gate,
+		HumanVerifier:      humanVerifier,
 		IPRate:             livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
 		CodeRate:           livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},
 		PerIPDailyBudget:   f.perIPDailyBudget,
@@ -323,6 +354,9 @@ func validateFlags(f *serveFlags) error {
 	if strings.TrimSpace(f.flyTokenFile) == "" && strings.TrimSpace(f.flyTokenEnv) == "" {
 		return errors.New("a Fly API token is required: pass --fly-token-file or --fly-token-env")
 	}
+	if err := validateAdminFlags(f); err != nil {
+		return err
+	}
 	if f.concurrency <= 0 {
 		return errors.New("--concurrency must be > 0")
 	}
@@ -344,8 +378,22 @@ func validateFlags(f *serveFlags) error {
 	if f.perIPDailyBudget < 0 || f.perCodeDailyBudget < 0 || f.globalDailyBudget < 0 {
 		return errors.New("daily budgets must be >= 0")
 	}
+	if !f.unsafeUnlimited {
+		if f.globalDailyBudget <= 0 {
+			return errors.New("--global-daily-budget must be > 0 unless --unsafe-unlimited-budgets is set")
+		}
+		if f.vmDailyTurnBudget <= 0 {
+			return errors.New("--vm-daily-turn-budget must be > 0 unless --unsafe-unlimited-budgets is set")
+		}
+	}
+	if err := validateHumanGateFlags(f); err != nil {
+		return err
+	}
 	if f.sessionTTL <= 0 {
 		return errors.New("--session-ttl must be > 0")
+	}
+	if err := validateTurnstileFlags(f); err != nil {
+		return err
 	}
 	if f.deadlineGrace < 0 {
 		return errors.New("--deadline-grace must be >= 0")
@@ -357,6 +405,223 @@ func validateFlags(f *serveFlags) error {
 		return err
 	}
 	return nil
+}
+
+func validateAdminFlags(f *serveFlags) error {
+	listen := strings.TrimSpace(f.adminListen)
+	tokenFile := strings.TrimSpace(f.adminTokenFile)
+	tokenEnv := strings.TrimSpace(f.adminTokenEnv)
+	if listen == "" {
+		if tokenFile != "" || tokenEnv != "" {
+			return errors.New("--admin-token-file/--admin-token-env require --admin-listen")
+		}
+		return nil
+	}
+	if tokenFile == "" && tokenEnv == "" {
+		return errors.New("--admin-listen requires --admin-token-file or --admin-token-env")
+	}
+	return nil
+}
+
+func validateHumanGateFlags(f *serveFlags) error {
+	hasTurnstile := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
+	hasCFAccess := strings.TrimSpace(f.cfAccessTeamDomain) != "" || strings.TrimSpace(f.cfAccessAUD) != ""
+	if hasTurnstile || hasCFAccess || f.unsafeNoHumanGate {
+		return nil
+	}
+	return errors.New("--turnstile-secret-file/--turnstile-secret-env or Cloudflare Access is required unless --unsafe-no-human-gate is set")
+}
+
+func validateTurnstileFlags(f *serveFlags) error {
+	configured := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
+	if !configured && strings.TrimSpace(f.turnstileVerifyURL) != "" {
+		return errors.New("--turnstile-verify-url requires --turnstile-secret-file or --turnstile-secret-env")
+	}
+	if strings.TrimSpace(f.turnstileVerifyURL) == "" {
+		return nil
+	}
+	u, err := url.Parse(f.turnstileVerifyURL)
+	if err != nil {
+		return fmt.Errorf("--turnstile-verify-url: parse: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("--turnstile-verify-url must be http(s)")
+	}
+	if u.Host == "" {
+		return errors.New("--turnstile-verify-url host is required")
+	}
+	return nil
+}
+
+func startSignalControlLoop(ctx context.Context, out io.Writer, srv *broker.Server, httpSrv *http.Server) func() {
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGTERM, syscall.SIGINT)
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	var shutdownOnce sync.Once
+	shutdown := func(reason string) {
+		shutdownOnce.Do(func() {
+			_, _ = fmt.Fprintf(out, "broker shutting down: %s\n", reason)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = httpSrv.Shutdown(shutdownCtx)
+		})
+	}
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case sig := <-sigCh:
+				if applyControlSignal(out, srv, sig) {
+					shutdown(sig.String())
+					return
+				}
+			case <-ctx.Done():
+				shutdown("context canceled")
+				return
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(sigCh)
+		close(stopCh)
+		<-done
+	}
+}
+
+func startAdminServer(ctx context.Context, out io.Writer, f *serveFlags, srv *broker.Server) (func(), error) {
+	if strings.TrimSpace(f.adminListen) == "" {
+		return func() {}, nil
+	}
+	token, err := resolveAdminToken(f)
+	if err != nil {
+		return nil, err
+	}
+	httpSrv := &http.Server{
+		Handler:           adminHandler(srv, token),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    8 << 10,
+	}
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", f.adminListen)
+	if err != nil {
+		return nil, fmt.Errorf("admin listen %s: %w", f.adminListen, err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_, _ = fmt.Fprintf(out, "admin server error: %v\n", err)
+		}
+	}()
+	_, _ = fmt.Fprintf(out, "broker admin serving on %s\n", f.adminListen)
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+		_ = ln.Close()
+		<-done
+	}, nil
+}
+
+func resolveAdminToken(f *serveFlags) (string, error) {
+	if strings.TrimSpace(f.adminTokenFile) != "" {
+		return readRequiredFile(f.adminTokenFile, "--admin-token-file")
+	}
+	v := strings.TrimSpace(os.Getenv(f.adminTokenEnv))
+	if v == "" {
+		return "", fmt.Errorf("%s is empty or unset", f.adminTokenEnv)
+	}
+	return v, nil
+}
+
+func adminHandler(srv *broker.Server, token string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/admin/health", func(w http.ResponseWriter, r *http.Request) {
+		if !adminAuthorized(r, token) {
+			writeAdminAuthErr(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writeAdminJSON(w, http.StatusOK, map[string]any{"killed": srv.Killed()})
+	})
+	mux.HandleFunc("/admin/pause", func(w http.ResponseWriter, r *http.Request) {
+		if !adminAuthorized(r, token) {
+			writeAdminAuthErr(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		srv.Kill()
+		writeAdminJSON(w, http.StatusOK, map[string]any{"killed": true})
+	})
+	mux.HandleFunc("/admin/resume", func(w http.ResponseWriter, r *http.Request) {
+		if !adminAuthorized(r, token) {
+			writeAdminAuthErr(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		srv.Resume()
+		writeAdminJSON(w, http.StatusOK, map[string]any{"killed": false})
+	})
+	return mux
+}
+
+func adminAuthorized(r *http.Request, token string) bool {
+	got := strings.TrimSpace(r.Header.Get("Authorization"))
+	const prefix = "Bearer "
+	if !strings.HasPrefix(got, prefix) {
+		return false
+	}
+	got = strings.TrimSpace(strings.TrimPrefix(got, prefix))
+	if got == "" || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+}
+
+func writeAdminAuthErr(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "missing bearer token", http.StatusUnauthorized)
+		return
+	}
+	http.Error(w, "invalid bearer token", http.StatusForbidden)
+}
+
+func writeAdminJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func applyControlSignal(out io.Writer, srv *broker.Server, sig os.Signal) bool {
+	switch sig {
+	case syscall.SIGUSR1:
+		srv.Kill()
+		_, _ = fmt.Fprintln(out, "broker paused by SIGUSR1")
+		return false
+	case syscall.SIGUSR2:
+		srv.Resume()
+		_, _ = fmt.Fprintln(out, "broker resumed by SIGUSR2")
+		return false
+	case syscall.SIGTERM, syscall.SIGINT:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateAllowOrigin(raw string) error {
@@ -713,6 +978,32 @@ func buildVMBaseEnv(f *serveFlags) map[string]string {
 		env["PLAYGROUND_MAX_MESSAGES"] = strconv.Itoa(f.vmMaxMessages)
 	}
 	return env
+}
+
+func resolveTurnstileVerifier(f *serveFlags) (broker.HumanVerifier, error) {
+	file := strings.TrimSpace(f.turnstileSecretFile)
+	envName := strings.TrimSpace(f.turnstileSecretEnv)
+	if file == "" && envName == "" {
+		return nil, nil
+	}
+	var secret string
+	var err error
+	if file != "" {
+		secret, err = readRequiredFile(file, "--turnstile-secret-file")
+	} else {
+		secret = strings.TrimSpace(os.Getenv(envName))
+		if secret == "" {
+			err = fmt.Errorf("%s is empty or unset", envName)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return broker.TurnstileVerifier{
+		Secret:    secret,
+		VerifyURL: strings.TrimSpace(f.turnstileVerifyURL),
+		Client:    &http.Client{Timeout: 5 * time.Second},
+	}, nil
 }
 
 func resolveSessionEnv(f *serveFlags) (map[string]string, error) {

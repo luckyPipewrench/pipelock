@@ -6,6 +6,7 @@ package playground
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,6 +83,15 @@ var ErrReceiptInvariant = fmt.Errorf("playground: agent action produced no signe
 // is also closed, because it may already have recorded that raw reply in bounded
 // history before the parent process could redact it for the visitor.
 var ErrAgentReplyDLP = fmt.Errorf("playground: agent reply contained a secret")
+
+// ErrModelProviderPaused is returned when the model provider reports a spend,
+// auth, or rate-limit failure that should pause the public demo cleanly.
+var ErrModelProviderPaused = fmt.Errorf("playground: model provider paused")
+
+// ModelProviderPausedMessage is the visitor-facing message for provider spend,
+// auth, or rate-limit failures. Keep it generic so provider response details and
+// account state are not exposed to visitors.
+const ModelProviderPausedMessage = "demo paused: model provider unavailable or out of credits"
 
 // ContainmentVerifier proves the live agent's environment is kernel-contained
 // before a public session starts. Verify returns nil only when containment is
@@ -546,6 +556,9 @@ func (s *LiveSession) sendViaModel(ctx context.Context, msg string) error {
 	})
 	if runErr != nil {
 		s.endReceiptTurn()
+		if errors.Is(runErr, ErrModelProviderPaused) {
+			return ErrModelProviderPaused
+		}
 		s.push(LiveEvent{Type: LiveEventError, Message: "agent turn failed"})
 		return fmt.Errorf("model agent turn: %w", runErr)
 	}

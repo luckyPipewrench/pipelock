@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +102,60 @@ func TestComplete_RedactsAPIKeyFromStatusErrorAndEvent(t *testing.T) {
 	}
 	if strings.Contains(errEv.Text, apiKey) || !strings.Contains(errEv.Text, "[redacted]") {
 		t.Fatalf("event text = %q, want API key redacted", errEv.Text)
+	}
+	if errEv.Code != ErrorCodeModelProviderPaused {
+		t.Fatalf("event code = %q, want provider paused", errEv.Code)
+	}
+}
+
+func TestComplete_ModelProviderPausedStatuses(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			model := &scriptedModel{
+				status:    status,
+				errorBody: `{"error":{"message":"provider unavailable"}}`,
+			}
+			emit, evs := collectEvents()
+			a := newAgent(t, model, nil, emit)
+
+			_, err := a.Run(context.Background(), "hi")
+			var st *ModelStatusError
+			if !errors.As(err, &st) || st.Status != status {
+				t.Fatalf("err = %v, want ModelStatusError status %d", err, status)
+			}
+			if !IsProviderPausedStatus(status) {
+				t.Fatalf("status %d should classify as provider paused", status)
+			}
+			var codes []string
+			for _, ev := range *evs {
+				if ev.Kind == EventError {
+					codes = append(codes, ev.Code)
+				}
+			}
+			if !slices.Contains(codes, ErrorCodeModelProviderPaused) {
+				t.Fatalf("error codes = %v, want %q", codes, ErrorCodeModelProviderPaused)
+			}
+		})
+	}
+}
+
+func TestComplete_ModelNonPausedStatusHasNoProviderPausedCode(t *testing.T) {
+	model := &scriptedModel{status: http.StatusInternalServerError}
+	emit, evs := collectEvents()
+	a := newAgent(t, model, nil, emit)
+
+	_, err := a.Run(context.Background(), "hi")
+	var st *ModelStatusError
+	if !errors.As(err, &st) || st.Status != http.StatusInternalServerError {
+		t.Fatalf("err = %v, want ModelStatusError 500", err)
+	}
+	if IsProviderPausedStatus(http.StatusInternalServerError) {
+		t.Fatal("500 must not classify as provider paused")
+	}
+	for _, ev := range *evs {
+		if ev.Kind == EventError && ev.Code == ErrorCodeModelProviderPaused {
+			t.Fatalf("event = %+v, 500 must not emit provider paused code", ev)
+		}
 	}
 }
 

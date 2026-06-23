@@ -20,6 +20,7 @@ package llmagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -46,6 +47,11 @@ const (
 	EventTurnDone = "turn_done"
 )
 
+// Error codes carried on EventError.Code.
+const (
+	ErrorCodeModelProviderPaused = "model_provider_paused"
+)
+
 // Turn-end reasons carried on EventTurnEnd.Reason.
 const (
 	turnEndComplete      = "complete"        // the model finished on its own
@@ -58,6 +64,7 @@ const (
 type Event struct {
 	Kind   string `json:"kind"`
 	Text   string `json:"text,omitempty"`   // reply text or error message
+	Code   string `json:"code,omitempty"`   // machine-readable EventError reason
 	Tool   string `json:"tool,omitempty"`   // tool name (tool_call/tool_result)
 	Method string `json:"method,omitempty"` // HTTP method for the tool's request
 	URL    string `json:"url,omitempty"`    // target URL for the tool's request
@@ -342,7 +349,7 @@ func (a *Agent) Run(ctx context.Context, userMsg string) (string, error) {
 		a.emit(Event{Kind: EventThinking})
 		reply, err := a.complete(ctx, messages, true)
 		if err != nil {
-			a.emit(Event{Kind: EventError, Text: err.Error()})
+			a.emit(Event{Kind: EventError, Text: err.Error(), Code: errorCode(err)})
 			return "", err
 		}
 
@@ -406,6 +413,14 @@ func (a *Agent) Run(ctx context.Context, userMsg string) (string, error) {
 		a.convo = a.trimContext(messages)
 	}
 	return finalText, nil
+}
+
+func errorCode(err error) string {
+	var st *ModelStatusError
+	if errors.As(err, &st) && IsProviderPausedStatus(st.Status) {
+		return ErrorCodeModelProviderPaused
+	}
+	return ""
 }
 
 // skippedToolResult is the synthetic tool message used to answer a tool call that

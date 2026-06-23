@@ -40,6 +40,27 @@ type serverFakeProvider struct {
 	destroyedCh chan string
 }
 
+type serverFakeHumanVerifier struct {
+	mu     sync.Mutex
+	err    error
+	tokens []string
+	ips    []string
+}
+
+func (v *serverFakeHumanVerifier) Verify(_ context.Context, token, remoteIP string) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.tokens = append(v.tokens, token)
+	v.ips = append(v.ips, remoteIP)
+	return v.err
+}
+
+func (v *serverFakeHumanVerifier) calls() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return len(v.tokens)
+}
+
 func (p *serverFakeProvider) CreateMachine(_ context.Context, spec MachineSpec) (*Machine, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -410,10 +431,18 @@ func TestServerHealthCORSKillAndResume(t *testing.T) {
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("health POST = %d, want 405", resp.StatusCode)
 	}
+	health := getBrokerHealth(t, ts)
+	if got := health["session_starts_last_minute"]; got != float64(0) {
+		t.Fatalf("session_starts_last_minute before session = %v, want 0", got)
+	}
 
 	status, session := postBrokerSession(t, ts)
 	if status != http.StatusOK {
 		t.Fatalf("session status = %d, want 200", status)
+	}
+	health = getBrokerHealth(t, ts)
+	if got := health["session_starts_last_minute"]; got != float64(1) {
+		t.Fatalf("session_starts_last_minute after session = %v, want 1", got)
 	}
 	if got := srv.clientIP(httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)); got == "" {
 		t.Fatal("clientIP should fall back to RemoteAddr")
@@ -442,6 +471,27 @@ func TestServerHealthCORSKillAndResume(t *testing.T) {
 	if srv.Killed() {
 		t.Fatal("Resume did not clear killed state")
 	}
+}
+
+func getBrokerHealth(t *testing.T, ts *httptest.Server) map[string]any {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+livechat.RouteHealth, nil)
+	if err != nil {
+		t.Fatalf("new health request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("health GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health GET status = %d, want 200", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	return body
 }
 
 func TestServer_EndToEndProxyAndRelease(t *testing.T) {
@@ -1189,5 +1239,92 @@ func TestServer_AttemptVMSessionResponseErrors(t *testing.T) {
 				t.Fatal("HTTP response errors must not be retryable")
 			}
 		})
+	}
+}
+
+func TestServer_HumanVerifierBeforeLease(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "turnstile-ok")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	verifier := &serverFakeHumanVerifier{}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{HumanVerifier: verifier})
+
+	resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{
+		Code:           brokerTestCode,
+		TurnstileToken: "human-token",
+	})
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", resp.StatusCode)
+	}
+	if got := verifier.calls(); got != 1 {
+		t.Fatalf("verifier calls = %d, want 1", got)
+	}
+	if got := provider.createdCount(); got != 1 {
+		t.Fatalf("created machines = %d, want 1", got)
+	}
+}
+
+func TestServer_HumanVerifierRejectsBeforeLease(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "turnstile-reject")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	verifier := &serverFakeHumanVerifier{err: errors.New("not human")}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{HumanVerifier: verifier})
+
+	resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{
+		Code:           brokerTestCode,
+		TurnstileToken: "bad-token",
+	})
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("session status = %d, want 403", resp.StatusCode)
+	}
+	if got := provider.createdCount(); got != 0 {
+		t.Fatalf("created machines = %d, want 0", got)
+	}
+}
+
+func TestServer_RegisterTokenRefusedAfterKill(t *testing.T) {
+	t.Parallel()
+	provider := &serverFakeProvider{}
+	srv, _ := newBrokerTestServer(t, provider, ServerConfig{})
+
+	// A session-create that registers its token AFTER a pause must be refused, or
+	// its VM survives the kill switch (fail-open emergency stop).
+	srv.Kill()
+	if srv.registerToken("late-token", &tokenLease{token: "late-token", sessionKey: "sk"}) {
+		t.Fatal("registerToken succeeded after Kill: in-flight session would survive the pause")
+	}
+
+	// Resume must restore normal registration.
+	srv.Resume()
+	if !srv.registerToken("ok-token", &tokenLease{token: "ok-token", sessionKey: "sk2"}) {
+		t.Fatal("registerToken refused after Resume")
+	}
+}
+
+func TestServer_HealthDoesNotOverclaimContainment(t *testing.T) {
+	t.Parallel()
+	provider := &serverFakeProvider{}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+livechat.RouteHealth, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("health request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if _, present := body["contained"]; present {
+		t.Fatal("health must not report a constant 'contained' field the broker cannot prove")
 	}
 }

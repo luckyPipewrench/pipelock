@@ -55,5 +55,9 @@ pipelock-audit.log
 # Temp build dir for generate.sh
 .gen-shadow-*
 /pipelock-playground-demo
+/pipelock-playground-broker
+/pipelock-playground-live
+/pipelock-playground-llm-agent
 /pipelock-playground-toyagent
 /pipelock-playground-webtool
+/ui/kits/*.zip

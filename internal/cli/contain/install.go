@@ -1644,6 +1644,17 @@ func renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int, table, chain
 		agentUID, nftLogPrefix(EgressClassNotRoutingThroughPipelock))
 }
 
+// RenderNFTRules returns the canonical Pipelock containment nftables ruleset for
+// the given uids and proxy port, using the default table/chain names. It is the
+// single source of truth for the owner-match egress rule, exported so a
+// deployment that establishes containment WITHOUT `pipelock contain install`
+// (for example a per-visitor microVM boot entrypoint that has no systemd) loads
+// the IDENTICAL proven rule instead of a drift-prone hand-copied one. The
+// returned text is suitable for `nft -f -`.
+func RenderNFTRules(operatorUID, proxyUID, agentUID, proxyPort int) string {
+	return renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+}
+
 // ---------------------------------------------------------------------------
 // Step 17: write plk-launch
 // ---------------------------------------------------------------------------

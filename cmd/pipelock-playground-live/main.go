@@ -32,6 +32,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/contain"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
@@ -51,42 +52,43 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: false,
 		Version:       cliutil.Version,
 	}
-	root.AddCommand(newServeCmd(), newGenSecretCmd(), newGenCodeCmd())
+	root.AddCommand(newServeCmd(), newGenSecretCmd(), newGenCodeCmd(), newPrintNFTCmd(), newVerifyContainmentCmd())
 	return root
 }
 
 type serveFlags struct {
-	listen                string
-	codes                 []string
-	maxPerCode            int
-	concurrency           int
-	requireContainment    bool
-	dev                   bool
-	orchestratorKey       string
-	toyAgentBin           string
-	webToolBin            string
-	proxyPort             int
-	sessionTTL            time.Duration
-	maxInputBytes         int
-	ipRate                float64
-	ipBurst               float64
-	codeRate              float64
-	codeBurst             float64
-	allowOrigin           string
-	trustForwardedFor     bool
-	secretB64             string
-	secretFile            string
-	staticDir             string
-	llmAgentBin           string
-	modelBaseURL          string
-	model                 string
-	modelSecretFile       string
-	modelMaxSteps         int
-	modelTimeout          time.Duration
-	dailyTurnBudget       int
-	perIPDailyBudget      int
-	perCodeDailyBudget    int
-	maxMessagesPerSession int
+	listen                 string
+	codes                  []string
+	maxPerCode             int
+	concurrency            int
+	requireContainment     bool
+	selfManagedContainment bool
+	dev                    bool
+	orchestratorKey        string
+	toyAgentBin            string
+	webToolBin             string
+	proxyPort              int
+	sessionTTL             time.Duration
+	maxInputBytes          int
+	ipRate                 float64
+	ipBurst                float64
+	codeRate               float64
+	codeBurst              float64
+	allowOrigin            string
+	trustForwardedFor      bool
+	secretB64              string
+	secretFile             string
+	staticDir              string
+	llmAgentBin            string
+	modelBaseURL           string
+	model                  string
+	modelSecretFile        string
+	modelMaxSteps          int
+	modelTimeout           time.Duration
+	dailyTurnBudget        int
+	perIPDailyBudget       int
+	perCodeDailyBudget     int
+	maxMessagesPerSession  int
 }
 
 // defaultMaxPerCode is the safe default lifetime session budget per invite code.
@@ -109,6 +111,7 @@ func newServeCmd() *cobra.Command {
 	fl.IntVar(&f.maxPerCode, "max-per-code", defaultMaxPerCode, "max sessions per invite code (0 = unlimited, opt-in)")
 	fl.IntVar(&f.concurrency, "concurrency", 3, "global cap on simultaneous live sessions")
 	fl.BoolVar(&f.requireContainment, "require-containment", true, "refuse sessions unless kernel containment is established")
+	fl.BoolVar(&f.selfManagedContainment, "self-managed-containment", false, "the deployment sets the nft owner-match egress rule itself (e.g. a per-visitor microVM boot entrypoint) instead of `pipelock contain install`; the server proves the agent-uid egress/local escape drops empirically at start and via the signed witness, and does NOT require `pipelock contain verify`")
 	fl.BoolVar(&f.dev, "dev", false, "DEV ONLY: run uncontained (disables --require-containment); never use for public exposure")
 	fl.StringVar(&f.orchestratorKey, "orchestrator-key", "", "path to the published demo signing key (required outside --dev; empty = ephemeral per-run key in --dev)")
 	fl.StringVar(&f.toyAgentBin, "toyagent-bin", "", "toy-agent binary path (needed for the contained host-containment witness)")
@@ -195,7 +198,15 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 
 	var verifier playground.ContainmentVerifier
 	if requireContainment {
-		verifier = containVerifier{}
+		if f.selfManagedContainment {
+			// Self-managed (in-VM/Fly) containment: the deployment set the nft
+			// owner-match rule; verify the egress drop empirically rather than
+			// asking `pipelock contain verify` whether `pipelock contain install`
+			// ran on this host.
+			verifier = inVMContainVerifier{toyAgentBin: f.toyAgentBin}
+		} else {
+			verifier = containVerifier{}
+		}
 	}
 
 	llmAgent, err := buildLLMAgentConfig(f)
@@ -263,7 +274,7 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 	if f.staticDir != "" {
 		// Same-origin demo: API under /api/live/, viewer at /. No CORS needed.
 		mux := http.NewServeMux()
-		mux.Handle("/api/live/", srv.Handler())
+		mux.Handle(livechat.RouteAPIPrefix, srv.Handler())
 		mux.Handle("/", http.FileServer(http.Dir(f.staticDir)))
 		handler = mux
 		_, _ = fmt.Fprintf(out, "serving viewer from %s at /\n", f.staticDir)
@@ -300,6 +311,14 @@ func validateServeSafety(f *serveFlags, modelBacked bool) error {
 	}
 	if !f.dev && !f.requireContainment {
 		return errors.New("non-dev serve requires containment; use --dev for local uncontained testing")
+	}
+	if f.selfManagedContainment {
+		if f.dev {
+			return errors.New("--self-managed-containment cannot be combined with --dev (it IS a contained mode)")
+		}
+		if strings.TrimSpace(f.toyAgentBin) == "" {
+			return errors.New("--self-managed-containment requires --toyagent-bin (the start-gate egress probe binary)")
+		}
 	}
 	if f.proxyPort < 0 || f.proxyPort > 65535 {
 		return errors.New("--proxy-port must be 0-65535")
@@ -480,6 +499,69 @@ func newGenSecretCmd() *cobra.Command {
 	}
 }
 
+// newPrintNFTCmd prints the canonical Pipelock containment nftables ruleset for
+// the self-managed (in-VM/Fly) containment model. A per-visitor microVM boot
+// entrypoint pipes it to `nft -f -` so the kernel owner-match egress rule the
+// contained agent uid is held to is generated by the SHIPPED renderer (single
+// source of truth), not a drift-prone hand-copied rule. operator and proxy
+// default to uid 0 (the playground server and its in-process proxy run as root
+// in the disposable VM); only the agent uid is dropped to proxy-only egress.
+func newPrintNFTCmd() *cobra.Command {
+	var (
+		agentUID    int
+		proxyPort   int
+		operatorUID int
+		proxyUID    int
+	)
+	cmd := &cobra.Command{
+		Use:   "print-containment-nft",
+		Short: "Print the containment nftables ruleset (for `nft -f -` in a self-managed/in-VM deployment)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if agentUID <= 0 {
+				return errors.New("--agent-uid must be a positive non-root uid (the contained agent user)")
+			}
+			if proxyPort < 1 || proxyPort > 65535 {
+				return errors.New("--proxy-port must be 1-65535")
+			}
+			_, _ = fmt.Fprint(cmd.OutOrStdout(), contain.RenderNFTRules(operatorUID, proxyUID, agentUID, proxyPort))
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&agentUID, "agent-uid", 0, "uid of the contained agent user (required; only this uid is dropped to proxy-only egress)")
+	cmd.Flags().IntVar(&proxyPort, "proxy-port", playground.DefaultContainedProxyPort, "loopback port the in-process proxy binds; the agent uid may reach only 127.0.0.1:this")
+	cmd.Flags().IntVar(&operatorUID, "operator-uid", 0, "operator uid allowed full egress (default 0/root)")
+	cmd.Flags().IntVar(&proxyUID, "proxy-uid", 0, "proxy uid allowed full egress (default 0/root; the in-process proxy runs in the server process)")
+	return cmd
+}
+
+// newVerifyContainmentCmd runs the install-agnostic in-VM containment start gate
+// (playground.VerifyInVMContainment) and exits non-zero if the contained agent
+// uid's direct egress is not proven blocked. A per-visitor microVM boot
+// entrypoint runs this AFTER loading the nft rule and BEFORE starting the
+// server, so a VM that failed to establish containment aborts (fail-closed)
+// rather than serving an uncontained agent. The same proof runs per-session at
+// serve time and is recorded cryptographically in the signed bundle.
+func newVerifyContainmentCmd() *cobra.Command {
+	var (
+		toyAgentBin string
+		agentUser   string
+	)
+	cmd := &cobra.Command{
+		Use:   "verify-containment",
+		Short: "Prove the contained agent uid's egress/local escape surfaces are blocked (fail-closed boot gate for self-managed containment)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := playground.VerifyInVMContainment(cmd.Context(), toyAgentBin, agentUser); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "containment verified: contained agent egress/local escape surfaces are blocked; operator + proxy paths intact")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&toyAgentBin, "toyagent-bin", "", "probe binary (the pipelock-playground-toyagent path); required")
+	cmd.Flags().StringVar(&agentUser, "agent-user", "pipelock-agent", "contained agent username")
+	return cmd
+}
+
 func newGenCodeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "gen-code",
@@ -512,4 +594,20 @@ func (containVerifier) Verify(_ context.Context) error {
 		return errors.New("'pipelock contain verify --enforcement-only' did not pass; containment enforcement is not installed")
 	}
 	return nil
+}
+
+// inVMContainVerifier is the start gate for the self-managed (in-VM/Fly)
+// containment model: the deployment (e.g. a per-visitor microVM boot entrypoint)
+// sets the kernel owner-match egress rule itself, so there is no
+// `pipelock contain install` to verify. Instead of trusting the installer, it
+// proves the contained agent uid's direct egress is actually dropped, empirically
+// and fail-closed, before any session starts. The per-session cryptographic proof
+// is still the signed host-containment witness produced at finalize.
+type inVMContainVerifier struct {
+	toyAgentBin string
+	agentUser   string
+}
+
+func (v inVMContainVerifier) Verify(ctx context.Context) error {
+	return playground.VerifyInVMContainment(ctx, v.toyAgentBin, v.agentUser)
 }

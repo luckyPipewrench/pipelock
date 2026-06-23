@@ -1,0 +1,30 @@
+# Copyright 2026 Josh Waldrep
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pipelock playground BROKER image (the always-on public front door).
+#
+# Small static binary on distroless: no shell, no agent, runs as nonroot. It
+# leases per-visitor VMs via the Fly Machines API (HTTPS, hence ca-certs) and
+# reverse-proxies the session API to them over the app's private network. It
+# holds the Fly token + gate secret (delivered as Fly secrets/env), never an
+# agent secret beyond passing a per-session model key through to a leased VM.
+#
+# Build from the REPO ROOT:
+#   docker build -f deploy/fly-playground/Dockerfile.broker -t pipelock-playground-broker .
+
+ARG GO_VERSION=1.26
+
+FROM golang:${GO_VERSION}-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+ENV CGO_ENABLED=0
+RUN go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-broker ./cmd/pipelock-playground-broker
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/pipelock-playground-broker /usr/local/bin/pipelock-playground-broker
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/pipelock-playground-broker"]
+CMD ["serve"]

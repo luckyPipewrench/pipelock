@@ -320,6 +320,19 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		cfg.APIAllowlist = []string{liveRunSafeHost, modelHost}
 		cfg.Suppress = append(cfg.Suppress, modelProviderAuthSuppressions(opts.ModelBaseURL)...)
 
+		// Bind EVERY contained-agent request to the lab-agent identity. The agent's
+		// Go tools and model traffic set the X-Pipelock-Agent header (-> actor
+		// "lab-agent"), but its shell tools (curl/wget/python3 via HTTP_PROXY) do
+		// NOT — those egress as actor "anonymous", which the public-safe packet
+		// assembler REJECTS at seal time, breaking the downloadable bundle. Binding
+		// attributes ALL of the contained agent's egress to lab-agent regardless of
+		// any (missing or self-declared) header, so every blocked-exfil receipt
+		// seals into the bundle. It also hardens identity: a jailbroken model cannot
+		// self-declare a different agent to dodge attribution. Safe because the VM
+		// is single-tenant — the only actor in it IS the lab agent.
+		cfg.DefaultAgentIdentity = liveRunActor
+		cfg.BindDefaultAgentIdentity = true
+
 		// The benign read host is the one approved interactive destination, so lock
 		// it to reads: a request_policy rule blocks the standard write methods at
 		// the proxy (with a signed receipt), so a shell `curl -X POST` cannot use
@@ -503,17 +516,17 @@ func (lr *LiveRun) RunSteps(steps ...int) error {
 // contained network position; this requires root and an installed containment.
 // When false it runs as the current (operator) user.
 func (lr *LiveRun) runEgressProbe(targets []string, asAgent bool) ([]ProbeResult, error) {
+	if asAgent {
+		// Shared with the in-VM start gate (VerifyInVMContainment) so the
+		// finalize witness and the start gate exercise an identical agent-uid
+		// probe path and cannot diverge.
+		return spawnAgentEgressProbe(lr.ctx, lr.agentBin, lr.opts.AgentUser, targets)
+	}
+
+	// Operator (current user) probe: run the toy agent as-is, no uid drop.
 	args := []string{"--probe-targets", strings.Join(targets, ",")}
 	cmd := exec.CommandContext(lr.ctx, lr.agentBin, args...)
 	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
-	if asAgent {
-		if os.Geteuid() != 0 {
-			return nil, fmt.Errorf("contained egress probe requires root (euid=%d)", os.Geteuid())
-		}
-		if err := configureContainedCommand(cmd, lr.opts.AgentUser); err != nil {
-			return nil, err
-		}
-	}
 
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout

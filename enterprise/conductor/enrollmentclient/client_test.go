@@ -51,6 +51,54 @@ func TestNewRejectsBadBaseURL(t *testing.T) {
 	}
 }
 
+func TestEnrollConflictSurfacesReEnrollGuidance(t *testing.T) {
+	doer := &stubDoer{
+		status: http.StatusConflict,
+		body:   `{"error":"conductor follower instance already enrolled"}`,
+	}
+	c, err := New(Config{BaseURL: "https://conductor.example:8895", Client: doer})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	_, err = c.Enroll(context.Background(), Request{
+		Token:          "pl_" + "enroll_test",
+		AuditKeyID:     "audit-key-1",
+		AuditPublicKey: strings.Repeat("a", 64),
+	})
+	if err == nil {
+		t.Fatal("Enroll() error = nil, want 409 error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "status=409") {
+		t.Errorf("error missing status=409: %s", msg)
+	}
+	if !strings.Contains(msg, "pipelock conductor follower remove") {
+		t.Errorf("error missing re-enroll guidance: %s", msg)
+	}
+}
+
+func TestEnrollNon409DoesNotSurfaceReEnrollGuidance(t *testing.T) {
+	doer := &stubDoer{
+		status: http.StatusForbidden,
+		body:   `{"error":"forbidden"}`,
+	}
+	c, err := New(Config{BaseURL: "https://conductor.example:8895", Client: doer})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	_, err = c.Enroll(context.Background(), Request{
+		Token:          "pl_" + "enroll_test",
+		AuditKeyID:     "audit-key-1",
+		AuditPublicKey: strings.Repeat("a", 64),
+	})
+	if err == nil {
+		t.Fatal("Enroll() error = nil, want 403 error")
+	}
+	if strings.Contains(err.Error(), "pipelock conductor follower remove") {
+		t.Errorf("non-409 error should not contain re-enroll guidance: %s", err.Error())
+	}
+}
+
 func TestEnrollValidatesSuccessResponse(t *testing.T) {
 	tests := []struct {
 		name string

@@ -8,6 +8,7 @@ require (
 	github.com/dunglas/httpsfv v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/getsentry/sentry-go v0.46.2
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/gobwas/ws v1.4.0
 	github.com/goccy/go-yaml v1.19.2

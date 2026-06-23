@@ -94,25 +94,33 @@ var (
 // Grouped into a struct (rather than a long parameter list) per the project
 // convention for functions with many inputs.
 type publishOptions struct {
-	conductorURL string
-	configFile   string
-	ruleBundles  []string
-	orgID        string
-	fleetID      string
-	environment  string
-	bundleID     string
-	audience     []string
-	version      uint64
-	previousHash string
-	validity     time.Duration
-	minVersion   string
-	signingKey   string
-	publisherTok string
-	tlsCert      string
-	tlsKey       string
-	serverCA     string
-	licenseCRL   string
-	insecure     bool // accept absent mTLS material ONLY against an http:// URL (loopback dev)
+	conductorURL       string
+	configFile         string
+	ruleBundles        []string
+	orgID              string
+	fleetID            string
+	environment        string
+	bundleID           string
+	audience           []string
+	version            uint64
+	previousHash       string
+	validity           time.Duration
+	minVersion         string
+	signingKey         string
+	switchFromAudience []string
+	switchFromBundleID string
+	switchFromVersion  uint64
+	switchFromHash     string
+	switchAuthID       string
+	switchReason       string
+	switchTTL          time.Duration
+	switchSigningKeys  []string
+	publisherTok       string
+	tlsCert            string
+	tlsKey             string
+	serverCA           string
+	licenseCRL         string
+	insecure           bool // accept absent mTLS material ONLY against an http:// URL (loopback dev)
 }
 
 // publishKeyFile is the on-disk JSON shape produced by
@@ -186,6 +194,14 @@ Example:
 	cmd.Flags().DurationVar(&opts.validity, "validity", opts.validity, "validity window for the bundle starting now (not_before=now, expires_at=now+validity)")
 	cmd.Flags().StringVar(&opts.minVersion, "min-pipelock-version", "", "minimum pipelock version a follower must run to apply this bundle (major.minor.patch)")
 	cmd.Flags().StringVar(&opts.signingKey, "signing-key", "", "path to a policy-bundle-signing key file from 'pipelock signing key generate'")
+	cmd.Flags().StringArrayVar(&opts.switchFromAudience, "stream-switch-from-audience", nil, "source audience for an authorized cross-stream retarget; same syntax as --audience")
+	cmd.Flags().StringVar(&opts.switchFromBundleID, "stream-switch-from-bundle-id", "", "source bundle id currently active on followers for an authorized stream switch")
+	cmd.Flags().Uint64Var(&opts.switchFromVersion, "stream-switch-from-version", 0, "source bundle version currently active on followers for an authorized stream switch")
+	cmd.Flags().StringVar(&opts.switchFromHash, "stream-switch-from-hash", "", "source bundle hash currently active on followers for an authorized stream switch")
+	cmd.Flags().StringVar(&opts.switchAuthID, "stream-switch-authorization-id", "", "stream switch authorization id (default: stream-switch-<from>-to-<target>-<unix>)")
+	cmd.Flags().StringVar(&opts.switchReason, "stream-switch-reason", "", "operator reason recorded in the stream switch authorization")
+	cmd.Flags().DurationVar(&opts.switchTTL, "stream-switch-ttl", time.Hour, "validity window for the stream switch authorization")
+	cmd.Flags().StringArrayVar(&opts.switchSigningKeys, "stream-switch-signing-key", nil, "path to a policy-bundle-rollback keypair file; repeat to supply the M-of-N stream-switch signers")
 	cmd.Flags().StringVar(&opts.publisherTok, "publisher-token-file", "", "file containing the publisher bearer token")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "mTLS client certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "mTLS client private key file")
@@ -293,6 +309,9 @@ func buildSignedBundle(opts publishOptions) (conductorcore.PolicyBundle, string,
 			return conductorcore.PolicyBundle{}, "", nil, errors.New("--previous-bundle-hash must be a 64-character hex sha256 (use the hash printed by the prior publish)")
 		}
 	}
+	if err := validateStreamSwitchInputs(opts); err != nil {
+		return conductorcore.PolicyBundle{}, "", nil, err
+	}
 
 	payload := conductorcore.PolicyBundlePayload{
 		ConfigYAML:  configYAML,
@@ -340,6 +359,13 @@ func buildSignedBundle(opts publishOptions) (conductorcore.PolicyBundle, string,
 		PayloadSHA256:      payloadHash,
 		Payload:            payload,
 	}
+	if hasStreamSwitchOptions(opts) {
+		auth, err := buildStreamSwitchAuthorization(opts, bundle, audience, now)
+		if err != nil {
+			return conductorcore.PolicyBundle{}, "", nil, err
+		}
+		bundle.StreamSwitchAuthorization = &auth
+	}
 
 	preimage, err := bundle.SignablePreimage()
 	if err != nil {
@@ -362,6 +388,118 @@ func buildSignedBundle(opts publishOptions) (conductorcore.PolicyBundle, string,
 	}
 	handedOff = true
 	return bundle, keyID, priv, nil
+}
+
+func hasStreamSwitchOptions(opts publishOptions) bool {
+	return len(opts.switchFromAudience) > 0 ||
+		strings.TrimSpace(opts.switchFromBundleID) != "" ||
+		opts.switchFromVersion != 0 ||
+		strings.TrimSpace(opts.switchFromHash) != "" ||
+		strings.TrimSpace(opts.switchAuthID) != "" ||
+		strings.TrimSpace(opts.switchReason) != "" ||
+		len(opts.switchSigningKeys) > 0
+}
+
+func validateStreamSwitchInputs(opts publishOptions) error {
+	if !hasStreamSwitchOptions(opts) {
+		return nil
+	}
+	if len(opts.switchFromAudience) == 0 {
+		return errors.New("--stream-switch-from-audience is required when stream switch options are used")
+	}
+	if _, err := parseAudience(opts.switchFromAudience); err != nil {
+		return fmt.Errorf("parse --stream-switch-from-audience: %w", err)
+	}
+	if strings.TrimSpace(opts.switchFromBundleID) == "" {
+		return errors.New("--stream-switch-from-bundle-id is required when stream switch options are used")
+	}
+	if opts.switchFromVersion == 0 {
+		return errors.New("--stream-switch-from-version is required when stream switch options are used")
+	}
+	if strings.TrimSpace(opts.switchFromHash) == "" {
+		return errors.New("--stream-switch-from-hash is required when stream switch options are used")
+	}
+	if opts.switchTTL <= 0 {
+		return errors.New("--stream-switch-ttl must be positive")
+	}
+	if opts.switchTTL > conductorcore.DefaultStreamSwitchMaxValidity {
+		return fmt.Errorf("--stream-switch-ttl must not exceed %s", conductorcore.DefaultStreamSwitchMaxValidity)
+	}
+	if _, err := hex.DecodeString(opts.switchFromHash); err != nil || len(opts.switchFromHash) != 64 {
+		return errors.New("--stream-switch-from-hash must be a 64-character hex sha256")
+	}
+	if strings.TrimSpace(opts.switchReason) == "" {
+		return errors.New("--stream-switch-reason is required when stream switch options are used")
+	}
+	if len(opts.switchReason) > conductorcore.MaxReasonBytes {
+		return fmt.Errorf("--stream-switch-reason exceeds %d bytes", conductorcore.MaxReasonBytes)
+	}
+	// Count alone is not enough: blank or duplicate --stream-switch-signing-key
+	// values would otherwise pass the threshold check and reach key loading. The
+	// threshold means N DISTINCT signers, so reject blanks and de-duplicate here.
+	seen := make(map[string]struct{}, len(opts.switchSigningKeys))
+	for _, k := range opts.switchSigningKeys {
+		if strings.TrimSpace(k) == "" {
+			return errors.New("--stream-switch-signing-key must not be blank")
+		}
+		if _, dup := seen[k]; dup {
+			return fmt.Errorf("--stream-switch-signing-key %q specified more than once", k)
+		}
+		seen[k] = struct{}{}
+	}
+	if len(seen) < conductorcore.RequiredCatastrophicSigners {
+		return fmt.Errorf("%w: stream switch requires %d distinct signing keys, got %d",
+			conductorcore.ErrThresholdRequired, conductorcore.RequiredCatastrophicSigners, len(seen))
+	}
+	return nil
+}
+
+func buildStreamSwitchAuthorization(opts publishOptions, target conductorcore.PolicyBundle, targetAudience conductorcore.Audience, now time.Time) (conductorcore.StreamSwitchAuthorization, error) {
+	currentAudience, err := parseAudience(opts.switchFromAudience)
+	if err != nil {
+		return conductorcore.StreamSwitchAuthorization{}, fmt.Errorf("parse --stream-switch-from-audience: %w", err)
+	}
+	targetDetached := target
+	targetDetached.StreamSwitchAuthorization = nil
+	targetHash, err := targetDetached.CanonicalHash()
+	if err != nil {
+		return conductorcore.StreamSwitchAuthorization{}, fmt.Errorf("compute detached target bundle hash: %w", err)
+	}
+	authID := strings.TrimSpace(opts.switchAuthID)
+	if authID == "" {
+		authID = fmt.Sprintf("stream-switch-%d-to-%d-%d", opts.switchFromVersion, target.Version, now.Unix())
+	}
+	auth := conductorcore.StreamSwitchAuthorization{
+		SchemaVersion:     conductorcore.SchemaVersion,
+		AuthorizationID:   authID,
+		OrgID:             target.OrgID,
+		FleetID:           target.FleetID,
+		Environment:       target.Environment,
+		CurrentAudience:   currentAudience,
+		CurrentBundleID:   opts.switchFromBundleID,
+		CurrentVersion:    opts.switchFromVersion,
+		CurrentBundleHash: strings.ToLower(opts.switchFromHash),
+		TargetAudience:    targetAudience,
+		TargetBundleID:    target.BundleID,
+		TargetVersion:     target.Version,
+		TargetBundleHash:  targetHash,
+		Reason:            opts.switchReason,
+		CreatedAt:         now,
+		ExpiresAt:         now.Add(opts.switchTTL),
+	}
+	keys, err := loadSigningKeys(opts.switchSigningKeys, conductorcore.RequiredCatastrophicSigners, signing.PurposePolicyBundleRollback)
+	if err != nil {
+		return conductorcore.StreamSwitchAuthorization{}, err
+	}
+	defer zeroLoadedSigningKeys(keys)
+	auth.Signatures, err = signEmergencyPreimage(auth.SignablePreimage, signing.PurposePolicyBundleRollback, keys)
+	if err != nil {
+		return conductorcore.StreamSwitchAuthorization{}, err
+	}
+	if err := auth.Validate(); err != nil {
+		return conductorcore.StreamSwitchAuthorization{}, fmt.Errorf("stream switch authorization invalid: %w", err)
+	}
+	return auth, nil
 }
 
 // readConfigPayload reads the config YAML the bundle carries. The empty/blank

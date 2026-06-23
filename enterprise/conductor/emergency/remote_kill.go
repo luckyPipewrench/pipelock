@@ -36,6 +36,7 @@ const (
 	RemoteKillStateAnchorSuffix = ".anchor"
 	remoteKillStateContextFile  = "context.json"
 	maxRemoteKillStateBytes     = 16 * 1024
+	remoteKillDigestAlgorithmV1 = "remote-kill-replay-v1"
 )
 
 type KillSwitchSetter interface {
@@ -319,7 +320,8 @@ func remoteKillContextID(path string) string {
 }
 
 func remoteKillDigest(path string, state remoteKillState) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("remote-kill-replay-v1\n%s\n%d\n%s\n%s\n%s\n%s\n%s",
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%s\n%s\n%s\n%s\n%s",
+		remoteKillDigestAlgorithmV1,
 		remoteKillContextID(path),
 		state.LastCounter,
 		state.LastMessageHash,
@@ -348,6 +350,19 @@ func signedMessageDigest(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func legacyRemoteKillDigestV1(path string, state remoteKillState) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%s\n%s\n%s\n%s",
+		remoteKillDigestAlgorithmV1,
+		remoteKillContextID(path),
+		state.LastCounter,
+		state.LastMessageHash,
+		state.State,
+		state.Reason,
+		state.AppliedAt.UTC().Format(time.RFC3339Nano),
+	)))
+	return hex.EncodeToString(sum[:])
+}
+
 func readDurableRemoteKillState(path string) (remoteKillState, error) {
 	var state remoteKillState
 	err := withRemoteKillStateLock(path, func(canonical string) error {
@@ -359,12 +374,12 @@ func readDurableRemoteKillState(path string) (remoteKillState, error) {
 }
 
 func readDurableRemoteKillStateLocked(canonical string) (remoteKillState, error) {
-	primary, primaryFound, err := readOptionalRemoteKillState(canonical, canonical)
+	primary, primaryFound, primaryRewrite, err := readOptionalRemoteKillState(canonical, canonical)
 	if err != nil {
 		return remoteKillState{}, err
 	}
 	anchorPath := remoteKillStateAnchorPath(canonical)
-	anchor, anchorFound, err := readOptionalRemoteKillState(anchorPath, canonical)
+	anchor, anchorFound, anchorRewrite, err := readOptionalRemoteKillState(anchorPath, canonical)
 	if err != nil {
 		return remoteKillState{}, err
 	}
@@ -373,8 +388,18 @@ func readDurableRemoteKillStateLocked(canonical string) (remoteKillState, error)
 		if !remoteKillStatesEqual(primary, anchor) {
 			return remoteKillState{}, fmt.Errorf("%w: primary and anchor differ", ErrRemoteKillStateMismatch)
 		}
+		if primaryRewrite || anchorRewrite {
+			if err := writeRemoteKillStateLocked(canonical, primary); err != nil {
+				return remoteKillState{}, fmt.Errorf("migrate conductor remote kill state format: %w", err)
+			}
+		}
 		return primary, nil
 	case primaryFound:
+		if primaryRewrite {
+			if err := writeRemoteKillStateFileForContext(canonical, canonical, primary); err != nil {
+				return remoteKillState{}, fmt.Errorf("migrate conductor remote kill state primary: %w", err)
+			}
+		}
 		if err := writeRemoteKillStateFileForContext(anchorPath, canonical, primary); err != nil {
 			return remoteKillState{}, fmt.Errorf("backfill conductor remote kill state anchor: %w", err)
 		}
@@ -383,6 +408,11 @@ func readDurableRemoteKillStateLocked(canonical string) (remoteKillState, error)
 		}
 		return primary, nil
 	case anchorFound:
+		if anchorRewrite {
+			if err := writeRemoteKillStateFileForContext(anchorPath, canonical, anchor); err != nil {
+				return remoteKillState{}, fmt.Errorf("migrate conductor remote kill state anchor: %w", err)
+			}
+		}
 		if err := writeRemoteKillStateFileForContext(canonical, canonical, anchor); err != nil {
 			return remoteKillState{}, fmt.Errorf("restore conductor remote kill state primary: %w", err)
 		}
@@ -402,28 +432,35 @@ func readDurableRemoteKillStateLocked(canonical string) (remoteKillState, error)
 	}
 }
 
-func readOptionalRemoteKillState(path, canonicalPath string) (remoteKillState, bool, error) {
+func readOptionalRemoteKillState(path, canonicalPath string) (remoteKillState, bool, bool, error) {
 	state, err := readRemoteKillStateFile(path)
 	if err == nil {
-		if err := validateRemoteKillStateBinding(canonicalPath, state); err != nil {
-			return remoteKillState{}, false, err
+		rewrite, err := validateRemoteKillStateBinding(canonicalPath, state)
+		if err != nil {
+			return remoteKillState{}, false, false, err
 		}
-		return state, true, nil
+		return state, true, rewrite, nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return remoteKillState{}, false, nil
+		return remoteKillState{}, false, false, nil
 	}
-	return remoteKillState{}, false, err
+	return remoteKillState{}, false, false, err
 }
 
-func validateRemoteKillStateBinding(path string, state remoteKillState) error {
+func validateRemoteKillStateBinding(path string, state remoteKillState) (bool, error) {
 	if state.Context != "" && state.Context != remoteKillContextID(path) {
-		return fmt.Errorf("conductor remote kill state context mismatch")
+		return false, fmt.Errorf("conductor remote kill state context mismatch")
 	}
-	if state.Digest != "" && state.Digest != remoteKillDigest(path, state) {
-		return fmt.Errorf("conductor remote kill state digest mismatch")
+	switch {
+	case state.Digest == "":
+		return false, nil
+	case state.Digest == remoteKillDigest(path, state):
+		return false, nil
+	case state.Digest == legacyRemoteKillDigestV1(path, state):
+		return true, nil
+	default:
+		return false, fmt.Errorf("conductor remote kill state digest mismatch")
 	}
-	return nil
 }
 
 func remoteKillStatesEqual(a, b remoteKillState) bool {
@@ -610,12 +647,12 @@ func ResetRemoteKillReplayState(path string, counter uint64, state conductor.Kil
 // loud rather than being silently overwritten.
 func InitializeReplayBaseline(path string, now time.Time) error {
 	return withRemoteKillStateLock(path, func(canonical string) error {
-		if _, found, err := readOptionalRemoteKillState(canonical, canonical); err != nil {
+		if _, found, _, err := readOptionalRemoteKillState(canonical, canonical); err != nil {
 			return err
 		} else if found {
 			return nil
 		}
-		if _, found, err := readOptionalRemoteKillState(remoteKillStateAnchorPath(canonical), canonical); err != nil {
+		if _, found, _, err := readOptionalRemoteKillState(remoteKillStateAnchorPath(canonical), canonical); err != nil {
 			return err
 		} else if found {
 			return nil

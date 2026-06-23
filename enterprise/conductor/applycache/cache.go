@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 )
 
@@ -32,6 +33,15 @@ const (
 	configsDirName   = "configs"
 	configExt        = ".yaml"
 	recordExt        = ".json"
+
+	// enrolledRecordName and pipelockStateDirName are sibling follower-state
+	// entries that share the conductor bundle_cache_dir but are NOT part of the
+	// policy-bundle apply state. A real running follower always writes them, so
+	// reset-bundle-state must accept their presence (not treat them as
+	// foreign/corrupt) and must leave them untouched — .pipelock-state holds the
+	// remote-kill replay floor, enrolled.json the follower's enrollment identity.
+	enrolledRecordName   = "enrolled.json"
+	pipelockStateDirName = ".pipelock-state"
 )
 
 var (
@@ -121,6 +131,34 @@ func Open(cfg Config) (*Cache, error) {
 		configsDir: configsDir,
 		now:        func() time.Time { return time.Now().UTC() },
 	}, nil
+}
+
+// ResetActiveBundleState removes only the follower-side policy-bundle apply
+// state under dir: the active pointer, cached bundle records, and staged config
+// files. It deliberately does not touch sibling conductor state such as the
+// remote-kill replay file. Corrupt or foreign-looking cache contents are
+// rejected before any delete so an operator does not turn an unknown directory
+// into partial state.
+func ResetActiveBundleState(dir string) error {
+	cache, err := Open(Config{Dir: dir})
+	if err != nil {
+		return err
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if err := cache.validateResettableBundleStateLocked(); err != nil {
+		return err
+	}
+	paths, err := resetBundleStatePaths(cache)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("conductor apply cache reset: remove %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func (c *Cache) storeVerified(bundle conductor.PolicyBundle, opts verifyOptions) (VerifiedBundle, error) {
@@ -338,12 +376,86 @@ func (c *Cache) readActiveLocked() (VerifiedBundle, error) {
 	}, nil
 }
 
+func (c *Cache) validateResettableBundleStateLocked() error {
+	rootEntries, err := os.ReadDir(c.dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range rootEntries {
+		// Match by name AND expected kind: a state root with, e.g., a directory
+		// named enrolled.json or a regular file named bundles/ is not a real
+		// apply cache and must not be accepted as resettable. Symlinks are
+		// rejected for every allowed name (IsDir is false for a symlink).
+		switch entry.Name() {
+		case bundlesDirName, configsDirName, pipelockStateDirName:
+			if !entry.IsDir() {
+				return fmt.Errorf("%w: apply cache root entry %q must be a directory", ErrInvalidActiveRecord, entry.Name())
+			}
+		case activeRecordName, emergency.RemoteKillStateFileName, enrolledRecordName:
+			if !entry.Type().IsRegular() {
+				return fmt.Errorf("%w: apply cache root entry %q must be a regular file", ErrInvalidActiveRecord, entry.Name())
+			}
+		default:
+			return fmt.Errorf("%w: unexpected apply cache root entry %q", ErrInvalidActiveRecord, entry.Name())
+		}
+	}
+	activePath := filepath.Join(c.dir, activeRecordName)
+	if _, err := readActiveRecord(activePath); err != nil && !errors.Is(err, ErrNoValidBundle) {
+		return err
+	}
+	bundleEntries, err := os.ReadDir(c.bundlesDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range bundleEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), recordExt) {
+			return fmt.Errorf("%w: unexpected bundle cache entry %q", ErrInvalidActiveRecord, entry.Name())
+		}
+		if _, err := readBundleRecord(filepath.Join(c.bundlesDir, entry.Name())); err != nil {
+			return err
+		}
+	}
+	configEntries, err := os.ReadDir(c.configsDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range configEntries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), configExt) {
+			return fmt.Errorf("%w: unexpected config cache entry %q", ErrInvalidActiveRecord, entry.Name())
+		}
+		path := filepath.Join(c.configsDir, entry.Name())
+		if err := validateRegularFile(path, conductor.MaxConfigYAMLBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resetBundleStatePaths(c *Cache) ([]string, error) {
+	paths := []string{filepath.Join(c.dir, activeRecordName)}
+	for _, dir := range []string{c.bundlesDir, c.configsDir} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return paths, nil
+}
+
 func verifyBundle(now time.Time, bundle conductor.PolicyBundle, opts verifyOptions) error {
 	if err := bundle.ValidateAtTime(now); err != nil {
 		return err
 	}
 	if err := bundle.VerifySignaturesAt(now, opts.Resolver); err != nil {
 		return err
+	}
+	if bundle.StreamSwitchAuthorization != nil {
+		if err := bundle.StreamSwitchAuthorization.VerifySignaturesAt(now, opts.Resolver); err != nil {
+			return err
+		}
 	}
 	if err := bundle.ValidateForFollower(opts.Identity.OrgID, opts.Identity.FleetID, opts.Identity.InstanceID, opts.Identity.Labels); err != nil {
 		return err
@@ -357,6 +469,9 @@ func verifyBundle(now time.Time, bundle conductor.PolicyBundle, opts verifyOptio
 }
 
 func authorizeVersionTransition(now time.Time, current, next conductor.PolicyBundle, opts verifyOptions) error {
+	if !samePolicyStream(current, next) {
+		return authorizeStreamSwitch(now, current, next, opts)
+	}
 	if next.Version > current.Version {
 		currentHash, err := current.CanonicalHash()
 		if err != nil {
@@ -398,6 +513,54 @@ func authorizeVersionTransition(now time.Time, current, next conductor.PolicyBun
 		auth.TargetBundleID != next.BundleID ||
 		auth.TargetVersion != next.Version {
 		return fmt.Errorf("%w: authorization does not match active and target bundles", conductor.ErrInvalidRollback)
+	}
+	return nil
+}
+
+func samePolicyStream(a, b conductor.PolicyBundle) bool {
+	return a.OrgID == b.OrgID &&
+		a.FleetID == b.FleetID &&
+		a.Environment == b.Environment &&
+		conductor.AudiencesEqual(a.Audience, b.Audience)
+}
+
+func authorizeStreamSwitch(now time.Time, current, next conductor.PolicyBundle, opts verifyOptions) error {
+	if next.StreamSwitchAuthorization == nil {
+		return ErrRollbackRequired
+	}
+	auth := *next.StreamSwitchAuthorization
+	if err := auth.ValidateAtTime(now); err != nil {
+		return err
+	}
+	if err := auth.ValidateMaxValidity(conductor.DefaultStreamSwitchMaxValidity); err != nil {
+		return err
+	}
+	if err := auth.VerifySignaturesAt(now, opts.Resolver); err != nil {
+		return err
+	}
+	currentHash, err := current.CanonicalHash()
+	if err != nil {
+		return err
+	}
+	nextDetached := next
+	nextDetached.StreamSwitchAuthorization = nil
+	nextHash, err := nextDetached.CanonicalHash()
+	if err != nil {
+		return err
+	}
+	if auth.OrgID != opts.Identity.OrgID || auth.FleetID != opts.Identity.FleetID {
+		return fmt.Errorf("%w: org_id/fleet_id", conductor.ErrAudienceMismatch)
+	}
+	if auth.Environment != next.Environment ||
+		auth.CurrentBundleID != current.BundleID ||
+		auth.CurrentVersion != current.Version ||
+		!strings.EqualFold(auth.CurrentBundleHash, currentHash) ||
+		auth.TargetBundleID != next.BundleID ||
+		auth.TargetVersion != next.Version ||
+		!strings.EqualFold(auth.TargetBundleHash, nextHash) ||
+		!conductor.AudiencesEqual(auth.CurrentAudience, current.Audience) ||
+		!conductor.AudiencesEqual(auth.TargetAudience, next.Audience) {
+		return fmt.Errorf("%w: stream switch authorization does not match active and target bundles", conductor.ErrInvalidRollback)
 	}
 	return nil
 }

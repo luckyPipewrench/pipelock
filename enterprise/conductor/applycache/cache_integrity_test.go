@@ -103,6 +103,76 @@ func TestActiveRecordMissingPointer(t *testing.T) {
 	}
 }
 
+func TestResetActiveBundleStateRemovesOnlyBundleState(t *testing.T) {
+	cache, _ := storeValidActive(t)
+	// Reproduce the sibling state a REAL running follower writes into the same
+	// bundle_cache_dir: the remote-kill state file, the enrollment record, and
+	// the .pipelock-state dir that holds the remote-kill replay floor. reset
+	// must accept their presence and leave every one of them untouched.
+	replayPath := filepath.Join(cache.dir, "remote-kill-state.json")
+	if err := os.WriteFile(replayPath, []byte(`{"keep":true}`), 0o600); err != nil {
+		t.Fatalf("write sibling state: %v", err)
+	}
+	enrolledPath := filepath.Join(cache.dir, "enrolled.json")
+	if err := os.WriteFile(enrolledPath, []byte(`{"instance_id":"keep"}`), 0o600); err != nil {
+		t.Fatalf("write enrolled.json: %v", err)
+	}
+	replayFloorDir := filepath.Join(cache.dir, ".pipelock-state", "remote-kill-replay")
+	if err := os.MkdirAll(replayFloorDir, 0o750); err != nil {
+		t.Fatalf("mkdir .pipelock-state: %v", err)
+	}
+	replayFloorPath := filepath.Join(replayFloorDir, "floor")
+	if err := os.WriteFile(replayFloorPath, []byte("counter"), 0o600); err != nil {
+		t.Fatalf("write replay floor: %v", err)
+	}
+	if err := ResetActiveBundleState(cache.dir); err != nil {
+		t.Fatalf("ResetActiveBundleState(): %v", err)
+	}
+	if _, err := cache.Active(); !errors.Is(err, ErrNoValidBundle) {
+		t.Fatalf("Active() after reset = %v, want ErrNoValidBundle", err)
+	}
+	for _, p := range []string{replayPath, enrolledPath, replayFloorPath} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("sibling follower state was modified/removed (%s): %v", p, err)
+		}
+	}
+	for _, dir := range []string{cache.bundlesDir, cache.configsDir} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir(%s): %v", dir, err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("%s entries after reset = %d, want 0", dir, len(entries))
+		}
+	}
+}
+
+func TestResetActiveBundleStateRejectsCorruptCacheBeforeRemoving(t *testing.T) {
+	cache, hash := storeValidActive(t)
+	if err := os.WriteFile(activePath(cache), []byte(`{"version":`), 0o600); err != nil {
+		t.Fatalf("corrupt active: %v", err)
+	}
+	if err := ResetActiveBundleState(cache.dir); !errors.Is(err, ErrInvalidActiveRecord) {
+		t.Fatalf("ResetActiveBundleState(corrupt) = %v, want ErrInvalidActiveRecord", err)
+	}
+	if _, err := os.Stat(filepath.Join(cache.bundlesDir, hash+recordExt)); err != nil {
+		t.Fatalf("bundle record removed after rejected reset: %v", err)
+	}
+}
+
+func TestResetActiveBundleStateRejectsForeignRootEntry(t *testing.T) {
+	cache, hash := storeValidActive(t)
+	if err := os.WriteFile(filepath.Join(cache.dir, "not-conductor-state"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write foreign entry: %v", err)
+	}
+	if err := ResetActiveBundleState(cache.dir); !errors.Is(err, ErrInvalidActiveRecord) {
+		t.Fatalf("ResetActiveBundleState(foreign) = %v, want ErrInvalidActiveRecord", err)
+	}
+	if _, err := os.Stat(filepath.Join(cache.bundlesDir, hash+recordExt)); err != nil {
+		t.Fatalf("bundle record removed after rejected reset: %v", err)
+	}
+}
+
 func TestActiveRecordRejectsTrailingJSON(t *testing.T) {
 	cache, _ := storeValidActive(t)
 	data, err := os.ReadFile(activePath(cache))
@@ -357,6 +427,138 @@ func TestRollbackAuthorizationLegacyAudienceAccepted(t *testing.T) {
 	}
 }
 
+func TestStoreVerifiedRequiresStreamSwitchAuthorizationForCrossStreamRetarget(t *testing.T) {
+	policyKey := newTestKey(t)
+	rk1 := newPurposeKey(t, "rollback-1", signing.PurposePolicyBundleRollback)
+	rk2 := newPurposeKey(t, "rollback-2", signing.PurposePolicyBundleRollback)
+	cache := openTestCache(t)
+	wildcard := signedTestBundle(t, policyKey, "wildcard-v6", 6, "")
+	wildcard.Audience = conductor.Audience{InstanceIDs: []string{"*"}}
+	resignPolicyBundle(t, policyKey, &wildcard)
+	if _, err := cache.storeVerified(wildcard, testVerifyOptions(policyKey, rk1, rk2)); err != nil {
+		t.Fatalf("storeVerified(wildcard): %v", err)
+	}
+
+	target := signedTestBundle(t, policyKey, "instance-v7", 7, "")
+	_, err := cache.storeVerified(target, testVerifyOptions(policyKey, rk1, rk2))
+	if !errors.Is(err, ErrRollbackRequired) {
+		t.Fatalf("storeVerified(cross-stream without auth) = %v, want ErrRollbackRequired", err)
+	}
+
+	auth := signedStreamSwitchAuthorization(t, rk1, rk2, wildcard, target, nil)
+	target.StreamSwitchAuthorization = &auth
+	resignPolicyBundle(t, policyKey, &target)
+	verified, err := cache.storeVerified(target, testVerifyOptions(policyKey, rk1, rk2))
+	if err != nil {
+		t.Fatalf("storeVerified(cross-stream with auth): %v", err)
+	}
+	if verified.Bundle.BundleID != "instance-v7" {
+		t.Fatalf("applied bundle = %q, want instance-v7", verified.Bundle.BundleID)
+	}
+}
+
+// A cross-stream switch is authorized by catastrophic signers, NOT by version
+// monotonicity: a more-specific stream may legitimately carry a LOWER version
+// than the stream the follower is leaving (operator intent, signed at the
+// rollback threshold). This guards against a future change that re-adds a
+// global version gate to the switch path and silently breaks legitimate
+// retargeting onto a lower-versioned stream.
+func TestStoreVerifiedAuthorizedCrossStreamDowngradeApplies(t *testing.T) {
+	policyKey := newTestKey(t)
+	rk1 := newPurposeKey(t, "rollback-1", signing.PurposePolicyBundleRollback)
+	rk2 := newPurposeKey(t, "rollback-2", signing.PurposePolicyBundleRollback)
+	cache := openTestCache(t)
+	wildcard := signedTestBundle(t, policyKey, "wildcard-v6", 6, "")
+	wildcard.Audience = conductor.Audience{InstanceIDs: []string{"*"}}
+	resignPolicyBundle(t, policyKey, &wildcard)
+	if _, err := cache.storeVerified(wildcard, testVerifyOptions(policyKey, rk1, rk2)); err != nil {
+		t.Fatalf("storeVerified(wildcard): %v", err)
+	}
+
+	// instance stream version 3 (lower than the active wildcard v6).
+	target := signedTestBundle(t, policyKey, "instance-v3", 3, "")
+	auth := signedStreamSwitchAuthorization(t, rk1, rk2, wildcard, target, nil)
+	target.StreamSwitchAuthorization = &auth
+	resignPolicyBundle(t, policyKey, &target)
+	verified, err := cache.storeVerified(target, testVerifyOptions(policyKey, rk1, rk2))
+	if err != nil {
+		t.Fatalf("storeVerified(authorized cross-stream downgrade): %v", err)
+	}
+	if verified.Bundle.BundleID != "instance-v3" {
+		t.Fatalf("applied bundle = %q, want instance-v3", verified.Bundle.BundleID)
+	}
+}
+
+func TestStoreVerifiedRejectsInvalidStreamSwitchAuthorization(t *testing.T) {
+	policyKey := newTestKey(t)
+	rk1 := newPurposeKey(t, "rollback-1", signing.PurposePolicyBundleRollback)
+	rk2 := newPurposeKey(t, "rollback-2", signing.PurposePolicyBundleRollback)
+	cases := []struct {
+		name   string
+		mutate func(*conductor.StreamSwitchAuthorization)
+		want   error
+	}{
+		{
+			name:   "old_current_hash",
+			mutate: func(a *conductor.StreamSwitchAuthorization) { a.CurrentBundleHash = strings.Repeat("a", 64) },
+			want:   conductor.ErrInvalidRollback,
+		},
+		{
+			name: "wrong_target_audience",
+			mutate: func(a *conductor.StreamSwitchAuthorization) {
+				a.TargetAudience = conductor.Audience{InstanceIDs: []string{"other"}}
+			},
+			want: conductor.ErrInvalidRollback,
+		},
+		{
+			name:   "expired",
+			mutate: func(a *conductor.StreamSwitchAuthorization) { a.ExpiresAt = testNow.Add(-time.Second) },
+			want:   nil,
+		},
+		{
+			name: "wrong_current_audience",
+			mutate: func(a *conductor.StreamSwitchAuthorization) {
+				a.CurrentAudience = conductor.Audience{InstanceIDs: []string{"other"}}
+			},
+			want: conductor.ErrInvalidRollback,
+		},
+		{
+			name:   "wrong_target_bundle_hash",
+			mutate: func(a *conductor.StreamSwitchAuthorization) { a.TargetBundleHash = strings.Repeat("b", 64) },
+			want:   conductor.ErrHashMismatch,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := openTestCache(t)
+			wildcard := signedTestBundle(t, policyKey, "wildcard-v6", 6, "")
+			wildcard.Audience = conductor.Audience{InstanceIDs: []string{"*"}}
+			resignPolicyBundle(t, policyKey, &wildcard)
+			if _, err := cache.storeVerified(wildcard, testVerifyOptions(policyKey, rk1, rk2)); err != nil {
+				t.Fatalf("storeVerified(wildcard): %v", err)
+			}
+			target := signedTestBundle(t, policyKey, "instance-v7", 7, "")
+			auth := signedStreamSwitchAuthorization(t, rk1, rk2, wildcard, target, tc.mutate)
+			target.StreamSwitchAuthorization = &auth
+			resignPolicyBundle(t, policyKey, &target)
+			_, err := cache.storeVerified(target, testVerifyOptions(policyKey, rk1, rk2))
+			if err == nil {
+				t.Fatalf("storeVerified(%s) = nil, want rejection", tc.name)
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("storeVerified(%s) = %v, want %v", tc.name, err, tc.want)
+			}
+			active, activeErr := cache.Active()
+			if activeErr != nil {
+				t.Fatalf("Active(): %v", activeErr)
+			}
+			if active.Bundle.BundleID != "wildcard-v6" {
+				t.Fatalf("active bundle = %q, want wildcard-v6", active.Bundle.BundleID)
+			}
+		})
+	}
+}
+
 // mutatedRollbackAuth builds a rollback authorization for current->target,
 // applies mutate, then signs so the signature is valid over the mutated
 // content (exercising the post-signature authorization checks).
@@ -382,6 +584,51 @@ func mutatedRollbackAuth(t *testing.T, key1, key2 testKey, current, target condu
 		signProof(t, key2, auth.SignablePreimage),
 	}
 	return auth
+}
+
+func signedStreamSwitchAuthorization(t *testing.T, key1, key2 testKey, current, target conductor.PolicyBundle, mutate func(*conductor.StreamSwitchAuthorization)) conductor.StreamSwitchAuthorization {
+	t.Helper()
+	currentHash, err := current.CanonicalHash()
+	if err != nil {
+		t.Fatalf("current CanonicalHash(): %v", err)
+	}
+	targetDetached := target
+	targetDetached.StreamSwitchAuthorization = nil
+	targetHash, err := targetDetached.CanonicalHash()
+	if err != nil {
+		t.Fatalf("target CanonicalHash(): %v", err)
+	}
+	auth := conductor.StreamSwitchAuthorization{
+		SchemaVersion:     conductor.SchemaVersion,
+		AuthorizationID:   "switch-1",
+		OrgID:             current.OrgID,
+		FleetID:           current.FleetID,
+		Environment:       current.Environment,
+		CurrentAudience:   current.Audience,
+		CurrentBundleID:   current.BundleID,
+		CurrentVersion:    current.Version,
+		CurrentBundleHash: currentHash,
+		TargetAudience:    target.Audience,
+		TargetBundleID:    target.BundleID,
+		TargetVersion:     target.Version,
+		TargetBundleHash:  targetHash,
+		Reason:            "operator retarget",
+		CreatedAt:         testNow.Add(-time.Minute),
+		ExpiresAt:         testNow.Add(time.Hour),
+	}
+	if mutate != nil {
+		mutate(&auth)
+	}
+	auth.Signatures = []conductor.SignatureProof{
+		signProof(t, key1, auth.SignablePreimage),
+		signProof(t, key2, auth.SignablePreimage),
+	}
+	return auth
+}
+
+func resignPolicyBundle(t *testing.T, key testKey, bundle *conductor.PolicyBundle) {
+	t.Helper()
+	bundle.Signatures = []conductor.SignatureProof{signProof(t, key, bundle.SignablePreimage)}
 }
 
 // TestStoreVerifiedIdempotentReapply proves re-storing the exact active
@@ -629,4 +876,103 @@ func TestUnsupportedMinVersionRejected(t *testing.T) {
 	if _, err := cache.storeVerified(bundle, opts); !errors.Is(err, ErrUnsupportedMinVersion) {
 		t.Fatalf("storeVerified(min version) = %v, want ErrUnsupportedMinVersion", err)
 	}
+}
+
+// TestStreamSwitchMaxValidityFollower proves the follower rejects a
+// stream-switch authorization whose validity window exceeds
+// DefaultStreamSwitchMaxValidity, even when the signature and all other
+// fields are valid. This is the security boundary: a compromised CLI
+// cannot mint a long-lived cross-stream retarget a follower would honor.
+func TestStreamSwitchMaxValidityFollower(t *testing.T) {
+	policyKey := newTestKey(t)
+	rk1 := newPurposeKey(t, "rollback-1", signing.PurposePolicyBundleRollback)
+	rk2 := newPurposeKey(t, "rollback-2", signing.PurposePolicyBundleRollback)
+
+	cases := []struct {
+		name    string
+		ttl     time.Duration
+		wantErr error
+	}{
+		{
+			name:    "over_max_10_year_window",
+			ttl:     10 * 365 * 24 * time.Hour,
+			wantErr: conductor.ErrStreamSwitchWindowTooLong,
+		},
+		{
+			name:    "over_max_by_one_second",
+			ttl:     conductor.DefaultStreamSwitchMaxValidity + time.Second,
+			wantErr: conductor.ErrStreamSwitchWindowTooLong,
+		},
+		{
+			name:    "exactly_at_max",
+			ttl:     conductor.DefaultStreamSwitchMaxValidity,
+			wantErr: nil,
+		},
+		{
+			name:    "normal_short_window",
+			ttl:     time.Hour,
+			wantErr: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := openTestCache(t)
+			wildcard := signedTestBundle(t, policyKey, "wildcard-v6", 6, "")
+			wildcard.Audience = conductor.Audience{InstanceIDs: []string{"*"}}
+			resignPolicyBundle(t, policyKey, &wildcard)
+			if _, err := cache.storeVerified(wildcard, testVerifyOptions(policyKey, rk1, rk2)); err != nil {
+				t.Fatalf("storeVerified(wildcard): %v", err)
+			}
+
+			target := signedTestBundle(t, policyKey, "instance-v7", 7, "")
+			auth := signedStreamSwitchAuthorization(t, rk1, rk2, wildcard, target, func(a *conductor.StreamSwitchAuthorization) {
+				a.CreatedAt = testNow.Add(-time.Minute)
+				a.ExpiresAt = testNow.Add(-time.Minute).Add(tc.ttl)
+			})
+			target.StreamSwitchAuthorization = &auth
+			resignPolicyBundle(t, policyKey, &target)
+
+			_, err := cache.storeVerified(target, testVerifyOptions(policyKey, rk1, rk2))
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("storeVerified(%s) = %v, want %v", tc.name, err, tc.wantErr)
+				}
+				// Verify the active bundle is still the wildcard (rejection preserved state).
+				active, activeErr := cache.Active()
+				if activeErr != nil {
+					t.Fatalf("Active(): %v", activeErr)
+				}
+				if active.Bundle.BundleID != "wildcard-v6" {
+					t.Fatalf("active bundle = %q, want wildcard-v6", active.Bundle.BundleID)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("storeVerified(%s) = %v, want success", tc.name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestResetActiveBundleStateRejectsWrongEntryKind(t *testing.T) {
+	t.Run("regular file where directory expected", func(t *testing.T) {
+		cache, _ := storeValidActive(t)
+		p := filepath.Join(cache.dir, pipelockStateDirName)
+		_ = os.RemoveAll(p)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write %s as file: %v", pipelockStateDirName, err)
+		}
+		if err := ResetActiveBundleState(cache.dir); !errors.Is(err, ErrInvalidActiveRecord) {
+			t.Fatalf("ResetActiveBundleState(file-where-dir) = %v, want ErrInvalidActiveRecord", err)
+		}
+	})
+	t.Run("directory where regular file expected", func(t *testing.T) {
+		cache, _ := storeValidActive(t)
+		if err := os.Mkdir(filepath.Join(cache.dir, enrolledRecordName), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", enrolledRecordName, err)
+		}
+		if err := ResetActiveBundleState(cache.dir); !errors.Is(err, ErrInvalidActiveRecord) {
+			t.Fatalf("ResetActiveBundleState(dir-where-file) = %v, want ErrInvalidActiveRecord", err)
+		}
+	})
 }

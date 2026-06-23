@@ -10,14 +10,12 @@ mode: strict
 api_allowlist:
   - "*.anthropic.com"
   - "*.openai.com"
-  - "api.telegram.org"
-  - "*.discord.com"
-  - "gateway.discord.gg"
-  - "*.slack.com"
   - "github.com"
   - "*.github.com"
   - "*.githubusercontent.com"
   - "registry.npmjs.org"
+# Messaging/collaboration platforms are common exfiltration channels; add
+# exact hosts only when required for this deployment.
 
 fetch_proxy:
   listen: "127.0.0.1:8888"
@@ -98,27 +96,27 @@ dlp:
       exempt_domains:
         - "*.openai.com"
     - name: "Fireworks API Key"
-      regex: '\bfw_[A-Za-z0-9]{22}\b'
+      regex: 'fw_[A-Za-z0-9]{22}\b'
       severity: critical
       exempt_domains:
         - "*.fireworks.ai"
     - name: "LLM Router API Key"
-      regex: '\bsk-or-v1-[A-Fa-f0-9]{20,}\b'
+      regex: 'sk-or-v1-[A-Fa-f0-9]{20,}\b'
       severity: critical
       exempt_domains:
         - "*.openrouter.ai"
     - name: "Answer Engine API Key"
-      regex: '\bpplx-[A-Za-z0-9]{20,}\b'
+      regex: 'pplx-[A-Za-z0-9]{20,}\b'
       severity: critical
       exempt_domains:
         - "*.perplexity.ai"
     - name: "Web Research API Key"
-      regex: '\btvly-[A-Za-z0-9]{20,}\b'
+      regex: 'tvly-[A-Za-z0-9]{20,}\b'
       severity: critical
       exempt_domains:
         - "*.tavily.com"
     - name: "Google API Key"
-      regex: '\bAIza[0-9A-Za-z\-_]{35}\b'
+      regex: 'AIza[0-9A-Za-z\-_]{35}\b'
       severity: high
       exempt_domains:
         - "*.googleapis.com"
@@ -228,37 +226,37 @@ dlp:
       severity: critical
     # AI/ML provider keys
     - name: "Hugging Face Token"
-      regex: '\bhf_[A-Za-z0-9]{34,37}\b'
+      regex: 'hf_[A-Za-z0-9]{34,37}\b'
       severity: critical
       exempt_domains:
         - "*.huggingface.co"
     - name: "Databricks Token"
-      regex: '\bdapi[0-9a-f]{32,}\b'
+      regex: 'dapi[0-9a-f]{32,}\b'
       severity: critical
       exempt_domains:
         - "*.databricks.com"
     - name: "Replicate API Token"
-      regex: '\br8_[a-f0-9]{40}\b'
+      regex: 'r8_[a-f0-9]{40}\b'
       severity: critical
       exempt_domains:
         - "*.replicate.com"
     - name: "Together AI Key"
-      regex: '\btok_[a-z0-9]{40,}\b'
+      regex: 'tok_[a-z0-9]{40,}\b'
       severity: critical
       exempt_domains:
         - "*.together.ai"
     - name: "Pinecone API Key"
-      regex: '\bpcsk_[a-zA-Z0-9]{36,}\b'
+      regex: 'pcsk_[a-zA-Z0-9]{36,}\b'
       severity: critical
       exempt_domains:
         - "*.pinecone.io"
     - name: "Groq API Key"
-      regex: '\bgsk_[a-zA-Z0-9]{48,}\b'
+      regex: 'gsk_[a-zA-Z0-9]{48,}\b'
       severity: critical
       exempt_domains:
         - "*.groq.com"
     - name: "xAI API Key"
-      regex: '\bxai-[a-zA-Z0-9\-_]{80,}\b'
+      regex: 'xai-[a-zA-Z0-9\-_]{80,}\b'
       severity: critical
       exempt_domains:
         - "*.x.ai"
@@ -267,13 +265,13 @@ dlp:
       regex: 'dop_v1_[a-f0-9]{64}'
       severity: critical
     - name: "HashiCorp Vault Token"
-      regex: '\bhvs\.[A-Za-z0-9]{24,}\b'
+      regex: 'hvs\.[A-Za-z0-9]{24,}\b'
       severity: critical
     - name: "Vercel Token"
       regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b'
       severity: critical
     - name: "Supabase Service Key"
-      regex: '\bsb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)'
+      regex: 'sb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)'
       severity: critical
     # Package registry tokens
     - name: "npm Token"
@@ -284,13 +282,13 @@ dlp:
       severity: critical
     # Developer platform tokens
     - name: "Linear API Key"
-      regex: '\blin_api_[A-Za-z0-9]{40,}\b'
+      regex: 'lin_api_[A-Za-z0-9]{40,}\b'
       severity: high
     - name: "Notion API Key"
       regex: 'ntn_[a-zA-Z0-9]{40,}\b'
       severity: high
     - name: "Sentry Auth Token"
-      regex: '\bsntrys_[A-Za-z0-9]{40,}\b'
+      regex: 'sntrys_[A-Za-z0-9]{40,}\b'
       severity: high
     # Cryptographic material
     - name: "Private Key Header"

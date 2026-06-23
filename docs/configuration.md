@@ -67,12 +67,17 @@ Domains that are always allowed in strict mode. In balanced/audit mode, these ar
 api_allowlist:
   - "*.anthropic.com"
   - "*.openai.com"
-  - "*.discord.com"
   - "github.com"
-  - "api.slack.com"
+  - "*.githubusercontent.com"
 ```
 
 Supports wildcards (`*.example.com` matches `api.example.com` **and** the apex `example.com` itself). Case-insensitive.
+
+Generated defaults and presets intentionally omit messaging/collaboration
+platforms such as Slack, Discord, and Telegram because they are common
+exfiltration channels. Add exact hosts only when required for your deployment.
+Allowlisting controls destination reachability; it does not bypass DLP,
+request-body/header scanning, response scanning, or MCP content scanning.
 
 ## Fetch Proxy
 

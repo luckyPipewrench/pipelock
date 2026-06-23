@@ -5,6 +5,7 @@
 package controlplane
 
 import (
+	"container/heap"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -70,6 +71,14 @@ func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler
 	if err != nil {
 		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
 	}
+	adminAuth, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{
+		{Token: followerAdminToken, Role: RoleAdmin, OrgID: "org-main"},
+		{Token: followerOrgEmptyAdmin, Role: RoleAdmin, OrgID: "org-empty"},
+		{Token: followerAuditorToken, Role: RoleAuditor, OrgID: "org-main"},
+	})
+	if err != nil {
+		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+	}
 	handler, err := NewHandler(HandlerOptions{
 		Store:              mustStore(t),
 		Capabilities:       DefaultCapabilities("conductor-test"),
@@ -77,6 +86,7 @@ func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler
 		FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
 		AuthorizePublisher: func(*http.Request) error { return nil },
 		AuthorizeFollowers: followerAuth,
+		AuthorizeAdmin:     adminAuth,
 		AuditSink:          discardAuditSink{},
 		AuditKeys:          rejectingAuditKeyResolver,
 		Enrollments:        enrollments,
@@ -90,6 +100,17 @@ func newFollowersTestHandler(t *testing.T, enrollments EnrollmentStore) *Handler
 func getFollowers(t *testing.T, handler *Handler, target, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
+}
+
+func deleteFollower(t *testing.T, handler *Handler, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, FollowersPath, strings.NewReader(body))
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -295,7 +316,8 @@ func TestHandlerListFollowersMethodAndStoreGuards(t *testing.T) {
 		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
 	}
 
-	// POST is rejected before any auth/store work.
+	// POST is rejected before any auth/store work. GET and DELETE are the only
+	// supported follower-roster methods.
 	handler := newFollowersTestHandler(t, enrollments)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, FollowersPath+"?org_id=org-main", nil)
 	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
@@ -310,6 +332,119 @@ func TestHandlerListFollowersMethodAndStoreGuards(t *testing.T) {
 	w = getFollowers(t, noStore, FollowersPath+"?org_id=org-main", followerAdminToken)
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("no-store status = %d body=%s, want 501", w.Code, w.Body.String())
+	}
+}
+
+func TestHandlerRemoveFollowerDecommissionsAuditKey(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	handler := newFollowersTestHandler(t, store)
+
+	body := `{"org_id":"org-main","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`
+	w := deleteFollower(t, handler, followerAdminToken, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("remove status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var removed FollowerSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &removed); err != nil {
+		t.Fatalf("decode remove response: %v", err)
+	}
+	if removed.Active {
+		t.Fatalf("removed follower Active = true, want false: %+v", removed)
+	}
+	list, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: "org-main"})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers() after remove error = %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("removed follower still appears in fleet status: %+v", list)
+	}
+	if _, err := store.ResolveEnrolledAuditKey(identity, "audit-key-main-1"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("ResolveEnrolledAuditKey() after remove error = %v, want signature verification failure", err)
+	}
+
+	// A second remove has no extra side effect, but it must fail loud so an
+	// operator cannot accidentally treat a wrong id as a successful decommission.
+	w = deleteFollower(t, handler, followerAdminToken, body)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("second remove status = %d body=%s, want 404", w.Code, w.Body.String())
+	}
+}
+
+func TestHandlerRemoveFollowerRequiresAdminAndExactIdentity(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	mustEnrollFollower(t, store, "tok-main-1", FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}, "audit-key-main-1")
+	handler := newFollowersTestHandler(t, store)
+
+	body := `{"org_id":"org-main","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`
+	if w := deleteFollower(t, handler, followerAuditorToken, body); w.Code != http.StatusForbidden {
+		t.Fatalf("auditor remove status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+	if w := deleteFollower(t, handler, followerAdminToken, `{"org_id":"org-main","fleet_id":"prod","instance_id":"pl-prod-1","environment":"staging"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("wrong environment remove status = %d body=%s, want 404", w.Code, w.Body.String())
+	}
+	if w := deleteFollower(t, handler, followerAdminToken, `{"org_id":"bad/id","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid identity remove status = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+}
+
+func TestHandlerFollowersHundredFollowerRosterListsAndRemoves(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	for i := range 100 {
+		identity := FollowerIdentity{
+			OrgID:       "org-main",
+			FleetID:     "prod",
+			InstanceID:  fmt.Sprintf("pl-prod-%03d", i),
+			Environment: "prod",
+		}
+		mustEnrollFollower(t, store, fmt.Sprintf("scale-token-%03d", i), identity, fmt.Sprintf("scale-audit-key-%03d", i))
+	}
+	handler := newFollowersTestHandler(t, store)
+
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-main&fleet_id=prod&limit=100", followerAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list 100 followers status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var listed listFollowersResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode 100-follower response: %v", err)
+	}
+	if listed.Count != 100 || len(listed.Followers) != 100 {
+		t.Fatalf("100-follower roster count=%d len=%d, want 100", listed.Count, len(listed.Followers))
+	}
+	if listed.Followers[0].InstanceID != "pl-prod-000" || listed.Followers[99].InstanceID != "pl-prod-099" {
+		t.Fatalf("100-follower roster bounds = %s..%s, want pl-prod-000..pl-prod-099", listed.Followers[0].InstanceID, listed.Followers[99].InstanceID)
+	}
+
+	body := `{"org_id":"org-main","fleet_id":"prod","instance_id":"pl-prod-042","environment":"prod"}`
+	w = deleteFollower(t, handler, followerAdminToken, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("remove from 100-follower roster status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	w = getFollowers(t, handler, FollowersPath+"?org_id=org-main&fleet_id=prod&limit=100", followerAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list after remove status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode post-remove response: %v", err)
+	}
+	if listed.Count != 99 || len(listed.Followers) != 99 {
+		t.Fatalf("post-remove roster count=%d len=%d, want 99", listed.Count, len(listed.Followers))
+	}
+	for _, follower := range listed.Followers {
+		if follower.InstanceID == "pl-prod-042" {
+			t.Fatalf("removed follower still listed in 100-follower roster: %+v", follower)
+		}
 	}
 }
 
@@ -415,6 +550,23 @@ func TestFollowerSummaryLessOrdersByAllKeys(t *testing.T) {
 				t.Fatalf("followerSummaryLess() = %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFollowerSummaryMaxHeapPopReturnsLargestSummary(t *testing.T) {
+	h := followerSummaryMaxHeap{
+		{OrgID: "org-main", FleetID: "prod", InstanceID: "i-a", Environment: "prod"},
+		{OrgID: "org-main", FleetID: "prod", InstanceID: "i-c", Environment: "prod"},
+		{OrgID: "org-main", FleetID: "prod", InstanceID: "i-b", Environment: "prod"},
+	}
+	heap.Init(&h)
+
+	got := heap.Pop(&h).(FollowerSummary)
+	if got.InstanceID != "i-c" {
+		t.Fatalf("heap.Pop() instance = %q, want i-c", got.InstanceID)
+	}
+	if len(h) != 2 {
+		t.Fatalf("heap length after Pop = %d, want 2", len(h))
 	}
 }
 

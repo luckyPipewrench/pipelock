@@ -401,6 +401,31 @@ func testRollbackAuthorization() RollbackAuthorization {
 	}
 }
 
+func testStreamSwitchAuthorization() StreamSwitchAuthorization {
+	return StreamSwitchAuthorization{
+		SchemaVersion:     SchemaVersion,
+		AuthorizationID:   "switch-0001",
+		OrgID:             "org-test",
+		FleetID:           "fleet-prod",
+		Environment:       "prod",
+		CurrentAudience:   Audience{InstanceIDs: []string{"instance-1"}},
+		CurrentBundleID:   "bundle-0001",
+		CurrentVersion:    1,
+		CurrentBundleHash: testHash("11"),
+		TargetAudience:    Audience{Labels: map[string]string{"ring": "canary"}},
+		TargetBundleID:    "bundle-0002",
+		TargetVersion:     2,
+		TargetBundleHash:  testHash("22"),
+		Reason:            "move canary stream",
+		CreatedAt:         testNow,
+		ExpiresAt:         testNow.Add(10 * time.Minute),
+		Signatures: []SignatureProof{
+			testProof("switch-signer-1", signing.PurposePolicyBundleRollback),
+			testProof("switch-signer-2", signing.PurposePolicyBundleRollback),
+		},
+	}
+}
+
 func testAuditBatch() AuditBatchEnvelope {
 	payload := testAuditPayload()
 	return AuditBatchEnvelope{
@@ -863,6 +888,9 @@ func TestCanonicalHashMethods(t *testing.T) {
 	if got, err := testRollbackAuthorization().CanonicalHash(); err != nil || got == "" {
 		t.Fatalf("RollbackAuthorization.CanonicalHash() = %q, %v; want hash", got, err)
 	}
+	if got, err := testStreamSwitchAuthorization().CanonicalHash(); err != nil || got == "" {
+		t.Fatalf("StreamSwitchAuthorization.CanonicalHash() = %q, %v; want hash", got, err)
+	}
 	if got, err := testAuditBatch().CanonicalHash(); err != nil || got == "" {
 		t.Fatalf("AuditBatchEnvelope.CanonicalHash() = %q, %v; want hash", got, err)
 	}
@@ -902,6 +930,155 @@ func TestRollbackAuthorization_VerifySignatures(t *testing.T) {
 	auth.TargetBundleID = "bundle-other"
 	if err := auth.VerifySignaturesAt(testNow, resolver); !errors.Is(err, ErrSignatureVerification) {
 		t.Fatalf("VerifySignaturesAt(tampered) = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestStreamSwitchAuthorization_SignablePreimageExcludesSignatures(t *testing.T) {
+	authA := testStreamSwitchAuthorization()
+	authB := testStreamSwitchAuthorization()
+	authB.Signatures[0].Signature = testSignature("ab")
+	authB.Signatures[0].SignerKeyID = "different-signer"
+
+	preA, err := authA.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(authA): %v", err)
+	}
+	preB, err := authB.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(authB): %v", err)
+	}
+	if string(preA) != string(preB) {
+		t.Fatalf("preimage changed when detached signatures changed:\na=%s\nb=%s", preA, preB)
+	}
+}
+
+func TestStreamSwitchAuthorization_VerifySignatures(t *testing.T) {
+	auth := testStreamSwitchAuthorization()
+	pub1, proof1 := signedProof(t, auth.SignablePreimage, "switch-signer-1", signing.PurposePolicyBundleRollback)
+	pub2, proof2 := signedProof(t, auth.SignablePreimage, "switch-signer-2", signing.PurposePolicyBundleRollback)
+	auth.Signatures = []SignatureProof{proof1, proof2}
+	resolver := mapResolver(map[string]SignatureKey{
+		"switch-signer-1": {PublicKey: pub1, KeyPurpose: signing.PurposePolicyBundleRollback},
+		"switch-signer-2": {PublicKey: pub2, KeyPurpose: signing.PurposePolicyBundleRollback},
+	})
+
+	if err := auth.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	if err := auth.ValidateAtTime(testNow); err != nil {
+		t.Fatalf("ValidateAtTime() = %v, want nil", err)
+	}
+	if err := auth.VerifySignatures(resolver); err != nil {
+		t.Fatalf("VerifySignatures() = %v, want nil", err)
+	}
+	if err := auth.VerifySignaturesAt(testNow, resolver); err != nil {
+		t.Fatalf("VerifySignaturesAt() = %v, want nil", err)
+	}
+
+	auth.TargetBundleHash = testHash("88")
+	if err := auth.VerifySignaturesAt(testNow, resolver); !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("VerifySignaturesAt(tampered) = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestStreamSwitchAuthorization_ValidateRejectsSameAudience(t *testing.T) {
+	auth := testStreamSwitchAuthorization()
+	auth.TargetAudience = auth.CurrentAudience
+	if err := auth.Validate(); !errors.Is(err, ErrInvalidRollback) {
+		t.Fatalf("Validate(same audience) = %v, want ErrInvalidRollback", err)
+	}
+}
+
+func TestStreamSwitchAuthorization_ValidateRejectsMalformedFields(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*StreamSwitchAuthorization)
+		wantErr error
+	}{
+		{"schema", func(a *StreamSwitchAuthorization) { a.SchemaVersion = 99 }, ErrUnsupportedSchemaVersion},
+		{"authorization_id", func(a *StreamSwitchAuthorization) { a.AuthorizationID = "bad id" }, ErrInvalidIdentifier},
+		{"org", func(a *StreamSwitchAuthorization) { a.OrgID = "" }, ErrMissingField},
+		{"environment", func(a *StreamSwitchAuthorization) { a.Environment = "bad env" }, ErrInvalidIdentifier},
+		{"current_audience", func(a *StreamSwitchAuthorization) { a.CurrentAudience = Audience{} }, ErrInvalidAudience},
+		{"target_audience", func(a *StreamSwitchAuthorization) { a.TargetAudience = Audience{} }, ErrInvalidAudience},
+		{"current_bundle_id", func(a *StreamSwitchAuthorization) { a.CurrentBundleID = "bad id" }, ErrInvalidIdentifier},
+		{"target_bundle_id", func(a *StreamSwitchAuthorization) { a.TargetBundleID = "bad id" }, ErrInvalidIdentifier},
+		{"versions", func(a *StreamSwitchAuthorization) { a.CurrentVersion = 0 }, ErrMissingField},
+		{"current_bundle_hash", func(a *StreamSwitchAuthorization) { a.CurrentBundleHash = "bad" }, ErrInvalidHash},
+		{"target_bundle_hash", func(a *StreamSwitchAuthorization) { a.TargetBundleHash = "bad" }, ErrInvalidHash},
+		{"validity", func(a *StreamSwitchAuthorization) { a.ExpiresAt = a.CreatedAt }, ErrInvalidValidityWindow},
+		{"reason", func(a *StreamSwitchAuthorization) { a.Reason = "bad\nreason" }, ErrInvalidReason},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := testStreamSwitchAuthorization()
+			tc.mutate(&auth)
+			if err := auth.Validate(); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Validate() = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestPolicyBundle_ValidateStreamSwitchAuthorizationBinding(t *testing.T) {
+	bundle := testPolicyBundle()
+	bundle.Audience = Audience{Labels: map[string]string{"ring": "canary"}}
+	detached := bundle
+	detached.Signatures = nil
+	detached.StreamSwitchAuthorization = nil
+	targetHash, err := detached.CanonicalHash()
+	if err != nil {
+		t.Fatalf("target CanonicalHash: %v", err)
+	}
+
+	auth := testStreamSwitchAuthorization()
+	auth.OrgID = bundle.OrgID
+	auth.FleetID = bundle.FleetID
+	auth.Environment = bundle.Environment
+	auth.TargetAudience = bundle.Audience
+	auth.TargetBundleID = bundle.BundleID
+	auth.TargetVersion = bundle.Version
+	auth.TargetBundleHash = targetHash
+	bundle.StreamSwitchAuthorization = &auth
+	if err := bundle.Validate(); err != nil {
+		t.Fatalf("Validate(bound stream switch authorization) = %v, want nil", err)
+	}
+
+	mismatchedTarget := bundle
+	mismatchedAuth := auth
+	mismatchedAuth.TargetBundleID = "bundle-other"
+	mismatchedTarget.StreamSwitchAuthorization = &mismatchedAuth
+	if err := mismatchedTarget.Validate(); !errors.Is(err, ErrInvalidRollback) {
+		t.Fatalf("Validate(mismatched target) = %v, want ErrInvalidRollback", err)
+	}
+
+	badHash := bundle
+	badHashAuth := auth
+	badHashAuth.TargetBundleHash = testHash("99")
+	badHash.StreamSwitchAuthorization = &badHashAuth
+	if err := badHash.Validate(); !errors.Is(err, ErrHashMismatch) {
+		t.Fatalf("Validate(bad target hash) = %v, want ErrHashMismatch", err)
+	}
+}
+
+func TestAudiencesEqual(t *testing.T) {
+	if !AudiencesEqual(
+		Audience{InstanceIDs: []string{"instance-b", "instance-a"}, Labels: map[string]string{"ring": "prod"}},
+		Audience{InstanceIDs: []string{"instance-a", "instance-b"}, Labels: map[string]string{"ring": "prod"}},
+	) {
+		t.Fatal("AudiencesEqual() = false for reordered instance IDs and identical labels")
+	}
+	if AudiencesEqual(
+		Audience{InstanceIDs: []string{"instance-a"}, Labels: map[string]string{"ring": "prod"}},
+		Audience{InstanceIDs: []string{"instance-a"}, Labels: map[string]string{"ring": "canary"}},
+	) {
+		t.Fatal("AudiencesEqual() = true for different label values")
+	}
+	if AudiencesEqual(
+		Audience{InstanceIDs: []string{"instance-a"}},
+		Audience{InstanceIDs: []string{"instance-a", "instance-b"}},
+	) {
+		t.Fatal("AudiencesEqual() = true for different instance ID sets")
 	}
 }
 
@@ -1224,4 +1401,69 @@ func testHash(seed string) string {
 
 func testSignature(seed string) string {
 	return SignaturePrefixEd25519 + strings.Repeat(seed, 64)
+}
+
+func TestStreamSwitchAuthorization_ValidateMaxValidity(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name    string
+		created time.Time
+		expires time.Time
+		max     time.Duration
+		wantErr error
+	}{
+		{
+			name:    "within_max",
+			created: now,
+			expires: now.Add(time.Hour),
+			max:     24 * time.Hour,
+			wantErr: nil,
+		},
+		{
+			name:    "exactly_at_max",
+			created: now,
+			expires: now.Add(24 * time.Hour),
+			max:     24 * time.Hour,
+			wantErr: nil,
+		},
+		{
+			name:    "over_max_by_one_second",
+			created: now,
+			expires: now.Add(24*time.Hour + time.Second),
+			max:     24 * time.Hour,
+			wantErr: ErrStreamSwitchWindowTooLong,
+		},
+		{
+			name:    "ten_year_window",
+			created: now,
+			expires: now.Add(10 * 365 * 24 * time.Hour),
+			max:     24 * time.Hour,
+			wantErr: ErrStreamSwitchWindowTooLong,
+		},
+		{
+			name:    "non_positive_max_skips",
+			created: now,
+			expires: now.Add(10 * 365 * 24 * time.Hour),
+			max:     0,
+			wantErr: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := StreamSwitchAuthorization{
+				CreatedAt: tc.created,
+				ExpiresAt: tc.expires,
+			}
+			err := auth.ValidateMaxValidity(tc.max)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("ValidateMaxValidity(%s) = %v, want %v", tc.name, err, tc.wantErr)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("ValidateMaxValidity(%s) = %v, want nil", tc.name, err)
+				}
+			}
+		})
+	}
 }

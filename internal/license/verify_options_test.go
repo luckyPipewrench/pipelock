@@ -96,8 +96,9 @@ func TestVerifyTokenWithOptions_RequireSemantics(t *testing.T) {
 	})
 
 	t.Run("require_on_valid_intermediate_token_accepted", func(t *testing.T) {
+		crl := vroCRL(t, rootPriv, now, time.Hour, nil, nil)
 		lic, err := VerifyTokenWithOptions(intToken, VerifyOptions{
-			RootPub: rootPub, Now: now, RequireIntermediate: true, Intermediate: intCertBytes,
+			RootPub: rootPub, Now: now, RequireIntermediate: true, Intermediate: intCertBytes, CRL: &crl,
 		})
 		if err != nil {
 			t.Fatalf("intermediate token must verify under require: %v", err)
@@ -109,9 +110,11 @@ func TestVerifyTokenWithOptions_RequireSemantics(t *testing.T) {
 
 	t.Run("require_on_root_token_rejected (no root fallthrough)", func(t *testing.T) {
 		// A forged/legacy root-signed token must NOT verify under require mode,
-		// even with a valid intermediate configured.
+		// even with a valid intermediate configured. A valid CRL is supplied so
+		// the rejection is the root-fallthrough guard, not the CRL-required gate.
+		crl := vroCRL(t, rootPriv, now, time.Hour, nil, nil)
 		if _, err := VerifyTokenWithOptions(rootToken, VerifyOptions{
-			RootPub: rootPub, Now: now, RequireIntermediate: true, Intermediate: intCertBytes,
+			RootPub: rootPub, Now: now, RequireIntermediate: true, Intermediate: intCertBytes, CRL: &crl,
 		}); err == nil {
 			t.Fatal("root-signed token must be rejected under require mode")
 		}
@@ -126,6 +129,17 @@ func TestVerifyTokenWithOptions_RequireSemantics(t *testing.T) {
 		}
 	})
 
+	t.Run("require_on_intermediate_but_no_crl_returns_ErrCRLRequired", func(t *testing.T) {
+		// Require mode with a valid intermediate but no CRL must fail closed:
+		// a revoked intermediate would otherwise be undetectable.
+		_, err := VerifyTokenWithOptions(intToken, VerifyOptions{
+			RootPub: rootPub, Now: now, RequireIntermediate: true, Intermediate: intCertBytes,
+		})
+		if !errors.Is(err, ErrCRLRequired) {
+			t.Fatalf("want ErrCRLRequired, got %v", err)
+		}
+	})
+
 	t.Run("require_on_malformed_intermediate_fails_closed", func(t *testing.T) {
 		_, err := VerifyTokenWithOptions(intToken, VerifyOptions{
 			RootPub: rootPub, Now: now, RequireIntermediate: true, Intermediate: []byte("{not a cert"),
@@ -137,8 +151,9 @@ func TestVerifyTokenWithOptions_RequireSemantics(t *testing.T) {
 
 	t.Run("require_on_expired_token_ErrLicenseExpired_no_fallthrough", func(t *testing.T) {
 		expiredTok := vroToken(t, intPriv, "lic_exp", []string{FeatureFleet}, now.Add(-time.Hour))
+		crl := vroCRL(t, rootPriv, now, time.Hour, nil, nil)
 		_, err := VerifyTokenWithOptions(expiredTok, VerifyOptions{
-			RootPub: rootPub, Now: now, RequireIntermediate: true, Intermediate: intCertBytes,
+			RootPub: rootPub, Now: now, RequireIntermediate: true, Intermediate: intCertBytes, CRL: &crl,
 		})
 		if !errors.Is(err, ErrLicenseExpired) {
 			t.Fatalf("want ErrLicenseExpired, got %v", err)
@@ -495,6 +510,18 @@ func TestClassifyReloadWithOptions_RequireProvesLoss(t *testing.T) {
 		})
 		if !class.ProvesLoss(License{}, FeatureFleet) {
 			t.Fatalf("missing intermediate under require must prove loss, class=%v", class)
+		}
+	})
+
+	t.Run("crl_required_proves_loss", func(t *testing.T) {
+		// require on, valid intermediate, but no CRL configured -> proven loss
+		// (a revoked intermediate would be undetectable, so tear down).
+		_, class := ClassifyReloadWithOptions(FleetVerifyInputs{
+			LicenseKey: intToken, PublicKeyHex: pubHex,
+			IntermediateCert: intCertBytes, RequireSet: true, Require: true,
+		})
+		if class != ReloadRevoked || !class.ProvesLoss(License{}, FeatureFleet) {
+			t.Fatalf("missing CRL under require must prove loss, class=%v", class)
 		}
 	})
 

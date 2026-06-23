@@ -85,6 +85,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMode(); err != nil {
 		return warnings, err
 	}
+	c.validateAPIAllowlistWarnings(&warnings)
 	if err := c.validateLogging(); err != nil {
 		return warnings, err
 	}
@@ -244,6 +245,43 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 		return warnings, err
 	}
 	return warnings, nil
+}
+
+func (c *Config) validateAPIAllowlistWarnings(warnings *[]Warning) {
+	var messagingDomains []string
+	for _, raw := range c.APIAllowlist {
+		domain := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
+		if isMessagingAPIAllowlistDomain(domain) {
+			messagingDomains = append(messagingDomains, domain)
+		}
+	}
+	if len(messagingDomains) == 0 {
+		return
+	}
+	*warnings = append(*warnings, Warning{
+		Field:   "api_allowlist",
+		Message: fmt.Sprintf("contains messaging/collaboration domains (%s); these are common exfiltration channels, so keep only deployment-required exact hosts and rely on DLP/content scanning for payload control", strings.Join(messagingDomains, ", ")),
+	})
+}
+
+func isMessagingAPIAllowlistDomain(domain string) bool {
+	return domain == "api.telegram.org" ||
+		domain == "telegram.org" ||
+		domain == "*.telegram.org" ||
+		strings.HasSuffix(domain, ".telegram.org") ||
+		domain == "t.me" ||
+		domain == "*.t.me" ||
+		strings.HasSuffix(domain, ".t.me") ||
+		domain == "gateway.discord.gg" ||
+		domain == "discord.gg" ||
+		domain == "*.discord.gg" ||
+		strings.HasSuffix(domain, ".discord.gg") ||
+		domain == "discord.com" ||
+		domain == "*.discord.com" ||
+		strings.HasSuffix(domain, ".discord.com") ||
+		domain == "slack.com" ||
+		domain == "*.slack.com" ||
+		strings.HasSuffix(domain, ".slack.com")
 }
 
 // validateLicenseIntermediate surfaces a configured intermediate certificate

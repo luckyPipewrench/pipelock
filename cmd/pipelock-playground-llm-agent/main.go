@@ -119,6 +119,12 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, "WARNING: process hardening unavailable:", err)
 	}
+	// SECURITY INVARIANT (load-bearing, do not reorder): resolveAPIKey reads the
+	// model key from the inherited pipe (--secret-fd, fd 3) and CLOSES that fd
+	// here, BEFORE buildAgent/runLoop can spawn any run_command shell child. A
+	// shell child cannot inherit an already-closed fd, so the agent's own tools
+	// cannot read the model key off fd 3. Never move this after runLoop, and never
+	// spawn agent tools before it returns.
 	apiKey, err := resolveAPIKey(cfg.secretFd, cfg.secretFile, os.Getenv)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "api key:", err)

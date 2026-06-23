@@ -45,6 +45,9 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"huggingface-token", "token hf_" + strings.Repeat("A", 37), ClassHuggingFaceToken},
 		{"replicate-api-token", "token r8_" + strings.Repeat("A", 40), ClassReplicateAPIToken},
 		{"together-ai-key", "token TOK_" + strings.Repeat("A", 40), ClassTogetherAIKey},
+		{"pinecone-api-key", "token pcsk_" + strings.Repeat("A", 40), ClassAIProviderKey},
+		{"groq-api-key", "token gsk_" + strings.Repeat("A", 48), ClassAIProviderKey},
+		{"xai-api-key", "token xai-" + strings.Repeat("A", 80), ClassAIProviderKey},
 		{"hashicorp-vault-token", "token hvs." + strings.Repeat("A", 24), ClassVaultToken},
 		{"supabase-service-key", "token sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8), ClassSupabaseKey},
 		{"supabase-service-key-hyphen-checksum", "token sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 7) + "-", ClassSupabaseKey},
@@ -140,26 +143,6 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 		class Class
 	}{
 		{
-			name:  "vault embedded after word char",
-			input: "prefix_hvs." + strings.Repeat("A", 24),
-			class: ClassVaultToken,
-		},
-		{
-			name:  "supabase embedded after word char",
-			input: "prefix_sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8),
-			class: ClassSupabaseKey,
-		},
-		{
-			name:  "linear embedded after word char",
-			input: "prefix_lin_api_" + strings.Repeat("A", 40),
-			class: ClassLinearAPIKey,
-		},
-		{
-			name:  "sentry embedded after word char",
-			input: "prefix_sntrys_" + strings.Repeat("A", 40),
-			class: ClassSentryAuthToken,
-		},
-		{
 			name:  "vault followed by underscore suffix",
 			input: "hvs." + strings.Repeat("A", 24) + "_payload",
 			class: ClassVaultToken,
@@ -210,11 +193,6 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 			class: ClassAIProviderKey,
 		},
 		{
-			name:  "answer-engine embedded after word char",
-			input: "prefix_pplx-" + strings.Repeat("a", 24),
-			class: ClassAIProviderKey,
-		},
-		{
 			name:  "web-research under floor",
 			input: "tvly-" + strings.Repeat("a", 10),
 			class: ClassAIProviderKey,
@@ -229,6 +207,63 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 					t.Fatalf("matched %s in %q: %+v", tc.class, tc.input, got)
 				}
 			}
+		})
+	}
+}
+
+func TestDefaultMatcher_ProviderKeyGlueParity(t *testing.T) {
+	t.Parallel()
+	m := NewDefaultMatcher()
+
+	cases := []struct {
+		name  string
+		key   string
+		class Class
+	}{
+		{"google-api", "AIza" + strings.Repeat("A", 35), ClassGoogleAPIKey},
+		{"fireworks", "fw_" + strings.Repeat("A", 22), ClassFireworksAPIKey},
+		{"llm-router", "sk-or-v1-" + strings.Repeat("A", 24), ClassAIProviderKey},
+		{"answer-engine", "pplx-" + strings.Repeat("A", 24), ClassAIProviderKey},
+		{"web-research", "tvly-" + strings.Repeat("A", 24), ClassAIProviderKey},
+		{"huggingface", "hf_" + strings.Repeat("A", 37), ClassHuggingFaceToken},
+		{"databricks", "dapi" + strings.Repeat("a", 32), ClassDatabricksPAT},
+		{"replicate", "r8_" + strings.Repeat("a", 40), ClassReplicateAPIToken},
+		{"together", "tok_" + strings.Repeat("a", 40), ClassTogetherAIKey},
+		{"pinecone", "pcsk_" + strings.Repeat("A", 40), ClassAIProviderKey},
+		{"groq", "gsk_" + strings.Repeat("A", 48), ClassAIProviderKey},
+		{"xai", "xai-" + strings.Repeat("A", 80), ClassAIProviderKey},
+		{"vault", "hvs." + strings.Repeat("A", 24), ClassVaultToken},
+		{"supabase", "sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8), ClassSupabaseKey},
+		{"linear", "lin_api_" + strings.Repeat("A", 40), ClassLinearAPIKey},
+		{"sentry", "sntrys_" + strings.Repeat("A", 40), ClassSentryAuthToken},
+		// Round 2: source-control, messaging, package-registry, platform tokens
+		{"github-ghp", "ghp_" + strings.Repeat("A", 36), ClassGitHubToken},
+		{"github-pat", "github_pat_" + strings.Repeat("B", 36), ClassGitHubToken},
+		{"gitlab-pat", "glpat-" + strings.Repeat("C", 24), ClassGitLabToken},
+		{"gitlab-deploy", "gldt-" + strings.Repeat("D", 24), ClassGitLabToken},
+		{"gitlab-runner", "glrt-" + strings.Repeat("E", 24), ClassGitLabToken},
+		{"gitlab-ci", "glcbt-" + strings.Repeat("F", 24), ClassGitLabToken},
+		{"gitlab-pipeline", "glptt-" + strings.Repeat("A", 24), ClassGitLabToken},
+		{"gitlab-oauth", "gloas-" + strings.Repeat("B", 24), ClassGitLabToken},
+		{"gitlab-scim", "glsoat-" + strings.Repeat("C", 24), ClassGitLabToken},
+		{"gitlab-service", "glft-" + strings.Repeat("D", 24), ClassGitLabToken},
+		{"slack-xoxb", "xoxb-" + strings.Repeat("1", 15) + "-" + strings.Repeat("a", 10), ClassSlackToken},
+		{"npm", "npm_" + strings.Repeat("E", 36), ClassNPMToken},
+		{"pypi", "pypi-AgE" + strings.Repeat("F", 90), ClassPyPIToken},
+		{"notion", "ntn_" + strings.Repeat("A", 40), ClassNotionAPIKey},
+		{"vercel", "vercel_" + strings.Repeat("B", 24), ClassVercelToken},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := "prefixZ" + tc.key
+			for _, got := range m.Scan(input) {
+				if got.Class == tc.class && got.Original == tc.key {
+					return
+				}
+			}
+			t.Fatalf("glued provider key was not redacted as %s in %q", tc.class, input)
 		})
 	}
 }

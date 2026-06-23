@@ -29,6 +29,8 @@ func storeCmd() *cobra.Command {
 	cmd.AddCommand(storeDumpCmd())
 	cmd.AddCommand(storeInspectOfflineCmd())
 	cmd.AddCommand(storeRepairOfflineCmd())
+	cmd.AddCommand(storeBackupCmd())
+	cmd.AddCommand(storeRestoreCmd())
 	return cmd
 }
 

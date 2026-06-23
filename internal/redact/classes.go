@@ -86,15 +86,15 @@ func tokenClasses() []classPattern {
 		{class: ClassEnvSecret, pattern: regexp.MustCompile(`\b` + envSecretName + `\b\s*=\s*\S{8,}`), priority: 120},
 		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA|AIDA|AGPA|AROA)[A-Z0-9]{16}\b`), priority: 100, skipTrailing: sigV4CredentialScope, skipLeading: sigV4CredentialPrefix},
 		{class: ClassAWSSecretKey, pattern: regexp.MustCompile(`(?i)\b(?:aws_secret_access_key|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}\b`), priority: 100},
-		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`), priority: 100},
-		{class: ClassGitHubToken, pattern: regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b`), priority: 100},
+		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}\b`), priority: 100},
+		{class: ClassGitHubToken, pattern: regexp.MustCompile(`(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b`), priority: 100},
 		// All documented GitLab token prefixes (token overview: glpat-,
 		// gloas-, gldt-, glrt-/glrtr-, glcbt-, glptt-, glft-, glimt-,
 		// glagent-, glwt-, glsoat-, glffct-) share the gl<type>- + base64url
 		// shape, so one class covers every DLP detection pattern in the
 		// GitLab family and an allowlisted host gets a placeholder instead of
 		// the raw token. (?i) tolerates an uppercased leak.
-		{class: ClassGitLabToken, pattern: regexp.MustCompile(`(?i)\bgl(?:pat|oas|dt|rtr?|cbt|ptt|ft|imt|agent|wt|soat|ffct)-[A-Za-z0-9_-]{20,}\b`), priority: 100},
+		{class: ClassGitLabToken, pattern: regexp.MustCompile(`(?i)gl(?:pat|oas|dt|rtr?|cbt|ptt|ft|imt|agent|wt|soat|ffct)-[A-Za-z0-9_-]{20,}\b`), priority: 100},
 		// Database connection strings carry the password between ':' and '@'.
 		// Redacting scheme://user:pass@host masks the credential while the rest
 		// of the scalar (path, query) is untouched. Matches the four DLP
@@ -108,25 +108,25 @@ func tokenClasses() []classPattern {
 		// HMAC-SHA256 (32 bytes -> 44 base64 chars, trailing '=' as %3D).
 		// Anchored on the urlencoded padding to bound the match.
 		{class: ClassAzureSAS, pattern: regexp.MustCompile(`(?i)\bsig=[A-Za-z0-9%]{43,}%3d\b`), priority: 100},
-		{class: ClassSlackToken, pattern: regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
-		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)\bfw_[A-Za-z0-9]{22}\b`), priority: 100},
-		{class: ClassAIProviderKey, pattern: regexp.MustCompile(`(?i)\b(?:sk-or-v1-[A-Fa-f0-9]{20,}|pplx-[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9]{20,})\b`), priority: 100},
-		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)\bhf_[A-Za-z0-9]{34,37}\b`), priority: 100},
-		{class: ClassReplicateAPIToken, pattern: regexp.MustCompile(`(?i)\br8_[a-f0-9]{40}\b`), priority: 100},
-		{class: ClassTogetherAIKey, pattern: regexp.MustCompile(`(?i)\btok_[a-z0-9]{40,}\b`), priority: 100},
-		{class: ClassVaultToken, pattern: regexp.MustCompile(`(?i)\bhvs\.[A-Za-z0-9]{24,}\b`), priority: 100},
-		{class: ClassVercelToken, pattern: regexp.MustCompile(`(?i)\b(?:vercel|vc[piark])_[A-Za-z0-9]{24,}\b`), priority: 100},
-		{class: ClassSupabaseKey, pattern: regexp.MustCompile(`(?i)\bsb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`), priority: 100},
-		{class: ClassDatabricksPAT, pattern: regexp.MustCompile(`(?i)\bdapi[0-9a-f]{32,}\b`), priority: 100},
+		{class: ClassSlackToken, pattern: regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
+		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)fw_[A-Za-z0-9]{22}\b`), priority: 100},
+		{class: ClassAIProviderKey, pattern: regexp.MustCompile(`(?i)(?:sk-or-v1-[A-Fa-f0-9]{20,}|pplx-[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9]{20,}|pcsk_[A-Za-z0-9]{36,}|gsk_[A-Za-z0-9]{48,}|xai-[A-Za-z0-9_-]{80,})\b`), priority: 100},
+		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)hf_[A-Za-z0-9]{34,37}\b`), priority: 100},
+		{class: ClassReplicateAPIToken, pattern: regexp.MustCompile(`(?i)r8_[a-f0-9]{40}\b`), priority: 100},
+		{class: ClassTogetherAIKey, pattern: regexp.MustCompile(`(?i)tok_[a-z0-9]{40,}\b`), priority: 100},
+		{class: ClassVaultToken, pattern: regexp.MustCompile(`(?i)hvs\.[A-Za-z0-9]{24,}\b`), priority: 100},
+		{class: ClassVercelToken, pattern: regexp.MustCompile(`(?i)(?:vercel|vc[piark])_[A-Za-z0-9]{24,}\b`), priority: 100},
+		{class: ClassSupabaseKey, pattern: regexp.MustCompile(`(?i)sb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`), priority: 100},
+		{class: ClassDatabricksPAT, pattern: regexp.MustCompile(`(?i)dapi[0-9a-f]{32,}\b`), priority: 100},
 		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`sk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}\b`), priority: 100},
 		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}\b`), priority: 100},
-		{class: ClassNPMToken, pattern: regexp.MustCompile(`(?i)\bnpm_[A-Za-z0-9]{36,}\b`), priority: 100},
+		{class: ClassNPMToken, pattern: regexp.MustCompile(`(?i)npm_[A-Za-z0-9]{36,}\b`), priority: 100},
 		// PyPI API tokens use the stable "pypi-AgE" prefix for v2 macaroons
 		// with empty location. Update this if PyPI rotates token format.
-		{class: ClassPyPIToken, pattern: regexp.MustCompile(`(?i)\bpypi-AgE[A-Za-z0-9_-]{90,}`), priority: 100},
-		{class: ClassLinearAPIKey, pattern: regexp.MustCompile(`(?i)\blin_api_[A-Za-z0-9]{40,}\b`), priority: 100},
-		{class: ClassNotionAPIKey, pattern: regexp.MustCompile(`(?i)\bntn_[A-Za-z0-9]{40,}\b`), priority: 100},
-		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)\bsntrys_[A-Za-z0-9]{40,}\b`), priority: 100},
+		{class: ClassPyPIToken, pattern: regexp.MustCompile(`(?i)pypi-AgE[A-Za-z0-9_-]{90,}`), priority: 100},
+		{class: ClassLinearAPIKey, pattern: regexp.MustCompile(`(?i)lin_api_[A-Za-z0-9]{40,}\b`), priority: 100},
+		{class: ClassNotionAPIKey, pattern: regexp.MustCompile(`(?i)ntn_[A-Za-z0-9]{40,}\b`), priority: 100},
+		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)sntrys_[A-Za-z0-9]{40,}\b`), priority: 100},
 		{class: ClassTelegramToken, pattern: regexp.MustCompile(`\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b`), priority: 100},
 		{class: ClassDiscordToken, pattern: regexp.MustCompile(`\b[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b`), priority: 100},
 		// Twilio API Key SID: SK + 32 hex (34 total). Boundaries match the

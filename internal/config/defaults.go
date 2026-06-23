@@ -76,10 +76,6 @@ func Defaults() *Config {
 		APIAllowlist: []string{
 			"*.anthropic.com",
 			"*.openai.com",
-			"api.telegram.org",
-			"*.discord.com",
-			"gateway.discord.gg",
-			"*.slack.com",
 			"github.com",
 			"*.github.com",
 			"*.githubusercontent.com",
@@ -142,14 +138,14 @@ func Defaults() *Config {
 				// alphanumeric suffix. Keep the trailing word boundary so longer
 				// opaque base64-ish IDs do not match a 22-character prefix.
 				// Source: https://docs.fireworks.ai/api-reference/authentication
-				{Name: "Fireworks API Key", Regex: `\bfw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Fireworks API Key")},
+				{Name: "Fireworks API Key", Regex: `fw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Fireworks API Key")},
 				// OpenRouter keys are "sk-or-v1-" + a hex token. Keep the suffix
 				// hex-only: allowing hyphens, underscores, or arbitrary letters lets
 				// the pattern match ordinary prose/slugs after the prefix.
-				{Name: "LLM Router API Key", Regex: `\bsk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("LLM Router API Key")},
-				{Name: "Answer Engine API Key", Regex: `\bpplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Answer Engine API Key")},
-				{Name: "Web Research API Key", Regex: `\btvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Web Research API Key")},
-				{Name: "Google API Key", Regex: `\bAIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, ExemptDomains: providerKeyExemptDomains("Google API Key")},
+				{Name: "LLM Router API Key", Regex: `sk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("LLM Router API Key")},
+				{Name: "Answer Engine API Key", Regex: `pplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Answer Engine API Key")},
+				{Name: "Web Research API Key", Regex: `tvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Web Research API Key")},
+				{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, ExemptDomains: providerKeyExemptDomains("Google API Key")},
 				{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: SeverityCritical},
 				// Stripe keys use underscores (sk_test_) or hyphens (sk-test-) depending on version.
 				{Name: "Stripe Key", Regex: `[sr]k[-_](live|test)[-_][a-zA-Z0-9]{20,}`, Severity: SeverityCritical},
@@ -254,36 +250,36 @@ func Defaults() *Config {
 				// bounded alphanumeric suffix. Keep the boundary so longer
 				// opaque IDs do not match a valid token prefix.
 				// Source: https://huggingface.co/docs/hub/security-tokens
-				{Name: "Hugging Face Token", Regex: `\bhf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Hugging Face Token")},
+				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Hugging Face Token")},
 				// Databricks personal access tokens use a 32-character hex suffix.
 				// Keep this narrow: the previous lowercase-alphanumeric suffix
 				// produced false positives on base64 image payloads.
-				{Name: "Databricks Token", Regex: `\bdapi[0-9a-f]{32,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Databricks Token")},
+				{Name: "Databricks Token", Regex: `dapi[0-9a-f]{32,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Databricks Token")},
 				// Replicate API tokens use an "r8_" prefix with a 40-character
 				// hex suffix. The previous broad alphanumeric suffix was the same
 				// short-prefix FP shape as Fireworks and Databricks.
 				// Source: https://replicate.com/docs/topics/authentication
-				{Name: "Replicate API Token", Regex: `\br8_[a-f0-9]{40}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Replicate API Token")},
-				{Name: "Together AI Key", Regex: `\btok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Together AI Key")},
+				{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Replicate API Token")},
+				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Together AI Key")},
 				// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
-				{Name: "Pinecone API Key", Regex: `\bpcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Pinecone API Key")},
+				{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Pinecone API Key")},
 				// Groq inference API keys: "gsk_" prefix, 48+ alphanumeric chars.
-				{Name: "Groq API Key", Regex: `\bgsk_[a-zA-Z0-9]{48,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Groq API Key")},
+				{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("Groq API Key")},
 				// xAI (Grok) API keys: "xai-" prefix, 80+ chars including hyphens.
-				{Name: "xAI API Key", Regex: `\bxai-[a-zA-Z0-9\-_]{80,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("xAI API Key")},
+				{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}\b`, Severity: SeverityCritical, ExemptDomains: providerKeyExemptDomains("xAI API Key")},
 
 				// Infrastructure and platform tokens
 				// DigitalOcean personal access tokens: 64 hex chars after prefix.
 				{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: SeverityCritical},
 				// Vault 1.10+ service tokens use hvs. plus 24+ random chars.
 				// Source: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
-				{Name: "HashiCorp Vault Token", Regex: `\bhvs\.[A-Za-z0-9]{24,}\b`, Severity: SeverityCritical},
+				{Name: "HashiCorp Vault Token", Regex: `hvs\.[A-Za-z0-9]{24,}\b`, Severity: SeverityCritical},
 				{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b`, Severity: SeverityCritical},
 				// Supabase secret keys use sb_secret_<22-char-random>_<8-char-checksum>.
 				// Both suffix parts are base64url; the final checksum char may be '-',
 				// so the right edge handles that case without relying only on \b.
 				// Source: https://supabase.com/docs/guides/self-hosting/self-hosted-auth-keys#new-api-keys-format
-				{Name: "Supabase Service Key", Regex: `\bsb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`, Severity: SeverityCritical},
+				{Name: "Supabase Service Key", Regex: `sb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`, Severity: SeverityCritical},
 
 				// Package registry tokens
 				{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}\b`, Severity: SeverityCritical},
@@ -298,12 +294,12 @@ func Defaults() *Config {
 				// Linear documents lin_api_ as the personal API key prefix; keep the
 				// existing length floor but require a token boundary.
 				// Source: https://linear.app/changelog/2021-08-19-github-secret-scanning
-				{Name: "Linear API Key", Regex: `\blin_api_[A-Za-z0-9]{40,}\b`, Severity: "high"},
+				{Name: "Linear API Key", Regex: `lin_api_[A-Za-z0-9]{40,}\b`, Severity: "high"},
 				{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}\b`, Severity: "high"},
 				// Sentry CLI documents sntrys_ auth tokens; keep the existing
 				// length floor but require a token boundary.
 				// Source: https://docs.sentry.dev/cli/configuration/
-				{Name: "Sentry Auth Token", Regex: `\bsntrys_[A-Za-z0-9]{40,}\b`, Severity: "high"},
+				{Name: "Sentry Auth Token", Regex: `sntrys_[A-Za-z0-9]{40,}\b`, Severity: "high"},
 
 				// Cryptographic material
 				// PGP + optional trailing BLOCK keep DLP detection aligned with

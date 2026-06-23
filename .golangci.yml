@@ -48,6 +48,9 @@ linters:
       - path: internal/playground/containment\.go
         linters: [gosec]
         text: "G204"
+      - path: internal/playground/containment_invm\.go
+        linters: [gosec]
+        text: "G204"
       - path: internal/playground/liverun\.go
         linters: [gosec]
         text: "G204"

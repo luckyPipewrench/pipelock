@@ -33,12 +33,16 @@ writing a file. See [`pipelock license`](../cli/license.md).
 | 4. Deploy Conductor + sink | `pipelock conductor serve` / `pipelock fleet-sink` + Helm | **Shipped** |
 | 5. Enroll followers | `enrollment_token_path` auto-enroll or `pipelock conductor enroll` | **Shipped** |
 | 6. Publish a policy | `pipelock conductor publish` | **Shipped** |
-| 7. Kill / resume the fleet | `pipelock conductor kill` / `resume` | **Shipped** |
-| 8. Roll back a bad bundle | `pipelock conductor rollback` | **Shipped** |
-| 9. Mint enrollment tokens | `pipelock conductor enrollment-token mint` | **Shipped** |
-| 10. Fleet status / followers | `pipelock conductor fleet status` / `followers` | **Shipped** |
-| 11. Query the audit sink | `pipelock conductor audit query` | **Shipped** |
-| 12. Rotate certs and keys | cert-manager + `signing key generate` | **Shipped** |
+| 7. Retarget a follower stream | `pipelock conductor publish --stream-switch-*` | **Shipped** |
+| 8. Kill / resume the fleet | `pipelock conductor kill` / `resume` | **Shipped** |
+| 9. Roll back a bad bundle | `pipelock conductor rollback` | **Shipped** |
+| 10. Recover follower bundle state | `pipelock conductor follower reset-bundle-state` | **Shipped** |
+| 11. Mint enrollment tokens | `pipelock conductor enrollment-token mint` | **Shipped** |
+| 12. Fleet status / followers | `pipelock conductor fleet status` / `followers` | **Shipped** |
+| 13. Remove / decommission followers | `pipelock conductor follower remove` | **Shipped** |
+| 14. Back up / restore Conductor state | `pipelock conductor store backup` / `restore` | **Shipped** |
+| 15. Query the audit sink | `pipelock conductor audit query` | **Shipped** |
+| 16. Rotate certs and keys | cert-manager + `signing key generate` | **Shipped** |
 
 Every stage uses a shipped CLI; the full lifecycle runs without hand-rolled Go or
 OpenSSL beyond the documented bring-your-own-PKI choice. For the on-wire request
@@ -391,7 +395,45 @@ loopback dev conductor without TLS, `--allow-plaintext-loopback` permits an
 (watch the follower logs for the bundle-apply line, or `pipelock conductor fleet
 status`) before treating the rollout as complete.
 
-## 7. Kill and resume the fleet
+## 7. Retarget a follower stream
+
+A follower can match more than one policy stream, such as the fleet wildcard
+audience (`*`) and its own instance audience. When moving a running follower to a
+more-specific stream, publish the target bundle with a stream-switch
+authorization. The authorization is signed by the `policy-bundle-rollback`
+threshold keys and binds the source bundle hash to the target bundle before the
+target bundle is policy-signed.
+
+```bash
+pipelock conductor publish \
+  --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --config /etc/pipelock/edge-01-policy.yaml \
+  --bundle-id edge-01-canary-v11 \
+  --org org-acme --fleet prod --env prod \
+  --audience edge-01 \
+  --version 11 \
+  --validity 720h \
+  --min-pipelock-version 2.9.0 \
+  --signing-key /etc/pipelock/fleet-keys/policy-signing.json \
+  --stream-switch-from-audience '*' \
+  --stream-switch-from-bundle-id prod-wildcard-v10 \
+  --stream-switch-from-version 10 \
+  --stream-switch-from-hash 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --stream-switch-reason "move edge-01 to canary policy" \
+  --stream-switch-signing-key /etc/pipelock/fleet-keys/rollback-approver-1.json \
+  --stream-switch-signing-key /etc/pipelock/fleet-keys/rollback-approver-2.json \
+  --publisher-token-file /etc/pipelock/conductor/tokens/publisher/token \
+  --tls-cert /etc/pipelock/operator.crt \
+  --tls-key /etc/pipelock/operator.key \
+  --server-ca /etc/pipelock/conductor-ca.pem
+```
+
+Use `pipelock conductor stream status` to inspect the source stream head hash
+before publishing. A follower rejects a cross-stream target without the signed
+authorization, with an expired authorization, or when the authorization names a
+different source hash, target bundle, or audience.
+
+## 8. Kill and resume the fleet
 
 `pipelock conductor kill` pushes a signed, time-bounded fleet-wide kill;
 `pipelock conductor resume` clears it. Followers with
@@ -428,7 +470,7 @@ Conductor rejects a kill whose validity window exceeds
 fail closed within one `poll_interval`; clearing it lets them recover on the
 next poll.
 
-## 8. Roll back a bad bundle
+## 9. Roll back a bad bundle
 
 `pipelock conductor rollback` authorizes a signed revert to a prior bundle
 version:
@@ -453,7 +495,26 @@ rollback whose window exceeds `--rollback-max-validity` (default `24h`). Because
 kill and rollback keys are purpose-scoped, a rollback key cannot issue a kill or
 vice versa.
 
-## 9. Mint enrollment tokens
+## 10. Recover follower bundle state
+
+If a follower's local policy-bundle apply cache is wedged, reset only that local
+bundle state on the follower host. This does not touch remote-kill replay state.
+
+```bash
+# Dry run first.
+pipelock conductor follower reset-bundle-state \
+  --state-dir /var/lib/pipelock/bundles
+
+# Apply after confirming the state dir is conductor.bundle_cache_dir.
+pipelock conductor follower reset-bundle-state \
+  --state-dir /var/lib/pipelock/bundles \
+  --confirm
+```
+
+Restart the follower after a confirmed reset if it is wedged. On the next poll it
+re-fetches and verifies the authoritative bundle for its audience.
+
+## 11. Mint enrollment tokens
 
 Enrollment is token-gated (see [step 5](#5-enroll-followers)).
 `pipelock conductor enrollment-token mint` issues a single-use token scoped to
@@ -497,7 +558,7 @@ pipelock conductor enroll \
   --server-ca /etc/pipelock/conductor-ca.pem
 ```
 
-## 10. Fleet status and followers
+## 12. Fleet status and followers
 
 `pipelock conductor fleet status` lists enrolled instances — identity, audit key
 id, active state, and enrollment time — read over mTLS with an org-scoped
@@ -514,7 +575,89 @@ pipelock conductor fleet status \
   --ca-file /etc/pipelock/conductor-ca.pem
 ```
 
-## 11. Query the audit sink
+## 13. Remove a follower
+
+`pipelock conductor follower remove` decommissions one exact follower identity.
+It deletes the active enrollment record from the Conductor store, so the
+follower disappears from `fleet status` and future audit evidence signed by that
+enrolled audit key is rejected. The command is admin-only and requires the full
+org/fleet/instance/environment tuple; a wrong or already-removed follower fails
+loud instead of being treated as success.
+
+```bash
+pipelock conductor follower remove \
+  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org-id org-acme \
+  --fleet-id prod \
+  --instance-id edge-01 \
+  --environment prod \
+  --token-file /etc/pipelock/conductor/tokens/admin/token \
+  --client-cert /etc/pipelock/operator.crt \
+  --client-key /etc/pipelock/operator.key \
+  --ca-file /etc/pipelock/conductor-ca.pem
+```
+
+Confirm removal:
+
+```bash
+pipelock conductor fleet status \
+  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org-id org-acme --fleet-id prod --instance-id edge-01 \
+  --token-file /etc/pipelock/conductor/tokens/admin/token \
+  --client-cert /etc/pipelock/operator.crt \
+  --client-key /etc/pipelock/operator.key \
+  --ca-file /etc/pipelock/conductor-ca.pem
+```
+
+Expected result: no matching enrolled follower. If the old follower keeps
+running, it can still enforce local policy, but its later audit batches no
+longer verify through the Conductor enrollment resolver.
+
+## 14. Back up and restore Conductor state
+
+Back up the Conductor storage directory as one unit while Conductor is stopped
+or from a crash-consistent read-only volume snapshot:
+
+```bash
+pipelock conductor store backup \
+  --storage-dir /var/lib/pipelock/conductor \
+  --backup-dir /secure-backups/pipelock/conductor-20260622T120000Z
+```
+
+Restore is dry-run by default:
+
+```bash
+pipelock conductor store restore \
+  --storage-dir /var/lib/pipelock/conductor \
+  --backup-dir /secure-backups/pipelock/conductor-20260622T120000Z
+```
+
+Apply the restore only while Conductor is stopped:
+
+```bash
+pipelock conductor store restore \
+  --storage-dir /var/lib/pipelock/conductor \
+  --backup-dir /secure-backups/pipelock/conductor-20260622T120000Z \
+  --confirm
+```
+
+The storage backup includes policy bundles, stream heads, follower enrollments,
+emergency controls, and audit DB files under `--storage-dir`. It does not
+include TLS private keys, operator signing keys, license tokens, or Kubernetes
+Secrets; restore those through the deployment's secret/KMS process before
+starting Conductor. See [Conductor backup and restore](conductor-backup-restore.md).
+
+After restore:
+
+```bash
+pipelock conductor store inspect-offline \
+  --storage-dir /var/lib/pipelock/conductor
+```
+
+Expected result: the restored policy-bundle store reports the expected stream
+heads and no startup-bricking orphan records.
+
+## 15. Query the audit sink
 
 `pipelock conductor audit query` queries the audit sink's stored evidence
 metadata for one org/fleet/instance, read over mTLS with an auditor token:
@@ -552,7 +695,7 @@ Without `--key`, verification is **structural-only** and exits non-zero unless
 you pass `--allow-unpinned` — pin the trusted signer key to get a meaningful
 `CHAIN VALID`. See [receipt verification](receipt-verification.md).
 
-## 12. Rotate certs and keys
+## 16. Rotate certs and keys
 
 The operator-lifecycle rule for every piece of fleet state: prove you can
 **rotate, revoke, and recover** it, not just create it.
@@ -621,3 +764,4 @@ keeps serving its last applied bundle.
 - [Configuration reference: Conductor follower](../configuration.md#conductor-follower-v27-enterprise)
 - [Receipt verification](receipt-verification.md) — verify follower evidence offline
 - [`pipelock license`](../cli/license.md) — install and check the fleet license
+- [Conductor backup and restore](conductor-backup-restore.md) — DR commands and checks

@@ -209,7 +209,14 @@ const (
 	// Re-bumped again for the LLM Router suffix narrowing from alphanumeric to
 	// hex-only, matching the documented key shape and preventing long ordinary
 	// words after "sk-or-v1-" from false-positive matching.
-	goldenHashDefaults = "3fd8fa0662cde0ddaa694d2b2fb270b445a64cc527425dbaa9424051ac25e182"
+	// Re-bumped for dropping the leading \b from 16 provider-key DLP patterns:
+	// the anchor prevented detection when a key was glued to a preceding alnum
+	// run (credential-exfil bypass). Only the leading anchor was removed;
+	// trailing \b is retained.
+	// Re-bumped for removing Slack/Discord/Telegram from generated default
+	// api_allowlist. Messaging platforms are common exfiltration channels and
+	// should be explicit operator choices, not out-of-box policy.
+	goldenHashDefaults = "1eb706cea270631199da95d873521554fc708e381240864dbdef668c4a86eeed"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -311,7 +318,9 @@ const (
 	// Search" (jina_) default DLP patterns + their suppress entries.
 	// Re-bumped for the LLM Router hex-only suffix narrowing: see
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "d01993539c02491ec0916460e1456011ee94c17ab903c42554ccd3ee5b082903"
+	// Re-bumped for dropping leading \b from 16 provider-key DLP patterns:
+	// see goldenHashDefaults note above.
+	goldenHashRichConfig = "5217b3336452fe1e46ade0fc7b2c4d8d701890b72c8f48fbd803b3612208e58d"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

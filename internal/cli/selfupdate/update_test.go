@@ -194,7 +194,7 @@ func signedReleaseManifest(t *testing.T, version, goos, archiveName string, arch
 			GOARCH: testGOARCH,
 			Binary: archiveBinaryName(goos),
 		}},
-		SignerKeyID: "test-release-key",
+		SignerKeyID: testReleasePubHex, // must match the signing key (verification binds signer_key_id to the verifying key)
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {

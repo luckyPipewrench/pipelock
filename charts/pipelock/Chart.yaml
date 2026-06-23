@@ -2,8 +2,8 @@ apiVersion: v2
 name: pipelock
 description: Agent firewall for AI agents. Network scanning, process containment, and tool policy enforcement.
 type: application
-version: 0.5.0
-appVersion: "2.8.0"
+version: 0.6.0
+appVersion: "3.0.0"
 home: https://pipelab.org
 sources:
   - https://github.com/luckyPipewrench/pipelock
@@ -31,7 +31,11 @@ annotations:
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
     - kind: added
-      description: Pipelock appVersion 2.8.0 with defer authorization, fleet receipt reporting, and operator lifecycle tooling.
+      description: Pipelock appVersion 3.0.0. Conductor follower decommission (un-enroll) and offline control-plane backup/restore for disaster recovery.
+    - kind: added
+      description: Conductor control-plane hardening - cross-host clock-skew tolerance on control messages, stream-switch authorization with bounded validity.
+    - kind: changed
+      description: Security-hardening defaults that fail closed (breaking on upgrade) - MCP responses block by default unless a server is marked reasoning-trust, api_allowlist no longer ships messaging platforms, require-intermediate license mode now mandates a CRL, stricter provider-key DLP. See release notes for upgrade steps.
     - kind: added
       description: Free verifier support for offline Fleet Receipt Reports.
     - kind: fixed

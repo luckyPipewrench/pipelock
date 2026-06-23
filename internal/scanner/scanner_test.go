@@ -163,17 +163,13 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 		{"Replicate non-hex 40-char shape", "https://example.com/api?k=r8_" + strings.Repeat("g", 40)},
 		{"Together token followed by underscore suffix", "https://example.com/api?k=tok_" + strings.Repeat("a", 40) + "_payload"},
 		{"Vault old 23-char shape", "https://example.com/api?k=hvs." + strings.Repeat("a", 23)},
-		{"Vault token embedded after word char", "https://example.com/api?k=prefix_hvs." + strings.Repeat("a", 24)},
 		{"Vercel token followed by underscore suffix", "https://example.com/api?k=vcp_" + strings.Repeat("a", 24) + "_payload"},
 		{"Supabase old broad short shape", "https://example.com/api?k=sb_secret_" + strings.Repeat("a", 24)},
 		{"Supabase key followed by underscore suffix", "https://example.com/api?k=sb_secret_" + strings.Repeat("a", 22) + "_" + strings.Repeat("b", 8) + "_payload"},
-		{"Supabase key embedded after word char", "https://example.com/api?k=prefix_sb_secret_" + strings.Repeat("a", 22) + "_" + strings.Repeat("b", 8)},
 		{"PyPI old broad short shape", "https://example.com/api?k=pypi-" + "aB3_-cD4_-eF5_-gH6i"},
 		{"Linear token followed by underscore suffix", "https://example.com/api?k=lin_api_" + strings.Repeat("a", 40) + "_payload"},
-		{"Linear token embedded after word char", "https://example.com/api?k=prefix_lin_api_" + strings.Repeat("a", 40)},
 		{"Notion token followed by underscore suffix", "https://example.com/api?k=ntn_" + strings.Repeat("a", 40) + "_payload"},
 		{"Sentry token followed by underscore suffix", "https://example.com/api?k=sntrys_" + strings.Repeat("a", 40) + "_payload"},
-		{"Sentry token embedded after word char", "https://example.com/api?k=prefix_sntrys_" + strings.Repeat("a", 40)},
 		// GOCSPX too short
 		{"GOCSPX short value", "https://example.com/api?code=GOCSPX-short"},
 		// Slack xapp too short / wrong format
@@ -3710,6 +3706,23 @@ func TestScan_AllowlistPermitsWildcard(t *testing.T) {
 	result := s.Scan(context.Background(), "https://api.anthropic.com/v1/messages")
 	if !result.Allowed {
 		t.Errorf("expected wildcard-matched domain to be allowed, got blocked: %s", result.Reason)
+	}
+}
+
+func TestStrictMode_AllowlistDoesNotWeakenDLP(t *testing.T) {
+	cfg := testConfig()
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"example.com"}
+	s := New(cfg)
+	defer s.Close()
+
+	secret := testAnthropicPrefix + strings.Repeat("a", 25)
+	result := s.Scan(context.Background(), "https://example.com/api?key="+secret)
+	if result.Allowed {
+		t.Fatal("expected allowlisted URL carrying a credential to be blocked")
+	}
+	if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+		t.Fatalf("expected DLP scanner, got %q: %s", result.Scanner, result.Reason)
 	}
 }
 

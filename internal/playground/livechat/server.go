@@ -24,6 +24,11 @@ import (
 
 // Route paths for the live-chat API.
 const (
+	// RouteAPIPrefix is the common prefix for every live-chat API route. It is
+	// the mount point used when serving a static UI at / on the same origin, so
+	// the API and the UI share one host (and one CF Access gate).
+	RouteAPIPrefix = "/api/live/"
+
 	RouteSession = "/api/live/session"
 	RouteStream  = "/api/live/stream"
 	RouteMessage = "/api/live/message"

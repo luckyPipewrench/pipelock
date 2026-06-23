@@ -108,6 +108,15 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultAllowlist_NoMessagingPlatforms(t *testing.T) {
+	cfg := Defaults()
+	for _, domain := range cfg.APIAllowlist {
+		if isMessagingAPIAllowlistDomain(domain) {
+			t.Fatalf("default api_allowlist includes messaging exfil channel %q", domain)
+		}
+	}
+}
+
 func TestDefaults_QuarantineDir(t *testing.T) {
 	cfg := Defaults()
 	want := filepath.Join(os.TempDir(), "pipelock-quarantine")
@@ -147,6 +156,33 @@ func TestValidate_StrictModeRequiresAllowlist(t *testing.T) {
 	cfg.APIAllowlist = nil
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for strict mode with empty allowlist")
+	}
+}
+
+func TestStrictMode_EmptyAllowlist_FailsToStart(t *testing.T) {
+	cfg := Defaults()
+	cfg.Mode = ModeStrict
+	cfg.APIAllowlist = nil
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected strict mode to reject an empty api_allowlist")
+	}
+	if !strings.Contains(err.Error(), "strict mode requires at least one domain in api_allowlist") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_APIAllowlistMessagingPlatformsWarn(t *testing.T) {
+	cfg := Defaults()
+	cfg.APIAllowlist = []string{"github.com", "api.slack.com", "*.discord.com", "*.telegram.org"}
+
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+	if !hasConfigWarning(warnings, "api_allowlist") {
+		t.Fatalf("expected api_allowlist warning, got %#v", warnings)
 	}
 }
 
@@ -2144,6 +2180,42 @@ func TestLoad_PresetYAMLFiles(t *testing.T) {
 			}
 			if len(cfg.Internal) == 0 {
 				t.Error("expected non-empty internal CIDRs")
+			}
+		})
+	}
+}
+
+func TestLoad_PresetsDoNotDefaultAllowlistMessagingPlatforms(t *testing.T) {
+	presets := []string{
+		"../../configs/balanced.yaml",
+		"../../configs/strict.yaml",
+		"../../configs/audit.yaml",
+		"../../configs/claude-code.yaml",
+		"../../configs/cursor.yaml",
+		"../../configs/generic-agent.yaml",
+		"../../configs/hostile-model.yaml",
+	}
+
+	for _, path := range presets {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				t.Fatalf("resolving %s: %v", path, err)
+			}
+			raw, err := os.ReadFile(filepath.Clean(abs))
+			if err != nil {
+				t.Fatalf("reading preset %s: %v", abs, err)
+			}
+			var doc struct {
+				APIAllowlist []string `yaml:"api_allowlist"`
+			}
+			if err := yaml.Unmarshal(raw, &doc); err != nil {
+				t.Fatalf("unmarshaling preset %s: %v", abs, err)
+			}
+			for _, domain := range doc.APIAllowlist {
+				if isMessagingAPIAllowlistDomain(domain) {
+					t.Fatalf("%s api_allowlist includes messaging exfil channel %q", filepath.Base(path), domain)
+				}
 			}
 		})
 	}

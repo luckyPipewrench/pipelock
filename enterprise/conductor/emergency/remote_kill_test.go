@@ -294,6 +294,187 @@ func TestRemoteKillApplierRestoresPersistedState(t *testing.T) {
 	}
 }
 
+func TestRemoteKillStateWritesRollbackCompatibleSchema(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 12, conductor.KillSwitchActive)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := (&RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}).Apply(msg); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	state, err := readRemoteKillStateFile(statePath)
+	if err != nil {
+		t.Fatalf("readRemoteKillStateFile: %v", err)
+	}
+	if state.Digest != remoteKillDigest(statePath, state) {
+		t.Fatal("current-format state digest does not validate against current preimage")
+	}
+	data, err := os.ReadFile(filepath.Clean(statePath))
+	if err != nil {
+		t.Fatalf("ReadFile(state): %v", err)
+	}
+	if bytes.Contains(data, []byte("format_version")) || bytes.Contains(data, []byte("digest_algorithm")) {
+		t.Fatalf("state file contains rollback-breaking schema metadata: %s", string(data))
+	}
+}
+
+func TestRemoteKillStateMigratesLegacyBaselineDigest(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := writeLegacyRemoteKillStateV1(statePath, remoteKillState{
+		LastCounter:     0,
+		LastMessageHash: "",
+		State:           conductor.KillSwitchInactive,
+		Reason:          "",
+		AppliedAt:       testNow,
+	}, false); err != nil {
+		t.Fatalf("writeLegacyRemoteKillStateV1: %v", err)
+	}
+	ks := &captureKillSwitch{}
+	if err := (&RemoteKillApplier{KillSwitch: ks, StatePath: statePath}).RestorePersistedState(); err != nil {
+		t.Fatalf("RestorePersistedState(legacy baseline) error = %v", err)
+	}
+	if ks.active {
+		t.Fatal("legacy no-decision baseline activated kill switch")
+	}
+	state, err := readRemoteKillStateFile(statePath)
+	if err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	if state.Digest != remoteKillDigest(statePath, state) {
+		t.Fatal("migrated baseline digest does not validate as current format")
+	}
+}
+
+func TestRemoteKillStateMigratesLegacySignedDecisionDigest(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 14, conductor.KillSwitchActive)
+	hash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash: %v", err)
+	}
+	signedJSON, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal(msg): %v", err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := writeLegacyRemoteKillStateV1(statePath, remoteKillState{
+		LastCounter:     msg.Counter,
+		LastMessageHash: hash,
+		State:           msg.State,
+		Reason:          msg.Reason,
+		AppliedAt:       testNow,
+		SignedMessage:   signedJSON,
+	}, false); err != nil {
+		t.Fatalf("writeLegacyRemoteKillStateV1: %v", err)
+	}
+	ks := &captureKillSwitch{}
+	applier := &RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: ks,
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}
+	if err := applier.RestorePersistedState(); err != nil {
+		t.Fatalf("RestorePersistedState(legacy signed decision) error = %v", err)
+	}
+	if !ks.active || ks.message != msg.Reason {
+		t.Fatalf("kill switch = active=%v message=%q, want restored active legacy decision", ks.active, ks.message)
+	}
+	state, err := readRemoteKillStateFile(statePath)
+	if err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	if state.LastCounter != msg.Counter || state.State != msg.State || state.Reason != msg.Reason {
+		t.Fatalf("migrated decision = counter=%d state=%q reason=%q, want signed message decision",
+			state.LastCounter, state.State, state.Reason)
+	}
+}
+
+func TestRemoteKillStateDoesNotAutoBaselineLegacyUnsignedDecision(t *testing.T) {
+	_, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := writeLegacyRemoteKillStateV1(statePath, remoteKillState{
+		LastCounter:     99,
+		LastMessageHash: "legacy-unsigned-decision",
+		State:           conductor.KillSwitchInactive,
+		Reason:          "attacker tries old-format inactive reset",
+		AppliedAt:       testNow,
+	}, false); err != nil {
+		t.Fatalf("writeLegacyRemoteKillStateV1: %v", err)
+	}
+	ks := &captureKillSwitch{active: true, message: "real active kill"}
+	err := (&RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: ks,
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}).RestorePersistedState()
+	if err == nil || !strings.Contains(err.Error(), "not backed by a signed message") {
+		t.Fatalf("RestorePersistedState(legacy unsigned decision) error = %v, want signed-message rejection", err)
+	}
+	if ks.message == "attacker tries old-format inactive reset" || !ks.active {
+		t.Fatalf("legacy unsigned decision was applied or cleared kill switch: active=%v message=%q", ks.active, ks.message)
+	}
+	state, err := readRemoteKillStateFile(statePath)
+	if err != nil {
+		t.Fatalf("read migrated unsigned state: %v", err)
+	}
+	if state.LastCounter == 0 || state.LastMessageHash == "" {
+		t.Fatalf("legacy unsigned decision was reset to baseline: %+v", state)
+	}
+}
+
+func TestRemoteKillStateRejectsCurrentFormatDigestTamper(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 12, conductor.KillSwitchActive)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := (&RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}).Apply(msg); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	state, err := readRemoteKillStateFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	state.Reason = "tampered without digest update"
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent(tampered): %v", err)
+	}
+	if err := os.WriteFile(statePath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile(tampered): %v", err)
+	}
+	err = (&RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}).RestorePersistedState()
+	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("RestorePersistedState(current tamper) error = %v, want digest mismatch", err)
+	}
+}
+
 func TestRemoteKillApplierRestorePersistedStateValidation(t *testing.T) {
 	var nilApplier *RemoteKillApplier
 	if err := nilApplier.RestorePersistedState(); err == nil || !strings.Contains(err.Error(), "applier required") {
@@ -791,6 +972,31 @@ func TestRemoteKillApplier_RejectsTamperedPersistedDecisionOnRestore(t *testing.
 			t.Fatal("applied a persisted decision with no resolver to verify it")
 		}
 	})
+}
+
+func writeLegacyRemoteKillStateV1(path string, state remoteKillState, includeSignedMessageDigest bool) error {
+	canonical := filepath.Clean(path)
+	state.Context = remoteKillContextID(canonical)
+	state.Digest = ""
+	if includeSignedMessageDigest {
+		state.Digest = remoteKillDigest(canonical, state)
+	} else {
+		state.Digest = legacyRemoteKillDigestV1(canonical, state)
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	for _, target := range []string{canonical, remoteKillStateAnchorPath(canonical)} {
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			return err
+		}
+	}
+	return writeRemoteKillStateContext(canonical)
 }
 
 func signedRemoteKill(t *testing.T, counter uint64, state conductor.KillSwitchState) (conductor.RemoteKillMessage, conductor.SignatureKeyResolver) {

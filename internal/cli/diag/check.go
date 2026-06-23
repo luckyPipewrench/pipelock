@@ -4,14 +4,20 @@
 package diag
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // ErrURLBlocked is returned when pipelock check --url detects a blocked URL.
@@ -110,5 +116,77 @@ func checkConfigAdvisories(cfg *config.Config) []string {
 		advisories = append(advisories, "flight_recorder is enabled but dir is unset; no receipts will be written")
 	}
 
+	if cfg.Conductor.Enabled {
+		_, err := license.VerifyFleetWithOptions(fleetVerifyInputsFromConfig(cfg))
+		if err != nil {
+			advisories = append(advisories,
+				"conductor.enabled is true but no license granting the \"fleet\" feature was found; "+
+					"the proxy will refuse to start (install an Enterprise license with fleet or set PIPELOCK_LICENSE_KEY)")
+		}
+	}
+
+	if cfg.Conductor.Enabled && cfg.FlightRecorder.SigningKeyPath != "" {
+		advisories = append(advisories, conductorSigningKeyAdvisories(cfg)...)
+	}
+
 	return advisories
+}
+
+func fleetVerifyInputsFromConfig(cfg *config.Config) license.FleetVerifyInputs {
+	return license.FleetVerifyInputs{
+		LicenseKey:       cfg.LicenseKey,
+		PublicKeyHex:     cfg.LicensePublicKey,
+		CRLFile:          cfg.LicenseCRLFile,
+		IntermediateFile: cfg.LicenseIntermediateFile,
+		IntermediateCert: cfg.LicenseIntermediateCert,
+		RequireSet:       true,
+		Require:          cfg.LicenseRequireIntermediateResolved,
+		MaxAge:           cfg.LicenseCRLMaxAgeResolved,
+	}
+}
+
+// conductorSigningKeyAdvisories checks for mismatched key IDs and missing key
+// files when conductor.enabled is true and flight_recorder.signing_key_path is
+// set. Returns zero or more advisory strings.
+func conductorSigningKeyAdvisories(cfg *config.Config) []string {
+	var out []string
+	keyPath := filepath.Clean(cfg.FlightRecorder.SigningKeyPath)
+	// Read once: this read's failure is the missing/unreadable-file case, and the
+	// same bytes feed the key_id advisory below (no untestable second read).
+	data, err := os.ReadFile(keyPath) // #nosec G304 -- path comes from validated config
+	if err != nil {
+		out = append(out, fmt.Sprintf(
+			"flight_recorder.signing_key_path %q cannot be loaded; the proxy will fail to start (required when conductor.enabled): %v",
+			cfg.FlightRecorder.SigningKeyPath, err))
+		return out
+	}
+	// Validate the file loads the way the runtime loads it (catches malformed or
+	// too-permissive keys that would pass a shape check but fail at startup).
+	priv, err := signing.LoadPrivateKeyFile(keyPath)
+	if err != nil {
+		out = append(out, fmt.Sprintf(
+			"flight_recorder.signing_key_path %q is not a usable signing key; the proxy will fail to start (required when conductor.enabled): %v",
+			cfg.FlightRecorder.SigningKeyPath, err))
+		return out
+	}
+	for i := range priv {
+		priv[i] = 0
+	}
+
+	// If the key file is a JSON keypair with a key_id field, check whether
+	// conductor.recorder_key_id matches.
+	var kf struct {
+		KeyID string `json:"key_id"`
+	}
+	if json.Unmarshal(data, &kf) != nil || kf.KeyID == "" {
+		// Raw (non-JSON) key or JSON without key_id — skip silently.
+		return out
+	}
+	if cfg.Conductor.RecorderKeyID != "" && cfg.Conductor.RecorderKeyID != kf.KeyID {
+		out = append(out, fmt.Sprintf(
+			"conductor.recorder_key_id %q does not match the key_id %q in flight_recorder.signing_key_path; "+
+				"omit recorder_key_id to auto-derive from instance_id, or set it to match",
+			cfg.Conductor.RecorderKeyID, kf.KeyID))
+	}
+	return out
 }

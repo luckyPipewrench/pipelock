@@ -16,7 +16,9 @@ the Helm topology). Read those first for context; this guide is the operator
 
 Everything here is Enterprise-tier. Every server command verifies a license
 granting the `fleet` feature and **fails closed** before binding a listener or
-writing a file. See [`pipelock license`](../cli/license.md).
+writing a file. A follower running `pipelock run` with `conductor.enabled: true`
+also requires a license granting the `fleet` feature and fails closed before
+binding a listener. See [`pipelock license`](../cli/license.md).
 
 > **Build note.** Conductor exists only in an enterprise build (`-tags
 > enterprise`). The commands below assume a `pipelock` binary built with that
@@ -37,6 +39,7 @@ writing a file. See [`pipelock license`](../cli/license.md).
 | 8. Kill / resume the fleet | `pipelock conductor kill` / `resume` | **Shipped** |
 | 9. Roll back a bad bundle | `pipelock conductor rollback` | **Shipped** |
 | 10. Recover follower bundle state | `pipelock conductor follower reset-bundle-state` | **Shipped** |
+| 10b. Recover follower replay state | `pipelock conductor follower reset-replay-state` | **Shipped** |
 | 11. Mint enrollment tokens | `pipelock conductor enrollment-token mint` | **Shipped** |
 | 12. Fleet status / followers | `pipelock conductor fleet status` / `followers` | **Shipped** |
 | 13. Remove / decommission followers | `pipelock conductor follower remove` | **Shipped** |
@@ -337,8 +340,9 @@ conductor:
   client_key_path: /etc/pipelock/follower.key
   bundle_cache_dir: /var/lib/pipelock/bundles
   durable_audit_queue_dir: /var/lib/pipelock/audit-queue
-  audit_signing_key_id: edge-01-audit
-  recorder_key_id: edge-01-recorder
+  # audit_signing_key_id and recorder_key_id default to instance_id when omitted; override only if the audit sink expects a different key id
+  # audit_signing_key_id: edge-01-audit
+  # recorder_key_id: edge-01-recorder
   enrollment_token_path: /etc/pipelock/conductor/enrollment-token  # single-use; auto-enroll on startup
   poll_interval: 30s
   honor_remote_kill_switch: true
@@ -514,6 +518,26 @@ pipelock conductor follower reset-bundle-state \
 Restart the follower after a confirmed reset if it is wedged. On the next poll it
 re-fetches and verifies the authoritative bundle for its audience.
 
+### 10b. Recover follower replay state
+
+If a follower is wedged with "conductor remote kill replay state missing while
+follower context is present," reset only the remote-kill replay state on the
+follower host. This does not touch policy-bundle apply state.
+
+```bash
+# Dry run first.
+pipelock conductor follower reset-replay-state \
+  --state-dir /var/lib/pipelock/bundles
+
+# Apply after confirming the state dir is conductor.bundle_cache_dir.
+pipelock conductor follower reset-replay-state \
+  --state-dir /var/lib/pipelock/bundles \
+  --confirm
+```
+
+Restart the follower after a confirmed reset. On the next poll it re-syncs the
+authoritative kill state from the Conductor.
+
 ## 11. Mint enrollment tokens
 
 Enrollment is token-gated (see [step 5](#5-enroll-followers)).
@@ -557,6 +581,26 @@ pipelock conductor enroll \
   --tls-key /etc/pipelock/follower.key \
   --server-ca /etc/pipelock/conductor-ca.pem
 ```
+
+### Troubleshooting: re-enrolling after an aborted attempt
+
+If enrollment returns a 409 ("conductor follower instance already enrolled"),
+the follower identity is still registered on the Conductor. To re-enroll:
+
+1. Remove the existing enrollment on the server side:
+
+```bash
+pipelock conductor follower remove \
+  --server https://conductor.pipelock-control.svc.cluster.local:8895 \
+  --org-id <org> --fleet-id <fleet> --instance-id <instance> --environment <env> \
+  --token-file /etc/pipelock/conductor/tokens/admin/token \
+  --client-cert /etc/pipelock/operator.crt \
+  --client-key /etc/pipelock/operator.key \
+  --ca-file /etc/pipelock/conductor-ca.pem
+```
+
+2. Mint a new enrollment token (`enrollment-token mint`).
+3. Re-enroll the follower using the new token.
 
 ## 12. Fleet status and followers
 

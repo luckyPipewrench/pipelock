@@ -426,7 +426,7 @@ func readDurableRemoteKillStateLocked(canonical string) (remoteKillState, error)
 			return remoteKillState{}, contextErr
 		}
 		if contextFound {
-			return remoteKillState{}, fmt.Errorf("conductor remote kill replay state missing while follower context is present; run an explicit replay-state reset")
+			return remoteKillState{}, fmt.Errorf("conductor remote kill replay state missing while follower context is present; run: pipelock conductor follower reset-replay-state --state-dir <conductor.bundle_cache_dir> --confirm")
 		}
 		return remoteKillState{}, nil
 	}

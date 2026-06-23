@@ -47,7 +47,7 @@ const (
 var (
 	ErrCacheRequired         = errors.New("conductor apply cache required")
 	ErrNoValidBundle         = errors.New("conductor apply cache has no valid bundle")
-	ErrRollbackRequired      = errors.New("conductor rollback authorization required")
+	ErrRollbackRequired      = errors.New("conductor rollback authorization required: the incoming bundle version is not a forward advance from the locally cached version; either authorize a rollback on the conductor (pipelock conductor rollback), or if the local cache is stale from an aborted attempt, reset it: pipelock conductor follower reset-bundle-state --state-dir <conductor.bundle_cache_dir> --confirm")
 	ErrInvalidActiveRecord   = errors.New("conductor apply cache active record invalid")
 	ErrUnsupportedMinVersion = errors.New("conductor policy bundle requires unsupported pipelock version")
 	// ErrEntitlementLost aborts an in-flight policy-bundle apply when the fleet

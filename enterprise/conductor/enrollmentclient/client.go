@@ -88,7 +88,11 @@ func (c *Client) Enroll(ctx context.Context, reqBody Request) (Response, error) 
 		return Response{}, fmt.Errorf("enrollmentclient: read enroll response: %w", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return Response{}, fmt.Errorf("enrollmentclient: enroll status=%d body=%s", resp.StatusCode, snippet(respBody, reqBody.Token))
+		msg := fmt.Sprintf("enrollmentclient: enroll status=%d body=%s", resp.StatusCode, snippet(respBody, reqBody.Token))
+		if resp.StatusCode == http.StatusConflict {
+			msg += "; to re-enroll, first remove the existing enrollment: pipelock conductor follower remove --org-id <org> --fleet-id <fleet> --instance-id <instance> --environment <env>, then mint a new enrollment token and re-enroll"
+		}
+		return Response{}, errors.New(msg)
 	}
 	var out Response
 	if err := json.Unmarshal(respBody, &out); err != nil {

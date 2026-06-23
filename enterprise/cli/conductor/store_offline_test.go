@@ -118,6 +118,32 @@ func TestStoreRepairOfflineCmd_NoFleetLicenseFailsClosed(t *testing.T) {
 	}
 }
 
+func TestStoreBackupCmd_NoFleetLicenseFailsClosed(t *testing.T) {
+	t.Setenv(license.EnvLicenseKey, "")
+	t.Setenv(license.EnvLicensePublicKey, "")
+	t.Setenv(license.EnvLicenseCRLFile, "")
+	cmd := Cmd()
+	cmd.SetArgs([]string{"store", "backup", "--storage-dir", t.TempDir(), "--backup-dir", filepath.Join(t.TempDir(), "backup")})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err == nil || !errors.Is(err, license.ErrFleetLicenseRequired) {
+		t.Fatalf("backup without fleet license: err = %v, want ErrFleetLicenseRequired", err)
+	}
+}
+
+func TestStoreRestoreCmd_NoFleetLicenseFailsClosed(t *testing.T) {
+	t.Setenv(license.EnvLicenseKey, "")
+	t.Setenv(license.EnvLicensePublicKey, "")
+	t.Setenv(license.EnvLicenseCRLFile, "")
+	cmd := Cmd()
+	cmd.SetArgs([]string{"store", "restore", "--storage-dir", t.TempDir(), "--backup-dir", t.TempDir()})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	if err := cmd.Execute(); err == nil || !errors.Is(err, license.ErrFleetLicenseRequired) {
+		t.Fatalf("restore without fleet license: err = %v, want ErrFleetLicenseRequired", err)
+	}
+}
+
 func TestRunStoreInspectOffline_MissingStorageDir(t *testing.T) {
 	err := runStoreInspectOffline(newCapturingCmd(), storeOfflineOptions{})
 	if err == nil || !strings.Contains(err.Error(), "--storage-dir is required") {
@@ -374,6 +400,16 @@ func TestStoreRestoreRejectsMissingBackupDir(t *testing.T) {
 	}
 }
 
+func TestStoreRestoreRejectsMissingBackupManifest(t *testing.T) {
+	err := runStoreRestore(newCapturingCmd(), storeOfflineOptions{
+		storageDir: filepath.Join(t.TempDir(), "restore"),
+		backupDir:  t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "read backup manifest") {
+		t.Fatalf("runStoreRestore(missing manifest) = %v, want manifest read error", err)
+	}
+}
+
 func TestStoreRestoreRejectsBadBackupManifestAndStorage(t *testing.T) {
 	t.Run("unsupported_schema", func(t *testing.T) {
 		backupDir := t.TempDir()
@@ -406,6 +442,36 @@ func TestStoreRestoreRejectsBadBackupManifestAndStorage(t *testing.T) {
 		})
 		if err == nil || !strings.Contains(err.Error(), "backup storage path is not a directory") {
 			t.Fatalf("runStoreRestore(storage file) = %v, want backup storage directory rejection", err)
+		}
+	})
+
+	t.Run("storage_symlink", func(t *testing.T) {
+		backupDir := t.TempDir()
+		source := filepath.Join(backupDir, backupStorageSubdir)
+		if err := os.Mkdir(source, 0o750); err != nil {
+			t.Fatalf("mkdir backup storage: %v", err)
+		}
+		if err := writeBackupManifest(filepath.Join(backupDir, backupManifestFile), conductorBackupManifest{Schema: conductorBackupSchema}); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		target := filepath.Join(source, "target")
+		if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write symlink target: %v", err)
+		}
+		if err := os.Symlink(target, filepath.Join(source, "link")); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		restoreDir := filepath.Join(t.TempDir(), "restore")
+		err := runStoreRestore(newCapturingCmd(), storeOfflineOptions{
+			storageDir: restoreDir,
+			backupDir:  backupDir,
+			confirm:    true,
+		})
+		if err == nil || !strings.Contains(err.Error(), "copy backup storage") {
+			t.Fatalf("runStoreRestore(storage symlink) = %v, want copy failure", err)
+		}
+		if _, statErr := os.Stat(restoreDir); !os.IsNotExist(statErr) {
+			t.Fatalf("restore dir exists after failed copy (stat err=%v), want absent", statErr)
 		}
 	})
 }

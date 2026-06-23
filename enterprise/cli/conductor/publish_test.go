@@ -1272,3 +1272,40 @@ func TestValidateStreamSwitchInputs_RejectsBlankAndDuplicateSigningKeys(t *testi
 		}
 	})
 }
+
+func TestValidateStreamSwitchInputs_RejectsMissingAndMalformedFields(t *testing.T) {
+	base := publishOptions{
+		switchFromAudience: []string{"*"},
+		switchFromBundleID: "wildcard-v6",
+		switchFromVersion:  6,
+		switchFromHash:     strings.Repeat("ab", 32),
+		switchReason:       "test retarget",
+		switchTTL:          time.Hour,
+		switchSigningKeys:  []string{"/k/one.json", "/k/two.json"},
+	}
+	cases := []struct {
+		name string
+		mut  func(*publishOptions)
+		want string
+	}{
+		{"missing audience", func(o *publishOptions) { o.switchFromAudience = nil }, "--stream-switch-from-audience is required"},
+		{"bad audience", func(o *publishOptions) { o.switchFromAudience = []string{"label:not-a-pair"} }, "parse --stream-switch-from-audience"},
+		{"missing bundle", func(o *publishOptions) { o.switchFromBundleID = "" }, "--stream-switch-from-bundle-id is required"},
+		{"missing version", func(o *publishOptions) { o.switchFromVersion = 0 }, "--stream-switch-from-version is required"},
+		{"missing hash", func(o *publishOptions) { o.switchFromHash = "" }, "--stream-switch-from-hash is required"},
+		{"bad ttl", func(o *publishOptions) { o.switchTTL = 0 }, "--stream-switch-ttl must be positive"},
+		{"bad hash", func(o *publishOptions) { o.switchFromHash = "not-a-sha" }, "64-character hex"},
+		{"missing reason", func(o *publishOptions) { o.switchReason = "" }, "--stream-switch-reason is required"},
+		{"long reason", func(o *publishOptions) { o.switchReason = strings.Repeat("x", conductorcore.MaxReasonBytes+1) }, "--stream-switch-reason exceeds"},
+		{"too few signers", func(o *publishOptions) { o.switchSigningKeys = []string{"/k/one.json"} }, "stream switch requires"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := base
+			tc.mut(&opts)
+			if err := validateStreamSwitchInputs(opts); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateStreamSwitchInputs(%s) = %v, want %q", tc.name, err, tc.want)
+			}
+		})
+	}
+}

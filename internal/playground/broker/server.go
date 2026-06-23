@@ -438,8 +438,15 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		writeBrokerErr(w, http.StatusServiceUnavailable, "the demo is paused")
 		return
 	}
-	body, token, err := readMessageToken(r)
+	body, token, err := readMessageToken(w, r)
 	if err != nil {
+		// http.MaxBytesReader sets the response to 413 automatically for
+		// oversize bodies. For other parse errors, respond 400.
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeBrokerErr(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		writeBrokerErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
@@ -777,8 +784,9 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
-func readMessageToken(r *http.Request) ([]byte, string, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBrokerBodyBytes))
+func readMessageToken(w http.ResponseWriter, r *http.Request) ([]byte, string, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBrokerBodyBytes)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, "", fmt.Errorf("broker: read message request: %w", err)
 	}

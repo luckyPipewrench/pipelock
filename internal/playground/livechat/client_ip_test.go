@@ -115,3 +115,27 @@ func TestClientIP_ForwardedForRequiresTrust(t *testing.T) {
 		t.Fatalf("trusted ClientIP = %q, want first XFF", got)
 	}
 }
+
+func TestClientIP_InvalidXFFSegmentFallsToPeer(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		xff  string
+		want string
+	}{
+		{name: "garbage_first_segment", xff: "not-an-ip, 1.2.3.4", want: "203.0.113.10"},
+		{name: "empty_first_segment", xff: ", 1.2.3.4", want: "203.0.113.10"},
+		{name: "valid_first_segment", xff: "198.51.100.7, 1.2.3.4", want: "198.51.100.7"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+			req.RemoteAddr = "203.0.113.10:443"
+			req.Header.Set("X-Forwarded-For", tc.xff)
+			if got := ClientIPExact(req, true); got != tc.want {
+				t.Fatalf("ClientIPExact = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

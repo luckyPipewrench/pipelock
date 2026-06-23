@@ -1306,6 +1306,37 @@ func TestServer_RegisterTokenRefusedAfterKill(t *testing.T) {
 	}
 }
 
+func TestServer_OversizeMessageReturns413(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "oversize-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+
+	// Send a message body larger than maxBrokerBodyBytes (64 KiB).
+	oversizePayload := `{"token":"` + session.Token + `","message":"` + strings.Repeat("x", maxBrokerBodyBytes+1) + `"}`
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+livechat.RouteMessage, strings.NewReader(oversizePayload))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize message status = %d, want 413", resp.StatusCode)
+	}
+}
+
 func TestServer_HealthDoesNotOverclaimContainment(t *testing.T) {
 	t.Parallel()
 	provider := &serverFakeProvider{}

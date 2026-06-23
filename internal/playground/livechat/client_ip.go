@@ -12,6 +12,16 @@ import (
 
 const cfConnectingIPHeader = "CF-Connecting-IP"
 
+// cloudflareProxyPrefixes is a snapshot of Cloudflare's published proxy IP
+// ranges used to validate CF-Connecting-IP headers. These are NOT fetched at
+// runtime (avoids a network dependency at startup).
+//
+// Sources:
+//   - IPv4: https://www.cloudflare.com/ips-v4
+//   - IPv6: https://www.cloudflare.com/ips-v6
+//
+// Last refreshed: 2026-06-23
+// Refresh via scripts/check-cloudflare-ranges.sh.
 var cloudflareProxyPrefixes = []netip.Prefix{
 	mustParsePrefix("173.245.48.0/20"),
 	mustParsePrefix("103.21.244.0/22"),
@@ -121,7 +131,18 @@ func firstForwardedFor(raw string) string {
 	if i := strings.IndexByte(raw, ','); i >= 0 {
 		raw = raw[:i]
 	}
-	return strings.TrimSpace(raw)
+	segment := strings.TrimSpace(raw)
+	if segment == "" {
+		return ""
+	}
+	// Validate the segment is a real IP address; return empty on parse
+	// failure so the caller falls back to the peer address rather than using
+	// a garbage string as a rate-limit/budget key or Turnstile remoteip.
+	addr, err := netip.ParseAddr(segment)
+	if err != nil {
+		return ""
+	}
+	return addr.String()
 }
 
 func remoteHost(remoteAddr string) string {

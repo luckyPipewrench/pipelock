@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTurnstileVerifier_Verify(t *testing.T) {
@@ -103,5 +104,95 @@ func TestTurnstileVerifier_EmptySecretFailsClosed(t *testing.T) {
 	t.Parallel()
 	if err := (TurnstileVerifier{}).Verify(context.Background(), "token", "198.51.100.7"); err == nil {
 		t.Fatal("Verify with empty secret succeeded, want fail closed")
+	}
+}
+
+func TestSeenTokens_ReplayRejected(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	seen := NewSeenTokens(defaultSeenTokenTTL, clock)
+
+	if !seen.CheckAndMark("tok-a") {
+		t.Fatal("first CheckAndMark should accept")
+	}
+	if seen.CheckAndMark("tok-a") {
+		t.Fatal("second CheckAndMark for same token should reject")
+	}
+	// A different token is fine.
+	if !seen.CheckAndMark("tok-b") {
+		t.Fatal("different token should be accepted")
+	}
+}
+
+func TestSeenTokens_ExpiredTokenAllowed(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	seen := NewSeenTokens(2*time.Minute, clock)
+
+	if !seen.CheckAndMark("tok-expire") {
+		t.Fatal("first CheckAndMark should accept")
+	}
+	// Advance clock past TTL.
+	now = now.Add(3 * time.Minute)
+	if !seen.CheckAndMark("tok-expire") {
+		t.Fatal("token should be accepted again after TTL expires")
+	}
+}
+
+func TestSeenTokens_ConcurrentRace(t *testing.T) {
+	t.Parallel()
+	seen := NewSeenTokens(time.Minute, nil)
+	const token = "race-token"
+	const goroutines = 50
+	accepted := make(chan bool, goroutines)
+	start := make(chan struct{})
+	for range goroutines {
+		go func() {
+			<-start
+			accepted <- seen.CheckAndMark(token)
+		}()
+	}
+	close(start)
+	wins := 0
+	for range goroutines {
+		if <-accepted {
+			wins++
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("concurrent CheckAndMark accepted %d, want exactly 1", wins)
+	}
+}
+
+func TestReplayGuardVerifier_BlocksReplayBeforeNetwork(t *testing.T) {
+	t.Parallel()
+	var siteverifyCalls int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		siteverifyCalls++
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+	t.Cleanup(ts.Close)
+
+	inner := TurnstileVerifier{Secret: "secret", VerifyURL: ts.URL, Client: ts.Client()}
+	guard := &ReplayGuardVerifier{
+		Inner: inner,
+		Seen:  NewSeenTokens(time.Minute, nil),
+	}
+
+	// First call succeeds and reaches Siteverify.
+	if err := guard.Verify(context.Background(), "replay-tok", "198.51.100.7"); err != nil {
+		t.Fatalf("first Verify: %v", err)
+	}
+	if siteverifyCalls != 1 {
+		t.Fatalf("siteverify calls = %d, want 1", siteverifyCalls)
+	}
+	// Second call with same token is rejected WITHOUT a Siteverify call.
+	if err := guard.Verify(context.Background(), "replay-tok", "198.51.100.7"); err == nil {
+		t.Fatal("replayed token should be rejected")
+	}
+	if siteverifyCalls != 1 {
+		t.Fatalf("siteverify calls after replay = %d, want still 1 (no network call)", siteverifyCalls)
 	}
 }

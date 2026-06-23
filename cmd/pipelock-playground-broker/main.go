@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -36,67 +37,70 @@ import (
 )
 
 const (
-	defaultListen      = "127.0.0.1:8100"
-	defaultConcurrency = 3
-	defaultMaxPerCode  = 25
-	defaultSessionTTL  = 10 * time.Minute
-	defaultGrace       = 30 * time.Second
-	defaultIPRate      = 0.5
-	defaultIPBurst     = 5
-	defaultCodeRate    = 0.5
-	defaultCodeBurst   = 10
-	cfAccessJWTHeader  = "Cf-Access-Jwt-Assertion"
-	cfAccessKeysTTL    = 5 * time.Minute
+	defaultListen            = "127.0.0.1:8100"
+	defaultConcurrency       = 3
+	defaultMaxPerCode        = 25
+	defaultSessionTTL        = 10 * time.Minute
+	defaultGrace             = 30 * time.Second
+	defaultIPRate            = 0.5
+	defaultIPBurst           = 5
+	defaultCodeRate          = 0.5
+	defaultCodeBurst         = 10
+	nonStreamWriteTimeout    = 30 * time.Second
+	cfAccessJWTHeader        = "Cf-Access-Jwt-Assertion"
+	cfAccessKeysTTL          = 5 * time.Minute
+	cfAccessNegativeCacheTTL = 30 * time.Second
 
 	envModelKey        = "PLAYGROUND_MODEL_" + "KEY"
 	envOrchestratorKey = "PLAYGROUND_ORCHESTRATOR_" + "KEY"
 )
 
 type serveFlags struct {
-	listen                string
-	adminListen           string
-	adminTokenFile        string
-	adminTokenEnv         string
-	staticDir             string
-	provider              string
-	flyApp                string
-	flyTokenFile          string
-	flyTokenEnv           string
-	image                 string
-	region                string
-	memoryMB              int
-	cpus                  int
-	internalPort          int
-	concurrency           int
-	codes                 []string
-	maxPerCode            int
-	gateSecretFile        string
-	gateSecretEnv         string
-	ipRate                float64
-	ipBurst               float64
-	codeRate              float64
-	codeBurst             float64
-	perIPDailyBudget      int
-	perCodeDailyBudget    int
-	globalDailyBudget     int
-	unsafeUnlimited       bool
-	unsafeNoHumanGate     bool
-	turnstileSecretFile   string
-	turnstileSecretEnv    string
-	turnstileVerifyURL    string
-	sessionTTL            time.Duration
-	deadlineGrace         time.Duration
-	allowOrigin           string
-	publicHosts           []string
-	cfAccessTeamDomain    string
-	cfAccessAUD           string
-	cfAccessCertsURL      string
-	trustForwardedFor     bool
-	modelKeyFile          string
-	modelKeyEnv           string
-	orchestratorKeyFile   string
-	orchestratorKeyEnv    string
-	requireSessionSecrets bool
+	listen                  string
+	adminListen             string
+	adminTokenFile          string
+	adminTokenEnv           string
+	unsafeAdminListenPublic bool
+	staticDir               string
+	provider                string
+	flyApp                  string
+	flyTokenFile            string
+	flyTokenEnv             string
+	image                   string
+	region                  string
+	memoryMB                int
+	cpus                    int
+	internalPort            int
+	concurrency             int
+	codes                   []string
+	maxPerCode              int
+	gateSecretFile          string
+	gateSecretEnv           string
+	ipRate                  float64
+	ipBurst                 float64
+	codeRate                float64
+	codeBurst               float64
+	perIPDailyBudget        int
+	perCodeDailyBudget      int
+	globalDailyBudget       int
+	unsafeUnlimited         bool
+	unsafeNoHumanGate       bool
+	turnstileSecretFile     string
+	turnstileSecretEnv      string
+	turnstileVerifyURL      string
+	sessionTTL              time.Duration
+	deadlineGrace           time.Duration
+	allowOrigin             string
+	publicHosts             []string
+	cfAccessTeamDomain      string
+	cfAccessAUD             string
+	cfAccessCertsURL        string
+	trustForwardedFor       bool
+	modelKeyFile            string
+	modelKeyEnv             string
+	orchestratorKeyFile     string
+	orchestratorKeyEnv      string
+	requireSessionSecrets   bool
 	// VM model/session config, passed into each per-visitor VM via PLAYGROUND_*
 	// env (consumed by deploy/fly-playground/entrypoint.sh).
 	vmModelBaseURL    string
@@ -167,6 +171,7 @@ func newServeCmd() *cobra.Command {
 	fl.IntVar(&f.globalDailyBudget, "global-daily-budget", 0, "global session starts per UTC day (0 = unlimited)")
 	fl.BoolVar(&f.unsafeUnlimited, "unsafe-unlimited-budgets", false, "allow unlimited public broker/model budgets; unsafe for public deployments")
 	fl.BoolVar(&f.unsafeNoHumanGate, "unsafe-no-human-gate", false, "allow session creation without Turnstile or Cloudflare Access; unsafe for public deployments")
+	fl.BoolVar(&f.unsafeAdminListenPublic, "unsafe-admin-listen-public", false, "allow --admin-listen on a public/unspecified address; unsafe outside container netns")
 	fl.StringVar(&f.turnstileSecretFile, "turnstile-secret-file", "", "path to the Cloudflare Turnstile secret; enables human verification for session creation")
 	fl.StringVar(&f.turnstileSecretEnv, "turnstile-secret-env", "", "environment variable holding the Cloudflare Turnstile secret; enables human verification for session creation")
 	fl.StringVar(&f.turnstileVerifyURL, "turnstile-verify-url", "", "Cloudflare Turnstile Siteverify URL override (tests/dev only; empty uses Cloudflare)")
@@ -312,6 +317,10 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		handler = mux
 		_, _ = fmt.Fprintf(out, "serving static UI from %s at /\n", f.staticDir)
 	}
+	// Stream writes indefinitely; the message route is held open for the whole
+	// model turn. Both are exempt from the write deadline (see the middleware).
+	handler = writeDeadlineMiddleware(handler, nonStreamWriteTimeout, livechat.RouteStream, livechat.RouteMessage)
+
 	hosts, err := brokerPublicHosts(f)
 	if err != nil {
 		return nil, nil, err
@@ -420,7 +429,61 @@ func validateAdminFlags(f *serveFlags) error {
 	if tokenFile == "" && tokenEnv == "" {
 		return errors.New("--admin-listen requires --admin-token-file or --admin-token-env")
 	}
+	if err := validateAdminListenScope(listen, f.unsafeAdminListenPublic); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateAdminListenScope rejects admin listen addresses that bind to public
+// or unspecified IPs unless the operator explicitly opts in with
+// --unsafe-admin-listen-public. Loopback and RFC1918/ULA/link-local are safe.
+func validateAdminListenScope(listen string, unsafePublic bool) error {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		// May be a bare port like ":9090" — host is empty.
+		host = listen
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		// Empty host = unspecified address (binds all interfaces).
+		if unsafePublic {
+			return nil
+		}
+		return errors.New("--admin-listen binds to all interfaces (unspecified address); use a loopback/private address or pass --unsafe-admin-listen-public")
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		// Not a numeric IP — could be a hostname. Allow loopback names.
+		lower := strings.ToLower(host)
+		if lower == "localhost" {
+			return nil
+		}
+		if unsafePublic {
+			return nil
+		}
+		return fmt.Errorf("--admin-listen host %q is not a recognized private address; use a loopback/private address or pass --unsafe-admin-listen-public", host)
+	}
+	if addr.IsUnspecified() {
+		if unsafePublic {
+			return nil
+		}
+		return errors.New("--admin-listen binds to all interfaces (unspecified address); use a loopback/private address or pass --unsafe-admin-listen-public")
+	}
+	if isPrivateOrLoopback(addr) {
+		return nil
+	}
+	if unsafePublic {
+		return nil
+	}
+	return fmt.Errorf("--admin-listen address %s is public; use a loopback/private address or pass --unsafe-admin-listen-public", addr)
+}
+
+// isPrivateOrLoopback returns true for loopback, link-local, RFC1918, and ULA
+// addresses — the address classes safe for an admin listener without explicit
+// opt-in.
+func isPrivateOrLoopback(addr netip.Addr) bool {
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast()
 }
 
 func validateHumanGateFlags(f *serveFlags) error {
@@ -705,6 +768,32 @@ func normalizePublicHost(raw string) (string, error) {
 	return host, nil
 }
 
+// writeDeadlineMiddleware sets a per-request write deadline on bounded,
+// fast-completing routes so a slow reader cannot pin a goroutine, WITHOUT a
+// server-level WriteTimeout (which would kill the long-lived routes). The
+// exemptPaths are left with NO write deadline because they legitimately exceed
+// it: the SSE stream writes indefinitely, and the message route is held open
+// for the entire model turn (a multi-step agent turn routinely takes longer
+// than the deadline) before the response is written. Those long-lived routes
+// are bounded instead by the session TTL and the upstream/edge connection
+// timeouts, not by this deadline.
+func writeDeadlineMiddleware(next http.Handler, timeout time.Duration, exemptPaths ...string) http.Handler {
+	exempt := make(map[string]struct{}, len(exemptPaths))
+	for _, p := range exemptPaths {
+		exempt[p] = struct{}{}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		if _, ok := exempt[r.URL.Path]; ok {
+			// Long-lived route: clear any inherited deadline.
+			_ = rc.SetWriteDeadline(time.Time{})
+		} else {
+			_ = rc.SetWriteDeadline(time.Now().Add(timeout))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func hostGuard(next http.Handler, allowed []string) http.Handler {
 	set := make(map[string]struct{}, len(allowed))
 	for _, h := range allowed {
@@ -733,9 +822,10 @@ type cfAccessVerifier struct {
 	client   *http.Client
 	now      func() time.Time
 
-	mu      sync.RWMutex
-	keys    *jose.JSONWebKeySet
-	keysExp time.Time
+	mu        sync.RWMutex
+	keys      *jose.JSONWebKeySet
+	keysExp   time.Time
+	nextRetry time.Time // negative-cache: skip refetch until this time after a failure
 }
 
 func validateCFAccessFlags(f *serveFlags) error {
@@ -874,6 +964,32 @@ func (v *cfAccessVerifier) keySet(ctx context.Context) (*jose.JSONWebKeySet, err
 	if v.keys != nil && now.Before(v.keysExp) {
 		return v.keys, nil
 	}
+
+	// Negative-cache: if a previous refetch failed and we have stale keys,
+	// serve them until nextRetry to avoid hammering the JWKS endpoint.
+	if v.keys != nil && now.Before(v.nextRetry) {
+		v.keysExp = now.Add(cfAccessNegativeCacheTTL)
+		return v.keys, nil
+	}
+
+	keys, fetchErr := v.fetchKeys(ctx)
+	if fetchErr != nil {
+		// Fail-closed when there are no cached keys at all.
+		if v.keys == nil {
+			return nil, fetchErr
+		}
+		// Stale keys exist: serve them and set a negative-cache window.
+		v.nextRetry = now.Add(cfAccessNegativeCacheTTL)
+		v.keysExp = v.nextRetry
+		return v.keys, nil
+	}
+	v.keys = keys
+	v.keysExp = now.Add(cfAccessKeysTTL)
+	v.nextRetry = time.Time{}
+	return v.keys, nil
+}
+
+func (v *cfAccessVerifier) fetchKeys(ctx context.Context) (*jose.JSONWebKeySet, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.certsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build Cloudflare Access JWKS request: %w", err)
@@ -893,9 +1009,7 @@ func (v *cfAccessVerifier) keySet(ctx context.Context) (*jose.JSONWebKeySet, err
 	if len(keys.Keys) == 0 {
 		return nil, errors.New("cloudflare access jwks is empty")
 	}
-	v.keys = &keys
-	v.keysExp = now.Add(cfAccessKeysTTL)
-	return v.keys, nil
+	return &keys, nil
 }
 
 // resolveFlyToken reads the Fly API token from the configured file or env var.
@@ -999,10 +1113,14 @@ func resolveTurnstileVerifier(f *serveFlags) (broker.HumanVerifier, error) {
 	if err != nil {
 		return nil, err
 	}
-	return broker.TurnstileVerifier{
+	inner := broker.TurnstileVerifier{
 		Secret:    secret,
 		VerifyURL: strings.TrimSpace(f.turnstileVerifyURL),
 		Client:    &http.Client{Timeout: 5 * time.Second},
+	}
+	return &broker.ReplayGuardVerifier{
+		Inner: inner,
+		Seen:  broker.NewSeenTokens(0, nil),
 	}, nil
 }
 

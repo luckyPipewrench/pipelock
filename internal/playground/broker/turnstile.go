@@ -12,17 +12,89 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
 	defaultTurnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 	maxTurnstileTokenBytes    = 2048
+	defaultSeenTokenTTL       = 5 * time.Minute
 )
 
 // HumanVerifier validates a browser proof before the broker leases a VM.
 type HumanVerifier interface {
 	Verify(ctx context.Context, token, remoteIP string) error
+}
+
+// ErrTokenAlreadyUsed is returned when a Turnstile token has already been
+// submitted, preventing a replay-race where two concurrent session requests
+// use the same human-solve proof to lease two VMs.
+var ErrTokenAlreadyUsed = errors.New("turnstile token already used")
+
+// SeenTokens is a mutex-guarded set of recently submitted Turnstile tokens.
+// It prevents replay-race attacks where two concurrent requests submit the
+// same token before the upstream Siteverify endpoint detects the duplicate.
+// Expired entries are lazily evicted on insert, capping growth.
+type SeenTokens struct {
+	mu  sync.Mutex
+	m   map[string]time.Time // token → expiry
+	ttl time.Duration
+	now func() time.Time
+}
+
+// NewSeenTokens creates a seen-token set. A zero ttl uses defaultSeenTokenTTL.
+// The now function is injectable for deterministic tests; nil uses time.Now.
+func NewSeenTokens(ttl time.Duration, now func() time.Time) *SeenTokens {
+	if ttl <= 0 {
+		ttl = defaultSeenTokenTTL
+	}
+	if now == nil {
+		now = time.Now
+	}
+	return &SeenTokens{
+		m:   make(map[string]time.Time),
+		ttl: ttl,
+		now: now,
+	}
+}
+
+// CheckAndMark atomically checks whether a token has been seen. If not, it
+// marks it and returns true (proceed). If already present and not expired, it
+// returns false (reject). Expired entries for other tokens are lazily evicted.
+func (s *SeenTokens) CheckAndMark(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+
+	// Lazy eviction of expired entries to cap growth.
+	for k, exp := range s.m {
+		if !now.Before(exp) {
+			delete(s.m, k)
+		}
+	}
+
+	if exp, exists := s.m[token]; exists && now.Before(exp) {
+		return false
+	}
+	s.m[token] = now.Add(s.ttl)
+	return true
+}
+
+// ReplayGuardVerifier wraps a HumanVerifier with broker-side token replay
+// prevention. The seen-token check runs BEFORE the upstream Siteverify call,
+// so a replayed token never reaches the network.
+type ReplayGuardVerifier struct {
+	Inner HumanVerifier
+	Seen  *SeenTokens
+}
+
+// Verify rejects already-seen tokens before delegating to the inner verifier.
+func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string) error {
+	if !v.Seen.CheckAndMark(token) {
+		return ErrTokenAlreadyUsed
+	}
+	return v.Inner.Verify(ctx, token, remoteIP)
 }
 
 // TurnstileVerifier validates Cloudflare Turnstile tokens via Siteverify.

@@ -666,11 +666,15 @@ func TestResolveTurnstileVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveTurnstileVerifier file: %v", err)
 	}
-	fileVerifier, ok := got.(broker.TurnstileVerifier)
+	fileGuard, ok := got.(*broker.ReplayGuardVerifier)
 	if !ok {
-		t.Fatalf("verifier type = %T, want broker.TurnstileVerifier", got)
+		t.Fatalf("verifier type = %T, want *broker.ReplayGuardVerifier", got)
 	}
-	if fileVerifier.Secret != "file-secret" {
+	fileInner, ok := fileGuard.Inner.(broker.TurnstileVerifier)
+	if !ok {
+		t.Fatalf("inner type = %T, want broker.TurnstileVerifier", fileGuard.Inner)
+	}
+	if fileInner.Secret != "file-secret" {
 		t.Fatal("file turnstile secret mismatch")
 	}
 
@@ -679,11 +683,15 @@ func TestResolveTurnstileVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveTurnstileVerifier env: %v", err)
 	}
-	envVerifier, ok := got.(broker.TurnstileVerifier)
+	envGuard, ok := got.(*broker.ReplayGuardVerifier)
 	if !ok {
-		t.Fatalf("verifier type = %T, want broker.TurnstileVerifier", got)
+		t.Fatalf("verifier type = %T, want *broker.ReplayGuardVerifier", got)
 	}
-	if envVerifier.Secret != "env-secret" {
+	envInner, ok := envGuard.Inner.(broker.TurnstileVerifier)
+	if !ok {
+		t.Fatalf("inner type = %T, want broker.TurnstileVerifier", envGuard.Inner)
+	}
+	if envInner.Secret != "env-secret" {
 		t.Fatal("env turnstile secret mismatch")
 	}
 	if got, err := resolveTurnstileVerifier(&serveFlags{}); err != nil || got != nil {
@@ -1016,6 +1024,93 @@ func TestCFAccessVerifierErrorsAndCache(t *testing.T) {
 	}
 }
 
+func TestCFAccessJWKS_NegativeCache(t *testing.T) {
+	t.Parallel()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	const kid = "neg-cache-key"
+	jwks := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       &priv.PublicKey,
+		KeyID:     kid,
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	}}}
+
+	var fetchCount int
+	fetchFailing := false
+	keySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetchCount++
+		if fetchFailing {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(jwks)
+	}))
+	t.Cleanup(keySrv.Close)
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	verifier := &cfAccessVerifier{
+		issuer:   "https://team.cloudflareaccess.com",
+		audience: "aud",
+		certsURL: keySrv.URL,
+		client:   keySrv.Client(),
+		now:      func() time.Time { return now },
+	}
+
+	// Initial fetch succeeds and caches.
+	token := signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
+	if err := verifier.verify(context.Background(), token); err != nil {
+		t.Fatalf("initial verify: %v", err)
+	}
+	if fetchCount != 1 {
+		t.Fatalf("fetches = %d, want 1", fetchCount)
+	}
+
+	// Expire the cache and make fetch fail.
+	now = now.Add(cfAccessKeysTTL + time.Second)
+	fetchFailing = true
+	fetchesBefore := fetchCount
+	token = signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
+	if err := verifier.verify(context.Background(), token); err != nil {
+		t.Fatalf("verify with stale keys after fetch failure: %v", err)
+	}
+	if fetchCount != fetchesBefore+1 {
+		t.Fatalf("expected exactly 1 refetch attempt, got %d", fetchCount-fetchesBefore)
+	}
+
+	// Within the negative-cache window, no new fetch is attempted.
+	fetchesBefore = fetchCount
+	token = signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
+	if err := verifier.verify(context.Background(), token); err != nil {
+		t.Fatalf("verify within negative-cache window: %v", err)
+	}
+	if fetchCount != fetchesBefore {
+		t.Fatalf("fetch during negative-cache window: got %d additional fetches", fetchCount-fetchesBefore)
+	}
+}
+
+func TestCFAccessJWKS_NoCacheFailsClosed(t *testing.T) {
+	t.Parallel()
+	keySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(keySrv.Close)
+
+	verifier := &cfAccessVerifier{
+		issuer:   "https://team.cloudflareaccess.com",
+		audience: "aud",
+		certsURL: keySrv.URL,
+		client:   keySrv.Client(),
+		now:      time.Now,
+	}
+
+	if _, err := verifier.keySet(context.Background()); err == nil {
+		t.Fatal("keySet with no cache and failing fetch should error (fail-closed)")
+	}
+}
+
 func writeTestFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -1029,6 +1124,126 @@ func writeTestFile(t *testing.T, dir, name, content string) string {
 // entrypoint (deploy/fly-playground/entrypoint.sh) consumes into serve flags. A
 // rename here without updating the entrypoint silently breaks the per-VM config,
 // so this test is the producer-side guard for that string-coupled contract.
+// deadlineRecorder is an http.ResponseWriter that captures the write deadline
+// the middleware sets, so the test can assert exempt-vs-bounded routing. A
+// plain httptest.ResponseRecorder does not implement SetWriteDeadline, so
+// http.ResponseController could not otherwise apply (or reveal) the deadline.
+type deadlineRecorder struct {
+	http.ResponseWriter
+	deadline time.Time
+	set      bool
+}
+
+func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error {
+	d.deadline = t
+	d.set = true
+	return nil
+}
+
+// writeDeadliner mirrors the (anonymous in net/http) interface
+// http.ResponseController uses to apply a write deadline. The assertion makes
+// unparam recognize deadlineRecorder as an interface implementation — the
+// always-nil error return is required by that contract, not dead code.
+type writeDeadliner interface{ SetWriteDeadline(time.Time) error }
+
+var _ writeDeadliner = (*deadlineRecorder)(nil)
+
+func TestWriteDeadlineMiddleware(t *testing.T) {
+	t.Parallel()
+	const (
+		timeout      = 30 * time.Second
+		routeHealth  = "/api/live/health"
+		routeSession = "/api/live/session"
+		routeStream  = "/api/live/stream"
+		routeMessage = "/api/live/message"
+	)
+	exempt := []string{routeStream, routeMessage}
+
+	tests := []struct {
+		name string
+		path string
+		// exempt routes get NO deadline (cleared to zero); bounded routes get a
+		// future deadline so a slow reader cannot pin the goroutine.
+		wantExempt bool
+	}{
+		{name: "health_bounded", path: routeHealth, wantExempt: false},
+		{name: "session_bounded", path: routeSession, wantExempt: false},
+		{name: "stream_exempt", path: routeStream, wantExempt: true},
+		{name: "message_exempt_held_open_for_turn", path: routeMessage, wantExempt: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var ran bool
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				ran = true
+				w.WriteHeader(http.StatusOK)
+			})
+			mw := writeDeadlineMiddleware(inner, timeout, exempt...)
+			rec := &deadlineRecorder{ResponseWriter: httptest.NewRecorder()}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tc.path, nil)
+			before := time.Now()
+			mw.ServeHTTP(rec, req)
+
+			if !ran {
+				t.Fatal("inner handler did not run")
+			}
+			if !rec.set {
+				t.Fatal("middleware never called SetWriteDeadline")
+			}
+			if tc.wantExempt {
+				if !rec.deadline.IsZero() {
+					t.Fatalf("exempt path %s: deadline = %v, want zero (cleared)", tc.path, rec.deadline)
+				}
+			} else {
+				if !rec.deadline.After(before) {
+					t.Fatalf("bounded path %s: deadline = %v, want a future deadline", tc.path, rec.deadline)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateAdminListenScope(t *testing.T) {
+	tests := []struct {
+		name         string
+		listen       string
+		unsafePublic bool
+		wantErr      bool
+	}{
+		{name: "loopback_ok", listen: "127.0.0.1:9090", wantErr: false},
+		{name: "loopback_v6_ok", listen: "[::1]:9090", wantErr: false},
+		{name: "private_rfc1918_ok", listen: "10.0.0.5:9090", wantErr: false},
+		{name: "private_172_ok", listen: "172.16.0.1:9090", wantErr: false},
+		{name: "private_192_ok", listen: "192.168.1.1:9090", wantErr: false},
+		{name: "link_local_ok", listen: "169.254.1.1:9090", wantErr: false},
+		{name: "ula_ok", listen: "[fd00::1]:9090", wantErr: false},
+		{name: "localhost_ok", listen: "localhost:9090", wantErr: false},
+		{name: "unspecified_rejected", listen: "0.0.0.0:9090", wantErr: true},
+		{name: "unspecified_v6_rejected", listen: "[::]:9090", wantErr: true},
+		{name: "empty_host_rejected", listen: ":9090", wantErr: true},
+		{name: "public_ip_rejected", listen: "203.0.113.5:9090", wantErr: true},
+		{name: "public_v6_rejected", listen: "[2001:db8::1]:9090", wantErr: true},
+		{name: "unspecified_with_unsafe_ok", listen: "0.0.0.0:9090", unsafePublic: true, wantErr: false},
+		{name: "public_with_unsafe_ok", listen: "203.0.113.5:9090", unsafePublic: true, wantErr: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAdminListenScope(tc.listen, tc.unsafePublic)
+			if tc.wantErr && err == nil {
+				t.Fatal("validateAdminListenScope succeeded, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateAdminListenScope: %v", err)
+			}
+			// Public rejections must name the escape flag.
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "--unsafe-admin-listen-public") {
+				t.Fatalf("error %q does not name the escape flag", err)
+			}
+		})
+	}
+}
+
 func TestBuildVMBaseEnv(t *testing.T) {
 	f := &serveFlags{
 		internalPort:      8080,

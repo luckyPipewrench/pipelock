@@ -95,7 +95,7 @@ it re-fetches and verifies the authoritative bundle for its current audience.
 `follower reset-replay-state` is an offline follower-side recovery command for a
 wedged remote-kill replay state. Use it when the follower reports:
 
-> conductor remote kill replay state missing while follower context is present
+> conductor remote kill replay state missing while follower context is present; run: pipelock conductor follower reset-replay-state --state-dir <conductor.bundle_cache_dir> --confirm
 
 This happens when the follower's enrollment context exists but the corresponding
 replay-state file is missing or corrupt (e.g., after a partial disk recovery or

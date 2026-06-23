@@ -24,6 +24,7 @@ func TestCheckConductorAdvisories(t *testing.T) {
 		name             string
 		mutate           func(cfg *config.Config, dir string)
 		wantSubstr       string
+		forbidSubstr     string
 		wantNoAdvisories bool
 	}{
 		{
@@ -72,7 +73,8 @@ func TestCheckConductorAdvisories(t *testing.T) {
 			},
 			// The fleet-license advisory will still fire (no license), but no
 			// recorder-key-id mismatch advisory.
-			wantSubstr: "conductor.enabled is true but no license",
+			wantSubstr:   "conductor.enabled is true but no license",
+			forbidSubstr: "does not match the key_id",
 		},
 		{
 			name: "raw key file emits no mismatch advisory",
@@ -90,7 +92,8 @@ func TestCheckConductorAdvisories(t *testing.T) {
 				cfg.Conductor.RecorderKeyID = "some-id"
 			},
 			// Only fleet-license advisory, no recorder mismatch.
-			wantSubstr: "conductor.enabled is true but no license",
+			wantSubstr:   "conductor.enabled is true but no license",
+			forbidSubstr: "does not match the key_id",
 		},
 	}
 
@@ -119,6 +122,14 @@ func TestCheckConductorAdvisories(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("expected advisory containing %q, got %v", tt.wantSubstr, advisories)
+			}
+			if tt.forbidSubstr != "" {
+				for _, a := range advisories {
+					if strings.Contains(a, tt.forbidSubstr) {
+						t.Errorf("did not expect advisory containing %q, got %v", tt.forbidSubstr, advisories)
+						break
+					}
+				}
 			}
 		})
 	}

@@ -18,7 +18,7 @@
 
 ARG GO_VERSION=1.26
 
-FROM golang:${GO_VERSION}-bookworm AS build
+FROM golang:${GO_VERSION}-bookworm@sha256:5f68ec6805843bd3981a951ffada82a26a0bd2631045c8f7dba483fa868f5ec5 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -30,7 +30,7 @@ RUN go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-live      ./
  && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-toyagent  ./cmd/pipelock-playground-toyagent \
  && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-webtool   ./cmd/pipelock-playground-webtool
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716
 # nftables: load the owner-match egress rule. ca-certificates: TLS to the model
 # API through the proxy. tini: clean PID 1 signal handling. iproute2: diagnostics.
 #

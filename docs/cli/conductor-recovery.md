@@ -90,6 +90,40 @@ pipelock conductor follower reset-bundle-state \
 After a confirmed reset, restart the follower if it is wedged. On the next poll
 it re-fetches and verifies the authoritative bundle for its current audience.
 
+## `follower reset-replay-state`
+
+`follower reset-replay-state` is an offline follower-side recovery command for a
+wedged remote-kill replay state. Use it when the follower reports:
+
+> conductor remote kill replay state missing while follower context is present; run: pipelock conductor follower reset-replay-state --state-dir <conductor.bundle_cache_dir> --confirm
+
+This happens when the follower's enrollment context exists but the corresponding
+replay-state file is missing or corrupt (e.g., after a partial disk recovery or
+an interrupted enrollment).
+
+The command rewrites the follower's local remote-kill replay state to a clean
+baseline. On the next poll the follower re-syncs the authoritative kill state
+from the Conductor.
+
+Dry run (default):
+
+```sh
+pipelock conductor follower reset-replay-state \
+  --state-dir /var/lib/pipelock/bundles
+```
+
+Apply:
+
+```sh
+pipelock conductor follower reset-replay-state \
+  --state-dir /var/lib/pipelock/bundles \
+  --confirm
+```
+
+`--state-dir` is the same directory as `conductor.bundle_cache_dir` in the
+follower config. Without `--confirm`, the command prints what it would do and
+exits without modifying state (fail-closed dry run).
+
 ## `rollback clear`
 
 Clear a single active rollback authorization by its `authorization_id`. This is

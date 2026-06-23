@@ -53,6 +53,18 @@ func TestCheckConductorAdvisories(t *testing.T) {
 			wantSubstr: "cannot be loaded; the proxy will fail to start (required when conductor.enabled)",
 		},
 		{
+			name: "conductor enabled with unusable signing key file emits advisory",
+			mutate: func(cfg *config.Config, dir string) {
+				cfg.Conductor.Enabled = true
+				kp := filepath.Join(dir, "garbage-key")
+				if err := os.WriteFile(kp, []byte("not a valid signing key"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cfg.FlightRecorder.SigningKeyPath = kp
+			},
+			wantSubstr: "is not a usable signing key; the proxy will fail to start (required when conductor.enabled)",
+		},
+		{
 			name: "conductor enabled with mismatched recorder key id emits advisory",
 			mutate: func(cfg *config.Config, dir string) {
 				cfg.Conductor.Enabled = true

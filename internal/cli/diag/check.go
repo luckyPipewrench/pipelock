@@ -151,23 +151,26 @@ func fleetVerifyInputsFromConfig(cfg *config.Config) license.FleetVerifyInputs {
 func conductorSigningKeyAdvisories(cfg *config.Config) []string {
 	var out []string
 	keyPath := filepath.Clean(cfg.FlightRecorder.SigningKeyPath)
-	priv, err := signing.LoadPrivateKeyFile(keyPath)
+	// Read once: this read's failure is the missing/unreadable-file case, and the
+	// same bytes feed the key_id advisory below (no untestable second read).
+	data, err := os.ReadFile(keyPath) // #nosec G304 -- path comes from validated config
 	if err != nil {
 		out = append(out, fmt.Sprintf(
 			"flight_recorder.signing_key_path %q cannot be loaded; the proxy will fail to start (required when conductor.enabled): %v",
 			cfg.FlightRecorder.SigningKeyPath, err))
 		return out
 	}
-	for i := range priv {
-		priv[i] = 0
-	}
-
-	data, err := os.ReadFile(keyPath) // #nosec G304 -- path comes from validated config
+	// Validate the file loads the way the runtime loads it (catches malformed or
+	// too-permissive keys that would pass a shape check but fail at startup).
+	priv, err := signing.LoadPrivateKeyFile(keyPath)
 	if err != nil {
 		out = append(out, fmt.Sprintf(
-			"flight_recorder.signing_key_path %q cannot be read for key-id advisory: %v",
+			"flight_recorder.signing_key_path %q is not a usable signing key; the proxy will fail to start (required when conductor.enabled): %v",
 			cfg.FlightRecorder.SigningKeyPath, err))
 		return out
+	}
+	for i := range priv {
+		priv[i] = 0
 	}
 
 	// If the key file is a JSON keypair with a key_id field, check whether

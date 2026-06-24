@@ -24,6 +24,9 @@ BIN=/usr/local/bin/pipelock-playground-live
 TOYAGENT_BIN=/usr/local/bin/pipelock-playground-toyagent
 WEBTOOL_BIN=/usr/local/bin/pipelock-playground-webtool
 LLM_AGENT_BIN=/usr/local/bin/pipelock-playground-llm-agent
+VERIFIER_LINUX=/usr/local/bin/pipelock-verifier-linux
+VERIFIER_MACOS=/usr/local/bin/pipelock-verifier-macos
+VERIFIER_WINDOWS=/usr/local/bin/pipelock-verifier-windows.exe
 
 log() { printf '[entrypoint] %s\n' "$*" >&2; }
 
@@ -86,8 +89,9 @@ add_flag --daily-turn-budget "${PLAYGROUND_DAILY_TURN_BUDGET:-}"
 add_flag --session-ttl "${PLAYGROUND_SESSION_TTL:-}"
 add_flag --max-messages-per-session "${PLAYGROUND_MAX_MESSAGES:-}"
 # The model agent is all-or-nothing (serve rejects --llm-agent-bin without the
-# model flags). Only enable it when a model is configured, so a no-model
-# deployment runs the deterministic agent cleanly.
+# model flags). The public entrypoint also passes --require-model below, so a
+# no-model deployment fails honest instead of serving the deterministic agent as
+# "live".
 if [ -n "${PLAYGROUND_MODEL_BASE_URL:-}" ]; then
 	add_flag --llm-agent-bin "${LLM_AGENT_BIN}"
 fi
@@ -97,11 +101,15 @@ log "containment proven; starting server on ${LISTEN}"
 # shellcheck disable=SC2086  # word-splitting of ORCH_KEY_ARGS/MODEL_KEY_ARGS/EXTRA_ARGS is intended; secret paths are fixed under /run/playground (no spaces)
 exec "${BIN}" serve \
 	--self-managed-containment \
+	--require-model \
 	--listen "${LISTEN}" \
 	--proxy-port "${PROXY_PORT}" \
 	--concurrency 1 \
 	--toyagent-bin "${TOYAGENT_BIN}" \
 	--webtool-bin "${WEBTOOL_BIN}" \
+	--verifier-bin-linux "${VERIFIER_LINUX}" \
+	--verifier-bin-macos "${VERIFIER_MACOS}" \
+	--verifier-bin-windows "${VERIFIER_WINDOWS}" \
 	${ORCH_KEY_ARGS} \
 	${MODEL_KEY_ARGS} \
 	${EXTRA_ARGS} \

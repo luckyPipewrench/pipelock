@@ -234,7 +234,7 @@ func TestNewRootCmd_HasSubcommands(t *testing.T) {
 func TestNewServeCmd_RegistersFlags(t *testing.T) {
 	t.Parallel()
 	cmd := newServeCmd()
-	for _, name := range []string{"listen", "code", "max-per-code", "dev", "require-containment", "secret", "secret-file", "static-dir", "session-ttl", "daily-turn-budget", "max-messages-per-session"} {
+	for _, name := range []string{"listen", "code", "max-per-code", "dev", "require-containment", "require-model", "secret", "secret-file", "static-dir", "session-ttl", "daily-turn-budget", "max-messages-per-session", "verifier-bin-linux", "verifier-bin-macos", "verifier-bin-windows"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("serve missing --%s flag", name)
 		}
@@ -386,6 +386,21 @@ func TestBuildServer_PublicModelRequiresDailyBudget(t *testing.T) {
 		t.Fatal("nil server/handler")
 	}
 	defer srv.Close()
+}
+
+func TestBuildServer_RequireModelFailsClosedWithoutModelConfig(t *testing.T) {
+	t.Parallel()
+	f := devServeFlags()
+	f.dev = false
+	f.requireContainment = true
+	f.requireModel = true
+	f.codes = []string{"good"}
+	f.orchestratorKey = testOrchestratorKeyPath(t)
+
+	var out bytes.Buffer
+	if _, _, err := buildServer(&out, f); err == nil {
+		t.Fatal("--require-model without model config should fail closed")
+	}
 }
 
 func TestBuildServer_PublicModelValidatesRuntimeFiles(t *testing.T) {

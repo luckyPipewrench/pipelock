@@ -28,7 +28,10 @@ ENV CGO_ENABLED=0
 RUN go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-live      ./cmd/pipelock-playground-live \
  && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-llm-agent ./cmd/pipelock-playground-llm-agent \
  && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-toyagent  ./cmd/pipelock-playground-toyagent \
- && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-webtool   ./cmd/pipelock-playground-webtool
+ && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-webtool   ./cmd/pipelock-playground-webtool \
+ && GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-linux ./cmd/pipelock-verifier \
+ && GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-macos ./cmd/pipelock-verifier \
+ && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-windows.exe ./cmd/pipelock-verifier
 
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716
 # nftables: load the owner-match egress rule. ca-certificates: TLS to the model
@@ -54,8 +57,11 @@ COPY --from=build /out/pipelock-playground-live      /usr/local/bin/pipelock-pla
 COPY --from=build /out/pipelock-playground-llm-agent /usr/local/bin/pipelock-playground-llm-agent
 COPY --from=build /out/pipelock-playground-toyagent  /usr/local/bin/pipelock-playground-toyagent
 COPY --from=build /out/pipelock-playground-webtool   /usr/local/bin/pipelock-playground-webtool
+COPY --from=build /out/pipelock-verifier-linux       /usr/local/bin/pipelock-verifier-linux
+COPY --from=build /out/pipelock-verifier-macos       /usr/local/bin/pipelock-verifier-macos
+COPY --from=build /out/pipelock-verifier-windows.exe /usr/local/bin/pipelock-verifier-windows.exe
 COPY deploy/fly-playground/entrypoint.sh /usr/local/bin/playground-entrypoint
-RUN chmod 0755 /usr/local/bin/playground-entrypoint /usr/local/bin/pipelock-playground-*
+RUN chmod 0755 /usr/local/bin/playground-entrypoint /usr/local/bin/pipelock-playground-* /usr/local/bin/pipelock-verifier-*
 ENV PLAYGROUND_AGENT_USER=pipelock-agent \
     PLAYGROUND_AGENT_UID=10001 \
     PLAYGROUND_PROXY_PORT=8888 \

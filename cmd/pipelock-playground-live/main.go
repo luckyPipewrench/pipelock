@@ -62,6 +62,7 @@ type serveFlags struct {
 	maxPerCode             int
 	concurrency            int
 	requireContainment     bool
+	requireModel           bool
 	selfManagedContainment bool
 	dev                    bool
 	orchestratorKey        string
@@ -89,6 +90,9 @@ type serveFlags struct {
 	perIPDailyBudget       int
 	perCodeDailyBudget     int
 	maxMessagesPerSession  int
+	verifierBinLinux       string
+	verifierBinMacOS       string
+	verifierBinWindows     string
 }
 
 // defaultMaxPerCode is the safe default lifetime session budget per invite code.
@@ -111,6 +115,7 @@ func newServeCmd() *cobra.Command {
 	fl.IntVar(&f.maxPerCode, "max-per-code", defaultMaxPerCode, "max sessions per invite code (0 = unlimited, opt-in)")
 	fl.IntVar(&f.concurrency, "concurrency", 3, "global cap on simultaneous live sessions")
 	fl.BoolVar(&f.requireContainment, "require-containment", true, "refuse sessions unless kernel containment is established")
+	fl.BoolVar(&f.requireModel, "require-model", false, "refuse to serve unless the real model-backed agent is fully configured (public demo guard)")
 	fl.BoolVar(&f.selfManagedContainment, "self-managed-containment", false, "the deployment sets the nft owner-match egress rule itself (e.g. a per-visitor microVM boot entrypoint) instead of `pipelock contain install`; the server proves the agent-uid egress/local escape drops empirically at start and via the signed witness, and does NOT require `pipelock contain verify`")
 	fl.BoolVar(&f.dev, "dev", false, "DEV ONLY: run uncontained (disables --require-containment); never use for public exposure")
 	fl.StringVar(&f.orchestratorKey, "orchestrator-key", "", "path to the published demo signing key (required outside --dev; empty = ephemeral per-run key in --dev)")
@@ -138,6 +143,9 @@ func newServeCmd() *cobra.Command {
 	fl.IntVar(&f.perIPDailyBudget, "per-ip-daily-budget", 0, "per client-IP ceiling on model round trips per UTC day so one client cannot drain the global budget (0 = no per-IP cap)")
 	fl.IntVar(&f.perCodeDailyBudget, "per-code-daily-budget", 0, "per invite-code ceiling on model round trips per UTC day so one code cannot drain the global budget (0 = no per-code cap)")
 	fl.IntVar(&f.maxMessagesPerSession, "max-messages-per-session", 0, "max messages one session may send (0 = default of 40)")
+	fl.StringVar(&f.verifierBinLinux, "verifier-bin-linux", "", "Linux pipelock-verifier binary path for live verify-kit downloads")
+	fl.StringVar(&f.verifierBinMacOS, "verifier-bin-macos", "", "macOS pipelock-verifier binary path for live verify-kit downloads")
+	fl.StringVar(&f.verifierBinWindows, "verifier-bin-windows", "", "Windows pipelock-verifier.exe binary path for live verify-kit downloads")
 	return cmd
 }
 
@@ -236,20 +244,25 @@ func buildServer(out io.Writer, f *serveFlags) (*livechat.Server, http.Handler, 
 	}
 
 	srv, err := livechat.NewServer(livechat.ServerConfig{
-		Gate:                  gate,
-		Limits:                livechat.Limits{MaxInputBytes: f.maxInputBytes, SessionTTL: f.sessionTTL},
-		IPRate:                livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
-		CodeRate:              livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},
-		MaxConcurrent:         f.concurrency,
-		RequireContainment:    requireContainment,
-		Containment:           verifier,
-		OrchestratorKeyPath:   f.orchestratorKey,
-		ToyAgentBin:           f.toyAgentBin,
-		WebToolBin:            f.webToolBin,
-		ProxyPort:             f.proxyPort,
-		TrustForwardedFor:     f.trustForwardedFor,
-		AllowOrigin:           f.allowOrigin,
-		LLMAgent:              llmAgent,
+		Gate:                gate,
+		Limits:              livechat.Limits{MaxInputBytes: f.maxInputBytes, SessionTTL: f.sessionTTL},
+		IPRate:              livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
+		CodeRate:            livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},
+		MaxConcurrent:       f.concurrency,
+		RequireContainment:  requireContainment,
+		Containment:         verifier,
+		OrchestratorKeyPath: f.orchestratorKey,
+		ToyAgentBin:         f.toyAgentBin,
+		WebToolBin:          f.webToolBin,
+		ProxyPort:           f.proxyPort,
+		TrustForwardedFor:   f.trustForwardedFor,
+		AllowOrigin:         f.allowOrigin,
+		LLMAgent:            llmAgent,
+		VerifierBinaries: playground.VerifyKitBinaries{
+			Linux:   f.verifierBinLinux,
+			MacOS:   f.verifierBinMacOS,
+			Windows: f.verifierBinWindows,
+		},
 		DailyTurnBudget:       f.dailyTurnBudget,
 		PerIPDailyBudget:      f.perIPDailyBudget,
 		PerCodeDailyBudget:    f.perCodeDailyBudget,
@@ -325,6 +338,9 @@ func validateServeSafety(f *serveFlags, modelBacked bool) error {
 	}
 	if !f.dev && strings.TrimSpace(f.orchestratorKey) == "" {
 		return errors.New("non-dev serve requires --orchestrator-key so bundles verify against the published demo key")
+	}
+	if f.requireModel && !modelBacked {
+		return errors.New("--require-model set but model-backed agent is not configured")
 	}
 	if modelBacked && !f.dev && f.dailyTurnBudget <= 0 {
 		return errors.New("model-backed public serve requires --daily-turn-budget > 0 (or --dev for local testing)")

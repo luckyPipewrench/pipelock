@@ -94,6 +94,9 @@ type ServerConfig struct {
 	TrustForwardedFor bool
 	// AllowOrigin sets Access-Control-Allow-Origin for the browser. Empty = none.
 	AllowOrigin string
+	// VerifierBinaries supplies the real shipped pipelock-verifier binaries used
+	// to build per-session OS-specific live verification kits.
+	VerifierBinaries playground.VerifyKitBinaries
 }
 
 type liveEntry struct {
@@ -590,10 +593,12 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
-// handleBundle serves the downloadable, offline-verifiable session bundle. It
-// seals the run on demand (the visitor signalling "I'm done, prove it") and
-// returns the .tar.gz the visitor re-verifies with the shipped verifier. The
-// archive is served from in-memory bytes captured at seal time, so there is no
+// handleBundle serves the downloadable, offline-verifiable session proof. It
+// seals the run on demand (the visitor signalling "I'm done, prove it"). By
+// default it preserves the raw .tar.gz bundle for manual/CLI fallback; with
+// ?os=linux|macos|windows it returns a one-click zip kit containing that
+// session's real audit packet plus the shipped verifier binary. Archives are
+// served from in-memory bytes captured at seal time, so there is no
 // path-traversal surface and no race with the run dir's eventual removal.
 // Token-gated and rate-limited like every other route; an expired token (or a
 // session already torn down) cannot download.
@@ -631,6 +636,25 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.releaseSessionResources(entry)
+	if rawOS := r.URL.Query().Get("os"); rawOS != "" {
+		osName, pErr := playground.ParseVerifyKitOS(rawOS)
+		if pErr != nil {
+			writeErr(w, http.StatusBadRequest, "unsupported verify kit")
+			return
+		}
+		kit, filename, kErr := playground.BuildLiveVerifyKit(osName, s.cfg.VerifierBinaries.Path(osName), entry.bundle, entry.sess.OrchestratorPubHex())
+		if kErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "livechat: verify kit build failed: %v\n", kErr)
+			writeErr(w, http.StatusServiceUnavailable, "verify kit is not available")
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(kit)
+		return
+	}
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "pipelock-session-"+claims.SessionID+".tar.gz"))
 	w.Header().Set("X-Content-Type-Options", "nosniff")

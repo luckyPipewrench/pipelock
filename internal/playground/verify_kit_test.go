@@ -127,16 +127,18 @@ func TestLiveKitReadmeAndScript_PerOS(t *testing.T) {
 	t.Parallel()
 	const key = "65c1e83850fe24c986f44bdd3a95360602d2f4f198f1c95e2d500d2b9495aaaf"
 	for _, osName := range []VerifyKitOS{VerifyKitOSLinux, VerifyKitOSMacOS, VerifyKitOSWindows} {
-		if readme := liveKitReadme(osName); !strings.Contains(readme, "Pipelock") {
-			t.Fatalf("readme(%q) missing brand: %q", osName, readme)
-		}
-		name, body, err := liveKitScript(osName, key)
-		if err != nil {
-			t.Fatalf("liveKitScript(%q): %v", osName, err)
-		}
-		if name == "" || !strings.Contains(body, key) {
-			t.Fatalf("script(%q) name=%q missing key in body", osName, name)
-		}
+		t.Run(string(osName), func(t *testing.T) {
+			if readme := liveKitReadme(osName); !strings.Contains(readme, "Pipelock") {
+				t.Fatalf("readme(%q) missing brand: %q", osName, readme)
+			}
+			name, body, err := liveKitScript(osName, key)
+			if err != nil {
+				t.Fatalf("liveKitScript(%q): %v", osName, err)
+			}
+			if name == "" || !strings.Contains(body, key) {
+				t.Fatalf("script(%q) name=%q missing key in body", osName, name)
+			}
+		})
 	}
 	if r := liveKitReadme(VerifyKitOS("x86")); !strings.Contains(r, "Linux") {
 		t.Fatalf("default readme should fall back to Linux text: %q", r)
@@ -182,25 +184,27 @@ func TestBuildLiveVerifyKit_WindowsAndMacOS(t *testing.T) {
 		{VerifyKitOSWindows, "pipelock-live-verify-windows/app/pipelock-verifier.exe", "pipelock-live-verify-windows.zip"},
 		{VerifyKitOSMacOS, "pipelock-live-verify-macos/app/pipelock-verifier", "pipelock-live-verify-macos.zip"},
 	} {
-		kit, filename, err := BuildLiveVerifyKit(tc.osName, verifierPath, session, key)
-		if err != nil {
-			t.Fatalf("BuildLiveVerifyKit(%q): %v", tc.osName, err)
-		}
-		if filename != tc.wantFile {
-			t.Fatalf("filename(%q) = %q, want %q", tc.osName, filename, tc.wantFile)
-		}
-		zr, err := zip.NewReader(bytes.NewReader(kit), int64(len(kit)))
-		if err != nil {
-			t.Fatalf("zip reader(%q): %v", tc.osName, err)
-		}
-		found := false
-		for _, f := range zr.File {
-			if f.Name == tc.wantBin {
-				found = true
+		t.Run(string(tc.osName), func(t *testing.T) {
+			kit, filename, err := BuildLiveVerifyKit(tc.osName, verifierPath, session, key)
+			if err != nil {
+				t.Fatalf("BuildLiveVerifyKit(%q): %v", tc.osName, err)
 			}
-		}
-		if !found {
-			t.Fatalf("kit(%q) missing %q", tc.osName, tc.wantBin)
-		}
+			if filename != tc.wantFile {
+				t.Fatalf("filename(%q) = %q, want %q", tc.osName, filename, tc.wantFile)
+			}
+			zr, err := zip.NewReader(bytes.NewReader(kit), int64(len(kit)))
+			if err != nil {
+				t.Fatalf("zip reader(%q): %v", tc.osName, err)
+			}
+			found := false
+			for _, f := range zr.File {
+				if f.Name == tc.wantBin {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("kit(%q) missing %q", tc.osName, tc.wantBin)
+			}
+		})
 	}
 }

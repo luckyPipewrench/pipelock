@@ -93,6 +93,7 @@ func buildDecisions(narr scenarioNarrative, receipts []receipt.Receipt, rep Veri
 			Meta:             fmt.Sprintf("verdict=allow · transport=%s", ar.Transport),
 			Signer:           bundleSignerPipelock,
 			Key:              shortKey(allowR.SignerKey),
+			Envelope:         receiptEnvelopeLines(allowR),
 			DestinationClass: DestinationClassUntrusted,
 		})
 	}
@@ -131,9 +132,10 @@ func buildDecisions(narr scenarioNarrative, receipts []receipt.Receipt, rep Veri
 			Headline: narr.containDecision.headline,
 			Body: fmt.Sprintf("%d direct-egress routes and %d local escape surfaces blocked for the contained agent; the same control target stayed reachable for the operator.",
 				len(hcw.AgentProbes), len(hcw.LocalAgentProbes)),
-			Meta:   "owner-match drop · local hardening · enforced by the host kernel",
-			Signer: bundleSignerOrch,
-			Key:    shortKey(rep.OrchestratorKey),
+			Meta:     "owner-match drop · local hardening · enforced by the host kernel",
+			Signer:   bundleSignerOrch,
+			Key:      shortKey(rep.OrchestratorKey),
+			Envelope: witnessEnvelopeLines(*hcw),
 		})
 	}
 
@@ -147,6 +149,7 @@ func buildDecisions(narr scenarioNarrative, receipts []receipt.Receipt, rep Veri
 		Meta:     fmt.Sprintf("observations=%d · binds=%s", witness.ObservedCount, shortNonce(witness.RunNonce)),
 		Signer:   bundleSignerCollector,
 		Key:      shortKey(rep.CollectorKey),
+		Envelope: witnessEnvelopeLines(witness),
 	})
 
 	return decisions
@@ -157,6 +160,15 @@ func buildDecisions(narr scenarioNarrative, receipts []receipt.Receipt, rep Veri
 // signed artifact, not a sample — the same bytes a verifier checks.
 func receiptEnvelopeLines(r receipt.Receipt) []string {
 	b, _ := json.MarshalIndent(r, "", "  ")
+	return strings.Split(string(b), "\n")
+}
+
+// witnessEnvelopeLines renders a signed attestation (the collector witness or the
+// host-containment witness) as indented JSON lines, matching the viewer's
+// expandable-envelope format. Like receiptEnvelopeLines, this is the real signed
+// artifact — the witness carries its own ed25519 Signature — not a sample.
+func witnessEnvelopeLines(v any) []string {
+	b, _ := json.MarshalIndent(v, "", "  ")
 	return strings.Split(string(b), "\n")
 }
 

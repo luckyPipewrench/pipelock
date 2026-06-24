@@ -141,6 +141,25 @@ func TestSeenTokens_ExpiredTokenAllowed(t *testing.T) {
 	}
 }
 
+func TestSeenTokens_CapFailsClosedUntilExpiry(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	seen := NewSeenTokens(2*time.Minute, clock)
+	seen.max = 2
+
+	if !seen.CheckAndMark("tok-a") || !seen.CheckAndMark("tok-b") {
+		t.Fatal("initial tokens should be accepted")
+	}
+	if seen.CheckAndMark("tok-c") {
+		t.Fatal("cache at capacity should reject new tokens fail-closed")
+	}
+	now = now.Add(3 * time.Minute)
+	if !seen.CheckAndMark("tok-c") {
+		t.Fatal("cache should accept after expired entries are evicted")
+	}
+}
+
 func TestSeenTokens_ConcurrentRace(t *testing.T) {
 	t.Parallel()
 	seen := NewSeenTokens(time.Minute, nil)
@@ -194,5 +213,36 @@ func TestReplayGuardVerifier_BlocksReplayBeforeNetwork(t *testing.T) {
 	}
 	if siteverifyCalls != 1 {
 		t.Fatalf("siteverify calls after replay = %d, want still 1 (no network call)", siteverifyCalls)
+	}
+}
+
+func TestReplayGuardVerifier_InvalidTokenDoesNotPopulateSeenCache(t *testing.T) {
+	t.Parallel()
+	var siteverifyCalls int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		siteverifyCalls++
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+	t.Cleanup(ts.Close)
+
+	seen := NewSeenTokens(time.Minute, nil)
+	inner := TurnstileVerifier{Secret: "secret", VerifyURL: ts.URL, Client: ts.Client()}
+	guard := &ReplayGuardVerifier{
+		Inner: inner,
+		Seen:  seen,
+	}
+
+	for _, token := range []string{"", strings.Repeat("x", maxTurnstileTokenBytes+1)} {
+		if err := guard.Verify(context.Background(), token, "198.51.100.7"); err == nil {
+			t.Fatal("invalid token Verify succeeded, want fail closed")
+		}
+	}
+	if siteverifyCalls != 0 {
+		t.Fatalf("siteverify calls = %d, want 0 for invalid tokens", siteverifyCalls)
+	}
+	seen.mu.Lock()
+	defer seen.mu.Unlock()
+	if len(seen.m) != 0 {
+		t.Fatalf("seen-token cache len = %d, want 0 after invalid tokens", len(seen.m))
 	}
 }

@@ -20,6 +20,7 @@ const (
 	defaultTurnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 	maxTurnstileTokenBytes    = 2048
 	defaultSeenTokenTTL       = 5 * time.Minute
+	defaultSeenTokenMax       = 10000
 )
 
 // HumanVerifier validates a browser proof before the broker leases a VM.
@@ -40,6 +41,7 @@ type SeenTokens struct {
 	mu  sync.Mutex
 	m   map[string]time.Time // token → expiry
 	ttl time.Duration
+	max int
 	now func() time.Time
 }
 
@@ -55,6 +57,7 @@ func NewSeenTokens(ttl time.Duration, now func() time.Time) *SeenTokens {
 	return &SeenTokens{
 		m:   make(map[string]time.Time),
 		ttl: ttl,
+		max: defaultSeenTokenMax,
 		now: now,
 	}
 }
@@ -77,6 +80,9 @@ func (s *SeenTokens) CheckAndMark(token string) bool {
 	if exp, exists := s.m[token]; exists && now.Before(exp) {
 		return false
 	}
+	if len(s.m) >= s.max {
+		return false
+	}
 	s.m[token] = now.Add(s.ttl)
 	return true
 }
@@ -91,6 +97,13 @@ type ReplayGuardVerifier struct {
 
 // Verify rejects already-seen tokens before delegating to the inner verifier.
 func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return errors.New("turnstile token is required")
+	}
+	if len(token) > maxTurnstileTokenBytes {
+		return errors.New("turnstile token is too long")
+	}
 	if !v.Seen.CheckAndMark(token) {
 		return ErrTokenAlreadyUsed
 	}

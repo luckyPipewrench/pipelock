@@ -226,7 +226,7 @@ func liveKitReadme(osName VerifyKitOS) string {
 	case VerifyKitOSWindows:
 		return "Pipelock - verify your live session (Windows)\r\n\r\nDouble-click Verify.bat.\r\nA valid run prints result: VALID. Nothing here touches the internet.\r\n"
 	case VerifyKitOSMacOS:
-		return "Pipelock - verify your live session (macOS)\n\nDouble-click Verify.command.\nA valid run prints result: VALID. Nothing here touches the internet.\n"
+		return "Pipelock - verify your live session (macOS)\n\nThe verifier is a universal Intel/Apple Silicon binary, but it is not Apple-notarized, so macOS Gatekeeper may block a freshly downloaded copy. If double-clicking Verify.command is blocked, open Terminal in this folder and run:\n\n  xattr -d com.apple.quarantine Verify.command app/pipelock-verifier\n  ./Verify.command\n\nA valid run prints result: VALID. Nothing here touches the internet. Notarized macOS support is planned; Linux and Windows need no extra step.\n"
 	default:
 		return "Pipelock - verify your live session (Linux)\n\nRun ./verify.sh, or double-click it if your file manager runs scripts.\nA valid run prints result: VALID. Nothing here touches the internet.\n"
 	}

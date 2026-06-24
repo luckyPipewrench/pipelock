@@ -25,12 +25,18 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 ENV CGO_ENABLED=0
+# makefat (Keith Randall, Go team) fat-combines the two macOS arches into one
+# universal2 binary so the verifier runs natively on Intel AND Apple Silicon
+# without Rosetta. Pinned, not @latest (build-time supply-chain hygiene).
+RUN go install github.com/randall77/makefat@v0.0.0-20260406194835-1b91746796b7
 RUN go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-live      ./cmd/pipelock-playground-live \
  && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-llm-agent ./cmd/pipelock-playground-llm-agent \
  && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-toyagent  ./cmd/pipelock-playground-toyagent \
  && go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-webtool   ./cmd/pipelock-playground-webtool \
  && GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-linux ./cmd/pipelock-verifier \
- && GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-macos ./cmd/pipelock-verifier \
+ && GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-macos-amd64 ./cmd/pipelock-verifier \
+ && GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-macos-arm64 ./cmd/pipelock-verifier \
+ && makefat /out/pipelock-verifier-macos /out/pipelock-verifier-macos-amd64 /out/pipelock-verifier-macos-arm64 \
  && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-windows.exe ./cmd/pipelock-verifier
 
 FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716

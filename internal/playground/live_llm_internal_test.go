@@ -504,6 +504,25 @@ func TestScanAgentReply_CleanPassthrough(t *testing.T) {
 	}
 }
 
+// TestScanAgentReply_PlantedSecretRedacted: when the agent echoes a planted
+// secret the exact-match redactor fires before the generic-DLP pass and replaces
+// the reply with the redaction notice. No proxy/scanner is needed: the
+// planted-secret branch returns before touching the live runner.
+func TestScanAgentReply_PlantedSecretRedacted(t *testing.T) {
+	t.Parallel()
+	// Built at runtime so the literal never looks like a real key (gosec G101).
+	accessKey := "AKIA" + "EXAMPLE0123456789AB"
+	sess := &LiveSession{plantedSecrets: []string{accessKey}}
+	ev, blocked := sess.scanAgentReply(context.Background(),
+		LiveEvent{Type: LiveEventChat, Role: liveRoleAgent, Text: "sure, the key is " + accessKey})
+	if !blocked {
+		t.Fatal("a reply echoing a planted secret must be blocked")
+	}
+	if ev.Text != redactedReplyNotice {
+		t.Fatalf("planted-secret reply = %q, want redaction notice", ev.Text)
+	}
+}
+
 // TestSendViaModel_NoReceipt_FailsClosed: the runner narrates a tool action that
 // got a (claimed) proxy response but never went through the proxy, so no receipt
 // backs it. The turn must fail closed with ErrReceiptInvariant.

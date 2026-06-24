@@ -4,13 +4,91 @@
 package playground
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+const validKitKey64 = "65c1e83850fe24c986f44bdd3a95360602d2f4f198f1c95e2d500d2b9495aaaf"
+
+// writeTempVerifier writes a stand-in verifier binary and returns its path.
+func writeTempVerifier(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "pipelock-verifier")
+	if err := os.WriteFile(p, []byte("verifier"), 0o600); err != nil {
+		t.Fatalf("write verifier: %v", err)
+	}
+	return p
+}
+
+// buildKitSession builds a gzip+tar session bundle for verify-kit tests. Each
+// key in files is placed under the download archive prefix. withDirEntry adds a
+// directory header (a non-regular entry the extractor must skip); withForeign
+// adds a regular file outside the prefix (also skipped).
+func buildKitSession(t *testing.T, files map[string]string, withDirEntry, withForeign bool) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	writeOne := func(name, body string) {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(body))}); err != nil {
+			t.Fatalf("header %s: %v", name, err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if withDirEntry {
+		if err := tw.WriteHeader(&tar.Header{Name: downloadArchivePrefix + "/packet/", Typeflag: tar.TypeDir, Mode: 0o750}); err != nil {
+			t.Fatalf("dir header: %v", err)
+		}
+	}
+	if withForeign {
+		writeOne("some-other-root/ignored.txt", "ignored")
+	}
+	for name, body := range files {
+		writeOne(downloadArchivePrefix+"/"+name, body)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// readZipEntry returns the contents of one named entry in a zip archive.
+func readZipEntry(t *testing.T, zipBytes []byte, name string) string {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatalf("zip reader: %v", err)
+	}
+	for _, f := range zr.File {
+		if f.Name != name {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+		var b bytes.Buffer
+		_, readErr := b.ReadFrom(rc)
+		_ = rc.Close()
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		return b.String()
+	}
+	t.Fatalf("zip entry %q not found", name)
+	return ""
+}
 
 func TestBuildLiveVerifyKit_IncludesSessionPacketAndVerifier(t *testing.T) {
 	t.Parallel()
@@ -204,6 +282,90 @@ func TestBuildLiveVerifyKit_WindowsAndMacOS(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("kit(%q) missing %q", tc.osName, tc.wantBin)
+			}
+		})
+	}
+}
+
+func TestBuildLiveVerifyKit_RejectsGarbageSession(t *testing.T) {
+	t.Parallel()
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), []byte("not a gzip stream"), validKitKey64); err == nil {
+		t.Fatal("non-gzip session bytes should fail closed")
+	}
+}
+
+func TestBuildLiveVerifyKit_MissingPacketFileFailsClosed(t *testing.T) {
+	t.Parallel()
+	// Valid gzip+tar, but packet/packet.json is absent: the kit must not ship a
+	// bundle that cannot verify.
+	session := buildKitSession(t, map[string]string{
+		"packet/manifest.json":  `{"v":1}`,
+		"packet/evidence.jsonl": "{}\n",
+	}, false, false)
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session, validKitKey64); err == nil {
+		t.Fatal("missing packet file should fail closed")
+	}
+}
+
+func TestBuildLiveVerifyKit_InvalidInBundleTrustKeyFailsClosed(t *testing.T) {
+	t.Parallel()
+	// The bundle's own packet.json carries a non-hex signer key; it is preferred
+	// over the fallback and must be rejected.
+	session := buildKitSession(t, map[string]string{
+		"packet/packet.json":    `{"verifier":{"signer_key":"not-hex"}}`,
+		"packet/manifest.json":  `{"v":1}`,
+		"packet/evidence.jsonl": "{}\n",
+	}, false, false)
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session, validKitKey64); err == nil {
+		t.Fatal("invalid in-bundle trust key should fail closed")
+	}
+}
+
+func TestBuildLiveVerifyKit_TrustKeySource(t *testing.T) {
+	t.Parallel()
+	keyA := strings.Repeat("1", 64)
+	keyB := strings.Repeat("2", 64)
+	fallback := validKitKey64
+
+	cases := []struct {
+		name    string
+		files   map[string]string
+		wantKey string
+	}{
+		{
+			name: "from packet.json",
+			files: map[string]string{
+				"packet/packet.json":    `{"verifier":{"signer_key":"` + keyA + `"}}`,
+				"packet/manifest.json":  `{"signer_key":"` + keyB + `"}`,
+				"packet/evidence.jsonl": "{}\n",
+			},
+			wantKey: keyA,
+		},
+		{
+			name: "from manifest.json when packet lacks it",
+			files: map[string]string{
+				"packet/packet.json":    `{"receipt_count":1}`,
+				"packet/manifest.json":  `{"signer_key":"` + keyB + `"}`,
+				"packet/evidence.jsonl": "{}\n",
+			},
+			wantKey: keyB,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// withDirEntry + withForeign also exercise the extraction skip paths.
+			session := buildKitSession(t, tc.files, true, true)
+			kit, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session, fallback)
+			if err != nil {
+				t.Fatalf("BuildLiveVerifyKit: %v", err)
+			}
+			script := readZipEntry(t, kit, "pipelock-live-verify-linux/verify.sh")
+			if !strings.Contains(script, tc.wantKey) {
+				t.Fatalf("verify script did not use the in-bundle trust key %s", tc.wantKey)
+			}
+			if strings.Contains(script, fallback) {
+				t.Fatalf("verify script used the fallback key instead of the in-bundle key %s", tc.wantKey)
 			}
 		})
 	}

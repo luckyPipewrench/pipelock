@@ -31,8 +31,12 @@ const maxResponseBytes = 1 << 20 // 1 MiB
 // chatMessage is one entry in the chat-completions messages array. It doubles
 // as the assistant reply we parse back out (Content + ToolCalls).
 type chatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
+	Role string `json:"role"`
+	// content is ALWAYS emitted (no omitempty): assistant tool-call turns have
+	// empty content, and DeepSeek's deserializer rejects a messages[] entry that
+	// omits the field entirely ("missing field `content`" -> 400), which broke the
+	// agent mid-run on long tool-call chains. Empty string is valid alongside tool_calls.
+	Content    string     `json:"content"`
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }

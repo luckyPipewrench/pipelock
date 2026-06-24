@@ -512,6 +512,9 @@ func (s *LiveSession) scanAgentReply(ctx context.Context, ev LiveEvent) (LiveEve
 	// reversed, base64/hex-encoded, or chunked, which the shape patterns miss.
 	// This is browser-safety, not a network-egress proof (the receipts are that).
 	if containsPlantedSecret(ev.Text, s.plantedSecrets) {
+		// Diagnostic: a planted-secret exact match is a TRUE catch (the agent
+		// echoed the canary/decoy, even encoded). Pattern name only, never the secret.
+		fmt.Fprintf(os.Stderr, "playground: agent reply redacted (trigger=planted-secret)\n")
 		ev.Text = redactedReplyNotice
 		return ev, true
 	}
@@ -519,6 +522,14 @@ func (s *LiveSession) scanAgentReply(ctx context.Context, ev LiveEvent) (LiveEve
 		return ev, false
 	}
 	if res := s.lr.sc.ScanTextForDLPQuiet(ctx, ev.Text); !res.Clean {
+		// Diagnostic: a generic-DLP shape match may be a TRUE catch or a false
+		// positive on benign narration. Log the pattern name(s)/severity/encoding
+		// (never the matched text) so a redaction can be told apart from an FP.
+		pats := make([]string, 0, len(res.Matches))
+		for _, m := range res.Matches {
+			pats = append(pats, fmt.Sprintf("%s(sev=%s,enc=%q)", m.PatternName, m.Severity, m.Encoded))
+		}
+		fmt.Fprintf(os.Stderr, "playground: agent reply redacted (trigger=generic-dlp matches=%d patterns=%v)\n", len(res.Matches), pats)
 		ev.Text = redactedReplyNotice
 		return ev, true
 	}

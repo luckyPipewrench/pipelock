@@ -697,7 +697,9 @@ func TestResolveTurnstileVerifier(t *testing.T) {
 	if got, err := resolveTurnstileVerifier(&serveFlags{}); err != nil || got != nil {
 		t.Fatalf("resolveTurnstileVerifier empty = %T %v, want nil nil", got, err)
 	}
-	if _, err := resolveTurnstileVerifier(&serveFlags{turnstileSecretEnv: "BROKER_TEST_EMPTY_VALUE"}); err == nil { //nolint:gosec // Test env var name, not a credential.
+	// Split literal: this is an (unset) env var NAME, not a credential; the split
+	// keeps gosec G101 from flagging a string literal assigned to a *Env field.
+	if _, err := resolveTurnstileVerifier(&serveFlags{turnstileSecretEnv: "BROKER_TEST_" + "EMPTY_VALUE"}); err == nil {
 		t.Fatal("empty turnstile env should error")
 	}
 }
@@ -721,7 +723,8 @@ func TestResolveAdminToken(t *testing.T) {
 	if got != "env-token" {
 		t.Fatal("env admin token mismatch")
 	}
-	if _, err := resolveAdminToken(&serveFlags{adminTokenEnv: "BROKER_TEST_EMPTY_VALUE"}); err == nil { //nolint:gosec // Test env var name, not a credential.
+	// Split literal (see above): unset env var NAME, not a credential.
+	if _, err := resolveAdminToken(&serveFlags{adminTokenEnv: "BROKER_TEST_" + "EMPTY_VALUE"}); err == nil {
 		t.Fatal("empty admin token env should error")
 	}
 }

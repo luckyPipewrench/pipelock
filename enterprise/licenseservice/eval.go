@@ -422,7 +422,12 @@ func (h *WebhookHandler) evalOrderDenialReason(order *PolarOrder) string {
 	if order.Currency != h.cfg.EvalCurrency {
 		return denyReasonCurrencyMismatch
 	}
-	if order.TotalAmount != h.cfg.EvalAmountCents {
+	// Compare the tax-EXCLUSIVE net amount, not the gross total. Polar is the
+	// merchant of record and adds sales tax/VAT on top of the price, so
+	// total_amount varies by buyer jurisdiction while net_amount equals the
+	// configured product price for every buyer. Comparing total_amount rejected
+	// any taxed purchase (e.g. $5000 + tax > 500000) and never minted a token.
+	if order.NetAmount != h.cfg.EvalAmountCents {
 		return denyReasonAmountMismatch
 	}
 	if classifyRefund(order) != refundStateNone {

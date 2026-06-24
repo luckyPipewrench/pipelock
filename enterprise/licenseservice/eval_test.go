@@ -118,11 +118,12 @@ func defaultEvalOrderJSON(status string) string {
 		"paid": %s,
 		"billing_reason": "purchase",
 		"total_amount": %d,
+		"net_amount": %d,
 		"refunded_amount": %d,
 		"currency": "usd",
 		"customer": {"email": "%s", "metadata": {"org": "buyercorp"}},
 		"product": {"id": "%s", "name": "Enterprise Eval", "metadata": {"pipelock_tier": "enterprise_eval"}}
-	}`, testEvalOrderID, status, paid, testEvalAmount, refunded, testEvalEmail, testEvalProductID)
+	}`, testEvalOrderID, status, paid, testEvalAmount, testEvalAmount, refunded, testEvalEmail, testEvalProductID)
 }
 
 func evalPaidEvent() *PolarWebhookEvent {
@@ -197,7 +198,7 @@ func TestHandleOrderPaid_RejectsInvalidOrders(t *testing.T) {
 		body string
 	}{
 		{name: "unpaid", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), `"paid": true`, `"paid": false`)},
-		{name: "wrong amount", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), `"total_amount": 500000`, `"total_amount": 100`)},
+		{name: "wrong amount", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), `"net_amount": 500000`, `"net_amount": 100`)},
 		{name: "wrong currency", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), `"currency": "usd"`, `"currency": "eur"`)},
 		{name: "wrong product", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), testEvalProductID, "prod_not_allowlisted")},
 		{name: "fully refunded", body: defaultEvalOrderJSON(orderStatusRefunded)},
@@ -350,5 +351,51 @@ func TestHandleOrderPaid_MintedTokenVerifies(t *testing.T) {
 	}
 	if lic.Tier != tierEnterpriseEval || !lic.HasFeature(license.FeatureFleet) {
 		t.Errorf("license = %+v, want eval tier + fleet feature", lic)
+	}
+}
+
+// TestEvalOrderDenialReason_NetAmountTaxInvariant proves the amount gate matches
+// on the tax-exclusive net_amount, not the gross total_amount. Polar is the
+// merchant of record and adds tax on top of the price, so total_amount varies by
+// buyer jurisdiction; comparing it rejected every taxed purchase. Regression for
+// that bug: a taxed order (net == price, gross > price) must mint; a wrong net
+// must be denied even if the gross happens to equal the configured price.
+func TestEvalOrderDenialReason_NetAmountTaxInvariant(t *testing.T) {
+	const pid = "prod_eval_net_test"
+	h := &WebhookHandler{cfg: &Config{
+		EvalAmountCents: 500000,
+		EvalCurrency:    "usd",
+		EvalProductIDs:  []string{pid},
+	}}
+	base := func() *PolarOrder {
+		o := &PolarOrder{
+			Paid:          true,
+			BillingReason: "purchase",
+			Currency:      "usd",
+			NetAmount:     500000,
+			TotalAmount:   500000,
+		}
+		o.Product.ID = pid
+		o.Product.Metadata = map[string]string{"pipelock_tier": tierEnterpriseEval}
+		return o
+	}
+	tests := []struct {
+		name   string
+		mutate func(*PolarOrder)
+		want   string
+	}{
+		{"taxed order mints (net==price, gross>price)", func(o *PolarOrder) { o.NetAmount = 500000; o.TotalAmount = 535000 }, ""},
+		{"no-tax order mints", func(o *PolarOrder) { o.NetAmount = 500000; o.TotalAmount = 500000 }, ""},
+		{"wrong net denied", func(o *PolarOrder) { o.NetAmount = 400000; o.TotalAmount = 428000 }, denyReasonAmountMismatch},
+		{"net wrong is denied even when gross equals price", func(o *PolarOrder) { o.NetAmount = 450000; o.TotalAmount = 500000 }, denyReasonAmountMismatch},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := base()
+			tt.mutate(o)
+			if got := h.evalOrderDenialReason(o); got != tt.want {
+				t.Fatalf("evalOrderDenialReason = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

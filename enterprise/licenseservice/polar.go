@@ -263,7 +263,8 @@ type PolarOrder struct {
 	// re-fetch from the Polar API (the webhook body is not authoritative).
 	Status         string `json:"status"`          // "paid", "refunded", "partially_refunded", …
 	Paid           bool   `json:"paid"`            // true once payment has settled
-	TotalAmount    int    `json:"total_amount"`    // order total in minor units (cents)
+	TotalAmount    int    `json:"total_amount"`    // gross total incl. tax in minor units (cents); used for refund accounting
+	NetAmount      int    `json:"net_amount"`      // amount excl. tax in minor units (cents); the configured product price, tax-invariant
 	RefundedAmount int    `json:"refunded_amount"` // refunded so far in minor units (cents)
 	Currency       string `json:"currency"`        // ISO 4217, lowercase (e.g. "usd")
 

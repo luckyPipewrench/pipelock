@@ -37,6 +37,7 @@ ignore:
   - "internal/mcp/proxy_sandbox.go"
   - "internal/sandbox/subreaper_linux.go"  # kernel primitive (prctl)
   - "internal/sandbox/shm_linux.go"  # kernel primitive (mount), runs in forked child
+  - "cmd/pipelock-playground-broker/control_signals_windows.go"  # build-tagged windows, compiled by Windows CI but absent from Linux coverage
   # macOS sandbox files — build-tagged darwin, untestable on Linux CI.
   - "internal/sandbox/launcher_darwin.go"
   - "internal/sandbox/seatbelt_darwin.go"

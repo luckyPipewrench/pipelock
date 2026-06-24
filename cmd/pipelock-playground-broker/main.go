@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -518,7 +517,7 @@ func validateTurnstileFlags(f *serveFlags) error {
 
 func startSignalControlLoop(ctx context.Context, out io.Writer, srv *broker.Server, httpSrv *http.Server) func() {
 	sigCh := make(chan os.Signal, 2)
-	signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigCh, controlSignals()...)
 	stopCh := make(chan struct{})
 	done := make(chan struct{})
 	var shutdownOnce sync.Once
@@ -671,20 +670,20 @@ func writeAdminJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func applyControlSignal(out io.Writer, srv *broker.Server, sig os.Signal) bool {
-	switch sig {
-	case syscall.SIGUSR1:
+	if isPauseSignal(sig) {
 		srv.Kill()
 		_, _ = fmt.Fprintln(out, "broker paused by SIGUSR1")
 		return false
-	case syscall.SIGUSR2:
+	}
+	if isResumeSignal(sig) {
 		srv.Resume()
 		_, _ = fmt.Fprintln(out, "broker resumed by SIGUSR2")
 		return false
-	case syscall.SIGTERM, syscall.SIGINT:
-		return true
-	default:
-		return false
 	}
+	if isShutdownSignal(sig) {
+		return true
+	}
+	return false
 }
 
 func validateAllowOrigin(raw string) error {

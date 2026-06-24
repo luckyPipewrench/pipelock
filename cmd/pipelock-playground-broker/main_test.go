@@ -17,7 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,6 +40,23 @@ func (fakeProvider) WaitReady(_ context.Context, _ string) error {
 
 func (fakeProvider) DestroyMachine(_ context.Context, _ string) error {
 	return nil
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
 }
 
 func TestRootCommandHasServe(t *testing.T) {
@@ -497,7 +514,7 @@ func TestRunServeListenErrorAfterBuild(t *testing.T) {
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
 	cmd := newServeCmd()
-	var out bytes.Buffer
+	var out lockedBuffer
 	cmd.SetOut(&out)
 	err := runServe(cmd, &serveFlags{
 		listen:                "127.0.0.1:bad-port",
@@ -529,27 +546,84 @@ func TestRunServeListenErrorAfterBuild(t *testing.T) {
 	}
 }
 
-func TestApplyControlSignal(t *testing.T) {
+func TestRunServeContextCancelledShutsDown(t *testing.T) {
+	dir := t.TempDir()
+	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
+	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
+
+	oldFactory := newMachineProvider
+	newMachineProvider = func(_ context.Context, _ *serveFlags, _ string) (broker.MachineProvider, error) {
+		return fakeProvider{}, nil
+	}
+	t.Cleanup(func() { newMachineProvider = oldFactory })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd := newServeCmd()
+	cmd.SetContext(ctx)
+	var out lockedBuffer
+	cmd.SetOut(&out)
+	err := runServe(cmd, &serveFlags{
+		listen:                "127.0.0.1:0",
+		provider:              "fake",
+		flyApp:                "playground-test",
+		flyTokenFile:          flyTokenFile,
+		image:                 "registry.example/playground:test",
+		internalPort:          8080,
+		concurrency:           1,
+		codes:                 []string{"outer-code"},
+		maxPerCode:            defaultMaxPerCode,
+		gateSecretFile:        gateSecretFile,
+		ipRate:                defaultIPRate,
+		ipBurst:               defaultIPBurst,
+		codeRate:              defaultCodeRate,
+		codeBurst:             defaultCodeBurst,
+		globalDailyBudget:     10,
+		unsafeNoHumanGate:     true,
+		sessionTTL:            defaultSessionTTL,
+		deadlineGrace:         defaultGrace,
+		vmDailyTurnBudget:     10,
+		requireSessionSecrets: false,
+	})
+	if err != nil {
+		t.Fatalf("runServe with canceled context: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "broker shutting down: context canceled") {
+		t.Fatalf("runServe output = %q, want context-canceled shutdown", got)
+	}
+}
+
+func TestStartSignalControlLoopContextCancelled(t *testing.T) {
+	srv := newBrokerControlTestServer(t)
+	httpSrv := &http.Server{
+		Handler:           http.NewServeMux(),
+		ReadHeaderTimeout: time.Second,
+	}
+	shutdownDone := make(chan struct{})
+	httpSrv.RegisterOnShutdown(func() { close(shutdownDone) })
+	ctx, cancel := context.WithCancel(context.Background())
+	var out lockedBuffer
+	stop := startSignalControlLoop(ctx, &out, srv, httpSrv)
+	cancel()
+	select {
+	case <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for signal loop shutdown")
+	}
+	stop()
+
+	if got := out.String(); !strings.Contains(got, "broker shutting down: context canceled") {
+		t.Fatalf("signal loop output = %q, want context-canceled shutdown", got)
+	}
+}
+
+func TestApplyControlSignalShutdown(t *testing.T) {
 	srv := newBrokerControlTestServer(t)
 
 	var out bytes.Buffer
-	if shutdown := applyControlSignal(&out, srv, syscall.SIGUSR1); shutdown {
-		t.Fatal("SIGUSR1 requested shutdown, want pause only")
-	}
-	if !srv.Killed() {
-		t.Fatal("SIGUSR1 did not pause broker")
-	}
-	if shutdown := applyControlSignal(&out, srv, syscall.SIGUSR2); shutdown {
-		t.Fatal("SIGUSR2 requested shutdown, want resume only")
-	}
-	if srv.Killed() {
-		t.Fatal("SIGUSR2 did not resume broker")
-	}
-	if shutdown := applyControlSignal(&out, srv, syscall.SIGTERM); !shutdown {
-		t.Fatal("SIGTERM did not request graceful shutdown")
-	}
-	if got := out.String(); !strings.Contains(got, "paused") || !strings.Contains(got, "resumed") {
-		t.Fatalf("operator output = %q, want pause and resume messages", got)
+	if shutdown := applyControlSignal(&out, srv, os.Interrupt); !shutdown {
+		t.Fatal("interrupt did not request graceful shutdown")
 	}
 }
 
@@ -631,6 +705,21 @@ func TestAdminHandlerAuthAndPauseResume(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"killed":false`) {
 		t.Fatalf("health status/body = %d/%q, want killed false", rr.Code, rr.Body.String())
+	}
+}
+
+func TestStartAdminServerValidationBranches(t *testing.T) {
+	srv := newBrokerControlTestServer(t)
+	if stop, err := startAdminServer(context.Background(), io.Discard, &serveFlags{}, srv); err != nil {
+		t.Fatalf("startAdminServer disabled: %v", err)
+	} else {
+		stop()
+	}
+	if _, err := startAdminServer(context.Background(), io.Discard, &serveFlags{
+		adminListen:   "127.0.0.1:0",
+		adminTokenEnv: "BROKER_TEST_EMPTY_" + "ADMIN",
+	}, srv); err == nil {
+		t.Fatal("startAdminServer with empty token env succeeded, want error")
 	}
 }
 
@@ -858,6 +947,50 @@ func TestBrokerPublicHosts(t *testing.T) {
 	}
 	if _, err := brokerPublicHosts(&serveFlags{publicHosts: []string{"https://bad.example"}}); err == nil {
 		t.Fatal("URL-shaped public host should error")
+	}
+}
+
+func TestValidateAllowOriginBranches(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{name: "empty", raw: "", wantErr: false},
+		{name: "valid", raw: "https://playground.pipelab.org", wantErr: false},
+		{name: "surrounding_space", raw: " https://playground.pipelab.org", wantErr: true},
+		{name: "wildcard", raw: "*", wantErr: true},
+		{name: "bad_scheme", raw: "ftp://playground.pipelab.org", wantErr: true},
+		{name: "missing_host", raw: "https:///path", wantErr: true},
+		{name: "path_not_origin", raw: "https://playground.pipelab.org/path", wantErr: true},
+		{name: "query_not_origin", raw: "https://playground.pipelab.org?x=1", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAllowOrigin(tc.raw)
+			if tc.wantErr && err == nil {
+				t.Fatal("validateAllowOrigin succeeded, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateAllowOrigin: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveCodesBranches(t *testing.T) {
+	specs, err := resolveCodes([]string{"outer", "inner"}, 3)
+	if err != nil {
+		t.Fatalf("resolveCodes: %v", err)
+	}
+	if len(specs) != 2 || specs[0].Code != "outer" || specs[0].MaxSessions != 3 || specs[1].Code != "inner" {
+		t.Fatalf("specs = %+v, want two code specs with max sessions", specs)
+	}
+	if _, err := resolveCodes(nil, 3); err == nil {
+		t.Fatal("missing codes should error")
+	}
+	if _, err := resolveCodes([]string{"outer", " \t"}, 3); err == nil {
+		t.Fatal("blank code should error")
 	}
 }
 

@@ -116,6 +116,59 @@ func TestClientIP_ForwardedForRequiresTrust(t *testing.T) {
 	}
 }
 
+func TestClientIP_NilRequest(t *testing.T) {
+	t.Parallel()
+	if got := ClientIP(nil, true); got != "" {
+		t.Fatalf("ClientIP(nil) = %q, want empty", got)
+	}
+	if got := ClientIPExact(nil, true); got != "" {
+		t.Fatalf("ClientIPExact(nil) = %q, want empty", got)
+	}
+}
+
+func TestClientIP_CloudflareHeaderEmptyFallsBack(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	req.RemoteAddr = "173.245.48.9:443"
+	req.Header.Set("CF-Connecting-IP", " \t")
+
+	if got := ClientIPExact(req, false); got != "173.245.48.9" {
+		t.Fatalf("ClientIPExact = %q, want Cloudflare peer fallback", got)
+	}
+}
+
+func TestClientIP_MalformedCloudflarePeerFallsBack(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	req.RemoteAddr = "not-an-ip:443"
+	req.Header.Set("CF-Connecting-IP", "198.51.100.7")
+
+	if got := ClientIPExact(req, false); got != "not-an-ip" {
+		t.Fatalf("ClientIPExact = %q, want raw malformed peer fallback", got)
+	}
+}
+
+func TestClientIP_EmptyForwardedForFallsBack(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.10:443"
+	req.Header.Set("X-Forwarded-For", "")
+
+	if got := ClientIPExact(req, true); got != "203.0.113.10" {
+		t.Fatalf("ClientIPExact = %q, want peer fallback", got)
+	}
+}
+
+func TestClientIP_RemoteAddrWithoutPort(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.10"
+
+	if got := ClientIPExact(req, false); got != "203.0.113.10" {
+		t.Fatalf("ClientIPExact = %q, want raw remote address", got)
+	}
+}
+
 func TestClientIP_InvalidXFFSegmentFallsToPeer(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

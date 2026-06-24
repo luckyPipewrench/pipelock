@@ -899,7 +899,7 @@ func TestSubprocessTurnRunner_ContextCancelled(t *testing.T) {
 	dir := t.TempDir()
 	bin := buildLLMHelper(t, echoHelperSrc)
 	runner, err := newSubprocessTurnRunner(t.Context(), subprocessRunnerOpts{
-		Bin: bin, ProxyURL: "http://127.0.0.1:1/",
+		Bin: bin, ProxyURL: "http://proxy.invalid/",
 		ModelBaseURL: "http://m/v1", Model: "x", SecretFile: filepath.Join(dir, "k"),
 	})
 	if err != nil {
@@ -938,7 +938,7 @@ func main() {
 `
 	bin := buildLLMHelper(t, src)
 	runner, err := newSubprocessTurnRunner(t.Context(), subprocessRunnerOpts{
-		Bin: bin, ProxyURL: "http://127.0.0.1:1/",
+		Bin: bin, ProxyURL: "http://proxy.invalid/",
 		ModelBaseURL: "http://m/v1", Model: "x", SecretFile: filepath.Join(dir, "k"),
 	})
 	if err != nil {

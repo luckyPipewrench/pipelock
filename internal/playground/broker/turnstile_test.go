@@ -6,6 +6,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -41,6 +42,12 @@ func TestTurnstileVerifier_Verify(t *testing.T) {
 	}
 }
 
+type errRoundTripper struct{}
+
+func (errRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("network blocked")
+}
+
 func TestTurnstileVerifier_FailsClosed(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -73,6 +80,13 @@ func TestTurnstileVerifier_FailsClosed(t *testing.T) {
 			},
 		},
 		{
+			name:  "rejected_without_error_codes",
+			token: "token",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"success": false})
+			},
+		},
+		{
 			name:  "empty_token",
 			token: "",
 			handler: func(http.ResponseWriter, *http.Request) {
@@ -100,10 +114,39 @@ func TestTurnstileVerifier_FailsClosed(t *testing.T) {
 	}
 }
 
+func TestTurnstileVerifier_RequestBuildAndNetworkErrorsFailClosed(t *testing.T) {
+	t.Parallel()
+	if err := (TurnstileVerifier{Secret: "secret", VerifyURL: "://bad"}).Verify(context.Background(), "token", ""); err == nil {
+		t.Fatal("invalid verify URL should fail closed")
+	}
+	verifier := TurnstileVerifier{
+		Secret:    "secret",
+		VerifyURL: "https://turnstile.example/verify",
+		Client:    &http.Client{Transport: errRoundTripper{}},
+	}
+	if err := verifier.Verify(context.Background(), "token", ""); err == nil {
+		t.Fatal("network error should fail closed")
+	}
+}
+
 func TestTurnstileVerifier_EmptySecretFailsClosed(t *testing.T) {
 	t.Parallel()
 	if err := (TurnstileVerifier{}).Verify(context.Background(), "token", "198.51.100.7"); err == nil {
 		t.Fatal("Verify with empty secret succeeded, want fail closed")
+	}
+}
+
+func TestSeenTokens_Defaults(t *testing.T) {
+	t.Parallel()
+	seen := NewSeenTokens(0, nil)
+	if seen.ttl != defaultSeenTokenTTL {
+		t.Fatalf("ttl = %v, want default %v", seen.ttl, defaultSeenTokenTTL)
+	}
+	if seen.now == nil {
+		t.Fatal("now func is nil")
+	}
+	if !seen.CheckAndMark("default-token") {
+		t.Fatal("default seen-token cache should accept first token")
 	}
 }
 

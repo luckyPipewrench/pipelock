@@ -407,6 +407,7 @@ func TestPolarClient_GetOrder(t *testing.T) {
 		wantStatus   string
 		wantRefunded int
 		wantTotal    int
+		wantNet      int
 		wantCurrency string
 	}{
 		{
@@ -417,7 +418,8 @@ func TestPolarClient_GetOrder(t *testing.T) {
 				"status": "paid",
 				"paid": true,
 				"billing_reason": "purchase",
-				"total_amount": 500000,
+				"total_amount": 535000,
+				"net_amount": 500000,
 				"refunded_amount": 0,
 				"currency": "usd",
 				"customer": {"email": "buyer@example.com", "metadata": {}},
@@ -427,7 +429,8 @@ func TestPolarClient_GetOrder(t *testing.T) {
 			wantPaid:     true,
 			wantStatus:   "paid",
 			wantRefunded: 0,
-			wantTotal:    500000,
+			wantTotal:    535000,
+			wantNet:      500000,
 			wantCurrency: "usd",
 		},
 		{
@@ -438,7 +441,8 @@ func TestPolarClient_GetOrder(t *testing.T) {
 				"status": "partially_refunded",
 				"paid": true,
 				"billing_reason": "purchase",
-				"total_amount": 500000,
+				"total_amount": 535000,
+				"net_amount": 500000,
 				"refunded_amount": 100000,
 				"currency": "usd",
 				"customer": {"email": "buyer@example.com", "metadata": {}},
@@ -448,7 +452,8 @@ func TestPolarClient_GetOrder(t *testing.T) {
 			wantPaid:     true,
 			wantStatus:   "partially_refunded",
 			wantRefunded: 100000,
-			wantTotal:    500000,
+			wantTotal:    535000,
+			wantNet:      500000,
 			wantCurrency: "usd",
 		},
 		{
@@ -499,6 +504,9 @@ func TestPolarClient_GetOrder(t *testing.T) {
 			}
 			if order.TotalAmount != tt.wantTotal {
 				t.Errorf("TotalAmount = %d, want %d", order.TotalAmount, tt.wantTotal)
+			}
+			if order.NetAmount != tt.wantNet {
+				t.Errorf("NetAmount = %d, want %d", order.NetAmount, tt.wantNet)
 			}
 			if order.Currency != tt.wantCurrency {
 				t.Errorf("Currency = %q, want %q", order.Currency, tt.wantCurrency)

@@ -168,6 +168,7 @@ func bundleTestHCW() HostContainmentWitness {
 		RunNonce:    "n",
 		AgentProbes: []ProbeResult{{Target: "169.254.169.254:80", Blocked: true}, {Target: "10.0.0.1:443", Blocked: true}},
 		ProbedAt:    time.Unix(testFixtureTS, 0).UTC(),
+		Signature:   "hcw-sig",
 	}
 }
 
@@ -178,7 +179,7 @@ func TestBuildDecisions(t *testing.T) {
 		OrchestratorKey: strings.Repeat("0", 64),
 		CollectorKey:    strings.Repeat("c", 64),
 	}
-	witness := Witness{RunNonce: "playground-demo-run", ObservedCount: 0}
+	witness := Witness{RunNonce: "playground-demo-run", ObservedCount: 0, Signature: "collector-sig"}
 
 	// Uncontained: allow, block, witness; no containment decision.
 	d := buildDecisions(liveDemoNarrative, rs, rep, witness, nil)
@@ -187,6 +188,9 @@ func TestBuildDecisions(t *testing.T) {
 	}
 	if d[0].Verdict != "ALLOW" || d[0].Class != string(ClassPipelockDecision) {
 		t.Fatalf("decision 0 = %+v", d[0])
+	}
+	if got := strings.Join(d[0].Envelope, "\n"); !strings.Contains(got, "ed25519:deadbeef") || !strings.Contains(got, "signer_key") {
+		t.Fatalf("allow decision must carry the real signed receipt envelope:\n%s", got)
 	}
 	if d[1].Verdict != "BLOCKED" || !d[1].Pop || len(d[1].Envelope) == 0 {
 		t.Fatalf("block decision missing pop/envelope: %+v", d[1])
@@ -197,6 +201,9 @@ func TestBuildDecisions(t *testing.T) {
 	if d[2].Class != string(ClassCollectorWitness) || !strings.Contains(d[2].Headline, "observed = 0") {
 		t.Fatalf("witness decision = %+v", d[2])
 	}
+	if got := strings.Join(d[2].Envelope, "\n"); !strings.Contains(got, "collector-sig") || !strings.Contains(got, "run_nonce") {
+		t.Fatalf("collector witness decision must carry the signed witness envelope:\n%s", got)
+	}
 
 	// Contained: a host-containment decision is inserted before the witness.
 	hcw := bundleTestHCW()
@@ -206,6 +213,9 @@ func TestBuildDecisions(t *testing.T) {
 	}
 	if dc[2].Class != string(ClassHostContainment) || dc[2].Signer != bundleSignerOrch {
 		t.Fatalf("containment decision = %+v", dc[2])
+	}
+	if got := strings.Join(dc[2].Envelope, "\n"); !strings.Contains(got, "hcw-sig") || !strings.Contains(got, "agent_probes") {
+		t.Fatalf("host-containment decision must carry the signed witness envelope:\n%s", got)
 	}
 	if !strings.Contains(dc[2].Body, "2 direct-egress routes and 0 local escape surfaces") {
 		t.Fatalf("containment body should reflect probe count: %q", dc[2].Body)

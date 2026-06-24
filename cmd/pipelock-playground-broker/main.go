@@ -1100,13 +1100,13 @@ func resolveTurnstileVerifier(f *serveFlags) (broker.HumanVerifier, error) {
 	if file == "" && envName == "" {
 		return nil, nil
 	}
-	var secret string
+	var secretValue string
 	var err error
 	if file != "" {
-		secret, err = readRequiredFile(file, "--turnstile-secret-file")
+		secretValue, err = readRequiredFile(file, "--turnstile-secret-file")
 	} else {
-		secret = strings.TrimSpace(os.Getenv(envName))
-		if secret == "" {
+		secretValue = strings.TrimSpace(os.Getenv(envName))
+		if secretValue == "" {
 			err = fmt.Errorf("%s is empty or unset", envName)
 		}
 	}
@@ -1114,7 +1114,7 @@ func resolveTurnstileVerifier(f *serveFlags) (broker.HumanVerifier, error) {
 		return nil, err
 	}
 	inner := broker.TurnstileVerifier{
-		Secret:    secret,
+		Secret:    secretValue,
 		VerifyURL: strings.TrimSpace(f.turnstileVerifyURL),
 		Client:    &http.Client{Timeout: 5 * time.Second},
 	}

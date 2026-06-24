@@ -1063,8 +1063,8 @@ func TestCFAccessJWKS_NegativeCache(t *testing.T) {
 	}
 
 	// Initial fetch succeeds and caches.
-	token := signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
-	if err := verifier.verify(context.Background(), token); err != nil {
+	jwt := signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
+	if err := verifier.verify(context.Background(), jwt); err != nil {
 		t.Fatalf("initial verify: %v", err)
 	}
 	if fetchCount != 1 {
@@ -1075,8 +1075,8 @@ func TestCFAccessJWKS_NegativeCache(t *testing.T) {
 	now = now.Add(cfAccessKeysTTL + time.Second)
 	fetchFailing = true
 	fetchesBefore := fetchCount
-	token = signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
-	if err := verifier.verify(context.Background(), token); err != nil {
+	jwt = signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
+	if err := verifier.verify(context.Background(), jwt); err != nil {
 		t.Fatalf("verify with stale keys after fetch failure: %v", err)
 	}
 	if fetchCount != fetchesBefore+1 {
@@ -1085,8 +1085,8 @@ func TestCFAccessJWKS_NegativeCache(t *testing.T) {
 
 	// Within the negative-cache window, no new fetch is attempted.
 	fetchesBefore = fetchCount
-	token = signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
-	if err := verifier.verify(context.Background(), token); err != nil {
+	jwt = signedCFAccessTestJWT(t, priv, kid, verifier.issuer, verifier.audience, now)
+	if err := verifier.verify(context.Background(), jwt); err != nil {
 		t.Fatalf("verify within negative-cache window: %v", err)
 	}
 	if fetchCount != fetchesBefore {

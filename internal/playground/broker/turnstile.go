@@ -97,17 +97,17 @@ type ReplayGuardVerifier struct {
 
 // Verify rejects already-seen tokens before delegating to the inner verifier.
 func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string) error {
-	token = strings.TrimSpace(token)
-	if token == "" {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
 		return errors.New("turnstile token is required")
 	}
-	if len(token) > maxTurnstileTokenBytes {
+	if len(trimmed) > maxTurnstileTokenBytes {
 		return errors.New("turnstile token is too long")
 	}
-	if !v.Seen.CheckAndMark(token) {
+	if !v.Seen.CheckAndMark(trimmed) {
 		return ErrTokenAlreadyUsed
 	}
-	return v.Inner.Verify(ctx, token, remoteIP)
+	return v.Inner.Verify(ctx, trimmed, remoteIP)
 }
 
 // TurnstileVerifier validates Cloudflare Turnstile tokens via Siteverify.
@@ -127,11 +127,11 @@ func (v TurnstileVerifier) Verify(ctx context.Context, token, remoteIP string) e
 	if secret == "" {
 		return errors.New("turnstile secret is empty")
 	}
-	token = strings.TrimSpace(token)
-	if token == "" {
+	trimmedToken := strings.TrimSpace(token)
+	if trimmedToken == "" {
 		return errors.New("turnstile token is required")
 	}
-	if len(token) > maxTurnstileTokenBytes {
+	if len(trimmedToken) > maxTurnstileTokenBytes {
 		return errors.New("turnstile token is too long")
 	}
 	endpoint := strings.TrimSpace(v.VerifyURL)
@@ -144,7 +144,7 @@ func (v TurnstileVerifier) Verify(ctx context.Context, token, remoteIP string) e
 	}
 	form := url.Values{
 		"secret":   {secret},
-		"response": {token},
+		"response": {trimmedToken},
 	}
 	if strings.TrimSpace(remoteIP) != "" {
 		form.Set("remoteip", strings.TrimSpace(remoteIP))

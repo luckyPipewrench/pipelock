@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,7 +80,10 @@ func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []
 	if err != nil {
 		return nil, "", err
 	}
-	trustKey := liveKitTrustKey(files, fallbackTrustKey)
+	trustKey, err := validateLiveKitTrustKey(liveKitTrustKey(files, fallbackTrustKey))
+	if err != nil {
+		return nil, "", err
+	}
 
 	root := "pipelock-live-verify-" + string(osName)
 	var buf bytes.Buffer
@@ -148,6 +152,18 @@ func liveKitTrustKey(files map[string][]byte, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func validateLiveKitTrustKey(key string) (string, error) {
+	key = strings.TrimSpace(key)
+	decoded, err := hex.DecodeString(key)
+	if err != nil {
+		return "", fmt.Errorf("verify kit trust key is not hex: %w", err)
+	}
+	if len(decoded) != 32 {
+		return "", fmt.Errorf("verify kit trust key length = %d bytes, want 32", len(decoded))
+	}
+	return key, nil
 }
 
 func extractLiveKitFiles(sessionTarGz []byte) (map[string][]byte, error) {
@@ -231,10 +247,10 @@ func liveKitScript(osName VerifyKitOS, key string) (string, string, error) {
 
 func liveKitVerifierTxt(key string) string {
 	return fmt.Sprintf(`Pipelock live session audit packet
-verdict: run pipelock-verifier audit-packet . --key %s
+verdict: run pipelock-verifier audit-packet packet --key %s
 signer_key: %s
 
 Verify it yourself from this directory:
-  pipelock-verifier audit-packet . --key %s
+  pipelock-verifier audit-packet packet --key %s
 `, key, key, key)
 }

@@ -84,6 +84,18 @@ func TestBuildLiveVerifyKit_FailsClosedWithoutVerifier(t *testing.T) {
 	}
 }
 
+func TestValidateLiveKitTrustKeyRejectsUnsafeKey(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"", "not-a-hex-key; touch /tmp/pwned", strings.Repeat("0", 62), strings.Repeat("0", 66)} {
+		if _, err := validateLiveKitTrustKey(key); err == nil {
+			t.Fatalf("validateLiveKitTrustKey(%q) succeeded, want error", key)
+		}
+	}
+	if got, err := validateLiveKitTrustKey(strings.Repeat("0", 64)); err != nil || got != strings.Repeat("0", 64) {
+		t.Fatalf("valid key = %q, %v; want pass", got, err)
+	}
+}
+
 func TestParseVerifyKitOS(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{"linux", "mac", "darwin", "windows", "win"} {

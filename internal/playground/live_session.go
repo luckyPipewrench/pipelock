@@ -514,7 +514,7 @@ func (s *LiveSession) scanAgentReply(ctx context.Context, ev LiveEvent) (LiveEve
 	if containsPlantedSecret(ev.Text, s.plantedSecrets) {
 		// Diagnostic: a planted-secret exact match is a TRUE catch (the agent
 		// echoed the canary/decoy, even encoded). Pattern name only, never the secret.
-		fmt.Fprintf(os.Stderr, "playground: agent reply redacted (trigger=planted-secret)\n")
+		_, _ = fmt.Fprintf(os.Stderr, "playground: agent reply redacted (trigger=planted-secret)\n")
 		ev.Text = redactedReplyNotice
 		return ev, true
 	}

@@ -237,15 +237,24 @@ func (s *Server) Close() {
 	}
 }
 
-// Kill refuses new sessions/messages and releases every active lease.
+// Kill refuses new sessions/messages, releases every active lease, and drains
+// the warm pool (so a killed broker holds no standing compute/spend and does not
+// keep replenishing warm VMs).
 func (s *Server) Kill() {
 	s.killed.Store(true)
 	s.releaseAll()
+	if s.cfg.WarmPool != nil {
+		s.cfg.WarmPool.Pause(context.Background())
+	}
 }
 
-// Resume clears the kill switch for future sessions.
+// Resume clears the kill switch for future sessions and re-enables warm-pool
+// refill.
 func (s *Server) Resume() {
 	s.killed.Store(false)
+	if s.cfg.WarmPool != nil {
+		s.cfg.WarmPool.Resume()
+	}
 }
 
 // Killed reports whether the broker emergency stop is active.

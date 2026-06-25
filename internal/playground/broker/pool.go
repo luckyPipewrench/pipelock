@@ -92,6 +92,9 @@ type Pool struct {
 	// in the reaper's protected set (via WarmMachineIDs) until FinishHandoff.
 	handoff map[string]struct{}
 	closed  bool
+	// paused stops the maintainer from creating warm VMs (kill switch). Unlike
+	// closed (permanent, shutdown), paused is reversible via Resume.
+	paused bool
 }
 
 // NewPool validates cfg and returns a Pool. Call Run() to start the background
@@ -235,6 +238,34 @@ func (p *Pool) Drain(ctx context.Context) {
 	}
 }
 
+// Pause stops the maintainer from creating new warm VMs and destroys the ones
+// currently warm, releasing their concurrency slots. It is the kill-switch
+// counterpart to Drain: reversible via Resume. Without this, a paused/killed
+// broker would keep a warm VM running and replenishing it under the serve
+// context, so the kill switch would not actually stop standing compute/spend.
+func (p *Pool) Pause(ctx context.Context) {
+	p.mu.Lock()
+	p.paused = true
+	draining := make([]warmEntry, len(p.entries))
+	copy(draining, p.entries)
+	p.entries = nil
+	p.mu.Unlock()
+
+	for _, e := range draining {
+		_ = p.provider.DestroyMachine(ctx, e.machine.ID)
+		e.release()
+		_, _ = fmt.Fprintf(p.log, "pool: paused, destroyed warm vm %s\n", e.machine.ID)
+	}
+}
+
+// Resume re-enables warm-VM creation. The maintainer refills the pool on its
+// next tick.
+func (p *Pool) Resume() {
+	p.mu.Lock()
+	p.paused = false
+	p.mu.Unlock()
+}
+
 // maintain recycles stale entries and fills the pool up to Size.
 func (p *Pool) maintain(ctx context.Context) {
 	p.recycleStale(ctx)
@@ -274,8 +305,9 @@ func (p *Pool) fill(ctx context.Context) {
 		p.mu.Lock()
 		need := p.size - len(p.entries)
 		isClosed := p.closed
+		isPaused := p.paused
 		p.mu.Unlock()
-		if need <= 0 || isClosed {
+		if need <= 0 || isClosed || isPaused {
 			return
 		}
 

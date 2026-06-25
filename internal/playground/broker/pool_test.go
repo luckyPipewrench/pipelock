@@ -332,6 +332,41 @@ func TestPoolFallbackOnEmpty(t *testing.T) {
 // releases their concurrency slots.
 //
 // INVARIANT 4: warm VMs are drained on graceful shutdown.
+// TestPoolPauseDrainsAndStopsRefill proves the kill-switch behavior: Pause
+// destroys the warm VMs (freeing their concurrency slots) AND stops the
+// maintainer from refilling, until Resume. Without this a killed/paused broker
+// would keep standing warm compute and keep replenishing it.
+func TestPoolPauseDrainsAndStopsRefill(t *testing.T) {
+	fp := &fakeProvider{}
+	limiter := livechat.NewConcurrencyLimiter(3)
+	pool := newTestPool(t, fp, limiter, 1, 0, nil)
+	pool.maintain(context.Background())
+	if got := len(pool.WarmMachineIDs()); got != 1 {
+		t.Fatalf("warm before pause = %d, want 1", got)
+	}
+
+	pool.Pause(context.Background())
+	if got := len(pool.WarmMachineIDs()); got != 0 {
+		t.Fatalf("warm after pause = %d, want 0 (drained)", got)
+	}
+	if got := limiter.InUse(); got != 0 {
+		t.Fatalf("slots in use after pause = %d, want 0 (released)", got)
+	}
+
+	// Paused: the maintainer must NOT refill.
+	pool.maintain(context.Background())
+	if got := len(pool.WarmMachineIDs()); got != 0 {
+		t.Fatalf("paused pool refilled: %d warm, want 0", got)
+	}
+
+	// Resume: the maintainer refills again.
+	pool.Resume()
+	pool.maintain(context.Background())
+	if got := len(pool.WarmMachineIDs()); got != 1 {
+		t.Fatalf("warm after resume = %d, want 1", got)
+	}
+}
+
 func TestPoolDrainDestroysAll(t *testing.T) {
 	fp := &fakeProvider{}
 	limiter := livechat.NewConcurrencyLimiter(5)

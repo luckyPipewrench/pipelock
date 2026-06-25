@@ -47,11 +47,17 @@ const (
 	defaultCodeBurst      = 10
 	nonStreamWriteTimeout = 30 * time.Second
 	// sessionWriteTimeout bounds the session-create response write. It must
-	// exceed the broker's VM-ready budget (defaultVMReadyTimeout = 60s) so a
-	// legitimate cold VM boot+proof completes, while still capping a slow/
-	// non-reading client so the goroutine cannot be pinned indefinitely. A full
-	// exemption (no deadline) would leave that slow-reader hole open.
-	sessionWriteTimeout      = 90 * time.Second
+	// exceed the WHOLE cold-path budget, not just one stage: on a warm-pool MISS
+	// the handler runs Lease() (CreateMachine + WaitReady, bounded by the Fly
+	// adapter's ~60s wait timeout, which includes image pull) AND THEN
+	// createVMSession (bounded by the broker's ~60s vmReadyTimeout) before it
+	// writes the response — worst case ~120s. Allow margin so a legitimate cold
+	// start never fails closed mid-response (the 30s default caused exactly that:
+	// Fly PU02 / client 502), while still CAPPING a slow/non-reading client so the
+	// goroutine cannot be pinned indefinitely (a full exemption would leave that
+	// hole open). The warm-pool common path is ~2-3s; this ceiling only bites on a
+	// cold miss.
+	sessionWriteTimeout      = 180 * time.Second
 	cfAccessJWTHeader        = "Cf-Access-Jwt-Assertion"
 	cfAccessKeysTTL          = 5 * time.Minute
 	cfAccessNegativeCacheTTL = 30 * time.Second
@@ -367,14 +373,28 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		return nil, nil, nil, nil, err
 	}
 
-	// The reaper's protected-ID set is (active leases UNION warm-pool machines).
-	// INVARIANT 2: reaper MUST NOT destroy warm VMs.
+	// The reaper's protected-ID set is (warm pool + in-flight handoffs) UNION
+	// (active leases). INVARIANT 2: the reaper MUST NOT destroy warm or
+	// handing-off VMs.
+	//
+	// HAND-OVER-HAND ORDERING (do NOT reorder these two reads): a machine's
+	// protection moves from the pool's handoff set to the lease's active set, and
+	// the pool clears the handoff marker only AFTER AdoptWarm has registered the
+	// active lease (handleSession calls FinishHandoff after AdoptWarm). The two
+	// sets are independently locked, so this snapshot is non-atomic. We therefore
+	// read the SOURCE (warm + handoff) FIRST and the DESTINATION (active leases)
+	// SECOND: if a machine has already left handoff between the reads, it is
+	// guaranteed to be in active by the time we read active (and stays there until
+	// the session ends). Reading active first would let a machine that adopts +
+	// finishes between the two reads fall out of BOTH snapshots, and the reaper
+	// could destroy a live VM (TOCTOU).
 	activeIDsFn := func() map[string]struct{} {
-		ids := lm.ActiveMachineIDs()
-		if warmPool != nil {
-			for id := range warmPool.WarmMachineIDs() {
-				ids[id] = struct{}{}
-			}
+		if warmPool == nil {
+			return lm.ActiveMachineIDs()
+		}
+		ids := warmPool.WarmMachineIDs()        // source: warm + in-flight handoff, FIRST
+		for id := range lm.ActiveMachineIDs() { // destination: active leases, SECOND
+			ids[id] = struct{}{}
 		}
 		return ids
 	}

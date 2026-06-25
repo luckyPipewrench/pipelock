@@ -218,7 +218,20 @@ func runLocalProbe(ctx context.Context, out, errOut io.Writer, targetsCSV string
 
 	_, _ = fmt.Fprintf(errOut, "[agent] probing %d local escape target(s) from this uid\n", len(targets))
 
-	results := probeConcurrent(ctx, targets, playground.ProbeLocalEscape)
+	// Local escape probes run SEQUENTIALLY, NOT via probeConcurrent. Unlike the
+	// direct-egress dials (pure, independent), at least one local probe
+	// (cap:userns-mount) is order-dependent: it can permanently mutate the
+	// probing OS thread's namespace/mount state, so it is designed to run last
+	// and in isolation. Running local probes concurrently would let that
+	// mutation change the execution environment while other local probes are
+	// still in flight, corrupting the proof. The local suite is also fast (most
+	// targets fail closed immediately: missing socket / denied), so it was never
+	// the slow part — the ~12s was the egress DROP-timeout waits, which
+	// runProbe parallelizes safely.
+	results := make([]playground.ProbeResult, 0, len(targets))
+	for _, t := range targets {
+		results = append(results, playground.ProbeLocalEscape(ctx, t))
+	}
 
 	enc := json.NewEncoder(out)
 	if err := enc.Encode(results); err != nil {

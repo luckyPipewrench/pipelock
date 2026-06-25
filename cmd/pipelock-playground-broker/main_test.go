@@ -1291,28 +1291,36 @@ var _ writeDeadliner = (*deadlineRecorder)(nil)
 func TestWriteDeadlineMiddleware(t *testing.T) {
 	t.Parallel()
 	const (
-		timeout      = 30 * time.Second
-		routeHealth  = "/api/live/health"
-		routeSession = "/api/live/session"
-		routeStream  = "/api/live/stream"
-		routeMessage = "/api/live/message"
+		defaultTimeout = 30 * time.Second
+		longTimeout    = 90 * time.Second
+		routeHealth    = "/api/live/health"
+		routeSession   = "/api/live/session"
+		routeStream    = "/api/live/stream"
+		routeMessage   = "/api/live/message"
 	)
-	exempt := []string{routeStream, routeMessage, routeSession}
+	overrides := map[string]time.Duration{
+		routeStream:  0,           // exempt: SSE writes indefinitely
+		routeMessage: 0,           // exempt: held open for the whole model turn
+		routeSession: longTimeout, // bounded long: cold VM boot+proof
+	}
 
+	const (
+		kindExempt  = "exempt"  // no deadline
+		kindDefault = "default" // ~defaultTimeout
+		kindLong    = "long"    // ~longTimeout (bounded, but > default)
+	)
 	tests := []struct {
 		name string
 		path string
-		// exempt routes get NO deadline (cleared to zero); bounded routes get a
-		// future deadline so a slow reader cannot pin the goroutine.
-		wantExempt bool
+		kind string
 	}{
-		{name: "health_bounded", path: routeHealth, wantExempt: false},
-		// session-create synchronously boots+proves a cold microVM (can exceed
-		// the 30s deadline); it must be exempt and bounded by vmReadyTimeout
-		// instead, else cold starts fail closed mid-response (PU02 / 502).
-		{name: "session_exempt_cold_start_boot", path: routeSession, wantExempt: true},
-		{name: "stream_exempt", path: routeStream, wantExempt: true},
-		{name: "message_exempt_held_open_for_turn", path: routeMessage, wantExempt: true},
+		{name: "health_default", path: routeHealth, kind: kindDefault},
+		// session-create boots+proves a cold microVM (can exceed 30s): a longer
+		// but still BOUNDED deadline, not a full exemption (a slow reader must
+		// not pin the goroutine). 30s here made cold starts fail closed (PU02/502).
+		{name: "session_long_bounded", path: routeSession, kind: kindLong},
+		{name: "stream_exempt", path: routeStream, kind: kindExempt},
+		{name: "message_exempt_held_open_for_turn", path: routeMessage, kind: kindExempt},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1322,7 +1330,7 @@ func TestWriteDeadlineMiddleware(t *testing.T) {
 				ran = true
 				w.WriteHeader(http.StatusOK)
 			})
-			mw := writeDeadlineMiddleware(inner, timeout, exempt...)
+			mw := writeDeadlineMiddleware(inner, defaultTimeout, overrides)
 			rec := &deadlineRecorder{ResponseWriter: httptest.NewRecorder()}
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tc.path, nil)
 			before := time.Now()
@@ -1334,13 +1342,24 @@ func TestWriteDeadlineMiddleware(t *testing.T) {
 			if !rec.set {
 				t.Fatal("middleware never called SetWriteDeadline")
 			}
-			if tc.wantExempt {
+			switch tc.kind {
+			case kindExempt:
 				if !rec.deadline.IsZero() {
 					t.Fatalf("exempt path %s: deadline = %v, want zero (cleared)", tc.path, rec.deadline)
 				}
-			} else {
-				if !rec.deadline.After(before) {
-					t.Fatalf("bounded path %s: deadline = %v, want a future deadline", tc.path, rec.deadline)
+			case kindDefault:
+				// ~defaultTimeout out, and clearly shorter than the long budget.
+				if !rec.deadline.After(before) || rec.deadline.After(before.Add(defaultTimeout+5*time.Second)) {
+					t.Fatalf("default path %s: deadline = %v, want ~%s out", tc.path, rec.deadline, defaultTimeout)
+				}
+			case kindLong:
+				// Bounded (not zero) AND longer than the default deadline, so a
+				// cold VM boot completes but a slow reader is still capped.
+				if rec.deadline.IsZero() {
+					t.Fatalf("long path %s: deadline = zero, want a bounded future deadline", tc.path)
+				}
+				if !rec.deadline.After(before.Add(defaultTimeout)) {
+					t.Fatalf("long path %s: deadline = %v, want > default (%s) out", tc.path, rec.deadline, defaultTimeout)
 				}
 			}
 		})

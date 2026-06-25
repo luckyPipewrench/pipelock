@@ -36,16 +36,22 @@ import (
 )
 
 const (
-	defaultListen            = "127.0.0.1:8100"
-	defaultConcurrency       = 3
-	defaultMaxPerCode        = 25
-	defaultSessionTTL        = 10 * time.Minute
-	defaultGrace             = 30 * time.Second
-	defaultIPRate            = 0.5
-	defaultIPBurst           = 5
-	defaultCodeRate          = 0.5
-	defaultCodeBurst         = 10
-	nonStreamWriteTimeout    = 30 * time.Second
+	defaultListen         = "127.0.0.1:8100"
+	defaultConcurrency    = 3
+	defaultMaxPerCode     = 25
+	defaultSessionTTL     = 10 * time.Minute
+	defaultGrace          = 30 * time.Second
+	defaultIPRate         = 0.5
+	defaultIPBurst        = 5
+	defaultCodeRate       = 0.5
+	defaultCodeBurst      = 10
+	nonStreamWriteTimeout = 30 * time.Second
+	// sessionWriteTimeout bounds the session-create response write. It must
+	// exceed the broker's VM-ready budget (defaultVMReadyTimeout = 60s) so a
+	// legitimate cold VM boot+proof completes, while still capping a slow/
+	// non-reading client so the goroutine cannot be pinned indefinitely. A full
+	// exemption (no deadline) would leave that slow-reader hole open.
+	sessionWriteTimeout      = 90 * time.Second
 	cfAccessJWTHeader        = "Cf-Access-Jwt-Assertion"
 	cfAccessKeysTTL          = 5 * time.Minute
 	cfAccessNegativeCacheTTL = 30 * time.Second
@@ -396,17 +402,19 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		handler = mux
 		_, _ = fmt.Fprintf(out, "serving static UI from %s at /\n", f.staticDir)
 	}
-	// Stream writes indefinitely; the message route is held open for the whole
-	// model turn; session-create synchronously boots and proves a fresh
-	// per-visitor microVM, which on a cold start (image pull + boot + containment
-	// proof) legitimately exceeds this deadline. All three are exempt from the
-	// write deadline (see the middleware) and bounded instead by their own
-	// budgets — the SSE/turn lifecycle for stream/message, and the broker's
-	// vmReadyTimeout (createVMSession's readyCtx) for session-create. A 30s write
-	// deadline on session-create made cold starts fail closed mid-response
-	// (Fly PU02 / client 502) even though the VM came up healthy within the 60s
-	// VM-ready budget.
-	handler = writeDeadlineMiddleware(handler, nonStreamWriteTimeout, livechat.RouteStream, livechat.RouteMessage, livechat.RouteSession)
+	// Per-route write deadlines. Stream writes indefinitely and the message route
+	// is held open for the whole model turn, so both are exempt (deadline 0).
+	// Session-create synchronously boots and proves a fresh per-visitor microVM;
+	// on a cold start that legitimately exceeds the default 30s (a 30s deadline
+	// made cold starts fail closed mid-response: Fly PU02 / client 502), so it
+	// gets a longer BOUNDED deadline (sessionWriteTimeout > the 60s vmReadyTimeout)
+	// rather than a full exemption — capping a slow reader without cutting off a
+	// healthy boot. Everything else gets the default fast deadline.
+	handler = writeDeadlineMiddleware(handler, nonStreamWriteTimeout, map[string]time.Duration{
+		livechat.RouteStream:  0,
+		livechat.RouteMessage: 0,
+		livechat.RouteSession: sessionWriteTimeout,
+	})
 
 	hosts, err := brokerPublicHosts(f)
 	if err != nil {
@@ -864,18 +872,20 @@ func normalizePublicHost(raw string) (string, error) {
 // than the deadline) before the response is written. Those long-lived routes
 // are bounded instead by the session TTL and the upstream/edge connection
 // timeouts, not by this deadline.
-func writeDeadlineMiddleware(next http.Handler, timeout time.Duration, exemptPaths ...string) http.Handler {
-	exempt := make(map[string]struct{}, len(exemptPaths))
-	for _, p := range exemptPaths {
-		exempt[p] = struct{}{}
-	}
+func writeDeadlineMiddleware(next http.Handler, defaultTimeout time.Duration, overrides map[string]time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rc := http.NewResponseController(w)
-		if _, ok := exempt[r.URL.Path]; ok {
-			// Long-lived route: clear any inherited deadline.
+		d, ok := overrides[r.URL.Path]
+		switch {
+		case ok && d <= 0:
+			// Exempt long-lived route: clear any inherited deadline.
 			_ = rc.SetWriteDeadline(time.Time{})
-		} else {
-			_ = rc.SetWriteDeadline(time.Now().Add(timeout))
+		case ok:
+			// Route-specific bounded deadline (e.g. session-create's long
+			// cold-start budget). Still bounded so a slow reader can't pin us.
+			_ = rc.SetWriteDeadline(time.Now().Add(d))
+		default:
+			_ = rc.SetWriteDeadline(time.Now().Add(defaultTimeout))
 		}
 		next.ServeHTTP(w, r)
 	})

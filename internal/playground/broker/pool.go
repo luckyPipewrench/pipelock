@@ -85,6 +85,12 @@ type Pool struct {
 
 	mu      sync.Mutex
 	entries []warmEntry
+	// handoff holds machine IDs popped by Acquire but not yet adopted into an
+	// active lease. They are NO LONGER in entries but NOT YET in
+	// LeaseManager.ActiveMachineIDs, so without tracking them here the reaper
+	// could see them as unowned and destroy them mid-handoff (TOCTOU). They stay
+	// in the reaper's protected set (via WarmMachineIDs) until FinishHandoff.
+	handoff map[string]struct{}
 	closed  bool
 }
 
@@ -128,6 +134,7 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		maxWarmAge: maxWarmAge,
 		now:        now,
 		log:        log,
+		handoff:    make(map[string]struct{}),
 	}, nil
 }
 
@@ -148,22 +155,44 @@ func (p *Pool) Acquire() (machine *Machine, vmCode string, release func(), ok bo
 	e := p.entries[0]
 	p.entries[0] = warmEntry{} // clear reference
 	p.entries = p.entries[1:]
+	// Mark the machine as in-flight handoff: it has left entries but is not yet
+	// an active lease. Keep it in the reaper's protected set until FinishHandoff
+	// (called by the caller once AdoptWarm succeeds OR the VM is destroyed on
+	// failure). Closes the reaper TOCTOU window.
+	if e.machine != nil {
+		p.handoff[e.machine.ID] = struct{}{}
+	}
 	return e.machine, e.vmCode, e.release, true
 }
 
-// WarmMachineIDs returns a snapshot of machine IDs currently in the warm pool.
-// Combined with LeaseManager.ActiveMachineIDs, this protects warm VMs from the
-// reaper.
+// FinishHandoff clears an in-flight handoff marker for machineID. The caller
+// invokes it after Acquire once the machine is either adopted into an active
+// lease (now protected by ActiveMachineIDs) or destroyed on adopt failure (no
+// longer exists). Idempotent.
+func (p *Pool) FinishHandoff(machineID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.handoff, machineID)
+}
+
+// WarmMachineIDs returns a snapshot of machine IDs the reaper must protect:
+// every VM currently in the warm pool PLUS every VM in an in-flight handoff
+// (popped by Acquire, not yet an active lease). Combined with
+// LeaseManager.ActiveMachineIDs, this guarantees no broker-owned VM is ever
+// unprotected — including during the Acquire->AdoptWarm window.
 //
-// INVARIANT 2: the reaper MUST NOT destroy warm VMs.
+// INVARIANT 2: the reaper MUST NOT destroy warm or handing-off VMs.
 func (p *Pool) WarmMachineIDs() map[string]struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ids := make(map[string]struct{}, len(p.entries))
+	ids := make(map[string]struct{}, len(p.entries)+len(p.handoff))
 	for _, e := range p.entries {
 		if e.machine != nil {
 			ids[e.machine.ID] = struct{}{}
 		}
+	}
+	for id := range p.handoff {
+		ids[id] = struct{}{}
 	}
 	return ids
 }

@@ -370,6 +370,10 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 			} else {
 				lease = adopted
 			}
+			// Clear the in-flight handoff marker now that the machine is either an
+			// active lease (protected by ActiveMachineIDs) or destroyed. Closes the
+			// reaper TOCTOU window opened by Acquire.
+			s.cfg.WarmPool.FinishHandoff(wm.ID)
 		}
 	}
 	if lease == nil {

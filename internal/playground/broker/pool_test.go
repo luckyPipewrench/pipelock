@@ -92,6 +92,45 @@ func TestPoolAcquireReturnsWarmVM(t *testing.T) {
 	release()
 }
 
+// TestPoolHandoffStaysReaperProtected proves the warm-handoff TOCTOU is closed.
+// Acquire pops a VM out of the warm entries BEFORE the caller adopts it into an
+// active lease; in that window the VM is owned by neither the pool's entries nor
+// LeaseManager.ActiveMachineIDs. If WarmMachineIDs did not also cover in-flight
+// handoffs, a reaper sweep in that window could destroy a live, about-to-be-used
+// VM (it can outlive the 5m grace, since warm VMs live up to maxWarmAge). The VM
+// must stay reaper-protected until FinishHandoff.
+func TestPoolHandoffStaysReaperProtected(t *testing.T) {
+	fp := &fakeProvider{}
+	limiter := livechat.NewConcurrencyLimiter(3)
+	pool := newTestPool(t, fp, limiter, 1, 0, nil)
+	pool.maintain(context.Background())
+
+	m, _, release, ok := pool.Acquire()
+	if !ok {
+		t.Fatal("Acquire should succeed after maintain fills the pool")
+	}
+
+	// Popped from entries...
+	pool.mu.Lock()
+	nEntries := len(pool.entries)
+	pool.mu.Unlock()
+	if nEntries != 0 {
+		t.Fatalf("entries = %d after Acquire, want 0 (machine popped)", nEntries)
+	}
+	// ...but STILL in the reaper-protected set (in-flight handoff).
+	if _, prot := pool.WarmMachineIDs()[m.ID]; !prot {
+		t.Fatalf("machine %s not protected during handoff; reaper could destroy a live VM", m.ID)
+	}
+
+	// FinishHandoff clears protection (caller has adopted it into a lease or
+	// destroyed it on adopt failure).
+	pool.FinishHandoff(m.ID)
+	if _, prot := pool.WarmMachineIDs()[m.ID]; prot {
+		t.Fatalf("machine %s still protected after FinishHandoff", m.ID)
+	}
+	release()
+}
+
 // TestPoolCapInvariant verifies that warm + active machines never exceed the
 // configured concurrency cap.
 //

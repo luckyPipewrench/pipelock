@@ -448,6 +448,12 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		livechat.RouteStream:  0,
 		livechat.RouteMessage: 0,
 		livechat.RouteSession: sessionWriteTimeout,
+		// The signed bundle / verify kit can be large (one receipt per action — a
+		// long session is hundreds of KB) and the VM generates it on demand, so a
+		// 30s write deadline truncates the proxied download mid-body (Fly "could
+		// not finish reading HTTP body from instance"). Give it the same long
+		// bounded budget as session-create.
+		livechat.RouteBundle: sessionWriteTimeout,
 	})
 
 	hosts, err := brokerPublicHosts(f)

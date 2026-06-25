@@ -14,6 +14,7 @@
   "lockFileMaintenance": {
     "enabled": false
   },
+  "osvVulnerabilityAlerts": true,
   "vulnerabilityAlerts": {
     "labels": ["security", "fast-track"],
     "minimumReleaseAge": "0 days",

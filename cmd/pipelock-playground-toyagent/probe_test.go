@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"strings"
@@ -12,6 +13,42 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
+
+// TestProbeConcurrent_PreservesOrderUnderOutOfOrderCompletion proves the
+// containment proof's parallelization keeps results positionally aligned with
+// targets even when probes COMPLETE out of order. Order is load-bearing:
+// decodeProbeResults validates result[i] against target[i], and the differential
+// proof relies on the control target being first. The probe for target 0 is
+// gated to finish only after the last target has started, so completion order is
+// the reverse of index order; the test fails if probeConcurrent returned results
+// in completion order instead of target order. Runs under -race to catch any
+// shared-state bug in the per-index writes.
+func TestProbeConcurrent_PreservesOrderUnderOutOfOrderCompletion(t *testing.T) {
+	t.Parallel()
+	targets := []string{"t0", "t1", "t2", "t3", "t4"}
+	gate := make(chan struct{})
+	probe := func(_ context.Context, target string) playground.ProbeResult {
+		switch target {
+		case "t4":
+			close(gate) // release t0 only once the last target has started
+		case "t0":
+			<-gate // forced to complete after t4
+		}
+		return playground.ProbeResult{Target: target, Open: target == "t2"}
+	}
+	results := probeConcurrent(context.Background(), targets, probe)
+	if len(results) != len(targets) {
+		t.Fatalf("got %d results, want %d", len(results), len(targets))
+	}
+	for i, tg := range targets {
+		if results[i].Target != tg {
+			t.Fatalf("results[%d].Target = %q, want %q (order not preserved across out-of-order completion)", i, results[i].Target, tg)
+		}
+	}
+	if !results[2].Open {
+		t.Fatalf("results[2] (t2) Open = false, want true (result content misaligned with index)")
+	}
+}
 
 func TestRunProbe_OpenAndRefused(t *testing.T) {
 	t.Parallel()

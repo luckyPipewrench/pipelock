@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -165,16 +166,40 @@ func runProbe(ctx context.Context, out, errOut io.Writer, targetsCSV string) err
 
 	_, _ = fmt.Fprintf(errOut, "[agent] probing %d direct-egress target(s) from this network position\n", len(targets))
 
-	results := make([]playground.ProbeResult, 0, len(targets))
-	for _, t := range targets {
-		results = append(results, playground.ProbeDirectEgress(ctx, t))
-	}
+	results := probeConcurrent(ctx, targets, playground.ProbeDirectEgress)
 
 	enc := json.NewEncoder(out)
 	if err := enc.Encode(results); err != nil {
 		return fmt.Errorf("encode probe results: %w", err)
 	}
 	return nil
+}
+
+// probeConcurrent runs probe(ctx, target) for every target concurrently and
+// returns the results in the SAME ORDER as targets. Order matters: the
+// orchestrator's decodeProbeResults validates each result against the target at
+// the same index, and the differential containment proof relies on positional
+// alignment (control target first, then the suite). Each goroutine writes only
+// its own results[i], so there is no shared-state race.
+//
+// The probes are independent pure TCP/unix dials, each bounded by the same short
+// per-target timeout. Running them concurrently changes ONLY wall-clock: a suite
+// of DROP'd targets that each wait the full dial timeout completes in ~one
+// timeout instead of len(targets)*timeout sequentially. This is what keeps the
+// fail-closed containment proof off the critical path of session start; it does
+// not change which targets are probed or the pass/fail decision over them.
+func probeConcurrent(ctx context.Context, targets []string, probe func(context.Context, string) playground.ProbeResult) []playground.ProbeResult {
+	results := make([]playground.ProbeResult, len(targets))
+	var wg sync.WaitGroup
+	wg.Add(len(targets))
+	for i, t := range targets {
+		go func(i int, t string) {
+			defer wg.Done()
+			results[i] = probe(ctx, t)
+		}(i, t)
+	}
+	wg.Wait()
+	return results
 }
 
 // runLocalProbe performs local non-network escape probes and writes a JSON array
@@ -193,10 +218,7 @@ func runLocalProbe(ctx context.Context, out, errOut io.Writer, targetsCSV string
 
 	_, _ = fmt.Fprintf(errOut, "[agent] probing %d local escape target(s) from this uid\n", len(targets))
 
-	results := make([]playground.ProbeResult, 0, len(targets))
-	for _, t := range targets {
-		results = append(results, playground.ProbeLocalEscape(ctx, t))
-	}
+	results := probeConcurrent(ctx, targets, playground.ProbeLocalEscape)
 
 	enc := json.NewEncoder(out)
 	if err := enc.Encode(results); err != nil {

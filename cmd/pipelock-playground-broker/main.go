@@ -46,18 +46,20 @@ const (
 	defaultCodeRate       = 0.5
 	defaultCodeBurst      = 10
 	nonStreamWriteTimeout = 30 * time.Second
-	// sessionWriteTimeout bounds the session-create response write. It must
-	// exceed the WHOLE cold-path budget, not just one stage: on a warm-pool MISS
-	// the handler runs Lease() (CreateMachine + WaitReady, bounded by the Fly
-	// adapter's ~60s wait timeout, which includes image pull) AND THEN
-	// createVMSession (bounded by the broker's ~60s vmReadyTimeout) before it
-	// writes the response — worst case ~120s. Allow margin so a legitimate cold
-	// start never fails closed mid-response (the 30s default caused exactly that:
-	// Fly PU02 / client 502), while still CAPPING a slow/non-reading client so the
-	// goroutine cannot be pinned indefinitely (a full exemption would leave that
-	// hole open). The warm-pool common path is ~2-3s; this ceiling only bites on a
-	// cold miss.
-	sessionWriteTimeout      = 180 * time.Second
+	// sessionWriteTimeout bounds the session-create response write. It must exceed
+	// the WHOLE cold-path budget, summed across every stage, or a legitimate cold
+	// start fails closed mid-response (the 30s default did exactly that: Fly PU02
+	// / client 502). On a warm-pool MISS the handler runs, in sequence, three
+	// independently-bounded Fly/broker calls before it writes the response:
+	//   - CreateMachine  — Fly adapter HTTP client timeout ~65s (waitTimeout+5s)
+	//   - WaitReady      — Fly adapter HTTP client timeout ~65s (incl. image pull)
+	//   - createVMSession — broker vmReadyTimeout ~60s
+	// i.e. a code-level worst case of ~190s. The ceiling is set above that with
+	// margin so a cold miss completes, while still CAPPING a slow/non-reading
+	// client (a full exemption would leave that goroutine-pin hole open; the
+	// concurrency cap bounds how many such pins can exist). The warm-pool common
+	// path is ~2-3s; this ceiling only bites on a cold miss.
+	sessionWriteTimeout      = 300 * time.Second
 	cfAccessJWTHeader        = "Cf-Access-Jwt-Assertion"
 	cfAccessKeysTTL          = 5 * time.Minute
 	cfAccessNegativeCacheTTL = 30 * time.Second

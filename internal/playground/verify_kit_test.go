@@ -14,8 +14,6 @@ import (
 	"testing"
 )
 
-const validKitKey64 = "65c1e83850fe24c986f44bdd3a95360602d2f4f198f1c95e2d500d2b9495aaaf"
-
 // writeTempVerifier writes a stand-in verifier binary and returns its path.
 func writeTempVerifier(t *testing.T) string {
 	t.Helper()
@@ -90,12 +88,25 @@ func readZipEntry(t *testing.T, zipBytes []byte, name string) string {
 	return ""
 }
 
-func TestBuildLiveVerifyKit_IncludesSessionPacketAndVerifier(t *testing.T) {
+// fullKitSessionFiles returns the minimal set of files for a valid kit session
+// that includes all required run artifacts.
+func fullKitSessionFiles() map[string]string {
+	return map[string]string{
+		"packet/packet.json":       `{"receipt_count":1}`,
+		"packet/manifest.json":     `{"v":1}`,
+		"packet/evidence.jsonl":    "{}\n",
+		launchManifestFile:         `{"run_nonce":"n1"}`,
+		witnessFile:                `{"observed_count":0}`,
+		redWitnessFile:             `{"red":true}`,
+		hostContainmentWitnessFile: `{"contained":true}`,
+	}
+}
+
+func TestBuildLiveVerifyKit_IncludesAllRunArtifactsAndVerifier(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	writeRunArtifacts(t, dir, false)
-	const key = "65c1e83850fe24c986f44bdd3a95360602d2f4f198f1c95e2d500d2b9495aaaf"
-	session, err := ArchiveRunForDownload(dir, key)
+	writeRunArtifacts(t, dir, true) // with containment witness
+	session, err := ArchiveRunForDownload(dir, PublishedOrchestratorPubKeyHex)
 	if err != nil {
 		t.Fatalf("ArchiveRunForDownload: %v", err)
 	}
@@ -104,7 +115,7 @@ func TestBuildLiveVerifyKit_IncludesSessionPacketAndVerifier(t *testing.T) {
 		t.Fatalf("write verifier: %v", err)
 	}
 
-	kit, filename, err := BuildLiveVerifyKit(VerifyKitOSLinux, verifierPath, session, key)
+	kit, filename, err := BuildLiveVerifyKit(VerifyKitOSLinux, verifierPath, session)
 	if err != nil {
 		t.Fatalf("BuildLiveVerifyKit: %v", err)
 	}
@@ -132,15 +143,19 @@ func TestBuildLiveVerifyKit_IncludesSessionPacketAndVerifier(t *testing.T) {
 		files[f.Name] = b.String()
 	}
 
+	// Must include ALL run artifacts, not just the packet subset.
 	for _, want := range []string{
 		kitRoot + "/README.txt",
 		kitRoot + "/verify.sh",
 		kitRoot + "/app/pipelock-verifier",
-		kitRoot + "/app/packet/packet.json",
-		kitRoot + "/app/packet/manifest.json",
-		kitRoot + "/app/packet/evidence.jsonl",
-		kitRoot + "/app/packet/verifier.txt",
-		kitRoot + "/app/SESSION-VERIFY.txt",
+		kitRoot + "/app/run/packet/packet.json",
+		kitRoot + "/app/run/packet/manifest.json",
+		kitRoot + "/app/run/packet/evidence.jsonl",
+		kitRoot + "/app/run/" + launchManifestFile,
+		kitRoot + "/app/run/" + witnessFile,
+		kitRoot + "/app/run/" + redWitnessFile,
+		kitRoot + "/app/run/" + hostContainmentWitnessFile,
+		kitRoot + "/app/run/verifier.txt",
 	} {
 		if _, ok := files[want]; !ok {
 			t.Fatalf("kit missing %q (have %v)", want, keysOf(files))
@@ -149,28 +164,52 @@ func TestBuildLiveVerifyKit_IncludesSessionPacketAndVerifier(t *testing.T) {
 	if files[kitRoot+"/app/pipelock-verifier"] != "real verifier bytes" {
 		t.Fatal("kit did not include the configured verifier binary bytes")
 	}
+	// The script must use the PUBLISHED key and the full verify-run command.
 	script := files[kitRoot+"/verify.sh"]
-	if !strings.Contains(script, "./pipelock-verifier audit-packet packet --key "+key) {
-		t.Fatalf("verify script missing command/key:\n%s", script)
+	if !strings.Contains(script, "verify-run run --orchestrator-key "+PublishedOrchestratorPubKeyHex) {
+		t.Fatalf("verify script missing full verify-run command with published key:\n%s", script)
+	}
+}
+
+func TestBuildLiveVerifyKit_AlwaysUsesPublishedKey(t *testing.T) {
+	t.Parallel()
+	// Even when the bundle carries a different key, the kit must use the
+	// published key. There is no fallback or extraction path.
+	session := buildKitSession(t, fullKitSessionFiles(), false, false)
+
+	kit, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session)
+	if err != nil {
+		t.Fatalf("BuildLiveVerifyKit: %v", err)
+	}
+	script := readZipEntry(t, kit, "pipelock-live-verify-linux/verify.sh")
+	if !strings.Contains(script, PublishedOrchestratorPubKeyHex) {
+		t.Fatalf("verify script does not contain the published key:\n%s", script)
+	}
+	verifierTxt := readZipEntry(t, kit, "pipelock-live-verify-linux/app/run/verifier.txt")
+	if !strings.Contains(verifierTxt, PublishedOrchestratorPubKeyHex) {
+		t.Fatalf("verifier.txt does not contain the published key:\n%s", verifierTxt)
 	}
 }
 
 func TestBuildLiveVerifyKit_FailsClosedWithoutVerifier(t *testing.T) {
 	t.Parallel()
-	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, "", []byte("not-used"), "key"); err == nil {
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, "", []byte("not-used")); err == nil {
 		t.Fatal("missing verifier path should fail closed")
 	}
 }
 
-func TestValidateLiveKitTrustKeyRejectsUnsafeKey(t *testing.T) {
+func TestPublishedKeyIsValid32ByteHex(t *testing.T) {
 	t.Parallel()
-	for _, key := range []string{"", "not-a-hex-key; touch /tmp/pwned", strings.Repeat("0", 62), strings.Repeat("0", 66)} {
-		if _, err := validateLiveKitTrustKey(key); err == nil {
-			t.Fatalf("validateLiveKitTrustKey(%q) succeeded, want error", key)
-		}
+	// Verify the published key constant is a valid 32-byte hex string.
+	if len(PublishedOrchestratorPubKeyHex) != 64 {
+		t.Fatalf("PublishedOrchestratorPubKeyHex length = %d, want 64", len(PublishedOrchestratorPubKeyHex))
 	}
-	if got, err := validateLiveKitTrustKey(strings.Repeat("0", 64)); err != nil || got != strings.Repeat("0", 64) {
-		t.Fatalf("valid key = %q, %v; want pass", got, err)
+	for _, c := range PublishedOrchestratorPubKeyHex {
+		isDigit := c >= '0' && c <= '9'
+		isHexLower := c >= 'a' && c <= 'f'
+		if !isDigit && !isHexLower {
+			t.Fatalf("PublishedOrchestratorPubKeyHex contains non-hex char %q", c)
+		}
 	}
 }
 
@@ -203,25 +242,28 @@ func TestVerifyKitBinaries_Path(t *testing.T) {
 
 func TestLiveKitReadmeAndScript_PerOS(t *testing.T) {
 	t.Parallel()
-	const key = "65c1e83850fe24c986f44bdd3a95360602d2f4f198f1c95e2d500d2b9495aaaf"
+	orchKey := PublishedOrchestratorPubKeyHex
 	for _, osName := range []VerifyKitOS{VerifyKitOSLinux, VerifyKitOSMacOS, VerifyKitOSWindows} {
 		t.Run(string(osName), func(t *testing.T) {
 			if readme := liveKitReadme(osName); !strings.Contains(readme, "Pipelock") {
 				t.Fatalf("readme(%q) missing brand: %q", osName, readme)
 			}
-			name, body, err := liveKitScript(osName, key)
+			name, body, err := liveKitScript(osName, orchKey)
 			if err != nil {
 				t.Fatalf("liveKitScript(%q): %v", osName, err)
 			}
-			if name == "" || !strings.Contains(body, key) {
+			if name == "" || !strings.Contains(body, orchKey) {
 				t.Fatalf("script(%q) name=%q missing key in body", osName, name)
+			}
+			if !strings.Contains(body, "verify-run") {
+				t.Fatalf("script(%q) missing verify-run command: %s", osName, body)
 			}
 		})
 	}
 	if r := liveKitReadme(VerifyKitOS("x86")); !strings.Contains(r, "Linux") {
 		t.Fatalf("default readme should fall back to Linux text: %q", r)
 	}
-	if _, _, err := liveKitScript(VerifyKitOS("x86"), key); err == nil {
+	if _, _, err := liveKitScript(VerifyKitOS("x86"), orchKey); err == nil {
 		t.Fatal("liveKitScript with unsupported OS should error")
 	}
 }
@@ -230,13 +272,12 @@ func TestBuildLiveVerifyKit_ReadVerifierError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeRunArtifacts(t, dir, false)
-	const key = "65c1e83850fe24c986f44bdd3a95360602d2f4f198f1c95e2d500d2b9495aaaf"
-	session, err := ArchiveRunForDownload(dir, key)
+	session, err := ArchiveRunForDownload(dir, PublishedOrchestratorPubKeyHex)
 	if err != nil {
 		t.Fatalf("ArchiveRunForDownload: %v", err)
 	}
 	missing := filepath.Join(t.TempDir(), "no-such-verifier")
-	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, missing, session, key); err == nil {
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, missing, session); err == nil {
 		t.Fatal("unreadable verifier path should fail closed")
 	}
 }
@@ -245,8 +286,7 @@ func TestBuildLiveVerifyKit_WindowsAndMacOS(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	writeRunArtifacts(t, dir, false)
-	const key = "65c1e83850fe24c986f44bdd3a95360602d2f4f198f1c95e2d500d2b9495aaaf"
-	session, err := ArchiveRunForDownload(dir, key)
+	session, err := ArchiveRunForDownload(dir, PublishedOrchestratorPubKeyHex)
 	if err != nil {
 		t.Fatalf("ArchiveRunForDownload: %v", err)
 	}
@@ -263,7 +303,7 @@ func TestBuildLiveVerifyKit_WindowsAndMacOS(t *testing.T) {
 		{VerifyKitOSMacOS, "pipelock-live-verify-macos/app/pipelock-verifier", "pipelock-live-verify-macos.zip"},
 	} {
 		t.Run(string(tc.osName), func(t *testing.T) {
-			kit, filename, err := BuildLiveVerifyKit(tc.osName, verifierPath, session, key)
+			kit, filename, err := BuildLiveVerifyKit(tc.osName, verifierPath, session)
 			if err != nil {
 				t.Fatalf("BuildLiveVerifyKit(%q): %v", tc.osName, err)
 			}
@@ -289,84 +329,83 @@ func TestBuildLiveVerifyKit_WindowsAndMacOS(t *testing.T) {
 
 func TestBuildLiveVerifyKit_RejectsGarbageSession(t *testing.T) {
 	t.Parallel()
-	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), []byte("not a gzip stream"), validKitKey64); err == nil {
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), []byte("not a gzip stream")); err == nil {
 		t.Fatal("non-gzip session bytes should fail closed")
+	}
+}
+
+func TestBuildLiveVerifyKit_MissingRequiredFileFailsClosed(t *testing.T) {
+	t.Parallel()
+	// Missing launch-manifest.json: the kit must not ship a bundle that cannot
+	// verify the full trust chain.
+	incomplete := map[string]string{
+		"packet/packet.json":    `{"receipt_count":1}`,
+		"packet/manifest.json":  `{"v":1}`,
+		"packet/evidence.jsonl": "{}\n",
+		witnessFile:             `{"observed_count":0}`,
+		redWitnessFile:          `{"red":true}`,
+		// launchManifestFile is deliberately missing.
+	}
+	session := buildKitSession(t, incomplete, false, false)
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session); err == nil {
+		t.Fatal("missing launch-manifest.json should fail closed")
 	}
 }
 
 func TestBuildLiveVerifyKit_MissingPacketFileFailsClosed(t *testing.T) {
 	t.Parallel()
-	// Valid gzip+tar, but packet/packet.json is absent: the kit must not ship a
-	// bundle that cannot verify.
-	session := buildKitSession(t, map[string]string{
-		"packet/manifest.json":  `{"v":1}`,
-		"packet/evidence.jsonl": "{}\n",
-	}, false, false)
-	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session, validKitKey64); err == nil {
+	// Missing packet/packet.json.
+	incomplete := fullKitSessionFiles()
+	delete(incomplete, "packet/packet.json")
+	session := buildKitSession(t, incomplete, false, false)
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session); err == nil {
 		t.Fatal("missing packet file should fail closed")
 	}
 }
 
-func TestBuildLiveVerifyKit_InvalidInBundleTrustKeyFailsClosed(t *testing.T) {
+func TestBuildLiveVerifyKit_MissingWitnessFailsClosed(t *testing.T) {
 	t.Parallel()
-	// The bundle's own packet.json carries a non-hex signer key; it is preferred
-	// over the fallback and must be rejected.
-	session := buildKitSession(t, map[string]string{
-		"packet/packet.json":    `{"verifier":{"signer_key":"not-hex"}}`,
-		"packet/manifest.json":  `{"v":1}`,
-		"packet/evidence.jsonl": "{}\n",
-	}, false, false)
-	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session, validKitKey64); err == nil {
-		t.Fatal("invalid in-bundle trust key should fail closed")
+	incomplete := fullKitSessionFiles()
+	delete(incomplete, witnessFile)
+	session := buildKitSession(t, incomplete, false, false)
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session); err == nil {
+		t.Fatal("missing witness.json should fail closed")
 	}
 }
 
-func TestBuildLiveVerifyKit_TrustKeySource(t *testing.T) {
+func TestBuildLiveVerifyKit_MissingRedWitnessFailsClosed(t *testing.T) {
 	t.Parallel()
-	keyA := strings.Repeat("1", 64)
-	keyB := strings.Repeat("2", 64)
-	fallback := validKitKey64
-
-	cases := []struct {
-		name    string
-		files   map[string]string
-		wantKey string
-	}{
-		{
-			name: "from packet.json",
-			files: map[string]string{
-				"packet/packet.json":    `{"verifier":{"signer_key":"` + keyA + `"}}`,
-				"packet/manifest.json":  `{"signer_key":"` + keyB + `"}`,
-				"packet/evidence.jsonl": "{}\n",
-			},
-			wantKey: keyA,
-		},
-		{
-			name: "from manifest.json when packet lacks it",
-			files: map[string]string{
-				"packet/packet.json":    `{"receipt_count":1}`,
-				"packet/manifest.json":  `{"signer_key":"` + keyB + `"}`,
-				"packet/evidence.jsonl": "{}\n",
-			},
-			wantKey: keyB,
-		},
+	incomplete := fullKitSessionFiles()
+	delete(incomplete, redWitnessFile)
+	session := buildKitSession(t, incomplete, false, false)
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session); err == nil {
+		t.Fatal("missing red-witness.json should fail closed")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			// withDirEntry + withForeign also exercise the extraction skip paths.
-			session := buildKitSession(t, tc.files, true, true)
-			kit, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session, fallback)
-			if err != nil {
-				t.Fatalf("BuildLiveVerifyKit: %v", err)
-			}
-			script := readZipEntry(t, kit, "pipelock-live-verify-linux/verify.sh")
-			if !strings.Contains(script, tc.wantKey) {
-				t.Fatalf("verify script did not use the in-bundle trust key %s", tc.wantKey)
-			}
-			if strings.Contains(script, fallback) {
-				t.Fatalf("verify script used the fallback key instead of the in-bundle key %s", tc.wantKey)
-			}
-		})
+}
+
+func TestBuildLiveVerifyKit_OptionalContainmentWitnessOK(t *testing.T) {
+	t.Parallel()
+	files := fullKitSessionFiles()
+	delete(files, hostContainmentWitnessFile)
+	session := buildKitSession(t, files, false, false)
+	// Should succeed -- containment witness is optional.
+	if _, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session); err != nil {
+		t.Fatalf("missing optional containment witness should not fail: %v", err)
+	}
+}
+
+func TestBuildLiveVerifyKit_ScriptRunsVerifyRunNotAuditPacket(t *testing.T) {
+	t.Parallel()
+	session := buildKitSession(t, fullKitSessionFiles(), true, true)
+	kit, _, err := BuildLiveVerifyKit(VerifyKitOSLinux, writeTempVerifier(t), session)
+	if err != nil {
+		t.Fatalf("BuildLiveVerifyKit: %v", err)
+	}
+	script := readZipEntry(t, kit, "pipelock-live-verify-linux/verify.sh")
+	if strings.Contains(script, "audit-packet") {
+		t.Fatalf("verify script should NOT use audit-packet (partial check):\n%s", script)
+	}
+	if !strings.Contains(script, "verify-run") {
+		t.Fatalf("verify script should use verify-run (full chain):\n%s", script)
 	}
 }

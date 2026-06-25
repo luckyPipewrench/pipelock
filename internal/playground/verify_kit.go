@@ -8,8 +8,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -65,10 +63,35 @@ func ParseVerifyKitOS(raw string) (VerifyKitOS, error) {
 	}
 }
 
+// verifyKitRunFiles lists every run-directory file the kit must include for the
+// full VerifyRun trust chain. Missing files are tolerated only for optional
+// artifacts (the host-containment witness is required only for contained runs
+// and is extracted on a best-effort basis).
+var verifyKitRequiredFiles = []string{
+	"packet/packet.json",
+	"packet/manifest.json",
+	"packet/evidence.jsonl",
+	launchManifestFile,
+	witnessFile,
+	redWitnessFile,
+}
+
+// verifyKitOptionalFiles are extracted when present but their absence does not
+// fail the kit build.
+var verifyKitOptionalFiles = []string{
+	hostContainmentWitnessFile,
+	"VERIFY.txt",
+}
+
 // BuildLiveVerifyKit builds a single-download, offline verification kit for one
 // sealed live session. sessionTarGz must be the output of ArchiveRunForDownload.
-// The kit embeds the real verifier binary and the session's audit packet.
-func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte, fallbackTrustKey string) ([]byte, string, error) {
+// The kit embeds the real verifier binary and ALL run artifacts needed for the
+// full VerifyRun trust chain (launch manifest, witnesses, receipt chain, etc.).
+//
+// The trust key is ALWAYS the compiled-in PublishedOrchestratorPubKeyHex. The
+// kit never derives, extracts, or falls back to a key from the bundle -- a
+// tampered bundle cannot ship its own key.
+func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []byte) ([]byte, string, error) {
 	if verifierPath == "" {
 		return nil, "", errors.New("verifier binary path is not configured")
 	}
@@ -80,10 +103,8 @@ func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []
 	if err != nil {
 		return nil, "", err
 	}
-	trustKey, err := validateLiveKitTrustKey(liveKitTrustKey(files, fallbackTrustKey))
-	if err != nil {
-		return nil, "", err
-	}
+
+	trustKey := PublishedOrchestratorPubKeyHex
 
 	root := "pipelock-live-verify-" + string(osName)
 	var buf bytes.Buffer
@@ -108,21 +129,28 @@ func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []
 		return nil, "", err
 	}
 
-	for _, name := range []string{"packet/packet.json", "packet/manifest.json", "packet/evidence.jsonl"} {
+	// Pack required run-directory files -- all must be present.
+	for _, name := range verifyKitRequiredFiles {
 		data, ok := files[name]
 		if !ok {
 			return nil, "", fmt.Errorf("session bundle missing %s", name)
 		}
-		if err := zipFile(zw, root+"/app/"+name, data, 0o600); err != nil {
+		if err := zipFile(zw, root+"/app/run/"+name, data, 0o600); err != nil {
 			return nil, "", err
 		}
 	}
-	if verify, ok := files["VERIFY.txt"]; ok {
-		if err := zipFile(zw, root+"/app/SESSION-VERIFY.txt", verify, 0o600); err != nil {
+	// Pack optional files when present.
+	for _, name := range verifyKitOptionalFiles {
+		data, ok := files[name]
+		if !ok {
+			continue
+		}
+		if err := zipFile(zw, root+"/app/run/"+name, data, 0o600); err != nil {
 			return nil, "", err
 		}
 	}
-	if err := zipFile(zw, root+"/app/packet/verifier.txt", []byte(liveKitVerifierTxt(trustKey)), 0o600); err != nil {
+
+	if err := zipFile(zw, root+"/app/run/verifier.txt", []byte(liveKitVerifierTxt(trustKey)), 0o600); err != nil {
 		return nil, "", err
 	}
 
@@ -132,46 +160,21 @@ func BuildLiveVerifyKit(osName VerifyKitOS, verifierPath string, sessionTarGz []
 	return buf.Bytes(), "pipelock-live-verify-" + string(osName) + ".zip", nil
 }
 
-func liveKitTrustKey(files map[string][]byte, fallback string) string {
-	var packet struct {
-		Verifier struct {
-			SignerKey string `json:"signer_key"`
-		} `json:"verifier"`
-	}
-	if data := files["packet/packet.json"]; len(data) > 0 {
-		if err := json.Unmarshal(data, &packet); err == nil && strings.TrimSpace(packet.Verifier.SignerKey) != "" {
-			return strings.TrimSpace(packet.Verifier.SignerKey)
-		}
-	}
-	var manifest struct {
-		SignerKey string `json:"signer_key"`
-	}
-	if data := files["packet/manifest.json"]; len(data) > 0 {
-		if err := json.Unmarshal(data, &manifest); err == nil && strings.TrimSpace(manifest.SignerKey) != "" {
-			return strings.TrimSpace(manifest.SignerKey)
-		}
-	}
-	return fallback
-}
-
-func validateLiveKitTrustKey(key string) (string, error) {
-	key = strings.TrimSpace(key)
-	decoded, err := hex.DecodeString(key)
-	if err != nil {
-		return "", fmt.Errorf("verify kit trust key is not hex: %w", err)
-	}
-	if len(decoded) != 32 {
-		return "", fmt.Errorf("verify kit trust key length = %d bytes, want 32", len(decoded))
-	}
-	return key, nil
-}
-
 func extractLiveKitFiles(sessionTarGz []byte) (map[string][]byte, error) {
 	gr, err := gzip.NewReader(bytes.NewReader(sessionTarGz))
 	if err != nil {
 		return nil, fmt.Errorf("read session bundle gzip: %w", err)
 	}
 	defer func() { _ = gr.Close() }()
+
+	// Build the set of files to extract.
+	want := make(map[string]bool)
+	for _, f := range verifyKitRequiredFiles {
+		want[f] = true
+	}
+	for _, f := range verifyKitOptionalFiles {
+		want[f] = true
+	}
 
 	files := make(map[string][]byte)
 	tr := tar.NewReader(gr)
@@ -190,9 +193,7 @@ func extractLiveKitFiles(sessionTarGz []byte) (map[string][]byte, error) {
 		if !ok {
 			continue
 		}
-		switch name {
-		case "VERIFY.txt", "packet/packet.json", "packet/manifest.json", "packet/evidence.jsonl":
-		default:
+		if !want[name] {
 			continue
 		}
 		data, err := io.ReadAll(tr)
@@ -232,25 +233,32 @@ func liveKitReadme(osName VerifyKitOS) string {
 	}
 }
 
-func liveKitScript(osName VerifyKitOS, key string) (string, string, error) {
+func liveKitScript(osName VerifyKitOS, orchKey string) (string, string, error) {
 	switch osName {
 	case VerifyKitOSWindows:
-		return "Verify.bat", "@echo off\r\ncd /d \"%~dp0app\"\r\necho Verifying the signed Pipelock audit packet, offline...\r\necho.\r\npipelock-verifier.exe audit-packet packet --key " + key + "\r\necho.\r\necho result: VALID means every signature and the hash chain held. No network was used.\r\necho.\r\npause\r\n", nil
+		return "Verify.bat", "@echo off\r\ncd /d \"%~dp0app\"\r\necho Verifying the full Pipelock playground trust chain, offline...\r\necho.\r\npipelock-verifier.exe verify-run run --orchestrator-key " + orchKey + "\r\necho.\r\necho result: VALID means every signature, the receipt chain, witnesses, and run binding held.\r\necho No network was used.\r\necho.\r\npause\r\n", nil
 	case VerifyKitOSMacOS:
-		return "Verify.command", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the signed Pipelock audit packet, offline...\"\necho\n./pipelock-verifier audit-packet packet --key " + key + "\necho\necho \"result: VALID means every signature and the hash chain held. No network was used.\"\nread -n 1 -s -r -p \"Press any key to close.\"\n", nil
+		return "Verify.command", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\necho\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + "\necho\necho \"result: VALID means every signature, the receipt chain, witnesses, and run binding held.\"\necho \"No network was used.\"\nread -n 1 -s -r -p \"Press any key to close.\"\n", nil
 	case VerifyKitOSLinux:
-		return "verify.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the signed Pipelock audit packet, offline...\"\n./pipelock-verifier audit-packet packet --key " + key + "\n", nil
+		return "verify.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + "\n", nil
 	default:
 		return "", "", fmt.Errorf("unsupported verify kit OS %q", osName)
 	}
 }
 
-func liveKitVerifierTxt(key string) string {
-	return fmt.Sprintf(`Pipelock live session audit packet
-verdict: run pipelock-verifier audit-packet packet --key %s
-signer_key: %s
+func liveKitVerifierTxt(orchKey string) string {
+	return fmt.Sprintf(`Pipelock live session - full trust chain verification
+trust_root: %s (published Pipelock Playground orchestrator key)
+verdict: run pipelock-verifier verify-run run --orchestrator-key %s
 
 Verify it yourself from this directory:
-  pipelock-verifier audit-packet packet --key %s
-`, key, key, key)
+  pipelock-verifier verify-run run --orchestrator-key %s
+
+This performs the full verification chain:
+  - Launch manifest signature (orchestrator key)
+  - Audit packet receipt chain (manifest-pinned pipelock key)
+  - Collector witness signature and run binding
+  - Red-case calibration
+  - Host-containment witness (if contained)
+`, orchKey, orchKey, orchKey)
 }

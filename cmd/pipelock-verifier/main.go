@@ -20,6 +20,10 @@
 //	                    or a session directory).
 //	evidence PATH       Alias for chain.
 //	receipt PATH        Verify a single v1 or v2 receipt JSON file.
+//	verify-run RUNDIR   Verify a playground demo run directory against the
+//	                    full offline trust chain (launch manifest, audit
+//	                    packet, witnesses, red-case calibration, and
+//	                    host-containment).
 //
 // All subcommands accept --key (raw hex, public-key text, or file path) for
 // trusted verification, and --json for machine-readable output. Exit codes:
@@ -68,6 +72,7 @@ CI runner, an auditor's laptop, or an isolated environment.`,
 	root.AddCommand(newReceiptCmd())
 	root.AddCommand(newReplayCmd())
 	root.AddCommand(newAARPCmd())
+	root.AddCommand(newVerifyRunCmd())
 
 	return root
 }

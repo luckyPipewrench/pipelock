@@ -642,7 +642,7 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "unsupported verify kit")
 			return
 		}
-		kit, filename, kErr := playground.BuildLiveVerifyKit(osName, s.cfg.VerifierBinaries.Path(osName), entry.bundle, entry.sess.OrchestratorPubHex())
+		kit, filename, kErr := playground.BuildLiveVerifyKit(osName, s.cfg.VerifierBinaries.Path(osName), entry.bundle)
 		if kErr != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "livechat: verify kit build failed: %v\n", kErr)
 			writeErr(w, http.StatusServiceUnavailable, "verify kit is not available")

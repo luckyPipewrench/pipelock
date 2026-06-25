@@ -95,7 +95,7 @@ func TestBuildServerWithInjectedProvider(t *testing.T) {
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
 	var out bytes.Buffer
-	srv, handler, _, err := buildServer(context.Background(), &out, &serveFlags{
+	srv, handler, _, _, err := buildServer(context.Background(), &out, &serveFlags{
 		listen:                defaultListen,
 		provider:              "fake",
 		flyApp:                "playground-test",
@@ -168,7 +168,7 @@ func TestBuildServerStaticDir(t *testing.T) {
 	}
 
 	// With --static-dir: / serves the UI AND the API still routes on the same origin.
-	srv, handler, _, err := buildServer(context.Background(), &bytes.Buffer{}, flags(uiDir))
+	srv, handler, _, _, err := buildServer(context.Background(), &bytes.Buffer{}, flags(uiDir))
 	if err != nil {
 		t.Fatalf("buildServer(static): %v", err)
 	}
@@ -183,7 +183,7 @@ func TestBuildServerStaticDir(t *testing.T) {
 	}
 
 	// Without --static-dir: / is 404 (broker is API-only).
-	srv2, handler2, _, err := buildServer(context.Background(), &bytes.Buffer{}, flags(""))
+	srv2, handler2, _, _, err := buildServer(context.Background(), &bytes.Buffer{}, flags(""))
 	if err != nil {
 		t.Fatalf("buildServer(no static): %v", err)
 	}
@@ -212,7 +212,7 @@ func TestBuildServerHostGuardFromAllowOrigin(t *testing.T) {
 	}
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
-	srv, handler, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+	srv, handler, _, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
 		listen: defaultListen, provider: "fake", flyApp: "playground-test",
 		flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
 		staticDir: uiDir, internalPort: 8080, concurrency: 2,
@@ -284,7 +284,7 @@ func TestBuildServerCFAccessGuard(t *testing.T) {
 	}
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
-	srv, handler, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+	srv, handler, _, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
 		listen: defaultListen, provider: "fake", flyApp: "playground-test",
 		flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
 		staticDir: uiDir, internalPort: 8080, concurrency: 2,
@@ -347,7 +347,7 @@ func TestBuildServerTurnstileRejectsMissingToken(t *testing.T) {
 	}
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
-	srv, handler, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+	srv, handler, _, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
 		listen:                defaultListen,
 		provider:              "fake",
 		flyApp:                "playground-test",

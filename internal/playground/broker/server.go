@@ -53,6 +53,10 @@ const (
 type ServerConfig struct {
 	// Leases owns VM lifecycle and the global machine concurrency cap. Required.
 	Leases *LeaseManager
+	// WarmPool is the optional pre-created VM pool. When set, handleSession
+	// tries to acquire a warm VM before falling back to the synchronous
+	// Lease() create path. Nil disables warm-pool handout.
+	WarmPool *Pool
 	// Gate validates public invite codes before a VM is leased. Required.
 	Gate *livechat.Gate
 	// HumanVerifier validates a browser proof before invite-code redemption and
@@ -348,22 +352,47 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	rollback = append(rollback, func() { s.global.Refund(1) })
 
-	vmCode, err := livechat.NewRandomCode(vmInviteCodeBytes)
-	if err != nil {
-		undo()
-		writeBrokerErr(w, http.StatusInternalServerError, "internal error")
-		return
+	// Try the warm pool first for instant handout; fall through to the
+	// synchronous create path if the pool is empty or disabled.
+	//
+	// INVARIANT 3: a visitor NEVER fails because the pool is empty.
+	var lease *Lease
+	var vmCode string
+	if s.cfg.WarmPool != nil {
+		if wm, wc, wRelease, ok := s.cfg.WarmPool.Acquire(); ok {
+			vmCode = wc
+			adopted, adoptErr := s.cfg.Leases.AdoptWarm(sessionKey, wm, wRelease)
+			if adoptErr != nil {
+				// Adoption failed (e.g. duplicate key race). Destroy the warm VM
+				// and release the slot so neither leaks.
+				_ = s.cfg.Leases.cfg.Provider.DestroyMachine(context.WithoutCancel(r.Context()), wm.ID)
+				wRelease()
+			} else {
+				lease = adopted
+			}
+		}
 	}
-	sessionEnv := mergeEnv(s.cfg.SessionEnv, map[string]string{envVMInviteCode: vmCode})
-	lease, err := s.cfg.Leases.Lease(r.Context(), sessionKey, sessionEnv)
-	if err != nil {
-		undo()
-		if errors.Is(err, ErrAtCapacity) {
-			writeBrokerErr(w, http.StatusServiceUnavailable, "at capacity, try again")
+	if lease == nil {
+		// Cold path: mint a fresh vmCode, create a VM synchronously.
+		var codeErr error
+		vmCode, codeErr = livechat.NewRandomCode(vmInviteCodeBytes)
+		if codeErr != nil {
+			undo()
+			writeBrokerErr(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		writeBrokerErr(w, http.StatusServiceUnavailable, "session could not be started")
-		return
+		sessionEnv := mergeEnv(s.cfg.SessionEnv, map[string]string{envVMInviteCode: vmCode})
+		var leaseErr error
+		lease, leaseErr = s.cfg.Leases.Lease(r.Context(), sessionKey, sessionEnv)
+		if leaseErr != nil {
+			undo()
+			if errors.Is(leaseErr, ErrAtCapacity) {
+				writeBrokerErr(w, http.StatusServiceUnavailable, "at capacity, try again")
+				return
+			}
+			writeBrokerErr(w, http.StatusServiceUnavailable, "session could not be started")
+			return
+		}
 	}
 
 	resp, expiresAt, err := s.createVMSession(r.Context(), lease, vmCode)

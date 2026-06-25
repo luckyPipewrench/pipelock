@@ -52,6 +52,10 @@ const (
 
 	envModelKey        = "PLAYGROUND_MODEL_" + "KEY"
 	envOrchestratorKey = "PLAYGROUND_ORCHESTRATOR_" + "KEY"
+
+	// warmPoolVMCodeBytes mirrors broker.vmInviteCodeBytes for warm-pool VM
+	// code generation. Kept in sync with the broker constant.
+	warmPoolVMCodeBytes = 18
 )
 
 type serveFlags struct {
@@ -100,6 +104,7 @@ type serveFlags struct {
 	orchestratorKeyFile     string
 	orchestratorKeyEnv      string
 	requireSessionSecrets   bool
+	warmPoolSize            int
 	// VM model/session config, passed into each per-visitor VM via PLAYGROUND_*
 	// env (consumed by deploy/fly-playground/entrypoint.sh).
 	vmModelBaseURL    string
@@ -193,6 +198,7 @@ func newServeCmd() *cobra.Command {
 	fl.IntVar(&f.vmDailyTurnBudget, "vm-daily-turn-budget", 0, "per-VM model round-trip ceiling per UTC day (the in-VM spend kill switch; required by the VM when a model is set)")
 	fl.DurationVar(&f.vmSessionTTL, "vm-session-ttl", 0, "per-VM session wall-clock cap (0 = VM default)")
 	fl.IntVar(&f.vmMaxMessages, "vm-max-messages-per-session", 0, "per-VM max messages per session (0 = VM default)")
+	fl.IntVar(&f.warmPoolSize, "warm-pool-size", 0, "number of pre-created warm VMs to maintain (0 = disabled)")
 	return cmd
 }
 
@@ -201,7 +207,7 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	srv, handler, startReaper, err := buildServer(ctx, cmd.OutOrStdout(), f)
+	srv, handler, startReaper, pool, err := buildServer(ctx, cmd.OutOrStdout(), f)
 	if err != nil {
 		return err
 	}
@@ -212,6 +218,17 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	reaperCtx, reaperCancel := context.WithCancel(ctx)
 	defer reaperCancel()
 	go startReaper(reaperCtx)
+
+	// Start the warm pool maintainer if enabled; drain on shutdown.
+	// INVARIANT 4: warm VMs are drained on graceful shutdown.
+	if pool != nil {
+		poolCtx, poolCancel := context.WithCancel(ctx)
+		defer func() {
+			poolCancel()
+			pool.Drain(context.Background())
+		}()
+		go pool.Run(poolCtx)
+	}
 
 	httpSrv := &http.Server{
 		Handler:           handler,
@@ -240,17 +257,17 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	return nil
 }
 
-func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, func(context.Context), error) {
+func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, func(context.Context), *broker.Pool, error) {
 	if err := validateFlags(f); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	secret, err := resolveGateSecret(f.gateSecretFile, f.gateSecretEnv)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	codes, err := resolveCodes(f.codes, f.maxPerCode)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	gate, err := livechat.NewGate(livechat.GateConfig{
 		Secret:   secret,
@@ -258,39 +275,75 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		TokenTTL: f.sessionTTL,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	token, err := resolveFlyToken(f)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	provider, err := newMachineProvider(ctx, f, token)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	sessionEnv, err := resolveSessionEnv(f)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	humanVerifier, err := resolveTurnstileVerifier(f)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
+	// The concurrency limiter is shared between the LeaseManager and the
+	// optional warm pool so warm + active machines never exceed the cap.
+	concLimiter := livechat.NewConcurrencyLimiter(f.concurrency)
+
+	baseEnv := buildVMBaseEnv(f)
 	lm, err := broker.NewLeaseManager(broker.LeaseConfig{
 		Provider:     provider,
-		Concurrency:  livechat.NewConcurrencyLimiter(f.concurrency),
+		Concurrency:  concLimiter,
 		Image:        f.image,
 		Region:       f.region,
 		MemoryMB:     f.memoryMB,
 		CPUs:         f.cpus,
 		InternalPort: f.internalPort,
-		BaseEnv:      buildVMBaseEnv(f),
+		BaseEnv:      baseEnv,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
+
+	// Build the optional warm pool when --warm-pool-size > 0.
+	var warmPool *broker.Pool
+	if f.warmPoolSize > 0 {
+		pool, poolErr := broker.NewPool(broker.PoolConfig{
+			Provider:    provider,
+			Concurrency: concLimiter,
+			NewVMCode: func() (string, error) {
+				return livechat.NewRandomCode(warmPoolVMCodeBytes)
+			},
+			BuildSpec: func(vmCode string) broker.MachineSpec {
+				return broker.MachineSpec{
+					Image:        f.image,
+					Env:          mergeSessionAndBaseEnv(sessionEnv, baseEnv, vmCode),
+					Region:       f.region,
+					MemoryMB:     f.memoryMB,
+					CPUs:         f.cpus,
+					InternalPort: f.internalPort,
+				}
+			},
+			Size: f.warmPoolSize,
+			Log:  out,
+		})
+		if poolErr != nil {
+			return nil, nil, nil, nil, poolErr
+		}
+		warmPool = pool
+		_, _ = fmt.Fprintf(out, "warm pool enabled: size %d\n", f.warmPoolSize)
+	}
+
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Leases:             lm,
+		WarmPool:           warmPool,
 		Gate:               gate,
 		HumanVerifier:      humanVerifier,
 		IPRate:             livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
@@ -305,16 +358,27 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		AllowOrigin:        f.allowOrigin,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
+	// The reaper's protected-ID set is (active leases UNION warm-pool machines).
+	// INVARIANT 2: reaper MUST NOT destroy warm VMs.
+	activeIDsFn := func() map[string]struct{} {
+		ids := lm.ActiveMachineIDs()
+		if warmPool != nil {
+			for id := range warmPool.WarmMachineIDs() {
+				ids[id] = struct{}{}
+			}
+		}
+		return ids
+	}
 	reaper, err := broker.NewReaper(broker.ReaperConfig{
 		Provider:  provider,
-		ActiveIDs: lm.ActiveMachineIDs,
+		ActiveIDs: activeIDsFn,
 		Log:       out,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	_, _ = fmt.Fprintf(out, "broker configured: %d code(s), capacity %d, image %s\n", len(codes), f.concurrency, f.image)
@@ -346,7 +410,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 
 	hosts, err := brokerPublicHosts(f)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	if len(hosts) > 0 {
 		handler = hostGuard(handler, hosts)
@@ -354,13 +418,13 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	}
 	cfAccess, err := newCFAccessVerifier(f)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	if cfAccess != nil {
 		handler = cfAccessGuard(handler, cfAccess)
 		_, _ = fmt.Fprintf(out, "broker Cloudflare Access JWT guard enabled for %s\n", cfAccess.issuer)
 	}
-	return srv, handler, reaper.Run, nil
+	return srv, handler, reaper.Run, warmPool, nil
 }
 
 func defaultMachineProvider(_ context.Context, f *serveFlags, flyToken string) (broker.MachineProvider, error) {
@@ -1115,6 +1179,21 @@ func buildVMBaseEnv(f *serveFlags) map[string]string {
 		env["PLAYGROUND_MAX_MESSAGES"] = strconv.Itoa(f.vmMaxMessages)
 	}
 	return env
+}
+
+// mergeSessionAndBaseEnv builds the full VM environment for a warm-pool VM:
+// baseEnv (shared config) + sessionEnv (per-session secrets) + the per-VM
+// invite code. Mirrors the layering that handleSession does for cold-path VMs.
+func mergeSessionAndBaseEnv(sessionEnv, baseEnv map[string]string, vmCode string) map[string]string {
+	out := make(map[string]string, len(baseEnv)+len(sessionEnv)+1)
+	for k, v := range baseEnv {
+		out[k] = v
+	}
+	for k, v := range sessionEnv {
+		out[k] = v
+	}
+	out["PLAYGROUND_CODE"] = vmCode
+	return out
 }
 
 func resolveTurnstileVerifier(f *serveFlags) (broker.HumanVerifier, error) {

@@ -169,6 +169,21 @@ func (lm *LeaseManager) ActiveLeases() int {
 	return len(lm.leases)
 }
 
+// ActiveMachineIDs returns a snapshot of machine IDs currently held in active
+// leases. The reaper uses this to distinguish machines that are in use from
+// orphans.
+func (lm *LeaseManager) ActiveMachineIDs() map[string]struct{} {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	ids := make(map[string]struct{}, len(lm.leases))
+	for _, lease := range lm.leases {
+		if lease.Machine != nil {
+			ids[lease.Machine.ID] = struct{}{}
+		}
+	}
+	return ids
+}
+
 // mergeEnv returns base overlaid with over (over wins). Neither input is
 // mutated. A nil result is fine for the provider (no env).
 func mergeEnv(base, over map[string]string) map[string]string {

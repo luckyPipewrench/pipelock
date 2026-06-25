@@ -201,11 +201,17 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	srv, handler, err := buildServer(ctx, cmd.OutOrStdout(), f)
+	srv, handler, startReaper, err := buildServer(ctx, cmd.OutOrStdout(), f)
 	if err != nil {
 		return err
 	}
 	defer srv.Close()
+
+	// Start the orphan-VM reaper under a context that cancels when the serve
+	// function returns (server close / shutdown / signal).
+	reaperCtx, reaperCancel := context.WithCancel(ctx)
+	defer reaperCancel()
+	go startReaper(reaperCtx)
 
 	httpSrv := &http.Server{
 		Handler:           handler,
@@ -234,17 +240,17 @@ func runServe(cmd *cobra.Command, f *serveFlags) error {
 	return nil
 }
 
-func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, error) {
+func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Server, http.Handler, func(context.Context), error) {
 	if err := validateFlags(f); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	secret, err := resolveGateSecret(f.gateSecretFile, f.gateSecretEnv)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	codes, err := resolveCodes(f.codes, f.maxPerCode)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	gate, err := livechat.NewGate(livechat.GateConfig{
 		Secret:   secret,
@@ -252,23 +258,23 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		TokenTTL: f.sessionTTL,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	token, err := resolveFlyToken(f)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	provider, err := newMachineProvider(ctx, f, token)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	sessionEnv, err := resolveSessionEnv(f)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	humanVerifier, err := resolveTurnstileVerifier(f)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	lm, err := broker.NewLeaseManager(broker.LeaseConfig{
 		Provider:     provider,
@@ -281,7 +287,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		BaseEnv:      buildVMBaseEnv(f),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Leases:             lm,
@@ -299,8 +305,18 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		AllowOrigin:        f.allowOrigin,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+
+	reaper, err := broker.NewReaper(broker.ReaperConfig{
+		Provider:  provider,
+		ActiveIDs: lm.ActiveMachineIDs,
+		Log:       out,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	_, _ = fmt.Fprintf(out, "broker configured: %d code(s), capacity %d, image %s\n", len(codes), f.concurrency, f.image)
 
 	// The broker API lives under /api/live/*. When a static UI directory is
@@ -317,12 +333,20 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		_, _ = fmt.Fprintf(out, "serving static UI from %s at /\n", f.staticDir)
 	}
 	// Stream writes indefinitely; the message route is held open for the whole
-	// model turn. Both are exempt from the write deadline (see the middleware).
-	handler = writeDeadlineMiddleware(handler, nonStreamWriteTimeout, livechat.RouteStream, livechat.RouteMessage)
+	// model turn; session-create synchronously boots and proves a fresh
+	// per-visitor microVM, which on a cold start (image pull + boot + containment
+	// proof) legitimately exceeds this deadline. All three are exempt from the
+	// write deadline (see the middleware) and bounded instead by their own
+	// budgets — the SSE/turn lifecycle for stream/message, and the broker's
+	// vmReadyTimeout (createVMSession's readyCtx) for session-create. A 30s write
+	// deadline on session-create made cold starts fail closed mid-response
+	// (Fly PU02 / client 502) even though the VM came up healthy within the 60s
+	// VM-ready budget.
+	handler = writeDeadlineMiddleware(handler, nonStreamWriteTimeout, livechat.RouteStream, livechat.RouteMessage, livechat.RouteSession)
 
 	hosts, err := brokerPublicHosts(f)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(hosts) > 0 {
 		handler = hostGuard(handler, hosts)
@@ -330,13 +354,13 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	}
 	cfAccess, err := newCFAccessVerifier(f)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if cfAccess != nil {
 		handler = cfAccessGuard(handler, cfAccess)
 		_, _ = fmt.Fprintf(out, "broker Cloudflare Access JWT guard enabled for %s\n", cfAccess.issuer)
 	}
-	return srv, handler, nil
+	return srv, handler, reaper.Run, nil
 }
 
 func defaultMachineProvider(_ context.Context, f *serveFlags, flyToken string) (broker.MachineProvider, error) {

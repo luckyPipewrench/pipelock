@@ -81,6 +81,13 @@ func TestFlyCreateMachine(t *testing.T) {
 	if gotBody.Region != "ord" {
 		t.Errorf("region = %q", gotBody.Region)
 	}
+	// Verify the playground role metadata tag is set.
+	if gotBody.Config.Metadata == nil {
+		t.Fatal("metadata is nil; want playground role tag")
+	}
+	if gotBody.Config.Metadata[playgroundRoleKey] != playgroundRoleVal {
+		t.Errorf("metadata[%s] = %q, want %q", playgroundRoleKey, gotBody.Config.Metadata[playgroundRoleKey], playgroundRoleVal)
+	}
 }
 
 func TestFlyCreateMachineDefaultsGuest(t *testing.T) {
@@ -207,6 +214,85 @@ func TestFlyNon2xxIsAPIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad config") {
 		t.Errorf("error should carry body: %v", err)
+	}
+}
+
+func TestFlyListManagedMachines(t *testing.T) {
+	// Return a mix of machines: one tagged, one untagged, one with foreign
+	// metadata. Only the tagged one should appear.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body := `[
+			{
+				"id": "m-tagged",
+				"state": "started",
+				"created_at": "2026-06-25T10:00:00Z",
+				"config": {"metadata": {"pipelock_role": "playground-vm"}}
+			},
+			{
+				"id": "m-untagged",
+				"state": "started",
+				"created_at": "2026-06-25T10:00:00Z",
+				"config": {}
+			},
+			{
+				"id": "m-foreign",
+				"state": "started",
+				"created_at": "2026-06-25T10:00:00Z",
+				"config": {"metadata": {"pipelock_role": "something-else"}}
+			},
+			{
+				"id": "m-no-metadata",
+				"state": "started",
+				"created_at": "",
+				"config": {"metadata": null}
+			}
+		]`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	fly := newTestFly(srv)
+	machines, err := fly.ListManagedMachines(context.Background())
+	if err != nil {
+		t.Fatalf("ListManagedMachines: %v", err)
+	}
+	if len(machines) != 1 {
+		t.Fatalf("got %d machines, want 1 (only the tagged one)", len(machines))
+	}
+	if machines[0].ID != "m-tagged" {
+		t.Errorf("machine ID = %q, want m-tagged", machines[0].ID)
+	}
+	if machines[0].State != "started" {
+		t.Errorf("state = %q, want started", machines[0].State)
+	}
+	wantCreated := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
+	if !machines[0].CreatedAt.Equal(wantCreated) {
+		t.Errorf("CreatedAt = %v, want %v", machines[0].CreatedAt, wantCreated)
+	}
+}
+
+func TestFlyListManagedMachinesUnparseableCreatedAt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := `[{"id": "m1", "state": "started", "created_at": "not-a-date", "config": {"metadata": {"pipelock_role": "playground-vm"}}}]`
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	fly := newTestFly(srv)
+	machines, err := fly.ListManagedMachines(context.Background())
+	if err != nil {
+		t.Fatalf("ListManagedMachines: %v", err)
+	}
+	if len(machines) != 1 {
+		t.Fatalf("got %d machines, want 1", len(machines))
+	}
+	if !machines[0].CreatedAt.IsZero() {
+		t.Errorf("CreatedAt should be zero for unparseable date, got %v", machines[0].CreatedAt)
 	}
 }
 

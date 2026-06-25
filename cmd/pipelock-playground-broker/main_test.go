@@ -42,6 +42,10 @@ func (fakeProvider) DestroyMachine(_ context.Context, _ string) error {
 	return nil
 }
 
+func (fakeProvider) ListManagedMachines(_ context.Context) ([]broker.Machine, error) {
+	return nil, nil
+}
+
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -91,7 +95,7 @@ func TestBuildServerWithInjectedProvider(t *testing.T) {
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
 	var out bytes.Buffer
-	srv, handler, err := buildServer(context.Background(), &out, &serveFlags{
+	srv, handler, _, err := buildServer(context.Background(), &out, &serveFlags{
 		listen:                defaultListen,
 		provider:              "fake",
 		flyApp:                "playground-test",
@@ -164,7 +168,7 @@ func TestBuildServerStaticDir(t *testing.T) {
 	}
 
 	// With --static-dir: / serves the UI AND the API still routes on the same origin.
-	srv, handler, err := buildServer(context.Background(), &bytes.Buffer{}, flags(uiDir))
+	srv, handler, _, err := buildServer(context.Background(), &bytes.Buffer{}, flags(uiDir))
 	if err != nil {
 		t.Fatalf("buildServer(static): %v", err)
 	}
@@ -179,7 +183,7 @@ func TestBuildServerStaticDir(t *testing.T) {
 	}
 
 	// Without --static-dir: / is 404 (broker is API-only).
-	srv2, handler2, err := buildServer(context.Background(), &bytes.Buffer{}, flags(""))
+	srv2, handler2, _, err := buildServer(context.Background(), &bytes.Buffer{}, flags(""))
 	if err != nil {
 		t.Fatalf("buildServer(no static): %v", err)
 	}
@@ -208,7 +212,7 @@ func TestBuildServerHostGuardFromAllowOrigin(t *testing.T) {
 	}
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
-	srv, handler, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+	srv, handler, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
 		listen: defaultListen, provider: "fake", flyApp: "playground-test",
 		flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
 		staticDir: uiDir, internalPort: 8080, concurrency: 2,
@@ -280,7 +284,7 @@ func TestBuildServerCFAccessGuard(t *testing.T) {
 	}
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
-	srv, handler, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+	srv, handler, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
 		listen: defaultListen, provider: "fake", flyApp: "playground-test",
 		flyTokenFile: flyTokenFile, image: "registry.example/playground:test",
 		staticDir: uiDir, internalPort: 8080, concurrency: 2,
@@ -343,7 +347,7 @@ func TestBuildServerTurnstileRejectsMissingToken(t *testing.T) {
 	}
 	t.Cleanup(func() { newMachineProvider = oldFactory })
 
-	srv, handler, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
+	srv, handler, _, err := buildServer(context.Background(), &bytes.Buffer{}, &serveFlags{
 		listen:                defaultListen,
 		provider:              "fake",
 		flyApp:                "playground-test",
@@ -1293,7 +1297,7 @@ func TestWriteDeadlineMiddleware(t *testing.T) {
 		routeStream  = "/api/live/stream"
 		routeMessage = "/api/live/message"
 	)
-	exempt := []string{routeStream, routeMessage}
+	exempt := []string{routeStream, routeMessage, routeSession}
 
 	tests := []struct {
 		name string
@@ -1303,7 +1307,10 @@ func TestWriteDeadlineMiddleware(t *testing.T) {
 		wantExempt bool
 	}{
 		{name: "health_bounded", path: routeHealth, wantExempt: false},
-		{name: "session_bounded", path: routeSession, wantExempt: false},
+		// session-create synchronously boots+proves a cold microVM (can exceed
+		// the 30s deadline); it must be exempt and bounded by vmReadyTimeout
+		// instead, else cold starts fail closed mid-response (PU02 / 502).
+		{name: "session_exempt_cold_start_boot", path: routeSession, wantExempt: true},
 		{name: "stream_exempt", path: routeStream, wantExempt: true},
 		{name: "message_exempt_held_open_for_turn", path: routeMessage, wantExempt: true},
 	}

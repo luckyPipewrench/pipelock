@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 )
 
-// fakeProvider is an in-memory MachineProvider for testing the lease lifecycle.
+// fakeProvider is an in-memory MachineProvider for testing the lease lifecycle
+// and the orphan reaper.
 type fakeProvider struct {
 	mu         sync.Mutex
 	created    []MachineSpec
@@ -22,6 +24,12 @@ type fakeProvider struct {
 	createErr  error
 	waitErr    error
 	nextID     int
+
+	// managedMachines is the set returned by ListManagedMachines. Tests
+	// populate it directly; CreateMachine also appends here with the
+	// playground role tag so the fake behaves like the real Fly adapter.
+	managedMachines []Machine
+	listErr         error
 }
 
 func (f *fakeProvider) CreateMachine(_ context.Context, spec MachineSpec) (*Machine, error) {
@@ -34,7 +42,9 @@ func (f *fakeProvider) CreateMachine(_ context.Context, spec MachineSpec) (*Mach
 	id := fmt.Sprintf("m%d", f.nextID)
 	f.created = append(f.created, spec)
 	f.createdIDs = append(f.createdIDs, id)
-	return &Machine{ID: id, State: "created", PrivateIP: "fdaa::" + id}, nil
+	m := &Machine{ID: id, State: "created", PrivateIP: "fdaa::" + id, CreatedAt: time.Now()}
+	f.managedMachines = append(f.managedMachines, *m)
+	return m, nil
 }
 
 func (f *fakeProvider) WaitReady(_ context.Context, _ string) error {
@@ -48,6 +58,17 @@ func (f *fakeProvider) DestroyMachine(_ context.Context, id string) error {
 	defer f.mu.Unlock()
 	f.destroyed = append(f.destroyed, id)
 	return nil
+}
+
+func (f *fakeProvider) ListManagedMachines(_ context.Context) ([]Machine, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := make([]Machine, len(f.managedMachines))
+	copy(out, f.managedMachines)
+	return out, nil
 }
 
 func (f *fakeProvider) counts() (created, destroyed int) {
@@ -200,6 +221,48 @@ func TestLeaseDuplicateKey(t *testing.T) {
 	}
 	if created, _ := fp.counts(); created != 1 {
 		t.Errorf("duplicate key created %d machines, want 1", created)
+	}
+}
+
+func TestActiveMachineIDs(t *testing.T) {
+	fp := &fakeProvider{}
+	lm := newManager(t, fp, 3)
+
+	// Empty initially.
+	ids := lm.ActiveMachineIDs()
+	if len(ids) != 0 {
+		t.Fatalf("ActiveMachineIDs on empty manager = %d, want 0", len(ids))
+	}
+
+	// Lease two machines.
+	l1, err := lm.Lease(context.Background(), "s1", nil)
+	if err != nil {
+		t.Fatalf("Lease s1: %v", err)
+	}
+	l2, err := lm.Lease(context.Background(), "s2", nil)
+	if err != nil {
+		t.Fatalf("Lease s2: %v", err)
+	}
+
+	ids = lm.ActiveMachineIDs()
+	if len(ids) != 2 {
+		t.Fatalf("ActiveMachineIDs = %d, want 2", len(ids))
+	}
+	if _, ok := ids[l1.Machine.ID]; !ok {
+		t.Errorf("machine %s not in active set", l1.Machine.ID)
+	}
+	if _, ok := ids[l2.Machine.ID]; !ok {
+		t.Errorf("machine %s not in active set", l2.Machine.ID)
+	}
+
+	// Release one.
+	lm.Release(context.Background(), "s1")
+	ids = lm.ActiveMachineIDs()
+	if len(ids) != 1 {
+		t.Fatalf("ActiveMachineIDs after release = %d, want 1", len(ids))
+	}
+	if _, ok := ids[l2.Machine.ID]; !ok {
+		t.Errorf("machine %s not in active set after releasing s1", l2.Machine.ID)
 	}
 }
 

@@ -21,6 +21,14 @@ import (
 // in tests (httptest server).
 const defaultFlyBaseURL = "https://api.machines.dev/v1"
 
+// playgroundRoleKey and playgroundRoleVal are the metadata tag set on every
+// per-visitor VM so the orphan reaper can distinguish them from the broker's own
+// machine and unrelated infra. ListManagedMachines filters on this tag.
+const (
+	playgroundRoleKey = "pipelock_role"
+	playgroundRoleVal = "playground-vm"
+)
+
 // defaultWaitTimeout bounds a single WaitReady call's server-side wait.
 const defaultWaitTimeout = 60 * time.Second
 
@@ -68,6 +76,7 @@ type flyMachineConfig struct {
 	Guest       flyGuest          `json:"guest"`
 	AutoDestroy bool              `json:"auto_destroy"`
 	Restart     flyRestart        `json:"restart"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
 type flyCreateRequest struct {
@@ -132,6 +141,9 @@ func (f *FlyMachines) CreateMachine(ctx context.Context, spec MachineSpec) (*Mac
 			// never restart it. The broker also force-destroys explicitly.
 			AutoDestroy: true,
 			Restart:     flyRestart{Policy: "no"},
+			// Tag the VM so the orphan reaper can distinguish per-visitor VMs
+			// from the broker's own machine and unrelated infra.
+			Metadata: map[string]string{playgroundRoleKey: playgroundRoleVal},
 		},
 		Region: spec.Region,
 	}
@@ -191,6 +203,49 @@ func (f *FlyMachines) DestroyMachine(ctx context.Context, id string) error {
 		return err
 	}
 	return nil
+}
+
+// flyListMachine mirrors the Fly Machines API list-machines response fields that
+// the broker reads. Only the fields needed for orphan reaping are modeled.
+type flyListMachine struct {
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+	Config    struct {
+		Metadata map[string]string `json:"metadata"`
+	} `json:"config"`
+}
+
+// ListManagedMachines returns only per-visitor VMs (those tagged with
+// pipelock_role == playground-vm). The broker's own machine and unrelated infra
+// are excluded. A machine whose created_at is missing or unparseable gets a zero
+// CreatedAt (the reaper treats zero as "unknown age, spare it").
+func (f *FlyMachines) ListManagedMachines(ctx context.Context) ([]Machine, error) {
+	if err := f.validate(); err != nil {
+		return nil, err
+	}
+	path := fmt.Sprintf("/apps/%s/machines", url.PathEscape(f.AppName))
+	respBody, err := f.do(ctx, http.MethodGet, path, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var raw []flyListMachine
+	if uerr := json.Unmarshal(respBody, &raw); uerr != nil {
+		return nil, fmt.Errorf("fly: parse list machines response: %w", uerr)
+	}
+	var managed []Machine
+	for _, m := range raw {
+		if m.Config.Metadata[playgroundRoleKey] != playgroundRoleVal {
+			continue
+		}
+		created, _ := time.Parse(time.RFC3339, m.CreatedAt)
+		managed = append(managed, Machine{
+			ID:        m.ID,
+			State:     m.State,
+			CreatedAt: created,
+		})
+	}
+	return managed, nil
 }
 
 func (f *FlyMachines) validate() error {

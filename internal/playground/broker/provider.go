@@ -14,7 +14,10 @@
 // passing a per-session credential into the leased VM's environment.
 package broker
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Machine is the broker's view of one leased per-visitor microVM. Fields are the
 // subset the broker needs to route to and tear down the VM; provider-specific
@@ -29,6 +32,10 @@ type Machine struct {
 	// the provider's private network (Fly 6PN is an IPv6 address). Empty until
 	// the machine has been assigned one.
 	PrivateIP string
+	// CreatedAt is the provider-reported creation time. Zero if unknown or
+	// unparseable — callers that care about age must treat zero as "unknown,
+	// do not assume old."
+	CreatedAt time.Time
 }
 
 // MachineSpec describes the per-visitor VM to create. The broker fills it per
@@ -66,4 +73,9 @@ type MachineProvider interface {
 	// machine already gone is not an error, so teardown on a half-failed lease
 	// never wedges.
 	DestroyMachine(ctx context.Context, id string) error
+	// ListManagedMachines returns ONLY broker-tagged per-visitor VMs (those
+	// with metadata pipelock_role == playground-vm). The broker's own machine
+	// and unrelated infra are never returned. Used by the orphan reaper to
+	// reconcile actual provider state against live leases.
+	ListManagedMachines(ctx context.Context) ([]Machine, error)
 }

@@ -9,8 +9,15 @@
 # holds the Fly token + gate secret (delivered as Fly secrets/env), never an
 # agent secret beyond passing a per-session model key through to a leased VM.
 #
-# Build from the REPO ROOT:
-#   docker build -f deploy/fly-playground/Dockerfile.broker -t pipelock-playground-broker .
+# The broker serves the static playground viewer at / (via --static-dir /srv/ui).
+# That viewer lives in the public site repo, not here, so it is supplied as a
+# BuildKit named build context ("ui") instead of being vendored into this repo —
+# keeping the image build reproducible without copying the site into pipelock.
+#
+# Build from the REPO ROOT (see deploy/fly-playground/build-images.sh):
+#   docker build -f deploy/fly-playground/Dockerfile.broker \
+#     --build-context ui=<site-repo>/static/playground/demo \
+#     -t pipelock-playground-broker .
 
 ARG GO_VERSION=1.26
 
@@ -25,6 +32,10 @@ RUN go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-broker ./cmd
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
 COPY --from=build /out/pipelock-playground-broker /usr/local/bin/pipelock-playground-broker
+# Bundle the static playground viewer at /srv/ui (served at / via --static-dir).
+# Supplied by the "ui" named build context (see header). Without this the broker
+# serves an empty UI; bundling it here is the single source of the served viewer.
+COPY --from=ui . /srv/ui
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/pipelock-playground-broker"]
 CMD ["serve"]

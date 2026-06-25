@@ -65,9 +65,15 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"discord-mfa-token", "bot mfa." + strings.Repeat("G", 84), ClassDiscordToken},
 		{"twilio-api-key", "sid SK" + strings.Repeat("a", 32), ClassTwilioAPIKey},
 		{"mailgun-api-key", "send key-" + strings.Repeat("b", 32), ClassMailgunAPIKey},
+		{"sendgrid-api-key", "key SG." + strings.Repeat("A", 22) + "." + strings.Repeat("B", 43), ClassSendGridAPIKey},
 		{"bearer-token", "Authorization: bearer " + strings.Repeat("J", 24), ClassBearer},
 		{"jwt", "bearer eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
 		{"jwt-header-whitespace", "bearer " + base64.RawURLEncoding.EncodeToString([]byte(`{ "alg":"HS256","typ":"JWT"}`)) + ".eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
+		// Payload variants exercising the broadened second-segment branches:
+		// `{ "sub"...}` -> eyA, `{}` -> e30, and a newline-led header -> ew.
+		{"jwt-payload-whitespace", "bearer eyJhbGciOiJIUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(`{ "sub":"123"}`)) + ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
+		{"jwt-empty-payload", "bearer eyJhbGciOiJIUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(`{}`)) + ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
+		{"jwt-header-newline", "bearer " + base64.RawURLEncoding.EncodeToString([]byte("{\n\"alg\":\"HS256\"}")) + ".eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
 		{"ssh-openssh", "-----BEGIN OPENSSH PRIVATE " + "KEY-----", ClassSSHPrivateKey},
 		{"ssh-rsa", "-----BEGIN RSA PRIVATE " + "KEY-----", ClassSSHPrivateKey},
 		// Bare PKCS#8 header (GCP service-account private_key) now redactable.

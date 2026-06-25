@@ -2863,17 +2863,17 @@ func TestTextDLP_DottedTokenPatterns(t *testing.T) {
 		"promoting hard today now that 3.0 is out. lets start with the " +
 		"generic release template for x. deep research and strategize."
 
-	blocked := []struct{ name, text string }{
-		{"discord_real", discordReal},
-		{"discord_mfa", discordMFA},
-		{"sendgrid_real", sendgridReal},
-		{"jwt_real", jwtReal},
-		{"jwt_json", jwtJSON},
-		{"jwt_header_with_whitespace", jwtHeaderWithWhitespace},
-		{"jwt_payload_with_padding", jwtPayloadWithPadding},
-		{"jwt_empty_claims", jwtEmptyClaims},
-		{"sendgrid_hex_encoded", sendgridHexEncoded},
-		{"jwt_url_then_base64_encoded", jwtURLBase64Encoded},
+	blocked := []struct{ name, text, want string }{
+		{"discord_real", discordReal, "Discord Bot Token"},
+		{"discord_mfa", discordMFA, "Discord Bot Token"},
+		{"sendgrid_real", sendgridReal, "SendGrid API Key"},
+		{"jwt_real", jwtReal, "JWT Token"},
+		{"jwt_json", jwtJSON, "JWT Token"},
+		{"jwt_header_with_whitespace", jwtHeaderWithWhitespace, "JWT Token"},
+		{"jwt_payload_with_padding", jwtPayloadWithPadding, "JWT Token"},
+		{"jwt_empty_claims", jwtEmptyClaims, "JWT Token"},
+		{"sendgrid_hex_encoded", sendgridHexEncoded, "SendGrid API Key"},
+		{"jwt_url_then_base64_encoded", jwtURLBase64Encoded, "JWT Token"},
 	}
 	clean := []struct{ name, text string }{
 		{"discord_lowercase_anchor", discordLower},
@@ -2894,8 +2894,19 @@ func TestTextDLP_DottedTokenPatterns(t *testing.T) {
 	for _, sf := range surfaces {
 		for _, tc := range blocked {
 			t.Run(sf.name+"/blocked/"+tc.name, func(t *testing.T) {
-				if res := sf.scan(tc.text); res.Clean {
-					t.Errorf("%s/%s: real token must still match (detection regression), got Clean", sf.name, tc.name)
+				res := sf.scan(tc.text)
+				if res.Clean {
+					t.Fatalf("%s/%s: real token must still match (detection regression), got Clean", sf.name, tc.name)
+				}
+				found := false
+				for _, m := range res.Matches {
+					if m.PatternName == tc.want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("%s/%s: expected DLP pattern %q, got matches %+v", sf.name, tc.name, tc.want, res.Matches)
 				}
 			})
 		}

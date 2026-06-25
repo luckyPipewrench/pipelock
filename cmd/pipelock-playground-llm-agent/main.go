@@ -71,13 +71,17 @@ const defaultActor = "lab-agent"
 // demo is a multi-step chat, so the agent must remember what it already explored
 // to handle "and then..." / "continue" without re-discovering from scratch; the
 // budget keeps that rich memory bounded in cost and context size. The oldest
-// whole turns are dropped when it overflows.
-const liveHistoryTokens = 16000
+// whole turns are dropped when it overflows. Sized well under the model's context
+// window (deepseek-chat is 64k) but large enough that a normal multi-prompt demo
+// session with verbose tool dumps (filesystem searches, config bodies, base64
+// blobs) does NOT drop earlier turns mid-conversation and "forget" what the
+// visitor asked. 16k was too small: a few exfil-technique turns overflowed it.
+const liveHistoryTokens = 40000
 
 // liveHistoryTurns is a secondary safety cap on the number of turns retained, a
 // backstop against a long run of tiny turns. The token budget is the real
 // limiter for normal tool-laden turns.
-const liveHistoryTurns = 12
+const liveHistoryTurns = 24
 
 type config struct {
 	modelBaseURL   string

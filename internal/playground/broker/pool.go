@@ -342,7 +342,12 @@ func (p *Pool) fill(ctx context.Context) {
 		}
 
 		p.mu.Lock()
-		if p.closed {
+		// Re-check closed AND paused under the lock: a Drain (closed) or Kill
+		// (paused) can land while this VM was being created/booted, and the top
+		// of the loop checked before CreateMachine. Without this, a kill mid-
+		// create would leave a warm VM running after the pool was supposed to
+		// stop. Destroy it and free the slot.
+		if p.closed || p.paused {
 			p.mu.Unlock()
 			_ = p.provider.DestroyMachine(context.WithoutCancel(ctx), m.ID)
 			release()

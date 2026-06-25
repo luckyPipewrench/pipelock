@@ -34,6 +34,14 @@ const (
 
 	envVMInviteCode = "PLAYGROUND_CODE"
 
+	// maxArtifactBytes caps the per-artifact size the broker will cache. The
+	// sealed bundle is signed JSON/tar.gz; 16 MiB is generous headroom.
+	maxArtifactBytes = 16 << 20 // 16 MiB
+
+	// maxArtifactCacheEntries bounds the total number of cached artifacts to
+	// prevent unbounded memory growth from many concurrent sessions.
+	maxArtifactCacheEntries = 128
+
 	// defaultVMReadyTimeout bounds the broker's whole VM session-create retry
 	// window. A freshly leased VM reports "started" (Firecracker booted) before it
 	// serves, and crosses TWO fail-closed containment proofs (six 2s egress probes
@@ -122,6 +130,10 @@ type Server struct {
 
 	killed atomic.Bool
 
+	// bundleCache holds sealed artifacts so re-downloads and kit-then-raw
+	// flows survive VM teardown. Keyed by (token, os).
+	bundleCache *artifactCache
+
 	mu       sync.Mutex
 	tokens   map[string]*tokenLease
 	bySess   map[string]string
@@ -135,6 +147,90 @@ type tokenLease struct {
 	sessionKey string
 	lease      *Lease
 	deadline   time.Time
+}
+
+// artifactCacheKey identifies a cached artifact by session token and OS
+// variant (empty string = the raw .tar.gz bundle).
+type artifactCacheKey struct {
+	token string
+	os    string
+}
+
+// artifactCacheEntry holds a single sealed artifact served to visitors.
+type artifactCacheEntry struct {
+	body               []byte
+	contentType        string
+	contentDisposition string
+	insertedAt         time.Time
+}
+
+// artifactCache is a bounded in-memory cache for sealed session artifacts,
+// keyed by (token, os). It survives VM teardown so re-downloads and kit-then-
+// raw flows work after the VM is destroyed.
+type artifactCache struct {
+	mu      sync.Mutex
+	entries map[artifactCacheKey]*artifactCacheEntry
+	ttl     time.Duration
+}
+
+func newArtifactCache(ttl time.Duration) *artifactCache {
+	return &artifactCache{
+		entries: make(map[artifactCacheKey]*artifactCacheEntry),
+		ttl:     ttl,
+	}
+}
+
+// get returns the cached artifact for the key, or nil if absent/expired.
+func (c *artifactCache) get(key artifactCacheKey) *artifactCacheEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		return nil
+	}
+	if time.Since(e.insertedAt) > c.ttl {
+		delete(c.entries, key)
+		return nil
+	}
+	return e
+}
+
+// put stores an artifact. If the cache is at capacity, expired entries are
+// evicted first; if still at capacity, the oldest entry is evicted.
+func (c *artifactCache) put(key artifactCacheKey, e *artifactCacheEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Evict expired entries first.
+	now := time.Now()
+	for k, v := range c.entries {
+		if now.Sub(v.insertedAt) > c.ttl {
+			delete(c.entries, k)
+		}
+	}
+	// If still at capacity, evict the oldest.
+	if len(c.entries) >= maxArtifactCacheEntries {
+		var oldestKey artifactCacheKey
+		var oldestTime time.Time
+		first := true
+		for k, v := range c.entries {
+			if first || v.insertedAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.insertedAt
+				first = false
+			}
+		}
+		if !first {
+			delete(c.entries, oldestKey)
+		}
+	}
+	c.entries[key] = e
+}
+
+// len returns the number of entries (for testing).
+func (c *artifactCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
 }
 
 type sessionRequest struct {
@@ -192,6 +288,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if vmReadyTimeout <= 0 {
 		vmReadyTimeout = defaultVMReadyTimeout
 	}
+	// The artifact cache TTL covers the session TTL plus generous grace for
+	// re-downloads. 10 minutes is safe: cached bytes are the visitor-facing
+	// signed artifact (offline-verifiable), not secrets.
+	const artifactCacheTTL = 10 * time.Minute
 	s := &Server{
 		cfg:            cfg,
 		ipRate:         livechat.NewRateLimiter(cfg.IPRate),
@@ -201,6 +301,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		global:         livechat.NewDailyBudget(cfg.GlobalDailyBudget),
 		client:         client,
 		vmReadyTimeout: vmReadyTimeout,
+		bundleCache:    newArtifactCache(artifactCacheTTL),
 		tokens:         make(map[string]*tokenLease),
 		bySess:         make(map[string]string),
 		reapDone:       make(chan struct{}),
@@ -544,17 +645,127 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		writeBrokerErr(w, http.StatusTooManyRequests, "rate limited")
 		return
 	}
-	token := r.URL.Query().Get("token")
-	binding := s.lookupToken(token)
+	queryToken := r.URL.Query().Get("token")
+	osParam := r.URL.Query().Get("os")
+
+	// Cache HIT: serve the cached artifact without touching the VM. This
+	// makes re-downloads and kit-then-raw flows work after VM teardown.
+	cacheKey := artifactCacheKey{token: queryToken, os: osParam}
+	if cached := s.bundleCache.get(cacheKey); cached != nil {
+		w.Header().Set("Content-Type", cached.contentType)
+		w.Header().Set("Content-Disposition", cached.contentDisposition)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(cached.body)
+		return
+	}
+
+	// Cache MISS: the VM must still be alive to fetch the artifact.
+	binding := s.lookupToken(queryToken)
 	if binding == nil {
 		writeBrokerErr(w, http.StatusNotFound, "session not found")
 		return
 	}
-	rec := &statusRecorder{ResponseWriter: w}
-	s.proxy(rec, r, binding, false)
-	if rec.status == http.StatusOK {
-		s.releaseToken(context.WithoutCancel(r.Context()), token)
+
+	// Fetch the requested artifact variant from the VM.
+	fetched, fetchErr := s.fetchVMArtifact(r.Context(), binding.lease, queryToken, osParam)
+	if fetchErr != nil {
+		// Propagate the error without releasing the VM so the client can
+		// retry while the session is still alive.
+		writeBrokerErr(w, http.StatusBadGateway, "session proxy unavailable")
+		return
 	}
+	if fetched.status != http.StatusOK {
+		// Non-200 from the VM (e.g. 503 seal failure): propagate and do NOT
+		// release. The visitor can retry while the VM still lives.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(fetched.status)
+		_, _ = w.Write(fetched.body)
+		return
+	}
+
+	// Store the successfully fetched artifact in the cache.
+	s.bundleCache.put(cacheKey, &artifactCacheEntry{
+		body:               fetched.body,
+		contentType:        fetched.contentType,
+		contentDisposition: fetched.contentDisposition,
+		insertedAt:         time.Now(),
+	})
+
+	// Also prefetch the raw bundle (os="") into the cache so a later
+	// raw-bundle download succeeds even after the VM is gone.
+	if osParam != "" {
+		rawKey := artifactCacheKey{token: queryToken, os: ""}
+		if s.bundleCache.get(rawKey) == nil {
+			if raw, rawErr := s.fetchVMArtifact(r.Context(), binding.lease, queryToken, ""); rawErr == nil && raw.status == http.StatusOK {
+				s.bundleCache.put(rawKey, &artifactCacheEntry{
+					body:               raw.body,
+					contentType:        raw.contentType,
+					contentDisposition: raw.contentDisposition,
+					insertedAt:         time.Now(),
+				})
+			}
+		}
+	}
+
+	// The artifact is durably cached. NOW release the VM.
+	s.releaseToken(context.WithoutCancel(r.Context()), queryToken)
+
+	// Serve the fetched artifact to the client.
+	w.Header().Set("Content-Type", fetched.contentType)
+	w.Header().Set("Content-Disposition", fetched.contentDisposition)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(fetched.body)
+}
+
+// vmArtifact holds the result of a direct bounded GET to the VM's bundle route.
+type vmArtifact struct {
+	status             int
+	body               []byte
+	contentType        string
+	contentDisposition string
+}
+
+// fetchVMArtifact makes a bounded HTTP GET to the VM's bundle endpoint and
+// reads the full response body into memory. It does NOT use the streaming
+// reverse proxy because the broker needs the complete body to cache it.
+func (s *Server) fetchVMArtifact(ctx context.Context, lease *Lease, vmToken, osParam string) (vmArtifact, error) {
+	target, err := s.targetURL(lease, livechat.RouteBundle)
+	if err != nil {
+		return vmArtifact{}, err
+	}
+	q := target.Query()
+	q.Set("token", vmToken)
+	if osParam != "" {
+		q.Set("os", osParam)
+	}
+	target.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return vmArtifact{}, fmt.Errorf("broker: build bundle request: %w", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return vmArtifact{}, fmt.Errorf("broker: fetch bundle: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxArtifactBytes+1))
+	if err != nil {
+		return vmArtifact{}, fmt.Errorf("broker: read bundle body: %w", err)
+	}
+	if len(body) > maxArtifactBytes {
+		return vmArtifact{}, fmt.Errorf("broker: bundle body exceeds %d bytes", maxArtifactBytes)
+	}
+
+	return vmArtifact{
+		status:             resp.StatusCode,
+		body:               body,
+		contentType:        resp.Header.Get("Content-Type"),
+		contentDisposition: resp.Header.Get("Content-Disposition"),
+	}, nil
 }
 
 func (s *Server) createVMSession(ctx context.Context, lease *Lease, code string) (vmSessionResponse, time.Time, error) {

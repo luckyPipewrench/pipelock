@@ -354,7 +354,7 @@ func TestBuildHostContainmentWitnessSignsProbeEvidence(t *testing.T) {
 		return results, nil
 	}
 
-	w, err := lr.buildHostContainmentWitness()
+	w, err := lr.buildHostContainmentWitness(t.Context())
 	if err != nil {
 		t.Fatalf("buildHostContainmentWitness: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestBuildHostContainmentWitnessFailsClosedOnProbeError(t *testing.T) {
 		return nil, errors.New("agent probe should not run")
 	}
 
-	_, err = lr.buildHostContainmentWitness()
+	_, err = lr.buildHostContainmentWitness(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "operator control probe") {
 		t.Fatalf("buildHostContainmentWitness error = %v, want operator probe failure", err)
 	}
@@ -432,7 +432,7 @@ func TestBuildHostContainmentWitnessFailsClosedOnNilProxyListener(t *testing.T) 
 		return []ProbeResult{{Target: targets[0], Open: true, Blocked: false, Detail: "connected"}}, nil
 	}
 
-	_, err = lr.buildHostContainmentWitness()
+	_, err = lr.buildHostContainmentWitness(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "proxy listener not initialized") {
 		t.Fatalf("buildHostContainmentWitness error = %v, want proxy listener not initialized", err)
 	}

@@ -129,6 +129,7 @@ type fakeVM struct {
 	streamStarted chan struct{}
 	streamRelease chan struct{}
 	bundleStatus  int
+	bundleHits    atomic.Int32
 	server        *httptest.Server
 }
 
@@ -215,9 +216,19 @@ func (vm *fakeVM) handle(w http.ResponseWriter, r *http.Request) {
 			writeBrokerErr(w, http.StatusForbidden, "wrong VM")
 			return
 		}
-		w.Header().Set("Content-Type", "application/gzip")
-		w.WriteHeader(vm.bundleStatus)
-		_, _ = w.Write([]byte("bundle-" + vm.token))
+		vm.bundleHits.Add(1)
+		osParam := r.URL.Query().Get("os")
+		if osParam != "" {
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "kit-"+osParam+".zip"))
+			w.WriteHeader(vm.bundleStatus)
+			_, _ = w.Write([]byte("kit-" + osParam + "-" + vm.token))
+		} else {
+			w.Header().Set("Content-Type", "application/gzip")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "bundle.tar.gz"))
+			w.WriteHeader(vm.bundleStatus)
+			_, _ = w.Write([]byte("bundle-" + vm.token))
+		}
 	default:
 		writeBrokerErr(w, http.StatusNotFound, "not found")
 	}
@@ -1395,5 +1406,258 @@ func TestServer_HealthDoesNotOverclaimContainment(t *testing.T) {
 	}
 	if _, present := body["contained"]; present {
 		t.Fatal("health must not report a constant 'contained' field the broker cannot prove")
+	}
+}
+
+// --- Artifact cache tests ---
+
+func TestArtifactCache_GetPutEvictTTL(t *testing.T) {
+	t.Parallel()
+	c := newArtifactCache(50 * time.Millisecond)
+
+	key := artifactCacheKey{token: "t1", os: ""}
+	if got := c.get(key); got != nil {
+		t.Fatal("get on empty cache should return nil")
+	}
+
+	entry := &artifactCacheEntry{
+		body:               []byte("hello"),
+		contentType:        "application/gzip",
+		contentDisposition: "attachment",
+		insertedAt:         time.Now(),
+	}
+	c.put(key, entry)
+	if got := c.get(key); got == nil || string(got.body) != "hello" {
+		t.Fatalf("get after put = %v, want hello", got)
+	}
+
+	// Wait for TTL to expire, then verify eviction on read.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.get(key) == nil {
+			return // evicted as expected
+		}
+	}
+	t.Fatal("entry did not expire after TTL")
+}
+
+func TestArtifactCache_CapEvictsOldest(t *testing.T) {
+	t.Parallel()
+	c := newArtifactCache(time.Minute)
+
+	// Fill to capacity.
+	for i := range maxArtifactCacheEntries {
+		k := artifactCacheKey{token: fmt.Sprintf("t%d", i), os: ""}
+		c.put(k, &artifactCacheEntry{
+			body:       []byte(fmt.Sprintf("body%d", i)),
+			insertedAt: time.Now(),
+		})
+	}
+	if c.len() != maxArtifactCacheEntries {
+		t.Fatalf("cache len = %d, want %d", c.len(), maxArtifactCacheEntries)
+	}
+
+	// One more should evict the oldest (t0).
+	c.put(artifactCacheKey{token: "overflow", os: ""}, &artifactCacheEntry{
+		body:       []byte("new"),
+		insertedAt: time.Now(),
+	})
+	if c.len() != maxArtifactCacheEntries {
+		t.Fatalf("cache len after overflow = %d, want %d", c.len(), maxArtifactCacheEntries)
+	}
+	// The oldest entry should be gone.
+	if got := c.get(artifactCacheKey{token: "t0", os: ""}); got != nil {
+		t.Fatal("oldest entry should have been evicted")
+	}
+}
+
+// TestServer_BundleRedownloadAfterVMTeardown proves the core durability fix:
+// after the first successful bundle download releases the VM, a second download
+// (browser retry, double-click) succeeds from the broker's artifact cache.
+func TestServer_BundleRedownloadAfterVMTeardown(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "redownload-token")
+	destroyed := make(chan string, 4)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+
+	// First download: fetches from VM, caches, releases VM.
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	resp1 := getBroker(t, bundleURL)
+	body1, err := io.ReadAll(resp1.Body)
+	_ = resp1.Body.Close()
+	if err != nil {
+		t.Fatalf("read first bundle: %v", err)
+	}
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first bundle status = %d, want 200", resp1.StatusCode)
+	}
+	if string(body1) != "bundle-"+vm.token {
+		t.Fatalf("first bundle body = %q, want %q", body1, "bundle-"+vm.token)
+	}
+
+	// VM should be destroyed after first download.
+	expectDestroyed(t, destroyed)
+	if got := srv.cfg.Leases.ActiveLeases(); got != 0 {
+		t.Fatalf("active leases after first download = %d, want 0", got)
+	}
+
+	// Second download: VM is gone, but the cache serves it.
+	resp2 := getBroker(t, bundleURL)
+	body2, err := io.ReadAll(resp2.Body)
+	_ = resp2.Body.Close()
+	if err != nil {
+		t.Fatalf("read second bundle: %v", err)
+	}
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second bundle status = %d, want 200 (cache hit after VM teardown)", resp2.StatusCode)
+	}
+	if string(body2) != string(body1) {
+		t.Fatalf("second bundle body differs from first: %q vs %q", body2, body1)
+	}
+
+	// The VM should have been hit exactly once (not on the second download).
+	if got := vm.bundleHits.Load(); got != 1 {
+		t.Fatalf("VM bundle hits = %d, want 1 (second download should be a cache hit)", got)
+	}
+}
+
+// TestServer_BundleKitThenRawBothSucceed proves the prefetch-raw behavior:
+// downloading a verify-kit (os=linux) also prefetches the raw bundle into the
+// cache, so a subsequent raw download succeeds even after VM teardown.
+func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "kit-raw-token")
+	destroyed := make(chan string, 4)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+
+	// Download the verify kit (os=linux).
+	kitURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token) + "&os=linux"
+	kitResp := getBroker(t, kitURL)
+	kitBody, err := io.ReadAll(kitResp.Body)
+	_ = kitResp.Body.Close()
+	if err != nil {
+		t.Fatalf("read kit: %v", err)
+	}
+	if kitResp.StatusCode != http.StatusOK {
+		t.Fatalf("kit status = %d, want 200", kitResp.StatusCode)
+	}
+	if !strings.HasPrefix(string(kitBody), "kit-linux-") {
+		t.Fatalf("kit body = %q, want kit-linux-* prefix", kitBody)
+	}
+
+	// VM should be destroyed.
+	expectDestroyed(t, destroyed)
+
+	// Now download the raw bundle. VM is gone, but prefetch should have cached it.
+	rawURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, rawURL)
+	rawBody, err := io.ReadAll(rawResp.Body)
+	_ = rawResp.Body.Close()
+	if err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw bundle status = %d, want 200 (prefetched into cache)", rawResp.StatusCode)
+	}
+	if string(rawBody) != "bundle-"+vm.token {
+		t.Fatalf("raw bundle body = %q, want %q", rawBody, "bundle-"+vm.token)
+	}
+
+	// The VM should have been hit exactly twice: once for the kit, once for
+	// the raw prefetch.
+	if got := vm.bundleHits.Load(); got != 2 {
+		t.Fatalf("VM bundle hits = %d, want 2 (kit + raw prefetch)", got)
+	}
+}
+
+// TestServer_BundleVM503DoesNotReleaseVM proves that a 503 from the VM (seal
+// failure) is propagated to the client and the VM is NOT released, so the
+// client can retry while the VM still lives.
+func TestServer_BundleVM503DoesNotReleaseVM(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "vm-503-token")
+	vm.bundleStatus = http.StatusServiceUnavailable
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+
+	bundleURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	resp := getBroker(t, bundleURL)
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	// The non-200 should be propagated and the lease should be retained.
+	if got := srv.cfg.Leases.ActiveLeases(); got != 1 {
+		t.Fatalf("active leases after VM 503 = %d, want 1 (VM not released)", got)
+	}
+	if got := srv.bundleCache.len(); got != 0 {
+		t.Fatalf("cache len after VM 503 = %d, want 0 (failed fetch must not cache)", got)
+	}
+}
+
+// TestServer_BundleOversizedDoesNotCache proves that an oversized artifact
+// body does not poison the cache and does not release the VM.
+func TestServer_BundleOversizedDoesNotCache(t *testing.T) {
+	t.Parallel()
+	// Create a VM that returns a body exceeding maxArtifactBytes.
+	oversizeBody := strings.Repeat("x", maxArtifactBytes+1)
+	vmsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case livechat.RouteSession:
+			writeBrokerJSON(w, http.StatusOK, vmSessionResponse{
+				Token:     "oversize-tok",
+				SessionID: "sid-oversize",
+				ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+			})
+		case livechat.RouteBundle:
+			w.Header().Set("Content-Type", "application/gzip")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, oversizeBody)
+		default:
+			writeBrokerErr(w, http.StatusNotFound, "not found")
+		}
+	}))
+	t.Cleanup(vmsrv.Close)
+	u, err := url.Parse(vmsrv.URL)
+	if err != nil {
+		t.Fatalf("parse vm url: %v", err)
+	}
+	provider := &serverFakeProvider{targets: []string{u.Host}}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, _ := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+
+	resp := getBroker(t, ts.URL+livechat.RouteBundle+"?token=oversize-tok")
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	// The oversize body should result in a 502 error (fetch failure).
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("oversize bundle status = %d, want 502", resp.StatusCode)
+	}
+	if got := srv.bundleCache.len(); got != 0 {
+		t.Fatalf("cache len after oversize = %d, want 0", got)
+	}
+	if got := srv.cfg.Leases.ActiveLeases(); got != 1 {
+		t.Fatalf("active leases after oversize = %d, want 1 (VM not released on fetch error)", got)
 	}
 }

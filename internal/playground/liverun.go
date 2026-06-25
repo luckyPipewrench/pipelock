@@ -592,7 +592,10 @@ func decodeProbeResults(stdout []byte, expectedTargets []string) ([]ProbeResult,
 // contained position (all must be blocked), and probes local non-network escape
 // surfaces (platform sockets, device nodes, namespace/mount capabilities). The
 // witness is signed by the orchestrator key, the run's trust root.
-func (lr *LiveRun) buildHostContainmentWitness() (HostContainmentWitness, error) {
+//
+// ctx should survive session cancellation (e.g. via context.WithoutCancel) so
+// the witness can be built at TTL expiry when the session context is canceled.
+func (lr *LiveRun) buildHostContainmentWitness(ctx context.Context) (HostContainmentWitness, error) {
 	runProbe := lr.runEgressProbe
 	if lr.egressProbe != nil {
 		runProbe = lr.egressProbe
@@ -602,7 +605,7 @@ func (lr *LiveRun) buildHostContainmentWitness() (HostContainmentWitness, error)
 		runLocalProbe = lr.localEscapeProbe
 	}
 
-	ctrlLn, err := (&net.ListenConfig{}).Listen(lr.ctx, "tcp", "127.0.0.1:0")
+	ctrlLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return HostContainmentWitness{}, fmt.Errorf("control listener: %w", err)
 	}
@@ -708,8 +711,15 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 		lr.rec = nil
 	}
 
+	// The seal must complete even when the session context is canceled (TTL
+	// expiry or client disconnect). WithoutCancel drops the parent's
+	// cancellation while preserving values; the 30s timeout bounds the seal
+	// so a genuinely stuck probe does not hang forever.
+	sealCtx, sealCancel := context.WithTimeout(context.WithoutCancel(lr.ctx), 30*time.Second)
+	defer sealCancel()
+
 	// --- Red-case calibration ---
-	rcResult, redWitness, err := RunRedCaseCalibrationWithWitness(lr.ctx, lr.collectorPriv, lr.canaryID, lr.canaryValue)
+	rcResult, redWitness, err := RunRedCaseCalibrationWithWitness(sealCtx, lr.collectorPriv, lr.canaryID, lr.canaryValue)
 	if err != nil {
 		return VerifyReport{}, fmt.Errorf("red-case calibration: %w", err)
 	}
@@ -794,7 +804,7 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	// separate witness proves the kernel owner-match drop from the contained
 	// network position. Each property is attested where it is actually enforced.
 	if lr.opts.Contained {
-		hcw, hcwErr := lr.buildHostContainmentWitness()
+		hcw, hcwErr := lr.buildHostContainmentWitness(sealCtx)
 		if hcwErr != nil {
 			return VerifyReport{}, fmt.Errorf("host-containment witness: %w", hcwErr)
 		}

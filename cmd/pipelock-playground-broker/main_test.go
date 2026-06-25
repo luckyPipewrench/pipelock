@@ -1288,6 +1288,24 @@ type writeDeadliner interface{ SetWriteDeadline(time.Time) error }
 
 var _ writeDeadliner = (*deadlineRecorder)(nil)
 
+func TestNoCacheStatic(t *testing.T) {
+	t.Parallel()
+	var served bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		served = true
+		w.WriteHeader(http.StatusOK)
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/viewer-live.js", nil)
+	noCacheStatic(inner).ServeHTTP(rec, req)
+	if !served {
+		t.Fatal("inner static handler was not called")
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache (so the viewer revalidates after a redeploy)", got)
+	}
+}
+
 func TestWriteDeadlineMiddleware(t *testing.T) {
 	t.Parallel()
 	const (

@@ -432,7 +432,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 	if strings.TrimSpace(f.staticDir) != "" {
 		mux := http.NewServeMux()
 		mux.Handle(livechat.RouteAPIPrefix, srv.Handler())
-		mux.Handle("/", http.FileServer(http.Dir(f.staticDir)))
+		mux.Handle("/", noCacheStatic(http.FileServer(http.Dir(f.staticDir))))
 		handler = mux
 		_, _ = fmt.Fprintf(out, "serving static UI from %s at /\n", f.staticDir)
 	}
@@ -906,6 +906,19 @@ func normalizePublicHost(raw string) (string, error) {
 // than the deadline) before the response is written. Those long-lived routes
 // are bounded instead by the session TTL and the upstream/edge connection
 // timeouts, not by this deadline.
+// noCacheStatic sets Cache-Control: no-cache on static viewer assets so the
+// browser revalidates them (via ETag/Last-Modified) on every load instead of
+// serving a stale copy from disk cache. The demo updates the viewer (HTML/JS/CSS)
+// in place behind the same paths, so without revalidation a redeploy leaves
+// visitors on a stale viewer — e.g. old example prompts after the assets change.
+// no-cache (revalidate), not no-store, keeps 304s cheap when nothing changed.
+func noCacheStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func writeDeadlineMiddleware(next http.Handler, defaultTimeout time.Duration, overrides map[string]time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rc := http.NewResponseController(w)

@@ -498,6 +498,40 @@ func getBrokerHealth(t *testing.T, ts *httptest.Server) map[string]any {
 	return body
 }
 
+// TestServer_DefaultCodeFallback proves the Access-gated code-optional path:
+// with a DefaultCode configured, a session request carrying NO invite code falls
+// back to the default and succeeds (the human gate is the authorization), and
+// health advertises code_required=false. Without a DefaultCode an empty code is
+// still rejected (the public/Turnstile path is unchanged).
+func TestServer_DefaultCodeFallback(t *testing.T) {
+	t.Run("empty code uses default when configured", func(t *testing.T) {
+		vm := newFakeVM(t, "vm-default-token")
+		provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{DefaultCode: brokerTestCode})
+
+		resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{Code: ""})
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("empty code with DefaultCode = %d, want 200", resp.StatusCode)
+		}
+		if health := getBrokerHealth(t, ts); health["code_required"] != false {
+			t.Fatalf("code_required = %v, want false when DefaultCode set", health["code_required"])
+		}
+	})
+	t.Run("empty code rejected without default", func(t *testing.T) {
+		provider := &serverFakeProvider{}
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+		resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{Code: ""})
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("empty code without DefaultCode = %d, want 403", resp.StatusCode)
+		}
+		if health := getBrokerHealth(t, ts); health["code_required"] != true {
+			t.Fatalf("code_required = %v, want true", health["code_required"])
+		}
+	})
+}
+
 func TestServer_EndToEndProxyAndRelease(t *testing.T) {
 	vm := newFakeVM(t, "vm-token-a")
 	destroyed := make(chan string, 4)

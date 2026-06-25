@@ -112,6 +112,7 @@ type serveFlags struct {
 	cfAccessTeamDomain      string
 	cfAccessAUD             string
 	cfAccessCertsURL        string
+	cfAccessDefaultCode     string
 	trustForwardedFor       bool
 	modelKeyFile            string
 	modelKeyEnv             string
@@ -200,6 +201,7 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.cfAccessTeamDomain, "cf-access-team-domain", "", "Cloudflare Access team domain, e.g. https://team.cloudflareaccess.com; enables origin-side Access JWT validation when set with --cf-access-aud")
 	fl.StringVar(&f.cfAccessAUD, "cf-access-aud", "", "Cloudflare Access application AUD tag expected in Cf-Access-Jwt-Assertion")
 	fl.StringVar(&f.cfAccessCertsURL, "cf-access-certs-url", "", "override Cloudflare Access JWKS URL (tests/dev only; defaults to <team-domain>/cdn-cgi/access/certs)")
+	fl.StringVar(&f.cfAccessDefaultCode, "cf-access-default-code", "", "invite code used when an Access-gated request sends none, so allowlisted users skip the code prompt; REQUIRES --cf-access-team-domain/--cf-access-aud and must be one of the --code values")
 	fl.BoolVar(&f.trustForwardedFor, "trust-forwarded-for", false, "read client IP from X-Forwarded-For behind a trusted proxy")
 	fl.StringVar(&f.modelKeyFile, "model-key-file", "", "path to the model key file passed to the VM env")
 	fl.StringVar(&f.modelKeyEnv, "model-key-env", "", "environment variable holding the model key passed to the VM env")
@@ -359,6 +361,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		Leases:             lm,
 		WarmPool:           warmPool,
 		Gate:               gate,
+		DefaultCode:        f.cfAccessDefaultCode,
 		HumanVerifier:      humanVerifier,
 		IPRate:             livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
 		CodeRate:           livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},
@@ -950,6 +953,25 @@ type cfAccessVerifier struct {
 func validateCFAccessFlags(f *serveFlags) error {
 	team := strings.TrimSpace(f.cfAccessTeamDomain)
 	aud := strings.TrimSpace(f.cfAccessAUD)
+	// --cf-access-default-code lets Access-gated users skip the invite code.
+	// Fail closed: it is only safe behind the Access JWT gate (without it, a
+	// default code would let ANYONE create sessions code-free), and it must name
+	// a real configured code so the gate can redeem it.
+	if dc := strings.TrimSpace(f.cfAccessDefaultCode); dc != "" {
+		if team == "" || aud == "" {
+			return errors.New("--cf-access-default-code requires --cf-access-team-domain and --cf-access-aud (a default code without a human gate would open the broker)")
+		}
+		found := false
+		for _, c := range f.codes {
+			if strings.TrimSpace(c) == dc {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return errors.New("--cf-access-default-code must be one of the --code values")
+		}
+	}
 	if team == "" && aud == "" {
 		if strings.TrimSpace(f.cfAccessCertsURL) != "" {
 			return errors.New("--cf-access-certs-url requires --cf-access-team-domain and --cf-access-aud")

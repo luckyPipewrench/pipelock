@@ -59,6 +59,12 @@ type ServerConfig struct {
 	WarmPool *Pool
 	// Gate validates public invite codes before a VM is leased. Required.
 	Gate *livechat.Gate
+	// DefaultCode, when non-empty, is the invite code used when a session request
+	// arrives with no code. It MUST be one of the Gate's configured codes, and is
+	// only safe to set when an out-of-band human gate (Cloudflare Access) fronts
+	// the broker — the caller (main) enforces that. Empty means a code is always
+	// required. It is never sent to clients.
+	DefaultCode string
 	// HumanVerifier validates a browser proof before invite-code redemption and
 	// VM lease. Nil disables this gate for private/Access-gated deployments.
 	HumanVerifier HumanVerifier
@@ -264,6 +270,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"budget_remaining":           s.global.Remaining(),
 		"killed":                     s.killed.Load(),
 		"session_starts_last_minute": s.sessionStartsSince(time.Now(), time.Minute),
+		// code_required is false when a server-side DefaultCode is configured
+		// (Access-gated deploys): the viewer then auto-starts instead of
+		// prompting for an invite code.
+		"code_required": s.cfg.DefaultCode == "",
 	})
 }
 
@@ -292,7 +302,17 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeBrokerErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if body.Code == "" {
+	// An empty client code falls back to the configured DefaultCode. DefaultCode
+	// is only ever set when an out-of-band human gate (Cloudflare Access) fronts
+	// the broker, so the email allowlist — not the invite code — is the
+	// authorization, and allowlisted users need not paste a code. The default
+	// code is server-side only (never embedded in client JS). When no DefaultCode
+	// is configured (public/Turnstile path), an empty code is still rejected.
+	code := body.Code
+	if code == "" {
+		code = s.cfg.DefaultCode
+	}
+	if code == "" {
 		writeBrokerErr(w, http.StatusForbidden, "invite code rejected")
 		return
 	}
@@ -304,7 +324,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	codeLimiterKey := "code:" + codeKey(body.Code)
+	codeLimiterKey := "code:" + codeKey(code)
 	if !s.codeRate.Allow(codeLimiterKey) {
 		writeBrokerErr(w, http.StatusTooManyRequests, "rate limited")
 		return
@@ -315,7 +335,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeBrokerErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	_, claims, err := s.cfg.Gate.Redeem(body.Code, sessionKey)
+	_, claims, err := s.cfg.Gate.Redeem(code, sessionKey)
 	if err != nil {
 		writeBrokerErr(w, gateStatus(err), "invite code rejected")
 		return

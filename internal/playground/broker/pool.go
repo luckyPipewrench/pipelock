@@ -322,7 +322,8 @@ func (p *Pool) fill(ctx context.Context) {
 			release: release,
 			created: p.now(),
 		})
-		_, _ = fmt.Fprintf(p.log, "pool: warm vm %s ready (code %s)\n", m.ID, vmCode)
+		// Do NOT log vmCode: it is the per-VM broker->VM session credential.
+		_, _ = fmt.Fprintf(p.log, "pool: warm vm %s ready\n", m.ID)
 		p.mu.Unlock()
 	}
 }

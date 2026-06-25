@@ -138,8 +138,10 @@ func tokenClasses() []classPattern {
 		{class: ClassMailgunAPIKey, pattern: regexp.MustCompile(`(?i)\bkey-[A-Za-z0-9]{32}\b`), priority: 100},
 		// SendGrid API key: literal uppercase "SG." + two base64url segments.
 		// Case-sensitive (no (?i)) to mirror the tightened DLP default; a real
-		// key's "SG." prefix is structural, and case-flipping corrupts it.
-		{class: ClassSendGridAPIKey, pattern: regexp.MustCompile(`\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}`), priority: 100},
+		// key's "SG." prefix is structural, and case-flipping corrupts it. The
+		// last segment is {43,} (not {43}) so an overlong suffix is consumed and
+		// redacted in full rather than leaving an unredacted tail (fail closed).
+		{class: ClassSendGridAPIKey, pattern: regexp.MustCompile(`\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43,}`), priority: 100},
 		{class: ClassBearer, pattern: regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}\b`), priority: 95},
 		// JWT: three base64url segments separated by dots. Header/payload
 		// prefixes mirror the DLP JSON-object variants.

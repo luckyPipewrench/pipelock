@@ -108,6 +108,7 @@ type serveFlags struct {
 	turnstileExpectedHostname string
 	turnstileExpectedAction   string
 	turnstileMaxAge           time.Duration
+	turnstileSitekey          string
 	sessionTTL                time.Duration
 	deadlineGrace             time.Duration
 	allowOrigin               string
@@ -200,6 +201,7 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.turnstileExpectedHostname, "turnstile-expected-hostname", "", "expected hostname in the Turnstile Siteverify response; public deploys SHOULD set this")
 	fl.StringVar(&f.turnstileExpectedAction, "turnstile-action", "", "expected action label in the Turnstile Siteverify response; public deploys SHOULD set this")
 	fl.DurationVar(&f.turnstileMaxAge, "turnstile-max-age", broker.DefaultTurnstileMaxAge, "max age for a Turnstile challenge_ts before it is rejected (0 disables)")
+	fl.StringVar(&f.turnstileSitekey, "turnstile-sitekey", "", "public Cloudflare Turnstile site key; reported via /health so the viewer renders the widget (the secret is set separately via --turnstile-secret-*)")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", defaultSessionTTL, "VM session token TTL")
 	fl.DurationVar(&f.deadlineGrace, "deadline-grace", defaultGrace, "lease teardown grace after VM session expiry")
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser")
@@ -368,6 +370,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		WarmPool:           warmPool,
 		Gate:               gate,
 		DefaultCode:        f.cfAccessDefaultCode,
+		TurnstileSitekey:   f.turnstileSitekey,
 		HumanVerifier:      humanVerifier,
 		IPRate:             livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
 		CodeRate:           livechat.RateConfig{RefillPerSec: f.codeRate, Burst: f.codeBurst},

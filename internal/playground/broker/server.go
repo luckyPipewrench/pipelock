@@ -65,6 +65,11 @@ type ServerConfig struct {
 	// the broker — the caller (main) enforces that. Empty means a code is always
 	// required. It is never sent to clients.
 	DefaultCode string
+	// TurnstileSitekey is the PUBLIC Cloudflare Turnstile site key, reported via
+	// /health so the viewer can render the widget. Empty means no Turnstile
+	// widget (Access-gated or unsafe-no-gate deploy). The secret is held by
+	// HumanVerifier, never here.
+	TurnstileSitekey string
 	// HumanVerifier validates a browser proof before invite-code redemption and
 	// VM lease. Nil disables this gate for private/Access-gated deployments.
 	HumanVerifier HumanVerifier
@@ -283,6 +288,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		// (Access-gated deploys): the viewer then auto-starts instead of
 		// prompting for an invite code.
 		"code_required": s.cfg.DefaultCode == "",
+		// turnstile_sitekey is the public site key (empty if no Turnstile gate);
+		// the viewer renders the widget and sends turnstile_token when present.
+		"turnstile_sitekey": s.cfg.TurnstileSitekey,
 	})
 }
 

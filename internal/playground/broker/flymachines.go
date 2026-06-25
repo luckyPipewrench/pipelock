@@ -36,6 +36,11 @@ const defaultWaitTimeout = 60 * time.Second
 // misbehaving/huge response cannot exhaust broker memory.
 const flyMaxBodyBytes = 1 << 20 // 1 MiB
 
+// flyRequestIDHeader is the Fly API response header that carries a per-request
+// trace identifier. Including it in error messages lets operators debug failures
+// with Fly support without exposing potentially secret response-body content.
+const flyRequestIDHeader = "Fly-Request-Id"
+
 // FlyMachines is the Fly Machines API adapter for MachineProvider. It leases one
 // ephemeral, internal-only Firecracker microVM per visitor: the machine has no
 // public service (the broker reaches it over the app's private 6PN network on
@@ -259,16 +264,22 @@ func (f *FlyMachines) validate() error {
 }
 
 // apiError carries a non-2xx Fly API response for typed handling (e.g. 404 on
-// destroy). The body is truncated and must never be assumed secret-free in logs.
+// destroy is status-based). The response body is deliberately excluded: Fly
+// error responses can echo back parts of the submitted request, which may
+// contain VM environment secrets (model API keys, invite codes, etc.). Only
+// non-sensitive diagnostics (status, method, path, request ID) are surfaced.
 type apiError struct {
-	status int
-	method string
-	path   string
-	body   string
+	status    int
+	method    string
+	path      string
+	requestID string // Fly-Request-Id header for operator debugging
 }
 
 func (e *apiError) Error() string {
-	return fmt.Sprintf("fly: %s %s: HTTP %d: %s", e.method, e.path, e.status, e.body)
+	if e.requestID != "" {
+		return fmt.Sprintf("fly: %s %s: HTTP %d (request-id: %s)", e.method, e.path, e.status, e.requestID)
+	}
+	return fmt.Sprintf("fly: %s %s: HTTP %d", e.method, e.path, e.status)
 }
 
 // do performs a Fly API request and returns the response body for 2xx, or an
@@ -309,7 +320,12 @@ func (f *FlyMachines) do(ctx context.Context, method, path string, query url.Val
 		return nil, fmt.Errorf("fly: read %s %s response: %w", method, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &apiError{status: resp.StatusCode, method: method, path: path, body: strings.TrimSpace(string(respBody))}
+		return nil, &apiError{
+			status:    resp.StatusCode,
+			method:    method,
+			path:      path,
+			requestID: resp.Header.Get(flyRequestIDHeader),
+		}
 	}
 	return respBody, nil
 }

@@ -11,9 +11,33 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+const (
+	testSecretVal = "secret-val"
+	testRemoteIP  = "198.51.100.7"
+)
+
+// turnstileSuccessHandler returns a handler that responds with configurable
+// Siteverify fields. Missing fields use Cloudflare-realistic defaults.
+func turnstileSuccessHandler(t *testing.T, overrides map[string]any) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, _ *http.Request) {
+		resp := map[string]any{
+			"success":      true,
+			"hostname":     "playground.pipelab.org",
+			"action":       "session-create",
+			"challenge_ts": time.Now().UTC().Format(time.RFC3339),
+		}
+		for k, v := range overrides {
+			resp[k] = v
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
 
 func TestTurnstileVerifier_Verify(t *testing.T) {
 	t.Parallel()
@@ -33,11 +57,11 @@ func TestTurnstileVerifier_Verify(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	verifier := TurnstileVerifier{Secret: "secret", VerifyURL: ts.URL, Client: ts.Client()}
-	if err := verifier.Verify(context.Background(), "token", "198.51.100.7"); err != nil {
+	verifier := TurnstileVerifier{Secret: testSecretVal, VerifyURL: ts.URL, Client: ts.Client()}
+	if err := verifier.Verify(context.Background(), "tok-value", testRemoteIP); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if got.Get("secret") != "secret" || got.Get("response") != "token" || got.Get("remoteip") != "198.51.100.7" {
+	if got.Get("secret") != testSecretVal || got.Get("response") != "tok-value" || got.Get("remoteip") != testRemoteIP {
 		t.Fatalf("siteverify form = %v", got)
 	}
 }
@@ -106,8 +130,8 @@ func TestTurnstileVerifier_FailsClosed(t *testing.T) {
 			t.Parallel()
 			ts := httptest.NewServer(tc.handler)
 			t.Cleanup(ts.Close)
-			verifier := TurnstileVerifier{Secret: "secret", VerifyURL: ts.URL, Client: ts.Client()}
-			if err := verifier.Verify(context.Background(), tc.token, "198.51.100.7"); err == nil {
+			verifier := TurnstileVerifier{Secret: testSecretVal, VerifyURL: ts.URL, Client: ts.Client()}
+			if err := verifier.Verify(context.Background(), tc.token, testRemoteIP); err == nil {
 				t.Fatal("Verify succeeded, want fail closed")
 			}
 		})
@@ -116,11 +140,11 @@ func TestTurnstileVerifier_FailsClosed(t *testing.T) {
 
 func TestTurnstileVerifier_RequestBuildAndNetworkErrorsFailClosed(t *testing.T) {
 	t.Parallel()
-	if err := (TurnstileVerifier{Secret: "secret", VerifyURL: "://bad"}).Verify(context.Background(), "token", ""); err == nil {
+	if err := (TurnstileVerifier{Secret: testSecretVal, VerifyURL: "://bad"}).Verify(context.Background(), "token", ""); err == nil {
 		t.Fatal("invalid verify URL should fail closed")
 	}
 	verifier := TurnstileVerifier{
-		Secret:    "secret",
+		Secret:    testSecretVal,
 		VerifyURL: "https://turnstile.example/verify",
 		Client:    &http.Client{Transport: errRoundTripper{}},
 	}
@@ -131,10 +155,153 @@ func TestTurnstileVerifier_RequestBuildAndNetworkErrorsFailClosed(t *testing.T) 
 
 func TestTurnstileVerifier_EmptySecretFailsClosed(t *testing.T) {
 	t.Parallel()
-	if err := (TurnstileVerifier{}).Verify(context.Background(), "token", "198.51.100.7"); err == nil {
+	if err := (TurnstileVerifier{}).Verify(context.Background(), "token", testRemoteIP); err == nil {
 		t.Fatal("Verify with empty secret succeeded, want fail closed")
 	}
 }
+
+// --- Post-success response validation (Issue A) ---
+
+func TestTurnstileVerifier_HostnameActionFreshness(t *testing.T) {
+	t.Parallel()
+
+	freshTS := time.Now().UTC().Format(time.RFC3339)
+	staleTS := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	fixedNow := time.Now().UTC()
+	clock := func() time.Time { return fixedNow }
+
+	tests := []struct {
+		name      string
+		verifier  TurnstileVerifier
+		overrides map[string]any
+		wantErr   bool
+	}{
+		{
+			name: "success_matching_hostname_action_fresh",
+			verifier: TurnstileVerifier{
+				ExpectedHostname: "playground.pipelab.org",
+				ExpectedAction:   "session-create",
+				MaxAge:           5 * time.Minute,
+				Now:              clock,
+			},
+			overrides: map[string]any{
+				"hostname":     "playground.pipelab.org",
+				"action":       "session-create",
+				"challenge_ts": freshTS,
+			},
+			wantErr: false,
+		},
+		{
+			name: "wrong_hostname_rejected",
+			verifier: TurnstileVerifier{
+				ExpectedHostname: "playground.pipelab.org",
+			},
+			overrides: map[string]any{
+				"hostname": "evil.attacker.com",
+			},
+			wantErr: true,
+		},
+		{
+			name: "wrong_action_rejected",
+			verifier: TurnstileVerifier{
+				ExpectedAction: "session-create",
+			},
+			overrides: map[string]any{
+				"action": "wrong-action",
+			},
+			wantErr: true,
+		},
+		{
+			name: "stale_challenge_ts_rejected",
+			verifier: TurnstileVerifier{
+				MaxAge: 5 * time.Minute,
+				Now:    clock,
+			},
+			overrides: map[string]any{
+				"challenge_ts": staleTS,
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing_challenge_ts_with_max_age_fails_closed",
+			verifier: TurnstileVerifier{
+				MaxAge: 5 * time.Minute,
+				Now:    clock,
+			},
+			overrides: map[string]any{
+				"challenge_ts": "",
+			},
+			wantErr: true,
+		},
+		{
+			name: "unparseable_challenge_ts_with_max_age_fails_closed",
+			verifier: TurnstileVerifier{
+				MaxAge: 5 * time.Minute,
+				Now:    clock,
+			},
+			overrides: map[string]any{
+				"challenge_ts": "not-a-timestamp",
+			},
+			wantErr: true,
+		},
+		{
+			name: "hostname_case_insensitive",
+			verifier: TurnstileVerifier{
+				ExpectedHostname: "Playground.Pipelab.Org",
+			},
+			overrides: map[string]any{
+				"hostname": "playground.pipelab.org",
+			},
+			wantErr: false,
+		},
+		{
+			name:     "no_validation_fields_set_allows_on_success",
+			verifier: TurnstileVerifier{},
+			overrides: map[string]any{
+				"hostname": "anything.example",
+				"action":   "whatever",
+			},
+			wantErr: false,
+		},
+		{
+			name: "max_age_zero_skips_freshness",
+			verifier: TurnstileVerifier{
+				MaxAge: 0,
+			},
+			overrides: map[string]any{
+				"challenge_ts": staleTS,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ts := httptest.NewServer(turnstileSuccessHandler(t, tc.overrides))
+			t.Cleanup(ts.Close)
+
+			v := tc.verifier
+			v.Secret = testSecretVal
+			v.VerifyURL = ts.URL
+			v.Client = ts.Client()
+
+			err := v.Verify(context.Background(), "test-token", testRemoteIP)
+			if tc.wantErr && err == nil {
+				t.Fatal("Verify succeeded, want fail closed")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Verify failed: %v", err)
+			}
+			// Verify that error messages don't leak which check failed.
+			if tc.wantErr && err != nil && !errors.Is(err, errTurnstileRejected) {
+				t.Fatalf("error should be generic errTurnstileRejected, got: %v", err)
+			}
+		})
+	}
+}
+
+// --- SeenTokens unit tests ---
 
 func TestSeenTokens_Defaults(t *testing.T) {
 	t.Parallel()
@@ -206,14 +373,14 @@ func TestSeenTokens_CapFailsClosedUntilExpiry(t *testing.T) {
 func TestSeenTokens_ConcurrentRace(t *testing.T) {
 	t.Parallel()
 	seen := NewSeenTokens(time.Minute, nil)
-	const token = "race-token"
+	const tok = "race-token"
 	const goroutines = 50
 	accepted := make(chan bool, goroutines)
 	start := make(chan struct{})
 	for range goroutines {
 		go func() {
 			<-start
-			accepted <- seen.CheckAndMark(token)
+			accepted <- seen.CheckAndMark(tok)
 		}()
 	}
 	close(start)
@@ -228,60 +395,138 @@ func TestSeenTokens_ConcurrentRace(t *testing.T) {
 	}
 }
 
-func TestReplayGuardVerifier_BlocksReplayBeforeNetwork(t *testing.T) {
+func TestSeenTokens_IsSeenAndMarkSeen(t *testing.T) {
 	t.Parallel()
-	var siteverifyCalls int
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	seen := NewSeenTokens(2*time.Minute, clock)
+
+	if seen.IsSeen("tok-x") {
+		t.Fatal("unseen token should not be seen")
+	}
+	if !seen.MarkSeen("tok-x") {
+		t.Fatal("MarkSeen should succeed")
+	}
+	if !seen.IsSeen("tok-x") {
+		t.Fatal("marked token should be seen")
+	}
+	// After expiry, not seen.
+	now = now.Add(3 * time.Minute)
+	if seen.IsSeen("tok-x") {
+		t.Fatal("expired token should not be seen")
+	}
+}
+
+// --- ReplayGuardVerifier (Issue B: post-verify record pattern) ---
+
+func TestReplayGuardVerifier_BlocksReplayAfterSuccess(t *testing.T) {
+	t.Parallel()
+	var siteverifyCalls atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		siteverifyCalls++
+		siteverifyCalls.Add(1)
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	t.Cleanup(ts.Close)
 
-	inner := TurnstileVerifier{Secret: "secret", VerifyURL: ts.URL, Client: ts.Client()}
+	inner := TurnstileVerifier{Secret: testSecretVal, VerifyURL: ts.URL, Client: ts.Client()}
 	guard := &ReplayGuardVerifier{
 		Inner: inner,
 		Seen:  NewSeenTokens(time.Minute, nil),
 	}
 
 	// First call succeeds and reaches Siteverify.
-	if err := guard.Verify(context.Background(), "replay-tok", "198.51.100.7"); err != nil {
+	if err := guard.Verify(context.Background(), "replay-tok", testRemoteIP); err != nil {
 		t.Fatalf("first Verify: %v", err)
 	}
-	if siteverifyCalls != 1 {
-		t.Fatalf("siteverify calls = %d, want 1", siteverifyCalls)
+	if siteverifyCalls.Load() != 1 {
+		t.Fatalf("siteverify calls = %d, want 1", siteverifyCalls.Load())
 	}
 	// Second call with same token is rejected WITHOUT a Siteverify call.
-	if err := guard.Verify(context.Background(), "replay-tok", "198.51.100.7"); err == nil {
+	if err := guard.Verify(context.Background(), "replay-tok", testRemoteIP); err == nil {
 		t.Fatal("replayed token should be rejected")
 	}
-	if siteverifyCalls != 1 {
-		t.Fatalf("siteverify calls after replay = %d, want still 1 (no network call)", siteverifyCalls)
+	if siteverifyCalls.Load() != 1 {
+		t.Fatalf("siteverify calls after replay = %d, want still 1 (no network call)", siteverifyCalls.Load())
 	}
 }
 
-func TestReplayGuardVerifier_InvalidTokenDoesNotPopulateSeenCache(t *testing.T) {
+func TestReplayGuardVerifier_FailedTokenDoesNotPoisonCache(t *testing.T) {
 	t.Parallel()
-	var siteverifyCalls int
+	// Issue B: an attacker spraying invalid tokens must not fill the cache.
+	// A failed Siteverify must NOT record the token, so the same token value
+	// can succeed on a subsequent attempt.
+	var callCount atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		siteverifyCalls++
+		n := callCount.Add(1)
+		if n == 1 {
+			// First call: upstream rejects.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success":     false,
+				"error-codes": []string{"timeout-or-duplicate"},
+			})
+			return
+		}
+		// Second call: upstream accepts.
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}))
 	t.Cleanup(ts.Close)
 
 	seen := NewSeenTokens(time.Minute, nil)
-	inner := TurnstileVerifier{Secret: "secret", VerifyURL: ts.URL, Client: ts.Client()}
+	inner := TurnstileVerifier{Secret: testSecretVal, VerifyURL: ts.URL, Client: ts.Client()}
 	guard := &ReplayGuardVerifier{
 		Inner: inner,
 		Seen:  seen,
 	}
 
-	for _, token := range []string{"", strings.Repeat("x", maxTurnstileTokenBytes+1)} {
-		if err := guard.Verify(context.Background(), token, "198.51.100.7"); err == nil {
+	// First attempt: upstream rejects.
+	if err := guard.Verify(context.Background(), "the-token", testRemoteIP); err == nil {
+		t.Fatal("first Verify should have failed")
+	}
+
+	// Token must NOT be in the seen cache.
+	if seen.IsSeen("the-token") {
+		t.Fatal("failed verification should not poison seen cache")
+	}
+
+	// Second attempt with same token: upstream accepts this time.
+	if err := guard.Verify(context.Background(), "the-token", testRemoteIP); err != nil {
+		t.Fatalf("second Verify should succeed: %v", err)
+	}
+
+	// NOW the token should be in the seen cache.
+	if !seen.IsSeen("the-token") {
+		t.Fatal("token should be recorded as seen after successful verification")
+	}
+
+	// Third attempt: replay rejected.
+	if err := guard.Verify(context.Background(), "the-token", testRemoteIP); err == nil {
+		t.Fatal("third Verify should reject replay")
+	}
+}
+
+func TestReplayGuardVerifier_InvalidTokenDoesNotPopulateSeenCache(t *testing.T) {
+	t.Parallel()
+	var siteverifyCalls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		siteverifyCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+	}))
+	t.Cleanup(ts.Close)
+
+	seen := NewSeenTokens(time.Minute, nil)
+	inner := TurnstileVerifier{Secret: testSecretVal, VerifyURL: ts.URL, Client: ts.Client()}
+	guard := &ReplayGuardVerifier{
+		Inner: inner,
+		Seen:  seen,
+	}
+
+	for _, tok := range []string{"", strings.Repeat("x", maxTurnstileTokenBytes+1)} {
+		if err := guard.Verify(context.Background(), tok, testRemoteIP); err == nil {
 			t.Fatal("invalid token Verify succeeded, want fail closed")
 		}
 	}
-	if siteverifyCalls != 0 {
-		t.Fatalf("siteverify calls = %d, want 0 for invalid tokens", siteverifyCalls)
+	if siteverifyCalls.Load() != 0 {
+		t.Fatalf("siteverify calls = %d, want 0 for invalid tokens", siteverifyCalls.Load())
 	}
 	seen.mu.Lock()
 	defer seen.mu.Unlock()

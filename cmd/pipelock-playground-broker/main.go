@@ -73,53 +73,56 @@ const (
 )
 
 type serveFlags struct {
-	listen                  string
-	adminListen             string
-	adminTokenFile          string
-	adminTokenEnv           string
-	unsafeAdminListenPublic bool
-	staticDir               string
-	provider                string
-	flyApp                  string
-	flyTokenFile            string
-	flyTokenEnv             string
-	image                   string
-	region                  string
-	memoryMB                int
-	cpus                    int
-	internalPort            int
-	concurrency             int
-	codes                   []string
-	maxPerCode              int
-	gateSecretFile          string
-	gateSecretEnv           string
-	ipRate                  float64
-	ipBurst                 float64
-	codeRate                float64
-	codeBurst               float64
-	perIPDailyBudget        int
-	perCodeDailyBudget      int
-	globalDailyBudget       int
-	unsafeUnlimited         bool
-	unsafeNoHumanGate       bool
-	turnstileSecretFile     string
-	turnstileSecretEnv      string
-	turnstileVerifyURL      string
-	sessionTTL              time.Duration
-	deadlineGrace           time.Duration
-	allowOrigin             string
-	publicHosts             []string
-	cfAccessTeamDomain      string
-	cfAccessAUD             string
-	cfAccessCertsURL        string
-	cfAccessDefaultCode     string
-	trustForwardedFor       bool
-	modelKeyFile            string
-	modelKeyEnv             string
-	orchestratorKeyFile     string
-	orchestratorKeyEnv      string
-	requireSessionSecrets   bool
-	warmPoolSize            int
+	listen                    string
+	adminListen               string
+	adminTokenFile            string
+	adminTokenEnv             string
+	unsafeAdminListenPublic   bool
+	staticDir                 string
+	provider                  string
+	flyApp                    string
+	flyTokenFile              string
+	flyTokenEnv               string
+	image                     string
+	region                    string
+	memoryMB                  int
+	cpus                      int
+	internalPort              int
+	concurrency               int
+	codes                     []string
+	maxPerCode                int
+	gateSecretFile            string
+	gateSecretEnv             string
+	ipRate                    float64
+	ipBurst                   float64
+	codeRate                  float64
+	codeBurst                 float64
+	perIPDailyBudget          int
+	perCodeDailyBudget        int
+	globalDailyBudget         int
+	unsafeUnlimited           bool
+	unsafeNoHumanGate         bool
+	turnstileSecretFile       string
+	turnstileSecretEnv        string
+	turnstileVerifyURL        string
+	turnstileExpectedHostname string
+	turnstileExpectedAction   string
+	turnstileMaxAge           time.Duration
+	sessionTTL                time.Duration
+	deadlineGrace             time.Duration
+	allowOrigin               string
+	publicHosts               []string
+	cfAccessTeamDomain        string
+	cfAccessAUD               string
+	cfAccessCertsURL          string
+	cfAccessDefaultCode       string
+	trustForwardedFor         bool
+	modelKeyFile              string
+	modelKeyEnv               string
+	orchestratorKeyFile       string
+	orchestratorKeyEnv        string
+	requireSessionSecrets     bool
+	warmPoolSize              int
 	// VM model/session config, passed into each per-visitor VM via PLAYGROUND_*
 	// env (consumed by deploy/fly-playground/entrypoint.sh).
 	vmModelBaseURL    string
@@ -194,6 +197,9 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.turnstileSecretFile, "turnstile-secret-file", "", "path to the Cloudflare Turnstile secret; enables human verification for session creation")
 	fl.StringVar(&f.turnstileSecretEnv, "turnstile-secret-env", "", "environment variable holding the Cloudflare Turnstile secret; enables human verification for session creation")
 	fl.StringVar(&f.turnstileVerifyURL, "turnstile-verify-url", "", "Cloudflare Turnstile Siteverify URL override (tests/dev only; empty uses Cloudflare)")
+	fl.StringVar(&f.turnstileExpectedHostname, "turnstile-expected-hostname", "", "expected hostname in the Turnstile Siteverify response; public deploys SHOULD set this")
+	fl.StringVar(&f.turnstileExpectedAction, "turnstile-action", "", "expected action label in the Turnstile Siteverify response; public deploys SHOULD set this")
+	fl.DurationVar(&f.turnstileMaxAge, "turnstile-max-age", broker.DefaultTurnstileMaxAge, "max age for a Turnstile challenge_ts before it is rejected (0 disables)")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", defaultSessionTTL, "VM session token TTL")
 	fl.DurationVar(&f.deadlineGrace, "deadline-grace", defaultGrace, "lease teardown grace after VM session expiry")
 	fl.StringVar(&f.allowOrigin, "allow-origin", "", "Access-Control-Allow-Origin for the browser")
@@ -1270,9 +1276,12 @@ func resolveTurnstileVerifier(f *serveFlags) (broker.HumanVerifier, error) {
 		return nil, err
 	}
 	inner := broker.TurnstileVerifier{
-		Secret:    secretValue,
-		VerifyURL: strings.TrimSpace(f.turnstileVerifyURL),
-		Client:    &http.Client{Timeout: 5 * time.Second},
+		Secret:           secretValue,
+		VerifyURL:        strings.TrimSpace(f.turnstileVerifyURL),
+		Client:           &http.Client{Timeout: 5 * time.Second},
+		ExpectedHostname: strings.TrimSpace(f.turnstileExpectedHostname),
+		ExpectedAction:   strings.TrimSpace(f.turnstileExpectedAction),
+		MaxAge:           f.turnstileMaxAge,
 	}
 	return &broker.ReplayGuardVerifier{
 		Inner: inner,

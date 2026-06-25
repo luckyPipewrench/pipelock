@@ -194,7 +194,9 @@ func TestFlyDestroyMachineIdempotentOn404(t *testing.T) {
 }
 
 func TestFlyNon2xxIsAPIError(t *testing.T) {
+	const fakeRequestID = "req-abc123"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(flyRequestIDHeader, fakeRequestID)
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_, _ = w.Write([]byte(`{"error":"bad config"}`))
 	}))
@@ -212,8 +214,99 @@ func TestFlyNon2xxIsAPIError(t *testing.T) {
 	if apiErr.status != http.StatusUnprocessableEntity {
 		t.Errorf("status = %d", apiErr.status)
 	}
-	if !strings.Contains(err.Error(), "bad config") {
-		t.Errorf("error should carry body: %v", err)
+	errStr := err.Error()
+	// Error must include status code and path (non-sensitive diagnostics).
+	if !strings.Contains(errStr, "422") {
+		t.Errorf("error should contain HTTP status code: %s", errStr)
+	}
+	if !strings.Contains(errStr, "/apps/playground-pool/machines") {
+		t.Errorf("error should contain request path: %s", errStr)
+	}
+	// Error must include the Fly request ID for operator debugging.
+	if !strings.Contains(errStr, fakeRequestID) {
+		t.Errorf("error should contain Fly-Request-Id: %s", errStr)
+	}
+	// Error must NOT include the response body (may contain echoed secrets).
+	if strings.Contains(errStr, "bad config") {
+		t.Errorf("error must NOT contain response body: %s", errStr)
+	}
+}
+
+func TestFlyAPIErrorOmitsResponseBody(t *testing.T) {
+	// Fly error responses can echo back parts of the submitted request, which
+	// includes VM environment secrets (model API keys, invite codes). Verify
+	// the error string never surfaces the response body. Build the fake
+	// credential at runtime (gosec G101).
+	fakeSecret := "AKIA" + "IOSFODNN7EXAMPLE"
+	const wantRequestID = "req-trace-deadbeef"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(flyRequestIDHeader, wantRequestID)
+		w.WriteHeader(http.StatusBadRequest)
+		// Simulate Fly echoing back env secrets in the error response.
+		_, _ = w.Write([]byte(`{"error":"invalid config","env":{"MODEL_KEY":"` + fakeSecret + `"}}`))
+	}))
+	defer srv.Close()
+
+	fly := newTestFly(srv)
+	_, err := fly.CreateMachine(context.Background(), MachineSpec{Image: "img"})
+	if err == nil {
+		t.Fatal("want error on 400")
+	}
+
+	errStr := err.Error()
+
+	// Must NOT contain the fake secret (response body content).
+	if strings.Contains(errStr, fakeSecret) {
+		t.Fatalf("error string contains response-body secret: %s", errStr)
+	}
+	if strings.Contains(errStr, "invalid config") {
+		t.Fatalf("error string contains response-body text: %s", errStr)
+	}
+
+	// Must contain non-sensitive diagnostics: status, method, path, request-id.
+	if !strings.Contains(errStr, "400") {
+		t.Errorf("error missing HTTP status code: %s", errStr)
+	}
+	if !strings.Contains(errStr, http.MethodPost) {
+		t.Errorf("error missing HTTP method: %s", errStr)
+	}
+	if !strings.Contains(errStr, "/apps/playground-pool/machines") {
+		t.Errorf("error missing request path: %s", errStr)
+	}
+	if !strings.Contains(errStr, wantRequestID) {
+		t.Errorf("error missing Fly-Request-Id: %s", errStr)
+	}
+}
+
+func TestFlyAPIErrorWithoutRequestID(t *testing.T) {
+	// When the Fly API does not return a request ID header, the error should
+	// still be well-formed and contain status/method/path.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`internal error`))
+	}))
+	defer srv.Close()
+
+	fly := newTestFly(srv)
+	err := fly.WaitReady(context.Background(), "some-id")
+	if err == nil {
+		t.Fatal("want error on 500")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "500") {
+		t.Errorf("error missing status code: %s", errStr)
+	}
+	if !strings.Contains(errStr, "/wait") {
+		t.Errorf("error missing path: %s", errStr)
+	}
+	// Must not contain the response body.
+	if strings.Contains(errStr, "internal error") {
+		t.Errorf("error must not contain response body: %s", errStr)
+	}
+	// Must not contain "request-id" when header is absent.
+	if strings.Contains(errStr, "request-id") {
+		t.Errorf("error should omit request-id field when header is absent: %s", errStr)
 	}
 }
 

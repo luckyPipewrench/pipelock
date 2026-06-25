@@ -4,6 +4,7 @@
 package redact
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -61,10 +62,12 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"sentry-auth-token", "token SNTRYS_" + strings.Repeat("A", 40), ClassSentryAuthToken},
 		{"telegram-token", "bot 1234567890:" + strings.Repeat("F", 35), ClassTelegramToken},
 		{"discord-token", "bot M" + strings.Repeat("G", 23) + "." + strings.Repeat("H", 6) + "." + strings.Repeat("I", 27), ClassDiscordToken},
+		{"discord-mfa-token", "bot mfa." + strings.Repeat("G", 84), ClassDiscordToken},
 		{"twilio-api-key", "sid SK" + strings.Repeat("a", 32), ClassTwilioAPIKey},
 		{"mailgun-api-key", "send key-" + strings.Repeat("b", 32), ClassMailgunAPIKey},
 		{"bearer-token", "Authorization: bearer " + strings.Repeat("J", 24), ClassBearer},
 		{"jwt", "bearer eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
+		{"jwt-header-whitespace", "bearer " + base64.RawURLEncoding.EncodeToString([]byte(`{ "alg":"HS256","typ":"JWT"}`)) + ".eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
 		{"ssh-openssh", "-----BEGIN OPENSSH PRIVATE " + "KEY-----", ClassSSHPrivateKey},
 		{"ssh-rsa", "-----BEGIN RSA PRIVATE " + "KEY-----", ClassSSHPrivateKey},
 		// Bare PKCS#8 header (GCP service-account private_key) now redactable.

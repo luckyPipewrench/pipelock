@@ -216,7 +216,18 @@ const (
 	// Re-bumped for removing Slack/Discord/Telegram from generated default
 	// api_allowlist. Messaging platforms are common exfiltration channels and
 	// should be explicit operator choices, not out-of-box policy.
-	goldenHashDefaults = "1eb706cea270631199da95d873521554fc708e381240864dbdef668c4a86eeed"
+	// Re-bumped for the dotted-token DLP false-positive fix: the "Discord Bot
+	// Token", "SendGrid API Key", and "JWT Token" default patterns now pin
+	// their structural prefix anchors case-sensitively ((?-i:[MN]), (?-i:SG.),
+	// (?-i:eyJ/eyA/ew*)) so the scanner's forced (?i) prefix plus
+	// whitespace-normalized DLP view can no longer collapse natural-language
+	// prose into a fake 3-part dotted token. Detection-relevant: real tokens
+	// still match (and Discord now also matches the "mfa." token form). Review
+	// polish widened the JWT header/payload segments to narrow case-sensitive
+	// JSON-object encodings (`eyA`, `ew[o/k/0]`, `e30`, `e30=`), so compact
+	// JWTs with whitespace or empty claims are not dropped. See
+	// TestTextDLP_DottedTokenPatterns.
+	goldenHashDefaults = "202ed8105c8c7b9c415bb5890b359313f5cc8395550d5bd22cba88662fa1e2be"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -320,7 +331,11 @@ const (
 	// goldenHashDefaults note above.
 	// Re-bumped for dropping leading \b from 16 provider-key DLP patterns:
 	// see goldenHashDefaults note above.
-	goldenHashRichConfig = "5217b3336452fe1e46ade0fc7b2c4d8d701890b72c8f48fbd803b3612208e58d"
+	// Re-bumped for the dotted-token DLP false-positive fix plus JWT
+	// header/payload edge-case polish: see goldenHashDefaults note above. The
+	// rich fixture inherits the default DLP pattern set (include_defaults: true),
+	// so the hash shifts in lockstep.
+	goldenHashRichConfig = "06714a1deedfcd869f0a249d2b0fb8c46e38847f99d2e8c13c1e331f2414805f"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

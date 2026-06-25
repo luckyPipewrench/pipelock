@@ -128,7 +128,7 @@ func tokenClasses() []classPattern {
 		{class: ClassNotionAPIKey, pattern: regexp.MustCompile(`(?i)ntn_[A-Za-z0-9]{40,}\b`), priority: 100},
 		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)sntrys_[A-Za-z0-9]{40,}\b`), priority: 100},
 		{class: ClassTelegramToken, pattern: regexp.MustCompile(`\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b`), priority: 100},
-		{class: ClassDiscordToken, pattern: regexp.MustCompile(`\b[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b`), priority: 100},
+		{class: ClassDiscordToken, pattern: regexp.MustCompile(`(?:\b[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}|\bmfa\.[A-Za-z0-9_-]{84,})`), priority: 100},
 		// Twilio API Key SID: SK + 32 hex (34 total). Boundaries match the
 		// tightened DLP default so an allowlisted host gets a placeholder
 		// rather than the leaked SID passing through raw.
@@ -137,9 +137,9 @@ func tokenClasses() []classPattern {
 		// the tightened DLP default.
 		{class: ClassMailgunAPIKey, pattern: regexp.MustCompile(`(?i)\bkey-[A-Za-z0-9]{32}\b`), priority: 100},
 		{class: ClassBearer, pattern: regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}\b`), priority: 95},
-		// JWT: three base64url segments separated by dots; first segment
-		// starts with `eyJ` (decodes to '{"').
-		{class: ClassJWT, pattern: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`), priority: 100},
+		// JWT: three base64url segments separated by dots. Header/payload
+		// prefixes mirror the DLP JSON-object variants.
+		{class: ClassJWT, pattern: regexp.MustCompile(`\b(?:ey[JA][A-Za-z0-9_=-]{7,}|ew[ok0][A-Za-z0-9_=-]{7,})\.(?:ey[JA][A-Za-z0-9_=-]{7,}|ew[ok0][A-Za-z0-9_=-]{7,}|e30=?)\.[A-Za-z0-9_=-]{10,}`), priority: 100},
 		// The key-type qualifier is optional so a bare PKCS#8 PEM header (the
 		// one with no RSA/EC/DSA/OpenSSH qualifier before the key label), as
 		// used by GCP service-account JSON private_key fields, is recognised

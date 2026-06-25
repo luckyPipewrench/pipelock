@@ -687,7 +687,7 @@ For built-in provider-key patterns, the default config already exempts the provi
 | Azure SAS Token | `sig=<base64>%3D` | high |
 | Slack Token | `xox[bpras]-` | critical |
 | Slack App Token | `xapp-` | critical |
-| Discord Bot Token | `[MN][A-Za-z0-9]{23,}` | critical |
+| Discord Bot Token | `[MN]*.*.*` / `mfa.*` | critical |
 | Twilio API Key | `SK[a-f0-9]{32}` | critical |
 | SendGrid API Key | `SG.` | critical |
 | Mailgun API Key | `key-[a-zA-Z0-9]{32}` | critical |
@@ -708,7 +708,7 @@ For built-in provider-key patterns, the default config already exempts the provi
 | Linear API Key | `lin_api_` + 40+ alphanumeric chars | high |
 | Notion API Key | `ntn_` | high |
 | Sentry Auth Token | `sntrys_` + 40+ alphanumeric chars | high |
-| JWT Token | `ey...\..*\.` | high |
+| JWT Token | JSON-object base64url header and payload, three segments | high |
 | Private Key Header | `-----BEGIN.*PRIVATE KEY-----` | critical |
 | Bitcoin WIF Private Key | `[5KL]` + base58 | critical |
 | Extended Private Key | `[xyzt]prv` + base58 | critical |

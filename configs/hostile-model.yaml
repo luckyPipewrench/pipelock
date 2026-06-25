@@ -212,14 +212,14 @@ dlp:
       regex: 'xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+'
       severity: critical
     - name: "Discord Bot Token"
-      regex: '[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}'
+      regex: '(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})'
       severity: critical
     # Communication service keys
     - name: "Twilio API Key"
       regex: '\bSK[a-f0-9]{32}\b'
       severity: critical
     - name: "SendGrid API Key"
-      regex: 'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
+      regex: '(?-i:SG\.)[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
       severity: critical
     - name: "Mailgun API Key"
       regex: '\bkey-[a-zA-Z0-9]{32}\b'
@@ -299,7 +299,7 @@ dlp:
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----'
       severity: critical
     - name: "JWT Token"
-      regex: '(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}'
+      regex: '(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}'
       severity: critical
     # Cryptocurrency private keys
     - name: "Bitcoin WIF Private Key"

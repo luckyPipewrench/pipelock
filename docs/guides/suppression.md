@@ -161,12 +161,12 @@ Inline `// pipelock:ignore` comments work automatically with no action config ne
 | AWS Access ID | `AKIA*` / `ASIA*` / `AROA*` + 6 more prefixes | critical |
 | Slack Token | `xox[bpras]-*` | critical |
 | Slack App Token | `xapp-*` | critical |
-| Discord Bot Token | Base64 three-segment token | critical |
+| Discord Bot Token | `M*.*.*` / `N*.*.*` / `mfa.*` | critical |
 | Twilio API Key | `SK` + 32 hex | high |
 | SendGrid API Key | `SG.*.*` | critical |
 | Mailgun API Key | `key-` + 32 chars | high |
 | Private Key Header | `-----BEGIN * PRIVATE KEY-----` | critical |
-| JWT Token | `eyJ*.eyJ*.*` (three base64url segments) | high |
+| JWT Token | JSON-object base64url header and payload, three segments | high |
 | Social Security Number | `###-##-####` | low |
 | Credential in URL | `password=`, `token=`, `apikey=`, etc. | high |
 

@@ -2812,3 +2812,99 @@ func TestScanTextForDLPInbound_StillCatchesGenericDLP(t *testing.T) {
 		t.Fatalf("ScanTextForDLPInbound must still run generic pattern DLP, got clean for key pattern")
 	}
 }
+
+// TestTextDLP_DottedTokenPatterns is the regression suite for the dotted-token
+// DLP false positive. The "Discord Bot Token", "SendGrid API Key", and "JWT
+// Token" default patterns matched ordinary prose: the scanner force-prefixes
+// every DLP regex with (?i) and the whitespace-normalized DLP view collapses
+// spaced words into a 3-part dotted shape, so a lowercase letter in prose
+// satisfied a structural prefix anchor ([MN] / SG. / ey). The fix pins those
+// structural anchors case-sensitively, including narrow JWT JSON-object
+// base64url prefixes. This proves the FP prose is clean on both DLP surfaces
+// while real tokens still block, with no detection loss.
+func TestTextDLP_DottedTokenPatterns(t *testing.T) {
+	t.Parallel()
+	s := New(testConfig())
+
+	// Build real-shaped tokens at runtime so the test source carries no literal
+	// secret (gosec G101 / the DLP self-scan would otherwise flag this file).
+	// These are synthetic shapes, not real credentials.
+	const d = "."
+	discordReal := "x" + "N" + strings.Repeat("A", 23) + d + "ab-_09" + d + strings.Repeat("b", 27) + "y"
+	discordMFA := "mfa" + d + strings.Repeat("a", 84)
+	sendgridReal := "xSG" + d + strings.Repeat("-", 22) + d + strings.Repeat("_", 43) + "y"
+	jwtReal := "xeyJ" + strings.Repeat("a", 7) + d + "eyJ" + strings.Repeat("b", 7) + d + strings.Repeat("c", 10) + "=y"
+	encodeJWTSegment := func(s string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(s))
+	}
+	jwtJSON := encodeJWTSegment(`{"alg":"HS256","typ":"JWT"}`) + d +
+		encodeJWTSegment(`{"sub":"123"}`) + d + "abcDEF012-_abcDEF012-_abcDEF012"
+	jwtHeaderWithWhitespace := encodeJWTSegment(`{ "alg":"HS256","typ":"JWT"}`) + d +
+		encodeJWTSegment(`{"sub":"123"}`) + d + "abcDEF012-_abcDEF012-_abcDEF012"
+	jwtPayloadWithPadding := encodeJWTSegment(`{"alg":"HS256","typ":"JWT"}`) + d +
+		base64.URLEncoding.EncodeToString([]byte(`{ "sub":"123"}`)) + d + "abcDEF012-_abcDEF012-_abcDEF012"
+	jwtEmptyClaims := encodeJWTSegment(`{"alg":"none"}`) + d +
+		base64.URLEncoding.EncodeToString([]byte(`{}`)) + d + "abcDEF012-_abcDEF012-_abcDEF012"
+	sendgridHexEncoded := hex.EncodeToString([]byte("SG" + d + strings.Repeat("-", 22) + d + strings.Repeat("_", 43)))
+	jwtURLBase64Encoded := base64.RawURLEncoding.EncodeToString([]byte(url.QueryEscape(jwtJSON)))
+
+	// Lowercase-anchor controls: byte-identical to the real tokens except the
+	// structural prefix is lowercase. The OLD (?i) patterns matched these; the
+	// fix MUST NOT. (m vs M, sg vs SG, eyj vs eyJ.)
+	discordLower := "m" + strings.Repeat("A", 23) + d + "ab-_09" + d + strings.Repeat("b", 27)
+	sendgridLower := "sg" + d + strings.Repeat("-", 22) + d + strings.Repeat("_", 43)
+	jwtLower := "eyj" + strings.Repeat("a", 7) + d + "eyj" + strings.Repeat("b", 7) + d + strings.Repeat("c", 10)
+	jwtUpper := strings.ToUpper("eyJ" + strings.Repeat("a", 7) + d + "eyJ" + strings.Repeat("b", 7) + d + strings.Repeat("c", 10))
+
+	// The proven operator-prose false positive: this collapsed into a fake
+	// Discord token under whitespace normalization and silently dropped an
+	// operator's inbound message.
+	prose := "you should have/see ops updated well now. we need to start " +
+		"promoting hard today now that 3.0 is out. lets start with the " +
+		"generic release template for x. deep research and strategize."
+
+	blocked := []struct{ name, text string }{
+		{"discord_real", discordReal},
+		{"discord_mfa", discordMFA},
+		{"sendgrid_real", sendgridReal},
+		{"jwt_real", jwtReal},
+		{"jwt_json", jwtJSON},
+		{"jwt_header_with_whitespace", jwtHeaderWithWhitespace},
+		{"jwt_payload_with_padding", jwtPayloadWithPadding},
+		{"jwt_empty_claims", jwtEmptyClaims},
+		{"sendgrid_hex_encoded", sendgridHexEncoded},
+		{"jwt_url_then_base64_encoded", jwtURLBase64Encoded},
+	}
+	clean := []struct{ name, text string }{
+		{"discord_lowercase_anchor", discordLower},
+		{"sendgrid_lowercase_anchor", sendgridLower},
+		{"jwt_lowercase_anchor", jwtLower},
+		{"jwt_uppercased_by_agent", jwtUpper},
+		{"operator_prose_fp", prose},
+	}
+
+	surfaces := []struct {
+		name string
+		scan func(string) TextDLPResult
+	}{
+		{"inbound", func(text string) TextDLPResult { return s.ScanTextForDLPInbound(context.Background(), text) }},
+		{"outbound", func(text string) TextDLPResult { return s.ScanTextForDLP(context.Background(), text) }},
+	}
+
+	for _, sf := range surfaces {
+		for _, tc := range blocked {
+			t.Run(sf.name+"/blocked/"+tc.name, func(t *testing.T) {
+				if res := sf.scan(tc.text); res.Clean {
+					t.Errorf("%s/%s: real token must still match (detection regression), got Clean", sf.name, tc.name)
+				}
+			})
+		}
+		for _, tc := range clean {
+			t.Run(sf.name+"/clean/"+tc.name, func(t *testing.T) {
+				if res := sf.scan(tc.text); !res.Clean {
+					t.Errorf("%s/%s: must be clean (false positive), got matches %+v", sf.name, tc.name, res.Matches)
+				}
+			})
+		}
+	}
+}

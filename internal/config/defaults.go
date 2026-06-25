@@ -218,7 +218,15 @@ func Defaults() *Config {
 				// Messaging platform tokens
 				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical},
 				{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical},
-				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: SeverityCritical},
+				// The first segment is base64 of a snowflake user ID, which is
+				// structurally an UPPERCASE M or N; the bot-token form is three
+				// dot-separated base64url parts, the mfa form is "mfa." + 84 chars.
+				// The leading anchor MUST stay case-sensitive: the scanner force-
+				// prefixes every DLP regex with (?i), so a bare [MN] anchor matches a
+				// lowercase m/n in ordinary words and, after whitespace normalization,
+				// natural-language prose collapses into the 3-part dotted shape (a real
+				// false positive). (?-i:...) pins the structural anchor to uppercase.
+				{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical},
 
 				// Communication service keys
 				// Twilio API Key SIDs are an "SK" prefix + exactly 32 hex chars
@@ -228,7 +236,11 @@ func Defaults() *Config {
 				// happen to start with SK. (?i) is retained for evasion coverage.
 				// Source: https://www.twilio.com/docs/glossary/what-is-a-sid
 				{Name: "Twilio API Key", Regex: `\bSK[a-f0-9]{32}\b`, Severity: "high"},
-				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: SeverityCritical},
+				// SendGrid keys are a literal uppercase "SG." prefix + two
+				// base64url segments. The prefix must stay case-sensitive: under the
+				// forced (?i) prefix a bare "SG." matches lowercase "sg." in prose,
+				// and the .22.43 dotted shape can form after whitespace normalization.
+				{Name: "SendGrid API Key", Regex: `(?-i:SG\.)[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: SeverityCritical},
 				// Mailgun private API keys are a "key-" prefix + exactly 32
 				// alphanumeric chars. The previous unbounded form matched the
 				// hyper-common "key-" literal anywhere and any 32-char prefix of
@@ -305,7 +317,15 @@ func Defaults() *Config {
 				// PGP + optional trailing BLOCK keep DLP detection aligned with
 				// the ssh-private-key redaction class (which covers PGP/BLOCK).
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----`, Severity: SeverityCritical},
-				{Name: "JWT Token", Regex: `(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},
+				// A JWT's header and payload are base64url JSON objects. Real-world
+				// compact tokens normally encode from `{"...` and therefore start
+				// with literal "eyJ", but valid JSON may include whitespace after
+				// `{`, producing `eyA` or `ew[o/k/0]` prefixes. The previous "ey" +
+				// (?i) matched "EY"/"ey" anywhere, so prose with two dot-separated
+				// "ey..."-ish fragments tripped it. Keep only narrow, case-sensitive
+				// JSON-object prefixes so the precision fix does not drop compact
+				// JWTs serialized with whitespace.
+				{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},
 
 				// Cryptocurrency private keys
 				// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or

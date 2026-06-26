@@ -38,6 +38,7 @@ const (
 
 	defaultConcurrency = 50
 	defaultTimeout     = 90 * time.Second
+	maxConcurrency     = 1000
 	maxResponseBytes   = 1 << 20
 )
 
@@ -197,6 +198,9 @@ func validateConfig(cfg config) error {
 	if cfg.concurrency <= 0 {
 		return errors.New("--concurrency must be > 0")
 	}
+	if cfg.concurrency > maxConcurrency {
+		return fmt.Errorf("--concurrency must be <= %d", maxConcurrency)
+	}
 	if cfg.ramp < 0 {
 		return errors.New("--ramp must be >= 0")
 	}
@@ -210,6 +214,7 @@ func validateConfig(cfg config) error {
 }
 
 func runLoadTest(ctx context.Context, client *http.Client, cfg config) ([]userResult, int) {
+	client = sameOriginClient(client, cfg.brokerURL)
 	results := make([]userResult, cfg.concurrency)
 	tracker := &inFlightTracker{}
 	var wg sync.WaitGroup
@@ -353,6 +358,24 @@ func doRequest(parent context.Context, client *http.Client, cfg config, method, 
 	}
 	step.Status = resp.StatusCode
 	return resp, step
+}
+
+func sameOriginClient(client *http.Client, brokerURL string) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	base, err := url.Parse(brokerURL)
+	if err != nil {
+		return client
+	}
+	cp := *client
+	cp.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if req.URL.Scheme != base.Scheme || req.URL.Host != base.Host {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+	return &cp
 }
 
 func joinURL(baseURL, path, rawQuery string) (string, error) {

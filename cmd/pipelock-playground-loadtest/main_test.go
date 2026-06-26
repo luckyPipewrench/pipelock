@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -145,6 +146,43 @@ func TestInFlightTracker(t *testing.T) {
 				t.Fatalf("peakValue() = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateConfigRejectsExcessiveConcurrency(t *testing.T) {
+	t.Parallel()
+
+	cfg := config{
+		brokerURL:      "https://broker.example",
+		code:           "demo-code",
+		turnstileToken: "test-token",
+		concurrency:    maxConcurrency + 1,
+		prompt:         "hello",
+		timeout:        time.Second,
+	}
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("validateConfig accepted excessive concurrency")
+	}
+}
+
+func TestSameOriginClientBlocksCrossOriginRedirect(t *testing.T) {
+	t.Parallel()
+
+	client := sameOriginClient(&http.Client{}, "https://broker.example/base")
+	sameReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://broker.example/next", nil)
+	if err != nil {
+		t.Fatalf("NewRequest same origin: %v", err)
+	}
+	if err := client.CheckRedirect(sameReq, nil); err != nil {
+		t.Fatalf("same-origin redirect blocked: %v", err)
+	}
+
+	crossReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://other.example/next", nil)
+	if err != nil {
+		t.Fatalf("NewRequest cross origin: %v", err)
+	}
+	if err := client.CheckRedirect(crossReq, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("cross-origin redirect error = %v, want ErrUseLastResponse", err)
 	}
 }
 

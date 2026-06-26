@@ -4,6 +4,9 @@
 package playground_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -108,6 +111,88 @@ func TestExtractRunArtifactsFromBundle_InMemory(t *testing.T) {
 	}
 	if !rep.OK {
 		t.Fatalf("bundle artifacts did not verify: %+v", rep.Checks)
+	}
+}
+
+func TestVerifyPublishedBundleBytes_RejectsUnpublishedSigner(t *testing.T) {
+	t.Parallel()
+
+	bundle, _ := realBundleForMemoryVerify(t)
+	rep, err := playground.VerifyPublishedBundleBytes(bundle)
+	if err != nil {
+		t.Fatalf("VerifyPublishedBundleBytes: %v", err)
+	}
+	if rep.OK {
+		t.Fatalf("bundle signed by an unpublished orchestrator key verified: %+v", rep)
+	}
+	if rep.OrchestratorKey != playground.PublishedOrchestratorPubKeyHex {
+		t.Fatalf("OrchestratorKey = %q, want published key", rep.OrchestratorKey)
+	}
+}
+
+func TestVerifyRunArtifacts_MissingWitnessDoesNotReportUncheckedManifestPass(t *testing.T) {
+	t.Parallel()
+
+	fixture := newVerifyMemoryFixture(t)
+	artifacts := fixture.artifacts
+	artifacts.Witness = nil
+	rep, err := playground.VerifyRunArtifacts(artifacts, fixture.orchestratorPubHex)
+	if err != nil {
+		t.Fatalf("VerifyRunArtifacts: %v", err)
+	}
+	if rep.OK {
+		t.Fatalf("missing witness verified: %+v", rep)
+	}
+	for _, check := range rep.Checks {
+		if check.Name == "launch-manifest-signature" && check.OK {
+			t.Fatalf("reported unchecked manifest signature as passing: %+v", rep.Checks)
+		}
+	}
+}
+
+func TestExtractRunArtifactsFromBundle_RejectsAmbiguousOrUnsafeMembers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		entries []bundleEntry
+	}{
+		{
+			name: "duplicate artifact",
+			entries: []bundleEntry{
+				{name: "pipelock-session/launch-manifest.json", data: []byte(`{}`)},
+				{name: "pipelock-session/launch-manifest.json", data: []byte(`{}`)},
+			},
+		},
+		{
+			name:    "path traversal artifact",
+			entries: []bundleEntry{{name: "pipelock-session/../pipelock-session/launch-manifest.json", data: []byte(`{}`)}},
+		},
+		{
+			name:    "backslash traversal artifact",
+			entries: []bundleEntry{{name: `pipelock-session\launch-manifest.json`, data: []byte(`{}`)}},
+		},
+		{
+			name:    "unknown artifact under prefix",
+			entries: []bundleEntry{{name: "pipelock-session/extra.json", data: []byte(`{}`)}},
+		},
+		{
+			name:    "artifact outside prefix",
+			entries: []bundleEntry{{name: "launch-manifest.json", data: []byte(`{}`)}},
+		},
+		{
+			name:    "huge declared member",
+			entries: []bundleEntry{{name: "pipelock-session/launch-manifest.json", declaredSize: 17 << 20}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := playground.ExtractRunArtifactsFromBundle(makeBundle(t, tc.entries)); err == nil {
+				t.Fatal("ExtractRunArtifactsFromBundle returned nil error for unsafe bundle")
+			}
+		})
 	}
 }
 
@@ -288,6 +373,12 @@ type verifyMemoryFixture struct {
 	orchestratorPubHex string
 	orchestratorPriv   ed25519.PrivateKey
 	launchManifest     playground.LaunchManifest
+}
+
+type bundleEntry struct {
+	name         string
+	data         []byte
+	declaredSize int64
 }
 
 func newVerifyMemoryFixture(t *testing.T) verifyMemoryFixture {
@@ -523,4 +614,37 @@ func mustJSON(t *testing.T, v any) []byte {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func makeBundle(t *testing.T, entries []bundleEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, entry := range entries {
+		size := int64(len(entry.data))
+		if entry.declaredSize > 0 {
+			size = entry.declaredSize
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: entry.name, Mode: 0o600, Size: size}); err != nil {
+			t.Fatalf("WriteHeader: %v", err)
+		}
+		if len(entry.data) > 0 {
+			if _, err := tw.Write(entry.data); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+		}
+		if entry.declaredSize > 0 {
+			break
+		}
+	}
+	if err := tw.Close(); err != nil {
+		if entries[len(entries)-1].declaredSize == 0 {
+			t.Fatalf("tar Close: %v", err)
+		}
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip Close: %v", err)
+	}
+	return buf.Bytes()
 }

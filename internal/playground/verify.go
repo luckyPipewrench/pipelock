@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -56,6 +57,7 @@ const (
 	witnessFile                = "witness.json"
 	redWitnessFile             = "red-witness.json"
 	hostContainmentWitnessFile = "host-containment-witness.json"
+	verifyInstructionsFile     = "VERIFY.txt"
 	checkManifestSig           = "launch-manifest-signature"
 	checkPinnedPipelock        = "pinned-pipelock-key"
 	checkAuditPacket           = "audit-packet-chain"
@@ -67,6 +69,10 @@ const (
 	checkHostContainSig        = "host-containment-witness-signature"
 	checkHostContainBinding    = "host-containment-binds-run"
 	checkHostContainEnforced   = "host-containment-enforced"
+
+	maxBundleMembers       = 64
+	maxBundleMemberBytes   = 16 << 20
+	maxBundleExpandedBytes = 32 << 20
 )
 
 // requiredChecks is the full set of check names that must all appear and pass
@@ -134,7 +140,10 @@ func ExtractRunArtifactsFromBundle(bundle []byte) (RunArtifacts, error) {
 	defer func() { _ = gr.Close() }()
 
 	var artifacts RunArtifacts
-	tr := tar.NewReader(gr)
+	seen := make(map[string]bool, len(archiveArtifacts))
+	expanded := &io.LimitedReader{R: gr, N: maxBundleExpandedBytes + 1}
+	tr := tar.NewReader(expanded)
+	members := 0
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -143,16 +152,33 @@ func ExtractRunArtifactsFromBundle(bundle []byte) (RunArtifacts, error) {
 		if err != nil {
 			return RunArtifacts{}, fmt.Errorf("read tar: %w", err)
 		}
-		if hdr.Typeflag != tar.TypeReg {
+		members++
+		if members > maxBundleMembers {
+			return RunArtifacts{}, fmt.Errorf("bundle has too many members")
+		}
+		if expanded.N <= 0 {
+			return RunArtifacts{}, fmt.Errorf("bundle expanded size exceeds %d bytes", maxBundleExpandedBytes)
+		}
+		name, retain, err := bundleArtifactName(hdr.Name, hdr.Typeflag)
+		if err != nil {
+			return RunArtifacts{}, err
+		}
+		if !retain {
 			continue
 		}
-		name, ok := strings.CutPrefix(filepath.ToSlash(hdr.Name), downloadArchivePrefix+"/")
-		if !ok {
-			continue
+		if seen[name] {
+			return RunArtifacts{}, fmt.Errorf("duplicate bundle artifact %s", name)
 		}
-		data, err := io.ReadAll(tr)
+		seen[name] = true
+		if hdr.Size < 0 || hdr.Size > maxBundleMemberBytes {
+			return RunArtifacts{}, fmt.Errorf("bundle artifact %s is too large", name)
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxBundleMemberBytes+1))
 		if err != nil {
 			return RunArtifacts{}, fmt.Errorf("read bundle file %s: %w", name, err)
+		}
+		if len(data) > maxBundleMemberBytes {
+			return RunArtifacts{}, fmt.Errorf("bundle artifact %s is too large", name)
 		}
 		switch name {
 		case launchManifestFile:
@@ -172,6 +198,50 @@ func ExtractRunArtifactsFromBundle(bundle []byte) (RunArtifacts, error) {
 		}
 	}
 	return artifacts, nil
+}
+
+func bundleArtifactName(raw string, typeflag byte) (name string, retain bool, err error) {
+	clean, err := cleanBundleMemberName(raw)
+	if err != nil {
+		return "", false, err
+	}
+	if typeflag != tar.TypeReg {
+		return "", false, nil
+	}
+	name, ok := strings.CutPrefix(clean, downloadArchivePrefix+"/")
+	if !ok {
+		return "", false, fmt.Errorf("unexpected bundle member %s", raw)
+	}
+	switch name {
+	case verifyInstructionsFile:
+		return name, false, nil
+	case launchManifestFile,
+		witnessFile,
+		redWitnessFile,
+		hostContainmentWitnessFile,
+		path.Join(packetSubdir, packetJSONFile),
+		path.Join(packetSubdir, packetEvidenceFile),
+		path.Join(packetSubdir, packetManifestFile):
+		return name, true, nil
+	default:
+		return "", false, fmt.Errorf("unexpected bundle artifact %s", name)
+	}
+}
+
+func cleanBundleMemberName(raw string) (string, error) {
+	if raw == "" || strings.Contains(raw, "\x00") || strings.Contains(raw, "\\") || strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("unsafe bundle member name %q", raw)
+	}
+	name := filepath.ToSlash(raw)
+	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("unsafe bundle member name %q", raw)
+		}
+	}
+	if clean := path.Clean(name); clean != name {
+		return "", fmt.Errorf("unsafe bundle member name %q", raw)
+	}
+	return name, nil
 }
 
 // VerifyRun performs the all-or-nothing offline verification of a playground
@@ -230,10 +300,6 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 	wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(cleanDir, witnessFile)))
 	if err != nil {
 		rep.Checks = append(rep.Checks, Check{
-			Name:   checkManifestSig,
-			OK:     true,
-			Reason: "loaded (verification deferred to step 1)",
-		}, Check{
 			Name:   checkWitnessSig,
 			OK:     false,
 			Reason: fmt.Sprintf("cannot read witness.json: %v", err),
@@ -243,10 +309,6 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 	var witness Witness
 	if err := json.Unmarshal(wBytes, &witness); err != nil {
 		rep.Checks = append(rep.Checks, Check{
-			Name:   checkManifestSig,
-			OK:     true,
-			Reason: "loaded (verification deferred to step 1)",
-		}, Check{
 			Name:   checkWitnessSig,
 			OK:     false,
 			Reason: fmt.Sprintf("malformed witness.json: %v", err),
@@ -469,10 +531,6 @@ func VerifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string) (Veri
 
 	if len(artifacts.Witness) == 0 {
 		rep.Checks = append(rep.Checks, Check{
-			Name:   checkManifestSig,
-			OK:     true,
-			Reason: "loaded (verification deferred to step 1)",
-		}, Check{
 			Name:   checkWitnessSig,
 			OK:     false,
 			Reason: "missing witness.json",
@@ -482,10 +540,6 @@ func VerifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string) (Veri
 	var witness Witness
 	if err := json.Unmarshal(artifacts.Witness, &witness); err != nil {
 		rep.Checks = append(rep.Checks, Check{
-			Name:   checkManifestSig,
-			OK:     true,
-			Reason: "loaded (verification deferred to step 1)",
-		}, Check{
 			Name:   checkWitnessSig,
 			OK:     false,
 			Reason: fmt.Sprintf("malformed witness.json: %v", err),

@@ -392,7 +392,7 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 	clean := filepath.Clean(path)
 	entries, err := recorder.ReadEntries(clean)
 	if err != nil {
-		rawReceipts, rawErr := extractRawReceiptsJSONL(clean)
+		rawReceipts, rawErr := extractRawReceiptsJSONLFile(clean)
 		if rawErr != nil {
 			return nil, rawErr
 		}
@@ -405,11 +405,33 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 	if err != nil || len(receipts) > 0 {
 		return receipts, err
 	}
-	rawReceipts, rawErr := extractRawReceiptsJSONL(clean)
+	rawReceipts, rawErr := extractRawReceiptsJSONLFile(clean)
 	if rawErr != nil {
 		return nil, rawErr
 	}
 	return rawReceipts, nil
+}
+
+// ExtractReceiptsBytes extracts action_receipt entries from JSONL evidence
+// bytes using the same accepted formats as ExtractReceipts: recorder entries
+// first, then raw receipt JSONL as the compatibility fallback.
+func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
+	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
+	if err != nil {
+		rawReceipts, rawErr := extractRawReceiptsJSONLBytes(data)
+		if rawErr != nil {
+			return nil, rawErr
+		}
+		if len(rawReceipts) > 0 {
+			return rawReceipts, nil
+		}
+		return nil, fmt.Errorf("reading entries: %w", err)
+	}
+	receipts, err := extractReceiptsFromEntries(entries)
+	if err != nil || len(receipts) > 0 {
+		return receipts, err
+	}
+	return extractRawReceiptsJSONLBytes(data)
 }
 
 // ExtractReceiptsWithSessionID reads a flight recorder JSONL file and returns
@@ -456,11 +478,15 @@ func extractReceiptsFromEntries(entries []recorder.Entry) ([]Receipt, error) {
 	return receipts, nil
 }
 
-func extractRawReceiptsJSONL(path string) ([]Receipt, error) {
+func extractRawReceiptsJSONLFile(path string) ([]Receipt, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("reading raw receipts: %w", err)
 	}
+	return extractRawReceiptsJSONLBytes(data)
+}
+
+func extractRawReceiptsJSONLBytes(data []byte) ([]Receipt, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
 	var receipts []Receipt

@@ -172,7 +172,7 @@ func TestAdvanceCRLHighWater(t *testing.T) {
 		if err != nil || !found || gen != 13 {
 			t.Fatalf("primary after forward progress = (%d, %v, %v), want (13, true, nil)", gen, found, err)
 		}
-		anchor, anchorFound, err := readCRLHighWaterFile(CRLHighWaterAnchorPath(crlFile), "test anchor")
+		anchor, anchorFound, err := readCRLHighWaterFileForContext(CRLHighWaterAnchorPath(crlFile), "test anchor", crlFile)
 		if err != nil || !anchorFound || anchor != 13 {
 			t.Fatalf("anchor after forward progress = (%d, %v, %v), want (13, true, nil)", anchor, anchorFound, err)
 		}

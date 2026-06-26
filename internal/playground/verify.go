@@ -4,12 +4,18 @@
 package playground
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -51,6 +57,7 @@ const (
 	witnessFile                = "witness.json"
 	redWitnessFile             = "red-witness.json"
 	hostContainmentWitnessFile = "host-containment-witness.json"
+	verifyInstructionsFile     = "VERIFY.txt"
 	checkManifestSig           = "launch-manifest-signature"
 	checkPinnedPipelock        = "pinned-pipelock-key"
 	checkAuditPacket           = "audit-packet-chain"
@@ -62,6 +69,10 @@ const (
 	checkHostContainSig        = "host-containment-witness-signature"
 	checkHostContainBinding    = "host-containment-binds-run"
 	checkHostContainEnforced   = "host-containment-enforced"
+
+	maxBundleMembers       = 64
+	maxBundleMemberBytes   = 16 << 20
+	maxBundleExpandedBytes = 32 << 20
 )
 
 // requiredChecks is the full set of check names that must all appear and pass
@@ -89,6 +100,150 @@ var containmentChecks = []string{
 	checkHostContainEnforced,
 }
 
+// RunArtifacts is the in-memory form of a sealed playground run. It mirrors the
+// files inside a run directory and inside the downloadable tar.gz bundle.
+type RunArtifacts struct {
+	LaunchManifest         []byte
+	Witness                []byte
+	RedWitness             []byte
+	HostContainmentWitness []byte
+	PacketJSON             []byte
+	PacketEvidenceJSONL    []byte
+	PacketManifestJSON     []byte
+}
+
+// VerifyPublishedBundleBytes verifies the raw playground bundle served by
+// /api/live/bundle (os="") against the compiled published orchestrator key. It
+// never accepts a trust root from the bundle itself.
+func VerifyPublishedBundleBytes(bundle []byte) (VerifyReport, error) {
+	artifacts, err := ExtractRunArtifactsFromBundle(bundle)
+	if err != nil {
+		rep := VerifyReport{OrchestratorKey: PublishedOrchestratorPubKeyHex}
+		rep.Checks = append(rep.Checks, Check{
+			Name:   checkManifestSig,
+			OK:     false,
+			Reason: fmt.Sprintf("cannot read session bundle: %v", err),
+		})
+		return finalize(rep, requiredChecks), nil
+	}
+	return VerifyRunArtifacts(artifacts, PublishedOrchestratorPubKeyHex)
+}
+
+// ExtractRunArtifactsFromBundle unpacks the deterministic downloadable
+// playground tar.gz into the same in-memory artifact struct VerifyRunArtifacts
+// consumes. Only the documented files under pipelock-session/ are retained.
+func ExtractRunArtifactsFromBundle(bundle []byte) (RunArtifacts, error) {
+	gr, err := gzip.NewReader(bytes.NewReader(bundle))
+	if err != nil {
+		return RunArtifacts{}, fmt.Errorf("read gzip: %w", err)
+	}
+	defer func() { _ = gr.Close() }()
+
+	var artifacts RunArtifacts
+	seen := make(map[string]bool, len(archiveArtifacts))
+	expanded := &io.LimitedReader{R: gr, N: maxBundleExpandedBytes + 1}
+	tr := tar.NewReader(expanded)
+	members := 0
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return RunArtifacts{}, fmt.Errorf("read tar: %w", err)
+		}
+		members++
+		if members > maxBundleMembers {
+			return RunArtifacts{}, fmt.Errorf("bundle has too many members")
+		}
+		if expanded.N <= 0 {
+			return RunArtifacts{}, fmt.Errorf("bundle expanded size exceeds %d bytes", maxBundleExpandedBytes)
+		}
+		name, retain, err := bundleArtifactName(hdr.Name, hdr.Typeflag)
+		if err != nil {
+			return RunArtifacts{}, err
+		}
+		if !retain {
+			continue
+		}
+		if seen[name] {
+			return RunArtifacts{}, fmt.Errorf("duplicate bundle artifact %s", name)
+		}
+		seen[name] = true
+		if hdr.Size < 0 || hdr.Size > maxBundleMemberBytes {
+			return RunArtifacts{}, fmt.Errorf("bundle artifact %s is too large", name)
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxBundleMemberBytes+1))
+		if err != nil {
+			return RunArtifacts{}, fmt.Errorf("read bundle file %s: %w", name, err)
+		}
+		if len(data) > maxBundleMemberBytes {
+			return RunArtifacts{}, fmt.Errorf("bundle artifact %s is too large", name)
+		}
+		switch name {
+		case launchManifestFile:
+			artifacts.LaunchManifest = data
+		case witnessFile:
+			artifacts.Witness = data
+		case redWitnessFile:
+			artifacts.RedWitness = data
+		case hostContainmentWitnessFile:
+			artifacts.HostContainmentWitness = data
+		case filepath.ToSlash(filepath.Join(packetSubdir, packetJSONFile)):
+			artifacts.PacketJSON = data
+		case filepath.ToSlash(filepath.Join(packetSubdir, packetEvidenceFile)):
+			artifacts.PacketEvidenceJSONL = data
+		case filepath.ToSlash(filepath.Join(packetSubdir, packetManifestFile)):
+			artifacts.PacketManifestJSON = data
+		}
+	}
+	return artifacts, nil
+}
+
+func bundleArtifactName(raw string, typeflag byte) (name string, retain bool, err error) {
+	clean, err := cleanBundleMemberName(raw)
+	if err != nil {
+		return "", false, err
+	}
+	if typeflag != tar.TypeReg {
+		return "", false, nil
+	}
+	name, ok := strings.CutPrefix(clean, downloadArchivePrefix+"/")
+	if !ok {
+		return "", false, fmt.Errorf("unexpected bundle member %s", raw)
+	}
+	switch name {
+	case verifyInstructionsFile:
+		return name, false, nil
+	case launchManifestFile,
+		witnessFile,
+		redWitnessFile,
+		hostContainmentWitnessFile,
+		path.Join(packetSubdir, packetJSONFile),
+		path.Join(packetSubdir, packetEvidenceFile),
+		path.Join(packetSubdir, packetManifestFile):
+		return name, true, nil
+	default:
+		return "", false, fmt.Errorf("unexpected bundle artifact %s", name)
+	}
+}
+
+func cleanBundleMemberName(raw string) (string, error) {
+	if raw == "" || strings.Contains(raw, "\x00") || strings.Contains(raw, "\\") || strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("unsafe bundle member name %q", raw)
+	}
+	name := filepath.ToSlash(raw)
+	for _, part := range strings.Split(name, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("unsafe bundle member name %q", raw)
+		}
+	}
+	if clean := path.Clean(name); clean != name {
+		return "", fmt.Errorf("unsafe bundle member name %q", raw)
+	}
+	return name, nil
+}
+
 // VerifyRun performs the all-or-nothing offline verification of a playground
 // demo run directory. The trust root is the single orchestratorPubHex key; all
 // other keys (pipelock, collector) are taken from the verified manifest, NOT
@@ -106,8 +261,49 @@ var containmentChecks = []string{
 // OK = logical AND of all checks. Any single failure => OK=false with a
 // specific reason. Missing/malformed files fail closed (no panic).
 func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
-	rep := VerifyReport{OrchestratorKey: orchestratorPubHex}
 	cleanDir := filepath.Clean(dir)
+	var artifacts RunArtifacts
+	var err error
+	if artifacts.LaunchManifest, err = readRunArtifact(cleanDir, launchManifestFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.Witness, err = readRunArtifact(cleanDir, witnessFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.RedWitness, err = readRunArtifact(cleanDir, redWitnessFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.HostContainmentWitness, err = readRunArtifact(cleanDir, hostContainmentWitnessFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.PacketJSON, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetJSONFile)); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.PacketEvidenceJSONL, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetEvidenceFile)); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.PacketManifestJSON, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetManifestFile)); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	return VerifyRunArtifacts(artifacts, orchestratorPubHex)
+}
+
+func readRunArtifact(cleanDir, name string) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(cleanDir, name)))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("cannot read %s: %w", name, err)
+	}
+	return data, nil
+}
+
+// VerifyRunArtifacts performs the all-or-nothing offline verification of a
+// playground demo run from in-memory bytes. This is the shared verifier used by
+// the browser/WASM path.
+func VerifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string) (VerifyReport, error) {
+	rep := VerifyReport{OrchestratorKey: orchestratorPubHex}
 
 	// required is the base check set until the manifest reveals whether this was
 	// a contained run, at which point the containment checks are appended.
@@ -115,17 +311,16 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 
 	// --- Load files (fail closed on missing/malformed) ---
 
-	lmBytes, err := os.ReadFile(filepath.Clean(filepath.Join(cleanDir, launchManifestFile)))
-	if err != nil {
+	if len(artifacts.LaunchManifest) == 0 {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkManifestSig,
 			OK:     false,
-			Reason: fmt.Sprintf("cannot read launch-manifest.json: %v", err),
+			Reason: "missing launch-manifest.json",
 		})
 		return finalize(rep, required), nil
 	}
 	var lm LaunchManifest
-	if err := json.Unmarshal(lmBytes, &lm); err != nil {
+	if err := json.Unmarshal(artifacts.LaunchManifest, &lm); err != nil {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkManifestSig,
 			OK:     false,
@@ -142,26 +337,17 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 		required = append(append([]string{}, requiredChecks...), containmentChecks...)
 	}
 
-	wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(cleanDir, witnessFile)))
-	if err != nil {
+	if len(artifacts.Witness) == 0 {
 		rep.Checks = append(rep.Checks, Check{
-			Name:   checkManifestSig,
-			OK:     true,
-			Reason: "loaded (verification deferred to step 1)",
-		}, Check{
 			Name:   checkWitnessSig,
 			OK:     false,
-			Reason: fmt.Sprintf("cannot read witness.json: %v", err),
+			Reason: "missing witness.json",
 		})
 		return finalize(rep, required), nil
 	}
 	var witness Witness
-	if err := json.Unmarshal(wBytes, &witness); err != nil {
+	if err := json.Unmarshal(artifacts.Witness, &witness); err != nil {
 		rep.Checks = append(rep.Checks, Check{
-			Name:   checkManifestSig,
-			OK:     true,
-			Reason: "loaded (verification deferred to step 1)",
-		}, Check{
 			Name:   checkWitnessSig,
 			OK:     false,
 			Reason: fmt.Sprintf("malformed witness.json: %v", err),
@@ -197,7 +383,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 	rep.CollectorKey = lm.CollectorPubKey
 
 	// --- Pinned pipelock key gate (before step 2) ---
-	// Without this gate, an empty PipelockPubKey causes VerifyPacketDir to
+	// Without this gate, an empty PipelockPubKey causes packet verification to
 	// fall back to the packet's self-declared signer key, which makes the
 	// audit-packet check trust-on-first-use (fail-open). We require the
 	// manifest to pin a real ed25519 public key.
@@ -216,8 +402,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 
 	// --- Step 2: Verify Audit Packet under the pipelock key the manifest pins ---
 
-	packetDir := filepath.Join(cleanDir, packetSubdir)
-	if err := replaycapture.VerifyPacketDir(packetDir, lm.PipelockPubKey); err != nil {
+	if err := replaycapture.VerifyPacketBytes(artifacts.PacketJSON, artifacts.PacketEvidenceJSONL, lm.PipelockPubKey); err != nil {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkAuditPacket,
 			OK:     false,
@@ -288,7 +473,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 		})
 		return finalize(rep, required), nil
 	}
-	redWitness, redReasons := verifyRedWitnessArtifact(cleanDir, lm, rc)
+	redWitness, redReasons := verifyRedWitnessArtifactBytes(artifacts.RedWitness, lm, rc)
 	if !rc.WitnessWentRed {
 		redReasons = append(redReasons, "WitnessWentRed is false")
 	}
@@ -319,7 +504,7 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 
 	// --- Step 6: Verify the signed artifacts prove the live demo semantics ---
 
-	if err := verifyLiveDemoSemantics(cleanDir, lm, witness); err != nil {
+	if err := verifyLiveDemoSemanticsBytes(artifacts.PacketManifestJSON, artifacts.PacketEvidenceJSONL, lm, witness); err != nil {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkLiveSemantics,
 			OK:     false,
@@ -337,30 +522,26 @@ func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 	// decision; this proves the kernel owner-match drop from the contained
 	// network position. Required only when the signed manifest says Contained.
 	if lm.Contained {
-		verifyHostContainment(cleanDir, lm, orchestratorPubHex, &rep)
+		verifyHostContainmentBytes(artifacts.HostContainmentWitness, lm, orchestratorPubHex, &rep)
 	}
 
 	rep.ObservedCount = witness.ObservedCount
 	return finalize(rep, required), nil
 }
 
-// verifyHostContainment loads and checks the host-containment witness for a
-// contained run, appending the three containment checks to rep. It fails closed
-// on a missing/malformed witness, a signature invalid under the orchestrator
-// key, a witness bound to a different run, or a witness whose probes do not
-// prove enforcement (the differential + no-leak gate). It returns early after
-// the first failing check so later checks are absent and finalize reports the
-// run as not verified.
-func verifyHostContainment(runDir string, lm LaunchManifest, orchestratorPubHex string, rep *VerifyReport) {
-	data, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, hostContainmentWitnessFile)))
-	if err != nil {
+func verifyHostContainmentBytes(data []byte, lm LaunchManifest, orchestratorPubHex string, rep *VerifyReport) {
+	if len(data) == 0 {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkHostContainSig,
 			OK:     false,
-			Reason: fmt.Sprintf("cannot read %s: %v", hostContainmentWitnessFile, err),
+			Reason: fmt.Sprintf("missing %s", hostContainmentWitnessFile),
 		})
 		return
 	}
+	verifyHostContainmentData(data, lm, orchestratorPubHex, rep)
+}
+
+func verifyHostContainmentData(data []byte, lm LaunchManifest, orchestratorPubHex string, rep *VerifyReport) {
 	var hcw HostContainmentWitness
 	if err := json.Unmarshal(data, &hcw); err != nil {
 		rep.Checks = append(rep.Checks, Check{
@@ -416,14 +597,14 @@ func hostContainmentEnforcedReason(hcw HostContainmentWitness) string {
 	return "host-containment not proven: differential failed, proxy contract missing/substituted, target suite missing/substituted, local escape suite missing/substituted, or a contained-agent route/surface was open"
 }
 
-func verifyRedWitnessArtifact(runDir string, lm LaunchManifest, rc *RedCaseResult) (Witness, []string) {
-	var reasons []string
-	path := filepath.Join(runDir, redWitnessFile)
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return Witness{}, []string{fmt.Sprintf("cannot read %s: %v", redWitnessFile, err)}
+func verifyRedWitnessArtifactBytes(data []byte, lm LaunchManifest, rc *RedCaseResult) (Witness, []string) {
+	if len(data) == 0 {
+		return Witness{}, []string{fmt.Sprintf("missing %s", redWitnessFile)}
 	}
+	return verifyRedWitnessArtifactData(data, lm, rc, nil)
+}
 
+func verifyRedWitnessArtifactData(data []byte, lm LaunchManifest, rc *RedCaseResult, reasons []string) (Witness, []string) {
 	var red Witness
 	if err := json.Unmarshal(data, &red); err != nil {
 		return Witness{}, []string{fmt.Sprintf("malformed %s: %v", redWitnessFile, err)}
@@ -447,29 +628,36 @@ func verifyRedWitnessArtifact(runDir string, lm LaunchManifest, rc *RedCaseResul
 	return red, reasons
 }
 
-func verifyLiveDemoSemantics(runDir string, lm LaunchManifest, witness Witness) error {
-	packetDir := filepath.Join(runDir, packetSubdir)
-	replayManifestPath := filepath.Join(packetDir, "manifest.json")
-	data, err := os.ReadFile(filepath.Clean(replayManifestPath))
-	if err != nil {
-		return fmt.Errorf("cannot read packet manifest: %w", err)
+func verifyLiveDemoSemanticsBytes(manifestJSON, evidenceJSONL []byte, lm LaunchManifest, witness Witness) error {
+	if len(manifestJSON) == 0 {
+		return fmt.Errorf("missing packet manifest")
 	}
 	var replayManifest replaycapture.Manifest
-	if err := json.Unmarshal(data, &replayManifest); err != nil {
+	if err := json.Unmarshal(manifestJSON, &replayManifest); err != nil {
 		return fmt.Errorf("malformed packet manifest: %w", err)
 	}
+	if err := verifyLiveDemoManifest(replayManifest, lm); err != nil {
+		return err
+	}
+
+	receipts, err := receipt.ExtractReceiptsBytes(evidenceJSONL)
+	if err != nil {
+		return fmt.Errorf("extract packet receipts for semantic check: %w", err)
+	}
+	return verifyLiveDemoReceipts(receipts, lm, witness)
+}
+
+func verifyLiveDemoManifest(replayManifest replaycapture.Manifest, lm LaunchManifest) error {
 	if replayManifest.ScenarioID != lm.ScenarioID {
 		return fmt.Errorf("packet scenario_id=%q does not match launch manifest scenario_id=%q", replayManifest.ScenarioID, lm.ScenarioID)
 	}
 	if replayManifest.PolicyHash != lm.PolicyHash {
 		return fmt.Errorf("packet policy_hash=%q does not match launch manifest policy_hash=%q", replayManifest.PolicyHash, lm.PolicyHash)
 	}
+	return nil
+}
 
-	receipts, err := receipt.ExtractReceipts(filepath.Join(packetDir, "evidence.jsonl"))
-	if err != nil {
-		return fmt.Errorf("extract packet receipts for semantic check: %w", err)
-	}
-
+func verifyLiveDemoReceipts(receipts []receipt.Receipt, lm LaunchManifest, witness Witness) error {
 	// A real model-backed run does not reproduce the scripted safe-GET + body_dlp
 	// beats, so it verifies under the honest model-mode predicate instead of the
 	// strict deterministic one. AgentKind is covered by the manifest signature, so

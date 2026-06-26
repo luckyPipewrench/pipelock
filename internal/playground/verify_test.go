@@ -255,6 +255,22 @@ func TestVerify_AllGood_Passes(t *testing.T) {
 	}
 }
 
+func TestVerifyRun_PreservesArtifactReadError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "launch-manifest.json"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err := playground.VerifyRun(dir, strings.Repeat("0", 64))
+	if err == nil {
+		t.Fatal("VerifyRun returned nil error for unreadable launch-manifest.json")
+	}
+	if !strings.Contains(err.Error(), "cannot read launch-manifest.json") {
+		t.Fatalf("VerifyRun error = %v, want launch-manifest read context", err)
+	}
+}
+
 func TestVerify_TamperedWitnessByte_FailsClosed(t *testing.T) {
 	t.Parallel()
 	mustFailVerify(t, func(dir string) {

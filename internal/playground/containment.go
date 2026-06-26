@@ -1,6 +1,8 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !js
+
 package playground
 
 import (
@@ -21,24 +23,6 @@ import (
 // classify it as Open (connected), Blocked (kernel/network denial), or
 // ambiguous/reachable failure (for example connection refused).
 // --------------------------------------------------------------------------
-
-// ProbeResult holds the outcome of a single direct-egress probe. It is
-// serialized into the signed HostContainmentWitness, so its JSON shape is part
-// of the evidence model: the field tags must stay stable for SignedBytes
-// determinism.
-type ProbeResult struct {
-	// Target is the host:port that was probed.
-	Target string `json:"target"`
-	// Open is true when the probe connected successfully (egress is NOT blocked).
-	Open bool `json:"open"`
-	// Blocked is true only when the probe failed in a way consistent with a
-	// kernel/network egress denial. Reachable-but-closed targets (connection
-	// refused) are NOT blocked: they prove packets escaped far enough to get a
-	// response.
-	Blocked bool `json:"blocked"`
-	// Detail is a human-readable classification (e.g. "connected", "connection refused").
-	Detail string `json:"detail"`
-}
 
 // probeTimeout is the per-target TCP dial timeout for egress probes. Short
 // enough to keep the self-test fast, long enough that a real connection on
@@ -216,37 +200,7 @@ func probeErrorDetail(err error, blocked bool) string {
 //   - RFC-1918 private IP (10.0.0.1:443)
 //   - Public DNS resolvers (8.8.8.8:53, 1.1.1.1:853 DoT)
 //   - Public HTTPS endpoint (93.184.216.34:443 -- example.com's IP)
-func DirectEgressTargets() []string {
-	return []string{
-		"169.254.169.254:80", // cloud metadata
-		"10.0.0.1:443",       // RFC-1918 private
-		"8.8.8.8:53",         // public DNS (Google)
-		"1.1.1.1:853",        // public DNS over TLS (Cloudflare)
-		"93.184.216.34:443",  // public HTTPS (example.com)
-	}
-}
-
-// LocalEscapeTargets returns local, non-network surfaces the contained agent
-// must not be able to use. This suite complements DirectEgressTargets: direct
-// egress proves destination control, while these probes prove the same uid
-// cannot bypass the mediator through platform control sockets, host/device
-// nodes, or capability-gated local privilege operations.
-func LocalEscapeTargets() []string {
-	return []string{
-		"unix:/.fly/api",            // Fly.io local control socket
-		"unix:/var/run/docker.sock", // classic container escape control socket
-		"device:/dev/vda",           // common Fly/KVM block device
-		"device:/dev/vdb",           // common Fly/KVM data block device
-		"device:/dev/root",          // root block-device alias
-		"device:/dev/nvme0n1",       // common NVMe block device
-		"device:/dev/sda",           // common virt/SCSI block device
-		"device:/dev/fuse",          // unmediated FUSE mount surface
-		"cap:mknod",                 // create new device nodes
-		"cap:mount",                 // mount a filesystem
-		"cap:userns-mount",          // create user namespace root and mount
-	}
-}
-
+//
 // MediatedProxyPolicyTargets returns the mediated-proxy-policy suite: request
 // patterns that must be blocked by the proxy's policy engine (DLP, domain
 // blocklist, SSRF) even when traffic is routed through the proxy. These are

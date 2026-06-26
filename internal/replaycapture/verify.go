@@ -20,7 +20,7 @@ import (
 // the internal gate the rig runs on every packet before publish; the separate
 // binary test proves the same packet verifies from a clean machine.
 func VerifyPacketDir(dir, keyHex string) error {
-	packetPath := filepath.Join(dir, artifactPacketName)
+	packetPath := filepath.Join(dir, "packet.json")
 	data, err := os.ReadFile(filepath.Clean(packetPath))
 	if err != nil {
 		return fmt.Errorf("reading packet.json: %w", err)
@@ -40,11 +40,53 @@ func VerifyPacketDir(dir, keyHex string) error {
 		return fmt.Errorf("evidence path %q is not local to the packet directory", pkt.Artifacts.Evidence)
 	}
 	evidencePath := filepath.Join(dir, pkt.Artifacts.Evidence)
-	receipts, err := receipt.ExtractReceipts(evidencePath)
+	evidence, err := os.ReadFile(filepath.Clean(evidencePath))
 	if err != nil {
 		return fmt.Errorf("extracting evidence: %w", err)
 	}
+	return verifyPacket(pkt, evidence, keyHex)
+}
 
+// VerifyPacketBytes performs the same packet schema, receipt-chain, and summary
+// cross-checks as VerifyPacketDir using in-memory packet.json and evidence
+// bytes. It is the browser/WASM verifier path: no directory or filesystem is
+// required.
+func VerifyPacketBytes(packetJSON, evidenceJSONL []byte, keyHex string) error {
+	var pkt auditpacket.Packet
+	if err := json.Unmarshal(packetJSON, &pkt); err != nil {
+		return fmt.Errorf("parsing packet.json: %w", err)
+	}
+	if err := pkt.Validate(); err != nil {
+		return fmt.Errorf("packet schema: %w", err)
+	}
+	if err := validateInMemoryPacketArtifacts(pkt); err != nil {
+		return err
+	}
+	return verifyPacket(pkt, evidenceJSONL, keyHex)
+}
+
+func validateInMemoryPacketArtifacts(pkt auditpacket.Packet) error {
+	const (
+		expectedPacketArtifact   = "packet.json"
+		expectedEvidenceArtifact = "evidence.jsonl"
+	)
+	if !filepath.IsLocal(pkt.Artifacts.Evidence) {
+		return fmt.Errorf("evidence path %q is not local to the packet directory", pkt.Artifacts.Evidence)
+	}
+	if pkt.Artifacts.Packet != expectedPacketArtifact {
+		return fmt.Errorf("packet artifact path %q does not match bundled %s", pkt.Artifacts.Packet, expectedPacketArtifact)
+	}
+	if pkt.Artifacts.Evidence != expectedEvidenceArtifact {
+		return fmt.Errorf("evidence artifact path %q does not match bundled %s", pkt.Artifacts.Evidence, expectedEvidenceArtifact)
+	}
+	return nil
+}
+
+func verifyPacket(pkt auditpacket.Packet, evidenceJSONL []byte, keyHex string) error {
+	receipts, err := receipt.ExtractReceiptsBytes(evidenceJSONL)
+	if err != nil {
+		return fmt.Errorf("extracting evidence: %w", err)
+	}
 	key := keyHex
 	if key == "" {
 		key = pkt.Verifier.SignerKey
@@ -77,10 +119,31 @@ func VerifyPacketDir(dir, keyHex string) error {
 func crossCheckTotals(summary auditpacket.Summary, receipts []receipt.Receipt) error {
 	var recomputed auditpacket.Totals
 	for _, r := range receipts {
-		addVerdict(&recomputed, r.ActionRecord.Verdict)
+		addVerifyVerdict(&recomputed, r.ActionRecord.Verdict)
 	}
 	if recomputed != summary.Totals {
 		return fmt.Errorf("totals mismatch: packet=%+v chain=%+v", summary.Totals, recomputed)
 	}
 	return nil
+}
+
+func addVerifyVerdict(t *auditpacket.Totals, verdict string) {
+	switch verdict {
+	case "allow":
+		t.Allow++
+	case "block":
+		t.Block++
+	case "warn":
+		t.Warn++
+	case "ask":
+		t.Ask++
+	case "strip":
+		t.Strip++
+	case "forward":
+		t.Forward++
+	case "redirect":
+		t.Redirect++
+	default:
+		t.Other++
+	}
 }

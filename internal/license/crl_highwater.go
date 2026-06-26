@@ -131,10 +131,6 @@ func ReadCRLHighWater(crlFile string) (generation uint64, found bool, err error)
 	return readCRLHighWaterFileForContext(CRLHighWaterPath(crlFile), "license CRL high-water", crlFile)
 }
 
-func readCRLHighWaterFile(path, label string) (generation uint64, found bool, err error) {
-	return readCRLHighWaterFileForContext(path, label, "")
-}
-
 func readCRLHighWaterFileForContext(path, label, crlFile string) (generation uint64, found bool, err error) {
 	info, statErr := os.Stat(path)
 	if statErr != nil {

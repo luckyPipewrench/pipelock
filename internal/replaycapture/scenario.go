@@ -1,6 +1,8 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !js
+
 // Package replaycapture builds public-safe, signed Audit Packets from
 // controlled synthetic attack scenarios driven through a real Pipelock proxy.
 //

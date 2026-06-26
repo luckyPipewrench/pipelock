@@ -200,6 +200,7 @@ func probeErrorDetail(err error, blocked bool) string {
 //   - RFC-1918 private IP (10.0.0.1:443)
 //   - Public DNS resolvers (8.8.8.8:53, 1.1.1.1:853 DoT)
 //   - Public HTTPS endpoint (93.184.216.34:443 -- example.com's IP)
+//
 // MediatedProxyPolicyTargets returns the mediated-proxy-policy suite: request
 // patterns that must be blocked by the proxy's policy engine (DLP, domain
 // blocklist, SSRF) even when traffic is routed through the proxy. These are

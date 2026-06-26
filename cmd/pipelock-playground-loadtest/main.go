@@ -221,6 +221,12 @@ func runLoadTest(ctx context.Context, client *http.Client, cfg config) ([]userRe
 	interval := rampInterval(cfg.concurrency, cfg.ramp)
 
 	for i := range cfg.concurrency {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return results, tracker.peakValue()
+		default:
+		}
 		if i > 0 && interval > 0 {
 			select {
 			case <-ctx.Done():

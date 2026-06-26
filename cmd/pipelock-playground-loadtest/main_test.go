@@ -328,6 +328,46 @@ func TestRunLoadTestCancellationDuringRampWaitsForStartedUsers(t *testing.T) {
 	}
 }
 
+func TestRunLoadTestPreCanceledZeroRampStartsNoUsers(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("{}")),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg := config{
+		brokerURL:   "https://broker.example",
+		code:        "demo-code",
+		concurrency: 3,
+		ramp:        0,
+		prompt:      "hello",
+		timeout:     time.Second,
+	}
+
+	results, peak := runLoadTest(ctx, client, cfg)
+	if len(results) != cfg.concurrency {
+		t.Fatalf("results len = %d, want %d", len(results), cfg.concurrency)
+	}
+	if peak != 0 {
+		t.Fatalf("peak in-flight = %d, want 0", peak)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("HTTP calls after pre-canceled zero-ramp run = %d, want 0", calls.Load())
+	}
+	for _, result := range results {
+		if len(result.Steps) != 0 {
+			t.Fatalf("result %+v has steps, want no started users", result)
+		}
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

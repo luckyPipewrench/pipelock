@@ -262,24 +262,41 @@ func cleanBundleMemberName(raw string) (string, error) {
 // specific reason. Missing/malformed files fail closed (no panic).
 func VerifyRun(dir, orchestratorPubHex string) (VerifyReport, error) {
 	cleanDir := filepath.Clean(dir)
-	artifacts := RunArtifacts{
-		LaunchManifest:         readRunArtifact(cleanDir, launchManifestFile),
-		Witness:                readRunArtifact(cleanDir, witnessFile),
-		RedWitness:             readRunArtifact(cleanDir, redWitnessFile),
-		HostContainmentWitness: readRunArtifact(cleanDir, hostContainmentWitnessFile),
-		PacketJSON:             readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetJSONFile)),
-		PacketEvidenceJSONL:    readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetEvidenceFile)),
-		PacketManifestJSON:     readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetManifestFile)),
+	var artifacts RunArtifacts
+	var err error
+	if artifacts.LaunchManifest, err = readRunArtifact(cleanDir, launchManifestFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.Witness, err = readRunArtifact(cleanDir, witnessFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.RedWitness, err = readRunArtifact(cleanDir, redWitnessFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.HostContainmentWitness, err = readRunArtifact(cleanDir, hostContainmentWitnessFile); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.PacketJSON, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetJSONFile)); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.PacketEvidenceJSONL, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetEvidenceFile)); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
+	}
+	if artifacts.PacketManifestJSON, err = readRunArtifact(cleanDir, filepath.Join(packetSubdir, packetManifestFile)); err != nil {
+		return VerifyReport{OrchestratorKey: orchestratorPubHex}, err
 	}
 	return VerifyRunArtifacts(artifacts, orchestratorPubHex)
 }
 
-func readRunArtifact(cleanDir, name string) []byte {
+func readRunArtifact(cleanDir, name string) ([]byte, error) {
 	data, err := os.ReadFile(filepath.Clean(filepath.Join(cleanDir, name)))
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("cannot read %s: %w", name, err)
 	}
-	return data
+	return data, nil
 }
 
 // VerifyRunArtifacts performs the all-or-nothing offline verification of a

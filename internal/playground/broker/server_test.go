@@ -1682,6 +1682,91 @@ func TestServer_BundleConcurrentVariantsHoldVMUntilAllDone(t *testing.T) {
 	}
 }
 
+// TestServer_BundleConcurrentIdenticalCoalesced proves the per-(token, os) fetch
+// lock: two concurrent identical kit downloads result in exactly ONE VM fetch of
+// that variant (the follower reads the cache the leader populated), so N
+// concurrent identical downloads cannot each pull a full kit into memory.
+func TestServer_BundleConcurrentIdenticalCoalesced(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "coalesce-token")
+	vm.bundleHoldOS = "linux"
+	vm.bundleHold = make(chan struct{})
+	vm.bundleHeld = make(chan struct{}, 1)
+	var releaseOnce sync.Once
+	releaseHold := func() { releaseOnce.Do(func() { close(vm.bundleHold) }) }
+	t.Cleanup(releaseHold)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+	kitURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token) + "&os=linux"
+
+	type res struct {
+		status int
+		body   string
+	}
+	run := func() res {
+		resp := getBroker(t, kitURL)
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return res{resp.StatusCode, string(b)}
+	}
+	r1 := make(chan res, 1)
+	r2 := make(chan res, 1)
+	go func() { r1 <- run() }() // leader: blocks at the VM, holding the fetch lock
+	select {
+	case <-vm.bundleHeld:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first kit fetch never reached the VM")
+	}
+	go func() { r2 <- run() }() // follower: blocks on the per-variant fetch lock
+	releaseHold()
+	for _, rr := range []res{<-r1, <-r2} {
+		if rr.status != http.StatusOK {
+			t.Fatalf("kit status = %d, want 200", rr.status)
+		}
+		if !strings.HasPrefix(rr.body, "kit-linux-") {
+			t.Fatalf("kit body = %q, want kit-linux-* prefix", rr.body)
+		}
+	}
+	// The kit was fetched from the VM exactly once; the extra hit is the raw
+	// prefetch. Pre-fix (no coalescing) the follower would fetch a second kit.
+	if got := vm.bundleHits.Load(); got != 2 {
+		t.Fatalf("VM bundle hits = %d, want 2 (1 kit + 1 raw prefetch; coalesced)", got)
+	}
+}
+
+// TestArtifactCache_ByteAccounting proves the cache tracks total bytes across
+// put/overwrite/expire so the byte budget can bound worst-case memory.
+func TestArtifactCache_ByteAccounting(t *testing.T) {
+	t.Parallel()
+	c := newArtifactCache(time.Minute)
+	k1 := artifactCacheKey{token: "t", os: "linux"}
+	k2 := artifactCacheKey{token: "t", os: ""}
+	c.put(k1, &artifactCacheEntry{body: make([]byte, 100), insertedAt: time.Now()})
+	c.put(k2, &artifactCacheEntry{body: make([]byte, 50), insertedAt: time.Now()})
+	if got := c.bytesLen(); got != 150 {
+		t.Fatalf("curBytes = %d, want 150", got)
+	}
+	// Overwriting a key adjusts the byte total, not double-counts.
+	c.put(k1, &artifactCacheEntry{body: make([]byte, 300), insertedAt: time.Now()})
+	if got := c.bytesLen(); got != 350 {
+		t.Fatalf("curBytes after overwrite = %d, want 350", got)
+	}
+	// Evicting an expired entry on get decrements the total.
+	exp := newArtifactCache(time.Nanosecond)
+	exp.put(k1, &artifactCacheEntry{body: make([]byte, 200), insertedAt: time.Now().Add(-time.Hour)})
+	if exp.get(k1) != nil {
+		t.Fatal("expired entry should be evicted on get")
+	}
+	if got := exp.bytesLen(); got != 0 {
+		t.Fatalf("curBytes after expired-get = %d, want 0", got)
+	}
+}
+
 // TestServer_BundleVM503DoesNotReleaseVM proves that a 503 from the VM (seal
 // failure) is propagated to the client and the VM is NOT released, so the
 // client can retry while the VM still lives.

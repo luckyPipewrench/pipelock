@@ -635,14 +635,20 @@ func validateTurnstileFlags(f *serveFlags) error {
 	if !configured && strings.TrimSpace(f.turnstileVerifyURL) != "" {
 		return errors.New("--turnstile-verify-url requires --turnstile-secret-file or --turnstile-secret-env")
 	}
-	// In production (Turnstile configured against the real Cloudflare endpoint,
-	// i.e. no --turnstile-verify-url override) the hostname and action bindings
-	// are mandatory, not advisory: without them a token solved for another page
-	// or action could be replayed against this broker. Dev/test (which sets
-	// --turnstile-verify-url to a local stub) is exempt.
-	if configured && strings.TrimSpace(f.turnstileVerifyURL) == "" {
+	// The endpoint is Cloudflare's production Siteverify when no override is set
+	// OR the override explicitly points at challenges.cloudflare.com. In that
+	// case the hostname + action bindings are mandatory, not advisory: without
+	// them a token solved for another page/action could be replayed against this
+	// broker. Only a non-Cloudflare override (a local dev/test stub) is exempt.
+	cloudflareEndpoint := strings.TrimSpace(f.turnstileVerifyURL) == ""
+	if v := strings.TrimSpace(f.turnstileVerifyURL); v != "" {
+		if u, err := url.Parse(v); err == nil && strings.EqualFold(u.Host, "challenges.cloudflare.com") {
+			cloudflareEndpoint = true
+		}
+	}
+	if configured && cloudflareEndpoint {
 		if strings.TrimSpace(f.turnstileExpectedHostname) == "" || strings.TrimSpace(f.turnstileExpectedAction) == "" {
-			return errors.New("--turnstile-expected-hostname and --turnstile-action are required when Turnstile is enabled against Cloudflare (use --turnstile-verify-url for dev/test only)")
+			return errors.New("--turnstile-expected-hostname and --turnstile-action are required when Turnstile is enabled against Cloudflare (use a non-Cloudflare --turnstile-verify-url for dev/test only)")
 		}
 	}
 	if strings.TrimSpace(f.turnstileVerifyURL) == "" {

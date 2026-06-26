@@ -52,6 +52,15 @@ const (
 	// TTL. Each entry is capped at maxArtifactBytes, bounding worst-case memory.
 	maxArtifactCacheEntries = 256
 
+	// maxArtifactCacheBytes bounds the total resident size of all cached
+	// artifacts independent of the entry count, so many concurrent large verify
+	// kits cannot exhaust memory. The oldest entries are evicted to stay under it.
+	maxArtifactCacheBytes = 512 << 20 // 512 MiB
+
+	// artifactFetchTimeout bounds a single detached artifact fetch so a stalled
+	// VM cannot pin a goroutine, memory, or the per-token in-flight counter.
+	artifactFetchTimeout = 90 * time.Second
+
 	// defaultVMReadyTimeout bounds the broker's whole VM session-create retry
 	// window. A freshly leased VM reports "started" (Firecracker booted) before it
 	// serves, and crosses TWO fail-closed containment proofs (six 2s egress probes
@@ -159,6 +168,9 @@ type Server struct {
 	// are guarded by mu.
 	bundleInflight map[string]int
 	bundleSealed   map[string]bool
+	// fetchMu serializes concurrent identical (token, os) cache misses so only
+	// one request reads a full artifact from the VM into memory. Guarded by mu.
+	fetchMu map[artifactCacheKey]*sync.Mutex
 }
 
 type tokenLease struct {
@@ -187,15 +199,25 @@ type artifactCacheEntry struct {
 // keyed by (token, os). It survives VM teardown so re-downloads and kit-then-
 // raw flows work after the VM is destroyed.
 type artifactCache struct {
-	mu      sync.Mutex
-	entries map[artifactCacheKey]*artifactCacheEntry
-	ttl     time.Duration
+	mu       sync.Mutex
+	entries  map[artifactCacheKey]*artifactCacheEntry
+	ttl      time.Duration
+	curBytes int64
 }
 
 func newArtifactCache(ttl time.Duration) *artifactCache {
 	return &artifactCache{
 		entries: make(map[artifactCacheKey]*artifactCacheEntry),
 		ttl:     ttl,
+	}
+}
+
+// evictLocked removes an entry and decrements the byte total. Caller holds mu.
+// It is safe to call inside a range over c.entries (Go permits delete-on-range).
+func (c *artifactCache) evictLocked(key artifactCacheKey) {
+	if e, ok := c.entries[key]; ok {
+		c.curBytes -= int64(len(e.body))
+		delete(c.entries, key)
 	}
 }
 
@@ -208,41 +230,47 @@ func (c *artifactCache) get(key artifactCacheKey) *artifactCacheEntry {
 		return nil
 	}
 	if time.Since(e.insertedAt) > c.ttl {
-		delete(c.entries, key)
+		c.evictLocked(key)
 		return nil
 	}
 	return e
 }
 
-// put stores an artifact. If the cache is at capacity, expired entries are
-// evicted first; if still at capacity, the oldest entry is evicted.
+// put stores an artifact, evicting expired entries first and then the oldest
+// entries until both the entry-count cap AND the total-byte budget are
+// satisfied. The byte budget bounds worst-case memory regardless of how many
+// large verify kits are cached at once.
 func (c *artifactCache) put(key artifactCacheKey, e *artifactCacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Evict expired entries first.
+	// Replace any existing entry for this key (adjust the byte total).
+	c.evictLocked(key)
+	// Evict expired entries.
 	now := time.Now()
 	for k, v := range c.entries {
 		if now.Sub(v.insertedAt) > c.ttl {
-			delete(c.entries, k)
+			c.evictLocked(k)
 		}
 	}
-	// If still at capacity, evict the oldest.
-	if len(c.entries) >= maxArtifactCacheEntries {
+	// Evict the oldest entries until within both the entry and byte budgets.
+	newBytes := int64(len(e.body))
+	for len(c.entries) >= maxArtifactCacheEntries ||
+		(len(c.entries) > 0 && c.curBytes+newBytes > maxArtifactCacheBytes) {
 		var oldestKey artifactCacheKey
 		var oldestTime time.Time
 		first := true
 		for k, v := range c.entries {
 			if first || v.insertedAt.Before(oldestTime) {
-				oldestKey = k
-				oldestTime = v.insertedAt
-				first = false
+				oldestKey, oldestTime, first = k, v.insertedAt, false
 			}
 		}
-		if !first {
-			delete(c.entries, oldestKey)
+		if first {
+			break
 		}
+		c.evictLocked(oldestKey)
 	}
 	c.entries[key] = e
+	c.curBytes += newBytes
 }
 
 // len returns the number of entries (for testing).
@@ -250,6 +278,13 @@ func (c *artifactCache) len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.entries)
+}
+
+// bytesLen returns the tracked total cached bytes (for testing).
+func (c *artifactCache) bytesLen() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.curBytes
 }
 
 type sessionRequest struct {
@@ -698,9 +733,26 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Detach the fetch from request cancellation so a client disconnect mid-
-	// fetch cannot abort populating the durable cache.
-	fetchCtx := context.WithoutCancel(r.Context())
+	// Coalesce concurrent identical (token, os) misses so only ONE request reads
+	// a full artifact from the VM into memory; the others serialize on this
+	// per-variant lock and then read the cache the leader populated.
+	fm := s.bundleFetchMutex(cacheKey)
+	fm.Lock()
+	defer fm.Unlock()
+	if cached := s.bundleCache.get(cacheKey); cached != nil {
+		w.Header().Set("Content-Type", cached.contentType)
+		w.Header().Set("Content-Disposition", cached.contentDisposition)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(cached.body)
+		return
+	}
+
+	// Detach the fetch from request cancellation so a client disconnect mid-fetch
+	// cannot abort populating the durable cache, but bound it with a hard timeout
+	// so a stalled VM cannot pin a goroutine or the in-flight counter forever.
+	fetchCtx, cancelFetch := context.WithTimeout(context.WithoutCancel(r.Context()), artifactFetchTimeout)
+	defer cancelFetch()
 
 	// Fetch the requested artifact variant from the VM.
 	fetched, fetchErr := s.fetchVMArtifact(fetchCtx, binding.lease, queryToken, osParam)
@@ -763,6 +815,22 @@ func (s *Server) bundleEnter(token string) {
 	}
 	s.bundleInflight[token]++
 	s.mu.Unlock()
+}
+
+// bundleFetchMutex returns the per-(token, os) mutex used to coalesce concurrent
+// identical cache misses so only one request fetches the artifact from the VM.
+func (s *Server) bundleFetchMutex(key artifactCacheKey) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fetchMu == nil {
+		s.fetchMu = make(map[artifactCacheKey]*sync.Mutex)
+	}
+	m := s.fetchMu[key]
+	if m == nil {
+		m = &sync.Mutex{}
+		s.fetchMu[key] = m
+	}
+	return m
 }
 
 // bundleSeal records that an artifact for the token has been durably cached, so

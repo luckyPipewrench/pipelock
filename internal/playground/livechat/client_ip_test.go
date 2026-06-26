@@ -54,6 +54,22 @@ func TestClientIP_FlyEdgeNotCloudflareIgnoresForgedCFHeader(t *testing.T) {
 	}
 }
 
+func TestClientIP_PublicPeerIgnoresForgedFlyClientIP(t *testing.T) {
+	t.Parallel()
+	// A directly-exposed (non-Fly) deployment sees a PUBLIC peer. A client that
+	// sets both Fly-Client-IP (to a Cloudflare range) and CF-Connecting-IP must
+	// NOT forge identity: the Fly-behind-edge path is gated on a private/Fly
+	// internal peer, so a public peer skips it and falls back to the real peer.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.50:443"              // public peer (directly exposed)
+	req.Header.Set(flyClientIPHeader, "162.158.0.1") // forged Cloudflare-range edge
+	req.Header.Set(cfConnectingIPHeader, "198.51.100.7")
+
+	if got := ClientIP(req, false); got != "203.0.113.50" {
+		t.Fatalf("ClientIP = %q, want public peer (forged Fly-Client-IP ignored)", got)
+	}
+}
+
 func TestClientIP_CloudflareConnectingIPv6BucketsToSlash64(t *testing.T) {
 	t.Parallel()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)

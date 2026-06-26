@@ -916,6 +916,12 @@ func TestValidateFlagsBranches(t *testing.T) {
 			// hostname + action; omitting them is rejected.
 			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
 		}},
+		{name: "turnstile_explicit_cloudflare_url_missing_bindings", mutate: func(f *serveFlags) {
+			// Explicitly pointing at the real Cloudflare Siteverify URL must NOT
+			// escape the hostname/action binding requirement.
+			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
+			f.turnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+		}},
 		{name: "bad_cf_combo", mutate: func(f *serveFlags) { f.cfAccessCertsURL = "https://keys.example/certs" }},
 		{name: "bad_cf_aud", mutate: func(f *serveFlags) {
 			f.cfAccessTeamDomain = "team.cloudflareaccess.com"

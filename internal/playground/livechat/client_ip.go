@@ -87,7 +87,7 @@ func ClientIPExact(r *http.Request, trustForwardedFor bool) string {
 	// only through Fly's proxy), so a direct .fly.dev client cannot forge this:
 	// their Fly-Client-IP is their own non-Cloudflare address and the
 	// CF-Connecting-IP is ignored.
-	if ip := cloudflareBehindEdgeIP(r); ip != "" {
+	if ip := cloudflareBehindEdgeIP(r, peer); ip != "" {
 		return ip
 	}
 	if trustForwardedFor {
@@ -102,7 +102,15 @@ func ClientIPExact(r *http.Request, trustForwardedFor bool) string {
 // through a front edge (Fly) whose own client-IP header reports a Cloudflare
 // proxy address. Returns "" when the edge header is absent or is not Cloudflare,
 // or when CF-Connecting-IP is missing or unparseable.
-func cloudflareBehindEdgeIP(r *http.Request) string {
+func cloudflareBehindEdgeIP(r *http.Request, peer string) string {
+	// Only honor Fly-Client-IP when the DIRECT peer is a private/loopback address
+	// — i.e. the request actually arrived through a co-located front proxy (Fly's
+	// internal proxy connects from a private ULA address). A directly-exposed
+	// deployment sees the real client as the peer (a public address), so a forged
+	// Fly-Client-IP from such a client is ignored and cannot mint a fake identity.
+	if a, err := netip.ParseAddr(peer); err != nil || (!a.IsPrivate() && !a.IsLoopback()) {
+		return ""
+	}
 	edge := strings.TrimSpace(r.Header.Get(flyClientIPHeader))
 	if edge == "" || !isCloudflareProxy(edge) {
 		return ""

@@ -1817,6 +1817,30 @@ func TestServer_BundleConcurrentVariantsHoldVMUntilAllDone(t *testing.T) {
 	}
 }
 
+func TestServer_BundleFailedConcurrentWaveRetainsVMForRetry(t *testing.T) {
+	t.Parallel()
+	srv := &Server{}
+	const token = "retry-token"
+
+	srv.bundleEnter(token)
+	srv.bundleEnter(token)
+	srv.bundleSeal(token)
+	srv.bundleMarkFailed(token)
+
+	if srv.bundleLeave(token) {
+		t.Fatal("first leave released VM while another artifact fetch was in-flight")
+	}
+	if srv.bundleLeave(token) {
+		t.Fatal("failed concurrent artifact wave released VM; want retained for retry")
+	}
+
+	srv.bundleEnter(token)
+	srv.bundleSeal(token)
+	if !srv.bundleLeave(token) {
+		t.Fatal("successful retry after failed wave did not release VM")
+	}
+}
+
 // TestServer_BundleConcurrentIdenticalCoalesced proves the per-(token, os) fetch
 // lock: two concurrent identical kit downloads result in exactly ONE VM fetch of
 // that variant (the follower reads the cache the leader populated), so N

@@ -169,6 +169,7 @@ type Server struct {
 	// are guarded by mu.
 	bundleInflight map[string]int
 	bundleSealed   map[string]bool
+	bundleFailed   map[string]bool
 	// fetchMu serializes concurrent identical (token, os) cache misses so only
 	// one request reads a full artifact from the VM into memory. Guarded by mu.
 	fetchMu map[artifactCacheKey]*sync.Mutex
@@ -772,12 +773,14 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 	fetched, fetchErr := s.fetchVMArtifact(fetchCtx, binding.lease, queryToken, osParam)
 	if fetchErr != nil {
 		// Propagate without sealing so the VM is retained for retry.
+		s.bundleMarkFailed(queryToken)
 		writeBrokerErr(w, http.StatusBadGateway, "session proxy unavailable")
 		return
 	}
 	if fetched.status != http.StatusOK {
 		// Non-200 from the VM (e.g. 503 seal failure): propagate and do NOT
 		// seal. The visitor can retry while the VM still lives.
+		s.bundleMarkFailed(queryToken)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(fetched.status)
 		_, _ = w.Write(fetched.body)
@@ -858,10 +861,22 @@ func (s *Server) bundleSeal(token string) {
 	s.mu.Unlock()
 }
 
+func (s *Server) bundleMarkFailed(token string) {
+	s.mu.Lock()
+	if s.bundleFailed == nil {
+		s.bundleFailed = make(map[string]bool)
+	}
+	s.bundleFailed[token] = true
+	s.mu.Unlock()
+}
+
 // bundleLeave decrements the in-flight count for the token. It returns true if
-// this was the last in-flight request AND an artifact was sealed, meaning the
-// caller should release the VM now. If no artifact was sealed (every fetch
-// failed), the VM is retained for retry and the reaper reclaims it at TTL.
+// this was the last in-flight request, an artifact was sealed, and no concurrent
+// artifact fetch failed, meaning the caller should release the VM now. If any
+// fetch in the wave failed, the VM is retained for retry and the reaper reclaims
+// it at TTL. This preserves the "try another variant / retry the failed
+// download" path instead of letting one successful variant tear down the VM
+// behind a concurrent failed one.
 func (s *Server) bundleLeave(token string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -871,6 +886,11 @@ func (s *Server) bundleLeave(token string) bool {
 	}
 	delete(s.bundleInflight, token)
 	sealed := s.bundleSealed[token]
+	failed := s.bundleFailed[token]
+	delete(s.bundleFailed, token)
+	if failed {
+		return false
+	}
 	delete(s.bundleSealed, token)
 	return sealed
 }

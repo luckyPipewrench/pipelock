@@ -12,6 +12,12 @@ import (
 
 const cfConnectingIPHeader = "CF-Connecting-IP"
 
+// flyClientIPHeader is set by Fly.io's proxy to the address that connected to
+// Fly's edge. The app is reachable only through that proxy, which overwrites any
+// client-supplied value, so this header is trustworthy for identifying the
+// immediate upstream (e.g. Cloudflare) in front of Fly.
+const flyClientIPHeader = "Fly-Client-IP"
+
 // cloudflareProxyPrefixes is a snapshot of Cloudflare's published proxy IP
 // ranges used to validate CF-Connecting-IP headers. These are NOT fetched at
 // runtime (avoids a network dependency at startup).
@@ -72,12 +78,44 @@ func ClientIPExact(r *http.Request, trustForwardedFor bool) string {
 	if ip := cloudflareConnectingIP(r, peer); ip != "" {
 		return ip
 	}
+	// Cloudflare-behind-Fly path: on Fly.io the direct peer is Fly's internal
+	// proxy, not Cloudflare, so the direct-peer check above fails and every
+	// visitor would otherwise collapse into one rate/budget bucket. Fly sets
+	// Fly-Client-IP to whoever connected to its edge; when that is a Cloudflare
+	// proxy IP, Cloudflare is the immediate upstream and CF-Connecting-IP is
+	// trustworthy. Fly always sets Fly-Client-IP itself (the app is reachable
+	// only through Fly's proxy), so a direct .fly.dev client cannot forge this:
+	// their Fly-Client-IP is their own non-Cloudflare address and the
+	// CF-Connecting-IP is ignored.
+	if ip := cloudflareBehindEdgeIP(r); ip != "" {
+		return ip
+	}
 	if trustForwardedFor {
 		if ip := firstForwardedFor(r.Header.Get("X-Forwarded-For")); ip != "" {
 			return ip
 		}
 	}
 	return peer
+}
+
+// cloudflareBehindEdgeIP trusts CF-Connecting-IP when the request reached us
+// through a front edge (Fly) whose own client-IP header reports a Cloudflare
+// proxy address. Returns "" when the edge header is absent or is not Cloudflare,
+// or when CF-Connecting-IP is missing or unparseable.
+func cloudflareBehindEdgeIP(r *http.Request) string {
+	edge := strings.TrimSpace(r.Header.Get(flyClientIPHeader))
+	if edge == "" || !isCloudflareProxy(edge) {
+		return ""
+	}
+	raw := strings.TrimSpace(r.Header.Get(cfConnectingIPHeader))
+	if raw == "" {
+		return ""
+	}
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		return ""
+	}
+	return addr.String()
 }
 
 // abuseBucket collapses an IPv6 address to its /64 network so rotating within a

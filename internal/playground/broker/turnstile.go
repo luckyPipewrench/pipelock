@@ -24,6 +24,11 @@ const (
 	// DefaultTurnstileMaxAge is the default maximum age for a Turnstile
 	// challenge_ts before the verifier rejects it.
 	DefaultTurnstileMaxAge = 5 * time.Minute
+	// DefaultFailedTokenTTL bounds how long a just-failed token is fast-rejected
+	// to dampen Siteverify retry amplification during provider trouble. It is
+	// short so a genuinely valid token blocked by a transient upstream error can
+	// be retried soon after.
+	DefaultFailedTokenTTL = 30 * time.Second
 )
 
 // HumanVerifier validates a browser proof before the broker leases a VM.
@@ -136,6 +141,12 @@ func (s *SeenTokens) CheckAndMark(token string) bool {
 type ReplayGuardVerifier struct {
 	Inner HumanVerifier
 	Seen  *SeenTokens
+	// Failed, when non-nil, is a short-TTL negative cache of tokens whose
+	// upstream verification just failed. It dampens Siteverify retry
+	// amplification (a client resubmitting the same bad token during provider
+	// trouble) without permanently poisoning the token: after the short TTL a
+	// genuinely valid token can be retried.
+	Failed *SeenTokens
 
 	mu       sync.Mutex
 	inflight map[string]chan struct{} // token → done channel
@@ -158,6 +169,12 @@ func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string
 		return ErrTokenAlreadyUsed
 	}
 
+	// Fast-reject a token that just failed upstream, so a client resubmitting a
+	// bad token during provider trouble does not amplify Siteverify calls.
+	if v.Failed != nil && v.Failed.IsSeen(trimmed) {
+		return errTurnstileRejected
+	}
+
 	// Serialize concurrent identical tokens so only one reaches the network.
 	// The second concurrent caller waits for the first to finish, then checks
 	// the seen cache: if the first succeeded the token is consumed and the
@@ -178,7 +195,12 @@ func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string
 		if v.Seen.IsSeen(trimmed) {
 			return ErrTokenAlreadyUsed
 		}
-		// First caller failed — fall through and let this caller try.
+		// If the first caller failed, the negative cache short-circuits this
+		// waiter instead of re-hitting Siteverify with the same bad token.
+		if v.Failed != nil && v.Failed.IsSeen(trimmed) {
+			return errTurnstileRejected
+		}
+		// Otherwise fall through and let this caller try.
 	} else {
 		ch = make(chan struct{})
 		v.inflight[trimmed] = ch
@@ -193,8 +215,12 @@ func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string
 
 	err := v.Inner.Verify(ctx, trimmed, remoteIP)
 	if err != nil {
-		// Failed verification: do NOT record in the seen cache so the token
-		// value is not poisoned for a potentially valid future use.
+		// Failed verification: do NOT record in the (permanent) seen cache so the
+		// token is not poisoned for a potentially valid future use. Record it in
+		// the short-TTL negative cache to dampen immediate retry amplification.
+		if v.Failed != nil {
+			v.Failed.MarkSeen(trimmed)
+		}
 		return err
 	}
 

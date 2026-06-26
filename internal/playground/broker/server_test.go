@@ -130,7 +130,14 @@ type fakeVM struct {
 	streamRelease chan struct{}
 	bundleStatus  int
 	bundleHits    atomic.Int32
-	server        *httptest.Server
+	// bundleHold, when non-nil, blocks a bundle response whose os matches
+	// bundleHoldOS until the channel is closed; bundleHeld signals (once) that
+	// such a request has reached the block. Used to drive concurrent-download
+	// race tests deterministically.
+	bundleHoldOS string
+	bundleHold   chan struct{}
+	bundleHeld   chan struct{}
+	server       *httptest.Server
 }
 
 func newFakeVM(t *testing.T, token string) *fakeVM {
@@ -218,6 +225,15 @@ func (vm *fakeVM) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		vm.bundleHits.Add(1)
 		osParam := r.URL.Query().Get("os")
+		if vm.bundleHold != nil && osParam == vm.bundleHoldOS {
+			if vm.bundleHeld != nil {
+				select {
+				case vm.bundleHeld <- struct{}{}:
+				default:
+				}
+			}
+			<-vm.bundleHold
+		}
 		if osParam != "" {
 			w.Header().Set("Content-Type", "application/zip")
 			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "kit-"+osParam+".zip"))
@@ -534,8 +550,8 @@ func TestServer_DefaultCodeFallback(t *testing.T) {
 		_, ts := newBrokerTestServer(t, provider, ServerConfig{})
 		resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{Code: ""})
 		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("empty code without DefaultCode = %d, want 403", resp.StatusCode)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("empty code without DefaultCode = %d, want 401", resp.StatusCode)
 		}
 		if health := getBrokerHealth(t, ts); health["code_required"] != true {
 			t.Fatalf("code_required = %v, want true", health["code_required"])
@@ -1015,8 +1031,8 @@ func TestServer_AbuseControlsReject(t *testing.T) {
 		resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{Code: ""})
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("empty-code status = %d, want 403", resp.StatusCode)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("empty-code status = %d, want 401", resp.StatusCode)
 		}
 		status, _ := postBrokerSession(t, ts)
 		if status != http.StatusOK {
@@ -1104,7 +1120,7 @@ func TestServerDirectHelpers(t *testing.T) {
 	if got := gateStatus(livechat.ErrGateClosed); got != http.StatusServiceUnavailable {
 		t.Fatalf("gateStatus closed = %d", got)
 	}
-	if got := gateStatus(errors.New("bad code")); got != http.StatusForbidden {
+	if got := gateStatus(errors.New("bad code")); got != http.StatusUnauthorized {
 		t.Fatalf("gateStatus other = %d", got)
 	}
 	if got := codeKey("same"); got != codeKey("same") || got == codeKey("different") {
@@ -1582,6 +1598,90 @@ func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
 	}
 }
 
+// TestServer_BundleConcurrentVariantsHoldVMUntilAllDone proves the per-token
+// in-flight refcount: a fast variant (the raw bundle) completing while a slow
+// variant (an OS kit) is still being fetched must NOT release/destroy the VM.
+// Pre-fix, the fast download's eager releaseToken destroyed the VM mid-fetch of
+// the kit, reproducing the intermittent "download failed" bug under
+// double-clicks, two tabs, or raw+kit clicked together.
+func TestServer_BundleConcurrentVariantsHoldVMUntilAllDone(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "concurrent-token")
+	vm.bundleHoldOS = "linux"
+	vm.bundleHold = make(chan struct{})
+	vm.bundleHeld = make(chan struct{}, 1)
+	var releaseOnce sync.Once
+	releaseHold := func() { releaseOnce.Do(func() { close(vm.bundleHold) }) }
+	// Always release the held VM handler, even if the test fails early, so
+	// httptest.Server.Close() (which waits for outstanding requests) cannot hang.
+	t.Cleanup(releaseHold)
+	destroyed := make(chan string, 4)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+
+	kitURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token) + "&os=linux"
+	rawURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+
+	// Start the slow kit download; it blocks inside the VM fetch. Read+close the
+	// body inside the goroutine so the response is consumed (and bodyclose-clean).
+	type kitResult struct {
+		status int
+		body   string
+	}
+	kitDone := make(chan kitResult, 1)
+	go func() {
+		resp := getBroker(t, kitURL)
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		kitDone <- kitResult{status: resp.StatusCode, body: string(b)}
+	}()
+
+	// Wait until the kit fetch has actually reached the VM (in-flight).
+	select {
+	case <-vm.bundleHeld:
+	case <-time.After(2 * time.Second):
+		t.Fatal("kit fetch never reached the VM")
+	}
+
+	// While the kit is still in-flight, the fast raw download completes.
+	rawResp := getBroker(t, rawURL)
+	rawBody, _ := io.ReadAll(rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw status = %d, want 200", rawResp.StatusCode)
+	}
+	if string(rawBody) != "bundle-"+vm.token {
+		t.Fatalf("raw body = %q, want %q", rawBody, "bundle-"+vm.token)
+	}
+
+	// The VM must STILL be leased: the kit download is in-flight, so the fast
+	// raw download must not have released it.
+	if got := srv.cfg.Leases.ActiveLeases(); got != 1 {
+		t.Fatalf("active leases while kit in-flight = %d, want 1 (VM must be held)", got)
+	}
+
+	// Release the kit fetch; as the last in-flight request it releases the VM.
+	releaseHold()
+	kit := <-kitDone
+	if kit.status != http.StatusOK {
+		t.Fatalf("kit status = %d, want 200", kit.status)
+	}
+	if !strings.HasPrefix(kit.body, "kit-linux-") {
+		t.Fatalf("kit body = %q, want kit-linux-* prefix", kit.body)
+	}
+
+	// Now the VM is released exactly once, after both downloads finished.
+	expectDestroyed(t, destroyed)
+	if got := srv.cfg.Leases.ActiveLeases(); got != 0 {
+		t.Fatalf("active leases after both downloads = %d, want 0", got)
+	}
+}
+
 // TestServer_BundleVM503DoesNotReleaseVM proves that a 503 from the VM (seal
 // failure) is propagated to the client and the VM is NOT released, so the
 // client can retry while the VM still lives.
@@ -1646,7 +1746,7 @@ func TestServer_BundleOversizedDoesNotCache(t *testing.T) {
 		t.Fatalf("session status = %d, want 200", status)
 	}
 
-	resp := getBroker(t, ts.URL+livechat.RouteBundle+"?token=oversize-tok")
+	resp := getBroker(t, ts.URL+livechat.RouteBundle+"?token="+url.QueryEscape("oversize-tok"))
 	_, _ = io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 

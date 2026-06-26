@@ -875,6 +875,8 @@ func TestValidateFlagsBranches(t *testing.T) {
 	}
 	turnstileGate := noHumanGate
 	turnstileGate.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
+	turnstileGate.turnstileExpectedHostname = "playground.example"
+	turnstileGate.turnstileExpectedAction = "playground-session"
 	if err := validateFlags(&turnstileGate); err != nil {
 		t.Fatalf("turnstile gate should validate: %v", err)
 	}
@@ -908,6 +910,11 @@ func TestValidateFlagsBranches(t *testing.T) {
 		{name: "bad_turnstile_verify_url", mutate: func(f *serveFlags) {
 			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
 			f.turnstileVerifyURL = "file:///tmp/siteverify"
+		}},
+		{name: "turnstile_production_missing_hostname_action", mutate: func(f *serveFlags) {
+			// Turnstile against Cloudflare (no --turnstile-verify-url) must bind
+			// hostname + action; omitting them is rejected.
+			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
 		}},
 		{name: "bad_cf_combo", mutate: func(f *serveFlags) { f.cfAccessCertsURL = "https://keys.example/certs" }},
 		{name: "bad_cf_aud", mutate: func(f *serveFlags) {

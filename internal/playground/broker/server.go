@@ -34,13 +34,23 @@ const (
 
 	envVMInviteCode = "PLAYGROUND_CODE"
 
-	// maxArtifactBytes caps the per-artifact size the broker will cache. The
-	// sealed bundle is signed JSON/tar.gz; 16 MiB is generous headroom.
+	// maxArtifactBytes caps the per-artifact size of the raw sealed bundle the
+	// broker will cache. The bundle is signed JSON/tar.gz; 16 MiB is generous.
 	maxArtifactBytes = 16 << 20 // 16 MiB
 
+	// maxKitBytes caps the per-artifact size of a verify kit (os != ""), which
+	// bundles a platform verifier binary alongside the signed run and is much
+	// larger than the raw bundle. Kept separate so a future notarized/universal
+	// build cannot silently exceed the bundle cap and fail on one platform only.
+	maxKitBytes = 64 << 20 // 64 MiB
+
 	// maxArtifactCacheEntries bounds the total number of cached artifacts to
-	// prevent unbounded memory growth from many concurrent sessions.
-	maxArtifactCacheEntries = 128
+	// prevent unbounded memory growth. A single session can hold up to four
+	// entries (the raw bundle plus a per-OS verify kit each), so this is sized
+	// well above the global daily session budget to keep a traffic spike from
+	// evicting one visitor's artifact before they re-download within the cache
+	// TTL. Each entry is capped at maxArtifactBytes, bounding worst-case memory.
+	maxArtifactCacheEntries = 256
 
 	// defaultVMReadyTimeout bounds the broker's whole VM session-create retry
 	// window. A freshly leased VM reports "started" (Firecracker booted) before it
@@ -140,6 +150,15 @@ type Server struct {
 	starts   []time.Time
 	closed   bool
 	reapDone chan struct{}
+
+	// bundleInflight counts in-flight bundle-download requests per token, and
+	// bundleSealed records tokens whose artifact is durably cached. Together
+	// they hold the VM until every concurrent download for a token finishes, so
+	// a fast variant (raw bundle, a double-click, a second tab) cannot
+	// release/destroy the VM while another variant is still being fetched. Both
+	// are guarded by mu.
+	bundleInflight map[string]int
+	bundleSealed   map[string]bool
 }
 
 type tokenLease struct {
@@ -431,7 +450,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		code = s.cfg.DefaultCode
 	}
 	if code == "" {
-		writeBrokerErr(w, http.StatusForbidden, "invite code rejected")
+		writeBrokerErr(w, http.StatusUnauthorized, "invite code rejected")
 		return
 	}
 	if s.cfg.HumanVerifier != nil {
@@ -667,37 +686,54 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mark this request in-flight for the token so a concurrent download of a
+	// different variant (raw bundle + OS kit, a double-click, two tabs, browser
+	// prefetch/retry) cannot release/destroy the VM while another fetch is still
+	// running. The VM is released only when the LAST in-flight request for the
+	// token finishes AND an artifact has been durably sealed into the cache.
+	s.bundleEnter(queryToken)
+	defer func() {
+		if s.bundleLeave(queryToken) {
+			s.releaseToken(context.WithoutCancel(r.Context()), queryToken)
+		}
+	}()
+
+	// Detach the fetch from request cancellation so a client disconnect mid-
+	// fetch cannot abort populating the durable cache.
+	fetchCtx := context.WithoutCancel(r.Context())
+
 	// Fetch the requested artifact variant from the VM.
-	fetched, fetchErr := s.fetchVMArtifact(r.Context(), binding.lease, queryToken, osParam)
+	fetched, fetchErr := s.fetchVMArtifact(fetchCtx, binding.lease, queryToken, osParam)
 	if fetchErr != nil {
-		// Propagate the error without releasing the VM so the client can
-		// retry while the session is still alive.
+		// Propagate without sealing so the VM is retained for retry.
 		writeBrokerErr(w, http.StatusBadGateway, "session proxy unavailable")
 		return
 	}
 	if fetched.status != http.StatusOK {
 		// Non-200 from the VM (e.g. 503 seal failure): propagate and do NOT
-		// release. The visitor can retry while the VM still lives.
+		// seal. The visitor can retry while the VM still lives.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(fetched.status)
 		_, _ = w.Write(fetched.body)
 		return
 	}
 
-	// Store the successfully fetched artifact in the cache.
+	// Store the successfully fetched artifact in the cache and mark the token
+	// sealed so the VM may be released once all in-flight requests finish.
 	s.bundleCache.put(cacheKey, &artifactCacheEntry{
 		body:               fetched.body,
 		contentType:        fetched.contentType,
 		contentDisposition: fetched.contentDisposition,
 		insertedAt:         time.Now(),
 	})
+	s.bundleSeal(queryToken)
 
 	// Also prefetch the raw bundle (os="") into the cache so a later
 	// raw-bundle download succeeds even after the VM is gone.
 	if osParam != "" {
 		rawKey := artifactCacheKey{token: queryToken, os: ""}
 		if s.bundleCache.get(rawKey) == nil {
-			if raw, rawErr := s.fetchVMArtifact(r.Context(), binding.lease, queryToken, ""); rawErr == nil && raw.status == http.StatusOK {
+			if raw, rawErr := s.fetchVMArtifact(fetchCtx, binding.lease, queryToken, ""); rawErr == nil && raw.status == http.StatusOK {
 				s.bundleCache.put(rawKey, &artifactCacheEntry{
 					body:               raw.body,
 					contentType:        raw.contentType,
@@ -708,15 +744,53 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The artifact is durably cached. NOW release the VM.
-	s.releaseToken(context.WithoutCancel(r.Context()), queryToken)
-
-	// Serve the fetched artifact to the client.
+	// Serve the fetched artifact to the client. VM release happens in the
+	// deferred bundleLeave once the last in-flight request for the token ends.
 	w.Header().Set("Content-Type", fetched.contentType)
 	w.Header().Set("Content-Disposition", fetched.contentDisposition)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(fetched.body)
+}
+
+// bundleEnter records a handleBundle request as in-flight for the token so the
+// VM is not released while a concurrent artifact fetch for the same token is
+// still running.
+func (s *Server) bundleEnter(token string) {
+	s.mu.Lock()
+	if s.bundleInflight == nil {
+		s.bundleInflight = make(map[string]int)
+	}
+	s.bundleInflight[token]++
+	s.mu.Unlock()
+}
+
+// bundleSeal records that an artifact for the token has been durably cached, so
+// the VM may be released once all in-flight requests finish.
+func (s *Server) bundleSeal(token string) {
+	s.mu.Lock()
+	if s.bundleSealed == nil {
+		s.bundleSealed = make(map[string]bool)
+	}
+	s.bundleSealed[token] = true
+	s.mu.Unlock()
+}
+
+// bundleLeave decrements the in-flight count for the token. It returns true if
+// this was the last in-flight request AND an artifact was sealed, meaning the
+// caller should release the VM now. If no artifact was sealed (every fetch
+// failed), the VM is retained for retry and the reaper reclaims it at TTL.
+func (s *Server) bundleLeave(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bundleInflight[token]--
+	if s.bundleInflight[token] > 0 {
+		return false
+	}
+	delete(s.bundleInflight, token)
+	sealed := s.bundleSealed[token]
+	delete(s.bundleSealed, token)
+	return sealed
 }
 
 // vmArtifact holds the result of a direct bounded GET to the VM's bundle route.
@@ -752,12 +826,18 @@ func (s *Server) fetchVMArtifact(ctx context.Context, lease *Lease, vmToken, osP
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxArtifactBytes+1))
+	// Verify kits (os != "") bundle a platform verifier binary and are far
+	// larger than the raw bundle, so they get a separate, higher cap.
+	sizeCap := int64(maxArtifactBytes)
+	if osParam != "" {
+		sizeCap = int64(maxKitBytes)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, sizeCap+1))
 	if err != nil {
 		return vmArtifact{}, fmt.Errorf("broker: read bundle body: %w", err)
 	}
-	if len(body) > maxArtifactBytes {
-		return vmArtifact{}, fmt.Errorf("broker: bundle body exceeds %d bytes", maxArtifactBytes)
+	if int64(len(body)) > sizeCap {
+		return vmArtifact{}, fmt.Errorf("broker: bundle body exceeds %d bytes", sizeCap)
 	}
 
 	return vmArtifact{
@@ -1107,7 +1187,11 @@ func gateStatus(err error) int {
 	if errors.Is(err, livechat.ErrGateClosed) {
 		return http.StatusServiceUnavailable
 	}
-	return http.StatusForbidden
+	// An invite-code redemption failure is an authentication problem (a bad or
+	// spent code), distinct from the human-verification gate (403). Returning
+	// 401 lets the viewer tell the visitor to fix their code rather than retry
+	// the human check.
+	return http.StatusUnauthorized
 }
 
 func codeKey(code string) string {

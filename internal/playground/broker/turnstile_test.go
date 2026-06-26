@@ -504,6 +504,46 @@ func TestReplayGuardVerifier_FailedTokenDoesNotPoisonCache(t *testing.T) {
 	}
 }
 
+func TestReplayGuardVerifier_NegativeCacheDampsRetry(t *testing.T) {
+	t.Parallel()
+	// With a negative cache, a token that just failed upstream is fast-rejected
+	// on immediate retry WITHOUT a second Siteverify call, damping the retry
+	// amplification an attacker (or a provider outage) could otherwise cause.
+	var callCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":     false,
+			"error-codes": []string{"invalid-input-response"},
+		})
+	}))
+	t.Cleanup(ts.Close)
+
+	inner := TurnstileVerifier{Secret: testSecretVal, VerifyURL: ts.URL, Client: ts.Client()}
+	guard := &ReplayGuardVerifier{
+		Inner:  inner,
+		Seen:   NewSeenTokens(time.Minute, nil),
+		Failed: NewSeenTokens(time.Minute, nil),
+	}
+
+	// First attempt reaches upstream and fails.
+	if err := guard.Verify(context.Background(), "bad-token", testRemoteIP); err == nil {
+		t.Fatal("first Verify should fail")
+	}
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf("Siteverify calls after first attempt = %d, want 1", got)
+	}
+
+	// Immediate retry of the same bad token is short-circuited by the negative
+	// cache: no additional Siteverify call.
+	if err := guard.Verify(context.Background(), "bad-token", testRemoteIP); err == nil {
+		t.Fatal("retry of a just-failed token should be rejected")
+	}
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf("Siteverify calls after retry = %d, want 1 (negative cache must short-circuit)", got)
+	}
+}
+
 func TestReplayGuardVerifier_InvalidTokenDoesNotPopulateSeenCache(t *testing.T) {
 	t.Parallel()
 	var siteverifyCalls atomic.Int32

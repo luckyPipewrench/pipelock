@@ -229,7 +229,7 @@ func liveKitReadme(osName VerifyKitOS) string {
 	case VerifyKitOSMacOS:
 		return "Pipelock - verify your live session (macOS)\n\nThe verifier is a universal Intel/Apple Silicon binary, but it is not Apple-notarized, so macOS Gatekeeper may block a freshly downloaded copy. If double-clicking Verify.command is blocked, open Terminal in this folder and run:\n\n  xattr -d com.apple.quarantine Verify.command app/pipelock-verifier\n  ./Verify.command\n\nA valid run prints result: VALID. Nothing here touches the internet. Notarized macOS support is planned; Linux and Windows need no extra step.\n"
 	default:
-		return "Pipelock - verify your live session (Linux)\n\nRun ./verify.sh, or double-click it if your file manager runs scripts.\nA valid run prints result: VALID. Nothing here touches the internet.\n"
+		return "Pipelock - verify your live session (Linux)\n\nOpen a terminal in this folder and run:\n\n  ./verify.sh\n\nDouble-clicking usually opens it in a text editor instead of running it - that is normal on Linux; use the terminal.\nA valid run prints result: VALID. Nothing here touches the internet.\n"
 	}
 }
 
@@ -240,7 +240,7 @@ func liveKitScript(osName VerifyKitOS, orchKey string) (string, string, error) {
 	case VerifyKitOSMacOS:
 		return "Verify.command", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\necho\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + "\necho\necho \"result: VALID means every signature, the receipt chain, witnesses, and run binding held.\"\necho \"No network was used.\"\nread -n 1 -s -r -p \"Press any key to close.\"\n", nil
 	case VerifyKitOSLinux:
-		return "verify.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + "\n", nil
+		return "verify.sh", "#!/bin/bash\ncd \"$(dirname \"$0\")/app\"\necho \"Verifying the full Pipelock playground trust chain, offline...\"\necho\n./pipelock-verifier verify-run run --orchestrator-key " + orchKey + "\necho\necho \"result: VALID means every signature, the receipt chain, witnesses, and run binding held.\"\necho \"No network was used.\"\n", nil
 	default:
 		return "", "", fmt.Errorf("unsupported verify kit OS %q", osName)
 	}

@@ -198,8 +198,8 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.turnstileSecretFile, "turnstile-secret-file", "", "path to the Cloudflare Turnstile secret; enables human verification for session creation")
 	fl.StringVar(&f.turnstileSecretEnv, "turnstile-secret-env", "", "environment variable holding the Cloudflare Turnstile secret; enables human verification for session creation")
 	fl.StringVar(&f.turnstileVerifyURL, "turnstile-verify-url", "", "Cloudflare Turnstile Siteverify URL override (tests/dev only; empty uses Cloudflare)")
-	fl.StringVar(&f.turnstileExpectedHostname, "turnstile-expected-hostname", "", "expected hostname in the Turnstile Siteverify response; public deploys SHOULD set this")
-	fl.StringVar(&f.turnstileExpectedAction, "turnstile-action", "", "expected action label in the Turnstile Siteverify response; public deploys SHOULD set this")
+	fl.StringVar(&f.turnstileExpectedHostname, "turnstile-expected-hostname", "", "expected hostname in the Turnstile Siteverify response; required when Turnstile runs against Cloudflare")
+	fl.StringVar(&f.turnstileExpectedAction, "turnstile-action", "", "expected action label in the Turnstile Siteverify response; required when Turnstile runs against Cloudflare")
 	fl.DurationVar(&f.turnstileMaxAge, "turnstile-max-age", broker.DefaultTurnstileMaxAge, "max age for a Turnstile challenge_ts before it is rejected (0 disables)")
 	fl.StringVar(&f.turnstileSitekey, "turnstile-sitekey", "", "public Cloudflare Turnstile site key; reported via /health so the viewer renders the widget (the secret is set separately via --turnstile-secret-*)")
 	fl.DurationVar(&f.sessionTTL, "session-ttl", defaultSessionTTL, "VM session token TTL")
@@ -634,6 +634,16 @@ func validateTurnstileFlags(f *serveFlags) error {
 	configured := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
 	if !configured && strings.TrimSpace(f.turnstileVerifyURL) != "" {
 		return errors.New("--turnstile-verify-url requires --turnstile-secret-file or --turnstile-secret-env")
+	}
+	// In production (Turnstile configured against the real Cloudflare endpoint,
+	// i.e. no --turnstile-verify-url override) the hostname and action bindings
+	// are mandatory, not advisory: without them a token solved for another page
+	// or action could be replayed against this broker. Dev/test (which sets
+	// --turnstile-verify-url to a local stub) is exempt.
+	if configured && strings.TrimSpace(f.turnstileVerifyURL) == "" {
+		if strings.TrimSpace(f.turnstileExpectedHostname) == "" || strings.TrimSpace(f.turnstileExpectedAction) == "" {
+			return errors.New("--turnstile-expected-hostname and --turnstile-action are required when Turnstile is enabled against Cloudflare (use --turnstile-verify-url for dev/test only)")
+		}
 	}
 	if strings.TrimSpace(f.turnstileVerifyURL) == "" {
 		return nil
@@ -1306,8 +1316,9 @@ func resolveTurnstileVerifier(f *serveFlags) (broker.HumanVerifier, error) {
 		MaxAge:           f.turnstileMaxAge,
 	}
 	return &broker.ReplayGuardVerifier{
-		Inner: inner,
-		Seen:  broker.NewSeenTokens(0, nil),
+		Inner:  inner,
+		Seen:   broker.NewSeenTokens(0, nil),
+		Failed: broker.NewSeenTokens(broker.DefaultFailedTokenTTL, nil),
 	}, nil
 }
 

@@ -505,6 +505,64 @@ func TestBuildServerValidation(t *testing.T) {
 	}
 }
 
+func TestValidateDefaultCode(t *testing.T) {
+	t.Parallel()
+	const pub = "pub-code"
+	mk := func(mut func(*serveFlags)) *serveFlags {
+		f := &serveFlags{codes: []string{pub, "other"}}
+		mut(f)
+		return f
+	}
+	cases := []struct {
+		name    string
+		f       *serveFlags
+		wantErr bool
+	}{
+		{"empty_is_noop", mk(func(f *serveFlags) {}), false},
+		{"turnstile_gate_ok", mk(func(f *serveFlags) { f.defaultCode = pub; f.turnstileSecretEnv = "TS_SECRET" }), false},
+		{"cfaccess_gate_ok", mk(func(f *serveFlags) {
+			f.defaultCode = pub
+			f.cfAccessTeamDomain = "https://x.cloudflareaccess.com"
+			f.cfAccessAUD = "aud-tag"
+		}), false},
+		// The security guardrail: a default code with NO human gate would let
+		// anyone create sessions code-free. Must fail closed.
+		{"no_gate_rejected", mk(func(f *serveFlags) { f.defaultCode = pub }), true},
+		{"unsafe_no_human_gate_rejected", mk(func(f *serveFlags) { f.defaultCode = pub; f.unsafeNoHumanGate = true }), true},
+		{"unknown_code_rejected", mk(func(f *serveFlags) { f.defaultCode = "ghost"; f.turnstileSecretEnv = "TS_SECRET" }), true},
+		{"conflicting_flags_rejected", mk(func(f *serveFlags) {
+			f.defaultCode = pub
+			f.cfAccessDefaultCode = "other"
+			f.turnstileSecretEnv = "TS_SECRET"
+		}), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDefaultCode(tc.f)
+			if tc.wantErr && err == nil {
+				t.Fatal("validateDefaultCode succeeded, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateDefaultCode failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestEffectiveDefaultCode(t *testing.T) {
+	t.Parallel()
+	if got := effectiveDefaultCode(&serveFlags{defaultCode: "general"}); got != "general" {
+		t.Fatalf("general wins: got %q", got)
+	}
+	if got := effectiveDefaultCode(&serveFlags{cfAccessDefaultCode: "cf"}); got != "cf" {
+		t.Fatalf("cf fallback: got %q", got)
+	}
+	if got := effectiveDefaultCode(&serveFlags{}); got != "" {
+		t.Fatalf("empty: got %q", got)
+	}
+}
+
 func TestRunServeListenErrorAfterBuild(t *testing.T) {
 	dir := t.TempDir()
 	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")

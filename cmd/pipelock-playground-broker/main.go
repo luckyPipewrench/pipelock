@@ -117,6 +117,7 @@ type serveFlags struct {
 	cfAccessAUD               string
 	cfAccessCertsURL          string
 	cfAccessDefaultCode       string
+	defaultCode               string
 	trustForwardedFor         bool
 	modelKeyFile              string
 	modelKeyEnv               string
@@ -210,6 +211,7 @@ func newServeCmd() *cobra.Command {
 	fl.StringVar(&f.cfAccessAUD, "cf-access-aud", "", "Cloudflare Access application AUD tag expected in Cf-Access-Jwt-Assertion")
 	fl.StringVar(&f.cfAccessCertsURL, "cf-access-certs-url", "", "override Cloudflare Access JWKS URL (tests/dev only; defaults to <team-domain>/cdn-cgi/access/certs)")
 	fl.StringVar(&f.cfAccessDefaultCode, "cf-access-default-code", "", "invite code used when an Access-gated request sends none, so allowlisted users skip the code prompt; REQUIRES --cf-access-team-domain/--cf-access-aud and must be one of the --code values")
+	fl.StringVar(&f.defaultCode, "default-code", "", "invite code auto-applied when a session request sends none, so public visitors skip the code prompt; REQUIRES a human gate (--turnstile-secret-* or Cloudflare Access) and must be one of the --code values. Use this for a public Turnstile-gated demo (no email allowlist)")
 	fl.BoolVar(&f.trustForwardedFor, "trust-forwarded-for", false, "read client IP from X-Forwarded-For behind a trusted proxy")
 	fl.StringVar(&f.modelKeyFile, "model-key-file", "", "path to the model key file passed to the VM env")
 	fl.StringVar(&f.modelKeyEnv, "model-key-env", "", "environment variable holding the model key passed to the VM env")
@@ -369,7 +371,7 @@ func buildServer(ctx context.Context, out io.Writer, f *serveFlags) (*broker.Ser
 		Leases:             lm,
 		WarmPool:           warmPool,
 		Gate:               gate,
-		DefaultCode:        f.cfAccessDefaultCode,
+		DefaultCode:        effectiveDefaultCode(f),
 		TurnstileSitekey:   f.turnstileSitekey,
 		HumanVerifier:      humanVerifier,
 		IPRate:             livechat.RateConfig{RefillPerSec: f.ipRate, Burst: f.ipBurst},
@@ -548,7 +550,46 @@ func validateFlags(f *serveFlags) error {
 	if err := validateCFAccessFlags(f); err != nil {
 		return err
 	}
+	if err := validateDefaultCode(f); err != nil {
+		return err
+	}
 	return nil
+}
+
+// effectiveDefaultCode is the server-side invite code auto-applied when a
+// session request sends none. The general --default-code wins; --cf-access-default-code
+// remains as the Access-only alias. Empty means "client must send a code".
+func effectiveDefaultCode(f *serveFlags) string {
+	if dc := strings.TrimSpace(f.defaultCode); dc != "" {
+		return dc
+	}
+	return strings.TrimSpace(f.cfAccessDefaultCode)
+}
+
+// validateDefaultCode fails closed on --default-code: like --cf-access-default-code
+// it lets visitors skip the invite-code prompt, so it is only safe behind a human
+// gate (Turnstile OR Cloudflare Access) — never with no gate / --unsafe-no-human-gate
+// alone, which would let ANYONE create sessions code-free. It must also name a real
+// --code. (--cf-access-default-code keeps its own Access-only check in validateCFAccessFlags.)
+func validateDefaultCode(f *serveFlags) error {
+	dc := strings.TrimSpace(f.defaultCode)
+	if dc == "" {
+		return nil
+	}
+	if cfdc := strings.TrimSpace(f.cfAccessDefaultCode); cfdc != "" && cfdc != dc {
+		return errors.New("set only one of --default-code or --cf-access-default-code")
+	}
+	hasTurnstile := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
+	hasCFAccess := strings.TrimSpace(f.cfAccessTeamDomain) != "" || strings.TrimSpace(f.cfAccessAUD) != ""
+	if !hasTurnstile && !hasCFAccess {
+		return errors.New("--default-code requires a human gate (--turnstile-secret-file/--turnstile-secret-env or Cloudflare Access); a default code with no human gate would open the broker")
+	}
+	for _, c := range f.codes {
+		if strings.TrimSpace(c) == dc {
+			return nil
+		}
+	}
+	return errors.New("--default-code must be one of the --code values")
 }
 
 func validateAdminFlags(f *serveFlags) error {

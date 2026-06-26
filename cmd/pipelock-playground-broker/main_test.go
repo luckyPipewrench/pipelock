@@ -991,6 +991,12 @@ func TestValidateFlagsBranches(t *testing.T) {
 			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
 			f.turnstileVerifyURL = "https://challenges.cloudflare.com:443/turnstile/v0/siteverify"
 		}},
+		{name: "turnstile_explicit_cloudflare_url_trailing_dot_missing_bindings", mutate: func(f *serveFlags) {
+			// A DNS-root trailing dot is still the real Cloudflare host, so it
+			// must not bypass hostname/action binding.
+			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
+			f.turnstileVerifyURL = "https://challenges.cloudflare.com./turnstile/v0/siteverify"
+		}},
 		{name: "bad_cf_combo", mutate: func(f *serveFlags) { f.cfAccessCertsURL = "https://keys.example/certs" }},
 		{name: "bad_cf_aud", mutate: func(f *serveFlags) {
 			f.cfAccessTeamDomain = "team.cloudflareaccess.com"

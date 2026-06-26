@@ -50,7 +50,7 @@ Exit code 0 = every check passed. Non-zero = at least one check failed.`,
 				enc := json.NewEncoder(w)
 				enc.SetIndent("", "  ")
 				if err := enc.Encode(rep); err != nil {
-					return err
+					return fmt.Errorf("encode verify-run JSON report: %w", err)
 				}
 				if !rep.OK {
 					return cliutil.ExitCodeError(1, fmt.Errorf("VERIFY FAILED: one or more checks did not pass"))

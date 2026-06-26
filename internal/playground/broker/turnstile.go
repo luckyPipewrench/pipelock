@@ -153,6 +153,7 @@ type ReplayGuardVerifier struct {
 
 	mu       sync.Mutex
 	inflight map[string]chan struct{} // token → done channel
+	waitHook func()                   // test hook called when a waiter observes an in-flight token
 }
 
 // Verify rejects already-seen tokens, deduplicates in-flight concurrent
@@ -188,7 +189,11 @@ func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string
 			v.inflight = make(map[string]chan struct{})
 		}
 		if ch, ok := v.inflight[trimmed]; ok {
+			waitHook := v.waitHook
 			v.mu.Unlock()
+			if waitHook != nil {
+				waitHook()
+			}
 			// Another goroutine is verifying this token. Wait, then loop back
 			// through the replay/negative-cache/inflight gates. If the leader
 			// failed without populating Failed, exactly one waiter may become the

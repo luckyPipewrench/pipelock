@@ -499,12 +499,74 @@ func TestPoolRecycleStaleDestroyFailureKeepsEntryAndSlot(t *testing.T) {
 	if _, ok := newIDs[oldID]; !ok {
 		t.Fatalf("stale VM %s should stay tracked when destroy fails", oldID)
 	}
+	if _, _, _, ok := pool.Acquire(); ok {
+		t.Fatal("failed-destroy stale VM was handed out; want quarantined")
+	}
 	if limiter.InUse() != 1 {
 		t.Fatalf("InUse after failed recycle = %d, want 1", limiter.InUse())
 	}
 	created, _ := fp.counts()
 	if created != 1 {
 		t.Fatalf("created after failed recycle = %d, want 1; failed destroy must not free slot for replacement", created)
+	}
+
+	fp.destroyErr = nil
+	pool.maintain(context.Background())
+	recoveredIDs := pool.WarmMachineIDs()
+	if len(recoveredIDs) != 1 {
+		t.Fatalf("warm VMs after quarantine retry = %d, want replacement", len(recoveredIDs))
+	}
+	if _, ok := recoveredIDs[oldID]; ok {
+		t.Fatalf("old VM %s stayed tracked after successful quarantine retry", oldID)
+	}
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse after quarantine retry/refill = %d, want 1", limiter.InUse())
+	}
+	created, _ = fp.counts()
+	if created != 2 {
+		t.Fatalf("created after quarantine retry/refill = %d, want 2", created)
+	}
+	if fp.destroyCalls != 2 {
+		t.Fatalf("destroy attempts after quarantine retry = %d, want 2", fp.destroyCalls)
+	}
+}
+
+func TestPoolPauseDestroyFailureQuarantinesVM(t *testing.T) {
+	fp := &destroyErrProvider{fakeProvider: &fakeProvider{}, destroyErr: errors.New("destroy failed")}
+	limiter := livechat.NewConcurrencyLimiter(1)
+	pool := newTestPool(t, fp, limiter, 1, 0, nil)
+	pool.maintain(context.Background())
+	warmIDs := pool.WarmMachineIDs()
+	if len(warmIDs) != 1 {
+		t.Fatalf("warm VMs after fill = %d, want 1", len(warmIDs))
+	}
+	var oldID string
+	for id := range warmIDs {
+		oldID = id
+	}
+
+	pool.Pause(context.Background())
+	quarantinedIDs := pool.WarmMachineIDs()
+	if len(quarantinedIDs) != 1 {
+		t.Fatalf("warm VMs after failed pause destroy = %d, want quarantined VM", len(quarantinedIDs))
+	}
+	if _, ok := quarantinedIDs[oldID]; !ok {
+		t.Fatalf("failed pause destroy VM %s should stay protected", oldID)
+	}
+	if _, _, _, ok := pool.Acquire(); ok {
+		t.Fatal("failed-destroy paused VM was handed out; want quarantined")
+	}
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse after failed pause destroy = %d, want 1", limiter.InUse())
+	}
+
+	fp.destroyErr = nil
+	pool.maintain(context.Background())
+	if got := len(pool.WarmMachineIDs()); got != 0 {
+		t.Fatalf("warm VMs after paused quarantine retry = %d, want 0", got)
+	}
+	if limiter.InUse() != 0 {
+		t.Fatalf("InUse after paused quarantine retry = %d, want 0", limiter.InUse())
 	}
 }
 

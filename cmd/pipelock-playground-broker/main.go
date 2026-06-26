@@ -686,7 +686,7 @@ func validateTurnstileFlags(f *serveFlags) error {
 	// broker. Only a non-Cloudflare override (a local dev/test stub) is exempt.
 	cloudflareEndpoint := strings.TrimSpace(f.turnstileVerifyURL) == ""
 	if v := strings.TrimSpace(f.turnstileVerifyURL); v != "" {
-		if u, err := url.Parse(v); err == nil && strings.EqualFold(u.Hostname(), "challenges.cloudflare.com") {
+		if u, err := url.Parse(v); err == nil && strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), "challenges.cloudflare.com") {
 			cloudflareEndpoint = true
 		}
 	}

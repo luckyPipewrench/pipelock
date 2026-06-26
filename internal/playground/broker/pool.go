@@ -89,6 +89,10 @@ type Pool struct {
 
 	mu      sync.Mutex
 	entries []warmEntry
+	// quarantine holds VMs whose destroy call failed. They remain protected
+	// from the reaper and keep their limiter slot, but Acquire must never hand
+	// them to a visitor after cleanup already tried to remove them.
+	quarantine map[string]warmEntry
 	// handoff holds machine IDs popped by Acquire but not yet adopted into an
 	// active lease. They are NO LONGER in entries but NOT YET in
 	// LeaseManager.ActiveMachineIDs, so without tracking them here the reaper
@@ -141,6 +145,7 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		maxWarmAge: maxWarmAge,
 		now:        now,
 		log:        log,
+		quarantine: make(map[string]warmEntry),
 		handoff:    make(map[string]struct{}),
 	}, nil
 }
@@ -192,11 +197,14 @@ func (p *Pool) FinishHandoff(machineID string) {
 func (p *Pool) WarmMachineIDs() map[string]struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ids := make(map[string]struct{}, len(p.entries)+len(p.handoff))
+	ids := make(map[string]struct{}, len(p.entries)+len(p.quarantine)+len(p.handoff))
 	for _, e := range p.entries {
 		if e.machine != nil {
 			ids[e.machine.ID] = struct{}{}
 		}
+	}
+	for id := range p.quarantine {
+		ids[id] = struct{}{}
 	}
 	for id := range p.handoff {
 		ids[id] = struct{}{}
@@ -233,14 +241,14 @@ func (p *Pool) Drain(ctx context.Context) {
 	draining := make([]warmEntry, len(p.entries))
 	copy(draining, p.entries)
 	p.entries = nil
+	for id, e := range p.quarantine {
+		draining = append(draining, e)
+		delete(p.quarantine, id)
+	}
 	p.mu.Unlock()
 
 	failed := p.destroyWarmEntries(ctx, draining, "drain")
-	if len(failed) > 0 {
-		p.mu.Lock()
-		p.entries = append(failed, p.entries...)
-		p.mu.Unlock()
-	}
+	p.quarantineFailed(failed)
 }
 
 // Pause stops the maintainer from creating new warm VMs and destroys the ones
@@ -254,14 +262,14 @@ func (p *Pool) Pause(ctx context.Context) {
 	draining := make([]warmEntry, len(p.entries))
 	copy(draining, p.entries)
 	p.entries = nil
+	for id, e := range p.quarantine {
+		draining = append(draining, e)
+		delete(p.quarantine, id)
+	}
 	p.mu.Unlock()
 
 	failed := p.destroyWarmEntries(ctx, draining, "pause")
-	if len(failed) > 0 {
-		p.mu.Lock()
-		p.entries = append(failed, p.entries...)
-		p.mu.Unlock()
-	}
+	p.quarantineFailed(failed)
 }
 
 // Resume re-enables warm-VM creation. The maintainer refills the pool on its
@@ -274,6 +282,7 @@ func (p *Pool) Resume() {
 
 // maintain recycles stale entries and fills the pool up to Size.
 func (p *Pool) maintain(ctx context.Context) {
+	p.retryQuarantine(ctx)
 	p.recycleStale(ctx)
 	p.fill(ctx)
 }
@@ -295,10 +304,40 @@ func (p *Pool) recycleStale(ctx context.Context) {
 	p.mu.Unlock()
 
 	failed := p.destroyWarmEntries(ctx, stale, "recycle stale")
-	if len(failed) > 0 {
-		p.mu.Lock()
-		p.entries = append(failed, p.entries...)
+	p.quarantineFailed(failed)
+}
+
+func (p *Pool) retryQuarantine(ctx context.Context) {
+	p.mu.Lock()
+	if len(p.quarantine) == 0 {
 		p.mu.Unlock()
+		return
+	}
+	retry := make([]warmEntry, 0, len(p.quarantine))
+	for id, e := range p.quarantine {
+		retry = append(retry, e)
+		delete(p.quarantine, id)
+	}
+	p.mu.Unlock()
+
+	failed := p.destroyWarmEntries(ctx, retry, "retry quarantined")
+	p.quarantineFailed(failed)
+}
+
+func (p *Pool) quarantineFailed(entries []warmEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.quarantine == nil {
+		p.quarantine = make(map[string]warmEntry)
+	}
+	for _, e := range entries {
+		if e.machine == nil {
+			continue
+		}
+		p.quarantine[e.machine.ID] = e
 	}
 }
 

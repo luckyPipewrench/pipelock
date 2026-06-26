@@ -481,17 +481,25 @@ func TestReplayGuardVerifier_WaitersRecheckFailedLeader(t *testing.T) {
 		Seen:   NewSeenTokens(time.Minute, nil),
 		Failed: NewSeenTokens(time.Minute, nil),
 	}
+	waitersReady := make(chan struct{})
+	var waiters atomic.Int32
+	guard.waitHook = func() {
+		if waiters.Add(1) == 2 {
+			close(waitersReady)
+		}
+	}
 
 	errs := make(chan error, 3)
-	start := make(chan struct{})
-	for range 3 {
+	go func() {
+		errs <- guard.Verify(context.Background(), "same-token", testRemoteIP)
+	}()
+	<-inner.first
+	for range 2 {
 		go func() {
-			<-start
 			errs <- guard.Verify(context.Background(), "same-token", testRemoteIP)
 		}()
 	}
-	close(start)
-	<-inner.first
+	<-waitersReady
 	close(inner.allow)
 
 	for range 3 {

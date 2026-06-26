@@ -71,7 +71,8 @@ func TestClientIP_PublicPeerIgnoresForgedFlyClientIP(t *testing.T) {
 }
 
 func TestClientIP_NonFlyPrivatePeerIgnoresForgedFlyClientIP(t *testing.T) {
-	t.Parallel()
+	t.Setenv("FLY_APP_NAME", "")
+	t.Setenv("FLY_MACHINE_ID", "")
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.RemoteAddr = "172.19.0.5:443"
 	req.Header.Set(flyClientIPHeader, "162.158.0.1")

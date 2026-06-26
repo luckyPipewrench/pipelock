@@ -627,6 +627,16 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "session not found")
 		return
 	}
+	rawOS := r.URL.Query().Get("os")
+	var osName playground.VerifyKitOS
+	if rawOS != "" {
+		var pErr error
+		osName, pErr = playground.ParseVerifyKitOS(rawOS)
+		if pErr != nil {
+			writeErr(w, http.StatusBadRequest, "unsupported verify kit")
+			return
+		}
+	}
 	// Seal on demand: assemble + offline-verify + build the archive. Sealing
 	// marks the session terminal (no further messages), which is the intended
 	// "finish and prove it" semantic. Fail closed if the run did not verify.
@@ -636,12 +646,7 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.releaseSessionResources(entry)
-	if rawOS := r.URL.Query().Get("os"); rawOS != "" {
-		osName, pErr := playground.ParseVerifyKitOS(rawOS)
-		if pErr != nil {
-			writeErr(w, http.StatusBadRequest, "unsupported verify kit")
-			return
-		}
+	if rawOS != "" {
 		kit, filename, kErr := playground.BuildLiveVerifyKit(osName, s.cfg.VerifierBinaries.Path(osName), entry.bundle)
 		if kErr != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "livechat: verify kit build failed: %v\n", kErr)

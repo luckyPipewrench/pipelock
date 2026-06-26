@@ -246,11 +246,15 @@ func TestServer_Bundle_VerifyKitDownload(t *testing.T) {
 
 	token := sealReadySession(t, ts)
 
-	// Unsupported OS selector: rejected with 400 (the seal already succeeded).
+	// Unsupported OS selector: rejected with 400 before sealing or releasing the
+	// session slot.
 	bad := getRaw(t, ts.URL+RouteBundle+"?token="+token+"&os=plan9")
 	_ = bad.Body.Close()
 	if bad.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bundle os=plan9 = %d, want 400", bad.StatusCode)
+	}
+	if got := srv.conc.InUse(); got != 1 {
+		t.Fatalf("capacity after bad os = %d, want 1", got)
 	}
 
 	// A supported OS with no configured verifier binary fails closed (503).

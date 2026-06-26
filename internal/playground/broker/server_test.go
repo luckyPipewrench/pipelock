@@ -1352,6 +1352,41 @@ func TestServer_HumanVerifierRejectsBeforeLease(t *testing.T) {
 	}
 }
 
+func TestServer_GlobalBudgetClosedBeforeHumanVerifier(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "global-before-human-a")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	verifier := &serverFakeHumanVerifier{}
+	_, ts := newBrokerTestServer(t, provider, ServerConfig{
+		HumanVerifier:     verifier,
+		GlobalDailyBudget: 1,
+	})
+
+	status, _ := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("first status = %d, want 200", status)
+	}
+	if got := verifier.calls(); got != 1 {
+		t.Fatalf("human verifier calls after first session = %d, want 1", got)
+	}
+
+	resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{
+		Code:           brokerTestCode,
+		TurnstileToken: "second-token",
+	})
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("second status = %d, want 503", resp.StatusCode)
+	}
+	if got := verifier.calls(); got != 1 {
+		t.Fatalf("human verifier calls after exhausted global budget = %d, want 1", got)
+	}
+	if got := provider.createdCount(); got != 1 {
+		t.Fatalf("created machines = %d, want 1", got)
+	}
+}
+
 func TestServer_RegisterTokenRefusedAfterKill(t *testing.T) {
 	t.Parallel()
 	provider := &serverFakeProvider{}
@@ -1595,6 +1630,39 @@ func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
 	// the raw prefetch.
 	if got := vm.bundleHits.Load(); got != 2 {
 		t.Fatalf("VM bundle hits = %d, want 2 (kit + raw prefetch)", got)
+	}
+}
+
+func TestServer_BundleRejectsInvalidOSBeforeVMFetch(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "bad-os-token")
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+
+	badURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token) + "&os=plan9"
+	resp := getBroker(t, badURL)
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad os bundle status = %d, want 400", resp.StatusCode)
+	}
+	if got := vm.bundleHits.Load(); got != 0 {
+		t.Fatalf("VM bundle hits after bad os = %d, want 0", got)
+	}
+
+	srv.mu.Lock()
+	fetchMuLen := len(srv.fetchMu)
+	srv.mu.Unlock()
+	if fetchMuLen != 0 {
+		t.Fatalf("fetch mutex entries after bad os = %d, want 0", fetchMuLen)
+	}
+	if got := srv.cfg.Leases.ActiveLeases(); got != 1 {
+		t.Fatalf("active leases after bad os = %d, want 1", got)
 	}
 }
 

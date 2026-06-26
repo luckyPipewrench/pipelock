@@ -896,6 +896,11 @@ func brokerPublicHosts(f *serveFlags) ([]string, error) {
 			return nil, fmt.Errorf("--allow-origin host: %w", err)
 		}
 	}
+	if len(hosts) == 0 && f.turnstileExpectedHostname != "" {
+		if err := add(f.turnstileExpectedHostname); err != nil {
+			return nil, fmt.Errorf("--turnstile-expected-hostname: %w", err)
+		}
+	}
 	return hosts, nil
 }
 

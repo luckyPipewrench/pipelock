@@ -962,6 +962,13 @@ func TestBrokerPublicHosts(t *testing.T) {
 	if len(hosts) != 1 || hosts[0] != "playground.pipelab.org" {
 		t.Fatalf("hosts from origin = %#v", hosts)
 	}
+	hosts, err = brokerPublicHosts(&serveFlags{turnstileExpectedHostname: "Playground.Pipelab.Org."})
+	if err != nil {
+		t.Fatalf("brokerPublicHosts turnstile hostname: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0] != "playground.pipelab.org" {
+		t.Fatalf("hosts from turnstile hostname = %#v", hosts)
+	}
 	if _, err := brokerPublicHosts(&serveFlags{publicHosts: []string{"https://bad.example"}}); err == nil {
 		t.Fatal("URL-shaped public host should error")
 	}

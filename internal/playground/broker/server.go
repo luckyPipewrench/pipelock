@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/playground/livechat"
 )
 
@@ -488,6 +489,10 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeBrokerErr(w, http.StatusUnauthorized, "invite code rejected")
 		return
 	}
+	if !s.global.Open() {
+		writeBrokerErr(w, http.StatusServiceUnavailable, "daily limit reached, the demo is paused until tomorrow")
+		return
+	}
 	if s.cfg.HumanVerifier != nil {
 		// Turnstile remoteip must be the exact client address, not the /64
 		// abuse bucket, so token-to-IP binding stays correct.
@@ -701,6 +706,14 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 	}
 	queryToken := r.URL.Query().Get("token")
 	osParam := r.URL.Query().Get("os")
+	if osParam != "" {
+		normalized, err := playground.ParseVerifyKitOS(osParam)
+		if err != nil {
+			writeBrokerErr(w, http.StatusBadRequest, "unsupported verify kit")
+			return
+		}
+		osParam = string(normalized)
+	}
 
 	// Cache HIT: serve the cached artifact without touching the VM. This
 	// makes re-downloads and kit-then-raw flows work after VM teardown.

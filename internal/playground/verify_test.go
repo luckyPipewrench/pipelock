@@ -259,7 +259,7 @@ func TestVerifyRun_PreservesArtifactReadError(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "launch-manifest.json"), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "launch-manifest.json"), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	_, err := playground.VerifyRun(dir, strings.Repeat("0", 64))

@@ -486,11 +486,6 @@ func extractRawReceiptsJSONLFile(path string) ([]Receipt, error) {
 	return extractRawReceiptsJSONLBytes(data)
 }
 
-//nolint:unused // Used by package tests to exercise the raw JSONL compatibility wrapper.
-func extractRawReceiptsJSONL(path string) ([]Receipt, error) {
-	return extractRawReceiptsJSONLFile(path)
-}
-
 func extractRawReceiptsJSONLBytes(data []byte) ([]Receipt, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)

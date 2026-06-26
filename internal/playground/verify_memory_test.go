@@ -150,8 +150,8 @@ func TestVerifyRunArtifacts_MissingWitnessDoesNotReportUncheckedManifestPass(t *
 		t.Fatalf("missing witness verified: %+v", rep)
 	}
 	for _, check := range rep.Checks {
-		if check.Name == "launch-manifest-signature" && check.OK {
-			t.Fatalf("reported unchecked manifest signature as passing: %+v", rep.Checks)
+		if check.Name == "launch-manifest-signature" {
+			t.Fatalf("reported manifest signature check before reading witness: %+v", rep.Checks)
 		}
 	}
 }

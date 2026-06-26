@@ -224,6 +224,7 @@ func runLoadTest(ctx context.Context, client *http.Client, cfg config) ([]userRe
 		if i > 0 && interval > 0 {
 			select {
 			case <-ctx.Done():
+				wg.Wait()
 				return results, tracker.peakValue()
 			case <-time.After(interval):
 			}
@@ -337,9 +338,9 @@ func doRequest(parent context.Context, client *http.Client, cfg config, method, 
 		return nil, stepResult{Name: stepName, Failed: true, Category: categoryOther, ErrMessage: err.Error()}
 	}
 	reqCtx, cancel := context.WithTimeout(parent, cfg.timeout)
-	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, method, target, body)
 	if err != nil {
+		cancel()
 		return nil, stepResult{Name: stepName, Failed: true, Category: categoryOther, ErrMessage: err.Error()}
 	}
 	req.Header.Set("Accept", "application/json")
@@ -351,13 +352,26 @@ func doRequest(parent context.Context, client *http.Client, cfg config, method, 
 	latency := time.Since(start)
 	step := stepResult{Name: stepName, Latency: latency}
 	if err != nil {
+		cancel()
 		step.Failed = true
 		step.Category = categorizeError(err)
 		step.ErrMessage = err.Error()
 		return nil, step
 	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 	step.Status = resp.StatusCode
 	return resp, step
+}
+
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 func sameOriginClient(client *http.Client, brokerURL string) *http.Client {

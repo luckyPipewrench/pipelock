@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,6 +64,42 @@ func TestCategorizeStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCategorizeError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, want: categoryTimeout},
+		{name: "net timeout", err: timeoutError{}, want: categoryTimeout},
+		{name: "other", err: errors.New("connection refused"), want: categoryOther},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := categorizeError(tc.err); got != tc.want {
+				t.Fatalf("categorizeError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string {
+	return "timeout"
+}
+
+func (timeoutError) Timeout() bool {
+	return true
+}
+
+func (timeoutError) Temporary() bool {
+	return true
 }
 
 func TestAggregateResults(t *testing.T) {
@@ -165,6 +202,47 @@ func TestValidateConfigRejectsExcessiveConcurrency(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRequiredFields(t *testing.T) {
+	t.Parallel()
+
+	valid := config{
+		brokerURL:      "https://broker.example",
+		code:           "demo-code",
+		turnstileToken: "test-token",
+		concurrency:    1,
+		prompt:         "hello",
+		timeout:        time.Second,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*config)
+		want   string
+	}{
+		{name: "broker url", mutate: func(cfg *config) { cfg.brokerURL = "://" }, want: "--broker-url"},
+		{name: "broker host", mutate: func(cfg *config) { cfg.brokerURL = "https://" }, want: "--broker-url host"},
+		{name: "code", mutate: func(cfg *config) { cfg.code = " " }, want: "--code"},
+		{name: "turnstile", mutate: func(cfg *config) { cfg.turnstileToken = "" }, want: "--turnstile-token"},
+		{name: "concurrency", mutate: func(cfg *config) { cfg.concurrency = 0 }, want: "--concurrency"},
+		{name: "ramp", mutate: func(cfg *config) { cfg.ramp = -time.Second }, want: "--ramp"},
+		{name: "prompt", mutate: func(cfg *config) { cfg.prompt = "" }, want: "--prompt"},
+		{name: "timeout", mutate: func(cfg *config) { cfg.timeout = 0 }, want: "--timeout"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := valid
+			tc.mutate(&cfg)
+			err := validateConfig(cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateConfig error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := validateConfig(valid); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+}
+
 func TestSameOriginClientBlocksCrossOriginRedirect(t *testing.T) {
 	t.Parallel()
 
@@ -183,6 +261,111 @@ func TestSameOriginClientBlocksCrossOriginRedirect(t *testing.T) {
 	}
 	if err := client.CheckRedirect(crossReq, nil); !errors.Is(err, http.ErrUseLastResponse) {
 		t.Fatalf("cross-origin redirect error = %v, want ErrUseLastResponse", err)
+	}
+}
+
+func TestRunLoadTestCancellationDuringRampWaitsForStartedUsers(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce atomic.Bool
+	var releaseOnce sync.Once
+	releaseRequest := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	t.Cleanup(releaseRequest)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		if startOnce.CompareAndSwap(false, true) {
+			close(started)
+		}
+		<-release
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       io.NopCloser(strings.NewReader("stopped")),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := config{
+		brokerURL:      "https://broker.example",
+		code:           "demo-code",
+		turnstileToken: "test-token",
+		concurrency:    3,
+		ramp:           300 * time.Millisecond,
+		prompt:         "hello",
+		timeout:        time.Second,
+	}
+	done := make(chan []userResult, 1)
+	go func() {
+		results, _ := runLoadTest(ctx, client, cfg)
+		done <- results
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first virtual user did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+		releaseRequest()
+		t.Fatal("runLoadTest returned before started user finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseRequest()
+	results := <-done
+	if len(results) != cfg.concurrency {
+		t.Fatalf("results len = %d, want %d", len(results), cfg.concurrency)
+	}
+	if len(results[0].Steps) != 1 || !results[0].Steps[0].Failed {
+		t.Fatalf("first user result = %+v, want failed session step after release", results[0])
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func TestDoRequestKeepsTimeoutContextUntilBodyClose(t *testing.T) {
+	t.Parallel()
+
+	bodyAllowed := make(chan struct{})
+	ts := newLocalTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-bodyAllowed
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer ts.Close()
+
+	cfg := config{
+		brokerURL: ts.URL,
+		timeout:   time.Second,
+	}
+	resp, step := doRequest(context.Background(), ts.Client(), cfg, http.MethodGet, "/", "", nil, "probe")
+	if step.Failed {
+		t.Fatalf("doRequest failed before body read: %+v", step)
+	}
+	close(bodyAllowed)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll after doRequest returned error: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", body)
 	}
 }
 
@@ -270,6 +453,65 @@ func TestRunLoadTestFakeBroker(t *testing.T) {
 	}
 	if peak <= 0 || peak > 4 {
 		t.Fatalf("peak in flight = %d, want 1..4", peak)
+	}
+}
+
+func TestPrintReportAndWriteJSON(t *testing.T) {
+	t.Parallel()
+
+	agg := aggregate{
+		Total:             3,
+		Successes:         1,
+		Failures:          2,
+		MaxUsersInFlight:  2,
+		FailureCategories: newFailureCategories(),
+		StepLatency: map[string]latencySummary{
+			stepSession: {Count: 3, P50: time.Millisecond, P95: 2 * time.Millisecond, P99: 3 * time.Millisecond},
+			stepMessage: {Count: 1, P50: 4 * time.Millisecond, P95: 4 * time.Millisecond, P99: 4 * time.Millisecond},
+			stepBundle:  {},
+		},
+		StepStatuses: map[string]map[string]int{
+			stepSession: {"200": 1, "429": 1, "error": 1},
+			stepMessage: {"202": 1},
+		},
+		SessionCreateDist: sessionCreateDistribution{
+			Count:   3,
+			Min:     time.Millisecond,
+			P50:     2 * time.Millisecond,
+			P95:     3 * time.Millisecond,
+			P99:     3 * time.Millisecond,
+			Max:     3 * time.Millisecond,
+			Buckets: map[string]int{"<=1s": 1, "<=5s": 1, "<=15s": 0, "<=30s": 0, ">30s": 1},
+		},
+	}
+	agg.FailureCategories[categoryRateLimited] = 1
+	agg.FailureCategories[categoryTimeout] = 1
+
+	var report strings.Builder
+	printReport(&report, agg)
+	out := report.String()
+	for _, want := range []string{
+		"Pipelock playground broker load test",
+		"total=3 successes=1 failures=2 max_in_flight=2",
+		"rate_limited: 1",
+		"session: 200=1 429=1 error=1",
+		"buckets: <=1s=1 <=5s=1 <=15s=0 <=30s=0 >30s=1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("report missing %q in:\n%s", want, out)
+		}
+	}
+
+	var js strings.Builder
+	if err := writeJSON(&js, agg); err != nil {
+		t.Fatalf("writeJSON: %v", err)
+	}
+	var decoded aggregate
+	if err := json.Unmarshal([]byte(js.String()), &decoded); err != nil {
+		t.Fatalf("json output did not decode: %v", err)
+	}
+	if decoded.Total != agg.Total || decoded.SessionCreateDist.Buckets[">30s"] != 1 {
+		t.Fatalf("decoded aggregate = %+v", decoded)
 	}
 }
 

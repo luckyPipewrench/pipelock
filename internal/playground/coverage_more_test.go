@@ -587,44 +587,35 @@ func TestVerifyURLExfilReplayCompatibleSemantics(t *testing.T) {
 func TestVerifyLiveDemoSemanticsRejectsBadPacketManifest(t *testing.T) {
 	t.Parallel()
 
-	runDir := t.TempDir()
 	lm := LaunchManifest{
 		ScenarioID: LiveDemoScenarioID,
 		PolicyHash: "sha256:test-policy",
 	}
-	if err := verifyLiveDemoSemantics(runDir, lm, Witness{}); err == nil ||
-		!strings.Contains(err.Error(), "cannot read packet manifest") {
+	if err := verifyLiveDemoSemanticsBytes(nil, nil, lm, Witness{}); err == nil ||
+		!strings.Contains(err.Error(), "missing packet manifest") {
 		t.Fatalf("missing manifest error = %v", err)
 	}
 
-	packetDir := filepath.Join(runDir, packetSubdir)
-	if err := os.MkdirAll(packetDir, 0o750); err != nil {
-		t.Fatalf("mkdir packet: %v", err)
-	}
-	manifestPath := filepath.Join(packetDir, "manifest.json")
-	if err := os.WriteFile(manifestPath, []byte("{"), 0o600); err != nil {
-		t.Fatalf("write malformed manifest: %v", err)
-	}
-	if err := verifyLiveDemoSemantics(runDir, lm, Witness{}); err == nil ||
+	if err := verifyLiveDemoSemanticsBytes([]byte("{"), nil, lm, Witness{}); err == nil ||
 		!strings.Contains(err.Error(), "malformed packet manifest") {
 		t.Fatalf("malformed manifest error = %v", err)
 	}
 
-	writePacketManifest(t, manifestPath, "other-scenario", lm.PolicyHash)
-	if err := verifyLiveDemoSemantics(runDir, lm, Witness{}); err == nil ||
+	manifestJSON := packetManifestBytes("other-scenario", lm.PolicyHash)
+	if err := verifyLiveDemoSemanticsBytes(manifestJSON, nil, lm, Witness{}); err == nil ||
 		!strings.Contains(err.Error(), "scenario_id") {
 		t.Fatalf("scenario mismatch error = %v", err)
 	}
 
-	writePacketManifest(t, manifestPath, lm.ScenarioID, "sha256:other-policy")
-	if err := verifyLiveDemoSemantics(runDir, lm, Witness{}); err == nil ||
+	manifestJSON = packetManifestBytes(lm.ScenarioID, "sha256:other-policy")
+	if err := verifyLiveDemoSemanticsBytes(manifestJSON, nil, lm, Witness{}); err == nil ||
 		!strings.Contains(err.Error(), "policy_hash") {
 		t.Fatalf("policy mismatch error = %v", err)
 	}
 
-	writePacketManifest(t, manifestPath, lm.ScenarioID, lm.PolicyHash)
-	if err := verifyLiveDemoSemantics(runDir, lm, Witness{}); err == nil ||
-		!strings.Contains(err.Error(), "extract packet receipts") {
+	manifestJSON = packetManifestBytes(lm.ScenarioID, lm.PolicyHash)
+	if err := verifyLiveDemoSemanticsBytes(manifestJSON, nil, lm, Witness{}); err == nil ||
+		!strings.Contains(err.Error(), "missing required live-demo receipt semantics") {
 		t.Fatalf("missing evidence error = %v", err)
 	}
 }
@@ -780,10 +771,6 @@ func newRunStepsTestLiveRun(t *testing.T, agentBin string) *LiveRun {
 	}
 }
 
-func writePacketManifest(t *testing.T, path, scenarioID, policyHash string) {
-	t.Helper()
-	data := []byte(fmt.Sprintf(`{"scenario_id":%q,"policy_hash":%q}`, scenarioID, policyHash))
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write packet manifest: %v", err)
-	}
+func packetManifestBytes(scenarioID, policyHash string) []byte {
+	return []byte(fmt.Sprintf(`{"scenario_id":%q,"policy_hash":%q}`, scenarioID, policyHash))
 }

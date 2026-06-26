@@ -234,6 +234,73 @@ func TestVerifyPacketDir_DetectsVerifierTamper(t *testing.T) {
 	})
 }
 
+func TestVerifyPacketBytes_BrowserBundlePath(t *testing.T) {
+	t.Parallel()
+
+	eng := newTestEngine(t)
+	cs, err := eng.Capture(DefaultScenarios()[1])
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	res, err := AssemblePacket(cs, t.TempDir(), fixedStamp())
+	if err != nil {
+		t.Fatalf("AssemblePacket: %v", err)
+	}
+	packetJSON, err := os.ReadFile(filepath.Join(res.PacketDir, artifactPacketName))
+	if err != nil {
+		t.Fatalf("read packet.json: %v", err)
+	}
+	evidenceJSONL, err := os.ReadFile(filepath.Join(res.PacketDir, artifactEvidenceName))
+	if err != nil {
+		t.Fatalf("read evidence.jsonl: %v", err)
+	}
+
+	if err := VerifyPacketBytes(packetJSON, evidenceJSONL, eng.PublicKeyHex()); err != nil {
+		t.Fatalf("VerifyPacketBytes valid bundle: %v", err)
+	}
+	if err := VerifyPacketBytes([]byte("{"), evidenceJSONL, eng.PublicKeyHex()); err == nil ||
+		!strings.Contains(err.Error(), "parsing packet.json") {
+		t.Fatalf("malformed packet error = %v", err)
+	}
+	if err := VerifyPacketBytes(packetJSON, evidenceJSONL, strings.Repeat("00", 32)); err == nil ||
+		!strings.Contains(err.Error(), "chain verification failed") {
+		t.Fatalf("wrong key error = %v", err)
+	}
+
+	tampered := *res.Packet
+	tampered.Artifacts.Packet = "nested/packet.json"
+	tamperedJSON, err := marshalIndentNoEscape(&tampered)
+	if err != nil {
+		t.Fatalf("marshal tampered packet path: %v", err)
+	}
+	if err := VerifyPacketBytes(tamperedJSON, evidenceJSONL, eng.PublicKeyHex()); err == nil ||
+		!strings.Contains(err.Error(), "packet artifact path") {
+		t.Fatalf("packet path error = %v", err)
+	}
+
+	tampered = *res.Packet
+	tampered.Artifacts.Evidence = "../evidence.jsonl"
+	tamperedJSON, err = marshalIndentNoEscape(&tampered)
+	if err != nil {
+		t.Fatalf("marshal traversal evidence path: %v", err)
+	}
+	if err := VerifyPacketBytes(tamperedJSON, evidenceJSONL, eng.PublicKeyHex()); err == nil ||
+		!strings.Contains(err.Error(), "evidence path must stay inside the packet directory") {
+		t.Fatalf("traversal evidence path error = %v", err)
+	}
+
+	tampered = *res.Packet
+	tampered.Artifacts.Evidence = "other.jsonl"
+	tamperedJSON, err = marshalIndentNoEscape(&tampered)
+	if err != nil {
+		t.Fatalf("marshal evidence path mismatch: %v", err)
+	}
+	if err := VerifyPacketBytes(tamperedJSON, evidenceJSONL, eng.PublicKeyHex()); err == nil ||
+		!strings.Contains(err.Error(), "evidence artifact path") {
+		t.Fatalf("evidence path mismatch error = %v", err)
+	}
+}
+
 func writePacketForTest(t *testing.T, packetDir string, pkt *auditpacket.Packet) {
 	t.Helper()
 	data, err := marshalIndentNoEscape(pkt)

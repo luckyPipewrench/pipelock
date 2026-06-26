@@ -445,6 +445,71 @@ func TestExtractReceipts_RawJSONL(t *testing.T) {
 	}
 }
 
+func TestExtractReceiptsBytes_RawJSONL(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	receipts := buildChain(t, priv, 2)
+
+	var raw strings.Builder
+	raw.WriteByte('\n')
+	for _, r := range receipts {
+		data, err := Marshal(r)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		raw.Write(data)
+		raw.WriteString("\n\n")
+	}
+
+	got, err := ExtractReceiptsBytes([]byte(raw.String()))
+	if err != nil {
+		t.Fatalf("ExtractReceiptsBytes: %v", err)
+	}
+	if len(got) != len(receipts) {
+		t.Fatalf("receipt count = %d, want %d", len(got), len(receipts))
+	}
+	result := VerifyChain(got, got[0].SignerKey)
+	if !result.Valid {
+		t.Fatalf("raw byte chain invalid: %s", result.Error)
+	}
+}
+
+func TestExtractReceiptsBytes_RecorderEntries(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
+	entry := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  0,
+		Timestamp: r.ActionRecord.Timestamp,
+		SessionID: chainTestSession,
+		Type:      recorderEntryType,
+		Transport: chainTestTransport,
+		Summary:   "signed receipt",
+		Detail:    r,
+		PrevHash:  recorder.GenesisHash,
+	}
+	entry.Hash = recorder.ComputeHash(entry)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Marshal entry: %v", err)
+	}
+	data = append(data, '\n')
+
+	got, err := ExtractReceiptsBytes(data)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsBytes: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(got))
+	}
+	if got[0].ActionRecord.Target != chainTestTarget {
+		t.Fatalf("receipt target = %q, want %q", got[0].ActionRecord.Target, chainTestTarget)
+	}
+}
+
 func TestExtractReceipts_RawJSONLRejectsMalformedTail(t *testing.T) {
 	t.Parallel()
 
@@ -462,6 +527,31 @@ func TestExtractReceipts_RawJSONLRejectsMalformedTail(t *testing.T) {
 	_, err = ExtractReceipts(path)
 	if err == nil || !strings.Contains(err.Error(), "parse raw receipt line 2") {
 		t.Fatalf("ExtractReceipts error = %v, want raw line parse error", err)
+	}
+}
+
+func TestExtractReceiptsBytes_RejectsMalformedTail(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateTestKey(t)
+	r := signChainReceipt(t, priv, 0, GenesisHash, time.Now().UTC())
+	data, err := Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = ExtractReceiptsBytes(append(data, []byte("\nnot-json\n")...))
+	if err == nil || !strings.Contains(err.Error(), "parse raw receipt line 2") {
+		t.Fatalf("ExtractReceiptsBytes error = %v, want raw line parse error", err)
+	}
+}
+
+func TestExtractReceiptsBytes_RejectsUnreadableEvidence(t *testing.T) {
+	t.Parallel()
+
+	_, err := ExtractReceiptsBytes([]byte("not-json\n"))
+	if err == nil || !strings.Contains(err.Error(), "reading entries") {
+		t.Fatalf("ExtractReceiptsBytes error = %v, want recorder read error", err)
 	}
 }
 
@@ -494,9 +584,9 @@ func TestExtractReceipts_RawJSONLIgnoresNonReceiptFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	got, err := extractRawReceiptsJSONL(path)
+	got, err := extractRawReceiptsJSONLFile(path)
 	if err != nil {
-		t.Fatalf("extractRawReceiptsJSONL: %v", err)
+		t.Fatalf("extractRawReceiptsJSONLFile: %v", err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("receipt count = %d, want 0", len(got))

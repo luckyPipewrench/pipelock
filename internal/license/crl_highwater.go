@@ -131,11 +131,6 @@ func ReadCRLHighWater(crlFile string) (generation uint64, found bool, err error)
 	return readCRLHighWaterFileForContext(CRLHighWaterPath(crlFile), "license CRL high-water", crlFile)
 }
 
-//nolint:unused // Used by package tests; production callers use the context-bound wrapper.
-func readCRLHighWaterFile(path, label string) (generation uint64, found bool, err error) {
-	return readCRLHighWaterFileForContext(path, label, "")
-}
-
 func readCRLHighWaterFileForContext(path, label, crlFile string) (generation uint64, found bool, err error) {
 	info, statErr := os.Stat(path)
 	if statErr != nil {

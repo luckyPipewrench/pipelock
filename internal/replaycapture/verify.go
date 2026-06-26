@@ -59,10 +59,27 @@ func VerifyPacketBytes(packetJSON, evidenceJSONL []byte, keyHex string) error {
 	if err := pkt.Validate(); err != nil {
 		return fmt.Errorf("packet schema: %w", err)
 	}
+	if err := validateInMemoryPacketArtifacts(pkt); err != nil {
+		return err
+	}
+	return verifyPacket(pkt, evidenceJSONL, keyHex)
+}
+
+func validateInMemoryPacketArtifacts(pkt auditpacket.Packet) error {
+	const (
+		expectedPacketArtifact   = "packet.json"
+		expectedEvidenceArtifact = "evidence.jsonl"
+	)
 	if !filepath.IsLocal(pkt.Artifacts.Evidence) {
 		return fmt.Errorf("evidence path %q is not local to the packet directory", pkt.Artifacts.Evidence)
 	}
-	return verifyPacket(pkt, evidenceJSONL, keyHex)
+	if pkt.Artifacts.Packet != expectedPacketArtifact {
+		return fmt.Errorf("packet artifact path %q does not match bundled %s", pkt.Artifacts.Packet, expectedPacketArtifact)
+	}
+	if pkt.Artifacts.Evidence != expectedEvidenceArtifact {
+		return fmt.Errorf("evidence artifact path %q does not match bundled %s", pkt.Artifacts.Evidence, expectedEvidenceArtifact)
+	}
+	return nil
 }
 
 func verifyPacket(pkt auditpacket.Packet, evidenceJSONL []byte, keyHex string) error {

@@ -65,6 +65,12 @@ func TestVerifyRunArtifacts_InMemory(t *testing.T) {
 			wantOK:    false,
 		},
 		{
+			name:      "packet evidence path mismatch fails closed",
+			artifacts: fixtureWithPacketEvidencePath(t, fixture, "other-evidence.jsonl"),
+			key:       fixture.orchestratorPubHex,
+			wantOK:    false,
+		},
+		{
 			name: "truncated manifest fails closed",
 			artifacts: playground.RunArtifacts{
 				LaunchManifest: []byte(`{"run_nonce"`),
@@ -534,6 +540,18 @@ func fixtureWithMissingPipelockKey(t *testing.T, fixture verifyMemoryFixture) pl
 	lm = playground.SignLaunchManifest(fixture.orchestratorPriv, lm)
 	artifacts := fixture.artifacts
 	artifacts.LaunchManifest = mustJSON(t, lm)
+	return artifacts
+}
+
+func fixtureWithPacketEvidencePath(t *testing.T, fixture verifyMemoryFixture, evidencePath string) playground.RunArtifacts {
+	t.Helper()
+	var pkt auditpacket.Packet
+	if err := json.Unmarshal(fixture.artifacts.PacketJSON, &pkt); err != nil {
+		t.Fatalf("unmarshal packet fixture: %v", err)
+	}
+	pkt.Artifacts.Evidence = evidencePath
+	artifacts := fixture.artifacts
+	artifacts.PacketJSON = mustJSON(t, pkt)
 	return artifacts
 }
 

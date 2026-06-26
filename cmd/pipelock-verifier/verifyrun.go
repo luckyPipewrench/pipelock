@@ -49,7 +49,13 @@ Exit code 0 = every check passed. Non-zero = at least one check failed.`,
 			if jsonMode {
 				enc := json.NewEncoder(w)
 				enc.SetIndent("", "  ")
-				return enc.Encode(rep)
+				if err := enc.Encode(rep); err != nil {
+					return err
+				}
+				if !rep.OK {
+					return cliutil.ExitCodeError(1, fmt.Errorf("VERIFY FAILED: one or more checks did not pass"))
+				}
+				return nil
 			}
 
 			for _, c := range rep.Checks {

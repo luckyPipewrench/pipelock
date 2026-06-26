@@ -24,7 +24,7 @@ func TestClientIP_CloudflareConnectingIP(t *testing.T) {
 }
 
 func TestClientIP_CloudflareBehindFlyEdge(t *testing.T) {
-	t.Parallel()
+	t.Setenv("FLY_APP_NAME", "pipelock-playground")
 	// On Fly the direct peer is Fly's internal proxy, not Cloudflare, so the
 	// real visitor must be resolved via Fly-Client-IP (Cloudflare's edge) plus
 	// CF-Connecting-IP (the visitor). Without this, every visitor collapses into
@@ -40,7 +40,7 @@ func TestClientIP_CloudflareBehindFlyEdge(t *testing.T) {
 }
 
 func TestClientIP_FlyEdgeNotCloudflareIgnoresForgedCFHeader(t *testing.T) {
-	t.Parallel()
+	t.Setenv("FLY_APP_NAME", "pipelock-playground")
 	// A client hitting .fly.dev directly cannot forge identity: Fly overwrites
 	// Fly-Client-IP with the client's own (non-Cloudflare) address, so the
 	// CF-Connecting-IP header is ignored and the identity falls back to the peer.
@@ -55,7 +55,7 @@ func TestClientIP_FlyEdgeNotCloudflareIgnoresForgedCFHeader(t *testing.T) {
 }
 
 func TestClientIP_PublicPeerIgnoresForgedFlyClientIP(t *testing.T) {
-	t.Parallel()
+	t.Setenv("FLY_APP_NAME", "pipelock-playground")
 	// A directly-exposed (non-Fly) deployment sees a PUBLIC peer. A client that
 	// sets both Fly-Client-IP (to a Cloudflare range) and CF-Connecting-IP must
 	// NOT forge identity: the Fly-behind-edge path is gated on a private/Fly
@@ -67,6 +67,18 @@ func TestClientIP_PublicPeerIgnoresForgedFlyClientIP(t *testing.T) {
 
 	if got := ClientIP(req, false); got != "203.0.113.50" {
 		t.Fatalf("ClientIP = %q, want public peer (forged Fly-Client-IP ignored)", got)
+	}
+}
+
+func TestClientIP_NonFlyPrivatePeerIgnoresForgedFlyClientIP(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	req.RemoteAddr = "172.19.0.5:443"
+	req.Header.Set(flyClientIPHeader, "162.158.0.1")
+	req.Header.Set(cfConnectingIPHeader, "198.51.100.7")
+
+	if got := ClientIP(req, false); got != "172.19.0.5" {
+		t.Fatalf("ClientIP = %q, want private peer when not running on Fly", got)
 	}
 }
 

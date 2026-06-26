@@ -673,6 +673,9 @@ func validateHumanGateFlags(f *serveFlags) error {
 
 func validateTurnstileFlags(f *serveFlags) error {
 	configured := strings.TrimSpace(f.turnstileSecretFile) != "" || strings.TrimSpace(f.turnstileSecretEnv) != ""
+	if f.turnstileMaxAge < 0 {
+		return errors.New("--turnstile-max-age must be >= 0")
+	}
 	if !configured && strings.TrimSpace(f.turnstileVerifyURL) != "" {
 		return errors.New("--turnstile-verify-url requires --turnstile-secret-file or --turnstile-secret-env")
 	}
@@ -683,7 +686,7 @@ func validateTurnstileFlags(f *serveFlags) error {
 	// broker. Only a non-Cloudflare override (a local dev/test stub) is exempt.
 	cloudflareEndpoint := strings.TrimSpace(f.turnstileVerifyURL) == ""
 	if v := strings.TrimSpace(f.turnstileVerifyURL); v != "" {
-		if u, err := url.Parse(v); err == nil && strings.EqualFold(u.Host, "challenges.cloudflare.com") {
+		if u, err := url.Parse(v); err == nil && strings.EqualFold(u.Hostname(), "challenges.cloudflare.com") {
 			cloudflareEndpoint = true
 		}
 	}

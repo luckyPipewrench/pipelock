@@ -852,6 +852,24 @@ func TestReceipt_V1WithoutKeyIsNotProvenance(t *testing.T) {
 	}
 }
 
+func TestVerifyRunJSONFailureExitsNonZero(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, code := runRoot(t, "verify-run", "--json", t.TempDir())
+	if code == cliutil.ExitOK {
+		t.Fatalf("verify-run --json on malformed run dir exited 0, stdout=%q", stdout)
+	}
+	var rpt struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &rpt); err != nil {
+		t.Fatalf("verify-run --json output is not parseable JSON: %v\nstdout=%s", err, stdout)
+	}
+	if rpt.OK {
+		t.Fatalf("verify-run report ok=true for malformed run dir: %s", stdout)
+	}
+}
+
 func TestReceipt_V1AllowUnpinned(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 1)

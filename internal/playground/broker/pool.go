@@ -23,6 +23,10 @@ const (
 
 	// poolMaintainInterval is how often the background maintainer ticks.
 	poolMaintainInterval = 2 * time.Second
+
+	// poolDestroyTimeout bounds cleanup calls made with a non-cancelled context.
+	// Destroy failure keeps the VM tracked and its limiter slot held.
+	poolDestroyTimeout = 30 * time.Second
 )
 
 // warmEntry is one ready-to-hand-out VM in the warm pool.
@@ -231,10 +235,11 @@ func (p *Pool) Drain(ctx context.Context) {
 	p.entries = nil
 	p.mu.Unlock()
 
-	for _, e := range draining {
-		_ = p.provider.DestroyMachine(ctx, e.machine.ID)
-		e.release()
-		_, _ = fmt.Fprintf(p.log, "pool: drain destroyed warm vm %s\n", e.machine.ID)
+	failed := p.destroyWarmEntries(ctx, draining, "drain")
+	if len(failed) > 0 {
+		p.mu.Lock()
+		p.entries = append(failed, p.entries...)
+		p.mu.Unlock()
 	}
 }
 
@@ -251,10 +256,11 @@ func (p *Pool) Pause(ctx context.Context) {
 	p.entries = nil
 	p.mu.Unlock()
 
-	for _, e := range draining {
-		_ = p.provider.DestroyMachine(ctx, e.machine.ID)
-		e.release()
-		_, _ = fmt.Fprintf(p.log, "pool: paused, destroyed warm vm %s\n", e.machine.ID)
+	failed := p.destroyWarmEntries(ctx, draining, "pause")
+	if len(failed) > 0 {
+		p.mu.Lock()
+		p.entries = append(failed, p.entries...)
+		p.mu.Unlock()
 	}
 }
 
@@ -288,12 +294,32 @@ func (p *Pool) recycleStale(ctx context.Context) {
 	p.entries = kept
 	p.mu.Unlock()
 
-	for _, e := range stale {
-		_ = p.provider.DestroyMachine(ctx, e.machine.ID)
-		e.release()
-		_, _ = fmt.Fprintf(p.log, "pool: recycled stale warm vm %s (age %s)\n",
-			e.machine.ID, now.Sub(e.created).Truncate(time.Second))
+	failed := p.destroyWarmEntries(ctx, stale, "recycle stale")
+	if len(failed) > 0 {
+		p.mu.Lock()
+		p.entries = append(failed, p.entries...)
+		p.mu.Unlock()
 	}
+}
+
+func (p *Pool) destroyWarmEntries(ctx context.Context, entries []warmEntry, reason string) []warmEntry {
+	failed := make([]warmEntry, 0)
+	for _, e := range entries {
+		if e.machine == nil {
+			continue
+		}
+		destroyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), poolDestroyTimeout)
+		err := p.provider.DestroyMachine(destroyCtx, e.machine.ID)
+		cancel()
+		if err != nil {
+			failed = append(failed, e)
+			_, _ = fmt.Fprintf(p.log, "pool: %s destroy warm vm %s failed: %v\n", reason, e.machine.ID, err)
+			continue
+		}
+		e.release()
+		_, _ = fmt.Fprintf(p.log, "pool: %s destroyed warm vm %s\n", reason, e.machine.ID)
+	}
+	return failed
 }
 
 // fill creates warm VMs up to Size, respecting the shared concurrency cap.

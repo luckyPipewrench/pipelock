@@ -100,6 +100,9 @@ func (s *SeenTokens) MarkSeen(token string) bool {
 	if len(s.m) >= s.max {
 		return false
 	}
+	if exp, exists := s.m[token]; exists && now.Before(exp) {
+		return false
+	}
 	s.m[token] = now.Add(s.ttl)
 	return true
 }
@@ -164,45 +167,40 @@ func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string
 		return errors.New("turnstile token is too long")
 	}
 
-	// Reject already-verified (consumed) tokens.
-	if v.Seen.IsSeen(trimmed) {
-		return ErrTokenAlreadyUsed
-	}
-
-	// Fast-reject a token that just failed upstream, so a client resubmitting a
-	// bad token during provider trouble does not amplify Siteverify calls.
-	if v.Failed != nil && v.Failed.IsSeen(trimmed) {
-		return errTurnstileRejected
-	}
-
 	// Serialize concurrent identical tokens so only one reaches the network.
 	// The second concurrent caller waits for the first to finish, then checks
 	// the seen cache: if the first succeeded the token is consumed and the
 	// second is rejected, preserving the one-use invariant.
-	v.mu.Lock()
-	if v.inflight == nil {
-		v.inflight = make(map[string]chan struct{})
-	}
-	if ch, ok := v.inflight[trimmed]; ok {
-		v.mu.Unlock()
-		// Another goroutine is verifying this token — wait for it.
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		// Re-check: if the first caller succeeded, the token is now consumed.
+	for {
+		// Reject already-verified (consumed) tokens.
 		if v.Seen.IsSeen(trimmed) {
 			return ErrTokenAlreadyUsed
 		}
-		// If the first caller failed, the negative cache short-circuits this
-		// waiter instead of re-hitting Siteverify with the same bad token.
+
+		// Fast-reject a token that just failed upstream, so a client resubmitting a
+		// bad token during provider trouble does not amplify Siteverify calls.
 		if v.Failed != nil && v.Failed.IsSeen(trimmed) {
 			return errTurnstileRejected
 		}
-		// Otherwise fall through and let this caller try.
-	} else {
-		ch = make(chan struct{})
+
+		v.mu.Lock()
+		if v.inflight == nil {
+			v.inflight = make(map[string]chan struct{})
+		}
+		if ch, ok := v.inflight[trimmed]; ok {
+			v.mu.Unlock()
+			// Another goroutine is verifying this token. Wait, then loop back
+			// through the replay/negative-cache/inflight gates. If the leader
+			// failed without populating Failed, exactly one waiter may become the
+			// next leader; the rest keep waiting instead of all hitting upstream.
+			select {
+			case <-ch:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		ch := make(chan struct{})
 		v.inflight[trimmed] = ch
 		v.mu.Unlock()
 		defer func() {
@@ -211,6 +209,7 @@ func (v *ReplayGuardVerifier) Verify(ctx context.Context, token, remoteIP string
 			close(ch)
 			v.mu.Unlock()
 		}()
+		break
 	}
 
 	err := v.Inner.Verify(ctx, trimmed, remoteIP)

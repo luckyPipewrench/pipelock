@@ -52,8 +52,10 @@ if [ ! -x deploy/wasm-verify/build.sh ]; then
 	exit 1
 fi
 echo "[build-images] building browser-verifier WASM into ${PLAYGROUND_UI_DIR}"
+wasm_stamp="$(mktemp)"
+trap 'rm -f "${wasm_stamp}"' EXIT
 deploy/wasm-verify/build.sh "${PLAYGROUND_UI_DIR}"
-if ! find "${PLAYGROUND_UI_DIR}" -type f -name '*.wasm' -print -quit | grep -q .; then
+if ! find "${PLAYGROUND_UI_DIR}" -type f -name '*.wasm' -newer "${wasm_stamp}" -print -quit | grep -q .; then
 	echo "[build-images] ERROR: browser-verifier build produced no .wasm under PLAYGROUND_UI_DIR=${PLAYGROUND_UI_DIR}; refusing to ship unwired inline verify UI" >&2
 	exit 1
 fi

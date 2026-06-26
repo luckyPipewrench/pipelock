@@ -126,16 +126,17 @@ func (p *serverFakeProvider) createdEnv(index int) map[string]string {
 }
 
 type fakeVM struct {
-	t             *testing.T
-	token         string
-	sessionID     string
-	expiresAt     time.Time
-	sessionCodes  chan string
-	messages      chan string
-	streamStarted chan struct{}
-	streamRelease chan struct{}
-	bundleStatus  int
-	bundleHits    atomic.Int32
+	t               *testing.T
+	token           string
+	sessionID       string
+	expiresAt       time.Time
+	sessionCodes    chan string
+	messages        chan string
+	streamStarted   chan struct{}
+	streamRelease   chan struct{}
+	bundleStatus    int
+	rawBundleStatus int
+	bundleHits      atomic.Int32
 	// bundleHold, when non-nil, blocks a bundle response whose os matches
 	// bundleHoldOS until the channel is closed; bundleHeld signals (once) that
 	// such a request has reached the block. Used to drive concurrent-download
@@ -240,15 +241,19 @@ func (vm *fakeVM) handle(w http.ResponseWriter, r *http.Request) {
 			}
 			<-vm.bundleHold
 		}
+		status := vm.bundleStatus
+		if osParam == "" && vm.rawBundleStatus != 0 {
+			status = vm.rawBundleStatus
+		}
 		if osParam != "" {
 			w.Header().Set("Content-Type", "application/zip")
 			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "kit-"+osParam+".zip"))
-			w.WriteHeader(vm.bundleStatus)
+			w.WriteHeader(status)
 			_, _ = w.Write([]byte("kit-" + osParam + "-" + vm.token))
 		} else {
 			w.Header().Set("Content-Type", "application/gzip")
 			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", "bundle.tar.gz"))
-			w.WriteHeader(vm.bundleStatus)
+			w.WriteHeader(status)
 			_, _ = w.Write([]byte("bundle-" + vm.token))
 		}
 	default:
@@ -1653,7 +1658,7 @@ func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
 	vm := newFakeVM(t, "kit-raw-token")
 	destroyed := make(chan string, 4)
 	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
-	_, ts := newBrokerTestServer(t, provider, ServerConfig{})
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
 
 	status, session := postBrokerSession(t, ts)
 	if status != http.StatusOK {
@@ -1698,6 +1703,55 @@ func TestServer_BundleKitThenRawBothSucceed(t *testing.T) {
 	if got := vm.bundleHits.Load(); got != 2 {
 		t.Fatalf("VM bundle hits = %d, want 2 (kit + raw prefetch)", got)
 	}
+
+	srv.mu.Lock()
+	fetchMuLen := len(srv.fetchMu)
+	srv.mu.Unlock()
+	if fetchMuLen != 0 {
+		t.Fatalf("fetch mutex entries after bundle downloads = %d, want 0", fetchMuLen)
+	}
+}
+
+func TestServer_BundleKitRawPrefetchFailureRetainsVM(t *testing.T) {
+	t.Parallel()
+	vm := newFakeVM(t, "raw-prefetch-fail-token")
+	vm.rawBundleStatus = http.StatusServiceUnavailable
+	destroyed := make(chan string, 4)
+	provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}, destroyedCh: destroyed}
+	srv, ts := newBrokerTestServer(t, provider, ServerConfig{})
+
+	status, session := postBrokerSession(t, ts)
+	if status != http.StatusOK {
+		t.Fatalf("session status = %d, want 200", status)
+	}
+
+	kitURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token) + "&os=linux"
+	kitResp := getBroker(t, kitURL)
+	_, _ = io.ReadAll(kitResp.Body)
+	_ = kitResp.Body.Close()
+	if kitResp.StatusCode != http.StatusOK {
+		t.Fatalf("kit status = %d, want 200", kitResp.StatusCode)
+	}
+
+	select {
+	case id := <-destroyed:
+		t.Fatalf("VM %s was destroyed even though raw prefetch failed", id)
+	default:
+	}
+	if got := srv.cfg.Leases.ActiveLeases(); got != 1 {
+		t.Fatalf("active leases after raw prefetch failure = %d, want 1", got)
+	}
+
+	// Once the raw bundle can be fetched, the token seals and the VM releases.
+	vm.rawBundleStatus = 0
+	rawURL := ts.URL + livechat.RouteBundle + "?token=" + url.QueryEscape(session.Token)
+	rawResp := getBroker(t, rawURL)
+	_, _ = io.ReadAll(rawResp.Body)
+	_ = rawResp.Body.Close()
+	if rawResp.StatusCode != http.StatusOK {
+		t.Fatalf("raw bundle status after retry = %d, want 200", rawResp.StatusCode)
+	}
+	expectDestroyed(t, destroyed)
 }
 
 func TestServer_BundleRejectsInvalidOSBeforeVMFetch(t *testing.T) {

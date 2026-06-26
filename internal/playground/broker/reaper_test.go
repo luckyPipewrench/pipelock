@@ -138,9 +138,6 @@ func TestReaperReconcileOnceDestroyError(t *testing.T) {
 			{ID: "orphan-b", State: "started", CreatedAt: baseTime.Add(-10 * time.Minute)},
 		},
 	}
-	// Make DestroyMachine fail for all calls by replacing the fake's
-	// DestroyMachine behavior: use a destroyErr-capable fake wrapper.
-	destroyCallCount := 0
 	original := fp
 	wrapper := &destroyErrProvider{fakeProvider: original, destroyErr: errors.New("nope")}
 
@@ -162,7 +159,9 @@ func TestReaperReconcileOnceDestroyError(t *testing.T) {
 	if destroyed != 0 {
 		t.Errorf("destroyed = %d, want 0 (all destroys failed)", destroyed)
 	}
-	_ = destroyCallCount
+	if wrapper.destroyCalls != 2 {
+		t.Errorf("DestroyMachine calls = %d, want 2", wrapper.destroyCalls)
+	}
 	if !strings.Contains(logBuf.String(), "nope") {
 		t.Errorf("destroy error should be logged: %s", logBuf.String())
 	}
@@ -171,10 +170,12 @@ func TestReaperReconcileOnceDestroyError(t *testing.T) {
 // destroyErrProvider wraps fakeProvider but makes DestroyMachine always fail.
 type destroyErrProvider struct {
 	*fakeProvider
-	destroyErr error
+	destroyErr   error
+	destroyCalls int
 }
 
 func (d *destroyErrProvider) DestroyMachine(_ context.Context, _ string) error {
+	d.destroyCalls++
 	return d.destroyErr
 }
 

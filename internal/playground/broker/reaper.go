@@ -31,8 +31,8 @@ const (
 type ReaperConfig struct {
 	// Provider lists managed machines and destroys orphans.
 	Provider MachineProvider
-	// ActiveIDs returns the set of machine IDs currently held in active
-	// leases (LeaseManager.ActiveMachineIDs).
+	// ActiveIDs returns provider machine IDs protected from orphan cleanup:
+	// active leases plus any warm-pool machines or in-flight warm handoffs.
 	ActiveIDs func() map[string]struct{}
 	// Now returns the current time. Injectable for tests; nil uses time.Now.
 	Now func() time.Time

@@ -407,6 +407,9 @@ func TestSeenTokens_IsSeenAndMarkSeen(t *testing.T) {
 	if !seen.MarkSeen("tok-x") {
 		t.Fatal("MarkSeen should succeed")
 	}
+	if seen.MarkSeen("tok-x") {
+		t.Fatal("duplicate MarkSeen before expiry should reject")
+	}
 	if !seen.IsSeen("tok-x") {
 		t.Fatal("marked token should be seen")
 	}
@@ -447,6 +450,57 @@ func TestReplayGuardVerifier_BlocksReplayAfterSuccess(t *testing.T) {
 	}
 	if siteverifyCalls.Load() != 1 {
 		t.Fatalf("siteverify calls after replay = %d, want still 1 (no network call)", siteverifyCalls.Load())
+	}
+}
+
+type sequenceVerifier struct {
+	calls atomic.Int32
+	first chan struct{}
+	allow chan struct{}
+}
+
+func (v *sequenceVerifier) Verify(ctx context.Context, _, _ string) error {
+	n := v.calls.Add(1)
+	if n == 1 {
+		close(v.first)
+		select {
+		case <-v.allow:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return errTurnstileRejected
+	}
+	return nil
+}
+
+func TestReplayGuardVerifier_WaitersRecheckFailedLeader(t *testing.T) {
+	t.Parallel()
+	inner := &sequenceVerifier{first: make(chan struct{}), allow: make(chan struct{})}
+	guard := &ReplayGuardVerifier{
+		Inner:  inner,
+		Seen:   NewSeenTokens(time.Minute, nil),
+		Failed: NewSeenTokens(time.Minute, nil),
+	}
+
+	errs := make(chan error, 3)
+	start := make(chan struct{})
+	for range 3 {
+		go func() {
+			<-start
+			errs <- guard.Verify(context.Background(), "same-token", testRemoteIP)
+		}()
+	}
+	close(start)
+	<-inner.first
+	close(inner.allow)
+
+	for range 3 {
+		if err := <-errs; err == nil {
+			t.Fatal("Verify succeeded, want failed leader and waiters to fail closed")
+		}
+	}
+	if got := inner.calls.Load(); got != 1 {
+		t.Fatalf("inner verifier calls = %d, want 1; waiters must recheck failed-token cache", got)
 	}
 }
 

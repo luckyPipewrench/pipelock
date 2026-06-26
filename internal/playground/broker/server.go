@@ -171,8 +171,10 @@ type Server struct {
 	bundleSealed   map[string]bool
 	bundleFailed   map[string]bool
 	// fetchMu serializes concurrent identical (token, os) cache misses so only
-	// one request reads a full artifact from the VM into memory. Guarded by mu.
-	fetchMu map[artifactCacheKey]*sync.Mutex
+	// one request reads a full artifact from the VM into memory. Entries are
+	// removed after the last waiter leaves so long-running brokers cannot grow
+	// one lock per historical session. Guarded by mu.
+	fetchMu map[artifactCacheKey]*artifactFetchLock
 }
 
 type tokenLease struct {
@@ -187,6 +189,11 @@ type tokenLease struct {
 type artifactCacheKey struct {
 	token string
 	os    string
+}
+
+type artifactFetchLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // artifactCacheEntry holds a single sealed artifact served to visitors.
@@ -751,9 +758,8 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 	// Coalesce concurrent identical (token, os) misses so only ONE request reads
 	// a full artifact from the VM into memory; the others serialize on this
 	// per-variant lock and then read the cache the leader populated.
-	fm := s.bundleFetchMutex(cacheKey)
-	fm.Lock()
-	defer fm.Unlock()
+	fm := s.bundleFetchLock(cacheKey)
+	defer s.bundleFetchUnlock(cacheKey, fm)
 	if cached := s.bundleCache.get(cacheKey); cached != nil {
 		w.Header().Set("Content-Type", cached.contentType)
 		w.Header().Set("Content-Disposition", cached.contentDisposition)
@@ -795,10 +801,10 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 		contentDisposition: fetched.contentDisposition,
 		insertedAt:         time.Now(),
 	})
-	s.bundleSeal(queryToken)
 
 	// Also prefetch the raw bundle (os="") into the cache so a later
 	// raw-bundle download succeeds even after the VM is gone.
+	sealToken := true
 	if osParam != "" {
 		rawKey := artifactCacheKey{token: queryToken, os: ""}
 		if s.bundleCache.get(rawKey) == nil {
@@ -809,8 +815,14 @@ func (s *Server) handleBundle(w http.ResponseWriter, r *http.Request) {
 					contentDisposition: raw.contentDisposition,
 					insertedAt:         time.Now(),
 				})
+			} else {
+				sealToken = false
+				s.bundleMarkFailed(queryToken)
 			}
 		}
+	}
+	if sealToken {
+		s.bundleSeal(queryToken)
 	}
 
 	// Serve the fetched artifact to the client. VM release happens in the
@@ -834,20 +846,33 @@ func (s *Server) bundleEnter(token string) {
 	s.mu.Unlock()
 }
 
-// bundleFetchMutex returns the per-(token, os) mutex used to coalesce concurrent
+// bundleFetchLock locks the per-(token, os) mutex used to coalesce concurrent
 // identical cache misses so only one request fetches the artifact from the VM.
-func (s *Server) bundleFetchMutex(key artifactCacheKey) *sync.Mutex {
+// The returned lock must be released with bundleFetchUnlock.
+func (s *Server) bundleFetchLock(key artifactCacheKey) *artifactFetchLock {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.fetchMu == nil {
-		s.fetchMu = make(map[artifactCacheKey]*sync.Mutex)
+		s.fetchMu = make(map[artifactCacheKey]*artifactFetchLock)
 	}
 	m := s.fetchMu[key]
 	if m == nil {
-		m = &sync.Mutex{}
+		m = &artifactFetchLock{}
 		s.fetchMu[key] = m
 	}
+	m.refs++
+	s.mu.Unlock()
+	m.mu.Lock()
 	return m
+}
+
+func (s *Server) bundleFetchUnlock(key artifactCacheKey, m *artifactFetchLock) {
+	m.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m.refs--
+	if m.refs == 0 && s.fetchMu[key] == m {
+		delete(s.fetchMu, key)
+	}
 }
 
 // bundleSeal records that an artifact for the token has been durably cached, so

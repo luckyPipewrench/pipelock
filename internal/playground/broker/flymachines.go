@@ -221,6 +221,14 @@ type flyListMachine struct {
 	} `json:"config"`
 }
 
+type flyListMachinesPage struct {
+	Machines         []flyListMachine `json:"machines"`
+	NextCursor       string           `json:"next_cursor"`
+	ResponseMetadata struct {
+		NextCursor string `json:"next_cursor"`
+	} `json:"response_metadata"`
+}
+
 // ListManagedMachines returns only per-visitor VMs (those tagged with
 // pipelock_role == playground-vm). The broker's own machine and unrelated infra
 // are excluded. A machine whose created_at is missing or unparseable gets a zero
@@ -230,13 +238,22 @@ func (f *FlyMachines) ListManagedMachines(ctx context.Context) ([]Machine, error
 		return nil, err
 	}
 	path := fmt.Sprintf("/apps/%s/machines", url.PathEscape(f.AppName))
-	respBody, err := f.do(ctx, http.MethodGet, path, nil, nil)
-	if err != nil {
-		return nil, err
-	}
+	query := url.Values{"summary": []string{"true"}, "limit": []string{"200"}}
 	var raw []flyListMachine
-	if uerr := json.Unmarshal(respBody, &raw); uerr != nil {
-		return nil, fmt.Errorf("fly: parse list machines response: %w", uerr)
+	for {
+		respBody, err := f.do(ctx, http.MethodGet, path, query, nil)
+		if err != nil {
+			return nil, err
+		}
+		page, next, err := parseFlyListMachines(respBody)
+		if err != nil {
+			return nil, err
+		}
+		raw = append(raw, page...)
+		if next == "" {
+			break
+		}
+		query.Set("cursor", next)
 	}
 	var managed []Machine
 	for _, m := range raw {
@@ -251,6 +268,22 @@ func (f *FlyMachines) ListManagedMachines(ctx context.Context) ([]Machine, error
 		})
 	}
 	return managed, nil
+}
+
+func parseFlyListMachines(respBody []byte) ([]flyListMachine, string, error) {
+	var raw []flyListMachine
+	if err := json.Unmarshal(respBody, &raw); err == nil {
+		return raw, "", nil
+	}
+	var page flyListMachinesPage
+	if err := json.Unmarshal(respBody, &page); err != nil {
+		return nil, "", fmt.Errorf("fly: parse list machines response: %w", err)
+	}
+	next := strings.TrimSpace(page.NextCursor)
+	if next == "" {
+		next = strings.TrimSpace(page.ResponseMetadata.NextCursor)
+	}
+	return page.Machines, next, nil
 }
 
 func (f *FlyMachines) validate() error {

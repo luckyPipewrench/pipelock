@@ -969,6 +969,11 @@ func TestValidateFlagsBranches(t *testing.T) {
 			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
 			f.turnstileVerifyURL = "file:///tmp/siteverify"
 		}},
+		{name: "bad_turnstile_max_age", mutate: func(f *serveFlags) {
+			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
+			f.turnstileVerifyURL = "https://turnstile.example/verify"
+			f.turnstileMaxAge = -1
+		}},
 		{name: "turnstile_production_missing_hostname_action", mutate: func(f *serveFlags) {
 			// Turnstile against Cloudflare (no --turnstile-verify-url) must bind
 			// hostname + action; omitting them is rejected.
@@ -979,6 +984,12 @@ func TestValidateFlagsBranches(t *testing.T) {
 			// escape the hostname/action binding requirement.
 			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
 			f.turnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+		}},
+		{name: "turnstile_explicit_cloudflare_url_with_port_missing_bindings", mutate: func(f *serveFlags) {
+			// A port on the real Cloudflare host is still the production
+			// Siteverify endpoint, so hostname/action binding remains required.
+			f.turnstileSecretEnv = "BROKER_TEST_TURNSTILE"
+			f.turnstileVerifyURL = "https://challenges.cloudflare.com:443/turnstile/v0/siteverify"
 		}},
 		{name: "bad_cf_combo", mutate: func(f *serveFlags) { f.cfAccessCertsURL = "https://keys.example/certs" }},
 		{name: "bad_cf_aud", mutate: func(f *serveFlags) {

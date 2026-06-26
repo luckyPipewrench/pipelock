@@ -5,6 +5,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -375,12 +376,12 @@ func TestPoolDrainDestroysAll(t *testing.T) {
 	// Fill: 2 warm VMs.
 	pool.maintain(context.Background())
 	pool.maintain(context.Background()) // second call may be needed if fill creates one at a time
-	if limiter.InUse() < 1 {
-		t.Fatalf("InUse after fill = %d, want >= 1", limiter.InUse())
+	if limiter.InUse() != 2 {
+		t.Fatalf("InUse after fill = %d, want 2", limiter.InUse())
 	}
 	warmBefore := len(pool.WarmMachineIDs())
-	if warmBefore < 1 {
-		t.Fatalf("warm VMs after fill = %d, want >= 1", warmBefore)
+	if warmBefore != 2 {
+		t.Fatalf("warm VMs after fill = %d, want 2", warmBefore)
 	}
 
 	pool.Drain(context.Background())
@@ -459,6 +460,51 @@ func TestPoolRecycleStale(t *testing.T) {
 	// Slot count: still 1 (recycled = destroyed old + created new).
 	if limiter.InUse() != 1 {
 		t.Errorf("InUse after recycle = %d, want 1", limiter.InUse())
+	}
+}
+
+func TestPoolRecycleStaleDestroyFailureKeepsEntryAndSlot(t *testing.T) {
+	fp := &destroyErrProvider{fakeProvider: &fakeProvider{}, destroyErr: errors.New("destroy failed")}
+	limiter := livechat.NewConcurrencyLimiter(1)
+
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	currentTime := now
+	var timeMu sync.Mutex
+	clockFn := func() time.Time {
+		timeMu.Lock()
+		defer timeMu.Unlock()
+		return currentTime
+	}
+
+	pool := newTestPool(t, fp, limiter, 1, 5*time.Minute, clockFn)
+	pool.maintain(context.Background())
+	warmIDs := pool.WarmMachineIDs()
+	if len(warmIDs) != 1 {
+		t.Fatalf("warm VMs after fill = %d, want 1", len(warmIDs))
+	}
+	var oldID string
+	for id := range warmIDs {
+		oldID = id
+	}
+
+	timeMu.Lock()
+	currentTime = now.Add(6 * time.Minute)
+	timeMu.Unlock()
+
+	pool.maintain(context.Background())
+	newIDs := pool.WarmMachineIDs()
+	if len(newIDs) != 1 {
+		t.Fatalf("warm VMs after failed recycle = %d, want 1", len(newIDs))
+	}
+	if _, ok := newIDs[oldID]; !ok {
+		t.Fatalf("stale VM %s should stay tracked when destroy fails", oldID)
+	}
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse after failed recycle = %d, want 1", limiter.InUse())
+	}
+	created, _ := fp.counts()
+	if created != 1 {
+		t.Fatalf("created after failed recycle = %d, want 1; failed destroy must not free slot for replacement", created)
 	}
 }
 
@@ -589,6 +635,10 @@ func TestPoolAdoptWarmSessionPath(t *testing.T) {
 	if lease.Machine.ID != m.ID {
 		t.Errorf("adopted lease machine ID = %s, want %s", lease.Machine.ID, m.ID)
 	}
+	pool.FinishHandoff(m.ID)
+	if _, protected := pool.WarmMachineIDs()[m.ID]; protected {
+		t.Fatalf("machine %s still reaper-protected after FinishHandoff", m.ID)
+	}
 
 	// The vmCode from the pool is what the session-create will use.
 	if code == "" {
@@ -630,9 +680,8 @@ func TestPoolConcurrentAcquireSafe(t *testing.T) {
 	for range acquired {
 		count++
 	}
-	// At most 5 should have succeeded (pool size 5).
-	if count > 5 {
-		t.Errorf("acquired %d from pool of 5", count)
+	if count != 5 {
+		t.Errorf("acquired %d from pool of 5, want exactly 5", count)
 	}
 }
 

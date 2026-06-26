@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 )
 
@@ -83,10 +84,8 @@ func ClientIPExact(r *http.Request, trustForwardedFor bool) string {
 	// visitor would otherwise collapse into one rate/budget bucket. Fly sets
 	// Fly-Client-IP to whoever connected to its edge; when that is a Cloudflare
 	// proxy IP, Cloudflare is the immediate upstream and CF-Connecting-IP is
-	// trustworthy. Fly always sets Fly-Client-IP itself (the app is reachable
-	// only through Fly's proxy), so a direct .fly.dev client cannot forge this:
-	// their Fly-Client-IP is their own non-Cloudflare address and the
-	// CF-Connecting-IP is ignored.
+	// trustworthy. This path is gated on Fly runtime indicators so a non-Fly
+	// reverse proxy that forwards client-supplied headers cannot forge identity.
 	if ip := cloudflareBehindEdgeIP(r, peer); ip != "" {
 		return ip
 	}
@@ -103,6 +102,9 @@ func ClientIPExact(r *http.Request, trustForwardedFor bool) string {
 // proxy address. Returns "" when the edge header is absent or is not Cloudflare,
 // or when CF-Connecting-IP is missing or unparseable.
 func cloudflareBehindEdgeIP(r *http.Request, peer string) string {
+	if !runningOnFly() {
+		return ""
+	}
 	// Only honor Fly-Client-IP when the DIRECT peer is a private/loopback address
 	// — i.e. the request actually arrived through a co-located front proxy (Fly's
 	// internal proxy connects from a private ULA address). A directly-exposed
@@ -115,15 +117,11 @@ func cloudflareBehindEdgeIP(r *http.Request, peer string) string {
 	if edge == "" || !isCloudflareProxy(edge) {
 		return ""
 	}
-	raw := strings.TrimSpace(r.Header.Get(cfConnectingIPHeader))
-	if raw == "" {
-		return ""
-	}
-	addr, err := netip.ParseAddr(raw)
-	if err != nil {
-		return ""
-	}
-	return addr.String()
+	return parseCFConnectingIP(r)
+}
+
+func runningOnFly() bool {
+	return os.Getenv("FLY_APP_NAME") != "" || os.Getenv("FLY_MACHINE_ID") != ""
 }
 
 // abuseBucket collapses an IPv6 address to its /64 network so rotating within a
@@ -146,6 +144,10 @@ func cloudflareConnectingIP(r *http.Request, peer string) string {
 	if !isCloudflareProxy(peer) {
 		return ""
 	}
+	return parseCFConnectingIP(r)
+}
+
+func parseCFConnectingIP(r *http.Request) string {
 	raw := strings.TrimSpace(r.Header.Get(cfConnectingIPHeader))
 	if raw == "" {
 		return ""

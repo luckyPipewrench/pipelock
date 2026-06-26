@@ -369,6 +369,59 @@ func TestFlyListManagedMachines(t *testing.T) {
 	}
 }
 
+func TestFlyListManagedMachinesPagedObjectResponse(t *testing.T) {
+	var cursors []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if got := r.URL.Query().Get("summary"); got != "true" {
+			t.Fatalf("summary query = %q, want true", got)
+		}
+		if got := r.URL.Query().Get("limit"); got != "200" {
+			t.Fatalf("limit query = %q, want 200", got)
+		}
+		cursor := r.URL.Query().Get("cursor")
+		cursors = append(cursors, cursor)
+		w.Header().Set("Content-Type", "application/json")
+		switch cursor {
+		case "":
+			_, _ = w.Write([]byte(`{
+				"machines": [
+					{"id": "m-page-1", "state": "started", "created_at": "2026-06-25T10:00:00Z", "config": {"metadata": {"pipelock_role": "playground-vm"}}}
+				],
+				"response_metadata": {"next_cursor": "next-page"}
+			}`))
+		case "next-page":
+			_, _ = w.Write([]byte(`{
+				"machines": [
+					{"id": "m-foreign", "state": "started", "created_at": "2026-06-25T10:00:00Z", "config": {"metadata": {"pipelock_role": "other"}}},
+					{"id": "m-page-2", "state": "started", "created_at": "2026-06-25T10:01:00Z", "config": {"metadata": {"pipelock_role": "playground-vm"}}}
+				]
+			}`))
+		default:
+			t.Fatalf("unexpected cursor %q", cursor)
+		}
+	}))
+	defer srv.Close()
+
+	fly := newTestFly(srv)
+	machines, err := fly.ListManagedMachines(context.Background())
+	if err != nil {
+		t.Fatalf("ListManagedMachines: %v", err)
+	}
+	if len(cursors) != 2 || cursors[0] != "" || cursors[1] != "next-page" {
+		t.Fatalf("cursors = %#v, want initial request then next-page", cursors)
+	}
+	if len(machines) != 2 {
+		t.Fatalf("got %d managed machines, want 2", len(machines))
+	}
+	if machines[0].ID != "m-page-1" || machines[1].ID != "m-page-2" {
+		t.Fatalf("machine IDs = %q, %q; want m-page-1, m-page-2", machines[0].ID, machines[1].ID)
+	}
+}
+
 func TestFlyListManagedMachinesUnparseableCreatedAt(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		body := `[{"id": "m1", "state": "started", "created_at": "not-a-date", "config": {"metadata": {"pipelock_role": "playground-vm"}}}]`

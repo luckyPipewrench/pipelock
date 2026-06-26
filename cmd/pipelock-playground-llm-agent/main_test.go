@@ -231,6 +231,30 @@ func TestBuildAgent_NoExecOmitsRunCommand(t *testing.T) {
 	}
 }
 
+func TestLiveHistoryCapsAreModelAware(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		model      string
+		wantTokens int
+		wantTurns  int
+	}{
+		{name: "deepseek_chat", model: "deepseek-chat", wantTokens: liveHistoryTokens, wantTurns: liveHistoryTurns},
+		{name: "deepseek_reasoner_case_trimmed", model: " DeepSeek-Reasoner ", wantTokens: liveHistoryTokens, wantTurns: liveHistoryTurns},
+		{name: "unknown_model_uses_default_context", model: "small-model", wantTokens: 8192, wantTurns: liveHistoryTurns / 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotTokens, gotTurns := liveHistoryCaps(tt.model)
+			if gotTokens != tt.wantTokens || gotTurns != tt.wantTurns {
+				t.Fatalf("liveHistoryCaps(%q) = (%d, %d), want (%d, %d)", tt.model, gotTokens, gotTurns, tt.wantTokens, tt.wantTurns)
+			}
+		})
+	}
+}
+
 func TestBuildClient(t *testing.T) {
 	c, err := buildClient("http://127.0.0.1:8888", 0, "")
 	if err != nil {

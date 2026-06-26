@@ -61,3 +61,8 @@ pipelock-audit.log
 /pipelock-playground-toyagent
 /pipelock-playground-webtool
 /ui/kits/*.zip
+
+# Generated WASM browser-verifier build artifacts
+deploy/wasm-verify/out/*.wasm
+deploy/wasm-verify/out/wasm_exec.js
+deploy/wasm-verify/*.tar.gz

@@ -61,6 +61,12 @@ func (v *serverFakeHumanVerifier) calls() int {
 	return len(v.tokens)
 }
 
+func (v *serverFakeHumanVerifier) setErr(err error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.err = err
+}
+
 func (p *serverFakeProvider) CreateMachine(_ context.Context, spec MachineSpec) (*Machine, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -525,11 +531,11 @@ func getBrokerHealth(t *testing.T, ts *httptest.Server) map[string]any {
 	return body
 }
 
-// TestServer_DefaultCodeFallback proves the Access-gated code-optional path:
+// TestServer_DefaultCodeFallback proves the human-gated code-optional path:
 // with a DefaultCode configured, a session request carrying NO invite code falls
 // back to the default and succeeds (the human gate is the authorization), and
 // health advertises code_required=false. Without a DefaultCode an empty code is
-// still rejected (the public/Turnstile path is unchanged).
+// still rejected.
 func TestServer_DefaultCodeFallback(t *testing.T) {
 	t.Run("empty code uses default when configured", func(t *testing.T) {
 		vm := newFakeVM(t, "vm-default-token")
@@ -555,6 +561,43 @@ func TestServer_DefaultCodeFallback(t *testing.T) {
 		}
 		if health := getBrokerHealth(t, ts); health["code_required"] != true {
 			t.Fatalf("code_required = %v, want true", health["code_required"])
+		}
+	})
+	t.Run("default code still requires human verifier before lease", func(t *testing.T) {
+		vm := newFakeVM(t, "vm-default-human-token")
+		provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+		verifier := &serverFakeHumanVerifier{err: errors.New("missing human proof")}
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{
+			DefaultCode:       brokerTestCode,
+			HumanVerifier:     verifier,
+			GlobalDailyBudget: 1,
+		})
+
+		resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{Code: ""})
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("empty code without human proof = %d, want 403", resp.StatusCode)
+		}
+		if got := verifier.calls(); got != 1 {
+			t.Fatalf("verifier calls = %d, want 1", got)
+		}
+		if got := provider.createdCount(); got != 0 {
+			t.Fatalf("created machines = %d, want 0 before human proof", got)
+		}
+
+		verifier.setErr(nil)
+		resp = postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{
+			Code:           "",
+			TurnstileToken: "human-token",
+		})
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("empty code with human proof after failed attempt = %d, want 200", resp.StatusCode)
+		}
+		if got := provider.createdCount(); got != 1 {
+			t.Fatalf("created machines = %d, want 1 after human proof", got)
 		}
 	})
 }
@@ -1037,6 +1080,30 @@ func TestServer_AbuseControlsReject(t *testing.T) {
 		status, _ := postBrokerSession(t, ts)
 		if status != http.StatusOK {
 			t.Fatalf("valid code after empty-code rejection = %d, want 200", status)
+		}
+	})
+
+	t.Run("unknown_code_spray_does_not_fill_code_rate_keys", func(t *testing.T) {
+		vm := newFakeVM(t, "unknown-code-rate")
+		provider := &serverFakeProvider{targets: []string{vm.targetHost(t)}}
+		_, ts := newBrokerTestServer(t, provider, ServerConfig{
+			DefaultCode: brokerTestCode,
+			CodeRate:    livechat.RateConfig{RefillPerSec: 1000, Burst: 1000, MaxKeys: 1},
+		})
+		resp := postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{Code: "attacker-random-code"})
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unknown-code status = %d, want 401", resp.StatusCode)
+		}
+		resp = postBrokerJSON(t, ts.URL+livechat.RouteSession, sessionRequest{Code: ""})
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("default code after unknown-code spray = %d, want 200", resp.StatusCode)
+		}
+		if got := provider.createdCount(); got != 1 {
+			t.Fatalf("created machines = %d, want only the default-code session", got)
 		}
 	})
 

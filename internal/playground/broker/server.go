@@ -89,9 +89,9 @@ type ServerConfig struct {
 	Gate *livechat.Gate
 	// DefaultCode, when non-empty, is the invite code used when a session request
 	// arrives with no code. It MUST be one of the Gate's configured codes, and is
-	// only safe to set when an out-of-band human gate (Cloudflare Access) fronts
-	// the broker — the caller (main) enforces that. Empty means a code is always
-	// required. It is never sent to clients.
+	// only safe to set when a human gate (Turnstile or Cloudflare Access) protects
+	// session creation — the caller (main) enforces that. Empty means a code is
+	// always required. It is never sent to clients.
 	DefaultCode string
 	// TurnstileSitekey is the PUBLIC Cloudflare Turnstile site key, reported via
 	// /health so the viewer can render the widget. Empty means no Turnstile
@@ -475,12 +475,12 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeBrokerErr(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	// An empty client code falls back to the configured DefaultCode. DefaultCode
-	// is only ever set when an out-of-band human gate (Cloudflare Access) fronts
-	// the broker, so the email allowlist — not the invite code — is the
-	// authorization, and allowlisted users need not paste a code. The default
-	// code is server-side only (never embedded in client JS). When no DefaultCode
-	// is configured (public/Turnstile path), an empty code is still rejected.
+	// An empty client code falls back to the configured DefaultCode. DefaultCode is
+	// only ever set when a human gate (Turnstile or Cloudflare Access) protects
+	// session creation, so the human proof — not the invite-code prompt — is the
+	// public authorization step. The default code is server-side only (never
+	// embedded in client JS). When no DefaultCode is configured, an empty code is
+	// still rejected.
 	code := body.Code
 	if code == "" {
 		code = s.cfg.DefaultCode
@@ -501,12 +501,6 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	codeLimiterKey := "code:" + codeKey(code)
-	if !s.codeRate.Allow(codeLimiterKey) {
-		writeBrokerErr(w, http.StatusTooManyRequests, "rate limited")
-		return
-	}
-
 	sessionKey, err := newBrokerSessionKey()
 	if err != nil {
 		writeBrokerErr(w, http.StatusInternalServerError, "internal error")
@@ -525,6 +519,13 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rollback = append(rollback, func() { s.cfg.Gate.Refund(claims) })
+
+	codeLimiterKey := "code:" + claims.CodeID
+	if !s.codeRate.Allow(codeLimiterKey) {
+		undo()
+		writeBrokerErr(w, http.StatusTooManyRequests, "rate limited")
+		return
+	}
 
 	ipBudgetKey := "ip:" + ip
 	codeBudgetKey := "code:" + claims.CodeID

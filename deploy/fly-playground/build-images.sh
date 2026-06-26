@@ -43,14 +43,19 @@ docker build -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
 # shipped verifier from the served dir. Build it straight into PLAYGROUND_UI_DIR
 # so the broker bundles it into /srv/ui. The .wasm is gitignored in the site repo
 # (built here at image time, never committed). Requires deploy/wasm-verify/build.sh
-# + cmd/pipelock-verifier-wasm (the WASM-verifier change); if absent, the broker
-# still builds, just without the inline-verify button (the download-kit path is
-# unaffected). go (with the js/wasm target) must be on PATH.
-if [ -x deploy/wasm-verify/build.sh ]; then
-	echo "[build-images] building browser-verifier WASM into ${PLAYGROUND_UI_DIR}"
-	deploy/wasm-verify/build.sh "${PLAYGROUND_UI_DIR}"
-else
-	echo "[build-images] WARNING: deploy/wasm-verify/build.sh absent; broker will ship without the inline browser-verify button (download-kit path still works)" >&2
+# + cmd/pipelock-verifier-wasm (the WASM-verifier change). Fail closed if that
+# build path is absent or produces no .wasm, so the image cannot silently ship a
+# viewer whose inline-verify button points at missing browser-verifier assets.
+# go (with the js/wasm target) must be on PATH.
+if [ ! -x deploy/wasm-verify/build.sh ]; then
+	echo "[build-images] ERROR: deploy/wasm-verify/build.sh absent; refusing to build a broker with potentially stale inline browser-verify UI" >&2
+	exit 1
+fi
+echo "[build-images] building browser-verifier WASM into ${PLAYGROUND_UI_DIR}"
+deploy/wasm-verify/build.sh "${PLAYGROUND_UI_DIR}"
+if ! find "${PLAYGROUND_UI_DIR}" -type f -name '*.wasm' -print -quit | grep -q .; then
+	echo "[build-images] ERROR: browser-verifier build produced no .wasm under PLAYGROUND_UI_DIR=${PLAYGROUND_UI_DIR}; refusing to ship unwired inline verify UI" >&2
+	exit 1
 fi
 
 echo "[build-images] building broker image ${BROKER_TAG} (viewer from ${PLAYGROUND_UI_DIR})"

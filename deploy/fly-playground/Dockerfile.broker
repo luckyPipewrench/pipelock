@@ -30,12 +30,21 @@ ARG VERSION=dev
 ENV CGO_ENABLED=0
 RUN go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-broker ./cmd/pipelock-playground-broker
 
+# Stage the static UI here (a shell-having stage) and normalize perms with a real
+# chmod. The broker runs as nonroot, so served assets MUST be world-readable or
+# its file server returns 403. Some built assets (the verifier wasm) arrive 0600
+# with a restrictive POSIX ACL from the build host; BuildKit's COPY --chmod does
+# NOT reliably override an ACL'd source, so fix perms with a RUN chmod instead.
+COPY --from=ui . /srv-ui
+RUN chmod -R a+rX /srv-ui
+
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
 COPY --from=build /out/pipelock-playground-broker /usr/local/bin/pipelock-playground-broker
-# Bundle the static playground viewer at /srv/ui (served at / via --static-dir).
-# Supplied by the "ui" named build context (see header). Without this the broker
-# serves an empty UI; bundling it here is the single source of the served viewer.
-COPY --from=ui . /srv/ui
+# Bundle the static playground viewer at /srv/ui (served at / via --static-dir),
+# taking the perm-normalized copy from the build stage above. Copying between
+# stages preserves the chmod'd (world-readable) perms, so the nonroot broker can
+# read every asset including the verifier wasm.
+COPY --from=build /srv-ui /srv/ui
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/pipelock-playground-broker"]
 CMD ["serve"]

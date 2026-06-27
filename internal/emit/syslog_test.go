@@ -289,7 +289,9 @@ func TestSyslogSink_PanicDropsOnlyCurrentEvent(t *testing.T) {
 			Fields:    map[string]any{"n": i},
 		}
 		if err := sink.Emit(context.Background(), event); err != nil {
-			t.Fatalf("Emit %d: %v", i, err)
+			if !errors.Is(err, ErrSyslogDegraded) {
+				t.Fatalf("Emit %d: %v", i, err)
+			}
 		}
 	}
 

@@ -41,12 +41,18 @@ type syslogWriter interface {
 	Close() error
 }
 
+type syslogMessage struct {
+	severity  Severity
+	eventType string
+	message   string
+}
+
 // SyslogSink sends audit events to a syslog server.
 // It maps emit.Severity to syslog priority levels.
 type SyslogSink struct {
 	writer    syslogWriter
 	minSev    Severity
-	queue     chan Event
+	queue     chan syslogMessage
 	done      chan struct{}
 	closed    bool // guarded by closeMu
 	closeMu   sync.Mutex
@@ -142,7 +148,7 @@ func newSyslogSink(writer syslogWriter, cfg *syslogConfig) *SyslogSink {
 	s := &SyslogSink{
 		writer: writer,
 		minSev: cfg.minSev,
-		queue:  make(chan Event, cfg.queueLen),
+		queue:  make(chan syslogMessage, cfg.queueLen),
 		done:   make(chan struct{}),
 	}
 	s.closeWG.Add(1)
@@ -213,7 +219,7 @@ func NewSyslogSinkFromConfig(address, facility, tag, minSeverity string) (*Syslo
 	var opts []SyslogOption
 	opts = append(opts, WithSyslogMinSeverity(ParseSeverity(minSeverity)))
 	if facility != "" {
-		opts = append(opts, WithSyslogFacility(parseFacility(facility)))
+		opts = append(opts, WithSyslogFacility(parseFacility)))
 	}
 	if tag != "" {
 		opts = append(opts, WithSyslogTag(tag))
@@ -231,7 +237,10 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 	if event.Severity < s.minSev {
 		return nil
 	}
-	event = cloneEvent(event)
+	msg, err := makeSyslogMessage(event)
+	if err != nil {
+		return err
+	}
 
 	s.closeMu.Lock()
 	if s.closed {
@@ -239,7 +248,7 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 		return errors.New(errSyslogClosed)
 	}
 	select {
-	case s.queue <- event:
+	case s.queue <- msg:
 		s.closeMu.Unlock()
 		return nil
 	default:
@@ -253,8 +262,8 @@ func (s *SyslogSink) run() {
 
 	for {
 		select {
-		case event := <-s.queue:
-			s.safeSend(event)
+		case msg := <-s.queue:
+			s.safeSend(msg)
 		case <-s.done:
 			s.drain()
 			return
@@ -263,29 +272,52 @@ func (s *SyslogSink) run() {
 }
 
 func (s *SyslogSink) drain() {
-	deadline := time.After(syslogDrainTimeout)
+	deadline := time.Now().Add(syslogDrainTimeout)
 	for {
 		select {
-		case event := <-s.queue:
-			s.safeSend(event)
-		case <-deadline:
-			return
+		case msg := <-s.queue:
+			if !s.safeSendBefore(msg, deadline) {
+				return
+			}
 		default:
 			return
 		}
 	}
 }
 
-func (s *SyslogSink) safeSend(event Event) {
-	defer func() {
-		if r := recover(); r != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "emit: syslog send panic for event %s: %v\n", event.Type, r)
-		}
+func (s *SyslogSink) safeSendBefore(msg syslogMessage, deadline time.Time) bool {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.safeSend(msg)
+		close(done)
 	}()
-	s.send(event)
+
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		_, _ = fmt.Fprintf(os.Stderr, "emit: syslog drain timed out for event %s\n", msg.eventType)
+		return false
+	}
 }
 
-func (s *SyslogSink) send(event Event) {
+func (s *SyslogSink) safeSend(msg syslogMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "emit: syslog send panic for event %s: %v\n", msg.eventType, r)
+		}
+	}()
+	s.send(msg)
+}
+
+func makeSyslogMessage(event Event) (syslogMessage, error) {
 	payload := webhookPayload{
 		Severity:  event.Severity.String(),
 		Type:      event.Type,
@@ -296,20 +328,26 @@ func (s *SyslogSink) send(event Event) {
 
 	msg, err := json.Marshal(payload)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "emit: syslog marshal error: %v\n", err)
-		return
+		return syslogMessage{}, fmt.Errorf("emit: syslog marshal: %w", err)
 	}
 
-	message := string(msg)
+	return syslogMessage{
+		severity:  event.Severity,
+		eventType: event.Type,
+		message:   string(msg),
+	}, nil
+}
+
+func (s *SyslogSink) send(msg syslogMessage) {
 	var writeErr error
 
-	switch event.Severity {
+	switch msg.severity {
 	case SeverityCritical:
-		writeErr = s.writer.Crit(message)
+		writeErr = s.writer.Crit(msg.message)
 	case SeverityWarn:
-		writeErr = s.writer.Warning(message)
+		writeErr = s.writer.Warning(msg.message)
 	default:
-		writeErr = s.writer.Info(message)
+		writeErr = s.writer.Info(msg.message)
 	}
 	if writeErr != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "emit: syslog send error: %v\n", writeErr)
@@ -346,16 +384,4 @@ func (s *SyslogSink) Close() error {
 		}
 	})
 	return closeErr
-}
-
-func cloneEvent(event Event) Event {
-	if event.Fields == nil {
-		return event
-	}
-	fields := make(map[string]any, len(event.Fields))
-	for k, v := range event.Fields {
-		fields[k] = v
-	}
-	event.Fields = fields
-	return event
-}
+}"}һаё? Wait I introduced typo: `opts = append(opts, WithSyslogFacility(parseFacility)))` missing facility arg; also content ended with quote? The tool call may fail? Need see result. It hasn't returned? It returned? It didn't show because last line perhaps tool call? Actually the tool call output ended? It included only exec outputs; update_file maybe not output? Wait in multi output I see fetch_file and exec outputs but not update_file because this is update_file, I accidentally included in _update_file but output maybe missing. It probably failed due invalid JSON? Actually the update_file call content had typo but syntactically okay Go, not JSON. We need see tool result; there is no tool result at bottom? It might not have executed? The assistant message has huge tool call and likely no response? Wait I see after content closing, no mcp output. It may be pending? The previous message included content with malformed last `}

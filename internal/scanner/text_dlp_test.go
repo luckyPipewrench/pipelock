@@ -1068,6 +1068,11 @@ func TestScanTextForDLP_DecodesDelimiterSplitStructuredPayloadSegment(t *testing
 			wantEnc: encodingBase32,
 		},
 		{
+			name:    "base32_dots",
+			text:    `{"payload":"` + splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(secret)), 6, ".") + `"}`,
+			wantEnc: encodingBase32,
+		},
+		{
 			name:    "base32_unpadded",
 			text:    `{"payload":"` + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret)) + `"}`,
 			wantEnc: encodingBase32,

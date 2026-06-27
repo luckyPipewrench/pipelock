@@ -7,8 +7,10 @@ package emit
 
 import (
 	"context"
+	"errors"
 	"log/syslog"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -104,6 +106,94 @@ func TestSyslogSink_Close_NilWriter(t *testing.T) {
 	s := &SyslogSink{}
 	if err := s.Close(); err != nil {
 		t.Errorf("Close() on nil writer: %v", err)
+	}
+}
+
+func TestSyslogSink_EmitReturnsBeforeSlowWriter(t *testing.T) {
+	writer := newBlockingSyslogWriter()
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
+
+	event := Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sink.Emit(context.Background(), event)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Emit returned error: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Emit blocked on syslog writer")
+	}
+
+	writer.waitStarted(t)
+	writer.release()
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestSyslogSink_EmitQueueFullIsBounded(t *testing.T) {
+	writer := newBlockingSyslogWriter()
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
+
+	event := Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{},
+	}
+
+	if err := sink.Emit(context.Background(), event); err != nil {
+		t.Fatalf("first Emit: %v", err)
+	}
+	writer.waitStarted(t)
+
+	if err := sink.Emit(context.Background(), event); err != nil {
+		t.Fatalf("second Emit: %v", err)
+	}
+	if err := sink.Emit(context.Background(), event); !errors.Is(err, ErrSyslogQueueFull) {
+		t.Fatalf("third Emit error = %v, want ErrSyslogQueueFull", err)
+	}
+
+	writer.release()
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestSyslogSink_CloseDrainsQueuedEvents(t *testing.T) {
+	writer := &countingSyslogWriter{}
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 4})
+
+	for i := 0; i < 3; i++ {
+		event := Event{
+			Severity:  SeverityWarn,
+			Type:      testEventBlocked,
+			Timestamp: time.Now(),
+			Fields:    map[string]any{"n": i},
+		}
+		if err := sink.Emit(context.Background(), event); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := writer.count.Load(); got != 3 {
+		t.Fatalf("writer calls = %d, want 3", got)
+	}
+	if err := sink.Emit(context.Background(), Event{Severity: SeverityWarn}); err == nil {
+		t.Fatal("expected Emit to fail after Close")
 	}
 }
 
@@ -318,7 +408,8 @@ func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	// Channel field is unmarshalable - Emit should return an error.
+	// Channel field is unmarshalable. Async delivery logs the marshal failure
+	// from the worker and drops the event instead of blocking the caller.
 	event := Event{
 		Severity:  SeverityWarn,
 		Type:      testEventBlocked,
@@ -327,8 +418,8 @@ func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	}
 
 	err = sink.Emit(context.Background(), event)
-	if err == nil {
-		t.Error("expected marshal error from Emit")
+	if err != nil {
+		t.Errorf("Emit returned error: %v", err)
 	}
 }
 
@@ -362,4 +453,90 @@ func searchSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+type blockingSyslogWriter struct {
+	started  chan struct{}
+	releaseC chan struct{}
+	count    atomic.Int64
+	closed   atomic.Bool
+}
+
+func newBlockingSyslogWriter() *blockingSyslogWriter {
+	return &blockingSyslogWriter{
+		started:  make(chan struct{}),
+		releaseC: make(chan struct{}),
+	}
+}
+
+func (w *blockingSyslogWriter) Crit(msg string) error {
+	return w.write(msg)
+}
+
+func (w *blockingSyslogWriter) Warning(msg string) error {
+	return w.write(msg)
+}
+
+func (w *blockingSyslogWriter) Info(msg string) error {
+	return w.write(msg)
+}
+
+func (w *blockingSyslogWriter) Close() error {
+	w.closed.Store(true)
+	return nil
+}
+
+func (w *blockingSyslogWriter) write(_ string) error {
+	w.count.Add(1)
+	select {
+	case <-w.started:
+	default:
+		close(w.started)
+	}
+	<-w.releaseC
+	return nil
+}
+
+func (w *blockingSyslogWriter) waitStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-w.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for syslog writer")
+	}
+}
+
+func (w *blockingSyslogWriter) release() {
+	select {
+	case <-w.releaseC:
+	default:
+		close(w.releaseC)
+	}
+}
+
+type countingSyslogWriter struct {
+	count  atomic.Int64
+	closed atomic.Bool
+}
+
+func (w *countingSyslogWriter) Crit(msg string) error {
+	return w.write(msg)
+}
+
+func (w *countingSyslogWriter) Warning(msg string) error {
+	return w.write(msg)
+}
+
+func (w *countingSyslogWriter) Info(msg string) error {
+	return w.write(msg)
+}
+
+func (w *countingSyslogWriter) Close() error {
+	w.closed.Store(true)
+	return nil
+}
+
+func (w *countingSyslogWriter) write(_ string) error {
+	w.count.Add(1)
+	return nil
 }

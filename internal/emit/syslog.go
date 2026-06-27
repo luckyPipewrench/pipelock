@@ -8,20 +8,45 @@ package emit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/syslog"
 	"net"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
+
+const (
+	DefaultSyslogQueueSize = 64
+	syslogDrainTimeout     = 10 * time.Second
+)
+
+// ErrSyslogQueueFull is returned when the syslog event queue is at capacity.
+var ErrSyslogQueueFull = errors.New("emit: syslog queue full, event dropped")
+
+const errSyslogClosed = "emit: syslog sink closed"
+
+type syslogWriter interface {
+	Crit(string) error
+	Warning(string) error
+	Info(string) error
+	Close() error
+}
 
 // SyslogSink sends audit events to a syslog server.
 // It maps emit.Severity to syslog priority levels.
 type SyslogSink struct {
-	writer *syslog.Writer
-	minSev Severity
+	writer    syslogWriter
+	minSev    Severity
+	queue     chan Event
+	done      chan struct{}
+	closed    bool // guarded by closeMu
+	closeMu   sync.Mutex
+	closeWG   sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // SyslogOption configures a SyslogSink.
@@ -31,6 +56,7 @@ type syslogConfig struct {
 	facility syslog.Priority
 	tag      string
 	minSev   Severity
+	queueLen int
 }
 
 // WithSyslogFacility sets the syslog facility (default LOG_LOCAL0).
@@ -51,6 +77,15 @@ func WithSyslogTag(tag string) SyslogOption {
 func WithSyslogMinSeverity(sev Severity) SyslogOption {
 	return func(c *syslogConfig) {
 		c.minSev = sev
+	}
+}
+
+// WithSyslogQueueSize sets the buffered channel capacity for pending events.
+func WithSyslogQueueSize(n int) SyslogOption {
+	return func(c *syslogConfig) {
+		if n > 0 {
+			c.queueLen = n
+		}
 	}
 }
 
@@ -80,6 +115,7 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 	cfg := &syslogConfig{
 		facility: syslog.LOG_LOCAL0,
 		tag:      "pipelock",
+		queueLen: DefaultSyslogQueueSize,
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -95,10 +131,22 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 		return nil, fmt.Errorf("emit: syslog dial: %w", err)
 	}
 
-	return &SyslogSink{
+	return newSyslogSink(writer, cfg), nil
+}
+
+func newSyslogSink(writer syslogWriter, cfg *syslogConfig) *SyslogSink {
+	if cfg.queueLen <= 0 {
+		cfg.queueLen = DefaultSyslogQueueSize
+	}
+	s := &SyslogSink{
 		writer: writer,
 		minSev: cfg.minSev,
-	}, nil
+		queue:  make(chan Event, cfg.queueLen),
+		done:   make(chan struct{}),
+	}
+	s.closeWG.Add(1)
+	go s.run()
+	return s
 }
 
 // parseFacility converts a facility name string to a syslog.Priority.
@@ -161,13 +209,66 @@ func NewSyslogSinkFromConfig(address, facility, tag, minSeverity string) (*Syslo
 	return NewSyslogSink(address, opts...)
 }
 
-// Emit writes an event to syslog at the appropriate priority level.
+// Emit enqueues an event for async delivery.
 // Events below the minimum severity are silently dropped.
+// Returns ErrSyslogQueueFull if the queue is at capacity, or an error if the sink is closed.
 func (s *SyslogSink) Emit(_ context.Context, event Event) error {
+	if s == nil || s.writer == nil || s.queue == nil {
+		return errors.New("emit: syslog sink not initialized")
+	}
 	if event.Severity < s.minSev {
 		return nil
 	}
 
+	s.closeMu.Lock()
+	if s.closed {
+		s.closeMu.Unlock()
+		return errors.New(errSyslogClosed)
+	}
+	select {
+	case s.queue <- event:
+		s.closeMu.Unlock()
+		return nil
+	default:
+		s.closeMu.Unlock()
+		return ErrSyslogQueueFull
+	}
+}
+
+func (s *SyslogSink) run() {
+	defer s.closeWG.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "emit: syslog goroutine panic: %v\n", r)
+		}
+	}()
+
+	for {
+		select {
+		case event := <-s.queue:
+			s.send(event)
+		case <-s.done:
+			s.drain()
+			return
+		}
+	}
+}
+
+func (s *SyslogSink) drain() {
+	deadline := time.After(syslogDrainTimeout)
+	for {
+		select {
+		case event := <-s.queue:
+			s.send(event)
+		case <-deadline:
+			return
+		default:
+			return
+		}
+	}
+}
+
+func (s *SyslogSink) send(event Event) {
 	payload := webhookPayload{
 		Severity:  event.Severity.String(),
 		Type:      event.Type,
@@ -178,18 +279,23 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 
 	msg, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("emit: syslog marshal: %w", err)
+		_, _ = fmt.Fprintf(os.Stderr, "emit: syslog marshal error: %v\n", err)
+		return
 	}
 
 	message := string(msg)
+	var writeErr error
 
 	switch event.Severity {
 	case SeverityCritical:
-		return s.writer.Crit(message)
+		writeErr = s.writer.Crit(message)
 	case SeverityWarn:
-		return s.writer.Warning(message)
+		writeErr = s.writer.Warning(message)
 	default:
-		return s.writer.Info(message)
+		writeErr = s.writer.Info(message)
+	}
+	if writeErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "emit: syslog send error: %v\n", writeErr)
 	}
 }
 
@@ -198,5 +304,17 @@ func (s *SyslogSink) Close() error {
 	if s == nil || s.writer == nil {
 		return nil
 	}
-	return s.writer.Close()
+
+	var closeErr error
+	s.closeOnce.Do(func() {
+		if s.done != nil {
+			s.closeMu.Lock()
+			s.closed = true
+			s.closeMu.Unlock()
+			close(s.done)
+			s.closeWG.Wait()
+		}
+		closeErr = s.writer.Close()
+	})
+	return closeErr
 }

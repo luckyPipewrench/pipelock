@@ -1030,6 +1030,7 @@ func TestInterceptTunnel_SuppressedInjectionPassesThrough(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.Suppress = []config.SuppressEntry{
 		{Rule: "Prompt Injection", Path: "*", Reason: "test suppression"},
+		{Rule: "Cross-Lingual Instruction Override", Path: "*", Reason: "test suppression"},
 	}
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })

@@ -4238,7 +4238,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if sc.ResponseScanningEnabled() && isHTML {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
-			rawResult := sc.ScanResponse(r.Context(), hidden)
+			rawResult := sc.ScanResponseWithSuppress(r.Context(), hidden, displayURL, cfg.Suppress)
+			recordSuppressedResponseScanExempts(p.metrics, rawResult.SuppressedMatches, TransportFetch)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
 			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
@@ -4298,21 +4299,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Exempt domains are still scanned for visibility (findings logged as warn)
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
-		scanResult := sc.ScanResponse(r.Context(), content)
-
-		// Filter out suppressed findings before deriving taint or capture action.
-		if !scanResult.Clean && len(cfg.Suppress) > 0 {
-			var kept []scanner.ResponseMatch
-			for _, m := range scanResult.Matches {
-				if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
-					kept = append(kept, m)
-				} else {
-					p.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportFetch)
-				}
-			}
-			scanResult.Matches = kept
-			scanResult.Clean = len(kept) == 0
-		}
+		scanResult := sc.ScanResponseWithSuppress(r.Context(), content, displayURL, cfg.Suppress)
+		recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportFetch)
 		if !scanResult.Clean {
 			responsePromptHit = true
 		}
@@ -4393,6 +4381,25 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func recordSuppressedResponseScanExempts(m *metrics.Metrics, matches []scanner.ResponseMatch, transport string) {
+	if len(matches) == 0 {
+		return
+	}
+	// A single suppressed finding re-matches across multiple normalization
+	// passes of the cascade (core, primary, leetspeak, vowel-fold, ...), so
+	// SuppressedMatches can carry the same pattern several times. Dedupe by
+	// pattern name so the exempt counter reflects distinct suppressed patterns
+	// per response rather than once per normalization view.
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		if _, ok := seen[match.PatternName]; ok {
+			continue
+		}
+		seen[match.PatternName] = struct{}{}
+		m.RecordResponseScanExempt(ExemptReasonSuppress, transport)
+	}
+}
+
 // filterAndActOnResponseScan applies suppression filtering and the configured
 // response scanning action to a scan result. Returns blocked=true if the
 // request was blocked (HTTP response already written), the output content
@@ -4416,11 +4423,9 @@ func (p *Proxy) filterAndActOnResponseScan(
 		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}
 
-	// Suppress filter: serves both the main response scan path (where the caller's
-	// inline loop already stripped suppressed matches before the capture observer) and
-	// the hidden content scan path (where this is the only suppress point). For the
-	// main path, no suppressed matches remain so this loop is a no-op. For the hidden
-	// content path, this loop filters and emits the metric correctly.
+	// Defense-in-depth for legacy callers that still hand in an unfiltered
+	// ScanResponse result. Current proxy response paths use ScanResponseWithSuppress
+	// so suppression cannot mask later normalization passes.
 	if !result.Clean && len(cfg.Suppress) > 0 {
 		var kept []scanner.ResponseMatch
 		for _, m := range result.Matches {

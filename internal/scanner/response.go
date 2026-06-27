@@ -20,7 +20,8 @@ import (
 type ResponseScanResult struct {
 	Clean              bool
 	Matches            []ResponseMatch
-	TransformedContent string // set for strip and ask actions
+	SuppressedMatches  []ResponseMatch `json:"-"`
+	TransformedContent string          // set for strip and ask actions
 
 	// StegoDetected fires when the raw response carries combining-mark density
 	// at or above normalize.ZalgoSuspiciousThreshold. The pattern-matching
@@ -70,6 +71,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 // normalized hit on the same content.
 func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
 	original := content
+	var suppressedMatches []ResponseMatch
 	filterSuppressed := func(matches []ResponseMatch) []ResponseMatch {
 		if len(matches) == 0 || len(suppress) == 0 || suppressTarget == "" {
 			return matches
@@ -78,6 +80,8 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 		for _, match := range matches {
 			if !config.IsSuppressed(match.PatternName, suppressTarget, suppress) {
 				kept = append(kept, match)
+			} else {
+				suppressedMatches = append(suppressedMatches, match)
 			}
 		}
 		return kept
@@ -94,6 +98,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	stegoDensity := normalize.ZalgoDensity(original)
 	stegoDetected := stegoDensity >= normalize.ZalgoSuspiciousThreshold
 	defer func() {
+		out.SuppressedMatches = suppressedMatches
 		out.StegoDensity = stegoDensity
 		out.StegoDetected = stegoDetected
 	}()

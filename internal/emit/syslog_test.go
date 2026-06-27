@@ -370,6 +370,11 @@ func TestSyslogSink_DrainTimeoutBoundsQueuedSend(t *testing.T) {
 
 func TestSyslogSink_QueueSizeClamped(t *testing.T) {
 	cfg := &syslogConfig{}
+	WithSyslogQueueSize(0)(cfg)
+	if cfg.queueLen != DefaultSyslogQueueSize {
+		t.Fatalf("queueLen = %d, want default %d", cfg.queueLen, DefaultSyslogQueueSize)
+	}
+
 	WithSyslogQueueSize(MaxSyslogQueueSize + 1)(cfg)
 	if cfg.queueLen != MaxSyslogQueueSize {
 		t.Fatalf("queueLen = %d, want %d", cfg.queueLen, MaxSyslogQueueSize)
@@ -380,6 +385,55 @@ func TestSyslogSink_QueueSizeClamped(t *testing.T) {
 	defer func() { _ = sink.Close() }()
 	if cap(sink.queue) != MaxSyslogQueueSize {
 		t.Fatalf("queue capacity = %d, want %d", cap(sink.queue), MaxSyslogQueueSize)
+	}
+}
+
+func TestSyslogSink_EmitRejectsUninitialized(t *testing.T) {
+	var nilSink *SyslogSink
+	if err := nilSink.Emit(context.Background(), Event{}); err == nil {
+		t.Fatal("expected nil sink Emit to fail")
+	}
+
+	emptySink := &SyslogSink{}
+	if err := emptySink.Emit(context.Background(), Event{}); err == nil {
+		t.Fatal("expected empty sink Emit to fail")
+	}
+}
+
+func TestSyslogSink_SafeSendBeforeExpiredDeadline(t *testing.T) {
+	writer := &countingSyslogWriter{}
+	sink := &SyslogSink{writer: writer}
+
+	ok := sink.safeSendBefore(syslogMessage{
+		severity:  SeverityWarn,
+		eventType: testEventBlocked,
+		message:   "{}",
+	}, time.Now().Add(-time.Nanosecond))
+	if ok {
+		t.Fatal("safeSendBefore returned true after deadline")
+	}
+	if got := writer.count.Load(); got != 0 {
+		t.Fatalf("writer calls = %d, want 0", got)
+	}
+}
+
+func TestSyslogSink_LogsWriteErrorAndReturnsCloseError(t *testing.T) {
+	writer := &errorSyslogWriter{closeErr: errSyslogWriterFailure}
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
+
+	if err := sink.Emit(context.Background(), Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{},
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if err := sink.Close(); !errors.Is(err, errSyslogWriterFailure) {
+		t.Fatalf("Close error = %v, want %v", err, errSyslogWriterFailure)
+	}
+	if got := writer.count.Load(); got != 1 {
+		t.Fatalf("writer calls = %d, want 1", got)
 	}
 }
 
@@ -788,4 +842,32 @@ func (w *panicOnceSyslogWriter) write(_ string) error {
 		panic("syslog write panic")
 	}
 	return nil
+}
+
+var errSyslogWriterFailure = errors.New("syslog writer failure")
+
+type errorSyslogWriter struct {
+	count    atomic.Int64
+	closeErr error
+}
+
+func (w *errorSyslogWriter) Crit(msg string) error {
+	return w.write(msg)
+}
+
+func (w *errorSyslogWriter) Warning(msg string) error {
+	return w.write(msg)
+}
+
+func (w *errorSyslogWriter) Info(msg string) error {
+	return w.write(msg)
+}
+
+func (w *errorSyslogWriter) Close() error {
+	return w.closeErr
+}
+
+func (w *errorSyslogWriter) write(_ string) error {
+	w.count.Add(1)
+	return errSyslogWriterFailure
 }

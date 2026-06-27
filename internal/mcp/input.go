@@ -1360,9 +1360,9 @@ func jsonRPCErrorCodeForInputError(errText string) int {
 // injectMCPEnvelope injects a mediation envelope into a JSON-RPC message's
 // params._meta field. Returns the modified message bytes, or the original
 // message unmodified if the message is not an envelope-bearing shape.
-// Malformed or non-object params fail closed through a returned error. A
-// malformed _meta member is normalized to a fresh object so attacker-controlled
-// metadata cannot suppress required mediation.
+// Malformed, null, or non-object params fail closed through a returned error.
+// A malformed _meta member is normalized to a fresh object so
+// attacker-controlled metadata cannot suppress required mediation.
 func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope.BuildOpts) ([]byte, error) {
 	if emitter == nil {
 		return msg, nil
@@ -1382,8 +1382,13 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
 		return msg, fmt.Errorf("parse MCP params for mediation envelope: %w", err)
 	}
+	// json.Unmarshal of JSON null into a map succeeds with a nil map, so
+	// params:null reaches here without an error. Fail closed rather than
+	// normalizing it to an object: a tools/call never legitimately carries
+	// null params, and silently rewriting it would diverge from the
+	// non-object fail-closed path above.
 	if params == nil {
-		params = make(map[string]json.RawMessage)
+		return msg, fmt.Errorf("parse MCP params for mediation envelope: params must be a JSON object")
 	}
 
 	// Use json.RawMessage to preserve existing _meta members byte-for-byte.

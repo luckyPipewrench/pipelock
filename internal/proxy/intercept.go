@@ -176,7 +176,7 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 	e := ic.Proxy.receiptEmitterPtr.Load()
 	ic.Proxy.reloadMu.RUnlock()
 	if e == nil {
-		return fmt.Errorf("receipt emitter unavailable")
+		return errReceiptEmitterUnavailable
 	}
 	if err := e.Emit(opts); err != nil {
 		if ic.Logger != nil {
@@ -197,6 +197,12 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 
 func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, actx audit.LogContext, opts receipt.EmitOpts) bool {
 	if err := interceptEmitReceipt(ic, opts); err != nil && ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+		if errors.Is(err, errReceiptEmitterUnavailable) && ic.Proxy != nil {
+			ic.Proxy.metrics.RecordEmitFailure(receipt.FailReasonUnavailable)
+		}
+		if ic.Proxy != nil {
+			ic.Proxy.metrics.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), opts.Transport)
+		}
 		blockedErr := newReceiptEmissionBlockedRequest(err)
 		ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,

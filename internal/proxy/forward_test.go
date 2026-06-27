@@ -555,7 +555,7 @@ func TestForwardProxy_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 		cfg.ResponseScanning.Enabled = false
 	})
 	defer cleanup()
-	rph := newReceiptProxyHelper(t)
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	if err := rph.rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -572,6 +572,37 @@ func TestForwardProxy_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	if got := hits.Load(); got != 0 {
 		t.Fatalf("upstream hits = %d, want 0", got)
 	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
+}
+
+func TestForwardProxy_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="forward"} 1`)
 }
 
 func TestConnect_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
@@ -581,7 +612,11 @@ func TestConnect_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("target listen: %v", err)
 	}
-	defer targetLn.Close() //nolint:errcheck // test cleanup
+	t.Cleanup(func() {
+		if closeErr := targetLn.Close(); closeErr != nil {
+			t.Errorf("target listener close: %v", closeErr)
+		}
+	})
 	go func() {
 		for {
 			conn, err := targetLn.Accept()
@@ -597,21 +632,29 @@ func TestConnect_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 		cfg.FlightRecorder.RequireReceipts = true
 	})
 	defer cleanup()
-	rph := newReceiptProxyHelper(t)
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	if err := rph.rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
 	p.receiptEmitterPtr.Store(rph.emitter)
 
 	conn := dialProxy(t, proxyAddr)
-	defer conn.Close() //nolint:errcheck // test cleanup
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("proxy connection close: %v", closeErr)
+		}
+	}()
 	target := targetLn.Addr().String()
 	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		t.Fatalf("read CONNECT response: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("CONNECT response body close: %v", closeErr)
+		}
+	}()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("CONNECT status = %d, want 403", resp.StatusCode)
 	}
@@ -621,6 +664,66 @@ func TestConnect_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	if got := hits.Load(); got != 0 {
 		t.Fatalf("target hits = %d, want 0", got)
 	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="connect"} 1`)
+}
+
+func TestConnect_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
+	var hits atomic.Int32
+	lc := net.ListenConfig{}
+	targetLn, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("target listen: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := targetLn.Close(); closeErr != nil {
+			t.Errorf("target listener close: %v", closeErr)
+		}
+	})
+	go func() {
+		for {
+			conn, acceptErr := targetLn.Accept()
+			if acceptErr != nil {
+				return
+			}
+			hits.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("proxy connection close: %v", closeErr)
+		}
+	}()
+	target := targetLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("CONNECT response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("target hits = %d, want 0", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="connect"} 1`)
 }
 
 func TestForwardProxy_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
@@ -636,7 +739,7 @@ func TestForwardProxy_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
 		cfg.ResponseScanning.Enabled = false
 	})
 	defer cleanup()
-	rph := newReceiptProxyHelper(t)
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	if err := rph.rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -650,6 +753,8 @@ func TestForwardProxy_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
 	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
 }
 
 func TestForwardProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {

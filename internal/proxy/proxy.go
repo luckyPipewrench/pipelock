@@ -4230,6 +4230,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// URL. An exempt origin that 302s to a non-exempt host must still be scanned.
 	finalHost := resp.Request.URL.Hostname()
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
+	suppressedResponseScanExempts := make(map[string]struct{})
 	if sc.ResponseScanningEnabled() && responseScanExempt {
 		log.LogResponseScanExempt(actx, finalHost)
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportFetch)
@@ -4239,7 +4240,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponseWithSuppress(r.Context(), hidden, displayURL, cfg.Suppress)
-			recordSuppressedResponseScanExempts(p.metrics, rawResult.SuppressedMatches, TransportFetch)
+			recordSuppressedResponseScanExemptsForResponse(p.metrics, rawResult.SuppressedMatches, TransportFetch, suppressedResponseScanExempts)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
 			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
@@ -4300,7 +4301,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponseWithSuppress(r.Context(), content, displayURL, cfg.Suppress)
-		recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportFetch)
+		recordSuppressedResponseScanExemptsForResponse(p.metrics, scanResult.SuppressedMatches, TransportFetch, suppressedResponseScanExempts)
 		if !scanResult.Clean {
 			responsePromptHit = true
 		}
@@ -4382,6 +4383,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 }
 
 func recordSuppressedResponseScanExempts(m *metrics.Metrics, matches []scanner.ResponseMatch, transport string) {
+	recordSuppressedResponseScanExemptsForResponse(m, matches, transport, nil)
+}
+
+func recordSuppressedResponseScanExemptsForResponse(m *metrics.Metrics, matches []scanner.ResponseMatch, transport string, seen map[string]struct{}) {
 	if len(matches) == 0 {
 		return
 	}
@@ -4390,7 +4395,9 @@ func recordSuppressedResponseScanExempts(m *metrics.Metrics, matches []scanner.R
 	// SuppressedMatches can carry the same pattern several times. Dedupe by
 	// pattern name so the exempt counter reflects distinct suppressed patterns
 	// per response rather than once per normalization view.
-	seen := make(map[string]struct{}, len(matches))
+	if seen == nil {
+		seen = make(map[string]struct{}, len(matches))
+	}
 	for _, match := range matches {
 		if _, ok := seen[match.PatternName]; ok {
 			continue

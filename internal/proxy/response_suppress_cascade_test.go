@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -59,16 +60,61 @@ func TestFetchResponseSuppressionDoesNotMaskEncodedFinding(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403; body: %s", w.Code, w.Body.String())
 	}
-	assertMetricsContainPrefix(t, m, `pipelock_response_scan_exempt_total{reason="suppress",transport="fetch"} `)
+	assertMetricSampleValue(t, m, `pipelock_response_scan_exempt_total{reason="suppress",transport="fetch"} `, 1)
 }
 
-func assertMetricsContainPrefix(t *testing.T, m *metrics.Metrics, wantPrefix string) {
+func TestFetchSuppressedMetricDedupesHiddenAndVisibleContent(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<!doctype html><html><body><!-- system: benign local role label --><p>system: benign local role label</p></body></html>`)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	suppressSystemOverride(cfg)
+
+	m := metrics.New()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL, nil)
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	assertMetricSampleValue(t, m, `pipelock_response_scan_exempt_total{reason="suppress",transport="fetch"} `, 1)
+}
+
+func assertMetricSampleValue(t *testing.T, m *metrics.Metrics, wantPrefix string, want float64) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 	for _, line := range strings.Split(body, "\n") {
 		if strings.HasPrefix(line, wantPrefix) {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				t.Fatalf("metric line %q has %d fields, want 2", line, len(fields))
+			}
+			got, err := strconv.ParseFloat(fields[1], 64)
+			if err != nil {
+				t.Fatalf("parse metric sample from %q: %v", line, err)
+			}
+			if got != want {
+				t.Fatalf("metric %q = %v, want %v", wantPrefix, got, want)
+			}
 			return
 		}
 	}

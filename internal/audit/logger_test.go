@@ -59,6 +59,16 @@ func (c *collectingSink) lastEvent() (emit.Event, bool) {
 	return c.events[len(c.events)-1], true
 }
 
+func (c *collectingSink) onlyEvent(t *testing.T) emit.Event {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.events) != 1 {
+		t.Fatalf("got %d emitted events, want exactly 1", len(c.events))
+	}
+	return c.events[0]
+}
+
 func TestNew_StdoutJSON(t *testing.T) {
 	logger, err := New("json", "stdout", "", true, true)
 	if err != nil {
@@ -1707,6 +1717,374 @@ func assertEmitterContextFields(t *testing.T, ev emit.Event, wantKey string, wan
 	for _, key := range absent {
 		if _, exists := ev.Fields[key]; exists {
 			t.Fatalf("expected %q to be absent, got %v", key, ev.Fields[key])
+		}
+	}
+}
+
+func assertEmitterFields(t *testing.T, ev emit.Event, wantType EventType, wantSeverity emit.Severity, want map[string]any) {
+	t.Helper()
+	if ev.Type != string(wantType) {
+		t.Fatalf("type = %q, want %q", ev.Type, wantType)
+	}
+	if ev.Severity != wantSeverity {
+		t.Fatalf("severity = %s, want %s", ev.Severity, wantSeverity)
+	}
+	for key, wantValue := range want {
+		if got := ev.Fields[key]; got != wantValue {
+			t.Fatalf("fields[%s] = %v, want %v", key, got, wantValue)
+		}
+	}
+}
+
+func TestEmit_OperationalLifecycleEvents(t *testing.T) {
+	tests := []struct {
+		name     string
+		wantType EventType
+		log      func(*Logger)
+		want     map[string]any
+	}{
+		{
+			name:     "startup",
+			wantType: EventStartup,
+			log: func(l *Logger) {
+				l.LogStartup(":8888", "balanced", testVersion, testConfigHash)
+			},
+			want: map[string]any{
+				"listen":      ":8888",
+				"mode":        "balanced",
+				"version":     testVersion,
+				"config_hash": testConfigHash,
+			},
+		},
+		{
+			name:     "shutdown",
+			wantType: EventShutdown,
+			log: func(l *Logger) {
+				l.LogShutdown("signal")
+			},
+			want: map[string]any{
+				"reason": "signal",
+			},
+		},
+		{
+			name:     "agent listener",
+			wantType: EventAgentListener,
+			log: func(l *Logger) {
+				l.LogAgentListener("127.0.0.1:9100", "strict-bot")
+			},
+			want: map[string]any{
+				"listen": "127.0.0.1:9100",
+				"agent":  "strict-bot",
+			},
+		},
+		{
+			name:     "redirect",
+			wantType: EventRedirect,
+			log: func(l *Logger) {
+				l.LogRedirect("https://example.com", "https://www.example.com", testClientIP, testReqID, testAgentName, 2)
+			},
+			want: map[string]any{
+				"original_url": "https://example.com",
+				"redirect_url": "https://www.example.com",
+				"client_ip":    testClientIP,
+				"request_id":   testReqID,
+				"agent":        testAgentName,
+				"hop":          2,
+			},
+		},
+		{
+			name:     "websocket open",
+			wantType: EventWSOpen,
+			log: func(l *Logger) {
+				l.LogWSOpen("ws://example.com/stream", testClientIP, testReqID, testAgentName)
+			},
+			want: map[string]any{
+				"target":     "ws://example.com/stream",
+				"client_ip":  testClientIP,
+				"request_id": testReqID,
+				"agent":      testAgentName,
+			},
+		},
+		{
+			name:     "websocket close",
+			wantType: EventWSClose,
+			log: func(l *Logger) {
+				l.LogWSClose(WSCloseEvent{
+					Target:         "ws://example.com/stream",
+					ClientIP:       testClientIP,
+					RequestID:      testReqID,
+					Agent:          testAgentName,
+					ClientToServer: 11,
+					ServerToClient: 22,
+					TextFrames:     3,
+					BinaryFrames:   4,
+					Duration:       250 * time.Millisecond,
+				})
+			},
+			want: map[string]any{
+				"target":                 "ws://example.com/stream",
+				"client_ip":              testClientIP,
+				"request_id":             testReqID,
+				"agent":                  testAgentName,
+				"client_to_server_bytes": int64(11),
+				"server_to_client_bytes": int64(22),
+				"text_frames":            int64(3),
+				"binary_frames":          int64(4),
+				"duration_ms":            int64(250),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, sink := newLoggerWithEmitter(t)
+			defer logger.Close()
+
+			tt.log(logger)
+
+			ev := sink.onlyEvent(t)
+			assertEmitterFields(t, ev, tt.wantType, emit.SeverityInfo, tt.want)
+			if ev.InstanceID != "test-instance" {
+				t.Fatalf("instance_id = %q, want test-instance", ev.InstanceID)
+			}
+		})
+	}
+}
+
+func TestEmit_WebSocketLifecycleHonorsIncludeAllowedFalse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+	logger, err := New("json", "file", path, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	sink := &collectingSink{}
+	emitter := emit.NewEmitter("test", sink)
+	logger.SetEmitter(emitter)
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	logger.LogWSOpen("ws://example.com/stream", testClientIP, testReqID, testAgentName)
+	logger.LogWSClose(WSCloseEvent{
+		Target:         "ws://example.com/stream",
+		ClientIP:       testClientIP,
+		RequestID:      testReqID,
+		Agent:          testAgentName,
+		ClientToServer: 11,
+		ServerToClient: 22,
+		TextFrames:     3,
+		BinaryFrames:   4,
+		Duration:       250 * time.Millisecond,
+	})
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 0 {
+		t.Fatalf("got %d emitted events, want none", len(sink.events))
+	}
+}
+
+func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
+	tests := []struct {
+		name     string
+		wantType EventType
+		log      func(*Logger)
+	}{
+		{
+			name:     "dlp warn",
+			wantType: EventDLPWarn,
+			log: func(l *Logger) {
+				l.LogDLPWarn(
+					LogContext{method: http.MethodGet, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-dlp-warn", agent: testAgentName},
+					"staged-key",
+					"high",
+					"fetch",
+				)
+			},
+		},
+		{
+			name:     "address protection",
+			wantType: EventAddressProtection,
+			log: func(l *Logger) {
+				l.LogBodyScan(
+					LogContext{method: http.MethodPost, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-address", agent: testAgentName},
+					EventAddressProtection,
+					actionBlock,
+					1,
+					[]string{"ETH lookalike detected"},
+				)
+			},
+		},
+		{
+			name:     "body dlp",
+			wantType: EventBodyDLP,
+			log: func(l *Logger) {
+				l.LogBodyDLP(
+					LogContext{method: http.MethodPost, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-body", agent: testAgentName},
+					actionBlock,
+					1,
+					[]string{"api-key"},
+					nil,
+				)
+			},
+		},
+		{
+			name:     "body prompt injection",
+			wantType: EventBodyPromptInjection,
+			log: func(l *Logger) {
+				l.LogBodyScan(
+					LogContext{method: http.MethodPost, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-body-inj", agent: testAgentName},
+					EventBodyPromptInjection,
+					actionBlock,
+					1,
+					[]string{"Prompt Injection"},
+				)
+			},
+		},
+		{
+			name:     "header dlp",
+			wantType: EventHeaderDLP,
+			log: func(l *Logger) {
+				l.LogHeaderDLP(
+					LogContext{method: http.MethodGet, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-header", agent: testAgentName},
+					"Authorization",
+					actionBlock,
+					[]string{"bearer-token"},
+					nil,
+				)
+			},
+		},
+		{
+			name:     "sni mismatch",
+			wantType: EventSNIMismatch,
+			log: func(l *Logger) {
+				l.LogSNIMismatch("allowed.com", "evil.com", testClientIP, testReqID, testAgentName, "mismatch")
+			},
+		},
+		{
+			name:     "taint decision",
+			wantType: EventTaintDecision,
+			log: func(l *Logger) {
+				l.LogTaintDecision(
+					LogContext{method: http.MethodPost, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-taint", agent: testAgentName},
+					TaintDecision{
+						TaintLevel:  "high",
+						ActionClass: "write",
+						Sensitivity: "secret",
+						Authority:   "remote_content",
+						Decision:    actionBlock,
+						Reason:      "tainted source",
+					},
+				)
+			},
+		},
+		{
+			name:     "airlock enter",
+			wantType: EventAirlockEnter,
+			log: func(l *Logger) {
+				l.LogAirlockEnter("sess-1", "quarantine", "response_scan", testClientIP, testReqID)
+			},
+		},
+		{
+			name:     "airlock deny",
+			wantType: EventAirlockDeny,
+			log: func(l *Logger) {
+				l.LogAirlockDeny("sess-1", "quarantine", "fetch", http.MethodGet, testClientIP, testReqID)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, sink := newLoggerWithEmitter(t)
+			defer logger.Close()
+
+			tt.log(logger)
+
+			ev := sink.onlyEvent(t)
+			if ev.Type != string(tt.wantType) {
+				t.Fatalf("type = %q, want %q", ev.Type, tt.wantType)
+			}
+			if ev.Severity != emit.SeverityWarn {
+				t.Fatalf("severity = %s, want warn", ev.Severity)
+			}
+		})
+	}
+}
+
+func TestAuditEmitLookupEventsHaveExplicitSeverity(t *testing.T) {
+	lookupEvents := map[EventType]string{
+		EventStartup:             emit.EventStartup,
+		EventShutdown:            emit.EventShutdown,
+		EventAllowed:             emit.EventAllowed,
+		EventBlocked:             emit.EventBlocked,
+		EventDLPWarn:             emit.EventDLPWarn,
+		EventError:               emit.EventError,
+		EventAnomaly:             emit.EventAnomaly,
+		EventResponseScanExempt:  emit.EventResponseScanExempt,
+		EventMediaExposure:       emit.EventMediaExposure,
+		EventResponseScan:        emit.EventResponseScan,
+		EventTaintDecision:       emit.EventTaintDecision,
+		EventTunnelOpen:          emit.EventTunnelOpen,
+		EventTunnelClose:         emit.EventTunnelClose,
+		EventForwardHTTP:         emit.EventForwardHTTP,
+		EventRedirect:            emit.EventRedirect,
+		EventToolRedirect:        emit.EventToolRedirect,
+		EventConfigReload:        emit.EventConfigReload,
+		EventAgentListener:       emit.EventAgentListener,
+		EventWSOpen:              emit.EventWSOpen,
+		EventWSClose:             emit.EventWSClose,
+		EventWSBlocked:           emit.EventWSBlocked,
+		EventWSScan:              emit.EventWSScan,
+		EventSessionAnomaly:      emit.EventSessionAnomaly,
+		EventMCPUnknownTool:      emit.EventMCPUnknownTool,
+		EventSNIMismatch:         emit.EventSNIMismatch,
+		EventKillSwitchDeny:      emit.EventKillSwitchDeny,
+		EventBodyDLP:             emit.EventBodyDLP,
+		EventBodyPromptInjection: emit.EventBodyPromptInjection,
+		EventAddressProtection:   emit.EventAddressProtection,
+		EventHeaderDLP:           emit.EventHeaderDLP,
+		EventSessionAdmin:        emit.EventSessionAdmin,
+		EventAirlockEnter:        emit.EventAirlockEnter,
+		EventAirlockDeny:         emit.EventAirlockDeny,
+		EventAirlockDeescalate:   emit.EventAirlockDeescalate,
+		EventShieldRewrite:       emit.EventShieldRewrite,
+	}
+
+	for auditEvent, emitEvent := range lookupEvents {
+		t.Run(string(auditEvent), func(t *testing.T) {
+			if string(auditEvent) != emitEvent {
+				t.Fatalf("audit event %q does not match emit event %q", auditEvent, emitEvent)
+			}
+			if _, ok := emit.EventSeverity[emitEvent]; !ok {
+				t.Fatalf("emit.EventSeverity missing %q", emitEvent)
+			}
+		})
+	}
+}
+
+func TestEmit_OperationalLifecycleEventsSanitizeFields(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogRedirect(
+		"https://example.com/\x1b[2Jtoken",
+		"https://www.example.com/\x1b[31mnext",
+		"10.0.0\x1b[2J.1",
+		"req-\x1b[0m1",
+		"agent-\x1b[1mbot",
+		1,
+	)
+
+	ev := sink.onlyEvent(t)
+	for _, field := range []string{"original_url", "redirect_url", "client_ip", "request_id", "agent"} {
+		value, ok := ev.Fields[field].(string)
+		if !ok {
+			t.Fatalf("fields[%s] = %T, want string", field, ev.Fields[field])
+		}
+		if strings.Contains(value, "\x1b") {
+			t.Fatalf("fields[%s] contains ANSI escape: %q", field, value)
 		}
 	}
 }

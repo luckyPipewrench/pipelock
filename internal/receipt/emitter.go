@@ -55,6 +55,11 @@ const (
 	FailReasonRecord = "record"
 	// FailReasonSealed is an emit attempt after the transcript root was emitted.
 	FailReasonSealed = "sealed"
+	// FailReasonUnavailable is a required-receipt emission attempt when no
+	// receipt emitter is configured. Best-effort receipt paths intentionally
+	// remain silent when receipts are disabled; this reason is for fail-closed
+	// require_receipts decisions only.
+	FailReasonUnavailable = "unavailable"
 )
 
 // Emitter produces signed action receipts and writes them to the flight recorder.

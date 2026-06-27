@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -76,9 +78,15 @@ func TestRunContainRun_VerifiesEmitsPostureThenLaunches(t *testing.T) {
 			launched = append([]string(nil), args...)
 			return nil
 		},
-		emitPosture: func(configFile, outputDir string) (string, error) {
+		emitPosture: func(configFile, outputDir string, probe *probeEnv, postureArgs []string) (string, error) {
 			postureConfig = configFile
 			postureOutput = outputDir
+			if probe != env {
+				t.Fatal("posture emitter did not receive probe env")
+			}
+			if got, want := strings.Join(postureArgs, " "), "claude --help"; got != want {
+				t.Fatalf("posture args = %q, want %q", got, want)
+			}
 			return outputDir + "/proof.json", nil
 		},
 	}
@@ -109,7 +117,7 @@ func TestRunContainRun_RejectsIncompleteEnvironment(t *testing.T) {
 			name: "missing probe",
 			env: containRunEnv{
 				launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-				emitPosture: func(string, string) (string, error) { return "/unused", nil },
+				emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
 			},
 			args: []string{"claude"},
 			want: "preflight environment is missing",
@@ -118,7 +126,7 @@ func TestRunContainRun_RejectsIncompleteEnvironment(t *testing.T) {
 			name: "missing launcher",
 			env: containRunEnv{
 				probe:       allPassEnv(t),
-				emitPosture: func(string, string) (string, error) { return "/unused", nil },
+				emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
 			},
 			args: []string{"claude"},
 			want: "launcher is unavailable",
@@ -137,7 +145,7 @@ func TestRunContainRun_RejectsIncompleteEnvironment(t *testing.T) {
 			env: containRunEnv{
 				probe:       allPassEnv(t),
 				launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-				emitPosture: func(string, string) (string, error) { return "/unused", nil },
+				emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
 			},
 			want: "usage: pipelock contain run",
 		},
@@ -174,7 +182,7 @@ func TestRunContainRun_FailsClosedBeforeLaunchWhenPreflightFails(t *testing.T) {
 			launched = true
 			return nil
 		},
-		emitPosture: func(string, string) (string, error) { return "/unused", nil },
+		emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
 	}
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"claude"})
 	if err == nil || !strings.Contains(err.Error(), "cc_agent_egress_denied") {
@@ -196,7 +204,7 @@ func TestRunContainRun_FailsClosedWhenAgentCanSudoBackOut(t *testing.T) {
 	runEnv := containRunEnv{
 		probe:       env,
 		launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(string, string) (string, error) { return "/unused", nil },
+		emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
 	}
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"claude"})
 	if err == nil || !strings.Contains(err.Error(), containRunPrivilegeProbe) {
@@ -212,7 +220,7 @@ func TestRunContainRun_PostureFailureStopsLaunch(t *testing.T) {
 			launched = true
 			return nil
 		},
-		emitPosture: func(string, string) (string, error) {
+		emitPosture: func(string, string, *probeEnv, []string) (string, error) {
 			return "", errors.New("signing key missing")
 		},
 	}
@@ -230,7 +238,7 @@ func TestRunContainRun_UnregisteredToolStopsBeforePosture(t *testing.T) {
 	runEnv := containRunEnv{
 		probe:  allPassEnv(t),
 		launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(string, string) (string, error) {
+		emitPosture: func(string, string, *probeEnv, []string) (string, error) {
 			posture = true
 			return "/unused", nil
 		},
@@ -305,7 +313,7 @@ func TestRunContainRun_RejectsInvalidToolName(t *testing.T) {
 	runEnv := containRunEnv{
 		probe:       allPassEnv(t),
 		launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
-		emitPosture: func(string, string) (string, error) { return "/unused", nil },
+		emitPosture: func(string, string, *probeEnv, []string) (string, error) { return "/unused", nil },
 	}
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"../claude"})
 	if err == nil || !strings.Contains(err.Error(), "invalid tool name") {
@@ -313,7 +321,7 @@ func TestRunContainRun_RejectsInvalidToolName(t *testing.T) {
 	}
 }
 
-func TestProbeAgentPrivilegeEscapeDenied_SkipPaths(t *testing.T) {
+func TestProbeAgentPrivilegeEscapeDenied_FailPaths(t *testing.T) {
 	tests := []struct {
 		name   string
 		runCmd runCommand
@@ -340,8 +348,8 @@ func TestProbeAgentPrivilegeEscapeDenied_SkipPaths(t *testing.T) {
 			env.runCmd = tt.runCmd
 
 			status, detail := probeAgentPrivilegeEscapeDenied(context.Background(), env)
-			if status != statusSkip {
-				t.Fatalf("status = %s, want %s (%s)", status, statusSkip, detail)
+			if status != statusFail {
+				t.Fatalf("status = %s, want %s (%s)", status, statusFail, detail)
 			}
 			if !strings.Contains(detail, tt.want) {
 				t.Fatalf("detail = %q, want %q", detail, tt.want)
@@ -404,7 +412,8 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	}
 
 	outDir := filepath.Join(dir, "posture")
-	path, err := emitContainRunPosture(cfgPath, outDir)
+	env := allPassEnv(t)
+	path, err := emitContainRunPosture(cfgPath, outDir, env, []string{"claude", "--help"})
 	if err != nil {
 		t.Fatalf("emitContainRunPosture: %v", err)
 	}
@@ -418,6 +427,23 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	if !bytes.Contains(data, []byte(`"signature"`)) {
 		t.Fatalf("proof missing signature: %s", data)
 	}
+	var capsule posturepkg.Capsule
+	if err := json.Unmarshal(data, &capsule); err != nil {
+		t.Fatalf("unmarshal proof: %v", err)
+	}
+	if capsule.Evidence.ContainLaunch == nil {
+		t.Fatalf("proof missing signed contain launch evidence: %s", data)
+	}
+	launch := capsule.Evidence.ContainLaunch
+	if launch.Tool != "claude" || launch.CWD != "/home/"+testAgentUser || launch.Argc != 2 {
+		t.Fatalf("launch evidence = %+v, want claude argc=2 cwd=/home/%s", launch, testAgentUser)
+	}
+	if got, want := strings.Join(launch.TargetGroups, ","), "987,1001"; got != want {
+		t.Fatalf("target groups = %q, want %q", got, want)
+	}
+	if launch.ArgvSHA256 == "" || launch.EnvSHA256 == "" {
+		t.Fatalf("launch evidence missing privacy-preserving hashes: %+v", launch)
+	}
 }
 
 func TestEmitContainRunPosture_EmitFailure(t *testing.T) {
@@ -426,7 +452,7 @@ func TestEmitContainRunPosture_EmitFailure(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, err := emitContainRunPosture(cfgPath, t.TempDir())
+	_, err := emitContainRunPosture(cfgPath, t.TempDir(), allPassEnv(t), []string{"claude"})
 	if err == nil {
 		t.Fatal("expected posture emit error")
 	}
@@ -455,7 +481,7 @@ func TestEmitContainRunPosture_WriteFailure(t *testing.T) {
 		t.Fatalf("write output file: %v", err)
 	}
 
-	_, err = emitContainRunPosture(cfgPath, outputPath)
+	_, err = emitContainRunPosture(cfgPath, outputPath, allPassEnv(t), []string{"claude"})
 	if err == nil {
 		t.Fatal("expected proof write error")
 	}
@@ -465,7 +491,7 @@ func TestEmitContainRunPosture_WriteFailure(t *testing.T) {
 }
 
 func TestEmitContainRunPosture_LoadFailure(t *testing.T) {
-	_, err := emitContainRunPosture(filepath.Join(t.TempDir(), "missing.yaml"), t.TempDir())
+	_, err := emitContainRunPosture(filepath.Join(t.TempDir(), "missing.yaml"), t.TempDir(), allPassEnv(t), []string{"claude"})
 	if err == nil {
 		t.Fatal("expected config load error")
 	}

@@ -58,6 +58,10 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig,
 			fmt.Errorf("%s resolves to uid %d gid %d; refusing to launch a contained tool as root", env.agentUserName, uid, gid))
 	}
+	homeDir, err := cleanContainedAgentHomeDir(env.agentUserName, u.HomeDir)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 	if filepath.Clean(env.launchPath) != defaultLaunchScript {
 		return cliutil.ExitCodeError(cliutil.ExitConfig,
 			fmt.Errorf("contain run launcher path %q does not match expected %s", env.launchPath, defaultLaunchScript))
@@ -65,7 +69,7 @@ func launchContainedAgent(
 	// Resolve the agent's own group set so the child matches what
 	// `sudo -u <agent>` grants via initgroups. Without an explicit setgroups
 	// the child would inherit the launcher's (root's) supplementary groups.
-	groupIDs, err := u.GroupIds()
+	groupIDs, err := groupIDsForEnv(env, u)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve groups for %s: %w", env.agentUserName, err))
 	}
@@ -74,7 +78,7 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
 	}
 
-	cmd := containedAgentCommand(ctx, env.agentUserName, u.HomeDir, uint32(uid), uint32(gid), groups, args, stdin, stdout, stderr)
+	cmd := containedAgentCommand(ctx, env.agentUserName, homeDir, env.port, uint32(uid), uint32(gid), groups, args, stdin, stdout, stderr)
 
 	if err := runContainedAgentCommand(cmd); err != nil {
 		var exitErr *exec.ExitError
@@ -89,6 +93,7 @@ func launchContainedAgent(
 func containedAgentCommand(
 	ctx context.Context,
 	agentUserName, homeDir string,
+	proxyPort int,
 	uid, gid uint32,
 	groups []uint32,
 	args []string,
@@ -101,16 +106,8 @@ func containedAgentCommand(
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-		cmd.Dir = cwd
-	}
-	cmd.Env = []string{
-		"HOME=" + homeDir,
-		"USER=" + agentUserName,
-		"LOGNAME=" + agentUserName,
-		"SHELL=/bin/bash",
-		"PATH=" + agentExecPath(agentUserName),
-	}
+	cmd.Dir = homeDir
+	cmd.Env = containLaunchEnv(agentUserName, homeDir, proxyPort)
 	cmd.SysProcAttr = agentSysProcAttr(uid, gid, groups)
 	return cmd
 }

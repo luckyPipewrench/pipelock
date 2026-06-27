@@ -145,6 +145,7 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		runCmd:        rejectAllRun,
 		dialCtx:       rejectAllDial,
 		lookupUser:    rejectAllLookup,
+		groupIDs:      rejectAllGroupIDs,
 		stat:          os.Stat,
 		readFile:      rejectAllReadFile,
 		selfPath:      rejectAllSelfPath,
@@ -155,6 +156,10 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		opt(env)
 	}
 	return env
+}
+
+func rejectAllGroupIDs(u *user.User) ([]string, error) {
+	return nil, fmt.Errorf("unstubbed group ids for %s", u.Username)
 }
 
 func rejectAllRun(_ context.Context, name string, args ...string) (string, int, error) {
@@ -1584,11 +1589,20 @@ func allPassEnv(t *testing.T) *probeEnv {
 	env.lookupUser = func(name string) (*user.User, error) {
 		switch name {
 		case testProxyUser:
-			return &user.User{Uid: "988", Username: testProxyUser}, nil
+			return &user.User{Uid: "988", Gid: "988", Username: testProxyUser, HomeDir: "/home/" + testProxyUser}, nil
 		case testAgentUser:
-			return &user.User{Uid: "987", Username: testAgentUser}, nil
+			return &user.User{Uid: "987", Gid: "987", Username: testAgentUser, HomeDir: "/home/" + testAgentUser}, nil
 		}
 		return nil, fmt.Errorf("unexpected lookup %q", name)
+	}
+	env.groupIDs = func(u *user.User) ([]string, error) {
+		switch u.Username {
+		case testProxyUser:
+			return []string{"988"}, nil
+		case testAgentUser:
+			return []string{"987", "1001"}, nil
+		}
+		return nil, fmt.Errorf("unexpected group ids for %q", u.Username)
 	}
 
 	// Probe 6: dial succeeds.

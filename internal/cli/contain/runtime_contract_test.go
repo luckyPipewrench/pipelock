@@ -141,6 +141,30 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 	}
 }
 
+func TestContainLaunchEnv_UsesCompleteRuntimeContract(t *testing.T) {
+	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort)
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{
+		"HOME=/home/" + testAgentUser,
+		"USER=" + testAgentUser,
+		"LOGNAME=" + testAgentUser,
+		"SHELL=/bin/bash",
+		"HTTP_PROXY=http://127.0.0.1:8888",
+		"HTTPS_PROXY=http://127.0.0.1:8888",
+		"NO_PROXY=" + contractNoProxy,
+		"SSL_CERT_FILE=" + defaultCABundlePath,
+		"REQUESTS_CA_BUNDLE=" + defaultCABundlePath,
+		"NODE_EXTRA_CA_CERTS=" + defaultCAExportPath,
+		"NODE_OPTIONS=--require " + defaultUndiciShimPath,
+		"NODE_USE_ENV_PROXY=1",
+		"PATH=" + agentExecPath(testAgentUser),
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("contain launch env missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
 func TestRenderProfileScript_ParsesUnderBashAndExports(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	body := renderProfileScript(env)

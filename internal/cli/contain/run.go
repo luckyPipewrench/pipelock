@@ -5,11 +5,16 @@ package contain
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -33,7 +38,7 @@ type containRunOptions struct {
 type containRunEnv struct {
 	probe       *probeEnv
 	launch      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error
-	emitPosture func(configFile, outputDir string) (string, error)
+	emitPosture func(configFile, outputDir string, env *probeEnv, args []string) (string, error)
 }
 
 func defaultContainRunEnv() containRunEnv {
@@ -127,7 +132,7 @@ func runContainRun(
 		return err
 	}
 
-	posturePath, err := env.emitPosture(opts.configFile, opts.postureOutput)
+	posturePath, err := env.emitPosture(opts.configFile, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("emit contain-run posture capsule: %w", err))
 	}
@@ -172,10 +177,10 @@ func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool
 func probeAgentPrivilegeEscapeDenied(ctx context.Context, env *probeEnv) (string, string) {
 	out, code, err := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--", "sudo", "-n", "true")
 	if err != nil {
-		return statusSkip, fmt.Sprintf("sudo privilege-escape canary could not run: %v", err)
+		return statusFail, fmt.Sprintf("sudo privilege-escape canary could not run: %v", err)
 	}
 	if isSudoUserMissing(out) {
-		return statusSkip, fmt.Sprintf("%s user not present; install containment model first", env.agentUserName)
+		return statusFail, fmt.Sprintf("%s user not present; install containment model first", env.agentUserName)
 	}
 	if code == 0 {
 		return statusFail, fmt.Sprintf("%s can run sudo non-interactively; privilege escape is possible", env.agentUserName)
@@ -231,12 +236,16 @@ func parseAgentGIDs(ids []string, primary uint32) ([]uint32, error) {
 	return out, nil
 }
 
-func emitContainRunPosture(configFile, outputDir string) (string, error) {
+func emitContainRunPosture(configFile, outputDir string, env *probeEnv, args []string) (string, error) {
 	cfg, err := config.Load(filepath.Clean(configFile))
 	if err != nil {
 		return "", fmt.Errorf("loading config: %w", err)
 	}
-	capsule, err := posturepkg.Emit(cfg, posturepkg.Options{})
+	launchEvidence, err := containRunLaunchEvidence(env, args)
+	if err != nil {
+		return "", fmt.Errorf("build launch evidence: %w", err)
+	}
+	capsule, err := posturepkg.Emit(cfg, posturepkg.Options{ContainLaunch: &launchEvidence})
 	if err != nil {
 		return "", err
 	}
@@ -245,4 +254,98 @@ func emitContainRunPosture(configFile, outputDir string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainLaunchEvidence, error) {
+	if env == nil {
+		return posturepkg.ContainLaunchEvidence{}, errors.New("probe environment is missing")
+	}
+	if len(args) == 0 {
+		return posturepkg.ContainLaunchEvidence{}, errors.New("launch args are missing")
+	}
+	u, err := env.lookupUser(env.agentUserName)
+	if err != nil {
+		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("lookup %s: %w", env.agentUserName, err)
+	}
+	gid, err := strconv.ParseUint(u.Gid, 10, 32)
+	if err != nil {
+		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("parse gid for %s: %w", env.agentUserName, err)
+	}
+	groupIDs, err := groupIDsForEnv(env, u)
+	if err != nil {
+		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("resolve groups for %s: %w", env.agentUserName, err)
+	}
+	groups, err := parseAgentGIDs(groupIDs, uint32(gid))
+	if err != nil {
+		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("group ids for %s: %w", env.agentUserName, err)
+	}
+	homeDir, err := cleanContainedAgentHomeDir(env.agentUserName, u.HomeDir)
+	if err != nil {
+		return posturepkg.ContainLaunchEvidence{}, err
+	}
+
+	launchEnv := containLaunchEnv(env.agentUserName, homeDir, env.port)
+	envVars := make([]string, 0, len(launchEnv))
+	for _, entry := range launchEnv {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("malformed launch env entry %q", entry)
+		}
+		envVars = append(envVars, name)
+	}
+	argvHash, err := stringSliceSHA256(args)
+	if err != nil {
+		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("hash argv: %w", err)
+	}
+	envHash, err := stringSliceSHA256(launchEnv)
+	if err != nil {
+		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("hash env: %w", err)
+	}
+
+	return posturepkg.ContainLaunchEvidence{
+		Launcher:     defaultLaunchScript,
+		AgentUser:    env.agentUserName,
+		TargetUID:    u.Uid,
+		TargetGID:    u.Gid,
+		TargetGroups: groupIDStrings(groups),
+		Tool:         args[0],
+		Argc:         len(args),
+		ArgvSHA256:   argvHash,
+		CWD:          homeDir,
+		ProxyPort:    env.port,
+		EnvVars:      envVars,
+		EnvSHA256:    envHash,
+	}, nil
+}
+
+func groupIDsForEnv(env *probeEnv, u *user.User) ([]string, error) {
+	if env != nil && env.groupIDs != nil {
+		return env.groupIDs(u)
+	}
+	return realGroupIDs(u)
+}
+
+func groupIDStrings(groups []uint32) []string {
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, strconv.FormatUint(uint64(g), 10))
+	}
+	return out
+}
+
+func cleanContainedAgentHomeDir(agentUserName, homeDir string) (string, error) {
+	clean := filepath.Clean(homeDir)
+	if homeDir == "" || clean == "." || !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("%s home directory %q is not absolute; refusing contained launch", agentUserName, homeDir)
+	}
+	return clean, nil
+}
+
+func stringSliceSHA256(values []string) (string, error) {
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

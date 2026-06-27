@@ -277,6 +277,7 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 		context.Background(),
 		testAgentUser,
 		"/home/"+testAgentUser,
+		defaultProxyPort,
 		966,
 		966,
 		groups,
@@ -295,13 +296,10 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 	if cmd.Stdin != stdin || cmd.Stdout != &stdout || cmd.Stderr != &stderr {
 		t.Fatal("command stdio was not wired through")
 	}
-	wantEnv := []string{
-		"HOME=/home/" + testAgentUser,
-		"USER=" + testAgentUser,
-		"LOGNAME=" + testAgentUser,
-		"SHELL=/bin/bash",
-		"PATH=" + agentExecPath(testAgentUser),
+	if cmd.Dir != "/home/"+testAgentUser {
+		t.Fatalf("dir = %q, want contained agent home", cmd.Dir)
 	}
+	wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort)
 	if got, want := strings.Join(cmd.Env, "\n"), strings.Join(wantEnv, "\n"); got != want {
 		t.Fatalf("env =\n%s\nwant:\n%s", got, want)
 	}

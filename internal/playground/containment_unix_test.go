@@ -7,6 +7,7 @@ package playground_test
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ import (
 func TestLocalEscapeProbe_UnixSocketRefused_NotBlocked(t *testing.T) {
 	t.Parallel()
 
-	socketPath := filepath.Join(t.TempDir(), "closed.sock")
+	socketPath := shortUnixSocketPath(t, "closed.sock")
 	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 	if err != nil {
 		t.Fatalf("create unix socket: %v", err)
@@ -44,7 +45,7 @@ func TestLocalEscapeProbe_UnixSocketRefused_NotBlocked(t *testing.T) {
 func TestLocalEscapeProbe_UnixSocketOpen(t *testing.T) {
 	t.Parallel()
 
-	socketPath := filepath.Join(t.TempDir(), "open.sock")
+	socketPath := shortUnixSocketPath(t, "open.sock")
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen unix socket: %v", err)
@@ -70,4 +71,16 @@ func TestLocalEscapeProbe_UnixSocketOpen(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("accept goroutine did not finish")
 	}
+}
+
+func shortUnixSocketPath(t *testing.T, name string) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("/tmp", "plkux-")
+	if err != nil {
+		t.Fatalf("create short unix socket temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	return filepath.Join(dir, name)
 }

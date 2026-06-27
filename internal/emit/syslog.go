@@ -8,20 +8,83 @@ package emit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/syslog"
 	"net"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
+
+const (
+	DefaultSyslogQueueSize = 64
+	MaxSyslogQueueSize     = 4096
+)
+
+var syslogDrainTimeout = 10 * time.Second
+
+// ErrSyslogQueueFull is returned when the syslog event queue is at capacity.
+var ErrSyslogQueueFull = errors.New("emit: syslog queue full, event dropped")
+
+// ErrSyslogCloseTimeout is returned when Close cannot drain the worker before the timeout.
+var ErrSyslogCloseTimeout = errors.New("emit: syslog close timed out before drain completed")
+
+// ErrSyslogDegraded is returned after a prior async delivery failure.
+// The event may still be accepted for queueing; this error signals that the
+// sink is not currently proving successful delivery.
+var ErrSyslogDegraded = errors.New("emit: syslog sink degraded")
+
+const errSyslogClosed = "emit: syslog sink closed"
+
+type syslogWriter interface {
+	Crit(string) error
+	Warning(string) error
+	Info(string) error
+	Close() error
+}
+
+type syslogMessage struct {
+	severity  Severity
+	eventType string
+	message   string
+}
+
+// SyslogStats reports delivery health for a SyslogSink.
+type SyslogStats struct {
+	Delivered uint64
+	Failed    uint64
+	Dropped   uint64
+	Abandoned uint64
+	Degraded  bool
+	LastError string
+	QueueLen  int
+	QueueCap  int
+}
 
 // SyslogSink sends audit events to a syslog server.
 // It maps emit.Severity to syslog priority levels.
 type SyslogSink struct {
-	writer *syslog.Writer
-	minSev Severity
+	writer    syslogWriter
+	minSev    Severity
+	queue     chan syslogMessage
+	done      chan struct{}
+	closed    bool // guarded by closeMu
+	closeMu   sync.Mutex
+	closeWG   sync.WaitGroup
+	closeOnce sync.Once
+	closeErr  error
+
+	delivered atomic.Uint64
+	failed    atomic.Uint64
+	dropped   atomic.Uint64
+	abandoned atomic.Uint64
+	degraded  atomic.Bool
+	lastErrMu sync.Mutex
+	lastErr   string
 }
 
 // SyslogOption configures a SyslogSink.
@@ -31,6 +94,7 @@ type syslogConfig struct {
 	facility syslog.Priority
 	tag      string
 	minSev   Severity
+	queueLen int
 }
 
 // WithSyslogFacility sets the syslog facility (default LOG_LOCAL0).
@@ -51,6 +115,13 @@ func WithSyslogTag(tag string) SyslogOption {
 func WithSyslogMinSeverity(sev Severity) SyslogOption {
 	return func(c *syslogConfig) {
 		c.minSev = sev
+	}
+}
+
+// WithSyslogQueueSize sets the buffered channel capacity for pending events.
+func WithSyslogQueueSize(n int) SyslogOption {
+	return func(c *syslogConfig) {
+		c.queueLen = normalizeSyslogQueueSize(n)
 	}
 }
 
@@ -80,6 +151,7 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 	cfg := &syslogConfig{
 		facility: syslog.LOG_LOCAL0,
 		tag:      "pipelock",
+		queueLen: DefaultSyslogQueueSize,
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -95,10 +167,31 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 		return nil, fmt.Errorf("emit: syslog dial: %w", err)
 	}
 
-	return &SyslogSink{
+	return newSyslogSink(writer, cfg), nil
+}
+
+func newSyslogSink(writer syslogWriter, cfg *syslogConfig) *SyslogSink {
+	cfg.queueLen = normalizeSyslogQueueSize(cfg.queueLen)
+	s := &SyslogSink{
 		writer: writer,
 		minSev: cfg.minSev,
-	}, nil
+		queue:  make(chan syslogMessage, cfg.queueLen),
+		done:   make(chan struct{}),
+	}
+	s.closeWG.Add(1)
+	go s.run()
+	return s
+}
+
+func normalizeSyslogQueueSize(n int) int {
+	switch {
+	case n <= 0:
+		return DefaultSyslogQueueSize
+	case n > MaxSyslogQueueSize:
+		return MaxSyslogQueueSize
+	default:
+		return n
+	}
 }
 
 // parseFacility converts a facility name string to a syslog.Priority.
@@ -161,13 +254,82 @@ func NewSyslogSinkFromConfig(address, facility, tag, minSeverity string) (*Syslo
 	return NewSyslogSink(address, opts...)
 }
 
-// Emit writes an event to syslog at the appropriate priority level.
+// Emit enqueues an event for async delivery.
 // Events below the minimum severity are silently dropped.
+// Returns ErrSyslogQueueFull if the queue is at capacity, ErrSyslogDegraded if
+// a prior async delivery failed, or an error if the sink is closed.
 func (s *SyslogSink) Emit(_ context.Context, event Event) error {
+	if s == nil || s.writer == nil || s.queue == nil {
+		return errors.New("emit: syslog sink not initialized")
+	}
 	if event.Severity < s.minSev {
 		return nil
 	}
+	msg, err := makeSyslogMessage(event)
+	if err != nil {
+		return err
+	}
 
+	s.closeMu.Lock()
+	if s.closed {
+		s.closeMu.Unlock()
+		return errors.New(errSyslogClosed)
+	}
+	select {
+	case s.queue <- msg:
+		degraded := s.degraded.Load()
+		s.closeMu.Unlock()
+		if degraded {
+			return ErrSyslogDegraded
+		}
+		return nil
+	default:
+		s.closeMu.Unlock()
+		s.recordDropped("queue_full", msg, nil)
+		return ErrSyslogQueueFull
+	}
+}
+
+func (s *SyslogSink) run() {
+	defer s.closeWG.Done()
+
+	for {
+		select {
+		case msg := <-s.queue:
+			s.safeSend(msg)
+		case <-s.done:
+			s.drain()
+			return
+		}
+	}
+}
+
+func (s *SyslogSink) drain() {
+	deadline := time.Now().Add(syslogDrainTimeout)
+	for {
+		select {
+		case msg := <-s.queue:
+			if time.Now().After(deadline) {
+				s.recordAbandoned("drain_timeout", msg, len(s.queue)+1)
+				return
+			}
+			s.safeSend(msg)
+		default:
+			return
+		}
+	}
+}
+
+func (s *SyslogSink) safeSend(msg syslogMessage) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.recordFailure("panic", msg, fmt.Errorf("%v", r))
+		}
+	}()
+	s.send(msg)
+}
+
+func makeSyslogMessage(event Event) (syslogMessage, error) {
 	payload := webhookPayload{
 		Severity:  event.Severity.String(),
 		Type:      event.Type,
@@ -178,19 +340,33 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 
 	msg, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("emit: syslog marshal: %w", err)
+		return syslogMessage{}, fmt.Errorf("emit: syslog marshal: %w", err)
 	}
 
-	message := string(msg)
+	return syslogMessage{
+		severity:  event.Severity,
+		eventType: event.Type,
+		message:   string(msg),
+	}, nil
+}
 
-	switch event.Severity {
+func (s *SyslogSink) send(msg syslogMessage) {
+	var writeErr error
+
+	switch msg.severity {
 	case SeverityCritical:
-		return s.writer.Crit(message)
+		writeErr = s.writer.Crit(msg.message)
 	case SeverityWarn:
-		return s.writer.Warning(message)
+		writeErr = s.writer.Warning(msg.message)
 	default:
-		return s.writer.Info(message)
+		writeErr = s.writer.Info(msg.message)
 	}
+	if writeErr != nil {
+		s.recordFailure("write_error", msg, writeErr)
+		return
+	}
+	s.delivered.Add(1)
+	s.degraded.Store(false)
 }
 
 // Close closes the syslog writer. Safe to call on a nil or already-closed writer.
@@ -198,5 +374,125 @@ func (s *SyslogSink) Close() error {
 	if s == nil || s.writer == nil {
 		return nil
 	}
-	return s.writer.Close()
+
+	s.closeOnce.Do(func() {
+		writerClosed := false
+		if s.done != nil {
+			s.closeMu.Lock()
+			s.closed = true
+			s.closeMu.Unlock()
+			close(s.done)
+
+			drained := make(chan struct{})
+			go func() {
+				s.closeWG.Wait()
+				close(drained)
+			}()
+			select {
+			case <-drained:
+			case <-time.After(syslogDrainTimeout):
+				s.closeErr = ErrSyslogCloseTimeout
+				s.recordAbandoned("close_timeout", syslogMessage{eventType: "unknown"}, len(s.queue)+1)
+				if err := s.writer.Close(); err != nil {
+					s.closeErr = errors.Join(s.closeErr, err)
+				}
+				writerClosed = true
+				select {
+				case <-drained:
+				case <-time.After(syslogDrainTimeout):
+				}
+			}
+		}
+		if !writerClosed {
+			err := s.writer.Close()
+			s.closeErr = errors.Join(s.closeErr, err)
+		}
+	})
+	return s.closeErr
+}
+
+// Stats returns a consistent snapshot of syslog sink delivery health.
+func (s *SyslogSink) Stats() SyslogStats {
+	if s == nil {
+		return SyslogStats{}
+	}
+	s.lastErrMu.Lock()
+	lastErr := s.lastErr
+	s.lastErrMu.Unlock()
+	stats := SyslogStats{
+		Delivered: s.delivered.Load(),
+		Failed:    s.failed.Load(),
+		Dropped:   s.dropped.Load(),
+		Abandoned: s.abandoned.Load(),
+		Degraded:  s.degraded.Load(),
+		LastError: lastErr,
+	}
+	if s.queue != nil {
+		stats.QueueLen = len(s.queue)
+		stats.QueueCap = cap(s.queue)
+	}
+	return stats
+}
+
+func (s *SyslogSink) recordFailure(reason string, msg syslogMessage, err error) {
+	s.failed.Add(1)
+	s.degraded.Store(true)
+	if err != nil {
+		s.lastErrMu.Lock()
+		s.lastErr = err.Error()
+		s.lastErrMu.Unlock()
+	}
+	s.logDiagnostic("delivery_failed", reason, msg, err, 0)
+}
+
+func (s *SyslogSink) recordDropped(reason string, msg syslogMessage, err error) {
+	s.dropped.Add(1)
+	s.degraded.Store(true)
+	lastErr := reason
+	if err != nil {
+		lastErr = err.Error()
+	}
+	s.lastErrMu.Lock()
+	s.lastErr = lastErr
+	s.lastErrMu.Unlock()
+	s.logDiagnostic("event_dropped", reason, msg, err, 0)
+}
+
+func (s *SyslogSink) recordAbandoned(reason string, msg syslogMessage, count int) {
+	if count < 1 {
+		count = 1
+	}
+	s.abandoned.Add(uint64(count))
+	s.degraded.Store(true)
+	s.lastErrMu.Lock()
+	s.lastErr = reason
+	s.lastErrMu.Unlock()
+	s.logDiagnostic("events_abandoned", reason, msg, nil, count)
+}
+
+func (s *SyslogSink) logDiagnostic(event, reason string, msg syslogMessage, err error, count int) {
+	fields := map[string]any{
+		"component":  "emit.syslog",
+		"event":      event,
+		"reason":     reason,
+		"event_type": msg.eventType,
+		"delivered":  s.delivered.Load(),
+		"failed":     s.failed.Load(),
+		"dropped":    s.dropped.Load(),
+		"abandoned":  s.abandoned.Load(),
+		"queue_len":  len(s.queue),
+		"queue_cap":  cap(s.queue),
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	if count > 0 {
+		fields["count"] = count
+	}
+	encoded, marshalErr := json.Marshal(fields)
+	if marshalErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "emit: syslog diagnostic marshal error: %v\n", marshalErr)
+		return
+	}
+	_, _ = fmt.Fprintln(os.Stderr, string(encoded))
 }

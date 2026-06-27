@@ -72,10 +72,30 @@ type Capsule struct {
 
 // EvidenceBundle contains the raw posture evidence collected at emit time.
 type EvidenceBundle struct {
-	Discover       DiscoverEvidence      `json:"discover"`
-	VerifyInstall  VerifyInstallEvidence `json:"verify_install"`
-	Simulate       audit.SimulateResult  `json:"simulate"`
-	FlightRecorder FlightRecorderCounts  `json:"flight_recorder"`
+	Discover       DiscoverEvidence       `json:"discover"`
+	VerifyInstall  VerifyInstallEvidence  `json:"verify_install"`
+	Simulate       audit.SimulateResult   `json:"simulate"`
+	FlightRecorder FlightRecorderCounts   `json:"flight_recorder"`
+	ContainLaunch  *ContainLaunchEvidence `json:"contain_launch,omitempty"`
+}
+
+// ContainLaunchEvidence binds a signed posture capsule to the exact
+// containment launch attempt without writing prompt-like argv values or env
+// values in cleartext. Operators can recompute the hashes from the observed
+// command/env when auditing a run.
+type ContainLaunchEvidence struct {
+	Launcher     string   `json:"launcher"`
+	AgentUser    string   `json:"agent_user"`
+	TargetUID    string   `json:"target_uid"`
+	TargetGID    string   `json:"target_gid"`
+	TargetGroups []string `json:"target_groups"`
+	Tool         string   `json:"tool"`
+	Argc         int      `json:"argc"`
+	ArgvSHA256   string   `json:"argv_sha256"`
+	CWD          string   `json:"cwd"`
+	ProxyPort    int      `json:"proxy_port"`
+	EnvVars      []string `json:"env_vars"`
+	EnvSHA256    string   `json:"env_sha256"`
 }
 
 // DiscoverEvidence captures high-level MCP protection counts.
@@ -116,6 +136,7 @@ type Options struct {
 	ExpirationDays int
 	SigningKey     ed25519.PrivateKey
 	EvidenceBundle *EvidenceBundle
+	ContainLaunch  *ContainLaunchEvidence
 }
 
 type signableCapsule struct {
@@ -149,6 +170,9 @@ func Emit(cfg *config.Config, opts Options) (*Capsule, error) {
 	evidence, err := resolveEvidence(cfg, opts.EvidenceBundle)
 	if err != nil {
 		return nil, err
+	}
+	if opts.ContainLaunch != nil {
+		evidence.ContainLaunch = cloneContainLaunchEvidence(opts.ContainLaunch)
 	}
 
 	configHash, err := hashConfig(cfg)
@@ -344,6 +368,18 @@ func RenderProofMarkdown(c *Capsule) string {
 			_, _ = fmt.Fprintf(&b, "| %s | %d | %d | %d |\n", name, v.Allow, v.Block, v.Warn)
 		}
 	}
+	if launch := c.Evidence.ContainLaunch; launch != nil {
+		_, _ = fmt.Fprintf(&b, "\n## Contain launch\n\n")
+		_, _ = fmt.Fprintf(&b, "- Launcher: `%s`\n", launch.Launcher)
+		_, _ = fmt.Fprintf(&b, "- Agent user: `%s` (uid `%s`, gid `%s`, groups `%s`)\n", launch.AgentUser, launch.TargetUID, launch.TargetGID, strings.Join(launch.TargetGroups, "`, `"))
+		_, _ = fmt.Fprintf(&b, "- Tool: `%s`\n", launch.Tool)
+		_, _ = fmt.Fprintf(&b, "- Arg count: %d\n", launch.Argc)
+		_, _ = fmt.Fprintf(&b, "- Argv SHA-256: `%s`\n", launch.ArgvSHA256)
+		_, _ = fmt.Fprintf(&b, "- CWD: `%s`\n", launch.CWD)
+		_, _ = fmt.Fprintf(&b, "- Proxy port: %d\n", launch.ProxyPort)
+		_, _ = fmt.Fprintf(&b, "- Env SHA-256: `%s`\n", launch.EnvSHA256)
+		_, _ = fmt.Fprintf(&b, "- Env vars: `%s`\n", strings.Join(launch.EnvVars, "`, `"))
+	}
 
 	return b.String()
 }
@@ -425,7 +461,20 @@ func cloneEvidenceBundle(bundle EvidenceBundle) EvidenceBundle {
 			cloned.FlightRecorder.ScannerVerdict[key] = value
 		}
 	}
+	if bundle.ContainLaunch != nil {
+		cloned.ContainLaunch = cloneContainLaunchEvidence(bundle.ContainLaunch)
+	}
 	return cloned
+}
+
+func cloneContainLaunchEvidence(in *ContainLaunchEvidence) *ContainLaunchEvidence {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.TargetGroups = append([]string(nil), in.TargetGroups...)
+	out.EnvVars = append([]string(nil), in.EnvVars...)
+	return &out
 }
 
 func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {

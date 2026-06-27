@@ -152,6 +152,28 @@ func runtimeContractVars(env *installEnv) []contractVar {
 	}
 }
 
+// containLaunchEnv returns the exact environment used by `pipelock contain
+// run` when it execs plk-launch directly, bypassing sudo's env filtering. Keep
+// this in lockstep with launchExecEnvLines so the verified run launcher and the
+// installed wrapper do not drift.
+func containLaunchEnv(agentUserName, homeDir string, proxyPort int) []string {
+	env := []string{
+		"HOME=" + homeDir,
+		"USER=" + agentUserName,
+		"LOGNAME=" + agentUserName,
+		"SHELL=/bin/bash",
+	}
+	for _, v := range runtimeContractVars(&installEnv{
+		proxyPort:    proxyPort,
+		caBundlePath: defaultCABundlePath,
+		caExportPath: defaultCAExportPath,
+	}) {
+		env = append(env, v.name+"="+v.value)
+	}
+	env = append(env, "PATH="+agentExecPath(agentUserName))
+	return env
+}
+
 // shellSafeValue reports whether v can appear unquoted after `env NAME=` in a
 // bash command. Conservative: anything outside this set gets single-quoted.
 func shellSafeValue(v string) bool {

@@ -141,6 +141,27 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 	}
 }
 
+func TestContainLaunchEnv_UsesCompleteRuntimeContract(t *testing.T) {
+	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort)
+	want := []string{
+		"HOME=/home/" + testAgentUser,
+		"USER=" + testAgentUser,
+		"LOGNAME=" + testAgentUser,
+		"SHELL=/bin/bash",
+	}
+	for _, v := range runtimeContractVars(&installEnv{
+		proxyPort:    defaultProxyPort,
+		caBundlePath: defaultCABundlePath,
+		caExportPath: defaultCAExportPath,
+	}) {
+		want = append(want, v.name+"="+v.value)
+	}
+	want = append(want, "PATH="+agentExecPath(testAgentUser))
+	if gotJoined, wantJoined := strings.Join(got, "\n"), strings.Join(want, "\n"); gotJoined != wantJoined {
+		t.Fatalf("contain launch env =\n%s\nwant:\n%s", gotJoined, wantJoined)
+	}
+}
+
 func TestRenderProfileScript_ParsesUnderBashAndExports(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	body := renderProfileScript(env)

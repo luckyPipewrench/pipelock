@@ -1,9 +1,10 @@
 # SSE Streaming and Inline Response Scanning
 
 Pipelock streams Server-Sent Event (SSE) responses inline while scanning
-each event for DLP patterns, prompt injection, and other response-layer
-threats. Clean events flush immediately so token-by-token LLM chat UX is
-preserved; a detection terminates the stream fail-closed.
+each event and a bounded rolling cross-event tail for DLP patterns,
+prompt injection, and other response-layer threats. Clean events flush
+immediately so token-by-token LLM chat UX is preserved; a detection
+terminates the stream fail-closed.
 
 Before v2.3.0, only A2A streams received inline scanning. Generic
 `text/event-stream` responses (OpenAI chat completions, Anthropic
@@ -23,6 +24,8 @@ plus the `event:`, `id:`, and `retry:` metadata fields:
 - Prompt injection detectors (jailbreak phrases, instruction override,
   credential solicitation, memory persistence, covert action directives,
   CJK instruction overrides)
+- Cross-event DLP and prompt-injection payloads split across sequential
+  `data:` events
 - Response-address protection and CEE taint propagation when enabled
 
 Unknown fields and lines without a `:` delimiter are ignored by the
@@ -71,17 +74,16 @@ response_scanning:
 | Forward proxy + TLS interception | A2A-only streaming; generic SSE buffered | All `text/event-stream` streamed and scanned |
 | TLS-intercepted CONNECT | A2A-only streaming; generic SSE buffered | All `text/event-stream` streamed and scanned |
 | Reverse proxy | No streaming path; all responses buffered at 1 MB | All `text/event-stream` streamed and scanned; non-SSE responses continue to use the buffered path |
-| A2A | Already streamed with field-aware walker + cross-event rolling-tail detection | Unchanged |
+| A2A | Already streamed with field-aware walker + cross-event rolling-tail detection | Unchanged; generic SSE now also has rolling-tail detection |
 
 ## Known limitations
 
-- **Cross-event injection detection applies only to A2A.** Generic SSE
-  streaming scans each event in isolation. An attacker who splits a
-  single injection payload across sequential SSE events can evade the
-  current detector. A2A's rolling-tail detector covers this case for
-  the A2A protocol. Generalizing cross-event detection to any SSE
-  stream is tracked as a follow-up. Verified by
-  `TestScanGenericSSEStream_CrossEventSplit_NotDetected`.
+- **Cross-event detection is bounded by a fixed-size rolling tail.** Fragments
+  of a split payload are joined only while they fall within the tail window;
+  payloads separated by more intervening bytes than the tail holds are not
+  joined for cross-event scanning. Each event is still scanned individually,
+  and contiguous splits across several adjacent events are caught as the tail
+  accumulates. This matches the A2A scanner's rolling-tail ceiling.
 - **Per-account proxy overrides in clients can bypass pipelock.** If an
   upstream client sets its own proxy (not through `HTTPS_PROXY`), it
   may route around pipelock entirely. Configure clients to honor the

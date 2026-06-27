@@ -93,6 +93,8 @@ type dialFunc func(ctx context.Context, network, address string, timeout time.Du
 // substitute a deterministic lookup.
 type lookupUserFunc func(name string) (*user.User, error)
 
+type groupIDsFunc func(*user.User) ([]string, error)
+
 // probeEnv carries the inputs every probe needs. Everything is
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
@@ -121,6 +123,7 @@ type probeEnv struct {
 	runCmd     runCommand
 	dialCtx    dialFunc
 	lookupUser lookupUserFunc
+	groupIDs   groupIDsFunc
 	stat       func(path string) (os.FileInfo, error)
 	readFile   func(path string) ([]byte, error)
 	selfPath   func() (string, error)
@@ -155,11 +158,16 @@ func defaultProbeEnv() *probeEnv {
 		runCmd:             realRunCommand,
 		dialCtx:            realDial,
 		lookupUser:         user.Lookup,
+		groupIDs:           realGroupIDs,
 		stat:               os.Stat,
 		readFile:           os.ReadFile,
 		selfPath:           os.Executable,
 		hashFile:           sha256HexOfFile,
 	}
+}
+
+func realGroupIDs(u *user.User) ([]string, error) {
+	return u.GroupIds()
 }
 
 // realRunCommand executes name+args under ctx, captures merged stdout

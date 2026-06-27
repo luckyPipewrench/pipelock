@@ -136,7 +136,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	// errors flow through to the existing parse-error path below so
 	// telemetry stays attributable to the right cause.
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
-		return InputVerdict{Clean: false, Error: fmt.Sprintf("duplicate JSON object key: %v", err)}
+		return InputVerdict{ID: recoveredID, Clean: false, Error: fmt.Sprintf("duplicate JSON object key: %v", err)}
 	}
 
 	var rpc jsonrpc.RPCResponse // Reuse struct - has Method and Params fields.

@@ -3328,6 +3328,53 @@ func TestScanRequest_ParseErrorRecoversTopLevelID(t *testing.T) {
 	}
 }
 
+func TestScanRequest_DuplicateKeyBlockRecoversTopLevelID(t *testing.T) {
+	sc := testInputScanner(t)
+	line := []byte(`{"jsonrpc":"2.0","id":105,"method":"tools/list","method":"tools/call","params":{"name":"send","arguments":{"x":"safe"}}}`)
+
+	verdict := ScanRequest(context.Background(), line, sc, config.ActionBlock, config.ActionBlock)
+	if verdict.Clean {
+		t.Fatal("duplicate-key JSON should fail closed")
+	}
+	if string(verdict.ID) != "105" {
+		t.Fatalf("ID = %s, want 105", string(verdict.ID))
+	}
+	if !strings.Contains(verdict.Error, "duplicate") {
+		t.Fatalf("Error = %q, want duplicate-key reason", verdict.Error)
+	}
+}
+
+func TestForwardScannedInput_DuplicateKeyWithIDProducesErrorResponse(t *testing.T) {
+	sc := testInputScanner(t)
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	clientIn := strings.NewReader(`{"jsonrpc":"2.0","id":106,"method":"tools/list","method":"tools/call","params":{"name":"send","arguments":{"x":"safe"}}}` + "\n")
+	fwdScannedInput(clientIn, &serverIn, &logW, sc, config.ActionBlock, config.ActionBlock, blockedCh)
+
+	if serverIn.Len() > 0 {
+		t.Fatal("expected duplicate-key request not to be forwarded")
+	}
+
+	select {
+	case got := <-blockedCh:
+		if got.IsNotification {
+			t.Fatal("id-bearing duplicate-key block should not be treated as notification")
+		}
+		if string(got.ID) != "106" {
+			t.Fatalf("ID = %s, want 106", string(got.ID))
+		}
+		resp := blockRequestResponse(got)
+		if !bytes.Contains(resp, []byte(`"id":106`)) {
+			t.Fatalf("response %s does not preserve recovered id", string(resp))
+		}
+	default:
+		t.Fatal("expected blocked request for id-bearing duplicate-key block")
+	}
+}
+
 func TestScanRequest_ParseErrorNotificationStaysSilent(t *testing.T) {
 	sc := testInputScanner(t)
 	line := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"send","arguments":`)
@@ -4202,6 +4249,22 @@ func TestStripInboundMCPMeta_PreservesLargeIntegerMeta(t *testing.T) {
 	}
 }
 
+func TestStripInboundMCPMeta_PreservesAngleBracketsInArgs(t *testing.T) {
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"a < b && c > d"},"_meta":{"com.pipelock/mediation":{"act":"spoofed"}}}}`)
+	got := stripInboundMCPMeta(msg)
+
+	if bytes.Contains(got, []byte(envelope.MCPMetaKey)) {
+		t.Fatalf("mediation key should be stripped, got: %s", got)
+	}
+	if !bytes.Contains(got, []byte(`a < b && c > d`)) {
+		t.Fatalf("payload must stay unescaped while stripping spoofed _meta, got: %s", got)
+	}
+	escapedLT := string([]byte{0x5c}) + "u003c"
+	if bytes.Contains(got, []byte(escapedLT)) {
+		t.Fatalf("payload was HTML-escaped (%s present), got: %s", escapedLT, got)
+	}
+}
+
 func TestStripInboundMCPMeta_NoMetaKey(t *testing.T) {
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"other":"value"}}}`)
 	got := stripInboundMCPMeta(msg)
@@ -4257,9 +4320,9 @@ func TestInjectMCPEnvelope_PreservesLargeIntegerMeta(t *testing.T) {
 	}
 }
 
-// TestInjectMCPEnvelope_MalformedMetaFailsOpen verifies that a _meta value
-// that isn't a JSON object causes fail-open (message returned unmodified).
-func TestInjectMCPEnvelope_MalformedMetaFailsOpen(t *testing.T) {
+// TestInjectMCPEnvelope_MalformedMetaNormalizes verifies that a _meta value
+// that isn't a JSON object is replaced with a real mediation envelope.
+func TestInjectMCPEnvelope_MalformedMetaNormalizes(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	// _meta is a string, not an object.
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":"not-an-object"}}`)
@@ -4267,22 +4330,57 @@ func TestInjectMCPEnvelope_MalformedMetaFailsOpen(t *testing.T) {
 		ActionID: "test-id", Action: "read", Verdict: "allow",
 	})
 
-	if !bytes.Equal(got, msg) {
-		t.Errorf("malformed _meta should fail-open with original message\ngot:  %s\nwant: %s", got, msg)
+	if bytes.Contains(got, []byte(`not-an-object`)) {
+		t.Fatalf("malformed _meta should be stripped, got: %s", got)
+	}
+	if !bytes.Contains(got, []byte(envelope.MCPMetaKey)) {
+		t.Fatalf("expected normalized _meta to contain mediation envelope, got: %s", got)
 	}
 }
 
-// TestInjectMCPEnvelope_ArrayMetaFailsOpen verifies that _meta as a JSON
-// array (not object) also fails open.
-func TestInjectMCPEnvelope_ArrayMetaFailsOpen(t *testing.T) {
+// TestInjectMCPEnvelope_ArrayMetaNormalizes verifies that _meta as a JSON
+// array (not object) is also replaced with a real envelope.
+func TestInjectMCPEnvelope_ArrayMetaNormalizes(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":[1,2,3]}}`)
 	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{
 		ActionID: "test-id", Action: "read", Verdict: "allow",
 	})
 
-	if !bytes.Equal(got, msg) {
-		t.Errorf("array _meta should fail-open with original message\ngot:  %s\nwant: %s", got, msg)
+	if bytes.Contains(got, []byte(`[1,2,3]`)) {
+		t.Fatalf("array _meta should be stripped, got: %s", got)
+	}
+	if !bytes.Contains(got, []byte(envelope.MCPMetaKey)) {
+		t.Fatalf("expected normalized _meta to contain mediation envelope, got: %s", got)
+	}
+}
+
+// TestInjectMCPEnvelope_PreservesAngleBracketsInArgs verifies that tool-call
+// argument bytes containing <, >, or & stay literal rather than HTML-escaped to
+// their \u-prefixed forms. Plain json.Marshal escapes these by default;
+// injection must not mutate the request payload on the wire.
+func TestInjectMCPEnvelope_PreservesAngleBracketsInArgs(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run","arguments":{"code":"a < b && c > d"}}}`)
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{
+		ActionID: "test-id", Action: "run", Verdict: "allow",
+	})
+
+	// The literal, unescaped payload must survive verbatim. If json.Marshal
+	// had HTML-escaped it, the bytes would instead contain the \u-prefixed
+	// escapes for <, >, and & and this substring would be absent.
+	if !bytes.Contains(got, []byte(`a < b && c > d`)) {
+		t.Fatalf("payload must be forwarded unescaped, got: %s", got)
+	}
+	// Belt-and-suspenders: build the JSON HTML-escape for '<' at runtime
+	// (0x5c is a backslash) so no escape is hand-written in source, then
+	// assert json.Marshal did not emit it.
+	escapedLT := string([]byte{0x5c}) + "u003c"
+	if bytes.Contains(got, []byte(escapedLT)) {
+		t.Fatalf("payload was HTML-escaped (%s present), got: %s", escapedLT, got)
+	}
+	if !bytes.Contains(got, []byte(envelope.MCPMetaKey)) {
+		t.Fatalf("envelope not injected, got: %s", got)
 	}
 }
 
@@ -4307,6 +4405,70 @@ func TestForwardScannedInput_EnvelopeInjectedOnCleanToolCall(t *testing.T) {
 	output := serverIn.String()
 	if !strings.Contains(output, `"com.pipelock/mediation"`) {
 		t.Errorf("expected mediation envelope in forwarded message, got: %s", output)
+	}
+}
+
+func TestForwardScannedInput_MalformedMetaNormalizesEnvelope(t *testing.T) {
+	sc := testInputScanner(t)
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test-hash"})
+	clean := `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/readme.md"},"_meta":"not-an-object"}}` + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := buildTestOpts(sc, func(o *MCPProxyOpts) {
+		o.EnvelopeEmitter = em
+	})
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(clean)),
+		transport.NewStdioWriter(&serverIn),
+		&logW, "block", "block", blockedCh, nil, nil, opts,
+	)
+
+	output := serverIn.String()
+	if strings.Contains(output, `not-an-object`) {
+		t.Fatalf("malformed _meta should not be forwarded, got: %s", output)
+	}
+	if !strings.Contains(output, `"com.pipelock/mediation"`) {
+		t.Fatalf("expected mediation envelope in forwarded message, got: %s", output)
+	}
+	if len(blockedCh) != 0 {
+		t.Fatalf("normalizable malformed _meta should not block, got %d blocked requests", len(blockedCh))
+	}
+}
+
+func TestForwardScannedInput_NonObjectParamsBlocksEnvelopeInjection(t *testing.T) {
+	sc := testInputScanner(t)
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test-hash"})
+	clean := `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":"not-an-object"}` + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := buildTestOpts(sc, func(o *MCPProxyOpts) {
+		o.EnvelopeEmitter = em
+	})
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(clean)),
+		transport.NewStdioWriter(&serverIn),
+		&logW, "block", "block", blockedCh, nil, nil, opts,
+	)
+
+	if serverIn.Len() != 0 {
+		t.Fatalf("non-object params should not be forwarded, got: %s", serverIn.String())
+	}
+	select {
+	case blocked := <-blockedCh:
+		if blocked.ErrorCode != -32002 {
+			t.Fatalf("ErrorCode = %d, want -32002", blocked.ErrorCode)
+		}
+		if string(blocked.ID) != "6" {
+			t.Fatalf("ID = %s, want 6", string(blocked.ID))
+		}
+	default:
+		t.Fatal("expected non-object params to block envelope injection")
 	}
 }
 

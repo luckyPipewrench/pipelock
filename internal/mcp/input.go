@@ -1359,9 +1359,10 @@ func jsonRPCErrorCodeForInputError(errText string) int {
 
 // injectMCPEnvelope injects a mediation envelope into a JSON-RPC message's
 // params._meta field. Returns the modified message bytes, or the original
-// message unmodified if parsing fails before metadata can be safely rewritten.
-// Once _meta is parsed, spoofed mediation metadata is stripped even if envelope
-// construction fails.
+// message unmodified if the message is not an envelope-bearing shape.
+// Malformed or non-object params fail closed through a returned error. A
+// malformed _meta member is normalized to a fresh object so attacker-controlled
+// metadata cannot suppress required mediation.
 func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope.BuildOpts) ([]byte, error) {
 	if emitter == nil {
 		return msg, nil
@@ -1379,7 +1380,7 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return msg, nil
+		return msg, fmt.Errorf("parse MCP params for mediation envelope: %w", err)
 	}
 	if params == nil {
 		params = make(map[string]json.RawMessage)
@@ -1391,7 +1392,7 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 	meta := make(map[string]json.RawMessage)
 	if metaRaw, exists := params["_meta"]; exists {
 		if err := json.Unmarshal(metaRaw, &meta); err != nil {
-			return msg, nil // malformed _meta -- fail-open
+			meta = make(map[string]json.RawMessage)
 		}
 	}
 	if meta == nil {
@@ -1406,7 +1407,7 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 		return out, fmt.Errorf("inject MCP mediation envelope: %w", err)
 	}
 	envData := env.ToMCPMeta()
-	envBytes, err := json.Marshal(envData)
+	envBytes, err := marshalMCPMessage(envData)
 	if err != nil {
 		out := marshalMCPWithMeta(msg, rpc, params, meta)
 		return out, fmt.Errorf("marshal MCP mediation envelope: %w", err)
@@ -1421,19 +1422,24 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 }
 
 func marshalMCPWithMeta(original []byte, rpc, params map[string]json.RawMessage, meta map[string]json.RawMessage) []byte {
-	metaBytes, err := json.Marshal(meta)
+	// Re-serialize without HTML escaping so tool-call payloads containing
+	// <, >, or & keep those literal bytes. This matches marshalMCPMessage
+	// used on the redaction forward path; plain json.Marshal HTML-escapes
+	// those bytes (to their \u-prefixed escapes), which would mutate the
+	// request on the wire.
+	metaBytes, err := marshalMCPMessage(meta)
 	if err != nil {
 		return original
 	}
 	params["_meta"] = metaBytes
 
-	paramsBytes, err := json.Marshal(params)
+	paramsBytes, err := marshalMCPMessage(params)
 	if err != nil {
 		return original
 	}
 	rpc["params"] = paramsBytes
 
-	out, err := json.Marshal(rpc)
+	out, err := marshalMCPMessage(rpc)
 	if err != nil {
 		return original
 	}
@@ -1490,19 +1496,19 @@ func stripInboundMCPMeta(msg []byte) []byte {
 
 	delete(meta, envelope.MCPMetaKey)
 
-	metaBytes, err := json.Marshal(meta)
+	metaBytes, err := marshalMCPMessage(meta)
 	if err != nil {
 		return msg
 	}
 	params["_meta"] = metaBytes
 
-	paramsBytes, err := json.Marshal(params)
+	paramsBytes, err := marshalMCPMessage(params)
 	if err != nil {
 		return msg
 	}
 	rpc["params"] = paramsBytes
 
-	out, err := json.Marshal(rpc)
+	out, err := marshalMCPMessage(rpc)
 	if err != nil {
 		return msg
 	}

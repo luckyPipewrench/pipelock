@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -443,6 +444,40 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	}
 	if launch.ArgvSHA256 == "" || launch.EnvSHA256 == "" {
 		t.Fatalf("launch evidence missing privacy-preserving hashes: %+v", launch)
+	}
+}
+
+func TestContainRunLaunchEvidence_RejectsInvalidUID(t *testing.T) {
+	tests := []struct {
+		name string
+		uid  string
+		want string
+	}{
+		{name: "malformed uid", uid: "not-a-uid", want: "parse uid"},
+		{name: "root uid", uid: "0", want: "resolves to uid 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := allPassEnv(t)
+			origLookup := env.lookupUser
+			env.lookupUser = func(name string) (*user.User, error) {
+				u, err := origLookup(name)
+				if err != nil {
+					return nil, err
+				}
+				if name == testAgentUser {
+					clone := *u
+					clone.Uid = tt.uid
+					return &clone, nil
+				}
+				return u, nil
+			}
+
+			_, err := containRunLaunchEvidence(env, []string{"claude"})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

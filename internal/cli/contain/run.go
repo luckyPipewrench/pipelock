@@ -267,6 +267,13 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 	if err != nil {
 		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("lookup %s: %w", env.agentUserName, err)
 	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("parse uid for %s: %w", env.agentUserName, err)
+	}
+	if uid == 0 {
+		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("%s resolves to uid 0; refusing contained launch", env.agentUserName)
+	}
 	gid, err := strconv.ParseUint(u.Gid, 10, 32)
 	if err != nil {
 		return posturepkg.ContainLaunchEvidence{}, fmt.Errorf("parse gid for %s: %w", env.agentUserName, err)
@@ -305,8 +312,8 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 	return posturepkg.ContainLaunchEvidence{
 		Launcher:     defaultLaunchScript,
 		AgentUser:    env.agentUserName,
-		TargetUID:    u.Uid,
-		TargetGID:    u.Gid,
+		TargetUID:    strconv.FormatUint(uid, 10),
+		TargetGID:    strconv.FormatUint(gid, 10),
 		TargetGroups: groupIDStrings(groups),
 		Tool:         args[0],
 		Argc:         len(args),

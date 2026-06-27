@@ -78,37 +78,53 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
 	}
 
-	cmd := containedAgentCommand(ctx, env.agentUserName, homeDir, env.port, uint32(uid), uint32(gid), groups, args, stdin, stdout, stderr)
+	cmd := containedAgentCommand(containedAgentCommandOptions{
+		ctx:           ctx,
+		agentUserName: env.agentUserName,
+		homeDir:       homeDir,
+		proxyPort:     env.port,
+		uid:           uint32(uid),
+		gid:           uint32(gid),
+		groups:        groups,
+		args:          args,
+		stdin:         stdin,
+		stdout:        stdout,
+		stderr:        stderr,
+	})
 
 	if err := runContainedAgentCommand(cmd); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return cliutil.ExitCodeError(exitErr.ExitCode(), fmt.Errorf("contained agent exited with status %d", exitErr.ExitCode()))
 		}
-		return err
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("launch contained agent via %s: %w", defaultLaunchScript, err))
 	}
 	return nil
 }
 
-func containedAgentCommand(
-	ctx context.Context,
-	agentUserName, homeDir string,
-	proxyPort int,
-	uid, gid uint32,
-	groups []uint32,
-	args []string,
-	stdin io.Reader,
-	stdout io.Writer,
-	stderr io.Writer,
-) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, defaultLaunchScript)
-	cmd.Args = append([]string{defaultLaunchScript}, args...)
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.Dir = homeDir
-	cmd.Env = containLaunchEnv(agentUserName, homeDir, proxyPort)
-	cmd.SysProcAttr = agentSysProcAttr(uid, gid, groups)
+type containedAgentCommandOptions struct {
+	ctx           context.Context
+	agentUserName string
+	homeDir       string
+	proxyPort     int
+	uid           uint32
+	gid           uint32
+	groups        []uint32
+	args          []string
+	stdin         io.Reader
+	stdout        io.Writer
+	stderr        io.Writer
+}
+
+func containedAgentCommand(opts containedAgentCommandOptions) *exec.Cmd {
+	cmd := exec.CommandContext(opts.ctx, defaultLaunchScript)
+	cmd.Args = append([]string{defaultLaunchScript}, opts.args...)
+	cmd.Stdin = opts.stdin
+	cmd.Stdout = opts.stdout
+	cmd.Stderr = opts.stderr
+	cmd.Dir = opts.homeDir
+	cmd.Env = containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort)
+	cmd.SysProcAttr = agentSysProcAttr(opts.uid, opts.gid, opts.groups)
 	return cmd
 }
 

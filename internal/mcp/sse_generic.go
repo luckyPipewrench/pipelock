@@ -194,7 +194,9 @@ func ScanGenericSSEStreamWithOptions(
 			// rides through unscanned (external review finding #2).
 			text := canonicalSSEEventText(event, reader)
 
-			dropTail := false
+			clearTailAfterCurrent := false
+			skipTailInjection := false
+			skipTailDLP := false
 			injectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, text), opts.Target, opts.Suppress)
 			if !injectResult.Clean {
 				findingErr := fmt.Errorf("%w: injection: %s",
@@ -203,7 +205,8 @@ func ScanGenericSSEStreamWithOptions(
 					if opts.OnFinding != nil {
 						opts.OnFinding(findingErr)
 					}
-					dropTail = true
+					clearTailAfterCurrent = true
+					skipTailInjection = true
 				} else {
 					return findingErr
 				}
@@ -225,46 +228,51 @@ func ScanGenericSSEStreamWithOptions(
 					if opts.OnFinding != nil {
 						opts.OnFinding(findingErr)
 					}
-					dropTail = true
+					clearTailAfterCurrent = true
+					skipTailDLP = true
 				} else {
 					return findingErr
 				}
 			}
 
 			resetTail := false
-			if !dropTail && tail != "" {
+			if tail != "" {
 				combined := tail + " " + string(event)
 
-				tailInjectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, combined), opts.Target, opts.Suppress)
-				if !tailInjectResult.Clean {
-					findingErr := fmt.Errorf("%w: cross-event injection: %s",
-						ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
-					if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-						if opts.OnFinding != nil {
-							opts.OnFinding(findingErr)
+				if !skipTailInjection {
+					tailInjectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, combined), opts.Target, opts.Suppress)
+					if !tailInjectResult.Clean {
+						findingErr := fmt.Errorf("%w: cross-event injection: %s",
+							ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
+						if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
+							if opts.OnFinding != nil {
+								opts.OnFinding(findingErr)
+							}
+							resetTail = true
+						} else {
+							return findingErr
 						}
-						resetTail = true
-					} else {
-						return findingErr
 					}
 				}
 
-				tailDLPResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
-				if !tailDLPResult.Clean {
-					findingErr := fmt.Errorf("%w: cross-event dlp: %s",
-						ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
-					if cfg.Action == config.ActionWarn {
-						if opts.OnFinding != nil {
-							opts.OnFinding(findingErr)
+				if !skipTailDLP {
+					tailDLPResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
+					if !tailDLPResult.Clean {
+						findingErr := fmt.Errorf("%w: cross-event dlp: %s",
+							ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
+						if cfg.Action == config.ActionWarn {
+							if opts.OnFinding != nil {
+								opts.OnFinding(findingErr)
+							}
+							resetTail = true
+						} else {
+							return findingErr
 						}
-						resetTail = true
-					} else {
-						return findingErr
 					}
 				}
 			}
 
-			if dropTail {
+			if clearTailAfterCurrent {
 				tail = ""
 			} else if len(event) >= rollingTailSize {
 				tail = string(event[len(event)-rollingTailSize:])

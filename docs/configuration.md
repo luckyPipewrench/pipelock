@@ -868,7 +868,7 @@ response_scanning:
 | `max_event_bytes` | `65536` | Per-event data-payload ceiling. Measures only the bytes inside the SSE `data:` field(s) — `event:`, `id:`, and `retry:` metadata are not counted. Events exceeding this are treated as findings and fail closed. Set higher only for providers with genuinely large single events. |
 
 **Behavior:**
-- Each event's `data:` payload is fed through the same DLP + injection patterns used for buffered response scanning.
+- Each event's canonical SSE text (`data:` plus `event:`, `id:`, and `retry:` metadata) is fed through the same DLP + injection patterns used for buffered response scanning.
 - A bounded rolling tail catches DLP and prompt-injection payloads split across sequential events.
 - Clean events flush to the client immediately. In block mode, the first detected event terminates the stream; later events are not forwarded. In warn mode, findings are logged and forwarding continues.
 - `response_scanning.exempt_domains` still pins prompt-injection findings to visibility-only for trusted hosts. DLP findings are not exempted.

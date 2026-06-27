@@ -226,7 +226,11 @@ func TestSyslogSink_EmitSnapshotsFieldsBeforeEnqueue(t *testing.T) {
 	}
 	writer.waitStarted(t)
 
+	nested := map[string]any{"value": "before"}
+	list := []string{"before"}
 	fields := map[string]any{"reason": "before"}
+	fields["nested"] = nested
+	fields["list"] = list
 	second := Event{
 		Severity:  SeverityWarn,
 		Type:      testEventBlocked,
@@ -237,6 +241,8 @@ func TestSyslogSink_EmitSnapshotsFieldsBeforeEnqueue(t *testing.T) {
 		t.Fatalf("second Emit: %v", err)
 	}
 	fields["reason"] = "after"
+	nested["value"] = "after"
+	list[0] = "after"
 
 	writer.release()
 	if err := sink.Close(); err != nil {
@@ -252,6 +258,18 @@ func TestSyslogSink_EmitSnapshotsFieldsBeforeEnqueue(t *testing.T) {
 	}
 	if contains(messages[1], `"reason":"after"`) {
 		t.Fatalf("second message used mutated field value:\n%s", messages[1])
+	}
+	if !contains(messages[1], `"nested":{"value":"before"}`) {
+		t.Fatalf("second message missing original nested value:\n%s", messages[1])
+	}
+	if contains(messages[1], `"nested":{"value":"after"}`) {
+		t.Fatalf("second message used mutated nested value:\n%s", messages[1])
+	}
+	if !contains(messages[1], `"list":["before"]`) {
+		t.Fatalf("second message missing original slice value:\n%s", messages[1])
+	}
+	if contains(messages[1], `"list":["after"]`) {
+		t.Fatalf("second message used mutated slice value:\n%s", messages[1])
 	}
 }
 
@@ -316,6 +334,38 @@ func TestSyslogSink_CloseTimeoutBoundsWait(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker did not exit after writer close")
 	}
+}
+
+func TestSyslogSink_DrainTimeoutBoundsQueuedSend(t *testing.T) {
+	oldTimeout := syslogDrainTimeout
+	syslogDrainTimeout = 25 * time.Millisecond
+	defer func() { syslogDrainTimeout = oldTimeout }()
+
+	writer := newBlockingSyslogWriter()
+	sink := &SyslogSink{
+		writer: writer,
+		queue:  make(chan syslogMessage, 1),
+	}
+	msg, err := makeSyslogMessage(Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("makeSyslogMessage: %v", err)
+	}
+	sink.queue <- msg
+
+	start := time.Now()
+	sink.drain()
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("drain took %s, want bounded wait", elapsed)
+	}
+	if got := writer.count.Load(); got != 1 {
+		t.Fatalf("writer calls = %d, want 1", got)
+	}
+	writer.release()
 }
 
 func TestSyslogSink_QueueSizeClamped(t *testing.T) {
@@ -545,7 +595,7 @@ func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	defer func() { _ = sink.Close() }()
 
 	// Channel field is unmarshalable. Async delivery logs the marshal failure
-	// from the worker and drops the event instead of blocking the caller.
+	// before enqueue and drops the event without doing writer I/O.
 	event := Event{
 		Severity:  SeverityWarn,
 		Type:      testEventBlocked,
@@ -554,8 +604,8 @@ func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	}
 
 	err = sink.Emit(context.Background(), event)
-	if err != nil {
-		t.Errorf("Emit returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected marshal error from Emit")
 	}
 }
 

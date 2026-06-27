@@ -59,6 +59,16 @@ func (c *collectingSink) lastEvent() (emit.Event, bool) {
 	return c.events[len(c.events)-1], true
 }
 
+func (c *collectingSink) onlyEvent(t *testing.T) emit.Event {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.events) != 1 {
+		t.Fatalf("got %d emitted events, want exactly 1", len(c.events))
+	}
+	return c.events[0]
+}
+
 func TestNew_StdoutJSON(t *testing.T) {
 	logger, err := New("json", "stdout", "", true, true)
 	if err != nil {
@@ -1832,10 +1842,7 @@ func TestEmit_OperationalLifecycleEvents(t *testing.T) {
 
 			tt.log(logger)
 
-			ev, ok := sink.lastEvent()
-			if !ok {
-				t.Fatal("expected emitted event")
-			}
+			ev := sink.onlyEvent(t)
 			assertEmitterFields(t, ev, tt.wantType, emit.SeverityInfo, tt.want)
 			if ev.InstanceID != "test-instance" {
 				t.Fatalf("instance_id = %q, want test-instance", ev.InstanceID)
@@ -1889,7 +1896,7 @@ func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
 			wantType: EventDLPWarn,
 			log: func(l *Logger) {
 				l.LogDLPWarn(
-					LogContext{method: "GET", url: "https://api.example.com", clientIP: testClientIP, requestID: "req-dlp-warn", agent: testAgentName},
+					LogContext{method: http.MethodGet, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-dlp-warn", agent: testAgentName},
 					"staged-key",
 					"high",
 					"fetch",
@@ -1901,7 +1908,7 @@ func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
 			wantType: EventAddressProtection,
 			log: func(l *Logger) {
 				l.LogBodyScan(
-					LogContext{method: "POST", url: "https://api.example.com", clientIP: testClientIP, requestID: "req-address", agent: testAgentName},
+					LogContext{method: http.MethodPost, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-address", agent: testAgentName},
 					EventAddressProtection,
 					actionBlock,
 					1,
@@ -1914,7 +1921,7 @@ func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
 			wantType: EventBodyDLP,
 			log: func(l *Logger) {
 				l.LogBodyDLP(
-					LogContext{method: "POST", url: "https://api.example.com", clientIP: testClientIP, requestID: "req-body", agent: testAgentName},
+					LogContext{method: http.MethodPost, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-body", agent: testAgentName},
 					actionBlock,
 					1,
 					[]string{"api-key"},
@@ -1927,7 +1934,7 @@ func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
 			wantType: EventBodyPromptInjection,
 			log: func(l *Logger) {
 				l.LogBodyScan(
-					LogContext{method: "POST", url: "https://api.example.com", clientIP: testClientIP, requestID: "req-body-inj", agent: testAgentName},
+					LogContext{method: http.MethodPost, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-body-inj", agent: testAgentName},
 					EventBodyPromptInjection,
 					actionBlock,
 					1,
@@ -1940,7 +1947,7 @@ func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
 			wantType: EventHeaderDLP,
 			log: func(l *Logger) {
 				l.LogHeaderDLP(
-					LogContext{method: "GET", url: "https://api.example.com", clientIP: testClientIP, requestID: "req-header", agent: testAgentName},
+					LogContext{method: http.MethodGet, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-header", agent: testAgentName},
 					"Authorization",
 					actionBlock,
 					[]string{"bearer-token"},
@@ -1960,7 +1967,7 @@ func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
 			wantType: EventTaintDecision,
 			log: func(l *Logger) {
 				l.LogTaintDecision(
-					LogContext{method: "POST", url: "https://api.example.com", clientIP: testClientIP, requestID: "req-taint", agent: testAgentName},
+					LogContext{method: http.MethodPost, url: "https://api.example.com", clientIP: testClientIP, requestID: "req-taint", agent: testAgentName},
 					TaintDecision{
 						TaintLevel:  "high",
 						ActionClass: "write",
@@ -1983,7 +1990,7 @@ func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
 			name:     "airlock deny",
 			wantType: EventAirlockDeny,
 			log: func(l *Logger) {
-				l.LogAirlockDeny("sess-1", "quarantine", "fetch", "GET", testClientIP, testReqID)
+				l.LogAirlockDeny("sess-1", "quarantine", "fetch", http.MethodGet, testClientIP, testReqID)
 			},
 		},
 	}
@@ -1995,10 +2002,7 @@ func TestEmit_SecurityEventsUseWarnSeverity(t *testing.T) {
 
 			tt.log(logger)
 
-			ev, ok := sink.lastEvent()
-			if !ok {
-				t.Fatal("expected emitted event")
-			}
+			ev := sink.onlyEvent(t)
 			if ev.Type != string(tt.wantType) {
 				t.Fatalf("type = %q, want %q", ev.Type, tt.wantType)
 			}
@@ -2073,10 +2077,7 @@ func TestEmit_OperationalLifecycleEventsSanitizeFields(t *testing.T) {
 		1,
 	)
 
-	ev, ok := sink.lastEvent()
-	if !ok {
-		t.Fatal("expected emitted event")
-	}
+	ev := sink.onlyEvent(t)
 	for _, field := range []string{"original_url", "redirect_url", "client_ip", "request_id", "agent"} {
 		value, ok := ev.Fields[field].(string)
 		if !ok {

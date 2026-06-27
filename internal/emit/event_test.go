@@ -92,6 +92,8 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 
 		// Warn: security-relevant operational
 		{EventResponseScanExempt, SeverityWarn},
+		{EventMediaExposure, SeverityWarn},
+		{EventTextStego, SeverityWarn},
 		{EventLicenseExpiry, SeverityWarn},
 
 		// Info

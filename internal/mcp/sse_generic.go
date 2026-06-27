@@ -73,8 +73,9 @@ type GenericSSEScanOptions struct {
 }
 
 // ScanGenericSSEStream handles non-A2A text/event-stream responses with
-// per-event DLP and injection scanning. Used for OpenAI, Anthropic,
-// Kilo Gateway, and any other LLM SSE traffic the proxy intercepts.
+// per-event DLP and injection scanning, plus a rolling-tail scan across
+// adjacent events. Used for OpenAI, Anthropic, Kilo Gateway, and any
+// other LLM SSE traffic the proxy intercepts.
 //
 // Contract:
 //   - Caller copies response headers to w BEFORE calling this function.
@@ -95,7 +96,8 @@ type GenericSSEScanOptions struct {
 // scanner's job). Generic SSE data: payloads can be non-JSON: OpenAI
 // emits "[DONE]" as a literal sentinel and some providers send raw text
 // deltas. Treating the joined data: payload as text is the lowest-common
-// denominator that catches DLP and injection patterns across providers.
+// denominator that catches DLP and injection patterns across providers,
+// including payloads split across sequential token events.
 func ScanGenericSSEStream(
 	ctx context.Context,
 	body io.Reader,
@@ -129,6 +131,8 @@ func ScanGenericSSEStreamWithOptions(
 	}
 
 	reader := transport.NewSSEReader(body)
+	var tail string
+	var injectionTail string
 
 	for {
 		select {
@@ -191,17 +195,11 @@ func ScanGenericSSEStreamWithOptions(
 			// rides through unscanned (external review finding #2).
 			text := canonicalSSEEventText(event, reader)
 
-			injectResult := sc.ScanResponse(ctx, text)
-			if !injectResult.Clean && len(opts.Suppress) > 0 {
-				var kept []scanner.ResponseMatch
-				for _, match := range injectResult.Matches {
-					if !config.IsSuppressed(match.PatternName, opts.Target, opts.Suppress) {
-						kept = append(kept, match)
-					}
-				}
-				injectResult.Matches = kept
-				injectResult.Clean = len(kept) == 0
-			}
+			clearDLPTailAfterCurrent := false
+			clearInjectionTailAfterCurrent := false
+			skipTailInjection := false
+			skipTailDLP := false
+			injectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, text), opts.Target, opts.Suppress)
 			if !injectResult.Clean {
 				findingErr := fmt.Errorf("%w: injection: %s",
 					ErrSSEStreamFinding, sseInjectionNames(injectResult.Matches))
@@ -209,39 +207,21 @@ func ScanGenericSSEStreamWithOptions(
 					if opts.OnFinding != nil {
 						opts.OnFinding(findingErr)
 					}
+					clearInjectionTailAfterCurrent = true
+					skipTailInjection = true
 				} else {
 					return findingErr
 				}
 			}
 
-			dlpResult := sc.ScanTextForDLP(ctx, text)
-			if !dlpResult.Clean && len(opts.Suppress) > 0 {
-				var kept []scanner.TextDLPMatch
-				for _, match := range dlpResult.Matches {
-					if !config.IsSuppressed(match.PatternName, opts.Target, opts.Suppress) {
-						kept = append(kept, match)
-					}
-				}
-				dlpResult.Matches = kept
-				dlpResult.Clean = len(kept) == 0
-			}
+			dlpResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
 			if dlpResult.Clean {
 				// Keep scanning the joined data payload too. The canonical
 				// wire-shaped text preserves per-line data: prefixes for
 				// metadata visibility, while the joined payload catches
 				// split-secret patterns that are easier to recognize before
 				// those prefixes are reintroduced.
-				dlpResult = sc.ScanTextForDLP(ctx, string(event))
-				if !dlpResult.Clean && len(opts.Suppress) > 0 {
-					var kept []scanner.TextDLPMatch
-					for _, match := range dlpResult.Matches {
-						if !config.IsSuppressed(match.PatternName, opts.Target, opts.Suppress) {
-							kept = append(kept, match)
-						}
-					}
-					dlpResult.Matches = kept
-					dlpResult.Clean = len(kept) == 0
-				}
+				dlpResult = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
 			}
 			if !dlpResult.Clean {
 				findingErr := fmt.Errorf("%w: dlp: %s",
@@ -250,9 +230,58 @@ func ScanGenericSSEStreamWithOptions(
 					if opts.OnFinding != nil {
 						opts.OnFinding(findingErr)
 					}
+					clearDLPTailAfterCurrent = true
+					skipTailDLP = true
 				} else {
 					return findingErr
 				}
+			}
+
+			resetInjectionTail := false
+			if !skipTailInjection && injectionTail != "" {
+				combined := injectionTail + " " + string(event)
+				tailInjectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, combined), opts.Target, opts.Suppress)
+				if !tailInjectResult.Clean {
+					findingErr := fmt.Errorf("%w: cross-event injection: %s",
+						ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
+					if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
+						if opts.OnFinding != nil {
+							opts.OnFinding(findingErr)
+						}
+						resetInjectionTail = true
+					} else {
+						return findingErr
+					}
+				}
+			}
+
+			resetDLPTail := false
+			if !skipTailDLP && tail != "" {
+				combined := tail + string(event)
+				tailDLPResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
+				if !tailDLPResult.Clean {
+					findingErr := fmt.Errorf("%w: cross-event dlp: %s",
+						ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
+					if cfg.Action == config.ActionWarn {
+						if opts.OnFinding != nil {
+							opts.OnFinding(findingErr)
+						}
+						resetDLPTail = true
+					} else {
+						return findingErr
+					}
+				}
+			}
+
+			if clearDLPTailAfterCurrent {
+				tail = ""
+			} else {
+				tail = advanceSSERollingTail(tail, event, resetDLPTail, "")
+			}
+			if clearInjectionTailAfterCurrent {
+				injectionTail = ""
+			} else {
+				injectionTail = advanceSSERollingTail(injectionTail, event, resetInjectionTail, " ")
 			}
 		}
 
@@ -268,6 +297,20 @@ func ScanGenericSSEStreamWithOptions(
 			flusher.Flush()
 		}
 	}
+}
+
+func advanceSSERollingTail(tail string, event []byte, reset bool, separator string) string {
+	if len(event) >= rollingTailSize {
+		return string(event[len(event)-rollingTailSize:])
+	}
+	if reset || tail == "" {
+		return string(event)
+	}
+	combined := tail + separator + string(event)
+	if len(combined) > rollingTailSize {
+		return combined[len(combined)-rollingTailSize:]
+	}
+	return combined
 }
 
 // passthroughSSE forwards body to w in small chunks, flushing after
@@ -302,6 +345,42 @@ func passthroughSSE(ctx context.Context, body io.Reader, w io.Writer, flusher ht
 			return err
 		}
 	}
+}
+
+// keepUnsuppressedResponse removes suppressed prompt-injection matches and
+// recomputes Clean. Suppression lives here, applied to every match a pass
+// returns, so a configured suppress rule cannot mask a co-occurring
+// unsuppressed match (the post-filter masking trap). A no-op when the result
+// is already clean or no suppress rules are configured.
+func keepUnsuppressedResponse(res scanner.ResponseScanResult, target string, suppress []config.SuppressEntry) scanner.ResponseScanResult {
+	if res.Clean || len(suppress) == 0 {
+		return res
+	}
+	var kept []scanner.ResponseMatch
+	for _, m := range res.Matches {
+		if !config.IsSuppressed(m.PatternName, target, suppress) {
+			kept = append(kept, m)
+		}
+	}
+	res.Matches = kept
+	res.Clean = len(kept) == 0
+	return res
+}
+
+// keepUnsuppressedDLP is keepUnsuppressedResponse for DLP results.
+func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []config.SuppressEntry) scanner.TextDLPResult {
+	if res.Clean || len(suppress) == 0 {
+		return res
+	}
+	var kept []scanner.TextDLPMatch
+	for _, m := range res.Matches {
+		if !config.IsSuppressed(m.PatternName, target, suppress) {
+			kept = append(kept, m)
+		}
+	}
+	res.Matches = kept
+	res.Clean = len(kept) == 0
+	return res
 }
 
 func sseInjectionNames(matches []scanner.ResponseMatch) string {

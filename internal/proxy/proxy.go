@@ -4231,7 +4231,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	finalHost := resp.Request.URL.Hostname()
 	finalResponseURL := resp.Request.URL.String()
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
-	suppressedResponseScanExempts := make(map[string]struct{})
 	if sc.ResponseScanningEnabled() && responseScanExempt {
 		log.LogResponseScanExempt(actx, finalHost)
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportFetch)
@@ -4241,10 +4240,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
 			rawResult := sc.ScanResponseWithSuppress(r.Context(), hidden, finalResponseURL, cfg.Suppress)
-			recordSuppressedResponseScanExemptsForResponse(p.metrics, rawResult.SuppressedMatches, TransportFetch, suppressedResponseScanExempts)
+			recordSuppressedResponseScanExempts(p.metrics, rawResult.SuppressedMatches, TransportFetch)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, finalResponseURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 			if blocked {
 				return
 			}
@@ -4302,7 +4301,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponseWithSuppress(r.Context(), content, finalResponseURL, cfg.Suppress)
-		recordSuppressedResponseScanExemptsForResponse(p.metrics, scanResult.SuppressedMatches, TransportFetch, suppressedResponseScanExempts)
+		recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportFetch)
 		if !scanResult.Clean {
 			responsePromptHit = true
 		}
@@ -4335,7 +4334,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, finalResponseURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
+		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 		if found {
 			hasFinding = true
 		}
@@ -4384,26 +4383,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 }
 
 func recordSuppressedResponseScanExempts(m *metrics.Metrics, matches []scanner.ResponseMatch, transport string) {
-	recordSuppressedResponseScanExemptsForResponse(m, matches, transport, nil)
-}
-
-func recordSuppressedResponseScanExemptsForResponse(m *metrics.Metrics, matches []scanner.ResponseMatch, transport string, seen map[string]struct{}) {
-	if len(matches) == 0 {
-		return
-	}
-	// A single suppressed finding re-matches across multiple normalization
-	// passes of the cascade (core, primary, leetspeak, vowel-fold, ...), so
-	// SuppressedMatches can carry the same pattern several times. Dedupe by
-	// pattern name so the exempt counter reflects distinct suppressed patterns
-	// per response rather than once per normalization view.
-	if seen == nil {
-		seen = make(map[string]struct{}, len(matches))
-	}
-	for _, match := range matches {
-		if _, ok := seen[match.PatternName]; ok {
-			continue
-		}
-		seen[match.PatternName] = struct{}{}
+	for range matches {
 		m.RecordResponseScanExempt(ExemptReasonSuppress, transport)
 	}
 }
@@ -4419,7 +4399,7 @@ func recordSuppressedResponseScanExemptsForResponse(m *metrics.Metrics, matches 
 func (p *Proxy) filterAndActOnResponseScan(
 	w http.ResponseWriter,
 	result scanner.ResponseScanResult,
-	content, displayURL, suppressTarget, agent, clientIP, requestID, actionID string,
+	content, displayURL, agent, clientIP, requestID, actionID string,
 	sc *scanner.Scanner,
 	cfg *config.Config,
 	log *audit.Logger,
@@ -4431,21 +4411,6 @@ func (p *Proxy) filterAndActOnResponseScan(
 		_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
 	}
 
-	// Defense-in-depth for legacy callers that still hand in an unfiltered
-	// ScanResponse result. Current proxy response paths use ScanResponseWithSuppress
-	// so suppression cannot mask later normalization passes.
-	if !result.Clean && len(cfg.Suppress) > 0 {
-		var kept []scanner.ResponseMatch
-		for _, m := range result.Matches {
-			if !config.IsSuppressed(m.PatternName, suppressTarget, cfg.Suppress) {
-				kept = append(kept, m)
-			} else {
-				p.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportFetch)
-			}
-		}
-		result.Matches = kept
-		result.Clean = len(kept) == 0
-	}
 	if result.Clean {
 		return false, out, false
 	}

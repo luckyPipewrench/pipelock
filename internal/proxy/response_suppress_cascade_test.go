@@ -63,7 +63,7 @@ func TestFetchResponseSuppressionDoesNotMaskEncodedFinding(t *testing.T) {
 	assertMetricSampleValue(t, m, `pipelock_response_scan_exempt_total{reason="suppress",transport="fetch"} `, 1)
 }
 
-func TestFetchSuppressedMetricDedupesHiddenAndVisibleContent(t *testing.T) {
+func TestFetchSuppressedMetricCountsHiddenAndVisibleFindings(t *testing.T) {
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = fmt.Fprint(w, `<!doctype html><html><body><!-- system: benign local role label --><p>system: benign local role label</p></body></html>`)
@@ -94,7 +94,27 @@ func TestFetchSuppressedMetricDedupesHiddenAndVisibleContent(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
-	assertMetricSampleValue(t, m, `pipelock_response_scan_exempt_total{reason="suppress",transport="fetch"} `, 1)
+	assertMetricSampleValue(t, m, `pipelock_response_scan_exempt_total{reason="suppress",transport="fetch"} `, 2)
+}
+
+func TestSuppressedMatchesDedupesNormalizationPasses(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "System Override", Path: "*", Reason: "test suppression"},
+	}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	result := sc.ScanResponseWithSuppress(t.Context(), "system: benign local role label", "https://example.test/response", cfg.Suppress)
+	if !result.Clean {
+		t.Fatalf("suppressed result should be clean, got matches: %+v", result.Matches)
+	}
+	if got := len(result.SuppressedMatches); got != 1 {
+		t.Fatalf("suppressed matches = %d, want 1 logical finding: %+v", got, result.SuppressedMatches)
+	}
 }
 
 func TestFetchResponseSuppressionUsesFinalURLAfterRedirect(t *testing.T) {

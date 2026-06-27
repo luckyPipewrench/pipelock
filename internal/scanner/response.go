@@ -72,6 +72,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
 	original := content
 	var suppressedMatches []ResponseMatch
+	suppressedSeen := make(map[string]struct{})
 	filterSuppressed := func(matches []ResponseMatch) []ResponseMatch {
 		if len(matches) == 0 || len(suppress) == 0 || suppressTarget == "" {
 			return matches
@@ -81,7 +82,11 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 			if !config.IsSuppressed(match.PatternName, suppressTarget, suppress) {
 				kept = append(kept, match)
 			} else {
-				suppressedMatches = append(suppressedMatches, match)
+				key := responseMatchLogicalKey(match)
+				if _, ok := suppressedSeen[key]; !ok {
+					suppressedSeen[key] = struct{}{}
+					suppressedMatches = append(suppressedMatches, match)
+				}
 			}
 		}
 		return kept
@@ -277,6 +282,16 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	}
 
 	return result
+}
+
+func responseMatchLogicalKey(match ResponseMatch) string {
+	return strings.Join([]string{
+		match.PatternName,
+		match.Bundle,
+		match.BundleVersion,
+		fmt.Sprint(match.Position),
+		fmt.Sprint(match.matchLength),
+	}, "\x00")
 }
 
 func filterDefensiveCredentialSolicitationMatches(content string, matches []ResponseMatch) []ResponseMatch {

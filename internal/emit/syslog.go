@@ -76,6 +76,7 @@ type SyslogSink struct {
 	closeMu   sync.Mutex
 	closeWG   sync.WaitGroup
 	closeOnce sync.Once
+	closeErr  error
 
 	delivered atomic.Uint64
 	failed    atomic.Uint64
@@ -283,8 +284,8 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 		}
 		return nil
 	default:
-		s.recordDropped("queue_full", msg, nil)
 		s.closeMu.Unlock()
+		s.recordDropped("queue_full", msg, nil)
 		return ErrSyslogQueueFull
 	}
 }
@@ -374,7 +375,6 @@ func (s *SyslogSink) Close() error {
 		return nil
 	}
 
-	var closeErr error
 	s.closeOnce.Do(func() {
 		writerClosed := false
 		if s.done != nil {
@@ -391,10 +391,10 @@ func (s *SyslogSink) Close() error {
 			select {
 			case <-drained:
 			case <-time.After(syslogDrainTimeout):
-				closeErr = ErrSyslogCloseTimeout
+				s.closeErr = ErrSyslogCloseTimeout
 				s.recordAbandoned("close_timeout", syslogMessage{eventType: "unknown"}, len(s.queue)+1)
 				if err := s.writer.Close(); err != nil {
-					closeErr = errors.Join(closeErr, err)
+					s.closeErr = errors.Join(s.closeErr, err)
 				}
 				writerClosed = true
 				select {
@@ -405,10 +405,10 @@ func (s *SyslogSink) Close() error {
 		}
 		if !writerClosed {
 			err := s.writer.Close()
-			closeErr = errors.Join(closeErr, err)
+			s.closeErr = errors.Join(s.closeErr, err)
 		}
 	})
-	return closeErr
+	return s.closeErr
 }
 
 // Stats returns a consistent snapshot of syslog sink delivery health.

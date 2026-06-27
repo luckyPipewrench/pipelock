@@ -436,6 +436,21 @@ func TestSyslogSink_DegradedAfterWriteErrorAndReturnsCloseError(t *testing.T) {
 	}
 }
 
+func TestSyslogSink_CloseReturnsStoredErrorOnRepeatedCalls(t *testing.T) {
+	writer := &errorSyslogWriter{closeErr: errSyslogWriterFailure}
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
+
+	if err := sink.Close(); !errors.Is(err, errSyslogWriterFailure) {
+		t.Fatalf("first Close error = %v, want %v", err, errSyslogWriterFailure)
+	}
+	if err := sink.Close(); !errors.Is(err, errSyslogWriterFailure) {
+		t.Fatalf("second Close error = %v, want %v", err, errSyslogWriterFailure)
+	}
+	if got := writer.closeCount.Load(); got != 1 {
+		t.Fatalf("writer Close calls = %d, want 1", got)
+	}
+}
+
 func TestSyslogSink_EmitSignalsPriorDegradedState(t *testing.T) {
 	writer := newBlockingSyslogWriter()
 	sink := newSyslogSink(writer, &syslogConfig{queueLen: 2})
@@ -664,11 +679,8 @@ func TestNewSyslogSinkFromConfig_InvalidAddress(t *testing.T) {
 }
 
 func TestSyslogSink_Emit_MarshalError(t *testing.T) {
-	addr, _ := startUDPSyslog(t)
-	sink, err := NewSyslogSink("udp://" + addr)
-	if err != nil {
-		t.Fatalf("NewSyslogSink: %v", err)
-	}
+	writer := &countingSyslogWriter{}
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
 	defer func() { _ = sink.Close() }()
 
 	// Channel field is unmarshalable. Async delivery logs the marshal failure
@@ -680,9 +692,12 @@ func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 		Fields:    map[string]any{"bad": make(chan int)},
 	}
 
-	err = sink.Emit(context.Background(), event)
+	err := sink.Emit(context.Background(), event)
 	if err == nil {
 		t.Fatal("expected marshal error from Emit")
+	}
+	if got := writer.count.Load(); got != 0 {
+		t.Fatalf("writer calls = %d, want 0", got)
 	}
 }
 
@@ -870,8 +885,9 @@ func (w *panicOnceSyslogWriter) write(_ string) error {
 var errSyslogWriterFailure = errors.New("syslog writer failure")
 
 type errorSyslogWriter struct {
-	count    atomic.Int64
-	closeErr error
+	count      atomic.Int64
+	closeCount atomic.Int64
+	closeErr   error
 }
 
 func (w *errorSyslogWriter) Crit(msg string) error {
@@ -887,6 +903,7 @@ func (w *errorSyslogWriter) Info(msg string) error {
 }
 
 func (w *errorSyslogWriter) Close() error {
+	w.closeCount.Add(1)
 	return w.closeErr
 }
 

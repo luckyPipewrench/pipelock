@@ -132,6 +132,7 @@ func ScanGenericSSEStreamWithOptions(
 
 	reader := transport.NewSSEReader(body)
 	var tail string
+	var injectionTail string
 
 	for {
 		select {
@@ -194,7 +195,8 @@ func ScanGenericSSEStreamWithOptions(
 			// rides through unscanned (external review finding #2).
 			text := canonicalSSEEventText(event, reader)
 
-			clearTailAfterCurrent := false
+			clearDLPTailAfterCurrent := false
+			clearInjectionTailAfterCurrent := false
 			skipTailInjection := false
 			skipTailDLP := false
 			injectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, text), opts.Target, opts.Suppress)
@@ -205,7 +207,7 @@ func ScanGenericSSEStreamWithOptions(
 					if opts.OnFinding != nil {
 						opts.OnFinding(findingErr)
 					}
-					clearTailAfterCurrent = true
+					clearInjectionTailAfterCurrent = true
 					skipTailInjection = true
 				} else {
 					return findingErr
@@ -228,64 +230,58 @@ func ScanGenericSSEStreamWithOptions(
 					if opts.OnFinding != nil {
 						opts.OnFinding(findingErr)
 					}
-					clearTailAfterCurrent = true
+					clearDLPTailAfterCurrent = true
 					skipTailDLP = true
 				} else {
 					return findingErr
 				}
 			}
 
-			resetTail := false
-			if tail != "" {
-				combined := tail + " " + string(event)
-
-				if !skipTailInjection {
-					tailInjectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, combined), opts.Target, opts.Suppress)
-					if !tailInjectResult.Clean {
-						findingErr := fmt.Errorf("%w: cross-event injection: %s",
-							ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
-						if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-							if opts.OnFinding != nil {
-								opts.OnFinding(findingErr)
-							}
-							resetTail = true
-						} else {
-							return findingErr
+			resetInjectionTail := false
+			if !skipTailInjection && injectionTail != "" {
+				combined := injectionTail + " " + string(event)
+				tailInjectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, combined), opts.Target, opts.Suppress)
+				if !tailInjectResult.Clean {
+					findingErr := fmt.Errorf("%w: cross-event injection: %s",
+						ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
+					if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
+						if opts.OnFinding != nil {
+							opts.OnFinding(findingErr)
 						}
-					}
-				}
-
-				if !skipTailDLP {
-					tailDLPResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
-					if !tailDLPResult.Clean {
-						findingErr := fmt.Errorf("%w: cross-event dlp: %s",
-							ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
-						if cfg.Action == config.ActionWarn {
-							if opts.OnFinding != nil {
-								opts.OnFinding(findingErr)
-							}
-							resetTail = true
-						} else {
-							return findingErr
-						}
+						resetInjectionTail = true
+					} else {
+						return findingErr
 					}
 				}
 			}
 
-			if clearTailAfterCurrent {
-				tail = ""
-			} else if len(event) >= rollingTailSize {
-				tail = string(event[len(event)-rollingTailSize:])
-			} else if resetTail {
-				tail = string(event)
-			} else if len(tail)+len(event) > rollingTailSize {
+			resetDLPTail := false
+			if !skipTailDLP && tail != "" {
 				combined := tail + " " + string(event)
-				tail = combined[len(combined)-rollingTailSize:]
-			} else {
-				if tail != "" {
-					tail += " "
+				tailDLPResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
+				if !tailDLPResult.Clean {
+					findingErr := fmt.Errorf("%w: cross-event dlp: %s",
+						ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
+					if cfg.Action == config.ActionWarn {
+						if opts.OnFinding != nil {
+							opts.OnFinding(findingErr)
+						}
+						resetDLPTail = true
+					} else {
+						return findingErr
+					}
 				}
-				tail += string(event)
+			}
+
+			if clearDLPTailAfterCurrent {
+				tail = ""
+			} else {
+				tail = advanceSSERollingTail(tail, event, resetDLPTail)
+			}
+			if clearInjectionTailAfterCurrent {
+				injectionTail = ""
+			} else {
+				injectionTail = advanceSSERollingTail(injectionTail, event, resetInjectionTail)
 			}
 		}
 
@@ -301,6 +297,20 @@ func ScanGenericSSEStreamWithOptions(
 			flusher.Flush()
 		}
 	}
+}
+
+func advanceSSERollingTail(tail string, event []byte, reset bool) string {
+	if len(event) >= rollingTailSize {
+		return string(event[len(event)-rollingTailSize:])
+	}
+	if reset || tail == "" {
+		return string(event)
+	}
+	combined := tail + " " + string(event)
+	if len(combined) > rollingTailSize {
+		return combined[len(combined)-rollingTailSize:]
+	}
+	return combined
 }
 
 // passthroughSSE forwards body to w in small chunks, flushing after

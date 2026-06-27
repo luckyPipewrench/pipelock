@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -293,6 +294,74 @@ func TestProxy_NilEmitter_NoReceipt(t *testing.T) {
 		if e.Type == receiptEntryType {
 			t.Fatal("unexpected action_receipt entry when emitter is nil")
 		}
+	}
+}
+
+func TestEmitRequiredReceipt_UnavailableEmitterRecordsMetric(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	m := metrics.New()
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	err = p.emitRequiredReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: TransportFetch,
+		Method:    http.MethodGet,
+		Target:    "https://example.test/required",
+		RequestID: "req-required-unavailable",
+		Agent:     "agent",
+	})
+	if !errors.Is(err, errReceiptEmitterUnavailable) {
+		t.Fatalf("error = %v, want errReceiptEmitterUnavailable", err)
+	}
+	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
+	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="fetch"} 1`)
+}
+
+func TestRequiredReceiptBlockMetricReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "unavailable",
+			err:  errReceiptEmitterUnavailable,
+			want: receipt.FailReasonUnavailable,
+		},
+		{
+			name: "wrapped unavailable",
+			err:  fmt.Errorf("context: %w", errReceiptEmitterUnavailable),
+			want: receipt.FailReasonUnavailable,
+		},
+		{
+			name: "record failure",
+			err:  fmt.Errorf("recording receipt: disk full"),
+			want: "emit_error",
+		},
+		{
+			name: "nil",
+			err:  nil,
+			want: "emit_error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := requiredReceiptBlockMetricReason(tt.err); got != tt.want {
+				t.Fatalf("requiredReceiptBlockMetricReason(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 

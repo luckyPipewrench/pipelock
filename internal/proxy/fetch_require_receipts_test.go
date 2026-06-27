@@ -34,7 +34,7 @@ func fetchRequireReceiptsProxy(t *testing.T, require bool) *Proxy {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
-	rph := newReceiptProxyHelper(t)
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	if err := rph.rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -95,6 +95,44 @@ func TestHandleFetch_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	if got := hits.Load(); got != 0 {
 		t.Fatalf("upstream hits = %d, want 0 (must block before egress)", got)
 	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="fetch"} 1`)
+}
+
+func TestHandleFetch_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cfg := testScannerConfig()
+	cfg.Internal = nil
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	rec := httptest.NewRecorder()
+	p.handleFetch(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if got := rec.Header().Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason header = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (must block before egress)", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="fetch"} 1`)
 }
 
 // TestHandleFetch_ReceiptFailureWithoutRequireStillForwards pins the default:
@@ -120,6 +158,8 @@ func TestHandleFetch_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
 	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="fetch"} 1`)
 }
 
 func TestHandleFetch_RequireReceiptsResponseBlockReusesActionID(t *testing.T) {

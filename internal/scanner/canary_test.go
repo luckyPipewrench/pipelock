@@ -73,6 +73,18 @@ func TestScanTextForDLP_CanaryBypassCoverage(t *testing.T) {
 			wantCanary:  testCanaryName,
 		},
 		{
+			name:        "base64_encoded_spaces_in_structured_text",
+			text:        `{"payload":"` + splitEncodedTokenForTest(base64.StdEncoding.EncodeToString([]byte(canary)), 5, " ") + `"}`,
+			wantEncoded: "base64",
+			wantCanary:  testCanaryName,
+		},
+		{
+			name:        "base64_encoded_dots_in_structured_text",
+			text:        `{"payload":"` + splitEncodedTokenForTest(base64.StdEncoding.EncodeToString([]byte(canary)), 5, ".") + `"}`,
+			wantEncoded: "base64",
+			wantCanary:  testCanaryName,
+		},
+		{
 			name:        "hex_encoded",
 			text:        hex.EncodeToString([]byte(canary)),
 			wantEncoded: "hex",

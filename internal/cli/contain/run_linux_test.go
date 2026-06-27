@@ -6,7 +6,9 @@
 package contain
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os/user"
 	"strings"
@@ -79,6 +81,124 @@ func TestLaunchContainedAgent_RejectsUnexpectedLaunchPath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not match expected") {
 		t.Fatalf("error = %v, want launcher path mismatch", err)
+	}
+}
+
+func TestRunCmd_RejectsNonRootAfterPlatformCheck(t *testing.T) {
+	if isRoot() {
+		t.Skip("root environment cannot exercise the non-root guard")
+	}
+	cmd := runCmd()
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"claude"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("expected non-root rejection")
+	}
+	if got := cliutil.ExitCodeOf(err); got != cliutil.ExitConfig {
+		t.Fatalf("exit code = %d, want %d", got, cliutil.ExitConfig)
+	}
+	if !strings.Contains(err.Error(), "must be run as root") {
+		t.Fatalf("error = %v, want root guard", err)
+	}
+}
+
+func TestLaunchContainedAgent_RejectsBadAgentUserRecord(t *testing.T) {
+	tests := []struct {
+		name string
+		env  *probeEnv
+		want string
+	}{
+		{
+			name: "lookup failure",
+			env: &probeEnv{
+				agentUserName: testAgentUser,
+				launchPath:    defaultLaunchScript,
+				lookupUser: func(string) (*user.User, error) {
+					return nil, errors.New("missing user")
+				},
+			},
+			want: "lookup " + testAgentUser,
+		},
+		{
+			name: "bad uid",
+			env:  containRunLinuxGuardEnv("not-a-uid", "966", defaultLaunchScript),
+			want: "parse uid",
+		},
+		{
+			name: "bad gid",
+			env:  containRunLinuxGuardEnv("966", "not-a-gid", defaultLaunchScript),
+			want: "parse gid",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := launchContainedAgent(context.Background(), tt.env, []string{"claude"}, nil, io.Discard, io.Discard)
+			if err == nil {
+				t.Fatal("expected bad agent user record rejection")
+			}
+			if got := cliutil.ExitCodeOf(err); got != cliutil.ExitConfig {
+				t.Fatalf("exit code = %d, want %d", got, cliutil.ExitConfig)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
+	stdin := strings.NewReader("input")
+	var stdout, stderr bytes.Buffer
+	groups := []uint32{966, 1001}
+
+	cmd := containedAgentCommand(
+		context.Background(),
+		testAgentUser,
+		"/home/"+testAgentUser,
+		966,
+		966,
+		groups,
+		[]string{"claude", "--help"},
+		stdin,
+		&stdout,
+		&stderr,
+	)
+
+	if cmd.Path != defaultLaunchScript {
+		t.Fatalf("path = %q, want %q", cmd.Path, defaultLaunchScript)
+	}
+	if got, want := strings.Join(cmd.Args, " "), defaultLaunchScript+" claude --help"; got != want {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+	if cmd.Stdin != stdin || cmd.Stdout != &stdout || cmd.Stderr != &stderr {
+		t.Fatal("command stdio was not wired through")
+	}
+	wantEnv := []string{
+		"HOME=/home/" + testAgentUser,
+		"USER=" + testAgentUser,
+		"LOGNAME=" + testAgentUser,
+		"SHELL=/bin/bash",
+		"PATH=" + agentExecPath(testAgentUser),
+	}
+	if got, want := strings.Join(cmd.Env, "\n"), strings.Join(wantEnv, "\n"); got != want {
+		t.Fatalf("env =\n%s\nwant:\n%s", got, want)
+	}
+	if cmd.SysProcAttr == nil || cmd.SysProcAttr.Credential == nil {
+		t.Fatal("command missing launch credential")
+	}
+	cred := cmd.SysProcAttr.Credential
+	if cred.Uid != 966 || cred.Gid != 966 {
+		t.Fatalf("uid/gid = %d/%d, want 966/966", cred.Uid, cred.Gid)
+	}
+	if cred.NoSetGroups {
+		t.Fatal("NoSetGroups must stay false")
+	}
+	if !equalGIDs(cred.Groups, groups) {
+		t.Fatalf("groups = %v, want %v", cred.Groups, groups)
 	}
 }
 

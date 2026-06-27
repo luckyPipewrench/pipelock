@@ -10,7 +10,41 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
+
+func TestDefaultContainRunEnv_WiresRealOperations(t *testing.T) {
+	env := defaultContainRunEnv()
+	if env.probe == nil {
+		t.Fatal("probe env is nil")
+	}
+	if env.launch == nil {
+		t.Fatal("launcher is nil")
+	}
+	if env.emitPosture == nil {
+		t.Fatal("posture emitter is nil")
+	}
+}
+
+func TestRunCmd_RejectsInvalidPortBeforePrivilegeChecks(t *testing.T) {
+	cmd := runCmd()
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--port", "0", "claude"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("expected invalid port error")
+	}
+	if got := cliutil.ExitCodeOf(err); got != cliutil.ExitConfig {
+		t.Fatalf("exit code = %d, want %d", got, cliutil.ExitConfig)
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Fatalf("error = %v, want port validation failure", err)
+	}
+}
 
 func TestRunContainRun_VerifiesEmitsPostureThenLaunches(t *testing.T) {
 	env := allPassEnv(t)

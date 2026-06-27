@@ -70,22 +70,7 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
 	}
 
-	cmd := exec.CommandContext(ctx, defaultLaunchScript)
-	cmd.Args = append([]string{defaultLaunchScript}, args...)
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
-		cmd.Dir = cwd
-	}
-	cmd.Env = []string{
-		"HOME=" + u.HomeDir,
-		"USER=" + env.agentUserName,
-		"LOGNAME=" + env.agentUserName,
-		"SHELL=/bin/bash",
-		"PATH=" + agentExecPath(env.agentUserName),
-	}
-	cmd.SysProcAttr = agentSysProcAttr(uint32(uid), uint32(gid), groups)
+	cmd := containedAgentCommand(ctx, env.agentUserName, u.HomeDir, uint32(uid), uint32(gid), groups, args, stdin, stdout, stderr)
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
@@ -95,6 +80,35 @@ func launchContainedAgent(
 		return err
 	}
 	return nil
+}
+
+func containedAgentCommand(
+	ctx context.Context,
+	agentUserName, homeDir string,
+	uid, gid uint32,
+	groups []uint32,
+	args []string,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, defaultLaunchScript)
+	cmd.Args = append([]string{defaultLaunchScript}, args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		cmd.Dir = cwd
+	}
+	cmd.Env = []string{
+		"HOME=" + homeDir,
+		"USER=" + agentUserName,
+		"LOGNAME=" + agentUserName,
+		"SHELL=/bin/bash",
+		"PATH=" + agentExecPath(agentUserName),
+	}
+	cmd.SysProcAttr = agentSysProcAttr(uid, gid, groups)
+	return cmd
 }
 
 // agentSysProcAttr builds the credential the contained tool launches under.

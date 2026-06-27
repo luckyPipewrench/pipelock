@@ -943,7 +943,7 @@ func TestScanGenericSSEStream_ResponseExemptInjectionPreservesNextEventDLPContex
 		"",
 	}, "\n")
 
-	var findings int
+	var findings []error
 	var out bytes.Buffer
 	err := ScanGenericSSEStreamWithOptions(
 		context.Background(),
@@ -954,16 +954,25 @@ func TestScanGenericSSEStream_ResponseExemptInjectionPreservesNextEventDLPContex
 		enabledSSECfg(),
 		GenericSSEScanOptions{
 			ResponseScanExempt: true,
-			OnFinding: func(error) {
-				findings++
+			OnFinding: func(err error) {
+				findings = append(findings, err)
 			},
 		},
 	)
 	if !errors.Is(err, ErrSSEStreamFinding) {
 		t.Fatalf("response-exempt injection must preserve DLP context for next event, got %v", err)
 	}
-	if findings == 0 {
-		t.Fatal("expected visibility finding for response-exempt injection")
+	if !strings.Contains(err.Error(), "cross-event dlp") {
+		t.Fatalf("expected cross-event DLP finding, got %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected one visibility finding for response-exempt injection, got %d", len(findings))
+	}
+	if !errors.Is(findings[0], ErrSSEStreamFinding) ||
+		!strings.Contains(findings[0].Error(), "injection:") ||
+		strings.Contains(findings[0].Error(), "cross-event") ||
+		strings.Contains(findings[0].Error(), "dlp") {
+		t.Fatalf("expected one same-event injection visibility finding, got %v", findings[0])
 	}
 	if strings.Contains(out.String(), key[8:]) {
 		t.Fatalf("cross-event DLP completion leaked after response-exempt injection event: %q", out.String())

@@ -257,7 +257,7 @@ func ScanGenericSSEStreamWithOptions(
 
 			resetDLPTail := false
 			if !skipTailDLP && tail != "" {
-				combined := tail + " " + string(event)
+				combined := tail + string(event)
 				tailDLPResult := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
 				if !tailDLPResult.Clean {
 					findingErr := fmt.Errorf("%w: cross-event dlp: %s",
@@ -276,12 +276,12 @@ func ScanGenericSSEStreamWithOptions(
 			if clearDLPTailAfterCurrent {
 				tail = ""
 			} else {
-				tail = advanceSSERollingTail(tail, event, resetDLPTail)
+				tail = advanceSSERollingTail(tail, event, resetDLPTail, "")
 			}
 			if clearInjectionTailAfterCurrent {
 				injectionTail = ""
 			} else {
-				injectionTail = advanceSSERollingTail(injectionTail, event, resetInjectionTail)
+				injectionTail = advanceSSERollingTail(injectionTail, event, resetInjectionTail, " ")
 			}
 		}
 
@@ -299,14 +299,14 @@ func ScanGenericSSEStreamWithOptions(
 	}
 }
 
-func advanceSSERollingTail(tail string, event []byte, reset bool) string {
+func advanceSSERollingTail(tail string, event []byte, reset bool, separator string) string {
 	if len(event) >= rollingTailSize {
 		return string(event[len(event)-rollingTailSize:])
 	}
 	if reset || tail == "" {
 		return string(event)
 	}
-	combined := tail + " " + string(event)
+	combined := tail + separator + string(event)
 	if len(combined) > rollingTailSize {
 		return combined[len(combined)-rollingTailSize:]
 	}

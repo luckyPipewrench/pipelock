@@ -4144,13 +4144,20 @@ func TestInjectMCPEnvelope_NoParams(t *testing.T) {
 	}
 }
 
-func TestInjectMCPEnvelope_NullParamsCreatesMetaMap(t *testing.T) {
+func TestInjectMCPEnvelope_NullParamsFailsClosed(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":null}`)
-	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{ActionID: "x", Action: "read", Verdict: "allow"})
-
-	if !bytes.Contains(got, []byte(`"_meta"`)) {
-		t.Fatalf("expected _meta to be created for null params, got: %s", got)
+	got, err := injectMCPEnvelope(msg, em, envelope.BuildOpts{ActionID: "x", Action: "read", Verdict: "allow"})
+	if err == nil {
+		t.Fatalf("expected null params to fail closed with an error, got nil (out: %s)", got)
+	}
+	// Fail-closed must not rewrite the message into an injected object; the
+	// original bytes are returned so the caller blocks rather than forwards.
+	if !bytes.Equal(got, msg) {
+		t.Fatalf("expected original message returned on fail-closed, got: %s", got)
+	}
+	if bytes.Contains(got, []byte(`"_meta"`)) {
+		t.Fatalf("null params must not be normalized into an injected _meta, got: %s", got)
 	}
 }
 
@@ -4469,6 +4476,43 @@ func TestForwardScannedInput_NonObjectParamsBlocksEnvelopeInjection(t *testing.T
 		}
 	default:
 		t.Fatal("expected non-object params to block envelope injection")
+	}
+}
+
+func TestForwardScannedInput_NullParamsBlocksEnvelopeInjection(t *testing.T) {
+	sc := testInputScanner(t)
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test-hash"})
+	// json.Unmarshal of null into a map yields a nil map with no error, so
+	// params:null must be explicitly failed closed rather than normalized to
+	// an object and forwarded with a mediation envelope.
+	clean := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":null}` + "\n"
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := buildTestOpts(sc, func(o *MCPProxyOpts) {
+		o.EnvelopeEmitter = em
+	})
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(clean)),
+		transport.NewStdioWriter(&serverIn),
+		&logW, "block", "block", blockedCh, nil, nil, opts,
+	)
+
+	if serverIn.Len() != 0 {
+		t.Fatalf("null params should not be forwarded, got: %s", serverIn.String())
+	}
+	select {
+	case blocked := <-blockedCh:
+		if blocked.ErrorCode != -32002 {
+			t.Fatalf("ErrorCode = %d, want -32002", blocked.ErrorCode)
+		}
+		if string(blocked.ID) != "7" {
+			t.Fatalf("ID = %s, want 7", string(blocked.ID))
+		}
+	default:
+		t.Fatal("expected null params to block envelope injection")
 	}
 }
 

@@ -984,15 +984,30 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 	return p.emitReceiptWithEmitter(opts, p.receiptEmitterPtr.Load())
 }
 
+var errReceiptEmitterUnavailable = errors.New("receipt emitter unavailable")
+
+func requiredReceiptBlockMetricReason(err error) string {
+	if errors.Is(err, errReceiptEmitterUnavailable) {
+		return receipt.FailReasonUnavailable
+	}
+	return "emit_error"
+}
+
 func (p *Proxy) emitRequiredReceipt(opts receipt.EmitOpts) error {
 	if cfg := p.cfgPtr.Load(); cfg != nil {
 		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 	}
 	e := p.receiptEmitterPtr.Load()
 	if e == nil {
-		return fmt.Errorf("receipt emitter unavailable")
+		p.metrics.RecordEmitFailure(receipt.FailReasonUnavailable)
+		p.metrics.RecordRequiredReceiptBlock(receipt.FailReasonUnavailable, opts.Transport)
+		return errReceiptEmitterUnavailable
 	}
-	return p.emitReceiptWithEmitter(opts, e)
+	if err := p.emitReceiptWithEmitter(opts, e); err != nil {
+		p.metrics.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), opts.Transport)
+		return err
+	}
+	return nil
 }
 
 func (p *Proxy) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {

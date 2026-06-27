@@ -21,6 +21,7 @@ rules to force every agent process through the Pipelock proxy.
 
 Subcommands:
   install     Create users, systemd unit, nft rules, wrappers, sudoers.
+  run         Verify containment, then launch a registered agent tool.
   verify      Run read-only probes; report pass/fail/skip.
   doctor      Live self-test of the runtime contract; report remediation.
   rollback    Undo install (idempotent).
@@ -40,6 +41,7 @@ without touching state.`,
 	cmd.AddCommand(
 		verifyCmd(),
 		doctorCmd(),
+		runCmd(),
 		installCmd(),
 		rollbackCmd(),
 		addToolCmd(),

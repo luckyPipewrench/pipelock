@@ -7,6 +7,7 @@ The subcommands are:
 | Subcommand | What it does | Mutates state |
 |---|---|---|
 | `install` | Create users, systemd unit, nftables rules, wrappers, sudoers entry, CA bundle, runtime contract | yes (root only) |
+| `run` | Verify the containment boundary, emit a signed posture capsule, then launch a registered tool as `pipelock-agent` | writes proof + starts process |
 | `verify` | Read-only probes that report pass / fail / skip for the 12 invariants below | no |
 | `doctor` | Live self-test that proves common tooling reaches the internet *through* the proxy, with per-check remediation | no |
 | `rollback` | Idempotently undo `install`. Restores the prior state and removes wrappers, users, unit, rules | yes (root only) |
@@ -27,6 +28,39 @@ Single-user containment can't enforce egress at the kernel: the same user who ru
 - **`pipelock-agent`** — runs the AI agent process. Cannot reach the internet directly: nftables owner-match denies its outbound TCP except to loopback. All egress goes through `pipelock-proxy` on 127.0.0.1.
 
 The agent runs with reduced capabilities (no privileged ports, no raw sockets, no NET_ADMIN). It cannot bypass the proxy because the kernel refuses to forward its packets anywhere else.
+
+## `pipelock contain run`
+
+`contain run` is the recommended launch path once `contain install` has completed. Run it as root (typically via `sudo`) and pass the registered tool name after `--`:
+
+```bash
+sudo pipelock contain run -- claude
+sudo pipelock contain run -- codex --ask-for-approval never
+```
+
+Before it starts the tool, `contain run` fails closed unless every containment probe passes:
+
+- system users, systemd service, nftables owner-match rules, wrappers, CA bundle, loopback proxy, `NO_PROXY`, binary-integrity pin, allow-list enforcement, and registered tool targets must all be healthy;
+- the direct-egress canary from `pipelock-agent` must fail while the operator can still reach the internet, proving the negative probe is meaningful rather than a generic outage;
+- `pipelock-agent` must not be able to run `sudo -n true`, so the launch path refuses a host where the agent can trivially sudo back out.
+
+If preflight passes, the command emits a signed posture capsule using `flight_recorder.signing_key_path` from the config, then launches `/usr/local/bin/plk-launch <tool> ...` directly as `pipelock-agent`. Pipelock does not read or store the agent's API keys; the launched tool loads its own credentials from the contained user's environment and config, the same as the `plk-*` wrappers.
+
+Flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--config` | `/etc/pipelock/pipelock.yaml` | Config used to sign the posture capsule. Must include `flight_recorder.signing_key_path`. |
+| `--port` | `8888` | Loopback proxy port to verify before launch. |
+| `--posture-output` | `/var/lib/pipelock/contain/posture` | Directory where the signed posture capsule is written. |
+
+Exit codes:
+
+- **0** — preflight passed, posture capsule was written, and the agent process exited successfully.
+- **1** — containment was broken, posture emission failed, or the launched agent exited non-zero.
+- **2** — usage/precondition error, such as not running as root, an invalid tool name, or an invalid port.
+
+Remaining operator responsibilities: register tools with `contain add-tool`, grant workspace ACLs with `contain grant-workspace`, keep the Pipelock service running as `pipelock-proxy`, and keep host-level setuid/sudo policy tight. The built-in sudo canary catches direct `pipelock-agent -> root` sudo access; it is not a full filesystem audit of every possible setuid helper on the host.
 
 ## `pipelock contain install`
 

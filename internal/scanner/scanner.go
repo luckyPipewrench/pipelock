@@ -1596,7 +1596,7 @@ func isEncodedTokenSeparator(c byte, kind encodedTokenKind) bool {
 	case encodedTokenBase64Std:
 		return c == '-' || c == '_'
 	case encodedTokenBase64URL:
-		return c == '/'
+		return c == '/' || c == '+'
 	case encodedTokenBase32:
 		return c == '-' || c == '_' || c == '/'
 	default:
@@ -1708,6 +1708,9 @@ func decodeEncodings(s string) []decodedResult {
 		}
 	}
 	if decoded, err := base32.StdEncoding.DecodeString(s); err == nil && len(decoded) > 0 {
+		out = append(out, decodedResult{string(decoded), encodingBase32})
+	}
+	if decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(s); err == nil && len(decoded) > 0 {
 		out = append(out, decodedResult{string(decoded), encodingBase32})
 	}
 	if normalized := normalizeEncodedToken(s, encodedTokenBase32); normalized != "" {

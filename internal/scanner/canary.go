@@ -70,14 +70,7 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized))...)
 	}
 
-	segmentViews := []spanTextView{{text: cleaned, viewLabel: ViewDLPNormalized}}
-	if compacted := compactTextDLPWhitespace(cleaned); compacted != cleaned {
-		segmentViews = append(segmentViews, spanTextView{
-			text:      compacted,
-			viewLabel: spanViewLabel("whitespace", ViewDLPNormalized),
-		})
-	}
-	for _, view := range segmentViews {
+	for _, view := range textDLPEncodingSegmentViews(cleaned) {
 		segments := strings.FieldsFunc(view.text, isTextDLPEncodingDelimiter)
 		for _, seg := range segments {
 			if len(seg) < 8 {

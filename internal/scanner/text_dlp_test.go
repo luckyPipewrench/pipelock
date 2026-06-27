@@ -1048,20 +1048,29 @@ func TestScanTextForDLP_DecodesDelimiterSplitStructuredPayloadSegment(t *testing
 
 	secret := testAnthropicPrefix + strings.Repeat("z", 25)
 	tests := []struct {
-		name string
-		text string
+		name    string
+		text    string
+		wantEnc string
 	}{
 		{
-			name: "base64_spaces",
-			text: `{"payload":"` + splitEncodedTokenForTest(base64.StdEncoding.EncodeToString([]byte(secret)), 5, " ") + `"}`,
+			name:    "base64_spaces",
+			text:    `{"payload":"` + splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(secret)), 5, " ") + `"}`,
+			wantEnc: encodingBase64,
 		},
 		{
-			name: "base64_dots",
-			text: `{"payload":"` + splitEncodedTokenForTest(base64.StdEncoding.EncodeToString([]byte(secret)), 5, ".") + `"}`,
+			name:    "base64_dots",
+			text:    `{"payload":"` + splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(secret)), 5, ".") + `"}`,
+			wantEnc: encodingBase64,
 		},
 		{
-			name: "base32_hyphens",
-			text: `{"payload":"` + splitEncodedTokenForTest(base32.StdEncoding.EncodeToString([]byte(secret)), 6, "-") + `"}`,
+			name:    "base32_hyphens",
+			text:    `{"payload":"` + splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(secret)), 6, "-") + `"}`,
+			wantEnc: encodingBase32,
+		},
+		{
+			name:    "base32_unpadded",
+			text:    `{"payload":"` + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret)) + `"}`,
+			wantEnc: encodingBase32,
 		},
 	}
 
@@ -1071,9 +1080,8 @@ func TestScanTextForDLP_DecodesDelimiterSplitStructuredPayloadSegment(t *testing
 			if result.Clean {
 				t.Fatal("expected delimiter-split encoded secret inside JSON string to be detected")
 			}
-			if !hasTextDLPMatch(result.Matches, testAnthropicName, encodingBase64) &&
-				!hasTextDLPMatch(result.Matches, testAnthropicName, encodingBase32) {
-				t.Fatalf("expected encoded %q match, got %+v", testAnthropicName, result.Matches)
+			if !hasTextDLPMatch(result.Matches, testAnthropicName, tt.wantEnc) {
+				t.Fatalf("expected %s %q match, got %+v", tt.wantEnc, testAnthropicName, result.Matches)
 			}
 		})
 	}
@@ -1433,11 +1441,11 @@ func TestCheckSecretsInText_DelimiterEncodedEnvSecret(t *testing.T) {
 		text    string
 		wantEnc string
 	}{
-		{"base64_spaces", stdSecret, "data: " + splitEncodedTokenForTest(stdB64, 5, " "), encodingBase64},
-		{"base64_dots", stdSecret, "data: " + splitEncodedTokenForTest(stdB64, 5, "."), encodingBase64},
-		{"base64url_slashes", urlSecret, "data: " + splitEncodedTokenForTest(urlB64, 5, "/"), "base64url"},
-		{"base32_hyphens", stdSecret, "data: " + splitEncodedTokenForTest(b32, 6, "-"), encodingBase32},
-		{"base32_dots", stdSecret, "data: " + splitEncodedTokenForTest(b32, 6, "."), encodingBase32},
+		{"base64_spaces", stdSecret, "data: " + splitEncodedTokenForTest(t, stdB64, 5, " "), encodingBase64},
+		{"base64_dots", stdSecret, "data: " + splitEncodedTokenForTest(t, stdB64, 5, "."), encodingBase64},
+		{"base64url_slashes", urlSecret, "data: " + splitEncodedTokenForTest(t, urlB64, 5, "/"), "base64url"},
+		{"base32_hyphens", stdSecret, "data: " + splitEncodedTokenForTest(t, b32, 6, "-"), encodingBase32},
+		{"base32_dots", stdSecret, "data: " + splitEncodedTokenForTest(t, b32, 6, "."), encodingBase32},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2305,10 +2313,10 @@ func TestScanTextForDLP_FileSecretDelimiterEncodedMatch(t *testing.T) {
 		name string
 		text string
 	}{
-		{"base64_spaces", splitEncodedTokenForTest(base64.StdEncoding.EncodeToString([]byte(secret)), 5, " ")},
-		{"base64_dots", splitEncodedTokenForTest(base64.StdEncoding.EncodeToString([]byte(secret)), 5, ".")},
-		{"base32_hyphens", splitEncodedTokenForTest(base32.StdEncoding.EncodeToString([]byte(secret)), 6, "-")},
-		{"base32_dots", splitEncodedTokenForTest(base32.StdEncoding.EncodeToString([]byte(secret)), 6, ".")},
+		{"base64_spaces", splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(secret)), 5, " ")},
+		{"base64_dots", splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(secret)), 5, ".")},
+		{"base32_hyphens", splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(secret)), 6, "-")},
+		{"base32_dots", splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(secret)), 6, ".")},
 	}
 
 	for _, tt := range tests {
@@ -2347,9 +2355,9 @@ func TestScanTextForDLP_DelimiterEncodedBenignClean(t *testing.T) {
 		name string
 		text string
 	}{
-		{"base64_spaces", splitEncodedTokenForTest(base64.StdEncoding.EncodeToString([]byte(benign)), 5, " ")},
-		{"base64_dots", splitEncodedTokenForTest(base64.StdEncoding.EncodeToString([]byte(benign)), 5, ".")},
-		{"base32_hyphens", splitEncodedTokenForTest(base32.StdEncoding.EncodeToString([]byte(benign)), 6, "-")},
+		{"base64_spaces", splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(benign)), 5, " ")},
+		{"base64_dots", splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(benign)), 5, ".")},
+		{"base32_hyphens", splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(benign)), 6, "-")},
 		{"ordinary_prose", "This is ordinary prose about base64 chunks in documentation."},
 	}
 	for _, tt := range tests {

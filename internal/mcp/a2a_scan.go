@@ -39,8 +39,8 @@ type A2AScanResult struct {
 }
 
 // rollingTailSize is the number of bytes kept across SSE events for
-// cross-event injection detection. 4KB covers realistic injection
-// patterns (20-80 characters) with margin.
+// cross-event injection and DLP detection. 4KB covers realistic injection
+// patterns and secret tokens with margin.
 const rollingTailSize = 4096
 
 // ScanA2ARequestBody runs field-aware scanning on an A2A request body.

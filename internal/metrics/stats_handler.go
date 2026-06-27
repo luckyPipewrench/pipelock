@@ -41,6 +41,10 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 				Escalations:  m.sessionEscalationCount,
 				TopAnomalies: topN(m.topAnomalyTypes),
 			},
+			Receipts: receiptStats{
+				EmitFailures:   topN(m.receiptEmitFailureCounts),
+				RequiredBlocks: topRequiredReceiptBlocks(m.requiredReceiptBlocks),
+			},
 		}
 		ceeFunc := m.CEEStatsFunc
 		if total > 0 {
@@ -76,8 +80,20 @@ type statsResponse struct {
 	TopBlockedDomains []rankedEntry            `json:"top_blocked_domains"`
 	TopScanners       []rankedEntry            `json:"top_scanners"`
 	Sessions          sessionStats             `json:"sessions"`
+	Receipts          receiptStats             `json:"receipts"`
 	CEE               CEEStats                 `json:"cross_request_detection"`
 	Agents            map[string]agentStatsOut `json:"agents,omitempty"`
+}
+
+type receiptStats struct {
+	EmitFailures   []rankedEntry                 `json:"emit_failures"`
+	RequiredBlocks []requiredReceiptBlockSummary `json:"required_blocks"`
+}
+
+type requiredReceiptBlockSummary struct {
+	Reason    string `json:"reason"`
+	Transport string `json:"transport"`
+	Count     int64  `json:"count"`
 }
 
 type agentStatsOut struct {
@@ -113,5 +129,30 @@ func topN(m map[string]int64) []rankedEntry {
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Count > entries[j].Count
 	})
+	return entries
+}
+
+func topRequiredReceiptBlocks(m map[string]int64) []requiredReceiptBlockSummary {
+	entries := make([]requiredReceiptBlockSummary, 0, len(m))
+	for key, count := range m {
+		reason, transport := splitRequiredReceiptBlockKey(key)
+		entries = append(entries, requiredReceiptBlockSummary{
+			Reason:    reason,
+			Transport: transport,
+			Count:     count,
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Count != entries[j].Count {
+			return entries[i].Count > entries[j].Count
+		}
+		if entries[i].Reason != entries[j].Reason {
+			return entries[i].Reason < entries[j].Reason
+		}
+		return entries[i].Transport < entries[j].Transport
+	})
+	if len(entries) > maxTopEntries {
+		entries = entries[:maxTopEntries]
+	}
 	return entries
 }

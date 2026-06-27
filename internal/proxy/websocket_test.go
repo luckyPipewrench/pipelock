@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -608,6 +610,109 @@ func TestWSProxyRequireReceipts_RedactedSuccessEmitsCloseSummary(t *testing.T) {
 	if redactionCloseCount != 1 {
 		t.Fatalf("redaction close receipt count = %d, want one signed close summary", redactionCloseCount)
 	}
+}
+
+func TestWSProxyRequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
+	var upstreamHits atomic.Int32
+	lc := net.ListenConfig{}
+	backendLn, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen backend: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := backendLn.Close(); closeErr != nil {
+			t.Errorf("backend listener close: %v", closeErr)
+		}
+	})
+	go func() {
+		for {
+			conn, acceptErr := backendLn.Accept()
+			if acceptErr != nil {
+				return
+			}
+			upstreamHits.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendLn.Addr().String())
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("websocket connection close: %v", closeErr)
+		}
+	}()
+	_, _, err = wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected websocket close error for required receipt failure")
+	}
+	if errText := err.Error(); errText != "EOF" &&
+		(!strings.Contains(errText, "1008") || !strings.Contains(errText, string(blockreason.ReceiptEmissionFailed))) {
+		t.Fatalf("close error = %q, want EOF or policy violation receipt emission failure", errText)
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="websocket"} 1`)
+}
+
+func TestWSProxyRequireReceiptsEmissionFailureBlocksAndRecordsMetrics(t *testing.T) {
+	var upstreamHits atomic.Int32
+	lc := net.ListenConfig{}
+	backendLn, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen backend: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := backendLn.Close(); closeErr != nil {
+			t.Errorf("backend listener close: %v", closeErr)
+		}
+	})
+	go func() {
+		for {
+			conn, acceptErr := backendLn.Accept()
+			if acceptErr != nil {
+				return
+			}
+			upstreamHits.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer proxyCleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	conn := dialWS(t, proxyAddr, backendLn.Addr().String())
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("websocket connection close: %v", closeErr)
+		}
+	}()
+	_, _, err = wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected websocket close error for required receipt failure")
+	}
+	if errText := err.Error(); errText != "EOF" &&
+		(!strings.Contains(errText, "1008") || !strings.Contains(errText, string(blockreason.ReceiptEmissionFailed))) {
+		t.Fatalf("close error = %q, want EOF or policy violation receipt emission failure", errText)
+	}
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="websocket"} 1`)
 }
 
 func TestWSProxyRedaction_BinaryNonJSONBlocked(t *testing.T) {

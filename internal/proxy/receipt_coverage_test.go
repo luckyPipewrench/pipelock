@@ -976,6 +976,11 @@ type receiptProxyHelper struct {
 
 func newReceiptProxyHelper(t *testing.T) *receiptProxyHelper {
 	t.Helper()
+	return newReceiptProxyHelperWithMetrics(t, nil)
+}
+
+func newReceiptProxyHelperWithMetrics(t *testing.T, m *metrics.Metrics) *receiptProxyHelper {
+	t.Helper()
 	dir := t.TempDir()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -998,6 +1003,7 @@ func newReceiptProxyHelper(t *testing.T) *receiptProxyHelper {
 		ConfigHash: coverageTestConfigHash,
 		Principal:  coverageTestPrincipal,
 		Actor:      coverageTestActor,
+		Metrics:    m,
 	})
 
 	return &receiptProxyHelper{

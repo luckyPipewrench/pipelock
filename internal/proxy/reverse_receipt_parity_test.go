@@ -7,6 +7,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,9 +21,12 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
@@ -74,6 +80,229 @@ func reverseReceiptParitySetupWithShield(t *testing.T, cfg *config.Config, upstr
 		if err := rec.Close(); err != nil {
 			t.Fatalf("recorder close: %v", err)
 		}
+	}
+}
+
+func TestReverseEmitReceipt_NoV1EmitterSkipsV2(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	signer := proxydecision.NewKeyedSigner(priv)
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  rec,
+		Signer:    signer,
+		Principal: "local",
+		Actor:     "pipelock",
+	})
+	if v2 == nil {
+		t.Fatal("v2 emitter construction returned nil")
+	}
+	var v2Ptr atomic.Pointer[proxydecision.Emitter]
+	v2Ptr.Store(v2)
+
+	rp := &ReverseProxyHandler{
+		logger:       audit.NewNop(),
+		v2EmitterPtr: &v2Ptr,
+	}
+	rp.emitReceipt(receipt.EmitOpts{
+		ActionID:  "reverse-no-v1",
+		Verdict:   config.ActionBlock,
+		Layer:     LayerReverseResponseBlocked,
+		Pattern:   "response_scan",
+		Transport: TransportReverse,
+		Method:    http.MethodGet,
+		Target:    "https://example.test/reverse",
+		RequestID: "req-reverse-no-v1",
+		Agent:     "agent",
+	})
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	for _, e := range readRecorderEntries(t, dir) {
+		if e.Type == "action_receipt" {
+			t.Fatalf("unexpected v1 action_receipt without a v1 emitter: %+v", e)
+		}
+		if e.Type == "evidence_receipt" && e.EventKind == string(contractreceipt.PayloadProxyDecision) {
+			t.Fatalf("unexpected v2 proxy_decision without a v1 action_receipt sibling: %+v", e)
+		}
+	}
+}
+
+func TestReverseEmitReceipt_V1FailureSkipsV2(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	v1 := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "test-hash",
+		Principal:  "local",
+		Actor:      "pipelock",
+	})
+	if v1 == nil {
+		t.Fatal("v1 emitter construction returned nil")
+	}
+	if err := v1.Emit(receipt.EmitOpts{
+		ActionID:  "seed",
+		Verdict:   config.ActionAllow,
+		Transport: TransportReverse,
+		Method:    http.MethodGet,
+		Target:    "https://example.test/seed",
+	}); err != nil {
+		t.Fatalf("seed Emit: %v", err)
+	}
+	if err := v1.EmitTranscriptRoot("proxy"); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+
+	signer := proxydecision.NewKeyedSigner(priv)
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  rec,
+		Signer:    signer,
+		Principal: "local",
+		Actor:     "pipelock",
+	})
+	if v2 == nil {
+		t.Fatal("v2 emitter construction returned nil")
+	}
+	var v1Ptr atomic.Pointer[receipt.Emitter]
+	v1Ptr.Store(v1)
+	var v2Ptr atomic.Pointer[proxydecision.Emitter]
+	v2Ptr.Store(v2)
+
+	rp := &ReverseProxyHandler{
+		logger:            audit.NewNop(),
+		receiptEmitterPtr: &v1Ptr,
+		v2EmitterPtr:      &v2Ptr,
+	}
+	rp.emitReceipt(receipt.EmitOpts{
+		ActionID:  "reverse-v1-fail",
+		Verdict:   config.ActionBlock,
+		Layer:     LayerReverseResponseBlocked,
+		Pattern:   "response_scan",
+		Transport: TransportReverse,
+		Method:    http.MethodGet,
+		Target:    "https://example.test/reverse",
+		RequestID: "req-reverse-v1-fail",
+		Agent:     "agent",
+	})
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	for _, e := range readRecorderEntries(t, dir) {
+		if e.Type == "evidence_receipt" && e.EventKind == string(contractreceipt.PayloadProxyDecision) {
+			t.Fatalf("unexpected v2 proxy_decision after v1 receipt failure: %+v", e)
+		}
+	}
+}
+
+func TestReverseEmitReceipt_V1SuccessEmitsV2Sibling(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	v1 := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "test-hash",
+		Principal:  "local",
+		Actor:      "pipelock",
+	})
+	if v1 == nil {
+		t.Fatal("v1 emitter construction returned nil")
+	}
+	signer := proxydecision.NewKeyedSigner(priv)
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  rec,
+		Signer:    signer,
+		Principal: "local",
+		Actor:     "pipelock",
+	})
+	if v2 == nil {
+		t.Fatal("v2 emitter construction returned nil")
+	}
+	var v1Ptr atomic.Pointer[receipt.Emitter]
+	v1Ptr.Store(v1)
+	var v2Ptr atomic.Pointer[proxydecision.Emitter]
+	v2Ptr.Store(v2)
+
+	rp := &ReverseProxyHandler{
+		logger:            audit.NewNop(),
+		receiptEmitterPtr: &v1Ptr,
+		v2EmitterPtr:      &v2Ptr,
+	}
+	wantPolicyHash := strings.Repeat("a", 64)
+	rp.emitReceipt(receipt.EmitOpts{
+		ActionID:   "reverse-v1-ok",
+		Verdict:    config.ActionBlock,
+		Layer:      LayerReverseResponseBlocked,
+		Pattern:    "response_scan",
+		Transport:  TransportReverse,
+		Method:     http.MethodGet,
+		Target:     "https://example.test/reverse",
+		RequestID:  "req-reverse-v1-ok",
+		Agent:      "agent",
+		PolicyHash: wantPolicyHash,
+	})
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	var v1Count, v2Count int
+	for _, e := range readRecorderEntries(t, dir) {
+		switch {
+		case e.Type == "action_receipt":
+			v1Count++
+		case e.Type == "evidence_receipt" && e.EventKind == string(contractreceipt.PayloadProxyDecision):
+			v2Count++
+			var rcpt contractreceipt.EvidenceReceipt
+			if err := json.Unmarshal(e.Detail, &rcpt); err != nil {
+				t.Fatalf("unmarshal v2 receipt: %v", err)
+			}
+			if err := contractreceipt.VerifyWithKey(rcpt, pub, signer.KeyID()); err != nil {
+				t.Fatalf("v2 receipt verify: %v", err)
+			}
+			if rcpt.PolicyHash != contractreceipt.NormalizePolicyHash(wantPolicyHash) {
+				t.Fatalf("v2 policy_hash = %q, want %q", rcpt.PolicyHash, contractreceipt.NormalizePolicyHash(wantPolicyHash))
+			}
+		}
+	}
+	if v1Count != 1 {
+		t.Fatalf("v1 action_receipt count = %d, want 1", v1Count)
+	}
+	if v2Count != 1 {
+		t.Fatalf("v2 proxy_decision count = %d, want 1", v2Count)
 	}
 }
 

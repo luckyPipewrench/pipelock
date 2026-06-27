@@ -63,8 +63,9 @@ type MCPDecision struct {
 // mediation envelope for d. Returns the outbound message bytes -
 // envelope-injected when d.Envelope is non-nil, d.InboundMsg verbatim
 // otherwise. The returned error is the receipt-emit error if one
-// occurred; envelope injection does not return an error (the existing
-// helper is fail-open).
+// occurred, or the envelope-injection error. Envelope injection is
+// fail-closed on malformed params: callers must treat a non-nil error
+// as a block and must not forward the returned bytes.
 //
 // Both emitters are nil-safe:
 //

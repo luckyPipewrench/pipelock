@@ -247,17 +247,20 @@ func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
 	}
-	if rp.receiptEmitterPtr != nil {
-		if e := rp.receiptEmitterPtr.Load(); e != nil {
-			if err := e.Emit(opts); err != nil {
-				rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-					fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
-						opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
-						opts.Transport, opts.Method, opts.Target, opts.Agent, err))
-				// v1 stays authoritative: skip v2 when v1 failed to record.
-				return
-			}
-		}
+	if rp.receiptEmitterPtr == nil {
+		return
+	}
+	e := rp.receiptEmitterPtr.Load()
+	if e == nil {
+		return
+	}
+	if err := e.Emit(opts); err != nil {
+		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
+			fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
+				opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
+				opts.Transport, opts.Method, opts.Target, opts.Agent, err))
+		// v1 stays authoritative: skip v2 when v1 failed to record.
+		return
 	}
 	// Dual-emit the v2 proxy_decision receipt.
 	emitV2(rp.v2EmitterPtr, opts, func(err error) {

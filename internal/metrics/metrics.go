@@ -135,7 +135,10 @@ type Metrics struct {
 	envelopeVerifyTotal *prometheus.CounterVec
 
 	// Signed action-receipt emission (receipt.go).
-	receiptEmitFailures *prometheus.CounterVec
+	receiptEmitFailures      *prometheus.CounterVec
+	requiredReceiptBlockings *prometheus.CounterVec
+	receiptEmitFailureCounts map[string]int64
+	requiredReceiptBlocks    map[string]int64
 
 	// Stats endpoint state (stats_handler.go).
 	mu                     sync.Mutex
@@ -176,12 +179,14 @@ func New() *Metrics {
 	reg := prometheus.NewRegistry()
 
 	m := &Metrics{
-		registry:          reg,
-		startTime:         time.Now(),
-		topBlockedDomains: make(map[string]int64),
-		topScannerHits:    make(map[string]int64),
-		topAnomalyTypes:   make(map[string]int64),
-		agentStats:        make(map[string]*agentCounters),
+		registry:                 reg,
+		startTime:                time.Now(),
+		topBlockedDomains:        make(map[string]int64),
+		topScannerHits:           make(map[string]int64),
+		topAnomalyTypes:          make(map[string]int64),
+		agentStats:               make(map[string]*agentCounters),
+		receiptEmitFailureCounts: make(map[string]int64),
+		requiredReceiptBlocks:    make(map[string]int64),
 	}
 
 	m.registerProxyMetrics(reg)

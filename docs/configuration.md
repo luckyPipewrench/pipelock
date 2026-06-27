@@ -863,20 +863,18 @@ response_scanning:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `true` | Run per-event DLP + injection scanning on non-A2A SSE responses. When `false`, SSE responses still stream with per-read flushing — they are NOT silently downgraded to the buffered path. |
+| `enabled` | `true` | Run per-event plus rolling cross-event DLP + injection scanning on non-A2A SSE responses. When `false`, SSE responses still stream with per-read flushing — they are NOT silently downgraded to the buffered path. |
 | `action` | `block` | `block` terminates the stream on detection. `warn` logs an anomaly and continues forwarding events. |
 | `max_event_bytes` | `65536` | Per-event data-payload ceiling. Measures only the bytes inside the SSE `data:` field(s) — `event:`, `id:`, and `retry:` metadata are not counted. Events exceeding this are treated as findings and fail closed. Set higher only for providers with genuinely large single events. |
 
 **Behavior:**
-- Each event's `data:` payload is fed through the same DLP + injection patterns used for buffered response scanning.
+- Each event's canonical SSE text (`data:` plus `event:`, `id:`, and `retry:` metadata) is fed through the same DLP + injection patterns used for buffered response scanning.
+- A bounded rolling tail catches DLP and prompt-injection payloads split across sequential events.
 - Clean events flush to the client immediately. In block mode, the first detected event terminates the stream; later events are not forwarded. In warn mode, findings are logged and forwarding continues.
 - `response_scanning.exempt_domains` still pins prompt-injection findings to visibility-only for trusted hosts. DLP findings are not exempted.
 - Global `suppress` rules apply before SSE action selection.
 - Compressed SSE (`gzip`, `br`, `zstd`) is fail-closed-blocked on every transport. The streaming scanner is never given compressed bytes.
 - Receipts use the `sse_stream` layer label (A2A keeps its existing `a2a_stream` label so dashboards stay continuous).
-
-**Limitations (v1):**
-- Cross-event payload splitting (a secret broken across two sequential events) is NOT detected. A2A traffic still gets cross-event scanning via the A2A scanner's rolling tail; generic SSE does not in v1.
 
 See [`docs/guides/sse-streaming.md`](guides/sse-streaming.md) for the full guide with transport coverage, fail-closed behavior, and adversarial test matrix.
 

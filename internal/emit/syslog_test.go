@@ -681,7 +681,6 @@ func TestNewSyslogSinkFromConfig_InvalidAddress(t *testing.T) {
 func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	writer := &countingSyslogWriter{}
 	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
-	defer func() { _ = sink.Close() }()
 
 	// Channel field is unmarshalable. Async delivery logs the marshal failure
 	// before enqueue and drops the event without doing writer I/O.
@@ -695,6 +694,9 @@ func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	err := sink.Emit(context.Background(), event)
 	if err == nil {
 		t.Fatal("expected marshal error from Emit")
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 	if got := writer.count.Load(); got != 0 {
 		t.Fatalf("writer calls = %d, want 0", got)

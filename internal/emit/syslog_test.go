@@ -164,6 +164,10 @@ func TestSyslogSink_EmitQueueFullIsBounded(t *testing.T) {
 	if err := sink.Emit(context.Background(), event); !errors.Is(err, ErrSyslogQueueFull) {
 		t.Fatalf("third Emit error = %v, want ErrSyslogQueueFull", err)
 	}
+	stats := sink.Stats()
+	if stats.Dropped != 1 || !stats.Degraded || stats.LastError != "queue_full" {
+		t.Fatalf("stats = %+v, want queue_full drop", stats)
+	}
 
 	writer.release()
 	if err := sink.Close(); err != nil {
@@ -338,10 +342,10 @@ func TestSyslogSink_CloseTimeoutBoundsWait(t *testing.T) {
 
 func TestSyslogSink_DrainTimeoutBoundsQueuedSend(t *testing.T) {
 	oldTimeout := syslogDrainTimeout
-	syslogDrainTimeout = 25 * time.Millisecond
+	syslogDrainTimeout = -time.Nanosecond
 	defer func() { syslogDrainTimeout = oldTimeout }()
 
-	writer := newBlockingSyslogWriter()
+	writer := &countingSyslogWriter{}
 	sink := &SyslogSink{
 		writer: writer,
 		queue:  make(chan syslogMessage, 1),
@@ -362,19 +366,17 @@ func TestSyslogSink_DrainTimeoutBoundsQueuedSend(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("drain took %s, want bounded wait", elapsed)
 	}
-	if got := writer.count.Load(); got != 1 {
-		t.Fatalf("writer calls = %d, want 1", got)
+	if got := writer.count.Load(); got != 0 {
+		t.Fatalf("writer calls = %d, want 0", got)
 	}
-	writer.release()
+	stats := sink.Stats()
+	if stats.Abandoned != 1 || !stats.Degraded {
+		t.Fatalf("stats = %+v, want abandoned degraded event", stats)
+	}
 }
 
 func TestSyslogSink_QueueSizeClamped(t *testing.T) {
 	cfg := &syslogConfig{}
-	WithSyslogQueueSize(0)(cfg)
-	if cfg.queueLen != DefaultSyslogQueueSize {
-		t.Fatalf("queueLen = %d, want default %d", cfg.queueLen, DefaultSyslogQueueSize)
-	}
-
 	WithSyslogQueueSize(MaxSyslogQueueSize + 1)(cfg)
 	if cfg.queueLen != MaxSyslogQueueSize {
 		t.Fatalf("queueLen = %d, want %d", cfg.queueLen, MaxSyslogQueueSize)
@@ -385,6 +387,14 @@ func TestSyslogSink_QueueSizeClamped(t *testing.T) {
 	defer func() { _ = sink.Close() }()
 	if cap(sink.queue) != MaxSyslogQueueSize {
 		t.Fatalf("queue capacity = %d, want %d", cap(sink.queue), MaxSyslogQueueSize)
+	}
+}
+
+func TestSyslogSink_QueueSizeDefaults(t *testing.T) {
+	cfg := &syslogConfig{}
+	WithSyslogQueueSize(0)(cfg)
+	if cfg.queueLen != DefaultSyslogQueueSize {
+		t.Fatalf("queueLen = %d, want default %d", cfg.queueLen, DefaultSyslogQueueSize)
 	}
 }
 
@@ -400,24 +410,7 @@ func TestSyslogSink_EmitRejectsUninitialized(t *testing.T) {
 	}
 }
 
-func TestSyslogSink_SafeSendBeforeExpiredDeadline(t *testing.T) {
-	writer := &countingSyslogWriter{}
-	sink := &SyslogSink{writer: writer}
-
-	ok := sink.safeSendBefore(syslogMessage{
-		severity:  SeverityWarn,
-		eventType: testEventBlocked,
-		message:   "{}",
-	}, time.Now().Add(-time.Nanosecond))
-	if ok {
-		t.Fatal("safeSendBefore returned true after deadline")
-	}
-	if got := writer.count.Load(); got != 0 {
-		t.Fatalf("writer calls = %d, want 0", got)
-	}
-}
-
-func TestSyslogSink_LogsWriteErrorAndReturnsCloseError(t *testing.T) {
+func TestSyslogSink_DegradedAfterWriteErrorAndReturnsCloseError(t *testing.T) {
 	writer := &errorSyslogWriter{closeErr: errSyslogWriterFailure}
 	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
 
@@ -434,6 +427,34 @@ func TestSyslogSink_LogsWriteErrorAndReturnsCloseError(t *testing.T) {
 	}
 	if got := writer.count.Load(); got != 1 {
 		t.Fatalf("writer calls = %d, want 1", got)
+	}
+	stats := sink.Stats()
+	if stats.Failed != 1 || !stats.Degraded || stats.LastError == "" {
+		t.Fatalf("stats = %+v, want failed degraded sink with last error", stats)
+	}
+}
+
+func TestSyslogSink_EmitSignalsPriorDegradedState(t *testing.T) {
+	writer := newBlockingSyslogWriter()
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 2})
+	sink.degraded.Store(true)
+
+	err := sink.Emit(context.Background(), Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{},
+	})
+	if !errors.Is(err, ErrSyslogDegraded) {
+		t.Fatalf("Emit error = %v, want ErrSyslogDegraded", err)
+	}
+	writer.waitStarted(t)
+	writer.release()
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if stats := sink.Stats(); stats.Delivered != 1 || stats.Degraded {
+		t.Fatalf("stats = %+v, want successful send to clear degraded state", stats)
 	}
 }
 

@@ -95,7 +95,15 @@ func launchContainedAgent(
 	if err := runContainedAgentCommand(cmd); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return cliutil.ExitCodeError(exitErr.ExitCode(), fmt.Errorf("contained agent exited with status %d", exitErr.ExitCode()))
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				signal := status.Signal()
+				return cliutil.ExitCodeError(128+int(signal), fmt.Errorf("contained agent terminated by signal %s", signal))
+			}
+			exitCode := exitErr.ExitCode()
+			if exitCode < 0 {
+				return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("contained agent exited without status: %w", err))
+			}
+			return cliutil.ExitCodeError(exitCode, fmt.Errorf("contained agent exited with status %d", exitCode))
 		}
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("launch contained agent via %s: %w", defaultLaunchScript, err))
 	}

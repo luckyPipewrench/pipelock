@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/user"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -224,6 +225,44 @@ func TestLaunchContainedAgent_MapsContainedExitStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "contained agent exited with status 7") {
 		t.Fatalf("error = %v, want contained exit status context", err)
+	}
+}
+
+func TestLaunchContainedAgent_MapsSignaledContainedExit(t *testing.T) {
+	current := testContainedAgentUser()
+
+	exitErr := exec.CommandContext(context.Background(), "sh", "-c", "kill -TERM $$").Run()
+	if exitErr == nil {
+		t.Fatal("expected helper command to be terminated by signal")
+	}
+
+	env := &probeEnv{
+		agentUserName: current.Username,
+		launchPath:    defaultLaunchScript,
+		lookupUser: func(string) (*user.User, error) {
+			return current, nil
+		},
+		groupIDs: func(*user.User) ([]string, error) {
+			return []string{current.Gid, "1001"}, nil
+		},
+	}
+
+	oldRun := runContainedAgentCommand
+	defer func() { runContainedAgentCommand = oldRun }()
+	runContainedAgentCommand = func(*exec.Cmd) error {
+		return exitErr
+	}
+
+	err := launchContainedAgent(context.Background(), env, []string{"claude"}, nil, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected contained signal exit")
+	}
+	wantCode := 128 + int(syscall.SIGTERM)
+	if got := cliutil.ExitCodeOf(err); got != wantCode {
+		t.Fatalf("exit code = %d, want %d", got, wantCode)
+	}
+	if !strings.Contains(err.Error(), "contained agent terminated by signal") {
+		t.Fatalf("error = %v, want contained signal context", err)
 	}
 }
 

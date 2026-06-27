@@ -21,11 +21,16 @@ import (
 
 const (
 	DefaultSyslogQueueSize = 64
-	syslogDrainTimeout     = 10 * time.Second
+	MaxSyslogQueueSize     = 4096
 )
+
+var syslogDrainTimeout = 10 * time.Second
 
 // ErrSyslogQueueFull is returned when the syslog event queue is at capacity.
 var ErrSyslogQueueFull = errors.New("emit: syslog queue full, event dropped")
+
+// ErrSyslogCloseTimeout is returned when Close cannot drain the worker before the timeout.
+var ErrSyslogCloseTimeout = errors.New("emit: syslog close timed out before drain completed")
 
 const errSyslogClosed = "emit: syslog sink closed"
 
@@ -83,9 +88,7 @@ func WithSyslogMinSeverity(sev Severity) SyslogOption {
 // WithSyslogQueueSize sets the buffered channel capacity for pending events.
 func WithSyslogQueueSize(n int) SyslogOption {
 	return func(c *syslogConfig) {
-		if n > 0 {
-			c.queueLen = n
-		}
+		c.queueLen = normalizeSyslogQueueSize(n)
 	}
 }
 
@@ -135,9 +138,7 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 }
 
 func newSyslogSink(writer syslogWriter, cfg *syslogConfig) *SyslogSink {
-	if cfg.queueLen <= 0 {
-		cfg.queueLen = DefaultSyslogQueueSize
-	}
+	cfg.queueLen = normalizeSyslogQueueSize(cfg.queueLen)
 	s := &SyslogSink{
 		writer: writer,
 		minSev: cfg.minSev,
@@ -147,6 +148,17 @@ func newSyslogSink(writer syslogWriter, cfg *syslogConfig) *SyslogSink {
 	s.closeWG.Add(1)
 	go s.run()
 	return s
+}
+
+func normalizeSyslogQueueSize(n int) int {
+	switch {
+	case n <= 0:
+		return DefaultSyslogQueueSize
+	case n > MaxSyslogQueueSize:
+		return MaxSyslogQueueSize
+	default:
+		return n
+	}
 }
 
 // parseFacility converts a facility name string to a syslog.Priority.
@@ -219,6 +231,7 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 	if event.Severity < s.minSev {
 		return nil
 	}
+	event = cloneEvent(event)
 
 	s.closeMu.Lock()
 	if s.closed {
@@ -237,16 +250,11 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 
 func (s *SyslogSink) run() {
 	defer s.closeWG.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "emit: syslog goroutine panic: %v\n", r)
-		}
-	}()
 
 	for {
 		select {
 		case event := <-s.queue:
-			s.send(event)
+			s.safeSend(event)
 		case <-s.done:
 			s.drain()
 			return
@@ -259,13 +267,22 @@ func (s *SyslogSink) drain() {
 	for {
 		select {
 		case event := <-s.queue:
-			s.send(event)
+			s.safeSend(event)
 		case <-deadline:
 			return
 		default:
 			return
 		}
 	}
+}
+
+func (s *SyslogSink) safeSend(event Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "emit: syslog send panic for event %s: %v\n", event.Type, r)
+		}
+	}()
+	s.send(event)
 }
 
 func (s *SyslogSink) send(event Event) {
@@ -312,9 +329,33 @@ func (s *SyslogSink) Close() error {
 			s.closed = true
 			s.closeMu.Unlock()
 			close(s.done)
-			s.closeWG.Wait()
+
+			drained := make(chan struct{})
+			go func() {
+				s.closeWG.Wait()
+				close(drained)
+			}()
+			select {
+			case <-drained:
+			case <-time.After(syslogDrainTimeout):
+				closeErr = ErrSyslogCloseTimeout
+			}
 		}
-		closeErr = s.writer.Close()
+		if err := s.writer.Close(); err != nil {
+			closeErr = errors.Join(closeErr, err)
+		}
 	})
 	return closeErr
+}
+
+func cloneEvent(event Event) Event {
+	if event.Fields == nil {
+		return event
+	}
+	fields := make(map[string]any, len(event.Fields))
+	for k, v := range event.Fields {
+		fields[k] = v
+	}
+	event.Fields = fields
+	return event
 }

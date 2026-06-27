@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/syslog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -171,7 +172,7 @@ func TestSyslogSink_EmitQueueFullIsBounded(t *testing.T) {
 }
 
 func TestSyslogSink_CloseDrainsQueuedEvents(t *testing.T) {
-	writer := &countingSyslogWriter{}
+	writer := newBlockingSyslogWriter()
 	sink := newSyslogSink(writer, &syslogConfig{queueLen: 4})
 
 	for i := 0; i < 3; i++ {
@@ -186,14 +187,149 @@ func TestSyslogSink_CloseDrainsQueuedEvents(t *testing.T) {
 		}
 	}
 
-	if err := sink.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	writer.waitStarted(t)
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- sink.Close()
+	}()
+	waitSinkClosed(t, sink)
+	writer.release()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for Close")
 	}
 	if got := writer.count.Load(); got != 3 {
 		t.Fatalf("writer calls = %d, want 3", got)
 	}
 	if err := sink.Emit(context.Background(), Event{Severity: SeverityWarn}); err == nil {
 		t.Fatal("expected Emit to fail after Close")
+	}
+}
+
+func TestSyslogSink_EmitSnapshotsFieldsBeforeEnqueue(t *testing.T) {
+	writer := newBlockingSyslogWriter()
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 4})
+
+	first := Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{"reason": "first"},
+	}
+	if err := sink.Emit(context.Background(), first); err != nil {
+		t.Fatalf("first Emit: %v", err)
+	}
+	writer.waitStarted(t)
+
+	fields := map[string]any{"reason": "before"}
+	second := Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+		Fields:    fields,
+	}
+	if err := sink.Emit(context.Background(), second); err != nil {
+		t.Fatalf("second Emit: %v", err)
+	}
+	fields["reason"] = "after"
+
+	writer.release()
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	messages := writer.messages()
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(messages))
+	}
+	if !contains(messages[1], `"reason":"before"`) {
+		t.Fatalf("second message missing original field value:\n%s", messages[1])
+	}
+	if contains(messages[1], `"reason":"after"`) {
+		t.Fatalf("second message used mutated field value:\n%s", messages[1])
+	}
+}
+
+func TestSyslogSink_PanicDropsOnlyCurrentEvent(t *testing.T) {
+	writer := &panicOnceSyslogWriter{}
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 2})
+
+	for i := 0; i < 2; i++ {
+		event := Event{
+			Severity:  SeverityWarn,
+			Type:      testEventBlocked,
+			Timestamp: time.Now(),
+			Fields:    map[string]any{"n": i},
+		}
+		if err := sink.Emit(context.Background(), event); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := writer.count.Load(); got != 2 {
+		t.Fatalf("writer calls = %d, want 2", got)
+	}
+}
+
+func TestSyslogSink_CloseTimeoutBoundsWait(t *testing.T) {
+	oldTimeout := syslogDrainTimeout
+	syslogDrainTimeout = 25 * time.Millisecond
+	defer func() { syslogDrainTimeout = oldTimeout }()
+
+	writer := newBlockingSyslogWriter()
+	sink := newSyslogSink(writer, &syslogConfig{queueLen: 1})
+	event := Event{
+		Severity:  SeverityWarn,
+		Type:      testEventBlocked,
+		Timestamp: time.Now(),
+		Fields:    map[string]any{},
+	}
+	if err := sink.Emit(context.Background(), event); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	writer.waitStarted(t)
+
+	start := time.Now()
+	err := sink.Close()
+	if !errors.Is(err, ErrSyslogCloseTimeout) {
+		t.Fatalf("Close error = %v, want ErrSyslogCloseTimeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Close took %s, want bounded wait", elapsed)
+	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		sink.closeWG.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after writer close")
+	}
+}
+
+func TestSyslogSink_QueueSizeClamped(t *testing.T) {
+	cfg := &syslogConfig{}
+	WithSyslogQueueSize(MaxSyslogQueueSize + 1)(cfg)
+	if cfg.queueLen != MaxSyslogQueueSize {
+		t.Fatalf("queueLen = %d, want %d", cfg.queueLen, MaxSyslogQueueSize)
+	}
+
+	writer := &countingSyslogWriter{}
+	sink := newSyslogSink(writer, cfg)
+	defer func() { _ = sink.Close() }()
+	if cap(sink.queue) != MaxSyslogQueueSize {
+		t.Fatalf("queue capacity = %d, want %d", cap(sink.queue), MaxSyslogQueueSize)
 	}
 }
 
@@ -458,6 +594,8 @@ func searchSubstring(s, substr string) bool {
 type blockingSyslogWriter struct {
 	started  chan struct{}
 	releaseC chan struct{}
+	mu       sync.Mutex
+	logs     []string
 	count    atomic.Int64
 	closed   atomic.Bool
 }
@@ -483,11 +621,15 @@ func (w *blockingSyslogWriter) Info(msg string) error {
 
 func (w *blockingSyslogWriter) Close() error {
 	w.closed.Store(true)
+	w.release()
 	return nil
 }
 
-func (w *blockingSyslogWriter) write(_ string) error {
+func (w *blockingSyslogWriter) write(msg string) error {
 	w.count.Add(1)
+	w.mu.Lock()
+	w.logs = append(w.logs, msg)
+	w.mu.Unlock()
 	select {
 	case <-w.started:
 	default:
@@ -511,6 +653,34 @@ func (w *blockingSyslogWriter) release() {
 	case <-w.releaseC:
 	default:
 		close(w.releaseC)
+	}
+}
+
+func (w *blockingSyslogWriter) messages() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]string, len(w.logs))
+	copy(out, w.logs)
+	return out
+}
+
+func waitSinkClosed(t *testing.T, sink *SyslogSink) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		sink.closeMu.Lock()
+		closed := sink.closed
+		sink.closeMu.Unlock()
+		if closed {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for sink close to start")
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -538,5 +708,34 @@ func (w *countingSyslogWriter) Close() error {
 
 func (w *countingSyslogWriter) write(_ string) error {
 	w.count.Add(1)
+	return nil
+}
+
+type panicOnceSyslogWriter struct {
+	count  atomic.Int64
+	closed atomic.Bool
+}
+
+func (w *panicOnceSyslogWriter) Crit(msg string) error {
+	return w.write(msg)
+}
+
+func (w *panicOnceSyslogWriter) Warning(msg string) error {
+	return w.write(msg)
+}
+
+func (w *panicOnceSyslogWriter) Info(msg string) error {
+	return w.write(msg)
+}
+
+func (w *panicOnceSyslogWriter) Close() error {
+	w.closed.Store(true)
+	return nil
+}
+
+func (w *panicOnceSyslogWriter) write(_ string) error {
+	if w.count.Add(1) == 1 {
+		panic("syslog write panic")
+	}
 	return nil
 }

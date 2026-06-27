@@ -153,8 +153,7 @@ func newLogEntry(event *zerolog.Event, eventType EventType) *logEntry {
 	}
 }
 
-// newLogEntryRaw creates a logEntry with a raw event name string (for startup/shutdown
-// which use plain strings instead of EventType constants).
+// newLogEntryRaw creates a logEntry with a raw event name string.
 func newLogEntryRaw(event *zerolog.Event, eventName string) *logEntry {
 	return &logEntry{
 		event:  event.Str("event", eventName),
@@ -291,6 +290,8 @@ type EventType string
 
 // Event type constants for structured audit log entries.
 const (
+	EventStartup             EventType = "startup"
+	EventShutdown            EventType = "shutdown"
 	EventAllowed             EventType = "allowed"
 	EventBlocked             EventType = "blocked"
 	EventError               EventType = "error"
@@ -993,6 +994,10 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agen
 		optStr("agent", agent).
 		intField("hop", hop)
 	e.msg("redirect followed")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventRedirect), e.fields)
+	}
 }
 
 // ToolRedirectEvent bundles the per-event fields LogToolRedirect emits.
@@ -1072,19 +1077,27 @@ func (l *Logger) LogLicenseExpiry(licenseID string, thresholdDays, daysRemaining
 
 // LogStartup logs that the proxy has started.
 func (l *Logger) LogStartup(listenAddr, mode, version, configHash string) {
-	e := newLogEntryRaw(l.zl.Info(), "startup").
+	e := newLogEntryRaw(l.zl.Info(), string(EventStartup)).
 		str("listen", listenAddr).
 		str("mode", mode).
 		str("version", version).
 		str("config_hash", configHash)
 	e.msg("pipelock started")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventStartup), e.fields)
+	}
 }
 
 // LogShutdown logs that the proxy is shutting down.
 func (l *Logger) LogShutdown(reason string) {
-	e := newLogEntryRaw(l.zl.Info(), "shutdown").
+	e := newLogEntryRaw(l.zl.Info(), string(EventShutdown)).
 		str("reason", reason)
 	e.msg("pipelock stopping")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventShutdown), e.fields)
+	}
 }
 
 // LogAgentListener logs that a per-agent listener has started.
@@ -1093,6 +1106,10 @@ func (l *Logger) LogAgentListener(addr, agent string) {
 		str("listen", addr).
 		str("agent", agent)
 	e.msg("agent listener started")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventAgentListener), e.fields)
+	}
 }
 
 // LogWSOpen logs a WebSocket proxy connection establishment.
@@ -1106,6 +1123,10 @@ func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
 		str("request_id", requestID).
 		str("agent", agent)
 	e.msg("websocket opened")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventWSOpen), e.fields)
+	}
 }
 
 // WSCloseEvent bundles the per-event fields LogWSClose emits.
@@ -1137,6 +1158,10 @@ func (l *Logger) LogWSClose(ev WSCloseEvent) {
 		int64Field("binary_frames", ev.BinaryFrames).
 		durMS(ev.Duration)
 	e.msg("websocket closed")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventWSClose), e.fields)
+	}
 }
 
 // LogWSBlocked logs a blocked WebSocket frame or connection.

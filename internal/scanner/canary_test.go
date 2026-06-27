@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
@@ -70,6 +71,24 @@ func TestScanTextForDLP_CanaryBypassCoverage(t *testing.T) {
 			name:        "base64_encoded",
 			text:        base64.StdEncoding.EncodeToString([]byte(canary)),
 			wantEncoded: "base64",
+			wantCanary:  testCanaryName,
+		},
+		{
+			name:        "base64_encoded_spaces_in_structured_text",
+			text:        `{"payload":"` + splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(canary)), 5, " ") + `"}`,
+			wantEncoded: "base64",
+			wantCanary:  testCanaryName,
+		},
+		{
+			name:        "base64_encoded_dots_in_structured_text",
+			text:        `{"payload":"` + splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(canary)), 5, ".") + `"}`,
+			wantEncoded: "base64",
+			wantCanary:  testCanaryName,
+		},
+		{
+			name:        "base32_encoded_unpadded",
+			text:        base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(canary)),
+			wantEncoded: "base32",
 			wantCanary:  testCanaryName,
 		},
 		{

@@ -1542,6 +1542,101 @@ func normalizeHex(s string) string {
 	return out
 }
 
+type encodedTokenKind int
+
+const (
+	encodedTokenBase64Std encodedTokenKind = iota
+	encodedTokenBase64URL
+	encodedTokenBase32
+)
+
+func isASCIIWhitespaceByte(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\f', '\v':
+		return true
+	default:
+		return false
+	}
+}
+
+func isEncodedTokenByte(c byte, kind encodedTokenKind) bool {
+	switch {
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= 'a' && c <= 'z':
+		return kind != encodedTokenBase32
+	case c >= '0' && c <= '9':
+		return kind != encodedTokenBase32 || c == '2' || c == '3' || c == '4' || c == '5' || c == '6' || c == '7'
+	case c == '=':
+		return true
+	case c == '+' || c == '/':
+		return kind == encodedTokenBase64Std
+	case c == '-' || c == '_':
+		return kind == encodedTokenBase64URL
+	default:
+		return false
+	}
+}
+
+// isEncodedTokenSeparator reports whether c is a delimiter an attacker may
+// interleave between encoded-token characters to evade contiguous-string
+// matching. The recognized set is intentionally narrow: ASCII whitespace, '.',
+// and the cross-encoding characters that are invalid for the target alphabet
+// (so they cannot be data bytes). Any other byte aborts normalization rather
+// than being skipped, which keeps false positives down at the cost of missing
+// exotic splitters (',', ':', ';', '|'). The contiguous hex path in
+// matchSecretEncodingSpan covers ',', ':', '\x', and '0x' explicitly; encoded
+// (base64/base32) splitting on those separators is a known, documented gap, not
+// full coverage.
+func isEncodedTokenSeparator(c byte, kind encodedTokenKind) bool {
+	if isASCIIWhitespaceByte(c) || c == '.' {
+		return true
+	}
+	switch kind {
+	case encodedTokenBase64Std:
+		return c == '-' || c == '_'
+	case encodedTokenBase64URL:
+		return c == '/' || c == '+'
+	case encodedTokenBase32:
+		return c == '-' || c == '_' || c == '/'
+	default:
+		return false
+	}
+}
+
+// normalizeEncodedToken strips only characters that are invalid for the target
+// encoding. It preserves URL-safe base64 '-' and '_' for URL-safe decode and
+// preserves standard base64 '/' for standard decode, so data bytes are not
+// treated as delimiters.
+func normalizeEncodedToken(s string, kind encodedTokenKind) string {
+	if len(s) < 4 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	changed := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if isEncodedTokenByte(c, kind) {
+			b.WriteByte(c)
+			continue
+		}
+		if isEncodedTokenSeparator(c, kind) {
+			changed = true
+			continue
+		}
+		return ""
+	}
+	if !changed {
+		return ""
+	}
+	out := b.String()
+	if len(out) < 4 {
+		return ""
+	}
+	return out
+}
+
 // hexByteSep formats a contiguous hex string with a separator between each byte
 // pair. Used by matchSecretEncodingSpan to generate delimiter-separated
 // variants of known secrets for substring matching.
@@ -1598,8 +1693,33 @@ func decodeEncodings(s string) []decodedResult {
 			out = append(out, decodedResult{string(decoded), encodingBase64})
 		}
 	}
+	if normalized := normalizeEncodedToken(s, encodedTokenBase64Std); normalized != "" {
+		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
+			if decoded, err := enc.DecodeString(normalized); err == nil && len(decoded) > 0 {
+				out = append(out, decodedResult{string(decoded), encodingBase64})
+			}
+		}
+	}
+	if normalized := normalizeEncodedToken(s, encodedTokenBase64URL); normalized != "" {
+		for _, enc := range []*base64.Encoding{base64.URLEncoding, base64.RawURLEncoding} {
+			if decoded, err := enc.DecodeString(normalized); err == nil && len(decoded) > 0 {
+				out = append(out, decodedResult{string(decoded), encodingBase64})
+			}
+		}
+	}
 	if decoded, err := base32.StdEncoding.DecodeString(s); err == nil && len(decoded) > 0 {
 		out = append(out, decodedResult{string(decoded), encodingBase32})
+	}
+	if decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(s); err == nil && len(decoded) > 0 {
+		out = append(out, decodedResult{string(decoded), encodingBase32})
+	}
+	if normalized := normalizeEncodedToken(s, encodedTokenBase32); normalized != "" {
+		if decoded, err := base32.StdEncoding.DecodeString(normalized); err == nil && len(decoded) > 0 {
+			out = append(out, decodedResult{string(decoded), encodingBase32})
+		}
+		if decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(normalized); err == nil && len(decoded) > 0 {
+			out = append(out, decodedResult{string(decoded), encodingBase32})
+		}
 	}
 	return out
 }
@@ -2113,6 +2233,39 @@ func indexAnyView(needle string, views []spanTextView) (int, int, string, bool) 
 	return 0, 0, "", false
 }
 
+func indexEncodedTokenView(needle string, views []spanTextView, kind encodedTokenKind) (int, int, string, bool) {
+	if len(needle) == 0 {
+		return 0, 0, "", false
+	}
+	for _, view := range views {
+		text := view.text
+		for start := 0; start < len(text); start++ {
+			if text[start] != needle[0] {
+				continue
+			}
+			textIdx := start
+			needleIdx := 0
+			for textIdx < len(text) && needleIdx < len(needle) {
+				c := text[textIdx]
+				if c == needle[needleIdx] {
+					textIdx++
+					needleIdx++
+					continue
+				}
+				if isEncodedTokenSeparator(c, kind) {
+					textIdx++
+					continue
+				}
+				break
+			}
+			if needleIdx == len(needle) {
+				return start, textIdx, view.viewLabel, true
+			}
+		}
+	}
+	return 0, 0, "", false
+}
+
 func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (bool, string, int, int, string) {
 	// Raw match.
 	if start, end, viewLabel, ok := indexAnyView(secret, texts); ok {
@@ -2130,6 +2283,14 @@ func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (b
 			return true, encodingBase64, start, end, viewLabel
 		}
 	}
+	if start, end, viewLabel, ok := indexEncodedTokenView(b64Std, texts, encodedTokenBase64Std); ok {
+		return true, encodingBase64, start, end, viewLabel
+	}
+	if b64StdNoPad != b64Std {
+		if start, end, viewLabel, ok := indexEncodedTokenView(b64StdNoPad, texts, encodedTokenBase64Std); ok {
+			return true, encodingBase64, start, end, viewLabel
+		}
+	}
 
 	// Base64 URL-safe (padded + unpadded).
 	b64URL := base64.URLEncoding.EncodeToString([]byte(secret))
@@ -2141,6 +2302,16 @@ func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (b
 	}
 	if b64URLNoPad != b64StdNoPad {
 		if start, end, viewLabel, ok := indexAnyView(b64URLNoPad, texts); ok {
+			return true, "base64url", start, end, viewLabel
+		}
+	}
+	if b64URL != b64Std {
+		if start, end, viewLabel, ok := indexEncodedTokenView(b64URL, texts, encodedTokenBase64URL); ok {
+			return true, "base64url", start, end, viewLabel
+		}
+	}
+	if b64URLNoPad != b64StdNoPad {
+		if start, end, viewLabel, ok := indexEncodedTokenView(b64URLNoPad, texts, encodedTokenBase64URL); ok {
 			return true, "base64url", start, end, viewLabel
 		}
 	}
@@ -2173,6 +2344,14 @@ func matchSecretEncodingSpan(secret string, texts, lowerTexts []spanTextView) (b
 	}
 	if b32NoPad != b32Std {
 		if start, end, viewLabel, ok := indexAnyView(b32NoPad, texts); ok {
+			return true, encodingBase32, start, end, viewLabel
+		}
+	}
+	if start, end, viewLabel, ok := indexEncodedTokenView(b32Std, texts, encodedTokenBase32); ok {
+		return true, encodingBase32, start, end, viewLabel
+	}
+	if b32NoPad != b32Std {
+		if start, end, viewLabel, ok := indexEncodedTokenView(b32NoPad, texts, encodedTokenBase32); ok {
 			return true, encodingBase32, start, end, viewLabel
 		}
 	}

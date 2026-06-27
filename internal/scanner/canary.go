@@ -70,18 +70,18 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized))...)
 	}
 
-	segments := strings.FieldsFunc(cleaned, func(r rune) bool {
-		return r == '/' || r == '?' || r == '&' || r == '=' || r == ' ' || r == '\n' || r == '\t'
-	})
-	for _, seg := range segments {
-		if len(seg) < 8 {
-			continue
-		}
-		for _, d := range decodeEncodings(seg) {
-			matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", "dlp_segment"))...)
-		}
-		if collapsed := canonicalizeCanaryText(seg); collapsed != "" && collapsed != seg {
-			matches = append(matches, s.matchCanaryTokens(seg, "split", true, "dlp_segment")...)
+	for _, view := range textDLPEncodingSegmentViews(cleaned) {
+		segments := strings.FieldsFunc(view.text, isTextDLPEncodingDelimiter)
+		for _, seg := range segments {
+			if len(seg) < 8 {
+				continue
+			}
+			for _, d := range decodeEncodings(seg) {
+				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, spanViewLabel(d.encoding+"_decoded", view.viewLabel))...)
+			}
+			if collapsed := canonicalizeCanaryText(seg); collapsed != "" && collapsed != seg {
+				matches = append(matches, s.matchCanaryTokens(seg, "split", true, view.viewLabel)...)
+			}
 		}
 	}
 

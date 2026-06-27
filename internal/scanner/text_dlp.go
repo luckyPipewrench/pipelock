@@ -353,10 +353,9 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 		}
 	}
 
-	// ASCII whitespace collapse: catches high-confidence keys split by spaces,
-	// tabs, or newlines in headers and tool args (e.g. "AKIAIOSF ODNN7EXAMPLE").
-	if compacted := compactTextDLPWhitespace(cleaned); compacted != cleaned {
-		matches = append(matches, s.matchDLPPatterns(compacted, "whitespace")...)
+	segmentViews := textDLPEncodingSegmentViews(cleaned)
+	if len(segmentViews) > 1 {
+		matches = append(matches, s.matchDLPPatterns(segmentViews[1].text, "whitespace")...)
 	}
 
 	// Hostname exfiltration: extract URL hostnames from the text and run the
@@ -392,7 +391,12 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 	// Warn-only matches must not gate off further scanning - an enforced
 	// match might hide in a decoded segment.
 	if !hasEnforcedMatch(matches) {
-		matches = append(matches, s.decodeTextSegments(cleaned)...)
+		for _, view := range segmentViews {
+			matches = append(matches, s.decodeTextSegments(view.text)...)
+			if hasEnforcedMatch(matches) {
+				break
+			}
+		}
 	}
 
 	// Check for env + file secret leaks (raw + encoded forms). These detect a
@@ -496,6 +500,17 @@ func compactTextDLPWhitespace(text string) string {
 		}
 		return r
 	}, text)
+}
+
+func textDLPEncodingSegmentViews(cleaned string) []spanTextView {
+	views := []spanTextView{{text: cleaned, viewLabel: ViewDLPNormalized}}
+	if compacted := compactTextDLPWhitespace(cleaned); compacted != cleaned {
+		views = append(views, spanTextView{
+			text:      compacted,
+			viewLabel: spanViewLabel("whitespace", ViewDLPNormalized),
+		})
+	}
+	return views
 }
 
 // checkSecretsInText scans text for leaked secrets (env vars or file-based).

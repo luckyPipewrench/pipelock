@@ -1042,6 +1042,56 @@ func TestScanTextForDLP_DecodesStructuredPayloadSegment(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_DecodesDelimiterSplitStructuredPayloadSegment(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	secret := testAnthropicPrefix + strings.Repeat("z", 25)
+	tests := []struct {
+		name    string
+		text    string
+		wantEnc string
+	}{
+		{
+			name:    "base64_spaces",
+			text:    `{"payload":"` + splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(secret)), 5, " ") + `"}`,
+			wantEnc: encodingBase64,
+		},
+		{
+			name:    "base64_dots",
+			text:    `{"payload":"` + splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(secret)), 5, ".") + `"}`,
+			wantEnc: encodingBase64,
+		},
+		{
+			name:    "base32_hyphens",
+			text:    `{"payload":"` + splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(secret)), 6, "-") + `"}`,
+			wantEnc: encodingBase32,
+		},
+		{
+			name:    "base32_dots",
+			text:    `{"payload":"` + splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(secret)), 6, ".") + `"}`,
+			wantEnc: encodingBase32,
+		},
+		{
+			name:    "base32_unpadded",
+			text:    `{"payload":"` + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(secret)) + `"}`,
+			wantEnc: encodingBase32,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean {
+				t.Fatal("expected delimiter-split encoded secret inside JSON string to be detected")
+			}
+			if !hasTextDLPMatch(result.Matches, testAnthropicName, tt.wantEnc) {
+				t.Fatalf("expected %s %q match, got %+v", tt.wantEnc, testAnthropicName, result.Matches)
+			}
+		})
+	}
+}
+
 func TestScanTextForDLP_AllowsOfficialAWSExampleCredentialDocs(t *testing.T) {
 	s := New(testConfig())
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
@@ -1369,6 +1419,47 @@ func TestCheckSecretsInText_DelimiterHexEnvSecret(t *testing.T) {
 			matches := s.checkSecretsInText([]string{secret}, tt.text, "Environment Variable Leak", "env")
 			if len(matches) == 0 {
 				t.Errorf("expected %s hex-encoded env leak to be caught", tt.name)
+			}
+		})
+	}
+}
+
+func TestCheckSecretsInText_DelimiterEncodedEnvSecret(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = true
+	s := New(cfg)
+	defer s.Close()
+
+	stdSecret := "DelimiterSecretValue1234"
+	stdB64 := base64.StdEncoding.EncodeToString([]byte(stdSecret))
+	b32 := base32.StdEncoding.EncodeToString([]byte(stdSecret))
+
+	urlSecret := "ab~test-value" + "-for-28-byte-wk"
+	urlB64 := base64.URLEncoding.EncodeToString([]byte(urlSecret))
+	if urlB64 == base64.StdEncoding.EncodeToString([]byte(urlSecret)) {
+		t.Skip("URL-safe and standard base64 encodings are the same for this secret")
+	}
+
+	tests := []struct {
+		name    string
+		secret  string
+		text    string
+		wantEnc string
+	}{
+		{"base64_spaces", stdSecret, "data: " + splitEncodedTokenForTest(t, stdB64, 5, " "), encodingBase64},
+		{"base64_dots", stdSecret, "data: " + splitEncodedTokenForTest(t, stdB64, 5, "."), encodingBase64},
+		{"base64url_slashes", urlSecret, "data: " + splitEncodedTokenForTest(t, urlB64, 5, "/"), "base64url"},
+		{"base32_hyphens", stdSecret, "data: " + splitEncodedTokenForTest(t, b32, 6, "-"), encodingBase32},
+		{"base32_dots", stdSecret, "data: " + splitEncodedTokenForTest(t, b32, 6, "."), encodingBase32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matches := s.checkSecretsInText([]string{tt.secret}, tt.text, "Environment Variable Leak", "")
+			if len(matches) == 0 {
+				t.Fatalf("expected delimiter-split encoded env leak to be caught")
+			}
+			if matches[0].Encoded != tt.wantEnc {
+				t.Fatalf("Encoded = %q, want %q", matches[0].Encoded, tt.wantEnc)
 			}
 		})
 	}
@@ -2215,6 +2306,70 @@ func TestScanTextForDLP_FileSecretEncodedFieldValues(t *testing.T) {
 			}
 			if !found {
 				t.Error("expected 'Known Secret Leak' match")
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_FileSecretDelimiterEncodedMatch(t *testing.T) {
+	secret := "MyFileSecret" + "Value1234"
+
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"base64_spaces", splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(secret)), 5, " ")},
+		{"base64_dots", splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(secret)), 5, ".")},
+		{"base32_hyphens", splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(secret)), 6, "-")},
+		{"base32_dots", splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(secret)), 6, ".")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "secrets.txt")
+			if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := testConfig()
+			cfg.DLP.SecretsFile = path
+			s := New(cfg)
+			defer s.Close()
+
+			result := s.ScanTextForDLP(context.Background(), "payload: "+tt.text)
+			if result.Clean {
+				t.Fatal("expected delimiter-split encoded file secret to be detected")
+			}
+			if !hasTextDLPMatch(result.Matches, "Known Secret Leak", "") &&
+				!hasTextDLPMatch(result.Matches, "Known Secret Leak", encodingBase64) &&
+				!hasTextDLPMatch(result.Matches, "Known Secret Leak", encodingBase32) {
+				t.Fatalf("expected known secret leak match, got %#v", result.Matches)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_DelimiterEncodedBenignClean(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	benign := "This is a normal support note about base64 encoding."
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"base64_spaces", splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(benign)), 5, " ")},
+		{"base64_dots", splitEncodedTokenForTest(t, base64.StdEncoding.EncodeToString([]byte(benign)), 5, ".")},
+		{"base32_hyphens", splitEncodedTokenForTest(t, base32.StdEncoding.EncodeToString([]byte(benign)), 6, "-")},
+		{"ordinary_prose", "This is ordinary prose about base64 chunks in documentation."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if !result.Clean {
+				t.Fatalf("false positive on clean delimiter-split encoded text: %#v", result.Matches)
 			}
 		})
 	}

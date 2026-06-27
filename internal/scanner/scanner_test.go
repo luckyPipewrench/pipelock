@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2823,6 +2824,144 @@ func TestScan_DLP_DelimiterHexNoFalsePositives(t *testing.T) {
 			result := s.Scan(context.Background(), tt.url)
 			if !result.Allowed {
 				t.Errorf("false positive on delimiter-hex clean data: %s (reason: %s)", tt.url, result.Reason)
+			}
+		})
+	}
+}
+
+func splitEncodedTokenForTest(t testing.TB, s string, chunk int, sep string) string {
+	t.Helper()
+	if chunk <= 0 {
+		t.Fatalf("invalid split chunk size: %d", chunk)
+	}
+	if len(s) <= chunk {
+		t.Fatalf("split chunk size %d does not split token of length %d", chunk, len(s))
+	}
+	var parts []string
+	for len(s) > chunk {
+		parts = append(parts, s[:chunk])
+		s = s[chunk:]
+	}
+	parts = append(parts, s)
+	return strings.Join(parts, sep)
+}
+
+func TestScan_DLP_DelimiterEncodedTokensInURLComponents(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:     "URL-safe Test Secret",
+		Regex:    `ab~test-value-for-28-byte-wk`,
+		Severity: "critical",
+	})
+	s := New(cfg)
+	defer s.Close()
+
+	secret := testAnthropicPrefix + testAlphabet
+	stdB64 := base64.StdEncoding.EncodeToString([]byte(secret))
+	urlSafeSecret := "ab~test-value" + "-for-28-byte-wk"
+	urlB64 := base64.URLEncoding.EncodeToString([]byte(urlSafeSecret))
+	if urlB64 == base64.StdEncoding.EncodeToString([]byte(urlSafeSecret)) {
+		t.Fatal("URL-safe fixture must differ from standard base64")
+	}
+	b32 := base32.StdEncoding.EncodeToString([]byte(secret))
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "query_base64_spaces",
+			url:  "https://example.com/api?key=" + url.QueryEscape(splitEncodedTokenForTest(t, stdB64, 5, " ")),
+		},
+		{
+			name: "query_base64_dots",
+			url:  "https://example.com/api?key=" + splitEncodedTokenForTest(t, stdB64, 5, "."),
+		},
+		{
+			name: "query_base64url_plus",
+			url:  "https://example.com/api?key=" + url.QueryEscape(splitEncodedTokenForTest(t, urlB64, 5, "+")),
+		},
+		{
+			name: "query_base32_hyphens",
+			url:  "https://example.com/api?key=" + splitEncodedTokenForTest(t, b32, 6, "-"),
+		},
+		{
+			name: "path_base64_dots",
+			url:  "https://example.com/exfil/" + splitEncodedTokenForTest(t, stdB64, 5, ".") + "/data",
+		},
+		{
+			name: "path_base64url_plus",
+			url:  "https://example.com/exfil/" + splitEncodedTokenForTest(t, urlB64, 5, "+") + "/data",
+		},
+		{
+			name: "path_base32_hyphens",
+			url:  "https://example.com/exfil/" + splitEncodedTokenForTest(t, b32, 6, "-") + "/data",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed {
+				t.Fatalf("expected delimiter-split encoded API key to be blocked")
+			}
+			if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+				t.Fatalf("scanner = %s, want DLP or core_dlp (reason: %s)", result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+func TestScan_DLP_DelimiterEncodedTokensNoFalsePositives(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 8.0
+	s := New(cfg)
+	defer s.Close()
+
+	benign := "This is a normal support note about base64 encoding."
+	stdB64 := base64.StdEncoding.EncodeToString([]byte(benign))
+	urlBenign := "ab~benign-value-for-28-byte-wk"
+	urlB64 := base64.URLEncoding.EncodeToString([]byte(urlBenign))
+	if urlB64 == base64.StdEncoding.EncodeToString([]byte(urlBenign)) {
+		t.Fatal("URL-safe benign fixture must differ from standard base64")
+	}
+	b32 := base32.StdEncoding.EncodeToString([]byte(benign))
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "query_base64_spaces_clean",
+			url:  "https://example.com/api?data=" + url.QueryEscape(splitEncodedTokenForTest(t, stdB64, 5, " ")),
+		},
+		{
+			name: "query_base64_dots_clean",
+			url:  "https://example.com/api?data=" + splitEncodedTokenForTest(t, stdB64, 5, "."),
+		},
+		{
+			name: "query_base64url_plus_clean",
+			url:  "https://example.com/api?data=" + url.QueryEscape(splitEncodedTokenForTest(t, urlB64, 5, "+")),
+		},
+		{
+			name: "path_base64url_plus_clean",
+			url:  "https://example.com/docs/" + splitEncodedTokenForTest(t, urlB64, 5, "+"),
+		},
+		{
+			name: "path_base32_hyphens_clean",
+			url:  "https://example.com/docs/" + splitEncodedTokenForTest(t, b32, 6, "-"),
+		},
+		{
+			name: "ordinary_prose_query_clean",
+			url:  "https://example.com/search?q=base64+tokens+are+often+wrapped+in+docs",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if !result.Allowed {
+				t.Fatalf("false positive on clean delimiter-split encoded token: scanner=%s reason=%s", result.Scanner, result.Reason)
 			}
 		})
 	}

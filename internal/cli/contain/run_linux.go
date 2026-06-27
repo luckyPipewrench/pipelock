@@ -27,6 +27,10 @@ func containRunSupported() bool {
 	return true
 }
 
+var runContainedAgentCommand = func(cmd *exec.Cmd) error {
+	return cmd.Run()
+}
+
 func launchContainedAgent(
 	ctx context.Context,
 	env *probeEnv,
@@ -72,7 +76,7 @@ func launchContainedAgent(
 
 	cmd := containedAgentCommand(ctx, env.agentUserName, u.HomeDir, uint32(uid), uint32(gid), groups, args, stdin, stdout, stderr)
 
-	if err := cmd.Run(); err != nil {
+	if err := runContainedAgentCommand(cmd); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return cliutil.ExitCodeError(exitErr.ExitCode(), fmt.Errorf("contained agent exited with status %d", exitErr.ExitCode()))

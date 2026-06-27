@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os/exec"
 	"os/user"
 	"strings"
 	"testing"
@@ -147,6 +148,123 @@ func TestLaunchContainedAgent_RejectsBadAgentUserRecord(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestLaunchContainedAgent_RunsVerifiedCommandAsAgent(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Fatalf("user.Current: %v", err)
+	}
+	if current.Uid == "0" || current.Gid == "0" {
+		t.Skip("root test user cannot exercise non-root launch path")
+	}
+
+	env := &probeEnv{
+		agentUserName: current.Username,
+		launchPath:    defaultLaunchScript,
+		lookupUser: func(name string) (*user.User, error) {
+			if name != current.Username {
+				t.Fatalf("lookup user = %q, want %q", name, current.Username)
+			}
+			return current, nil
+		},
+	}
+
+	oldRun := runContainedAgentCommand
+	defer func() { runContainedAgentCommand = oldRun }()
+	var got *exec.Cmd
+	runContainedAgentCommand = func(cmd *exec.Cmd) error {
+		got = cmd
+		return nil
+	}
+
+	if err := launchContainedAgent(context.Background(), env, []string{"claude", "--version"}, nil, io.Discard, io.Discard); err != nil {
+		t.Fatalf("launchContainedAgent: %v", err)
+	}
+	if got == nil {
+		t.Fatal("runner was not called")
+	}
+	if got.Path != defaultLaunchScript {
+		t.Fatalf("path = %q, want %q", got.Path, defaultLaunchScript)
+	}
+	if want := defaultLaunchScript + " claude --version"; strings.Join(got.Args, " ") != want {
+		t.Fatalf("args = %q, want %q", strings.Join(got.Args, " "), want)
+	}
+}
+
+func TestLaunchContainedAgent_MapsContainedExitStatus(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Fatalf("user.Current: %v", err)
+	}
+	if current.Uid == "0" || current.Gid == "0" {
+		t.Skip("root test user cannot exercise non-root launch path")
+	}
+
+	exitErr := exec.CommandContext(context.Background(), "sh", "-c", "exit 7").Run()
+	if exitErr == nil {
+		t.Fatal("expected helper command to fail")
+	}
+
+	env := &probeEnv{
+		agentUserName: current.Username,
+		launchPath:    defaultLaunchScript,
+		lookupUser: func(string) (*user.User, error) {
+			return current, nil
+		},
+	}
+
+	oldRun := runContainedAgentCommand
+	defer func() { runContainedAgentCommand = oldRun }()
+	runContainedAgentCommand = func(*exec.Cmd) error {
+		return exitErr
+	}
+
+	err = launchContainedAgent(context.Background(), env, []string{"claude"}, nil, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected contained exit status")
+	}
+	if got := cliutil.ExitCodeOf(err); got != 7 {
+		t.Fatalf("exit code = %d, want 7", got)
+	}
+	if !strings.Contains(err.Error(), "contained agent exited with status 7") {
+		t.Fatalf("error = %v, want contained exit status context", err)
+	}
+}
+
+func TestLaunchContainedAgent_ReturnsRunnerError(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Fatalf("user.Current: %v", err)
+	}
+	if current.Uid == "0" || current.Gid == "0" {
+		t.Skip("root test user cannot exercise non-root launch path")
+	}
+
+	env := &probeEnv{
+		agentUserName: current.Username,
+		launchPath:    defaultLaunchScript,
+		lookupUser: func(string) (*user.User, error) {
+			return current, nil
+		},
+	}
+
+	oldRun := runContainedAgentCommand
+	defer func() { runContainedAgentCommand = oldRun }()
+	runContainedAgentCommand = func(*exec.Cmd) error {
+		return errors.New("fork failed")
+	}
+
+	err = launchContainedAgent(context.Background(), env, []string{"claude"}, nil, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected runner error")
+	}
+	if got := cliutil.ExitCodeOf(err); got != cliutil.ExitGeneral {
+		t.Fatalf("exit code = %d, want %d", got, cliutil.ExitGeneral)
+	}
+	if !strings.Contains(err.Error(), "fork failed") {
+		t.Fatalf("error = %v, want runner error", err)
 	}
 }
 

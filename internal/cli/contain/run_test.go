@@ -6,12 +6,16 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestDefaultContainRunEnv_WiresRealOperations(t *testing.T) {
@@ -46,6 +50,22 @@ func TestRunCmd_RejectsInvalidPortBeforePrivilegeChecks(t *testing.T) {
 	}
 }
 
+func TestRunCmd_RejectsMissingToolArg(t *testing.T) {
+	cmd := runCmd()
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(nil)
+
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("expected missing tool argument error")
+	}
+	if !strings.Contains(err.Error(), "usage: pipelock contain run") {
+		t.Fatalf("error = %v, want usage error", err)
+	}
+}
+
 func TestRunContainRun_VerifiesEmitsPostureThenLaunches(t *testing.T) {
 	env := allPassEnv(t)
 	var launched []string
@@ -75,6 +95,67 @@ func TestRunContainRun_VerifiesEmitsPostureThenLaunches(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "signed posture capsule") {
 		t.Fatalf("output missing posture line:\n%s", out.String())
+	}
+}
+
+func TestRunContainRun_RejectsIncompleteEnvironment(t *testing.T) {
+	tests := []struct {
+		name string
+		env  containRunEnv
+		args []string
+		want string
+	}{
+		{
+			name: "missing probe",
+			env: containRunEnv{
+				launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+				emitPosture: func(string, string) (string, error) { return "/unused", nil },
+			},
+			args: []string{"claude"},
+			want: "preflight environment is missing",
+		},
+		{
+			name: "missing launcher",
+			env: containRunEnv{
+				probe:       allPassEnv(t),
+				emitPosture: func(string, string) (string, error) { return "/unused", nil },
+			},
+			args: []string{"claude"},
+			want: "launcher is unavailable",
+		},
+		{
+			name: "missing posture emitter",
+			env: containRunEnv{
+				probe:  allPassEnv(t),
+				launch: func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+			},
+			args: []string{"claude"},
+			want: "posture emitter is unavailable",
+		},
+		{
+			name: "missing args",
+			env: containRunEnv{
+				probe:       allPassEnv(t),
+				launch:      func(context.Context, *probeEnv, []string, io.Reader, io.Writer, io.Writer) error { return nil },
+				emitPosture: func(string, string) (string, error) { return "/unused", nil },
+			},
+			want: "usage: pipelock contain run",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var nilCtx context.Context
+			err := runContainRun(nilCtx, nil, io.Discard, io.Discard, tt.env, containRunOptions{}, tt.args)
+			if err == nil {
+				t.Fatal("expected configuration error")
+			}
+			if got := cliutil.ExitCodeOf(err); got != cliutil.ExitConfig {
+				t.Fatalf("exit code = %d, want %d", got, cliutil.ExitConfig)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -229,5 +310,166 @@ func TestRunContainRun_RejectsInvalidToolName(t *testing.T) {
 	err := runContainRun(context.Background(), nil, io.Discard, io.Discard, runEnv, containRunOptions{}, []string{"../claude"})
 	if err == nil || !strings.Contains(err.Error(), "invalid tool name") {
 		t.Fatalf("err = %v, want invalid tool name", err)
+	}
+}
+
+func TestProbeAgentPrivilegeEscapeDenied_SkipPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		runCmd runCommand
+		want   string
+	}{
+		{
+			name: "sudo canary cannot run",
+			runCmd: func(context.Context, string, ...string) (string, int, error) {
+				return "", -1, errors.New("sudo unavailable")
+			},
+			want: "could not run",
+		},
+		{
+			name: "agent user missing",
+			runCmd: func(context.Context, string, ...string) (string, int, error) {
+				return "sudo: unknown user pipelock-agent", 1, nil
+			},
+			want: "user not present",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := allPassEnv(t)
+			env.runCmd = tt.runCmd
+
+			status, detail := probeAgentPrivilegeEscapeDenied(context.Background(), env)
+			if status != statusSkip {
+				t.Fatalf("status = %s, want %s (%s)", status, statusSkip, detail)
+			}
+			if !strings.Contains(detail, tt.want) {
+				t.Fatalf("detail = %q, want %q", detail, tt.want)
+			}
+		})
+	}
+}
+
+func TestProbeRequestedToolRegistered_FailureDetails(t *testing.T) {
+	tests := []struct {
+		name string
+		read func(string) ([]byte, error)
+		want string
+	}{
+		{
+			name: "read failure",
+			read: func(string) ([]byte, error) {
+				return nil, errors.New("permission denied")
+			},
+			want: "read ",
+		},
+		{
+			name: "parse failure",
+			read: func(string) ([]byte, error) {
+				return []byte("malformed-entry\n"), nil
+			},
+			want: "parse ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := allPassEnv(t)
+			env.readFile = tt.read
+
+			status, detail := probeRequestedToolRegistered(env, "claude")
+			if status != statusFail {
+				t.Fatalf("status = %s, want %s (%s)", status, statusFail, detail)
+			}
+			if !strings.Contains(detail, tt.want) {
+				t.Fatalf("detail = %q, want %q", detail, tt.want)
+			}
+		})
+	}
+}
+
+func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "flight-recorder.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("signing.SavePrivateKey: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfg := "mode: balanced\nflight_recorder:\n  enabled: false\n  signing_key_path: " + keyPath + "\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	outDir := filepath.Join(dir, "posture")
+	path, err := emitContainRunPosture(cfgPath, outDir)
+	if err != nil {
+		t.Fatalf("emitContainRunPosture: %v", err)
+	}
+	if path != filepath.Join(outDir, "proof.json") {
+		t.Fatalf("proof path = %q, want %q", path, filepath.Join(outDir, "proof.json"))
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read proof: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"signature"`)) {
+		t.Fatalf("proof missing signature: %s", data)
+	}
+}
+
+func TestEmitContainRunPosture_EmitFailure(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := emitContainRunPosture(cfgPath, t.TempDir())
+	if err == nil {
+		t.Fatal("expected posture emit error")
+	}
+	if !strings.Contains(err.Error(), "flight_recorder.signing_key_path") {
+		t.Fatalf("error = %v, want missing signing key path", err)
+	}
+}
+
+func TestEmitContainRunPosture_WriteFailure(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "flight-recorder.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("signing.SavePrivateKey: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfg := "mode: balanced\nflight_recorder:\n  enabled: false\n  signing_key_path: " + keyPath + "\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	outputPath := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(outputPath, []byte("occupied"), 0o600); err != nil {
+		t.Fatalf("write output file: %v", err)
+	}
+
+	_, err = emitContainRunPosture(cfgPath, outputPath)
+	if err == nil {
+		t.Fatal("expected proof write error")
+	}
+	if !strings.Contains(err.Error(), "create output directory") {
+		t.Fatalf("error = %v, want output directory context", err)
+	}
+}
+
+func TestEmitContainRunPosture_LoadFailure(t *testing.T) {
+	_, err := emitContainRunPosture(filepath.Join(t.TempDir(), "missing.yaml"), t.TempDir())
+	if err == nil {
+		t.Fatal("expected config load error")
+	}
+	if !strings.Contains(err.Error(), "loading config") {
+		t.Fatalf("error = %v, want config load context", err)
 	}
 }

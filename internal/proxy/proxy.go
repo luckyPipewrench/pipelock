@@ -4229,6 +4229,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Use the final response origin after redirects, not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be scanned.
 	finalHost := resp.Request.URL.Hostname()
+	finalResponseURL := resp.Request.URL.String()
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
 	suppressedResponseScanExempts := make(map[string]struct{})
 	if sc.ResponseScanningEnabled() && responseScanExempt {
@@ -4239,11 +4240,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if sc.ResponseScanningEnabled() && isHTML {
 		hidden := extractHiddenContent(content)
 		if hidden != "" {
-			rawResult := sc.ScanResponseWithSuppress(r.Context(), hidden, displayURL, cfg.Suppress)
+			rawResult := sc.ScanResponseWithSuppress(r.Context(), hidden, finalResponseURL, cfg.Suppress)
 			recordSuppressedResponseScanExemptsForResponse(p.metrics, rawResult.SuppressedMatches, TransportFetch, suppressedResponseScanExempts)
 			// Use live escalation level so mid-request CEE escalations are reflected.
 			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
+			blocked, _, found := p.filterAndActOnResponseScan(w, rawResult, content, displayURL, finalResponseURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 			if blocked {
 				return
 			}
@@ -4300,7 +4301,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Exempt domains are still scanned for visibility (findings logged as warn)
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
-		scanResult := sc.ScanResponseWithSuppress(r.Context(), content, displayURL, cfg.Suppress)
+		scanResult := sc.ScanResponseWithSuppress(r.Context(), content, finalResponseURL, cfg.Suppress)
 		recordSuppressedResponseScanExemptsForResponse(p.metrics, scanResult.SuppressedMatches, TransportFetch, suppressedResponseScanExempts)
 		if !scanResult.Clean {
 			responsePromptHit = true
@@ -4334,7 +4335,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
+		blocked, newContent, found := p.filterAndActOnResponseScan(w, scanResult, content, displayURL, finalResponseURL, agent, clientIP, requestID, actionID, sc, cfg, log, recEscalationLevel(fetchRec), responseScanExempt)
 		if found {
 			hasFinding = true
 		}
@@ -4418,7 +4419,7 @@ func recordSuppressedResponseScanExemptsForResponse(m *metrics.Metrics, matches 
 func (p *Proxy) filterAndActOnResponseScan(
 	w http.ResponseWriter,
 	result scanner.ResponseScanResult,
-	content, displayURL, agent, clientIP, requestID, actionID string,
+	content, displayURL, suppressTarget, agent, clientIP, requestID, actionID string,
 	sc *scanner.Scanner,
 	cfg *config.Config,
 	log *audit.Logger,
@@ -4436,7 +4437,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	if !result.Clean && len(cfg.Suppress) > 0 {
 		var kept []scanner.ResponseMatch
 		for _, m := range result.Matches {
-			if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
+			if !config.IsSuppressed(m.PatternName, suppressTarget, cfg.Suppress) {
 				kept = append(kept, m)
 			} else {
 				p.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportFetch)

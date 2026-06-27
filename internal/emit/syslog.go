@@ -219,7 +219,7 @@ func NewSyslogSinkFromConfig(address, facility, tag, minSeverity string) (*Syslo
 	var opts []SyslogOption
 	opts = append(opts, WithSyslogMinSeverity(ParseSeverity(minSeverity)))
 	if facility != "" {
-		opts = append(opts, WithSyslogFacility(parseFacility)))
+		opts = append(opts, WithSyslogFacility(parseFacility(facility)))
 	}
 	if tag != "" {
 		opts = append(opts, WithSyslogTag(tag))
@@ -384,4 +384,4 @@ func (s *SyslogSink) Close() error {
 		}
 	})
 	return closeErr
-}"}һаё? Wait I introduced typo: `opts = append(opts, WithSyslogFacility(parseFacility)))` missing facility arg; also content ended with quote? The tool call may fail? Need see result. It hasn't returned? It returned? It didn't show because last line perhaps tool call? Actually the tool call output ended? It included only exec outputs; update_file maybe not output? Wait in multi output I see fetch_file and exec outputs but not update_file because this is update_file, I accidentally included in _update_file but output maybe missing. It probably failed due invalid JSON? Actually the update_file call content had typo but syntactically okay Go, not JSON. We need see tool result; there is no tool result at bottom? It might not have executed? The assistant message has huge tool call and likely no response? Wait I see after content closing, no mcp output. It may be pending? The previous message included content with malformed last `}
+}

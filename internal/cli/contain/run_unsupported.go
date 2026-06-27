@@ -15,6 +15,10 @@ func isRoot() bool {
 	return false
 }
 
+func containRunSupported() bool {
+	return false
+}
+
 func launchContainedAgent(
 	context.Context,
 	*probeEnv,

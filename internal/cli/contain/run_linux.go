@@ -23,6 +23,10 @@ func isRoot() bool {
 	return os.Geteuid() == 0
 }
 
+func containRunSupported() bool {
+	return true
+}
+
 func launchContainedAgent(
 	ctx context.Context,
 	env *probeEnv,
@@ -50,6 +54,10 @@ func launchContainedAgent(
 		return cliutil.ExitCodeError(cliutil.ExitConfig,
 			fmt.Errorf("%s resolves to uid %d gid %d; refusing to launch a contained tool as root", env.agentUserName, uid, gid))
 	}
+	if filepath.Clean(env.launchPath) != defaultLaunchScript {
+		return cliutil.ExitCodeError(cliutil.ExitConfig,
+			fmt.Errorf("contain run launcher path %q does not match expected %s", env.launchPath, defaultLaunchScript))
+	}
 	// Resolve the agent's own group set so the child matches what
 	// `sudo -u <agent>` grants via initgroups. Without an explicit setgroups
 	// the child would inherit the launcher's (root's) supplementary groups.
@@ -60,10 +68,6 @@ func launchContainedAgent(
 	groups, err := parseAgentGIDs(groupIDs, uint32(gid))
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("group ids for %s: %w", env.agentUserName, err))
-	}
-	if filepath.Clean(env.launchPath) != defaultLaunchScript {
-		return cliutil.ExitCodeError(cliutil.ExitConfig,
-			fmt.Errorf("contain run launcher path %q does not match expected %s", env.launchPath, defaultLaunchScript))
 	}
 
 	cmd := exec.CommandContext(ctx, defaultLaunchScript)

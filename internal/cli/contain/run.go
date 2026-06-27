@@ -74,6 +74,9 @@ Pipelock does not read or store agent secrets.`,
 			if err := validatePort(opts.port); err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
+			if !containRunSupported() {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("contain run is supported only on Linux"))
+			}
 			if !isRoot() {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("contain run must be run as root (use sudo)"))
 			}

@@ -181,8 +181,8 @@ func TestInterceptHandler_CrossAgentA2ABodyRecordsEvidenceAndSignal(t *testing.T
 	}, roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"text/plain"}},
-			Body:       io.NopCloser(strings.NewReader("ok")),
+			Header:     http.Header{"Content-Type": []string{"application/a2a+json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"taskId":"t-1"}}`)),
 		}, nil
 	}))
 

@@ -4,8 +4,10 @@
 package redact
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +117,7 @@ func TestCheckNoDuplicateKeys_MalformedJSON(t *testing.T) {
 		[]byte(`{"x":`),
 		[]byte(`{"x":,}`),
 		[]byte(`[1,`),
+		[]byte(`{} {}`),
 	}
 	for _, c := range mustFail {
 		err := checkNoDuplicateKeys(c)
@@ -183,6 +186,31 @@ func TestRewriteJSON_NoDuplicateKeys_StillRedacts(t *testing.T) {
 	if !containsPlaceholder(out, "aws-access-key") {
 		t.Fatalf("expected placeholder in output, got %q", string(out))
 	}
+}
+
+// TestNoDuplicateJSONKeys_DeepNestingDoesNotCrash proves the token-streaming
+// walk no longer exhausts the goroutine stack on maliciously deep input (the
+// pre-bound version fatally crashed around ~1M levels) and stays aligned with
+// encoding/json: anything the guard rejects, json.Unmarshal also rejects, so
+// the guard never blocks a body the very next decode would have accepted.
+func TestNoDuplicateJSONKeys_DeepNestingDoesNotCrash(t *testing.T) {
+	for _, depth := range []int{maxDuplicateKeyScanDepth - 1, maxDuplicateKeyScanDepth + 5, 2_000_000} {
+		body := []byte(strings.Repeat("[", depth) + strings.Repeat("]", depth))
+		guardErr := NoDuplicateJSONKeys(body)
+		var v interface{}
+		jsonErr := json.Unmarshal(body, &v)
+		if guardErr == nil && jsonErr != nil {
+			t.Fatalf("depth=%d: guard accepted but json.Unmarshal rejected (%v)", depth, jsonErr)
+		}
+		if guardErr != nil && !isUnparseableBlock(guardErr) {
+			t.Fatalf("depth=%d: want ReasonBodyUnparseable, got %v", depth, guardErr)
+		}
+	}
+}
+
+func isUnparseableBlock(err error) bool {
+	var be *BlockError
+	return errors.As(err, &be) && be.Reason == ReasonBodyUnparseable
 }
 
 func containsPlaceholder(body []byte, class string) bool {

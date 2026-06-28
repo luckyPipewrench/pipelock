@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -21,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -61,13 +63,21 @@ func ScanResponse(line []byte, sc *scanner.Scanner) jsonrpc.ScanVerdict {
 // server without a global config change. ScanResponse delegates here with an
 // empty options value (no suppression).
 func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+	trimmed := bytes.TrimSpace(line)
 	// Detect batch response (JSON-RPC 2.0 batch = JSON array).
-	if len(line) > 0 && line[0] == '[' {
-		return scanBatch(line, sc, opts)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		return scanBatch(trimmed, sc, opts)
+	}
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+		return jsonrpc.ScanVerdict{
+			ID:    recoverTopLevelJSONRPCID(trimmed),
+			Clean: false,
+			Error: fmt.Sprintf("duplicate JSON object key: %v", err),
+		}
 	}
 
 	var rpc jsonrpc.RPCResponse
-	if err := json.Unmarshal(line, &rpc); err != nil {
+	if err := json.Unmarshal(trimmed, &rpc); err != nil {
 		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 
@@ -207,8 +217,17 @@ func isToolsListResponse(line []byte) bool {
 // instructional text. However, a malicious server can inject into sibling fields
 // like result.note or result.cursor, so those must be scanned.
 func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
+	trimmed := bytes.TrimSpace(line)
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+		return jsonrpc.ScanVerdict{
+			ID:    recoverTopLevelJSONRPCID(trimmed),
+			Clean: false,
+			Error: fmt.Sprintf("duplicate JSON object key: %v", err),
+		}
+	}
+
 	var rpc jsonrpc.RPCResponse
-	if err := json.Unmarshal(line, &rpc); err != nil {
+	if err := json.Unmarshal(trimmed, &rpc); err != nil {
 		return jsonrpc.ScanVerdict{Clean: false, Error: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 

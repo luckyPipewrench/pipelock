@@ -734,7 +734,7 @@ func MCPResponseActionForTrust(trust string) string {
 type GenericSSEScanning struct {
 	Enabled       bool   `yaml:"enabled"`
 	Action        string `yaml:"action"`          // warn, block (mirrors a2a_scanning.action)
-	MaxEventBytes int    `yaml:"max_event_bytes"` // per-event ceiling, default 65536
+	MaxEventBytes int    `yaml:"max_event_bytes"` // per-event ceiling, default 65536; also hard-bounded by the 10 MB SSE transport ceiling
 }
 
 // ResponseScanPattern is a named regex pattern for detecting prompt injection in responses.

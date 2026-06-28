@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -609,6 +610,72 @@ func TestChain_Valid(t *testing.T) {
 	}
 }
 
+func TestIndependent_ValidLocalAnchor(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 3)
+	evidence, bundle, logPath := writeIndependentFixture(t, fix)
+
+	stdout, stderr, code := runRoot(t, "independent", evidence,
+		"--bundle", bundle,
+		"--key", fix.keyHex,
+		"--local-log", logPath,
+		"--log-id", "verifier-test-log",
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "INDEPENDENT VERIFY OK") {
+		t.Fatalf("stdout missing success marker:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "does not prove real-time truth") {
+		t.Fatalf("stdout missing honest limit:\n%s", stdout)
+	}
+}
+
+func TestIndependent_RejectsRewrittenBundleCheckpoint(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 2)
+	evidence, bundlePath, logPath := writeIndependentFixture(t, fix)
+	bundle, err := anchorpkg.LoadBundle(bundlePath)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	bundle.Checkpoint.RootHash = strings.Repeat("0", 64)
+	if err := anchorpkg.WriteBundle(bundlePath, bundle); err != nil {
+		t.Fatalf("WriteBundle: %v", err)
+	}
+
+	_, stderr, code := runRoot(t, "independent", evidence,
+		"--bundle", bundlePath,
+		"--key", fix.keyHex,
+		"--local-log", logPath,
+		"--log-id", "verifier-test-log",
+	)
+	if code == cliutil.ExitOK {
+		t.Fatalf("rewritten bundle checkpoint passed, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "checkpoint does not match") {
+		t.Fatalf("stderr = %q, want checkpoint mismatch", stderr)
+	}
+}
+
+func TestIndependent_ResolveSignerKeysAcceptsRepeatedKeys(t *testing.T) {
+	t.Parallel()
+
+	keyA := strings.Repeat("a", 64)
+	keyB := strings.Repeat("b", 64)
+	keys, err := resolveSignerKeys([]string{keyA, keyB})
+	if err != nil {
+		t.Fatalf("resolveSignerKeys: %v", err)
+	}
+	if len(keys) != 2 || keys[0] != keyA || keys[1] != keyB {
+		t.Fatalf("keys = %#v, want [%s %s]", keys, keyA, keyB)
+	}
+	if _, err := resolveSignerKeys([]string{"  "}); err == nil {
+		t.Fatal("blank repeated key set should fail")
+	}
+}
+
 func TestChain_ActionWithoutKeyFailsUnpinned(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 2)
@@ -626,6 +693,28 @@ func TestChain_ActionWithoutKeyFailsUnpinned(t *testing.T) {
 	if !strings.Contains(stderr, unpinnedReceiptBanner) {
 		t.Fatalf("stderr = %q, want unpinned warning", stderr)
 	}
+}
+
+func writeIndependentFixture(t *testing.T, fix *fixture) (evidencePath, bundlePath, logPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+	evidencePath = filepath.Join(dir, "evidence.jsonl")
+	checkpoint, err := anchorpkg.BuildCheckpoint("proxy", fix.receipts, []string{fix.keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	logPath = filepath.Join(dir, "anchor.jsonl")
+	log := anchorpkg.LocalLog{Path: logPath, LogID: "verifier-test-log"}
+	proof, err := log.Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	bundlePath = filepath.Join(dir, "anchor-bundle.json")
+	if err := anchorpkg.WriteBundle(bundlePath, anchorpkg.NewBundle(checkpoint, proof)); err != nil {
+		t.Fatalf("WriteBundle: %v", err)
+	}
+	return evidencePath, bundlePath, logPath
 }
 
 func TestChain_ActionAllowUnpinned(t *testing.T) {

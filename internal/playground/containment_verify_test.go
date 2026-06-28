@@ -113,7 +113,10 @@ func TestVerify_Contained_DuplicateKeyWitnessFailsClosed(t *testing.T) {
 	}
 
 	rep, err := playground.VerifyRun(dir, orchPubHex)
-	if err == nil && rep.OK {
+	if err != nil {
+		t.Fatalf("VerifyRun returned unexpected error: %v", err)
+	}
+	if rep.OK {
 		t.Fatal("duplicate-key host-containment witness must fail closed")
 	}
 	check := findCheck(t, rep.Checks, "host-containment-witness-signature")

@@ -218,6 +218,12 @@ func TestScanResponse_BatchDuplicateKeysFailClosedWithID(t *testing.T) {
 	if !strings.Contains(v.Error, "duplicate JSON object key") {
 		t.Fatalf("Error = %q, want duplicate JSON object key", v.Error)
 	}
+	if v.Action != "" {
+		t.Fatalf("Action = %q, want empty action on parse error", v.Action)
+	}
+	if len(v.Matches) != 0 {
+		t.Fatalf("Matches = %+v, want no matches on parse error", v.Matches)
+	}
 	if string(v.ID) != "9" {
 		t.Fatalf("ID = %s, want 9", string(v.ID))
 	}
@@ -239,6 +245,12 @@ func TestScanResponse_BatchParseErrorTakesPrecedenceOverMatches(t *testing.T) {
 	}
 	if !strings.Contains(v.Error, "duplicate JSON object key") {
 		t.Fatalf("Error = %q, want duplicate JSON object key", v.Error)
+	}
+	if v.Action != "" {
+		t.Fatalf("Action = %q, want empty action on parse error", v.Action)
+	}
+	if len(v.Matches) != 0 {
+		t.Fatalf("Matches = %+v, want no matches on parse error", v.Matches)
 	}
 	if string(v.ID) != "9" {
 		t.Fatalf("ID = %s, want 9", string(v.ID))

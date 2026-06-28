@@ -1185,6 +1185,10 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving true binary: %v", err)
 	}
+	shPath, _, err := integrity.ResolveAndHash("sh")
+	if err != nil {
+		t.Fatalf("resolving sh binary: %v", err)
+	}
 
 	// Helper: write a manifest file and return its path.
 	writeManifest := func(t *testing.T, entries map[string]string) string {
@@ -1201,11 +1205,13 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		cfg     *config.MCPBinaryIntegrity
-		entries map[string]string // nil = use missing manifest path
-		wantErr bool
-		wantLog string // substring expected in log output
+		name        string
+		cfg         *config.MCPBinaryIntegrity
+		command     []string
+		entries     map[string]string // nil = use missing manifest path
+		wantErr     bool
+		wantLog     string // substring expected in log output
+		wantNoSpawn bool
 	}{
 		{
 			name: "disabled_skips_check",
@@ -1234,8 +1240,10 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionBlock,
 			},
-			entries: map[string]string{truePath: "deadbeef"},
-			wantErr: true,
+			command:     []string{"sh", "-c", "printf spawned"},
+			entries:     map[string]string{shPath: "deadbeef"},
+			wantErr:     true,
+			wantNoSpawn: true,
 		},
 		{
 			name: "wrong_hash_warns_and_spawns",
@@ -1253,8 +1261,10 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionBlock,
 			},
-			entries: map[string]string{"/some/other/binary": "abc123"},
-			wantErr: true,
+			command:     []string{"sh", "-c", "printf spawned"},
+			entries:     map[string]string{"/some/other/binary": "abc123"},
+			wantErr:     true,
+			wantNoSpawn: true,
 		},
 		{
 			name: "unknown_binary_warns",
@@ -1273,7 +1283,9 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				ManifestPath: "/nonexistent/manifest.json",
 				Action:       config.ActionBlock,
 			},
-			wantErr: true,
+			command:     []string{"sh", "-c", "printf spawned"},
+			wantErr:     true,
+			wantNoSpawn: true,
 		},
 		{
 			name: "missing_manifest_warns",
@@ -1307,7 +1319,11 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 			opts := testOpts(sc)
 			opts.IntegrityCfg = icfg
 
-			err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"true"}, opts)
+			command := tt.command
+			if command == nil {
+				command = []string{"true"}
+			}
+			err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, command, opts)
 
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
@@ -1319,6 +1335,9 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 			logStr := logBuf.String()
 			if tt.wantLog != "" && !strings.Contains(logStr, tt.wantLog) {
 				t.Errorf("expected log to contain %q, got: %s", tt.wantLog, logStr)
+			}
+			if tt.wantNoSpawn && out.String() != "" {
+				t.Fatalf("subprocess spawned despite block action; output: %q", out.String())
 			}
 		})
 	}

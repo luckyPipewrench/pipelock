@@ -1486,7 +1486,7 @@ type TaintTrustOverride struct {
 type MCPBinaryIntegrity struct {
 	Enabled          bool   `yaml:"enabled"`
 	ManifestPath     string `yaml:"manifest_path"`     // path to hash manifest JSON
-	Action           string `yaml:"action"`            // "block" or "warn" (default "warn")
+	Action           string `yaml:"action"`            // "block" or "warn" (default "block")
 	RequireSignature bool   `yaml:"require_signature"` // verify detached manifest signature before use
 	SignaturePath    string `yaml:"signature_path"`    // optional; default manifest_path + .sig
 	TrustedSigner    string `yaml:"trusted_signer"`    // keystore identity used to verify manifest signature

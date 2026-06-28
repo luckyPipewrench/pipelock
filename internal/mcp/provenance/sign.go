@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package provenance provides cryptographic attestation generation and
-// verification for MCP tool definitions. It supports two signing modes:
-// "pipelock" (offline Ed25519) and "sigstore" (keyless OIDC, future).
+// verification for MCP tool definitions. It signs the canonical tool object
+// with the embedded Pipelock provenance _meta member removed, so extension
+// fields and non-provenance _meta members are covered by the attestation. It
+// supports two signing modes: "pipelock" (offline Ed25519) and "sigstore"
+// (keyless OIDC, future).
 package provenance
 
 import (
@@ -47,35 +50,67 @@ type ToolDef struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
+	// ExtraFields carries additional MCP tool-definition fields that should be
+	// covered by the attestation, such as annotations, title, outputSchema, or
+	// non-provenance _meta members.
+	ExtraFields map[string]json.RawMessage
 }
 
-// canonicalTool is the sorted-key struct used for deterministic hashing.
-// Field order is alphabetical: description, inputSchema, name.
-type canonicalTool struct {
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-	Name        string          `json:"name"`
-}
-
-// ToolDigest computes a canonical SHA-256 of a tool definition.
+// ToolDigest computes a canonical SHA-256 of a core tool definition.
 // The canonical form is JSON with sorted keys and no extraneous whitespace,
 // making the digest format-independent. InputSchema is re-serialized through
-// a round-trip to normalize whitespace and key ordering.
+// a round-trip to normalize whitespace and key ordering. Use ToolDef.ExtraFields
+// with SignPipelock to include additional MCP tool-definition fields.
 func ToolDigest(name, description string, inputSchema json.RawMessage) string {
-	normalized := normalizeSchema(inputSchema)
-
-	ct := canonicalTool{
-		Description: description,
-		InputSchema: normalized,
+	return toolDigest(ToolDef{
 		Name:        name,
+		Description: description,
+		InputSchema: inputSchema,
+	})
+}
+
+func toolDigest(tool ToolDef) string {
+	fields := make(map[string]json.RawMessage, len(tool.ExtraFields)+3)
+	fields["name"] = mustMarshal(tool.Name)
+	fields["description"] = mustMarshal(tool.Description)
+	fields["inputSchema"] = normalizeSchema(tool.InputSchema)
+	for key, value := range tool.ExtraFields {
+		if key == "name" || key == "description" || key == "inputSchema" {
+			continue
+		}
+		fields[key] = value
+	}
+	return digestToolFields(fields)
+}
+
+func toolDigestRaw(raw json.RawMessage) string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return ""
+	}
+	return digestToolFields(fields)
+}
+
+func digestToolFields(fields map[string]json.RawMessage) string {
+	canonical := make(map[string]json.RawMessage, len(fields))
+	for key, raw := range fields {
+		if key == "_meta" {
+			stripped, keep := stripProvenanceMeta(raw)
+			if !keep {
+				continue
+			}
+			raw = stripped
+		}
+
+		normalized := normalizeJSON(raw)
+		if !json.Valid(normalized) {
+			return ""
+		}
+		canonical[key] = normalized
 	}
 
-	// json.Marshal produces sorted keys for structs (field order = declaration order,
-	// which is alphabetical here). No indent = no extraneous whitespace.
-	data, err := json.Marshal(ct)
+	data, err := json.Marshal(canonical)
 	if err != nil {
-		// Should never happen with string/RawMessage fields.
-		// Return empty digest so verification always fails rather than panicking.
 		return ""
 	}
 
@@ -89,11 +124,12 @@ func normalizeSchema(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 || string(raw) == "null" {
 		return json.RawMessage("null")
 	}
+	return normalizeJSON(raw)
+}
 
+func normalizeJSON(raw json.RawMessage) json.RawMessage {
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		// If the schema is invalid JSON, use it as-is.
-		// Verification will catch mismatches.
 		return raw
 	}
 
@@ -103,6 +139,22 @@ func normalizeSchema(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	return out
+}
+
+func stripProvenanceMeta(raw json.RawMessage) (json.RawMessage, bool) {
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return raw, true
+	}
+	delete(meta, metaKey)
+	if len(meta) == 0 {
+		return nil, false
+	}
+	out, err := json.Marshal(meta)
+	if err != nil {
+		return raw, true
+	}
+	return out, true
 }
 
 // sortAndMarshal recursively sorts map keys for deterministic JSON output.
@@ -149,7 +201,7 @@ func SignPipelock(tools []ToolDef, privKey ed25519.PrivateKey, keyID string) ([]
 
 	attestations := make([]Attestation, 0, len(tools))
 	for _, tool := range tools {
-		digest := ToolDigest(tool.Name, tool.Description, tool.InputSchema)
+		digest := toolDigest(tool)
 		if digest == "" {
 			return nil, fmt.Errorf("failed to compute digest for tool %q", tool.Name)
 		}
@@ -244,19 +296,7 @@ func EmbedInToolsList(response []byte, attestations []Attestation) ([]byte, erro
 
 	modified := make([]json.RawMessage, 0, len(rpc.Result.Tools))
 	for _, raw := range rpc.Result.Tools {
-		// Parse tool to compute digest and find matching attestation.
-		var td struct {
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			InputSchema json.RawMessage `json:"inputSchema"`
-		}
-		if err := json.Unmarshal(raw, &td); err != nil {
-			// Unparseable tool entry: keep as-is.
-			modified = append(modified, raw)
-			continue
-		}
-
-		digest := ToolDigest(td.Name, td.Description, td.InputSchema)
+		digest := toolDigestRaw(raw)
 		att, found := byDigest[digest]
 		if !found {
 			modified = append(modified, raw)
@@ -270,7 +310,7 @@ func EmbedInToolsList(response []byte, attestations []Attestation) ([]byte, erro
 			continue
 		}
 
-		toolMap["_meta"] = InjectMeta(att)
+		toolMap["_meta"] = injectMeta(toolMap["_meta"], att)
 
 		out, err := json.Marshal(toolMap)
 		if err != nil {
@@ -298,6 +338,23 @@ func EmbedInToolsList(response []byte, attestations []Attestation) ([]byte, erro
 func mustMarshal(v interface{}) json.RawMessage {
 	data, _ := json.Marshal(v)
 	return data
+}
+
+func injectMeta(existing json.RawMessage, att Attestation) json.RawMessage {
+	meta := make(map[string]json.RawMessage)
+	if len(existing) > 0 && string(existing) != "null" {
+		_ = json.Unmarshal(existing, &meta)
+	}
+	attRaw, err := json.Marshal(att)
+	if err != nil {
+		return existing
+	}
+	meta[metaKey] = attRaw
+	out, err := json.Marshal(meta)
+	if err != nil {
+		return existing
+	}
+	return out
 }
 
 // SortAttestations sorts attestations by digest for deterministic output.

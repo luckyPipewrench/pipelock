@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 )
 
@@ -237,4 +238,158 @@ func TestVerifyToolsList_FailClosed(t *testing.T) {
 			t.Fatal("expected error on unparseable response (caller fails closed)")
 		}
 	})
+}
+
+func TestVerifyToolsList_FullToolObjectSigned(t *testing.T) {
+	pub, priv := newKeyPair(t)
+	keyID := "k1"
+	cfg := VerifyConfig{
+		TrustedKeys: map[string]ed25519.PublicKey{keyID: pub},
+		Mode:        ModePipelock,
+	}
+
+	signAndEmbed := func(t *testing.T, raw []byte, tool ToolDef) []byte {
+		t.Helper()
+		att := signOne(t, tool, priv, keyID)
+		embedded, err := EmbedInToolsList(raw, []Attestation{att})
+		if err != nil {
+			t.Fatalf("EmbedInToolsList: %v", err)
+		}
+		return embedded
+	}
+	statusFor := func(t *testing.T, response []byte) string {
+		t.Helper()
+		results, err := VerifyToolsList(response, cfg)
+		if err != nil {
+			t.Fatalf("VerifyToolsList: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("results=%+v, want one result", results)
+		}
+		return results[0].Status
+	}
+
+	t.Run("top level extension mutation fails", func(t *testing.T) {
+		raw := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"exec","description":"run","inputSchema":{"type":"object"}}]}}`)
+		embedded := signAndEmbed(t, raw, ToolDef{Name: "exec", Description: "run", InputSchema: []byte(`{"type":"object"}`)})
+		tampered := mutateFirstTool(t, embedded, func(tool map[string]json.RawMessage) {
+			tool["annotations"] = json.RawMessage(`{"destructiveHint":false,"title":"safe wrapper"}`)
+		})
+
+		if got := statusFor(t, tampered); got != StatusFailed {
+			t.Fatalf("status=%q, want failed for unsigned extension mutation", got)
+		}
+	})
+
+	t.Run("sibling meta mutation fails", func(t *testing.T) {
+		raw := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"ui","description":"show ui","inputSchema":{"type":"object"}}]}}`)
+		embedded := signAndEmbed(t, raw, ToolDef{Name: "ui", Description: "show ui", InputSchema: []byte(`{"type":"object"}`)})
+		tampered := mutateFirstTool(t, embedded, func(tool map[string]json.RawMessage) {
+			var meta map[string]json.RawMessage
+			if err := json.Unmarshal(tool["_meta"], &meta); err != nil {
+				t.Fatalf("parse _meta: %v", err)
+			}
+			meta["openai/outputTemplate"] = json.RawMessage(`"ui://attacker/template.html"`)
+			out, err := json.Marshal(meta)
+			if err != nil {
+				t.Fatalf("marshal _meta: %v", err)
+			}
+			tool["_meta"] = out
+		})
+
+		if got := statusFor(t, tampered); got != StatusFailed {
+			t.Fatalf("status=%q, want failed for unsigned _meta sibling mutation", got)
+		}
+	})
+
+	t.Run("signed extension verifies", func(t *testing.T) {
+		raw := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"lookup","description":"lookup records","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]}}`)
+		tool := ToolDef{
+			Name:        "lookup",
+			Description: "lookup records",
+			InputSchema: []byte(`{"type":"object"}`),
+			ExtraFields: map[string]json.RawMessage{
+				"annotations": []byte(`{"readOnlyHint":true}`),
+			},
+		}
+		embedded := signAndEmbed(t, raw, tool)
+
+		if got := statusFor(t, embedded); got != StatusVerified {
+			t.Fatalf("status=%q, want verified for signed extension", got)
+		}
+	})
+
+	t.Run("signed sibling meta verifies and is preserved", func(t *testing.T) {
+		raw := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"ui","description":"show ui","inputSchema":{"type":"object"},"_meta":{"openai/outputTemplate":"ui://trusted/template.html"}}]}}`)
+		tool := ToolDef{
+			Name:        "ui",
+			Description: "show ui",
+			InputSchema: []byte(`{"type":"object"}`),
+			ExtraFields: map[string]json.RawMessage{
+				"_meta": []byte(`{"openai/outputTemplate":"ui://trusted/template.html"}`),
+			},
+		}
+		embedded := signAndEmbed(t, raw, tool)
+
+		if got := statusFor(t, embedded); got != StatusVerified {
+			t.Fatalf("status=%q, want verified for signed _meta sibling", got)
+		}
+
+		var meta map[string]json.RawMessage
+		readFirstToolMeta(t, embedded, &meta)
+		if _, ok := meta["openai/outputTemplate"]; !ok {
+			t.Fatal("expected existing _meta sibling key to be preserved")
+		}
+		if _, ok := meta[metaKey]; !ok {
+			t.Fatal("expected provenance _meta key to be injected")
+		}
+	})
+}
+
+func mutateFirstTool(t *testing.T, response []byte, mutate func(map[string]json.RawMessage)) []byte {
+	t.Helper()
+	var rpc map[string]json.RawMessage
+	if err := json.Unmarshal(response, &rpc); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	var result struct {
+		Tools []map[string]json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(rpc["result"], &result); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if len(result.Tools) != 1 {
+		t.Fatalf("tools=%d, want 1", len(result.Tools))
+	}
+	mutate(result.Tools[0])
+	newResult, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	rpc["result"] = newResult
+	out, err := json.Marshal(rpc)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	return out
+}
+
+func readFirstToolMeta(t *testing.T, response []byte, dst *map[string]json.RawMessage) {
+	t.Helper()
+	var rpc struct {
+		Result struct {
+			Tools []struct {
+				Meta json.RawMessage `json:"_meta"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response, &rpc); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if len(rpc.Result.Tools) != 1 {
+		t.Fatalf("tools=%d, want 1", len(rpc.Result.Tools))
+	}
+	if err := json.Unmarshal(rpc.Result.Tools[0].Meta, dst); err != nil {
+		t.Fatalf("parse _meta: %v", err)
+	}
 }

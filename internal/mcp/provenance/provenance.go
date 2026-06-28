@@ -132,8 +132,8 @@ func VerifyTool(tool ToolDef, att Attestation, cfg VerifyConfig) VerificationRes
 		return result
 	}
 
-	// Recompute digest from the tool definition.
-	expectedDigest := ToolDigest(tool.Name, tool.Description, tool.InputSchema)
+	// Recompute digest from the full tool definition.
+	expectedDigest := toolDigest(tool)
 	if expectedDigest != att.Digest.SHA256 {
 		result.Status = StatusFailed
 		result.Detail = fmt.Sprintf("digest mismatch: computed %s, attestation has %s", expectedDigest, att.Digest.SHA256)
@@ -298,15 +298,33 @@ func VerifyToolsList(response []byte, cfg VerifyConfig) ([]VerificationResult, e
 			continue
 		}
 
-		td := ToolDef{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.InputSchema,
-		}
+		td := toolDefFromRaw(raw, tool)
 		results = append(results, VerifyTool(td, att, cfg))
 	}
 
 	return results, nil
+}
+
+func toolDefFromRaw(raw json.RawMessage, tool toolWithMeta) ToolDef {
+	td := ToolDef{
+		Name:        tool.Name,
+		Description: tool.Description,
+		InputSchema: tool.InputSchema,
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return td
+	}
+
+	delete(fields, "name")
+	delete(fields, "description")
+	delete(fields, "inputSchema")
+	if len(fields) == 0 {
+		return td
+	}
+	td.ExtraFields = fields
+	return td
 }
 
 // ErrFailedVerification is returned when an attestation is present but invalid.

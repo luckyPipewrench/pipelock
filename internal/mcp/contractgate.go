@@ -19,6 +19,7 @@ import (
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -312,10 +313,39 @@ func mcpScannerBlockReason(verdict InputVerdict, policyVerdict policy.Verdict, c
 		return blockreason.DLPMatch
 	case len(verdict.Inject) > 0:
 		return blockreason.PromptInjection
+	case len(verdict.URLFindings) > 0:
+		return mcpURLBlockReason(verdict.URLFindings[0].Scanner)
 	case policyVerdict.Matched:
 		return blockreason.ToolPolicyDeny
 	case chainMatched:
 		return blockreason.ToolChainBlocked
+	default:
+		return blockreason.ParseError
+	}
+}
+
+func mcpURLBlockReason(scannerLabel string) blockreason.Reason {
+	switch scannerLabel {
+	case scanner.ScannerScheme:
+		return blockreason.SchemeBlocked
+	case scanner.ScannerBlocklist:
+		return blockreason.DomainBlocklist
+	case scanner.ScannerSSRFMetadata:
+		return blockreason.SSRFMetadata
+	case scanner.ScannerSSRF, scanner.ScannerCoreSSRF:
+		return blockreason.SSRFPrivateIP
+	case scanner.ScannerEntropy:
+		return blockreason.PathEntropy
+	case scanner.ScannerSubdomainEntropy:
+		return blockreason.SubdomainEntropy
+	case scanner.ScannerLength:
+		return blockreason.URLLength
+	case scanner.ScannerRateLimit:
+		return blockreason.RateLimit
+	case scanner.ScannerDataBudget:
+		return blockreason.DataBudget
+	case scanner.ScannerDLP, scanner.ScannerCoreDLP:
+		return blockreason.DLPMatch
 	default:
 		return blockreason.ParseError
 	}

@@ -87,6 +87,12 @@ func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, inj
 }
 
 func inputVerdictEffectiveAction(verdict InputVerdict, configuredAction string) string {
+	if verdict.Error != "" {
+		return config.ActionBlock
+	}
+	if len(verdict.URLFindings) > 0 {
+		return config.ActionBlock
+	}
 	if verdict.Action != "" {
 		return verdict.Action
 	}
@@ -108,6 +114,34 @@ func inputVerdictEffectiveAction(verdict InputVerdict, configuredAction string) 
 		return addrAction
 	}
 	return configuredAction
+}
+
+func scanMCPResourceURI(ctx context.Context, method string, params json.RawMessage, sc *scanner.Scanner) []scanner.Result {
+	if sc == nil || method != methodResourcesRead {
+		return nil
+	}
+	if err := redact.NoDuplicateJSONKeys(bytes.TrimSpace(params)); err != nil && isDuplicateKeyBlock(err) {
+		return []scanner.Result{{
+			Allowed: false,
+			Reason:  fmt.Sprintf("duplicate resource URI key: %v", err),
+			Scanner: scanner.ScannerParser,
+		}}
+	}
+	var req struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil
+	}
+	uri := strings.TrimSpace(req.URI)
+	lower := strings.ToLower(uri)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return nil
+	}
+	if result := sc.Scan(ctx, uri); !result.Allowed {
+		return []scanner.Result{result}
+	}
+	return nil
 }
 
 // ScanRequest parses a JSON-RPC 2.0 request and scans its params for
@@ -338,8 +372,9 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 			addrFindings = addrResult.Findings
 		}
 	}
+	urlFindings := scanMCPResourceURI(ctx, rpc.Method, rpc.Params, sc)
 
-	if len(dlpMatches) == 0 && len(injMatches) == 0 && len(addrFindings) == 0 {
+	if len(dlpMatches) == 0 && len(injMatches) == 0 && len(addrFindings) == 0 && len(urlFindings) == 0 {
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
 	}
 
@@ -352,6 +387,9 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 			verdictAction = addrAction
 		}
 	}
+	if len(urlFindings) > 0 {
+		verdictAction = config.ActionBlock
+	}
 
 	return InputVerdict{
 		ID:              rpc.ID,
@@ -360,6 +398,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		Action:          verdictAction,
 		Matches:         dlpMatches,
 		Inject:          injMatches,
+		URLFindings:     urlFindings,
 		AddressFindings: addrFindings,
 	}
 }
@@ -466,6 +505,7 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 
 	var allDLP []scanner.TextDLPMatch
 	var allInj []scanner.ResponseMatch
+	var allURL []scanner.Result
 	var allAddr []addressprotect.Finding
 	var firstID json.RawMessage
 	var hasError bool
@@ -493,11 +533,12 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 		if !v.Clean && v.Error == "" {
 			allDLP = append(allDLP, v.Matches...)
 			allInj = append(allInj, v.Inject...)
+			allURL = append(allURL, v.URLFindings...)
 			allAddr = append(allAddr, v.AddressFindings...)
 		}
 	}
 
-	if len(allDLP) == 0 && len(allInj) == 0 && len(allAddr) == 0 {
+	if len(allDLP) == 0 && len(allInj) == 0 && len(allURL) == 0 && len(allAddr) == 0 {
 		if hasError {
 			errText := "one or more batch elements failed to parse"
 			if firstError == uninspectableJSONDepthReason {
@@ -512,7 +553,7 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 	}
 	v := InputVerdict{
 		ID: firstID, Clean: false, Action: batchAction,
-		Matches: allDLP, Inject: allInj, AddressFindings: allAddr,
+		Matches: allDLP, Inject: allInj, URLFindings: allURL, AddressFindings: allAddr,
 	}
 	if hasError {
 		v.Error = "one or more batch elements also failed to parse"

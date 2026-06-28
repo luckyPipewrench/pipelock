@@ -262,7 +262,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 	if scanEnabled && redactionCfg.Matcher != nil {
 		originalVerdict := scanRequestForAgent(inputScanCtx, msg, sc, action, onParseError, opts.addressProtectionAgent())
-		if !originalVerdict.Clean && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
+		if !originalVerdict.Clean && originalVerdict.Error == "" && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
 			receiptLayer, receiptPattern, receiptSeverity = contentScanAttribution(originalVerdict)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinInputVerdictReasons(originalVerdict))
 			recordAdaptiveSignal(session.SignalBlock)
@@ -601,6 +601,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	for _, m := range verdict.Inject {
 		reasons = append(reasons, m.PatternName)
 	}
+	for _, f := range verdict.URLFindings {
+		reasons = append(reasons, "url:"+f.Scanner+":"+f.Reason)
+	}
 	for _, f := range verdict.AddressFindings {
 		reasons = append(reasons, "address:"+f.Explanation)
 	}
@@ -673,6 +676,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		var rawFindings []capture.Finding
 		rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
 		rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
+		rawFindings = append(rawFindings, urlFindingsToCapture(verdict.URLFindings)...)
 		rawFindings = append(rawFindings, addressFindingsToCapture(verdict.AddressFindings)...)
 		obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
 			Subsurface:        "dlp_mcp_input",

@@ -700,7 +700,7 @@ func (c *Config) ApplyDefaults() {
 	// MCP binary integrity defaults
 	if c.MCPBinaryIntegrity.Enabled {
 		if c.MCPBinaryIntegrity.Action == "" {
-			c.MCPBinaryIntegrity.Action = ActionWarn
+			c.MCPBinaryIntegrity.Action = ActionBlock
 		}
 	}
 

@@ -2421,7 +2421,7 @@ Pre-spawn SHA-256 hash verification for MCP server subprocesses. Prevents tamper
 mcp_binary_integrity:
   enabled: true
   manifest_path: /etc/pipelock/binary-manifest.json
-  action: warn
+  action: block
   require_signature: false
 ```
 
@@ -2429,11 +2429,14 @@ mcp_binary_integrity:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable binary hash verification before spawn |
 | `manifest_path` | (required if enabled) | Path to JSON hash manifest |
-| `action` | `warn` | Action on hash mismatch: `block` or `warn` |
-| `require_signature` | `false` | Verify a detached manifest signature before using the manifest |
-| `signature_path` | `<manifest_path>.sig` | Detached signature path when signatures are required |
-| `trusted_signer` | (required when signatures are required) | Keystore identity used to verify the manifest signature |
+| `action` | `block` | Action on manifest load failure or hash mismatch: `block` or `warn`; signature trust failures still block when `require_signature: true` |
+| `require_signature` | `false` | Verify a detached manifest signature before using the manifest; verification failures always block |
+| `signature_path` | `<manifest_path>.sig` | Detached signature path when signatures are required; unreadable or invalid signatures block |
+| `trusted_signer` | (required when signatures are required) | Keystore identity used to verify the manifest signature; missing or untrusted signer state blocks |
 | `keystore` | `~/.pipelock` | Keystore used for the trusted signer lookup |
+
+Omitting `action` is fail-closed: a missing manifest, unreadable manifest, unknown binary, or hash mismatch blocks MCP subprocess spawn. Set `action: warn` only for a temporary rollout if you need the previous log-only behavior while completing the manifest.
+When `require_signature: true`, signer lookup and signature verification failures always block; `action: warn` only applies to non-signature manifest load and hash issues.
 
 The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing. Generate, preflight, and sign the manifest with `pipelock mcp integrity manifest`; see [MCP integrity manifest tooling](cli/mcp-integrity.md).
 

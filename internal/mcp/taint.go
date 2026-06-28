@@ -411,6 +411,9 @@ func contentScanAttribution(verdict InputVerdict) (layer, pattern, severity stri
 	if len(verdict.Inject) > 0 {
 		return mcpReceiptLayerInput, verdict.Inject[0].PatternName, config.SeverityHigh
 	}
+	if len(verdict.URLFindings) > 0 {
+		return mcpReceiptLayerInput, "url:" + verdict.URLFindings[0].Scanner, config.SeverityHigh
+	}
 	if len(verdict.AddressFindings) > 0 {
 		return mcpReceiptLayerInput, "address:" + verdict.AddressFindings[0].Explanation, config.SeverityHigh
 	}

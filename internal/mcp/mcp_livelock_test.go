@@ -254,6 +254,9 @@ func TestMCPContractBlockReasonHelpers(t *testing.T) {
 	if got := mcpScannerBlockReason(InputVerdict{Inject: []scanner.ResponseMatch{{PatternName: "prompt"}}}, policy.Verdict{}, false); got != blockreason.PromptInjection {
 		t.Fatalf("injection scanner reason = %s", got)
 	}
+	if got := mcpScannerBlockReason(InputVerdict{URLFindings: []scanner.Result{{Scanner: scanner.ScannerCoreSSRF}}}, policy.Verdict{}, false); got != blockreason.SSRFPrivateIP {
+		t.Fatalf("url scanner reason = %s", got)
+	}
 	if got := mcpScannerBlockReason(InputVerdict{}, policy.Verdict{Matched: true}, false); got != blockreason.ToolPolicyDeny {
 		t.Fatalf("policy scanner reason = %s", got)
 	}

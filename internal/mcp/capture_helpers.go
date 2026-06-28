@@ -105,6 +105,23 @@ func responseMatchesToFindings(matches []scanner.ResponseMatch, action string) [
 	return findings
 }
 
+// urlFindingsToCapture converts scanner.Result URL findings to capture findings.
+func urlFindingsToCapture(findings []scanner.Result) []capture.Finding {
+	if len(findings) == 0 {
+		return nil
+	}
+	out := make([]capture.Finding, len(findings))
+	for i, f := range findings {
+		out[i] = capture.Finding{
+			Kind:        capture.KindURL,
+			PatternName: f.Scanner,
+			MatchText:   f.Reason,
+			Action:      config.ActionBlock,
+		}
+	}
+	return out
+}
+
 // addressFindingsToCapture converts addressprotect.Finding slice to capture findings.
 func addressFindingsToCapture(findings []addressprotect.Finding) []capture.Finding {
 	if len(findings) == 0 {

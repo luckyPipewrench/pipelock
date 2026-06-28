@@ -20,7 +20,8 @@ import (
 type ResponseScanResult struct {
 	Clean              bool
 	Matches            []ResponseMatch
-	TransformedContent string // set for strip and ask actions
+	SuppressedMatches  []ResponseMatch `json:"-"`
+	TransformedContent string          // set for strip and ask actions
 
 	// StegoDetected fires when the raw response carries combining-mark density
 	// at or above normalize.ZalgoSuspiciousThreshold. The pattern-matching
@@ -70,6 +71,8 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 // normalized hit on the same content.
 func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
 	original := content
+	var suppressedMatches []ResponseMatch
+	suppressedSeen := make(map[string]struct{})
 	filterSuppressed := func(matches []ResponseMatch) []ResponseMatch {
 		if len(matches) == 0 || len(suppress) == 0 || suppressTarget == "" {
 			return matches
@@ -78,6 +81,12 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 		for _, match := range matches {
 			if !config.IsSuppressed(match.PatternName, suppressTarget, suppress) {
 				kept = append(kept, match)
+			} else {
+				key := responseMatchLogicalKey(match)
+				if _, ok := suppressedSeen[key]; !ok {
+					suppressedSeen[key] = struct{}{}
+					suppressedMatches = append(suppressedMatches, match)
+				}
 			}
 		}
 		return kept
@@ -94,6 +103,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	stegoDensity := normalize.ZalgoDensity(original)
 	stegoDetected := stegoDensity >= normalize.ZalgoSuspiciousThreshold
 	defer func() {
+		out.SuppressedMatches = suppressedMatches
 		out.StegoDensity = stegoDensity
 		out.StegoDetected = stegoDetected
 	}()
@@ -272,6 +282,16 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	}
 
 	return result
+}
+
+func responseMatchLogicalKey(match ResponseMatch) string {
+	return strings.Join([]string{
+		match.PatternName,
+		match.Bundle,
+		match.BundleVersion,
+		fmt.Sprint(match.Position),
+		fmt.Sprint(match.matchLength),
+	}, "\x00")
 }
 
 func filterDefensiveCredentialSolicitationMatches(content string, matches []ResponseMatch) []ResponseMatch {

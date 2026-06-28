@@ -70,10 +70,11 @@ func ToolDigest(name, description string, inputSchema json.RawMessage) string {
 }
 
 func toolDigest(tool ToolDef) string {
-	fields := make(map[string]json.RawMessage, len(tool.ExtraFields)+3)
-	fields["name"] = mustMarshal(tool.Name)
-	fields["description"] = mustMarshal(tool.Description)
-	fields["inputSchema"] = normalizeSchema(tool.InputSchema)
+	fields := map[string]json.RawMessage{
+		"name":        mustMarshal(tool.Name),
+		"description": mustMarshal(tool.Description),
+		"inputSchema": normalizeSchema(tool.InputSchema),
+	}
 	for key, value := range tool.ExtraFields {
 		if key == "name" || key == "description" || key == "inputSchema" {
 			continue

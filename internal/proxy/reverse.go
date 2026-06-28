@@ -244,55 +244,46 @@ func (rp *ReverseProxyHandler) SetRequestPolicyPrepareFn(fn func(*http.Request, 
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested. Plain RequestID alone is too thin for that.
 func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) error {
+	e := rp.receiptEmitter()
+	if e == nil {
+		return nil
+	}
+	return rp.emitReceiptWithEmitter(opts, e)
+}
+
+func (rp *ReverseProxyHandler) emitRequiredReceipt(opts receipt.EmitOpts) error {
+	e := rp.receiptEmitter()
+	if e == nil {
+		err := rp.recordReceiptEmitterUnavailable(opts)
+		rp.recordRequiredReceiptBlock(err, opts.Transport)
+		return err
+	}
+	if err := rp.emitReceiptWithEmitter(opts, e); err != nil {
+		rp.recordRequiredReceiptBlock(err, opts.Transport)
+		return err
+	}
+	return nil
+}
+
+func (rp *ReverseProxyHandler) receiptEmitter() *receipt.Emitter {
+	if rp == nil || rp.receiptEmitterPtr == nil {
+		return nil
+	}
+	return rp.receiptEmitterPtr.Load()
+}
+
+func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
+	if e == nil {
+		return nil
+	}
 	if rp.cfgPtr != nil {
 		if cfg := rp.cfgPtr.Load(); cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-	}
-	if rp.receiptEmitterPtr == nil {
-		return nil
-	}
-	e := rp.receiptEmitterPtr.Load()
-	if e == nil {
-		return nil
 	}
 	if err := e.Emit(opts); err != nil {
 		rp.logReceiptEmissionFailure(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record.
-		return err
-	}
-	// Dual-emit the v2 proxy_decision receipt.
-	emitV2(rp.v2EmitterPtr, opts, func(err error) {
-		if rp.logger == nil {
-			return
-		}
-		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-			fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s transport=%s: %w",
-				opts.ActionID, opts.Verdict, opts.Transport, err))
-	})
-	return nil
-}
-
-func (rp *ReverseProxyHandler) emitRequiredReceipt(opts receipt.EmitOpts) error {
-	if rp.cfgPtr != nil {
-		if cfg := rp.cfgPtr.Load(); cfg != nil {
-			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
-		}
-	}
-	if rp.receiptEmitterPtr == nil {
-		err := rp.recordReceiptEmitterUnavailable(opts)
-		rp.recordRequiredReceiptBlock(err, opts.Transport)
-		return err
-	}
-	e := rp.receiptEmitterPtr.Load()
-	if e == nil {
-		err := rp.recordReceiptEmitterUnavailable(opts)
-		rp.recordRequiredReceiptBlock(err, opts.Transport)
-		return err
-	}
-	if err := e.Emit(opts); err != nil {
-		rp.logReceiptEmissionFailure(opts, err)
-		rp.recordRequiredReceiptBlock(err, opts.Transport)
 		return err
 	}
 	emitV2(rp.v2EmitterPtr, opts, func(err error) {

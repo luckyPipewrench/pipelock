@@ -115,7 +115,7 @@ func TestReverseEmitReceipt_NoV1EmitterSkipsV2(t *testing.T) {
 		logger:       audit.NewNop(),
 		v2EmitterPtr: &v2Ptr,
 	}
-	_ = rp.emitReceipt(receipt.EmitOpts{
+	if err := rp.emitReceipt(receipt.EmitOpts{
 		ActionID:  "reverse-no-v1",
 		Verdict:   config.ActionBlock,
 		Layer:     LayerReverseResponseBlocked,
@@ -125,7 +125,9 @@ func TestReverseEmitReceipt_NoV1EmitterSkipsV2(t *testing.T) {
 		Target:    "https://example.test/reverse",
 		RequestID: "req-reverse-no-v1",
 		Agent:     "agent",
-	})
+	}); err != nil {
+		t.Fatalf("emitReceipt without v1 emitter = %v, want nil", err)
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -197,7 +199,7 @@ func TestReverseEmitReceipt_V1FailureSkipsV2(t *testing.T) {
 		receiptEmitterPtr: &v1Ptr,
 		v2EmitterPtr:      &v2Ptr,
 	}
-	_ = rp.emitReceipt(receipt.EmitOpts{
+	if err := rp.emitReceipt(receipt.EmitOpts{
 		ActionID:  "reverse-v1-fail",
 		Verdict:   config.ActionBlock,
 		Layer:     LayerReverseResponseBlocked,
@@ -207,7 +209,9 @@ func TestReverseEmitReceipt_V1FailureSkipsV2(t *testing.T) {
 		Target:    "https://example.test/reverse",
 		RequestID: "req-reverse-v1-fail",
 		Agent:     "agent",
-	})
+	}); err == nil {
+		t.Fatal("emitReceipt after sealed v1 chain returned nil, want error")
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -264,7 +268,7 @@ func TestReverseEmitReceipt_V1SuccessEmitsV2Sibling(t *testing.T) {
 		v2EmitterPtr:      &v2Ptr,
 	}
 	wantPolicyHash := strings.Repeat("a", 64)
-	_ = rp.emitReceipt(receipt.EmitOpts{
+	if err := rp.emitReceipt(receipt.EmitOpts{
 		ActionID:   "reverse-v1-ok",
 		Verdict:    config.ActionBlock,
 		Layer:      LayerReverseResponseBlocked,
@@ -275,7 +279,9 @@ func TestReverseEmitReceipt_V1SuccessEmitsV2Sibling(t *testing.T) {
 		RequestID:  "req-reverse-v1-ok",
 		Agent:      "agent",
 		PolicyHash: wantPolicyHash,
-	})
+	}); err != nil {
+		t.Fatalf("emitReceipt success path = %v, want nil", err)
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}

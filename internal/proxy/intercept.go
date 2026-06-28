@@ -201,11 +201,11 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 
 func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, actx audit.LogContext, opts receipt.EmitOpts) bool {
 	if err := interceptEmitReceipt(ic, opts); err != nil && ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
-		if errors.Is(err, errReceiptEmitterUnavailable) && ic.Proxy != nil {
-			ic.Proxy.metrics.RecordEmitFailure(receipt.FailReasonUnavailable)
-		}
-		if ic.Proxy != nil {
-			ic.Proxy.metrics.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), opts.Transport)
+		if m := interceptReceiptMetrics(ic); m != nil {
+			if errors.Is(err, errReceiptEmitterUnavailable) {
+				m.RecordEmitFailure(receipt.FailReasonUnavailable)
+			}
+			m.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), opts.Transport)
 		}
 		blockedErr := newReceiptEmissionBlockedRequest(err)
 		ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -215,6 +215,16 @@ func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, ac
 		return true
 	}
 	return false
+}
+
+func interceptReceiptMetrics(ic *InterceptContext) *metrics.Metrics {
+	if ic == nil {
+		return nil
+	}
+	if ic.Proxy != nil && ic.Proxy.metrics != nil {
+		return ic.Proxy.metrics
+	}
+	return ic.Metrics
 }
 
 // interceptReadHeaderTimeout is the maximum time to read request headers on an

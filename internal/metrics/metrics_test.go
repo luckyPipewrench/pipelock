@@ -130,6 +130,9 @@ func TestStatsHandler(t *testing.T) {
 	if len(stats.Receipts.EmitFailures) != 0 {
 		t.Errorf("expected no receipt emit failures, got %v", stats.Receipts.EmitFailures)
 	}
+	if len(stats.Receipts.RequiredBlocks) != 0 {
+		t.Errorf("expected no required receipt blocks, got %v", stats.Receipts.RequiredBlocks)
+	}
 }
 
 func TestStatsHandler_BlockRate(t *testing.T) {

@@ -160,9 +160,11 @@ func TestInterceptEmitReceiptOrBlockRequiresProxy(t *testing.T) {
 	cfg.Internal = nil
 	cfg.ApplyDefaults()
 
+	m := metrics.New()
 	ic := &InterceptContext{
 		Config:    cfg,
 		Logger:    audit.NewNop(),
+		Metrics:   m,
 		RequestID: "req-intercept-no-proxy",
 		Agent:     "agent",
 	}
@@ -185,6 +187,8 @@ func TestInterceptEmitReceiptOrBlockRequiresProxy(t *testing.T) {
 	if got := rr.Header().Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
 		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
 	}
+	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
+	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="intercept"} 1`)
 }
 
 func testInterceptRedactProxy(t *testing.T, cfg *config.Config) *Proxy {

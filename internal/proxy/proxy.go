@@ -1050,9 +1050,9 @@ func (p *Proxy) logReceiptEmissionFailure(opts receipt.EmitOpts, err error) {
 }
 
 func receiptEmissionError(opts receipt.EmitOpts, err error) error {
-	return fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
+	return fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s: %w",
 		opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
-		opts.Transport, opts.Method, opts.Target, opts.Agent, err)
+		opts.Transport, opts.Method, err)
 }
 
 // receiptEmitterStage is the staged result of a receipt-emitter reload.

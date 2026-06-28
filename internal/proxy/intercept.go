@@ -1829,21 +1829,8 @@ func newInterceptHandler(
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 		}
 		if ic.Scanner.ResponseScanningEnabled() {
-			scanResult := ic.Scanner.ScanResponse(r.Context(), string(respBody))
-
-			// Filter out suppressed findings (parity with fetch proxy).
-			if !scanResult.Clean && len(ic.Config.Suppress) > 0 {
-				var kept []scanner.ResponseMatch
-				for _, m := range scanResult.Matches {
-					if !config.IsSuppressed(m.PatternName, r.URL.String(), ic.Config.Suppress) {
-						kept = append(kept, m)
-					} else {
-						ic.Metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportConnect)
-					}
-				}
-				scanResult.Matches = kept
-				scanResult.Clean = len(kept) == 0
-			}
+			scanResult := ic.Scanner.ScanResponseWithSuppress(r.Context(), string(respBody), r.URL.String(), ic.Config.Suppress)
+			recordSuppressedResponseScanExempts(ic.Metrics, scanResult.SuppressedMatches, TransportConnect)
 
 			// Capture observer: record intercept response scan verdict for policy replay.
 			// Runs after suppression so the recorded action matches runtime.

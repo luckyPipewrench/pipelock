@@ -72,6 +72,9 @@ func tryRecoverSession(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforce
 // methodToolsCall is the JSON-RPC method for MCP tool invocations.
 const methodToolsCall = "tools/call"
 
+// methodResourcesRead is the JSON-RPC method for MCP resource reads.
+const methodResourcesRead = "resources/read"
+
 // errPolicyBlocked is the error message returned when a tool call is denied by policy.
 const errPolicyBlocked = "pipelock: request blocked by tool call policy"
 
@@ -90,6 +93,7 @@ type InputVerdict struct {
 	Action          string                   `json:"action,omitempty"`
 	Matches         []scanner.TextDLPMatch   `json:"dlp_matches,omitempty"`
 	Inject          []scanner.ResponseMatch  `json:"injection_matches,omitempty"`
+	URLFindings     []scanner.Result         `json:"url_findings,omitempty"`
 	AddressFindings []addressprotect.Finding `json:"address_findings,omitempty"`
 	Error           string                   `json:"error,omitempty"`
 }
@@ -302,7 +306,7 @@ func ForwardScannedInput(
 		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
 		if redactionCfg.Matcher != nil {
 			originalVerdict := scanRequestForAgent(stdioInputCtx, line, sc, action, onParseError, opts.addressProtectionAgent())
-			if !originalVerdict.Clean && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
+			if !originalVerdict.Clean && originalVerdict.Error == "" && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
 				recordAdaptiveSignal(session.SignalBlock)
 				if pendingActionID != "" && receiptEmitter != nil {
@@ -773,16 +777,7 @@ func ForwardScannedInput(
 		}
 
 		// Build combined reasons from content scan, policy, and binding.
-		var reasons []string
-		for _, m := range verdict.Matches {
-			reasons = append(reasons, m.PatternName)
-		}
-		for _, m := range verdict.Inject {
-			reasons = append(reasons, m.PatternName)
-		}
-		for _, f := range verdict.AddressFindings {
-			reasons = append(reasons, "address:"+f.Explanation)
-		}
+		reasons := inputVerdictReasons(verdict)
 		for _, r := range policyVerdict.Rules {
 			reasons = append(reasons, "policy:"+r)
 		}
@@ -850,12 +845,17 @@ func ForwardScannedInput(
 		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
 				lineNum, method, reasonStr)
+			blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
+			if bindingReason != "" && bindingAction == config.ActionBlock {
+				blockReason = blockreason.SessionBinding
+			}
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isNotification,
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked", lineNum),
 				ErrorCode:      errCode,
 				ErrorMessage:   errMsg,
+				ErrorData:      mcpBlockReasonData(blockReason),
 			}
 		case config.ActionRedirect:
 			// Batch requests cannot be redirected element-by-element.
@@ -1248,6 +1248,7 @@ func ForwardScannedInput(
 			var rawFindings []capture.Finding
 			rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
 			rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
+			rawFindings = append(rawFindings, urlFindingsToCapture(verdict.URLFindings)...)
 			rawFindings = append(rawFindings, addressFindingsToCapture(verdict.AddressFindings)...)
 			obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
 				Subsurface:        "dlp_mcp_input",
@@ -1331,17 +1332,28 @@ func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
 }
 
-func joinInputVerdictReasons(verdict InputVerdict) string {
-	reasons := make([]string, 0, len(verdict.Matches)+len(verdict.Inject)+1)
+func inputVerdictReasons(verdict InputVerdict) []string {
+	reasons := make([]string, 0, len(verdict.Matches)+len(verdict.Inject)+len(verdict.URLFindings)+len(verdict.AddressFindings)+1)
 	for _, m := range verdict.Matches {
 		reasons = append(reasons, m.PatternName)
 	}
 	for _, m := range verdict.Inject {
 		reasons = append(reasons, m.PatternName)
 	}
+	for _, f := range verdict.URLFindings {
+		reasons = append(reasons, "url:"+f.Scanner+":"+f.Reason)
+	}
+	for _, f := range verdict.AddressFindings {
+		reasons = append(reasons, "address:"+f.Explanation)
+	}
 	if verdict.Error != "" {
 		reasons = append(reasons, verdict.Error)
 	}
+	return reasons
+}
+
+func joinInputVerdictReasons(verdict InputVerdict) string {
+	reasons := inputVerdictReasons(verdict)
 	if len(reasons) == 0 {
 		return "input scanning"
 	}

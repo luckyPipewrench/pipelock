@@ -865,7 +865,7 @@ response_scanning:
 |-------|---------|-------------|
 | `enabled` | `true` | Run per-event plus rolling cross-event DLP + injection scanning on non-A2A SSE responses. When `false`, SSE responses still stream with per-read flushing — they are NOT silently downgraded to the buffered path. |
 | `action` | `block` | `block` terminates the stream on detection. `warn` logs an anomaly and continues forwarding events. |
-| `max_event_bytes` | `65536` | Per-event data-payload ceiling. Measures only the bytes inside the SSE `data:` field(s) — `event:`, `id:`, and `retry:` metadata are not counted. Events exceeding this are treated as findings and fail closed. Set higher only for providers with genuinely large single events. |
+| `max_event_bytes` | `65536` | Per-event data-payload ceiling. Measures only the bytes inside the SSE `data:` field(s) — `event:`, `id:`, and `retry:` metadata are not counted. Events exceeding this are treated as findings and fail closed. Set higher only for providers with genuinely large single events. Independently, the SSE reader bounds any single event's cumulative `data:` payload at the 10 MB transport ceiling to prevent unbounded buffering, so values above 10 MB do not take effect. |
 
 **Behavior:**
 - Each event's canonical SSE text (`data:` plus `event:`, `id:`, and `retry:` metadata) is fed through the same DLP + injection patterns used for buffered response scanning.
@@ -2421,7 +2421,7 @@ Pre-spawn SHA-256 hash verification for MCP server subprocesses. Prevents tamper
 mcp_binary_integrity:
   enabled: true
   manifest_path: /etc/pipelock/binary-manifest.json
-  action: warn
+  action: block
   require_signature: false
 ```
 
@@ -2429,11 +2429,14 @@ mcp_binary_integrity:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable binary hash verification before spawn |
 | `manifest_path` | (required if enabled) | Path to JSON hash manifest |
-| `action` | `warn` | Action on hash mismatch: `block` or `warn` |
-| `require_signature` | `false` | Verify a detached manifest signature before using the manifest |
-| `signature_path` | `<manifest_path>.sig` | Detached signature path when signatures are required |
-| `trusted_signer` | (required when signatures are required) | Keystore identity used to verify the manifest signature |
+| `action` | `block` | Action on manifest load failure or hash mismatch: `block` or `warn`; signature trust failures still block when `require_signature: true` |
+| `require_signature` | `false` | Verify a detached manifest signature before using the manifest; verification failures always block |
+| `signature_path` | `<manifest_path>.sig` | Detached signature path when signatures are required; unreadable or invalid signatures block |
+| `trusted_signer` | (required when signatures are required) | Keystore identity used to verify the manifest signature; missing or untrusted signer state blocks |
 | `keystore` | `~/.pipelock` | Keystore used for the trusted signer lookup |
+
+Omitting `action` is fail-closed: a missing manifest, unreadable manifest, unknown binary, or hash mismatch blocks MCP subprocess spawn. Set `action: warn` only for a temporary rollout if you need the previous log-only behavior while completing the manifest.
+When `require_signature: true`, signer lookup and signature verification failures always block; `action: warn` only applies to non-signature manifest load and hash issues.
 
 The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing. Generate, preflight, and sign the manifest with `pipelock mcp integrity manifest`; see [MCP integrity manifest tooling](cli/mcp-integrity.md).
 

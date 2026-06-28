@@ -1185,6 +1185,11 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving true binary: %v", err)
 	}
+	shPath, _, err := integrity.ResolveAndHash("sh")
+	if err != nil {
+		t.Fatalf("resolving sh binary: %v", err)
+	}
+	spawnCommand := []string{"sh", "-c", `printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"spawned":true}}'`}
 
 	// Helper: write a manifest file and return its path.
 	writeManifest := func(t *testing.T, entries map[string]string) string {
@@ -1201,12 +1206,14 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		cfg     *config.MCPBinaryIntegrity
-		entries map[string]string // nil = use missing manifest path
-		wantErr bool
-		wantLog string // substring expected in log output
-		noSpawn bool   // true if subprocess should NOT be spawned
+		name        string
+		cfg         *config.MCPBinaryIntegrity
+		command     []string
+		entries     map[string]string // nil = use missing manifest path
+		wantErr     bool
+		wantLog     string // substring expected in log output
+		wantNoSpawn bool
+		wantOutput  string
 	}{
 		{
 			name: "disabled_skips_check",
@@ -1235,9 +1242,10 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionBlock,
 			},
-			entries: map[string]string{truePath: "deadbeef"},
-			wantErr: true,
-			noSpawn: true,
+			command:     spawnCommand,
+			entries:     map[string]string{shPath: "deadbeef"},
+			wantErr:     true,
+			wantNoSpawn: true,
 		},
 		{
 			name: "wrong_hash_warns_and_spawns",
@@ -1245,9 +1253,11 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionWarn,
 			},
-			entries: map[string]string{truePath: "deadbeef"},
-			wantErr: false,
-			wantLog: "binary integrity warning",
+			command:    spawnCommand,
+			entries:    map[string]string{shPath: "deadbeef"},
+			wantErr:    false,
+			wantLog:    "binary integrity warning",
+			wantOutput: "spawned",
 		},
 		{
 			name: "unknown_binary_blocks",
@@ -1255,9 +1265,10 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionBlock,
 			},
-			entries: map[string]string{"/some/other/binary": "abc123"},
-			wantErr: true,
-			noSpawn: true,
+			command:     spawnCommand,
+			entries:     map[string]string{"/some/other/binary": "abc123"},
+			wantErr:     true,
+			wantNoSpawn: true,
 		},
 		{
 			name: "unknown_binary_warns",
@@ -1265,9 +1276,11 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionWarn,
 			},
-			entries: map[string]string{"/some/other/binary": "abc123"},
-			wantErr: false,
-			wantLog: "binary integrity warning",
+			command:    spawnCommand,
+			entries:    map[string]string{"/some/other/binary": "abc123"},
+			wantErr:    false,
+			wantLog:    "binary integrity warning",
+			wantOutput: "spawned",
 		},
 		{
 			name: "missing_manifest_blocks",
@@ -1276,8 +1289,9 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				ManifestPath: "/nonexistent/manifest.json",
 				Action:       config.ActionBlock,
 			},
-			wantErr: true,
-			noSpawn: true,
+			command:     spawnCommand,
+			wantErr:     true,
+			wantNoSpawn: true,
 		},
 		{
 			name: "missing_manifest_warns",
@@ -1286,8 +1300,10 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				ManifestPath: "/nonexistent/manifest.json",
 				Action:       config.ActionWarn,
 			},
-			wantErr: false,
-			wantLog: "binary integrity warning",
+			command:    spawnCommand,
+			wantErr:    false,
+			wantLog:    "binary integrity warning",
+			wantOutput: "spawned",
 		},
 	}
 
@@ -1311,7 +1327,11 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 			opts := testOpts(sc)
 			opts.IntegrityCfg = icfg
 
-			err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"true"}, opts)
+			command := tt.command
+			if command == nil {
+				command = []string{"true"}
+			}
+			err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, command, opts)
 
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
@@ -1324,7 +1344,50 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 			if tt.wantLog != "" && !strings.Contains(logStr, tt.wantLog) {
 				t.Errorf("expected log to contain %q, got: %s", tt.wantLog, logStr)
 			}
+			if tt.wantNoSpawn && out.String() != "" {
+				t.Fatalf("subprocess spawned despite block action; output: %q", out.String())
+			}
+			if tt.wantOutput != "" && !strings.Contains(out.String(), tt.wantOutput) {
+				t.Fatalf("expected subprocess output to contain %q, got %q", tt.wantOutput, out.String())
+			}
 		})
+	}
+}
+
+func TestRunProxy_BinaryIntegrityDefaultBlocksBeforeSpawn(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("subprocess test requires unix")
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "integrity.yaml")
+	content := "mode: balanced\nmcp_binary_integrity:\n  enabled: true\n  manifest_path: /nonexistent/manifest.json\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.MCPBinaryIntegrity.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q", cfg.MCPBinaryIntegrity.Action, config.ActionBlock)
+	}
+
+	sc := testScannerWithAction(t, "warn")
+	var out bytes.Buffer
+	logBuf := &syncBuffer{}
+	opts := testOpts(sc)
+	opts.IntegrityCfg = &cfg.MCPBinaryIntegrity
+
+	err = RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"sh", "-c", "printf spawned"}, opts)
+	if err == nil {
+		t.Fatal("expected missing manifest to block before spawn")
+	}
+	if !strings.Contains(err.Error(), "loading manifest") {
+		t.Errorf("error should mention manifest loading, got: %v", err)
+	}
+	if out.String() != "" {
+		t.Fatalf("subprocess spawned despite default block action; output: %q", out.String())
 	}
 }
 
@@ -3169,6 +3232,105 @@ func TestVerifyBinaryIntegrity_BlockOnLoadError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "loading manifest") {
 		t.Errorf("error should mention manifest loading, got: %v", err)
+	}
+}
+
+// TestVerifyBinaryIntegrity_EmptyActionFailsClosed proves each enforcement
+// branch is fail-closed: an unset/unrecognized action (which config Validate
+// would reject, but a direct in-process caller could construct) blocks rather
+// than silently warning. Only an explicit "warn" relaxes enforcement.
+func TestVerifyBinaryIntegrity_EmptyActionFailsClosed(t *testing.T) {
+	actions := []string{"", "blok", "allow"}
+	testName := func(action string) string {
+		if action == "" {
+			return "empty"
+		}
+		return action
+	}
+
+	for _, action := range actions {
+		t.Run("load_error/"+testName(action), func(t *testing.T) {
+			icfg := &config.MCPBinaryIntegrity{
+				Enabled:      true,
+				ManifestPath: "/nonexistent/path/manifest.json",
+				Action:       action,
+			}
+
+			var logBuf bytes.Buffer
+			err := VerifyBinaryIntegrity([]string{"/bin/true"}, icfg, &logBuf)
+			if err == nil {
+				t.Fatalf("action %q should fail closed on manifest load failure", action)
+			}
+			if !strings.Contains(err.Error(), "loading manifest") {
+				t.Errorf("error should mention manifest loading, got: %v", err)
+			}
+		})
+	}
+
+	m := &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{
+			"/some/binary": "deadbeef",
+		},
+	}
+	mpath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := integrity.SaveManifest(mpath, m); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+	missingBinary := filepath.Join(t.TempDir(), "missing-binary")
+	for _, action := range actions {
+		t.Run("verify_error/"+testName(action), func(t *testing.T) {
+			icfg := &config.MCPBinaryIntegrity{
+				Enabled:      true,
+				ManifestPath: mpath,
+				Action:       action,
+			}
+
+			var logBuf bytes.Buffer
+			err := VerifyBinaryIntegrity([]string{missingBinary}, icfg, &logBuf)
+			if err == nil {
+				t.Fatalf("action %q should fail closed on binary verify error", action)
+			}
+			if !strings.Contains(err.Error(), "binary integrity") {
+				t.Errorf("error should mention binary integrity, got: %v", err)
+			}
+		})
+	}
+
+	if runtime.GOOS == osWindows {
+		return
+	}
+	truePath, _, err := integrity.ResolveAndHash("true")
+	if err != nil {
+		t.Fatalf("resolving true binary: %v", err)
+	}
+	mismatch := &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{
+			truePath: "0000000000000000000000000000000000000000000000000000000000000000",
+		},
+	}
+	mismatchPath := filepath.Join(t.TempDir(), "mismatch-manifest.json")
+	if err := integrity.SaveManifest(mismatchPath, mismatch); err != nil {
+		t.Fatalf("writing mismatch manifest: %v", err)
+	}
+	for _, action := range actions {
+		t.Run("hash_mismatch/"+testName(action), func(t *testing.T) {
+			icfg := &config.MCPBinaryIntegrity{
+				Enabled:      true,
+				ManifestPath: mismatchPath,
+				Action:       action,
+			}
+
+			var logBuf bytes.Buffer
+			err := VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf)
+			if err == nil {
+				t.Fatalf("action %q should fail closed on hash mismatch", action)
+			}
+			if !strings.Contains(err.Error(), "integrity check failed") {
+				t.Errorf("error should mention integrity check, got: %v", err)
+			}
+		})
 	}
 }
 

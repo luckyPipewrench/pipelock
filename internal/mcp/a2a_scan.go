@@ -39,8 +39,8 @@ type A2AScanResult struct {
 }
 
 // rollingTailSize is the number of bytes kept across SSE events for
-// cross-event scanning. A2A uses it for response injection detection;
-// generic SSE also uses it for DLP.
+// cross-event scanning. A2A and generic SSE use it for response injection and
+// DLP detection.
 const rollingTailSize = 4096
 
 // ScanA2ARequestBody runs field-aware scanning on an A2A request body.
@@ -595,7 +595,7 @@ func (ct *ContextTracker) touchOrderLocked(id string) {
 // --- SSE Stream Scanning ---
 
 // ScanA2AStream handles SSE streaming responses with per-event field-aware
-// scanning and a rolling tail for cross-event injection detection.
+// scanning and rolling tails for cross-event injection and DLP detection.
 //
 // Contract:
 // - Caller copies response headers to w BEFORE calling this function.
@@ -615,7 +615,8 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 	}
 
 	reader := transport.NewSSEReader(body)
-	var tail string
+	var injectionTail string
+	var dlpTail string
 
 	for {
 		select {
@@ -653,30 +654,34 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 				ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 		}
 
-		// Rolling tail: concatenate tail + current text, scan for
-		// cross-event injection.
+		// Rolling tails: injection keeps word boundaries; DLP does not insert a
+		// separator so a credential split exactly at an event boundary is visible
+		// to the same detectors that caught per-event data.
 		currentText, currentTruncated := extractTextFromEvent(event)
 		if currentTruncated {
 			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrA2AStreamFinding)
 		}
-		if tail != "" && currentText != "" {
-			combined := tail + " " + currentText
+		if injectionTail != "" && currentText != "" {
+			combined := injectionTail + " " + currentText
 			tailResult := sc.ScanResponse(ctx, combined)
 			if !tailResult.Clean {
 				return fmt.Errorf("%w: cross-event injection detected", ErrA2AStreamFinding)
 			}
 		}
-
-		// Update rolling tail.
-		if currentText != "" {
-			if len(currentText) >= rollingTailSize {
-				tail = currentText[len(currentText)-rollingTailSize:]
-			} else if len(tail)+len(currentText) > rollingTailSize {
-				combined := tail + currentText
-				tail = combined[len(combined)-rollingTailSize:]
-			} else {
-				tail += currentText
+		if dlpTail != "" && currentText != "" {
+			combined := dlpTail + currentText
+			dlpResult := sc.ScanTextForDLP(ctx, combined)
+			if !dlpResult.Clean {
+				return fmt.Errorf("%w: cross-event dlp detected: %s",
+					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			}
+		}
+
+		// Update rolling tails.
+		if currentText != "" {
+			current := []byte(currentText)
+			injectionTail = advanceSSERollingTail(injectionTail, current, false, " ")
+			dlpTail = advanceSSERollingTail(dlpTail, current, false, "")
 		}
 
 		// Forward clean event. Preserve id, event, and retry fields from the

@@ -1427,11 +1427,15 @@ func safeEnv() []string {
 	return env
 }
 
-// hash before subprocess spawn. Returns an error only when action is "block"
-// and verification fails; "warn" failures are logged to logW and return nil.
-// VerifyBinaryIntegrity checks the command binary against a hash manifest.
-// Returns nil when verification passes or action is warn (logged only).
-// Returns an error when action is block and verification fails.
+// VerifyBinaryIntegrity checks the command binary against a hash manifest
+// before subprocess spawn. Fail-closed: a verification failure returns an
+// error (blocking spawn) UNLESS action is explicitly "warn", in which case the
+// failure is logged to logW and nil is returned. An empty or unrecognized
+// action therefore blocks, matching the fail-closed config default. Config
+// load already constrains action to "warn" or "block" via Validate; treating
+// only an explicit "warn" as relaxing is defense-in-depth for any in-process
+// caller that constructs the config without validation.
+// Returns nil when verification passes.
 func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer, workDir ...string) error {
 	agentWorkDir := ""
 	if len(workDir) > 0 {
@@ -1449,12 +1453,12 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 	// the file after verification would open a TOCTOU window where an
 	// attacker with write access to the manifest path could swap the
 	// file between sig-verify and parse. Fail-closed: load errors are
-	// fatal when action is "block", logged as warnings otherwise, EXCEPT
-	// when require_signature=true: trust-establishment failures always
-	// block regardless of action.
+	// fatal unless action is explicitly "warn", EXCEPT when
+	// require_signature=true: trust-establishment failures always block
+	// regardless of action.
 	manifest, loadErr := loadMCPIntegrityManifest(icfg)
 	if loadErr != nil {
-		if icfg.RequireSignature || icfg.Action == config.ActionBlock {
+		if icfg.RequireSignature || icfg.Action != config.ActionWarn {
 			return fmt.Errorf("binary integrity: loading manifest: %w", loadErr)
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %v\n", loadErr)
@@ -1464,7 +1468,7 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 
 	result, verifyErr := integrity.Verify(command, intCfg, agentWorkDir)
 	if verifyErr != nil {
-		if icfg.Action == config.ActionBlock {
+		if icfg.Action != config.ActionWarn {
 			return fmt.Errorf("binary integrity: %w", verifyErr)
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %v\n", verifyErr)
@@ -1473,7 +1477,7 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 
 	if !result.Verified {
 		reasons := strings.Join(result.Reasons, "; ")
-		if icfg.Action == config.ActionBlock {
+		if icfg.Action != config.ActionWarn {
 			return fmt.Errorf("binary integrity check failed: %s", reasons)
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %s\n", reasons)

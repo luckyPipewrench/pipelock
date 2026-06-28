@@ -76,6 +76,7 @@ const (
 // Finding kind constants identify which detection rule produced a finding.
 const (
 	KindDLP               = "dlp"
+	KindURL               = "url"
 	KindAddressProtection = "address_protection"
 	KindInjection         = "injection"
 	KindCEE               = "cee"

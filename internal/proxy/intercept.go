@@ -167,6 +167,12 @@ func interceptRecordSignal(ic *InterceptContext, sig session.SignalType) {
 // the current emitter (including after key rotation on reload).
 func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 	if ic.Proxy == nil {
+		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+			if ic.Logger != nil {
+				ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), receiptEmissionError(opts, errReceiptEmitterUnavailable))
+			}
+			return errReceiptEmitterUnavailable
+		}
 		return nil
 	}
 	if ic.Config != nil {
@@ -179,9 +185,7 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 		return errReceiptEmitterUnavailable
 	}
 	if err := e.Emit(opts); err != nil {
-		if ic.Logger != nil {
-			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
-		}
+		ic.Proxy.logReceiptEmissionFailure(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}

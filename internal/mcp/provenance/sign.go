@@ -87,11 +87,40 @@ func toolDigest(tool ToolDef) string {
 }
 
 func toolDigestRaw(raw json.RawMessage) string {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
+	fields, ok := toolFieldsRaw(raw)
+	if !ok {
 		return ""
 	}
 	return digestToolFields(fields)
+}
+
+func toolFieldsRaw(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, false
+	}
+	if _, ok := fields["name"]; !ok {
+		fields["name"] = mustMarshal("")
+	}
+	if _, ok := fields["description"]; !ok {
+		fields["description"] = mustMarshal("")
+	}
+	if _, ok := fields["inputSchema"]; !ok {
+		fields["inputSchema"] = json.RawMessage("null")
+	}
+	return fields, true
+}
+
+func canonicalToolFieldsRaw(raw json.RawMessage) (map[string]json.RawMessage, bool) {
+	fields, ok := toolFieldsRaw(raw)
+	if !ok {
+		return nil, false
+	}
+	canonical := make(map[string]json.RawMessage, len(fields))
+	for key, value := range fields {
+		canonical[key] = normalizeJSON(value)
+	}
+	return canonical, true
 }
 
 func digestToolFields(fields map[string]json.RawMessage) string {
@@ -312,8 +341,8 @@ func EmbedInToolsList(response []byte, attestations []Attestation) ([]byte, erro
 		}
 
 		// Inject _meta into the tool object.
-		var toolMap map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &toolMap); err != nil {
+		toolMap, ok := canonicalToolFieldsRaw(raw)
+		if !ok {
 			modified = append(modified, raw)
 			continue
 		}

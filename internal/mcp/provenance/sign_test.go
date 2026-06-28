@@ -4,6 +4,7 @@
 package provenance
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"testing"
@@ -64,6 +65,15 @@ func TestToolDigest_PreservesLargeJSONNumbers(t *testing.T) {
 	d2 := ToolDigest(testToolName, testToolDesc, schema2)
 	if d1 == d2 {
 		t.Fatal("large distinct JSON numbers must not collapse to the same digest")
+	}
+}
+
+func TestToolDigestRaw_NormalizesMissingCoreFields(t *testing.T) {
+	structured := toolDigest(ToolDef{Name: "lookup"})
+	raw := toolDigestRaw(json.RawMessage(`{"name":"lookup"}`))
+
+	if raw != structured {
+		t.Fatalf("raw digest=%s, want structured digest %s", raw, structured)
 	}
 }
 
@@ -402,6 +412,54 @@ func TestEmbedInToolsList(t *testing.T) {
 	}
 	if !ok {
 		t.Error("embedded attestation should verify successfully")
+	}
+}
+
+func TestEmbedInToolsList_EmitsCanonicalSignedTool(t *testing.T) {
+	pub, priv := generateTestKeys(t)
+	tool := ToolDef{
+		Name:        "lookup",
+		Description: "lookup records",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	attestations, err := SignPipelock([]ToolDef{tool}, priv, signing.EncodePublicKey(pub))
+	if err != nil {
+		t.Fatalf("SignPipelock: %v", err)
+	}
+	response := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"lookup","description":"lookup records","inputSchema":{"type":"string","type":"object"}}]}}`)
+
+	modified, err := EmbedInToolsList(response, attestations)
+	if err != nil {
+		t.Fatalf("EmbedInToolsList: %v", err)
+	}
+
+	var rpc struct {
+		Result struct {
+			Tools []json.RawMessage `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(modified, &rpc); err != nil {
+		t.Fatalf("parsing modified response: %v", err)
+	}
+	if len(rpc.Result.Tools) != 1 {
+		t.Fatalf("tools=%d, want 1", len(rpc.Result.Tools))
+	}
+	if bytes.Contains(rpc.Result.Tools[0], []byte(`"type":"string"`)) {
+		t.Fatalf("tool was emitted with pre-canonical schema: %s", rpc.Result.Tools[0])
+	}
+	if got := bytes.Count(rpc.Result.Tools[0], []byte(`"type"`)); got != 1 {
+		t.Fatalf("tool schema type keys=%d, want 1 in %s", got, rpc.Result.Tools[0])
+	}
+
+	results, err := VerifyToolsList(modified, VerifyConfig{
+		TrustedKeys: map[string]ed25519.PublicKey{signing.EncodePublicKey(pub): pub},
+		Mode:        ModePipelock,
+	})
+	if err != nil {
+		t.Fatalf("VerifyToolsList: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != StatusVerified {
+		t.Fatalf("results=%+v, want one verified tool", results)
 	}
 }
 

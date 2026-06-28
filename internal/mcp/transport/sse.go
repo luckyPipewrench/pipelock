@@ -5,6 +5,7 @@ package transport
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"strings"
 )
@@ -15,6 +16,7 @@ import (
 // per the SSE specification.
 type SSEReader struct {
 	scanner       *bufio.Scanner
+	maxEventBytes int
 	lastEventID   string
 	lastEventType string
 	lastRetry     string
@@ -25,7 +27,7 @@ type SSEReader struct {
 func NewSSEReader(r io.Reader) *SSEReader {
 	s := bufio.NewScanner(r)
 	s.Buffer(make([]byte, 0, 64*1024), MaxLineSize)
-	return &SSEReader{scanner: s}
+	return &SSEReader{scanner: s, maxEventBytes: MaxLineSize}
 }
 
 // LastEventID returns the most recently seen SSE id: field value.
@@ -53,7 +55,12 @@ func (sr *SSEReader) LastRetry() string {
 // Returns io.EOF when no more events are available.
 func (sr *SSEReader) ReadMessage() ([]byte, error) {
 	var data []string
+	eventBytes := 0
 	hasData := false
+	maxEventBytes := sr.maxEventBytes
+	if maxEventBytes <= 0 {
+		maxEventBytes = MaxLineSize
+	}
 
 	// Reset per-event fields so they only reflect the current event.
 	sr.lastEventType = ""
@@ -83,7 +90,15 @@ func (sr *SSEReader) ReadMessage() ([]byte, error) {
 
 		switch field {
 		case "data":
+			nextEventBytes := eventBytes + len(value)
+			if hasData {
+				nextEventBytes++ // newline inserted by strings.Join below
+			}
+			if nextEventBytes > maxEventBytes {
+				return nil, fmt.Errorf("sse event too large: %d bytes (max %d)", nextEventBytes, maxEventBytes)
+			}
 			data = append(data, value)
+			eventBytes = nextEventBytes
 			hasData = true
 		case "id":
 			// Per SSE spec: if the id field value contains U+0000 NULL, ignore it.

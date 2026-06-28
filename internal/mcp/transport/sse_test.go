@@ -71,6 +71,35 @@ func TestSSEReader_MultiLineData(t *testing.T) {
 	}
 }
 
+func TestSSEReader_CumulativeDataTooLarge(t *testing.T) {
+	newCappedReader := func(input string, maxEventBytes int) *SSEReader {
+		t.Helper()
+		s := bufio.NewScanner(strings.NewReader(input))
+		s.Buffer(make([]byte, 0, 64), MaxLineSize)
+		return &SSEReader{scanner: s, maxEventBytes: maxEventBytes}
+	}
+
+	// The joined payload is "hello\nworld" (11 bytes). This proves the
+	// cumulative event cap counts the newline inserted between data: fields.
+	allowed := newCappedReader("data: hello\ndata: world\n\n", len("hello\nworld"))
+	msg, err := allowed.ReadMessage()
+	if err != nil {
+		t.Fatalf("exact-limit event should pass: %v", err)
+	}
+	if string(msg) != "hello\nworld" {
+		t.Fatalf("msg = %q, want %q", string(msg), "hello\nworld")
+	}
+
+	blocked := newCappedReader("data: hello\ndata: world\n\n", len("hello\nworld")-1)
+	_, err = blocked.ReadMessage()
+	if err == nil {
+		t.Fatal("expected cumulative event-size error")
+	}
+	if !strings.Contains(err.Error(), "sse event too large") {
+		t.Fatalf("error = %v, want sse event too large", err)
+	}
+}
+
 func TestSSEReader_IgnoresNonDataFields(t *testing.T) {
 	// event:, id:, retry: fields should not appear in the data payload.
 	input := "event: message\nid: 42\nretry: 3000\ndata: hello\n\n"

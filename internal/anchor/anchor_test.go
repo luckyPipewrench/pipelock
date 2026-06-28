@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,6 +96,65 @@ func TestVerifyBundleDetectsReceiptRewrite(t *testing.T) {
 	}
 }
 
+func TestVerifyBundleRejectsBackendMismatch(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T12:00:00Z")
+	receipts, keyHex := testReceiptChain(t, 2)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	log := LocalLog{Path: filepath.Join(t.TempDir(), "anchor.jsonl"), LogID: "test-log"}
+	proof, err := log.Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	bundle := NewBundle(checkpoint, proof)
+	bundle.Backend = "rekor-prod-transparency-log"
+
+	report := VerifyBundle(bundle, receipts, []string{keyHex}, log)
+	if report.Valid {
+		t.Fatalf("forged backend label produced a valid report: %+v", report)
+	}
+	if report.Backend != "" {
+		t.Fatalf("report.Backend = %q, want empty unverified backend", report.Backend)
+	}
+	if !strings.Contains(report.Error, "does not match proof backend") {
+		t.Fatalf("report.Error = %q, want backend mismatch", report.Error)
+	}
+}
+
+func TestVerifyBundleReportLimitsAreCanonical(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T12:00:00Z")
+	receipts, keyHex := testReceiptChain(t, 2)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	log := LocalLog{Path: filepath.Join(t.TempDir(), "anchor.jsonl"), LogID: "test-log"}
+	proof, err := log.Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	bundle := NewBundle(checkpoint, proof)
+	bundle.Limits = []string{"operator-independent witness PROVEN"}
+
+	report := VerifyBundle(bundle, receipts, []string{keyHex}, log)
+	if !report.Valid {
+		t.Fatalf("VerifyBundle invalid: %s", report.Error)
+	}
+	if report.Backend != LocalBackend {
+		t.Fatalf("report.Backend = %q, want %q", report.Backend, LocalBackend)
+	}
+	if len(report.Limits) != len(DefaultLimits) {
+		t.Fatalf("report.Limits = %v, want DefaultLimits", report.Limits)
+	}
+	for i := range DefaultLimits {
+		if report.Limits[i] != DefaultLimits[i] {
+			t.Fatalf("report.Limits[%d] = %q, want %q", i, report.Limits[i], DefaultLimits[i])
+		}
+	}
+}
+
 func TestVerifyBundleDetectsLocalLogRewrite(t *testing.T) {
 	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T12:00:00Z")
 	receipts, keyHex := testReceiptChain(t, 1)
@@ -122,5 +182,89 @@ func TestVerifyBundleDetectsLocalLogRewrite(t *testing.T) {
 	report := VerifyBundle(NewBundle(checkpoint, proof), receipts, []string{keyHex}, log)
 	if report.Valid || !strings.Contains(report.Error, "hash mismatch") {
 		t.Fatalf("rewritten log report = %+v, want hash mismatch", report)
+	}
+}
+
+func TestLocalLogSubmitRejectsMixedExistingLogID(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T12:00:00Z")
+	receipts, keyHex := testReceiptChain(t, 2)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	log := LocalLog{Path: filepath.Join(t.TempDir(), "anchor.jsonl"), LogID: "test-log"}
+	for range 2 {
+		if _, err := log.Submit(checkpoint); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+	entries, err := ReadLocalLog(log.Path)
+	if err != nil {
+		t.Fatalf("ReadLocalLog: %v", err)
+	}
+	entries[1].LogID = "other-log"
+	entries[1].Hash = localEntryHash(entries[1])
+	writeLocalLogEntries(t, log.Path, entries)
+
+	_, err = log.Submit(checkpoint)
+	if err == nil || !strings.Contains(err.Error(), "log_id mismatch at index 1") {
+		t.Fatalf("Submit err = %v, want mixed log_id rejection", err)
+	}
+}
+
+func TestLocalLogSubmitSerializesConcurrentAppends(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T12:00:00Z")
+	receipts, keyHex := testReceiptChain(t, 3)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	log := LocalLog{Path: filepath.Join(t.TempDir(), "anchor.jsonl"), LogID: "test-log"}
+
+	const submits = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, submits)
+	for range submits {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := log.Submit(checkpoint)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+	entries, err := ReadLocalLog(log.Path)
+	if err != nil {
+		t.Fatalf("ReadLocalLog: %v", err)
+	}
+	if len(entries) != submits {
+		t.Fatalf("len(entries) = %d, want %d", len(entries), submits)
+	}
+	for i, entry := range entries {
+		if entry.Index != uint64(i) {
+			t.Fatalf("entries[%d].Index = %d", i, entry.Index)
+		}
+	}
+}
+
+func writeLocalLogEntries(t *testing.T, path string, entries []LocalLogEntry) {
+	t.Helper()
+	var lines []byte
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		lines = append(lines, data...)
+		lines = append(lines, '\n')
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 }

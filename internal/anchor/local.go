@@ -41,13 +41,21 @@ func (l LocalLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	if l.Path == "" {
 		return Proof{}, errors.New("local anchor log path required")
 	}
+	unlock, err := acquireLocalLogLock(l.Path)
+	if err != nil {
+		return Proof{}, err
+	}
+	defer unlock()
+
 	logID := l.logID()
 	entries, err := ReadLocalLog(l.Path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Proof{}, err
 	}
-	if len(entries) > 0 && entries[0].LogID != logID {
-		return Proof{}, fmt.Errorf("local anchor log_id mismatch: got %q, want %q", entries[0].LogID, logID)
+	for _, entry := range entries {
+		if entry.LogID != logID {
+			return Proof{}, fmt.Errorf("local anchor log_id mismatch at index %d: got %q, want %q", entry.Index, entry.LogID, logID)
+		}
 	}
 	prevHash := GenesisHash
 	if len(entries) > 0 {

@@ -676,6 +676,74 @@ func TestIndependent_ResolveSignerKeysAcceptsRepeatedKeys(t *testing.T) {
 	}
 }
 
+func TestIndependent_DirModeUsesSessionReceipts(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 3)
+	evidence, bundle, logPath := writeIndependentFixture(t, fix)
+	dir := filepath.Dir(evidence)
+	moveIndependentEvidenceToSessionFile(t, evidence)
+
+	stdout, stderr, code := runRoot(t, "independent", dir,
+		"--dir",
+		"--session", "proxy",
+		"--bundle", bundle,
+		"--key", fix.keyHex,
+		"--local-log", logPath,
+		"--log-id", "verifier-test-log",
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "INDEPENDENT VERIFY OK") {
+		t.Fatalf("stdout missing success marker:\n%s", stdout)
+	}
+}
+
+func TestIndependent_DirModeRejectsUnknownSession(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 3)
+	evidence, bundle, logPath := writeIndependentFixture(t, fix)
+	dir := filepath.Dir(evidence)
+	moveIndependentEvidenceToSessionFile(t, evidence)
+
+	_, stderr, code := runRoot(t, "independent", dir,
+		"--dir",
+		"--session", "missing",
+		"--bundle", bundle,
+		"--key", fix.keyHex,
+		"--local-log", logPath,
+		"--log-id", "verifier-test-log",
+	)
+	if code == cliutil.ExitOK {
+		t.Fatalf("expected failure, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "empty receipt chain") {
+		t.Fatalf("stderr = %q, want empty-chain failure", stderr)
+	}
+}
+
+func TestIndependent_DirModeRejectsMalformedSessionFile(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 3)
+	evidence, bundle, logPath := writeIndependentFixture(t, fix)
+	sessionPath := moveIndependentEvidenceToSessionFile(t, evidence)
+	if err := os.WriteFile(sessionPath, []byte("{not json\n"), 0o600); err != nil {
+		t.Fatalf("write malformed evidence: %v", err)
+	}
+
+	_, stderr, code := runRoot(t, "independent", filepath.Dir(sessionPath),
+		"--dir",
+		"--session", "proxy",
+		"--bundle", bundle,
+		"--key", fix.keyHex,
+		"--local-log", logPath,
+		"--log-id", "verifier-test-log",
+	)
+	if code == cliutil.ExitOK {
+		t.Fatalf("expected failure, stderr=%q", stderr)
+	}
+}
+
 func TestChain_ActionWithoutKeyFailsUnpinned(t *testing.T) {
 	t.Parallel()
 	fix := newFixture(t, 2)
@@ -715,6 +783,15 @@ func writeIndependentFixture(t *testing.T, fix *fixture) (evidencePath, bundlePa
 		t.Fatalf("WriteBundle: %v", err)
 	}
 	return evidencePath, bundlePath, logPath
+}
+
+func moveIndependentEvidenceToSessionFile(t *testing.T, evidencePath string) string {
+	t.Helper()
+	sessionPath := filepath.Join(filepath.Dir(evidencePath), "evidence-proxy-0.jsonl")
+	if err := os.Rename(evidencePath, sessionPath); err != nil {
+		t.Fatalf("rename evidence: %v", err)
+	}
+	return sessionPath
 }
 
 func TestChain_ActionAllowUnpinned(t *testing.T) {

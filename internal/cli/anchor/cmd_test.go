@@ -115,3 +115,23 @@ func TestReceiptsCmdRequiresPinnedKey(t *testing.T) {
 		t.Fatalf("Execute err = %v, want pinned-key error", err)
 	}
 }
+
+func TestReceiptsCmdRejectsBlankPinnedKey(t *testing.T) {
+	for _, key := range []string{"", "  "} {
+		t.Run("blank_"+strings.ReplaceAll(key, " ", "space"), func(t *testing.T) {
+			receiptsPath, keyHex := cliReceiptJSONL(t)
+			cmd := receiptsCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetArgs([]string{
+				receiptsPath,
+				"--key", key,
+				"--key", keyHex,
+				"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+				"--out", filepath.Join(t.TempDir(), "bundle.json"),
+			})
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "public key is empty") {
+				t.Fatalf("Execute err = %v, want blank-key error", err)
+			}
+		})
+	}
+}

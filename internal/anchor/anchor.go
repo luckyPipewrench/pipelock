@@ -94,7 +94,7 @@ func BuildCheckpoint(sessionID string, receipts []receipt.Receipt, trustedKeys [
 	}
 	root, err := receipt.ComputeTranscriptRootTrusted(sessionID, receipts, trustedKeys)
 	if err != nil {
-		return Checkpoint{}, err
+		return Checkpoint{}, fmt.Errorf("compute transcript root: %w", err)
 	}
 	return Checkpoint{
 		SessionID:    root.SessionID,
@@ -121,13 +121,16 @@ func NewBundle(checkpoint Checkpoint, proof Proof) Bundle {
 func VerifyBundle(b Bundle, receipts []receipt.Receipt, trustedKeys []string, backend Backend) VerifyReport {
 	report := VerifyReport{
 		Valid:      false,
-		Backend:    b.Backend,
 		Proof:      b.Proof,
-		Limits:     append([]string(nil), b.Limits...),
+		Limits:     append([]string(nil), DefaultLimits...),
 		Checkpoint: b.Checkpoint,
 	}
 	if b.Version != BundleVersion {
 		report.Error = fmt.Sprintf("unsupported anchor bundle version %d", b.Version)
+		return report
+	}
+	if b.Backend != b.Proof.Backend {
+		report.Error = fmt.Sprintf("anchor bundle backend %q does not match proof backend %q", b.Backend, b.Proof.Backend)
 		return report
 	}
 	if backend == nil {
@@ -148,6 +151,7 @@ func VerifyBundle(b Bundle, receipts []receipt.Receipt, trustedKeys []string, ba
 		return report
 	}
 	report.Valid = true
+	report.Backend = b.Proof.Backend
 	report.SessionID = computed.SessionID
 	report.ReceiptCount = computed.ReceiptCount
 	report.FinalSeq = computed.FinalSeq
@@ -211,9 +215,6 @@ func decodeStrict(data []byte, dst any) error {
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("unexpected trailing JSON")
-		}
 		return errors.New("unexpected trailing JSON")
 	}
 	return nil

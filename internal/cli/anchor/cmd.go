@@ -124,7 +124,7 @@ func extractReceipts(target string, opts receiptsOptions) ([]receipt.Receipt, st
 	}
 	receipts, extractErr := receipt.ExtractReceipts(target)
 	if extractErr != nil {
-		return nil, "", err
+		return nil, "", extractErr
 	}
 	return receipts, "file", nil
 }
@@ -134,7 +134,7 @@ func resolveTrustedKeys(keys []string) ([]string, error) {
 	for _, key := range keys {
 		key = strings.TrimSpace(key)
 		if key == "" {
-			continue
+			return nil, fmt.Errorf("resolve --key: public key is empty")
 		}
 		pub, err := sigutil.LoadPublicKey(key)
 		if err != nil {

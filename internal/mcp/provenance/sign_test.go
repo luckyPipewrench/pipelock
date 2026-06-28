@@ -301,6 +301,22 @@ func TestInjectMeta(t *testing.T) {
 	}
 }
 
+func TestInjectMeta_InvalidExistingMetaPreserved(t *testing.T) {
+	att := Attestation{
+		PredicateType: predicateType,
+		Digest:        Digest{SHA256: "abc123"},
+		Mode:          ModePipelock,
+		Bundle:        "sig-data",
+		SignerID:      "key-1",
+	}
+	existing := json.RawMessage(`"not-an-object"`)
+
+	got := injectMeta(existing, att)
+	if string(got) != string(existing) {
+		t.Fatalf("injectMeta()=%s, want preserved existing _meta %s", got, existing)
+	}
+}
+
 func TestSortAttestations(t *testing.T) {
 	atts := []Attestation{
 		{Digest: Digest{SHA256: "zzz"}},

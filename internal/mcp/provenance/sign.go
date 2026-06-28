@@ -344,7 +344,9 @@ func mustMarshal(v interface{}) json.RawMessage {
 func injectMeta(existing json.RawMessage, att Attestation) json.RawMessage {
 	meta := make(map[string]json.RawMessage)
 	if len(existing) > 0 && string(existing) != "null" {
-		_ = json.Unmarshal(existing, &meta)
+		if err := json.Unmarshal(existing, &meta); err != nil {
+			return existing
+		}
 	}
 	attRaw, err := json.Marshal(att)
 	if err != nil {

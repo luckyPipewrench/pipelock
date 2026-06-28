@@ -120,7 +120,11 @@ func scanMCPResourceURI(ctx context.Context, method string, params json.RawMessa
 	if sc == nil || method != methodResourcesRead {
 		return nil
 	}
-	if err := redact.NoDuplicateJSONKeys(bytes.TrimSpace(params)); err != nil && isDuplicateKeyBlock(err) {
+	trimmed := bytes.TrimSpace(params)
+	if len(trimmed) == 0 || string(trimmed) == jsonrpc.Null {
+		return mcpResourceURIParserFinding("missing resources/read params")
+	}
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
 		return []scanner.Result{{
 			Allowed: false,
 			Reason:  fmt.Sprintf("duplicate resource URI key: %v", err),
@@ -130,10 +134,13 @@ func scanMCPResourceURI(ctx context.Context, method string, params json.RawMessa
 	var req struct {
 		URI string `json:"uri"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil
+	if err := json.Unmarshal(trimmed, &req); err != nil {
+		return mcpResourceURIParserFinding(fmt.Sprintf("invalid resources/read params: %v", err))
 	}
 	uri := strings.TrimSpace(req.URI)
+	if uri == "" {
+		return mcpResourceURIParserFinding("missing resources/read uri")
+	}
 	lower := strings.ToLower(uri)
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
 		return nil
@@ -142,6 +149,14 @@ func scanMCPResourceURI(ctx context.Context, method string, params json.RawMessa
 		return []scanner.Result{result}
 	}
 	return nil
+}
+
+func mcpResourceURIParserFinding(reason string) []scanner.Result {
+	return []scanner.Result{{
+		Allowed: false,
+		Reason:  reason,
+		Scanner: scanner.ScannerParser,
+	}}
 }
 
 // ScanRequest parses a JSON-RPC 2.0 request and scans its params for
@@ -266,8 +281,9 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 				addrFindings = addrResult.Findings
 			}
 		}
+		urlFindings := scanMCPResourceURI(ctx, rpc.Method, rpc.Params, sc)
 
-		if dlpResult.Clean && injResult.Clean && len(addrFindings) == 0 {
+		if dlpResult.Clean && injResult.Clean && len(addrFindings) == 0 && len(urlFindings) == 0 {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
 		}
 		var dlpMatches []scanner.TextDLPMatch
@@ -287,6 +303,9 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 				verdictAction = addrAction
 			}
 		}
+		if len(urlFindings) > 0 {
+			verdictAction = config.ActionBlock
+		}
 
 		return InputVerdict{
 			ID:              rpc.ID,
@@ -295,6 +314,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 			Action:          verdictAction,
 			Matches:         dlpMatches,
 			Inject:          injMatches,
+			URLFindings:     urlFindings,
 			AddressFindings: addrFindings,
 		}
 	}

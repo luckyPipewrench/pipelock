@@ -594,19 +594,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	// Build reasons.
-	var reasons []string
-	for _, m := range verdict.Matches {
-		reasons = append(reasons, m.PatternName)
-	}
-	for _, m := range verdict.Inject {
-		reasons = append(reasons, m.PatternName)
-	}
-	for _, f := range verdict.URLFindings {
-		reasons = append(reasons, "url:"+f.Scanner+":"+f.Reason)
-	}
-	for _, f := range verdict.AddressFindings {
-		reasons = append(reasons, "address:"+f.Explanation)
-	}
+	reasons := inputVerdictReasons(verdict)
 	for _, r := range policyVerdict.Rules {
 		reasons = append(reasons, "policy:"+r)
 	}

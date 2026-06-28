@@ -777,19 +777,7 @@ func ForwardScannedInput(
 		}
 
 		// Build combined reasons from content scan, policy, and binding.
-		var reasons []string
-		for _, m := range verdict.Matches {
-			reasons = append(reasons, m.PatternName)
-		}
-		for _, m := range verdict.Inject {
-			reasons = append(reasons, m.PatternName)
-		}
-		for _, f := range verdict.URLFindings {
-			reasons = append(reasons, "url:"+f.Scanner+":"+f.Reason)
-		}
-		for _, f := range verdict.AddressFindings {
-			reasons = append(reasons, "address:"+f.Explanation)
-		}
+		reasons := inputVerdictReasons(verdict)
 		for _, r := range policyVerdict.Rules {
 			reasons = append(reasons, "policy:"+r)
 		}
@@ -857,12 +845,17 @@ func ForwardScannedInput(
 		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
 				lineNum, method, reasonStr)
+			blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
+			if bindingReason != "" && bindingAction == config.ActionBlock {
+				blockReason = blockreason.SessionBinding
+			}
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isNotification,
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked", lineNum),
 				ErrorCode:      errCode,
 				ErrorMessage:   errMsg,
+				ErrorData:      mcpBlockReasonData(blockReason),
 			}
 		case config.ActionRedirect:
 			// Batch requests cannot be redirected element-by-element.
@@ -1339,7 +1332,7 @@ func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
 }
 
-func joinInputVerdictReasons(verdict InputVerdict) string {
+func inputVerdictReasons(verdict InputVerdict) []string {
 	reasons := make([]string, 0, len(verdict.Matches)+len(verdict.Inject)+len(verdict.URLFindings)+len(verdict.AddressFindings)+1)
 	for _, m := range verdict.Matches {
 		reasons = append(reasons, m.PatternName)
@@ -1356,6 +1349,11 @@ func joinInputVerdictReasons(verdict InputVerdict) string {
 	if verdict.Error != "" {
 		reasons = append(reasons, verdict.Error)
 	}
+	return reasons
+}
+
+func joinInputVerdictReasons(verdict InputVerdict) string {
+	reasons := inputVerdictReasons(verdict)
 	if len(reasons) == 0 {
 		return "input scanning"
 	}

@@ -2627,22 +2627,34 @@ func TestScanRequest_HexInURLPath_NoFalsePositives(t *testing.T) {
 
 func TestScanRequest_ResourcesReadHTTPURIUsesURLPolicy(t *testing.T) {
 	sc := testInputScanner(t)
-	line := makeRequest(1, "resources/read", map[string]string{
-		"uri": "http://169.254.169.254/latest/meta-data/",
-	})
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		{"http", "http://169.254.169.254/latest/meta-data/"},
+		{"https", "https://169.254.169.254/latest/meta-data/"},
+	}
 
-	verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionWarn, config.ActionBlock)
-	if verdict.Clean {
-		t.Fatal("resources/read HTTP URI to metadata endpoint should be blocked by URL policy")
-	}
-	if len(verdict.URLFindings) != 1 {
-		t.Fatalf("URLFindings len = %d, want 1: %+v", len(verdict.URLFindings), verdict)
-	}
-	if got := verdict.URLFindings[0].Scanner; got != scanner.ScannerCoreSSRF {
-		t.Fatalf("URL finding scanner = %q, want %q", got, scanner.ScannerCoreSSRF)
-	}
-	if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
-		t.Fatalf("effective action = %q, want %q", got, config.ActionBlock)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line := makeRequest(1, "resources/read", map[string]string{
+				"uri": tt.uri,
+			})
+
+			verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionWarn, config.ActionBlock)
+			if verdict.Clean {
+				t.Fatal("resources/read HTTP(S) URI to metadata endpoint should be blocked by URL policy")
+			}
+			if len(verdict.URLFindings) != 1 {
+				t.Fatalf("URLFindings len = %d, want 1: %+v", len(verdict.URLFindings), verdict)
+			}
+			if got := verdict.URLFindings[0].Scanner; got != scanner.ScannerCoreSSRF {
+				t.Fatalf("URL finding scanner = %q, want %q", got, scanner.ScannerCoreSSRF)
+			}
+			if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
+				t.Fatalf("effective action = %q, want %q", got, config.ActionBlock)
+			}
+		})
 	}
 }
 
@@ -2664,22 +2676,37 @@ func TestScanRequest_ResourcesReadNonHTTPURIsSkipURLPolicy(t *testing.T) {
 
 func TestScanRequest_BatchResourcesReadHTTPURIUsesURLPolicy(t *testing.T) {
 	sc := testInputScanner(t)
-	batch := "[" +
-		makeRequest(1, "tools/list", nil) + "," +
-		makeRequest(2, "resources/read", map[string]string{
-			"uri": "http://169.254.169.254/latest/meta-data/",
-		}) +
-		"]"
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		{"http", "http://169.254.169.254/latest/meta-data/"},
+		{"https", "https://169.254.169.254/latest/meta-data/"},
+	}
 
-	verdict := ScanRequest(context.Background(), []byte(batch), sc, config.ActionWarn, config.ActionBlock)
-	if verdict.Clean {
-		t.Fatal("batch resources/read HTTP URI to metadata endpoint should be blocked by URL policy")
-	}
-	if len(verdict.URLFindings) != 1 {
-		t.Fatalf("batch URLFindings len = %d, want 1: %+v", len(verdict.URLFindings), verdict)
-	}
-	if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
-		t.Fatalf("batch effective action = %q, want %q", got, config.ActionBlock)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			batch := "[" +
+				makeRequest(1, "tools/list", nil) + "," +
+				makeRequest(2, "resources/read", map[string]string{
+					"uri": tt.uri,
+				}) +
+				"]"
+
+			verdict := ScanRequest(context.Background(), []byte(batch), sc, config.ActionWarn, config.ActionBlock)
+			if verdict.Clean {
+				t.Fatal("batch resources/read HTTP(S) URI to metadata endpoint should be blocked by URL policy")
+			}
+			if len(verdict.URLFindings) != 1 {
+				t.Fatalf("batch URLFindings len = %d, want 1: %+v", len(verdict.URLFindings), verdict)
+			}
+			if got := verdict.URLFindings[0].Scanner; got != scanner.ScannerCoreSSRF {
+				t.Fatalf("batch URL finding scanner = %q, want %q", got, scanner.ScannerCoreSSRF)
+			}
+			if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
+				t.Fatalf("batch effective action = %q, want %q", got, config.ActionBlock)
+			}
+		})
 	}
 }
 
@@ -2696,6 +2723,86 @@ func TestScanRequest_ResourcesReadDuplicateURIBlocks(t *testing.T) {
 	}
 	if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
 		t.Fatalf("effective action = %q, want %q", got, config.ActionBlock)
+	}
+}
+
+func TestScanRequest_ResourcesReadMalformedParamsFailClosed(t *testing.T) {
+	sc := testInputScanner(t)
+	tests := []struct {
+		name string
+		line string
+	}{
+		{
+			name: "omitted params",
+			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read"}`,
+		},
+		{
+			name: "null params",
+			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":null}`,
+		},
+		{
+			name: "string params",
+			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":"http://169.254.169.254/latest/meta-data/"}`,
+		},
+		{
+			name: "array params",
+			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":["http://169.254.169.254/latest/meta-data/"]}`,
+		},
+		{
+			name: "non-string uri",
+			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":123}}`,
+		},
+		{
+			name: "missing uri",
+			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{}}`,
+		},
+		{
+			name: "empty uri",
+			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"   "}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict := ScanRequest(context.Background(), []byte(tt.line), sc, config.ActionWarn, config.ActionBlock)
+			if verdict.Clean {
+				t.Fatal("malformed resources/read params should fail closed")
+			}
+			if len(verdict.URLFindings) != 1 {
+				t.Fatalf("URLFindings len = %d, want 1: %+v", len(verdict.URLFindings), verdict)
+			}
+			if got := verdict.URLFindings[0].Scanner; got != scanner.ScannerParser {
+				t.Fatalf("URL finding scanner = %q, want %q", got, scanner.ScannerParser)
+			}
+			if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
+				t.Fatalf("effective action = %q, want %q", got, config.ActionBlock)
+			}
+		})
+	}
+}
+
+func TestForwardScannedInput_ResourcesReadURLBlockIncludesReasonData(t *testing.T) {
+	sc := testInputScanner(t)
+	msg := makeRequest(9, "resources/read", map[string]string{
+		"uri": "https://169.254.169.254/latest/meta-data/",
+	}) + "\n"
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	fwdScannedInput(strings.NewReader(msg), &serverBuf, &logBuf, sc, config.ActionWarn, config.ActionBlock, blockedCh)
+
+	if serverBuf.Len() != 0 {
+		t.Fatalf("expected resources/read URL-policy block not to be forwarded: %s", serverBuf.String())
+	}
+	blocked, ok := <-blockedCh
+	if !ok {
+		t.Fatal("expected blocked resources/read request")
+	}
+	if string(blocked.ID) != "9" {
+		t.Fatalf("blocked ID = %s, want 9", blocked.ID)
+	}
+	if !strings.Contains(string(blocked.ErrorData), string(blockreason.SSRFPrivateIP)) {
+		t.Fatalf("error data = %s, want %s", blocked.ErrorData, blockreason.SSRFPrivateIP)
 	}
 }
 

@@ -81,7 +81,7 @@ func isInterpreterName(baseName string) bool {
 type Config struct {
 	Enabled      bool              `yaml:"enabled"`
 	ManifestPath string            `yaml:"manifest_path"` // path to JSON manifest on disk
-	Action       string            `yaml:"action"`        // "block" or "warn" (default "warn")
+	Action       string            `yaml:"action"`        // "block" or "warn" (default "block")
 	Manifests    map[string]string `yaml:"-"`             // loaded: resolved_path -> expected SHA-256
 }
 

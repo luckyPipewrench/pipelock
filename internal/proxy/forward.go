@@ -2144,26 +2144,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// is enabled. Media policy above always runs when MediaPolicy
 		// is enabled, even if response scanning is off.
 		if sc.ResponseScanningEnabled() {
-			scanResult := sc.ScanResponse(r.Context(), string(respBody))
+			scanResult := sc.ScanResponseWithSuppress(r.Context(), string(respBody), resp.Request.URL.String(), cfg.Suppress)
+			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			if !scanResult.Clean {
 				responsePromptHit = true
-			}
-
-			// Filter out suppressed findings BEFORE capture (parity with
-			// fetch proxy). If every match is suppressed, runtime treats
-			// the response as clean, and capture must record that
-			// outcome so policy replay matches what actually happened.
-			if !scanResult.Clean && len(cfg.Suppress) > 0 {
-				var kept []scanner.ResponseMatch
-				for _, m := range scanResult.Matches {
-					if !config.IsSuppressed(m.PatternName, targetURL, cfg.Suppress) {
-						kept = append(kept, m)
-					} else {
-						p.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportForward)
-					}
-				}
-				scanResult.Matches = kept
-				scanResult.Clean = len(kept) == 0
 			}
 
 			// Capture observer: record forward response scan verdict for

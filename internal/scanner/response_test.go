@@ -1429,6 +1429,79 @@ func TestScanResponse_DefensiveDecoyDoesNotMaskEncodedSolicitation(t *testing.T)
 	}
 }
 
+func TestScanResponseWithSuppressDedupesSuppressedNormalizationViews(t *testing.T) {
+	cfg := testResponseConfig()
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "Prompt Injection", Path: "*", Reason: "test suppression"},
+	}
+
+	s := New(cfg)
+	t.Cleanup(func() { s.Close() })
+
+	const content = testInjectionPhrase
+	primaryContent := normalize.ForMatching(content)
+	primaryMatch := requireResponseMatch(t,
+		withResponseSpans(filterDefensiveCredentialSolicitationMatches(primaryContent, s.matchResponsePatternsPreFiltered(primaryContent)), ViewForMatching),
+		"Prompt Injection",
+		ViewForMatching,
+	)
+	foldedContent := normalize.FoldVowels(primaryContent)
+	vowelFoldMatch := requireResponseMatch(t,
+		withResponseSpans(filterDefensiveCredentialSolicitationMatches(foldedContent, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, foldedContent)), ViewVowelFold),
+		"Prompt Injection",
+		ViewVowelFold,
+	)
+	if primaryKey, foldedKey := responseMatchLogicalKey(primaryMatch), responseMatchLogicalKey(vowelFoldMatch); primaryKey != foldedKey {
+		t.Fatalf("test payload must hit the same logical finding in primary and vowel-fold views: primary=%+v folded=%+v", primaryMatch, vowelFoldMatch)
+	}
+
+	result := s.ScanResponseWithSuppress(t.Context(), content, "https://example.test/page", cfg.Suppress)
+	if !result.Clean {
+		t.Fatalf("suppressed result should be clean, got matches: %+v", result.Matches)
+	}
+	if got := len(result.SuppressedMatches); got != 1 {
+		t.Fatalf("suppressed matches = %d, want 1 logical finding: %+v", got, result.SuppressedMatches)
+	}
+	if got := result.SuppressedMatches[0].PatternName; got != "Prompt Injection" {
+		t.Fatalf("suppressed pattern = %q, want Prompt Injection", got)
+	}
+}
+
+func requireResponseMatch(t *testing.T, matches []ResponseMatch, patternName, viewLabel string) ResponseMatch {
+	t.Helper()
+	for _, match := range matches {
+		if match.PatternName == patternName && match.Span().ViewLabel == viewLabel {
+			return match
+		}
+	}
+	t.Fatalf("missing %q match in %s view: %+v", patternName, viewLabel, matches)
+	return ResponseMatch{}
+}
+
+func TestScanResponseWithSuppressKeepsDistinctSuppressedLocations(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "System Override", Path: "*", Reason: "test suppression"},
+	}
+
+	s := New(cfg)
+	t.Cleanup(func() { s.Close() })
+
+	result := s.ScanResponseWithSuppress(t.Context(), "system: first benign label\nsystem: second benign label", "https://example.test/page", cfg.Suppress)
+	if !result.Clean {
+		t.Fatalf("suppressed result should be clean, got matches: %+v", result.Matches)
+	}
+	if got := len(result.SuppressedMatches); got != 2 {
+		t.Fatalf("suppressed matches = %d, want 2 distinct locations: %+v", got, result.SuppressedMatches)
+	}
+	if result.SuppressedMatches[0].Position == result.SuppressedMatches[1].Position {
+		t.Fatalf("suppressed matches should retain distinct positions: %+v", result.SuppressedMatches)
+	}
+}
+
 func TestScanResponse_BehaviorOverride(t *testing.T) {
 	s := New(testResponseConfig())
 

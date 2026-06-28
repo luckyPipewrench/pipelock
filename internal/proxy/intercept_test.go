@@ -3354,7 +3354,8 @@ func TestInterceptTunnel_ResponseScanStripWithAdaptive(t *testing.T) {
 // in warn mode log but forward the request.
 func TestInterceptTunnel_A2AHeaderScanWarnMode(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, "ok")
+		w.Header().Set("Content-Type", "application/a2a+json")
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"taskId":"t-1"}}`)
 	}))
 	defer upstream.Close()
 

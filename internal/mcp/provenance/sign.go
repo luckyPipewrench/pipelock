@@ -99,6 +99,9 @@ func toolFieldsRaw(raw json.RawMessage) (map[string]json.RawMessage, bool) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, false
 	}
+	if fields == nil {
+		return nil, false
+	}
 	if _, ok := fields["name"]; !ok {
 		fields["name"] = mustMarshal("")
 	}

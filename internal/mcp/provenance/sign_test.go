@@ -77,6 +77,12 @@ func TestToolDigestRaw_NormalizesMissingCoreFields(t *testing.T) {
 	}
 }
 
+func TestToolDigestRaw_NullDoesNotPanic(t *testing.T) {
+	if got := toolDigestRaw(json.RawMessage(`null`)); got != "" {
+		t.Fatalf("toolDigestRaw(null)=%q, want empty digest", got)
+	}
+}
+
 func TestToolDigest_NilSchema(t *testing.T) {
 	// Nil schema -> consistent digest.
 	d1 := ToolDigest(testToolName, testToolDesc, nil)

@@ -73,7 +73,7 @@ const maxDuplicateKeyScanDepth = 10000
 // that has not yet emitted the outer value's opening token. depth is the
 // current nesting level, bounded by maxDuplicateKeyScanDepth.
 func walkForDuplicates(dec *json.Decoder, depth int) error {
-	if depth > maxDuplicateKeyScanDepth {
+	if depth >= maxDuplicateKeyScanDepth {
 		return newBlock(ReasonBodyUnparseable, 0, "JSON nesting exceeds maximum scan depth")
 	}
 	tok, err := dec.Token()

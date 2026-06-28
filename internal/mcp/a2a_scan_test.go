@@ -62,6 +62,9 @@ func TestScanA2ARequestBody_DuplicateKeyInjectionFailsClosed(t *testing.T) {
 	if result.Action != config.ActionBlock {
 		t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
 	}
+	if !strings.Contains(result.Reason, "duplicate JSON object key") {
+		t.Fatalf("Reason = %q, want duplicate JSON object key", result.Reason)
+	}
 }
 
 func TestScanAgentCard_DuplicateKeySkillFailsClosed(t *testing.T) {
@@ -73,28 +76,40 @@ func TestScanAgentCard_DuplicateKeySkillFailsClosed(t *testing.T) {
 	if result.Clean {
 		t.Fatal("duplicate-key agent-card skill injection should fail closed")
 	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
+	}
+	if !strings.Contains(result.Reason, "duplicate JSON object key") {
+		t.Fatalf("Reason = %q, want duplicate JSON object key", result.Reason)
+	}
 }
 
 func TestScanA2ABody_MalformedNonDuplicateFailsClosed(t *testing.T) {
 	// Malformed-but-not-duplicate JSON must fail closed, but never be
 	// attributed to the duplicate-key guard.
-	for _, body := range [][]byte{
-		[]byte(`{"message":{"parts":[{"text":"hello"}`),
-		[]byte(`{"message":{"parts":[{"text":"hello"}]}} {"message":{"parts":[{"text":"ignored"}]}}`),
+	for _, tt := range []struct {
+		name string
+		body []byte
+	}{
+		{"truncated", []byte(`{"message":{"parts":[{"text":"hello"}`)},
+		{"trailing value", []byte(`{"message":{"parts":[{"text":"hello"}]}} {"message":{"parts":[{"text":"ignored"}]}}`)},
+		{"whitespace only", []byte("  \t\n  ")},
 	} {
-		result := ScanA2ARequestBody(context.Background(), body, testA2AScanner(t), enabledA2ACfg())
-		if result.Clean {
-			t.Fatalf("malformed A2A JSON should fail closed: %s", body)
-		}
-		if result.Action != config.ActionBlock {
-			t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
-		}
-		if strings.Contains(result.Reason, "duplicate JSON object key") {
-			t.Fatalf("malformed JSON misattributed to duplicate-key guard: %q", result.Reason)
-		}
-		if !strings.Contains(result.Reason, "invalid JSON") {
-			t.Fatalf("Reason = %q, want invalid JSON", result.Reason)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			result := ScanA2ARequestBody(context.Background(), tt.body, testA2AScanner(t), enabledA2ACfg())
+			if result.Clean {
+				t.Fatalf("malformed A2A JSON should fail closed: %s", tt.body)
+			}
+			if result.Action != config.ActionBlock {
+				t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
+			}
+			if strings.Contains(result.Reason, "duplicate JSON object key") {
+				t.Fatalf("malformed JSON misattributed to duplicate-key guard: %q", result.Reason)
+			}
+			if !strings.Contains(result.Reason, "invalid JSON") {
+				t.Fatalf("Reason = %q, want invalid JSON", result.Reason)
+			}
+		})
 	}
 }
 

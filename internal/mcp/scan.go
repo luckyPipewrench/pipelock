@@ -347,6 +347,7 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonr
 	var firstID json.RawMessage
 	var action string
 	var hasError bool
+	var firstError string
 
 	for _, elem := range batch {
 		v := ScanResponseOpts(elem, sc, opts)
@@ -355,6 +356,9 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonr
 		}
 		if v.Error != "" {
 			hasError = true
+			if firstError == "" {
+				firstError = v.Error
+			}
 		}
 		if !v.Clean && v.Error == "" {
 			allMatches = append(allMatches, v.Matches...)
@@ -366,7 +370,7 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonr
 
 	if len(allMatches) == 0 {
 		if hasError {
-			return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: "one or more batch elements failed to parse"}
+			return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}
 		}
 		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}
 	}

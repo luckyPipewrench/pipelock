@@ -215,8 +215,8 @@ func TestScanResponse_BatchDuplicateKeysFailClosedWithID(t *testing.T) {
 	if v.Clean {
 		t.Fatal("batch element with duplicate response keys should fail closed")
 	}
-	if v.Error == "" {
-		t.Fatal("expected batch duplicate-key error")
+	if !strings.Contains(v.Error, "duplicate JSON object key") {
+		t.Fatalf("Error = %q, want duplicate JSON object key", v.Error)
 	}
 	if string(v.ID) != "9" {
 		t.Fatalf("ID = %s, want 9", string(v.ID))

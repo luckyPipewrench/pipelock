@@ -194,17 +194,23 @@ func TestRewriteJSON_NoDuplicateKeys_StillRedacts(t *testing.T) {
 // encoding/json: anything the guard rejects, json.Unmarshal also rejects, so
 // the guard never blocks a body the very next decode would have accepted.
 func TestNoDuplicateJSONKeys_DeepNestingDoesNotCrash(t *testing.T) {
-	for _, depth := range []int{maxDuplicateKeyScanDepth - 1, maxDuplicateKeyScanDepth + 5, 2_000_000} {
-		body := []byte(strings.Repeat("[", depth) + strings.Repeat("]", depth))
-		guardErr := NoDuplicateJSONKeys(body)
-		var v interface{}
-		jsonErr := json.Unmarshal(body, &v)
-		if guardErr == nil && jsonErr != nil {
-			t.Fatalf("depth=%d: guard accepted but json.Unmarshal rejected (%v)", depth, jsonErr)
-		}
-		if guardErr != nil && !isUnparseableBlock(guardErr) {
-			t.Fatalf("depth=%d: want ReasonBodyUnparseable, got %v", depth, guardErr)
-		}
+	for _, depth := range []int{maxDuplicateKeyScanDepth - 1, maxDuplicateKeyScanDepth, maxDuplicateKeyScanDepth + 1, maxDuplicateKeyScanDepth + 5, 2_000_000} {
+		depth := depth
+		t.Run(fmt.Sprintf("depth_%d", depth), func(t *testing.T) {
+			body := []byte(strings.Repeat("[", depth) + strings.Repeat("]", depth))
+			guardErr := NoDuplicateJSONKeys(body)
+			var v interface{}
+			jsonErr := json.Unmarshal(body, &v)
+			if guardErr == nil && jsonErr != nil {
+				t.Fatalf("guard accepted but json.Unmarshal rejected (%v)", jsonErr)
+			}
+			if guardErr != nil && jsonErr == nil {
+				t.Fatalf("guard rejected but json.Unmarshal accepted (%v)", guardErr)
+			}
+			if guardErr != nil && !isUnparseableBlock(guardErr) {
+				t.Fatalf("want ReasonBodyUnparseable, got %v", guardErr)
+			}
+		})
 	}
 }
 

@@ -76,7 +76,15 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	// acts on - behind a benign duplicate, evading every walker pass (Pass 2 is
 	// DLP-only). Parser-integrity failures hard-block, matching the MCP response
 	// scan guard in ScanResponseOpts and the existing inspect-depth hard block.
-	if err := redact.NoDuplicateJSONKeys(bytes.TrimSpace(body)); err != nil {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return A2AScanResult{
+			Clean:  false,
+			Action: config.ActionBlock,
+			Reason: "a2a: invalid JSON: empty body",
+		}
+	}
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil {
 		reason := fmt.Sprintf("a2a: invalid JSON: %v", err)
 		if isDuplicateKeyBlock(err) {
 			reason = fmt.Sprintf("a2a: duplicate JSON object key: %v", err)

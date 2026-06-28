@@ -1429,6 +1429,52 @@ func TestScanResponse_DefensiveDecoyDoesNotMaskEncodedSolicitation(t *testing.T)
 	}
 }
 
+func TestScanResponseWithSuppressDedupesSuppressedNormalizationViews(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "System Override", Path: "*", Reason: "test suppression"},
+	}
+
+	s := New(cfg)
+	t.Cleanup(func() { s.Close() })
+
+	result := s.ScanResponseWithSuppress(t.Context(), "system: benign local role label", "https://example.test/page", cfg.Suppress)
+	if !result.Clean {
+		t.Fatalf("suppressed result should be clean, got matches: %+v", result.Matches)
+	}
+	if got := len(result.SuppressedMatches); got != 1 {
+		t.Fatalf("suppressed matches = %d, want 1 logical finding: %+v", got, result.SuppressedMatches)
+	}
+	if got := result.SuppressedMatches[0].PatternName; got != "System Override" {
+		t.Fatalf("suppressed pattern = %q, want System Override", got)
+	}
+}
+
+func TestScanResponseWithSuppressKeepsDistinctSuppressedLocations(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "System Override", Path: "*", Reason: "test suppression"},
+	}
+
+	s := New(cfg)
+	t.Cleanup(func() { s.Close() })
+
+	result := s.ScanResponseWithSuppress(t.Context(), "system: first benign label\nsystem: second benign label", "https://example.test/page", cfg.Suppress)
+	if !result.Clean {
+		t.Fatalf("suppressed result should be clean, got matches: %+v", result.Matches)
+	}
+	if got := len(result.SuppressedMatches); got != 2 {
+		t.Fatalf("suppressed matches = %d, want 2 distinct locations: %+v", got, result.SuppressedMatches)
+	}
+	if result.SuppressedMatches[0].Position == result.SuppressedMatches[1].Position {
+		t.Fatalf("suppressed matches should retain distinct positions: %+v", result.SuppressedMatches)
+	}
+}
+
 func TestScanResponse_BehaviorOverride(t *testing.T) {
 	s := New(testResponseConfig())
 

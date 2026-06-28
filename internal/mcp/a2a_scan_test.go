@@ -113,6 +113,42 @@ func TestScanA2ABody_MalformedNonDuplicateFailsClosed(t *testing.T) {
 	}
 }
 
+func TestScanA2ABody_EmptyRequestAndResponseFailClosed(t *testing.T) {
+	sc := testA2AScanner(t)
+	cfg := enabledA2ACfg()
+
+	for _, tt := range []struct {
+		name string
+		scan func() A2AScanResult
+	}{
+		{"request nil", func() A2AScanResult {
+			return ScanA2ARequestBody(context.Background(), nil, sc, cfg)
+		}},
+		{"request empty", func() A2AScanResult {
+			return ScanA2ARequestBody(context.Background(), []byte{}, sc, cfg)
+		}},
+		{"response nil", func() A2AScanResult {
+			return ScanA2AResponseBody(context.Background(), nil, sc, cfg)
+		}},
+		{"response empty", func() A2AScanResult {
+			return ScanA2AResponseBody(context.Background(), []byte{}, sc, cfg)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.scan()
+			if result.Clean {
+				t.Fatal("empty A2A body should fail closed")
+			}
+			if result.Action != config.ActionBlock {
+				t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
+			}
+			if !strings.Contains(result.Reason, "invalid JSON") {
+				t.Fatalf("Reason = %q, want invalid JSON", result.Reason)
+			}
+		})
+	}
+}
+
 // --- ScanA2ARequestBody ---
 
 func TestScanA2ARequestBody_CleanMessage(t *testing.T) {
@@ -200,8 +236,11 @@ func TestScanA2ARequestBody_Disabled(t *testing.T) {
 
 func TestScanA2ARequestBody_EmptyBody(t *testing.T) {
 	result := ScanA2ARequestBody(context.Background(), nil, testA2AScanner(t), enabledA2ACfg())
-	if !result.Clean {
-		t.Error("expected clean for empty body")
+	if result.Clean {
+		t.Fatal("expected fail-closed block for empty body")
+	}
+	if result.Action != config.ActionBlock {
+		t.Fatalf("Action = %q, want %q", result.Action, config.ActionBlock)
 	}
 }
 

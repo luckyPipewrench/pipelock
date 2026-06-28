@@ -50,7 +50,7 @@ const rollingTailSize = 4096
 // text/opaque through injection + DLP. Falls back to raw DLP for split-secret
 // detection when the walker completes within budget.
 func ScanA2ARequestBody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning) A2AScanResult {
-	if cfg == nil || !cfg.Enabled || len(body) == 0 {
+	if cfg == nil || !cfg.Enabled {
 		return A2AScanResult{Clean: true}
 	}
 	return scanA2ABody(ctx, body, sc, cfg)
@@ -58,7 +58,7 @@ func ScanA2ARequestBody(ctx context.Context, body []byte, sc *scanner.Scanner, c
 
 // ScanA2AResponseBody runs field-aware scanning on an A2A response body.
 func ScanA2AResponseBody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning) A2AScanResult {
-	if cfg == nil || !cfg.Enabled || len(body) == 0 {
+	if cfg == nil || !cfg.Enabled {
 		return A2AScanResult{Clean: true}
 	}
 	return scanA2ABody(ctx, body, sc, cfg)

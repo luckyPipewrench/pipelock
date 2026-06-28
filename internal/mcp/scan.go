@@ -368,10 +368,10 @@ func scanBatch(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonr
 		}
 	}
 
+	if hasError {
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}
+	}
 	if len(allMatches) == 0 {
-		if hasError {
-			return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Error: firstError}
-		}
 		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}
 	}
 	return jsonrpc.ScanVerdict{

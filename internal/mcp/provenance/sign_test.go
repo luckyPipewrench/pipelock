@@ -56,6 +56,17 @@ func TestToolDigest_SortedKeys(t *testing.T) {
 	}
 }
 
+func TestToolDigest_PreservesLargeJSONNumbers(t *testing.T) {
+	schema1 := json.RawMessage(`{"type":"object","properties":{"n":{"const":9007199254740992}}}`)
+	schema2 := json.RawMessage(`{"type":"object","properties":{"n":{"const":9007199254740993}}}`)
+
+	d1 := ToolDigest(testToolName, testToolDesc, schema1)
+	d2 := ToolDigest(testToolName, testToolDesc, schema2)
+	if d1 == d2 {
+		t.Fatal("large distinct JSON numbers must not collapse to the same digest")
+	}
+}
+
 func TestToolDigest_NilSchema(t *testing.T) {
 	// Nil schema -> consistent digest.
 	d1 := ToolDigest(testToolName, testToolDesc, nil)

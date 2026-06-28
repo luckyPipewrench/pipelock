@@ -10,6 +10,7 @@
 package provenance
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 )
 
@@ -130,7 +132,12 @@ func normalizeSchema(raw json.RawMessage) json.RawMessage {
 
 func normalizeJSON(raw json.RawMessage) json.RawMessage {
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&parsed); err != nil {
+		return raw
+	}
+	if err := dec.Decode(new(interface{})); err != io.EOF {
 		return raw
 	}
 

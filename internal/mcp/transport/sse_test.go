@@ -71,17 +71,17 @@ func TestSSEReader_MultiLineData(t *testing.T) {
 	}
 }
 
-func TestSSEReader_CumulativeDataTooLarge(t *testing.T) {
-	newCappedReader := func(input string, maxEventBytes int) *SSEReader {
-		t.Helper()
-		s := bufio.NewScanner(strings.NewReader(input))
-		s.Buffer(make([]byte, 0, 64), MaxLineSize)
-		return &SSEReader{scanner: s, maxEventBytes: maxEventBytes}
-	}
+func newCappedSSEReader(t *testing.T, input string, maxEventBytes int) *SSEReader {
+	t.Helper()
+	s := bufio.NewScanner(strings.NewReader(input))
+	s.Buffer(make([]byte, 0, 64), MaxLineSize)
+	return &SSEReader{scanner: s, maxEventBytes: maxEventBytes}
+}
 
+func TestSSEReader_CumulativeDataTooLarge(t *testing.T) {
 	// The joined payload is "hello\nworld" (11 bytes). This proves the
 	// cumulative event cap counts the newline inserted between data: fields.
-	allowed := newCappedReader("data: hello\ndata: world\n\n", len("hello\nworld"))
+	allowed := newCappedSSEReader(t, "data: hello\ndata: world\n\n", len("hello\nworld"))
 	msg, err := allowed.ReadMessage()
 	if err != nil {
 		t.Fatalf("exact-limit event should pass: %v", err)
@@ -90,7 +90,7 @@ func TestSSEReader_CumulativeDataTooLarge(t *testing.T) {
 		t.Fatalf("msg = %q, want %q", string(msg), "hello\nworld")
 	}
 
-	blocked := newCappedReader("data: hello\ndata: world\n\n", len("hello\nworld")-1)
+	blocked := newCappedSSEReader(t, "data: hello\ndata: world\n\n", len("hello\nworld")-1)
 	_, err = blocked.ReadMessage()
 	if err == nil {
 		t.Fatal("expected cumulative event-size error")
@@ -101,14 +101,7 @@ func TestSSEReader_CumulativeDataTooLarge(t *testing.T) {
 }
 
 func TestSSEReader_CumulativeEmptyDataTooLarge(t *testing.T) {
-	newCappedReader := func(input string, maxEventBytes int) *SSEReader {
-		t.Helper()
-		s := bufio.NewScanner(strings.NewReader(input))
-		s.Buffer(make([]byte, 0, 64), MaxLineSize)
-		return &SSEReader{scanner: s, maxEventBytes: maxEventBytes}
-	}
-
-	allowed := newCappedReader("data:\ndata:\ndata:\n\n", len("\n\n"))
+	allowed := newCappedSSEReader(t, "data:\ndata:\ndata:\n\n", len("\n\n"))
 	msg, err := allowed.ReadMessage()
 	if err != nil {
 		t.Fatalf("exact-limit empty-data event should pass: %v", err)
@@ -117,7 +110,7 @@ func TestSSEReader_CumulativeEmptyDataTooLarge(t *testing.T) {
 		t.Fatalf("msg = %q, want %q", string(msg), "\n\n")
 	}
 
-	blocked := newCappedReader("data:\ndata:\ndata:\n\n", len("\n\n")-1)
+	blocked := newCappedSSEReader(t, "data:\ndata:\ndata:\n\n", len("\n\n")-1)
 	_, err = blocked.ReadMessage()
 	if err == nil {
 		t.Fatal("expected cumulative event-size error")

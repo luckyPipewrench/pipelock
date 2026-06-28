@@ -10243,6 +10243,24 @@ func TestLoad_MCPBinaryIntegrityDefaults(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
+	if cfg.MCPBinaryIntegrity.Action != ActionBlock {
+		t.Errorf("Action = %q, want %q", cfg.MCPBinaryIntegrity.Action, ActionBlock)
+	}
+}
+
+func TestLoad_MCPBinaryIntegrityExplicitWarnPreserved(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "integrity.yaml")
+	content := "mode: balanced\nmcp_binary_integrity:\n  enabled: true\n  manifest_path: /tmp/manifest.json\n  action: warn\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
 	if cfg.MCPBinaryIntegrity.Action != ActionWarn {
 		t.Errorf("Action = %q, want %q", cfg.MCPBinaryIntegrity.Action, ActionWarn)
 	}

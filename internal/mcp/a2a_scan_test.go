@@ -385,6 +385,35 @@ func TestScanA2AStream_InjectionTerminates(t *testing.T) {
 	}
 }
 
+func TestScanA2AStream_TaskUpdateSplitDLPTerminates(t *testing.T) {
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	part1, part2 := key[:10], key[10:]
+	events := strings.Join([]string{
+		`event: task-update`,
+		`data: {"status":{"message":{"parts":[{"text":"` + part1 + `"}]}}}`,
+		``,
+		`event: task-update`,
+		`data: {"status":{"message":{"parts":[{"text":"` + part2 + `"}]}}}`,
+		``,
+		``,
+	}, "\n")
+	r := strings.NewReader(events)
+	var buf bytes.Buffer
+	err := ScanA2AStream(context.Background(), r, &buf, nil, testA2AScanner(t), enabledA2ACfg())
+	if !errors.Is(err, ErrA2AStreamFinding) {
+		t.Fatalf("expected ErrA2AStreamFinding for split task-update DLP, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "cross-event dlp") {
+		t.Fatalf("expected cross-event DLP reason, got %v", err)
+	}
+	if !strings.Contains(buf.String(), part1) {
+		t.Fatalf("first clean fragment should be forwarded, got %q", buf.String())
+	}
+	if strings.Contains(buf.String(), part2) {
+		t.Fatalf("completing fragment must not be forwarded, got %q", buf.String())
+	}
+}
+
 func TestScanA2AStream_Disabled(t *testing.T) {
 	cfg := enabledA2ACfg()
 	cfg.Enabled = false

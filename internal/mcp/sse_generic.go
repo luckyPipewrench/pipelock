@@ -199,7 +199,7 @@ func ScanGenericSSEStreamWithOptions(
 			clearInjectionTailAfterCurrent := false
 			skipTailInjection := false
 			skipTailDLP := false
-			injectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, text), opts.Target, opts.Suppress)
+			injectResult := sc.ScanResponseWithSuppress(ctx, text, opts.Target, opts.Suppress)
 			if !injectResult.Clean {
 				findingErr := fmt.Errorf("%w: injection: %s",
 					ErrSSEStreamFinding, sseInjectionNames(injectResult.Matches))
@@ -240,7 +240,7 @@ func ScanGenericSSEStreamWithOptions(
 			resetInjectionTail := false
 			if !skipTailInjection && injectionTail != "" {
 				combined := injectionTail + " " + string(event)
-				tailInjectResult := keepUnsuppressedResponse(sc.ScanResponse(ctx, combined), opts.Target, opts.Suppress)
+				tailInjectResult := sc.ScanResponseWithSuppress(ctx, combined, opts.Target, opts.Suppress)
 				if !tailInjectResult.Clean {
 					findingErr := fmt.Errorf("%w: cross-event injection: %s",
 						ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
@@ -347,27 +347,7 @@ func passthroughSSE(ctx context.Context, body io.Reader, w io.Writer, flusher ht
 	}
 }
 
-// keepUnsuppressedResponse removes suppressed prompt-injection matches and
-// recomputes Clean. Suppression lives here, applied to every match a pass
-// returns, so a configured suppress rule cannot mask a co-occurring
-// unsuppressed match (the post-filter masking trap). A no-op when the result
-// is already clean or no suppress rules are configured.
-func keepUnsuppressedResponse(res scanner.ResponseScanResult, target string, suppress []config.SuppressEntry) scanner.ResponseScanResult {
-	if res.Clean || len(suppress) == 0 {
-		return res
-	}
-	var kept []scanner.ResponseMatch
-	for _, m := range res.Matches {
-		if !config.IsSuppressed(m.PatternName, target, suppress) {
-			kept = append(kept, m)
-		}
-	}
-	res.Matches = kept
-	res.Clean = len(kept) == 0
-	return res
-}
-
-// keepUnsuppressedDLP is keepUnsuppressedResponse for DLP results.
+// keepUnsuppressedDLP removes suppressed DLP matches and recomputes Clean.
 func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []config.SuppressEntry) scanner.TextDLPResult {
 	if res.Clean || len(suppress) == 0 {
 		return res

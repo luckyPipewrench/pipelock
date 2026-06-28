@@ -216,6 +216,10 @@ const (
 	// Re-bumped for removing Slack/Discord/Telegram from generated default
 	// api_allowlist. Messaging platforms are common exfiltration channels and
 	// should be explicit operator choices, not out-of-box policy.
+	// Re-bumped for MCP binary-integrity fail-closed defaults:
+	// enabled mcp_binary_integrity with no explicit action now defaults to
+	// block, so missing manifests and hash failures stop MCP subprocess spawn
+	// unless an operator deliberately sets action: warn.
 	// Re-bumped for the dotted-token DLP false-positive fix: the "Discord Bot
 	// Token", "SendGrid API Key", and "JWT Token" default patterns now pin
 	// their structural prefix anchors case-sensitively ((?-i:[MN]), (?-i:SG.),
@@ -227,7 +231,7 @@ const (
 	// JSON-object encodings (`eyA`, `ew[o/k/0]`, `e30`, `e30=`), so compact
 	// JWTs with whitespace or empty claims are not dropped. See
 	// TestTextDLP_DottedTokenPatterns.
-	goldenHashDefaults = "202ed8105c8c7b9c415bb5890b359313f5cc8395550d5bd22cba88662fa1e2be"
+	goldenHashDefaults = "eccdfd0b83416de46dd9247c7a5986558834e2f9be5e21ae0fda9c280c6bc8bc"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

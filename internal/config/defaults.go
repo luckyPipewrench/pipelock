@@ -597,7 +597,7 @@ func Defaults() *Config {
 			MaxRawSize:                1 << 20, // 1MB encoded
 		},
 		MCPBinaryIntegrity: MCPBinaryIntegrity{
-			Action: ActionWarn, // default action when hash verification fails
+			Action: ActionBlock, // default action when hash verification fails
 		},
 		FlightRecorder: FlightRecorder{
 			// Enabled by default so receipts ("verify the boundary") are on out

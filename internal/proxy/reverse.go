@@ -1444,21 +1444,8 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 
 	// Scan the response text for injection patterns.
 	text := string(body)
-	result := sc.ScanResponse(resp.Request.Context(), text)
-
-	// Filter out suppressed findings (parity with fetch proxy).
-	if !result.Clean && len(cfg.Suppress) > 0 {
-		var kept []scanner.ResponseMatch
-		for _, m := range result.Matches {
-			if !config.IsSuppressed(m.PatternName, resp.Request.URL.String(), cfg.Suppress) {
-				kept = append(kept, m)
-			} else {
-				rp.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportReverse)
-			}
-		}
-		result.Matches = kept
-		result.Clean = len(kept) == 0
-	}
+	result := sc.ScanResponseWithSuppress(resp.Request.Context(), text, resp.Request.URL.String(), cfg.Suppress)
+	recordSuppressedResponseScanExempts(rp.metrics, result.SuppressedMatches, TransportReverse)
 
 	// Capture observer: record reverse proxy response scan verdict for policy replay.
 	// Runs after suppression so the recorded action matches runtime.

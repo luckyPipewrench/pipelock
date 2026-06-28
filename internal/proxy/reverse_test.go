@@ -1838,6 +1838,8 @@ func TestReverseProxy_SuppressedInjectionPassesThrough(t *testing.T) {
 	cfg.Suppress = []config.SuppressEntry{
 		{Rule: "Prompt Injection", Path: "*", Reason: "test suppression"},
 		{Rule: "System Prompt Disclosure", Path: "*", Reason: "test suppression"},
+		{Rule: "Cross-Lingual Instruction Override", Path: "*", Reason: "test suppression"},
+		{Rule: "Cross-Lingual System Prompt Disclosure", Path: "*", Reason: "test suppression"},
 	}
 
 	upstream := func(w http.ResponseWriter, _ *http.Request) {

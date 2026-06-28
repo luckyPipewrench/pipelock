@@ -122,24 +122,41 @@ func (tb *ToolBaseline) ShouldSkip(name string) bool {
 // Returns (driftDetected, previousHash). On first insertion returns (false, "").
 // New tools are silently dropped when the baseline exceeds maxBaselineTools.
 func (tb *ToolBaseline) CheckAndUpdate(name, hash string) (bool, string) {
+	drifted, prev, _ := tb.CheckAndUpdatePromote(name, hash, true, true)
+	return drifted, prev
+}
+
+// CheckAndUpdatePromote stores a tool's hash and reports whether it changed.
+// When promoteNew is false, first-seen hashes are not stored. When
+// promoteChanged is false, changed hashes are reported but not stored.
+// Unchanged tools always match the existing baseline.
+// The promoted return value reports whether callers should update companion
+// baseline state such as descriptions and parameter names.
+func (tb *ToolBaseline) CheckAndUpdatePromote(name, hash string, promoteNew, promoteChanged bool) (drifted bool, previousHash string, promoted bool) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
 	prev, exists := tb.hashes[name]
 
 	if !exists && len(tb.hashes) >= maxBaselineTools {
-		return false, ""
+		return false, "", false
 	}
-
-	tb.hashes[name] = hash
 
 	if !exists {
-		return false, ""
+		if !promoteNew {
+			return false, "", false
+		}
+		tb.hashes[name] = hash
+		return false, "", true
 	}
 	if prev != hash {
-		return true, prev
+		if promoteChanged {
+			tb.hashes[name] = hash
+			return true, prev, true
+		}
+		return true, prev, false
 	}
-	return false, ""
+	return false, "", true
 }
 
 // StoreDesc saves a tool's description text for later diff generation.
@@ -1023,7 +1040,9 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 		// CPU exhaustion from malicious servers sending unlimited unique names.
 		if cfg.DetectDrift && cfg.Baseline != nil && !cfg.Baseline.ShouldSkip(tool.Name) {
 			hash := hashTool(tool)
-			drifted, prevHash := cfg.Baseline.CheckAndUpdate(tool.Name, hash)
+			promoteNew := cfg.Action != "block" || !hasFinding
+			promoteChanged := cfg.Action != "block"
+			drifted, prevHash, promoted := cfg.Baseline.CheckAndUpdatePromote(tool.Name, hash, promoteNew, promoteChanged)
 
 			if drifted {
 				match.DriftDetected = true
@@ -1032,11 +1051,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 				match.DriftDetail = cfg.Baseline.DiffSummary(tool.Name, tool.Description, paramNames)
 				hasFinding = true
 			}
-			// Store the actual tool description (not the full scan text which
-			// includes param names) so DiffSummary reports description changes
-			// accurately without false "description grew" when only params change.
-			cfg.Baseline.StoreDesc(tool.Name, tool.Description)
-			cfg.Baseline.StoreParams(tool.Name, paramNames)
+			if promoted {
+				// Store the actual tool description (not the full scan text which
+				// includes param names) so DiffSummary reports description changes
+				// accurately without false "description grew" when only params change.
+				cfg.Baseline.StoreDesc(tool.Name, tool.Description)
+				cfg.Baseline.StoreParams(tool.Name, paramNames)
+			}
 		}
 
 		if hasFinding {

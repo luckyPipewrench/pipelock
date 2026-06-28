@@ -337,8 +337,12 @@ func TestVerifyToolsList_FullToolObjectSigned(t *testing.T) {
 
 		var meta map[string]json.RawMessage
 		readFirstToolMeta(t, embedded, &meta)
-		if _, ok := meta["openai/outputTemplate"]; !ok {
-			t.Fatal("expected existing _meta sibling key to be preserved")
+		var outputTemplate string
+		if err := json.Unmarshal(meta["openai/outputTemplate"], &outputTemplate); err != nil {
+			t.Fatalf("parse preserved _meta sibling: %v", err)
+		}
+		if outputTemplate != "ui://trusted/template.html" {
+			t.Fatalf("preserved _meta sibling=%q, want %q", outputTemplate, "ui://trusted/template.html")
 		}
 		if _, ok := meta[metaKey]; !ok {
 			t.Fatal("expected provenance _meta key to be injected")

@@ -731,16 +731,22 @@ func TestIndependent_DirModeRejectsMalformedSessionFile(t *testing.T) {
 		t.Fatalf("write malformed evidence: %v", err)
 	}
 
-	_, stderr, code := runRoot(t, "independent", filepath.Dir(sessionPath),
-		"--dir",
-		"--session", "proxy",
-		"--bundle", bundle,
-		"--key", fix.keyHex,
-		"--local-log", logPath,
-		"--log-id", "verifier-test-log",
-	)
-	if code == cliutil.ExitOK {
-		t.Fatalf("expected failure, stderr=%q", stderr)
+	var stdout, stderr bytes.Buffer
+	err := runIndependent(&stdout, &stderr, filepath.Dir(sessionPath), independentOptions{
+		bundlePath: bundle,
+		signerKeys: []string{
+			fix.keyHex,
+		},
+		logPath:   logPath,
+		logID:     "verifier-test-log",
+		sessionID: "proxy",
+		asDir:     true,
+	})
+	if err == nil {
+		t.Fatalf("expected failure, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(err.Error(), "invalid character") {
+		t.Fatalf("err = %v, want JSON decode failure", err)
 	}
 }
 

@@ -43,7 +43,7 @@ func (l LocalLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	}
 	unlock, err := acquireLocalLogLock(l.Path)
 	if err != nil {
-		return Proof{}, err
+		return Proof{}, fmt.Errorf("acquire local anchor log lock: %w", err)
 	}
 	defer unlock()
 

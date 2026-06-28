@@ -135,3 +135,23 @@ func TestReceiptsCmdRejectsBlankPinnedKey(t *testing.T) {
 		})
 	}
 }
+
+func TestReceiptsCmdReturnsFallbackExtractionError(t *testing.T) {
+	_, keyHex := cliReceiptJSONL(t)
+	missingPath := filepath.Join(t.TempDir(), "missing.jsonl")
+	cmd := receiptsCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		missingPath,
+		"--key", keyHex,
+		"--local-log", filepath.Join(t.TempDir(), "anchor.jsonl"),
+		"--out", filepath.Join(t.TempDir(), "bundle.json"),
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute err = nil, want missing evidence error")
+	}
+	if !strings.Contains(err.Error(), "reading raw receipts") {
+		t.Fatalf("Execute err = %v, want fallback raw-receipt error", err)
+	}
+}

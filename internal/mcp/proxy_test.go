@@ -1189,6 +1189,7 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving sh binary: %v", err)
 	}
+	spawnCommand := []string{"sh", "-c", `printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"spawned":true}}'`}
 
 	// Helper: write a manifest file and return its path.
 	writeManifest := func(t *testing.T, entries map[string]string) string {
@@ -1212,6 +1213,7 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 		wantErr     bool
 		wantLog     string // substring expected in log output
 		wantNoSpawn bool
+		wantOutput  string
 	}{
 		{
 			name: "disabled_skips_check",
@@ -1240,7 +1242,7 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionBlock,
 			},
-			command:     []string{"sh", "-c", "printf spawned"},
+			command:     spawnCommand,
 			entries:     map[string]string{shPath: "deadbeef"},
 			wantErr:     true,
 			wantNoSpawn: true,
@@ -1251,9 +1253,11 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionWarn,
 			},
-			entries: map[string]string{truePath: "deadbeef"},
-			wantErr: false,
-			wantLog: "binary integrity warning",
+			command:    spawnCommand,
+			entries:    map[string]string{shPath: "deadbeef"},
+			wantErr:    false,
+			wantLog:    "binary integrity warning",
+			wantOutput: "spawned",
 		},
 		{
 			name: "unknown_binary_blocks",
@@ -1261,7 +1265,7 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionBlock,
 			},
-			command:     []string{"sh", "-c", "printf spawned"},
+			command:     spawnCommand,
 			entries:     map[string]string{"/some/other/binary": "abc123"},
 			wantErr:     true,
 			wantNoSpawn: true,
@@ -1272,9 +1276,11 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				Enabled: true,
 				Action:  config.ActionWarn,
 			},
-			entries: map[string]string{"/some/other/binary": "abc123"},
-			wantErr: false,
-			wantLog: "binary integrity warning",
+			command:    spawnCommand,
+			entries:    map[string]string{"/some/other/binary": "abc123"},
+			wantErr:    false,
+			wantLog:    "binary integrity warning",
+			wantOutput: "spawned",
 		},
 		{
 			name: "missing_manifest_blocks",
@@ -1283,7 +1289,7 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				ManifestPath: "/nonexistent/manifest.json",
 				Action:       config.ActionBlock,
 			},
-			command:     []string{"sh", "-c", "printf spawned"},
+			command:     spawnCommand,
 			wantErr:     true,
 			wantNoSpawn: true,
 		},
@@ -1294,8 +1300,10 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 				ManifestPath: "/nonexistent/manifest.json",
 				Action:       config.ActionWarn,
 			},
-			wantErr: false,
-			wantLog: "binary integrity warning",
+			command:    spawnCommand,
+			wantErr:    false,
+			wantLog:    "binary integrity warning",
+			wantOutput: "spawned",
 		},
 	}
 
@@ -1338,6 +1346,9 @@ func TestRunProxy_BinaryIntegrity(t *testing.T) {
 			}
 			if tt.wantNoSpawn && out.String() != "" {
 				t.Fatalf("subprocess spawned despite block action; output: %q", out.String())
+			}
+			if tt.wantOutput != "" && !strings.Contains(out.String(), tt.wantOutput) {
+				t.Fatalf("expected subprocess output to contain %q, got %q", tt.wantOutput, out.String())
 			}
 		})
 	}

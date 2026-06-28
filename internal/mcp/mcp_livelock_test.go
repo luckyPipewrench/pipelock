@@ -266,6 +266,30 @@ func TestMCPContractBlockReasonHelpers(t *testing.T) {
 	if got := mcpScannerBlockReason(InputVerdict{}, policy.Verdict{}, false); got != blockreason.ParseError {
 		t.Fatalf("default scanner reason = %s", got)
 	}
+	for _, tt := range []struct {
+		scanner string
+		want    blockreason.Reason
+	}{
+		{scanner.ScannerScheme, blockreason.SchemeBlocked},
+		{scanner.ScannerBlocklist, blockreason.DomainBlocklist},
+		{scanner.ScannerSSRFMetadata, blockreason.SSRFMetadata},
+		{scanner.ScannerSSRF, blockreason.SSRFPrivateIP},
+		{scanner.ScannerCoreSSRF, blockreason.SSRFPrivateIP},
+		{scanner.ScannerEntropy, blockreason.PathEntropy},
+		{scanner.ScannerSubdomainEntropy, blockreason.SubdomainEntropy},
+		{scanner.ScannerLength, blockreason.URLLength},
+		{scanner.ScannerRateLimit, blockreason.RateLimit},
+		{scanner.ScannerDataBudget, blockreason.DataBudget},
+		{scanner.ScannerDLP, blockreason.DLPMatch},
+		{scanner.ScannerCoreDLP, blockreason.DLPMatch},
+		{"unknown", blockreason.ParseError},
+	} {
+		t.Run("url_reason_"+tt.scanner, func(t *testing.T) {
+			if got := mcpURLBlockReason(tt.scanner); got != tt.want {
+				t.Fatalf("mcpURLBlockReason(%q) = %s, want %s", tt.scanner, got, tt.want)
+			}
+		})
+	}
 	if got := mcpContractBlockReason(mcpContractGateOutput{WinningSource: contractruntime.WinningSourceKillSwitch}); got != blockreason.KillSwitchActive {
 		t.Fatalf("kill switch contract reason = %s", got)
 	}
@@ -295,6 +319,21 @@ func TestMCPContractBlockReasonHelpers(t *testing.T) {
 	})
 	if enriched.ContractRuleID != "r-allow" || enriched.ContractGeneration != 7 || enriched.ContractWinningSource != contractruntime.WinningSourceContract {
 		t.Fatalf("enriched receipt = %+v", enriched)
+	}
+}
+
+func TestContentScanAttribution_URLFinding(t *testing.T) {
+	layer, pattern, severity := contentScanAttribution(InputVerdict{
+		URLFindings: []scanner.Result{{Scanner: scanner.ScannerBlocklist}},
+	})
+	if layer != mcpReceiptLayerInput {
+		t.Fatalf("layer = %q, want %q", layer, mcpReceiptLayerInput)
+	}
+	if pattern != "url:"+scanner.ScannerBlocklist {
+		t.Fatalf("pattern = %q, want url:%s", pattern, scanner.ScannerBlocklist)
+	}
+	if severity != config.SeverityHigh {
+		t.Fatalf("severity = %q, want %q", severity, config.SeverityHigh)
 	}
 }
 

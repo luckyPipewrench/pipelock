@@ -2757,6 +2757,10 @@ func TestScanRequest_ResourcesReadMalformedParamsFailClosed(t *testing.T) {
 			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{}}`,
 		},
 		{
+			name: "null uri",
+			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":null}}`,
+		},
+		{
 			name: "empty uri",
 			line: `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"   "}}`,
 		},

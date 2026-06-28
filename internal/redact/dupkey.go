@@ -45,13 +45,37 @@ func NoDuplicateJSONKeys(body []byte) error {
 	// UseNumber for parity with the main decode path; it affects how
 	// numeric tokens are represented but is irrelevant for key tracking.
 	dec.UseNumber()
-	return walkForDuplicates(dec)
+	if err := walkForDuplicates(dec, 0); err != nil {
+		return err
+	}
+	if tok, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return newBlock(ReasonBodyUnparseable, 0, err.Error())
+		}
+		return newBlock(ReasonBodyUnparseable, 0, fmt.Sprintf("unexpected trailing JSON token %v", tok))
+	}
+	return nil
 }
+
+// maxDuplicateKeyScanDepth bounds the recursion in walkForDuplicates. The
+// token-streaming walk recurses one Go stack frame per JSON nesting level and,
+// unlike the value decoder, encoding/json's Token() API enforces no depth
+// limit - so a maliciously deep array (well within the 10MB line cap) would
+// otherwise exhaust the goroutine stack and crash the process. The cap matches
+// encoding/json's own maxNestingDepth, so any body that survives this walk is
+// also accepted by the json.Unmarshal that immediately follows every caller:
+// no new false positives, and anything deeper fails closed identically on both
+// (here as ReasonBodyUnparseable, there as an invalid-JSON parse error).
+const maxDuplicateKeyScanDepth = 10000
 
 // walkForDuplicates consumes exactly one JSON value from dec and recurses
 // into any contained objects or arrays. The caller supplies a decoder
-// that has not yet emitted the outer value's opening token.
-func walkForDuplicates(dec *json.Decoder) error {
+// that has not yet emitted the outer value's opening token. depth is the
+// current nesting level, bounded by maxDuplicateKeyScanDepth.
+func walkForDuplicates(dec *json.Decoder, depth int) error {
+	if depth > maxDuplicateKeyScanDepth {
+		return newBlock(ReasonBodyUnparseable, 0, "JSON nesting exceeds maximum scan depth")
+	}
 	tok, err := dec.Token()
 	if err == io.EOF {
 		return nil
@@ -82,7 +106,7 @@ func walkForDuplicates(dec *json.Decoder) error {
 				return newBlock(ReasonDuplicateKey, 0, fmt.Sprintf("duplicate object key %q", key))
 			}
 			seen[key] = struct{}{}
-			if err := walkForDuplicates(dec); err != nil {
+			if err := walkForDuplicates(dec, depth+1); err != nil {
 				return err
 			}
 		}
@@ -92,7 +116,7 @@ func walkForDuplicates(dec *json.Decoder) error {
 		}
 	case '[':
 		for dec.More() {
-			if err := walkForDuplicates(dec); err != nil {
+			if err := walkForDuplicates(dec, depth+1); err != nil {
 				return err
 			}
 		}

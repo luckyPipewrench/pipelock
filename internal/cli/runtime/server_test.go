@@ -1042,6 +1042,27 @@ func TestServer_Reload_RequireReceiptsAllowsNonDowngradeReload(t *testing.T) {
 	}
 }
 
+func TestServer_Reload_RequireReceiptsAllowsRestartOnlyWarning(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldLive.Mode = config.ModeBalanced
+	oldLive.FlightRecorder.RequireReceipts = true
+
+	restartOnly := oldLive.Clone()
+	restartOnly.HealthWatchdog.IntervalSeconds = oldLive.HealthWatchdog.IntervalSeconds + 1
+
+	if err := s.Reload(restartOnly); err != nil {
+		t.Fatalf("require_receipts restart-only warning reload should not error, got: %v", err)
+	}
+	if !buf.contains("health_watchdog") {
+		t.Fatalf("stderr missing health_watchdog restart-only warning:\n%s", buf.String())
+	}
+	live := s.proxy.CurrentConfig()
+	if !live.FlightRecorder.RequireReceipts {
+		t.Fatal("require_receipts was not preserved")
+	}
+}
+
 func TestServer_Reload_MCPBinaryRequireSignatureRejectsDowngrade(t *testing.T) {
 	s, buf := newTestServer(t, nil)
 	oldLive := s.proxy.CurrentConfig()
@@ -1110,6 +1131,10 @@ func TestServer_Reload_MediationVerifyInboundRejectsDowngrade(t *testing.T) {
 
 func TestReloadDowngradeRejectReason(t *testing.T) {
 	downgrade := []config.ReloadWarning{{Field: "enforce", Message: "enforcement disabled"}}
+	restartOnly := []config.ReloadWarning{{
+		Field:   "health_watchdog",
+		Message: "health_watchdog config changes require restart — ignored on reload",
+	}}
 
 	for _, tt := range []struct {
 		name   string
@@ -1155,6 +1180,15 @@ func TestReloadDowngradeRejectReason(t *testing.T) {
 			wantIn: "flight_recorder.require_receipts",
 		},
 		{
+			name: "required receipts allows restart-only warning",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.FlightRecorder.RequireReceipts = true
+				return c
+			},
+			warns: restartOnly,
+		},
+		{
 			name: "license require-intermediate rejects",
 			cfg: func() *config.Config {
 				c := config.Defaults()
@@ -1185,6 +1219,16 @@ func TestReloadDowngradeRejectReason(t *testing.T) {
 			},
 			warns:  downgrade,
 			wantIn: "mcp_binary_integrity.require_signature",
+		},
+		{
+			name: "MCP binary signature allows restart-only warning",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.RequireSignature = true
+				return c
+			},
+			warns: restartOnly,
 		},
 		{
 			name: "disabled MCP binary integrity stale require flag does not reject",

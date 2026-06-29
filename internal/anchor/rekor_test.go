@@ -4,14 +4,25 @@
 package anchor
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
+)
+
+const (
+	fakeRekorIntegratedTime int64 = 1780000000
+	fakeRekorRootHash             = "fake-root"
+	fakeRekorSET                  = "fake-set"
 )
 
 func TestRekorLogSubmitRecordsSubmissionProof(t *testing.T) {
@@ -29,8 +40,20 @@ func TestRekorLogSubmitRecordsSubmissionProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	if proof.Backend != RekorBackend || proof.Rekor == nil || proof.Rekor.Body == "" || proof.Rekor.Signature == "" {
+	if proof.Backend != RekorBackend || proof.Rekor == nil {
 		t.Fatalf("incomplete proof: %+v", proof)
+	}
+	if proof.LogID != "fake-rekor-log" || proof.LogIndex != 7 || proof.LogRootHash != fakeRekorRootHash || proof.EntryHash == "" {
+		t.Fatalf("unexpected Rekor log metadata: %+v", proof)
+	}
+	if proof.Rekor.URL != server.URL ||
+		proof.Rekor.UUID != "fake-uuid" ||
+		proof.Rekor.Body == "" ||
+		proof.Rekor.PublicKey == "" ||
+		proof.Rekor.Signature == "" ||
+		proof.Rekor.IntegratedTime != fakeRekorIntegratedTime ||
+		proof.Rekor.SignedEntryTimestamp != fakeRekorSET {
+		t.Fatalf("unexpected Rekor proof metadata: %+v", proof.Rekor)
 	}
 	if err := validateRekorSubmissionRecord(proof, checkpoint); err != nil {
 		t.Fatalf("validateRekorSubmissionRecord: %v", err)
@@ -88,6 +111,67 @@ func TestRekorSubmissionRecordRejectsTampering(t *testing.T) {
 	}
 }
 
+func TestRekorSubmissionRecordRequiresMetadata(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	proof, err := (RekorLog{URL: fakeRekorServer(t).URL, Signer: priv}).Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		edit func(*Proof)
+		want string
+	}{
+		{name: "url", edit: func(p *Proof) { p.Rekor.URL = "" }, want: "URL"},
+		{name: "uuid", edit: func(p *Proof) { p.Rekor.UUID = "" }, want: "UUID"},
+		{name: "log id", edit: func(p *Proof) { p.LogID = "" }, want: "log_id"},
+		{name: "entry hash", edit: func(p *Proof) { p.EntryHash = "" }, want: "entry_hash"},
+		{name: "root hash", edit: func(p *Proof) { p.LogRootHash = "" }, want: "log_root_hash"},
+		{name: "integrated time", edit: func(p *Proof) { p.Rekor.IntegratedTime = 0 }, want: "integrated_time"},
+		{name: "set", edit: func(p *Proof) { p.Rekor.SignedEntryTimestamp = "" }, want: "signed_entry_timestamp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := proof
+			candidate.Rekor = cloneRekorProof(proof.Rekor)
+			tc.edit(&candidate)
+			if err := validateRekorSubmissionRecord(candidate, checkpoint); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateRekorSubmissionRecord err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadRekorPrivateKey(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "rekor.key")
+	if err := domsigning.SavePrivateKey(priv, path); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	loaded, err := LoadRekorPrivateKey(path)
+	if err != nil {
+		t.Fatalf("LoadRekorPrivateKey: %v", err)
+	}
+	if !loaded.Equal(priv) {
+		t.Fatal("loaded Rekor key does not match saved key")
+	}
+	if _, err := LoadRekorPrivateKey(filepath.Join(t.TempDir(), "missing.key")); err == nil || !strings.Contains(err.Error(), "load rekor signing key") {
+		t.Fatalf("LoadRekorPrivateKey missing err = %v, want wrapped load error", err)
+	}
+}
+
 func TestRekorLogVerifyRejectsForgedSelfConsistentProof(t *testing.T) {
 	receipts, keyHex := testReceiptChain(t, 1)
 	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
@@ -130,13 +214,15 @@ func TestRekorLogVerifyRejectsForgedSelfConsistentProof(t *testing.T) {
 		LogID:       "TOTALLY-MADE-UP",
 		LogIndex:    999999,
 		EntryHash:   sha256Hex([]byte(encodedBody)),
-		LogRootHash: "fabricated",
+		LogRootHash: "fabricated-root",
 		Rekor: &RekorProof{
-			URL:       "https://rekor.example.invalid",
-			UUID:      "fake-uuid",
-			Body:      encodedBody,
-			PublicKey: publicKey,
-			Signature: signature,
+			URL:                  "https://rekor.example.invalid",
+			UUID:                 "fake-uuid",
+			Body:                 encodedBody,
+			PublicKey:            publicKey,
+			Signature:            signature,
+			IntegratedTime:       fakeRekorIntegratedTime,
+			SignedEntryTimestamp: fakeRekorSET,
 		},
 	}
 	if err := validateRekorSubmissionRecord(proof, checkpoint); err != nil {
@@ -145,6 +231,98 @@ func TestRekorLogVerifyRejectsForgedSelfConsistentProof(t *testing.T) {
 	report := VerifyBundle(NewBundle(checkpoint, proof), receipts, []string{keyHex}, RekorLog{})
 	if report.Valid || !strings.Contains(report.Error, "trusted Rekor SET") {
 		t.Fatalf("forged Rekor proof report = %+v, want fail-closed SET verification error", report)
+	}
+}
+
+func TestRekorLogSubmitRejectsMalformedResponses(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		want    string
+	}{
+		{
+			name: "status",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "nope", http.StatusBadGateway)
+			},
+			want: "status 502",
+		},
+		{
+			name: "missing uuid",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				writeDirectRekorEntry(t, w, r, "fake-rekor-log", "body")
+			},
+			want: "UUID required",
+		},
+		{
+			name: "missing log id",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				writeMappedRekorEntry(t, w, r, "", "body", fakeRekorRootHash, fakeRekorSET, fakeRekorIntegratedTime)
+			},
+			want: "logID required",
+		},
+		{
+			name: "missing body",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				writeMappedRekorEntry(t, w, r, "fake-rekor-log", "", fakeRekorRootHash, fakeRekorSET, fakeRekorIntegratedTime)
+			},
+			want: "body required",
+		},
+		{
+			name: "missing set",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				writeMappedRekorEntry(t, w, r, "fake-rekor-log", "body", fakeRekorRootHash, "", fakeRekorIntegratedTime)
+			},
+			want: "signed_entry_timestamp",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(tc.handler)
+			t.Cleanup(server.Close)
+			_, err := (RekorLog{URL: server.URL, Signer: priv}).Submit(checkpoint)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Submit err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRekorLogSubmitRejectsRequestFailures(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if _, err := (RekorLog{URL: "://bad-url", Signer: priv}).Submit(checkpoint); err == nil || !strings.Contains(err.Error(), "parse rekor URL") {
+		t.Fatalf("Submit bad URL err = %v, want parse error", err)
+	}
+	listener, err := new(net.ListenConfig).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	url := "http://" + listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := (RekorLog{URL: url, Signer: priv}).Submit(checkpoint); err == nil || !strings.Contains(err.Error(), "submit rekor entry") {
+		t.Fatalf("Submit connection err = %v, want submit error", err)
+	}
+	if _, err := (RekorLog{URL: fakeRekorServer(t).URL}).Submit(checkpoint); err == nil || !strings.Contains(err.Error(), "signing key required") {
+		t.Fatalf("Submit missing signer err = %v, want signing key error", err)
 	}
 }
 
@@ -178,6 +356,20 @@ func TestDecodeRekorEntryAcceptsRealisticUnknownFields(t *testing.T) {
 	}
 }
 
+func TestDecodeRekorEntryRejectsMalformedResponses(t *testing.T) {
+	for name, data := range map[string]string{
+		"duplicate": `{"fake-uuid":{"logID":"a"},"fake-uuid":{"logID":"b"}}`,
+		"multiple":  `{"uuid-a":{"logID":"a"},"uuid-b":{"logID":"b"}}`,
+		"invalid":   `{not json`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := decodeRekorEntry([]byte(data)); err == nil {
+				t.Fatal("decodeRekorEntry err = nil, want failure")
+			}
+		})
+	}
+}
+
 func cloneRekorProof(in *RekorProof) *RekorProof {
 	if in == nil {
 		return nil
@@ -188,7 +380,7 @@ func cloneRekorProof(in *RekorProof) *RekorProof {
 
 func fakeRekorServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/log/entries" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -205,13 +397,66 @@ func fakeRekorServer(t *testing.T) *httptest.Server {
 		}
 		encodedBody := base64.StdEncoding.EncodeToString(raw)
 		entry := rekorEntry{
-			LogID:    "fake-rekor-log",
-			LogIndex: 7,
-			Body:     encodedBody,
-			Verification: rekorVerification{InclusionProof: rekorInclusionProof{
-				RootHash: sha256Hex([]byte(encodedBody)),
-			}},
+			LogID:          "fake-rekor-log",
+			LogIndex:       7,
+			IntegratedTime: fakeRekorIntegratedTime,
+			Body:           encodedBody,
+			Verification: rekorVerification{
+				SignedEntryTimestamp: fakeRekorSET,
+				InclusionProof: rekorInclusionProof{
+					RootHash: fakeRekorRootHash,
+				},
+			},
 		}
 		_ = json.NewEncoder(w).Encode(map[string]rekorEntry{"fake-uuid": entry})
 	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func writeDirectRekorEntry(t *testing.T, w http.ResponseWriter, r *http.Request, logID, body string) {
+	t.Helper()
+	if body == "body" {
+		body = encodedRekorRequestBody(t, r)
+	}
+	_ = json.NewEncoder(w).Encode(rekorEntry{
+		LogID:          logID,
+		LogIndex:       7,
+		IntegratedTime: fakeRekorIntegratedTime,
+		Body:           body,
+		Verification: rekorVerification{
+			SignedEntryTimestamp: fakeRekorSET,
+			InclusionProof:       rekorInclusionProof{RootHash: fakeRekorRootHash},
+		},
+	})
+}
+
+func writeMappedRekorEntry(t *testing.T, w http.ResponseWriter, r *http.Request, logID, body, rootHash, set string, integratedTime int64) {
+	t.Helper()
+	if body == "body" {
+		body = encodedRekorRequestBody(t, r)
+	}
+	_ = json.NewEncoder(w).Encode(map[string]rekorEntry{"fake-uuid": {
+		LogID:          logID,
+		LogIndex:       7,
+		IntegratedTime: integratedTime,
+		Body:           body,
+		Verification: rekorVerification{
+			SignedEntryTimestamp: set,
+			InclusionProof:       rekorInclusionProof{RootHash: rootHash},
+		},
+	}})
+}
+
+func encodedRekorRequestBody(t *testing.T, r *http.Request) string {
+	t.Helper()
+	var body rekorSubmitRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode request: %v", err)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("Marshal request: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
 }

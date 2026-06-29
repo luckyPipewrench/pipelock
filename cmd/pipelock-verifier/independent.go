@@ -75,9 +75,9 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
-	backend, err := independentBackend(bundle, opts)
+	backend, exitCode, err := independentBackend(bundle, opts)
 	if err != nil {
-		return cliutil.ExitCodeError(exitUsage, err)
+		return cliutil.ExitCodeError(exitCode, err)
 	}
 	report := anchor.VerifyBundle(bundle, receipts, keyHexes, backend)
 	emitIndependentReport(stdout, stderr, filepath.Clean(target), report, opts.jsonOutput)
@@ -87,20 +87,20 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 	return nil
 }
 
-func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.Backend, error) {
+func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.Backend, int, error) {
 	switch bundle.Backend {
 	case anchor.LocalBackend:
 		if strings.TrimSpace(opts.logPath) == "" {
-			return nil, fmt.Errorf("--local-log is required for local anchor verification")
+			return nil, exitUsage, fmt.Errorf("--local-log is required for local anchor verification")
 		}
 		return anchor.LocalLog{
 			Path:  opts.logPath,
 			LogID: opts.logID,
-		}, nil
+		}, cliutil.ExitOK, nil
 	case anchor.RekorBackend:
-		return anchor.RekorLog{}, nil
+		return anchor.RekorLog{}, cliutil.ExitOK, nil
 	default:
-		return nil, fmt.Errorf("unsupported anchor backend %q", bundle.Backend)
+		return nil, cliutil.ExitConfig, fmt.Errorf("unsupported anchor backend %q", bundle.Backend)
 	}
 }
 

@@ -29,6 +29,9 @@ const (
 	rekorSHA256Algorithm        = "sha256"
 )
 
+// RekorLog submits receipt-chain checkpoints to Rekor and stores the returned
+// submission metadata. Verify fails closed until trusted Rekor SET and
+// inclusion-proof verification is implemented.
 type RekorLog struct {
 	URL        string
 	HTTPClient *http.Client
@@ -191,8 +194,29 @@ func validateRekorSubmissionRecord(proof Proof, checkpoint Checkpoint) error {
 	if proof.Rekor == nil {
 		return errors.New("rekor proof required")
 	}
+	if strings.TrimSpace(proof.Rekor.URL) == "" {
+		return errors.New("rekor proof URL required")
+	}
+	if proof.Rekor.UUID == "" {
+		return errors.New("rekor proof UUID required")
+	}
+	if proof.LogID == "" {
+		return errors.New("rekor proof log_id required")
+	}
 	if proof.Rekor.Body == "" {
 		return errors.New("rekor proof body required")
+	}
+	if proof.EntryHash == "" {
+		return errors.New("rekor proof entry_hash required")
+	}
+	if proof.LogRootHash == "" {
+		return errors.New("rekor proof log_root_hash required")
+	}
+	if proof.Rekor.IntegratedTime <= 0 {
+		return errors.New("rekor proof integrated_time required")
+	}
+	if proof.Rekor.SignedEntryTimestamp == "" {
+		return errors.New("rekor proof signed_entry_timestamp required")
 	}
 	checkpointBytes, err := checkpointBytes(checkpoint)
 	if err != nil {
@@ -205,7 +229,7 @@ func validateRekorSubmissionRecord(proof Proof, checkpoint Checkpoint) error {
 	if err != nil {
 		return fmt.Errorf("decode rekor body: %w", err)
 	}
-	if proof.EntryHash != "" && proof.EntryHash != sha256Hex([]byte(proof.Rekor.Body)) {
+	if proof.EntryHash != sha256Hex([]byte(proof.Rekor.Body)) {
 		return errors.New("rekor proof entry_hash does not match encoded body")
 	}
 	var body rekorSubmitRequest
@@ -230,6 +254,8 @@ func validateRekorSubmissionRecord(proof Proof, checkpoint Checkpoint) error {
 	return nil
 }
 
+// LoadRekorPrivateKey loads the Ed25519 key used to sign Rekor submission
+// bodies before they are posted.
 func LoadRekorPrivateKey(path string) (ed25519.PrivateKey, error) {
 	key, err := domsigning.LoadPrivateKeyFile(path)
 	if err != nil {

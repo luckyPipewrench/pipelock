@@ -130,11 +130,13 @@ func TestReceiptsCmdWritesRekorAnchorBundle(t *testing.T) {
 		encodedBody := base64.StdEncoding.EncodeToString(raw)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"fake-uuid": map[string]any{
-				"logID":    "fake-rekor-log",
-				"logIndex": 3,
-				"body":     encodedBody,
+				"logID":          "fake-rekor-log",
+				"logIndex":       3,
+				"integratedTime": 1780000000,
+				"body":           encodedBody,
 				"verification": map[string]any{
-					"inclusionProof": map[string]any{"rootHash": "fake-root"},
+					"inclusionProof":       map[string]any{"rootHash": "fake-root"},
+					"signedEntryTimestamp": "fake-set",
 				},
 			},
 		})
@@ -159,8 +161,20 @@ func TestReceiptsCmdWritesRekorAnchorBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadBundle: %v", err)
 	}
-	if bundle.Backend != anchorpkg.RekorBackend || bundle.Proof.Rekor == nil || bundle.Proof.Rekor.Body == "" {
+	if bundle.Backend != anchorpkg.RekorBackend || bundle.Proof.Backend != anchorpkg.RekorBackend || bundle.Proof.Rekor == nil {
 		t.Fatalf("unexpected Rekor bundle: %+v", bundle)
+	}
+	if bundle.Proof.LogID != "fake-rekor-log" || bundle.Proof.LogIndex != 3 || bundle.Proof.LogRootHash != "fake-root" || bundle.Proof.EntryHash == "" {
+		t.Fatalf("unexpected Rekor log metadata: %+v", bundle.Proof)
+	}
+	if bundle.Proof.Rekor.UUID != "fake-uuid" ||
+		bundle.Proof.Rekor.URL != server.URL ||
+		bundle.Proof.Rekor.Body == "" ||
+		bundle.Proof.Rekor.PublicKey == "" ||
+		bundle.Proof.Rekor.Signature == "" ||
+		bundle.Proof.Rekor.IntegratedTime != 1780000000 ||
+		bundle.Proof.Rekor.SignedEntryTimestamp != "fake-set" {
+		t.Fatalf("unexpected Rekor proof metadata: %+v", bundle.Proof.Rekor)
 	}
 	if !strings.Contains(out.String(), "Backend:       rekor") {
 		t.Fatalf("output missing Rekor backend:\n%s", out.String())

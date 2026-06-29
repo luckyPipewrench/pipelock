@@ -644,11 +644,32 @@ func TestIndependent_RekorAnchorFailsClosedUntilTrustedLogVerification(t *testin
 		"--bundle", bundle,
 		"--key", fix.keyHex,
 	)
-	if code == cliutil.ExitOK {
-		t.Fatalf("Rekor independent verification succeeded without trusted log verification, stdout=%q stderr=%q", stdout, stderr)
+	if code != cliutil.ExitGeneral {
+		t.Fatalf("code=%d, want %d for Rekor fail-closed verification; stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 	}
 	if !strings.Contains(stderr, "trusted Rekor SET") {
 		t.Fatalf("stderr missing fail-closed Rekor verification error:\n%s", stderr)
+	}
+}
+
+func TestIndependent_RejectsUnsupportedBundleBackendAsConfig(t *testing.T) {
+	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
+	fix := newFixture(t, 1)
+	_, bundlePath, logPath := writeIndependentFixture(t, fix)
+	_ = logPath
+	bundle, err := anchorpkg.LoadBundle(bundlePath)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	bundle.Backend = "future"
+	bundle.Proof.Backend = "future"
+
+	_, code, err := independentBackend(bundle, independentOptions{})
+	if code != cliutil.ExitConfig {
+		t.Fatalf("code=%d, want %d for unsupported bundle backend", code, cliutil.ExitConfig)
+	}
+	if err == nil || !strings.Contains(err.Error(), `unsupported anchor backend "future"`) {
+		t.Fatalf("err = %v, want unsupported backend", err)
 	}
 }
 
@@ -837,11 +858,13 @@ func writeIndependentRekorFixture(t *testing.T, fix *fixture) (evidencePath, bun
 		body := base64.StdEncoding.EncodeToString(raw)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"fake-uuid": map[string]any{
-				"logID":    "fake-rekor-log",
-				"logIndex": 4,
-				"body":     body,
+				"logID":          "fake-rekor-log",
+				"logIndex":       4,
+				"integratedTime": 1780000000,
+				"body":           body,
 				"verification": map[string]any{
-					"inclusionProof": map[string]any{"rootHash": "fake-root"},
+					"inclusionProof":       map[string]any{"rootHash": "fake-root"},
+					"signedEntryTimestamp": "fake-set",
 				},
 			},
 		})

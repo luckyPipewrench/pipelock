@@ -6,7 +6,6 @@
 package playground
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -188,7 +187,7 @@ func loadLaunchManifest(cleanDir string) (LaunchManifest, error) {
 		return LaunchManifest{}, fmt.Errorf("read launch manifest: %w", err)
 	}
 	var lm LaunchManifest
-	if err := json.Unmarshal(data, &lm); err != nil {
+	if err := unmarshalStrictArtifact(launchManifestFile, data, &lm); err != nil {
 		return LaunchManifest{}, fmt.Errorf("parse launch manifest: %w", err)
 	}
 	return lm, nil

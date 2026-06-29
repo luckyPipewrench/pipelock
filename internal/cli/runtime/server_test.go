@@ -990,6 +990,282 @@ func TestServer_Reload_StrictAllowsApiTokenRotation(t *testing.T) {
 	}
 }
 
+func TestServer_Reload_RequireReceiptsRejectsSecurityDowngrade(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldLive.Mode = config.ModeBalanced
+	oldLive.FlightRecorder.RequireReceipts = true
+	oldLive.ResponseScanning.Enabled = true
+	oldLive.ResponseScanning.Action = config.ActionBlock
+
+	downgraded := oldLive.Clone()
+	downgraded.ResponseScanning.Action = config.ActionWarn
+
+	err := s.Reload(downgraded)
+	if err == nil {
+		t.Fatal("expected require_receipts mode to reject response action downgrade reload")
+	}
+	if !strings.Contains(err.Error(), "required security mode") ||
+		!strings.Contains(err.Error(), "flight_recorder.require_receipts") {
+		t.Fatalf("error = %q, want required receipt downgrade context", err.Error())
+	}
+	if !buf.contains("response_scanning.action") {
+		t.Fatalf("stderr missing downgrade warning:\n%s", buf.String())
+	}
+	live := s.proxy.CurrentConfig()
+	if live.ResponseScanning.Action != config.ActionBlock {
+		t.Fatalf("rejected reload changed response action to %q", live.ResponseScanning.Action)
+	}
+	if !live.FlightRecorder.RequireReceipts {
+		t.Fatal("rejected reload cleared require_receipts in live config")
+	}
+}
+
+func TestServer_Reload_RequireReceiptsAllowsNonDowngradeReload(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldLive.Mode = config.ModeBalanced
+	oldLive.FlightRecorder.RequireReceipts = true
+
+	rotated := oldLive.Clone()
+	rotated.KillSwitch.APIToken = "new-token"
+
+	if err := s.Reload(rotated); err != nil {
+		t.Fatalf("require_receipts non-downgrade reload should not error, got: %v", err)
+	}
+	live := s.proxy.CurrentConfig()
+	if live.KillSwitch.APIToken != "new-token" {
+		t.Fatalf("api token reload did not apply: got %q", live.KillSwitch.APIToken)
+	}
+	if !live.FlightRecorder.RequireReceipts {
+		t.Fatal("require_receipts was not preserved")
+	}
+}
+
+func TestServer_Reload_RequireReceiptsAllowsRestartOnlyWarning(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldLive.Mode = config.ModeBalanced
+	oldLive.FlightRecorder.RequireReceipts = true
+
+	restartOnly := oldLive.Clone()
+	restartOnly.HealthWatchdog.IntervalSeconds = oldLive.HealthWatchdog.IntervalSeconds + 1
+
+	if err := s.Reload(restartOnly); err != nil {
+		t.Fatalf("require_receipts restart-only warning reload should not error, got: %v", err)
+	}
+	if !buf.contains("health_watchdog") {
+		t.Fatalf("stderr missing health_watchdog restart-only warning:\n%s", buf.String())
+	}
+	live := s.proxy.CurrentConfig()
+	if !live.FlightRecorder.RequireReceipts {
+		t.Fatal("require_receipts was not preserved")
+	}
+}
+
+func TestServer_Reload_MCPBinaryRequireSignatureRejectsDowngrade(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldLive.Mode = config.ModeBalanced
+	oldLive.MCPBinaryIntegrity.Enabled = true
+	oldLive.MCPBinaryIntegrity.Action = config.ActionBlock
+	oldLive.MCPBinaryIntegrity.RequireSignature = true
+	oldLive.MCPBinaryIntegrity.ManifestPath = "/tmp/pipelock-test-manifest.json"
+	oldLive.MCPBinaryIntegrity.TrustedSigner = "release"
+
+	downgraded := oldLive.Clone()
+	downgraded.MCPBinaryIntegrity.RequireSignature = false
+
+	err := s.Reload(downgraded)
+	if err == nil {
+		t.Fatal("expected require_signature mode to reject MCP binary integrity downgrade reload")
+	}
+	if !strings.Contains(err.Error(), "required security mode") ||
+		!strings.Contains(err.Error(), "mcp_binary_integrity.require_signature") {
+		t.Fatalf("error = %q, want MCP binary required-signature downgrade context", err.Error())
+	}
+	if !buf.contains("mcp_binary_integrity.require_signature") {
+		t.Fatalf("stderr missing MCP binary signature downgrade warning:\n%s", buf.String())
+	}
+	live := s.proxy.CurrentConfig()
+	if !live.MCPBinaryIntegrity.RequireSignature {
+		t.Fatal("rejected reload cleared MCP binary signature requirement in live config")
+	}
+}
+
+func TestServer_Reload_MediationVerifyInboundRejectsDowngrade(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	pub, _, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	oldLive := s.proxy.CurrentConfig()
+	oldLive.Mode = config.ModeBalanced
+	oldLive.MediationEnvelope.VerifyInbound.Enabled = true
+	oldLive.MediationEnvelope.VerifyInbound.TrustList = []config.MediationEnvelopeTrustedKey{{
+		KeyID:     "peer",
+		PublicKey: signing.EncodePublicKey(pub),
+	}}
+	oldLive.MediationEnvelope.VerifyInbound.ReplayCache.Window = "2m"
+	oldLive.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 16
+
+	downgraded := oldLive.Clone()
+	downgraded.MediationEnvelope.VerifyInbound.Enabled = false
+
+	err = s.Reload(downgraded)
+	if err == nil {
+		t.Fatal("expected inbound mediation verification mode to reject disable reload")
+	}
+	if !strings.Contains(err.Error(), "required security mode") ||
+		!strings.Contains(err.Error(), "mediation_envelope.verify_inbound.enabled") {
+		t.Fatalf("error = %q, want inbound mediation verification downgrade context", err.Error())
+	}
+	if !buf.contains("mediation_envelope.verify_inbound.enabled") {
+		t.Fatalf("stderr missing inbound mediation verification downgrade warning:\n%s", buf.String())
+	}
+	live := s.proxy.CurrentConfig()
+	if !live.MediationEnvelope.VerifyInbound.Enabled {
+		t.Fatal("rejected reload disabled inbound mediation verification in live config")
+	}
+}
+
+func TestReloadDowngradeRejectReason(t *testing.T) {
+	downgrade := []config.ReloadWarning{{Field: "enforce", Message: "enforcement disabled"}}
+	restartOnly := []config.ReloadWarning{{
+		Field:   "health_watchdog",
+		Message: "health_watchdog config changes require restart — ignored on reload",
+	}}
+
+	for _, tt := range []struct {
+		name   string
+		cfg    func() *config.Config
+		warns  []config.ReloadWarning
+		wantIn string
+	}{
+		{
+			name: "balanced without required contract allows warning-only reload",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.Mode = config.ModeBalanced
+				return c
+			},
+		},
+		{
+			name: "warnings are required",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.Mode = config.ModeStrict
+				return c
+			},
+			warns: nil,
+		},
+		{
+			name: "strict rejects",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.Mode = config.ModeStrict
+				return c
+			},
+			warns:  downgrade,
+			wantIn: "strict mode",
+		},
+		{
+			name: "required receipts reject",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.FlightRecorder.RequireReceipts = true
+				return c
+			},
+			warns:  downgrade,
+			wantIn: "flight_recorder.require_receipts",
+		},
+		{
+			name: "required receipts allows restart-only warning",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.FlightRecorder.RequireReceipts = true
+				return c
+			},
+			warns: restartOnly,
+		},
+		{
+			name: "license require-intermediate rejects",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.LicenseRequireIntermediateResolved = true
+				return c
+			},
+			warns:  downgrade,
+			wantIn: "license_require_intermediate",
+		},
+		{
+			name: "A2A signed cards reject",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.A2AScanning.Enabled = true
+				c.A2AScanning.RequireSignedAgentCards = true
+				return c
+			},
+			warns:  downgrade,
+			wantIn: "a2a_scanning.require_signed_agent_cards",
+		},
+		{
+			name: "MCP binary signature rejects",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.RequireSignature = true
+				return c
+			},
+			warns:  downgrade,
+			wantIn: "mcp_binary_integrity.require_signature",
+		},
+		{
+			name: "MCP binary signature allows restart-only warning",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.RequireSignature = true
+				return c
+			},
+			warns: restartOnly,
+		},
+		{
+			name: "disabled MCP binary integrity stale require flag does not reject",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.MCPBinaryIntegrity.Enabled = false
+				c.MCPBinaryIntegrity.RequireSignature = true
+				return c
+			},
+			warns: downgrade,
+		},
+		{
+			name: "inbound mediation verification rejects",
+			cfg: func() *config.Config {
+				c := config.Defaults()
+				c.MediationEnvelope.VerifyInbound.Enabled = true
+				return c
+			},
+			warns:  downgrade,
+			wantIn: "mediation_envelope.verify_inbound.enabled",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reloadDowngradeRejectReason(tt.cfg(), tt.warns)
+			if tt.wantIn == "" {
+				if got != "" {
+					t.Fatalf("reject reason = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.wantIn) {
+				t.Fatalf("reject reason = %q, want substring %q", got, tt.wantIn)
+			}
+		})
+	}
+}
+
 func TestServer_Reload_RejectsRestartRequiredProxyModes(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 

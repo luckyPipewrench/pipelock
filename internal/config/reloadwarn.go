@@ -158,6 +158,29 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// MCP binary integrity disabled or signature requirement weakened.
+	if old.MCPBinaryIntegrity.Enabled && !updated.MCPBinaryIntegrity.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_binary_integrity.enabled",
+			Message: "MCP binary integrity disabled",
+		})
+	}
+	if old.MCPBinaryIntegrity.Enabled && old.MCPBinaryIntegrity.RequireSignature &&
+		(!updated.MCPBinaryIntegrity.Enabled || !updated.MCPBinaryIntegrity.RequireSignature) {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_binary_integrity.require_signature",
+			Message: "MCP binary manifest signature requirement disabled",
+		})
+	}
+
+	// MCP tool provenance disabled.
+	if old.MCPToolProvenance.Enabled && !updated.MCPToolProvenance.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mcp_tool_provenance.enabled",
+			Message: "MCP tool provenance verification disabled",
+		})
+	}
+
 	// Forward proxy disabled
 	if old.ForwardProxy.Enabled && !updated.ForwardProxy.Enabled {
 		warnings = append(warnings, ReloadWarning{
@@ -668,6 +691,15 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "mediation envelope disabled — outbound requests will no longer carry the Pipelock-Mediation header",
 		})
 	}
+	// Inbound verification is a fail-closed trust boundary for federated
+	// mediation. Disabling it means incoming mediation headers are no longer
+	// authenticated before being stripped/replaced.
+	if old.MediationEnvelope.VerifyInbound.Enabled && !updated.MediationEnvelope.VerifyInbound.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mediation_envelope.verify_inbound.enabled",
+			Message: "inbound mediation envelope verification disabled — incoming mediation headers will no longer require a trusted RFC 9421 signature",
+		})
+	}
 	// Key rotation is not a downgrade, but an operator rotating the
 	// key id without first publishing the new public key will silently
 	// start emitting signatures no verifier can check. Warn on change.
@@ -753,6 +785,12 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 	if old.MCPToolPolicy.Enabled && updated.MCPToolPolicy.Enabled {
 		appendActionDowngradeWarning(warnings, "mcp_tool_policy.action", old.MCPToolPolicy.Action, updated.MCPToolPolicy.Action)
 		appendToolPolicyRuleActionDowngrades(warnings, old.MCPToolPolicy, updated.MCPToolPolicy)
+	}
+	if old.MCPBinaryIntegrity.Enabled && updated.MCPBinaryIntegrity.Enabled {
+		appendActionDowngradeWarning(warnings, "mcp_binary_integrity.action", old.MCPBinaryIntegrity.Action, updated.MCPBinaryIntegrity.Action)
+	}
+	if old.MCPToolProvenance.Enabled && updated.MCPToolProvenance.Enabled {
+		appendActionDowngradeWarning(warnings, "mcp_tool_provenance.action", old.MCPToolProvenance.Action, updated.MCPToolProvenance.Action)
 	}
 	if old.AddressProtection.Enabled && updated.AddressProtection.Enabled {
 		appendActionDowngradeWarning(warnings, "address_protection.action", old.AddressProtection.Action, updated.AddressProtection.Action)

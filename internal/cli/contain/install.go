@@ -1304,7 +1304,7 @@ func stepInstallNFTRules() step {
 			liveRulesDrifted := false
 			if out, code, _ := env.runCmd(ctx, nftExecutable(env), "list", "table", "inet", env.nftTableOrDefault()); code == 0 {
 				tableLoaded = true
-				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), env.proxyPort)
+				liveRulesDrifted = !liveNFTContainmentMatches(out, env.nftChainOrDefault(), operatorUID, proxyUID, agentUID, env.proxyPort)
 			}
 
 			rulesChanged := false
@@ -1416,10 +1416,14 @@ func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
 	return nil
 }
 
-func liveNFTContainmentMatches(out, chainName string, proxyPort int) bool {
-	return chainHasSkuidDrop(out, chainName) &&
-		chainHasAgentProxyLoopbackAllow(out, chainName, proxyPort) &&
-		!chainHasBroadLoopbackAccept(out, chainName)
+func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, agentUID, proxyPort int) bool {
+	return chainHasSkuidAcceptForUID(out, chainName, operatorUID) &&
+		chainHasSkuidAcceptForUID(out, chainName, proxyUID) &&
+		chainHasAgentCatchAllDrop(out, chainName, agentUID) &&
+		chainHasAgentProxyLoopbackAllow(out, chainName, agentUID, proxyPort) &&
+		chainHasAgentDNSDrop(out, chainName, agentUID, "udp") &&
+		chainHasAgentDNSDrop(out, chainName, agentUID, "tcp") &&
+		!chainHasBroadLoopbackAccept(out, chainName, agentUID)
 }
 
 func nftRulesIncludeLine(path string) string {

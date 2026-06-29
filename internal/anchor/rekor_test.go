@@ -133,6 +133,11 @@ func TestRekorSubmissionRecordRequiresMetadata(t *testing.T) {
 	}{
 		{name: "url", edit: func(p *Proof) { p.Rekor.URL = "" }, want: "URL"},
 		{name: "url whitespace", edit: func(p *Proof) { p.Rekor.URL = " \t" }, want: "URL"},
+		{name: "url http remote", edit: func(p *Proof) { p.Rekor.URL = "http://rekor.example.invalid" }, want: "https"},
+		{name: "url query", edit: func(p *Proof) { p.Rekor.URL = "https://rekor.example.invalid?debug=true" }, want: "query"},
+		{name: "url fragment", edit: func(p *Proof) { p.Rekor.URL = "https://rekor.example.invalid#anchor" }, want: "fragment"},
+		{name: "url userinfo", edit: func(p *Proof) { p.Rekor.URL = "https://user@rekor.example.invalid" }, want: "userinfo"},
+		{name: "url noncanonical", edit: func(p *Proof) { p.Rekor.URL = "https://rekor.example.invalid/" }, want: "canonical"},
 		{name: "uuid", edit: func(p *Proof) { p.Rekor.UUID = "" }, want: "UUID"},
 		{name: "uuid whitespace", edit: func(p *Proof) { p.Rekor.UUID = " \t" }, want: "UUID"},
 		{name: "log id", edit: func(p *Proof) { p.LogID = "" }, want: "log_id"},
@@ -154,6 +159,41 @@ func TestRekorSubmissionRecordRequiresMetadata(t *testing.T) {
 			tc.edit(&candidate)
 			if err := validateRekorSubmissionRecord(candidate, checkpoint); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validateRekorSubmissionRecord err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeRekorBaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+		err  string
+	}{
+		{name: "default", raw: "", want: DefaultRekorURL},
+		{name: "trim and canonicalize", raw: " HTTPS://Rekor.Example.Invalid/path/ ", want: "https://rekor.example.invalid/path"},
+		{name: "local http allowed", raw: "http://127.0.0.1:3000/", want: "http://127.0.0.1:3000"},
+		{name: "localhost http allowed", raw: "http://localhost:3000/", want: "http://localhost:3000"},
+		{name: "remote http", raw: "http://rekor.example.invalid", err: "https"},
+		{name: "query", raw: "https://rekor.example.invalid?debug=true", err: "query"},
+		{name: "fragment", raw: "https://rekor.example.invalid#frag", err: "fragment"},
+		{name: "userinfo", raw: "https://user@rekor.example.invalid", err: "userinfo"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeRekorBaseURL(tc.raw)
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("normalizeRekorBaseURL err = %v, want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeRekorBaseURL: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("normalizeRekorBaseURL = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -366,9 +406,12 @@ func TestDecodeRekorEntryAcceptsRealisticUnknownFields(t *testing.T) {
 
 func TestDecodeRekorEntryRejectsMalformedResponses(t *testing.T) {
 	for name, data := range map[string]string{
-		"duplicate": `{"fake-uuid":{"logID":"a"},"fake-uuid":{"logID":"b"}}`,
-		"multiple":  `{"uuid-a":{"logID":"a"},"uuid-b":{"logID":"b"}}`,
-		"invalid":   `{not json`,
+		"duplicate":        `{"fake-uuid":{"logID":"a"},"fake-uuid":{"logID":"b"}}`,
+		"nested duplicate": `{"fake-uuid":{"logID":"a","verification":{"inclusionProof":{"rootHash":"a","rootHash":"b"}}}}`,
+		"multiple":         `{"uuid-a":{"logID":"a"},"uuid-b":{"logID":"b"}}`,
+		"mapped type":      `{"fake-uuid":{"logID":123}}`,
+		"direct type":      `{"logID":123}`,
+		"invalid":          `{not json`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := decodeRekorEntry([]byte(data)); err == nil {

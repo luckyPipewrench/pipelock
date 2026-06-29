@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -118,7 +119,11 @@ func (r RekorLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	if err != nil {
 		return Proof{}, fmt.Errorf("marshal rekor entry: %w", err)
 	}
-	endpoint, err := rekorEntriesURL(r.URL)
+	baseURL, err := normalizeRekorBaseURL(r.URL)
+	if err != nil {
+		return Proof{}, err
+	}
+	endpoint, err := rekorEntriesURL(baseURL)
 	if err != nil {
 		return Proof{}, err
 	}
@@ -165,7 +170,7 @@ func (r RekorLog) Submit(checkpoint Checkpoint) (Proof, error) {
 		EntryHash:   sha256Hex([]byte(entry.Body)),
 		LogRootHash: entry.Verification.InclusionProof.RootHash,
 		Rekor: &RekorProof{
-			URL:                  strings.TrimRight(rekorBaseURL(r.URL), "/"),
+			URL:                  baseURL,
 			UUID:                 uuid,
 			Body:                 entry.Body,
 			PublicKey:            publicKey,
@@ -212,6 +217,13 @@ func validateRekorSubmissionRecord(proof Proof, checkpoint Checkpoint) error {
 	}
 	if proof.Rekor.IntegratedTime <= 0 {
 		return errors.New("rekor proof integrated_time required")
+	}
+	normalizedURL, err := normalizeRekorBaseURL(proof.Rekor.URL)
+	if err != nil {
+		return fmt.Errorf("rekor proof URL invalid: %w", err)
+	}
+	if proof.Rekor.URL != normalizedURL {
+		return errors.New("rekor proof URL is not canonical")
 	}
 	checkpointBytes, err := checkpointBytes(checkpoint)
 	if err != nil {
@@ -323,8 +335,52 @@ func rekorBaseURL(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
-func rekorEntriesURL(raw string) (string, error) {
+func normalizeRekorBaseURL(raw string) (string, error) {
 	base, err := url.Parse(rekorBaseURL(raw))
+	if err != nil {
+		return "", fmt.Errorf("parse rekor URL: %w", err)
+	}
+	if base.Scheme == "" {
+		return "", errors.New("rekor URL scheme required")
+	}
+	base.Scheme = strings.ToLower(base.Scheme)
+	if base.Host == "" {
+		return "", errors.New("rekor URL host required")
+	}
+	if base.User != nil {
+		return "", errors.New("rekor URL userinfo is not allowed")
+	}
+	if base.RawQuery != "" {
+		return "", errors.New("rekor URL query is not allowed")
+	}
+	if base.Fragment != "" {
+		return "", errors.New("rekor URL fragment is not allowed")
+	}
+	if base.Scheme != "https" {
+		if base.Scheme != "http" || !isLocalRekorHost(base.Hostname()) {
+			return "", errors.New("rekor URL must use https unless host is a local test endpoint")
+		}
+	}
+	base.Host = strings.ToLower(base.Host)
+	base.Path = strings.TrimRight(base.Path, "/")
+	base.RawPath = ""
+	return base.String(), nil
+}
+
+func isLocalRekorHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func rekorEntriesURL(raw string) (string, error) {
+	baseURL, err := normalizeRekorBaseURL(raw)
+	if err != nil {
+		return "", err
+	}
+	base, err := url.Parse(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse rekor URL: %w", err)
 	}
@@ -338,12 +394,23 @@ func decodeRekorEntry(data []byte) (rekorEntry, string, error) {
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
 		return rekorEntry{}, "", err
 	}
-	var byUUID map[string]rekorEntry
-	if err := json.Unmarshal(data, &byUUID); err == nil && len(byUUID) > 0 {
-		if len(byUUID) != 1 {
-			return rekorEntry{}, "", fmt.Errorf("rekor response contained %d entries, want exactly 1", len(byUUID))
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil && len(raw) > 0 {
+		if isDirectRekorEntryObject(raw) {
+			var entry rekorEntry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				return rekorEntry{}, "", fmt.Errorf("parse rekor response: %w", err)
+			}
+			return entry, "", nil
 		}
-		for uuid, entry := range byUUID {
+		if len(raw) != 1 {
+			return rekorEntry{}, "", fmt.Errorf("rekor response contained %d entries, want exactly 1", len(raw))
+		}
+		for uuid, entryData := range raw {
+			var entry rekorEntry
+			if err := json.Unmarshal(entryData, &entry); err != nil {
+				return rekorEntry{}, "", fmt.Errorf("parse rekor entry %q: %w", uuid, err)
+			}
 			return entry, uuid, nil
 		}
 	}
@@ -352,4 +419,13 @@ func decodeRekorEntry(data []byte) (rekorEntry, string, error) {
 		return rekorEntry{}, "", fmt.Errorf("parse rekor response: %w", err)
 	}
 	return entry, "", nil
+}
+
+func isDirectRekorEntryObject(raw map[string]json.RawMessage) bool {
+	for _, key := range []string{"logID", "logIndex", "integratedTime", "body", "verification"} {
+		if _, ok := raw[key]; ok {
+			return true
+		}
+	}
+	return false
 }

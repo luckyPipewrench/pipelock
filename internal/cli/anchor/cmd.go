@@ -26,6 +26,7 @@ type receiptsOptions struct {
 	logID     string
 	rekorURL  string
 	rekorKey  string
+	rekorYes  bool
 	output    string
 }
 
@@ -71,6 +72,7 @@ and inclusion-proof checks.`,
 	cmd.Flags().StringVar(&opts.logID, "log-id", anchorpkg.DefaultLocalLogID, "local fake-log identifier")
 	cmd.Flags().StringVar(&opts.rekorURL, "rekor-url", anchorpkg.DefaultRekorURL, "Rekor base URL")
 	cmd.Flags().StringVar(&opts.rekorKey, "rekor-key", "", "Ed25519 private key file used to sign the Rekor checkpoint entry")
+	cmd.Flags().BoolVar(&opts.rekorYes, "yes-send-to-remote-log", false, "acknowledge Rekor anchoring sends checkpoint material to the configured remote log")
 	cmd.Flags().StringVar(&opts.output, "out", "", "anchor bundle output path")
 	return cmd
 }
@@ -110,6 +112,9 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 
 	_, _ = fmt.Fprintf(out, "ANCHOR BUNDLE WRITTEN: %s\n", filepath.Clean(opts.output))
 	_, _ = fmt.Fprintf(out, "  Backend:       %s\n", proof.Backend)
+	if proof.Rekor != nil {
+		_, _ = fmt.Fprintf(out, "  Rekor URL:     %s\n", proof.Rekor.URL)
+	}
 	_, _ = fmt.Fprintf(out, "  Log index:     %d\n", proof.LogIndex)
 	_, _ = fmt.Fprintf(out, "  Session:       %s\n", checkpoint.SessionID)
 	_, _ = fmt.Fprintf(out, "  Receipts:      %d\n", checkpoint.ReceiptCount)
@@ -131,6 +136,9 @@ func resolveBackend(opts receiptsOptions) (anchorpkg.Backend, error) {
 	case anchorpkg.RekorBackend:
 		if strings.TrimSpace(opts.rekorKey) == "" {
 			return nil, fmt.Errorf("--rekor-key is required for the rekor anchor backend")
+		}
+		if !opts.rekorYes {
+			return nil, fmt.Errorf("--yes-send-to-remote-log is required for the rekor anchor backend")
 		}
 		key, err := anchorpkg.LoadRekorPrivateKey(opts.rekorKey)
 		if err != nil {

@@ -152,6 +152,7 @@ func TestReceiptsCmdWritesRekorAnchorBundle(t *testing.T) {
 		"--backend", anchorpkg.RekorBackend,
 		"--rekor-url", server.URL,
 		"--rekor-key", rekorKey,
+		"--yes-send-to-remote-log",
 		"--out", bundlePath,
 	})
 	if err := cmd.Execute(); err != nil {
@@ -178,6 +179,9 @@ func TestReceiptsCmdWritesRekorAnchorBundle(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Backend:       rekor") {
 		t.Fatalf("output missing Rekor backend:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Rekor URL:     "+server.URL) {
+		t.Fatalf("output missing Rekor URL:\n%s", out.String())
 	}
 }
 
@@ -233,6 +237,23 @@ func TestReceiptsCmdRequiresRekorKey(t *testing.T) {
 	})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--rekor-key is required") {
 		t.Fatalf("Execute err = %v, want Rekor key error", err)
+	}
+}
+
+func TestReceiptsCmdRequiresRekorRemoteAcknowledgement(t *testing.T) {
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	dir := t.TempDir()
+	cmd := receiptsCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		receiptsPath,
+		"--key", keyHex,
+		"--backend", anchorpkg.RekorBackend,
+		"--rekor-key", writeRekorKey(t, dir),
+		"--out", filepath.Join(dir, "bundle.json"),
+	})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--yes-send-to-remote-log is required") {
+		t.Fatalf("Execute err = %v, want Rekor acknowledgement error", err)
 	}
 }
 

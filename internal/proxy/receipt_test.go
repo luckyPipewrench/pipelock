@@ -326,6 +326,33 @@ func TestEmitRequiredReceipt_UnavailableEmitterRecordsMetric(t *testing.T) {
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="fetch"} 1`)
 }
 
+func TestReceiptEmissionError_OmitsRawTargetAndAgent(t *testing.T) {
+	t.Parallel()
+
+	err := receiptEmissionError(receipt.EmitOpts{
+		ActionID:  "act-123",
+		Verdict:   config.ActionAllow,
+		Layer:     "receipt_emission",
+		Pattern:   "required",
+		Transport: TransportReverse,
+		Method:    http.MethodGet,
+		Target:    "https://example.test/path?debug=raw-target-marker",
+		Agent:     "private-agent",
+	}, errors.New("disk full"))
+
+	msg := err.Error()
+	for _, forbidden := range []string{"https://example.test", "raw-target-marker", "private-agent"} {
+		if strings.Contains(msg, forbidden) {
+			t.Fatalf("receipt emission error leaked %q in %q", forbidden, msg)
+		}
+	}
+	for _, want := range []string{"act-123", string(config.ActionAllow), TransportReverse, http.MethodGet, "disk full"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("receipt emission error %q missing %q", msg, want)
+		}
+	}
+}
+
 func TestRequiredReceiptBlockMetricReason(t *testing.T) {
 	t.Parallel()
 

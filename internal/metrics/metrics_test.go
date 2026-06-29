@@ -127,6 +127,12 @@ func TestStatsHandler(t *testing.T) {
 	if len(stats.TopScanners) != 1 {
 		t.Errorf("expected 1 top scanner, got %d", len(stats.TopScanners))
 	}
+	if len(stats.Receipts.EmitFailures) != 0 {
+		t.Errorf("expected no receipt emit failures, got %v", stats.Receipts.EmitFailures)
+	}
+	if len(stats.Receipts.RequiredBlocks) != 0 {
+		t.Errorf("expected no required receipt blocks, got %v", stats.Receipts.RequiredBlocks)
+	}
 }
 
 func TestStatsHandler_BlockRate(t *testing.T) {
@@ -163,6 +169,59 @@ func TestStatsHandler_Empty(t *testing.T) {
 	}
 	if stats.Requests.BlockRate != 0 {
 		t.Errorf("expected block_rate=0, got %f", stats.Requests.BlockRate)
+	}
+	if len(stats.Receipts.EmitFailures) != 0 {
+		t.Errorf("expected no receipt emit failures, got %v", stats.Receipts.EmitFailures)
+	}
+	if len(stats.Receipts.RequiredBlocks) != 0 {
+		t.Errorf("expected no required receipt blocks, got %v", stats.Receipts.RequiredBlocks)
+	}
+}
+
+func TestStatsHandler_IncludesReceiptFailureSummary(t *testing.T) {
+	m := New()
+	m.RecordEmitFailure("record")
+	m.RecordEmitFailure("record")
+	m.RecordEmitFailure("unavailable")
+	m.RecordEmitFailure("attacker-controlled detail")
+	m.RecordRequiredReceiptBlock("unavailable", "fetch")
+	m.RecordRequiredReceiptBlock("emit_error", "reverse")
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
+	w := httptest.NewRecorder()
+	m.StatsHandler().ServeHTTP(w, req)
+
+	var stats statsResponse
+	if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+		t.Fatalf("failed to decode stats: %v", err)
+	}
+	got := make(map[string]int64, len(stats.Receipts.EmitFailures))
+	for _, reason := range stats.Receipts.EmitFailures {
+		got[reason.Name] = reason.Count
+	}
+	want := map[string]int64{
+		"record":      2,
+		"unavailable": 1,
+		"unknown":     1,
+	}
+	for reason, count := range want {
+		if got[reason] != count {
+			t.Errorf("receipt failure reason %q = %d, want %d", reason, got[reason], count)
+		}
+	}
+	if _, ok := got["attacker-controlled detail"]; ok {
+		t.Fatal("non-canonical receipt failure reason leaked into /stats")
+	}
+
+	blocked := make(map[string]int64, len(stats.Receipts.RequiredBlocks))
+	for _, block := range stats.Receipts.RequiredBlocks {
+		blocked[block.Reason+"/"+block.Transport] = block.Count
+	}
+	if blocked["unavailable/fetch"] != 1 {
+		t.Fatalf("required unavailable/fetch blocks = %d, want 1", blocked["unavailable/fetch"])
+	}
+	if blocked["emit_error/reverse"] != 1 {
+		t.Fatalf("required emit_error/reverse blocks = %d, want 1", blocked["emit_error/reverse"])
 	}
 }
 

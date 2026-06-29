@@ -999,12 +999,12 @@ func (p *Proxy) emitRequiredReceipt(opts receipt.EmitOpts) error {
 	}
 	e := p.receiptEmitterPtr.Load()
 	if e == nil {
-		p.metrics.RecordEmitFailure(receipt.FailReasonUnavailable)
-		p.metrics.RecordRequiredReceiptBlock(receipt.FailReasonUnavailable, opts.Transport)
-		return errReceiptEmitterUnavailable
+		err := p.recordReceiptEmitterUnavailable(opts)
+		p.recordRequiredReceiptBlock(err, opts.Transport)
+		return err
 	}
 	if err := p.emitReceiptWithEmitter(opts, e); err != nil {
-		p.metrics.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), opts.Transport)
+		p.recordRequiredReceiptBlock(err, opts.Transport)
 		return err
 	}
 	return nil
@@ -1015,10 +1015,7 @@ func (p *Proxy) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter
 		return nil
 	}
 	if err := e.Emit(opts); err != nil {
-		p.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-			fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
-				opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
-				opts.Transport, opts.Method, opts.Target, opts.Agent, err))
+		p.logReceiptEmissionFailure(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record, so a
 		// proxy_decision never outlives its action_receipt sibling.
 		return err
@@ -1026,6 +1023,36 @@ func (p *Proxy) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
 	p.emitV2Receipt(opts)
 	return nil
+}
+
+func (p *Proxy) recordReceiptEmitterUnavailable(opts receipt.EmitOpts) error {
+	if p != nil && p.metrics != nil {
+		p.metrics.RecordEmitFailure(receipt.FailReasonUnavailable)
+	}
+	if p != nil {
+		p.logReceiptEmissionFailure(opts, errReceiptEmitterUnavailable)
+	}
+	return errReceiptEmitterUnavailable
+}
+
+func (p *Proxy) recordRequiredReceiptBlock(err error, transport string) {
+	if p == nil || p.metrics == nil {
+		return
+	}
+	p.metrics.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), transport)
+}
+
+func (p *Proxy) logReceiptEmissionFailure(opts receipt.EmitOpts, err error) {
+	if p == nil || p.logger == nil || err == nil {
+		return
+	}
+	p.logger.LogError(audit.NewRequestLogContext(opts.RequestID), receiptEmissionError(opts, err))
+}
+
+func receiptEmissionError(opts receipt.EmitOpts, err error) error {
+	return fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s: %w",
+		opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
+		opts.Transport, opts.Method, err)
 }
 
 // receiptEmitterStage is the staged result of a receipt-emitter reload.

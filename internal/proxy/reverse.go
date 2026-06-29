@@ -232,42 +232,93 @@ func (rp *ReverseProxyHandler) SetRequestPolicyPrepareFn(fn func(*http.Request, 
 }
 
 // emitReceipt records a signed action receipt for a reverse-proxy
-// decision. Mirrors Proxy.emitReceipt: nil emitter is a no-op, errors are
-// logged but never propagated so a recorder failure cannot poison the
-// hot path. Reverse-proxy receipts use Transport="reverse"; the caller
-// supplies Layer/Pattern/ActionID/RequestID/Agent/Method/Target.
+// decision. Mirrors Proxy.emitReceipt: nil emitter is a no-op; emitter errors
+// are logged and returned to the caller. Current reverse-proxy hot paths ignore
+// the return value, preserving optional-receipt behavior, while tests and future
+// require_receipts gates can assert the failure directly. Reverse-proxy receipts
+// use Transport="reverse"; the caller supplies Layer/Pattern/ActionID/RequestID/
+// Agent/Method/Target.
 //
 // On emit failure the wrapped error carries every receipt field so an
 // operator reconstructing an enforcement decision after a missing-receipt
 // incident can correlate the audit log entry to the action that was
 // supposed to be attested. Plain RequestID alone is too thin for that.
-func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
+func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) error {
+	e := rp.receiptEmitter()
+	if e == nil {
+		return nil
+	}
+	return rp.emitReceiptWithEmitter(opts, e)
+}
+
+func (rp *ReverseProxyHandler) emitRequiredReceipt(opts receipt.EmitOpts) error {
+	e := rp.receiptEmitter()
+	if e == nil {
+		err := rp.recordReceiptEmitterUnavailable(opts)
+		rp.recordRequiredReceiptBlock(err, opts.Transport)
+		return err
+	}
+	if err := rp.emitReceiptWithEmitter(opts, e); err != nil {
+		rp.recordRequiredReceiptBlock(err, opts.Transport)
+		return err
+	}
+	return nil
+}
+
+func (rp *ReverseProxyHandler) receiptEmitter() *receipt.Emitter {
+	if rp == nil || rp.receiptEmitterPtr == nil {
+		return nil
+	}
+	return rp.receiptEmitterPtr.Load()
+}
+
+func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
+	if e == nil {
+		return nil
+	}
 	if rp.cfgPtr != nil {
 		if cfg := rp.cfgPtr.Load(); cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
 	}
-	if rp.receiptEmitterPtr == nil {
-		return
-	}
-	e := rp.receiptEmitterPtr.Load()
-	if e == nil {
-		return
-	}
 	if err := e.Emit(opts); err != nil {
-		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-			fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
-				opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
-				opts.Transport, opts.Method, opts.Target, opts.Agent, err))
+		rp.logReceiptEmissionFailure(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record.
-		return
+		return err
 	}
-	// Dual-emit the v2 proxy_decision receipt.
 	emitV2(rp.v2EmitterPtr, opts, func(err error) {
+		if rp.logger == nil {
+			return
+		}
 		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
 			fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s transport=%s: %w",
 				opts.ActionID, opts.Verdict, opts.Transport, err))
 	})
+	return nil
+}
+
+func (rp *ReverseProxyHandler) recordReceiptEmitterUnavailable(opts receipt.EmitOpts) error {
+	if rp != nil && rp.metrics != nil {
+		rp.metrics.RecordEmitFailure(receipt.FailReasonUnavailable)
+	}
+	if rp != nil {
+		rp.logReceiptEmissionFailure(opts, errReceiptEmitterUnavailable)
+	}
+	return errReceiptEmitterUnavailable
+}
+
+func (rp *ReverseProxyHandler) recordRequiredReceiptBlock(err error, transport string) {
+	if rp == nil || rp.metrics == nil {
+		return
+	}
+	rp.metrics.RecordRequiredReceiptBlock(requiredReceiptBlockMetricReason(err), transport)
+}
+
+func (rp *ReverseProxyHandler) logReceiptEmissionFailure(opts receipt.EmitOpts, err error) {
+	if rp == nil || rp.logger == nil || err == nil {
+		return
+	}
+	rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID), receiptEmissionError(opts, err))
 }
 
 func reverseTargetURL(upstream *url.URL, r *http.Request) string {
@@ -385,7 +436,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if snap.cfg != nil {
 			opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
 		}
-		rp.emitReceipt(opts)
+		_ = rp.emitReceipt(opts)
 	}
 	if !scOK {
 		// Reload thrash or no live scanner. Fail closed at the request
@@ -788,6 +839,35 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	reverseAllowReceipt := withReverseContractReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: TransportReverse,
+		Method:    r.Method,
+		Target:    targetURL,
+		RequestID: requestID,
+		Agent:     agent,
+	})
+	if cfg.FlightRecorder.RequireReceipts {
+		// Pin the v2 proxy_decision policy hash to the admission snapshot
+		// (cfg == snap.cfg), not a possibly-reloaded rp.cfgPtr. The v2
+		// receipt consumes opts.PolicyHash; withReceiptPolicyHash is
+		// first-write-wins, so emitRequiredReceipt's internal load becomes a
+		// no-op. Mirrors the forward/fetch/websocket required-allow call
+		// sites, which pre-apply the snapshot hash so a hot reload between
+		// admission and emit cannot bind the allow to a successor policy.
+		if err := rp.emitRequiredReceipt(withReceiptPolicyHash(reverseAllowReceipt, cfg.CanonicalPolicyHash())); err != nil {
+			blockedErr := newReceiptEmissionBlockedRequest(err)
+			rp.logger.LogBlocked(newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent), blockedErr.layer, blockedErr.detail)
+			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockedErr.layer)
+			writeReverseProxyBlock(w, http.StatusForbidden,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockedErr.reason)
+			return
+		}
+	}
+
 	// Stash envelope build metadata on the request context so the
 	// signing RoundTripper (installed on rp.proxy.Transport) can
 	// attach a Pipelock-Mediation header and an RFC 9421 signature
@@ -886,7 +966,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		rp.emitReceipt(opts)
+		_ = rp.emitReceipt(opts)
 	}
 
 	// Skip binary content types - no secrets to scan in images/video.
@@ -1079,7 +1159,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		if cfg != nil {
 			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
 		}
-		rp.emitReceipt(opts)
+		_ = rp.emitReceipt(opts)
 	}
 	clientIP, _ := resp.Request.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := resp.Request.Context().Value(ctxKeyRequestID).(string)

@@ -10,7 +10,6 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -320,7 +319,7 @@ func VerifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string) (Veri
 		return finalize(rep, required), nil
 	}
 	var lm LaunchManifest
-	if err := json.Unmarshal(artifacts.LaunchManifest, &lm); err != nil {
+	if err := unmarshalStrictArtifact(launchManifestFile, artifacts.LaunchManifest, &lm); err != nil {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkManifestSig,
 			OK:     false,
@@ -346,7 +345,7 @@ func VerifyRunArtifacts(artifacts RunArtifacts, orchestratorPubHex string) (Veri
 		return finalize(rep, required), nil
 	}
 	var witness Witness
-	if err := json.Unmarshal(artifacts.Witness, &witness); err != nil {
+	if err := unmarshalStrictArtifact(witnessFile, artifacts.Witness, &witness); err != nil {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkWitnessSig,
 			OK:     false,
@@ -543,7 +542,7 @@ func verifyHostContainmentBytes(data []byte, lm LaunchManifest, orchestratorPubH
 
 func verifyHostContainmentData(data []byte, lm LaunchManifest, orchestratorPubHex string, rep *VerifyReport) {
 	var hcw HostContainmentWitness
-	if err := json.Unmarshal(data, &hcw); err != nil {
+	if err := unmarshalStrictArtifact(hostContainmentWitnessFile, data, &hcw); err != nil {
 		rep.Checks = append(rep.Checks, Check{
 			Name:   checkHostContainSig,
 			OK:     false,
@@ -606,7 +605,7 @@ func verifyRedWitnessArtifactBytes(data []byte, lm LaunchManifest, rc *RedCaseRe
 
 func verifyRedWitnessArtifactData(data []byte, lm LaunchManifest, rc *RedCaseResult, reasons []string) (Witness, []string) {
 	var red Witness
-	if err := json.Unmarshal(data, &red); err != nil {
+	if err := unmarshalStrictArtifact(redWitnessFile, data, &red); err != nil {
 		return Witness{}, []string{fmt.Sprintf("malformed %s: %v", redWitnessFile, err)}
 	}
 	if !VerifyWitness(lm.CollectorPubKey, red) {
@@ -633,7 +632,7 @@ func verifyLiveDemoSemanticsBytes(manifestJSON, evidenceJSONL []byte, lm LaunchM
 		return fmt.Errorf("missing packet manifest")
 	}
 	var replayManifest replaycapture.Manifest
-	if err := json.Unmarshal(manifestJSON, &replayManifest); err != nil {
+	if err := unmarshalStrictArtifact(packetManifestFile, manifestJSON, &replayManifest); err != nil {
 		return fmt.Errorf("malformed packet manifest: %w", err)
 	}
 	if err := verifyLiveDemoManifest(replayManifest, lm); err != nil {

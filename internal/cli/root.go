@@ -9,6 +9,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/cli/assess"
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/canary"
@@ -74,6 +75,8 @@ Quick start:
 		"pipelock home directory (default ~/.pipelock, or set PIPELOCK_HOME)")
 
 	cmd.AddCommand(
+		// External receipt anchoring
+		anchor.Cmd(),
 		// Assess
 		assess.Cmd(),
 		// Policy capture/replay

@@ -1254,7 +1254,7 @@ func TestStepInstallNFTRules_SkipsWhenLoaded(t *testing.T) {
 	// Pre-write the file so the body matches.
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
-	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
@@ -1274,11 +1274,45 @@ func TestStepInstallNFTRules_SkipsWhenLoaded(t *testing.T) {
 	}
 }
 
+func TestStepInstallNFTRules_SkipsWhenLoadedForRootOperator(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	env.lookupUser = func(name string) (*user.User, error) {
+		switch name {
+		case "pipelock-proxy":
+			return &user.User{Uid: "988", Gid: "988", Username: name, HomeDir: "/var/lib/pipelock-proxy"}, nil
+		case "pipelock-agent":
+			return &user.User{Uid: "987", Gid: "987", Username: name, HomeDir: "/home/pipelock-agent"}, nil
+		case containInstallOperatorUser:
+			return &user.User{Uid: "0", Gid: "0", Username: name, HomeDir: "/root"}, nil
+		default:
+			return nil, user.UnknownUserError(name)
+		}
+	}
+	body := renderNFTRules(0, 988, 987, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), body, 0, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if applied {
+		t.Errorf("expected skip when root-operator rules file matches and table is loaded")
+	}
+}
+
 func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
-	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
 		t.Fatalf("mkdir rules parent: %v", err)
 	}
 	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
@@ -1315,6 +1349,43 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	}
 	if !sawDelete || !sawLoad {
 		t.Fatalf("expected delete+reload for live drift, got %v", runner.calls)
+	}
+}
+
+func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasStaleAgentUID(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	stale := renderNFTRules(operatorUID, proxyUID, 986, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), stale, 0, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected stale live agent uid to trigger rules reload")
+	}
+
+	var sawDelete, sawLoad bool
+	for _, c := range runner.calls {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+			sawDelete = true
+		}
+		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
+			sawLoad = true
+		}
+	}
+	if !sawDelete || !sawLoad {
+		t.Fatalf("expected delete+reload for stale uid, got %v", runner.calls)
 	}
 }
 

@@ -509,6 +509,23 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "loopback allow",
 		},
 		{
+			name: "loopback address prefix is not proxy address",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.10 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "loopback allow",
+		},
+		{
 			name: "stale agent uid",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
@@ -541,13 +558,30 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "DNS drop rule missing",
 		},
 		{
-			name: "dns port prefix is not dns port",
+			name: "udp dns port prefix is not dns port",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
 			meta skuid 1000 accept
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
 			meta skuid 987 udp dport 530 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "udp/53 DNS drop rule missing",
+		},
+		{
+			name: "tcp dns port prefix is not dns port",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
 			meta skuid 987 tcp dport 530 drop
 			meta skuid 987 drop
 		}
@@ -555,7 +589,41 @@ func TestProbeNFTContainment(t *testing.T) {
 	`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "DNS drop rule missing",
+			wantDetail: "tcp/53 DNS drop rule missing",
+		},
+		{
+			name: "constrained udp dns drop is not catch all dns drop",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 ip daddr 8.8.8.8 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "udp/53 DNS drop rule missing",
+		},
+		{
+			name: "constrained tcp dns drop is not catch all dns drop",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 ip daddr 8.8.8.8 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "tcp/53 DNS drop rule missing",
 		},
 		{
 			name: "constrained proxy accept is not terminal accept",

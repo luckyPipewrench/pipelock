@@ -965,7 +965,7 @@ func chainHasSkuidAcceptForUID(out, chainName string, uid int) bool {
 func chainHasAgentProxyLoopbackAllow(out, chainName string, agentUID, port int) bool {
 	return chainHasLine(out, chainName, func(line string) bool {
 		return lineHasSkuid(line, agentUID) &&
-			strings.Contains(line, "ip daddr 127.0.0.1") &&
+			lineHasIPDAddr(line, "127.0.0.1") &&
 			lineHasToken(line, "tcp") &&
 			lineHasDPort(line, port) &&
 			lineHasToken(line, "accept")
@@ -974,10 +974,7 @@ func chainHasAgentProxyLoopbackAllow(out, chainName string, agentUID, port int) 
 
 func chainHasAgentDNSDrop(out, chainName string, agentUID int, protocol string) bool {
 	return chainHasLine(out, chainName, func(line string) bool {
-		return lineHasSkuid(line, agentUID) &&
-			lineHasToken(line, protocol) &&
-			lineHasDPort(line, 53) &&
-			lineHasToken(line, "drop")
+		return lineHasSkuidProtocolDPortVerdict(line, agentUID, protocol, 53, "drop")
 	})
 }
 
@@ -1004,28 +1001,54 @@ func lineHasSkuid(line string, uid int) bool {
 func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
 	fields := strings.Fields(line)
 	uidText := strconv.Itoa(uid)
-	skuidAt := -1
-	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] == "skuid" && fields[i+1] == uidText {
-			skuidAt = i + 1
-			break
-		}
-	}
+	skuidAt := indexSkuidUID(fields, uidText)
 	if skuidAt == -1 {
 		return false
 	}
-	verdictAt := -1
-	for i := skuidAt + 1; i < len(fields); i++ {
-		if fields[i] == verdict {
-			verdictAt = i
-			break
-		}
-	}
+	verdictAt := indexTokenAfter(fields, verdict, skuidAt+1)
 	if verdictAt == -1 {
 		return false
 	}
+	return fieldsAreNFTBookkeeping(fields[skuidAt+1 : verdictAt])
+}
+
+func lineHasSkuidProtocolDPortVerdict(line string, uid int, protocol string, port int, verdict string) bool {
+	fields := strings.Fields(line)
+	skuidAt := indexSkuidUID(fields, strconv.Itoa(uid))
+	if skuidAt == -1 || skuidAt+3 >= len(fields) {
+		return false
+	}
+	if fields[skuidAt+1] != protocol || fields[skuidAt+2] != "dport" || fields[skuidAt+3] != strconv.Itoa(port) {
+		return false
+	}
+	verdictAt := indexTokenAfter(fields, verdict, skuidAt+4)
+	if verdictAt == -1 {
+		return false
+	}
+	return fieldsAreNFTBookkeeping(fields[skuidAt+4 : verdictAt])
+}
+
+func indexSkuidUID(fields []string, uidText string) int {
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == "skuid" && fields[i+1] == uidText {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+func indexTokenAfter(fields []string, want string, start int) int {
+	for i := start; i < len(fields); i++ {
+		if fields[i] == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func fieldsAreNFTBookkeeping(fields []string) bool {
 	inPrefix := false
-	for _, field := range fields[skuidAt+1 : verdictAt] {
+	for _, field := range fields {
 		if inPrefix {
 			if strings.HasSuffix(field, `"`) {
 				inPrefix = false
@@ -1042,6 +1065,16 @@ func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
 		}
 	}
 	return !inPrefix
+}
+
+func lineHasIPDAddr(line, addr string) bool {
+	fields := strings.Fields(line)
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] == "ip" && fields[i+1] == "daddr" && fields[i+2] == addr {
+			return true
+		}
+	}
+	return false
 }
 
 func lineHasDPort(line string, port int) bool {

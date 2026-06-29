@@ -67,8 +67,8 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FlightRecorder.RequireReceipts = true
-	cfg.Internal = nil
 	cfg.ApplyDefaults()
+	cfg.Internal = nil
 
 	m := metrics.New()
 	sc := scanner.New(cfg)
@@ -116,8 +116,8 @@ func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
 func TestInterceptEmitReceiptOrBlockUnavailableEmitterRecordsMetric(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FlightRecorder.RequireReceipts = true
-	cfg.Internal = nil
 	cfg.ApplyDefaults()
+	cfg.Internal = nil
 
 	m := metrics.New()
 	sc := scanner.New(cfg)
@@ -157,8 +157,8 @@ func TestInterceptEmitReceiptOrBlockUnavailableEmitterRecordsMetric(t *testing.T
 func TestInterceptEmitReceiptOrBlockRequiresProxy(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FlightRecorder.RequireReceipts = true
-	cfg.Internal = nil
 	cfg.ApplyDefaults()
+	cfg.Internal = nil
 
 	m := metrics.New()
 	ic := &InterceptContext{

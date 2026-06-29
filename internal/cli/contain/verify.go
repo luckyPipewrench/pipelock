@@ -777,15 +777,30 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !strings.Contains(out, "chain "+env.nftChain) {
 		return statusFail, fmt.Sprintf("chain %s missing from table", env.nftChain)
 	}
-	// The containment rule signature: a drop tied to an skuid match.
-	// We don't pin the exact UID since it varies per machine.
-	if !chainHasSkuidDrop(out, env.nftChain) {
-		return statusFail, "chain present but skuid-drop rule missing"
+
+	current, err := containmentUIDsFromProbeEnv(env)
+	if err != nil {
+		return statusFail, err.Error()
 	}
-	if !chainHasAgentProxyLoopbackAllow(out, env.nftChain, env.port) {
-		return statusFail, fmt.Sprintf("chain present but pipelock-agent loopback allow is not limited to 127.0.0.1:%d", env.port)
+	if current.operatorKnown && !chainHasSkuidAcceptForUID(out, env.nftChain, current.operatorUID) {
+		return statusFail, fmt.Sprintf("chain present but operator uid %d accept rule missing", current.operatorUID)
 	}
-	if chainHasBroadLoopbackAccept(out, env.nftChain) {
+	if !chainHasSkuidAcceptForUID(out, env.nftChain, current.proxyUID) {
+		return statusFail, fmt.Sprintf("chain present but proxy uid %d accept rule missing", current.proxyUID)
+	}
+	if !chainHasAgentCatchAllDrop(out, env.nftChain, current.agentUID) {
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
+	}
+	if !chainHasAgentProxyLoopbackAllow(out, env.nftChain, current.agentUID, env.port) {
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow is not limited to 127.0.0.1:%d", current.agentUID, env.port)
+	}
+	if !chainHasAgentDNSDrop(out, env.nftChain, current.agentUID, "udp") {
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing", current.agentUID)
+	}
+	if !chainHasAgentDNSDrop(out, env.nftChain, current.agentUID, "tcp") {
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing", current.agentUID)
+	}
+	if chainHasBroadLoopbackAccept(out, env.nftChain, current.agentUID) {
 		return statusFail, "chain contains broad loopback accept before agent drop"
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
@@ -793,8 +808,111 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 			return statusFail, err.Error()
 		}
 	}
-	return statusPass, fmt.Sprintf("table inet %s has chain %s with skuid drop rule, proxy-only loopback allow, and persistence unit",
-		env.nftTable, env.nftChain)
+	return statusPass, fmt.Sprintf("table inet %s has chain %s with current agent uid %d skuid drop rule, proxy-only loopback allow, direct-DNS drops, and persistence unit",
+		env.nftTable, env.nftChain, current.agentUID)
+}
+
+type containmentUIDs struct {
+	operatorUID   int
+	operatorKnown bool
+	proxyUID      int
+	agentUID      int
+}
+
+func containmentUIDsFromProbeEnv(env *probeEnv) (containmentUIDs, error) {
+	proxyUID, err := lookupUID(env.lookupUser, env.proxyUserName)
+	if err != nil {
+		return containmentUIDs{}, fmt.Errorf("lookup proxy uid %s: %w", env.proxyUserName, err)
+	}
+	if proxyUID == 0 {
+		return containmentUIDs{}, fmt.Errorf("%s resolves to uid 0; containment proxy user must be non-root", env.proxyUserName)
+	}
+	agentUID, err := lookupUID(env.lookupUser, env.agentUserName)
+	if err != nil {
+		return containmentUIDs{}, fmt.Errorf("lookup agent uid %s: %w", env.agentUserName, err)
+	}
+	if agentUID == 0 {
+		return containmentUIDs{}, fmt.Errorf("%s resolves to uid 0; contained agent user must be non-root", env.agentUserName)
+	}
+
+	current := containmentUIDs{proxyUID: proxyUID, agentUID: agentUID}
+	if env.nftRulesPath == "" {
+		return current, nil
+	}
+	data, err := env.readFile(env.nftRulesPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return current, nil
+		}
+		return containmentUIDs{}, fmt.Errorf("read nftables rules file %s: %w", env.nftRulesPath, err)
+	}
+	header, ok, err := parseNFTRulesHeaderUIDs(data)
+	if err != nil {
+		return containmentUIDs{}, fmt.Errorf("parse nftables rules file %s: %w", env.nftRulesPath, err)
+	}
+	if !ok {
+		return current, nil
+	}
+	if header.proxyUID != proxyUID {
+		return containmentUIDs{}, fmt.Errorf("nftables rules file proxy uid %d does not match current %s uid %d", header.proxyUID, env.proxyUserName, proxyUID)
+	}
+	if header.agentUID != agentUID {
+		return containmentUIDs{}, fmt.Errorf("nftables rules file agent uid %d does not match current %s uid %d", header.agentUID, env.agentUserName, agentUID)
+	}
+	current.operatorUID = header.operatorUID
+	current.operatorKnown = true
+	return current, nil
+}
+
+func lookupUID(lookup lookupUserFunc, name string) (int, error) {
+	u, err := lookup(name)
+	if err != nil {
+		return 0, err
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return 0, fmt.Errorf("parse uid: %w", err)
+	}
+	return uid, nil
+}
+
+type nftRulesHeaderUIDs struct {
+	operatorUID int
+	proxyUID    int
+	agentUID    int
+}
+
+func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "#") || !strings.Contains(line, "operator=") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, "#")))
+		values := map[string]int{}
+		for _, field := range fields {
+			key, value, ok := strings.Cut(field, "=")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "operator", "pipelock-proxy", "pipelock-agent":
+				uid, err := strconv.Atoi(value)
+				if err != nil {
+					return nftRulesHeaderUIDs{}, true, fmt.Errorf("%s uid %q: %w", key, value, err)
+				}
+				values[key] = uid
+			}
+		}
+		operatorUID, hasOperator := values["operator"]
+		proxyUID, hasProxy := values["pipelock-proxy"]
+		agentUID, hasAgent := values["pipelock-agent"]
+		if !hasOperator || !hasProxy || !hasAgent {
+			return nftRulesHeaderUIDs{}, true, errors.New("managed uid header missing operator, pipelock-proxy, or pipelock-agent uid")
+		}
+		return nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID}, true, nil
+	}
+	return nftRulesHeaderUIDs{}, false, nil
 }
 
 func verifyNFTPersistence(env *probeEnv) error {
@@ -826,30 +944,59 @@ func probeNFTExecutable(env *probeEnv) string {
 	return "nft"
 }
 
-func chainHasSkuidDrop(out, chainName string) bool {
+func chainHasAgentCatchAllDrop(out, chainName string, uid int) bool {
 	return chainHasLine(out, chainName, func(line string) bool {
-		return strings.Contains(line, "skuid") && strings.Contains(line, "drop")
+		return lineHasSkuid(line, uid) &&
+			strings.Contains(line, "drop") &&
+			!strings.Contains(line, " dport ")
 	})
 }
 
-func chainHasAgentProxyLoopbackAllow(out, chainName string, port int) bool {
+func chainHasSkuidAcceptForUID(out, chainName string, uid int) bool {
+	return chainHasLine(out, chainName, func(line string) bool {
+		return lineHasSkuid(line, uid) && strings.Contains(line, "accept")
+	})
+}
+
+func chainHasAgentProxyLoopbackAllow(out, chainName string, agentUID, port int) bool {
 	portText := strconv.Itoa(port)
 	return chainHasLine(out, chainName, func(line string) bool {
-		return strings.Contains(line, "skuid") &&
+		return lineHasSkuid(line, agentUID) &&
 			strings.Contains(line, "ip daddr 127.0.0.1") &&
 			strings.Contains(line, "tcp dport "+portText) &&
 			strings.Contains(line, "accept")
 	})
 }
 
-func chainHasBroadLoopbackAccept(out, chainName string) bool {
-	return chainHasLineBeforeSkuidDrop(out, chainName, func(line string) bool {
-		return strings.Contains(line, "accept") &&
-			(strings.Contains(line, `meta oif "lo"`) || strings.Contains(line, "ip daddr 127.0.0.0/8"))
+func chainHasAgentDNSDrop(out, chainName string, agentUID int, protocol string) bool {
+	return chainHasLine(out, chainName, func(line string) bool {
+		return lineHasSkuid(line, agentUID) &&
+			strings.Contains(line, protocol+" dport 53") &&
+			strings.Contains(line, "drop")
 	})
 }
 
-func chainHasLineBeforeSkuidDrop(out, chainName string, match func(string) bool) bool {
+func chainHasBroadLoopbackAccept(out, chainName string, agentUID int) bool {
+	return chainHasLineBeforeAgentDrop(out, chainName, agentUID, func(line string) bool {
+		return strings.Contains(line, "accept") &&
+			(strings.Contains(line, `meta oif "lo"`) ||
+				strings.Contains(line, "ip daddr 127.0.0.0/8") ||
+				(strings.Contains(line, "ip daddr 127.0.0.1") && !strings.Contains(line, " dport ")))
+	})
+}
+
+func lineHasSkuid(line string, uid int) bool {
+	want := strconv.Itoa(uid)
+	fields := strings.Fields(line)
+	for i, field := range fields {
+		if field == "skuid" && i+1 < len(fields) && fields[i+1] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func(string) bool) bool {
 	inChain := false
 	depth := 0
 	for _, raw := range strings.Split(out, "\n") {
@@ -866,7 +1013,7 @@ func chainHasLineBeforeSkuidDrop(out, chainName string, match func(string) bool)
 		if strings.Contains(line, "{") {
 			depth += strings.Count(line, "{")
 		}
-		if strings.Contains(line, "skuid") && strings.Contains(line, "drop") {
+		if lineHasSkuid(line, agentUID) && strings.Contains(line, "drop") && !strings.Contains(line, " dport ") {
 			return false
 		}
 		if match(line) {

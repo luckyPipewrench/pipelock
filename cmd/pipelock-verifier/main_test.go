@@ -7,10 +7,14 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -632,6 +636,22 @@ func TestIndependent_ValidLocalAnchor(t *testing.T) {
 	}
 }
 
+func TestIndependent_RekorAnchorFailsClosedUntilTrustedLogVerification(t *testing.T) {
+	fix := newFixture(t, 3)
+	evidence, bundle := writeIndependentRekorFixture(t, fix)
+
+	stdout, stderr, code := runRoot(t, "independent", evidence,
+		"--bundle", bundle,
+		"--key", fix.keyHex,
+	)
+	if code == cliutil.ExitOK {
+		t.Fatalf("Rekor independent verification succeeded without trusted log verification, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "trusted Rekor SET") {
+		t.Fatalf("stderr missing fail-closed Rekor verification error:\n%s", stderr)
+	}
+}
+
 func TestIndependent_RejectsRewrittenBundleCheckpoint(t *testing.T) {
 	t.Setenv("PIPELOCK_ANCHOR_TEST_NOW", "2026-06-28T14:00:00Z")
 	fix := newFixture(t, 2)
@@ -789,6 +809,54 @@ func writeIndependentFixture(t *testing.T, fix *fixture) (evidencePath, bundlePa
 		t.Fatalf("WriteBundle: %v", err)
 	}
 	return evidencePath, bundlePath, logPath
+}
+
+func writeIndependentRekorFixture(t *testing.T, fix *fixture) (evidencePath, bundlePath string) {
+	t.Helper()
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+	evidencePath = filepath.Join(dir, "evidence.jsonl")
+	checkpoint, err := anchorpkg.BuildCheckpoint("proxy", fix.receipts, []string{fix.keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, rekorPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/log/entries" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		body := base64.StdEncoding.EncodeToString(raw)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"fake-uuid": map[string]any{
+				"logID":    "fake-rekor-log",
+				"logIndex": 4,
+				"body":     body,
+				"verification": map[string]any{
+					"inclusionProof": map[string]any{"rootHash": "fake-root"},
+				},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	proof, err := (anchorpkg.RekorLog{URL: server.URL, Signer: rekorPriv}).Submit(checkpoint)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	bundlePath = filepath.Join(dir, "rekor-anchor-bundle.json")
+	if err := anchorpkg.WriteBundle(bundlePath, anchorpkg.NewBundle(checkpoint, proof)); err != nil {
+		t.Fatalf("WriteBundle: %v", err)
+	}
+	return evidencePath, bundlePath
 }
 
 func moveIndependentEvidenceToSessionFile(t *testing.T, evidencePath string) string {

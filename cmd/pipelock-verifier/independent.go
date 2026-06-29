@@ -30,14 +30,14 @@ func newIndependentCmd() *cobra.Command {
 	var opts independentOptions
 	cmd := &cobra.Command{
 		Use:   "independent PATH",
-		Short: "Verify an externally anchored receipt-chain checkpoint",
-		Long: `Verifies a receipt chain against an anchor bundle and external inclusion
-proof. The local backend is a deterministic test backend; it proves the
+		Short: "Verify an anchored receipt-chain checkpoint",
+		Long: `Verifies a receipt chain against an anchor bundle and backend proof
+material. The local backend is a deterministic test backend; it proves the
 checkpoint/proof mechanics but is not an operator-independent witness.
 
-Honest limit: anchoring detects after-the-fact rewrite, delete, omit, and
-equivocation against the anchored checkpoint. It does not prove real-time truth
-by whoever held the receipt signing key.`,
+Honest limit: anchoring does not prove real-time truth by whoever held the
+receipt signing key. Rekor bundles fail closed until trusted Rekor SET and
+inclusion-proof verification is implemented.`,
 		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -63,9 +63,6 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 	if len(opts.signerKeys) == 0 {
 		return cliutil.ExitCodeError(exitUsage, fmt.Errorf("at least one --key is required"))
 	}
-	if strings.TrimSpace(opts.logPath) == "" {
-		return cliutil.ExitCodeError(exitUsage, fmt.Errorf("--local-log is required for local anchor verification"))
-	}
 	keyHexes, err := resolveSignerKeys(opts.signerKeys)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))
@@ -78,15 +75,33 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
-	report := anchor.VerifyBundle(bundle, receipts, keyHexes, anchor.LocalLog{
-		Path:  opts.logPath,
-		LogID: opts.logID,
-	})
+	backend, err := independentBackend(bundle, opts)
+	if err != nil {
+		return cliutil.ExitCodeError(exitUsage, err)
+	}
+	report := anchor.VerifyBundle(bundle, receipts, keyHexes, backend)
 	emitIndependentReport(stdout, stderr, filepath.Clean(target), report, opts.jsonOutput)
 	if !report.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("independent verification failed: %s", report.Error))
 	}
 	return nil
+}
+
+func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.Backend, error) {
+	switch bundle.Backend {
+	case anchor.LocalBackend:
+		if strings.TrimSpace(opts.logPath) == "" {
+			return nil, fmt.Errorf("--local-log is required for local anchor verification")
+		}
+		return anchor.LocalLog{
+			Path:  opts.logPath,
+			LogID: opts.logID,
+		}, nil
+	case anchor.RekorBackend:
+		return anchor.RekorLog{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported anchor backend %q", bundle.Backend)
+	}
 }
 
 func independentReceipts(target string, opts independentOptions) ([]receipt.Receipt, error) {

@@ -23,7 +23,9 @@ import (
 const (
 	BundleVersion     = 1
 	LocalBackend      = "local"
+	RekorBackend      = "rekor"
 	DefaultLocalLogID = "local-fake-log"
+	DefaultRekorURL   = "https://rekor.sigstore.dev"
 	GenesisHash       = "genesis"
 
 	dirPermissions  = 0o750
@@ -31,9 +33,15 @@ const (
 )
 
 var DefaultLimits = []string{
-	"External anchoring detects after-the-fact rewrite, delete, omit, and equivocation against the anchored checkpoint.",
-	"External anchoring does not prove real-time truth by whoever held the receipt signing key.",
+	"Anchor bundles bind a verified receipt-chain checkpoint to backend proof material.",
 	"The local backend is a deterministic test backend, not an operator-independent witness.",
+	"Anchoring does not prove real-time truth by whoever held the receipt signing key.",
+}
+
+var rekorLimits = []string{
+	"Rekor submission records a receipt-chain checkpoint for later transparency-log audit.",
+	"Independent Rekor verification requires trusted SET and inclusion-proof verification; this bundle does not make that claim.",
+	"Anchoring does not prove real-time truth by whoever held the receipt signing key.",
 }
 
 type Backend interface {
@@ -52,11 +60,22 @@ type Checkpoint struct {
 }
 
 type Proof struct {
-	Backend     string `json:"backend"`
-	LogID       string `json:"log_id"`
-	LogIndex    uint64 `json:"log_index"`
-	EntryHash   string `json:"entry_hash"`
-	LogRootHash string `json:"log_root_hash"`
+	Backend     string      `json:"backend"`
+	LogID       string      `json:"log_id"`
+	LogIndex    uint64      `json:"log_index"`
+	EntryHash   string      `json:"entry_hash"`
+	LogRootHash string      `json:"log_root_hash"`
+	Rekor       *RekorProof `json:"rekor,omitempty"`
+}
+
+type RekorProof struct {
+	URL                  string `json:"url,omitempty"`
+	UUID                 string `json:"uuid,omitempty"`
+	Body                 string `json:"body,omitempty"`
+	PublicKey            string `json:"public_key,omitempty"`
+	Signature            string `json:"signature,omitempty"`
+	IntegratedTime       int64  `json:"integrated_time,omitempty"`
+	SignedEntryTimestamp string `json:"signed_entry_timestamp,omitempty"`
 }
 
 type Bundle struct {
@@ -114,7 +133,7 @@ func NewBundle(checkpoint Checkpoint, proof Proof) Bundle {
 		CreatedAt:  time.Now().UTC(),
 		Checkpoint: checkpoint,
 		Proof:      proof,
-		Limits:     append([]string(nil), DefaultLimits...),
+		Limits:     limitsForBackend(proof.Backend),
 	}
 }
 
@@ -122,7 +141,7 @@ func VerifyBundle(b Bundle, receipts []receipt.Receipt, trustedKeys []string, ba
 	report := VerifyReport{
 		Valid:      false,
 		Proof:      b.Proof,
-		Limits:     append([]string(nil), DefaultLimits...),
+		Limits:     limitsForBackend(b.Proof.Backend),
 		Checkpoint: b.Checkpoint,
 	}
 	if b.Version != BundleVersion {
@@ -157,6 +176,15 @@ func VerifyBundle(b Bundle, receipts []receipt.Receipt, trustedKeys []string, ba
 	report.FinalSeq = computed.FinalSeq
 	report.RootHash = computed.RootHash
 	return report
+}
+
+func limitsForBackend(backend string) []string {
+	switch backend {
+	case RekorBackend:
+		return append([]string(nil), rekorLimits...)
+	default:
+		return append([]string(nil), DefaultLimits...)
+	}
 }
 
 func LoadBundle(path string) (Bundle, error) {

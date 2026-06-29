@@ -113,6 +113,23 @@ func TestBundleFileRoundTrip(t *testing.T) {
 	if loaded.Backend != LocalBackend || !checkpointsEqual(loaded.Checkpoint, checkpoint) {
 		t.Fatalf("loaded bundle = %+v", loaded)
 	}
+	if loaded.Version != bundle.Version {
+		t.Fatalf("loaded.Version = %d, want %d", loaded.Version, bundle.Version)
+	}
+	if loaded.Proof != bundle.Proof {
+		t.Fatalf("loaded.Proof = %+v, want %+v", loaded.Proof, bundle.Proof)
+	}
+	if !loaded.CreatedAt.Equal(bundle.CreatedAt) {
+		t.Fatalf("loaded.CreatedAt = %s, want %s", loaded.CreatedAt, bundle.CreatedAt)
+	}
+	if len(loaded.Limits) != len(bundle.Limits) {
+		t.Fatalf("loaded.Limits = %v, want %v", loaded.Limits, bundle.Limits)
+	}
+	for i := range bundle.Limits {
+		if loaded.Limits[i] != bundle.Limits[i] {
+			t.Fatalf("loaded.Limits[%d] = %q, want %q", i, loaded.Limits[i], bundle.Limits[i])
+		}
+	}
 }
 
 func TestLoadBundleRejectsStrictJSONViolations(t *testing.T) {

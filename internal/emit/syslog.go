@@ -275,9 +275,9 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 		s.closeMu.Unlock()
 		return errors.New(errSyslogClosed)
 	}
+	degraded := s.degraded.Load()
 	select {
 	case s.queue <- msg:
-		degraded := s.degraded.Load()
 		s.closeMu.Unlock()
 		if degraded {
 			return ErrSyslogDegraded

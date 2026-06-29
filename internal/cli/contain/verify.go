@@ -836,6 +836,9 @@ func containmentUIDsFromProbeEnv(env *probeEnv) (containmentUIDs, error) {
 	}
 
 	current := containmentUIDs{proxyUID: proxyUID, agentUID: agentUID}
+	if proxyUID == agentUID {
+		return containmentUIDs{}, fmt.Errorf("%s and %s both resolve to uid %d; containment users must be distinct", env.proxyUserName, env.agentUserName, agentUID)
+	}
 	if env.nftRulesPath == "" {
 		return current, nil
 	}
@@ -858,6 +861,9 @@ func containmentUIDsFromProbeEnv(env *probeEnv) (containmentUIDs, error) {
 	}
 	if header.agentUID != agentUID {
 		return containmentUIDs{}, fmt.Errorf("nftables rules file agent uid %d does not match current %s uid %d", header.agentUID, env.agentUserName, agentUID)
+	}
+	if header.operatorUID == agentUID {
+		return containmentUIDs{}, fmt.Errorf("nftables rules file operator uid %d matches current %s uid; contained agent must not be allow-listed", header.operatorUID, env.agentUserName)
 	}
 	current.operatorUID = header.operatorUID
 	current.operatorKnown = true
@@ -946,33 +952,32 @@ func probeNFTExecutable(env *probeEnv) string {
 
 func chainHasAgentCatchAllDrop(out, chainName string, uid int) bool {
 	return chainHasLine(out, chainName, func(line string) bool {
-		return lineHasSkuid(line, uid) &&
-			strings.Contains(line, "drop") &&
-			!strings.Contains(line, " dport ")
+		return lineHasTerminalSkuidVerdict(line, uid, "drop")
 	})
 }
 
 func chainHasSkuidAcceptForUID(out, chainName string, uid int) bool {
 	return chainHasLine(out, chainName, func(line string) bool {
-		return lineHasSkuid(line, uid) && strings.Contains(line, "accept")
+		return lineHasTerminalSkuidVerdict(line, uid, "accept")
 	})
 }
 
 func chainHasAgentProxyLoopbackAllow(out, chainName string, agentUID, port int) bool {
-	portText := strconv.Itoa(port)
 	return chainHasLine(out, chainName, func(line string) bool {
 		return lineHasSkuid(line, agentUID) &&
 			strings.Contains(line, "ip daddr 127.0.0.1") &&
-			strings.Contains(line, "tcp dport "+portText) &&
-			strings.Contains(line, "accept")
+			lineHasToken(line, "tcp") &&
+			lineHasDPort(line, port) &&
+			lineHasToken(line, "accept")
 	})
 }
 
 func chainHasAgentDNSDrop(out, chainName string, agentUID int, protocol string) bool {
 	return chainHasLine(out, chainName, func(line string) bool {
 		return lineHasSkuid(line, agentUID) &&
-			strings.Contains(line, protocol+" dport 53") &&
-			strings.Contains(line, "drop")
+			lineHasToken(line, protocol) &&
+			lineHasDPort(line, 53) &&
+			lineHasToken(line, "drop")
 	})
 }
 
@@ -996,6 +1001,69 @@ func lineHasSkuid(line string, uid int) bool {
 	return false
 }
 
+func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
+	fields := strings.Fields(line)
+	uidText := strconv.Itoa(uid)
+	skuidAt := -1
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == "skuid" && fields[i+1] == uidText {
+			skuidAt = i + 1
+			break
+		}
+	}
+	if skuidAt == -1 {
+		return false
+	}
+	verdictAt := -1
+	for i := skuidAt + 1; i < len(fields); i++ {
+		if fields[i] == verdict {
+			verdictAt = i
+			break
+		}
+	}
+	if verdictAt == -1 {
+		return false
+	}
+	inPrefix := false
+	for _, field := range fields[skuidAt+1 : verdictAt] {
+		if inPrefix {
+			if strings.HasSuffix(field, `"`) {
+				inPrefix = false
+			}
+			continue
+		}
+		switch field {
+		case "counter", "log":
+			continue
+		case "prefix":
+			inPrefix = true
+		default:
+			return false
+		}
+	}
+	return !inPrefix
+}
+
+func lineHasDPort(line string, port int) bool {
+	want := strconv.Itoa(port)
+	fields := strings.Fields(line)
+	for i, field := range fields {
+		if field == "dport" && i+1 < len(fields) && fields[i+1] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func lineHasToken(line, want string) bool {
+	for _, field := range strings.Fields(line) {
+		if field == want {
+			return true
+		}
+	}
+	return false
+}
+
 func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func(string) bool) bool {
 	inChain := false
 	depth := 0
@@ -1013,7 +1081,7 @@ func chainHasLineBeforeAgentDrop(out, chainName string, agentUID int, match func
 		if strings.Contains(line, "{") {
 			depth += strings.Count(line, "{")
 		}
-		if lineHasSkuid(line, agentUID) && strings.Contains(line, "drop") && !strings.Contains(line, " dport ") {
+		if lineHasTerminalSkuidVerdict(line, agentUID, "drop") {
 			return false
 		}
 		if match(line) {

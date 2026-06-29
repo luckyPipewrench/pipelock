@@ -404,6 +404,23 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "skuid-drop rule missing",
 		},
 		{
+			name: "constrained agent drop is not catch all",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 ip daddr 10.0.0.0/8 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "skuid-drop rule missing",
+		},
+		{
 			name: "broad loopback accept",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
@@ -440,11 +457,47 @@ func TestProbeNFTContainment(t *testing.T) {
 			wantDetail: "broad loopback accept",
 		},
 		{
+			name: "constrained agent drop does not hide broad loopback accept",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 10.0.0.0/8 drop
+			ip daddr 127.0.0.1 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "broad loopback accept",
+		},
+		{
 			name: "missing proxy port allow",
 			stdout: `table inet pipelock_containment {
 		chain output_filter {
 			meta skuid 1000 accept
 			meta skuid 988 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "loopback allow",
+		},
+		{
+			name: "proxy port prefix is not proxy port",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 88880 accept
 			meta skuid 987 udp dport 53 drop
 			meta skuid 987 tcp dport 53 drop
 			meta skuid 987 drop
@@ -486,6 +539,40 @@ func TestProbeNFTContainment(t *testing.T) {
 			code:       0,
 			wantStatus: statusFail,
 			wantDetail: "DNS drop rule missing",
+		},
+		{
+			name: "dns port prefix is not dns port",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 530 drop
+			meta skuid 987 tcp dport 530 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "DNS drop rule missing",
+		},
+		{
+			name: "constrained proxy accept is not terminal accept",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 ip daddr 127.0.0.1 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "proxy uid 988 accept rule missing",
 		},
 		{
 			name: "skuid and drop outside target chain",
@@ -619,6 +706,27 @@ func TestProbeNFTContainment_UsesInstalledOperatorUIDFromRulesFile(t *testing.T)
 	if gotStatus != statusPass {
 		t.Fatalf("status: got %q, want pass (detail=%q)", gotStatus, gotDetail)
 	}
+
+	liveWithoutOperator1000 := `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`
+	env.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+		return liveWithoutOperator1000, 0, nil
+	}
+	gotStatus, gotDetail = probeNFTContainment(context.Background(), env)
+	if gotStatus != statusFail {
+		t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+	}
+	if !strings.Contains(gotDetail, "operator uid 1000") {
+		t.Fatalf("detail: got %q, want operator uid 1000 failure", gotDetail)
+	}
 }
 
 func TestProbeNFTContainment_SkuidUIDBoundaryIsExact(t *testing.T) {
@@ -679,6 +787,56 @@ func TestProbeNFTContainment_StaleAgentUIDPrefixDoesNotSatisfyDrop(t *testing.T)
 	if !strings.Contains(gotDetail, "current agent uid 98") {
 		t.Fatalf("detail: got %q, want current agent uid 98 failure", gotDetail)
 	}
+}
+
+func TestProbeNFTContainment_RejectsContainmentUIDCollisions(t *testing.T) {
+	t.Run("proxy equals agent", func(t *testing.T) {
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.lookupUser = func(name string) (*user.User, error) {
+				switch name {
+				case testProxyUser, testAgentUser:
+					return &user.User{Uid: "987", Gid: "987", Username: name, HomeDir: "/home/" + name}, nil
+				default:
+					return nil, user.UnknownUserError(name)
+				}
+			}
+			e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+				return goodNFTContainmentOutput, 0, nil
+			}
+		})
+
+		gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
+		if gotStatus != statusFail {
+			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "containment users must be distinct") {
+			t.Fatalf("detail: got %q, want distinct-user failure", gotDetail)
+		}
+	})
+
+	t.Run("operator equals agent", func(t *testing.T) {
+		tmp := t.TempDir()
+		rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
+		if err := os.WriteFile(rulesPath, []byte(renderNFTRules(987, 988, 987, 8888, testTable, testChain)), 0o600); err != nil {
+			t.Fatalf("write rules: %v", err)
+		}
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.lookupUser = containTestLookup
+			e.nftRulesPath = rulesPath
+			e.readFile = os.ReadFile
+			e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+				return goodNFTContainmentOutput, 0, nil
+			}
+		})
+
+		gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
+		if gotStatus != statusFail {
+			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "operator uid 987 matches current pipelock-agent uid") {
+			t.Fatalf("detail: got %q, want operator-agent collision failure", gotDetail)
+		}
+	})
 }
 
 func containTestLookup(name string) (*user.User, error) {

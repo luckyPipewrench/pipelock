@@ -194,29 +194,24 @@ func validateRekorSubmissionRecord(proof Proof, checkpoint Checkpoint) error {
 	if proof.Rekor == nil {
 		return errors.New("rekor proof required")
 	}
-	if strings.TrimSpace(proof.Rekor.URL) == "" {
-		return errors.New("rekor proof URL required")
-	}
-	if proof.Rekor.UUID == "" {
-		return errors.New("rekor proof UUID required")
-	}
-	if proof.LogID == "" {
-		return errors.New("rekor proof log_id required")
-	}
-	if proof.Rekor.Body == "" {
-		return errors.New("rekor proof body required")
-	}
-	if proof.EntryHash == "" {
-		return errors.New("rekor proof entry_hash required")
-	}
-	if proof.LogRootHash == "" {
-		return errors.New("rekor proof log_root_hash required")
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "URL", value: proof.Rekor.URL},
+		{name: "UUID", value: proof.Rekor.UUID},
+		{name: "log_id", value: proof.LogID},
+		{name: "body", value: proof.Rekor.Body},
+		{name: "entry_hash", value: proof.EntryHash},
+		{name: "log_root_hash", value: proof.LogRootHash},
+		{name: "signed_entry_timestamp", value: proof.Rekor.SignedEntryTimestamp},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("rekor proof %s required", field.name)
+		}
 	}
 	if proof.Rekor.IntegratedTime <= 0 {
 		return errors.New("rekor proof integrated_time required")
-	}
-	if proof.Rekor.SignedEntryTimestamp == "" {
-		return errors.New("rekor proof signed_entry_timestamp required")
 	}
 	checkpointBytes, err := checkpointBytes(checkpoint)
 	if err != nil {

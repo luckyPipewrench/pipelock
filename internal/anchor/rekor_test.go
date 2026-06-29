@@ -132,12 +132,19 @@ func TestRekorSubmissionRecordRequiresMetadata(t *testing.T) {
 		want string
 	}{
 		{name: "url", edit: func(p *Proof) { p.Rekor.URL = "" }, want: "URL"},
+		{name: "url whitespace", edit: func(p *Proof) { p.Rekor.URL = " \t" }, want: "URL"},
 		{name: "uuid", edit: func(p *Proof) { p.Rekor.UUID = "" }, want: "UUID"},
+		{name: "uuid whitespace", edit: func(p *Proof) { p.Rekor.UUID = " \t" }, want: "UUID"},
 		{name: "log id", edit: func(p *Proof) { p.LogID = "" }, want: "log_id"},
+		{name: "log id whitespace", edit: func(p *Proof) { p.LogID = " \t" }, want: "log_id"},
+		{name: "body whitespace", edit: func(p *Proof) { p.Rekor.Body = " \t" }, want: "body"},
 		{name: "entry hash", edit: func(p *Proof) { p.EntryHash = "" }, want: "entry_hash"},
+		{name: "entry hash whitespace", edit: func(p *Proof) { p.EntryHash = " \t" }, want: "entry_hash"},
 		{name: "root hash", edit: func(p *Proof) { p.LogRootHash = "" }, want: "log_root_hash"},
+		{name: "root hash whitespace", edit: func(p *Proof) { p.LogRootHash = " \t" }, want: "log_root_hash"},
 		{name: "integrated time", edit: func(p *Proof) { p.Rekor.IntegratedTime = 0 }, want: "integrated_time"},
 		{name: "set", edit: func(p *Proof) { p.Rekor.SignedEntryTimestamp = "" }, want: "signed_entry_timestamp"},
+		{name: "set whitespace", edit: func(p *Proof) { p.Rekor.SignedEntryTimestamp = " \t" }, want: "signed_entry_timestamp"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -88,6 +88,9 @@ func runIndependent(stdout, stderr io.Writer, target string, opts independentOpt
 }
 
 func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.Backend, int, error) {
+	if bundle.Backend != bundle.Proof.Backend {
+		return nil, cliutil.ExitConfig, fmt.Errorf("anchor bundle backend %q does not match proof backend %q", bundle.Backend, bundle.Proof.Backend)
+	}
 	switch bundle.Backend {
 	case anchor.LocalBackend:
 		if strings.TrimSpace(opts.logPath) == "" {

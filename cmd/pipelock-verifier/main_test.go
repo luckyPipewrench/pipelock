@@ -671,6 +671,16 @@ func TestIndependent_RejectsUnsupportedBundleBackendAsConfig(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `unsupported anchor backend "future"`) {
 		t.Fatalf("err = %v, want unsupported backend", err)
 	}
+
+	bundle.Backend = anchorpkg.LocalBackend
+	bundle.Proof.Backend = anchorpkg.RekorBackend
+	_, code, err = independentBackend(bundle, independentOptions{logPath: logPath})
+	if code != cliutil.ExitConfig {
+		t.Fatalf("code=%d, want %d for backend mismatch", code, cliutil.ExitConfig)
+	}
+	if err == nil || !strings.Contains(err.Error(), "does not match proof backend") {
+		t.Fatalf("err = %v, want backend mismatch", err)
+	}
 }
 
 func TestIndependent_RejectsRewrittenBundleCheckpoint(t *testing.T) {

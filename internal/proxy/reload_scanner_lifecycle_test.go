@@ -190,12 +190,16 @@ func TestReverseProxy_EmitReceipt_NilGuards(t *testing.T) {
 	rp := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, nil)
 
 	// Path 1: receiptEmitterPtr never set. Must be a no-op.
-	rp.emitReceipt(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock})
+	if err := rp.emitReceipt(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock}); err != nil {
+		t.Fatalf("emitReceipt with unset emitter = %v, want nil", err)
+	}
 
 	// Path 2: receiptEmitterPtr set but storing nil. Must be a no-op.
 	var emPtr atomic.Pointer[receipt.Emitter]
 	rp.SetReceiptEmitter(&emPtr)
-	rp.emitReceipt(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock})
+	if err := rp.emitReceipt(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock}); err != nil {
+		t.Fatalf("emitReceipt with nil stored emitter = %v, want nil", err)
+	}
 }
 
 // TestReverseProxy_SnapshotAndAcquire_RetryAndFallback covers the

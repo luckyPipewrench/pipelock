@@ -154,6 +154,43 @@ func TestInterceptEmitReceiptOrBlockUnavailableEmitterRecordsMetric(t *testing.T
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="intercept"} 1`)
 }
 
+func TestInterceptEmitReceiptOrBlockRequiresProxy(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.Internal = nil
+	cfg.ApplyDefaults()
+
+	m := metrics.New()
+	ic := &InterceptContext{
+		Config:    cfg,
+		Logger:    audit.NewNop(),
+		Metrics:   m,
+		RequestID: "req-intercept-no-proxy",
+		Agent:     "agent",
+	}
+	rr := httptest.NewRecorder()
+	blocked := interceptEmitReceiptOrBlock(ic, rr, audit.NewRequestLogContext(ic.RequestID), receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "intercept",
+		Method:    http.MethodGet,
+		Target:    "https://example.test/",
+		RequestID: ic.RequestID,
+		Agent:     ic.Agent,
+	})
+	if !blocked {
+		t.Fatal("missing proxy did not fail closed when receipts are required")
+	}
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+	if got := rr.Header().Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
+	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="intercept"} 1`)
+}
+
 func testInterceptRedactProxy(t *testing.T, cfg *config.Config) *Proxy {
 	t.Helper()
 	return testInterceptRedactProxyWithScanner(t, cfg, nil)

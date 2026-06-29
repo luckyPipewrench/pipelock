@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
@@ -95,6 +96,35 @@ func TestVerify_Contained_MalformedWitness_FailsClosed(t *testing.T) {
 	rep, err := playground.VerifyRun(dir, orchPubHex)
 	if err == nil && rep.OK {
 		t.Fatal("malformed host-containment witness must fail closed")
+	}
+}
+
+func TestVerify_Contained_DuplicateKeyWitnessFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, orchPubHex, _ := buildRunDir(t, true)
+	path := filepath.Join(dir, hcwFile)
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read hcw: %v", err)
+	}
+	data = prependDuplicateJSONField(t, data, "run_nonce", "attacker-run")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write hcw: %v", err)
+	}
+
+	rep, err := playground.VerifyRun(dir, orchPubHex)
+	if err != nil {
+		t.Fatalf("VerifyRun returned unexpected error: %v", err)
+	}
+	if rep.OK {
+		t.Fatal("duplicate-key host-containment witness must fail closed")
+	}
+	check := findCheck(t, rep.Checks, "host-containment-witness-signature")
+	if check.OK {
+		t.Fatalf("host-containment witness signature check passed unexpectedly: %+v", check)
+	}
+	if !strings.Contains(check.Reason, "duplicate JSON key") {
+		t.Fatalf("Reason = %q, want duplicate JSON key", check.Reason)
 	}
 }
 

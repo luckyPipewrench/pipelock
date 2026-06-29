@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -114,7 +115,7 @@ func TestReverseEmitReceipt_NoV1EmitterSkipsV2(t *testing.T) {
 		logger:       audit.NewNop(),
 		v2EmitterPtr: &v2Ptr,
 	}
-	rp.emitReceipt(receipt.EmitOpts{
+	if err := rp.emitReceipt(receipt.EmitOpts{
 		ActionID:  "reverse-no-v1",
 		Verdict:   config.ActionBlock,
 		Layer:     LayerReverseResponseBlocked,
@@ -124,7 +125,9 @@ func TestReverseEmitReceipt_NoV1EmitterSkipsV2(t *testing.T) {
 		Target:    "https://example.test/reverse",
 		RequestID: "req-reverse-no-v1",
 		Agent:     "agent",
-	})
+	}); err != nil {
+		t.Fatalf("emitReceipt without v1 emitter = %v, want nil", err)
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -196,7 +199,7 @@ func TestReverseEmitReceipt_V1FailureSkipsV2(t *testing.T) {
 		receiptEmitterPtr: &v1Ptr,
 		v2EmitterPtr:      &v2Ptr,
 	}
-	rp.emitReceipt(receipt.EmitOpts{
+	if err := rp.emitReceipt(receipt.EmitOpts{
 		ActionID:  "reverse-v1-fail",
 		Verdict:   config.ActionBlock,
 		Layer:     LayerReverseResponseBlocked,
@@ -206,7 +209,9 @@ func TestReverseEmitReceipt_V1FailureSkipsV2(t *testing.T) {
 		Target:    "https://example.test/reverse",
 		RequestID: "req-reverse-v1-fail",
 		Agent:     "agent",
-	})
+	}); err == nil {
+		t.Fatal("emitReceipt after sealed v1 chain returned nil, want error")
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -263,7 +268,7 @@ func TestReverseEmitReceipt_V1SuccessEmitsV2Sibling(t *testing.T) {
 		v2EmitterPtr:      &v2Ptr,
 	}
 	wantPolicyHash := strings.Repeat("a", 64)
-	rp.emitReceipt(receipt.EmitOpts{
+	if err := rp.emitReceipt(receipt.EmitOpts{
 		ActionID:   "reverse-v1-ok",
 		Verdict:    config.ActionBlock,
 		Layer:      LayerReverseResponseBlocked,
@@ -274,7 +279,9 @@ func TestReverseEmitReceipt_V1SuccessEmitsV2Sibling(t *testing.T) {
 		RequestID:  "req-reverse-v1-ok",
 		Agent:      "agent",
 		PolicyHash: wantPolicyHash,
-	})
+	}); err != nil {
+		t.Fatalf("emitReceipt success path = %v, want nil", err)
+	}
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}
@@ -377,6 +384,106 @@ func TestReceiptCoverage_ReverseShieldReceiptScrubsTargetAndLinksParent(t *testi
 	}
 	if !strings.Contains(r.ActionRecord.Target, "__redacted") {
 		t.Fatalf("reverse shield receipt target did not include path redaction marker: %q", r.ActionRecord.Target)
+	}
+}
+
+func TestReverseProxy_RequireReceiptsBlocksMissingEmitterBeforeEgress(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+	proxySrv := newIPv4Server(t, handler)
+	t.Cleanup(proxySrv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clean", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (missing receipt emitter must block before reverse egress)", got)
+	}
+}
+
+func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+
+	proxySrv, dir, closeRec := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clean", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	var allowCount int
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Verdict == config.ActionAllow &&
+			rcpt.ActionRecord.Transport == TransportReverse &&
+			rcpt.ActionRecord.Layer == "" {
+			allowCount++
+		}
+	}
+	if allowCount != 1 {
+		t.Fatalf("reverse allow receipt count = %d, want 1 (receipts: %d)", allowCount, len(receipts))
 	}
 }
 

@@ -137,6 +137,7 @@ func TestRekorSubmissionRecordRequiresMetadata(t *testing.T) {
 		{name: "uuid whitespace", edit: func(p *Proof) { p.Rekor.UUID = " \t" }, want: "UUID"},
 		{name: "log id", edit: func(p *Proof) { p.LogID = "" }, want: "log_id"},
 		{name: "log id whitespace", edit: func(p *Proof) { p.LogID = " \t" }, want: "log_id"},
+		{name: "body", edit: func(p *Proof) { p.Rekor.Body = "" }, want: "body"},
 		{name: "body whitespace", edit: func(p *Proof) { p.Rekor.Body = " \t" }, want: "body"},
 		{name: "entry hash", edit: func(p *Proof) { p.EntryHash = "" }, want: "entry_hash"},
 		{name: "entry hash whitespace", edit: func(p *Proof) { p.EntryHash = " \t" }, want: "entry_hash"},

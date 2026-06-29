@@ -99,6 +99,75 @@ func TestVerifyRunArtifacts_InMemory(t *testing.T) {
 	}
 }
 
+func TestVerifyRunArtifacts_RejectsDuplicateJSONKeys(t *testing.T) {
+	t.Parallel()
+	fixture := newVerifyMemoryFixture(t)
+
+	tests := []struct {
+		name       string
+		mutate     func(*testing.T, playground.RunArtifacts) playground.RunArtifacts
+		wantCheck  string
+		wantReason string
+	}{
+		{
+			name: "launch manifest duplicate signed field",
+			mutate: func(t *testing.T, artifacts playground.RunArtifacts) playground.RunArtifacts {
+				artifacts.LaunchManifest = prependDuplicateJSONField(t, artifacts.LaunchManifest, "run_nonce", "attacker-run")
+				return artifacts
+			},
+			wantCheck:  "launch-manifest-signature",
+			wantReason: "duplicate JSON key",
+		},
+		{
+			name: "witness duplicate signed field",
+			mutate: func(t *testing.T, artifacts playground.RunArtifacts) playground.RunArtifacts {
+				artifacts.Witness = prependDuplicateJSONField(t, artifacts.Witness, "observed_count", 99)
+				return artifacts
+			},
+			wantCheck:  "collector-witness-signature",
+			wantReason: "duplicate JSON key",
+		},
+		{
+			name: "red witness duplicate signed field",
+			mutate: func(t *testing.T, artifacts playground.RunArtifacts) playground.RunArtifacts {
+				artifacts.RedWitness = prependDuplicateJSONField(t, artifacts.RedWitness, "observed_count", 0)
+				return artifacts
+			},
+			wantCheck:  "red-case-calibration",
+			wantReason: "duplicate JSON key",
+		},
+		{
+			name: "packet manifest duplicate semantic field",
+			mutate: func(t *testing.T, artifacts playground.RunArtifacts) playground.RunArtifacts {
+				artifacts.PacketManifestJSON = prependDuplicateJSONField(t, artifacts.PacketManifestJSON, "scenario_id", "wrong-scenario")
+				return artifacts
+			},
+			wantCheck:  "live-demo-semantics",
+			wantReason: "duplicate JSON key",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rep, err := playground.VerifyRunArtifacts(tc.mutate(t, fixture.artifacts), fixture.orchestratorPubHex)
+			if err != nil {
+				t.Fatalf("VerifyRunArtifacts returned unexpected error: %v", err)
+			}
+			if rep.OK {
+				t.Fatalf("duplicate-key artifact verified: %+v", rep.Checks)
+			}
+			check := findCheck(t, rep.Checks, tc.wantCheck)
+			if check.OK {
+				t.Fatalf("%s check passed unexpectedly: %+v", tc.wantCheck, check)
+			}
+			if !strings.Contains(check.Reason, tc.wantReason) {
+				t.Fatalf("%s reason = %q, want %q", tc.wantCheck, check.Reason, tc.wantReason)
+			}
+		})
+	}
+}
+
 func TestExtractRunArtifactsFromBundle_InMemory(t *testing.T) {
 	t.Parallel()
 	fixture := newVerifyMemoryFixture(t)
@@ -562,6 +631,34 @@ func corruptWitnessByte(artifacts playground.RunArtifacts) playground.RunArtifac
 		out.Witness[len(out.Witness)/2] ^= 0x01
 	}
 	return out
+}
+
+func prependDuplicateJSONField(t *testing.T, raw []byte, key string, value any) []byte {
+	t.Helper()
+	valueJSON, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal duplicate value: %v", err)
+	}
+	prefix := append([]byte(`{"`+key+`":`), valueJSON...)
+	prefix = append(prefix, ',')
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		t.Fatalf("fixture is not a JSON object: %q", raw)
+	}
+	out := append([]byte(nil), prefix...)
+	out = append(out, trimmed[1:]...)
+	return out
+}
+
+func findCheck(t *testing.T, checks []playground.Check, name string) playground.Check {
+	t.Helper()
+	for _, check := range checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("missing check %q in %+v", name, checks)
+	return playground.Check{}
 }
 
 func writeRunArtifactsFromMemory(t *testing.T, artifacts playground.RunArtifacts) string {

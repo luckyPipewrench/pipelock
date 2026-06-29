@@ -121,11 +121,11 @@ func (r RekorLog) Submit(checkpoint Checkpoint) (Proof, error) {
 	}
 	baseURL, err := normalizeRekorBaseURL(r.URL)
 	if err != nil {
-		return Proof{}, err
+		return Proof{}, fmt.Errorf("normalize rekor URL: %w", err)
 	}
 	endpoint, err := rekorEntriesURL(baseURL)
 	if err != nil {
-		return Proof{}, err
+		return Proof{}, fmt.Errorf("build rekor entries URL: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

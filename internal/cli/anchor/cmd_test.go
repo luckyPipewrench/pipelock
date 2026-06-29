@@ -102,6 +102,46 @@ func TestReceiptsCmdWritesLocalAnchorBundle(t *testing.T) {
 	}
 }
 
+func TestCmdRegistersReceiptsSubcommand(t *testing.T) {
+	cmd := Cmd()
+	if cmd.Use != "anchor" {
+		t.Fatalf("Use = %q, want anchor", cmd.Use)
+	}
+	if _, _, err := cmd.Find([]string{"receipts"}); err != nil {
+		t.Fatalf("Find receipts: %v", err)
+	}
+}
+
+func TestReceiptsCmdRequiresLocalLogAndOutput(t *testing.T) {
+	receiptsPath, keyHex := cliReceiptJSONL(t)
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "local log",
+			args: []string{receiptsPath, "--key", keyHex, "--out", filepath.Join(t.TempDir(), "bundle.json")},
+			want: "--local-log is required",
+		},
+		{
+			name: "output",
+			args: []string{receiptsPath, "--key", keyHex, "--local-log", filepath.Join(t.TempDir(), "anchor.jsonl")},
+			want: "--out is required",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := receiptsCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetArgs(tc.args)
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Execute err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestReceiptsCmdRequiresPinnedKey(t *testing.T) {
 	receiptsPath, _ := cliReceiptJSONL(t)
 	cmd := receiptsCmd()

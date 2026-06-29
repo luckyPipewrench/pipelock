@@ -399,6 +399,35 @@ func TestValidateReload_MediationEnvelopeDisabled(t *testing.T) {
 	}
 }
 
+func TestValidateReload_MediationEnvelopeVerifyInboundDisabled(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	old := Defaults()
+	old.MediationEnvelope.VerifyInbound.Enabled = true
+	old.MediationEnvelope.VerifyInbound.TrustList = []MediationEnvelopeTrustedKey{{
+		KeyID:     "peer",
+		PublicKey: signing.EncodePublicKey(pub),
+	}}
+	if err := old.validateMediationEnvelope(); err != nil {
+		t.Fatalf("old validate: %v", err)
+	}
+
+	updated := old.Clone()
+	updated.MediationEnvelope.VerifyInbound.Enabled = false
+	if err := updated.validateMediationEnvelope(); err != nil {
+		t.Fatalf("updated validate: %v", err)
+	}
+
+	warnings := ValidateReload(old, updated)
+	if !reloadWarningHasField(warnings, "mediation_envelope.verify_inbound.enabled") {
+		t.Errorf("expected mediation_envelope.verify_inbound.enabled warning, got %v", warnings)
+	}
+}
+
 func TestValidateReload_MediationEnvelopeKeyIDChange(t *testing.T) {
 	t.Parallel()
 

@@ -334,9 +334,11 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		for _, w := range warnings {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: %s - %s\n", w.Field, w.Message)
 		}
-		// Block downgrades from strict mode (security-critical).
-		if oldCfg.Mode == config.ModeStrict && len(warnings) > 0 {
-			rejectErr := fmt.Errorf("rejected: security downgrade from strict mode")
+		// Block downgrades from strict mode and from explicit "required"
+		// security contracts. A required evidence/signature mode should not
+		// keep forwarding under a warning-only weakening reload.
+		if reason := reloadDowngradeRejectReason(oldCfg, warnings); reason != "" {
+			rejectErr := fmt.Errorf("rejected: security downgrade from %s", reason)
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 			return rejectErr
 		}
@@ -435,6 +437,69 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 	}
 
 	return reasons
+}
+
+func reloadDowngradeRejectReason(oldCfg *config.Config, warnings []config.ReloadWarning) string {
+	if oldCfg == nil || len(warnings) == 0 {
+		return ""
+	}
+	if oldCfg.Mode == config.ModeStrict {
+		return "strict mode"
+	}
+	if !hasRejectableDowngradeWarning(warnings) {
+		return ""
+	}
+
+	var required []string
+	if oldCfg.FlightRecorder.RequireReceipts {
+		required = append(required, "flight_recorder.require_receipts")
+	}
+	if oldCfg.LicenseRequireIntermediateResolved {
+		required = append(required, "license_require_intermediate")
+	}
+	if oldCfg.A2AScanning.Enabled && oldCfg.A2AScanning.RequireSignedAgentCards {
+		required = append(required, "a2a_scanning.require_signed_agent_cards")
+	}
+	if oldCfg.MCPBinaryIntegrity.Enabled && oldCfg.MCPBinaryIntegrity.RequireSignature {
+		required = append(required, "mcp_binary_integrity.require_signature")
+	}
+	if oldCfg.MediationEnvelope.VerifyInbound.Enabled {
+		required = append(required, "mediation_envelope.verify_inbound.enabled")
+	}
+	if len(required) == 0 {
+		return ""
+	}
+	return "required security mode (" + strings.Join(required, ", ") + ")"
+}
+
+func hasRejectableDowngradeWarning(warnings []config.ReloadWarning) bool {
+	for _, w := range warnings {
+		if reloadWarningIsAdvisory(w) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func reloadWarningIsAdvisory(w config.ReloadWarning) bool {
+	msg := strings.ToLower(w.Message)
+	if strings.Contains(msg, "requires restart") ||
+		strings.Contains(msg, "require restart") ||
+		strings.Contains(msg, "ignored on reload") ||
+		strings.Contains(msg, "uses init-time") ||
+		strings.Contains(msg, "cannot change at runtime") {
+		return true
+	}
+
+	switch w.Field {
+	case "mediation_envelope.key_id":
+		return true
+	case "dlp.secrets_file":
+		return !strings.Contains(msg, "removed")
+	default:
+		return false
+	}
 }
 
 func hasNamedAgentProfiles(agents map[string]config.AgentProfile) bool {

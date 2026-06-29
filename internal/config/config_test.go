@@ -3791,6 +3791,14 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 	old.MCPToolPolicy.Rules = []ToolPolicyRule{{Name: "deny-shell", ToolPattern: "shell", Action: ActionBlock}}
 	updated.MCPToolPolicy.Action = ActionWarn
 	updated.MCPToolPolicy.Rules = []ToolPolicyRule{{Name: "deny-shell", ToolPattern: "shell", Action: ActionWarn}}
+	old.MCPBinaryIntegrity.Enabled = true
+	updated.MCPBinaryIntegrity.Enabled = true
+	old.MCPBinaryIntegrity.Action = ActionBlock
+	updated.MCPBinaryIntegrity.Action = ActionWarn
+	old.MCPToolProvenance.Enabled = true
+	updated.MCPToolProvenance.Enabled = true
+	old.MCPToolProvenance.Action = ActionBlock
+	updated.MCPToolProvenance.Action = ActionWarn
 	old.AddressProtection.Enabled = true
 	updated.AddressProtection.Enabled = true
 	old.AddressProtection.Action = ActionBlock
@@ -3832,6 +3840,8 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 		"mcp_tool_scanning.action",
 		"mcp_tool_policy.action",
 		"mcp_tool_policy.rules.deny-shell.action",
+		"mcp_binary_integrity.action",
+		"mcp_tool_provenance.action",
 		"address_protection.action",
 		"address_protection.unknown_action",
 		"a2a_scanning.action",
@@ -3840,6 +3850,27 @@ func TestValidateReload_ActionDowngradesWarnForEnforcementSurfaces(t *testing.T)
 		"mcp_session_binding.unknown_tool_action",
 		"mcp_session_binding.no_baseline_action",
 		"tool_chain_detection.action",
+	} {
+		if !hasReloadWarning(warnings, field) {
+			t.Fatalf("missing reload warning for %s; warnings=%+v", field, warnings)
+		}
+	}
+}
+
+func TestValidateReload_MCPIntegrityAndProvenanceDowngrades(t *testing.T) {
+	old := Defaults()
+	updated := old.Clone()
+	old.MCPBinaryIntegrity.Enabled = true
+	old.MCPBinaryIntegrity.RequireSignature = true
+	updated.MCPBinaryIntegrity.Enabled = false
+	old.MCPToolProvenance.Enabled = true
+	updated.MCPToolProvenance.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	for _, field := range []string{
+		"mcp_binary_integrity.enabled",
+		"mcp_binary_integrity.require_signature",
+		"mcp_tool_provenance.enabled",
 	} {
 		if !hasReloadWarning(warnings, field) {
 			t.Fatalf("missing reload warning for %s; warnings=%+v", field, warnings)

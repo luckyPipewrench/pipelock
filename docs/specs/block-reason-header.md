@@ -4,7 +4,7 @@ When pipelock blocks an outbound request, the response carries a small set of HT
 
 This document is the canonical schema. Once an agent in production reads `dlp_match`, the vocabulary is locked. Renaming a code in v2 breaks every consumer.
 
-> **Status:** the schema and emit package land first (this PR). The transport refactor that wires every block path to call `Info.SetHeaders` lands in a follow-up PR. Until that PR merges, the vocabulary below is the *target* — it is not currently emitted on production blocks. The split is intentional: locking the operator-facing vocabulary before any block site commits to it.
+> **Status:** the v1 schema, validators, and production emit sites are shipped. The production-path matrix test (`internal/blockreason/production_path_matrix_test.go`) fails the build if a reason code has no production emit site or documented non-HTTP exemption.
 
 ## Header set
 
@@ -164,7 +164,7 @@ Agents should treat unknown reason codes as a generic block at the declared seve
 
 ## Transport coverage
 
-The follow-up transport PR wires the header onto every pipelock block path. There is no transport split — the schema is the same on every surface; only the framing differs (HTTP headers vs WebSocket close-frame JSON).
+HTTP-capable block paths emit the same v1 schema; only the framing differs (HTTP headers vs WebSocket close-frame JSON). MCP JSON-RPC-only blocks preserve the same reason vocabulary in error metadata where there is no HTTP response surface.
 
 | Transport | Mechanism |
 |---|---|

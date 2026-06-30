@@ -269,7 +269,7 @@ Scans request bodies and headers for secret exfiltration and prompt injection be
 
 ```yaml
 request_body_scanning:
-  enabled: false
+  enabled: true
   action: warn              # warn or block (no strip for bodies)
   max_body_bytes: 5242880   # 5MB; fail-closed above this
   scan_headers: true        # scan request headers for DLP
@@ -285,7 +285,7 @@ request_body_scanning:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Enable request body/header DLP scanning and request body prompt-injection scanning |
+| `enabled` | `true` | Enable request body/header DLP scanning and request body prompt-injection scanning |
 | `action` | `warn` | `warn` logs ordinary findings, `block` rejects ordinary findings (requires enforce mode). Critical DLP and prompt-injection hard-blocks still reject non-provider destinations in enforce mode. |
 | `max_body_bytes` | `5242880` | Max body size to buffer; bodies exceeding this are always blocked (fail-closed) |
 | `scan_headers` | `true` | Scan request headers for DLP patterns |
@@ -310,7 +310,7 @@ request_body_scanning:
 
 **Security hard-blocks:** In enforce mode, critical-severity DLP findings in request bodies hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`. Request-body prompt-injection findings hard-block non-provider destinations with `X-Pipelock-Block-Reason: prompt_injection`. Operators that need audit-only rollout for selected critical patterns can set those individual patterns to `action: warn` or run the deployment with `enforce: false`.
 
-**Note on `scan_headers`:** The config default is `true`, but omitting the field from your YAML file gives `false` (Go's zero value overrides the default). Always set `scan_headers: true` explicitly in your config if you want header scanning enabled.
+**Note on security defaults:** Omitting `request_body_scanning.enabled` or `request_body_scanning.scan_headers` defaults both to `true`. Set either field to `false` explicitly only when you intend to disable that protection.
 
 ## Redaction
 

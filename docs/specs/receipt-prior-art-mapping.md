@@ -83,7 +83,7 @@ and responses so intermediaries can verify origin and integrity.
 | Signed components | `target`, `method`, `transport` on the action record | Receipts capture the action semantically, not the byte-for-byte request. |
 | `keyid` parameter | `signer_key` | RFC 9421 `keyid` is an application-defined key identifier; receipts use raw hex today. A JWK or JWK-thumbprint (RFC 7638) profile would make the identifier resolver-friendly. |
 | Signature algorithm | `ed25519` | RFC 9421 supports ed25519. |
-| Integration point | `X-Pipelock-Block-Reason-Receipt` response header (opaque ULID receipt ID) | Block responses already carry a receipt ID per the [block-reason header spec](./block-reason-header.md); relying parties can fetch the matching receipt through the transports documented at [`docs/guides/receipt-transports.md`](../guides/receipt-transports.md). Embedding a full receipt inline in an HTTP header is a possible future profile, not shipped today. |
+| Integration point | `X-Pipelock-Block-Reason-Receipt` response header (opaque receipt ID) | Block responses may carry a receipt ID per the [block-reason header spec](./block-reason-header.md) when that block path has a receipt action ID available; relying parties can fetch the matching receipt through the transports documented at [`docs/guides/receipt-transports.md`](../guides/receipt-transports.md). Embedding a full receipt inline in an HTTP header is a possible future profile, not shipped today. |
 
 **Relationship:** Different problem. RFC 9421 proves "this HTTP message has not been
 modified." Receipts prove "an authorized agent caused this semantic action." Both can

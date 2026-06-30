@@ -13,7 +13,7 @@ The schema is locked at v1. Additive changes (new reason codes, new optional hea
 | `X-Pipelock-Block-Reason-Severity` | Always | `critical` |
 | `X-Pipelock-Block-Reason-Retry` | Always | `none` |
 | `X-Pipelock-Block-Reason-Layer` | Optional | `body_dlp` |
-| `X-Pipelock-Block-Reason-Receipt` | Optional | `01J0GNYZ7XSQRTQ8FPYM5BHX2K` |
+| `X-Pipelock-Block-Reason-Receipt` | Optional | `0190a3c4-1234-7abc-89ab-0123456789ab` |
 
 The version header lets a future v2 schema break compatibility cleanly. Receivers should parse the version header first and reject unknown majors.
 
@@ -101,7 +101,7 @@ Agents should switch on the retry hint, not on the reason code, when deciding wh
 
 `X-Pipelock-Block-Reason-Layer` carries the scanner label that fired (e.g. `subdomain_entropy`, `body_dlp`, `tool_policy`). Useful for telemetry attribution. Bounded to 32 characters; longer labels are dropped, not silently truncated.
 
-`X-Pipelock-Block-Reason-Receipt` is reserved for a 26-character Crockford-base32 ULID identifying an action receipt. The header schema and validator (`WithReceipt`) ship in v2.4, but v2.4 production block paths leave it unset — the header surface is reserved for follow-up wiring that supplies a receipt ID at the block emit site. When a block path does populate it, an auditor can pull the receipt by ID from the receipt store. Receipts are signed; see [`receipt-transports.md`](receipt-transports.md).
+`X-Pipelock-Block-Reason-Receipt` carries an opaque receipt identifier when the block path has one available. The validator accepts either a 26-character Crockford-base32 ULID or a canonical 36-character hyphenated UUIDv7; live receipt `action_id` values use the UUIDv7 form. When populated, an auditor can pull the matching receipt by ID from the receipt store. Receipts are signed; see [`receipt-transports.md`](receipt-transports.md).
 
 ## Privacy: what the headers do NOT carry
 

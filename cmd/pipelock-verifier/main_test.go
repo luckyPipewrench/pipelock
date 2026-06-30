@@ -709,6 +709,13 @@ func TestIndependentBackend_RekorLoadsTrustedLogKey(t *testing.T) {
 	if len(rekorBackend.TrustedLogKeys) != 1 {
 		t.Fatalf("TrustedLogKeys len = %d, want 1", len(rekorBackend.TrustedLogKeys))
 	}
+	loaded, ok := rekorBackend.TrustedLogKeys[0].(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("TrustedLogKeys[0] type = %T, want ed25519.PublicKey", rekorBackend.TrustedLogKeys[0])
+	}
+	if !bytes.Equal(loaded, pub) {
+		t.Fatal("TrustedLogKeys[0] does not match configured Rekor log key")
+	}
 }
 
 func TestIndependent_RejectsRewrittenBundleCheckpoint(t *testing.T) {

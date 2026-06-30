@@ -307,18 +307,29 @@ func validateRekorInclusionProof(proof Proof) error {
 	if inc.TreeSize == 0 {
 		return errors.New("rekor proof inclusion_proof.tree_size required")
 	}
+	if inc.LogIndex != proof.LogIndex {
+		return fmt.Errorf("rekor proof inclusion_proof.log_index %d does not match log_index %d", inc.LogIndex, proof.LogIndex)
+	}
 	if inc.LogIndex >= inc.TreeSize {
 		return fmt.Errorf("rekor proof inclusion_proof.log_index %d outside tree_size %d", inc.LogIndex, inc.TreeSize)
 	}
 	if strings.TrimSpace(inc.Checkpoint) == "" {
 		return errors.New("rekor proof inclusion_proof.checkpoint required")
 	}
-	if _, err := hex.DecodeString(inc.RootHash); err != nil {
+	root, err := hex.DecodeString(inc.RootHash)
+	if err != nil {
 		return fmt.Errorf("decode rekor inclusion root_hash: %w", err)
 	}
+	if len(root) != sha256.Size {
+		return fmt.Errorf("rekor proof inclusion_proof.root_hash length = %d, want %d", len(root), sha256.Size)
+	}
 	for i, hash := range inc.Hashes {
-		if _, err := hex.DecodeString(hash); err != nil {
+		decoded, err := hex.DecodeString(hash)
+		if err != nil {
 			return fmt.Errorf("decode rekor inclusion proof hash %d: %w", i, err)
+		}
+		if len(decoded) != sha256.Size {
+			return fmt.Errorf("rekor inclusion proof hash %d length = %d, want %d", i, len(decoded), sha256.Size)
 		}
 	}
 	return nil

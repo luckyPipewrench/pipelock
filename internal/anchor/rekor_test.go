@@ -10,6 +10,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -18,6 +19,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -168,8 +170,19 @@ func TestRekorSubmissionRecordRequiresMetadata(t *testing.T) {
 		{name: "set whitespace", edit: func(p *Proof) { p.Rekor.SignedEntryTimestamp = " \t" }, want: "signed_entry_timestamp"},
 		{name: "inclusion proof", edit: func(p *Proof) { p.Rekor.InclusionProof = nil }, want: "inclusion_proof"},
 		{name: "inclusion root mismatch", edit: func(p *Proof) { p.Rekor.InclusionProof.RootHash = strings.Repeat("0", 64) }, want: "root_hash"},
+		{name: "inclusion log index mismatch", edit: func(p *Proof) {
+			p.Rekor.InclusionProof.TreeSize = 2
+			p.Rekor.InclusionProof.LogIndex = 1
+		}, want: "log_index"},
 		{name: "inclusion tree size", edit: func(p *Proof) { p.Rekor.InclusionProof.TreeSize = 0 }, want: "tree_size"},
 		{name: "inclusion checkpoint", edit: func(p *Proof) { p.Rekor.InclusionProof.Checkpoint = "" }, want: "checkpoint"},
+		{name: "inclusion root hash short", edit: func(p *Proof) {
+			p.LogRootHash = "aabb"
+			p.Rekor.InclusionProof.RootHash = "aabb"
+		}, want: "root_hash length"},
+		{name: "inclusion proof hash short", edit: func(p *Proof) {
+			p.Rekor.InclusionProof.Hashes = append(p.Rekor.InclusionProof.Hashes, "aabb")
+		}, want: "proof hash 0 length"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,6 +287,42 @@ func TestLoadRekorPublicKeyAcceptsPEMAndPipelockFormats(t *testing.T) {
 	if !pipelockKey.(ed25519.PublicKey).Equal(pub) {
 		t.Fatal("pipelock key mismatch")
 	}
+	keys, err := LoadRekorPublicKeys([]string{pemText, domsigning.EncodePublicKey(pub)})
+	if err != nil {
+		t.Fatalf("LoadRekorPublicKeys: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("LoadRekorPublicKeys len = %d, want 2", len(keys))
+	}
+}
+
+func TestLoadRekorPublicKeyRejectsMalformedInputs(t *testing.T) {
+	dir := t.TempDir()
+	badFile := filepath.Join(dir, "bad.pub")
+	if err := os.WriteFile(badFile, []byte("not-a-key"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty", input: " \t", want: "empty"},
+		{name: "unsupported pem", input: "-----BEGIN TRUST ANCHOR-----\nAA==\n-----END TRUST ANCHOR-----", want: "unsupported PEM"},
+		{name: "missing file path", input: filepath.Join(dir, "missing.pub"), want: "file does not exist"},
+		{name: "bad file contents", input: badFile, want: "parse rekor log public key file"},
+		{name: "bad inline value", input: "not-a-key", want: "parse rekor log public key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := LoadRekorPublicKey(tc.input); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadRekorPublicKey err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if _, err := LoadRekorPublicKeys([]string{domsigning.EncodePublicKey(mustEd25519PublicKey(t)), "not-a-key"}); err == nil || !strings.Contains(err.Error(), "parse rekor log public key") {
+		t.Fatalf("LoadRekorPublicKeys err = %v, want wrapped parse error", err)
+	}
 }
 
 func TestRekorLogVerifyRejectsForgedSelfConsistentProof(t *testing.T) {
@@ -297,6 +346,165 @@ func TestRekorLogVerifyRejectsForgedSelfConsistentProof(t *testing.T) {
 	report := VerifyBundle(NewBundle(checkpoint, proof), receipts, []string{keyHex}, RekorLog{TrustedLogKeys: []crypto.PublicKey{trustedLogPub}})
 	if report.Valid || !strings.Contains(report.Error, "signed_entry_timestamp") {
 		t.Fatalf("forged Rekor proof report = %+v, want SET verification failure", report)
+	}
+}
+
+func TestRekorLogVerifyRejectsMalformedVerificationArtifacts(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	logPub, logPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	proof := selfConsistentRekorProof(t, checkpoint, logPriv, logPriv)
+	root, err := hex.DecodeString(proof.Rekor.InclusionProof.RootHash)
+	if err != nil {
+		t.Fatalf("DecodeString root: %v", err)
+	}
+	cases := []struct {
+		name string
+		edit func(*Proof)
+		want string
+	}{
+		{name: "set base64", edit: func(p *Proof) {
+			p.Rekor.SignedEntryTimestamp = "not base64!"
+		}, want: "signed_entry_timestamp"},
+		{name: "checkpoint root mismatch", edit: func(p *Proof) {
+			p.Rekor.InclusionProof.Checkpoint = signedCheckpointForTest(t, 1, make([]byte, sha256.Size), logPriv)
+		}, want: "checkpoint root hash"},
+		{name: "checkpoint tree size mismatch", edit: func(p *Proof) {
+			p.Rekor.InclusionProof.Checkpoint = signedCheckpointForTest(t, 2, root, logPriv)
+		}, want: "checkpoint tree size"},
+		{name: "checkpoint wrong signer", edit: func(p *Proof) {
+			_, wrongPriv, genErr := ed25519.GenerateKey(rand.Reader)
+			if genErr != nil {
+				t.Fatalf("GenerateKey wrong: %v", genErr)
+			}
+			p.Rekor.InclusionProof.Checkpoint = signedCheckpointForTest(t, 1, root, wrongPriv)
+		}, want: "checkpoint signature"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := proof
+			candidate.Rekor = cloneRekorProof(proof.Rekor)
+			tc.edit(&candidate)
+			err := (RekorLog{TrustedLogKeys: []crypto.PublicKey{logPub}}).Verify(candidate, checkpoint)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Verify err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	setOverflow := proof
+	setOverflow.Rekor = cloneRekorProof(proof.Rekor)
+	setOverflow.LogIndex = math.MaxUint64
+	if err := verifyRekorSET(setOverflow, []crypto.PublicKey{logPub}); err == nil || !strings.Contains(err.Error(), "overflows SET payload") {
+		t.Fatalf("verifyRekorSET overflow err = %v, want overflow", err)
+	}
+}
+
+func TestVerifyRekorInclusionRejectsMalformedInputs(t *testing.T) {
+	receipts, keyHex := testReceiptChain(t, 1)
+	checkpoint, err := BuildCheckpoint("proxy", receipts, []string{keyHex})
+	if err != nil {
+		t.Fatalf("BuildCheckpoint: %v", err)
+	}
+	_, logPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	proof := selfConsistentRekorProof(t, checkpoint, logPriv, logPriv)
+	cases := []struct {
+		name string
+		edit func(*Proof)
+		want string
+	}{
+		{name: "body base64", edit: func(p *Proof) {
+			p.Rekor.Body = "not base64!"
+		}, want: "decode rekor body"},
+		{name: "root hex", edit: func(p *Proof) {
+			p.Rekor.InclusionProof.RootHash = "not-hex"
+		}, want: "decode rekor inclusion root_hash"},
+		{name: "path hex", edit: func(p *Proof) {
+			p.Rekor.InclusionProof.Hashes = []string{"not-hex"}
+		}, want: "decode rekor inclusion proof hash 0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := proof
+			candidate.Rekor = cloneRekorProof(proof.Rekor)
+			tc.edit(&candidate)
+			if err := verifyRekorInclusion(candidate); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("verifyRekorInclusion err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseSignedRekorCheckpointRejectsMalformedNotes(t *testing.T) {
+	validRoot := base64.StdEncoding.EncodeToString([]byte("root"))
+	validSig := base64.StdEncoding.EncodeToString([]byte{0, 0, 0, 1, 's'})
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "no signature split", raw: "origin\n1\n" + validRoot + "\n", want: "malformed signed note"},
+		{name: "signature block no trailing newline", raw: "origin\n1\n" + validRoot + "\n\n— fake " + validSig, want: "malformed signature block"},
+		{name: "too few note lines", raw: "origin\n1\n\n— fake " + validSig + "\n", want: "too few lines"},
+		{name: "empty origin", raw: "\n1\n" + validRoot + "\n\n— fake " + validSig + "\n", want: "origin is empty"},
+		{name: "empty tree size", raw: "origin\n\n" + validRoot + "\n\n— fake " + validSig + "\n", want: "tree size is empty"},
+		{name: "nonnumeric tree size", raw: "origin\none\n" + validRoot + "\n\n— fake " + validSig + "\n", want: "tree size is not numeric"},
+		{name: "overflow tree size", raw: "origin\n18446744073709551616\n" + validRoot + "\n\n— fake " + validSig + "\n", want: "tree size overflows"},
+		{name: "bad root", raw: "origin\n1\nnot-base64!\n\n— fake " + validSig + "\n", want: "decode rekor checkpoint root hash"},
+		{name: "bad signature prefix", raw: "origin\n1\n" + validRoot + "\n\nbad\n", want: "signature line malformed"},
+		{name: "bad signature base64", raw: "origin\n1\n" + validRoot + "\n\n— fake not-base64!\n", want: "decode rekor checkpoint signature"},
+		{name: "small signature", raw: "origin\n1\n" + validRoot + "\n\n— fake AA==\n", want: "signature too small"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseSignedRekorCheckpoint(tc.raw); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("parseSignedRekorCheckpoint err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if _, err := parseRekorNoteSignatures([]byte("\n")); err == nil || !strings.Contains(err.Error(), "no signatures") {
+		t.Fatalf("parseRekorNoteSignatures err = %v, want no signatures", err)
+	}
+}
+
+func TestVerifySignature_RSAAndUnsupportedKeys(t *testing.T) {
+	t.Parallel()
+	msg := []byte("rekor checkpoint bytes")
+	digest := sha256.Sum256(msg)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa GenerateKey: %v", err)
+	}
+	pss, err := rsa.SignPSS(rand.Reader, key, crypto.SHA256, digest[:], nil)
+	if err != nil {
+		t.Fatalf("SignPSS: %v", err)
+	}
+	if !verifySignature(&key.PublicKey, msg, pss) {
+		t.Fatal("rsa pss: valid signature rejected")
+	}
+	pkcs1, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("SignPKCS1v15: %v", err)
+	}
+	if !verifySignature(&key.PublicKey, msg, pkcs1) {
+		t.Fatal("rsa pkcs1v15: valid signature rejected")
+	}
+	if verifySignature(&key.PublicKey, []byte("wrong message"), pss) {
+		t.Fatal("rsa: wrong-message signature accepted")
+	}
+	if verifySignature(struct{}{}, msg, pss) {
+		t.Fatal("unsupported key type accepted")
+	}
+	if publicKeyHash(struct{}{}) != 0 {
+		t.Fatal("unsupported key hash did not fail closed to zero")
 	}
 }
 
@@ -450,6 +658,15 @@ func cloneRekorProof(in *RekorProof) *RekorProof {
 		out.InclusionProof = &inc
 	}
 	return &out
+}
+
+func mustEd25519PublicKey(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	return pub
 }
 
 func fakeRekorServer(t *testing.T) *httptest.Server {

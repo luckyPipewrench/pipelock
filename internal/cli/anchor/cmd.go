@@ -39,8 +39,8 @@ func Cmd() *cobra.Command {
 The local backend is a deterministic test backend. It exercises the same
 checkpoint and proof plumbing used by outside logs, but it is not an
 operator-independent witness. The Rekor backend records a transparency-log
-submission for later audit; independent Rekor verification requires trusted SET
-and inclusion-proof verification.`,
+submission for later audit; independent Rekor verification requires a pinned
+Rekor log public key.`,
 	}
 	cmd.AddCommand(receiptsCmd())
 	return cmd
@@ -56,9 +56,8 @@ an anchor backend, and emits an anchor bundle for verifier and audit tooling.
 
 Honest limit: anchoring does not prove real-time truth by whoever held the
 receipt signing key. The local backend is for deterministic tests and
-development. Rekor submission is recorded for later transparency-log audit, but
-this command does not claim independent Rekor verification without trusted SET
-and inclusion-proof checks.`,
+development. Rekor submission is recorded for later transparency-log audit;
+verify Rekor bundles with pipelock-verifier independent --rekor-log-key.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReceipts(cmd.OutOrStdout(), args[0], opts)

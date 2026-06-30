@@ -39,8 +39,9 @@ var DefaultLimits = []string{
 }
 
 var rekorLimits = []string{
-	"Rekor submission records a receipt-chain checkpoint for later transparency-log audit.",
-	"Independent Rekor verification requires trusted SET and inclusion-proof verification; this bundle does not make that claim.",
+	"Rekor verification proves the checkpoint entry has a valid SET and inclusion proof under a pinned Rekor log key.",
+	"Rekor anchoring does not prove the checkpoint was witnessed before every later action unless the anchored checkpoint covers the whole receipt chain being verified.",
+	"Rekor anchoring does not prove the log remained globally consistent after the recorded checkpoint without a later consistency audit.",
 	"Anchoring does not prove real-time truth by whoever held the receipt signing key.",
 }
 
@@ -69,13 +70,22 @@ type Proof struct {
 }
 
 type RekorProof struct {
-	URL                  string `json:"url,omitempty"`
-	UUID                 string `json:"uuid,omitempty"`
-	Body                 string `json:"body,omitempty"`
-	PublicKey            string `json:"public_key,omitempty"`
-	Signature            string `json:"signature,omitempty"`
-	IntegratedTime       int64  `json:"integrated_time,omitempty"`
-	SignedEntryTimestamp string `json:"signed_entry_timestamp,omitempty"`
+	URL                  string               `json:"url,omitempty"`
+	UUID                 string               `json:"uuid,omitempty"`
+	Body                 string               `json:"body,omitempty"`
+	PublicKey            string               `json:"public_key,omitempty"`
+	Signature            string               `json:"signature,omitempty"`
+	IntegratedTime       int64                `json:"integrated_time,omitempty"`
+	SignedEntryTimestamp string               `json:"signed_entry_timestamp,omitempty"`
+	InclusionProof       *RekorInclusionProof `json:"inclusion_proof,omitempty"`
+}
+
+type RekorInclusionProof struct {
+	RootHash   string   `json:"root_hash"`
+	LogIndex   uint64   `json:"log_index"`
+	TreeSize   uint64   `json:"tree_size"`
+	Hashes     []string `json:"hashes"`
+	Checkpoint string   `json:"checkpoint"`
 }
 
 type Bundle struct {

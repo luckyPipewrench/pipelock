@@ -17,13 +17,14 @@ import (
 )
 
 type independentOptions struct {
-	bundlePath string
-	signerKeys []string
-	logPath    string
-	logID      string
-	sessionID  string
-	asDir      bool
-	jsonOutput bool
+	bundlePath   string
+	signerKeys   []string
+	rekorLogKeys []string
+	logPath      string
+	logID        string
+	sessionID    string
+	asDir        bool
+	jsonOutput   bool
 }
 
 func newIndependentCmd() *cobra.Command {
@@ -36,8 +37,8 @@ material. The local backend is a deterministic test backend; it proves the
 checkpoint/proof mechanics but is not an operator-independent witness.
 
 Honest limit: anchoring does not prove real-time truth by whoever held the
-receipt signing key. Rekor bundles fail closed until trusted Rekor SET and
-inclusion-proof verification is implemented.`,
+receipt signing key. Rekor verification requires a pinned Rekor log public key
+and verifies the recorded SET, signed checkpoint, and inclusion proof offline.`,
 		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -50,6 +51,7 @@ inclusion-proof verification is implemented.`,
 	cmd.Flags().StringArrayVar(&opts.signerKeys, "key", nil, "trusted signer public key (hex, public-key text, or file path); repeat for rotated chains")
 	cmd.Flags().StringVar(&opts.logPath, "local-log", "", "local fake-log JSONL path")
 	cmd.Flags().StringVar(&opts.logID, "log-id", anchor.DefaultLocalLogID, "local fake-log identifier")
+	cmd.Flags().StringArrayVar(&opts.rekorLogKeys, "rekor-log-key", nil, "trusted Rekor log public key (PEM, Pipelock Ed25519 key, raw hex, or file path); repeat for rotations")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside the evidence directory when --dir is set")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single evidence file")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
@@ -101,7 +103,11 @@ func independentBackend(bundle anchor.Bundle, opts independentOptions) (anchor.B
 			LogID: opts.logID,
 		}, cliutil.ExitOK, nil
 	case anchor.RekorBackend:
-		return anchor.RekorLog{}, cliutil.ExitOK, nil
+		keys, err := anchor.LoadRekorPublicKeys(opts.rekorLogKeys)
+		if err != nil {
+			return nil, cliutil.ExitConfig, fmt.Errorf("resolve --rekor-log-key: %w", err)
+		}
+		return anchor.RekorLog{TrustedLogKeys: keys}, cliutil.ExitOK, nil
 	default:
 		return nil, cliutil.ExitConfig, fmt.Errorf("unsupported anchor backend %q", bundle.Backend)
 	}

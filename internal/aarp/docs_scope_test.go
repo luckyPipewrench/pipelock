@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -91,7 +92,15 @@ func TestSVIDStaysOutOfLiveDecisionPath(t *testing.T) {
 			if walkErr != nil {
 				return walkErr
 			}
-			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			if d.IsDir() {
+				switch d.Name() {
+				case "testdata", "vendor":
+					return fs.SkipDir
+				default:
+					return nil
+				}
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			f, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
@@ -120,19 +129,25 @@ func TestSVIDStaysOutOfLiveDecisionPath(t *testing.T) {
 func readScopeDoc(t *testing.T, path string) string {
 	t.Helper()
 
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
+
 	var (
 		body []byte
 		err  error
 	)
 	switch path {
 	case "README.md":
-		body, err = os.ReadFile("../../README.md")
+		body, err = os.ReadFile(filepath.Join(repoRoot, "README.md"))
 	case "docs/guides/mediation-envelope.md":
-		body, err = os.ReadFile("../../docs/guides/mediation-envelope.md")
+		body, err = os.ReadFile(filepath.Join(repoRoot, "docs/guides/mediation-envelope.md"))
 	case "docs/specs/aarp-v0.1-envelope.md":
-		body, err = os.ReadFile("../../docs/specs/aarp-v0.1-envelope.md")
+		body, err = os.ReadFile(filepath.Join(repoRoot, "docs/specs/aarp-v0.1-envelope.md"))
 	case "docs/specs/receipt-prior-art-mapping.md":
-		body, err = os.ReadFile("../../docs/specs/receipt-prior-art-mapping.md")
+		body, err = os.ReadFile(filepath.Join(repoRoot, "docs/specs/receipt-prior-art-mapping.md"))
 	default:
 		t.Fatalf("unhandled scope doc %q", path)
 	}

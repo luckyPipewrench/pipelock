@@ -7,11 +7,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -250,4 +255,73 @@ func TestReverseResponseSuppressionDoesNotMaskEncodedFinding(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 403; body: %s", resp.StatusCode, body)
 	}
+}
+
+func TestWebSocketResponseSuppressionPassesMatchingFinding(t *testing.T) {
+	backendAddr, backendCleanup := wsStaticResponseServer(t, "system: benign local role label")
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, suppressSystemOverride)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("suppressed WebSocket response should pass through, got close/error: %v", err)
+	}
+	if got := string(reply); got != "system: benign local role label" {
+		t.Fatalf("reply = %q, want suppressed payload passed through", got)
+	}
+}
+
+func TestWebSocketResponseSuppressionDoesNotMaskEncodedFinding(t *testing.T) {
+	backendAddr, backendCleanup := wsStaticResponseServer(t, suppressedSystemPlusEncodedJailbreak)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, suppressSystemOverride)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("trigger")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, err := wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("suppressed first-pass WebSocket response masked encoded finding; expected policy close")
+	}
+}
+
+func wsStaticResponseServer(t *testing.T, payload string) (string, func()) {
+	t.Helper()
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			_, _, _ = wsutil.ReadClientData(conn)
+			_ = wsutil.WriteServerMessage(conn, ws.OpText, []byte(payload))
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() { _ = srv.Serve(ln) }()
+	return ln.Addr().String(), func() { _ = srv.Close() }
 }

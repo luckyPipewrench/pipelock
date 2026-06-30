@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -298,6 +299,16 @@ func TestWebSocketResponseSuppressionDoesNotMaskEncodedFinding(t *testing.T) {
 	if err == nil {
 		t.Fatal("suppressed first-pass WebSocket response masked encoded finding; expected policy close")
 	}
+	var closeErr wsutil.ClosedError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("expected WebSocket policy close, got %T: %v", err, err)
+	}
+	if closeErr.Code != ws.StatusPolicyViolation {
+		t.Fatalf("close code = %d, want %d", closeErr.Code, ws.StatusPolicyViolation)
+	}
+	if closeErr.Reason != "injection detected" {
+		t.Fatalf("close reason = %q, want %q", closeErr.Reason, "injection detected")
+	}
 }
 
 func wsStaticResponseServer(t *testing.T, payload string) (string, func()) {
@@ -316,7 +327,17 @@ func wsStaticResponseServer(t *testing.T, payload string) (string, func()) {
 				return
 			}
 			defer func() { _ = conn.Close() }()
-			_, _, _ = wsutil.ReadClientData(conn)
+			if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Errorf("set read deadline: %v", err)
+				return
+			}
+			if _, _, err := wsutil.ReadClientData(conn); err != nil {
+				return
+			}
+			if err := conn.SetReadDeadline(time.Time{}); err != nil {
+				t.Errorf("clear read deadline: %v", err)
+				return
+			}
 			_ = wsutil.WriteServerMessage(conn, ws.OpText, []byte(payload))
 		}),
 		ReadHeaderTimeout: 5 * time.Second,

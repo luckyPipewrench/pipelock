@@ -25,6 +25,48 @@ type transportControlCoverage struct {
 	Exception string
 }
 
+var transportControlRequiredRows = map[string][]string{
+	"response_suppression_exact_match": {
+		TransportFetch,
+		TransportForward,
+		TransportConnect,
+		TransportReverse,
+		TransportWS,
+		"mcp_stdio",
+		"mcp_sse",
+	},
+	"response_suppression_decoded_cascade": {
+		TransportFetch,
+		TransportForward,
+		TransportConnect,
+		TransportReverse,
+		TransportWS,
+		"mcp_stdio",
+		"mcp_sse",
+	},
+	"size_exempt_in_cap_response_scan": {
+		TransportFetch,
+		TransportForward,
+		TransportConnect,
+		TransportReverse,
+		TransportWS,
+	},
+	"request_split_dlp": {
+		TransportFetch,
+		TransportForward,
+		TransportConnect,
+		TransportReverse,
+		TransportWS,
+		"mcp_stdio",
+		"mcp_http_listener",
+		"a2a",
+	},
+	"cross_transport_fragment_dlp": {
+		"fetch_forward_shared_buffer",
+		"mcp",
+	},
+}
+
 // transportControlParityMatrix is an executable index of sibling coverage for
 // controls that repeatedly drift across transports. Each covered cell points at
 // the runtime regression test that proves it. Exceptions must state why the
@@ -162,10 +204,9 @@ var transportControlParityMatrix = []transportControlCoverage{
 	},
 	{
 		Control:   "request_split_dlp",
-		Transport: "http_body_scanner",
-		State:     parityCovered,
-		File:      "internal/proxy/bodyscan_test.go",
-		Test:      "TestScanRequestBody_SplitSecretAcrossFields",
+		Transport: TransportFetch,
+		State:     parityNotApplicable,
+		Exception: "/fetch carries the target URL/query, not a proxied outbound request body",
 	},
 	{
 		Control:   "request_split_dlp",
@@ -173,6 +214,20 @@ var transportControlParityMatrix = []transportControlCoverage{
 		State:     parityCovered,
 		File:      "internal/proxy/bodyscan_test.go",
 		Test:      "TestForwardProxy_SplitSecretHeaders_Blocked",
+	},
+	{
+		Control:   "request_split_dlp",
+		Transport: TransportConnect,
+		State:     parityCovered,
+		File:      "internal/proxy/bodyscan_test.go",
+		Test:      "TestScanRequestBody_SplitSecretAcrossFields",
+	},
+	{
+		Control:   "request_split_dlp",
+		Transport: TransportReverse,
+		State:     parityCovered,
+		File:      "internal/proxy/bodyscan_test.go",
+		Test:      "TestScanRequestBody_SplitSecretAcrossFields",
 	},
 	{
 		Control:   "request_split_dlp",
@@ -221,29 +276,52 @@ var transportControlParityMatrix = []transportControlCoverage{
 func TestTransportControlParityMatrix(t *testing.T) {
 	root := parityRepoRoot(t)
 	seen := make(map[string]struct{}, len(transportControlParityMatrix))
+	rowsByControl := make(map[string]map[string]transportControlCoverage)
 	coveredByControl := make(map[string]int)
 
 	for _, row := range transportControlParityMatrix {
+		row := row
 		name := row.Control + "/" + row.Transport
 		if _, ok := seen[name]; ok {
-			t.Fatalf("duplicate parity matrix row: %s", name)
+			t.Errorf("duplicate parity matrix row: %s", name)
+			continue
 		}
 		seen[name] = struct{}{}
 
-		switch row.State {
-		case parityCovered:
-			coveredByControl[row.Control]++
-			assertParityEvidenceExists(t, root, row)
-		case parityNotApplicable:
-			if strings.TrimSpace(row.Exception) == "" {
-				t.Fatalf("%s: not-applicable row must explain why the control has no sibling surface", name)
-			}
-			if row.File != "" || row.Test != "" {
-				t.Fatalf("%s: not-applicable row must not point at executable evidence", name)
-			}
-		default:
-			t.Fatalf("%s: unknown matrix state %q", name, row.State)
+		if _, ok := transportControlRequiredRows[row.Control]; !ok {
+			t.Errorf("%s: control is missing from required transport set", row.Control)
 		}
+		if _, ok := rowsByControl[row.Control]; !ok {
+			rowsByControl[row.Control] = make(map[string]transportControlCoverage)
+		}
+		rowsByControl[row.Control][row.Transport] = row
+
+		t.Run(name, func(t *testing.T) {
+			if validateParityRow(t, root, row) {
+				coveredByControl[row.Control]++
+			}
+		})
+	}
+
+	for control, requiredTransports := range transportControlRequiredRows {
+		control := control
+		requiredTransports := requiredTransports
+		t.Run(control+"/required_transports", func(t *testing.T) {
+			rows := rowsByControl[control]
+			if len(rows) == 0 {
+				t.Fatalf("%s: no parity rows registered", control)
+			}
+			for _, transport := range requiredTransports {
+				if _, ok := rows[transport]; !ok {
+					t.Errorf("%s: missing parity row for %s", control, transport)
+				}
+			}
+			for transport := range rows {
+				if !requiredTransportSetContains(requiredTransports, transport) {
+					t.Errorf("%s: unexpected parity row for %s", control, transport)
+				}
+			}
+		})
 	}
 
 	for control, count := range coveredByControl {
@@ -253,26 +331,57 @@ func TestTransportControlParityMatrix(t *testing.T) {
 	}
 }
 
+func validateParityRow(t *testing.T, root string, row transportControlCoverage) bool {
+	t.Helper()
+	switch row.State {
+	case parityCovered:
+		assertParityEvidenceExists(t, root, row)
+		return true
+	case parityNotApplicable:
+		if strings.TrimSpace(row.Exception) == "" {
+			t.Errorf("%s/%s: not-applicable row must explain why the control has no sibling surface", row.Control, row.Transport)
+		}
+		if row.File != "" || row.Test != "" {
+			t.Errorf("%s/%s: not-applicable row must not point at executable evidence", row.Control, row.Transport)
+		}
+	default:
+		t.Errorf("%s/%s: unknown matrix state %q", row.Control, row.Transport, row.State)
+	}
+	return false
+}
+
 func assertParityEvidenceExists(t *testing.T, root string, row transportControlCoverage) {
 	t.Helper()
 	if row.File == "" || row.Test == "" {
-		t.Fatalf("%s/%s: covered row must name file and test", row.Control, row.Transport)
+		t.Errorf("%s/%s: covered row must name file and test", row.Control, row.Transport)
+		return
 	}
 	evidencePath := filepath.Clean(filepath.Join(root, row.File))
 	rel, err := filepath.Rel(root, evidencePath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		t.Fatalf("%s/%s: evidence file %s escapes repo root", row.Control, row.Transport, row.File)
+		t.Errorf("%s/%s: evidence file %s escapes repo root", row.Control, row.Transport, row.File)
+		return
 	}
 	// evidencePath is filepath.Clean'd and confirmed (via filepath.Rel) to stay
 	// inside the repo root above, so this read is not a file-inclusion vector.
 	data, err := os.ReadFile(evidencePath)
 	if err != nil {
-		t.Fatalf("%s/%s: read evidence file %s: %v", row.Control, row.Transport, row.File, err)
+		t.Errorf("%s/%s: read evidence file %s: %v", row.Control, row.Transport, row.File, err)
+		return
 	}
 	needle := "func " + row.Test + "("
 	if !strings.Contains(string(data), needle) {
-		t.Fatalf("%s/%s: evidence file %s does not define %s", row.Control, row.Transport, row.File, row.Test)
+		t.Errorf("%s/%s: evidence file %s does not define %s", row.Control, row.Transport, row.File, row.Test)
 	}
+}
+
+func requiredTransportSetContains(requiredTransports []string, transport string) bool {
+	for _, required := range requiredTransports {
+		if required == transport {
+			return true
+		}
+	}
+	return false
 }
 
 func parityRepoRoot(t *testing.T) string {

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/license"
@@ -2891,8 +2892,13 @@ func validateMCPServerName(serverName, field string) error {
 	if serverName == "" {
 		return fmt.Errorf("%s is empty", field)
 	}
-	if strings.Contains(serverName, "://") || strings.ContainsAny(serverName, "/\\\r\n\t") {
+	if strings.Contains(serverName, "://") || strings.ContainsAny(serverName, "/\\") {
 		return fmt.Errorf("%s %q: use the MCP --server-name value without URL syntax or slashes", field, serverName)
+	}
+	for _, r := range serverName {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("%s %q: use the MCP --server-name value without URL syntax or whitespace/control characters", field, serverName)
+		}
 	}
 	return nil
 }

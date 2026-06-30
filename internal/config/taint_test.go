@@ -130,6 +130,13 @@ func TestValidateTaint(t *testing.T) {
 			wantErr: "taint.trusted_mcp_servers",
 		},
 		{
+			name: "trusted MCP server control character rejected",
+			mutate: func(cfg *Config) {
+				cfg.Taint.TrustedMCPServers = []string{"docs\fcache"}
+			},
+			wantErr: "whitespace/control characters",
+		},
+		{
 			name: "duplicate trusted MCP server rejected",
 			mutate: func(cfg *Config) {
 				cfg.Taint.TrustedMCPServers = []string{"docs-cache", "docs-cache"}

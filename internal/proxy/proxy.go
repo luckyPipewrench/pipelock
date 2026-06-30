@@ -400,10 +400,10 @@ func WithReceiptEmitter(e *receipt.Emitter) Option {
 // proxy dual-emits a signed EvidenceReceipt v2 proxy_decision alongside every v1
 // action receipt the proxy emit path produces (fetch, forward, CONNECT,
 // intercept, WebSocket, reverse, and MCP-over-HTTP that transits the proxy).
-// The standalone MCP proxy emits v1 on a separate path (internal/mcp
-// EmitMCPDecision) that this does NOT cover; that surface is a follow-up. Pass
-// nil to disable (default). v2 emission is gated on the same receipt intent as
-// v1 (flight recorder + signing key); no separate config flag.
+// Standalone MCP transports use internal/mcp EmitMCPDecision with the same v2
+// emitter threaded through MCPProxyOpts. Pass nil to disable (default). v2
+// emission is gated on the same receipt intent as v1 (flight recorder + signing
+// key); no separate config flag.
 func WithV2ReceiptEmitter(e *proxydecision.Emitter) Option {
 	return func(p *Proxy) { p.v2EmitterPtr.Store(e) }
 }

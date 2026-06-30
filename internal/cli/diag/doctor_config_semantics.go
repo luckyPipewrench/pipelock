@@ -216,6 +216,22 @@ func checkDoctorInertExemptions(cfg *config.Config) []doctorReportCheck {
 		})
 	}
 
+	for _, entry := range cfg.ResponseScanning.MCPServers {
+		if entry.Trust != config.ResponseTrustReasoning || cfg.TaintTrustsMCPServer(entry.Server) {
+			continue
+		}
+		checks = append(checks, doctorReportCheck{
+			Name:       doctorCheckExemptionSemantics,
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusWarn,
+			Configured: true,
+			Detail: fmt.Sprintf(
+				"response_scanning.mcp_servers marks %q as reasoning-trusted, but taint.allowlisted_domains does not apply to MCP response taint and taint.trusted_mcp_servers does not include this server",
+				entry.Server),
+			Next: "if this MCP server is an operator-trusted source, add its --server-name value to taint.trusted_mcp_servers; otherwise leave it untrusted for taint",
+		})
+	}
+
 	return checks
 }
 

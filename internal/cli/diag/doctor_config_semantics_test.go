@@ -202,6 +202,29 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			wantWarn: 0,
 		},
 		{
+			name: "MCP response reasoning trust is not taint trust",
+			mutate: func(cfg *config.Config) {
+				cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{{
+					Server: "docs-cache",
+					Trust:  config.ResponseTrustReasoning,
+				}}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "taint.allowlisted_domains does not apply to MCP response taint",
+			wantNextSubstr:   "taint.trusted_mcp_servers",
+		},
+		{
+			name: "MCP response reasoning trust with taint trust is NOT flagged",
+			mutate: func(cfg *config.Config) {
+				cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{{
+					Server: "docs-cache",
+					Trust:  config.ResponseTrustReasoning,
+				}}
+				cfg.Taint.TrustedMCPServers = []string{"docs-cache"}
+			},
+			wantWarn: 0,
+		},
+		{
 			name: "duplicate suppress rule names collapse to one finding",
 			mutate: func(cfg *config.Config) {
 				cfg.Suppress = []config.SuppressEntry{

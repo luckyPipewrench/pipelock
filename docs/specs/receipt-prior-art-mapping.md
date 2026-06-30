@@ -155,7 +155,10 @@ reference implementation.
 
 **Relationship:** SPIFFE gives identity to **workloads**; receipts give authority
 trails to **actions taken by workloads**. Clean compose. No automatic SVID rotation
-yet on the receipt path; receipts accept whatever string goes in `actor`.
+yet on the receipt path; receipts accept whatever string goes in `actor`. The
+AARP/SVID sidecar verifier can appraise workload identity after the fact, but
+the live proxy and MCP decision paths do not currently consume that SVID result
+or use it to set receipt identity.
 
 ## in-toto / SLSA
 

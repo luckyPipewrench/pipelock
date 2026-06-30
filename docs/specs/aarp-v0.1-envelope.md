@@ -14,6 +14,13 @@ AARP — Agent Action Receipt Profile — is **not a new receipt format**. It is
 sits **alongside** a frozen Pipelock receipt and reports exactly what a verifier
 could cryptographically confirm versus what the producer merely claimed.
 
+Runtime scope: AARP and its X.509-SVID sidecar are verifier-side appraisal
+surfaces in the current implementation. The live proxy and MCP paths do not
+consume AARP/SVID evidence in allow/deny decisions, and they do not derive the
+receipt `actor` from an X.509-SVID. Until that runtime wiring exists, SVID
+language describes offline workload-identity appraisal only, not inline
+identity enforcement.
+
 The shipped receipts stay byte-for-byte frozen. AARP references them by digest
 and never rewrites them:
 

@@ -165,6 +165,12 @@ actor string during migration. Inbound verification uses the same knob:
 `spiffe` requires verified inbound actors to be valid SPIFFE IDs, while
 `legacy` keeps the older permissive parser for migration.
 
+This is SPIFFE ID syntax and trust-list binding for signed mediation envelopes;
+it is not X.509-SVID proof-of-possession. The AARP/SVID profile appraises
+sidecar evidence offline in the verifier. Current proxy and MCP runtime
+decisions do not consume an SVID certificate, and receipts continue to use the
+resolved agent identity rather than deriving `actor` from an X.509-SVID.
+
 **Inbound verification.** Set `mediation_envelope.verify_inbound.enabled: true`
 with a `trust_list` of accepted `key_id` / Ed25519 public-key pairs to require
 incoming mediation envelopes to verify before Pipelock strips and replaces

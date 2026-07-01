@@ -212,6 +212,7 @@ func (c *Config) policySemanticView() Config {
 	view.APIAllowlist = sortedCopy(view.APIAllowlist)
 	view.Internal = sortedCopy(view.Internal)
 	view.TrustedDomains = sortedCopy(view.TrustedDomains)
+	view.Taint.TrustedMCPServers = sortedCopy(view.Taint.TrustedMCPServers)
 	view.A2AScanning.TrustedAgentCardKeys = canonicalA2ATrustedCardKeys(view.A2AScanning.TrustedAgentCardKeys)
 	view.ResponseScanning.SizeExemptDomains = sortedCopy(view.ResponseScanning.SizeExemptDomains)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)

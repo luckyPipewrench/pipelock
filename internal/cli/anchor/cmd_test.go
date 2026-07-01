@@ -135,7 +135,13 @@ func TestReceiptsCmdWritesRekorAnchorBundle(t *testing.T) {
 				"integratedTime": 1780000000,
 				"body":           encodedBody,
 				"verification": map[string]any{
-					"inclusionProof":       map[string]any{"rootHash": "fake-root"},
+					"inclusionProof": map[string]any{
+						"rootHash":   strings.Repeat("a", 64),
+						"logIndex":   3,
+						"treeSize":   4,
+						"hashes":     []string{},
+						"checkpoint": "checkpoint",
+					},
 					"signedEntryTimestamp": "fake-set",
 				},
 			},
@@ -165,7 +171,7 @@ func TestReceiptsCmdWritesRekorAnchorBundle(t *testing.T) {
 	if bundle.Backend != anchorpkg.RekorBackend || bundle.Proof.Backend != anchorpkg.RekorBackend || bundle.Proof.Rekor == nil {
 		t.Fatalf("unexpected Rekor bundle: %+v", bundle)
 	}
-	if bundle.Proof.LogID != "fake-rekor-log" || bundle.Proof.LogIndex != 3 || bundle.Proof.LogRootHash != "fake-root" || bundle.Proof.EntryHash == "" {
+	if bundle.Proof.LogID != "fake-rekor-log" || bundle.Proof.LogIndex != 3 || bundle.Proof.LogRootHash != strings.Repeat("a", 64) || bundle.Proof.EntryHash == "" {
 		t.Fatalf("unexpected Rekor log metadata: %+v", bundle.Proof)
 	}
 	if bundle.Proof.Rekor.UUID != "fake-uuid" ||
@@ -174,7 +180,9 @@ func TestReceiptsCmdWritesRekorAnchorBundle(t *testing.T) {
 		bundle.Proof.Rekor.PublicKey == "" ||
 		bundle.Proof.Rekor.Signature == "" ||
 		bundle.Proof.Rekor.IntegratedTime != 1780000000 ||
-		bundle.Proof.Rekor.SignedEntryTimestamp != "fake-set" {
+		bundle.Proof.Rekor.SignedEntryTimestamp != "fake-set" ||
+		bundle.Proof.Rekor.InclusionProof == nil ||
+		bundle.Proof.Rekor.InclusionProof.TreeSize != 4 {
 		t.Fatalf("unexpected Rekor proof metadata: %+v", bundle.Proof.Rekor)
 	}
 	if !strings.Contains(out.String(), "Backend:       rekor") {

@@ -91,6 +91,42 @@ func TestForwardScanned_ExternalResponseContaminatesSession(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_TrustedMCPResponseDoesNotContaminateSession(t *testing.T) {
+	t.Parallel()
+
+	sc := testScannerWithAction(t, config.ActionWarn)
+	rec := &taintRecorder{}
+	cfg := config.Defaults()
+
+	var out bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(bytes.NewBufferString(cleanResponse+"\n")),
+		transport.NewStdioWriter(&out),
+		&bytes.Buffer{},
+		nil,
+		MCPProxyOpts{
+			Scanner:             sc,
+			Rec:                 rec,
+			TaintCfg:            &cfg.Taint,
+			TaintExternalSource: true,
+			TaintTrustedSource:  true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned() error = %v", err)
+	}
+	if found {
+		t.Fatal("expected clean response to remain clean")
+	}
+	risk := rec.RiskSnapshot()
+	if risk.Contaminated {
+		t.Fatal("trusted clean MCP response should not contaminate the session")
+	}
+	if risk.Level != session.TaintInternalGenerated {
+		t.Fatalf("taint level = %v, want internal_generated", risk.Level)
+	}
+}
+
 func TestForwardScanned_PromptHitMarksSessionHostile(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +158,42 @@ func TestForwardScanned_PromptHitMarksSessionHostile(t *testing.T) {
 	}
 	if !rec.RiskSnapshot().PromptHit {
 		t.Fatal("expected prompt_hit to be sticky")
+	}
+}
+
+func TestForwardScanned_TrustedMCPPromptHitStillMarksSessionHostile(t *testing.T) {
+	t.Parallel()
+
+	sc := testScannerWithAction(t, config.ActionWarn)
+	rec := &taintRecorder{}
+	cfg := config.Defaults()
+
+	var out bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(bytes.NewBufferString(injectionResponse+"\n")),
+		transport.NewStdioWriter(&out),
+		&bytes.Buffer{},
+		nil,
+		MCPProxyOpts{
+			Scanner:             sc,
+			Rec:                 rec,
+			TaintCfg:            &cfg.Taint,
+			TaintExternalSource: true,
+			TaintTrustedSource:  true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned() error = %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection response to be detected")
+	}
+	risk := rec.RiskSnapshot()
+	if risk.Level != session.TaintExternalHostile {
+		t.Fatalf("taint level = %v, want external_hostile", risk.Level)
+	}
+	if !risk.Contaminated || !risk.PromptHit {
+		t.Fatalf("trusted prompt hit should still contaminate as hostile: %+v", risk)
 	}
 }
 

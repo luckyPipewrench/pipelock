@@ -636,7 +636,7 @@ func TestIndependent_ValidLocalAnchor(t *testing.T) {
 	}
 }
 
-func TestIndependent_RekorAnchorFailsClosedUntilTrustedLogVerification(t *testing.T) {
+func TestIndependent_RekorAnchorRequiresTrustedLogKey(t *testing.T) {
 	fix := newFixture(t, 3)
 	evidence, bundle := writeIndependentRekorFixture(t, fix)
 
@@ -647,7 +647,7 @@ func TestIndependent_RekorAnchorFailsClosedUntilTrustedLogVerification(t *testin
 	if code != cliutil.ExitGeneral {
 		t.Fatalf("code=%d, want %d for Rekor fail-closed verification; stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "trusted Rekor SET") {
+	if !strings.Contains(stderr, "trusted Rekor log public key") {
 		t.Fatalf("stderr missing fail-closed Rekor verification error:\n%s", stderr)
 	}
 }
@@ -680,6 +680,41 @@ func TestIndependent_RejectsUnsupportedBundleBackendAsConfig(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "does not match proof backend") {
 		t.Fatalf("err = %v, want backend mismatch", err)
+	}
+}
+
+func TestIndependentBackend_RekorLoadsTrustedLogKey(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	bundle := anchorpkg.Bundle{
+		Backend: anchorpkg.RekorBackend,
+		Proof:   anchorpkg.Proof{Backend: anchorpkg.RekorBackend},
+	}
+
+	backend, code, err := independentBackend(bundle, independentOptions{
+		rekorLogKeys: []string{hex.EncodeToString(pub)},
+	})
+	if err != nil {
+		t.Fatalf("independentBackend: %v", err)
+	}
+	if code != cliutil.ExitOK {
+		t.Fatalf("code=%d, want %d", code, cliutil.ExitOK)
+	}
+	rekorBackend, ok := backend.(anchorpkg.RekorLog)
+	if !ok {
+		t.Fatalf("backend type = %T, want anchor.RekorLog", backend)
+	}
+	if len(rekorBackend.TrustedLogKeys) != 1 {
+		t.Fatalf("TrustedLogKeys len = %d, want 1", len(rekorBackend.TrustedLogKeys))
+	}
+	loaded, ok := rekorBackend.TrustedLogKeys[0].(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("TrustedLogKeys[0] type = %T, want ed25519.PublicKey", rekorBackend.TrustedLogKeys[0])
+	}
+	if !bytes.Equal(loaded, pub) {
+		t.Fatal("TrustedLogKeys[0] does not match configured Rekor log key")
 	}
 }
 
@@ -873,7 +908,13 @@ func writeIndependentRekorFixture(t *testing.T, fix *fixture) (evidencePath, bun
 				"integratedTime": 1780000000,
 				"body":           body,
 				"verification": map[string]any{
-					"inclusionProof":       map[string]any{"rootHash": "fake-root"},
+					"inclusionProof": map[string]any{
+						"rootHash":   strings.Repeat("a", 64),
+						"logIndex":   4,
+						"treeSize":   5,
+						"hashes":     []string{},
+						"checkpoint": "checkpoint",
+					},
 					"signedEntryTimestamp": "fake-set",
 				},
 			},

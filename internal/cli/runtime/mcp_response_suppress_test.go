@@ -41,6 +41,9 @@ func TestApplyMCPResponseSuppressOpts(t *testing.T) {
 	if opts.ResponseTrustClass != config.ResponseTrustUntrusted || opts.ResponseActionOverride != config.ActionBlock {
 		t.Fatalf("default trust/action = %q/%q, want untrusted/block", opts.ResponseTrustClass, opts.ResponseActionOverride)
 	}
+	if opts.TaintTrustedSource {
+		t.Fatal("default MCP server must not be taint-trusted")
+	}
 }
 
 func TestApplyMCPResponseSuppressOpts_ReasoningTrustWarnsMatchingServer(t *testing.T) {
@@ -58,6 +61,18 @@ func TestApplyMCPResponseSuppressOpts_ReasoningTrustWarnsMatchingServer(t *testi
 	}
 	if opts.ResponseActionOverride != config.ActionWarn {
 		t.Fatalf("ResponseActionOverride = %q, want %q", opts.ResponseActionOverride, config.ActionWarn)
+	}
+}
+
+func TestApplyMCPResponseSuppressOpts_TaintTrustedMatchingServer(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Taint.TrustedMCPServers = []string{testMCPServerName}
+	opts := mcp.MCPProxyOpts{}
+
+	applyMCPResponseSuppressOpts(&opts, cfg, testMCPServerName)
+
+	if !opts.TaintTrustedSource {
+		t.Fatal("expected matching server to be taint-trusted")
 	}
 }
 

@@ -238,6 +238,12 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 				Message: fmt.Sprintf("taint allowlisted domains added: %s — these sources now downgrade from untrusted to allowlisted", strings.Join(added, ", ")),
 			})
 		}
+		if added := exactStringsAdded(old.Taint.TrustedMCPServers, updated.Taint.TrustedMCPServers); len(added) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.trusted_mcp_servers",
+				Message: fmt.Sprintf("taint-trusted MCP servers added: %s — clean responses from these servers no longer contaminate the session", strings.Join(added, ", ")),
+			})
+		}
 		if removed := removedPatterns(old.Taint.ProtectedPaths, updated.Taint.ProtectedPaths); len(removed) > 0 {
 			warnings = append(warnings, ReloadWarning{
 				Field:   "taint.protected_paths",
@@ -1139,6 +1145,22 @@ func passthroughDomainsAdded(old, updated []string) []string {
 	for _, d := range updated {
 		if _, exists := oldSet[strings.ToLower(d)]; !exists {
 			added = append(added, d)
+		}
+	}
+	return added
+}
+
+// exactStringsAdded returns values present in updated but not in old, preserving
+// case-sensitive identity for non-domain config surfaces such as MCP server names.
+func exactStringsAdded(old, updated []string) []string {
+	oldSet := make(map[string]struct{}, len(old))
+	for _, v := range old {
+		oldSet[v] = struct{}{}
+	}
+	var added []string
+	for _, v := range updated {
+		if _, exists := oldSet[v]; !exists {
+			added = append(added, v)
 		}
 	}
 	return added

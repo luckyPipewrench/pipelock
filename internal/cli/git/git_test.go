@@ -386,9 +386,18 @@ func TestInstallHooksCmd_CreatesHook(t *testing.T) {
 	}
 
 	// Change to the fake repo dir
-	oldDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldDir) }()
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldDir); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
 
 	cmd := testRootCmd()
 	cmd.SetArgs([]string{"git", "install-hooks"})

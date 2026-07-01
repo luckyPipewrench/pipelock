@@ -751,7 +751,9 @@ func TestIsPipelockHook_Detection(t *testing.T) {
 		// Regression: a user hook that merely contains "cursor hook" mid-command
 		// (not a pipelock-generated form) must not be clobbered.
 		{"user hook containing the phrase", "/opt/tool cursor hook helper --verbose", false},
+		{"other binary exact hook words", "/opt/tool cursor hook", false},
 		{"user hook with unrelated flag after phrase", "/opt/tool cursor hook --helper", false},
+		{"trailing args after config", "/usr/bin/pipelock cursor hook --config /etc/pipelock/pipelock.yaml --helper", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

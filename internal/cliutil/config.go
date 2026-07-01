@@ -79,7 +79,7 @@ func WriteInstallConfigProvenance(w io.Writer, surface string, resolved InstallC
 		return
 	}
 	_, _ = fmt.Fprintf(w, "pipelock %s: config: built-in defaults; no PIPELOCK_CONFIG, user config, or system config was found\n", surface)
-	_, _ = fmt.Fprintln(w, "pipelock: installed hooks will use built-in defaults until reinstalled with --config or a standard config path exists")
+	_, _ = fmt.Fprintln(w, "pipelock: the installed integration will use built-in defaults until reinstalled with --config or a standard config path exists")
 }
 
 // ConfigPathIsSecure verifies that a discovered config file is safe to trust.

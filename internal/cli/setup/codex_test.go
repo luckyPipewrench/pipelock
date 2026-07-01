@@ -915,7 +915,7 @@ func TestRunCodexInstall_RealInstall(t *testing.T) {
 	if !strings.Contains(logStr, "--env PORT=3000") {
 		t.Errorf("expected env to be passed to codex mcp add, got: %s", logStr)
 	}
-	if !strings.Contains(logStr, installCfgPath) {
+	if !strings.Contains(logStr, "--config "+installCfgPath) {
 		t.Errorf("expected --config %s passthrough in log, got: %s", installCfgPath, logStr)
 	}
 }

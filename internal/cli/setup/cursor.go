@@ -619,8 +619,7 @@ func mergeHooks(existing *hooksJSON, newEntries map[string][]hookEntry) *hooksJS
 // unrelated user hook that merely contains "cursor hook" mid-command is never
 // clobbered on install or remove.
 func isPipelockHook(h hookEntry) bool {
-	command := strings.TrimSpace(h.Command)
-	return strings.HasSuffix(command, "cursor hook") || strings.Contains(command, " cursor hook --config ")
+	return isGeneratedPipelockHookCommand(h.Command, "cursor")
 }
 
 func cursorHooksDir(project bool) (string, error) {

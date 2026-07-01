@@ -386,8 +386,7 @@ func parseClaudeSettings(data []byte) (*claudeSettings, error) {
 // unrelated user hook that merely contains "claude hook" mid-command is never
 // clobbered. Mirrors cursor.go's isPipelockHook detection pattern.
 func isClaudePipelockHook(h claudeHookEntry) bool {
-	command := strings.TrimSpace(h.Command)
-	return strings.HasSuffix(command, "claude hook") || strings.Contains(command, " claude hook --config ")
+	return isGeneratedPipelockHookCommand(h.Command, "claude")
 }
 
 // mergeClaudeHooks removes existing pipelock hooks from PreToolUse and adds

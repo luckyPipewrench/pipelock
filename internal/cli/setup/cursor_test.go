@@ -737,6 +737,43 @@ func TestCursorRemoveCmd_RemovesPipelockHooksOnly(t *testing.T) {
 	}
 }
 
+func TestCursorRemoveCmd_DryRunDoesNotWriteBackup(t *testing.T) {
+	dir := t.TempDir()
+	cursorDir := filepath.Join(dir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{"version":1,"hooks":{"beforeShellExecution":[{"command":"lint","timeout":5},{"command":"/usr/bin/pipelock cursor hook","timeout":10}]}}`
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdirTemp(t, dir)
+
+	cmd := CursorCmd()
+	cmd.SetArgs([]string{"remove", "--project", "--dry-run"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "Would write to") || !strings.Contains(output, "(1 removed)") {
+		t.Fatalf("expected dry-run removal output, got %q", output)
+	}
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != existing {
+		t.Fatalf("dry-run remove changed hooks.json: got %q want %q", string(data), existing)
+	}
+	if _, err := os.Stat(hooksPath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("dry-run remove should not create backup, stat err: %v", err)
+	}
+}
+
 func TestCursorRemoveCmd_NoPipelockHooksNoops(t *testing.T) {
 	dir := t.TempDir()
 	cursorDir := filepath.Join(dir, ".cursor")
@@ -773,6 +810,69 @@ func TestCursorRemoveCmd_NoPipelockHooksNoops(t *testing.T) {
 	}
 }
 
+func TestCursorRemoveCmd_NoHooksJSONNoops(t *testing.T) {
+	dir := t.TempDir()
+	chdirTemp(t, dir)
+
+	cmd := CursorCmd()
+	cmd.SetArgs([]string{"remove", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no hooks.json found") {
+		t.Fatalf("expected missing-file no-op message, got %q", buf.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".cursor", "hooks.json")); !os.IsNotExist(err) {
+		t.Fatalf("remove should not create hooks.json when it is absent, stat err: %v", err)
+	}
+}
+
+func TestCursorRemoveCmd_MalformedExisting(t *testing.T) {
+	dir := t.TempDir()
+	cursorDir := filepath.Join(dir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdirTemp(t, dir)
+
+	cmd := CursorCmd()
+	cmd.SetArgs([]string{"remove", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for malformed existing hooks.json")
+	}
+	if !strings.Contains(err.Error(), "parsing existing") {
+		t.Errorf("unexpected error: %s", err.Error())
+	}
+}
+
+func TestCursorRemoveCmd_InvalidFlags(t *testing.T) {
+	cmd := CursorCmd()
+	cmd.SetArgs([]string{"remove", "--global", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when both --global and --project are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("unexpected error message: %s", err.Error())
+	}
+}
+
 func TestIsPipelockHook_Detection(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -792,6 +892,9 @@ func TestIsPipelockHook_Detection(t *testing.T) {
 		{"user hook with unrelated flag after phrase", "/opt/tool cursor hook --helper", false},
 		{"flag-like config operand", "/usr/bin/pipelock cursor hook --config --helper", false},
 		{"trailing args after config", "/usr/bin/pipelock cursor hook --config /etc/pipelock/pipelock.yaml --helper", false},
+		{"escaped space in config", `/usr/bin/pipelock cursor hook --config /tmp/has\ space.yaml`, true},
+		{"escaped single quote in config", `/usr/bin/pipelock cursor hook --config '/tmp/it'\''s.yaml'`, true},
+		{"unmatched quote", `/usr/bin/pipelock cursor hook --config '/tmp/bad.yaml`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

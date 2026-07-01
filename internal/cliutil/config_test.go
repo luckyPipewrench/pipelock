@@ -151,6 +151,17 @@ func TestResolveConfigForInstall_ExplicitSecureConfig(t *testing.T) {
 	}
 }
 
+func TestResolveConfigForInstall_RejectsMalformedExplicitConfig(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ResolveConfigForInstall(cfg); err == nil {
+		t.Fatal("expected malformed explicit config to be rejected")
+	}
+}
+
 func TestResolveConfigForInstall_RejectsUnsafeExplicitConfig(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "pipelock.yaml")
 	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
@@ -163,6 +174,43 @@ func TestResolveConfigForInstall_RejectsUnsafeExplicitConfig(t *testing.T) {
 
 	if _, err := ResolveConfigForInstall(cfg); err == nil {
 		t.Fatal("expected unsafe explicit config to be rejected")
+	}
+}
+
+func TestResolveConfigForInstall_AutoDiscoversEnvConfig(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", cfg)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+
+	resolved, err := ResolveConfigForInstall("")
+	if err != nil {
+		t.Fatalf("ResolveConfigForInstall: %v", err)
+	}
+	if resolved.Path != cfg {
+		t.Fatalf("Path = %q, want %q", resolved.Path, cfg)
+	}
+	if resolved.Source != "auto-discovered" || resolved.Explicit {
+		t.Fatalf("unexpected resolution metadata: %#v", resolved)
+	}
+}
+
+func TestResolveConfigForInstall_RejectsMalformedDiscoveredConfig(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", cfg)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+
+	if _, err := ResolveConfigForInstall(""); err == nil {
+		t.Fatal("expected malformed discovered config to be rejected")
 	}
 }
 
@@ -202,16 +250,49 @@ func TestResolveConfigForInstall_IgnoresCWDConfig(t *testing.T) {
 }
 
 func TestWriteInstallConfigProvenance(t *testing.T) {
-	var out bytes.Buffer
-	WriteInstallConfigProvenance(&out, "cursor install", InstallConfigResolution{
-		Path:   "/secure/pipelock.yaml",
-		Source: "auto-discovered",
-	}, false)
+	t.Run("path", func(t *testing.T) {
+		var out bytes.Buffer
+		WriteInstallConfigProvenance(&out, "cursor install", InstallConfigResolution{
+			Path:   "/secure/pipelock.yaml",
+			Source: "auto-discovered",
+		}, false)
 
-	got := out.String()
-	if !strings.Contains(got, "cursor install") || !strings.Contains(got, "/secure/pipelock.yaml") {
-		t.Fatalf("provenance output missing install surface/path: %q", got)
-	}
+		got := out.String()
+		if !strings.Contains(got, "cursor install") || !strings.Contains(got, "/secure/pipelock.yaml") {
+			t.Fatalf("provenance output missing install surface/path: %q", got)
+		}
+	})
+
+	t.Run("built in defaults", func(t *testing.T) {
+		var out bytes.Buffer
+		WriteInstallConfigProvenance(&out, "git install-hooks", InstallConfigResolution{
+			Source: "built-in defaults",
+		}, false)
+
+		got := out.String()
+		if !strings.Contains(got, "git install-hooks") || !strings.Contains(got, "built-in defaults") {
+			t.Fatalf("provenance output missing built-in defaults warning: %q", got)
+		}
+		if !strings.Contains(got, "reinstalled with --config") {
+			t.Fatalf("provenance output missing reinstall guidance: %q", got)
+		}
+	})
+
+	t.Run("quiet", func(t *testing.T) {
+		var out bytes.Buffer
+		WriteInstallConfigProvenance(&out, "cursor install", InstallConfigResolution{
+			Path:   "/secure/pipelock.yaml",
+			Source: "explicit --config",
+		}, true)
+		WriteInstallConfigProvenance(nil, "cursor install", InstallConfigResolution{
+			Path:   "/secure/pipelock.yaml",
+			Source: "explicit --config",
+		}, false)
+
+		if out.Len() != 0 {
+			t.Fatalf("quiet provenance wrote output: %q", out.String())
+		}
+	})
 }
 
 // TestDiscoverConfigPath_HomeFallback exercises the legacy ~/.config branch.
@@ -399,6 +480,17 @@ func TestConfigPathIsSecure_GroupOrWorldWritableRejected(t *testing.T) {
 func TestConfigPathIsSecure_MissingRejected(t *testing.T) {
 	if err := ConfigPathIsSecure(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
 		t.Fatal("missing config should be rejected")
+	}
+}
+
+func TestConfigPathIsSecure_NonRegularRejected(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ConfigPathIsSecure(dir); err == nil {
+		t.Fatal("directory config path should be rejected")
 	}
 }
 

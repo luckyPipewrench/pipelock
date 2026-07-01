@@ -792,13 +792,13 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID)
 	}
 	if !chainHasAgentProxyLoopbackAllowBeforeDrop(out, env.nftChain, current.agentUID, env.port) {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow is not limited to 127.0.0.1:%d", current.agentUID, env.port)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d loopback allow for 127.0.0.1:%d is missing or appears after the agent catch-all drop", current.agentUID, env.port)
 	}
 	if !chainHasAgentDNSDropBeforeCatchAll(out, env.nftChain, current.agentUID, "udp") {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing", current.agentUID)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d udp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
 	if !chainHasAgentDNSDropBeforeCatchAll(out, env.nftChain, current.agentUID, "tcp") {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing", current.agentUID)
+		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
 	if chainHasUnexpectedAcceptBeforeAgentDrop(out, env.nftChain, current, env.port) {
 		return statusFail, "chain contains unexpected accept before agent drop"

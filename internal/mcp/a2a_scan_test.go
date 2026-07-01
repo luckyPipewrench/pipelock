@@ -987,6 +987,26 @@ func TestScanResponseA2A_ByMethodName_Injection(t *testing.T) {
 	}
 }
 
+func TestScanA2AResponseBody_VerifiedImageDataURLDLPFalsePositiveClean(t *testing.T) {
+	body := []byte(`{"artifacts":[{"parts":[{"text":"` + verifiedJPEGDataURLWithAWSLikeRun(t) + `"}]}]}`)
+	result := ScanA2AResponseBody(context.Background(), body, testA2AScanner(t), enabledA2ACfg())
+	if !result.Clean {
+		t.Fatalf("verified image data URL should not trip A2A response DLP: %+v", result)
+	}
+}
+
+func TestScanA2AResponseBody_ImageDataURLDoesNotMaskSecret(t *testing.T) {
+	secret := "AKIA" + strings.Repeat("A", 16)
+	body := []byte(`{"artifacts":[{"parts":[{"text":"` + verifiedJPEGDataURLWithAWSLikeRun(t) + ` ` + secret + `"}]}]}`)
+	result := ScanA2AResponseBody(context.Background(), body, testA2AScanner(t), enabledA2ACfg())
+	if result.Clean {
+		t.Fatal("secret after verified image data URL should still block A2A response DLP")
+	}
+	if !strings.Contains(result.Reason, "AWS Access ID") {
+		t.Fatalf("Reason = %q, want AWS Access ID", result.Reason)
+	}
+}
+
 func TestScanResponseA2A_ByShape_Task(t *testing.T) {
 	opts := &A2AResponseOpts{Cfg: enabledA2ACfg()}
 	// No method set - detection by shape (status + artifacts).

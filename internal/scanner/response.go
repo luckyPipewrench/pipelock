@@ -71,6 +71,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 // normalized hit on the same content.
 func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
 	original := content
+	content = exciseVerifiedImageDataURLs(content)
 	var suppressedMatches []ResponseMatch
 	suppressedSeen := make(map[string]struct{})
 	filterSuppressed := func(matches []ResponseMatch) []ResponseMatch {
@@ -121,7 +122,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 
 	// Core response patterns run FIRST - immutable safety floor.
 	// These run regardless of response_scanning.enabled.
-	if coreSet := s.scanCoreResponse(ctx, original); len(coreSet.matches) > 0 {
+	if coreSet := s.scanCoreResponse(ctx, content); len(coreSet.matches) > 0 {
 		// Defensive anti-solicitation filtering happens per-pass inside
 		// scanCoreResponse (not here), so an all-defensive early pass cannot
 		// mask an encoded solicitation that only a later pass catches.
@@ -175,7 +176,7 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	// "ignore\u200ball" → ForMatching drops ZW → "ignoreall" (bypass).
 	// Replacing with space first → "ignore all" → regex `ignore\s+all` matches.
 	if len(matches) == 0 {
-		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
+		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(content))
 		if spaced != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, s.matchResponsePatternsPreFiltered(spaced)), ViewInvisibleSpaced))
 			if len(matches) > 0 {

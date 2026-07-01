@@ -525,6 +525,146 @@ func TestScanDiff_ErrNoDiffHeaders(t *testing.T) {
 	}
 }
 
+func TestScanDiff_FailClosedMalformedAddedContent(t *testing.T) {
+	key := fakeKey("EXAMPLE")
+	tests := []struct {
+		name string
+		diff string
+	}{
+		{
+			name: "bare added secret no headers",
+			diff: "+AWS_ACCESS_KEY_ID=" + key + "\n",
+		},
+		{
+			name: "bogus empty new-file header",
+			diff: "+++ \n+AWS_ACCESS_KEY_ID=" + key + "\n",
+		},
+		{
+			name: "dev null new-file header",
+			diff: "+++ /dev/null\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+		},
+		{
+			name: "partial parse secret before valid section",
+			diff: "+AWS_ACCESS_KEY_ID=" + key + "\n" +
+				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
+		},
+		{
+			name: "secret in later malformed section",
+			diff: "diff --git a/safe b/safe\n--- a/safe\n+++ b/safe\n@@ -0,0 +1 @@\n+safe=true\n" +
+				"diff --git a/bad b/bad\n--- a/bad\n+++ \n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+		},
+		{
+			name: "multi file with missing header",
+			diff: "diff --git a/safe b/safe\n--- a/safe\n+++ b/safe\n@@ -0,0 +1 @@\n+safe=true\n" +
+				"diff --git a/noheader b/noheader\n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+		},
+		{
+			name: "crlf orphan",
+			diff: "diff --git a/safe b/safe\r\n--- a/safe\r\n+++ b/safe\r\n@@ -0,0 +1 @@\r\n+safe=true\r\n" +
+				"+AWS_ACCESS_KEY_ID=" + key + "\r\n",
+		},
+		{
+			name: "non diff raw secret without plus",
+			diff: "AWS_ACCESS_KEY_ID=" + key + "\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ScanDiff(tc.diff, testPatterns())
+			if err != nil {
+				t.Fatalf("ScanDiff returned error instead of findings: %v", err)
+			}
+			if len(result.Findings) == 0 {
+				t.Fatal("expected secret finding")
+			}
+		})
+	}
+}
+
+func TestScanDiff_CleanMetadataOnlyDiffs(t *testing.T) {
+	tests := []struct {
+		name string
+		diff string
+	}{
+		{
+			name: "mode only",
+			diff: "diff --git a/tool.sh b/tool.sh\nold mode 100644\nnew mode 100755\n",
+		},
+		{
+			name: "rename only",
+			diff: "diff --git a/old.txt b/new.txt\nsimilarity index 100%\nrename from old.txt\nrename to new.txt\n",
+		},
+		{
+			name: "no prefix clean",
+			diff: "diff --git main.go main.go\n--- main.go\n+++ main.go\n@@ -1,2 +1,3 @@\n package main\n+import \"fmt\"\n",
+		},
+		{
+			name: "clean text with binary summary",
+			diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,2 @@\n package main\n+const ok = true\n" +
+				"diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n",
+		},
+		{
+			name: "long clean line",
+			diff: "diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -0,0 +1 @@\n+" + strings.Repeat("A", 1100*1024) + "\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ScanDiff(tc.diff, testPatterns())
+			if err != nil {
+				t.Fatalf("ScanDiff returned error for clean metadata/text diff: %v", err)
+			}
+			if len(result.Findings) != 0 {
+				t.Fatalf("expected no findings, got %+v", result.Findings)
+			}
+		})
+	}
+}
+
+func TestScanDiff_SecretsWithLongLinesAndBinarySummaries(t *testing.T) {
+	key := fakeKey("EXAMPLE")
+	tests := []struct {
+		name string
+		diff string
+	}{
+		{
+			name: "secret in long line",
+			diff: "diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -0,0 +1 @@\n+" +
+				strings.Repeat("A", 1100*1024) + "AWS_ACCESS_KEY_ID=" + key + "\n",
+		},
+		{
+			name: "secret with binary summary",
+			diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n" +
+				"diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ScanDiff(tc.diff, testPatterns())
+			if err != nil {
+				t.Fatalf("ScanDiff returned error instead of findings: %v", err)
+			}
+			if len(result.Findings) == 0 {
+				t.Fatal("expected secret finding")
+			}
+		})
+	}
+}
+
+func TestScanDiff_FailClosedUnsupportedBinaryPatch(t *testing.T) {
+	diff := "diff --git a/blob.bin b/blob.bin\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 1\nA\n"
+	result, err := ScanDiff(diff, testPatterns())
+	if !errors.Is(err, ErrUnsupportedBinaryPatch) {
+		t.Fatalf("expected ErrUnsupportedBinaryPatch, got %v", err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("expected no findings on unsupported error, got %+v", result.Findings)
+	}
+}
+
 func TestParseDiff_DevNullSkipped(t *testing.T) {
 	// +++ /dev/null should not be treated as a filename.
 	diff := `diff --git a/deleted.go b/deleted.go

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -659,6 +660,22 @@ func TestServer_Reload_StrictRejectsDowngrade(t *testing.T) {
 	live := s.proxy.CurrentConfig()
 	if live.Mode != config.ModeStrict {
 		t.Errorf("live config mode after rejected reload: want %q, got %q", config.ModeStrict, live.Mode)
+	}
+}
+
+func TestServer_Reload_MCPResponseScanningFallbackEmitsNotice(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	s.runtimeMode = config.RuntimeMCPProxy
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.ResponseScanning.Enabled = false
+	buf.reset()
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !strings.Contains(buf.String(), runtimeconfig.ResponseScanningMCPDisabledWarning) {
+		t.Fatalf("reload stderr missing response-scanning fallback notice:\n%s", buf.String())
 	}
 }
 

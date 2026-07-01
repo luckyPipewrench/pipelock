@@ -5,7 +5,9 @@ package cliutil
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -140,5 +142,142 @@ func TestDiscoverConfigPath_NonRegularRejected(t *testing.T) {
 	got := discoverConfigPath(filepath.Join(t.TempDir(), "system.yaml"))
 	if got != "" {
 		t.Errorf("non-regular candidate must not be returned, got %q", got)
+	}
+}
+
+func TestDiscoverConfigPath_GroupOrWorldWritableRejected(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".config", "pipelock")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	groupWritable := os.FileMode(0o620)
+	if err := os.Chmod(cfg, groupWritable); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", home)
+
+	got := discoverConfigPath(filepath.Join(t.TempDir(), "system.yaml"))
+	if got != "" {
+		t.Errorf("group-writable candidate must not be returned, got %q", got)
+	}
+}
+
+func TestDiscoverConfigPathStrict_UnsafeCandidateErrors(t *testing.T) {
+	xdg := t.TempDir()
+	xdgDir := filepath.Join(xdg, "pipelock")
+	if err := os.MkdirAll(xdgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	unsafeCfg := filepath.Join(xdgDir, "pipelock.yaml")
+	if err := os.WriteFile(unsafeCfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsafeMode := os.FileMode(0o600 | 0o020)
+	if err := os.Chmod(unsafeCfg, unsafeMode); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	homeDir := filepath.Join(home, ".config", "pipelock")
+	if err := os.MkdirAll(homeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	homeCfg := filepath.Join(homeDir, "pipelock.yaml")
+	if err := os.WriteFile(homeCfg, []byte("mode: permissive\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", home)
+
+	got, err := discoverConfigPathStrict(filepath.Join(t.TempDir(), "system.yaml"))
+	if err == nil {
+		t.Fatal("expected unsafe higher-priority candidate to error")
+	}
+	if got != "" {
+		t.Fatalf("strict discovery should not fall through after unsafe candidate, got %q", got)
+	}
+}
+
+func TestConfigPathIsSecure_OwnUserAccepted(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ConfigPathIsSecure(cfg); err != nil {
+		t.Fatalf("own-user 0600 config should be secure: %v", err)
+	}
+}
+
+func TestConfigPathIsSecure_GroupOrWorldWritableRejected(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mode := range []os.FileMode{0o620, 0o602} {
+		if err := os.Chmod(cfg, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := ConfigPathIsSecure(cfg); err == nil {
+			t.Fatalf("mode %04o config should be rejected", mode)
+		}
+	}
+}
+
+func TestConfigPathIsSecure_MissingRejected(t *testing.T) {
+	if err := ConfigPathIsSecure(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
+		t.Fatal("missing config should be rejected")
+	}
+}
+
+func TestConfigOwnershipSecure(t *testing.T) {
+	euid := currentEUID()
+	otherUID := euid + 1
+	if otherUID == 0 {
+		otherUID = 12345
+	}
+
+	tests := []struct {
+		name     string
+		ownerUID int
+		want     bool
+	}{
+		{name: "root owner accepted", ownerUID: 0, want: true},
+		{name: "effective user owner accepted", ownerUID: euid, want: true},
+		{name: "other user owner rejected", ownerUID: otherUID, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := configOwnershipSecure(tc.ownerUID, euid)
+			if got != tc.want {
+				t.Fatalf("configOwnershipSecure(%d, %d) = %v, want %v", tc.ownerUID, euid, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfigOwnershipSecure_PipelockProxyAcceptedWhenPresent(t *testing.T) {
+	u, err := user.Lookup("pipelock-proxy")
+	if err != nil {
+		t.Skip("pipelock-proxy user is not present")
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		t.Fatalf("parse pipelock-proxy uid %q: %v", u.Uid, err)
+	}
+	if !configOwnershipSecure(uid, currentEUID()) {
+		t.Fatalf("pipelock-proxy-owned config should be trusted")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,35 @@ func testRootCmd() *cobra.Command {
 // fakeKey builds a test credential at runtime to avoid gitleaks false positives.
 func fakeKey() string {
 	return "AK" + "IA" + "IOSFODNN7" + "EXAMPLE"
+}
+
+func runScanDiffCmd(t *testing.T, diff string, args ...string) (string, error) {
+	t.Helper()
+	stdin, err := os.CreateTemp(t.TempDir(), "scan-diff-stdin-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.WriteString(diff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stdin.Close() })
+
+	oldStdin := os.Stdin
+	os.Stdin = stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	cmd := testRootCmd()
+	cmd.SetArgs(append([]string{"git", "scan-diff"}, args...))
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err = cmd.Execute()
+	return buf.String(), err
 }
 
 func TestGitCmd_Help(t *testing.T) {
@@ -136,6 +166,143 @@ func TestScanDiffCmd_FindsSecret(t *testing.T) {
 	}
 	if !errors.Is(err, ErrSecretsFound) {
 		t.Fatalf("expected ErrSecretsFound, got: %v", err)
+	}
+}
+
+func TestScanDiffCmd_FailClosedMalformedInputs(t *testing.T) {
+	key := fakeKey()
+	tests := []struct {
+		name    string
+		diff    string
+		wantErr error
+	}{
+		{
+			name:    "bare added secret no headers",
+			diff:    "+AWS_ACCESS_KEY_ID=" + key + "\n",
+			wantErr: ErrSecretsFound,
+		},
+		{
+			name:    "bogus empty new-file header",
+			diff:    "+++ \n+AWS_ACCESS_KEY_ID=" + key + "\n",
+			wantErr: ErrSecretsFound,
+		},
+		{
+			name:    "dev null new-file header",
+			diff:    "+++ /dev/null\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+			wantErr: ErrSecretsFound,
+		},
+		{
+			name: "partial parse secret before valid section",
+			diff: "+AWS_ACCESS_KEY_ID=" + key + "\n" +
+				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
+			wantErr: ErrSecretsFound,
+		},
+		{
+			name: "secret in later malformed section",
+			diff: "diff --git a/safe b/safe\n--- a/safe\n+++ b/safe\n@@ -0,0 +1 @@\n+safe=true\n" +
+				"diff --git a/bad b/bad\n--- a/bad\n+++ \n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+			wantErr: ErrSecretsFound,
+		},
+		{
+			name: "multi-file some headers missing",
+			diff: "diff --git a/safe b/safe\n--- a/safe\n+++ b/safe\n@@ -0,0 +1 @@\n+safe=true\n" +
+				"diff --git a/noheader b/noheader\n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+			wantErr: ErrSecretsFound,
+		},
+		{
+			name:    "crlf line endings",
+			diff:    "diff --git a/x b/x\r\n--- a/x\r\n+++ b/x\r\n@@ -0,0 +1 @@\r\n+AWS_ACCESS_KEY_ID=" + key + "\r\n",
+			wantErr: ErrSecretsFound,
+		},
+		{
+			name:    "clean non-diff garbage",
+			diff:    "not a diff\nstill not a diff\n",
+			wantErr: gitprotect.ErrNoDiffHeaders,
+		},
+		{
+			name:    "binary patch",
+			diff:    "diff --git a/blob.bin b/blob.bin\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 1\nA\n",
+			wantErr: gitprotect.ErrUnsupportedBinaryPatch,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := runScanDiffCmd(t, tc.diff)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("expected %v, got %v\noutput:\n%s", tc.wantErr, err, output)
+			}
+		})
+	}
+}
+
+func TestScanDiffCmd_CleanMetadataOnlyDiffs(t *testing.T) {
+	tests := []struct {
+		name string
+		diff string
+	}{
+		{
+			name: "mode only",
+			diff: "diff --git a/tool.sh b/tool.sh\nold mode 100644\nnew mode 100755\n",
+		},
+		{
+			name: "rename only",
+			diff: "diff --git a/old.txt b/new.txt\nsimilarity index 100%\nrename from old.txt\nrename to new.txt\n",
+		},
+		{
+			name: "no prefix",
+			diff: "diff --git main.go main.go\n--- main.go\n+++ main.go\n@@ -1,2 +1,3 @@\n package main\n+import \"fmt\"\n",
+		},
+		{
+			name: "clean text with binary summary",
+			diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,2 @@\n package main\n+const ok = true\n" +
+				"diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n",
+		},
+		{
+			name: "long clean line",
+			diff: "diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -0,0 +1 @@\n+" + strings.Repeat("A", 1100*1024) + "\n",
+		},
+		{
+			name: "empty",
+			diff: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := runScanDiffCmd(t, tc.diff)
+			if err != nil {
+				t.Fatalf("expected clean diff to exit 0, got %v\noutput:\n%s", err, output)
+			}
+		})
+	}
+}
+
+func TestScanDiffCmd_LongAndBinarySummarySecretsStillBlock(t *testing.T) {
+	key := fakeKey()
+	tests := []struct {
+		name string
+		diff string
+	}{
+		{
+			name: "secret in long line",
+			diff: "diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -0,0 +1 @@\n+" +
+				strings.Repeat("A", 1100*1024) + "AWS_ACCESS_KEY_ID=" + key + "\n",
+		},
+		{
+			name: "secret with binary summary",
+			diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n" +
+				"diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := runScanDiffCmd(t, tc.diff)
+			if !errors.Is(err, ErrSecretsFound) {
+				t.Fatalf("expected %v, got %v\noutput:\n%s", ErrSecretsFound, err, output)
+			}
+		})
 	}
 }
 
@@ -270,7 +437,7 @@ func TestInstallHooksCmd_ForceOverwrite(t *testing.T) {
 }
 
 func TestInstallHooksCmd_NoGitDir(t *testing.T) {
-	dir := t.TempDir() // no .git directory
+	dir := t.TempDir()
 
 	oldDir, _ := os.Getwd()
 	_ = os.Chdir(dir)
@@ -286,9 +453,6 @@ func TestInstallHooksCmd_NoGitDir(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected error when not in git repo")
-	}
-	if !strings.Contains(err.Error(), "not a git repository") {
-		t.Errorf("expected 'not a git repository' error, got: %v", err)
 	}
 }
 

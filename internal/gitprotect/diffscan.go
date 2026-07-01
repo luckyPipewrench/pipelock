@@ -26,6 +26,14 @@ var (
 	maxDiffLineNumber = int(^uint(0)>>1) - 1
 )
 
+// Diff input limits keep git gates from truncating and silently passing
+// unverifiable input.
+const (
+	MaxDiffBytes = 100 * 1024 * 1024
+
+	orphanDiffFile = "(unattributed diff input)"
+)
+
 // Finding represents a secret detected in a git diff.
 type Finding struct {
 	File     string `json:"file"`
@@ -41,55 +49,128 @@ type addedLine struct {
 	content string
 }
 
-// parseDiff extracts added lines from unified diff output.
+type diffParseResult struct {
+	attributed               map[string][]addedLine
+	orphans                  []addedLine
+	hasRecognizableStructure bool
+	hasBinaryPatch           bool
+}
+
+// parseDiff extracts attributed added lines from unified diff output.
+//
+// Use parseDiffStructured for security decisions: this compatibility wrapper is
+// kept for existing unit tests and fuzz coverage that only care about normal
+// attributed lines.
+func parseDiff(diffText string) map[string][]addedLine {
+	return parseDiffStructured(diffText).attributed
+}
+
+// parseDiffStructured extracts added lines from unified diff output.
 // It tracks the current file from "+++ b/filename" or "+++ filename" lines
 // (supporting both standard and --no-prefix diffs) and line numbers from
-// "@@ -X,Y +Z,W @@" hunk headers. Only lines starting with "+" (but not
-// "+++") are captured. CRLF line endings are normalized before parsing.
-func parseDiff(diffText string) map[string][]addedLine {
+// "@@ -X,Y +Z,W @@" hunk headers.
+//
+// Only added content lines are scanned by callers. If a +line cannot be
+// attributed to a valid file header and active hunk, it is preserved as an
+// orphan candidate so malformed partial diffs fail closed on secrets without
+// scanning unchanged context.
+func parseDiffStructured(diffText string) diffParseResult {
 	// Normalize \r\n to \n to handle Windows-style line endings.
 	diffText = strings.ReplaceAll(diffText, "\r\n", "\n")
 
-	result := make(map[string][]addedLine)
+	result := diffParseResult{attributed: make(map[string][]addedLine)}
 	lines := strings.Split(diffText, "\n")
 
 	var currentFile string
 	var lineNum int
+	var inHunk bool
 
-	for _, line := range lines {
+	for i, line := range lines {
+		inputLineNum := i + 1
+
+		if line == "GIT binary patch" {
+			result.hasRecognizableStructure = true
+			result.hasBinaryPatch = true
+			inHunk = false
+			continue
+		}
+
+		if strings.HasPrefix(line, "Binary files ") {
+			result.hasRecognizableStructure = true
+			inHunk = false
+			continue
+		}
+
+		if strings.HasPrefix(line, "diff --git ") {
+			result.hasRecognizableStructure = true
+			currentFile = ""
+			inHunk = false
+			continue
+		}
+
+		if strings.HasPrefix(line, "old mode ") ||
+			strings.HasPrefix(line, "new mode ") ||
+			strings.HasPrefix(line, "similarity index ") ||
+			strings.HasPrefix(line, "rename from ") ||
+			strings.HasPrefix(line, "rename to ") ||
+			strings.HasPrefix(line, "index ") ||
+			strings.HasPrefix(line, "--- ") {
+			result.hasRecognizableStructure = true
+			inHunk = false
+			continue
+		}
+
 		// Track current file from "+++ b/filename" header (standard prefix)
 		if strings.HasPrefix(line, "+++ b/") {
 			currentFile = line[6:] // strip "+++ b/"
+			result.hasRecognizableStructure = true
+			inHunk = false
 			continue
 		}
 
 		// Also handle --no-prefix diffs: "+++ filename" (no b/ prefix).
 		// Must come after the "+++ b/" check to avoid stripping "b/" from paths.
-		if strings.HasPrefix(line, "+++ ") && !strings.HasPrefix(line, "+++ /dev/null") {
-			currentFile = line[4:] // strip "+++ "
+		if strings.HasPrefix(line, "+++ ") {
+			header := strings.TrimSpace(line[4:])
+			if header == "" || header == "/dev/null" {
+				currentFile = ""
+				inHunk = false
+				continue
+			}
+			currentFile = header
+			result.hasRecognizableStructure = true
+			inHunk = false
 			continue
 		}
 
 		// Skip other diff headers
-		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "diff ") ||
-			strings.HasPrefix(line, "index ") {
+		if strings.HasPrefix(line, "diff ") {
+			result.hasRecognizableStructure = true
+			currentFile = ""
+			inHunk = false
 			continue
 		}
 
 		// Parse hunk header for line numbers: @@ -X,Y +Z,W @@
 		if strings.HasPrefix(line, "@@") {
-			lineNum = parseHunkNewStart(line)
-			continue
-		}
-
-		if currentFile == "" {
+			lineNum, inHunk = parseHunkNewStartOK(line)
+			if inHunk {
+				result.hasRecognizableStructure = true
+			}
 			continue
 		}
 
 		// Added lines start with "+" (but not "+++")
 		if strings.HasPrefix(line, "+") {
 			content := line[1:] // strip leading "+"
-			result[currentFile] = append(result[currentFile], addedLine{
+			if currentFile == "" || !inHunk {
+				result.orphans = append(result.orphans, addedLine{
+					lineNum: inputLineNum,
+					content: content,
+				})
+				continue
+			}
+			result.attributed[currentFile] = append(result.attributed[currentFile], addedLine{
 				lineNum: lineNum,
 				content: content,
 			})
@@ -97,7 +178,7 @@ func parseDiff(diffText string) map[string][]addedLine {
 		} else if strings.HasPrefix(line, "-") {
 			// Removed lines don't increment the new-file line counter
 			continue
-		} else {
+		} else if inHunk {
 			// Context lines increment the counter
 			lineNum = nextDiffLineNumber(lineNum)
 		}
@@ -116,10 +197,18 @@ func nextDiffLineNumber(n int) int {
 // parseHunkNewStart extracts the starting line number of the new file
 // from a hunk header like "@@ -10,5 +20,8 @@" (returns 20).
 func parseHunkNewStart(hunkLine string) int {
+	n, ok := parseHunkNewStartOK(hunkLine)
+	if !ok {
+		return 1
+	}
+	return n
+}
+
+func parseHunkNewStartOK(hunkLine string) (int, bool) {
 	// Format: @@ -old_start[,old_count] +new_start[,new_count] @@
 	idx := strings.Index(hunkLine, "+")
 	if idx < 0 {
-		return 1
+		return 1, false
 	}
 
 	rest := hunkLine[idx+1:]
@@ -131,9 +220,9 @@ func parseHunkNewStart(hunkLine string) int {
 
 	n, err := strconv.Atoi(rest[:end])
 	if err != nil || n < 1 || n > maxDiffLineNumber {
-		return 1
+		return 1, false
 	}
-	return n
+	return n, true
 }
 
 // CompiledDLPPattern is a pre-compiled DLP regex for scanning diffs.
@@ -221,8 +310,14 @@ func (cp *CompiledDLPPattern) regexMatches(text string) bool {
 	return false
 }
 
-// ErrNoDiffHeaders is returned when input contains no unified diff file headers.
-var ErrNoDiffHeaders = fmt.Errorf("no unified diff file headers found (expected '+++ b/filename' or '+++ filename')")
+var (
+	// ErrNoDiffHeaders is returned when input contains no recognizable unified diff structure.
+	ErrNoDiffHeaders = fmt.Errorf("unverifiable input: no recognizable unified diff structure")
+	// ErrUnsupportedBinaryPatch is returned when input contains a binary patch the line scanner cannot inspect.
+	ErrUnsupportedBinaryPatch = fmt.Errorf("unsupported binary patch in diff")
+	// ErrDiffTooLarge is returned when input exceeds the bounded scan size.
+	ErrDiffTooLarge = fmt.Errorf("diff exceeds maximum size")
+)
 
 // ScanDiffResult holds findings and suppressed findings from a diff scan.
 type ScanDiffResult struct {
@@ -239,20 +334,61 @@ type ScanDiffResult struct {
 // Returns ErrNoDiffHeaders if the input contains no valid diff file headers,
 // indicating the caller may have passed non-diff content.
 func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, error) {
-	addedLines := parseDiff(diffText)
-
-	// Check if input had content but no diff headers - likely not a diff.
-	if len(addedLines) == 0 && len(strings.TrimSpace(diffText)) > 0 && len(patterns) > 0 {
-		// Only error if the input has content - empty input is fine.
-		if !strings.Contains(diffText, "+++ ") {
-			return ScanDiffResult{}, ErrNoDiffHeaders
-		}
+	// TODO: scan changed blob contents by object ID and add per-hunk window
+	// scanning so split-token additions cannot evade line-local matching.
+	if len(diffText) > MaxDiffBytes {
+		return ScanDiffResult{}, fmt.Errorf("%w of %d bytes", ErrDiffTooLarge, MaxDiffBytes)
 	}
 
-	if len(addedLines) == 0 || len(patterns) == 0 {
+	parsed := parseDiffStructured(diffText)
+	if parsed.hasBinaryPatch {
+		return ScanDiffResult{}, ErrUnsupportedBinaryPatch
+	}
+
+	if !parsed.hasRecognizableStructure && strings.TrimSpace(diffText) != "" {
+		if len(patterns) == 0 {
+			return ScanDiffResult{}, ErrNoDiffHeaders
+		}
+		result := scanAddedLines(map[string][]addedLine{
+			orphanDiffFile: rawInputLines(diffText),
+		}, patterns)
+		if len(result.Findings) > 0 || len(result.Suppressed) > 0 {
+			return result, nil
+		}
+		return ScanDiffResult{}, ErrNoDiffHeaders
+	}
+
+	if (len(parsed.attributed) == 0 && len(parsed.orphans) == 0) || len(patterns) == 0 {
 		return ScanDiffResult{}, nil
 	}
 
+	scanInput := make(map[string][]addedLine, len(parsed.attributed)+1)
+	for file, lines := range parsed.attributed {
+		scanInput[file] = lines
+	}
+	if len(parsed.orphans) > 0 {
+		scanInput[orphanDiffFile] = parsed.orphans
+	}
+	return scanAddedLines(scanInput, patterns), nil
+}
+
+func rawInputLines(diffText string) []addedLine {
+	diffText = strings.ReplaceAll(diffText, "\r\n", "\n")
+	lines := strings.Split(diffText, "\n")
+	result := make([]addedLine, 0, len(lines))
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		result = append(result, addedLine{
+			lineNum: i + 1,
+			content: strings.TrimPrefix(line, "+"),
+		})
+	}
+	return result
+}
+
+func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPattern) ScanDiffResult {
 	var findings []Finding
 	var suppressed []Finding
 	var matcher *redact.Matcher
@@ -319,7 +455,7 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, e
 	sortFindings(findings)
 	sortFindings(suppressed)
 
-	return ScanDiffResult{Findings: findings, Suppressed: suppressed}, nil
+	return ScanDiffResult{Findings: findings, Suppressed: suppressed}
 }
 
 func replaceGitProtectMatches(input string, matches []redact.Match) string {

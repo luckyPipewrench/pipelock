@@ -46,6 +46,11 @@ url="$2"
 
 z40=0000000000000000000000000000000000000000
 empty_tree=$(git hash-object -t tree /dev/null)
+tmp_diff=$(mktemp "${TMPDIR:-/tmp}/pipelock-diff.XXXXXX") || {
+    echo "ERROR: could not create temporary diff file; blocking push."
+    exit 1
+}
+trap 'rm -f "$tmp_diff"' EXIT HUP INT TERM
 
 while read local_ref local_sha remote_ref remote_sha; do
     if [ "$local_sha" = "$z40" ]; then
@@ -55,17 +60,23 @@ while read local_ref local_sha remote_ref remote_sha; do
 
     if [ "$remote_sha" = "$z40" ]; then
         # New branch, diff against empty tree
-        range="$empty_tree..$local_sha"
+        base="$empty_tree"
     else
-        range="$remote_sha..$local_sha"
+        base="$remote_sha"
     fi
 
-    if ! git diff "$range" | %s git scan-diff%s; then
+    if ! git diff --no-ext-diff --no-textconv "$base" "$local_sha" > "$tmp_diff"; then
+        echo "ERROR: git diff failed; blocking push."
+        exit 1
+    fi
+
+    if ! %s git scan-diff%s < "$tmp_diff"; then
         echo ""
         echo "Push blocked: secrets detected in diff."
         echo "Fix the issues above, then try again."
         exit 1
     fi
+    : > "$tmp_diff"
 done
 
 exit 0

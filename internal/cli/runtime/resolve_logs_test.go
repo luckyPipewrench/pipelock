@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -22,7 +23,7 @@ func TestEmitResolveInfoLogs(t *testing.T) {
 		}, "proxy")
 
 		want := []string{
-			"warning: response scanning was disabled in config, enabling with defaults",
+			runtimeconfig.ResponseScanningMCPDisabledWarning,
 			"pipelock: auto-enabling MCP input scanning for proxy mode",
 			"pipelock: auto-enabling MCP tool scanning for proxy mode",
 			"pipelock: auto-enabling MCP tool call policy for proxy mode",
@@ -59,7 +60,7 @@ func TestEmitResolveInfoLogs(t *testing.T) {
 			ResponseScanningFallback: true,
 		}, "proxy")
 		out := buf.String()
-		if !strings.Contains(out, "warning: response scanning was disabled") {
+		if !strings.Contains(out, runtimeconfig.ResponseScanningMCPDisabledWarning) {
 			t.Errorf("expected response-fallback line, got:\n%s", out)
 		}
 		if strings.Contains(out, "auto-enabling MCP") {

@@ -21,9 +21,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type loadOptions struct {
+	resolveLicense bool
+}
+
 // Load reads, parses, defaults, and validates a Pipelock config file.
 // If path is "-", the config is read from stdin.
 func Load(path string) (*Config, error) {
+	return load(path, loadOptions{resolveLicense: true})
+}
+
+// LoadForRules reads config for rules subcommands. It preserves strict YAML
+// parsing, defaults, path resolution, and validation, but intentionally skips
+// license_file resolution because rules operations only need rules/trusted-key
+// policy and may run as an unprivileged operator while runtime license material
+// is service-owned.
+func LoadForRules(path string) (*Config, error) {
+	return load(path, loadOptions{resolveLicense: false})
+}
+
+func load(path string, opts loadOptions) (*Config, error) {
 	var data []byte
 	var err error
 	if path == "-" {
@@ -69,19 +86,35 @@ func Load(path string) (*Config, error) {
 
 	cfg.ApplyDefaults()
 
-	// Resolve license key from multiple sources. Priority:
-	// - PIPELOCK_LICENSE_KEY env var (containers, CI)
-	// - license_file config field (file path, read at startup)
-	// - license_key config field (inline YAML, lowest priority)
-	if err := cfg.resolveLicenseKey(filepath.Dir(path)); err != nil {
-		return nil, fmt.Errorf("license key: %w", err)
-	}
-	cfg.resolveLicenseIntermediate(filepath.Dir(path))
-	cfg.resolveLicenseRuntimeVerification()
+	if opts.resolveLicense {
+		// Resolve license key from multiple sources. Priority:
+		// - PIPELOCK_LICENSE_KEY env var (containers, CI)
+		// - license_file config field (file path, read at startup)
+		// - license_key config field (inline YAML, lowest priority)
+		if err := cfg.resolveLicenseKey(filepath.Dir(path)); err != nil {
+			return nil, fmt.Errorf("license key: %w", err)
+		}
+		cfg.resolveLicenseIntermediate(filepath.Dir(path))
+		cfg.resolveLicenseRuntimeVerification()
 
-	// Soft-gate premium features: disable agents section if no license key.
-	if EnforceLicenseGateFunc != nil {
-		EnforceLicenseGateFunc(cfg)
+		// Soft-gate premium features: disable agents section if no license key.
+		if EnforceLicenseGateFunc != nil {
+			EnforceLicenseGateFunc(cfg)
+		}
+	} else {
+		cfg.LicenseKey = ""
+		cfg.LicenseFile = ""
+		cfg.LicenseCRLFile = ""
+		cfg.LicenseIntermediateFile = ""
+		cfg.LicenseIntermediateCert = nil
+		cfg.LicenseIntermediateLoadError = ""
+		cfg.LicenseRequireIntermediate = nil
+		cfg.LicenseRequireIntermediateResolved = false
+		cfg.LicenseRequireIntermediateEnvError = ""
+		cfg.LicenseCRLMaxAge = ""
+		cfg.LicenseCRLMaxAgeResolved = license.DefaultCRLMaxAge
+		cfg.LicenseCRLMaxAgeError = ""
+		cfg.LicensePublicKey = ""
 	}
 
 	// Resolve relative secrets_file path relative to config file directory.
@@ -126,8 +159,14 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+	if opts.resolveLicense {
+		if err := cfg.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid config: %w", err)
+		}
+	} else {
+		if err := cfg.validateForRules(); err != nil {
+			return nil, fmt.Errorf("invalid rules config: %w", err)
+		}
 	}
 	cfg.canonicalHashCache = &canonicalHashCacheHolder{}
 	cfg.canonicalRedactionKeyCache = &canonicalHashCacheHolder{}
@@ -143,6 +182,23 @@ func Load(path string) (*Config, error) {
 	_ = cfg.CanonicalPolicyHash()
 
 	return cfg, nil
+}
+
+func (c *Config) validateForRules() error {
+	if err := c.validateMode(); err != nil {
+		return err
+	}
+	if err := c.validateDLPPatternConfig(); err != nil {
+		return err
+	}
+	var warnings []Warning
+	if err := c.validateResponseScanning(&warnings); err != nil {
+		return err
+	}
+	if err := c.validateRules(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func readStableRegularFile(path string) ([]byte, error) {

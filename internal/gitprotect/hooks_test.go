@@ -78,15 +78,34 @@ func TestGeneratePrePushHook_HandlesNewBranch(t *testing.T) {
 	if !strings.Contains(hook, "empty_tree") {
 		t.Error("hook should handle new branches by diffing against empty tree")
 	}
+	if strings.Contains(hook, "$empty_tree..$local_sha") {
+		t.Error("hook must not use empty-tree revision ranges; git diff rejects tree..commit on initial pushes")
+	}
+	if !strings.Contains(hook, `git diff --no-ext-diff --no-textconv "$base" "$local_sha"`) {
+		t.Error("hook should diff base and local sha as separate arguments")
+	}
 }
 
 func TestGeneratePrePushHook_ExplicitErrorHandling(t *testing.T) {
 	hook := GeneratePrePushHook("pipelock", "")
 	// Should use if ! cmd pattern instead of set -e + $?
-	if !strings.Contains(hook, "if ! git diff") {
-		t.Error("hook should use 'if ! cmd' pattern for error handling")
+	if !strings.Contains(hook, "if ! git diff --no-ext-diff --no-textconv") {
+		t.Error("hook should check git diff with explicit error handling")
+	}
+	if !strings.Contains(hook, "if ! 'pipelock' git scan-diff < \"$tmp_diff\"") {
+		t.Error("hook should scan a verified diff file instead of a pipeline")
 	}
 	if strings.Contains(hook, "$? -ne 0") {
 		t.Error("hook should not use $? check (incompatible with set -e)")
+	}
+	if strings.Contains(hook, "| 'pipelock' git scan-diff") {
+		t.Error("hook must not pipe git diff into scan-diff because POSIX sh masks left-side failures")
+	}
+}
+
+func TestGeneratePrePushHook_DisablesExternalDiffAndTextconv(t *testing.T) {
+	hook := GeneratePrePushHook("pipelock", "")
+	if !strings.Contains(hook, "git diff --no-ext-diff --no-textconv") {
+		t.Error("hook should disable external diff and textconv before scan-diff")
 	}
 }

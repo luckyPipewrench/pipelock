@@ -652,6 +652,26 @@ func (c *Config) validateLogging() error {
 }
 
 func (c *Config) validateDLP() error {
+	if err := c.validateDLPPatternConfig(); err != nil {
+		return err
+	}
+
+	// Validate secrets_file if configured
+	if c.DLP.SecretsFile != "" {
+		info, err := os.Stat(c.DLP.SecretsFile)
+		if err != nil {
+			return fmt.Errorf("secrets_file %q: %w", c.DLP.SecretsFile, err)
+		}
+		// Reject group-write/execute and all other access. Group-read
+		// allowed for k8s Secret volume compatibility.
+		if secperm.TooPermissive(info.Mode().Perm(), 0o037) {
+			return fmt.Errorf("secrets_file %q has unsafe permissions (mode %04o): restrict to 0600 or 0640", c.DLP.SecretsFile, info.Mode().Perm())
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateDLPPatternConfig() error {
 	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
 	// is not implemented - DLP matches follow the transport-level action
 	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
@@ -694,19 +714,6 @@ func (c *Config) validateDLP() error {
 
 	if err := validateCanaryTokens(c); err != nil {
 		return fmt.Errorf("canary_tokens: %w", err)
-	}
-
-	// Validate secrets_file if configured
-	if c.DLP.SecretsFile != "" {
-		info, err := os.Stat(c.DLP.SecretsFile)
-		if err != nil {
-			return fmt.Errorf("secrets_file %q: %w", c.DLP.SecretsFile, err)
-		}
-		// Reject group-write/execute and all other access. Group-read
-		// allowed for k8s Secret volume compatibility.
-		if secperm.TooPermissive(info.Mode().Perm(), 0o037) {
-			return fmt.Errorf("secrets_file %q has unsafe permissions (mode %04o): restrict to 0600 or 0640", c.DLP.SecretsFile, info.Mode().Perm())
-		}
 	}
 	return nil
 }

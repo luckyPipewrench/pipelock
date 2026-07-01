@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -316,14 +317,13 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s.runtimeMode = runtimeMode
 
 	var bundleResult *rules.LoadResult
-	var resolveInfo config.ResolveRuntimeInfo
-	cfg, resolveInfo = cfg.ResolveRuntime(config.RuntimeResolveOpts{
+	cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 		Mode: runtimeMode,
 		MergeBundles: func(c *config.Config) {
 			bundleResult = rules.MergeIntoConfig(c, cliutil.Version)
 		},
 		DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
-	})
+	}, opts.Stderr, "listener")
 	for _, e := range bundleResult.Errors {
 		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 	}
@@ -333,7 +333,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if bundleResult.Degraded {
 		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 	}
-	emitResolveInfoLogs(opts.Stderr, resolveInfo, "listener")
 	if hasMCPListen {
 		if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPListener, cfg); err != nil {
 			return nil, err

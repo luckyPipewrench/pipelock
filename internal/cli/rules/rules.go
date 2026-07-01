@@ -31,29 +31,59 @@ import (
 // from the pipelab.org Hugo site via Cloudflare Pages.
 const officialRegistryURL = "https://pipelab.org/rules"
 
+var discoverRulesConfigPath = cliutil.DiscoverConfigPathStrict
+
 // loadRulesConfig loads the pipelock config for trusted key resolution.
-// When configFile is explicitly set (--config flag), load failures are fatal
-// (returned as error). Auto-discovery (PIPELOCK_CONFIG env, cwd pipelock.yaml)
-// is best-effort: failures return nil config, not an error.
-func loadRulesConfig(configFile string) (*config.Config, error) {
+// Resolution is explicit --config, then PIPELOCK_CONFIG, then the shared
+// user/system discovery path. CWD-local pipelock.yaml is intentionally ignored:
+// rules_dir and trusted_keys are security decisions and must not be discovered
+// from a hostile repository working directory.
+func loadRulesConfig(configFile string, stderr ...io.Writer) (*config.Config, error) {
+	provenance := io.Discard
+	if len(stderr) > 0 && stderr[0] != nil {
+		provenance = stderr[0]
+	}
+
 	// Explicit flag: hard error on failure.
 	if configFile != "" {
-		cfg, err := config.Load(configFile)
+		cfg, err := config.LoadForRules(configFile)
 		if err != nil {
 			return nil, fmt.Errorf("loading config %q: %w", configFile, err)
 		}
+		_, _ = fmt.Fprintf(provenance, "pipelock rules: using config %s\n", configFile)
 		return cfg, nil
 	}
-	// Try PIPELOCK_CONFIG env var (best-effort).
+
 	if envPath := os.Getenv("PIPELOCK_CONFIG"); envPath != "" {
-		if cfg, err := config.Load(envPath); err == nil {
-			return cfg, nil
+		clean, err := filepath.Abs(filepath.Clean(envPath))
+		if err != nil {
+			return nil, fmt.Errorf("resolving PIPELOCK_CONFIG %q: %w", envPath, err)
 		}
-	}
-	// Try pipelock.yaml in current directory (best-effort).
-	if cfg, err := config.Load("pipelock.yaml"); err == nil {
+		if err := cliutil.ConfigPathIsSecure(clean); err != nil {
+			return nil, fmt.Errorf("rejecting PIPELOCK_CONFIG %q: %w", clean, err)
+		}
+		cfg, err := config.LoadForRules(clean)
+		if err != nil {
+			return nil, fmt.Errorf("loading PIPELOCK_CONFIG %q: %w", clean, err)
+		}
+		_, _ = fmt.Fprintf(provenance, "pipelock rules: using config %s\n", clean)
 		return cfg, nil
 	}
+
+	discovered, discoverErr := discoverRulesConfigPath()
+	if discoverErr != nil {
+		return nil, fmt.Errorf("discovering config: %w", discoverErr)
+	}
+	if discovered != "" {
+		cfg, err := config.LoadForRules(discovered)
+		if err != nil {
+			return nil, fmt.Errorf("loading discovered config %q: %w", discovered, err)
+		}
+		_, _ = fmt.Fprintf(provenance, "pipelock rules: using config %s\n", discovered)
+		return cfg, nil
+	}
+
+	_, _ = fmt.Fprintln(provenance, "pipelock rules: using built-in defaults (no config found)")
 	return nil, nil
 }
 
@@ -105,7 +135,7 @@ Uses the same config resolution as runtime for accurate reporting.`,
 
 			// Load full config to respect rules_dir, include_defaults,
 			// min_confidence, disabled, and trusted_keys.
-			cfg, err := loadRulesConfig(configFile)
+			cfg, err := loadRulesConfig(configFile, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -592,11 +622,24 @@ Examples:
 			case localPath != "":
 				return installLocal(out, dir, localPath, allowUnsign)
 			case sourceURL != "":
-				return installRemote(out, dir, sourceURL, configFile, "")
+				return installRemote(installRemoteOptions{
+					out:        out,
+					stderr:     cmd.ErrOrStderr(),
+					rulesDir:   dir,
+					bundleURL:  sourceURL,
+					configFile: configFile,
+				})
 			case len(args) == 1:
 				name := args[0]
 				url := officialRegistryURL + "/" + name + "/bundle.yaml"
-				return installRemote(out, dir, url, configFile, name)
+				return installRemote(installRemoteOptions{
+					out:          out,
+					stderr:       cmd.ErrOrStderr(),
+					rulesDir:     dir,
+					bundleURL:    url,
+					configFile:   configFile,
+					expectedName: name,
+				})
 			default:
 				return fmt.Errorf("specify a bundle name, --source URL, or --path DIR")
 			}
@@ -668,18 +711,27 @@ func installLocal(out io.Writer, rulesDir, localPath string, allowUnsigned bool)
 	return nil
 }
 
+type installRemoteOptions struct {
+	out          io.Writer
+	stderr       io.Writer
+	rulesDir     string
+	bundleURL    string
+	configFile   string
+	expectedName string
+}
+
 // installRemote installs a bundle from a remote URL.
-func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName string) error {
+func installRemote(opts installRemoteOptions) error {
 	ctx := context.Background()
 
-	bundleData, sigData, err := fetchRemoteBundle(ctx, bundleURL)
+	bundleData, sigData, err := fetchRemoteBundle(ctx, opts.bundleURL)
 	if err != nil {
 		return err
 	}
 
-	// Load trusted keys from config (explicit flag, env, or cwd).
+	// Load trusted keys from config (explicit flag, env, or user/system discovery).
 	var trustedKeys []config.TrustedKey
-	if cfg, cfgErr := loadRulesConfig(configFile); cfgErr != nil {
+	if cfg, cfgErr := loadRulesConfig(opts.configFile, opts.stderr); cfgErr != nil {
 		return cfgErr
 	} else if cfg != nil {
 		trustedKeys = cfg.Rules.TrustedKeys
@@ -696,8 +748,8 @@ func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName 
 	}
 
 	// If an expected name was given (official install), verify it matches.
-	if expectedName != "" && bundle.Name != expectedName {
-		return fmt.Errorf("bundle name %q does not match expected %q", bundle.Name, expectedName)
+	if opts.expectedName != "" && bundle.Name != opts.expectedName {
+		return fmt.Errorf("bundle name %q does not match expected %q", bundle.Name, opts.expectedName)
 	}
 
 	// Enforce pipelock-* prefix reservation: only official keys allowed.
@@ -710,7 +762,7 @@ func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName 
 	}
 
 	digest := sha256Hex(bundleData)
-	destDir := filepath.Join(rulesDir, bundle.Name)
+	destDir := filepath.Join(opts.rulesDir, bundle.Name)
 
 	if err := checkExistingInstall(destDir, bundle.Version, digest); err != nil {
 		return err
@@ -721,20 +773,20 @@ func installRemote(out io.Writer, rulesDir, bundleURL, configFile, expectedName 
 	lf := &domrules.LockFile{
 		InstalledVersion:  bundle.Version,
 		InstalledAt:       now,
-		Source:            bundleURL,
+		Source:            opts.bundleURL,
 		LastCheck:         now,
 		BundleSHA256:      digest,
 		SignerFingerprint: result.SignerFingerprint,
 	}
-	if err := stageBundle(rulesDir, bundle.Name, bundleData, sigData, lf); err != nil {
+	if err := stageBundle(opts.rulesDir, bundle.Name, bundleData, sigData, lf); err != nil {
 		return err
 	}
-	if err := resetFreshnessStateAfterBundleChange(rulesDir); err != nil {
+	if err := resetFreshnessStateAfterBundleChange(opts.rulesDir); err != nil {
 		return err
 	}
 
-	_, _ = fmt.Fprintf(out, "Installed %s v%s (%s)\n", bundle.Name, bundle.Version, result.Tier)
-	_, _ = fmt.Fprintf(out, "  %d rules, signer: %s\n", len(bundle.Rules), result.SignerFingerprint[:16]+"...")
+	_, _ = fmt.Fprintf(opts.out, "Installed %s v%s (%s)\n", bundle.Name, bundle.Version, result.Tier)
+	_, _ = fmt.Fprintf(opts.out, "  %d rules, signer: %s\n", len(bundle.Rules), result.SignerFingerprint[:16]+"...")
 	return nil
 }
 
@@ -864,7 +916,7 @@ Local (unsigned) bundles are skipped during update.`,
 			defer unlock()
 
 			var trustedKeys []config.TrustedKey
-			if cfg, cfgErr := loadRulesConfig(configFile); cfgErr != nil {
+			if cfg, cfgErr := loadRulesConfig(configFile, cmd.ErrOrStderr()); cfgErr != nil {
 				return cfgErr
 			} else if cfg != nil {
 				trustedKeys = cfg.Rules.TrustedKeys
@@ -1066,7 +1118,7 @@ func rulesVerifyCmd() *cobra.Command {
 			dir := domrules.ResolveRulesDir(rulesDir)
 
 			var trustedKeys []config.TrustedKey
-			if cfg, cfgErr := loadRulesConfig(configFile); cfgErr != nil {
+			if cfg, cfgErr := loadRulesConfig(configFile, cmd.ErrOrStderr()); cfgErr != nil {
 				return cfgErr
 			} else if cfg != nil {
 				trustedKeys = cfg.Rules.TrustedKeys

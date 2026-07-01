@@ -89,13 +89,12 @@ Examples:
 				return err
 			}
 
-			const maxDiffSize = 100 * 1024 * 1024 // 100 MB
-			diffData, err := io.ReadAll(io.LimitReader(os.Stdin, maxDiffSize+1))
+			diffData, err := io.ReadAll(io.LimitReader(os.Stdin, gitprotect.MaxDiffBytes+1))
 			if err != nil {
 				return fmt.Errorf("reading diff from stdin: %w", err)
 			}
-			if len(diffData) > maxDiffSize {
-				return fmt.Errorf("diff exceeds maximum size of %d bytes", maxDiffSize)
+			if len(diffData) > gitprotect.MaxDiffBytes {
+				return fmt.Errorf("diff exceeds maximum size of %d bytes", gitprotect.MaxDiffBytes)
 			}
 
 			if len(diffData) == 0 {
@@ -113,7 +112,8 @@ Examples:
 			patterns := gitprotect.CompileDLPPatterns(cfg.DLP.Patterns)
 			result, scanErr := gitprotect.ScanDiff(string(diffData), patterns)
 			if scanErr != nil {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", scanErr)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ERROR: %v\n", scanErr)
+				return scanErr
 			}
 
 			// ScanDiff handles inline pipelock:ignore from the diff content

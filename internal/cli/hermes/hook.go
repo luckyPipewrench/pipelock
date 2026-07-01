@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -150,7 +151,7 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 		return emitDecision(stdout, blockDecision(fmt.Sprintf("pipelock hermes hook: config load failed: %v", err)))
 	}
 
-	cfg, _ = cfg.ResolveRuntime(config.RuntimeResolveOpts{
+	cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 		Mode: config.RuntimeMCPScan,
 		MergeBundles: func(c *config.Config) {
 			// Bundle merge errors are surfaced via stderr only; an empty
@@ -162,7 +163,7 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 				_, _ = fmt.Fprintf(stderr, "pipelock hermes hook: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
 		},
-	})
+	}, stderr, "hermes hook")
 
 	sc := scanner.New(cfg)
 	defer sc.Close()

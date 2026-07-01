@@ -797,12 +797,12 @@ response_scanning:
   ask_timeout_seconds: 30       # HITL approval timeout
   include_defaults: true
   exempt_domains:               # skip injection scanning for these hosts
-    - "api.openai.com"
-    - "*.anthropic.com"
+    - "api.vendor.example"
+    - "*.vendor.example"
   size_exempt_domains:          # trusted large-download hosts; scan cap only
     - "downloads.example.com"
   mcp_servers:                  # MCP response trust classes; default is untrusted/block
-    - server: "codex"
+    - server: "analysis-server"
       trust: "reasoning"        # reasoning => warn; untrusted => block
   patterns:
     - name: "Custom Injection"
@@ -816,7 +816,7 @@ response_scanning:
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
 | `include_defaults` | `true` | Merge with 29 built-in patterns |
 | `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
-| `size_exempt_domains` | `[]` | Trusted hosts whose oversized forward-proxy or TLS-intercepted responses may stream through instead of failing the scan ceiling. Request-side scanning and budget accounting still run. |
+| `size_exempt_domains` | `[]` | Trusted hosts whose oversized forward-proxy, TLS-intercepted, or reverse-proxy responses may stream through instead of failing the scan ceiling. Request-side scanning and budget accounting still run. |
 | `mcp_servers` | `[]` | Per-MCP-server response trust classes keyed by `pipelock mcp proxy --server-name`. Omitted, missing, malformed, or non-matching servers are treated as `untrusted` and block response-injection findings. `reasoning` is an explicit opt-in that logs/warns but forwards the response. |
 | `patterns` | 29 built-in | Injection and state/control poisoning patterns |
 
@@ -828,14 +828,16 @@ response_scanning:
 - **warn:** log the match, return content unchanged
 - **ask:** pause and prompt the operator for approval (requires TTY)
 
-**Exempt domains:** LLM provider APIs (OpenAI, Anthropic, etc.) return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs — only the response injection scan is skipped. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. Does not affect MCP response scanning; MCP uses `response_scanning.mcp_servers` so a reasoning-model MCP server can warn while web-relay MCP servers keep blocking.
+**MCP required control:** `response_scanning.enabled: false` is currently ignored in `pipelock mcp proxy` and `pipelock mcp scan` modes because MCP response scanning is the required injection-control path. Pipelock runs with default response scanning and prints a warning naming the overridden field. This compatibility fallback will become a startup/reload error in a future release; remove the disable to silence the warning.
+
+**Exempt domains:** Trusted response APIs can return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs — only the response injection scan is skipped. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. Does not affect MCP response scanning; MCP uses `response_scanning.mcp_servers` so a reasoning-model MCP server can warn while web-relay MCP servers keep blocking.
 
 **MCP response trust classes:** MCP response scanning defaults to `untrusted`, which blocks response-injection findings even if the generic `response_scanning.action` is `warn`. This protects web-relay servers such as fetch/search/scraping tools. To allow a reasoning-model MCP server to answer security-analysis questions that quote canonical jailbreak strings, opt in by server name:
 
 ```yaml
 response_scanning:
   mcp_servers:
-    - server: "codex"
+    - server: "analysis-server"
       trust: "reasoning"
 ```
 
@@ -843,13 +845,13 @@ response_scanning:
 
 Response trust does not make a server trusted for taint propagation. If a reasoning server is also an operator-trusted source whose clean responses should not contaminate the session, add the same `--server-name` value under `taint.trusted_mcp_servers`. Prompt-injection findings still raise hostile taint.
 
-Launch MCP proxies with a stable server identity so the entry can match: use `pipelock mcp proxy --server-name codex ...` for per-server wrappers, or `pipelock run --mcp-listen ... --mcp-upstream ... --mcp-server-name codex` for the long-lived MCP listener.
+Launch MCP proxies with a stable server identity so the entry can match: use `pipelock mcp proxy --server-name analysis-server ...` for per-server wrappers, or `pipelock run --mcp-listen ... --mcp-upstream ... --mcp-server-name analysis-server` for the long-lived MCP listener.
 
 For forward-proxy and TLS-intercepted traffic, an exempt host's response streams through untouched when `response_scanning.enabled` is true: no buffering, response scan-cap block, media metadata strip, Browser Shield rewrite, or injection scan is applied to that trusted response. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. If a host needs full byte-preserving passthrough without MITM, prefer `tls_interception.passthrough_domains`.
 
 Non-exempt responses that must be buffered for response scanning, Browser Shield, or media policy block fail-closed if they exceed the configured scan cap (`fetch_proxy.max_response_mb` or `tls_interception.max_response_bytes`). The block uses reason code `response_size` and names the host, observed size, scan ceiling, and the knob to raise. Data-budget truncation is separate and remains an explicit budget policy.
 
-Use `size_exempt_domains` for trusted large-download hosts when the default fail-closed scan ceiling blocks legitimate artifacts such as package headers, signed binaries, or model weights. This exemption is narrower than `exempt_domains`: it only takes effect after the response exceeds the scan cap. Smaller responses from the same host still take the normal buffered scanning path. The exemption applies only to the forward proxy and TLS interception; reverse-proxy / MCP-HTTP responses and compressed (`Content-Encoding`) responses still fail closed when they cannot be fully scanned, regardless of this list.
+Use `size_exempt_domains` for trusted large-download hosts when the default fail-closed scan ceiling blocks legitimate artifacts such as package headers, signed binaries, or model weights. This exemption is narrower than `exempt_domains`: it only takes effect after the response exceeds the scan cap. Smaller responses from the same host still take the normal buffered scanning path. The exemption applies to forward proxy, TLS interception, and reverse proxy responses. MCP-HTTP responses and compressed (`Content-Encoding`) responses still fail closed when they cannot be fully scanned, regardless of this list.
 
 ### Generic SSE streaming (`response_scanning.sse_streaming`)
 
@@ -1459,7 +1461,7 @@ Git-aware scanning for pre-push secret detection and branch restrictions.
 git_protection:
   enabled: false
   allowed_branches: ["feature/*", "fix/*", "main"]
-  allowed_push_repos: ["github.com/acme/private-*", "gitlab.com/*"]
+  allowed_push_repos: ["git.vendor.example/team/private-*", "forge.vendor.example/*"]
   pre_push_scan: true
 ```
 
@@ -1467,8 +1469,12 @@ git_protection:
 |-------|---------|-------------|
 | `enabled` | `false` | Enable git protection |
 | `allowed_branches` | `["feature/*", "fix/*", "main", "master"]` | Reserved, not yet enforced (push gating today uses `allowed_push_repos`, `blocked_commands`, `pre_push_scan`) |
-| `allowed_push_repos` | `[]` | Optional proxy-enforced allowlist for visible Git smart-HTTP pushes (`git-receive-pack`). Supported patterns include exact repos (`host/owner/repo`), owner globs (`github.com/acme/*`), and host-wide allowlists (`gitlab.com/*`). Bare `owner/repo` entries are rejected. Matching is case-insensitive. When `git_protection.enabled` is true and the allowlist is empty, visible pushes are blocked (fail-closed). Non-intercepted HTTPS CONNECT exposes only the host; enable TLS interception for repo-path enforcement. SSH pushes are opaque to the proxy and are not gated. |
+| `allowed_push_repos` | `[]` | Optional proxy-enforced allowlist for visible Git smart-HTTP pushes (`git-receive-pack`). Supported patterns include exact repos (`host/owner/repo`), owner globs (`git.vendor.example/team/*`), and host-wide allowlists (`forge.vendor.example/*`). Bare `owner/repo` entries are rejected. Matching is case-insensitive. When `git_protection.enabled` is true and the allowlist is empty, visible pushes are blocked (fail-closed). Non-intercepted HTTPS CONNECT exposes only the host; enable TLS interception for repo-path enforcement. SSH pushes are opaque to the proxy and are not gated. |
 | `pre_push_scan` | `true` | Scan diffs before push |
+
+`pipelock git scan-diff` is a fail-closed gate. Empty input and valid metadata-only diffs (mode-only changes, rename-only changes, and `--no-prefix` diffs with no added secret content) pass. Non-empty input that is not recognizable unified diff output exits non-zero as unverifiable. Added `+` lines that cannot be attributed to a valid file header and hunk are still scanned as orphan added-content candidates, so partial or malformed diffs cannot hide a secret before or between valid file sections. Unsupported binary patches fail closed because the line scanner cannot inspect their payload. Generated pre-push hooks invoke `git diff --no-ext-diff --no-textconv` before `pipelock git scan-diff` so repository-local diff drivers and textconv filters cannot substitute untrusted patch text.
+
+The gate scans added text lines, not unchanged context lines. That avoids re-blocking every push because of a pre-existing secret already present in the repository. Future hardening should scan changed blob contents by object ID and add per-hunk window scanning for split-token cases.
 
 ## Logging
 

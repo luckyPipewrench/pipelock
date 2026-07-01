@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -30,6 +32,31 @@ const (
 	testBundleName    = "test-bundle"
 	testBundleVersion = "2026.03.1"
 )
+
+func TestMain(m *testing.M) {
+	discoverRulesConfigPath = func() (string, error) {
+		return "", nil
+	}
+	dir, err := os.MkdirTemp("", "pipelock-rules-test-home-*")
+	if err != nil {
+		panic(err)
+	}
+	_ = os.Setenv("PIPELOCK_CONFIG", "")
+	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	_ = os.Setenv("HOME", filepath.Join(dir, "home"))
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+func withRulesConfigDiscovery(t *testing.T, fn func() (string, error)) {
+	t.Helper()
+	old := discoverRulesConfigPath
+	discoverRulesConfigPath = fn
+	t.Cleanup(func() {
+		discoverRulesConfigPath = old
+	})
+}
 
 // validBundleYAML is minimal valid bundle YAML for testing.
 const validBundleYAML = `format_version: 1
@@ -1030,15 +1057,203 @@ func TestLoadRulesConfig_ExplicitPathError(t *testing.T) {
 }
 
 func TestLoadRulesConfig_EmptyFallback(t *testing.T) {
-	// Empty configFile + no env + no cwd config -> nil, nil (not an error).
+	// Empty configFile + no env + no discovered config -> nil, nil (not an error).
 	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
 	t.Chdir(t.TempDir())
-	cfg, err := loadRulesConfig("")
+	var stderr strings.Builder
+	cfg, err := loadRulesConfig("", &stderr)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 	if cfg != nil {
-		t.Fatal("expected nil config when no explicit, env, or cwd config is present")
+		t.Fatal("expected nil config when no explicit, env, or discovered config is present")
+	}
+	if !strings.Contains(stderr.String(), "using built-in defaults") {
+		t.Fatalf("expected defaults provenance, got %q", stderr.String())
+	}
+}
+
+func TestLoadRulesConfig_HostileCWDConfigIgnored(t *testing.T) {
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "pipelock.yaml"), []byte("mode: balanced\nrules_dir: /hostile\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr strings.Builder
+	cfg, err := loadRulesConfig("", &stderr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg != nil {
+		t.Fatal("cwd pipelock.yaml must be ignored")
+	}
+	if !strings.Contains(stderr.String(), "using built-in defaults") {
+		t.Fatalf("expected defaults provenance, got %q", stderr.String())
+	}
+}
+
+func TestLoadRulesConfig_EnvVarHonoredWithProvenance(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "env-pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", cfgPath)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+
+	var stderr strings.Builder
+	cfg, err := loadRulesConfig("", &stderr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected env config")
+	}
+	if !strings.Contains(stderr.String(), cfgPath) {
+		t.Fatalf("expected config provenance to include env path, got %q", stderr.String())
+	}
+}
+
+func TestLoadRulesConfig_IgnoresRuntimeLicenseFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nlicense_file: missing-license.token\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	var stderr strings.Builder
+	cfg, err := loadRulesConfig(cfgPath, &stderr)
+	if err != nil {
+		t.Fatalf("rules config load should not require runtime license_file: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected config")
+	}
+	if cfg.LicenseFile != "" || cfg.LicenseKey != "" {
+		t.Fatalf("rules config loader should scrub runtime license fields, got license_file=%q license_key=%q", cfg.LicenseFile, cfg.LicenseKey)
+	}
+}
+
+func TestLoadRulesConfig_IgnoresRuntimeOnlyFiles(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfgYAML := `mode: balanced
+dlp:
+  secrets_file: /root/not-readable/pipelock-secrets.env
+tls_interception:
+  enabled: true
+  ca_cert: /root/not-readable/ca.pem
+  ca_key: /root/not-readable/ca-key.pem
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	cfg, err := loadRulesConfig(cfgPath, io.Discard)
+	if err != nil {
+		t.Fatalf("rules config load should not require runtime-only files: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected config")
+	}
+}
+
+func TestLoadRulesConfig_InvalidRulesFacingConfigFatal(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	cfgYAML := `mode: balanced
+dlp:
+  patterns:
+    - name: bad-regex
+      regex: "["
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	cfg, err := loadRulesConfig(cfgPath, io.Discard)
+	if err == nil {
+		t.Fatal("expected invalid rules-facing DLP pattern to be fatal")
+	}
+	if cfg != nil {
+		t.Fatalf("expected nil config on invalid rules-facing config, got %+v", cfg)
+	}
+	if !strings.Contains(err.Error(), "invalid rules config") || !strings.Contains(err.Error(), "bad-regex") {
+		t.Fatalf("expected invalid DLP pattern error, got %v", err)
+	}
+}
+
+func TestLoadRulesConfig_MalformedDiscoveredConfigFatal(t *testing.T) {
+	xdg := t.TempDir()
+	cfgDir := filepath.Join(xdg, "pipelock")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(cfgDir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: [broken\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", t.TempDir())
+	withRulesConfigDiscovery(t, cliutil.DiscoverConfigPathStrict)
+
+	var stderr strings.Builder
+	cfg, err := loadRulesConfig("", &stderr)
+	if err == nil {
+		t.Fatal("expected malformed discovered config to be fatal")
+	}
+	if cfg != nil {
+		t.Fatalf("expected nil config on malformed discovered config, got %+v", cfg)
+	}
+	if !strings.Contains(err.Error(), "loading discovered config") {
+		t.Fatalf("expected discovered config load error, got %v", err)
+	}
+}
+
+func TestLoadRulesConfig_UnsafeDiscoveredConfigFatal(t *testing.T) {
+	xdg := t.TempDir()
+	cfgDir := filepath.Join(xdg, "pipelock")
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(cfgDir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	unsafeMode := os.FileMode(0o600 | 0o020)
+	if err := os.Chmod(cfgPath, unsafeMode); err != nil {
+		t.Fatalf("chmod config: %v", err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", t.TempDir())
+	withRulesConfigDiscovery(t, cliutil.DiscoverConfigPathStrict)
+
+	var stderr strings.Builder
+	cfg, err := loadRulesConfig("", &stderr)
+	if err == nil {
+		t.Fatal("expected unsafe discovered config to be fatal")
+	}
+	if cfg != nil {
+		t.Fatalf("expected nil config on unsafe discovered config, got %+v", cfg)
+	}
+	if !strings.Contains(err.Error(), "discovering config") || !strings.Contains(err.Error(), "writable by group or other") {
+		t.Fatalf("expected unsafe discovery error, got %v", err)
+	}
+	if strings.Contains(stderr.String(), "using built-in defaults") {
+		t.Fatalf("unsafe discovered config must not fall back to defaults; stderr=%q", stderr.String())
 	}
 }
 
@@ -1609,7 +1824,13 @@ func TestRulesInstall_RemoteNameMismatch(t *testing.T) {
 	buf := &strings.Builder{}
 
 	// Call installRemote directly with an expectedName that doesn't match the bundle.
-	err = installRemote(buf, rulesDir, ts.URL+testBundlePath, "", "wrong-name")
+	err = installRemote(installRemoteOptions{
+		out:          buf,
+		stderr:       io.Discard,
+		rulesDir:     rulesDir,
+		bundleURL:    ts.URL + testBundlePath,
+		expectedName: "wrong-name",
+	})
 	if err == nil {
 		t.Fatal("expected error for name mismatch")
 	}
@@ -2182,7 +2403,13 @@ func TestInstallRemote_PipelockPrefixNonOfficial(t *testing.T) {
 
 	_ = trustedKeys // used through config file
 	buf := &strings.Builder{}
-	err = installRemote(buf, rulesDir, ts.URL+"/pipelock-evil/bundle.yaml", cfgPath, "")
+	err = installRemote(installRemoteOptions{
+		out:        buf,
+		stderr:     io.Discard,
+		rulesDir:   rulesDir,
+		bundleURL:  ts.URL + "/pipelock-evil/bundle.yaml",
+		configFile: cfgPath,
+	})
 	if err == nil {
 		t.Fatal("expected error for pipelock- prefix with non-official signer")
 	}
@@ -2407,10 +2634,19 @@ func TestRulesInstall_RemoteSignatureFailure(t *testing.T) {
 
 // ---------- rules status ----------
 
+type statusCmdOutput struct {
+	stdout string
+	stderr string
+}
+
 // runStatusCmd sets up a cobra root with the rules command, writes cfgYAML to
 // a temp config file, and executes "rules status" with the given extra args.
-func runStatusCmd(t *testing.T, cfgYAML string, extraArgs ...string) string {
+func runStatusCmd(t *testing.T, cfgYAML string, extraArgs ...string) statusCmdOutput {
 	t.Helper()
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
 	root := &cobra.Command{Use: "pipelock"}
 	root.AddCommand(Cmd())
 
@@ -2422,34 +2658,40 @@ func runStatusCmd(t *testing.T, cfgYAML string, extraArgs ...string) string {
 		t.Fatal(err)
 	}
 
-	var buf strings.Builder
-	root.SetOut(&buf)
-	root.SetErr(&buf)
+	var stdout strings.Builder
+	var stderr strings.Builder
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
 	args := append([]string{"rules", "status", "--config", cfgFile}, extraArgs...)
 	root.SetArgs(args)
 
 	if err := root.Execute(); err != nil {
 		t.Fatalf("rules status failed: %v", err)
 	}
-	return buf.String()
+	return statusCmdOutput{stdout: stdout.String(), stderr: stderr.String()}
 }
 
 func TestRulesStatus_DefaultConfig(t *testing.T) {
-	out := runStatusCmd(t, "")
+	output := runStatusCmd(t, "")
+	out := output.stdout
 	if !strings.Contains(out, "Core:") {
 		t.Error("expected Core: line in status output")
 	}
 	if !strings.Contains(out, "compiled fallback") {
 		t.Error("expected 'compiled fallback' when no standard bundle installed")
 	}
+	if !strings.Contains(output.stderr, "pipelock rules: using config ") {
+		t.Fatalf("expected config provenance on stderr, got %q", output.stderr)
+	}
 }
 
 func TestRulesStatus_JSON(t *testing.T) {
-	out := runStatusCmd(t, "", "--json")
+	output := runStatusCmd(t, "", "--json")
+	out := output.stdout
 
 	var status statusReport
 	if err := json.Unmarshal([]byte(out), &status); err != nil {
-		t.Fatalf("invalid JSON output: %v", err)
+		t.Fatalf("invalid JSON output: %v\nstdout=%q\nstderr=%q", err, out, output.stderr)
 	}
 	if status.Core.DLP != scanner.CoreDLPCount() {
 		t.Errorf("expected %d core DLP, got %d", scanner.CoreDLPCount(), status.Core.DLP)
@@ -2460,10 +2702,14 @@ func TestRulesStatus_JSON(t *testing.T) {
 	if status.StandardDLPSource != "compiled" {
 		t.Errorf("expected standard DLP source 'compiled', got %q", status.StandardDLPSource)
 	}
+	if !strings.Contains(output.stderr, "pipelock rules: using config ") {
+		t.Fatalf("expected config provenance on stderr, got %q", output.stderr)
+	}
 }
 
 func TestRulesStatus_IncludeDefaultsFalse(t *testing.T) {
-	out := runStatusCmd(t, "dlp:\n  include_defaults: false\nresponse_scanning:\n  include_defaults: false\n")
+	output := runStatusCmd(t, "dlp:\n  include_defaults: false\nresponse_scanning:\n  include_defaults: false\n")
+	out := output.stdout
 	if !strings.Contains(out, "disabled") {
 		t.Error("expected 'disabled' when include_defaults: false")
 	}

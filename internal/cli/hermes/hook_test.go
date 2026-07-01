@@ -9,10 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 )
 
 // runHookCLI feeds stdin to a fresh hook subcommand and returns the parsed
@@ -228,6 +232,31 @@ func TestHook_FailsClosedOnConfigLoadFailure(t *testing.T) {
 	}
 	if !strings.Contains(decision.Reason, "config load failed") {
 		t.Fatalf("reason missing config-load marker: %q", decision.Reason)
+	}
+}
+
+func TestHook_ResponseScanningFallbackEmitsNotice(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	cfg := "version: 1\nresponse_scanning:\n  enabled: false\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := hookCmd()
+	cmd.SetIn(strings.NewReader(`{"hook_event_name":"on_session_start"}`))
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--config", cfgPath})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if !strings.Contains(stderr.String(), runtimeconfig.ResponseScanningMCPDisabledWarning) {
+		t.Fatalf("stderr missing response-scanning fallback notice:\n%s", stderr.String())
 	}
 }
 

@@ -24,6 +24,36 @@ func LoadConfigOrDefault(path string) (*config.Config, error) {
 	return config.Defaults(), nil
 }
 
+// ConfigPathIsSecure verifies that a discovered config file is safe to trust.
+// It rejects group/other-writable files and files not owned by root, the
+// invoking user, or Pipelock's dedicated service account. The contain-managed
+// /etc/pipelock path is service-owned on installed systems, while the contained
+// agent remains a separate UID and must not be able to mutate it.
+func ConfigPathIsSecure(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat config %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("config %q is not a regular file", path)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("config %q is writable by group or other", path)
+	}
+	ownerUID, ok := configPathOwnerUID(info)
+	if !ok {
+		return nil
+	}
+	if !configOwnershipSecure(ownerUID, currentEUID()) {
+		return fmt.Errorf("config %q is owned by uid %d, not root or the invoking user", path, ownerUID)
+	}
+	return nil
+}
+
+func configOwnershipSecure(ownerUID, euid int) bool {
+	return ownerUID == 0 || ownerUID == euid || configPathOwnerTrusted(ownerUID)
+}
+
 // DiscoverConfigPath returns the first config file pipelock would naturally
 // look at, or empty string if none of the candidates exist. Search order
 // mirrors the systemd unit and CLI convention:
@@ -42,7 +72,16 @@ func DiscoverConfigPath() string {
 	return discoverConfigPath("/etc/pipelock/pipelock.yaml")
 }
 
-func discoverConfigPath(systemPath string) string {
+// DiscoverConfigPathStrict returns the first secure config file pipelock would
+// naturally look at. Unlike DiscoverConfigPath, candidate files that exist but
+// are non-regular, unreadable, or unsafe are returned as errors instead of
+// being silently skipped. Use this for security-sensitive commands where
+// falling back to defaults would hide an unsafe operator config.
+func DiscoverConfigPathStrict() (string, error) {
+	return discoverConfigPathStrict("/etc/pipelock/pipelock.yaml")
+}
+
+func configPathCandidates(systemPath string) []string {
 	candidates := []string{}
 
 	if env := os.Getenv("PIPELOCK_CONFIG"); env != "" {
@@ -57,16 +96,43 @@ func discoverConfigPath(systemPath string) string {
 	if systemPath != "" {
 		candidates = append(candidates, systemPath)
 	}
+	return candidates
+}
 
-	for _, c := range candidates {
+func discoverConfigPath(systemPath string) string {
+	for _, c := range configPathCandidates(systemPath) {
 		clean, err := filepath.Abs(filepath.Clean(c))
 		if err != nil {
 			continue
 		}
 		info, err := os.Stat(clean)
-		if err == nil && info.Mode().IsRegular() {
+		if err == nil && info.Mode().IsRegular() && ConfigPathIsSecure(clean) == nil {
 			return clean
 		}
 	}
 	return ""
+}
+
+func discoverConfigPathStrict(systemPath string) (string, error) {
+	for _, c := range configPathCandidates(systemPath) {
+		clean, err := filepath.Abs(filepath.Clean(c))
+		if err != nil {
+			return "", fmt.Errorf("resolving config path %q: %w", c, err)
+		}
+		info, err := os.Stat(clean)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("stat config %q: %w", clean, err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("config %q is not a regular file", clean)
+		}
+		if err := ConfigPathIsSecure(clean); err != nil {
+			return "", err
+		}
+		return clean, nil
+	}
+	return "", nil
 }

@@ -96,15 +96,18 @@ func TestLoadRulesConfig_EnvVar_Valid(t *testing.T) {
 }
 
 func TestLoadRulesConfig_NoFlag_NilConfig(t *testing.T) {
-	// Clear env and ensure no pipelock.yaml in cwd.
+	// Clear env and isolate standard discovery locations.
 	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
 
 	cfg, err := loadRulesConfig("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// May return nil or a config from cwd pipelock.yaml; either is acceptable.
-	_ = cfg
+	if cfg != nil {
+		t.Fatal("expected nil config when no discovered config exists")
+	}
 }
 
 // ---------- decodeSignatureBytes (additional cases) ----------

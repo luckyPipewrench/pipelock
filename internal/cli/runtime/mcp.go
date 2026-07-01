@@ -26,6 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -435,13 +436,12 @@ Examples:
 			// wraps an upstream server; RuntimeMCPProxy mode supplies the
 			// response-scanning fallback behavior the command needs.
 			var bundleResult *rules.LoadResult
-			var resolveInfo config.ResolveRuntimeInfo
-			cfg, resolveInfo = cfg.ResolveRuntime(config.RuntimeResolveOpts{
+			cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 				Mode: config.RuntimeMCPScan,
 				MergeBundles: func(c *config.Config) {
 					bundleResult = rules.MergeIntoConfig(c, cliutil.Version)
 				},
-			})
+			}, cmd.ErrOrStderr(), "scan")
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
@@ -451,7 +451,6 @@ Examples:
 			if bundleResult.Degraded {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
-			emitResolveInfoLogs(cmd.ErrOrStderr(), resolveInfo, "scan")
 			sc := scanner.New(cfg)
 			defer sc.Close()
 
@@ -657,14 +656,13 @@ Key-free evidence capture:
 			// reflects the effective policy every downstream emitter,
 			// scanner, and receipt stamp consumes.
 			var bundleResult *rules.LoadResult
-			var resolveInfo config.ResolveRuntimeInfo
-			cfg, resolveInfo = cfg.ResolveRuntime(config.RuntimeResolveOpts{
+			cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 				Mode: config.RuntimeMCPProxy,
 				MergeBundles: func(c *config.Config) {
 					bundleResult = rules.MergeIntoConfig(c, cliutil.Version)
 				},
 				DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
-			})
+			}, cmd.ErrOrStderr(), "proxy")
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
@@ -674,7 +672,6 @@ Key-free evidence capture:
 			if bundleResult.Degraded {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
-			emitResolveInfoLogs(cmd.ErrOrStderr(), resolveInfo, "proxy")
 			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 
 			// Rebuild scanner with the (possibly modified) resolved config.

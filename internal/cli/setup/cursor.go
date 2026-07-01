@@ -508,6 +508,10 @@ func runCursorRemove(cmd *cobra.Command, global, project, dryRun bool) error {
 			result.Hooks[event] = append(result.Hooks[event], h)
 		}
 	}
+	if removed == 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "No pipelock hooks found in %s\n", targetPath)
+		return nil
+	}
 
 	output, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {

@@ -526,6 +526,7 @@ func TestIsClaudePipelockHook_Detection(t *testing.T) {
 		{"user hook containing the phrase", "/opt/tool claude hook helper --verbose", false},
 		{"other binary exact hook words", "/opt/tool claude hook", false},
 		{"user hook with unrelated flag after phrase", "/opt/tool claude hook --helper", false},
+		{"flag-like config operand", "/usr/bin/pipelock claude hook --config --helper", false},
 		{"trailing args after config", "/usr/bin/pipelock claude hook --config /etc/pipelock/pipelock.yaml --helper", false},
 	}
 	for _, tc := range cases {

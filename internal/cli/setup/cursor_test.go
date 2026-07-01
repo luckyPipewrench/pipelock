@@ -650,14 +650,15 @@ func TestCursorInstallCmd_GlobalActual(t *testing.T) {
 
 func TestCursorInstallCmd_EmbedsExplicitConfig(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "pipelock config.yaml")
+	cfgName := "pipelock config.yaml"
+	cfgPath := filepath.Join(dir, cfgName)
 	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	chdirTemp(t, dir)
 
 	cmd := CursorCmd()
-	cmd.SetArgs([]string{"install", "--project", "--config", cfgPath})
+	cmd.SetArgs([]string{"install", "--project", "--config", cfgName})
 	var out, errOut strings.Builder
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -736,6 +737,42 @@ func TestCursorRemoveCmd_RemovesPipelockHooksOnly(t *testing.T) {
 	}
 }
 
+func TestCursorRemoveCmd_NoPipelockHooksNoops(t *testing.T) {
+	dir := t.TempDir()
+	cursorDir := filepath.Join(dir, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{"version":1,"hooks":{"beforeShellExecution":[{"command":"lint","timeout":5}]}}`
+	hooksPath := filepath.Join(cursorDir, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdirTemp(t, dir)
+
+	cmd := CursorCmd()
+	cmd.SetArgs([]string{"remove", "--project"})
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "No pipelock hooks found") {
+		t.Fatalf("expected no-op message, got %q", buf.String())
+	}
+	data, err := os.ReadFile(filepath.Clean(hooksPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != existing {
+		t.Fatalf("hooks.json changed on no-op remove: got %q want %q", string(data), existing)
+	}
+	if _, err := os.Stat(hooksPath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("no-op remove should not create backup, stat err: %v", err)
+	}
+}
+
 func TestIsPipelockHook_Detection(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -753,6 +790,7 @@ func TestIsPipelockHook_Detection(t *testing.T) {
 		{"user hook containing the phrase", "/opt/tool cursor hook helper --verbose", false},
 		{"other binary exact hook words", "/opt/tool cursor hook", false},
 		{"user hook with unrelated flag after phrase", "/opt/tool cursor hook --helper", false},
+		{"flag-like config operand", "/usr/bin/pipelock cursor hook --config --helper", false},
 		{"trailing args after config", "/usr/bin/pipelock cursor hook --config /etc/pipelock/pipelock.yaml --helper", false},
 	}
 	for _, tc := range cases {

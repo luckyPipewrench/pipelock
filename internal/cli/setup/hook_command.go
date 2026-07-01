@@ -20,7 +20,7 @@ func isGeneratedPipelockHookCommand(command, tool string) bool {
 	if len(fields) == 3 {
 		return true
 	}
-	return fields[3] == "--config" && fields[4] != ""
+	return fields[3] == "--config" && fields[4] != "" && !strings.HasPrefix(fields[4], "-")
 }
 
 func isPipelockHookBinary(binary string) bool {

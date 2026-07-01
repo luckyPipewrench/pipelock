@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -1836,6 +1837,35 @@ func TestRulesInstall_RemoteNameMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not match") {
 		t.Errorf("error should mention name mismatch, got: %v", err)
+	}
+}
+
+func TestInstallRemote_LoadsConfigBeforeFetch(t *testing.T) {
+	var requests atomic.Int32
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(validBundleYAML))
+	}))
+	defer ts.Close()
+
+	origClient := httpsOnlyClient
+	testClient := ts.Client()
+	testClient.CheckRedirect = httpsOnlyClient.CheckRedirect
+	httpsOnlyClient = testClient
+	t.Cleanup(func() { httpsOnlyClient = origClient })
+
+	err := installRemote(installRemoteOptions{
+		out:        io.Discard,
+		stderr:     io.Discard,
+		rulesDir:   t.TempDir(),
+		bundleURL:  ts.URL + testBundlePath,
+		configFile: filepath.Join(t.TempDir(), "missing-pipelock.yaml"),
+	})
+	if err == nil {
+		t.Fatal("expected config load error")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("remote bundle was fetched before config validation; requests=%d", requests.Load())
 	}
 }
 

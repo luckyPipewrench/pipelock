@@ -100,6 +100,9 @@ func TestLoadRulesConfig_NoFlag_NilConfig(t *testing.T) {
 	t.Setenv("PIPELOCK_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 
 	cfg, err := loadRulesConfig("")
 	if err != nil {

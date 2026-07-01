@@ -110,7 +110,12 @@ func parseDiffStructured(diffText string) diffParseResult {
 
 		if strings.HasPrefix(line, "old mode ") ||
 			strings.HasPrefix(line, "new mode ") ||
+			strings.HasPrefix(line, "new file mode ") ||
+			strings.HasPrefix(line, "deleted file mode ") ||
 			strings.HasPrefix(line, "similarity index ") ||
+			strings.HasPrefix(line, "dissimilarity index ") ||
+			strings.HasPrefix(line, "copy from ") ||
+			strings.HasPrefix(line, "copy to ") ||
 			strings.HasPrefix(line, "rename from ") ||
 			strings.HasPrefix(line, "rename to ") ||
 			strings.HasPrefix(line, "index ") ||
@@ -156,6 +161,11 @@ func parseDiffStructured(diffText string) diffParseResult {
 			lineNum, inHunk = parseHunkNewStartOK(line)
 			if inHunk {
 				result.hasRecognizableStructure = true
+			} else {
+				result.orphans = append(result.orphans, addedLine{
+					lineNum: inputLineNum,
+					content: line,
+				})
 			}
 			continue
 		}
@@ -178,9 +188,17 @@ func parseDiffStructured(diffText string) diffParseResult {
 		} else if strings.HasPrefix(line, "-") {
 			// Removed lines don't increment the new-file line counter
 			continue
-		} else if inHunk {
+		} else if strings.HasPrefix(line, `\ `) {
+			// "\ No newline at end of file" is diff metadata, not content.
+			continue
+		} else if inHunk && (line == "" || strings.HasPrefix(line, " ")) {
 			// Context lines increment the counter
 			lineNum = nextDiffLineNumber(lineNum)
+		} else if strings.TrimSpace(line) != "" {
+			result.orphans = append(result.orphans, addedLine{
+				lineNum: inputLineNum,
+				content: strings.TrimPrefix(line, "+"),
+			})
 		}
 	}
 
@@ -317,6 +335,9 @@ var (
 	ErrUnsupportedBinaryPatch = fmt.Errorf("unsupported binary patch in diff")
 	// ErrDiffTooLarge is returned when input exceeds the bounded scan size.
 	ErrDiffTooLarge = fmt.Errorf("diff exceeds maximum size")
+	// ErrUnattributedAddedLines is returned when input contains content that
+	// cannot be attributed to a valid unified diff hunk.
+	ErrUnattributedAddedLines = fmt.Errorf("unverifiable input: content outside unified diff hunks")
 )
 
 // ScanDiffResult holds findings and suppressed findings from a diff scan.
@@ -339,26 +360,36 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, e
 	if len(diffText) > MaxDiffBytes {
 		return ScanDiffResult{}, fmt.Errorf("%w of %d bytes", ErrDiffTooLarge, MaxDiffBytes)
 	}
+	if strings.TrimSpace(diffText) == "" {
+		return ScanDiffResult{}, ErrNoDiffHeaders
+	}
 
 	parsed := parseDiffStructured(diffText)
 	if parsed.hasBinaryPatch {
 		return ScanDiffResult{}, ErrUnsupportedBinaryPatch
 	}
 
-	if !parsed.hasRecognizableStructure && strings.TrimSpace(diffText) != "" {
+	if !parsed.hasRecognizableStructure {
 		if len(patterns) == 0 {
 			return ScanDiffResult{}, ErrNoDiffHeaders
 		}
 		result := scanAddedLines(map[string][]addedLine{
 			orphanDiffFile: rawInputLines(diffText),
 		}, patterns)
-		if len(result.Findings) > 0 || len(result.Suppressed) > 0 {
+		if len(result.Findings) > 0 {
 			return result, nil
 		}
 		return ScanDiffResult{}, ErrNoDiffHeaders
 	}
 
-	if (len(parsed.attributed) == 0 && len(parsed.orphans) == 0) || len(patterns) == 0 {
+	if len(parsed.orphans) > 0 && len(patterns) == 0 {
+		return ScanDiffResult{}, ErrUnattributedAddedLines
+	}
+
+	if len(parsed.attributed) == 0 && len(parsed.orphans) == 0 {
+		return ScanDiffResult{}, nil
+	}
+	if len(patterns) == 0 {
 		return ScanDiffResult{}, nil
 	}
 
@@ -369,7 +400,14 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, e
 	if len(parsed.orphans) > 0 {
 		scanInput[orphanDiffFile] = parsed.orphans
 	}
-	return scanAddedLines(scanInput, patterns), nil
+	result := scanAddedLines(scanInput, patterns)
+	if len(parsed.orphans) > 0 {
+		if len(result.Findings) > 0 {
+			return result, nil
+		}
+		return result, ErrUnattributedAddedLines
+	}
+	return result, nil
 }
 
 func rawInputLines(diffText string) []addedLine {

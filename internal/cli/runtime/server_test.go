@@ -669,13 +669,26 @@ func TestServer_Reload_MCPResponseScanningFallbackEmitsNotice(t *testing.T) {
 
 	newCfg := s.proxy.CurrentConfig().Clone()
 	newCfg.ResponseScanning.Enabled = false
+	newCfg.MCPInputScanning.Enabled = false
 	buf.reset()
 
 	if err := s.Reload(newCfg); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
+	if !s.proxy.CurrentConfig().ResponseScanning.Enabled {
+		t.Fatal("reload left response scanning disabled in MCP mode")
+	}
+	if !s.proxy.CurrentConfig().MCPInputScanning.Enabled {
+		t.Fatal("reload left MCP input scanning disabled in MCP mode")
+	}
 	if !strings.Contains(buf.String(), runtimeconfig.ResponseScanningMCPDisabledWarning) {
 		t.Fatalf("reload stderr missing response-scanning fallback notice:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "auto-enabling MCP input scanning for proxy mode") {
+		t.Fatalf("reload stderr missing actual runtime mode label:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "for reload mode") {
+		t.Fatalf("reload stderr used reload as a runtime mode label:\n%s", buf.String())
 	}
 }
 

@@ -66,6 +66,16 @@ func TestGeneratePrePushHook_FailClosed(t *testing.T) {
 	}
 }
 
+func TestGeneratePrePushHook_GenericScanFailureMessage(t *testing.T) {
+	hook := GeneratePrePushHook("pipelock", "")
+	if !strings.Contains(hook, "could not verify the diff or found secrets") {
+		t.Error("hook should describe scan-diff failures generically")
+	}
+	if strings.Contains(hook, "secrets detected in diff") {
+		t.Error("hook should not imply every scan-diff failure is a secret finding")
+	}
+}
+
 func TestGeneratePrePushHook_SkipsBranchDeletion(t *testing.T) {
 	hook := GeneratePrePushHook("pipelock", "")
 	if !strings.Contains(hook, "Deleting a branch") {

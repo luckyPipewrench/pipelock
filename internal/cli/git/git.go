@@ -94,7 +94,7 @@ Examples:
 				return fmt.Errorf("reading diff from stdin: %w", err)
 			}
 			if len(diffData) > gitprotect.MaxDiffBytes {
-				return fmt.Errorf("diff exceeds maximum size of %d bytes", gitprotect.MaxDiffBytes)
+				return fmt.Errorf("%w of %d bytes", gitprotect.ErrDiffTooLarge, gitprotect.MaxDiffBytes)
 			}
 
 			if len(diffData) == 0 {

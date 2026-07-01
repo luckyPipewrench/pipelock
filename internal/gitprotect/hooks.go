@@ -72,8 +72,8 @@ while read local_ref local_sha remote_ref remote_sha; do
 
     if ! %s git scan-diff%s < "$tmp_diff"; then
         echo ""
-        echo "Push blocked: secrets detected in diff."
-        echo "Fix the issues above, then try again."
+        echo "Push blocked: Pipelock could not verify the diff or found secrets."
+        echo "Fix the issue above, then try again."
         exit 1
     fi
     : > "$tmp_diff"

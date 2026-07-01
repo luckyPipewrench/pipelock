@@ -46,7 +46,7 @@ func fakeKey() string {
 	return "AK" + "IA" + "IOSFODNN7" + "EXAMPLE"
 }
 
-func runScanDiffCmd(t *testing.T, diff string, args ...string) (string, error) {
+func runScanDiffCmd(t *testing.T, diff string) (string, error) {
 	t.Helper()
 	stdin, err := os.CreateTemp(t.TempDir(), "scan-diff-stdin-*")
 	if err != nil {
@@ -65,7 +65,7 @@ func runScanDiffCmd(t *testing.T, diff string, args ...string) (string, error) {
 	t.Cleanup(func() { os.Stdin = oldStdin })
 
 	cmd := testRootCmd()
-	cmd.SetArgs(append([]string{"git", "scan-diff"}, args...))
+	cmd.SetArgs([]string{"git", "scan-diff"})
 
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
@@ -178,40 +178,74 @@ func TestScanDiffCmd_FailClosedMalformedInputs(t *testing.T) {
 	}{
 		{
 			name:    "bare added secret no headers",
-			diff:    "+AWS_ACCESS_KEY_ID=" + key + "\n",
+			diff:    "+provider_token=" + key + "\n",
 			wantErr: ErrSecretsFound,
 		},
 		{
 			name:    "bogus empty new-file header",
-			diff:    "+++ \n+AWS_ACCESS_KEY_ID=" + key + "\n",
+			diff:    "+++ \n+provider_token=" + key + "\n",
 			wantErr: ErrSecretsFound,
 		},
 		{
 			name:    "dev null new-file header",
-			diff:    "+++ /dev/null\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+			diff:    "+++ /dev/null\n+provider_token=" + key + "\n",
 			wantErr: ErrSecretsFound,
 		},
 		{
 			name: "partial parse secret before valid section",
-			diff: "+AWS_ACCESS_KEY_ID=" + key + "\n" +
+			diff: "+provider_token=" + key + "\n" +
 				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
 			wantErr: ErrSecretsFound,
 		},
 		{
+			name: "bare secret before valid section",
+			diff: "provider_token=" + key + "\n" +
+				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
+			wantErr: ErrSecretsFound,
+		},
+		{
+			name: "suppressed orphan secret still unverifiable",
+			diff: "+provider_token=" + key + " // pipelock:ignore\n" +
+				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
+			wantErr: gitprotect.ErrUnattributedAddedLines,
+		},
+		{
+			name:    "suppressed bare secret no headers",
+			diff:    "+provider_token=" + key + " // pipelock:ignore\n",
+			wantErr: gitprotect.ErrNoDiffHeaders,
+		},
+		{
+			name: "clean orphan line before valid section",
+			diff: "+not_a_secret=true\n" +
+				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
+			wantErr: gitprotect.ErrUnattributedAddedLines,
+		},
+		{
+			name: "clean garbage before valid section",
+			diff: "not a diff\n" +
+				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
+			wantErr: gitprotect.ErrUnattributedAddedLines,
+		},
+		{
+			name:    "whitespace",
+			diff:    " \n\t\n",
+			wantErr: gitprotect.ErrNoDiffHeaders,
+		},
+		{
 			name: "secret in later malformed section",
 			diff: "diff --git a/safe b/safe\n--- a/safe\n+++ b/safe\n@@ -0,0 +1 @@\n+safe=true\n" +
-				"diff --git a/bad b/bad\n--- a/bad\n+++ \n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+				"diff --git a/bad b/bad\n--- a/bad\n+++ \n@@ -0,0 +1 @@\n+provider_token=" + key + "\n",
 			wantErr: ErrSecretsFound,
 		},
 		{
 			name: "multi-file some headers missing",
 			diff: "diff --git a/safe b/safe\n--- a/safe\n+++ b/safe\n@@ -0,0 +1 @@\n+safe=true\n" +
-				"diff --git a/noheader b/noheader\n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+				"diff --git a/noheader b/noheader\n@@ -0,0 +1 @@\n+provider_token=" + key + "\n",
 			wantErr: ErrSecretsFound,
 		},
 		{
 			name:    "crlf line endings",
-			diff:    "diff --git a/x b/x\r\n--- a/x\r\n+++ b/x\r\n@@ -0,0 +1 @@\r\n+AWS_ACCESS_KEY_ID=" + key + "\r\n",
+			diff:    "diff --git a/x b/x\r\n--- a/x\r\n+++ b/x\r\n@@ -0,0 +1 @@\r\n+provider_token=" + key + "\r\n",
 			wantErr: ErrSecretsFound,
 		},
 		{
@@ -233,6 +267,15 @@ func TestScanDiffCmd_FailClosedMalformedInputs(t *testing.T) {
 				t.Fatalf("expected %v, got %v\noutput:\n%s", tc.wantErr, err, output)
 			}
 		})
+	}
+}
+
+func TestScanDiffCmd_FailClosedOversizedInput(t *testing.T) {
+	diff := strings.Repeat("A", gitprotect.MaxDiffBytes+1)
+
+	output, err := runScanDiffCmd(t, diff)
+	if !errors.Is(err, gitprotect.ErrDiffTooLarge) {
+		t.Fatalf("expected %v, got %v\noutput:\n%s", gitprotect.ErrDiffTooLarge, err, output)
 	}
 }
 
@@ -262,10 +305,6 @@ func TestScanDiffCmd_CleanMetadataOnlyDiffs(t *testing.T) {
 			name: "long clean line",
 			diff: "diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -0,0 +1 @@\n+" + strings.Repeat("A", 1100*1024) + "\n",
 		},
-		{
-			name: "empty",
-			diff: "",
-		},
 	}
 
 	for _, tc := range tests {
@@ -287,11 +326,11 @@ func TestScanDiffCmd_LongAndBinarySummarySecretsStillBlock(t *testing.T) {
 		{
 			name: "secret in long line",
 			diff: "diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -0,0 +1 @@\n+" +
-				strings.Repeat("A", 1100*1024) + "AWS_ACCESS_KEY_ID=" + key + "\n",
+				strings.Repeat("A", 1100*1024) + "provider_token=" + key + "\n",
 		},
 		{
 			name: "secret with binary summary",
-			diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n" +
+			diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1 @@\n+provider_token=" + key + "\n" +
 				"diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n",
 		},
 	}
@@ -321,9 +360,11 @@ func TestScanDiffCmd_EmptyStdin(t *testing.T) {
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
-	err := cmd.Execute()
-	if err != nil {
-		t.Fatalf("expected no error for empty stdin, got: %v", err)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("empty stdin should be a no-op, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "No diff content on stdin.") {
+		t.Fatalf("expected empty-stdin notice, got: %q", buf.String())
 	}
 }
 
@@ -814,12 +855,10 @@ func TestScanDiffCmd_JSON_EmptyStdin(t *testing.T) {
 	cmd.SetErr(buf)
 
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+		t.Fatalf("empty JSON stdin should be a no-op, got: %v", err)
 	}
-
-	output := strings.TrimSpace(buf.String())
-	if output != "[]" {
-		t.Errorf("expected [] for empty stdin, got %q", output)
+	if strings.TrimSpace(buf.String()) != "[]" {
+		t.Fatalf("expected empty JSON array, got: %q", buf.String())
 	}
 }
 
@@ -1125,12 +1164,10 @@ func TestScanDiffCmd_SARIF_EmptyStdin(t *testing.T) {
 	cmd.SetErr(buf)
 
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+		t.Fatalf("empty SARIF stdin should be a no-op, got: %v", err)
 	}
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal([]byte(buf.String()), &parsed); err != nil {
-		t.Fatalf("SARIF output is not valid JSON: %v", err)
+	if !strings.Contains(buf.String(), `"version"`) {
+		t.Fatalf("expected SARIF output for empty stdin, got: %q", buf.String())
 	}
 }
 

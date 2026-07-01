@@ -72,3 +72,32 @@ func TestResolveAndReportConfig_ResponseScanningReloadStates(t *testing.T) {
 		t.Fatalf("reload without config change should still warn when fallback fires:\n%s", stderr.String())
 	}
 }
+
+func TestEmitResolveInfoLogs_AllBranches(t *testing.T) {
+	EmitResolveInfoLogs(nil, config.ResolveRuntimeInfo{
+		ResponseScanningFallback:    true,
+		MCPInputScanningAutoEnabled: true,
+		MCPToolScanningAutoEnabled:  true,
+		MCPToolPolicyAutoEnabled:    true,
+	}, "proxy")
+
+	var stderr bytes.Buffer
+	EmitResolveInfoLogs(&stderr, config.ResolveRuntimeInfo{
+		ResponseScanningFallback:    true,
+		MCPInputScanningAutoEnabled: true,
+		MCPToolScanningAutoEnabled:  true,
+		MCPToolPolicyAutoEnabled:    true,
+	}, "proxy")
+
+	out := stderr.String()
+	for _, want := range []string{
+		ResponseScanningMCPDisabledWarning,
+		"auto-enabling MCP input scanning for proxy mode",
+		"auto-enabling MCP tool scanning for proxy mode",
+		"auto-enabling MCP tool call policy for proxy mode",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in stderr:\n%s", want, out)
+		}
+	}
+}

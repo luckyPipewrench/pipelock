@@ -724,17 +724,17 @@ type installRemoteOptions struct {
 func installRemote(opts installRemoteOptions) error {
 	ctx := context.Background()
 
-	bundleData, sigData, err := fetchRemoteBundle(ctx, opts.bundleURL)
-	if err != nil {
-		return err
-	}
-
 	// Load trusted keys from config (explicit flag, env, or user/system discovery).
 	var trustedKeys []config.TrustedKey
 	if cfg, cfgErr := loadRulesConfig(opts.configFile, opts.stderr); cfgErr != nil {
 		return cfgErr
 	} else if cfg != nil {
 		trustedKeys = cfg.Rules.TrustedKeys
+	}
+
+	bundleData, sigData, err := fetchRemoteBundle(ctx, opts.bundleURL)
+	if err != nil {
+		return err
 	}
 
 	result, err := verifyRemoteSignature(bundleData, sigData, trustedKeys)

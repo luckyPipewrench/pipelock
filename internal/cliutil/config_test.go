@@ -86,6 +86,50 @@ func TestDiscoverConfigPath_XDGFallback(t *testing.T) {
 	}
 }
 
+func TestDiscoverConfigPath_ExportedWrapper(t *testing.T) {
+	xdg := t.TempDir()
+	dir := filepath.Join(xdg, "pipelock")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", t.TempDir())
+
+	if got := DiscoverConfigPath(); got != cfg {
+		t.Fatalf("DiscoverConfigPath() = %q, want %q", got, cfg)
+	}
+}
+
+func TestDiscoverConfigPathStrict_ExportedWrapper(t *testing.T) {
+	xdg := t.TempDir()
+	dir := filepath.Join(xdg, "pipelock")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", t.TempDir())
+
+	got, err := DiscoverConfigPathStrict()
+	if err != nil {
+		t.Fatalf("DiscoverConfigPathStrict: %v", err)
+	}
+	if got != cfg {
+		t.Fatalf("DiscoverConfigPathStrict() = %q, want %q", got, cfg)
+	}
+}
+
 // TestDiscoverConfigPath_HomeFallback exercises the legacy ~/.config branch.
 func TestDiscoverConfigPath_HomeFallback(t *testing.T) {
 	home := t.TempDir()

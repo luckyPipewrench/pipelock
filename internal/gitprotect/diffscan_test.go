@@ -336,10 +336,9 @@ func TestScanDiff_NoFindings(t *testing.T) {
 }
 
 func TestScanDiff_EmptyDiff(t *testing.T) {
-	result, _ := ScanDiff("", testPatterns())
-	findings := result.Findings
-	if findings != nil {
-		t.Fatalf("expected nil findings, got %d", len(findings))
+	_, err := ScanDiff("", testPatterns())
+	if !errors.Is(err, ErrNoDiffHeaders) {
+		t.Fatalf("expected %v, got %v", ErrNoDiffHeaders, err)
 	}
 }
 
@@ -350,6 +349,28 @@ func TestScanDiff_EmptyPatterns(t *testing.T) {
 	findings := result.Findings
 	if findings != nil {
 		t.Fatalf("expected nil findings, got %d", len(findings))
+	}
+}
+
+func TestScanDiff_FailsClosedOnUnattributedCleanInput(t *testing.T) {
+	diff := "+not_a_secret=true\n" +
+		"diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -0,0 +1 @@\n+package x\n"
+	_, err := ScanDiff(diff, testPatterns())
+	if !errors.Is(err, ErrUnattributedAddedLines) {
+		t.Fatalf("expected %v, got %v", ErrUnattributedAddedLines, err)
+	}
+}
+
+func TestScanDiff_FailsClosedWhenInlineSuppressionMasksUnattributedSecret(t *testing.T) {
+	key := fakeKey("EXAMPLE")
+	diff := "+provider_token=" + key + " // pipelock:ignore\n" +
+		"diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -0,0 +1 @@\n+package x\n"
+	result, err := ScanDiff(diff, testPatterns())
+	if !errors.Is(err, ErrUnattributedAddedLines) {
+		t.Fatalf("expected %v, got %v", ErrUnattributedAddedLines, err)
+	}
+	if len(result.Suppressed) != 1 {
+		t.Fatalf("expected suppressed finding to be retained, got %+v", result.Suppressed)
 	}
 }
 
@@ -533,39 +554,43 @@ func TestScanDiff_FailClosedMalformedAddedContent(t *testing.T) {
 	}{
 		{
 			name: "bare added secret no headers",
-			diff: "+AWS_ACCESS_KEY_ID=" + key + "\n",
+			diff: "+provider_token=" + key + "\n",
 		},
 		{
 			name: "bogus empty new-file header",
-			diff: "+++ \n+AWS_ACCESS_KEY_ID=" + key + "\n",
+			diff: "+++ \n+provider_token=" + key + "\n",
 		},
 		{
 			name: "dev null new-file header",
-			diff: "+++ /dev/null\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+			diff: "+++ /dev/null\n+provider_token=" + key + "\n",
 		},
 		{
 			name: "partial parse secret before valid section",
-			diff: "+AWS_ACCESS_KEY_ID=" + key + "\n" +
+			diff: "+provider_token=" + key + "\n" +
 				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
 		},
 		{
 			name: "secret in later malformed section",
 			diff: "diff --git a/safe b/safe\n--- a/safe\n+++ b/safe\n@@ -0,0 +1 @@\n+safe=true\n" +
-				"diff --git a/bad b/bad\n--- a/bad\n+++ \n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+				"diff --git a/bad b/bad\n--- a/bad\n+++ \n@@ -0,0 +1 @@\n+provider_token=" + key + "\n",
 		},
 		{
 			name: "multi file with missing header",
 			diff: "diff --git a/safe b/safe\n--- a/safe\n+++ b/safe\n@@ -0,0 +1 @@\n+safe=true\n" +
-				"diff --git a/noheader b/noheader\n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n",
+				"diff --git a/noheader b/noheader\n@@ -0,0 +1 @@\n+provider_token=" + key + "\n",
+		},
+		{
+			name: "secret in malformed hunk line without diff marker",
+			diff: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\nprovider_token=" + key + "\n",
 		},
 		{
 			name: "crlf orphan",
 			diff: "diff --git a/safe b/safe\r\n--- a/safe\r\n+++ b/safe\r\n@@ -0,0 +1 @@\r\n+safe=true\r\n" +
-				"+AWS_ACCESS_KEY_ID=" + key + "\r\n",
+				"+provider_token=" + key + "\r\n",
 		},
 		{
 			name: "non diff raw secret without plus",
-			diff: "AWS_ACCESS_KEY_ID=" + key + "\n",
+			diff: "provider_token=" + key + "\n",
 		},
 	}
 
@@ -632,11 +657,11 @@ func TestScanDiff_SecretsWithLongLinesAndBinarySummaries(t *testing.T) {
 		{
 			name: "secret in long line",
 			diff: "diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -0,0 +1 @@\n+" +
-				strings.Repeat("A", 1100*1024) + "AWS_ACCESS_KEY_ID=" + key + "\n",
+				strings.Repeat("A", 1100*1024) + "provider_token=" + key + "\n",
 		},
 		{
 			name: "secret with binary summary",
-			diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1 @@\n+AWS_ACCESS_KEY_ID=" + key + "\n" +
+			diff: "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1 @@\n+provider_token=" + key + "\n" +
 				"diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n",
 		},
 	}

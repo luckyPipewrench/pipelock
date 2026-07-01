@@ -433,10 +433,10 @@ func TestProbeNFTContainment(t *testing.T) {
 			meta skuid 987 drop
 		}
 	}
-	`,
+			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "broad loopback accept",
+			wantDetail: "unexpected accept",
 		},
 		{
 			name: "bare loopback host accept",
@@ -451,10 +451,10 @@ func TestProbeNFTContainment(t *testing.T) {
 			meta skuid 987 drop
 		}
 	}
-	`,
+			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "broad loopback accept",
+			wantDetail: "unexpected accept",
 		},
 		{
 			name: "constrained agent drop does not hide broad loopback accept",
@@ -470,10 +470,10 @@ func TestProbeNFTContainment(t *testing.T) {
 			meta skuid 987 drop
 		}
 	}
-	`,
+			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "broad loopback accept",
+			wantDetail: "unexpected accept",
 		},
 		{
 			name: "missing proxy port allow",
@@ -507,6 +507,95 @@ func TestProbeNFTContainment(t *testing.T) {
 			code:       0,
 			wantStatus: statusFail,
 			wantDetail: "loopback allow",
+		},
+		{
+			name: "proxy loopback allow after agent drop is unreachable",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "loopback allow",
+		},
+		{
+			name: "agent broad accept before drop is fail open",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+			`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected accept",
+		},
+		{
+			name: "agent alternate destination accept before drop is fail open",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 ip daddr 10.0.0.10 tcp dport 443 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+			`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected accept",
+		},
+		{
+			name: "unscoped external accept before drop is fail open",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			ip daddr 10.0.0.10 tcp dport 443 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected accept",
+		},
+		{
+			name: "agent skuid set accept before drop is fail open",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid { 987, 1001 } ip daddr 10.0.0.10 tcp dport 443 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected accept",
 		},
 		{
 			name: "loopback address prefix is not proxy address",
@@ -550,6 +639,23 @@ func TestProbeNFTContainment(t *testing.T) {
 			meta skuid 988 accept
 			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
 			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "DNS drop rule missing",
+		},
+		{
+			name: "dns drops after catch all drop are unreachable",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 drop
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
 		}
 	}
 	`,

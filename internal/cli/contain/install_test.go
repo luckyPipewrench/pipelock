@@ -1352,6 +1352,54 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 	}
 }
 
+func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasUnexpectedAcceptBeforeDrop(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	operatorUID, proxyUID, agentUID := 1000, 988, 987
+	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
+		t.Fatalf("mkdir rules parent: %v", err)
+	}
+	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write rules: %v", err)
+	}
+	writeNFTPersistUnitFixture(t, env)
+	failOpen := `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			ip daddr 10.0.0.10 tcp dport 443 accept
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+`
+	runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), failOpen, 0, nil)
+
+	s := stepInstallNFTRules()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected fail-open live accept to trigger rules reload")
+	}
+
+	var sawDelete, sawLoad bool
+	for _, c := range runner.calls {
+		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+			sawDelete = true
+		}
+		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == env.nftRulesPath {
+			sawLoad = true
+		}
+	}
+	if !sawDelete || !sawLoad {
+		t.Fatalf("expected delete+reload for unexpected accept, got %v", runner.calls)
+	}
+}
+
 func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasStaleAgentUID(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987

@@ -206,30 +206,46 @@ func TestStripVerifiedImageDataURLs_RejectsUnverifiedImageLikeText(t *testing.T)
 }
 
 func TestImageDataURLHelpers_EdgeCases(t *testing.T) {
-	if indexDataImagePrefix("data:img") != -1 {
-		t.Fatal("short non-prefix matched")
-	}
-	if !asciiEqualFold("DATA:IMAGE/PNG", "data:image/png") {
-		t.Fatal("ASCII case fold did not match")
-	}
-	if asciiEqualFold("data:image/png", "data:image/pngx") {
-		t.Fatal("different length strings matched")
-	}
-	if asciiEqualFold("data:image/png", "data:image/jpg") {
-		t.Fatal("different strings matched")
-	}
-	if !isPNGOrJPEGBase64DataImageHeader("data:image/jpg; charset=utf-8 ; BASE64") {
-		t.Fatal("jpg base64 header with parameters did not match")
-	}
-	if isPNGOrJPEGBase64DataImageHeader("data:image/jpeg") {
-		t.Fatal("header without base64 flag matched")
-	}
-	if isPNGOrJPEGBase64DataImageHeader("data:text/plain;base64") {
-		t.Fatal("non-image header matched")
-	}
-	if got := dataURLBase64PayloadEnd("xxQUJD==Z", 2); got != len("xxQUJD==") {
-		t.Fatalf("payload end after padding = %d", got)
-	}
+	t.Run("short data image prefix does not match", func(t *testing.T) {
+		if indexDataImagePrefix("data:img") != -1 {
+			t.Fatal("short non-prefix matched")
+		}
+	})
+	t.Run("ascii equal fold matches case-insensitive prefix", func(t *testing.T) {
+		if !asciiEqualFold("DATA:IMAGE/PNG", "data:image/png") {
+			t.Fatal("ASCII case fold did not match")
+		}
+	})
+	t.Run("ascii equal fold rejects different length", func(t *testing.T) {
+		if asciiEqualFold("data:image/png", "data:image/pngx") {
+			t.Fatal("different length strings matched")
+		}
+	})
+	t.Run("ascii equal fold rejects different bytes", func(t *testing.T) {
+		if asciiEqualFold("data:image/png", "data:image/jpg") {
+			t.Fatal("different strings matched")
+		}
+	})
+	t.Run("jpg base64 header with parameters matches", func(t *testing.T) {
+		if !isPNGOrJPEGBase64DataImageHeader("data:image/jpg; charset=utf-8 ; BASE64") {
+			t.Fatal("jpg base64 header with parameters did not match")
+		}
+	})
+	t.Run("header without base64 flag does not match", func(t *testing.T) {
+		if isPNGOrJPEGBase64DataImageHeader("data:image/jpeg") {
+			t.Fatal("header without base64 flag matched")
+		}
+	})
+	t.Run("non-image header does not match", func(t *testing.T) {
+		if isPNGOrJPEGBase64DataImageHeader("data:text/plain;base64") {
+			t.Fatal("non-image header matched")
+		}
+	})
+	t.Run("payload ends after padding", func(t *testing.T) {
+		if got := dataURLBase64PayloadEnd("xxQUJD==Z", 2); got != len("xxQUJD==") {
+			t.Fatalf("payload end after padding = %d", got)
+		}
+	})
 }
 
 func TestCompletePNGValidationRejectsMalformedImages(t *testing.T) {

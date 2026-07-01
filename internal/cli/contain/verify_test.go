@@ -71,9 +71,9 @@ const goodNFTContainmentOutputRealListing = `table inet pipelock_containment {
 		meta skuid 1000 accept
 		meta skuid 988 accept
 		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
-		meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked" drop
-		meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked" drop
-		meta skuid 987 counter packets 12 bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock" drop
+		meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop
+		meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop
+		meta skuid 987 counter packets 12 bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
 	}
 }
 `
@@ -887,6 +887,59 @@ func TestProbeNFTContainment(t *testing.T) {
 			}
 			if !strings.Contains(gotDetail, tc.wantDetail) {
 				t.Fatalf("detail: got %q, want substring %q", gotDetail, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestFieldsAreNFTBookkeeping(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []string
+		want   bool
+	}{
+		{
+			name:   "empty",
+			fields: nil,
+			want:   true,
+		},
+		{
+			name:   "inline counter log prefix",
+			fields: strings.Fields(`counter log prefix "pipelock-contain class=direct_dns_blocked "`),
+			want:   true,
+		},
+		{
+			name:   "expanded counter log prefix",
+			fields: strings.Fields(`counter packets 12 bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock "`),
+			want:   true,
+		},
+		{
+			name:   "packets without counter rejected",
+			fields: strings.Fields(`packets 12 bytes 840`),
+			want:   false,
+		},
+		{
+			name:   "non numeric packets rejected",
+			fields: strings.Fields(`counter packets nope bytes 840`),
+			want:   false,
+		},
+		{
+			name:   "unterminated prefix rejected",
+			fields: strings.Fields(`counter log prefix "unterminated`),
+			want:   false,
+		},
+		{
+			name:   "unexpected token rejected",
+			fields: strings.Fields(`counter meta`),
+			want:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := fieldsAreNFTBookkeeping(tc.fields); got != tc.want {
+				t.Fatalf("fieldsAreNFTBookkeeping(%q) = %v, want %v", tc.fields, got, tc.want)
 			}
 		})
 	}

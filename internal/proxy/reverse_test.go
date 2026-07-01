@@ -1491,7 +1491,7 @@ func TestReverseProxy_ResponseSizeExemptDomainStreamsOversize(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
 
-	body := strings.Repeat("B", reverseProxyMaxBodyBytes+1)
+	body := strings.Repeat("A", reverseProxyMaxBodyBytes-1) + "XYZ123"
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)

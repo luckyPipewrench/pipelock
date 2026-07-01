@@ -59,6 +59,25 @@ const goodNFTContainmentOutput = `table inet pipelock_containment {
 }
 `
 
+// goodNFTContainmentOutputRealListing mirrors what `nft list table inet` actually
+// emits for the canonical ruleset: inline counters are expanded to
+// "counter packets N bytes N" and the agent catch-all carries counter+log+prefix
+// bookkeeping (renderNFTRules writes it). The simplified fixtures above never
+// exercise this shape; the parser must accept the real listing form or verify
+// fails on every correctly-installed system.
+const goodNFTContainmentOutputRealListing = `table inet pipelock_containment {
+	chain output_filter {
+		type filter hook output priority filter; policy accept;
+		meta skuid 1000 accept
+		meta skuid 988 accept
+		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+		meta skuid 987 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked" drop
+		meta skuid 987 tcp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked" drop
+		meta skuid 987 counter packets 12 bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock" drop
+	}
+}
+`
+
 // fakeRunResult is a canned subprocess response keyed by the leading
 // argv element (the command name). Tests pre-populate the map with
 // the expected calls; unexpected calls return an error.
@@ -354,6 +373,12 @@ func TestProbeNFTContainment(t *testing.T) {
 		wantDetail string
 	}{
 		{
+			name:       "happy path with real nft list expanded counters",
+			stdout:     goodNFTContainmentOutputRealListing,
+			code:       0,
+			wantStatus: statusPass,
+		},
+		{
 			name:       "happy path",
 			stdout:     goodNFTContainmentOutput,
 			code:       0,
@@ -436,7 +461,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected accept",
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "bare loopback host accept",
@@ -454,7 +479,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected accept",
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "constrained agent drop does not hide broad loopback accept",
@@ -473,7 +498,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected accept",
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "missing proxy port allow",
@@ -541,7 +566,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected accept",
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "agent alternate destination accept before drop is fail open",
@@ -559,7 +584,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected accept",
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "unscoped external accept before drop is fail open",
@@ -577,7 +602,7 @@ func TestProbeNFTContainment(t *testing.T) {
 	`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected accept",
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "agent skuid set accept before drop is fail open",
@@ -595,7 +620,85 @@ func TestProbeNFTContainment(t *testing.T) {
 	`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected accept",
+			wantDetail: "unexpected verdict",
+		},
+		{
+			name: "pre-drop return is fail open under accept policy",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 return
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected verdict",
+		},
+		{
+			name: "pre-drop jump is fail open",
+			stdout: `table inet pipelock_containment {
+		chain allow_all {
+			accept
+		}
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 jump allow_all
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected verdict",
+		},
+		{
+			name: "pre-drop goto is fail open",
+			stdout: `table inet pipelock_containment {
+		chain allow_all {
+			accept
+		}
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 goto allow_all
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected verdict",
+		},
+		{
+			name: "pre-drop queue is fail open",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 1000 accept
+			meta skuid 988 accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 queue
+			meta skuid 987 udp dport 53 drop
+			meta skuid 987 tcp dport 53 drop
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "unexpected verdict",
 		},
 		{
 			name: "loopback address prefix is not proxy address",

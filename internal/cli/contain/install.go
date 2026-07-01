@@ -1423,7 +1423,7 @@ func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, age
 		chainHasAgentProxyLoopbackAllowBeforeDrop(out, chainName, agentUID, proxyPort) &&
 		chainHasAgentDNSDropBeforeCatchAll(out, chainName, agentUID, "udp") &&
 		chainHasAgentDNSDropBeforeCatchAll(out, chainName, agentUID, "tcp") &&
-		!chainHasUnexpectedAcceptBeforeAgentDrop(out, chainName, containmentUIDs{
+		!chainHasUnsafeVerdictBeforeAgentDrop(out, chainName, containmentUIDs{
 			operatorUID:   operatorUID,
 			operatorKnown: true,
 			proxyUID:      proxyUID,

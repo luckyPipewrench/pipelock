@@ -800,8 +800,8 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !chainHasAgentDNSDropBeforeCatchAll(out, env.nftChain, current.agentUID, "tcp") {
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d tcp/53 DNS drop rule missing or appears after the agent catch-all drop", current.agentUID)
 	}
-	if chainHasUnexpectedAcceptBeforeAgentDrop(out, env.nftChain, current, env.port) {
-		return statusFail, "chain contains unexpected accept before agent drop"
+	if chainHasUnsafeVerdictBeforeAgentDrop(out, env.nftChain, current, env.port) {
+		return statusFail, "chain contains unexpected verdict before agent drop"
 	}
 	if env.nftPersistUnitPath != "" && env.nftRulesPath != "" {
 		if err := verifyNFTPersistence(env); err != nil {
@@ -982,9 +982,13 @@ func chainHasAgentDNSDropBeforeCatchAll(out, chainName string, agentUID int, pro
 	})
 }
 
-func chainHasUnexpectedAcceptBeforeAgentDrop(out, chainName string, uids containmentUIDs, proxyPort int) bool {
+func chainHasUnsafeVerdictBeforeAgentDrop(out, chainName string, uids containmentUIDs, proxyPort int) bool {
 	return chainHasLineBeforeAgentDrop(out, chainName, uids.agentUID, func(line string) bool {
-		if !lineHasToken(line, "accept") {
+		// Before the agent catch-all drop, only the managed operator/proxy
+		// accepts, the agent's proxy loopback allow, and DNS drops are safe.
+		// Any other terminal/control-flow verdict can bypass containment under
+		// the base-chain "policy accept" default.
+		if !lineHasAnyToken(line, "accept", "return", "jump", "goto", "queue") {
 			return false
 		}
 		if uids.operatorKnown && lineHasTerminalSkuidVerdict(line, uids.operatorUID, "accept") {
@@ -994,6 +998,10 @@ func chainHasUnexpectedAcceptBeforeAgentDrop(out, chainName string, uids contain
 			return false
 		}
 		if lineHasAgentProxyLoopbackAllow(line, uids.agentUID, proxyPort) {
+			return false
+		}
+		if lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "udp", 53, "drop") ||
+			lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "tcp", 53, "drop") {
 			return false
 		}
 		if uid, ok := terminalSkuidUIDVerdict(line, "accept"); ok && uid != uids.agentUID {
@@ -1082,6 +1090,8 @@ func indexTokenAfter(fields []string, want string, start int) int {
 
 func fieldsAreNFTBookkeeping(fields []string) bool {
 	inPrefix := false
+	seenCounter := false
+	expectCount := false
 	for _, field := range fields {
 		if inPrefix {
 			if strings.HasSuffix(field, `"`) {
@@ -1089,16 +1099,33 @@ func fieldsAreNFTBookkeeping(fields []string) bool {
 			}
 			continue
 		}
+		if expectCount {
+			// `nft list` renders an inline counter as
+			// "counter packets <n> bytes <n>"; consume the numeric
+			// argument that follows the packets/bytes keyword.
+			expectCount = false
+			if _, err := strconv.Atoi(field); err == nil {
+				continue
+			}
+			return false
+		}
 		switch field {
-		case "counter", "log":
+		case "counter":
+			seenCounter = true
+		case "log":
 			continue
+		case "packets", "bytes":
+			if !seenCounter {
+				return false
+			}
+			expectCount = true
 		case "prefix":
 			inPrefix = true
 		default:
 			return false
 		}
 	}
-	return !inPrefix
+	return !inPrefix && !expectCount
 }
 
 func lineHasIPDAddr(line, addr string) bool {
@@ -1126,6 +1153,17 @@ func lineHasToken(line, want string) bool {
 	for _, field := range strings.Fields(line) {
 		if field == want {
 			return true
+		}
+	}
+	return false
+}
+
+func lineHasAnyToken(line string, wants ...string) bool {
+	for _, field := range strings.Fields(line) {
+		for _, want := range wants {
+			if field == want {
+				return true
+			}
 		}
 	}
 	return false

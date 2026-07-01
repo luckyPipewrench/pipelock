@@ -138,6 +138,195 @@ func TestScanResponse_VerifiedImageDataURLDoesNotMaskPromptInjection(t *testing.
 	}
 }
 
+func TestStripVerifiedImageDataURLs_RejectsUnverifiedImageLikeText(t *testing.T) {
+	validImageURL := dataURLForPNGBytes(t, randomPNG(t, 8))
+	validJPEG := jpegWithLiteralInAppSegment(t, "fixture comment")
+	validJPEGURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(validJPEG)
+	badPNG := append([]byte(nil), randomPNG(t, 9)...)
+	badPNG[len(badPNG)-1] ^= 0xff
+
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "missing comma",
+			text: "data:image/png;base64" + base64.StdEncoding.EncodeToString(randomPNG(t, 10)),
+		},
+		{
+			name: "unsupported media type",
+			text: "data:image/gif;base64," + base64.StdEncoding.EncodeToString([]byte("GIF89a")),
+		},
+		{
+			name: "missing base64 flag",
+			text: "data:image/png;name=fixture," + base64.StdEncoding.EncodeToString(randomPNG(t, 11)),
+		},
+		{
+			name: "empty payload",
+			text: "data:image/png;base64,",
+		},
+		{
+			name: "payload starts with non-base64 byte",
+			text: "data:image/png;base64,%not-base64",
+		},
+		{
+			name: "base64 decodes to non-image bytes",
+			text: "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("not an image")),
+		},
+		{
+			name: "base64 decodes to corrupted image",
+			text: "data:image/png;base64," + base64.StdEncoding.EncodeToString(badPNG),
+		},
+		{
+			name: "overpadded base64 stops before suffix",
+			text: "data:image/png;base64,QUJD===" + "AKIA" + "ABCDEFGHIJKLMNOP",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			excised, decoded := stripVerifiedImageDataURLs("prefix "+tt.text+" suffix", true)
+			if excised != "prefix "+tt.text+" suffix" {
+				t.Fatalf("unverified image-like text was excised: %q", excised)
+			}
+			if decoded != "" {
+				t.Fatalf("unverified image-like text produced decoded bytes: %q", decoded)
+			}
+		})
+	}
+
+	excised, decoded := stripVerifiedImageDataURLs("a"+validImageURL+"b"+validJPEGURL+"c", true)
+	if excised != "abc" {
+		t.Fatalf("verified images not excised, got %q", excised)
+	}
+	decodedBytes := []byte(decoded)
+	if !bytes.Contains(decodedBytes, randomPNG(t, 8)) || !bytes.Contains(decodedBytes, validJPEG) {
+		t.Fatal("decoded verified image bytes were not retained")
+	}
+}
+
+func TestImageDataURLHelpers_EdgeCases(t *testing.T) {
+	if indexDataImagePrefix("data:img") != -1 {
+		t.Fatal("short non-prefix matched")
+	}
+	if !asciiEqualFold("DATA:IMAGE/PNG", "data:image/png") {
+		t.Fatal("ASCII case fold did not match")
+	}
+	if asciiEqualFold("data:image/png", "data:image/pngx") {
+		t.Fatal("different length strings matched")
+	}
+	if asciiEqualFold("data:image/png", "data:image/jpg") {
+		t.Fatal("different strings matched")
+	}
+	if !isPNGOrJPEGBase64DataImageHeader("data:image/jpg; charset=utf-8 ; BASE64") {
+		t.Fatal("jpg base64 header with parameters did not match")
+	}
+	if isPNGOrJPEGBase64DataImageHeader("data:image/jpeg") {
+		t.Fatal("header without base64 flag matched")
+	}
+	if isPNGOrJPEGBase64DataImageHeader("data:text/plain;base64") {
+		t.Fatal("non-image header matched")
+	}
+	if got := dataURLBase64PayloadEnd("xxQUJD==Z", 2); got != len("xxQUJD==") {
+		t.Fatalf("payload end after padding = %d", got)
+	}
+}
+
+func TestCompletePNGValidationRejectsMalformedImages(t *testing.T) {
+	valid := randomPNG(t, 12)
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "bad signature",
+			data: append([]byte("not-png"), valid[7:]...),
+		},
+		{
+			name: "truncated chunk",
+			data: valid[:20],
+		},
+		{
+			name: "oversized first chunk",
+			data: mutateBytes(valid, func(data []byte) {
+				binary.BigEndian.PutUint32(data[8:12], 1<<31)
+			}),
+		},
+		{
+			name: "bad crc",
+			data: mutateBytes(valid, func(data []byte) {
+				data[32] ^= 0xff
+			}),
+		},
+		{
+			name: "duplicate ihdr",
+			data: insertPNGChunkAfterIHDR(t, valid, "IHDR", bytes.Repeat([]byte{0}, 13)),
+		},
+		{
+			name: "idat before ihdr",
+			data: pngWithChunks(t, pngChunk(t, "IDAT", nil), pngChunk(t, "IEND", nil)),
+		},
+		{
+			name: "iend before idat",
+			data: pngWithChunks(t, pngChunk(t, "IHDR", valid[16:29]), pngChunk(t, "IEND", nil)),
+		},
+		{
+			name: "trailing bytes after iend",
+			data: append(append([]byte(nil), valid...), 0x00),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if isCompletePNG(tt.data) {
+				t.Fatal("malformed PNG accepted as complete")
+			}
+		})
+	}
+}
+
+func TestCompleteJPEGValidationEdges(t *testing.T) {
+	valid := jpegWithLiteralInAppSegment(t, "fixture comment")
+	validWithTrailing := append(append([]byte(nil), valid...), 0x00)
+	validWithStuffedAndRestartScan := syntheticJPEGWithScanData([]byte{0x00, 0xff, 0x00, 0xff, 0xd0, 0xff, 0xd9})
+
+	validTests := map[string][]byte{
+		"jpeg encoder fixture":             valid,
+		"stuffed and restart scan markers": validWithStuffedAndRestartScan,
+	}
+	for name, data := range validTests {
+		t.Run(name, func(t *testing.T) {
+			if !isCompleteJPEG(data) {
+				t.Fatal("valid JPEG rejected")
+			}
+		})
+	}
+
+	invalidTests := map[string][]byte{
+		"bad signature":               {0x00, 0xd8, 0xff, 0xd9},
+		"marker fill reaches eof":     {0xff, 0xd8, 0xff},
+		"missing marker prefix":       {0xff, 0xd8, 0x00, 0x00},
+		"eoi before scan":             {0xff, 0xd8, 0xff, 0xd9},
+		"restart before scan":         {0xff, 0xd8, 0xff, 0xd0},
+		"tem before scan":             {0xff, 0xd8, 0xff, 0x01},
+		"missing segment length byte": {0xff, 0xd8, 0xff, 0xe0, 0x00},
+		"short segment length":        {0xff, 0xd8, 0xff, 0xe0, 0x00, 0x01},
+		"oversized segment length":    {0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x00},
+		"trailing data after eoi":     validWithTrailing,
+		"scan marker at eof":          syntheticJPEGWithScanData([]byte{0xff}),
+		"scan unknown marker":         syntheticJPEGWithScanData([]byte{0xff, 0x02}),
+		"scan without eoi":            syntheticJPEGWithScanData([]byte{0x00, 0x01}),
+	}
+	for name, data := range invalidTests {
+		t.Run(name, func(t *testing.T) {
+			if isCompleteJPEG(data) {
+				t.Fatal("malformed JPEG accepted as complete")
+			}
+		})
+	}
+}
+
 func hasTextDLPPattern(matches []TextDLPMatch, pattern string) bool {
 	for _, match := range matches {
 		if match.PatternName == pattern {
@@ -218,6 +407,48 @@ func insertPNGChunkAfterIHDR(t *testing.T, pngBytes []byte, chunkType string, ch
 	out = append(out, chunk.Bytes()...)
 	out = append(out, pngBytes[insertAt:]...)
 	return out
+}
+
+func mutateBytes(in []byte, mutate func([]byte)) []byte {
+	out := append([]byte(nil), in...)
+	mutate(out)
+	return out
+}
+
+func pngChunk(t *testing.T, chunkType string, chunkData []byte) []byte {
+	t.Helper()
+	if len(chunkType) != 4 {
+		t.Fatalf("chunk type length = %d, want 4", len(chunkType))
+	}
+	var chunk bytes.Buffer
+	if err := binary.Write(&chunk, binary.BigEndian, mustUint32(t, len(chunkData))); err != nil {
+		t.Fatalf("write chunk length: %v", err)
+	}
+	chunk.WriteString(chunkType)
+	chunk.Write(chunkData)
+	crc := crc32.ChecksumIEEE(chunk.Bytes()[4:])
+	if err := binary.Write(&chunk, binary.BigEndian, crc); err != nil {
+		t.Fatalf("write chunk crc: %v", err)
+	}
+	return chunk.Bytes()
+}
+
+func pngWithChunks(t *testing.T, chunks ...[]byte) []byte {
+	t.Helper()
+	out := []byte("\x89PNG\r\n\x1a\n")
+	for _, chunk := range chunks {
+		out = append(out, chunk...)
+	}
+	return out
+}
+
+func syntheticJPEGWithScanData(scanData []byte) []byte {
+	data := []byte{
+		0xff, 0xd8,
+		0xff, 0xc0, 0x00, 0x02,
+		0xff, 0xda, 0x00, 0x02,
+	}
+	return append(data, scanData...)
 }
 
 func dataURLForPNGBytes(t *testing.T, pngBytes []byte) string {

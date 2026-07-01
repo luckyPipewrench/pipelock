@@ -5142,6 +5142,19 @@ func TestValidate_SecretsFileNotFound(t *testing.T) {
 	}
 }
 
+func TestValidate_SecretsFileNonRegularRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DLP.SecretsFile = t.TempDir()
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for non-regular secrets file")
+	}
+	if !strings.Contains(err.Error(), "must be a regular file") {
+		t.Errorf("error should mention regular file requirement, got: %v", err)
+	}
+}
+
 func TestValidate_SecretsFileWorldReadable(t *testing.T) {
 	dir := t.TempDir()
 	secretsPath := filepath.Join(dir, "secrets.txt")

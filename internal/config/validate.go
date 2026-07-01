@@ -662,6 +662,9 @@ func (c *Config) validateDLP() error {
 		if err != nil {
 			return fmt.Errorf("secrets_file %q: %w", c.DLP.SecretsFile, err)
 		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("secrets_file %q must be a regular file", c.DLP.SecretsFile)
+		}
 		// Reject group-write/execute and all other access. Group-read
 		// allowed for k8s Secret volume compatibility.
 		if secperm.TooPermissive(info.Mode().Perm(), 0o037) {

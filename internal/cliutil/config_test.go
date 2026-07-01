@@ -252,6 +252,39 @@ func TestDiscoverConfigPathStrict_UnsafeCandidateErrors(t *testing.T) {
 	}
 }
 
+func TestDiscoverConfigPathStrict_NonRegularCandidateErrors(t *testing.T) {
+	xdg := t.TempDir()
+	xdgDir := filepath.Join(xdg, "pipelock")
+	if err := os.MkdirAll(xdgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(xdgDir, "pipelock.yaml"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	home := t.TempDir()
+	homeDir := filepath.Join(home, ".config", "pipelock")
+	if err := os.MkdirAll(homeDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	homeCfg := filepath.Join(homeDir, "pipelock.yaml")
+	if err := os.WriteFile(homeCfg, []byte("mode: permissive\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", home)
+
+	got, err := discoverConfigPathStrict(filepath.Join(t.TempDir(), "system.yaml"))
+	if err == nil {
+		t.Fatal("expected non-regular higher-priority candidate to error")
+	}
+	if got != "" {
+		t.Fatalf("strict discovery should not fall through after non-regular candidate, got %q", got)
+	}
+}
+
 func TestConfigPathIsSecure_OwnUserAccepted(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "pipelock.yaml")
 	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {

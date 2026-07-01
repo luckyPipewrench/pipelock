@@ -91,6 +91,12 @@ func TestMCPResponseTrustValidationRejectsUnknownAndInertConfigWarns(t *testing.
 	}
 
 	cfg = Defaults()
+	cfg.ResponseScanning.MCPServers = []MCPResponseServerTrust{{Server: "docs cache", Trust: ResponseTrustReasoning}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "whitespace/control characters") {
+		t.Fatalf("Validate err = %v, want whitespace rejection", err)
+	}
+
+	cfg = Defaults()
 	cfg.ResponseScanning.Enabled = false
 	cfg.ResponseScanning.MCPServers = []MCPResponseServerTrust{{Server: "codex", Trust: ResponseTrustReasoning}}
 	warnings, err := cfg.ValidateWithWarnings()

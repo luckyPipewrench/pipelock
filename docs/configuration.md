@@ -841,6 +841,8 @@ response_scanning:
 
 `reasoning` maps to `warn`; `untrusted` maps to `block`. Unknown trust values fail config validation, duplicate server entries fail validation, and entries are surfaced as warnings when `response_scanning.enabled` is false. The trust decision applies to MCP stdio, stdio-to-HTTP, reverse Streamable HTTP/SSE, and WebSocket surfaces because they share the MCP response scan gate. Block logs and JSON-RPC errors name the server, matched pattern, and trust class so operators can see whether a server needs an explicit trust-class review.
 
+Response trust does not make a server trusted for taint propagation. If a reasoning server is also an operator-trusted source whose clean responses should not contaminate the session, add the same `--server-name` value under `taint.trusted_mcp_servers`. Prompt-injection findings still raise hostile taint.
+
 Launch MCP proxies with a stable server identity so the entry can match: use `pipelock mcp proxy --server-name codex ...` for per-server wrappers, or `pipelock run --mcp-listen ... --mcp-upstream ... --mcp-server-name codex` for the long-lived MCP listener.
 
 For forward-proxy and TLS-intercepted traffic, an exempt host's response streams through untouched when `response_scanning.enabled` is true: no buffering, response scan-cap block, media metadata strip, Browser Shield rewrite, or injection scan is applied to that trusted response. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. If a host needs full byte-preserving passthrough without MITM, prefer `tls_interception.passthrough_domains`.
@@ -2511,6 +2513,8 @@ taint:
     - "docs.anthropic.com"
     - "docs.github.com"
     - "developer.mozilla.org"
+  trusted_mcp_servers:                 # MCP --server-name values that do NOT raise session taint
+    - "docs-cache"
   protected_paths:                     # tainted sessions are blocked (or escalated) on these paths
     - "*/auth/*"
     - "*/security/*"
@@ -2542,6 +2546,7 @@ taint:
 | `policy` | string | `balanced` | `strict` is the most conservative taint policy, `balanced` is the security default, and `permissive` observes taint without changing enforcement. |
 | `recent_sources` | int | `10` | How many recent taint sources to keep per session for receipt reporting. |
 | `allowlisted_domains` | []string | 3 high-trust documentation domains | Responses from these domains do not raise taint. Supports `MatchDomain` wildcards. |
+| `trusted_mcp_servers` | []string | empty | MCP server names whose clean responses do not raise session taint. Entries match `pipelock mcp proxy --server-name`; URLs and slashes are rejected. This does not disable MCP response scanning, and prompt-injection hits can still raise hostile taint. |
 | `protected_paths` | []string | 7 patterns (see above) | Globs for file paths or tool args that are blocked for tainted sessions. |
 | `elevated_paths` | []string | `*/config/*`, `*/middleware*` | Globs that trigger warn/ask rather than block. |
 | `trust_overrides` | []object | empty | Narrow exemptions (see below). |
@@ -2569,7 +2574,7 @@ Task boundaries are surfaced on every emitted receipt as `session_task_id`, and 
 
 ### Classification details
 
-- **Taint level** is raised when a response arrives from a non-allowlisted domain, when an MCP tool returns content from an external source, or when prompt-injection signals fire on response content.
+- **Taint level** is raised when a response arrives from a non-allowlisted domain, when an MCP tool returns content from an external source, or when prompt-injection signals fire on response content. `taint.allowlisted_domains` applies to URL/HTTP response sources only; MCP response taint is keyed by the proxy's `--server-name` value through `taint.trusted_mcp_servers`.
 - **Action sensitivity** is derived from the target path (or tool-argument path) against `protected_paths` and `elevated_paths`.
 - **Authority kind** records which authority tier gated the action: `external`, `policy`, `user_broad`, `user_exact`, or `operator_override`.
 

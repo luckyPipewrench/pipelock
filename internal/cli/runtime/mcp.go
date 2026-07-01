@@ -222,14 +222,17 @@ func handleProxyError(err error, logW io.Writer, sentryClient *plsentry.Client) 
 func applyMCPResponseSuppressOpts(opts *mcp.MCPProxyOpts, cfg *config.Config, serverName string) {
 	opts.ServerName = serverName
 	trust := config.ResponseTrustUntrusted
+	taintTrusted := false
 	if cfg != nil {
 		opts.Suppress = cfg.Suppress
 		if configuredTrust, ok := cfg.MCPResponseTrustForServer(serverName); ok {
 			trust = configuredTrust
 		}
+		taintTrusted = cfg.TaintTrustsMCPServer(serverName)
 	}
 	opts.ResponseTrustClass = trust
 	opts.ResponseActionOverride = config.MCPResponseActionForTrust(trust)
+	opts.TaintTrustedSource = taintTrusted
 }
 
 func mcpResponseLogFields(opts mcp.MCPProxyOpts) (action, trust, server string) {

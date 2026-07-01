@@ -255,6 +255,9 @@ func (c *Config) ApplyDefaults() {
 		c.ResponseScanning.MCPServers[i].Server = strings.TrimSpace(c.ResponseScanning.MCPServers[i].Server)
 		c.ResponseScanning.MCPServers[i].Trust = strings.ToLower(strings.TrimSpace(c.ResponseScanning.MCPServers[i].Trust))
 	}
+	for i := range c.Taint.TrustedMCPServers {
+		c.Taint.TrustedMCPServers[i] = strings.TrimSpace(c.Taint.TrustedMCPServers[i])
+	}
 	// Merge default response scanning patterns with user patterns.
 	// include_defaults (nil/true): defaults load first, user patterns override by name.
 	// include_defaults (false): only user patterns are used (full override).

@@ -2255,7 +2255,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			// pinned to warn with no adaptive scoring or action upgrade.
 			wsRespExempt := isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains)
 			if r.scanText && r.scanner.ResponseScanningEnabled() {
-				scanResult := r.scanner.ScanResponse(ctx, string(msg))
+				scanResult := r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
+				recordSuppressedResponseScanExempts(r.proxy.metrics, scanResult.SuppressedMatches, TransportWS)
 				if !scanResult.Clean {
 					if wsRespExempt {
 						r.proxy.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportWS)

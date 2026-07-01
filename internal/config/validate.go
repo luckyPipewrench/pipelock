@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/license"
@@ -816,11 +817,8 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	seenMCPServers := make(map[string]struct{}, len(c.ResponseScanning.MCPServers))
 	for i, entry := range c.ResponseScanning.MCPServers {
 		field := fmt.Sprintf("response_scanning.mcp_servers[%d]", i)
-		if entry.Server == "" {
-			return fmt.Errorf("%s.server is empty", field)
-		}
-		if strings.Contains(entry.Server, "://") || strings.ContainsAny(entry.Server, "/\\\r\n\t") {
-			return fmt.Errorf("%s.server %q: use the MCP --server-name value without URL syntax or slashes", field, entry.Server)
+		if err := validateMCPServerName(entry.Server, field+".server"); err != nil {
+			return err
 		}
 		if _, ok := seenMCPServers[entry.Server]; ok {
 			return fmt.Errorf("%s.server %q duplicates an earlier MCP response trust entry", field, entry.Server)
@@ -2843,6 +2841,9 @@ func (c *Config) validateTaint() error {
 	if err := ValidateTrustedDomains(c.Taint.AllowlistedDomains, "taint.allowlisted_domains"); err != nil {
 		return err
 	}
+	if err := validateMCPServerNameList(c.Taint.TrustedMCPServers, "taint.trusted_mcp_servers"); err != nil {
+		return err
+	}
 	if err := validatePathGlobs(c.Taint.ProtectedPaths, "taint.protected_paths"); err != nil {
 		return err
 	}
@@ -2867,6 +2868,36 @@ func (c *Config) validateTaint() error {
 		}
 		if override.ExpiresAt.IsZero() {
 			return fmt.Errorf("taint.trust_overrides[%d].expires_at is required", i)
+		}
+	}
+	return nil
+}
+
+func validateMCPServerNameList(serverNames []string, label string) error {
+	seen := make(map[string]struct{}, len(serverNames))
+	for i, serverName := range serverNames {
+		field := fmt.Sprintf("%s[%d]", label, i)
+		if err := validateMCPServerName(serverName, field); err != nil {
+			return err
+		}
+		if _, ok := seen[serverName]; ok {
+			return fmt.Errorf("%s %q duplicates an earlier MCP server entry", field, serverName)
+		}
+		seen[serverName] = struct{}{}
+	}
+	return nil
+}
+
+func validateMCPServerName(serverName, field string) error {
+	if serverName == "" {
+		return fmt.Errorf("%s is empty", field)
+	}
+	if strings.Contains(serverName, "://") || strings.ContainsAny(serverName, "/\\") {
+		return fmt.Errorf("%s %q: use the MCP --server-name value without URL syntax or slashes", field, serverName)
+	}
+	for _, r := range serverName {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("%s %q: use the MCP --server-name value without URL syntax or whitespace/control characters", field, serverName)
 		}
 	}
 	return nil

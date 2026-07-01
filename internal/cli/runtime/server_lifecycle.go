@@ -713,6 +713,10 @@ func (s *Server) Start(ctx context.Context) error {
 		mcpResponseActionFn := func() string {
 			return config.MCPResponseActionForTrust(mcpResponseTrustFn())
 		}
+		mcpTaintTrustedFn := func() bool {
+			c := s.proxy.CurrentConfig()
+			return c != nil && c.TaintTrustsMCPServer(s.opts.MCPServerName)
+		}
 
 		mcpErr = make(chan error, 1)
 		lifecycleWG.Add(1)
@@ -752,6 +756,7 @@ func (s *Server) Start(ctx context.Context) error {
 				EnvelopeEmitterFn:        s.liveEnvelopeEmitter,
 				RedactionCfgFn:           mcpRedactionCfgFn,
 				TaintCfgFn:               mcpTaintCfgFn,
+				TaintTrustedSourceFn:     mcpTaintTrustedFn,
 				A2ACfgFn:                 mcpA2ACfgFn,
 				MediaPolicyFn:            mcpMediaPolicyFn,
 				ServerName:               s.opts.MCPServerName,

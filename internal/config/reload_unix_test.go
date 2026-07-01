@@ -7,6 +7,8 @@ package config
 
 import (
 	"context"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -39,6 +41,13 @@ func signalUntilReload(t *testing.T, r *Reloader, mode string) *Config {
 }
 
 func TestReloader_SIGHUPReload(t *testing.T) {
+	// Keep SIGHUP caught for the whole test. The test sends a real process
+	// signal; if delivery races with reloader signal cleanup, the default
+	// SIGHUP action can terminate the test binary instead of failing the test.
+	guard := make(chan os.Signal, 1)
+	signal.Notify(guard, syscall.SIGHUP)
+	defer signal.Stop(guard)
+
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pipelock.yaml")
 	writeTestConfig(t, cfgPath, "balanced")

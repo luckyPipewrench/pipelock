@@ -79,6 +79,13 @@ type MCPProxyOpts struct {
 	// TaintExternalSource marks responses from this MCP transport as external
 	// content by default (HTTP/SSE and WebSocket upstreams).
 	TaintExternalSource bool
+	// TaintTrustedSource marks this MCP server's responses as operator-trusted
+	// for taint classification. Prompt-injection hits can still raise hostile
+	// taint; this only changes clean response-source classification.
+	TaintTrustedSource bool
+	// TaintTrustedSourceFn returns the current MCP taint trust decision for
+	// hot-reload-aware proxy surfaces. Nil falls back to TaintTrustedSource.
+	TaintTrustedSourceFn func() bool
 
 	// Cross-request exfiltration detection
 	CEE   *CEEDeps
@@ -379,6 +386,14 @@ func (o MCPProxyOpts) taintCfg() *config.TaintConfig {
 		return o.TaintCfgFn()
 	}
 	return o.TaintCfg
+}
+
+func (o MCPProxyOpts) mcpResponseTaintExternal() bool {
+	trusted := o.TaintTrustedSource
+	if o.TaintTrustedSourceFn != nil {
+		trusted = o.TaintTrustedSourceFn()
+	}
+	return o.TaintExternalSource && !trusted
 }
 
 func (o MCPProxyOpts) cee() *CEEDeps {

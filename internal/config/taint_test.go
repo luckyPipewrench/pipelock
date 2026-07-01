@@ -30,6 +30,9 @@ func TestDefaults_Taint(t *testing.T) {
 	if len(cfg.Taint.ElevatedPaths) == 0 {
 		t.Fatal("expected elevated path defaults")
 	}
+	if len(cfg.Taint.TrustedMCPServers) != 0 {
+		t.Fatalf("trusted_mcp_servers = %#v, want empty default", cfg.Taint.TrustedMCPServers)
+	}
 }
 
 func TestApplyDefaults_TaintPreservesExplicitEmptySlices(t *testing.T) {
@@ -120,6 +123,33 @@ func TestValidateTaint(t *testing.T) {
 			wantErr: "source_match is required",
 		},
 		{
+			name: "trusted MCP server URL rejected",
+			mutate: func(cfg *Config) {
+				cfg.Taint.TrustedMCPServers = []string{"https://mcp.example.com"}
+			},
+			wantErr: "taint.trusted_mcp_servers",
+		},
+		{
+			name: "trusted MCP server control character rejected",
+			mutate: func(cfg *Config) {
+				cfg.Taint.TrustedMCPServers = []string{"docs\fcache"}
+			},
+			wantErr: "whitespace/control characters",
+		},
+		{
+			name: "duplicate trusted MCP server rejected",
+			mutate: func(cfg *Config) {
+				cfg.Taint.TrustedMCPServers = []string{"docs-cache", "docs-cache"}
+			},
+			wantErr: "duplicates",
+		},
+		{
+			name: "valid trusted MCP server",
+			mutate: func(cfg *Config) {
+				cfg.Taint.TrustedMCPServers = []string{"docs-cache"}
+			},
+		},
+		{
 			name: "valid trust override",
 			mutate: func(cfg *Config) {
 				cfg.Taint.TrustOverrides = []TaintTrustOverride{{
@@ -151,5 +181,24 @@ func TestValidateTaint(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestTaintTrustedMCPServersTrimLookupAndHash(t *testing.T) {
+	cfg := loadMCPResponseTrustConfig(t, "version: 1\ntaint:\n  trusted_mcp_servers:\n    - \" docs-cache \"\n    - code-search\n")
+
+	if !cfg.TaintTrustsMCPServer("docs-cache") {
+		t.Fatal("expected trimmed trusted MCP server lookup to match")
+	}
+	if cfg.TaintTrustsMCPServer("unknown") {
+		t.Fatal("unexpected trust for unknown MCP server")
+	}
+
+	a := Defaults()
+	a.Taint.TrustedMCPServers = []string{"docs-cache", "code-search"}
+	b := Defaults()
+	b.Taint.TrustedMCPServers = []string{"code-search", "docs-cache"}
+	if gotA, gotB := a.CanonicalPolicyHash(), b.CanonicalPolicyHash(); gotA != gotB {
+		t.Fatalf("CanonicalPolicyHash reordered trusted_mcp_servers mismatch:\nA=%s\nB=%s", gotA, gotB)
 	}
 }

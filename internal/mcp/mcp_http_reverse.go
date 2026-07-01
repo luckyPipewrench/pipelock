@@ -180,6 +180,8 @@ func RunHTTPListenerProxy(
 		TaintCfg:                 opts.taintCfg(),
 		TaintCfgFn:               opts.TaintCfgFn,
 		TaintExternalSource:      true,
+		TaintTrustedSource:       opts.TaintTrustedSource,
+		TaintTrustedSourceFn:     opts.TaintTrustedSourceFn,
 		EnvelopeEmitter:          opts.envelopeEmitter(),
 		EnvelopeEmitterFn:        opts.EnvelopeEmitterFn,
 	}

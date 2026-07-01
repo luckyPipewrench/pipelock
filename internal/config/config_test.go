@@ -3982,6 +3982,7 @@ const (
 	reloadFieldTaintAllowlisted    = "taint.allowlisted_domains"
 	reloadFieldTaintElevatedPaths  = "taint.elevated_paths"
 	reloadFieldTaintProtectedPaths = "taint.protected_paths"
+	reloadFieldTaintTrustedMCP     = "taint.trusted_mcp_servers"
 	reloadFieldTaintTrustOverrides = "taint.trust_overrides"
 )
 
@@ -4124,6 +4125,54 @@ func TestValidateReload_TaintAllowlistedDomainsReduced_NoWarning(t *testing.T) {
 		if w.Field == reloadFieldTaintAllowlisted {
 			t.Errorf("pure taint allowlist reduction should not produce warning, got: %s", w.Message)
 		}
+	}
+}
+
+func TestValidateReload_TaintTrustedMCPServersExpanded(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.TrustedMCPServers = []string{"docs-cache"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.TrustedMCPServers = []string{"docs-cache", "code-search"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintTrustedMCP {
+			found = true
+			if !strings.Contains(w.Message, "code-search") {
+				t.Errorf("warning should name the added MCP server, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint trusted MCP server expansion warning")
+	}
+}
+
+func TestValidateReload_TaintTrustedMCPServersCaseChangeWarns(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.TrustedMCPServers = []string{"DocsCache"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.TrustedMCPServers = []string{"docscache"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintTrustedMCP {
+			found = true
+			if !strings.Contains(w.Message, "docscache") {
+				t.Errorf("warning should name the case-changed MCP server, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint trusted MCP server case-change warning")
 	}
 }
 

@@ -77,7 +77,7 @@ func observeMCPResponseTaint(opts MCPProxyOpts, promptHit bool) {
 	if !ok {
 		return
 	}
-	observation := session.ClassifyMCPResponseObservation(mcpTaintSourceKind, opts.TaintExternalSource, promptHit)
+	observation := session.ClassifyMCPResponseObservation(mcpTaintSourceKind, opts.mcpResponseTaintExternal(), promptHit)
 	observation.MaxSources = taintCfg.RecentSources
 	rs.ObserveRisk(observation)
 }

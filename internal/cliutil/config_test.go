@@ -485,7 +485,7 @@ func TestConfigPathIsSecure_MissingRejected(t *testing.T) {
 
 func TestConfigPathIsSecure_NonRegularRejected(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pipelock.yaml")
-	if err := os.Mkdir(dir, 0o700); err != nil {
+	if err := os.Mkdir(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 

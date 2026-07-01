@@ -1420,10 +1420,15 @@ func liveNFTContainmentMatches(out, chainName string, operatorUID, proxyUID, age
 	return chainHasSkuidAcceptForUID(out, chainName, operatorUID) &&
 		chainHasSkuidAcceptForUID(out, chainName, proxyUID) &&
 		chainHasAgentCatchAllDrop(out, chainName, agentUID) &&
-		chainHasAgentProxyLoopbackAllow(out, chainName, agentUID, proxyPort) &&
-		chainHasAgentDNSDrop(out, chainName, agentUID, "udp") &&
-		chainHasAgentDNSDrop(out, chainName, agentUID, "tcp") &&
-		!chainHasBroadLoopbackAccept(out, chainName, agentUID)
+		chainHasAgentProxyLoopbackAllowBeforeDrop(out, chainName, agentUID, proxyPort) &&
+		chainHasAgentDNSDropBeforeCatchAll(out, chainName, agentUID, "udp") &&
+		chainHasAgentDNSDropBeforeCatchAll(out, chainName, agentUID, "tcp") &&
+		!chainHasUnsafeVerdictBeforeAgentDrop(out, chainName, containmentUIDs{
+			operatorUID:   operatorUID,
+			operatorKnown: true,
+			proxyUID:      proxyUID,
+			agentUID:      agentUID,
+		}, proxyPort)
 }
 
 func nftRulesIncludeLine(path string) string {

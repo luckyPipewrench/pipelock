@@ -1179,6 +1179,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// visibility but findings are pinned to warn with no adaptive scoring.
 	revHost := resp.Request.URL.Hostname()
 	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
+	revRespSizeExempt := isResponseSizeExempt(revHost, cfg.ResponseScanning.SizeExemptDomains)
 
 	// Media policy runs regardless of response-scanning state so an
 	// operator who disables response scanning for performance cannot
@@ -1447,6 +1448,17 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// window. This matches request-side behavior (bodyscan.go blocks oversized
 	// requests) and ensures response scanning cannot be bypassed by size.
 	if len(body) > maxBytes {
+		if revRespSizeExempt {
+			resp.Body = reverseBodyReadCloser{
+				Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
+				Closer: resp.Body,
+			}
+			resp.ContentLength = -1
+			resp.Header.Del("Content-Length")
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+				strconv.Itoa(resp.StatusCode))
+			return nil
+		}
 		_ = resp.Body.Close()
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "oversized")
@@ -1619,6 +1631,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 		strconv.Itoa(resp.StatusCode))
 	return nil
+}
+
+type reverseBodyReadCloser struct {
+	io.Reader
+	io.Closer
 }
 
 // errorHandler writes a JSON error when the upstream is unreachable.

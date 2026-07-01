@@ -1465,11 +1465,27 @@ type MediationEnvelopeReplayCache struct {
 type TaintConfig struct {
 	Enabled            bool                 `yaml:"enabled"`
 	AllowlistedDomains []string             `yaml:"allowlisted_domains"`
+	TrustedMCPServers  []string             `yaml:"trusted_mcp_servers" json:"trusted_mcp_servers,omitempty"`
 	ProtectedPaths     []string             `yaml:"protected_paths"`
 	ElevatedPaths      []string             `yaml:"elevated_paths"`
 	TrustOverrides     []TaintTrustOverride `yaml:"trust_overrides"`
 	Policy             string               `yaml:"policy"`         // strict, balanced, permissive
 	RecentSources      int                  `yaml:"recent_sources"` // bounded recent source history
+}
+
+// TaintTrustsMCPServer reports whether MCP responses from serverName should be
+// treated as operator-trusted source material for taint classification.
+func (c *Config) TaintTrustsMCPServer(serverName string) bool {
+	serverName = strings.TrimSpace(serverName)
+	if c == nil || serverName == "" {
+		return false
+	}
+	for _, trusted := range c.Taint.TrustedMCPServers {
+		if strings.TrimSpace(trusted) == serverName {
+			return true
+		}
+	}
+	return false
 }
 
 // TaintTrustOverride grants a narrow, expiring trust exemption.

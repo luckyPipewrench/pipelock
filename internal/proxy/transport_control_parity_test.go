@@ -193,8 +193,9 @@ var transportControlParityMatrix = []transportControlCoverage{
 	{
 		Control:   "size_exempt_in_cap_response_scan",
 		Transport: TransportReverse,
-		State:     parityNotApplicable,
-		Exception: "reverse proxy does not consume response_scanning.size_exempt_domains",
+		State:     parityCovered,
+		File:      "internal/proxy/reverse_test.go",
+		Test:      "TestReverseProxy_ResponseInjectionSizeExemptDomainStillScanned",
 	},
 	{
 		Control:   "size_exempt_in_cap_response_scan",

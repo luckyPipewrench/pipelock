@@ -367,7 +367,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[LangGraph](docs/guides/langgraph.md):** `MultiServerMCPClient`, `StateGraph`
 - **[Hermes](docs/guides/hermes.md):** full-plugin coverage (default, plugin-visible tool surfaces) or lighter MCP-only wrapping for Nous Research's agent, with auth-header sidecar preservation
 - **[JetBrains/Junie](docs/guides/jetbrains.md):** MCP proxy wrapping for IntelliJ, PyCharm, GoLand ([walkthrough](https://pipelab.org/learn/jetbrains-integration/))
-- **Cursor:** `pipelock cursor install` registers Pipelock as a Cursor hook for shell execution, MCP tool calls, and file reads; or use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
+- **Cursor:** `pipelock cursor install` registers Pipelock as a Cursor hook for shell execution, MCP tool calls, and file reads; use `--config` to embed a validated policy path and `pipelock cursor remove` to remove only Pipelock-managed hooks. You can also use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
 - **VS Code:** `pipelock vscode install` rewrites `.vscode/mcp.json` to route every MCP server through the MCP proxy (stdio commands wrapped, HTTP/SSE servers bridged via `--upstream`); `--global` targets the user-level `mcp.json`
 - **[OpenClaw](docs/guides/openclaw.md):** Gateway sidecar, init container, config wrapping
 

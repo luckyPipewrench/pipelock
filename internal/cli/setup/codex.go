@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/spf13/cobra"
 )
 
@@ -100,6 +101,7 @@ func codexInstallCmd() *cobra.Command {
 		dryRun     bool
 		configFile string
 		codexPath  string
+		quiet      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "install",
@@ -114,12 +116,13 @@ Use --codex-path to override the codex binary location (default: PATH lookup).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runCodexInstall(cmd, dryRun, configFile, codexPath)
+			return runCodexInstall(cmd, dryRun, configFile, codexPath, quiet)
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without modifying Codex config")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "pipelock config path passed through to 'pipelock mcp proxy'")
 	cmd.Flags().StringVar(&codexPath, "codex-path", "", "path to the codex binary (default: PATH lookup)")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress config provenance output")
 	return cmd
 }
 
@@ -507,7 +510,7 @@ func copyStringMap(in map[string]string) map[string]string {
 }
 
 // runCodexInstall is the top-level handler for `pipelock codex install`.
-func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverride string) error {
+func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverride string, quiet bool) error {
 	codexBin, err := resolveCodexBinary(codexPathOverride)
 	if err != nil {
 		return err
@@ -516,12 +519,17 @@ func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverr
 	if err != nil {
 		return err
 	}
+	resolvedConfig, err := cliutil.ResolveConfigForInstall(configFile)
+	if err != nil {
+		return err
+	}
+	cliutil.WriteInstallConfigProvenance(cmd.ErrOrStderr(), "codex install", resolvedConfig, quiet)
 
 	servers, err := codexMCPList(cmd.Context(), codexBin)
 	if err != nil {
 		return err
 	}
-	plans := planCodexInstall(servers, pipelockBin, configFile)
+	plans := planCodexInstall(servers, pipelockBin, resolvedConfig.Path)
 
 	wrapped, skipped := 0, 0
 	for _, p := range plans {

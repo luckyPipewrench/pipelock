@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/spf13/cobra"
 )
 
@@ -44,6 +45,7 @@ func jetbrainsInstallCmd() *cobra.Command {
 		configFile string
 		sandbox    bool
 		workspace  string
+		quiet      bool
 	)
 
 	cmd := &cobra.Command{
@@ -63,7 +65,7 @@ servers are skipped (idempotent). A .bak backup is created before modification.`
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runJetbrainsInstall(cmd, global, project, dryRun, configFile, sandbox, workspace)
+			return runJetbrainsInstall(cmd, global, project, dryRun, configFile, sandbox, workspace, quiet)
 		},
 	}
 
@@ -73,6 +75,7 @@ servers are skipped (idempotent). A .bak backup is created before modification.`
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "path to pipelock config file for --config passthrough")
 	cmd.Flags().BoolVar(&sandbox, "sandbox", false, "enable sandbox mode for wrapped MCP servers")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "workspace path for sandbox mode")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress config provenance output")
 
 	return cmd
 }
@@ -119,10 +122,15 @@ func junieConfigPath(global bool) (string, error) {
 	return filepath.Join(".", ".junie", "mcp", "mcp.json"), nil
 }
 
-func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, configFile string, sandbox bool, workspace string) error {
+func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, configFile string, sandbox bool, workspace string, quiet bool) error {
 	if global && project {
 		return fmt.Errorf("--global and --project are mutually exclusive")
 	}
+	resolvedConfig, err := cliutil.ResolveConfigForInstall(configFile)
+	if err != nil {
+		return err
+	}
+	cliutil.WriteInstallConfigProvenance(cmd.ErrOrStderr(), "jetbrains install", resolvedConfig, quiet)
 
 	// Default to global (user-level) when neither flag is set.
 	// This ensures the default install target is visible to pipelock discover.
@@ -154,7 +162,7 @@ func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, confi
 			continue
 		}
 
-		newServer, meta, err := wrapMCPServer(server, exe, configFile, sandbox, workspace)
+		newServer, meta, err := wrapMCPServer(server, exe, resolvedConfig.Path, sandbox, workspace)
 		if err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping server %q: %v\n", name, err)
 			continue

@@ -4,10 +4,12 @@
 package cliutil
 
 import (
+	"bytes"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -127,6 +129,88 @@ func TestDiscoverConfigPathStrict_ExportedWrapper(t *testing.T) {
 	}
 	if got != cfg {
 		t.Fatalf("DiscoverConfigPathStrict() = %q, want %q", got, cfg)
+	}
+}
+
+func TestResolveConfigForInstall_ExplicitSecureConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := ResolveConfigForInstall(cfg)
+	if err != nil {
+		t.Fatalf("ResolveConfigForInstall: %v", err)
+	}
+	if resolved.Path != cfg {
+		t.Fatalf("Path = %q, want %q", resolved.Path, cfg)
+	}
+	if resolved.Source != "explicit --config" || !resolved.Explicit {
+		t.Fatalf("unexpected resolution metadata: %#v", resolved)
+	}
+}
+
+func TestResolveConfigForInstall_RejectsUnsafeExplicitConfig(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(cfg, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsafeMode := os.FileMode(0o600 | 0o020)
+	if err := os.Chmod(cfg, unsafeMode); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ResolveConfigForInstall(cfg); err == nil {
+		t.Fatal("expected unsafe explicit config to be rejected")
+	}
+}
+
+func TestResolveConfigForInstall_IgnoresCWDConfig(t *testing.T) {
+	oldSystem := defaultSystemConfigPath
+	defaultSystemConfigPath = filepath.Join(t.TempDir(), "missing-system.yaml")
+	t.Cleanup(func() { defaultSystemConfigPath = oldSystem })
+
+	dir := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("pipelock.yaml", []byte("mode: strict\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PIPELOCK_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+
+	resolved, err := ResolveConfigForInstall("")
+	if err != nil {
+		t.Fatalf("ResolveConfigForInstall: %v", err)
+	}
+	if resolved.Path != "" || resolved.Source != "built-in defaults" {
+		t.Fatalf("cwd-local config must not be discovered for installs: %#v", resolved)
+	}
+}
+
+func TestWriteInstallConfigProvenance(t *testing.T) {
+	var out bytes.Buffer
+	WriteInstallConfigProvenance(&out, "cursor install", InstallConfigResolution{
+		Path:   "/secure/pipelock.yaml",
+		Source: "auto-discovered",
+	}, false)
+
+	got := out.String()
+	if !strings.Contains(got, "cursor install") || !strings.Contains(got, "/secure/pipelock.yaml") {
+		t.Fatalf("provenance output missing install surface/path: %q", got)
 	}
 }
 

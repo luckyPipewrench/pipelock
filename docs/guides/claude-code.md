@@ -175,6 +175,9 @@ execution. The `pipelock claude setup` command installs hooks automatically:
 # Install hooks (writes to ~/.claude/settings.json)
 pipelock claude setup
 
+# Install hooks with an explicit policy file
+pipelock claude setup --config ~/.config/pipelock/pipelock.yaml
+
 # Or install to a project-local settings file
 pipelock claude setup --project
 
@@ -184,6 +187,11 @@ pipelock claude setup --dry-run
 # Remove hooks
 pipelock claude remove
 ```
+
+At install time, Pipelock validates the config path, embeds the resolved
+absolute path into the generated hook command, and prints the config source. If
+no standard config is available, the hook is installed with built-in defaults
+and the setup output says so.
 
 This registers pipelock as a `PreToolUse` hook for security-relevant tools:
 

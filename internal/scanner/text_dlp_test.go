@@ -1164,15 +1164,40 @@ func TestScanTextForDLP_OfficialAWSExampleCredentialDocsWholeTokenOnly(t *testin
 
 func TestScanTextForDLP_UnicodePrefixedBareKeyStillBlocks(t *testing.T) {
 	// A rune that changes byte length when lowercased (U+212A KELVIN SIGN -> "k")
-	// must not shift the doc-marker offset logic into self-exempting a marker
-	// that overlaps the example key's own EXAMPLE suffix.
+	// must not shift doc-marker offsets away from credential byte spans.
 	s := New(testConfig())
 	defer s.Close()
 
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
-	input := strings.Repeat("K", 10) + key + " credential"
-	if s.ScanTextForDLP(context.Background(), input).Clean {
-		t.Fatal("self-overlapping example credential marker after a length-changing Unicode rune must still block")
+	prefix := strings.Repeat("K", 10)
+
+	tests := []struct {
+		name      string
+		input     string
+		wantClean bool
+	}{
+		{
+			name:      "legitimate_doc_marker_allows_whole_token_dummy",
+			input:     prefix + "example credential fixture\naws_access_key_id = " + key,
+			wantClean: true,
+		},
+		{
+			name:      "self_overlapping_marker_still_blocks",
+			input:     prefix + key + " credential",
+			wantClean: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.input)
+			if result.Clean != tt.wantClean {
+				t.Fatalf("Clean=%v, want %v, matches=%+v", result.Clean, tt.wantClean, result.Matches)
+			}
+			if !tt.wantClean && !hasTextDLPMatch(result.Matches, "AWS Access ID", "") {
+				t.Fatalf("expected AWS Access ID match, got %+v", result.Matches)
+			}
+		})
 	}
 }
 

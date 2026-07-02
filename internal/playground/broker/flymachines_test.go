@@ -383,8 +383,8 @@ func TestFlyListManagedMachinesPagedObjectResponse(t *testing.T) {
 		if got := r.URL.Query().Get("summary"); got != "" {
 			t.Fatalf("summary query = %q, want unset (summary strips metadata)", got)
 		}
-		if got := r.URL.Query().Get("limit"); got != "50" {
-			t.Fatalf("limit query = %q, want 50", got)
+		if want := strconv.Itoa(flyListPageSize); r.URL.Query().Get("limit") != want {
+			t.Fatalf("limit query = %q, want %q", r.URL.Query().Get("limit"), want)
 		}
 		cursor := r.URL.Query().Get("cursor")
 		cursors = append(cursors, cursor)

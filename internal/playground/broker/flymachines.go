@@ -36,6 +36,12 @@ const defaultWaitTimeout = 60 * time.Second
 // misbehaving/huge response cannot exhaust broker memory.
 const flyMaxBodyBytes = 1 << 20 // 1 MiB
 
+// flyListPageSize caps the per-page machine count in ListManagedMachines. It is
+// kept well under the Fly API maximum so a full (non-summary) machine page stays
+// under flyMaxBodyBytes even during a large orphan event; the cursor loop handles
+// the extra pages. See ListManagedMachines for why summary mode is not used.
+const flyListPageSize = 50
+
 // flyRequestIDHeader is the Fly API response header that carries a per-request
 // trace identifier. Including it in error messages lets operators debug failures
 // with Fly support without exposing potentially secret response-body content.
@@ -253,7 +259,7 @@ func (f *FlyMachines) ListManagedMachines(ctx context.Context) ([]Machine, error
 	// orphan event, fail to parse, and stall cleanup exactly when it matters most.
 	// More pages of a bounded size is the safer trade; the cursor loop below
 	// handles pagination.
-	query := url.Values{"limit": []string{"50"}}
+	query := url.Values{"limit": []string{strconv.Itoa(flyListPageSize)}}
 	var raw []flyListMachine
 	for {
 		respBody, err := f.do(ctx, http.MethodGet, path, query, nil)

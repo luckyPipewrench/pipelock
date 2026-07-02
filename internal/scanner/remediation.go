@@ -3,6 +3,8 @@
 
 package scanner
 
+import "strings"
+
 // ScannerBodyDLP identifies request-body DLP blocks emitted outside the URL
 // scanner pipeline.
 const ScannerBodyDLP = "body_dlp"
@@ -16,6 +18,14 @@ const (
 
 	injectionTraversalOperatorKnob = "This sequence is never legitimate in a normal URL (header injection / directory escape). There is no exemption knob — the URL must be corrected at the source."
 	parseContextOperatorKnob       = "This is not a policy block: the request context was unavailable/cancelled, or the URL could not be parsed. Correct the input and retry."
+
+	// Query entropy shares the ScannerEntropy label with path/subdomain entropy
+	// but is a distinct gate with a distinct knob. The table is keyed by label
+	// alone, so this variant is selected by GuidanceForResult from the scan
+	// Reason. The path-entropy default lives in the table's ScannerEntropy entry.
+	queryEntropyOperatorKnob = "Add the host to `fetch_proxy.monitoring.query_entropy_exclusions` (exact or `*.example.com` wildcard). " +
+		"This is the query-entropy gate, which is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa."
+	queryEntropyOperatorBroader = "Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity globally for every destination — broader blast radius; prefer the per-host exclusion."
 
 	secretAgentReason             = "Request blocked: the destination or content matched a secret/credential pattern."
 	highEntropyAgentReason        = "Request blocked: high-entropy content resembling exfiltration was detected."
@@ -148,4 +158,42 @@ var remediationGuidance = map[string]RemediationGuidance{
 func GuidanceFor(label string) (RemediationGuidance, bool) {
 	g, ok := remediationGuidance[label]
 	return g, ok
+}
+
+// OperatorHintFor returns the operator allow-path (OperatorKnob) for a label, or
+// "" when the label has no guidance. Convenience for string-valued operator
+// surfaces such as the audit remediation_hint field. Never use it for an
+// agent-facing surface — that is what AgentReason (via GuidanceFor) is for.
+//
+// Prefer OperatorHintForResult when the scan Reason is available: a label alone
+// cannot distinguish same-label variants (query vs path entropy), so this can
+// return the wrong knob for a query-entropy block.
+func OperatorHintFor(label string) string {
+	g, _ := GuidanceFor(label)
+	return g.OperatorKnob
+}
+
+// GuidanceForResult returns guidance using the scan Reason to disambiguate
+// same-label variants. Today only ScannerEntropy needs it: query entropy and
+// path/subdomain entropy share the label but need different knobs, and the
+// Reason ("... query ...") is the only signal that separates them. Every other
+// label falls through to the label-keyed table. This is the single place that
+// disambiguation lives, so explain, audit, and any future consumer agree.
+func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
+	if label == ScannerEntropy && strings.Contains(reason, "query ") {
+		return RemediationGuidance{
+			OperatorKnob:    queryEntropyOperatorKnob,
+			OperatorBroader: queryEntropyOperatorBroader,
+			AgentReason:     highEntropyAgentReason,
+		}, true
+	}
+	return GuidanceFor(label)
+}
+
+// OperatorHintForResult is OperatorHintFor with Reason-based disambiguation. Use
+// it wherever the scan Reason is in hand (audit, block responses) so a
+// query-entropy block gets the query-entropy knob rather than the path default.
+func OperatorHintForResult(label, reason string) string {
+	g, _ := GuidanceForResult(label, reason)
+	return g.OperatorKnob
 }

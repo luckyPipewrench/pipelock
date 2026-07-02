@@ -158,3 +158,38 @@ func TestGuidanceFor(t *testing.T) {
 		})
 	}
 }
+
+func TestGuidanceForResultDisambiguatesEntropy(t *testing.T) {
+	t.Run("query entropy uses the query knob", func(t *testing.T) {
+		g, ok := GuidanceForResult(ScannerEntropy, `high entropy query param "sig"`)
+		if !ok {
+			t.Fatal("GuidanceForResult(entropy, query reason) not ok")
+		}
+		if !strings.Contains(g.OperatorKnob, "query_entropy_exclusions") {
+			t.Fatalf("query-entropy knob = %q, want query_entropy_exclusions", g.OperatorKnob)
+		}
+		if OperatorHintForResult(ScannerEntropy, "query x") != queryEntropyOperatorKnob {
+			t.Fatal("OperatorHintForResult should return the query knob for a query reason")
+		}
+	})
+
+	t.Run("path entropy falls through to the table entry", func(t *testing.T) {
+		g, _ := GuidanceForResult(ScannerEntropy, "high entropy path segment")
+		if g != remediationGuidance[ScannerEntropy] {
+			t.Fatalf("path-entropy guidance = %#v, want the table entry", g)
+		}
+	})
+
+	t.Run("non-entropy label ignores the reason", func(t *testing.T) {
+		g, _ := GuidanceForResult(ScannerDLP, "high entropy query param")
+		if g != remediationGuidance[ScannerDLP] {
+			t.Fatal("a non-entropy label must be reason-independent")
+		}
+	})
+
+	t.Run("unknown label is fail-safe", func(t *testing.T) {
+		if _, ok := GuidanceForResult("nonexistent", "query"); ok {
+			t.Fatal("unknown label must return ok=false")
+		}
+	})
+}

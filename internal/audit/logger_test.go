@@ -2789,6 +2789,59 @@ func TestLogBlockedBodyDLPIncludesRemediationHint(t *testing.T) {
 	}
 }
 
+func TestLogBlockedIncludesRemediationHintForNonBodyDLPLabels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "ssrf" is not the single pre-existing body_dlp entry; before the central
+	// remediation table this block logged an empty remediation_hint. It now
+	// carries the SSRF operator allow-path.
+	logger.LogBlocked(LogContext{method: "GET", url: "https://svc.internal.example/", clientIP: testClientIP, requestID: "req-52"}, "ssrf", "destination resolves to a private IP")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	hint, _ := entry["remediation_hint"].(string)
+	if hint == "" {
+		t.Fatal("expected a remediation_hint for an ssrf block; audit remediation now covers every labelled block, not only body_dlp")
+	}
+	if !strings.Contains(hint, "trusted_domains") {
+		t.Fatalf("ssrf remediation_hint = %q, want the SSRF allow-path (trusted_domains / ssrf.ip_allowlist)", hint)
+	}
+}
+
+func TestLogBlockedEntropyRemediationHintUsesReason(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A query-entropy block shares the "entropy" label with path entropy; the
+	// remediation_hint must use the Reason to name the query knob, not the path
+	// default (which explicitly does not lift a query block).
+	logger.LogBlocked(LogContext{method: "GET", url: "https://api.example.com/x", clientIP: testClientIP, requestID: "req-53"}, "entropy", `high entropy query param "sig"`)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	hint, _ := entry["remediation_hint"].(string)
+	if !strings.Contains(hint, "query_entropy_exclusions") {
+		t.Fatalf("query-entropy remediation_hint = %q, want query_entropy_exclusions (not the path knob)", hint)
+	}
+}
+
 func TestLogHeaderDLP_JSONFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

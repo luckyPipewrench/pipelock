@@ -369,93 +369,19 @@ func explainPatternName(result scanner.Result) string {
 //   - Rate limit / length / data budget are protective ceilings, tuned by
 //     their own numeric knobs.
 func explainRemediationFor(result scanner.Result) *explainRemediation {
-	switch result.Scanner {
-	case scanner.ScannerDLP:
+	// scanner.GuidanceForResult is the single source: it draws from the label-
+	// keyed guidance table and uses the scan Reason to pick same-label variants
+	// (query vs path entropy), so explain and the audit remediation_hint cannot
+	// drift. The default covers a label with no mapped guidance.
+	if g, ok := scanner.GuidanceForResult(result.Scanner, result.Reason); ok {
 		return &explainRemediation{
-			Knob: "Add the destination host to that pattern's `dlp.patterns[].exempt_domains`. " +
-				"URL DLP does NOT consult the top-level `suppress:` list (that is body-DLP and response-scanning only) — a `suppress:` entry here is inert. " +
-				"If the value is a long token in the query string, you may ALSO need `fetch_proxy.monitoring.query_entropy_exclusions` (a separate gate).",
-			Broader: "`tls_interception.passthrough_domains` exempts the host in one line but blinds Pipelock to ALL inner TLS (method, path, body, response) for that host — only acceptable for can't-scan-by-construction hosts, never as the fix for a single-pattern false positive.",
+			Knob:      g.OperatorKnob,
+			Broader:   g.OperatorBroader,
+			Immutable: g.Immutable,
 		}
-	case scanner.ScannerCoreDLP:
-		return &explainRemediation{
-			Knob:      "Core DLP is an immutable safety floor for critical credential shapes and cannot be exempted by config. If this is a genuine false positive, the pattern itself must be tightened in a release; there is no per-host carve-out.",
-			Immutable: true,
-		}
-	case scanner.ScannerEntropy:
-		if strings.Contains(result.Reason, "query ") {
-			return &explainRemediation{
-				Knob: "Add the host to `fetch_proxy.monitoring.query_entropy_exclusions` (exact or `*.example.com` wildcard). " +
-					"This is the query-entropy gate, which is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa.",
-				Broader: "Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity globally for every destination — broader blast radius; prefer the per-host exclusion.",
-			}
-		}
-		return &explainRemediation{
-			Knob: "Add the host to `fetch_proxy.monitoring.subdomain_entropy_exclusions` (exact or `*.example.com` wildcard), or govern the exact host+path with `request_policy` so path entropy is exempted only for that route. " +
-				"This is the path-entropy gate; `fetch_proxy.monitoring.query_entropy_exclusions` does NOT lift path entropy blocks.",
-			Broader: "Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity globally for every destination — broader blast radius; prefer the per-host exclusion.",
-		}
-	case scanner.ScannerSubdomainEntropy:
-		return &explainRemediation{
-			Knob: "Add the host to `fetch_proxy.monitoring.subdomain_entropy_exclusions` (exact or `*.example.com` wildcard). " +
-				"This is the subdomain-entropy gate (high-entropy DNS labels), distinct from the query-entropy gate.",
-			Broader: "Raising `fetch_proxy.monitoring.subdomain_entropy_threshold` lowers subdomain sensitivity globally — prefer the per-host exclusion.",
-		}
-	case scanner.ScannerBlocklist:
-		return &explainRemediation{
-			Knob: "Remove the entry from `fetch_proxy.monitoring.blocklist` (or narrow it) if the domain is legitimate.",
-		}
-	case scanner.ScannerAllowlist:
-		return &explainRemediation{
-			Knob:    "Add the host to `api_allowlist`. In strict mode only allowlisted domains are reachable.",
-			Broader: "Switching `mode` from `strict` to `balanced` permits monitored web browsing for all destinations — much broader; prefer adding the single host to `api_allowlist`.",
-		}
-	case scanner.ScannerSSRF, scanner.ScannerSSRFMetadata:
-		return &explainRemediation{
-			Knob: "If the destination is a trusted internal service, add the hostname to top-level `trusted_domains` (hostname-based) or the resolved range to `ssrf.ip_allowlist` (IP-based). " +
-				"This verdict depends on DNS resolution at runtime; explain reports it without resolving.",
-			Broader: "Disabling SSRF entirely (`internal: []`) removes private-range protection for ALL destinations — never do this to fix one host.",
-		}
-	case scanner.ScannerCoreSSRF:
-		return &explainRemediation{
-			Knob:      "Core SSRF blocks private/loopback/link-local IP literals as an immutable floor. `ssrf.ip_allowlist` is the only override and is honored even by the core check; there is no way to disable the floor wholesale.",
-			Immutable: true,
-		}
-	case scanner.ScannerRateLimit:
-		return &explainRemediation{
-			Knob: "This is a protective ceiling, not a threat detection. Raise `fetch_proxy.monitoring.max_requests_per_minute` or retry after the window.",
-		}
-	case scanner.ScannerLength:
-		return &explainRemediation{
-			Knob: "Raise `fetch_proxy.monitoring.max_url_length`, or inspect the URL for data stuffing in query parameters.",
-		}
-	case scanner.ScannerDataBudget:
-		return &explainRemediation{
-			Knob: "This is a protective per-domain data ceiling. Adjust the session data budget configuration if the volume is legitimate.",
-		}
-	case scanner.ScannerCRLF, scanner.ScannerPathTraversal:
-		return &explainRemediation{
-			Knob:      "This sequence is never legitimate in a normal URL (header injection / directory escape). There is no exemption knob — the URL must be corrected at the source.",
-			Immutable: true,
-		}
-	case scanner.ScannerScheme:
-		return &explainRemediation{
-			Knob:      "Only `http` and `https` schemes are permitted. There is no knob to allow other schemes — use an http/https URL.",
-			Immutable: true,
-		}
-	case scanner.ScannerCoreResponse:
-		return &explainRemediation{
-			Knob:      "Core response scanning is an immutable injection floor and cannot be disabled by config.",
-			Immutable: true,
-		}
-	case scanner.ScannerContext, scanner.ScannerParser:
-		return &explainRemediation{
-			Knob: "This is not a policy block: the request context was unavailable/cancelled, or the URL could not be parsed. Correct the input and retry.",
-		}
-	default:
-		return &explainRemediation{
-			Knob: "No specific remediation is mapped for this scanner. Inspect the reason and the effective config before changing policy.",
-		}
+	}
+	return &explainRemediation{
+		Knob: "No specific remediation is mapped for this scanner. Inspect the reason and the effective config before changing policy.",
 	}
 }
 

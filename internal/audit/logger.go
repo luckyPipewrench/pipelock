@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	scannerpkg "github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/rs/zerolog"
 )
 
@@ -44,10 +45,6 @@ var contentScanners = map[string]struct{}{
 	"address_protection":    {},
 	"seed_phrase":           {},
 	"cross_request_entropy": {},
-}
-
-var blockRemediationHints = map[string]string{
-	"body_dlp": "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path.",
 }
 
 // IsContentScanner reports whether blocks attributed to the given scanner
@@ -679,7 +676,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		str("reason", reason).
 		optStr("agent", ctx.agent).
 		optStr("display_label", displayLabel).
-		optStr("remediation_hint", blockRemediationHints[scanner]).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, reason)).
 		optStr("mitre_technique", technique)
 
 	// includeBlocked gates local audit log only - external emission always fires

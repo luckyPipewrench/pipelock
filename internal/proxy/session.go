@@ -954,6 +954,12 @@ type BaselineResult struct {
 	Blocked    bool                 // true when DeviationAction is "block" and deviations found
 	Deviations []baseline.Deviation // specific metrics that deviated
 	Action     string               // the configured action: "warn", "ask", or "block"
+	Err        error                // non-nil when the check failed and enforcement must fail closed
+}
+
+type baselineSnapshot struct {
+	mgr    *baseline.Manager
+	action string
 }
 
 // SessionManager manages per-client sessions with eviction and cleanup.
@@ -977,8 +983,7 @@ type SessionManager struct {
 
 	// Behavioral baseline: profile-then-lock analysis.
 	// nil when behavioral_baseline.enabled is false.
-	baselineMgr    *baseline.Manager
-	baselineAction string // "warn", "ask", or "block" - cached from config
+	baselinePtr atomic.Pointer[baselineSnapshot]
 }
 
 // SessionManagerOptions configures optional SessionManager behavior.
@@ -1020,6 +1025,15 @@ func (sm *SessionManager) EnableBaseline(cfg *config.BehavioralBaseline) error {
 	if cfg == nil || !cfg.Enabled {
 		return nil
 	}
+	snap, err := newBaselineSnapshot(cfg)
+	if err != nil {
+		return err
+	}
+	sm.baselinePtr.Store(snap)
+	return nil
+}
+
+func newBaselineSnapshot(cfg *config.BehavioralBaseline) (*baselineSnapshot, error) {
 	mgr, err := baseline.NewManager(baseline.Config{
 		Enabled:          cfg.Enabled,
 		LearningWindow:   cfg.LearningWindow,
@@ -1032,41 +1046,162 @@ func (sm *SessionManager) EnableBaseline(cfg *config.BehavioralBaseline) error {
 		SeasonalityMode:  cfg.SeasonalityMode,
 	})
 	if err != nil {
-		return fmt.Errorf("baseline init: %w", err)
+		return nil, fmt.Errorf("baseline init: %w", err)
 	}
-	sm.baselineMgr = mgr
-	sm.baselineAction = cfg.DeviationAction
-	return nil
+	return &baselineSnapshot{mgr: mgr, action: baselineActionOrDefault(cfg.DeviationAction)}, nil
+}
+
+func baselineActionOrDefault(action string) string {
+	if action == "" {
+		return config.ActionWarn
+	}
+	return action
+}
+
+// ReconfigureBaseline applies behavioral_baseline hot-reload changes without
+// resetting learned or locked profiles.
+func (sm *SessionManager) ReconfigureBaseline(cfg *config.BehavioralBaseline) error {
+	if cfg == nil || !cfg.Enabled {
+		sm.baselinePtr.Store(nil)
+		return nil
+	}
+	if snap := sm.baselinePtr.Load(); snap != nil && snap.mgr != nil {
+		if err := snap.mgr.Reconfigure(baseline.Config{
+			Enabled:          cfg.Enabled,
+			LearningWindow:   cfg.LearningWindow,
+			DeviationAction:  cfg.DeviationAction,
+			ProfileDir:       cfg.ProfileDir,
+			AutoRatify:       cfg.AutoRatify,
+			SensitivitySigma: cfg.SensitivitySigma,
+			LockDimensions:   cfg.LockDimensions,
+			PoisonResistance: cfg.PoisonResistance,
+			SeasonalityMode:  cfg.SeasonalityMode,
+		}); err != nil {
+			return fmt.Errorf("baseline reconfigure: %w", err)
+		}
+		sm.baselinePtr.Store(&baselineSnapshot{mgr: snap.mgr, action: baselineActionOrDefault(cfg.DeviationAction)})
+		return nil
+	}
+	return sm.EnableBaseline(cfg)
 }
 
 // BaselineManager returns the baseline manager, or nil if not enabled.
 func (sm *SessionManager) BaselineManager() *baseline.Manager {
-	return sm.baselineMgr
+	snap := sm.baselinePtr.Load()
+	if snap == nil {
+		return nil
+	}
+	return snap.mgr
 }
 
 // CheckBaseline evaluates the current session metrics against the agent's
 // locked behavioral profile. Returns nil result when baseline is disabled
 // or the agent has no locked profile yet (still learning).
 func (sm *SessionManager) CheckBaseline(agentKey string, sess *SessionState) *BaselineResult {
-	if sm.baselineMgr == nil {
+	snap := sm.baselinePtr.Load()
+	if snap == nil || snap.mgr == nil {
 		return nil
 	}
 	metrics := sess.BaselineMetrics()
-	deviations := sm.baselineMgr.Check(agentKey, metrics)
+	deviations, err := snap.mgr.CheckErr(agentKey, metrics)
+	if err != nil {
+		return &BaselineResult{
+			Blocked: true,
+			Action:  config.ActionBlock,
+			Err:     fmt.Errorf("baseline check failed: %w", err),
+		}
+	}
 	if len(deviations) == 0 {
 		return nil
 	}
 	return &BaselineResult{
-		Blocked:    sm.baselineAction == config.ActionBlock,
+		Blocked:    snap.action == config.ActionBlock,
 		Deviations: deviations,
-		Action:     sm.baselineAction,
+		Action:     snap.action,
 	}
+}
+
+// CheckBaselineFailClosed wraps CheckBaseline with fail-closed panic handling
+// for enforcement paths.
+func (sm *SessionManager) CheckBaselineFailClosed(agentKey string, sess *SessionState) (res *BaselineResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = &BaselineResult{
+				Blocked: true,
+				Action:  config.ActionBlock,
+				Err:     fmt.Errorf("baseline check failed: %v", r),
+			}
+		}
+	}()
+	return sm.CheckBaseline(agentKey, sess)
+}
+
+// CheckBaselineForRecorder adapts the proxy baseline checker to the shared
+// session.BaselineChecker interface used by MCP transports.
+func (sm *SessionManager) CheckBaselineForRecorder(agentKey string, rec session.Recorder) session.BaselineDecision {
+	sess, ok := rec.(*SessionState)
+	if !ok || sess == nil || agentKey == "" {
+		return session.BaselineDecision{}
+	}
+	result := sm.CheckBaselineFailClosed(agentKey, sess)
+	if result == nil {
+		return session.BaselineDecision{}
+	}
+	return session.BaselineDecision{
+		Blocked: result.Blocked,
+		Action:  result.Action,
+		Detail:  baselineDecisionDetail(result),
+	}
+}
+
+// RecordBaselineForRecorder records an invocation recorder under an explicit
+// identity key for MCP transports.
+func (sm *SessionManager) RecordBaselineForRecorder(agentKey string, rec session.Recorder) {
+	sess, ok := rec.(*SessionState)
+	if !ok || sess == nil {
+		return
+	}
+	sm.RecordBaselineForAgent(agentKey, sess)
+}
+
+func baselineDecisionDetail(result *BaselineResult) string {
+	if result == nil {
+		return ""
+	}
+	if result.Err != nil {
+		return result.Err.Error()
+	}
+	if len(result.Deviations) == 0 {
+		return "baseline deviation"
+	}
+	parts := make([]string, 0, len(result.Deviations))
+	for _, d := range result.Deviations {
+		parts = append(parts, fmt.Sprintf("%s observed=%.2f baseline_mean=%.2f severity=%s", d.Metric, d.Observed, d.Baseline.Mean, d.Severity))
+	}
+	return "baseline deviation: " + strings.Join(parts, "; ")
+}
+
+// RecordBaselineForAgent records sess metrics into the behavioral baseline
+// manager under an explicit identity key. MCP invocation sessions carry their
+// identity out of band, so they intentionally bypass the identity-session key
+// gate used by HTTP eviction.
+func (sm *SessionManager) RecordBaselineForAgent(identityKey string, sess *SessionState) {
+	snap := sm.baselinePtr.Load()
+	if snap == nil || snap.mgr == nil || identityKey == "" || sess == nil {
+		return
+	}
+	if err := baseline.ValidateAgentKey(identityKey); err != nil {
+		return
+	}
+	bm := sess.BaselineMetrics()
+	snap.mgr.RecordSession(identityKey, bm)
 }
 
 // recordSessionBaseline records the session's accumulated metrics into the
 // baseline manager for learning. Called during session eviction/cleanup.
 func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
-	if sm.baselineMgr == nil {
+	snap := sm.baselinePtr.Load()
+	if snap == nil || snap.mgr == nil {
 		return
 	}
 	// Extract agent key from session key. Only identity sessions produce
@@ -1085,8 +1220,7 @@ func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
 		// Fall back to full key when no "|" separator exists.
 		agent = key
 	}
-	bm := sess.BaselineMetrics()
-	sm.baselineMgr.RecordSession(agent, bm)
+	sm.RecordBaselineForAgent(agent, sess)
 }
 
 // GetOrCreate returns the session for a key, creating if needed.

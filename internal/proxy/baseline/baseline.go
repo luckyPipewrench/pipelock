@@ -38,6 +38,12 @@ func validateAgentKey(key string) error {
 	return nil
 }
 
+// ValidateAgentKey reports whether key is safe for identity-keyed baseline
+// storage and lookup.
+func ValidateAgentKey(key string) error {
+	return validateAgentKey(key)
+}
+
 // ProfileState is the explicit state machine for baseline lifecycle.
 // Transitions: Observe->Learn (auto), Learn->Ratify (auto),
 // Ratify->Locked (operator only), Locked->Observe (operator only).
@@ -141,9 +147,16 @@ type Config struct {
 // seasonalityNone is the only supported seasonality mode.
 const seasonalityNone = "none"
 
-// allDimensions is the complete list of enforceable metrics.
-var allDimensions = []string{
+// supportedDimensions is the complete list of accepted metric names.
+var supportedDimensions = []string{
 	"tool_calls", "unique_tools", "domains", "bytes", "duration", "requests",
+}
+
+// defaultDimensions are enforced when lock_dimensions is omitted. Bytes are
+// accepted for existing profiles/configs but excluded from the PR1 default
+// because production traffic does not yet record bytes into SessionState.
+var defaultDimensions = []string{
+	"tool_calls", "unique_tools", "domains", "duration", "requests",
 }
 
 // agentState holds the in-memory state for a single agent.
@@ -183,13 +196,13 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 
 	// Validate LockDimensions against known metric names.
-	validDims := make(map[string]bool, len(allDimensions))
-	for _, d := range allDimensions {
+	validDims := make(map[string]bool, len(supportedDimensions))
+	for _, d := range supportedDimensions {
 		validDims[d] = true
 	}
 	for _, d := range cfg.LockDimensions {
 		if !validDims[d] {
-			return nil, fmt.Errorf("unsupported lock_dimension %q: valid values are %v", d, allDimensions)
+			return nil, fmt.Errorf("unsupported lock_dimension %q: valid values are %v", d, supportedDimensions)
 		}
 	}
 
@@ -209,6 +222,44 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 
 	return m, nil
+}
+
+// Reconfigure updates tunables without clearing learned or locked profiles.
+func (m *Manager) Reconfigure(cfg Config) error {
+	if cfg.LearningWindow <= 0 {
+		cfg.LearningWindow = 10
+	}
+	if cfg.SensitivitySigma <= 0 {
+		cfg.SensitivitySigma = 2.0
+	}
+	if cfg.DeviationAction == "" {
+		cfg.DeviationAction = "warn"
+	}
+	if cfg.SeasonalityMode == "" {
+		cfg.SeasonalityMode = seasonalityNone
+	}
+	if cfg.SeasonalityMode != seasonalityNone {
+		return fmt.Errorf("unsupported seasonality_mode %q: only \"none\" is supported", cfg.SeasonalityMode)
+	}
+	validDims := make(map[string]bool, len(supportedDimensions))
+	for _, d := range supportedDimensions {
+		validDims[d] = true
+	}
+	for _, d := range cfg.LockDimensions {
+		if !validDims[d] {
+			return fmt.Errorf("unsupported lock_dimension %q: valid values are %v", d, supportedDimensions)
+		}
+	}
+	if cfg.ProfileDir != "" {
+		if err := os.MkdirAll(cfg.ProfileDir, 0o750); err != nil {
+			return fmt.Errorf("creating profile dir: %w", err)
+		}
+	}
+
+	m.mu.Lock()
+	m.cfg = cfg
+	m.mu.Unlock()
+	return nil
 }
 
 // RecordSession adds a completed session's metrics to the learning set.
@@ -305,6 +356,15 @@ func (m *Manager) Check(agentKey string, current SessionMetrics) []Deviation {
 	}
 
 	return deviations
+}
+
+// CheckErr evaluates current session metrics against the locked profile and
+// returns validation errors separately so enforcement callers can fail closed.
+func (m *Manager) CheckErr(agentKey string, current SessionMetrics) ([]Deviation, error) {
+	if err := validateAgentKey(agentKey); err != nil {
+		return nil, err
+	}
+	return m.Check(agentKey, current), nil
 }
 
 // GetProfile returns the current profile for an agent. Returns nil if
@@ -603,7 +663,7 @@ func (m *Manager) activeDimensions() []string {
 	if len(m.cfg.LockDimensions) > 0 {
 		return m.cfg.LockDimensions
 	}
-	return allDimensions
+	return defaultDimensions
 }
 
 // persistProfile saves a profile to disk as JSON.

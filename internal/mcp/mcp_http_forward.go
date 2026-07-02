@@ -83,6 +83,7 @@ func RunHTTPProxy(
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(invocationKey)
 	}
+	defer recordMCPBaselineSample(opts, rec)
 
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}

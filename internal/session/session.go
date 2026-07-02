@@ -76,6 +76,20 @@ type Store interface {
 	GetOrCreate(key string) Recorder
 }
 
+// BaselineDecision is the transport-neutral behavioral baseline result.
+type BaselineDecision struct {
+	Blocked bool
+	Action  string
+	Detail  string
+}
+
+// BaselineChecker evaluates a live recorder against an identity-keyed
+// behavioral baseline without coupling MCP callers to proxy internals.
+type BaselineChecker interface {
+	CheckBaselineForRecorder(agentKey string, rec Recorder) BaselineDecision
+	RecordBaselineForRecorder(agentKey string, rec Recorder)
+}
+
 // TaskContext describes the current task boundary attached to a live session.
 type TaskContext struct {
 	CurrentTaskID    string

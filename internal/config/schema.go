@@ -1463,14 +1463,15 @@ type MediationEnvelopeReplayCache struct {
 // TaintConfig configures exposure-based policy escalation for sessions that
 // recently observed untrusted content.
 type TaintConfig struct {
-	Enabled            bool                 `yaml:"enabled"`
-	AllowlistedDomains []string             `yaml:"allowlisted_domains"`
-	TrustedMCPServers  []string             `yaml:"trusted_mcp_servers" json:"trusted_mcp_servers,omitempty"`
-	ProtectedPaths     []string             `yaml:"protected_paths"`
-	ElevatedPaths      []string             `yaml:"elevated_paths"`
-	TrustOverrides     []TaintTrustOverride `yaml:"trust_overrides"`
-	Policy             string               `yaml:"policy"`         // strict, balanced, permissive
-	RecentSources      int                  `yaml:"recent_sources"` // bounded recent source history
+	Enabled                bool                 `yaml:"enabled"`
+	AllowlistedDomains     []string             `yaml:"allowlisted_domains"`
+	TrustedMCPServers      []string             `yaml:"trusted_mcp_servers" json:"trusted_mcp_servers,omitempty"`
+	ProtectedPaths         []string             `yaml:"protected_paths"`
+	ElevatedPaths          []string             `yaml:"elevated_paths"`
+	TrustOverrides         []TaintTrustOverride `yaml:"trust_overrides"`
+	Policy                 string               `yaml:"policy"`         // strict, balanced, permissive
+	RecentSources          int                  `yaml:"recent_sources"` // bounded recent source history
+	FailSafeClassification bool                 `yaml:"fail_safe_classification" json:"fail_safe_classification,omitempty"`
 }
 
 // TaintTrustsMCPServer reports whether MCP responses from serverName should be

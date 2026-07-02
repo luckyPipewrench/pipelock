@@ -6,6 +6,7 @@ package session
 import (
 	"encoding/json"
 	"net"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -13,6 +14,21 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+// ClassificationOptions controls fail-safe action classification.
+type ClassificationOptions struct {
+	FailSafe bool
+}
+
+// ActionClassification carries an action class plus whether classification
+// came from a concrete method/tool/path signal instead of a low-confidence
+// fallback.
+type ActionClassification struct {
+	Class       ActionClass
+	Sensitivity ActionSensitivity
+	ActionRef   string
+	Confident   bool
+}
 
 // ClassifyURLSource maps a URL to a taint level using host-based trust rules.
 func ClassifyURLSource(rawURL string, allowlistedDomains []string) TaintLevel {
@@ -75,83 +91,122 @@ func IsMediaContentType(contentType string) bool {
 
 // ClassifyPathSensitivity returns the configured sensitivity for a path.
 func ClassifyPathSensitivity(targetPath string, protectedPatterns, elevatedPatterns []string) ActionSensitivity {
+	return ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, ClassificationOptions{}).Sensitivity
+}
+
+// ClassifyPathSensitivityWithConfidence returns path sensitivity plus whether
+// the target path was concrete enough to classify.
+func ClassifyPathSensitivityWithConfidence(targetPath string, protectedPatterns, elevatedPatterns []string, opts ClassificationOptions) ActionClassification {
 	normalized := toSlash(targetPath)
+	confident := strings.TrimSpace(normalized) != ""
 	for _, pattern := range protectedPatterns {
 		if matchPathPattern(normalized, pattern) {
-			return SensitivityProtected
+			return ActionClassification{Sensitivity: SensitivityProtected, Confident: true}
 		}
 	}
 	for _, pattern := range elevatedPatterns {
 		if matchPathPattern(normalized, pattern) {
-			return SensitivityElevated
+			return ActionClassification{Sensitivity: SensitivityElevated, Confident: true}
 		}
 	}
-	return SensitivityNormal
+	if opts.FailSafe && !confident {
+		return ActionClassification{Sensitivity: SensitivityProtected, Confident: false}
+	}
+	return ActionClassification{Sensitivity: SensitivityNormal, Confident: confident}
 }
 
 // ClassifyHTTPAction returns the taint policy action class for an HTTP request.
 func ClassifyHTTPAction(method, targetPath string, protectedPatterns, elevatedPatterns []string) (ActionClass, ActionSensitivity) {
+	classified := ClassifyHTTPActionWithOptions(method, targetPath, protectedPatterns, elevatedPatterns, ClassificationOptions{})
+	return classified.Class, classified.Sensitivity
+}
+
+// ClassifyHTTPActionWithOptions returns the taint policy action class for an
+// HTTP request plus a confidence flag.
+func ClassifyHTTPActionWithOptions(method, targetPath string, protectedPatterns, elevatedPatterns []string, opts ClassificationOptions) ActionClassification {
+	pathClass := ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, opts)
 	switch strings.ToUpper(method) {
-	case "GET", "HEAD", "OPTIONS", "TRACE":
-		return ActionClassRead, SensitivityNormal
-	case "POST", "PUT", "PATCH", "DELETE":
-		return ActionClassPublish, ClassifyPathSensitivity(targetPath, protectedPatterns, elevatedPatterns)
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		sensitivity := SensitivityNormal
+		if opts.FailSafe && !pathClass.Confident {
+			sensitivity = SensitivityProtected
+		}
+		return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, Confident: pathClass.Confident}
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return ActionClassification{Class: ActionClassPublish, Sensitivity: pathClass.Sensitivity, Confident: pathClass.Confident}
 	default:
-		return ActionClassNetwork, ClassifyPathSensitivity(targetPath, protectedPatterns, elevatedPatterns)
+		return ActionClassification{Class: ActionClassNetwork, Sensitivity: pathClass.Sensitivity, Confident: false}
 	}
 }
 
 // ClassifyMCPToolCall returns the taint policy action class for an MCP tools/call request.
 func ClassifyMCPToolCall(toolName, argsJSON string, protectedPatterns, elevatedPatterns []string) (ActionClass, ActionSensitivity, string) {
+	classified := ClassifyMCPToolCallWithOptions(toolName, argsJSON, protectedPatterns, elevatedPatterns, ClassificationOptions{})
+	return classified.Class, classified.Sensitivity, classified.ActionRef
+}
+
+// ClassifyMCPToolCallWithOptions returns the taint policy action class for an
+// MCP tools/call request plus a confidence flag.
+func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns, elevatedPatterns []string, opts ClassificationOptions) ActionClassification {
 	name := strings.ToLower(toolName)
 	args := flattenJSONStrings(argsJSON)
 	targetPath := firstPathLikeValue(args)
 	category := chains.ClassifyTool(toolName, argsJSON, nil)
 
 	if secretPath := firstSecretPath(args); secretPath != "" {
-		return ActionClassSecret, SensitivityProtected, secretPath
+		return ActionClassification{Class: ActionClassSecret, Sensitivity: SensitivityProtected, ActionRef: secretPath, Confident: true}
 	}
 
 	if looksLikeShellTool(name) || category == "exec" {
 		command := strings.Join(args, " ")
 		if isMutatingShellCommand(command) {
-			return ActionClassExec, classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), targetPath
+			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, Confident: true}
 		}
-		return ActionClassExec, SensitivityProtected, targetPath
+		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, Confident: true}
 	}
 
 	if category == "persist" {
-		return ActionClassExec, SensitivityProtected, targetPath
+		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, Confident: true}
 	}
 
 	if looksLikeWriteTool(name) || category == "write" || hasWriteIntent(argsJSON) {
-		return ActionClassWrite, ClassifyPathSensitivity(targetPath, protectedPatterns, elevatedPatterns), targetPath
+		pathClass := ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, opts)
+		return ActionClassification{Class: ActionClassWrite, Sensitivity: pathClass.Sensitivity, ActionRef: targetPath, Confident: pathClass.Confident}
 	}
 
 	if looksLikePublishTool(name, argsJSON) || hasMutatingNetworkIntent(argsJSON) {
-		return ActionClassPublish, SensitivityElevated, firstURLLikeValue(args)
+		return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: firstURLLikeValue(args), Confident: true}
 	}
 
 	if looksLikeBrowseTool(name) || category == "network" {
 		if hasMutatingNetworkIntent(argsJSON) {
-			return ActionClassPublish, SensitivityElevated, firstURLLikeValue(args)
+			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: firstURLLikeValue(args), Confident: true}
 		}
-		return ActionClassBrowse, SensitivityNormal, firstURLLikeValue(args)
+		return ActionClassification{Class: ActionClassBrowse, Sensitivity: SensitivityNormal, ActionRef: firstURLLikeValue(args), Confident: true}
 	}
 
 	if looksLikeReadTool(name) || category == "read" || category == "list" {
-		return ActionClassRead, SensitivityNormal, targetPath
+		pathClass := ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, opts)
+		sensitivity := SensitivityNormal
+		if opts.FailSafe && !pathClass.Confident {
+			sensitivity = SensitivityProtected
+		}
+		return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, ActionRef: targetPath, Confident: pathClass.Confident}
 	}
 
 	if hasExecIntent(argsJSON) {
 		command := strings.Join(args, " ")
 		if isMutatingShellCommand(command) {
-			return ActionClassExec, classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), targetPath
+			return ActionClassification{Class: ActionClassExec, Sensitivity: classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), ActionRef: targetPath, Confident: true}
 		}
-		return ActionClassExec, SensitivityProtected, targetPath
+		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, Confident: true}
 	}
 
-	return ActionClassRead, SensitivityNormal, targetPath
+	sensitivity := SensitivityNormal
+	if opts.FailSafe {
+		sensitivity = SensitivityProtected
+	}
+	return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, ActionRef: targetPath, Confident: false}
 }
 
 func classifyShellSensitivity(command, targetPath string, protectedPatterns, elevatedPatterns []string) ActionSensitivity {

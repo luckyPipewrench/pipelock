@@ -661,6 +661,32 @@ func ForwardScannedInput(
 
 		// All clean - forward (with block_all and CEE checks).
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
+			if toolCallName != "" {
+				baselineDecision := recordMCPToolCallAndCheckBaseline(opts, rec, toolCallName)
+				switch baselineDecision.Action {
+				case config.ActionBlock, config.ActionAsk:
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
+						lineNum, methodToolsCall, baselineDecision.Detail)
+					recordAdaptiveSignal(session.SignalBlock)
+					errMsg := ""
+					if baselineDecision.Action == config.ActionAsk {
+						errMsg = "pipelock: MCP request blocked by behavioral baseline"
+					}
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (baseline deviation)", lineNum),
+						ErrorCode:      -32001,
+						ErrorMessage:   errMsg,
+					}
+					_ = emitToolReceipt(config.ActionBlock)
+					continue
+				case config.ActionWarn:
+					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",
+						lineNum, methodToolsCall, baselineDecision.Detail)
+					recordAdaptiveSignal(session.SignalNearMiss)
+				}
+			}
 			// block_all enforcement: deny ALL traffic (including clean) when the
 			// session is at an escalation level with block_all=true.
 			if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
@@ -836,6 +862,18 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
 			if m != nil {
 				m.RecordAdaptiveUpgrade(originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
+			}
+		}
+
+		if toolCallName != "" {
+			baselineDecision := recordMCPToolCallAndCheckBaseline(opts, rec, toolCallName)
+			if baselineDecision.Action != "" {
+				reasons = append(reasons, baselineDecision.Detail)
+				effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
+				if baselineDecision.Action == config.ActionAsk {
+					errCode = -32001
+					errMsg = "pipelock: MCP request blocked by behavioral baseline"
+				}
 			}
 		}
 

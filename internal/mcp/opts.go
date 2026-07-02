@@ -72,6 +72,8 @@ type MCPProxyOpts struct {
 	// Session and adaptive enforcement
 	Store         session.Store
 	Rec           session.Recorder // set by RunProxy after Store.GetOrCreate
+	Baseline      session.BaselineChecker
+	BaselineFn    func() session.BaselineChecker
 	AdaptiveCfg   *config.AdaptiveEnforcement
 	AdaptiveCfgFn AdaptiveConfigFunc // hot-reload aware; used by listener proxy. Nil = use static AdaptiveCfg.
 	TaintCfg      *config.TaintConfig
@@ -379,6 +381,13 @@ func (o MCPProxyOpts) adaptiveCfg() *config.AdaptiveEnforcement {
 		return o.AdaptiveCfgFn()
 	}
 	return o.AdaptiveCfg
+}
+
+func (o MCPProxyOpts) baselineChecker() session.BaselineChecker {
+	if o.BaselineFn != nil {
+		return o.BaselineFn()
+	}
+	return o.Baseline
 }
 
 func (o MCPProxyOpts) taintCfg() *config.TaintConfig {

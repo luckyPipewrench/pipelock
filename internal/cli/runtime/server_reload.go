@@ -435,6 +435,7 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 	appendDisabled("mcp_tool_policy.enabled", oldCfg.MCPToolPolicy.Enabled, newCfg.MCPToolPolicy.Enabled)
 	appendDisabled("session_profiling.enabled", oldCfg.SessionProfiling.Enabled, newCfg.SessionProfiling.Enabled)
 	appendDisabled("adaptive_enforcement.enabled", oldCfg.AdaptiveEnforcement.Enabled, newCfg.AdaptiveEnforcement.Enabled)
+	appendDisabled("behavioral_baseline.enabled", oldCfg.BehavioralBaseline.Enabled, newCfg.BehavioralBaseline.Enabled)
 	appendDisabled("mcp_session_binding.enabled", oldCfg.MCPSessionBinding.Enabled, newCfg.MCPSessionBinding.Enabled)
 	appendDisabled("a2a_scanning.enabled", oldCfg.A2AScanning.Enabled, newCfg.A2AScanning.Enabled)
 	appendDisabled("tool_chain_detection.enabled", oldCfg.ToolChainDetection.Enabled, newCfg.ToolChainDetection.Enabled)
@@ -448,6 +449,20 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 	// only WARNS on this, which strict rejects but balanced does not.
 	if len(oldCfg.DLP.Patterns) > 0 && len(newCfg.DLP.Patterns) == 0 {
 		reasons = append(reasons, "dlp.patterns emptied")
+	}
+	if oldCfg.BehavioralBaseline.Enabled && newCfg.BehavioralBaseline.Enabled &&
+		oldCfg.BehavioralBaseline.DeviationAction == config.ActionBlock &&
+		newCfg.BehavioralBaseline.DeviationAction != config.ActionBlock {
+		reasons = append(reasons, "behavioral_baseline.deviation_action downgraded")
+	}
+
+	// A live profile_dir change is a posture teardown: Reconfigure swaps the
+	// dir in memory without loading profiles from it, so locked profiles are
+	// silently orphaned on the next restart (fail-open). Require a full restart
+	// to move the profile store instead of a hot reload.
+	if oldCfg.BehavioralBaseline.Enabled && newCfg.BehavioralBaseline.Enabled &&
+		oldCfg.BehavioralBaseline.ProfileDir != newCfg.BehavioralBaseline.ProfileDir {
+		reasons = append(reasons, "behavioral_baseline.profile_dir changed")
 	}
 
 	return reasons

@@ -327,7 +327,7 @@ What each mode prevents, detects, or logs:
 
 ## Configuration
 
-Generate a config from one of three CLI presets, or let `pipelock audit` tailor one to your project:
+Generate a config from any built-in preset, or let `pipelock audit` tailor one to your project:
 
 ```bash
 pipelock generate config --preset balanced > pipelock.yaml
@@ -339,15 +339,10 @@ pipelock audit ./my-project -o pipelock.yaml
 | `balanced` | balanced | warn | General purpose (default) |
 | `strict` | strict | block | High-security, regulated industries |
 | `audit` | audit | warn | Log-only evaluation |
-
-Four additional preset files ship in `configs/` for specific workflows:
-
-| File | Mode | Best For |
-|------|------|----------|
-| `configs/claude-code.yaml` | balanced | Claude Code unattended |
-| `configs/cursor.yaml` | balanced | Cursor IDE |
-| `configs/generic-agent.yaml` | balanced | New agents (tuning phase) |
-| `configs/hostile-model.yaml` | strict | Uncensored/abliterated models |
+| `claude-code` | balanced | block | Claude Code unattended |
+| `cursor` | balanced | block | Cursor IDE |
+| `generic-agent` | balanced | warn | New agents (tuning phase) |
+| `hostile-model` | strict | block | Uncensored/abliterated models |
 
 Config changes are picked up automatically via file watcher or SIGHUP. Full reference: **[docs/configuration.md](docs/configuration.md)**
 

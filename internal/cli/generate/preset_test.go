@@ -9,11 +9,15 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestStrictPreset(t *testing.T) {
-	cfg := strictPreset()
+	cfg, err := presets.Config(config.ModeStrict)
+	if err != nil {
+		t.Fatalf("Config(strict): %v", err)
+	}
 	if cfg.Mode != config.ModeStrict {
 		t.Errorf("mode = %q, want strict", cfg.Mode)
 	}
@@ -26,7 +30,10 @@ func TestStrictPreset(t *testing.T) {
 }
 
 func TestAuditPreset(t *testing.T) {
-	cfg := auditPreset()
+	cfg, err := presets.Config(config.ModeAudit)
+	if err != nil {
+		t.Fatalf("Config(audit): %v", err)
+	}
 	if cfg.Mode != config.ModeAudit {
 		t.Errorf("mode = %q, want audit", cfg.Mode)
 	}
@@ -64,6 +71,34 @@ func TestCmd_AuditPreset(t *testing.T) {
 	}
 }
 
+func TestCmd_AllPresetsProduceLoadableConfig(t *testing.T) {
+	for _, name := range presets.All {
+		t.Run(name, func(t *testing.T) {
+			cmd := Cmd()
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetArgs([]string{"config", "--preset", name})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+				t.Fatalf("writing generated config: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load generated %s config: %v", name, err)
+			}
+			switch cfg.Mode {
+			case config.ModeStrict, config.ModeBalanced, config.ModeAudit:
+			default:
+				t.Fatalf("mode = %q, want valid mode", cfg.Mode)
+			}
+		})
+	}
+}
+
 func TestCmd_InvalidPreset(t *testing.T) {
 	cmd := Cmd()
 	var buf bytes.Buffer
@@ -73,6 +108,11 @@ func TestCmd_InvalidPreset(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Error("expected error for invalid preset")
+	}
+	for _, name := range presets.All {
+		if !bytes.Contains([]byte(err.Error()), []byte(name)) {
+			t.Errorf("error %q does not list %q", err, name)
+		}
 	}
 }
 

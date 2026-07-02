@@ -203,7 +203,7 @@ func TestDecideLabelGuidanceNamesOperatorKnobsOnlyToOperator(t *testing.T) {
 	}{
 		{DecideInjectionLabel, "response_scanning", "response_scanning"},
 		{DecidePolicyLabel, "mcp_tool_policy", "mcp_tool_policy"},
-		{DecideStructuralLabel, "could not be evaluated safely", "mcp_tool_policy"},
+		{DecideStructuralLabel, "could not be evaluated safely", "correct the action shape"},
 	}
 
 	for _, tt := range tests {

@@ -216,7 +216,6 @@ func explainLoadSurfaceConfig(path string) (*config.Config, string, error) {
 			return nil, "", fmt.Errorf("config load error: %w", err)
 		}
 		cfg.ApplyDefaults()
-		cfg.Internal = nil
 		cfg.DLP.ScanEnv = false
 		return cfg, path, nil
 	}
@@ -232,7 +231,6 @@ func explainLoadSurfaceConfig(path string) (*config.Config, string, error) {
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
-	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 
 	return cfg, explainConfigLabelDefaults, nil
@@ -275,8 +273,17 @@ func validateExplainModeValues(cmd *cobra.Command) error {
 		return fmt.Errorf("--command cannot be empty")
 	}
 	toolValue, _ := cmd.Flags().GetString(explainSurfaceTool)
-	if cmd.Flags().Changed(explainSurfaceTool) && strings.TrimSpace(toolValue) == "" {
-		return fmt.Errorf("--tool cannot be empty")
+	if cmd.Flags().Changed(explainSurfaceTool) {
+		if strings.TrimSpace(toolValue) == "" {
+			return fmt.Errorf("--tool cannot be empty")
+		}
+		inputValue, _ := cmd.Flags().GetString("input")
+		if !cmd.Flags().Changed("input") || strings.TrimSpace(inputValue) == "" {
+			return fmt.Errorf("--input is required with --tool")
+		}
+		if !json.Valid([]byte(inputValue)) {
+			return fmt.Errorf("--input must be valid JSON")
+		}
 	}
 	fileValue, _ := cmd.Flags().GetString(explainSurfaceFile)
 	if cmd.Flags().Changed(explainSurfaceFile) && strings.TrimSpace(fileValue) == "" {
@@ -470,6 +477,11 @@ func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel,
 }
 
 func explainPrimaryEvidence(decision decide.Decision) decide.Evidence {
+	for _, e := range decision.Evidence {
+		if e.Action == config.ActionBlock {
+			return e
+		}
+	}
 	if len(decision.Evidence) > 0 {
 		return decision.Evidence[0]
 	}

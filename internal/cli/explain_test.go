@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -456,10 +458,13 @@ func TestExplainCmd_SurfaceModeValidation(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no target", nil, "provide exactly one explain target"},
+		{"no target", []string{}, "provide exactly one explain target"},
 		{"two modes", []string{"https://example.com", "--command", "printf hello"}, "provide exactly one explain target"},
 		{"input without tool", []string{"--input", `{"cmd":"echo"}`}, "--input can only be used with --tool"},
 		{"empty command", []string{"--command", ""}, "--command cannot be empty"},
+		{"tool without input", []string{"--tool", "mcp__x__run"}, "--input is required with --tool"},
+		{"tool empty input", []string{"--tool", "mcp__x__run", "--input", ""}, "--input is required with --tool"},
+		{"tool invalid input", []string{"--tool", "mcp__x__run", "--input", "{bad"}, "--input must be valid JSON"},
 	}
 
 	for _, tt := range tests {
@@ -472,6 +477,39 @@ func TestExplainCmd_SurfaceModeValidation(t *testing.T) {
 				t.Fatalf("error/output missing %q; err=%v out=%q", tt.want, err, out)
 			}
 		})
+	}
+}
+
+func TestExplainLoadSurfaceConfig_PreservesSSRFPolicy(t *testing.T) {
+	cfg, _, err := explainLoadSurfaceConfig("")
+	if err != nil {
+		t.Fatalf("explainLoadSurfaceConfig defaults: %v", err)
+	}
+	if cfg.Internal == nil {
+		t.Fatal("surface explain config must keep SSRF policy active")
+	}
+
+	path := writeConfig(t, "internal:\n  - 10.0.0.0/8\n")
+	cfg, _, err = explainLoadSurfaceConfig(path)
+	if err != nil {
+		t.Fatalf("explainLoadSurfaceConfig custom file: %v", err)
+	}
+	if len(cfg.Internal) != 1 || cfg.Internal[0] != "10.0.0.0/8" {
+		t.Fatalf("Internal = %#v, want custom SSRF policy preserved", cfg.Internal)
+	}
+}
+
+func TestExplainPrimaryEvidence_PrefersBlockOverWarn(t *testing.T) {
+	decision := decide.Decision{
+		UserMessage: "blocked",
+		Evidence: []decide.Evidence{
+			{Scanner: scanner.DecidePolicyLabel, Detail: "warning", Action: config.ActionWarn},
+			{Scanner: scanner.ScannerDLP, Detail: "secret", Action: config.ActionBlock},
+		},
+	}
+	got := explainPrimaryEvidence(decision)
+	if got.Scanner != scanner.ScannerDLP || got.Action != config.ActionBlock {
+		t.Fatalf("primary evidence = %+v, want blocking DLP evidence", got)
 	}
 }
 

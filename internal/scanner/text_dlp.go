@@ -23,11 +23,36 @@ import (
 // is not treated as a hostname.
 var textURLTokenRe = regexp.MustCompile(`(?i)\b(?:https?|wss?|ftp)://[^\s"'<>\\]+`)
 
+// officialAWSExampleCredentialDocMarkers are documentation-context phrases that,
+// when present OUTSIDE the credential literal's own byte span, mark the AWS
+// example key/secret as documentation rather than a live secret. They are
+// deliberately DISTINCT phrases (each contains "credential" or an equally
+// specific doc cue) rather than bare common words: a bare "example" or "sample"
+// would match ordinary hostnames like api.vendor.example and non-doc prose,
+// exempting the example key in contexts that are not documentation.
+var officialAWSExampleCredentialDocMarkers = []string{
+	"example credential",
+	"example credentials",
+	"sample credential",
+	"dummy credential",
+	"placeholder credential",
+	"test credential",
+	"fake credential",
+	"not a real credential",
+	"official aws example",
+	"replace these with your actual credentials",
+}
+
 type textHostView struct {
 	host      string
 	start     int
 	end       int
 	viewLabel string
+}
+
+type textByteSpan struct {
+	start int
+	end   int
 }
 
 // extractHostsFromTextViews pulls de-duplicated hostnames out of URL tokens in
@@ -615,19 +640,138 @@ func redactOfficialAWSExampleCredentialsForDocs(text string) string {
 		return text
 	}
 
-	lower := strings.ToLower(text)
-	docContext := strings.Contains(lower, "example credential") ||
-		strings.Contains(lower, "example credentials") ||
-		strings.Contains(lower, "replace these with your actual credentials") ||
-		strings.Contains(lower, "official aws example")
-	if !docContext {
+	if !hasOfficialAWSExampleCredentialDocContext(text, key, secret) {
 		return text
 	}
 
-	return strings.NewReplacer(
-		key, "AWS_ACCESS_KEY_ID_EXAMPLE",
-		secret, "AWS_SECRET_ACCESS_KEY_EXAMPLE",
-	).Replace(text)
+	text = replaceWholeCredentialToken(text, key, "AWS_ACCESS_KEY_ID_EXAMPLE")
+	text = replaceWholeCredentialToken(text, secret, "AWS_SECRET_ACCESS_KEY_EXAMPLE")
+	return text
+}
+
+func hasOfficialAWSExampleCredentialDocContext(text, key, secret string) bool {
+	// Use a length-preserving ASCII lowercase, NOT strings.ToLower: some Unicode
+	// runes (e.g. U+212A KELVIN SIGN) change byte length when lowercased, which
+	// would shift marker offsets out of alignment with the credential byte spans
+	// computed from the original text below. A misaligned marker inside the key's
+	// own EXAMPLE suffix could then look like an out-of-span marker and
+	// self-exempt a bare key. All markers are ASCII, so ASCII-only folding is
+	// sufficient for matching and keeps every byte offset identical.
+	lower := asciiLowerPreserveLen(text)
+	credentialSpans := literalByteSpans(text, key, secret)
+
+	for _, marker := range officialAWSExampleCredentialDocMarkers {
+		searchFrom := 0
+		for {
+			idx := strings.Index(lower[searchFrom:], marker)
+			if idx < 0 {
+				break
+			}
+
+			start := searchFrom + idx
+			end := start + len(marker)
+			if !overlapsAnyTextByteSpan(start, end, credentialSpans) {
+				return true
+			}
+			searchFrom = start + 1
+		}
+	}
+
+	return false
+}
+
+func literalByteSpans(text string, literals ...string) []textByteSpan {
+	var spans []textByteSpan
+	for _, literal := range literals {
+		searchFrom := 0
+		for {
+			idx := strings.Index(text[searchFrom:], literal)
+			if idx < 0 {
+				break
+			}
+
+			start := searchFrom + idx
+			end := start + len(literal)
+			spans = append(spans, textByteSpan{start: start, end: end})
+			searchFrom = end
+		}
+	}
+	return spans
+}
+
+func overlapsAnyTextByteSpan(start, end int, spans []textByteSpan) bool {
+	for _, span := range spans {
+		if start < span.end && end > span.start {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceWholeCredentialToken(text, literal, replacement string) string {
+	searchFrom := 0
+	copyFrom := 0
+	changed := false
+	var b strings.Builder
+
+	for {
+		idx := strings.Index(text[searchFrom:], literal)
+		if idx < 0 {
+			break
+		}
+
+		start := searchFrom + idx
+		end := start + len(literal)
+		if isWholeCredentialToken(text, start, end) {
+			if !changed {
+				b.Grow(len(text))
+				changed = true
+			}
+			b.WriteString(text[copyFrom:start])
+			b.WriteString(replacement)
+			copyFrom = end
+		}
+		searchFrom = end
+	}
+
+	if !changed {
+		return text
+	}
+	b.WriteString(text[copyFrom:])
+	return b.String()
+}
+
+func isWholeCredentialToken(text string, start, end int) bool {
+	return (start == 0 || !isCredentialTokenByte(text[start-1])) &&
+		(end == len(text) || !isCredentialTokenByte(text[end]))
+}
+
+func isCredentialTokenByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') ||
+		b == '/' ||
+		b == '+' ||
+		b == '='
+}
+
+// asciiLowerPreserveLen lowercases ASCII A-Z only, leaving every other byte
+// (including multi-byte UTF-8 sequences) unchanged. Unlike strings.ToLower it
+// never changes the byte length, so offsets into the result line up exactly with
+// offsets into the input.
+func asciiLowerPreserveLen(s string) string {
+	b := []byte(s)
+	changed := false
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+			changed = true
+		}
+	}
+	if !changed {
+		return s
+	}
+	return string(b)
 }
 
 func rot13ASCII(s string) string {

@@ -40,22 +40,15 @@ var (
 
 // YAML returns the config YAML bytes for a built-in preset.
 func YAML(name string) ([]byte, error) {
-	switch name {
-	case config.ModeStrict:
-		return marshal(strictPreset())
-	case config.ModeBalanced:
-		return marshal(config.Defaults())
-	case config.ModeAudit:
-		return marshal(auditPreset())
-	case PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel:
-		data, err := filePreset(name)
-		if err != nil {
-			return nil, err
-		}
-		return data, nil
-	default:
-		return nil, UnknownError(name)
+	if isFilePreset(name) {
+		data, _, err := filePreset(name)
+		return data, err
 	}
+	cfg, err := Config(name)
+	if err != nil {
+		return nil, err
+	}
+	return marshal(cfg)
 }
 
 // Config returns a parsed config for a built-in preset.
@@ -68,15 +61,8 @@ func Config(name string) (*config.Config, error) {
 	case config.ModeAudit:
 		return validatedConfig(name, auditPreset())
 	case PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel:
-		data, err := filePreset(name)
-		if err != nil {
-			return nil, err
-		}
-		cfg, err := parseConfig(data)
-		if err != nil {
-			return nil, fmt.Errorf("parsing preset %q: %w", name, err)
-		}
-		return cfg, nil
+		_, cfg, err := filePreset(name)
+		return cfg, err
 	default:
 		return nil, UnknownError(name)
 	}
@@ -86,15 +72,25 @@ func UnknownError(name string) error {
 	return fmt.Errorf("unknown preset %q: choose %s", name, ValidNames)
 }
 
-func filePreset(name string) ([]byte, error) {
+func isFilePreset(name string) bool {
+	switch name {
+	case PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel:
+		return true
+	default:
+		return false
+	}
+}
+
+func filePreset(name string) ([]byte, *config.Config, error) {
 	data, ok := configs.Preset(name)
 	if !ok {
-		return nil, fmt.Errorf("preset %q is not embedded", name)
+		return nil, nil, fmt.Errorf("preset %q is not embedded", name)
 	}
-	if _, err := parseConfig(data); err != nil {
-		return nil, fmt.Errorf("validating preset %q: %w", name, err)
+	cfg, err := parseConfig(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("validating preset %q: %w", name, err)
 	}
-	return data, nil
+	return data, cfg, nil
 }
 
 func validatedConfig(name string, cfg *config.Config) (*config.Config, error) {
@@ -120,13 +116,13 @@ func parseConfig(data []byte) (*config.Config, error) {
 		if errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("empty YAML document")
 		}
-		return nil, err
+		return nil, fmt.Errorf("decoding preset config: %w", err)
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err == nil {
 		return nil, fmt.Errorf("multiple YAML documents not supported")
 	} else if !errors.Is(err, io.EOF) {
-		return nil, err
+		return nil, fmt.Errorf("decoding preset config: %w", err)
 	}
 	if err := requireMappingDocument(data); err != nil {
 		return nil, err
@@ -144,7 +140,7 @@ func requireMappingDocument(data []byte) error {
 		if errors.Is(err, io.EOF) {
 			return fmt.Errorf("empty YAML document")
 		}
-		return err
+		return fmt.Errorf("decoding preset document: %w", err)
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return fmt.Errorf("preset YAML must be a non-empty mapping document")

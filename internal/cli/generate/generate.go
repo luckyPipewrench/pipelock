@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // Cmd returns the top-level "generate" command with all subcommands attached.
@@ -67,9 +68,6 @@ Examples:
 				cmd.PrintErrf("Config written to %s\n", output)
 			} else {
 				w := cmd.OutOrStdout()
-				if w == os.Stderr {
-					w = os.Stdout
-				}
 				_, _ = fmt.Fprint(w, header+string(data))
 			}
 
@@ -77,7 +75,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&preset, "preset", "balanced", presets.FlagHelp)
+	cmd.Flags().StringVar(&preset, "preset", config.ModeBalanced, presets.FlagHelp)
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output file path (default: stdout)")
 
 	return cmd

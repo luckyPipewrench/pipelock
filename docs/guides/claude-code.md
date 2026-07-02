@@ -14,7 +14,7 @@ go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 pipelock version
 
 # 3. Wrap an MCP server
-pipelock mcp proxy --config configs/claude-code.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
+pipelock mcp proxy --preset claude-code -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```
 
 ## MCP Proxy Mode
@@ -154,7 +154,7 @@ pipelock as an HTTP proxy server:
 
 ```bash
 # Start the proxy (background or separate terminal)
-pipelock run --config configs/claude-code.yaml
+pipelock run --preset claude-code
 ```
 
 The proxy listens on `127.0.0.1:8888` by default and exposes:
@@ -236,19 +236,19 @@ interception. They scan traffic directly without certificates.
 
 ## Choosing a Config
 
-Pipelock ships with agent-specific presets in `configs/`:
+Pipelock ships with agent-specific presets selectable via `--preset`:
 
 | Preset | Action | Entropy | Rate Limit | Best For |
 |--------|--------|---------|------------|----------|
-| `claude-code.yaml` | block | 5.0 | 120/min | Claude Code (unattended) |
-| `cursor.yaml` | block | 5.0 | 120/min | Cursor IDE (unattended) |
-| `generic-agent.yaml` | warn | 5.5 | 120/min | New agents (tuning phase) |
-| `balanced.yaml` | warn | 4.5 | 60/min | General purpose |
-| `strict.yaml` | block | 3.5 | 30/min | High-security environments |
+| `claude-code` | block | 5.0 | 120/min | Claude Code (unattended) |
+| `cursor` | block | 5.0 | 120/min | Cursor IDE (unattended) |
+| `generic-agent` | warn | 5.5 | 120/min | New agents (tuning phase) |
+| `balanced` | warn | 4.5 | 60/min | General purpose |
+| `strict` | block | 3.5 | 30/min | High-security environments |
 
-Start with `generic-agent.yaml` if you're unsure. Once you've verified there
-are no false positives for your workflow, switch to `claude-code.yaml` or
-`strict.yaml`.
+Start with `generic-agent` if you're unsure. Once you've verified there
+are no false positives for your workflow, switch to `claude-code` or
+`strict`.
 
 ## Troubleshooting
 
@@ -297,5 +297,5 @@ during development, run the MCP server manually:
 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
-  pipelock mcp proxy --config configs/claude-code.yaml -- npx -y @modelcontextprotocol/server-filesystem /tmp
+  pipelock mcp proxy --preset claude-code -- npx -y @modelcontextprotocol/server-filesystem /tmp
 ```

@@ -345,13 +345,13 @@ traffic in both directions without certificates.
 
 | Preset | Action | Best For |
 |--------|--------|----------|
-| `generic-agent.yaml` | warn | New agent integrations (recommended starting point) |
-| `balanced.yaml` | warn | General purpose, fetch proxy tuning |
-| `claude-code.yaml` | block | Claude Code, unattended agents |
-| `strict.yaml` | block | High-security, production |
+| `generic-agent` | warn | New agent integrations (recommended starting point) |
+| `balanced` | warn | General purpose, fetch proxy tuning |
+| `claude-code` | block | Claude Code, unattended agents |
+| `strict` | block | High-security, production |
 
-Start with `generic-agent.yaml` to log detections without blocking. Review the
-logs, then switch to `strict.yaml` for production.
+Start with `generic-agent` to log detections without blocking. Review the
+logs, then switch to `strict` for production.
 
 ## Troubleshooting
 

@@ -96,6 +96,9 @@ func TestUnknownPresetErrorListsAllValidNames(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error")
 			}
+			if _, err := Config(bad); err == nil {
+				t.Fatal("expected Config error")
+			}
 			msg := err.Error()
 			for _, name := range All {
 				if !strings.Contains(msg, name) {
@@ -103,6 +106,22 @@ func TestUnknownPresetErrorListsAllValidNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFilePresetRejectsUnembeddedName(t *testing.T) {
+	t.Parallel()
+
+	if _, _, err := filePreset("missing"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestValidatedConfigRejectsInvalidConfig(t *testing.T) {
+	t.Parallel()
+
+	if _, err := validatedConfig("bad", &config.Config{Mode: "bad"}); err == nil {
+		t.Fatal("expected validation error")
 	}
 }
 
@@ -118,6 +137,7 @@ func TestParseConfigRejectsInvalidPresetYAML(t *testing.T) {
 		{name: "null", data: []byte("null\n")},
 		{name: "sequence", data: []byte("- mode: balanced\n")},
 		{name: "multiple documents", data: []byte("mode: balanced\n---\nmode: audit\n")},
+		{name: "decode error", data: []byte("mode: [\n")},
 		{name: "invalid mode", data: []byte("mode: permissive\n")},
 	}
 

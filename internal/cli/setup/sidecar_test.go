@@ -565,6 +565,17 @@ func TestGenerateSidecarPatch_AllPresetsProduceValidConfig(t *testing.T) {
 	}
 }
 
+func TestGenerateSidecarPatch_InvalidPreset(t *testing.T) {
+	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("detectWorkload: %v", err)
+	}
+
+	if _, err := generateSidecarPatch(manifest, sidecarOptions{preset: "bogus"}); err == nil {
+		t.Fatal("expected error for invalid preset")
+	}
+}
+
 func TestRunSidecar_InvalidPreset(t *testing.T) {
 	t.Parallel()
 

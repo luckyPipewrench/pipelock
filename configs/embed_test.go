@@ -32,3 +32,20 @@ func TestPresetBytesMatchFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestPresetRejectsUnknownName(t *testing.T) {
+	t.Parallel()
+
+	if data, ok := Preset("missing"); ok || data != nil {
+		t.Fatalf("Preset returned (%q, %v), want nil false", data, ok)
+	}
+}
+
+func TestPresetRejectsMissingEmbeddedFile(t *testing.T) {
+	filePresets["missing"] = "missing.yaml"
+	defer delete(filePresets, "missing")
+
+	if data, ok := Preset("missing"); ok || data != nil {
+		t.Fatalf("Preset returned (%q, %v), want nil false", data, ok)
+	}
+}

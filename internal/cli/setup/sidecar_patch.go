@@ -158,7 +158,7 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 
 	proxyCfg, err := buildProxyConfig(opts.preset, agentIdentity)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building proxy config: %w", err)
 	}
 	configMapYAML, err := renderConfigMap(proxyCfg, opts.preset, namespace, proxyName, proxyLabels)
 	if err != nil {

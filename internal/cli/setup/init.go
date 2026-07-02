@@ -156,7 +156,8 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		home = h
 	}
 
-	if _, err := presets.Config(opts.preset); err != nil {
+	presetCfg, err := presets.Config(opts.preset)
+	if err != nil {
 		return cliutil.ExitCodeError(initExitError,
 			err)
 	}
@@ -194,7 +195,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		_, _ = fmt.Fprintln(w, "[2/5] Generating config...")
 	}
 
-	cfg, err := buildConfig(opts.preset, report)
+	cfg, err := buildConfigFromPreset(presetCfg, report)
 	if err != nil {
 		return cliutil.ExitCodeError(initExitError, err)
 	}
@@ -351,7 +352,10 @@ func buildConfig(preset string, report *discover.Report) (*config.Config, error)
 	if err != nil {
 		return nil, err
 	}
+	return buildConfigFromPreset(cfg, report)
+}
 
+func buildConfigFromPreset(cfg *config.Config, report *discover.Report) (*config.Config, error) {
 	// Enable MCP scanning if MCP servers were discovered.
 	if report != nil && report.Summary.TotalServers > 0 {
 		cfg.MCPInputScanning.Enabled = true

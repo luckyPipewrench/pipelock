@@ -943,6 +943,12 @@ mcp_tool_policy:
       arg_pattern: '/etc/shadow'
       arg_key: '^(file_?path|target)$'
       action: block
+    - name: "Block large transfers"
+      tool_pattern: "^transfer$"
+      arg_key: "^amount$"
+      arg_type: number
+      arg_number_gt: 1000000000
+      action: block
 ```
 
 | Field | Default | Description |
@@ -955,12 +961,20 @@ mcp_tool_policy:
 - `name:` rule identifier
 - `tool_pattern:` regex matching tool name
 - `arg_pattern:` regex matching argument values (optional; omit for tool-name-only rules)
-- `arg_key:` regex scoping `arg_pattern` to specific top-level argument keys (optional; requires `arg_pattern`). Without `arg_key`, `arg_pattern` checks values from all argument keys. Values under matching keys are extracted recursively.
+- `arg_key:` regex scoping `arg_pattern` or structural validators to specific top-level argument keys (optional for `arg_pattern`, required for structural validators). Without `arg_key`, `arg_pattern` checks values from all argument keys. Values under matching keys are extracted recursively for regex matching.
+- `arg_type:` required JSON type guard for the value at `arg_key`: `string`, `number`, `integer`, `boolean`, `array`, or `object`. Type mismatch is dangerous and matches fail-closed. When used alone, `arg_type` means "match if this value is not this type." If combined with numeric bounds, it must be `number` or `integer`; if combined with length bounds, it must be `string` or `array`.
+- `arg_number_gt:` match when the numeric value at `arg_key` is strictly greater than this threshold.
+- `arg_number_lt:` match when the numeric value at `arg_key` is strictly less than this threshold.
+- `arg_len_gt:` match when the string rune count or array element count at `arg_key` is strictly greater than this non-negative threshold.
+- `arg_len_lt:` match when the string rune count or array element count at `arg_key` is strictly less than this non-negative threshold.
+- `arg_value_in:` list of dangerous canonical values; matches when the canonical value at `arg_key` is in the set.
 - `action:` per-rule override (warn, block, redirect, or defer)
 - `redirect_profile:` reference to a named redirect profile (required when `action: redirect`)
 - `resolution_policy:` affirmative-clearing policy (required when `action: defer`; see below)
 
-Shell obfuscation detection is built-in: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
+Tool policy is a default-allow denylist: a rule describes the dangerous condition, and a matched rule applies its action. `arg_pattern` and all configured structural validators AND together within one rule. Numeric validators parse JSON numbers losslessly, so `1e9` and `1000000000` compare as equal. If a bound/type/length validator cannot evaluate a present or required value, the rule matches fail-closed; the exception is an `arg_value_in`-only rule with an absent key, which does not match because the dangerous value was not sent.
+
+Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
 
 ### Defer Action
 

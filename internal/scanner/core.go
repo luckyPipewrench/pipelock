@@ -464,6 +464,12 @@ func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string) r
 	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized)); len(matches) > 0 {
 		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 	}
+	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(decoded))
+	if spaced != normalized {
+		if matches := filterDefensiveCredentialSolicitationMatches(spaced, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced)); len(matches) > 0 {
+			return responseMatchSet{matches: withResponseSpans(matches, spanViewLabel("invisible_spaced", decodedViewLabel)), content: spaced}
+		}
+	}
 	return responseMatchSet{}
 }
 

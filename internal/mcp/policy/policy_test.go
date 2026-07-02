@@ -3723,6 +3723,26 @@ func TestValidate_StructuralValidators(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "invalid arg_number_gt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("not-a-number"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid arg_number_lt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberLT: jsonNumberPtr("1e10001"),
+			},
+			wantErr: true,
+		},
+		{
 			name: "unsatisfiable numeric range",
 			rule: config.ToolPolicyRule{
 				Name:        structuralRuleName,

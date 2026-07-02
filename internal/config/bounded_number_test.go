@@ -23,7 +23,9 @@ func TestParseBoundedJSONNumber_ExponentBound(t *testing.T) {
 		want bool
 	}{
 		{"small integer", "1000", true},
+		{"zero", "0", true},
 		{"scientific within bound", "1e9", true},
+		{"negative exponent within bound", "1e-9", true},
 		{"negative", "-42.5", true},
 		{"exponent at bound", "1e10000", true},
 		{"exponent just over bound", "1e10001", false},

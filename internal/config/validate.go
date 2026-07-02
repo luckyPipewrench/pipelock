@@ -1032,22 +1032,21 @@ func validateToolPolicyStructuralArgs(r ToolPolicyRule) error {
 	if err := validateToolPolicyStructuralTypeCompatibility(r); err != nil {
 		return err
 	}
+	var gt, lt *big.Rat
 	if r.ArgNumberGT != nil {
-		if _, ok := ParseBoundedJSONNumber(*r.ArgNumberGT); !ok {
+		var ok bool
+		if gt, ok = ParseBoundedJSONNumber(*r.ArgNumberGT); !ok {
 			return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_number_gt %q", r.Name, r.ArgNumberGT.String())
 		}
 	}
 	if r.ArgNumberLT != nil {
-		if _, ok := ParseBoundedJSONNumber(*r.ArgNumberLT); !ok {
+		var ok bool
+		if lt, ok = ParseBoundedJSONNumber(*r.ArgNumberLT); !ok {
 			return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_number_lt %q", r.Name, r.ArgNumberLT.String())
 		}
 	}
-	if r.ArgNumberGT != nil && r.ArgNumberLT != nil {
-		gt, _ := ParseBoundedJSONNumber(*r.ArgNumberGT)
-		lt, _ := ParseBoundedJSONNumber(*r.ArgNumberLT)
-		if gt.Cmp(lt) >= 0 {
-			return fmt.Errorf("mcp_tool_policy rule %q has unsatisfiable numeric range: arg_number_gt must be less than arg_number_lt", r.Name)
-		}
+	if gt != nil && lt != nil && gt.Cmp(lt) >= 0 {
+		return fmt.Errorf("mcp_tool_policy rule %q has unsatisfiable numeric range: arg_number_gt must be less than arg_number_lt", r.Name)
 	}
 	if r.ArgLenGT != nil && *r.ArgLenGT < 0 {
 		return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_len_gt %d: must be non-negative", r.Name, *r.ArgLenGT)

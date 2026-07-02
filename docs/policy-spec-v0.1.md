@@ -214,7 +214,7 @@ mcp:
 | `arg_len_gt` | integer | no | Dangerous length condition: match when a string rune count or array element count is strictly greater than this non-negative threshold. |
 | `arg_len_lt` | integer | no | Dangerous length condition: match when a string rune count or array element count is strictly less than this non-negative threshold. |
 | `arg_value_in` | string array | no | Dangerous value set: match when the canonical value at `arg_key` is in this set. |
-| `action` | string | no | `block` or `warn` |
+| `action` | string | no | `block`, `warn`, `redirect`, or `defer` |
 
 Structural validators describe dangerous conditions in the default-allow denylist model. Within one rule, `tool_pattern`, optional `arg_pattern`, and every configured structural validator AND together. Numeric checks compare parsed JSON numbers losslessly. Bound, type, and length validators fail closed when the value is absent or unevaluable; `arg_value_in` alone does not match an absent key.
 

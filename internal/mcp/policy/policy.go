@@ -284,6 +284,12 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
 		if rule.ArgKey != nil && rule.ArgPattern != nil {
 			if len(rawArgs) == 0 {
+				argPatternMatched := matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
+					matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
+					matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined)
+				if !argPatternMatched {
+					continue
+				}
 				if !rule.hasStructuralValidators() {
 					continue // cannot scope without raw JSON - skip non-structural rule
 				}
@@ -477,6 +483,10 @@ func structuralValuesForArgKey(rawArgs json.RawMessage, keyPattern *regexp.Regex
 	if len(rawArgs) == 0 || string(rawArgs) == jsonrpc.Null {
 		return nil, false, true
 	}
+	truncated, valid := structuralJSONDepthTruncated(rawArgs)
+	if truncated || !valid {
+		return nil, truncated, valid
+	}
 	dec := json.NewDecoder(bytes.NewReader(rawArgs))
 	dec.UseNumber()
 	var parsed interface{}
@@ -485,9 +495,6 @@ func structuralValuesForArgKey(rawArgs json.RawMessage, keyPattern *regexp.Regex
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		return nil, false, false
-	}
-	if structuralValueDepthTruncated(parsed, 0) {
-		return nil, true, true
 	}
 	args, ok := parsed.(map[string]interface{})
 	if !ok || keyPattern == nil {
@@ -503,25 +510,33 @@ func structuralValuesForArgKey(rawArgs json.RawMessage, keyPattern *regexp.Regex
 	return values, false, true
 }
 
-func structuralValueDepthTruncated(value interface{}, depth int) bool {
-	if depth > structuralMaxArgDepth {
-		return true
-	}
-	switch typed := value.(type) {
-	case []interface{}:
-		for _, item := range typed {
-			if structuralValueDepthTruncated(item, depth+1) {
-				return true
-			}
+func structuralJSONDepthTruncated(rawArgs json.RawMessage) (bool, bool) {
+	dec := json.NewDecoder(bytes.NewReader(rawArgs))
+	depth := 0
+	sawToken := false
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return false, sawToken && depth == 0
 		}
-	case map[string]interface{}:
-		for _, item := range typed {
-			if structuralValueDepthTruncated(item, depth+1) {
-				return true
+		if err != nil {
+			return false, false
+		}
+		sawToken = true
+		delim, ok := tok.(json.Delim)
+		if !ok {
+			continue
+		}
+		switch delim {
+		case '{', '[':
+			depth++
+			if depth > structuralMaxArgDepth+1 {
+				return true, true
 			}
+		case '}', ']':
+			depth--
 		}
 	}
-	return false
 }
 
 func (rule *CompiledRule) matchStructuralValue(value interface{}) bool {

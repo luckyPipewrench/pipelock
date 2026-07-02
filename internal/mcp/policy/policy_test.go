@@ -3366,6 +3366,96 @@ func TestStructuralValidators_RawArgsMissingWithArgPatternFailsClosed(t *testing
 	if !v.Matched {
 		t.Fatal("structural bound rule should fail closed instead of skipping when raw args are unavailable")
 	}
+
+	if v := pc.CheckToolCall(structuralTool, []string{"safe"}); v.Matched {
+		t.Fatalf("non-matching arg_pattern should not trigger structural fail-closed without raw args, got %+v", v)
+	}
+
+	valuePolicy := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        "value-only",
+		ToolPattern: structuralToolPattern,
+		ArgPattern:  "anything",
+		ArgKey:      "^mode$",
+		ArgValueIn:  []string{"admin"},
+	})
+	if v := valuePolicy.CheckToolCall(structuralTool, []string{"anything"}); v.Matched {
+		t.Fatalf("value-in-only structural rule should not fail closed on absent raw args, got %+v", v)
+	}
+}
+
+func TestStructuralValidators_DepthPrescanRejectsDeepJSON(t *testing.T) {
+	if truncated, valid := structuralJSONDepthTruncated(json.RawMessage(`{"amount":1}`)); truncated || !valid {
+		t.Fatalf("shallow JSON truncated=%v valid=%v, want false/true", truncated, valid)
+	}
+	if truncated, valid := structuralJSONDepthTruncated(json.RawMessage(`{"amount":`)); truncated || valid {
+		t.Fatalf("malformed JSON truncated=%v valid=%v, want false/false", truncated, valid)
+	}
+	if truncated, valid := structuralJSONDepthTruncated(json.RawMessage(fmt.Sprintf(`{"amount":%s}`, deepPolicyJSONObject("leaf", 100)))); !truncated || !valid {
+		t.Fatalf("deep JSON truncated=%v valid=%v, want true/true", truncated, valid)
+	}
+}
+
+func TestStructuralValuesForArgKeyEdgeCases(t *testing.T) {
+	keyPattern := regexp.MustCompile("^amount$")
+
+	if _, truncated, ok := structuralValuesForArgKey(json.RawMessage(`{} {}`), keyPattern); truncated || ok {
+		t.Fatalf("multiple JSON values truncated=%v ok=%v, want false/false", truncated, ok)
+	}
+	if _, truncated, ok := structuralValuesForArgKey(json.RawMessage(`[]`), keyPattern); truncated || !ok {
+		t.Fatalf("non-object JSON truncated=%v ok=%v, want false/true", truncated, ok)
+	}
+	if _, truncated, ok := structuralValuesForArgKey(json.RawMessage(`{"amount":1}`), nil); truncated || !ok {
+		t.Fatalf("nil key pattern truncated=%v ok=%v, want false/true", truncated, ok)
+	}
+}
+
+func TestStructuralValueBranchCoverage(t *testing.T) {
+	if (&CompiledRule{ArgType: "string"}).matchStructuralValue("safe") {
+		t.Fatal("type-only rule should not match when the value has the required type")
+	}
+	if !(&CompiledRule{ArgType: "integer"}).matchStructuralValue("not-a-number") {
+		t.Fatal("integer type guard should fail closed on non-number values")
+	}
+	if (&CompiledRule{ArgType: "integer"}).matchStructuralValue(json.Number("1")) {
+		t.Fatal("integer type guard should not match integer JSON numbers")
+	}
+	if !(&CompiledRule{ArgType: "integer"}).matchStructuralValue(json.Number("1.5")) {
+		t.Fatal("integer type guard should fail closed on non-integer JSON numbers")
+	}
+	if !(&CompiledRule{ArgType: "boolean"}).matchStructuralValue("true") {
+		t.Fatal("boolean type guard should fail closed on non-boolean values")
+	}
+	if !(&CompiledRule{ArgType: "array"}).matchStructuralValue("not-array") {
+		t.Fatal("array type guard should fail closed on non-array values")
+	}
+	if !(&CompiledRule{ArgType: "object"}).matchStructuralValue("not-object") {
+		t.Fatal("object type guard should fail closed on non-object values")
+	}
+	if !(&CompiledRule{ArgType: "unknown"}).matchStructuralValue("value") {
+		t.Fatal("unknown compiled type should fail closed")
+	}
+
+	if !(&CompiledRule{ArgNumberGT: jsonNumberPtr("not-a-number")}).matchStructuralValue(json.Number("1")) {
+		t.Fatal("invalid compiled gt threshold should fail closed")
+	}
+	if (&CompiledRule{ArgNumberLT: jsonNumberPtr("10")}).matchStructuralValue(json.Number("10")) {
+		t.Fatal("value equal to lt threshold should not match")
+	}
+	if !(&CompiledRule{ArgNumberLT: jsonNumberPtr("not-a-number")}).matchStructuralValue(json.Number("1")) {
+		t.Fatal("invalid compiled lt threshold should fail closed")
+	}
+
+	lenGT := 3
+	lenLT := 3
+	if (&CompiledRule{ArgLenGT: &lenGT}).matchStructuralValue("abc") {
+		t.Fatal("length equal to gt threshold should not match")
+	}
+	if (&CompiledRule{ArgLenLT: &lenLT}).matchStructuralValue("abc") {
+		t.Fatal("length equal to lt threshold should not match")
+	}
+	if (&CompiledRule{ArgValueIn: map[string]struct{}{"admin": {}}}).matchStructuralValue("user") {
+		t.Fatal("value outside arg_value_in should not match")
+	}
 }
 
 func TestStructuralValidators_TypeGuardComposition(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -100,7 +101,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "show diff without writing files or running canary")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "overwrite existing output files")
 	cmd.Flags().StringVar(&opts.image, "image", "", "companion proxy image (default: ghcr.io/luckypipewrench/pipelock:<version>)")
-	cmd.Flags().StringVar(&opts.preset, "preset", config.ModeBalanced, "config preset: strict, balanced, audit")
+	cmd.Flags().StringVar(&opts.preset, "preset", config.ModeBalanced, presets.FlagHelp)
 	cmd.Flags().BoolVar(&opts.skipCanary, "skip-canary", false, "skip the canary detection test")
 	cmd.Flags().BoolVar(&opts.skipVerify, "skip-verify", false, "skip static topology verification")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "machine-readable JSON output")
@@ -116,13 +117,9 @@ Examples:
 func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 	w := cmd.OutOrStdout()
 
-	// Validate preset.
-	switch opts.preset {
-	case config.ModeStrict, config.ModeBalanced, config.ModeAudit:
-		// valid
-	default:
+	if _, err := presets.Config(opts.preset); err != nil {
 		return cliutil.ExitCodeError(initExitError,
-			fmt.Errorf("unknown preset %q: choose strict, balanced, or audit", opts.preset))
+			err)
 	}
 
 	// Validate emit format.

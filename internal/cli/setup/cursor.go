@@ -132,6 +132,7 @@ The install subcommand writes hooks.json to register pipelock with Cursor.`,
 	cmd.AddCommand(
 		cursorHookCmd(),
 		cursorInstallCmd(),
+		cursorRemoveCmd(),
 	)
 
 	return cmd
@@ -333,9 +334,11 @@ func writeResponse(w io.Writer, resp cursorResponse) {
 
 func cursorInstallCmd() *cobra.Command {
 	var (
-		global  bool
-		project bool
-		dryRun  bool
+		global     bool
+		project    bool
+		dryRun     bool
+		configFile string
+		quiet      bool
 	)
 
 	cmd := &cobra.Command{
@@ -353,34 +356,35 @@ Runs are idempotent: running twice produces the same result.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runCursorInstall(cmd, global, project, dryRun)
+			return runCursorInstall(cmd, global, project, dryRun, configFile, quiet)
 		},
 	}
 
 	cmd.Flags().BoolVar(&global, "global", false, "install to ~/.cursor/hooks.json (default when no scope flag given)")
 	cmd.Flags().BoolVar(&project, "project", false, "install to .cursor/hooks.json in current directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
+	cmd.Flags().StringVarP(&configFile, "config", "c", "", "path to pipelock config file for installed hooks")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress config provenance output")
 
 	return cmd
 }
 
-func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
+func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool, configFile string, quiet bool) error {
 	if global && project {
 		return fmt.Errorf("--global and --project are mutually exclusive")
 	}
 
-	// Determine target path. When neither flag is set, defaults to global.
-	var targetDir string
-	if project {
-		targetDir = filepath.Join(".", ".cursor")
-	} else {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("finding home directory: %w", err)
-		}
-		targetDir = filepath.Join(home, ".cursor")
+	resolvedConfig, err := cliutil.ResolveConfigForInstall(configFile)
+	if err != nil {
+		return err
 	}
+	cliutil.WriteInstallConfigProvenance(cmd.ErrOrStderr(), "cursor install", resolvedConfig, quiet)
 
+	// Determine target path. When neither flag is set, defaults to global.
+	targetDir, err := cursorHooksDir(project)
+	if err != nil {
+		return err
+	}
 	targetPath := filepath.Join(targetDir, "hooks.json")
 
 	// Find pipelock binary path.
@@ -394,7 +398,7 @@ func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
 	}
 
 	// Build the hook entries.
-	newEntries := buildHookEntries(exe)
+	newEntries := buildHookEntries(exe, resolvedConfig.Path)
 
 	// Load existing hooks.json if present.
 	existing := &hooksJSON{Version: 1, Hooks: make(map[string][]hookEntry)}
@@ -426,11 +430,6 @@ func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
 		return nil
 	}
 
-	// Create directory if needed.
-	if err := os.MkdirAll(targetDir, 0o750); err != nil {
-		return fmt.Errorf("creating directory %s: %w", targetDir, err)
-	}
-
 	// Backup existing file.
 	if readErr == nil {
 		backupPath := targetPath + ".bak"
@@ -438,35 +437,101 @@ func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
 			return fmt.Errorf("creating backup %s: %w", backupPath, err)
 		}
 	}
-
-	// Atomic write: temp file + rename.
-	tmpFile, err := os.CreateTemp(targetDir, "hooks-*.json.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-
-	if _, err := tmpFile.Write(output); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("setting permissions: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("renaming temp file to %s: %w", targetPath, err)
+	if err := writeCursorHooksFile(targetDir, targetPath, output); err != nil {
+		return err
 	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Installed pipelock hooks to %s\n", targetPath)
+	return nil
+}
+
+func cursorRemoveCmd() *cobra.Command {
+	var (
+		global  bool
+		project bool
+		dryRun  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove pipelock hooks from Cursor",
+		Long: `Removes pipelock-managed hooks from Cursor hooks.json.
+Non-pipelock hooks are preserved. A .bak backup is created before modification.`,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runCursorRemove(cmd, global, project, dryRun)
+		},
+	}
+
+	cmd.Flags().BoolVar(&global, "global", false, "remove from ~/.cursor/hooks.json (default when no scope flag given)")
+	cmd.Flags().BoolVar(&project, "project", false, "remove from .cursor/hooks.json in current directory")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
+	return cmd
+}
+
+func runCursorRemove(cmd *cobra.Command, global, project, dryRun bool) error {
+	if global && project {
+		return fmt.Errorf("--global and --project are mutually exclusive")
+	}
+
+	targetDir, err := cursorHooksDir(project)
+	if err != nil {
+		return err
+	}
+	targetPath := filepath.Join(targetDir, "hooks.json")
+
+	existingData, readErr := os.ReadFile(filepath.Clean(targetPath))
+	if readErr != nil {
+		if errors.Is(readErr, os.ErrNotExist) {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no hooks.json found, nothing to remove")
+			return nil
+		}
+		return fmt.Errorf("reading existing %s: %w", targetPath, readErr)
+	}
+	existing, err := parseHooksJSON(existingData)
+	if err != nil {
+		return fmt.Errorf("parsing existing %s: %w", targetPath, err)
+	}
+
+	removed := 0
+	result := &hooksJSON{Version: existing.Version, Hooks: make(map[string][]hookEntry)}
+	if result.Version < 1 {
+		result.Version = 1
+	}
+	for event, entries := range existing.Hooks {
+		for _, h := range entries {
+			if isPipelockHook(h) {
+				removed++
+				continue
+			}
+			result.Hooks[event] = append(result.Hooks[event], h)
+		}
+	}
+	if removed == 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "No pipelock hooks found in %s\n", targetPath)
+		return nil
+	}
+
+	output, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling hooks.json: %w", err)
+	}
+	output = append(output, '\n')
+
+	if dryRun {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Would write to %s (%d removed):\n%s", targetPath, removed, output)
+		return nil
+	}
+
+	backupPath := targetPath + ".bak"
+	if err := os.WriteFile(backupPath, existingData, 0o600); err != nil {
+		return fmt.Errorf("creating backup %s: %w", backupPath, err)
+	}
+	if err := writeCursorHooksFile(targetDir, targetPath, output); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Removed %d pipelock hook(s) from %s\n", removed, targetPath)
 	return nil
 }
 
@@ -474,7 +539,7 @@ func runCursorInstall(cmd *cobra.Command, global, project, dryRun bool) error {
 const cursorHookTimeout = 10
 
 // buildHookEntries creates the 3 hook entries for pipelock, keyed by event name.
-func buildHookEntries(exe string) map[string][]hookEntry {
+func buildHookEntries(exe, configFile string) map[string][]hookEntry {
 	events := []string{
 		"beforeShellExecution",
 		"beforeMCPExecution",
@@ -484,8 +549,12 @@ func buildHookEntries(exe string) map[string][]hookEntry {
 	quoted := shellQuote(exe)
 	result := make(map[string][]hookEntry, len(events))
 	for _, event := range events {
+		command := quoted + " cursor hook"
+		if configFile != "" {
+			command += " --config " + shellQuote(configFile)
+		}
 		result[event] = []hookEntry{{
-			Command: quoted + " cursor hook",
+			Command: command,
 			Timeout: cursorHookTimeout,
 		}}
 	}
@@ -549,8 +618,50 @@ func mergeHooks(existing *hooksJSON, newEntries map[string][]hookEntry) *hooksJS
 }
 
 // isPipelockHook returns true if a hook entry is a pipelock cursor hook.
-// The command always ends with "cursor hook" because buildHookEntries
-// constructs it as `<binary> cursor hook`.
+// buildHookEntries only ever produces two forms: "<binary> cursor hook" (bare)
+// or "<binary> cursor hook --config <path>". Match exactly those so an
+// unrelated user hook that merely contains "cursor hook" mid-command is never
+// clobbered on install or remove.
 func isPipelockHook(h hookEntry) bool {
-	return strings.HasSuffix(strings.TrimSpace(h.Command), "cursor hook")
+	return isGeneratedPipelockHookCommand(h.Command, "cursor")
+}
+
+func cursorHooksDir(project bool) (string, error) {
+	if project {
+		return filepath.Join(".", ".cursor"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("finding home directory: %w", err)
+	}
+	return filepath.Join(home, ".cursor"), nil
+}
+
+func writeCursorHooksFile(targetDir, targetPath string, output []byte) error {
+	if err := os.MkdirAll(targetDir, 0o750); err != nil {
+		return fmt.Errorf("creating directory %s: %w", targetDir, err)
+	}
+	tmpFile, err := os.CreateTemp(targetDir, "hooks-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(output); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("setting permissions: %w", err)
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("renaming temp file to %s: %w", targetPath, err)
+	}
+	return nil
 }

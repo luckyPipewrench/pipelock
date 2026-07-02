@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 )
 
 // ---------- generateConfigCmd error paths ----------
@@ -27,6 +29,11 @@ func TestGenerateConfigCmd_UnknownPreset(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Error("expected error for unknown preset")
+	}
+	for _, name := range presets.All {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not list %q", err, name)
+		}
 	}
 }
 
@@ -120,10 +127,13 @@ func TestGenerateConfigCmd_OutputFile_BadPath(t *testing.T) {
 	}
 }
 
-// ---------- strictPreset / auditPreset ----------
+// ---------- preset helper values ----------
 
 func TestStrictPreset_Values(t *testing.T) {
-	cfg := strictPreset()
+	cfg, err := presets.Config("strict")
+	if err != nil {
+		t.Fatalf("Config(strict): %v", err)
+	}
 	if cfg.Mode != "strict" {
 		t.Errorf("Mode = %q, want strict", cfg.Mode)
 	}
@@ -142,7 +152,10 @@ func TestStrictPreset_Values(t *testing.T) {
 }
 
 func TestAuditPreset_Values(t *testing.T) {
-	cfg := auditPreset()
+	cfg, err := presets.Config("audit")
+	if err != nil {
+		t.Fatalf("Config(audit): %v", err)
+	}
 	if cfg.Mode != "audit" {
 		t.Errorf("Mode = %q, want audit", cfg.Mode)
 	}

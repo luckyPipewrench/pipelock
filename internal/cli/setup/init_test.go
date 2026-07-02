@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -362,6 +363,40 @@ func TestInitCmd_AuditPreset(t *testing.T) {
 	}
 }
 
+func TestInitCmd_AllPresetsWriteLoadableConfig(t *testing.T) {
+	for _, name := range presets.All {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			configPath := filepath.Join(home, name+".yaml")
+
+			var buf bytes.Buffer
+			cmd := InitCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			cmd.SetArgs([]string{
+				"--scan-home", home,
+				"--output", configPath,
+				"--preset", name,
+				"--skip-canary",
+			})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute: %v\n%s", err, buf.String())
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				t.Fatalf("Load generated %s config: %v", name, err)
+			}
+			switch cfg.Mode {
+			case config.ModeStrict, config.ModeBalanced, config.ModeAudit:
+			default:
+				t.Fatalf("mode = %q, want valid mode", cfg.Mode)
+			}
+		})
+	}
+}
+
 func TestInitCmd_BadPreset(t *testing.T) {
 	home := t.TempDir()
 
@@ -374,6 +409,11 @@ func TestInitCmd_BadPreset(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected error for bad preset")
+	}
+	for _, name := range presets.All {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not list %q", err, name)
+		}
 	}
 }
 
@@ -684,7 +724,10 @@ func TestBuildConfig_MCPEnablement(t *testing.T) {
 				},
 			}
 
-			cfg := buildConfig(config.ModeBalanced, report)
+			cfg, err := buildConfig(config.ModeBalanced, report)
+			if err != nil {
+				t.Fatalf("buildConfig: %v", err)
+			}
 
 			if cfg.MCPInputScanning.Enabled != tc.wantMCPInput {
 				t.Errorf("MCPInputScanning.Enabled = %v, want %v",

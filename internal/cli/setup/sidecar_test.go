@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestRunSidecar_DryRun(t *testing.T) {
@@ -518,6 +521,61 @@ func TestRunSidecar_CanaryDetection(t *testing.T) {
 	}
 }
 
+func TestRunSidecar_AllPresetsDryRun(t *testing.T) {
+	for _, name := range presets.All {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cmd := SidecarCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			cmd.SetArgs([]string{
+				"--inject-spec", testdataPath(t, "deployment.yaml"),
+				"--preset", name,
+				"--dry-run",
+			})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute: %v\n%s", err, buf.String())
+			}
+		})
+	}
+}
+
+func TestGenerateSidecarPatch_AllPresetsProduceValidConfig(t *testing.T) {
+	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("detectWorkload: %v", err)
+	}
+
+	for _, name := range presets.All {
+		t.Run(name, func(t *testing.T) {
+			result, err := generateSidecarPatch(manifest, sidecarOptions{preset: name})
+			if err != nil {
+				t.Fatalf("generateSidecarPatch: %v", err)
+			}
+			if err := result.Config.Validate(); err != nil {
+				t.Fatalf("sidecar config Validate: %v", err)
+			}
+			switch result.Config.Mode {
+			case config.ModeStrict, config.ModeBalanced, config.ModeAudit:
+			default:
+				t.Fatalf("mode = %q, want valid mode", result.Config.Mode)
+			}
+		})
+	}
+}
+
+func TestGenerateSidecarPatch_InvalidPreset(t *testing.T) {
+	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("detectWorkload: %v", err)
+	}
+
+	if _, err := generateSidecarPatch(manifest, sidecarOptions{preset: "bogus"}); err == nil {
+		t.Fatal("expected error for invalid preset")
+	}
+}
+
 func TestRunSidecar_InvalidPreset(t *testing.T) {
 	t.Parallel()
 
@@ -534,6 +592,11 @@ func TestRunSidecar_InvalidPreset(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected error for invalid preset")
+	}
+	for _, name := range presets.All {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not list %q", err, name)
+		}
 	}
 }
 

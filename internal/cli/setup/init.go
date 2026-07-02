@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
@@ -119,7 +120,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&preset, "preset", config.ModeBalanced, "config preset: strict, balanced, audit")
+	cmd.Flags().StringVar(&preset, "preset", config.ModeBalanced, presets.FlagHelp)
 	cmd.Flags().BoolVar(&skipCanary, "skip-canary", false, "skip the canary detection test")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "skip config validation checks")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without writing files")
@@ -155,13 +156,10 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		home = h
 	}
 
-	// Validate preset.
-	switch opts.preset {
-	case config.ModeStrict, config.ModeBalanced, config.ModeAudit:
-		// valid
-	default:
+	presetCfg, err := presets.Config(opts.preset)
+	if err != nil {
 		return cliutil.ExitCodeError(initExitError,
-			fmt.Errorf("unknown preset %q: choose strict, balanced, or audit", opts.preset))
+			err)
 	}
 
 	result := &initResult{}
@@ -197,7 +195,10 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		_, _ = fmt.Fprintln(w, "[2/5] Generating config...")
 	}
 
-	cfg := buildConfig(opts.preset, report)
+	cfg, err := buildConfigFromPreset(presetCfg, report)
+	if err != nil {
+		return cliutil.ExitCodeError(initExitError, err)
+	}
 	configPath := opts.output
 	if configPath == "" {
 		cfgDir, err := os.UserConfigDir()
@@ -346,26 +347,15 @@ func printDiscoverPhase(w io.Writer, report *discover.Report) {
 	_, _ = fmt.Fprintln(w)
 }
 
-func buildConfig(preset string, report *discover.Report) *config.Config {
-	var cfg *config.Config
-
-	switch preset {
-	case config.ModeStrict:
-		cfg = config.Defaults()
-		cfg.Mode = config.ModeStrict
-		cfg.FetchProxy.Monitoring.EntropyThreshold = 3.5
-		cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 3.5
-		cfg.FetchProxy.Monitoring.MaxURLLength = 500
-		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 30
-	case config.ModeAudit:
-		cfg = config.Defaults()
-		cfg.Mode = config.ModeAudit
-		enforce := false
-		cfg.Enforce = &enforce
-	default:
-		cfg = config.Defaults()
+func buildConfig(preset string, report *discover.Report) (*config.Config, error) {
+	cfg, err := presets.Config(preset)
+	if err != nil {
+		return nil, err
 	}
+	return buildConfigFromPreset(cfg, report)
+}
 
+func buildConfigFromPreset(cfg *config.Config, report *discover.Report) (*config.Config, error) {
 	// Enable MCP scanning if MCP servers were discovered.
 	if report != nil && report.Summary.TotalServers > 0 {
 		cfg.MCPInputScanning.Enabled = true
@@ -385,7 +375,7 @@ func buildConfig(preset string, report *discover.Report) *config.Config {
 		cfg.ToolChainDetection.MaxGap = &maxGap
 	}
 
-	return cfg
+	return cfg, nil
 }
 
 func writeConfig(cfg *config.Config, configPath, preset string) error {

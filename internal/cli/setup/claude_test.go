@@ -391,7 +391,7 @@ func TestParseClaudeSettings_Malformed(t *testing.T) {
 
 func TestMergeClaudeHooks_Fresh(t *testing.T) {
 	settings := &claudeSettings{Hooks: make(map[string][]claudeMatcherGroup)}
-	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock", "")
 
 	groups := merged.Hooks["PreToolUse"]
 	if len(groups) != 1 {
@@ -399,6 +399,23 @@ func TestMergeClaudeHooks_Fresh(t *testing.T) {
 	}
 	if groups[0].Matcher != claudeToolMatcher {
 		t.Errorf("matcher = %q, want %q", groups[0].Matcher, claudeToolMatcher)
+	}
+}
+
+func TestMergeClaudeHooks_WithConfig(t *testing.T) {
+	settings := &claudeSettings{Hooks: make(map[string][]claudeMatcherGroup)}
+	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock", "/tmp/pipelock config.yaml")
+
+	groups := merged.Hooks["PreToolUse"]
+	if len(groups) != 1 || len(groups[0].Hooks) != 1 {
+		t.Fatalf("expected one installed hook, got %#v", groups)
+	}
+	command := groups[0].Hooks[0].Command
+	if !strings.Contains(command, "claude hook --config") {
+		t.Fatalf("expected config flag in command, got %q", command)
+	}
+	if !strings.Contains(command, "'/tmp/pipelock config.yaml'") {
+		t.Fatalf("expected shell-quoted config path, got %q", command)
 	}
 }
 
@@ -413,7 +430,7 @@ func TestMergeClaudeHooks_PreservesOtherHooks(t *testing.T) {
 			},
 		},
 	}
-	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock", "")
 
 	// SessionStart untouched.
 	if len(merged.Hooks["SessionStart"]) != 1 {
@@ -437,8 +454,8 @@ func TestMergeClaudeHooks_PreservesOtherHooks(t *testing.T) {
 
 func TestMergeClaudeHooks_Idempotent(t *testing.T) {
 	settings := &claudeSettings{Hooks: make(map[string][]claudeMatcherGroup)}
-	first := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
-	second := mergeClaudeHooks(first, "/usr/local/bin/pipelock")
+	first := mergeClaudeHooks(settings, "/usr/local/bin/pipelock", "")
+	second := mergeClaudeHooks(first, "/usr/local/bin/pipelock", "")
 
 	// Count pipelock groups (should be same after second merge).
 	count := 0
@@ -457,7 +474,7 @@ func TestMergeClaudeHooks_Idempotent(t *testing.T) {
 
 func TestRemoveClaudeHooks(t *testing.T) {
 	settings := &claudeSettings{Hooks: make(map[string][]claudeMatcherGroup)}
-	installed := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+	installed := mergeClaudeHooks(settings, "/usr/local/bin/pipelock", "")
 	removed := removeClaudeHooks(installed)
 
 	if len(removed.Hooks["PreToolUse"]) != 0 {
@@ -476,7 +493,7 @@ func TestMergeClaudeHooks_PreservesSharedGroupHooks(t *testing.T) {
 			},
 		},
 	}
-	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
+	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock", "")
 
 	found := false
 	for _, g := range merged.Hooks["PreToolUse"] {
@@ -498,11 +515,19 @@ func TestIsClaudePipelockHook_Detection(t *testing.T) {
 		want    bool
 	}{
 		{"actual pipelock hook", "/usr/bin/pipelock claude hook", true},
+		{"hook with config", "/usr/bin/pipelock claude hook --config /etc/pipelock/pipelock.yaml", true},
 		{"quoted path", "'/usr/local/bin/pipelock' claude hook", true},
 		{"trailing whitespace", "/usr/bin/pipelock claude hook ", true},
 		{"unrelated command", "echo hello", false},
 		{"partial match", "pipelock claude", false},
 		{"empty command", "", false},
+		// Regression: a user hook that merely contains "claude hook" mid-command
+		// (not a pipelock-generated form) must not be clobbered.
+		{"user hook containing the phrase", "/opt/tool claude hook helper --verbose", false},
+		{"other binary exact hook words", "/opt/tool claude hook", false},
+		{"user hook with unrelated flag after phrase", "/opt/tool claude hook --helper", false},
+		{"flag-like config operand", "/usr/bin/pipelock claude hook --config --helper", false},
+		{"trailing args after config", "/usr/bin/pipelock claude hook --config /etc/pipelock/pipelock.yaml --helper", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

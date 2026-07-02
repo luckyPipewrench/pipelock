@@ -381,17 +381,18 @@ func parseClaudeSettings(data []byte) (*claudeSettings, error) {
 }
 
 // isClaudePipelockHook returns true if a hook entry was installed by pipelock.
-// The command always ends with "claude hook" because mergeClaudeHooks
-// constructs it as `<binary> claude hook`. Mirrors cursor.go's HasSuffix
-// detection pattern.
+// mergeClaudeHooks only ever produces "<binary> claude hook" (bare) or
+// "<binary> claude hook --config <path>". Match exactly those two forms so an
+// unrelated user hook that merely contains "claude hook" mid-command is never
+// clobbered. Mirrors cursor.go's isPipelockHook detection pattern.
 func isClaudePipelockHook(h claudeHookEntry) bool {
-	return strings.HasSuffix(strings.TrimSpace(h.Command), "claude hook")
+	return isGeneratedPipelockHookCommand(h.Command, "claude")
 }
 
 // mergeClaudeHooks removes existing pipelock hooks from PreToolUse and adds
 // fresh ones. Non-pipelock hooks are preserved even if they share a matcher
 // group with a pipelock hook. All other events are copied unchanged.
-func mergeClaudeHooks(settings *claudeSettings, exe string) *claudeSettings {
+func mergeClaudeHooks(settings *claudeSettings, exe, configFile string) *claudeSettings {
 	result := &claudeSettings{
 		Hooks: make(map[string][]claudeMatcherGroup),
 	}
@@ -423,6 +424,9 @@ func mergeClaudeHooks(settings *claudeSettings, exe string) *claudeSettings {
 	// every tool; dispatch in claudePayloadToAction decides what to scan.
 	quoted := shellQuote(exe)
 	hookCommand := quoted + " claude hook"
+	if configFile != "" {
+		hookCommand += " --config " + shellQuote(configFile)
+	}
 
 	result.Hooks[claudeHookEventPreToolUse] = append(
 		result.Hooks[claudeHookEventPreToolUse],
@@ -472,9 +476,11 @@ func removeClaudeHooks(settings *claudeSettings) *claudeSettings {
 
 func claudeSetupCmd() *cobra.Command {
 	var (
-		global  bool
-		project bool
-		dryRun  bool
+		global     bool
+		project    bool
+		dryRun     bool
+		configFile string
+		quiet      bool
 	)
 
 	cmd := &cobra.Command{
@@ -493,21 +499,29 @@ modification. Runs are idempotent: running twice produces the same result.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runClaudeSetup(cmd, global, project, dryRun)
+			return runClaudeSetup(cmd, global, project, dryRun, configFile, quiet)
 		},
 	}
 
 	cmd.Flags().BoolVar(&global, "global", false, "install to ~/.claude/settings.json (default)")
 	cmd.Flags().BoolVar(&project, "project", false, "install to .claude/settings.json in current directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
+	cmd.Flags().StringVarP(&configFile, "config", "c", "", "path to pipelock config file for installed hooks")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress config provenance output")
 
 	return cmd
 }
 
-func runClaudeSetup(cmd *cobra.Command, global, project, dryRun bool) error {
+func runClaudeSetup(cmd *cobra.Command, global, project, dryRun bool, configFile string, quiet bool) error {
 	if global && project {
 		return fmt.Errorf("--global and --project are mutually exclusive")
 	}
+
+	resolvedConfig, err := cliutil.ResolveConfigForInstall(configFile)
+	if err != nil {
+		return err
+	}
+	cliutil.WriteInstallConfigProvenance(cmd.ErrOrStderr(), "claude setup", resolvedConfig, quiet)
 
 	// Determine target path.
 	targetDir, err := claudeSettingsDir(project)
@@ -543,7 +557,7 @@ func runClaudeSetup(cmd *cobra.Command, global, project, dryRun bool) error {
 	}
 
 	// Merge pipelock hooks.
-	merged := mergeClaudeHooks(settings, exe)
+	merged := mergeClaudeHooks(settings, exe, resolvedConfig.Path)
 
 	// Serialize with raw field preservation.
 	output, err := marshalClaudeSettings(merged, rawMap)

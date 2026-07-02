@@ -1579,17 +1579,17 @@ ssrf:
 
 ## Presets
 
-Seven starter configs in `configs/`:
+Seven starter configs are selectable with `pipelock generate config --preset <name>`:
 
 | Preset | Mode | Response Action | MCP Policy | Best For |
 |--------|------|----------------|------------|----------|
-| `balanced.yaml` | balanced | warn | warn | General purpose |
-| `strict.yaml` | strict | block | block | High-security |
-| `audit.yaml` | audit | warn | warn | Log-only monitoring |
-| `claude-code.yaml` | balanced | block | warn | Claude Code (unattended) |
-| `cursor.yaml` | balanced | block | warn | Cursor IDE |
-| `generic-agent.yaml` | balanced | warn | warn | New agents (tuning) |
-| `hostile-model.yaml` | strict | block | block | Uncensored/abliterated models |
+| `balanced` | balanced | warn | warn | General purpose |
+| `strict` | strict | block | block | High-security |
+| `audit` | audit | warn | warn | Log-only monitoring |
+| `claude-code` | balanced | block | warn | Claude Code (unattended) |
+| `cursor` | balanced | block | warn | Cursor IDE |
+| `generic-agent` | balanced | warn | warn | New agents (tuning) |
+| `hostile-model` | strict | block | block | Uncensored/abliterated models |
 
 Key differences between presets:
 

@@ -11,7 +11,7 @@ pipelock init sidecar --inject-spec <manifest>
   [--dry-run]
   [--force]
   [--image <ref>]
-  [--preset strict|balanced|audit]
+  [--preset strict|balanced|audit|claude-code|cursor|generic-agent|hostile-model]
   [--skip-canary]
   [--skip-verify]
   [--json]
@@ -50,7 +50,7 @@ The command runs 7 phases: detect, generate, preview, emit, verify, canary, and 
 | `--dry-run` | false | Show the generated topology without writing files or running canary |
 | `--force` | false | Overwrite existing output files |
 | `--image` | `ghcr.io/luckypipewrench/pipelock:<version>` | Companion proxy image (tag or digest ref) |
-| `--preset` | `balanced` | Config preset: `strict`, `balanced`, `audit` |
+| `--preset` | `balanced` | Config preset: `strict`, `balanced`, `audit`, `claude-code`, `cursor`, `generic-agent`, `hostile-model` |
 | `--skip-canary` | false | Skip the canary detection test |
 | `--skip-verify` | false | Skip static topology verification |
 | `--json` | false | Machine-readable JSON output (`--output` required unless `--dry-run`) |

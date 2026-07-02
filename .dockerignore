@@ -19,4 +19,6 @@ README.md
 Makefile
 docs/
 assets/
-configs/
+configs/*
+!configs/*.go
+!configs/*.yaml

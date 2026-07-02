@@ -363,8 +363,8 @@ traffic in both directions without certificates.
 |--------|--------|----------|
 | `balanced` | warn (default) | Recommended starting point (`--preset balanced`) |
 | `strict` | block (default) | High-security, production (`--preset strict`) |
-| `generic-agent.yaml` | warn (default) | Agent-specific tuning (copy from `configs/`) |
-| `claude-code.yaml` | block (default) | Unattended coding agents (copy from `configs/`) |
+| `generic-agent` | warn (default) | Agent-specific tuning (`--preset generic-agent`) |
+| `claude-code` | block (default) | Unattended coding agents (`--preset claude-code`) |
 
 Start with `balanced` to log detections without blocking. Review the logs,
 tune thresholds, then switch to `strict` for production.

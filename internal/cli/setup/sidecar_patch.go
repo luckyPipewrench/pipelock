@@ -156,7 +156,10 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 		return nil, fmt.Errorf("configuring MCP client config mount: %w", err)
 	}
 
-	proxyCfg := buildProxyConfig(opts.preset, agentIdentity)
+	proxyCfg, err := buildProxyConfig(opts.preset, agentIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("building proxy config: %w", err)
+	}
 	configMapYAML, err := renderConfigMap(proxyCfg, opts.preset, namespace, proxyName, proxyLabels)
 	if err != nil {
 		return nil, fmt.Errorf("rendering ConfigMap: %w", err)
@@ -212,14 +215,17 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 	}, nil
 }
 
-func buildProxyConfig(preset, agentIdentity string) *config.Config {
-	cfg := buildConfig(preset, nil)
+func buildProxyConfig(preset, agentIdentity string) (*config.Config, error) {
+	cfg, err := buildConfig(preset, nil)
+	if err != nil {
+		return nil, err
+	}
 	cfg.DefaultAgentIdentity = agentIdentity
 	cfg.BindDefaultAgentIdentity = true
 	cfg.FetchProxy.Listen = fmt.Sprintf("0.0.0.0:%d", sidecarHealthPort)
 	cfg.MetricsListen = fmt.Sprintf("0.0.0.0:%d", sidecarMetricsPort)
 	cfg.ForwardProxy.Enabled = true
-	return cfg
+	return cfg, nil
 }
 
 // injectProxyEnvs adds HTTP and MCP proxy contract env vars to agent containers.

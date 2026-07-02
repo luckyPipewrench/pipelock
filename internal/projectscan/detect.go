@@ -285,7 +285,7 @@ func detectHostileTooling(dir string) []Finding {
 				findings = append(findings, Finding{
 					Severity: "warning",
 					Category: "tooling",
-					Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider using the hostile-model config preset.", dep),
+					Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider `pipelock generate config --preset hostile-model`.", dep),
 					Pattern:  hostile,
 				})
 			}
@@ -307,7 +307,7 @@ func detectHostileTooling(dir string) []Finding {
 					findings = append(findings, Finding{
 						Severity: "warning",
 						Category: "tooling",
-						Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider using the hostile-model config preset.", hostile),
+						Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider `pipelock generate config --preset hostile-model`.", hostile),
 						Pattern:  hostile,
 					})
 				}

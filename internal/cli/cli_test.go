@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -558,7 +559,7 @@ func TestCheckCmd_URLBlocked(t *testing.T) {
 }
 
 func TestGenerateCmd_AllPresets(t *testing.T) {
-	for _, preset := range []string{"strict", "balanced", "audit"} {
+	for _, preset := range presets.All {
 		t.Run(preset, func(t *testing.T) {
 			cmd := rootCmd()
 			cmd.SetArgs([]string{"generate", "config", "--preset", preset})
@@ -577,7 +578,7 @@ func TestGenerateCmd_AllPresets(t *testing.T) {
 func TestGenerateCmd_OutputPassesValidation(t *testing.T) {
 	// Regression: generated configs must be re-loadable without validation errors.
 	// This catches reserved fields (e.g. dlp.action) being emitted when they shouldn't be.
-	for _, preset := range []string{"strict", "balanced", "audit"} {
+	for _, preset := range presets.All {
 		t.Run(preset, func(t *testing.T) {
 			cmd := rootCmd()
 			cmd.SetArgs([]string{"generate", "config", "--preset", preset})

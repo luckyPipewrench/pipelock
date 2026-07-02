@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -20,9 +21,6 @@ const (
 	PresetCursor       = "cursor"
 	PresetGenericAgent = "generic-agent"
 	PresetHostileModel = "hostile-model"
-
-	ValidNames = "strict, balanced, audit, claude-code, cursor, generic-agent, hostile-model"
-	FlagHelp   = "config preset: " + ValidNames
 )
 
 var All = []string{
@@ -35,6 +33,11 @@ var All = []string{
 	PresetHostileModel,
 }
 
+var (
+	ValidNames = strings.Join(All, ", ")
+	FlagHelp   = "config preset: " + ValidNames
+)
+
 // YAML returns the config YAML bytes for a built-in preset.
 func YAML(name string) ([]byte, error) {
 	switch name {
@@ -45,10 +48,11 @@ func YAML(name string) ([]byte, error) {
 	case config.ModeAudit:
 		return marshal(auditPreset())
 	case PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel:
-		if data, ok := configs.Preset(name); ok {
-			return data, nil
+		data, err := filePreset(name)
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("preset %q is not embedded", name)
+		return data, nil
 	default:
 		return nil, UnknownError(name)
 	}
@@ -58,15 +62,15 @@ func YAML(name string) ([]byte, error) {
 func Config(name string) (*config.Config, error) {
 	switch name {
 	case config.ModeStrict:
-		return strictPreset(), nil
+		return validatedConfig(name, strictPreset())
 	case config.ModeBalanced:
-		return config.Defaults(), nil
+		return validatedConfig(name, config.Defaults())
 	case config.ModeAudit:
-		return auditPreset(), nil
+		return validatedConfig(name, auditPreset())
 	case PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel:
-		data, ok := configs.Preset(name)
-		if !ok {
-			return nil, fmt.Errorf("preset %q is not embedded", name)
+		data, err := filePreset(name)
+		if err != nil {
+			return nil, err
 		}
 		cfg, err := parseConfig(data)
 		if err != nil {
@@ -82,6 +86,24 @@ func UnknownError(name string) error {
 	return fmt.Errorf("unknown preset %q: choose %s", name, ValidNames)
 }
 
+func filePreset(name string) ([]byte, error) {
+	data, ok := configs.Preset(name)
+	if !ok {
+		return nil, fmt.Errorf("preset %q is not embedded", name)
+	}
+	if _, err := parseConfig(data); err != nil {
+		return nil, fmt.Errorf("validating preset %q: %w", name, err)
+	}
+	return data, nil
+}
+
+func validatedConfig(name string, cfg *config.Config) (*config.Config, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validating preset %q: %w", name, err)
+	}
+	return cfg, nil
+}
+
 func marshal(cfg *config.Config) ([]byte, error) {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -94,7 +116,10 @@ func parseConfig(data []byte) (*config.Config, error) {
 	cfg := &config.Config{}
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
-	if err := decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
+	if err := decoder.Decode(cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("empty YAML document")
+		}
 		return nil, err
 	}
 	var extra yaml.Node
@@ -103,11 +128,28 @@ func parseConfig(data []byte) (*config.Config, error) {
 	} else if !errors.Is(err, io.EOF) {
 		return nil, err
 	}
+	if err := requireMappingDocument(data); err != nil {
+		return nil, err
+	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+func requireMappingDocument(data []byte) error {
+	var doc yaml.Node
+	if err := yaml.NewDecoder(bytes.NewReader(data)).Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("empty YAML document")
+		}
+		return err
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("preset YAML must be a non-empty mapping document")
+	}
+	return nil
 }
 
 func strictPreset() *config.Config {

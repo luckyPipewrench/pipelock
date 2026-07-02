@@ -4,11 +4,13 @@
 package presets
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/configs"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -33,10 +35,8 @@ func TestYAMLProducesLoadableConfigForEveryPreset(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load(%q): %v", name, err)
 			}
-			switch cfg.Mode {
-			case config.ModeStrict, config.ModeBalanced, config.ModeAudit:
-			default:
-				t.Fatalf("mode = %q, want sane preset mode", cfg.Mode)
+			if got, want := cfg.Mode, expectedMode(name); got != want {
+				t.Fatalf("mode = %q, want %q", got, want)
 			}
 		})
 	}
@@ -56,6 +56,31 @@ func TestConfigAcceptsEveryPreset(t *testing.T) {
 			if cfg.Mode == "" {
 				t.Fatal("expected mode to be set")
 			}
+			if got, want := cfg.Mode, expectedMode(name); got != want {
+				t.Fatalf("mode = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestFilePresetYAMLMatchesEmbeddedBytes(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := YAML(name)
+			if err != nil {
+				t.Fatalf("YAML(%q): %v", name, err)
+			}
+			want, ok := configs.Preset(name)
+			if !ok {
+				t.Fatalf("configs.Preset(%q) not found", name)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("YAML(%q) changed embedded bytes", name)
+			}
 		})
 	}
 }
@@ -63,15 +88,60 @@ func TestConfigAcceptsEveryPreset(t *testing.T) {
 func TestUnknownPresetErrorListsAllValidNames(t *testing.T) {
 	t.Parallel()
 
-	_, err := YAML("nonexistent")
-	if err == nil {
-		t.Fatal("expected error")
+	for _, bad := range []string{"", " ", "nonexistent", "Balanced", "CLAUDE-CODE"} {
+		t.Run(bad, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := YAML(bad)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			msg := err.Error()
+			for _, name := range All {
+				if !strings.Contains(msg, name) {
+					t.Errorf("error %q does not list %q", msg, name)
+				}
+			}
+		})
 	}
-	msg := err.Error()
-	for _, name := range All {
-		if !strings.Contains(msg, name) {
-			t.Errorf("error %q does not list %q", msg, name)
-		}
+}
+
+func TestParseConfigRejectsInvalidPresetYAML(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "empty", data: []byte("")},
+		{name: "document marker only", data: []byte("---\n")},
+		{name: "null", data: []byte("null\n")},
+		{name: "sequence", data: []byte("- mode: balanced\n")},
+		{name: "multiple documents", data: []byte("mode: balanced\n---\nmode: audit\n")},
+		{name: "invalid mode", data: []byte("mode: permissive\n")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := parseConfig(tt.data); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func expectedMode(name string) string {
+	switch name {
+	case config.ModeStrict, PresetHostileModel:
+		return config.ModeStrict
+	case config.ModeBalanced, PresetClaudeCode, PresetCursor, PresetGenericAgent:
+		return config.ModeBalanced
+	case config.ModeAudit:
+		return config.ModeAudit
+	default:
+		panic("unexpected preset " + name)
 	}
 }
 

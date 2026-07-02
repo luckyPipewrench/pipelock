@@ -5,11 +5,14 @@ package cliutil
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+var defaultSystemConfigPath = "/etc/pipelock/pipelock.yaml"
 
 // LoadConfigOrDefault loads a config file if path is non-empty, otherwise
 // returns the built-in defaults.
@@ -22,6 +25,61 @@ func LoadConfigOrDefault(path string) (*config.Config, error) {
 		return cfg, nil
 	}
 	return config.Defaults(), nil
+}
+
+// InstallConfigResolution records the config path embedded into an installed
+// hook/wrapper and the source used to choose it.
+type InstallConfigResolution struct {
+	Path     string
+	Source   string
+	Explicit bool
+}
+
+// ResolveConfigForInstall resolves the config an installer should embed into
+// generated hook or wrapper commands. It intentionally never checks cwd-local
+// pipelock.yaml files; install-time config must be stable and operator-owned,
+// not dependent on the directory the agent later runs from.
+func ResolveConfigForInstall(path string) (InstallConfigResolution, error) {
+	if path != "" {
+		clean, err := filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			return InstallConfigResolution{}, fmt.Errorf("resolving config path %q: %w", path, err)
+		}
+		if err := ConfigPathIsSecure(clean); err != nil {
+			return InstallConfigResolution{}, err
+		}
+		if _, err := config.Load(clean); err != nil {
+			return InstallConfigResolution{}, fmt.Errorf("loading config %q: %w", clean, err)
+		}
+		return InstallConfigResolution{Path: clean, Source: "explicit --config", Explicit: true}, nil
+	}
+
+	discovered, err := DiscoverConfigPathStrict()
+	if err != nil {
+		return InstallConfigResolution{}, err
+	}
+	if discovered == "" {
+		return InstallConfigResolution{Source: "built-in defaults"}, nil
+	}
+	if _, err := config.Load(discovered); err != nil {
+		return InstallConfigResolution{}, fmt.Errorf("loading discovered config %q: %w", discovered, err)
+	}
+	return InstallConfigResolution{Path: discovered, Source: "auto-discovered"}, nil
+}
+
+// WriteInstallConfigProvenance reports the config an installer embedded. Keep
+// this operator-facing; generated hooks may later run from arbitrary working
+// directories, so the install output must make the trust boundary explicit.
+func WriteInstallConfigProvenance(w io.Writer, surface string, resolved InstallConfigResolution, quiet bool) {
+	if quiet || w == nil {
+		return
+	}
+	if resolved.Path != "" {
+		_, _ = fmt.Fprintf(w, "pipelock %s: config: %s (%s)\n", surface, resolved.Path, resolved.Source)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "pipelock %s: config: built-in defaults; no PIPELOCK_CONFIG, user config, or system config was found\n", surface)
+	_, _ = fmt.Fprintln(w, "pipelock: the installed integration will use built-in defaults until reinstalled with --config or a standard config path exists")
 }
 
 // ConfigPathIsSecure verifies that a discovered config file is safe to trust.
@@ -69,7 +127,7 @@ func configOwnershipSecure(ownerUID, euid int) bool {
 // wrapped argv so the spawned subprocess loads the same config as the
 // operator's main pipelock service.
 func DiscoverConfigPath() string {
-	return discoverConfigPath("/etc/pipelock/pipelock.yaml")
+	return discoverConfigPath(defaultSystemConfigPath)
 }
 
 // DiscoverConfigPathStrict returns the first secure config file pipelock would
@@ -78,7 +136,7 @@ func DiscoverConfigPath() string {
 // being silently skipped. Use this for security-sensitive commands where
 // falling back to defaults would hide an unsafe operator config.
 func DiscoverConfigPathStrict() (string, error) {
-	return discoverConfigPathStrict("/etc/pipelock/pipelock.yaml")
+	return discoverConfigPathStrict(defaultSystemConfigPath)
 }
 
 func configPathCandidates(systemPath string) []string {

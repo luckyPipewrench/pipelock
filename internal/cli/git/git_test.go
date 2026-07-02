@@ -46,6 +46,15 @@ func fakeKey() string {
 	return "AK" + "IA" + "IOSFODNN7" + "EXAMPLE"
 }
 
+func writeInstallTestConfig(t *testing.T) string {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
+}
+
 func runScanDiffCmd(t *testing.T, diff string) (string, error) {
 	t.Helper()
 	stdin, err := os.CreateTemp(t.TempDir(), "scan-diff-stdin-*")
@@ -377,9 +386,18 @@ func TestInstallHooksCmd_CreatesHook(t *testing.T) {
 	}
 
 	// Change to the fake repo dir
-	oldDir, _ := os.Getwd()
-	_ = os.Chdir(dir)
-	defer func() { _ = os.Chdir(oldDir) }()
+	oldDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldDir); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
 
 	cmd := testRootCmd()
 	cmd.SetArgs([]string{"git", "install-hooks"})
@@ -743,13 +761,14 @@ func TestInstallHooksCmd_WithConfig(t *testing.T) {
 	if err := os.MkdirAll(gitDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
+	cfgPath := writeInstallTestConfig(t)
 
 	oldDir, _ := os.Getwd()
 	_ = os.Chdir(dir)
 	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := testRootCmd()
-	cmd.SetArgs([]string{"git", "install-hooks", "--config", "/etc/pipelock.yaml"})
+	cmd.SetArgs([]string{"git", "install-hooks", "--config", cfgPath})
 
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
@@ -761,7 +780,7 @@ func TestInstallHooksCmd_WithConfig(t *testing.T) {
 
 	hookPath := filepath.Join(gitDir, "hooks", "pre-push")
 	data, _ := os.ReadFile(filepath.Clean(hookPath))
-	if !strings.Contains(string(data), "/etc/pipelock.yaml") {
+	if !strings.Contains(string(data), cfgPath) {
 		t.Error("hook should contain the config path")
 	}
 }

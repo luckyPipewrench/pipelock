@@ -882,9 +882,13 @@ func TestRunCodexInstall_RealInstall(t *testing.T) {
 		}
 	}]`
 	codexBin, invokeLog := fakeCodex(t, listJSON)
+	installCfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(installCfgPath, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	root := newCodexTestRoot()
-	root.SetArgs([]string{"codex", "install", "--codex-path", codexBin, "--config", cfgPath})
+	root.SetArgs([]string{"codex", "install", "--codex-path", codexBin, "--config", installCfgPath})
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
@@ -911,8 +915,8 @@ func TestRunCodexInstall_RealInstall(t *testing.T) {
 	if !strings.Contains(logStr, "--env PORT=3000") {
 		t.Errorf("expected env to be passed to codex mcp add, got: %s", logStr)
 	}
-	if !strings.Contains(logStr, cfgPath) {
-		t.Errorf("expected --config %s passthrough in log, got: %s", cfgPath, logStr)
+	if !strings.Contains(logStr, "--config "+installCfgPath) {
+		t.Errorf("expected --config %s passthrough in log, got: %s", installCfgPath, logStr)
 	}
 }
 

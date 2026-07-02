@@ -180,6 +180,7 @@ func installHooksCmd() *cobra.Command {
 	var configFile string
 	var binary string
 	var force bool
+	var quiet bool
 
 	cmd := &cobra.Command{
 		Use:   "install-hooks",
@@ -191,7 +192,7 @@ If .git/hooks/pre-push already exists, use --force to overwrite it.
 
 Examples:
   pipelock git install-hooks
-  pipelock git install-hooks --config /etc/pipelock.yaml
+  pipelock git install-hooks --config /etc/pipelock/pipelock.yaml
   pipelock git install-hooks --force`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			gitDir, err := findGitDir()
@@ -211,7 +212,13 @@ Examples:
 				binary = binaryName
 			}
 
-			hookContent := gitprotect.GeneratePrePushHook(binary, configFile)
+			resolvedConfig, err := cliutil.ResolveConfigForInstall(configFile)
+			if err != nil {
+				return err
+			}
+			cliutil.WriteInstallConfigProvenance(cmd.ErrOrStderr(), "git install-hooks", resolvedConfig, quiet)
+
+			hookContent := gitprotect.GeneratePrePushHook(binary, resolvedConfig.Path)
 
 			hooksDir := filepath.Join(gitDir, "hooks")
 			if err := os.MkdirAll(hooksDir, 0o750); err != nil {
@@ -230,6 +237,7 @@ Examples:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path for the hook to use")
 	cmd.Flags().StringVar(&binary, "binary", "", "path to pipelock binary (default: "+binaryName+" in PATH)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing hook")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress config provenance output")
 	return cmd
 }
 

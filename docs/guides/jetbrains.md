@@ -48,6 +48,10 @@ pipelock jetbrains install --dry-run
 pipelock jetbrains install --config ~/.config/pipelock/pipelock.yaml
 ```
 
+During install, Pipelock validates the selected config and writes the resolved
+absolute path into each wrapped MCP server. Without `--config`, it uses the
+standard config discovery order and prints the source it embedded.
+
 ## Remove
 
 ```bash

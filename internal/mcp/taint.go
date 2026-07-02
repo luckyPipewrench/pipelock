@@ -96,12 +96,16 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 	if rs, ok := opts.Rec.(session.RiskState); ok {
 		decision.Risk = rs.RiskSnapshot()
 	}
-	decision.ActionClass, decision.Sensitivity, decision.ActionRef = session.ClassifyMCPToolCall(
+	classified := session.ClassifyMCPToolCallWithOptions(
 		toolName,
 		argsJSON,
 		taintCfg.ProtectedPaths,
 		taintCfg.ElevatedPaths,
+		session.ClassificationOptions{FailSafe: taintCfg.FailSafeClassification},
 	)
+	decision.ActionClass = classified.Class
+	decision.Sensitivity = classified.Sensitivity
+	decision.ActionRef = classified.ActionRef
 	decision.ActionRef = mcpActionRef(toolName, decision.ActionRef)
 	if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
 		decision.Task = tp.TaskSnapshot()
@@ -114,11 +118,15 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 			return decision
 		}
 	}
-	decision.Result = session.PolicyMatrix{Profile: taintCfg.Policy}.Evaluate(
+	decision.Result = session.PolicyMatrix{Profile: taintCfg.Policy}.EvaluateWithOptions(
 		decision.Risk.Level,
 		decision.ActionClass,
 		decision.Sensitivity,
 		decision.Authority,
+		session.PolicyEvaluateOptions{
+			FailSafeClassification:  taintCfg.FailSafeClassification,
+			ClassificationConfident: classified.Confident,
+		},
 	)
 	if taintTrustOverrideApplies(taintCfg.TrustOverrides, decision.Risk, decision.ActionRef) {
 		decision.Result = session.PolicyDecisionResult{

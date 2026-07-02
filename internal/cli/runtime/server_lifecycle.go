@@ -741,6 +741,7 @@ func (s *Server) Start(ctx context.Context) error {
 				AuditLogger:              s.logger,
 				CEEFn:                    s.currentMCPCEE,
 				Store:                    mcpStore,
+				BaselineFn:               s.proxy.SessionBaselineChecker,
 				AdaptiveCfgFn:            mcpAdaptiveFn,
 				Metrics:                  s.metrics,
 				RedirectRTFn:             mcpRedirectRTFn,

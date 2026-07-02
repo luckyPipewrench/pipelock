@@ -1007,6 +1007,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
 	}
+	defer recordMCPBaselineSample(opts, rec)
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
 	// clientOut (blocked request drainer + response scanner) and logW

@@ -145,6 +145,34 @@ func TestClassifyPathSensitivity_RootRelativePatterns(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPActionWithOptions_FailSafeReadNeedsConfidence(t *testing.T) {
+	t.Parallel()
+
+	off := session.ClassifyHTTPActionWithOptions("GET", "", nil, nil, session.ClassificationOptions{})
+	if off.Class != session.ActionClassRead || off.Sensitivity != session.SensitivityNormal || off.Confident {
+		t.Fatalf("fail-safe off classification = %+v, want read normal low-confidence", off)
+	}
+
+	on := session.ClassifyHTTPActionWithOptions("GET", "", nil, nil, session.ClassificationOptions{FailSafe: true})
+	if on.Class != session.ActionClassRead || on.Sensitivity != session.SensitivityProtected || on.Confident {
+		t.Fatalf("fail-safe on classification = %+v, want read protected low-confidence", on)
+	}
+}
+
+func TestClassifyMCPToolCallWithOptions_FailSafeUnknownTool(t *testing.T) {
+	t.Parallel()
+
+	off := session.ClassifyMCPToolCallWithOptions("mystery_tool", `{}`, nil, nil, session.ClassificationOptions{})
+	if off.Class != session.ActionClassRead || off.Sensitivity != session.SensitivityNormal || off.Confident {
+		t.Fatalf("fail-safe off classification = %+v, want read normal low-confidence", off)
+	}
+
+	on := session.ClassifyMCPToolCallWithOptions("mystery_tool", `{}`, nil, nil, session.ClassificationOptions{FailSafe: true})
+	if on.Class != session.ActionClassRead || on.Sensitivity != session.SensitivityProtected || on.Confident {
+		t.Fatalf("fail-safe on classification = %+v, want read protected low-confidence", on)
+	}
+}
+
 func TestClassifyMCPToolCall_MutatingNetworkIntentWithSpacedJSON(t *testing.T) {
 	t.Parallel()
 

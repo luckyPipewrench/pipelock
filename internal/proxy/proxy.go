@@ -540,7 +540,12 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		}
 		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m, smOpts)
 		if cfg.BehavioralBaseline.Enabled {
-			_ = sm.EnableBaseline(&cfg.BehavioralBaseline) // validated at Load time
+			// Fail closed: a configured-enabled behavioral baseline that cannot
+			// initialize must not be silently swallowed (that leaves enforcement
+			// off while the operator believes deviations are blocked).
+			if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
+				return nil, fmt.Errorf("behavioral baseline init: %w", err)
+			}
 		}
 		p.sessionMgrPtr.Store(sm)
 	}
@@ -1393,6 +1398,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
 
+	oldCfg := p.cfgPtr.Load()
+
 	// Build new edition BEFORE swapping config/scanner.
 	// If this fails, keep all existing state unchanged (fail-safe).
 	oldSnap := p.editionPtr.Load()
@@ -1483,6 +1490,49 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		return false
 	}
 
+	var adaptiveCfg *config.AdaptiveEnforcement
+	if cfg.AdaptiveEnforcement.Enabled {
+		adaptiveCfg = &cfg.AdaptiveEnforcement
+	}
+	var airlockCfg *config.Airlock
+	if cfg.Airlock.Enabled {
+		airlockCfg = &cfg.Airlock
+	}
+	var stagedSessionMgr *SessionManager
+	if oldCfg != nil {
+		wasSessionProfilingEnabled := oldCfg.SessionProfiling.Enabled
+		isSessionProfilingEnabled := cfg.SessionProfiling.Enabled
+		switch {
+		case !wasSessionProfilingEnabled && isSessionProfilingEnabled:
+			smOpts := SessionManagerOptions{Logger: p.logger, AirlockCfg: airlockCfg}
+			stagedSessionMgr = NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics, smOpts)
+			if cfg.BehavioralBaseline.Enabled {
+				if err := stagedSessionMgr.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
+					p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+						fmt.Errorf("baseline reload failed, keeping old config: %w", err))
+					stagedSessionMgr.Close()
+					sc.Close()
+					if newEd != nil {
+						newEd.Close()
+					}
+					return false
+				}
+			}
+		case wasSessionProfilingEnabled && isSessionProfilingEnabled:
+			if sm := p.sessionMgrPtr.Load(); sm != nil {
+				if err := sm.ReconfigureBaseline(&cfg.BehavioralBaseline); err != nil {
+					p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+						fmt.Errorf("baseline reload failed, keeping old config: %w", err))
+					sc.Close()
+					if newEd != nil {
+						newEd.Close()
+					}
+					return false
+				}
+			}
+		}
+	}
+
 	// Publish both emitters now that staging has fully succeeded. The
 	// atomic.Pointer swaps are individually atomic; between them, a
 	// request can observe "new envelope + old receipt" for a few
@@ -1509,7 +1559,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.receiptKeyPath = receiptStage.keyPath
 	}
 
-	oldCfg := p.cfgPtr.Load()
 	// When redaction is being disabled, publish the config before clearing the
 	// legacy matcher mirror. Enabling keeps the opposite order: runtime first,
 	// then cfg, so a cfg that requires redaction never appears before its
@@ -1572,23 +1621,10 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 
 	// Toggle session manager lifecycle on config change.
-	var adaptiveCfg *config.AdaptiveEnforcement
-	if cfg.AdaptiveEnforcement.Enabled {
-		adaptiveCfg = &cfg.AdaptiveEnforcement
-	}
-	var airlockCfg *config.Airlock
-	if cfg.Airlock.Enabled {
-		airlockCfg = &cfg.Airlock
-	}
 	wasEnabled := oldCfg.SessionProfiling.Enabled
 	isEnabled := cfg.SessionProfiling.Enabled
 	if !wasEnabled && isEnabled {
-		smOpts := SessionManagerOptions{Logger: p.logger, AirlockCfg: airlockCfg}
-		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, p.metrics, smOpts)
-		if cfg.BehavioralBaseline.Enabled {
-			_ = sm.EnableBaseline(&cfg.BehavioralBaseline)
-		}
-		p.sessionMgrPtr.Store(sm)
+		p.sessionMgrPtr.Store(stagedSessionMgr)
 	} else if wasEnabled && !isEnabled {
 		if old := p.sessionMgrPtr.Swap(nil); old != nil {
 			old.Close()
@@ -1887,6 +1923,15 @@ func (p *Proxy) scannerProbe(ctx context.Context) error {
 func (p *Proxy) SessionStore() session.Store {
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		return sm.AsStore()
+	}
+	return nil
+}
+
+// SessionBaselineChecker returns the proxy's behavioral-baseline checker for
+// sharing with MCP transports. Returns nil when session profiling is disabled.
+func (p *Proxy) SessionBaselineChecker() session.BaselineChecker {
+	if sm := p.sessionMgrPtr.Load(); sm != nil {
+		return sm
 	}
 	return nil
 }
@@ -2244,6 +2289,34 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	ipAnomalies := sm.RecordIPDomain(clientIP, hostname, &cfg.SessionProfiling)
 	anomalies = append(anomalies, ipAnomalies...)
 
+	if baselineResult := sm.CheckBaselineFailClosed(baselineAgentKeyForSessionKey(key), sess); baselineResult != nil {
+		detail := baselineDecisionDetail(baselineResult)
+		if log != nil {
+			log.LogSessionAnomaly(key, "baseline_deviation", detail, clientIP, requestID, 3.0)
+		}
+		if p.metrics != nil {
+			p.metrics.RecordSessionAnomaly("baseline_deviation")
+		}
+		sess.RecordEvent(SessionEvent{
+			Kind:     "anomaly",
+			Type:     "baseline_deviation",
+			Target:   hostname,
+			Detail:   detail,
+			Severity: "warn",
+			Score:    3.0,
+		})
+		switch baselineResult.Action {
+		case config.ActionWarn:
+			// Observe and allow.
+		case config.ActionAsk:
+			return SessionResult{Blocked: true, Detail: detail, Level: sess.EffectiveEscalationLevel(scope)}
+		case config.ActionBlock:
+			return SessionResult{Blocked: true, Detail: detail, Level: sess.EffectiveEscalationLevel(scope)}
+		default:
+			return SessionResult{Blocked: true, Detail: detail, Level: sess.EffectiveEscalationLevel(scope)}
+		}
+	}
+
 	// Record adaptive signals (only when adaptive enforcement is enabled).
 	// escalated tracks whether the current request actually crossed an
 	// adaptive escalation threshold. Downstream airlock triggering is
@@ -2387,6 +2460,14 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	}
 
 	return SessionResult{Level: level}
+}
+
+func baselineAgentKeyForSessionKey(key string) string {
+	kind, agent, _ := classifySessionKey(key)
+	if kind == sessionKindIdentity && agent != "" {
+		return agent
+	}
+	return key
 }
 
 func recordScopedAdaptiveSignal(sess *SessionState, scope string, sig session.SignalType, ep decide.EscalationParams) bool {

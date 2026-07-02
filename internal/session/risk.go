@@ -178,6 +178,12 @@ type PolicyDecisionResult struct {
 	Reason   string
 }
 
+// PolicyEvaluateOptions carries optional fail-safe classification state.
+type PolicyEvaluateOptions struct {
+	FailSafeClassification  bool
+	ClassificationConfident bool
+}
+
 // RiskState is implemented by session recorders that track taint state.
 type RiskState interface {
 	RiskSnapshot() SessionRisk
@@ -285,7 +291,19 @@ func (pm PolicyMatrix) Evaluate(
 	sensitivity ActionSensitivity,
 	authority AuthorityKind,
 ) PolicyDecisionResult {
-	if isAlwaysAllowedAction(action) {
+	return pm.EvaluateWithOptions(taint, action, sensitivity, authority, PolicyEvaluateOptions{ClassificationConfident: true})
+}
+
+// EvaluateWithOptions applies the taint policy matrix with classifier
+// confidence metadata.
+func (pm PolicyMatrix) EvaluateWithOptions(
+	taint TaintLevel,
+	action ActionClass,
+	sensitivity ActionSensitivity,
+	authority AuthorityKind,
+	opts PolicyEvaluateOptions,
+) PolicyDecisionResult {
+	if isAlwaysAllowedAction(action) && (!opts.FailSafeClassification || opts.ClassificationConfident) {
 		return PolicyDecisionResult{Decision: PolicyAllow, Reason: "taint_safe_read_only_action"}
 	}
 
@@ -295,6 +313,18 @@ func (pm PolicyMatrix) Evaluate(
 
 	if taint >= TaintExternalHostile && isSensitiveAction(action, sensitivity) {
 		return PolicyDecisionResult{Decision: PolicyBlock, Reason: "sensitive_action_after_hostile_external_exposure"}
+	}
+
+	// Fail-safe classification (opt-in): a read/browse/summarize that only
+	// reached SensitivityProtected because it could NOT be confidently
+	// classified must not fall through to allow under untrusted exposure.
+	// Skipping the always-allow shortcut above is not enough — the untrusted
+	// switch has no read-class branch — so escalate to HITL here. Fires only
+	// when the toggle is on AND the classification was low-confidence, so
+	// confidently-normal reads are unaffected (regression-safe when off).
+	if opts.FailSafeClassification && !opts.ClassificationConfident &&
+		sensitivity >= SensitivityProtected && isAlwaysAllowedAction(action) {
+		return PolicyDecisionResult{Decision: PolicyAsk, Reason: "fail_safe_low_confidence_read_after_untrusted_exposure"}
 	}
 
 	switch action {

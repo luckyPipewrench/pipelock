@@ -754,6 +754,7 @@ Key-free evidence capture:
 			// profiling config as the HTTP proxy. store and adaptiveCfg are nil-safe
 			// downstream when session profiling is disabled.
 			var store session.Store
+			var baselineChecker session.BaselineChecker
 			var adaptiveCfg *config.AdaptiveEnforcement
 			var mcpMetrics *metrics.Metrics
 			if cfg.AdaptiveEnforcement.Enabled {
@@ -769,6 +770,7 @@ Key-free evidence capture:
 				}
 				defer sm.Close()
 				store = sm.AsStore()
+				baselineChecker = sm
 			}
 
 			// Denial-of-wallet tracker: _default budget is free tier (always
@@ -1027,7 +1029,7 @@ Key-free evidence capture:
 						InputCfg: inputCfg, RequestBodyCfg: &cfg.RequestBodyScanning,
 						ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
-						CEE: cee, Store: store, AdaptiveCfgFn: adaptiveFn, Metrics: mcpMetrics,
+						CEE: cee, Store: store, Baseline: baselineChecker, AdaptiveCfgFn: adaptiveFn, Metrics: mcpMetrics,
 						ConfigHash: captureConfigHash, Profile: captureProfile,
 						AddressProtectionAgent: captureProfile,
 						RedirectRT:             buildRedirectRT(cfg),
@@ -1066,7 +1068,7 @@ Key-free evidence capture:
 						Scanner: sc, Approver: approver,
 						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
-						CEE: cee, Store: store,
+						CEE: cee, Store: store, Baseline: baselineChecker,
 						AdaptiveCfg:            adaptiveCfg,
 						ConfigHash:             captureConfigHash,
 						Profile:                captureProfile,
@@ -1106,7 +1108,7 @@ Key-free evidence capture:
 					Scanner: sc, Approver: approver,
 					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
-					CEE: cee, Store: store,
+					CEE: cee, Store: store, Baseline: baselineChecker,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 					ConfigHash: captureConfigHash, Profile: captureProfile,
 					AddressProtectionAgent: captureProfile,
@@ -1271,7 +1273,7 @@ Key-free evidence capture:
 					Scanner: sc, Approver: approver,
 					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
-					CEE: cee, Store: store,
+					CEE: cee, Store: store, Baseline: baselineChecker,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 					ConfigHash: captureConfigHash, Profile: captureProfile,
 					AddressProtectionAgent: captureProfile,
@@ -1389,7 +1391,7 @@ Key-free evidence capture:
 				Scanner: sc, Approver: approver,
 				InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 				KillSwitch: ks, ChainMatcher: chainMatcher,
-				CEE: cee, Store: store,
+				CEE: cee, Store: store, Baseline: baselineChecker,
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 				ConfigHash: captureConfigHash, Profile: captureProfile,
 				AddressProtectionAgent: captureProfile,

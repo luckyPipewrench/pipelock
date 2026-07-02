@@ -5060,7 +5060,7 @@ func TestValidate_MCPToolPolicyRuleInvalidPerRuleAction(t *testing.T) {
 	}
 }
 
-func TestValidate_MCPToolPolicyStructuralValidators(t *testing.T) {
+func TestValidate_StructuralValidators(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		rule    ToolPolicyRule

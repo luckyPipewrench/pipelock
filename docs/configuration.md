@@ -1080,7 +1080,6 @@ behavioral_baseline:
     - tool_calls
     - unique_tools
     - domains
-    - bytes
     - duration
     - requests
   poison_resistance: true
@@ -1095,7 +1094,7 @@ behavioral_baseline:
 | `deviation_action` | `"warn"` | Action for locked-profile deviations: `warn`, `ask`, or `block` |
 | `auto_ratify` | `false` | Automatically lock learned profiles. Dangerous for production because poisoned training traffic can approve itself. |
 | `sensitivity_sigma` | `2.0` | Standard-deviation multiplier for deviation detection |
-| `lock_dimensions` | all dimensions | Optional subset of `tool_calls`, `unique_tools`, `domains`, `bytes`, `duration`, `requests` |
+| `lock_dimensions` | `tool_calls`, `unique_tools`, `domains`, `duration`, `requests` | Optional subset of `tool_calls`, `unique_tools`, `domains`, `duration`, `requests`. `bytes` remains stored in profiles for compatibility but is not part of default enforcement until transport byte recording is wired into session state. |
 | `poison_resistance` | `true` | Trim high-sigma training outliers before building the profile |
 | `seasonality_mode` | `"none"` | Seasonality mode; only `none` is currently enforced |
 
@@ -2477,7 +2476,7 @@ The `action` knob applies only to unsigned tools. A tool whose attestation is pr
 
 ## Behavioral Baseline
 
-Profile-then-lock behavioral analysis per agent. Pipelock observes an agent's sessions, builds a statistical profile of its normal behavior (tool calls, unique tools, domains, bytes, duration, requests), and once the profile is ratified and locked, flags or blocks sessions that deviate beyond `sensitivity_sigma` standard deviations from the learned mean.
+Profile-then-lock behavioral analysis per agent. Pipelock observes an agent's sessions, builds a statistical profile of its normal behavior (tool calls, unique tools, domains, duration, requests, with bytes retained for profile compatibility), and once the profile is ratified and locked, flags or blocks sessions that deviate beyond `sensitivity_sigma` standard deviations from the learned mean.
 
 ```yaml
 session_profiling:
@@ -2498,7 +2497,7 @@ behavioral_baseline:
 | `profile_dir` | (required if enabled) | Directory where learned profiles persist as JSON |
 | `auto_ratify` | `false` | Lock learned profiles without operator approval. **Dangerous:** an attacker active during the learning window gets their behavior baselined as normal. |
 | `sensitivity_sigma` | `2.0` | Standard deviations from the learned mean before a metric counts as deviant |
-| `lock_dimensions` | all | Metrics to enforce: `tool_calls`, `unique_tools`, `domains`, `bytes`, `duration`, `requests` |
+| `lock_dimensions` | `tool_calls`, `unique_tools`, `domains`, `duration`, `requests` | Metrics to enforce. `bytes` is accepted for existing profiles/configs but is not part of default enforcement until session byte recording is wired on production transports. |
 | `poison_resistance` | `true` | Trim outlier sessions when building the profile, so adversarial sessions during learning have bounded influence |
 | `seasonality_mode` | `none` | Only `none` is implemented. `labeled` and `time` are reserved and rejected by the baseline engine at startup. |
 
@@ -2515,6 +2514,7 @@ taint:
   enabled: true                        # default: true
   policy: balanced                     # strict, balanced, permissive (default: balanced)
   recent_sources: 10                   # bounded history of recent taint-raising events (default: 10)
+  fail_safe_classification: false      # unknown read/tool classifications become protected when true
   allowlisted_domains:                 # fetches from these domains do NOT raise session taint
     - "docs.anthropic.com"
     - "docs.github.com"
@@ -2551,6 +2551,7 @@ taint:
 | `enabled` | bool | `true` | Master switch. Omit to get the security default (enabled). |
 | `policy` | string | `balanced` | `strict` is the most conservative taint policy, `balanced` is the security default, and `permissive` observes taint without changing enforcement. |
 | `recent_sources` | int | `10` | How many recent taint sources to keep per session for receipt reporting. |
+| `fail_safe_classification` | bool | `false` | When true, unknown or low-confidence read/tool classifications are treated as protected instead of passing the read-only shortcut. |
 | `allowlisted_domains` | []string | 3 high-trust documentation domains | Responses from these domains do not raise taint. Supports `MatchDomain` wildcards. |
 | `trusted_mcp_servers` | []string | empty | MCP server names whose clean responses do not raise session taint. Entries match `pipelock mcp proxy --server-name`; URLs and slashes are rejected. This does not disable MCP response scanning, and prompt-injection hits can still raise hostile taint. |
 | `protected_paths` | []string | 7 patterns (see above) | Globs for file paths or tool args that are blocked for tainted sessions. |

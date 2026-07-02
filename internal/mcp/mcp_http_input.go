@@ -504,6 +504,30 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 
 	// All clean - proceed (with block_all and CEE checks).
 	if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
+		if toolName != "" {
+			baselineDecision := recordMCPToolCallAndCheckBaseline(opts, rec, toolName)
+			switch baselineDecision.Action {
+			case config.ActionBlock, config.ActionAsk:
+				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", baselineDecision.Detail)
+				recordAdaptiveSignal(session.SignalBlock)
+				receiptVerdict = config.ActionBlock
+				errMsg := ""
+				if baselineDecision.Action == config.ActionAsk {
+					errMsg = "pipelock: MCP request blocked by behavioral baseline"
+				}
+				result.Blocked = &BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     "blocked (baseline deviation)",
+					ErrorCode:      -32001,
+					ErrorMessage:   errMsg,
+				}
+				return result
+			case config.ActionWarn:
+				_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", baselineDecision.Detail)
+				recordAdaptiveSignal(session.SignalNearMiss)
+			}
+		}
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
 		if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
@@ -655,6 +679,18 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		if m != nil {
 			m.RecordAdaptiveUpgrade(originalAction, effectiveAction, levelLabel)
+		}
+	}
+
+	if toolName != "" {
+		baselineDecision := recordMCPToolCallAndCheckBaseline(opts, rec, toolName)
+		if baselineDecision.Action != "" {
+			reasons = append(reasons, baselineDecision.Detail)
+			effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
+			if baselineDecision.Action == config.ActionAsk {
+				errCode = -32001
+				errMsg = "pipelock: MCP request blocked by behavioral baseline"
+			}
 		}
 	}
 

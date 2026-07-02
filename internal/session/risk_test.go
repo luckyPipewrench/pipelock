@@ -181,3 +181,30 @@ func TestPolicyMatrixEvaluate(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicyMatrixEvaluateWithOptions_FailSafeLowConfidenceRead(t *testing.T) {
+	t.Parallel()
+
+	pm := session.PolicyMatrix{Profile: "balanced"}
+	withoutFailSafe := pm.EvaluateWithOptions(
+		session.TaintExternalHostile,
+		session.ActionClassRead,
+		session.SensitivityProtected,
+		session.AuthorityUserBroad,
+		session.PolicyEvaluateOptions{ClassificationConfident: false},
+	)
+	if withoutFailSafe.Decision != session.PolicyAllow {
+		t.Fatalf("without fail-safe decision = %s, want allow", withoutFailSafe.Decision)
+	}
+
+	withFailSafe := pm.EvaluateWithOptions(
+		session.TaintExternalHostile,
+		session.ActionClassRead,
+		session.SensitivityProtected,
+		session.AuthorityUserBroad,
+		session.PolicyEvaluateOptions{FailSafeClassification: true, ClassificationConfident: false},
+	)
+	if withFailSafe.Decision != session.PolicyBlock {
+		t.Fatalf("with fail-safe decision = %s, want block", withFailSafe.Decision)
+	}
+}

@@ -178,6 +178,12 @@ type PolicyDecisionResult struct {
 	Reason   string
 }
 
+// PolicyEvaluateOptions carries optional fail-safe classification state.
+type PolicyEvaluateOptions struct {
+	FailSafeClassification  bool
+	ClassificationConfident bool
+}
+
 // RiskState is implemented by session recorders that track taint state.
 type RiskState interface {
 	RiskSnapshot() SessionRisk
@@ -285,7 +291,19 @@ func (pm PolicyMatrix) Evaluate(
 	sensitivity ActionSensitivity,
 	authority AuthorityKind,
 ) PolicyDecisionResult {
-	if isAlwaysAllowedAction(action) {
+	return pm.EvaluateWithOptions(taint, action, sensitivity, authority, PolicyEvaluateOptions{ClassificationConfident: true})
+}
+
+// EvaluateWithOptions applies the taint policy matrix with classifier
+// confidence metadata.
+func (pm PolicyMatrix) EvaluateWithOptions(
+	taint TaintLevel,
+	action ActionClass,
+	sensitivity ActionSensitivity,
+	authority AuthorityKind,
+	opts PolicyEvaluateOptions,
+) PolicyDecisionResult {
+	if isAlwaysAllowedAction(action) && (!opts.FailSafeClassification || opts.ClassificationConfident) {
 		return PolicyDecisionResult{Decision: PolicyAllow, Reason: "taint_safe_read_only_action"}
 	}
 

@@ -1553,6 +1553,37 @@ func TestServer_Reload_ProxyFailureStaysFailSafe(t *testing.T) {
 	}
 }
 
+func TestImplausibleReloadTeardownReasons_BehavioralBaselineWeakening(t *testing.T) {
+	t.Parallel()
+
+	oldCfg := config.Defaults()
+	oldCfg.SessionProfiling.Enabled = true
+	oldCfg.BehavioralBaseline.Enabled = true
+	oldCfg.BehavioralBaseline.DeviationAction = config.ActionBlock
+	oldCfg.BehavioralBaseline.ProfileDir = t.TempDir()
+
+	disabled := oldCfg.Clone()
+	disabled.BehavioralBaseline.Enabled = false
+	if reasons := implausibleReloadTeardownReasons(oldCfg, disabled); !containsString(reasons, "behavioral_baseline.enabled disabled") {
+		t.Fatalf("baseline disable reasons = %v, want behavioral_baseline.enabled disabled", reasons)
+	}
+
+	downgraded := oldCfg.Clone()
+	downgraded.BehavioralBaseline.DeviationAction = config.ActionWarn
+	if reasons := implausibleReloadTeardownReasons(oldCfg, downgraded); !containsString(reasons, "behavioral_baseline.deviation_action downgraded") {
+		t.Fatalf("baseline downgrade reasons = %v, want behavioral_baseline.deviation_action downgraded", reasons)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestServer_MCPListener_ResponseScanningFallback verifies the
 // ResolveRuntime interaction for --mcp-listen: listener mode does NOT
 // trigger the response-scanning fallback (that is only for RuntimeMCPProxy

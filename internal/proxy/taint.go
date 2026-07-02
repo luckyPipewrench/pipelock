@@ -56,7 +56,11 @@ func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, 
 	if rs, ok := rec.(session.RiskState); ok {
 		decision.Risk = rs.RiskSnapshot()
 	}
-	decision.ActionClass, decision.Sensitivity = session.ClassifyHTTPAction(method, parsedURL.Path, cfg.Taint.ProtectedPaths, cfg.Taint.ElevatedPaths)
+	classified := session.ClassifyHTTPActionWithOptions(method, parsedURL.Path, cfg.Taint.ProtectedPaths, cfg.Taint.ElevatedPaths, session.ClassificationOptions{
+		FailSafe: cfg.Taint.FailSafeClassification,
+	})
+	decision.ActionClass = classified.Class
+	decision.Sensitivity = classified.Sensitivity
 	decision.ActionRef = httpActionRef(decision.ActionClass, method, parsedURL)
 	if tp, ok := rec.(session.TaskContextProvider); ok {
 		decision.Task = tp.TaskSnapshot()
@@ -66,11 +70,15 @@ func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, 
 			return decision
 		}
 	}
-	decision.Result = session.PolicyMatrix{Profile: cfg.Taint.Policy}.Evaluate(
+	decision.Result = session.PolicyMatrix{Profile: cfg.Taint.Policy}.EvaluateWithOptions(
 		decision.Risk.Level,
 		decision.ActionClass,
 		decision.Sensitivity,
 		decision.Authority,
+		session.PolicyEvaluateOptions{
+			FailSafeClassification:  cfg.Taint.FailSafeClassification,
+			ClassificationConfident: classified.Confident,
+		},
 	)
 	if trustOverrideApplies(cfg.Taint.TrustOverrides, decision.Risk, decision.ActionRef) {
 		decision.Result = session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "taint_trust_override"}

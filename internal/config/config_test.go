@@ -5137,6 +5137,35 @@ func TestValidate_MCPToolPolicyStructuralValidators(t *testing.T) {
 			wantErr: `arg_type "string" with numeric bounds`,
 		},
 		{
+			name: "numeric bound with integer type is valid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^amount$",
+				ArgType:     "integer",
+				ArgNumberGT: testJSONNumberPtr("10"),
+				ArgNumberLT: testJSONNumberPtr("100"),
+			},
+		},
+		{
+			name: "arg_value_in with arg_key is valid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^currency$",
+				ArgValueIn:  []string{"BTC", "ETH"},
+			},
+		},
+		{
+			name: "arg_value_in without arg_key is invalid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgValueIn:  []string{"BTC"},
+			},
+			wantErr: "structural argument validators but no arg_key",
+		},
+		{
 			name: "negative arg_len_lt",
 			rule: ToolPolicyRule{
 				Name:        "structural",

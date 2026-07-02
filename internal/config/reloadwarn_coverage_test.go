@@ -107,6 +107,8 @@ func TestActionDowngradedExportedWrapper(t *testing.T) {
 		{name: "block_to_warn_downgrades", oldAction: ActionBlock, newAction: ActionWarn, want: true},
 		{name: "warn_to_block_not_downgrade", oldAction: ActionWarn, newAction: ActionBlock, want: false},
 		{name: "unknown_action_not_downgrade", oldAction: "bogus", newAction: ActionWarn, want: false},
+		{name: "unknown_new_action_not_downgrade", oldAction: ActionWarn, newAction: "bogus", want: false},
+		{name: "same_action_not_downgrade", oldAction: ActionWarn, newAction: ActionWarn, want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

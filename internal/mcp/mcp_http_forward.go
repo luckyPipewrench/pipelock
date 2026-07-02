@@ -241,6 +241,7 @@ func RunHTTPProxy(
 							}
 							return
 						}
+						commitMCPToolCall(fwdOpts, rec, deferredReq.ToolName)
 						respReader = fwdOpts.withResponseTimeout(respReader)
 						_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
 						if errors.Is(scanErr, transport.ErrResponseTimeout) {
@@ -346,6 +347,7 @@ func RunHTTPProxy(
 			}
 			continue
 		}
+		commitMCPToolCall(fwdOpts, rec, frame.ToolCallName)
 
 		// Scan and forward response. Apply the optional per-read response
 		// timeout (no-op when disabled) so a hung HTTP upstream fails closed.

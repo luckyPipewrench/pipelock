@@ -344,7 +344,10 @@ func RunHTTPListenerProxy(
 			}
 			reqRec = opts.Store.GetOrCreate(adaptiveHost)
 		}
-		defer recordMCPBaselineSample(baseOpts, reqRec)
+		baselineRec := newMCPRequestBaselineRecorder()
+		baselineOpts := baseOpts
+		baselineOpts.BaselineRec = baselineRec
+		defer recordMCPBaselineSample(baselineOpts, nil)
 
 		warnCtx := scanner.DLPWarnContextFromCtx(r.Context())
 		if warnCtx.Transport == "" {
@@ -457,6 +460,7 @@ func RunHTTPListenerProxy(
 		// Input scanning: DLP, injection, policy, chain detection.
 		scanOpts := baseOpts
 		scanOpts.Rec = reqRec
+		scanOpts.BaselineRec = baselineRec
 		scanOpts.AdaptiveCfg = adaptiveCfg
 		scanOpts.AdaptiveCfgFn = nil
 		scanOpts.WarnContext = r.Context()
@@ -525,6 +529,7 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
+		commitMCPToolCall(scanOpts, reqRec, frame.ToolCallName)
 		defer func() { _ = upResp.Body.Close() }()
 
 		// 202 Accepted: notification acknowledged, no body.
@@ -593,6 +598,7 @@ func RunHTTPListenerProxy(
 		bufWriter := &syncWriter{w: &buf}
 		reqOpts := baseOpts
 		reqOpts.Rec = reqRec
+		reqOpts.BaselineRec = baselineRec
 		reqOpts.AdaptiveCfg = adaptiveCfg
 		reqOpts.AdaptiveCfgFn = nil
 

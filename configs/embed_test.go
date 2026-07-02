@@ -41,6 +41,8 @@ func TestPresetRejectsUnknownName(t *testing.T) {
 	}
 }
 
+// Intentionally serial: this test mutates the shared filePresets map that
+// parallel tests read through Preset.
 func TestPresetRejectsMissingEmbeddedFile(t *testing.T) {
 	filePresets["missing"] = "missing.yaml"
 	defer delete(filePresets, "missing")

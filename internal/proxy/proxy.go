@@ -540,7 +540,12 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		}
 		sm := NewSessionManager(&cfg.SessionProfiling, adaptiveCfg, m, smOpts)
 		if cfg.BehavioralBaseline.Enabled {
-			_ = sm.EnableBaseline(&cfg.BehavioralBaseline) // validated at Load time
+			// Fail closed: a configured-enabled behavioral baseline that cannot
+			// initialize must not be silently swallowed (that leaves enforcement
+			// off while the operator believes deviations are blocked).
+			if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
+				return nil, fmt.Errorf("behavioral baseline init: %w", err)
+			}
 		}
 		p.sessionMgrPtr.Store(sm)
 	}

@@ -1573,6 +1573,15 @@ func TestImplausibleReloadTeardownReasons_BehavioralBaselineWeakening(t *testing
 	if reasons := implausibleReloadTeardownReasons(oldCfg, downgraded); !containsString(reasons, "behavioral_baseline.deviation_action downgraded") {
 		t.Fatalf("baseline downgrade reasons = %v, want behavioral_baseline.deviation_action downgraded", reasons)
 	}
+
+	// A live profile_dir move orphans locked profiles on the next restart
+	// (Reconfigure does not reload the new dir), so it must be rejected as a
+	// teardown rather than hot-applied.
+	movedDir := oldCfg.Clone()
+	movedDir.BehavioralBaseline.ProfileDir = t.TempDir()
+	if reasons := implausibleReloadTeardownReasons(oldCfg, movedDir); !containsString(reasons, "behavioral_baseline.profile_dir changed") {
+		t.Fatalf("baseline profile_dir change reasons = %v, want behavioral_baseline.profile_dir changed", reasons)
+	}
 }
 
 func containsString(values []string, want string) bool {

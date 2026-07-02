@@ -315,6 +315,18 @@ func (pm PolicyMatrix) EvaluateWithOptions(
 		return PolicyDecisionResult{Decision: PolicyBlock, Reason: "sensitive_action_after_hostile_external_exposure"}
 	}
 
+	// Fail-safe classification (opt-in): a read/browse/summarize that only
+	// reached SensitivityProtected because it could NOT be confidently
+	// classified must not fall through to allow under untrusted exposure.
+	// Skipping the always-allow shortcut above is not enough — the untrusted
+	// switch has no read-class branch — so escalate to HITL here. Fires only
+	// when the toggle is on AND the classification was low-confidence, so
+	// confidently-normal reads are unaffected (regression-safe when off).
+	if opts.FailSafeClassification && !opts.ClassificationConfident &&
+		sensitivity >= SensitivityProtected && isAlwaysAllowedAction(action) {
+		return PolicyDecisionResult{Decision: PolicyAsk, Reason: "fail_safe_low_confidence_read_after_untrusted_exposure"}
+	}
+
 	switch action {
 	case ActionClassWrite:
 		if sensitivity >= SensitivityProtected && authority < AuthorityUserExact {

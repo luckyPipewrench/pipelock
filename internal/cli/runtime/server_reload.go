@@ -456,6 +456,15 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 		reasons = append(reasons, "behavioral_baseline.deviation_action downgraded")
 	}
 
+	// A live profile_dir change is a posture teardown: Reconfigure swaps the
+	// dir in memory without loading profiles from it, so locked profiles are
+	// silently orphaned on the next restart (fail-open). Require a full restart
+	// to move the profile store instead of a hot reload.
+	if oldCfg.BehavioralBaseline.Enabled && newCfg.BehavioralBaseline.Enabled &&
+		oldCfg.BehavioralBaseline.ProfileDir != newCfg.BehavioralBaseline.ProfileDir {
+		reasons = append(reasons, "behavioral_baseline.profile_dir changed")
+	}
+
 	return reasons
 }
 

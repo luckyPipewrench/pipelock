@@ -277,44 +277,19 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 
 		// Key-scoped rules: extract only values under matching top-level keys,
 		// then normalize and match those instead of all values. If raw
-		// arguments are unavailable, skip the rule rather than falling
-		// back to unscoped matching (safety net for future callers).
+		// arguments are unavailable, skip best-effort pattern-only rules rather
+		// than falling back to unscoped matching; structural validators need raw
+		// JSON, so they fail closed instead.
 		ruleTokens, ruleJoined := tokens, joined
 		ruleAltTokens, ruleAltJoined := altTokens, altJoined
 		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
-		if rule.ArgKey != nil && rule.ArgPattern != nil {
-			if len(rawArgs) == 0 {
-				argPatternMatched := matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
-					matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
-					matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined)
-				if !argPatternMatched {
-					continue
-				}
-				if !rule.hasStructuralValidators() {
-					continue // cannot scope without raw JSON - skip non-structural rule
-				}
-				structuralMatched, uninspectable := rule.matchStructuralValidators(rawArgs)
-				if uninspectable {
-					return uninspectableJSONDepthVerdict()
-				}
-				if !structuralMatched {
-					continue
-				}
-				matchedRules = append(matchedRules, rule.Name)
-				action := rule.Action
-				if action == "" {
-					action = pc.Action
-				}
-				prev := strictest
-				strictest = StricterAction(strictest, action)
-				if strictest != prev && action == config.ActionRedirect {
-					redirectProfile = rule.RedirectProfile
-				}
-				if strictest != prev && action == config.ActionDefer {
-					resolutionPolicy = rule.ResolutionPolicy
-				}
-				continue
+		if rule.ArgKey != nil && len(rawArgs) == 0 {
+			if rule.hasStructuralValidators() {
+				return uninspectableStructuralArgsVerdict(rule.Name)
 			}
+			continue
+		}
+		if rule.ArgKey != nil && rule.ArgPattern != nil {
 			scoped := jsonrpc.ExtractStringsForKeysResult(rawArgs, rule.ArgKey)
 			if scoped.Truncated {
 				return uninspectableJSONDepthVerdict()
@@ -730,6 +705,18 @@ func uninspectableJSONDepthVerdict() Verdict {
 		Matched: true,
 		Action:  config.ActionBlock,
 		Rules:   []string{uninspectableJSONDepthRule},
+	}
+}
+
+func uninspectableStructuralArgsVerdict(ruleName string) Verdict {
+	rules := []string{uninspectableJSONDepthRule}
+	if ruleName != "" {
+		rules = []string{ruleName, uninspectableJSONDepthRule}
+	}
+	return Verdict{
+		Matched: true,
+		Action:  config.ActionBlock,
+		Rules:   rules,
 	}
 }
 

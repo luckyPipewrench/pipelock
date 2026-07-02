@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -3366,9 +3367,12 @@ func TestStructuralValidators_RawArgsMissingWithArgPatternFailsClosed(t *testing
 	if !v.Matched {
 		t.Fatal("structural bound rule should fail closed instead of skipping when raw args are unavailable")
 	}
+	if !slices.Equal(v.Rules, []string{structuralRuleName, uninspectableJSONDepthRule}) {
+		t.Fatalf("Rules = %v, want [%q %q]", v.Rules, structuralRuleName, uninspectableJSONDepthRule)
+	}
 
-	if v := pc.CheckToolCall(structuralTool, []string{"safe"}); v.Matched {
-		t.Fatalf("non-matching arg_pattern should not trigger structural fail-closed without raw args, got %+v", v)
+	if v := pc.CheckToolCall(structuralTool, []string{"safe"}); !v.Matched {
+		t.Fatal("key-scoped structural rule should fail closed before using unscoped arg strings")
 	}
 
 	valuePolicy := structuralPolicy(t, config.ToolPolicyRule{
@@ -3378,8 +3382,8 @@ func TestStructuralValidators_RawArgsMissingWithArgPatternFailsClosed(t *testing
 		ArgKey:      "^mode$",
 		ArgValueIn:  []string{"admin"},
 	})
-	if v := valuePolicy.CheckToolCall(structuralTool, []string{"anything"}); v.Matched {
-		t.Fatalf("value-in-only structural rule should not fail closed on absent raw args, got %+v", v)
+	if v := valuePolicy.CheckToolCall(structuralTool, []string{"anything"}); !v.Matched {
+		t.Fatal("value-in structural rule should fail closed on absent raw args")
 	}
 }
 

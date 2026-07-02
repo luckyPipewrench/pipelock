@@ -32,6 +32,9 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		ScannerCoreSSRF,
 		ScannerCoreResponse,
 		ScannerBodyDLP,
+		DecideInjectionLabel,
+		DecidePolicyLabel,
+		DecideStructuralLabel,
 	}
 
 	labelSet := make(map[string]struct{}, len(labels))
@@ -190,4 +193,31 @@ func TestGuidanceForResultDisambiguatesEntropy(t *testing.T) {
 			t.Fatal("unknown label must return ok=false")
 		}
 	})
+}
+
+func TestDecideLabelGuidanceNamesOperatorKnobsOnlyToOperator(t *testing.T) {
+	tests := []struct {
+		label       string
+		wantKnob    string
+		forbidAgent string
+	}{
+		{DecideInjectionLabel, "response_scanning", "response_scanning"},
+		{DecidePolicyLabel, "mcp_tool_policy", "mcp_tool_policy"},
+		{DecideStructuralLabel, "could not be evaluated safely", "correct the action shape"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.label, func(t *testing.T) {
+			g, ok := GuidanceFor(tt.label)
+			if !ok {
+				t.Fatalf("GuidanceFor(%q) not ok", tt.label)
+			}
+			if !strings.Contains(g.OperatorKnob, tt.wantKnob) {
+				t.Fatalf("OperatorKnob = %q, want substring %q", g.OperatorKnob, tt.wantKnob)
+			}
+			if strings.Contains(g.AgentReason, tt.forbidAgent) {
+				t.Fatalf("AgentReason %q contains operator knob substring %q", g.AgentReason, tt.forbidAgent)
+			}
+		})
+	}
 }

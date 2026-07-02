@@ -9,12 +9,16 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -31,6 +35,13 @@ const (
 	explainViewScheme   = "scheme"
 
 	explainConfigLabelDefaults = "(built-in defaults)"
+
+	explainSurfaceCommand = "command"
+	explainSurfaceTool    = "tool"
+	explainSurfaceFile    = "file"
+
+	explainFileReadLimitBytes = 1 << 20
+	explainSummaryMaxBytes    = 240
 )
 
 // explainReport is the structured form of an `explain` verdict. It mirrors the
@@ -38,22 +49,25 @@ const (
 // human renderer also consumes. The remediation block is the load-bearing part
 // of this command — it names the EXACT knob the blocking scanner consults.
 type explainReport struct {
-	URL          string              `json:"url"`
-	ConfigFile   string              `json:"config_file"`
-	Mode         string              `json:"mode"`
-	Version      string              `json:"version"`
-	Allowed      bool                `json:"allowed"`
-	Scanner      string              `json:"scanner,omitempty"`
-	Layer        string              `json:"layer,omitempty"`
-	TargetView   string              `json:"target_view,omitempty"`
-	Host         string              `json:"host,omitempty"`
-	PatternName  string              `json:"pattern_name,omitempty"`
-	Reason       string              `json:"reason,omitempty"`
-	Score        float64             `json:"score"`
-	DNSDependent bool                `json:"dns_dependent"`
-	Notes        []string            `json:"notes,omitempty"`
-	WarnMatches  []explainWarnMatch  `json:"warn_matches,omitempty"`
-	Remediation  *explainRemediation `json:"remediation,omitempty"`
+	URL           string              `json:"url"`
+	Surface       string              `json:"surface,omitempty"`
+	BlockedAction string              `json:"blocked_action,omitempty"`
+	ConfigFile    string              `json:"config_file"`
+	Mode          string              `json:"mode"`
+	Version       string              `json:"version"`
+	Allowed       bool                `json:"allowed"`
+	Scanner       string              `json:"scanner,omitempty"`
+	Layer         string              `json:"layer,omitempty"`
+	TargetView    string              `json:"target_view,omitempty"`
+	Host          string              `json:"host,omitempty"`
+	PatternName   string              `json:"pattern_name,omitempty"`
+	Reason        string              `json:"reason,omitempty"`
+	Score         float64             `json:"score"`
+	DNSDependent  bool                `json:"dns_dependent"`
+	Notes         []string            `json:"notes,omitempty"`
+	WarnMatches   []explainWarnMatch  `json:"warn_matches,omitempty"`
+	AgentReason   string              `json:"agent_reason,omitempty"`
+	Remediation   *explainRemediation `json:"remediation,omitempty"`
 }
 
 type explainWarnMatch struct {
@@ -81,16 +95,21 @@ type explainRemediation struct {
 func explainCmd() *cobra.Command {
 	var configFile string
 	var jsonOutput bool
+	var commandInput string
+	var toolName string
+	var toolInput string
+	var filePath string
 
 	cmd := &cobra.Command{
-		Use:   "explain <url>",
-		Short: "Explain a URL verdict and the exact remediation for a block",
-		Long: `Run a URL through the scanner pipeline using the loaded config and explain
-the verdict so a block is remediable. For a blocked URL, explain prints the
-scanner/layer that produced the verdict, the matching pattern (for DLP and
-blocklist), which part of the URL was inspected, the destination host, the
+		Use:   "explain <url> [--command <command> | --tool <name> --input <json> | --file <path>]",
+		Short: "Explain a URL, command, tool, or file verdict and the exact remediation for a block",
+		Long: `Run a URL through the scanner pipeline, or run a hook surface through
+the decide path, using the loaded config and explain the verdict so a block is
+remediable. For a block, explain prints the scanner/layer that produced the
+verdict, the matching pattern or policy rule, the inspected surface, the
 effective config path, and — most importantly — the EXACT remediation knob
-that scanner consults, plus any broader option and its tradeoff.
+that scanner or decide label consults, plus any broader option and its
+tradeoff.
 
 explain does not perform network access. It runs the layers that fire before
 DNS resolution (scheme, CRLF, path traversal, allowlist, blocklist, core SSRF
@@ -103,16 +122,29 @@ core SSRF literal check, which needs no resolution.
 Examples:
   pipelock explain https://example.com/path
   pipelock explain --config pipelock.yaml https://example.com/download?id=42
-  pipelock explain --json https://10.0.0.1/internal`,
+  pipelock explain --json https://10.0.0.1/internal
+  pipelock explain --command "grep .env.example"
+  pipelock explain --tool "mcp__x__run" --input '{"cmd":"grep .env.example"}'
+  pipelock explain --file ./fixture.txt`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.ExactArgs(1),
+		Args:          validateExplainArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, cfgLabel, err := explainLoadConfig(configFile)
+			mode := explainModeFromFlags(cmd)
+			cfg, cfgLabel, err := explainLoadConfigForMode(configFile, mode)
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			report, err := buildExplainReport(cmd, cfg, cfgLabel, args[0])
+			var report explainReport
+			if mode == "" {
+				report, err = buildExplainReport(cmd, cfg, cfgLabel, args[0])
+			} else {
+				action, blockedAction, actionErr := explainActionForMode(mode, commandInput, toolName, toolInput, filePath)
+				if actionErr != nil {
+					return cliutil.ExitCodeError(cliutil.ExitConfig, actionErr)
+				}
+				report = buildExplainSurfaceReport(cmd, cfg, cfgLabel, mode, blockedAction, action)
+			}
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
@@ -128,7 +160,11 @@ Examples:
 			// A blocked verdict exits non-zero so scripts can branch on it,
 			// matching `pipelock check --url`'s contract.
 			if !report.Allowed {
-				return cliutil.ExitCodeError(cliutil.ExitSecurity, errExplainBlocked)
+				blockErr := errExplainBlocked
+				if report.Surface != "" {
+					blockErr = errExplainActionBlocked
+				}
+				return cliutil.ExitCodeError(cliutil.ExitSecurity, blockErr)
 			}
 			return nil
 		},
@@ -136,6 +172,10 @@ Examples:
 
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (default: built-in defaults)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
+	cmd.Flags().StringVar(&commandInput, "command", "", "explain a shell command hook verdict")
+	cmd.Flags().StringVar(&toolName, "tool", "", "explain a tool-use hook verdict for this tool name")
+	cmd.Flags().StringVar(&toolInput, "input", "", "JSON tool input for --tool")
+	cmd.Flags().StringVar(&filePath, "file", "", "explain a file-write hook verdict by scanning this file's content")
 
 	// `explain mcp-response` explains an MCP response block and names the
 	// per-server suppress knob (the stdio MCP equivalent of a URL verdict).
@@ -149,6 +189,8 @@ Examples:
 // without parsing output.
 var errExplainBlocked = errors.New("url blocked")
 
+var errExplainActionBlocked = errors.New("action blocked")
+
 func explainLoadConfig(path string) (*config.Config, string, error) {
 	if path == "" {
 		return config.Defaults(), explainConfigLabelDefaults, nil
@@ -158,6 +200,173 @@ func explainLoadConfig(path string) (*config.Config, string, error) {
 		return nil, "", fmt.Errorf("config load error: %w", err)
 	}
 	return cfg, path, nil
+}
+
+func explainLoadConfigForMode(path, mode string) (*config.Config, string, error) {
+	if mode == "" {
+		return explainLoadConfig(path)
+	}
+	return explainLoadSurfaceConfig(path)
+}
+
+func explainLoadSurfaceConfig(path string) (*config.Config, string, error) {
+	if path != "" {
+		cfg, err := config.Load(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("config load error: %w", err)
+		}
+		cfg.ApplyDefaults()
+		cfg.DLP.ScanEnv = false
+		return cfg, path, nil
+	}
+
+	cfg := config.Defaults()
+	cfg.MCPToolPolicy = config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules:   policy.DefaultToolPolicyRules(),
+	}
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = config.ActionBlock
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.ApplyDefaults()
+	cfg.DLP.ScanEnv = false
+
+	return cfg, explainConfigLabelDefaults, nil
+}
+
+func validateExplainArgs(cmd *cobra.Command, args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("explain accepts at most one positional URL")
+	}
+
+	modeCount := 0
+	modeNames := make([]string, 0, 4)
+	if len(args) == 1 {
+		modeCount++
+		modeNames = append(modeNames, "url")
+	}
+	for _, name := range []string{explainSurfaceCommand, explainSurfaceTool, explainSurfaceFile} {
+		if cmd.Flags().Changed(name) {
+			modeCount++
+			modeNames = append(modeNames, "--"+name)
+		}
+	}
+	if cmd.Flags().Changed("input") && !cmd.Flags().Changed(explainSurfaceTool) {
+		return fmt.Errorf("--input can only be used with --tool")
+	}
+
+	switch modeCount {
+	case 0:
+		return fmt.Errorf("provide exactly one explain target: URL, --command, --tool, or --file")
+	case 1:
+		return validateExplainModeValues(cmd)
+	default:
+		return fmt.Errorf("provide exactly one explain target, got %s", strings.Join(modeNames, " and "))
+	}
+}
+
+func validateExplainModeValues(cmd *cobra.Command) error {
+	commandValue, _ := cmd.Flags().GetString(explainSurfaceCommand)
+	if cmd.Flags().Changed(explainSurfaceCommand) && strings.TrimSpace(commandValue) == "" {
+		return fmt.Errorf("--command cannot be empty")
+	}
+	toolValue, _ := cmd.Flags().GetString(explainSurfaceTool)
+	if cmd.Flags().Changed(explainSurfaceTool) {
+		if strings.TrimSpace(toolValue) == "" {
+			return fmt.Errorf("--tool cannot be empty")
+		}
+		inputValue, _ := cmd.Flags().GetString("input")
+		if !cmd.Flags().Changed("input") || strings.TrimSpace(inputValue) == "" {
+			return fmt.Errorf("--input is required with --tool")
+		}
+		if !json.Valid([]byte(inputValue)) {
+			return fmt.Errorf("--input must be valid JSON")
+		}
+	}
+	fileValue, _ := cmd.Flags().GetString(explainSurfaceFile)
+	if cmd.Flags().Changed(explainSurfaceFile) && strings.TrimSpace(fileValue) == "" {
+		return fmt.Errorf("--file cannot be empty")
+	}
+	return nil
+}
+
+func explainModeFromFlags(cmd *cobra.Command) string {
+	switch {
+	case cmd.Flags().Changed(explainSurfaceCommand):
+		return explainSurfaceCommand
+	case cmd.Flags().Changed(explainSurfaceTool):
+		return explainSurfaceTool
+	case cmd.Flags().Changed(explainSurfaceFile):
+		return explainSurfaceFile
+	default:
+		return ""
+	}
+}
+
+func explainActionForMode(mode, commandInput, toolName, toolInput, filePath string) (decide.Action, string, error) {
+	switch mode {
+	case explainSurfaceCommand:
+		commandInput = strings.TrimSpace(commandInput)
+		return decide.Action{
+			Source: "explain",
+			Kind:   decide.EventShellExecution,
+			Shell:  &decide.ShellPayload{Command: commandInput},
+		}, explainLimitSummary(commandInput), nil
+	case explainSurfaceTool:
+		toolName = strings.TrimSpace(toolName)
+		return decide.Action{
+			Source: "explain",
+			Kind:   decide.EventToolUse,
+			ToolUse: &decide.ToolUsePayload{
+				ToolName:  toolName,
+				ToolInput: toolInput,
+			},
+		}, explainLimitSummary("tool " + toolName), nil
+	case explainSurfaceFile:
+		cleanPath, content, err := explainReadFileContent(filePath)
+		if err != nil {
+			return decide.Action{}, "", err
+		}
+		return decide.Action{
+			Source: "explain",
+			Kind:   decide.EventWriteFile,
+			Write: &decide.WritePayload{
+				FilePath: cleanPath,
+				Content:  content,
+			},
+		}, explainLimitSummary("write_file " + cleanPath), nil
+	default:
+		return decide.Action{}, "", fmt.Errorf("unknown explain mode %q", mode)
+	}
+}
+
+func explainReadFileContent(path string) (string, string, error) {
+	cleanPath := filepath.Clean(path)
+	f, err := os.Open(cleanPath)
+	if err != nil {
+		return "", "", fmt.Errorf("read --file %q: %w", cleanPath, err)
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+
+	data, err := io.ReadAll(io.LimitReader(f, explainFileReadLimitBytes+1))
+	if err != nil {
+		return "", "", fmt.Errorf("read --file %q: %w", cleanPath, err)
+	}
+	if len(data) > explainFileReadLimitBytes {
+		return "", "", fmt.Errorf("--file %q exceeds explain read cap of %d bytes", cleanPath, explainFileReadLimitBytes)
+	}
+	return cleanPath, string(data), nil
+}
+
+func explainLimitSummary(s string) string {
+	if len(s) <= explainSummaryMaxBytes {
+		return s
+	}
+	return s[:explainSummaryMaxBytes] + "..."
 }
 
 func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL string) (explainReport, error) {
@@ -227,6 +436,87 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 
 	report.Remediation = explainRemediationFor(result)
 	return report, nil
+}
+
+func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, surface, blockedAction string, action decide.Action) explainReport {
+	report := explainReport{
+		Surface:       surface,
+		BlockedAction: blockedAction,
+		ConfigFile:    cfgLabel,
+		Mode:          cfg.Mode,
+		Version:       cliutil.Version,
+		TargetView:    surface,
+	}
+
+	bundleResult := rules.MergeIntoConfig(cfg, cliutil.Version)
+	for _, e := range bundleResult.Errors {
+		report.Notes = append(report.Notes, fmt.Sprintf("rule bundle %s skipped: %s", e.Name, e.Reason))
+	}
+
+	sc := scanner.New(cfg)
+	pc := policy.New(cfg.MCPToolPolicy)
+	decision := decide.Decide(cmd.Context(), cfg, sc, pc, action)
+
+	report.Allowed = decision.Outcome == decide.Allow
+	if report.Allowed {
+		return report
+	}
+
+	primary := explainPrimaryEvidence(decision)
+	report.Scanner = primary.Scanner
+	report.Layer = primary.Scanner
+	report.PatternName = primary.Pattern
+	report.Reason = explainEvidenceReason(primary, decision)
+	report.Remediation = explainRemediationForEvidence(primary)
+	if report.Remediation != nil {
+		if g, ok := scanner.GuidanceForResult(primary.Scanner, report.Reason); ok {
+			report.AgentReason = g.AgentReason
+		}
+	}
+	return report
+}
+
+func explainPrimaryEvidence(decision decide.Decision) decide.Evidence {
+	for _, e := range decision.Evidence {
+		if e.Action == config.ActionBlock {
+			return e
+		}
+	}
+	if len(decision.Evidence) > 0 {
+		return decision.Evidence[0]
+	}
+	return decide.Evidence{
+		Scanner: scanner.DecideStructuralLabel,
+		Detail:  decision.UserMessage,
+		Action:  config.ActionBlock,
+	}
+}
+
+func explainEvidenceReason(e decide.Evidence, decision decide.Decision) string {
+	if e.Detail != "" {
+		return e.Detail
+	}
+	if e.Pattern != "" {
+		return e.Pattern
+	}
+	return decision.UserMessage
+}
+
+func explainRemediationForEvidence(e decide.Evidence) *explainRemediation {
+	reason := e.Detail
+	if reason == "" {
+		reason = e.Pattern
+	}
+	if g, ok := scanner.GuidanceForResult(e.Scanner, reason); ok {
+		return &explainRemediation{
+			Knob:      g.OperatorKnob,
+			Broader:   g.OperatorBroader,
+			Immutable: g.Immutable,
+		}
+	}
+	return &explainRemediation{
+		Knob: "No specific remediation is mapped for this scanner. Inspect the reason and the effective config before changing policy.",
+	}
 }
 
 // explainHost returns the lowercased hostname for display, or empty if the URL
@@ -388,7 +678,14 @@ func explainRemediationFor(result scanner.Result) *explainRemediation {
 func printExplainReport(w io.Writer, report explainReport) {
 	_, _ = fmt.Fprintln(w, "Pipelock Explain")
 	_, _ = fmt.Fprintln(w, "================")
-	_, _ = fmt.Fprintf(w, "URL:     %s\n", report.URL)
+	if report.Surface != "" {
+		_, _ = fmt.Fprintf(w, "Surface: %s\n", report.Surface)
+		if report.BlockedAction != "" {
+			_, _ = fmt.Fprintf(w, "Action:  %s\n", report.BlockedAction)
+		}
+	} else {
+		_, _ = fmt.Fprintf(w, "URL:     %s\n", report.URL)
+	}
 	_, _ = fmt.Fprintf(w, "Config:  %s\n", report.ConfigFile)
 	_, _ = fmt.Fprintf(w, "Mode:    %s\n", report.Mode)
 	if report.Host != "" {
@@ -433,6 +730,11 @@ func printExplainReport(w io.Writer, report explainReport) {
 		if report.Remediation.Broader != "" {
 			_, _ = fmt.Fprintf(w, "  broader: %s\n", report.Remediation.Broader)
 		}
+	}
+	if report.AgentReason != "" {
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "Agent reason:")
+		_, _ = fmt.Fprintf(w, "  %s\n", report.AgentReason)
 	}
 	for _, note := range report.Notes {
 		_, _ = fmt.Fprintf(w, "note: %s\n", note)

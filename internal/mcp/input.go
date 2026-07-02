@@ -662,7 +662,7 @@ func ForwardScannedInput(
 		// All clean - forward (with block_all and CEE checks).
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
 			if toolCallName != "" {
-				baselineDecision := checkMCPToolCallBaselineAttempt(opts, rec, toolCallName)
+				baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), toolCallName)
 				switch baselineDecision.Action {
 				case config.ActionBlock, config.ActionAsk:
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
@@ -796,7 +796,7 @@ func ForwardScannedInput(
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
-			commitMCPToolCall(opts, rec, toolCallName)
+			commitMCPToolCall(baselineMetricsRecorder(opts, rec), toolCallName)
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
@@ -867,7 +867,7 @@ func ForwardScannedInput(
 		}
 
 		if toolCallName != "" {
-			baselineDecision := checkMCPToolCallBaselineAttempt(opts, rec, toolCallName)
+			baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), toolCallName)
 			if baselineDecision.Action != "" {
 				reasons = append(reasons, baselineDecision.Detail)
 				// Recompute so the block/warn reason includes the baseline
@@ -1106,7 +1106,7 @@ func ForwardScannedInput(
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}
-						commitMCPToolCall(opts, rec, heldToolName)
+						commitMCPToolCall(baselineMetricsRecorder(opts, rec), heldToolName)
 					default:
 						if !heldNotification {
 							blockedCh <- BlockedRequest{
@@ -1262,7 +1262,7 @@ func ForwardScannedInput(
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
-			commitMCPToolCall(opts, rec, toolCallName)
+			commitMCPToolCall(baselineMetricsRecorder(opts, rec), toolCallName)
 		}
 
 		// Signal recording: record after action is taken.

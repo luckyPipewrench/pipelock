@@ -65,15 +65,15 @@ func (r *mcpRequestBaselineRecorder) RecordToolCall(toolName string) {
 	r.lastActivity = time.Now()
 }
 
-func baselineMetricsRecorder(opts MCPProxyOpts, rec session.Recorder) (session.ToolCallBaselineRecorder, bool) {
+func baselineMetricsRecorder(opts MCPProxyOpts, rec session.Recorder) session.ToolCallBaselineRecorder {
 	if opts.BaselineRec != nil {
-		return opts.BaselineRec, true
+		return opts.BaselineRec
 	}
-	provider, ok := rec.(session.ToolCallBaselineRecorder)
-	return provider, ok
+	provider, _ := rec.(session.ToolCallBaselineRecorder)
+	return provider
 }
 
-func checkMCPToolCallBaselineAttempt(opts MCPProxyOpts, rec session.Recorder, toolName string) session.BaselineDecision {
+func checkMCPToolCallBaselineAttempt(opts MCPProxyOpts, metricsProvider session.ToolCallBaselineRecorder, toolName string) session.BaselineDecision {
 	toolName = strings.TrimSpace(toolName)
 	if toolName == "" {
 		return session.BaselineDecision{}
@@ -90,21 +90,19 @@ func checkMCPToolCallBaselineAttempt(opts MCPProxyOpts, rec session.Recorder, to
 	if agentKey == "" {
 		return session.BaselineDecision{}
 	}
-	metricsProvider, ok := baselineMetricsRecorder(opts, rec)
-	if !ok || metricsProvider == nil {
+	if metricsProvider == nil {
 		return baselineFailClosedDecision("baseline metrics provider unavailable")
 	}
 	decision := metricsChecker.CheckBaselineForMetrics(agentKey, metricsProvider.ProvisionalToolCallMetrics(toolName))
 	return normalizeBaselineDecision(decision)
 }
 
-func commitMCPToolCall(opts MCPProxyOpts, rec session.Recorder, toolName string) {
+func commitMCPToolCall(metricsProvider session.ToolCallBaselineRecorder, toolName string) {
 	toolName = strings.TrimSpace(toolName)
 	if toolName == "" {
 		return
 	}
-	metricsProvider, ok := baselineMetricsRecorder(opts, rec)
-	if !ok || metricsProvider == nil {
+	if metricsProvider == nil {
 		return
 	}
 	metricsProvider.RecordToolCall(toolName)
@@ -148,8 +146,8 @@ func recordMCPBaselineSample(opts MCPProxyOpts, rec session.Recorder) {
 	if agentKey == "" {
 		return
 	}
-	metricsProvider, ok := baselineMetricsRecorder(opts, rec)
-	if !ok || metricsProvider == nil {
+	metricsProvider := baselineMetricsRecorder(opts, rec)
+	if metricsProvider == nil {
 		return
 	}
 	metricsChecker.RecordBaselineMetrics(agentKey, metricsProvider.BaselineMetrics())

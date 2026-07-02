@@ -241,9 +241,8 @@ func RunHTTPProxy(
 							}
 							return
 						}
-						commitMCPToolCall(fwdOpts, rec, deferredReq.ToolName)
 						respReader = fwdOpts.withResponseTimeout(respReader)
-						_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
+						foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
 						if errors.Is(scanErr, transport.ErrResponseTimeout) {
 							emitRequestScopedTimeout(
 								respReader,
@@ -255,6 +254,8 @@ func RunHTTPProxy(
 							)
 						} else if scanErr != nil {
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+						} else if !foundInjection {
+							commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), deferredReq.ToolName)
 						}
 					default:
 						if !deferredReq.IsNotification {
@@ -347,12 +348,11 @@ func RunHTTPProxy(
 			}
 			continue
 		}
-		commitMCPToolCall(fwdOpts, rec, frame.ToolCallName)
 
 		// Scan and forward response. Apply the optional per-read response
 		// timeout (no-op when disabled) so a hung HTTP upstream fails closed.
 		respReader = fwdOpts.withResponseTimeout(respReader)
-		_, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
+		foundInjection, scanErr := ForwardScanned(respReader, safeClientOut, safeLogW, tracker, fwdOpts)
 		if errors.Is(scanErr, transport.ErrResponseTimeout) {
 			emitRequestScopedTimeout(
 				respReader,
@@ -368,6 +368,8 @@ func RunHTTPProxy(
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
+		} else if !foundInjection {
+			commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), frame.ToolCallName)
 		}
 
 		// After first successful response with a session ID, start GET stream

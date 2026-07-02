@@ -529,11 +529,11 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
-		commitMCPToolCall(scanOpts, reqRec, frame.ToolCallName)
 		defer func() { _ = upResp.Body.Close() }()
 
 		// 202 Accepted: notification acknowledged, no body.
 		if upResp.StatusCode == http.StatusAccepted {
+			commitMCPToolCall(baselineRec, frame.ToolCallName)
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -619,7 +619,7 @@ func RunHTTPListenerProxy(
 			if flusher, ok := w.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
-			_, scanErr := ForwardScanned(reader, streamWriter, safeLogW, nil, reqOpts)
+			foundInjection, scanErr := ForwardScanned(reader, streamWriter, safeLogW, nil, reqOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
@@ -637,15 +637,33 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream SSE response failed validation")))
 				return
 			}
+			if scanErr == nil && !foundInjection {
+				commitMCPToolCall(baselineRec, frame.ToolCallName)
+			}
 			if !streamWriter.Wrote() {
 				w.WriteHeader(http.StatusAccepted)
 			}
 			return
 		}
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, nil, reqOpts)
+		foundInjection, scanErr := ForwardScanned(reader, bufWriter, safeLogW, nil, reqOpts)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream response failed validation")))
+			return
 		}
+		if foundInjection {
+			w.Header().Set("Content-Type", "application/json")
+			output := bytes.TrimSpace(buf.Bytes())
+			if len(output) == 0 {
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			_, _ = w.Write(output)
+			return
+		}
+		commitMCPToolCall(baselineRec, frame.ToolCallName)
 		w.Header().Set("Content-Type", "application/json")
 		output := bytes.TrimSpace(buf.Bytes())
 		if len(output) == 0 {

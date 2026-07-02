@@ -340,7 +340,7 @@ func TestRunHTTPListenerProxy_BehavioralBaselineRecordsDiscretePerRequestSamples
 		if decision.Blocked != nil {
 			t.Fatalf("listener-equivalent scan blocked: %+v", decision.Blocked)
 		}
-		commitMCPToolCall(opts, adaptiveRec, "dangerous_tool")
+		commitMCPToolCall(baselineRec, "dangerous_tool")
 		recordMCPBaselineSample(opts, nil)
 	}
 

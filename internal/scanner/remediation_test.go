@@ -8,7 +8,10 @@ import (
 	"testing"
 )
 
-func TestRemediationGuidanceCoversScannerHints(t *testing.T) {
+func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
+	// The canonical set of block labels a scanner emits. Every one must have
+	// guidance, and the guidance table must not carry a label outside this set,
+	// so a new scanner label without guidance (or a stray table entry) fails CI.
 	labels := []string{
 		ScannerBlocklist,
 		ScannerDLP,
@@ -35,21 +38,16 @@ func TestRemediationGuidanceCoversScannerHints(t *testing.T) {
 	for _, label := range labels {
 		labelSet[label] = struct{}{}
 		t.Run(label, func(t *testing.T) {
-			if _, ok := scannerHints[label]; !ok {
-				t.Fatalf("test fixture label %q is not in scannerHints", label)
-			}
 			if _, ok := remediationGuidance[label]; !ok {
-				t.Fatalf("remediationGuidance missing scannerHints label %q", label)
+				t.Fatalf("remediationGuidance missing label %q", label)
 			}
 		})
 	}
 
-	for label := range scannerHints {
-		t.Run("scannerHints/"+label, func(t *testing.T) {
-			if _, ok := labelSet[label]; !ok {
-				t.Fatalf("scannerHints label %q is not enumerated in remediation guidance parity test", label)
-			}
-		})
+	for label := range remediationGuidance {
+		if _, ok := labelSet[label]; !ok {
+			t.Errorf("remediationGuidance has label %q not enumerated in the canonical block-label set", label)
+		}
 	}
 }
 

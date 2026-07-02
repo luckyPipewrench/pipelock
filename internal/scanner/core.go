@@ -660,11 +660,12 @@ func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
 		// intended to allow it) rather than a real attack. Classify so
 		// adaptive enforcement doesn't escalate, and hint toward ip_allowlist.
 		if s.IsInAPIAllowlist(clean) {
-			cidr := ip.String() + "/128"
-			if ip.To4() != nil {
-				cidr = ip.String() + "/32"
-			}
-			r.Hint = fmt.Sprintf("add %q to ssrf.ip_allowlist to allow this internal IP", cidr)
+			// Config mismatch (operator allowlisted this IP), not an attack:
+			// classify so adaptive enforcement doesn't escalate. The agent-facing
+			// hint stays terse (no knob); the operator gets ssrf.ip_allowlist from
+			// `pipelock explain` and the audit remediation_hint, and the block
+			// reason carries the offending IP.
+			r.Hint = HintForScanner(ScannerCoreSSRF)
 			r.Class = ClassConfigMismatch
 		}
 		return r

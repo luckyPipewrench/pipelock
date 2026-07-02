@@ -911,11 +911,18 @@ func TestScan_SSRFHint_AllowlistedDomain(t *testing.T) {
 	if result.Hint == "" {
 		t.Fatal("expected non-empty hint for SSRF block on allowlisted domain")
 	}
-	if !strings.Contains(result.Hint, "trusted_domains") {
-		t.Errorf("expected hint to mention trusted_domains, got %q", result.Hint)
+	// The agent-facing hint is terse: it names no config knob and does not echo
+	// the host. The operator gets the exact allow-path from explain and audit.
+	if result.Hint != protectedAddressAgentReason {
+		t.Errorf("allowlisted-domain SSRF hint = %q, want the terse agent reason", result.Hint)
 	}
-	if !strings.Contains(result.Hint, "localhost") {
-		t.Errorf("expected hint to mention the hostname, got %q", result.Hint)
+	for _, leak := range []string{"trusted_domains", "ssrf.ip_allowlist", "api_allowlist", "localhost"} {
+		if strings.Contains(result.Hint, leak) {
+			t.Errorf("agent-facing SSRF hint leaked operator detail %q: %q", leak, result.Hint)
+		}
+	}
+	if result.Class != ClassConfigMismatch {
+		t.Errorf("allowlisted internal-IP block should classify as ClassConfigMismatch, got %v", result.Class)
 	}
 }
 
@@ -955,13 +962,18 @@ func TestScan_SSRFHint_RawIPLiteral_PointsToIPAllowlist(t *testing.T) {
 	if result.Hint == "" {
 		t.Fatal("expected non-empty hint for SSRF block on allowlisted IP literal")
 	}
-	// Should point to ssrf.ip_allowlist, NOT trusted_domains
-	// (because IsTrustedDomain rejects IP literals).
-	if !strings.Contains(result.Hint, "ssrf.ip_allowlist") {
-		t.Errorf("expected hint to mention ssrf.ip_allowlist for IP literal, got %q", result.Hint)
+	// The agent-facing hint is terse and names no config knob for the IP literal
+	// either; the operator gets ssrf.ip_allowlist from explain and audit.
+	if result.Hint != protectedAddressAgentReason {
+		t.Errorf("IP-literal SSRF hint = %q, want the terse agent reason", result.Hint)
 	}
-	if strings.Contains(result.Hint, "trusted_domains") {
-		t.Errorf("hint should NOT mention trusted_domains for IP literal, got %q", result.Hint)
+	for _, leak := range []string{"ssrf.ip_allowlist", "trusted_domains", "api_allowlist"} {
+		if strings.Contains(result.Hint, leak) {
+			t.Errorf("agent-facing SSRF hint leaked operator detail %q: %q", leak, result.Hint)
+		}
+	}
+	if result.Class != ClassConfigMismatch {
+		t.Errorf("allowlisted internal IP-literal block should classify as ClassConfigMismatch, got %v", result.Class)
 	}
 }
 
@@ -4617,45 +4629,56 @@ func TestBaseDomain(t *testing.T) {
 }
 
 func TestHintForBlock(t *testing.T) {
-	tests := []struct {
-		scanner string
-		want    string
-	}{
-		{ScannerBlocklist, "Domain is on the blocklist. Remove from fetch_proxy.monitoring.blocklist if legitimate."},
-		{ScannerDLP, "URL DLP matched this request. The top-level suppress: list does not apply; for regex-pattern false positives, add the destination host to that pattern's dlp.patterns[].exempt_domains."},
-		{ScannerEntropy, "High-entropy content detected. Review the URL for data exfiltration attempts."},
-		{ScannerSubdomainEntropy, "High-entropy content detected in subdomain. Review for data exfiltration via DNS."},
-		{ScannerSSRF, "SSRF protection blocked this URL. It may resolve to a private IP or DNS resolution failed."},
-		{ScannerSSRFMetadata, "SSRF protection blocked this URL. It resolves to a cloud-provider instance metadata endpoint (AWS / Azure / GCP IMDS)."},
-		{ScannerRateLimit, "Rate limit exceeded. Retry later or adjust fetch_proxy.monitoring.max_requests_per_minute."},
-		{ScannerLength, "URL exceeds maximum length. Check for data stuffing in query parameters."},
-		{ScannerDataBudget, "Session data budget exceeded."},
-		{ScannerScheme, "Only http and https schemes are allowed."},
-		{ScannerAllowlist, "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable."},
-		{ScannerParser, "The URL could not be parsed."},
-		{ScannerCRLF, "CRLF injection sequence detected in URL. This is never legitimate in normal traffic."},
-		{ScannerPathTraversal, "Path traversal sequence detected. Review the URL for directory escape attempts."},
-		{ScannerBodyDLP, "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."},
-		{"unknown_scanner", ""},
+	// HintForBlock feeds the agent-facing X-Pipelock-Hint header and the block
+	// response body, so it must return the terse AgentReason from the guidance
+	// table and never an operator knob (confused deputy).
+	labels := []string{
+		ScannerBlocklist, ScannerDLP, ScannerEntropy, ScannerSubdomainEntropy,
+		ScannerSSRF, ScannerSSRFMetadata, ScannerRateLimit, ScannerLength,
+		ScannerDataBudget, ScannerScheme, ScannerAllowlist, ScannerParser,
+		ScannerContext, ScannerCRLF, ScannerPathTraversal, ScannerCoreDLP,
+		ScannerCoreSSRF, ScannerCoreResponse, ScannerBodyDLP,
 	}
-	for _, tt := range tests {
-		t.Run(tt.scanner, func(t *testing.T) {
-			r := &Result{Allowed: false, Scanner: tt.scanner}
-			got := HintForBlock(r)
-			if got != tt.want {
-				t.Errorf("HintForBlock(scanner=%q) = %q, want %q", tt.scanner, got, tt.want)
+	knobLeaks := []string{
+		"exempt_domains", "suppress:", "ssrf.ip_allowlist", "trusted_domains",
+		"api_allowlist", "blocklist", "fetch_proxy", "dlp.patterns",
+	}
+	for _, label := range labels {
+		t.Run(label, func(t *testing.T) {
+			got := HintForBlock(&Result{Allowed: false, Scanner: label})
+			if want := remediationGuidance[label].AgentReason; got != want {
+				t.Errorf("HintForBlock(scanner=%q) = %q, want the agent reason %q", label, got, want)
+			}
+			if got == "" {
+				t.Errorf("HintForBlock(scanner=%q) returned empty", label)
+			}
+			for _, leak := range knobLeaks {
+				if strings.Contains(got, leak) {
+					t.Errorf("agent-facing HintForBlock(%q) leaked operator knob %q: %q", label, leak, got)
+				}
 			}
 		})
 	}
+	t.Run("unknown", func(t *testing.T) {
+		if got := HintForBlock(&Result{Allowed: false, Scanner: "unknown_scanner"}); got != "" {
+			t.Errorf("HintForBlock(unknown) = %q, want empty (fail-safe)", got)
+		}
+	})
 }
 
-func TestBodyDLPHintNamesSuppressNotExemptDomains(t *testing.T) {
-	hint := HintForScanner(ScannerBodyDLP)
-	if !strings.Contains(hint, "suppress:") {
-		t.Fatalf("body_dlp hint = %q, want suppress: remediation", hint)
+func TestBodyDLPRemediationAudienceSplit(t *testing.T) {
+	// Operator surface names the exact knob (suppress:, not URL-DLP exempt_domains).
+	op := OperatorHintFor(ScannerBodyDLP)
+	if !strings.Contains(op, "suppress:") {
+		t.Fatalf("body_dlp operator hint = %q, want suppress: remediation", op)
 	}
-	if strings.Contains(hint, "exempt_domains") {
-		t.Fatalf("body_dlp hint = %q, must not point to URL-DLP exempt_domains", hint)
+	if strings.Contains(op, "exempt_domains") {
+		t.Fatalf("body_dlp operator hint = %q, must not point to URL-DLP exempt_domains", op)
+	}
+	// Agent surface must NOT carry the knob.
+	agent := HintForScanner(ScannerBodyDLP)
+	if strings.Contains(agent, "suppress") || strings.Contains(agent, "exempt_domains") {
+		t.Fatalf("agent-facing body_dlp hint leaked the operator knob: %q", agent)
 	}
 }
 

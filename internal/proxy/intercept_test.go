@@ -874,11 +874,16 @@ func TestInterceptTunnel_BlocksSecretInBody(t *testing.T) {
 		t.Errorf("status = %d, want 403 (body DLP should block)", resp.StatusCode)
 	}
 	hint := resp.Header.Get("X-Pipelock-Hint")
-	if !strings.Contains(hint, "suppress:") {
-		t.Fatalf("body DLP hint = %q, want suppress: remediation", hint)
+	// The X-Pipelock-Hint header reaches the blocked agent, so it carries the
+	// terse reason and never the operator knob (confused deputy). The operator
+	// gets the suppress: allow-path from the audit remediation_hint and explain.
+	if hint == "" {
+		t.Fatal("expected an X-Pipelock-Hint header on a body DLP block")
 	}
-	if strings.Contains(hint, "exempt_domains") {
-		t.Fatalf("body DLP hint = %q, must not point to URL-DLP exempt_domains", hint)
+	for _, leak := range []string{"suppress:", "exempt_domains", "dlp.patterns", "fetch_proxy"} {
+		if strings.Contains(hint, leak) {
+			t.Fatalf("agent-facing body DLP hint leaked operator knob %q: %q", leak, hint)
+		}
 	}
 }
 

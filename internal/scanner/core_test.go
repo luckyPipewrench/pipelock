@@ -233,8 +233,11 @@ func TestCore_SSRFLiteral_ConfigMismatch_APIAllowlisted(t *testing.T) {
 	if result.Class != ClassConfigMismatch {
 		t.Errorf("expected ClassConfigMismatch for api_allowlisted IP, got %q", result.Class)
 	}
-	if result.Hint == "" {
-		t.Error("expected non-empty hint for config mismatch")
+	// The hint reaches the blocked agent via X-Pipelock-Hint, so it must be the
+	// terse reason, never the ssrf.ip_allowlist operator knob (confused deputy).
+	// The operator gets the knob from explain and the audit remediation_hint.
+	if result.Hint != protectedAddressAgentReason {
+		t.Errorf("core SSRF config-mismatch hint = %q, want the terse agent reason (no operator knob)", result.Hint)
 	}
 }
 

@@ -761,43 +761,28 @@ func (s *Scanner) RecordRequest(hostname string, dataBytes int) {
 	}
 }
 
-// scannerHints maps scanner labels to actionable guidance for operators.
-// Keyed by scanner constants; TestHintForBlock covers all entries.
-var scannerHints = map[string]string{
-	ScannerBlocklist:        "Domain is on the blocklist. Remove from fetch_proxy.monitoring.blocklist if legitimate.",
-	ScannerDLP:              "URL DLP matched this request. The top-level suppress: list does not apply; for regex-pattern false positives, add the destination host to that pattern's dlp.patterns[].exempt_domains.",
-	ScannerEntropy:          "High-entropy content detected. Review the URL for data exfiltration attempts.",
-	ScannerSubdomainEntropy: "High-entropy content detected in subdomain. Review for data exfiltration via DNS.",
-	ScannerSSRF:             "SSRF protection blocked this URL. It may resolve to a private IP or DNS resolution failed.",
-	ScannerSSRFMetadata:     "SSRF protection blocked this URL. It resolves to a cloud-provider instance metadata endpoint (AWS / Azure / GCP IMDS).",
-	ScannerRateLimit:        "Rate limit exceeded. Retry later or adjust fetch_proxy.monitoring.max_requests_per_minute.",
-	ScannerLength:           "URL exceeds maximum length. Check for data stuffing in query parameters.",
-	ScannerDataBudget:       "Session data budget exceeded.",
-	ScannerScheme:           "Only http and https schemes are allowed.",
-	ScannerAllowlist:        "Domain not on the allowlist. In strict mode, only allowlisted domains are reachable.",
-	ScannerParser:           "The URL could not be parsed.",
-	ScannerContext:          "The request context was nil or cancelled before the scan completed.",
-	ScannerCRLF:             "CRLF injection sequence detected in URL. This is never legitimate in normal traffic.",
-	ScannerPathTraversal:    "Path traversal sequence detected. Review the URL for directory escape attempts.",
-	ScannerCoreDLP:          "Core DLP pattern matched. This is a critical credential detection that cannot be disabled.",
-	ScannerCoreSSRF:         "Core SSRF protection blocked this URL. Private IP ranges are always blocked.",
-	ScannerCoreResponse:     "Core response scanning detected a prompt injection pattern. This cannot be disabled.",
-	ScannerBodyDLP:          bodyDLPOperatorKnob,
-}
-
-// HintForScanner returns actionable guidance for a scanner label.
-// Returns empty string for unknown scanner labels.
+// HintForScanner returns the terse, agent-facing block reason for a scanner
+// label (the AgentReason from the central remediation table). It deliberately
+// carries NO config knob or containment-mechanism name: this value reaches the
+// blocked agent via the X-Pipelock-Hint response header and the block response
+// body, so naming the remediation knob here would teach the agent to unblock
+// itself (confused deputy). Operators get the exact allow-path from
+// `pipelock explain` and the audit remediation_hint, not the agent response.
+// Returns "" for an unknown label (fail-safe).
 func HintForScanner(label string) string {
-	return scannerHints[label]
+	g, _ := GuidanceFor(label)
+	return g.AgentReason
 }
 
-// HintForBlock returns actionable guidance for a blocked scan result.
-// Returns empty string for unknown scanner labels (fail-safe).
+// HintForBlock returns the terse, agent-facing block reason for a blocked scan
+// result, using the scan Reason to disambiguate same-label variants. Returns ""
+// for an allowed or nil result, or an unknown label (fail-safe).
 func HintForBlock(r *Result) string {
 	if r == nil || r.Allowed {
 		return ""
 	}
-	return HintForScanner(r.Scanner)
+	g, _ := GuidanceForResult(r.Scanner, r.Reason)
+	return g.AgentReason
 }
 
 // Scan checks a URL against all scanners and returns the result.
@@ -821,7 +806,7 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 			Reason:  "request context unavailable",
 			Scanner: ScannerContext,
 			Score:   1.0,
-			Hint:    scannerHints[ScannerContext],
+			Hint:    HintForScanner(ScannerContext),
 		}
 	}
 	r := s.scan(ctx, rawURL)
@@ -1151,7 +1136,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 				Reason:  "request context cancelled",
 				Scanner: ScannerContext,
 				Score:   1.0,
-				Hint:    scannerHints[ScannerContext],
+				Hint:    HintForScanner(ScannerContext),
 			}
 		}
 		// Genuine resolver failure. Classify as infrastructure error,
@@ -1223,16 +1208,13 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 					Score:   1.0,
 				}
 				// If the domain is in api_allowlist, this is a config
-				// mismatch (not a real attack). Provide a specific hint
-				// and classify so adaptive enforcement doesn't escalate.
+				// mismatch (not a real attack): classify it so adaptive
+				// enforcement doesn't escalate. The agent-facing hint stays
+				// terse (no knob); the operator gets the exact allow-path
+				// (ssrf.ip_allowlist for an IP literal, trusted_domains for a
+				// hostname) from `pipelock explain` and the audit hint.
 				if s.IsInAPIAllowlist(hostname) {
-					if net.ParseIP(hostname) != nil {
-						// Raw IP literal: trusted_domains rejects IPs, so
-						// point operators at ssrf.ip_allowlist instead.
-						r.Hint = fmt.Sprintf("add %q to ssrf.ip_allowlist to allow this internal IP", ipStr)
-					} else {
-						r.Hint = fmt.Sprintf("add %q to trusted_domains to allow internal IP resolution", hostname)
-					}
+					r.Hint = HintForScanner(scannerLabel)
 					r.Class = ClassConfigMismatch
 				}
 				return r

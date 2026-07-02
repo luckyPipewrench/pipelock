@@ -230,62 +230,7 @@ func TestScanHTTPInputDecision_BlockedPolicyToolCallDoesNotCommitBehavioralBasel
 func TestMCPDeferredDeniedDoesNotCommitBehavioralBaseline(t *testing.T) {
 	t.Parallel()
 
-	sc := testInputScanner(t)
-	rec := &baselineTestRecorder{}
-	manager := newBaselineTestDeferManager(t)
-	policyCfg := baselineDeferPolicy()
-	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
-	t.Cleanup(func() {
-		if err := receiptRecorder.Close(); err != nil {
-			t.Errorf("receipt recorder close: %v", err)
-		}
-	})
-
-	inputR, inputW := io.Pipe()
-	defer func() { _ = inputW.Close() }()
-	var serverIn syncBuffer
-	var logBuf syncBuffer
-	blockedCh := make(chan BlockedRequest, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ForwardScannedInput(
-			transport.NewStdioReader(inputR),
-			transport.NewStdioWriter(&serverIn),
-			&logBuf,
-			config.ActionWarn,
-			config.ActionBlock,
-			blockedCh,
-			nil,
-			nil,
-			MCPProxyOpts{
-				Scanner:        sc,
-				Rec:            rec,
-				PolicyCfg:      policyCfg,
-				DeferManager:   manager,
-				Transport:      deferred.SurfaceMCPStdio,
-				ReceiptEmitter: receiptEmitter,
-			},
-		)
-	}()
-	if _, err := inputW.Write([]byte(baselineDeferToolCall + "\n")); err != nil {
-		t.Fatalf("write input: %v", err)
-	}
-	testwait.For(t, time.Second, func() bool {
-		return len(manager.Snapshot()) == 1
-	}, "deferred hold to be created; log=%s", &logBuf)
-
-	held := manager.Snapshot()
-	if len(held) != 1 {
-		t.Fatalf("held actions = %d, want 1; log=%s", len(held), logBuf.String())
-	}
-	if err := manager.Resolve(held[0].DeferID, config.ActionBlock, deferred.SourceApproval); err != nil {
-		t.Fatalf("Resolve block: %v", err)
-	}
-	if err := inputW.Close(); err != nil {
-		t.Fatalf("close input: %v", err)
-	}
-	<-done
+	rec, serverIn := runDeferredBaselineScenario(t, config.ActionBlock)
 	if serverIn.String() != "" {
 		t.Fatalf("deferred-denied request was forwarded: %s", serverIn.String())
 	}
@@ -297,6 +242,15 @@ func TestMCPDeferredDeniedDoesNotCommitBehavioralBaseline(t *testing.T) {
 func TestMCPDeferredAllowedCommitsBehavioralBaselineOnce(t *testing.T) {
 	t.Parallel()
 
+	rec, _ := runDeferredBaselineScenario(t, config.ActionAllow)
+	if got := rec.BaselineMetrics().ToolCalls; got != 1 {
+		t.Fatalf("committed tool calls after deferred allow = %d, want 1", got)
+	}
+}
+
+func runDeferredBaselineScenario(t *testing.T, finalDecision string) (*baselineTestRecorder, *syncBuffer) {
+	t.Helper()
+
 	sc := testInputScanner(t)
 	rec := &baselineTestRecorder{}
 	manager := newBaselineTestDeferManager(t)
@@ -309,7 +263,6 @@ func TestMCPDeferredAllowedCommitsBehavioralBaselineOnce(t *testing.T) {
 	})
 
 	inputR, inputW := io.Pipe()
-	defer func() { _ = inputW.Close() }()
 	var serverIn syncBuffer
 	var logBuf syncBuffer
 	done := make(chan struct{})
@@ -345,19 +298,19 @@ func TestMCPDeferredAllowedCommitsBehavioralBaselineOnce(t *testing.T) {
 	if len(held) != 1 {
 		t.Fatalf("held actions = %d, want 1; log=%s", len(held), logBuf.String())
 	}
-	if err := manager.Resolve(held[0].DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
-		t.Fatalf("Resolve allow: %v", err)
+	if err := manager.Resolve(held[0].DeferID, finalDecision, deferred.SourceApproval); err != nil {
+		t.Fatalf("Resolve %s: %v", finalDecision, err)
 	}
-	testwait.For(t, time.Second, func() bool {
-		return strings.Contains(serverIn.String(), "send_tool")
-	}, "deferred-allowed request to be forwarded; log=%s", &logBuf)
+	if finalDecision == config.ActionAllow {
+		testwait.For(t, time.Second, func() bool {
+			return strings.Contains(serverIn.String(), "send_tool")
+		}, "deferred-allowed request to be forwarded; log=%s", &logBuf)
+	}
 	if err := inputW.Close(); err != nil {
 		t.Fatalf("close input: %v", err)
 	}
 	<-done
-	if got := rec.BaselineMetrics().ToolCalls; got != 1 {
-		t.Fatalf("committed tool calls after deferred allow = %d, want 1", got)
-	}
+	return rec, &serverIn
 }
 
 func TestRunHTTPListenerProxy_BehavioralBaselineRecordsDiscretePerRequestSamples(t *testing.T) {

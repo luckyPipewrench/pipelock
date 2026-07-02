@@ -531,6 +531,80 @@ func TestPoolRecycleStaleDestroyFailureKeepsEntryAndSlot(t *testing.T) {
 	}
 }
 
+func TestPoolFillWaitReadyDestroyFailureQuarantinesVM(t *testing.T) {
+	// fill() creates a VM, WaitReady fails, and the follow-up destroy ALSO fails.
+	// The VM must be quarantined (still tracked + slot held), NOT forgotten with
+	// its slot released — otherwise a still-alive VM leaks and the freed slot lets
+	// warm+active drift above the cap (the cost-amplifier bug).
+	fp := &destroyErrProvider{
+		fakeProvider: &fakeProvider{waitErr: errors.New("not ready")},
+		destroyErr:   errors.New("destroy failed"),
+	}
+	limiter := livechat.NewConcurrencyLimiter(1)
+	pool := newTestPool(t, fp, limiter, 1, 0, nil)
+
+	pool.maintain(context.Background())
+
+	warmIDs := pool.WarmMachineIDs()
+	if len(warmIDs) != 1 {
+		t.Fatalf("WarmMachineIDs after not-ready+failed-destroy = %d, want 1 (quarantined)", len(warmIDs))
+	}
+	if _, _, _, ok := pool.Acquire(); ok {
+		t.Fatal("quarantined not-ready VM was handed out; must not be acquirable")
+	}
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse = %d, want 1 (slot held for the still-alive VM whose destroy failed)", limiter.InUse())
+	}
+	if created, _ := fp.counts(); created != 1 {
+		t.Fatalf("created = %d, want 1 (a freed slot would spawn a replacement = the leak/cost bug)", created)
+	}
+
+	// Recover: destroy + WaitReady now succeed; quarantine retry cleans up and refills.
+	fp.destroyErr = nil
+	fp.waitErr = nil
+	pool.maintain(context.Background())
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse after recovery = %d, want 1", limiter.InUse())
+	}
+}
+
+func TestPoolAbortHandoffDestroyFailureQuarantines(t *testing.T) {
+	// AbortHandoff on a warm VM whose destroy fails must keep it tracked (in
+	// quarantine, still reaper-protected) with its slot held, and clear the
+	// handoff marker — never release the slot and forget a still-alive VM.
+	fp := &destroyErrProvider{fakeProvider: &fakeProvider{}, destroyErr: errors.New("destroy failed")}
+	limiter := livechat.NewConcurrencyLimiter(1)
+	pool := newTestPool(t, fp, limiter, 1, 0, nil)
+	pool.maintain(context.Background())
+
+	m, _, release, ok := pool.Acquire()
+	if !ok {
+		t.Fatal("Acquire should return the warm VM")
+	}
+	if _, in := pool.WarmMachineIDs()[m.ID]; !in {
+		t.Fatal("acquired VM should be in the handoff-protected set")
+	}
+
+	pool.AbortHandoff(context.Background(), m, release, "adopt failed")
+
+	if _, in := pool.WarmMachineIDs()[m.ID]; !in {
+		t.Fatalf("AbortHandoff with failing destroy must keep the VM tracked (quarantine)")
+	}
+	if limiter.InUse() != 1 {
+		t.Fatalf("InUse = %d, want 1 (slot held until destroy succeeds)", limiter.InUse())
+	}
+	pool.mu.Lock()
+	_, stillHandoff := pool.handoff[m.ID]
+	_, inQuarantine := pool.quarantine[m.ID]
+	pool.mu.Unlock()
+	if stillHandoff {
+		t.Error("AbortHandoff should clear the handoff marker")
+	}
+	if !inQuarantine {
+		t.Error("AbortHandoff with failing destroy should quarantine the VM")
+	}
+}
+
 func TestPoolPauseDestroyFailureQuarantinesVM(t *testing.T) {
 	fp := &destroyErrProvider{fakeProvider: &fakeProvider{}, destroyErr: errors.New("destroy failed")}
 	limiter := livechat.NewConcurrencyLimiter(1)

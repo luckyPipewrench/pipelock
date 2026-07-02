@@ -187,6 +187,32 @@ func (p *Pool) FinishHandoff(machineID string) {
 	delete(p.handoff, machineID)
 }
 
+// AbortHandoff tears down a warm VM that was Acquire'd but could not be adopted
+// into an active lease (e.g. AdoptWarm failed). It destroys the VM through the
+// quarantine-on-failure path — NOT a fire-and-forget DestroyMachine — so that a
+// FAILED destroy keeps the VM tracked (in quarantine, still protected from the
+// reaper) and its concurrency slot HELD until a retry succeeds. A fire-and-forget
+// destroy that silently fails would release the slot while the VM is still alive
+// on the provider, letting warm+active drift above the operator cap (INVARIANT 1)
+// and spending on an untracked machine. FinishHandoff is called last so the
+// machine is never simultaneously absent from the handoff, quarantine, AND active
+// sets (no reaper TOCTOU). Idempotent-safe for a nil machine/release.
+func (p *Pool) AbortHandoff(ctx context.Context, machine *Machine, release func(), reason string) {
+	if machine == nil {
+		return
+	}
+	if release == nil {
+		release = func() {}
+	}
+	failed := p.destroyWarmEntries(ctx, []warmEntry{{
+		machine: machine,
+		release: release,
+		created: p.now(),
+	}}, reason)
+	p.quarantineFailed(failed)
+	p.FinishHandoff(machine.ID)
+}
+
 // WarmMachineIDs returns a snapshot of machine IDs the reaper must protect:
 // every VM currently in the warm pool PLUS every VM in an in-flight handoff
 // (popped by Acquire, not yet an active lease). Combined with
@@ -400,9 +426,12 @@ func (p *Pool) fill(ctx context.Context) {
 			return
 		}
 		if werr := p.provider.WaitReady(ctx, m.ID); werr != nil {
-			_ = p.provider.DestroyMachine(context.WithoutCancel(ctx), m.ID)
-			release()
 			_, _ = fmt.Fprintf(p.log, "pool: warm vm %s not ready: %v\n", m.ID, werr)
+			// Quarantine-on-failure rather than fire-and-forget: if DestroyMachine
+			// also fails, keep the VM tracked and its slot held until retry, so a
+			// still-alive VM cannot be forgotten while its slot is freed.
+			failed := p.destroyWarmEntries(ctx, []warmEntry{{machine: m, vmCode: vmCode, release: release, created: p.now()}}, "warm vm not ready")
+			p.quarantineFailed(failed)
 			return
 		}
 
@@ -414,8 +443,10 @@ func (p *Pool) fill(ctx context.Context) {
 		// stop. Destroy it and free the slot.
 		if p.closed || p.paused {
 			p.mu.Unlock()
-			_ = p.provider.DestroyMachine(context.WithoutCancel(ctx), m.ID)
-			release()
+			// Quarantine-on-failure: a destroy that fails here must not release the
+			// slot and forget a still-running VM (same invariant as the not-ready path).
+			failed := p.destroyWarmEntries(ctx, []warmEntry{{machine: m, vmCode: vmCode, release: release, created: p.now()}}, "discard stopped warm vm")
+			p.quarantineFailed(failed)
 			return
 		}
 		p.entries = append(p.entries, warmEntry{

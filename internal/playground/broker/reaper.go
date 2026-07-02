@@ -108,22 +108,40 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 	active := r.activeIDs()
 	now := r.now()
 	destroyed := 0
+	skippedActive := 0
+	skippedYoung := 0
+	skippedUnknownAge := 0
+	destroyErrors := 0
 	for _, m := range machines {
 		if _, ok := active[m.ID]; ok {
+			skippedActive++
 			continue // actively leased
 		}
 		// SAFETY INVARIANT: a machine younger than grace is ALWAYS spared.
 		// A zero/unknown CreatedAt is treated as NOT-yet-past-grace.
-		if m.CreatedAt.IsZero() || now.Sub(m.CreatedAt) < r.grace {
+		if m.CreatedAt.IsZero() {
+			skippedUnknownAge++
+			continue
+		}
+		if now.Sub(m.CreatedAt) < r.grace {
+			skippedYoung++
 			continue
 		}
 		if dErr := r.provider.DestroyMachine(ctx, m.ID); dErr != nil {
+			destroyErrors++
 			_, _ = fmt.Fprintf(r.log, "reaper: destroy %s: %v\n", m.ID, dErr)
 			continue
 		}
 		_, _ = fmt.Fprintf(r.log, "reaper: destroyed orphan %s (age %s)\n", m.ID, now.Sub(m.CreatedAt).Truncate(time.Second))
 		destroyed++
 	}
+	// Per-reconcile heartbeat: ALWAYS log the tallies, even when nothing is
+	// destroyed. This is deliberate observability — the production orphan leak
+	// stayed invisible for a week precisely because a reconcile that found
+	// nothing logged nothing. "managed=0" recurring is now a visible signal that
+	// the provider list/filter has been blinded (e.g. an API-shape regression).
+	_, _ = fmt.Fprintf(r.log, "reaper: reconcile managed=%d active=%d destroyed=%d skipped_active=%d skipped_young=%d skipped_unknown_age=%d destroy_errors=%d\n",
+		len(machines), len(active), destroyed, skippedActive, skippedYoung, skippedUnknownAge, destroyErrors)
 	return destroyed, nil
 }
 

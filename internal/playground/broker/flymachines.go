@@ -238,7 +238,22 @@ func (f *FlyMachines) ListManagedMachines(ctx context.Context) ([]Machine, error
 		return nil, err
 	}
 	path := fmt.Sprintf("/apps/%s/machines", url.PathEscape(f.AppName))
-	query := url.Values{"summary": []string{"true"}, "limit": []string{"200"}}
+	// Do NOT set summary=true: Fly's summary list response strips config.metadata
+	// to null, and this reaper filters managed machines on the
+	// pipelock_role=playground-vm metadata tag. With summary=true the filter drops
+	// EVERY machine, ListManagedMachines returns empty, and the reaper silently
+	// reaps nothing while per-visitor VMs accumulate forever (observed live:
+	// 14 orphaned VMs after a week). The full list response carries both
+	// config.metadata and created_at, which the reaper's tag filter and grace
+	// check require.
+	//
+	// Page size is kept modest (not the API max): full machine objects are
+	// larger than summary rows, and the response body is capped at flyMaxBodyBytes
+	// (1 MiB) in do(). A too-large page could exceed that cap during a large
+	// orphan event, fail to parse, and stall cleanup exactly when it matters most.
+	// More pages of a bounded size is the safer trade; the cursor loop below
+	// handles pagination.
+	query := url.Values{"limit": []string{"50"}}
 	var raw []flyListMachine
 	for {
 		respBody, err := f.do(ctx, http.MethodGet, path, query, nil)

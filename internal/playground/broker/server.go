@@ -569,17 +569,19 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 			vmCode = wc
 			adopted, adoptErr := s.cfg.Leases.AdoptWarm(sessionKey, wm, wRelease)
 			if adoptErr != nil {
-				// Adoption failed (e.g. duplicate key race). Destroy the warm VM
-				// and release the slot so neither leaks.
-				_ = s.cfg.Leases.cfg.Provider.DestroyMachine(context.WithoutCancel(r.Context()), wm.ID)
-				wRelease()
+				// Adoption failed (e.g. duplicate key race). Tear down the warm VM
+				// through the quarantine-on-failure path so a FAILED destroy keeps
+				// the slot held and the VM tracked (still reaper-protected) rather
+				// than releasing the slot and forgetting a still-alive VM.
+				// AbortHandoff clears the in-flight handoff marker itself.
+				s.cfg.WarmPool.AbortHandoff(r.Context(), wm, wRelease, "adopt failed")
 			} else {
 				lease = adopted
+				// Machine is now an active lease (protected by ActiveMachineIDs);
+				// clear the in-flight handoff marker. Closes the reaper TOCTOU
+				// window opened by Acquire.
+				s.cfg.WarmPool.FinishHandoff(wm.ID)
 			}
-			// Clear the in-flight handoff marker now that the machine is either an
-			// active lease (protected by ActiveMachineIDs) or destroyed. Closes the
-			// reaper TOCTOU window opened by Acquire.
-			s.cfg.WarmPool.FinishHandoff(wm.ID)
 		}
 	}
 	if lease == nil {

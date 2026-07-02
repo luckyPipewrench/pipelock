@@ -133,7 +133,7 @@ func Decide(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policy
 		return Decision{
 			Outcome:     Deny,
 			UserMessage: "pipelock: unknown event type",
-			Evidence:    []Evidence{{Scanner: "decide", Detail: "unrecognized event kind: " + string(action.Kind), Action: config.ActionBlock}},
+			Evidence:    []Evidence{{Scanner: scanner.DecideStructuralLabel, Detail: "unrecognized event kind: " + string(action.Kind), Action: config.ActionBlock}},
 		}
 	}
 }
@@ -180,7 +180,7 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 			// Malformed JSON in tool_input: block-level finding (fail-closed).
 			// Still scan the raw text for diagnostic DLP/injection evidence.
 			evidence = append(evidence, Evidence{
-				Scanner:  "decide",
+				Scanner:  scanner.DecideStructuralLabel,
 				Pattern:  "Malformed MCP Input",
 				Severity: config.SeverityHigh,
 				Detail:   "tool_input is not valid JSON",
@@ -278,7 +278,7 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 	if p.ToolInput != "" {
 		if !json.Valid([]byte(p.ToolInput)) {
 			evidence = append(evidence, Evidence{
-				Scanner:  "decide",
+				Scanner:  scanner.DecideStructuralLabel,
 				Pattern:  "Malformed Tool Input",
 				Severity: config.SeverityHigh,
 				Detail:   "tool_input is not valid JSON",
@@ -396,7 +396,7 @@ func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
 	var ev []Evidence
 	for _, m := range result.Matches {
 		ev = append(ev, Evidence{
-			Scanner:  "dlp",
+			Scanner:  scanner.ScannerDLP,
 			Pattern:  m.PatternName,
 			Severity: m.Severity,
 			Action:   config.ActionBlock, // DLP findings are always block-level
@@ -416,7 +416,7 @@ func evidenceFromInjection(result scanner.ResponseScanResult, cfgAction string) 
 	var ev []Evidence
 	for _, m := range result.Matches {
 		ev = append(ev, Evidence{
-			Scanner: "injection",
+			Scanner: scanner.DecideInjectionLabel,
 			Pattern: m.PatternName,
 			Detail:  m.MatchText,
 			Action:  action,
@@ -427,7 +427,7 @@ func evidenceFromInjection(result scanner.ResponseScanResult, cfgAction string) 
 
 func uninspectableJSONEvidence() Evidence {
 	return Evidence{
-		Scanner:  "decide",
+		Scanner:  scanner.DecideStructuralLabel,
 		Pattern:  "Uninspectable JSON",
 		Severity: config.SeverityCritical,
 		Detail:   "tool_input exceeds maximum inspectable JSON depth or size",
@@ -450,7 +450,7 @@ func evidenceFromPolicy(verdict policy.Verdict) []Evidence {
 			sev = "medium"
 		}
 		ev = append(ev, Evidence{
-			Scanner:  "policy",
+			Scanner:  scanner.DecidePolicyLabel,
 			Pattern:  rule,
 			Severity: sev,
 			Detail:   "action=" + action,

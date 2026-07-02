@@ -897,6 +897,14 @@ func actionDowngraded(oldAction, newAction string) bool {
 	return oldOK && newOK && newStrength < oldStrength
 }
 
+// ActionDowngraded reports whether newAction is a weaker terminal enforcement
+// outcome than oldAction (e.g. block->warn, ask->warn) using the same ranking
+// as reload-downgrade detection. Exported for reload teardown guards in other
+// packages that must reject any enforcement downgrade, not just block->non-block.
+func ActionDowngraded(oldAction, newAction string) bool {
+	return actionDowngraded(oldAction, newAction)
+}
+
 // reloadActionStrength ranks terminal enforcement outcomes for reload-downgrade
 // detection. Block is strongest because it denies the risky operation outright.
 // Defer and ask both stop automatic forwarding, but defer is stronger because it

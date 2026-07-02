@@ -870,6 +870,9 @@ func ForwardScannedInput(
 			baselineDecision := checkMCPToolCallBaselineAttempt(opts, rec, toolCallName)
 			if baselineDecision.Action != "" {
 				reasons = append(reasons, baselineDecision.Detail)
+				// Recompute so the block/warn reason includes the baseline
+				// deviation detail (reasonStr was built before this append).
+				reasonStr = joinStrings(reasons)
 				effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
 				if baselineDecision.Action == config.ActionAsk {
 					errCode = -32001

@@ -1154,6 +1154,16 @@ func (sm *SessionManager) CheckBaselineForRecorder(agentKey string, rec session.
 	}
 }
 
+// RecordBaselineForRecorder records an invocation recorder under an explicit
+// identity key for MCP transports.
+func (sm *SessionManager) RecordBaselineForRecorder(agentKey string, rec session.Recorder) {
+	sess, ok := rec.(*SessionState)
+	if !ok || sess == nil {
+		return
+	}
+	sm.RecordBaselineForAgent(agentKey, sess)
+}
+
 func baselineDecisionDetail(result *BaselineResult) string {
 	if result == nil {
 		return ""
@@ -1169,6 +1179,22 @@ func baselineDecisionDetail(result *BaselineResult) string {
 		parts = append(parts, fmt.Sprintf("%s observed=%.2f baseline_mean=%.2f severity=%s", d.Metric, d.Observed, d.Baseline.Mean, d.Severity))
 	}
 	return "baseline deviation: " + strings.Join(parts, "; ")
+}
+
+// RecordBaselineForAgent records sess metrics into the behavioral baseline
+// manager under an explicit identity key. MCP invocation sessions carry their
+// identity out of band, so they intentionally bypass the identity-session key
+// gate used by HTTP eviction.
+func (sm *SessionManager) RecordBaselineForAgent(identityKey string, sess *SessionState) {
+	snap := sm.baselinePtr.Load()
+	if snap == nil || snap.mgr == nil || identityKey == "" || sess == nil {
+		return
+	}
+	if err := baseline.ValidateAgentKey(identityKey); err != nil {
+		return
+	}
+	bm := sess.BaselineMetrics()
+	snap.mgr.RecordSession(identityKey, bm)
 }
 
 // recordSessionBaseline records the session's accumulated metrics into the
@@ -1194,8 +1220,7 @@ func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
 		// Fall back to full key when no "|" separator exists.
 		agent = key
 	}
-	bm := sess.BaselineMetrics()
-	snap.mgr.RecordSession(agent, bm)
+	sm.RecordBaselineForAgent(agent, sess)
 }
 
 // GetOrCreate returns the session for a key, creating if needed.

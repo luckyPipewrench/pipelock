@@ -93,6 +93,51 @@ func TestSessionManager_CheckBaselineInvalidAgentKeyFailsClosed(t *testing.T) {
 	}
 }
 
+func TestSessionManager_RecordBaselineForAgentInvalidKeyAndLockedNoOp(t *testing.T) {
+	t.Parallel()
+
+	cfg := testSessionConfig()
+	sm := NewSessionManager(cfg, nil, nil)
+	t.Cleanup(sm.Close)
+	bb := testBaselineBlockConfig(t)
+	bb.AutoRatify = false
+	bb.LockDimensions = []string{"tool_calls"}
+	if err := sm.EnableBaseline(bb); err != nil {
+		t.Fatalf("EnableBaseline: %v", err)
+	}
+
+	invalid := sm.GetOrCreate("mcp-http-invalid")
+	invalid.RecordToolCall("steady_tool")
+	sm.RecordBaselineForAgent("../agent-bad", invalid)
+	if agents := sm.BaselineManager().ListAgents(); len(agents) != 0 {
+		t.Fatalf("invalid identity key created baseline agents: %v", agents)
+	}
+
+	const agent = "agent-locked"
+	learned := sm.GetOrCreate("mcp-http-learn")
+	learned.RecordToolCall("steady_tool")
+	sm.RecordBaselineForAgent(agent, learned)
+	if state := sm.BaselineManager().GetState(agent); state != "ratify" {
+		t.Fatalf("baseline state = %q, want ratify", state)
+	}
+	if err := sm.BaselineManager().Ratify(agent); err != nil {
+		t.Fatalf("Ratify: %v", err)
+	}
+
+	deviant := sm.GetOrCreate("mcp-http-deviant")
+	deviant.RecordToolCall("steady_tool")
+	deviant.RecordToolCall("second_tool")
+	sm.RecordBaselineForAgent(agent, deviant)
+
+	profile := sm.BaselineManager().GetProfile(agent)
+	if profile == nil {
+		t.Fatal("locked profile missing")
+	}
+	if profile.Metrics.ToolCallsPerSession.Mean != 1 {
+		t.Fatalf("locked profile mutated after record: tool_calls mean = %.2f, want 1.00", profile.Metrics.ToolCallsPerSession.Mean)
+	}
+}
+
 func TestSessionManager_ReconfigureBaselinePreservesLockedProfile(t *testing.T) {
 	t.Parallel()
 

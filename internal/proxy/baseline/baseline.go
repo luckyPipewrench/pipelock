@@ -38,6 +38,12 @@ func validateAgentKey(key string) error {
 	return nil
 }
 
+// ValidateAgentKey reports whether key is safe for identity-keyed baseline
+// storage and lookup.
+func ValidateAgentKey(key string) error {
+	return validateAgentKey(key)
+}
+
 // ProfileState is the explicit state machine for baseline lifecycle.
 // Transitions: Observe->Learn (auto), Learn->Ratify (auto),
 // Ratify->Locked (operator only), Locked->Observe (operator only).

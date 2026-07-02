@@ -53,6 +53,8 @@ func (c *identityBaselineChecker) CheckBaselineForRecorder(agentKey string, rec 
 	return session.BaselineDecision{}
 }
 
+func (c *identityBaselineChecker) RecordBaselineForRecorder(string, session.Recorder) {}
+
 func TestMCPBehavioralBaselineUsesIdentityKeyNotInvocationKey(t *testing.T) {
 	t.Parallel()
 

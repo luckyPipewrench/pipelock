@@ -46,6 +46,21 @@ func recordMCPToolCallAndCheckBaseline(opts MCPProxyOpts, rec session.Recorder, 
 	return decision
 }
 
+func recordMCPBaselineSample(opts MCPProxyOpts, rec session.Recorder) {
+	if rec == nil {
+		return
+	}
+	checker := opts.baselineChecker()
+	if checker == nil {
+		return
+	}
+	agentKey := mcpBaselineAgentKey(opts)
+	if agentKey == "" {
+		return
+	}
+	checker.RecordBaselineForRecorder(agentKey, rec)
+}
+
 func mcpBaselineAgentKey(opts MCPProxyOpts) string {
 	if agent := strings.TrimSpace(opts.addressProtectionAgent()); agent != "" {
 		return agent

@@ -87,6 +87,7 @@ type BaselineDecision struct {
 // behavioral baseline without coupling MCP callers to proxy internals.
 type BaselineChecker interface {
 	CheckBaselineForRecorder(agentKey string, rec Recorder) BaselineDecision
+	RecordBaselineForRecorder(agentKey string, rec Recorder)
 }
 
 // TaskContext describes the current task boundary attached to a live session.

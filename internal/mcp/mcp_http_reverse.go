@@ -132,6 +132,9 @@ func RunHTTPListenerProxy(
 		KillSwitch:               opts.KillSwitch,
 		ChainMatcher:             opts.chainMatcher(),
 		ChainMatcherFn:           opts.ChainMatcherFn,
+		Store:                    opts.Store,
+		Baseline:                 opts.Baseline,
+		BaselineFn:               opts.BaselineFn,
 		AuditLogger:              opts.AuditLogger,
 		CEE:                      opts.cee(),
 		CEEFn:                    opts.CEEFn,
@@ -341,6 +344,7 @@ func RunHTTPListenerProxy(
 			}
 			reqRec = opts.Store.GetOrCreate(adaptiveHost)
 		}
+		defer recordMCPBaselineSample(baseOpts, reqRec)
 
 		warnCtx := scanner.DLPWarnContextFromCtx(r.Context())
 		if warnCtx.Transport == "" {

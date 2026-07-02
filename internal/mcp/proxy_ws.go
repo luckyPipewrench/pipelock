@@ -51,6 +51,7 @@ func RunWSProxy(
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-ws"))
 	}
+	defer recordMCPBaselineSample(opts, rec)
 
 	safeClientOut := &syncWriter{w: clientOut}
 	safeLogW := &syncWriter{w: logW}

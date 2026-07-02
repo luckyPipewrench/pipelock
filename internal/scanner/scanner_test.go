@@ -4635,7 +4635,7 @@ func TestHintForBlock(t *testing.T) {
 		{ScannerParser, "The URL could not be parsed."},
 		{ScannerCRLF, "CRLF injection sequence detected in URL. This is never legitimate in normal traffic."},
 		{ScannerPathTraversal, "Path traversal sequence detected. Review the URL for directory escape attempts."},
-		{"body_dlp", "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."},
+		{ScannerBodyDLP, "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."},
 		{"unknown_scanner", ""},
 	}
 	for _, tt := range tests {
@@ -4650,7 +4650,7 @@ func TestHintForBlock(t *testing.T) {
 }
 
 func TestBodyDLPHintNamesSuppressNotExemptDomains(t *testing.T) {
-	hint := HintForScanner("body_dlp")
+	hint := HintForScanner(ScannerBodyDLP)
 	if !strings.Contains(hint, "suppress:") {
 		t.Fatalf("body_dlp hint = %q, want suppress: remediation", hint)
 	}

@@ -782,7 +782,7 @@ var scannerHints = map[string]string{
 	ScannerCoreDLP:          "Core DLP pattern matched. This is a critical credential detection that cannot be disabled.",
 	ScannerCoreSSRF:         "Core SSRF protection blocked this URL. Private IP ranges are always blocked.",
 	ScannerCoreResponse:     "Core response scanning detected a prompt injection pattern. This cannot be disabled.",
-	"body_dlp":              "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path.",
+	ScannerBodyDLP:          bodyDLPOperatorKnob,
 }
 
 // HintForScanner returns actionable guidance for a scanner label.

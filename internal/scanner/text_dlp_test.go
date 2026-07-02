@@ -1164,15 +1164,15 @@ func TestScanTextForDLP_OfficialAWSExampleCredentialDocsWholeTokenOnly(t *testin
 
 func TestScanTextForDLP_UnicodePrefixedBareKeyStillBlocks(t *testing.T) {
 	// A rune that changes byte length when lowercased (U+212A KELVIN SIGN -> "k")
-	// must not shift the doc-marker offset logic into self-exempting a bare
-	// example key. Bare key with no legitimate doc marker MUST still block.
+	// must not shift the doc-marker offset logic into self-exempting a marker
+	// that overlaps the example key's own EXAMPLE suffix.
 	s := New(testConfig())
 	defer s.Close()
 
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
-	input := strings.Repeat("K", 10) + key
+	input := strings.Repeat("K", 10) + key + " credential"
 	if s.ScanTextForDLP(context.Background(), input).Clean {
-		t.Fatal("bare example key preceded by a length-changing Unicode rune must still block")
+		t.Fatal("self-overlapping example credential marker after a length-changing Unicode rune must still block")
 	}
 }
 

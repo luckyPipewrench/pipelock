@@ -9,8 +9,21 @@ import "strings"
 // scanner pipeline.
 const ScannerBodyDLP = "body_dlp"
 
+// Decide*Label values identify non-URL blocks emitted by internal/decide.
+// They are not URL scanner pipeline labels, but they share the remediation
+// table so operator and agent guidance cannot drift by surface.
+const (
+	DecideInjectionLabel  = "injection"
+	DecidePolicyLabel     = "policy"
+	DecideStructuralLabel = "decide"
+)
+
 const (
 	bodyDLPOperatorKnob = "Request body DLP matched. For false positives, add a top-level suppress: entry with rule: set to the matched rule name and path: scoped to the request path."
+
+	decideInjectionOperatorKnob  = "Prompt-injection scanning matched content in the action. For shell/file/tool explain blocks, tune `response_scanning` (for example suppress or disable per response-scanning config); MCP request-input injection is tuned by `mcp_input_scanning`."
+	decidePolicyOperatorKnob     = "Tool policy denied the action. Edit the matching `mcp_tool_policy.rules` entry, or narrow/add a rule for the intended tool call."
+	decideStructuralOperatorKnob = "The action could not be evaluated safely (unknown event, malformed tool input, or uninspectable input). There is no allow-path knob for the structural failure; correct the action shape and retry."
 
 	ssrfOperatorKnob = "If the destination is a trusted internal service, add the hostname to top-level `trusted_domains` (hostname-based) or the resolved range to `ssrf.ip_allowlist` (IP-based). " +
 		"This verdict depends on DNS resolution at runtime; explain reports it without resolving."
@@ -32,6 +45,9 @@ const (
 	protectedAddressAgentReason   = "Request blocked: the destination resolves to protected internal or metadata infrastructure."
 	protectiveCeilingAgentReason  = "Request blocked: a protective request ceiling was exceeded."
 	injectionTraversalAgentReason = "Request blocked: the URL contains an injection/traversal sequence."
+	promptInjectionAgentReason    = "Request blocked: the content matched a prompt-injection pattern."
+	toolPolicyAgentReason         = "Request blocked: the tool call is not permitted by policy."
+	decideStructuralAgentReason   = "Request blocked: the action could not be evaluated."
 	// destinationNotPermittedAgentReason is shared by the blocklist and allowlist
 	// blocks. It deliberately does NOT name which mechanism (blocklist vs strict
 	// allowlist) rejected the destination: telling a blocked agent whether it is
@@ -149,6 +165,19 @@ var remediationGuidance = map[string]RemediationGuidance{
 	ScannerBodyDLP: {
 		OperatorKnob: bodyDLPOperatorKnob,
 		AgentReason:  secretAgentReason,
+	},
+	DecideInjectionLabel: {
+		OperatorKnob: decideInjectionOperatorKnob,
+		AgentReason:  promptInjectionAgentReason,
+	},
+	DecidePolicyLabel: {
+		OperatorKnob: decidePolicyOperatorKnob,
+		AgentReason:  toolPolicyAgentReason,
+	},
+	DecideStructuralLabel: {
+		OperatorKnob: decideStructuralOperatorKnob,
+		Immutable:    true,
+		AgentReason:  decideStructuralAgentReason,
 	},
 }
 

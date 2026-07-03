@@ -238,22 +238,32 @@ func VerifyCheckpoints(entries []Entry, pubKey ed25519.PublicKey) error {
 // ReadEntries reads and parses JSONL evidence entries from a file.
 // Accepts the versions in acceptedEntryVersions; rejects unknown versions.
 func ReadEntries(path string) ([]Entry, error) {
+	entries, _, err := readEntries(path, 0)
+	return entries, err
+}
+
+func readEntries(path string, maxEntries int) ([]Entry, bool, error) {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
-		return nil, fmt.Errorf("opening evidence file: %w", err)
+		return nil, false, fmt.Errorf("opening evidence file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	entries, err := ReadEntriesFromReader(f)
+	entries, truncated, err := readEntriesFromReader(f, maxEntries)
 	if err != nil {
-		return nil, fmt.Errorf("reading evidence file: %w", err)
+		return nil, false, fmt.Errorf("reading evidence file: %w", err)
 	}
-	return entries, nil
+	return entries, truncated, nil
 }
 
 // ReadEntriesFromReader reads and parses JSONL evidence entries from r.
 // It applies the same duplicate-key and version fences as ReadEntries.
 func ReadEntriesFromReader(r io.Reader) ([]Entry, error) {
+	entries, _, err := readEntriesFromReader(r, 0)
+	return entries, err
+}
+
+func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 	var entries []Entry
 	sc := bufio.NewScanner(r)
 
@@ -263,6 +273,10 @@ func ReadEntriesFromReader(r io.Reader) ([]Entry, error) {
 
 	lineNum := 0
 	for sc.Scan() {
+		if maxEntries > 0 && len(entries) >= maxEntries {
+			return entries, true, nil
+		}
+
 		lineNum++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -273,20 +287,20 @@ func ReadEntriesFromReader(r io.Reader) ([]Entry, error) {
 		// last-wins (a parser-differential smuggling vector); shared with the
 		// receipt verify path via internal/jsonscan.
 		if err := jsonscan.RejectDuplicateKeys([]byte(line)); err != nil {
-			return nil, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
+			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
 
 		var e Entry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			return nil, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
+			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
 		if !acceptedEntryVersions[e.Version] {
-			return nil, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)
+			return nil, false, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)
 		}
 		entries = append(entries, e)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("scanning evidence entries: %w", err)
+		return nil, false, fmt.Errorf("scanning evidence entries: %w", err)
 	}
-	return entries, nil
+	return entries, false, nil
 }

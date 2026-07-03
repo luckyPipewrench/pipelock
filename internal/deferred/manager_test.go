@@ -416,11 +416,14 @@ func TestResolvePolicyReloadErrorBlocks(t *testing.T) {
 
 func TestManagerDerivesSessionPendingAncestorLinkage(t *testing.T) {
 	tests := []struct {
-		name    string
-		session string
+		name      string
+		session   string
+		wantChain bool
 	}{
-		{name: "named session", session: "s1"},
-		{name: "empty session group", session: ""},
+		{name: "named session", session: "s1", wantChain: true},
+		// An empty session ID is not an identity: unrelated session-less
+		// flows must never be linked into one ancestry chain.
+		{name: "empty session stays unlinked", session: "", wantChain: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -440,16 +443,56 @@ func TestManagerDerivesSessionPendingAncestorLinkage(t *testing.T) {
 				if !ok {
 					t.Fatalf("Held(%s) missing", id)
 				}
-				if held.CascadeDepth != i+1 || held.Linkage != LinkageSessionPendingAncestor {
-					t.Fatalf("Held(%s) depth/linkage = %d/%q", id, held.CascadeDepth, held.Linkage)
+				wantDepth := 1
+				if tt.wantChain {
+					wantDepth = i + 1
+				}
+				if held.CascadeDepth != wantDepth || held.Linkage != LinkageSessionPendingAncestor {
+					t.Fatalf("Held(%s) depth/linkage = %d/%q, want depth %d", id, held.CascadeDepth, held.Linkage, wantDepth)
 				}
 			}
 			b, _ := m.Held("b")
 			c, _ := m.Held("c")
-			if b.ParentDeferID != "a" || c.ParentDeferID != "b" {
-				t.Fatalf("parents b=%q c=%q, want a/b", b.ParentDeferID, c.ParentDeferID)
+			if tt.wantChain {
+				if b.ParentDeferID != "a" || c.ParentDeferID != "b" {
+					t.Fatalf("parents b=%q c=%q, want a/b", b.ParentDeferID, c.ParentDeferID)
+				}
+			} else if b.ParentDeferID != "" || c.ParentDeferID != "" {
+				t.Fatalf("session-less holds linked: b parent=%q c parent=%q, want none", b.ParentDeferID, c.ParentDeferID)
 			}
 		})
+	}
+}
+
+func TestManagerEmptySessionDenialDoesNotCascadeToStrangers(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 8, MaxCascadeDepth: 8})
+	resolved := make(chan Resolution, 2)
+	for _, id := range []string{"a", "b"} {
+		if err := m.Hold(HeldAction{
+			DeferID:   id,
+			ActionID:  id,
+			Target:    "tool",
+			SizeBytes: 1,
+			Authority: AuthoritySnapshot{},
+			Resolve:   func(res Resolution) { resolved <- res },
+		}); err != nil {
+			t.Fatalf("Hold(%s): %v", id, err)
+		}
+	}
+	if err := m.Resolve("a", config.ActionBlock, SourceApproval); err != nil {
+		t.Fatalf("Resolve(a): %v", err)
+	}
+	got := <-resolved
+	if got.DeferID != "a" {
+		t.Fatalf("resolved %q first, want a", got.DeferID)
+	}
+	if _, ok := m.Held("b"); !ok {
+		t.Fatal("unrelated session-less hold b was cascade-resolved by a's denial")
+	}
+	select {
+	case res := <-resolved:
+		t.Fatalf("unexpected cascade resolution %+v for unrelated hold", res)
+	default:
 	}
 }
 

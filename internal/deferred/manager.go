@@ -275,10 +275,17 @@ func (m *Manager) Hold(action HeldAction) error {
 	}
 	action.Linkage = LinkageSessionPendingAncestor
 	action.CascadeDepth = 1
-	if ids := m.sessionHolds[action.Authority.SessionID]; len(ids) > 0 {
-		parent := m.holds[ids[len(ids)-1]]
-		action.ParentDeferID = parent.DeferID
-		action.CascadeDepth = parent.CascadeDepth + 1
+	// An empty session ID is not an identity. Linking the shared "" bucket
+	// would chain unrelated flows into one ancestry: one flow could
+	// cascade-block another and the signed receipts would claim a false
+	// parent/child relationship. Session-less holds stay independent roots
+	// (the per-session capacity cap still bounds the "" bucket).
+	if action.Authority.SessionID != "" {
+		if ids := m.sessionHolds[action.Authority.SessionID]; len(ids) > 0 {
+			parent := m.holds[ids[len(ids)-1]]
+			action.ParentDeferID = parent.DeferID
+			action.CascadeDepth = parent.CascadeDepth + 1
+		}
 	}
 	if action.CascadeDepth > m.cfg.MaxCascadeDepth {
 		m.mu.Unlock()

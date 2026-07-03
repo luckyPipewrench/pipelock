@@ -1,6 +1,6 @@
 # AGENTS.md — Pipelock Development & Review Guide
 
-This file is the working guide for any AI coding agent (not just Claude Code) contributing to Pipelock. It covers the same ground as `CLAUDE.md` — build, test, lint, architecture, security invariants, and PR workflow — so an agent that reads `AGENTS.md` can be a first-class contributor, not just a reviewer.
+This file is the working guide for any AI coding agent contributing to Pipelock. It covers build, test, lint, architecture, security invariants, and PR workflow so an agent that reads `AGENTS.md` can be a first-class contributor, not just a reviewer.
 
 Pipelock is an agent firewall: a network and tool proxy that sits between AI agents and the internet, scanning the HTTP, WebSocket, and MCP traffic routed through it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Coverage is for **mediated** traffic; blocking direct egress that bypasses the proxy is deployment guidance, not a binary-enforced property.
 
@@ -266,7 +266,7 @@ Severity levels:
 
 - Don't flag `//nolint` comments that already exist in the tree — they were reviewed and intentional (this does not license *new* ones; the pre-push gate bans net-new `//nolint`).
 - Don't flag the `tests/` directory being gitignored — that's deliberate.
-- Don't flag `tests/pentest.sh` as broken or a no-op. It defines helper functions sourced by a private orchestrator that is not in this repo; the helpers live in a separate private security-test repository present on the developer's machine at runtime. It is not meant to run standalone.
+- Don't flag `tests/pentest.sh` as broken or a no-op. It defines helper functions sourced by an external security-test harness and is not meant to run standalone from this repository.
 - Don't suggest adding dependencies for things already handled by stdlib.
 - Don't suggest architectural changes absent a concrete bug.
 - Don't flag `CLAUDE.md`, `CLAUDE.local.md`, or `AGENTS.md` as unusual files.

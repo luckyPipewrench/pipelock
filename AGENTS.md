@@ -1,104 +1,239 @@
-# AGENTS.md — AI Code-Review Agent Instructions
+# AGENTS.md — Pipelock Development & Review Guide
 
-You are primarily a code reviewer for Pipelock. By default, you review and report. If the user explicitly asks you to make changes, you may edit for that request.
+This file is the working guide for any AI coding agent (not just Claude Code) contributing to Pipelock. It covers the same ground as `CLAUDE.md` — build, test, lint, architecture, security invariants, and PR workflow — so an agent that reads `AGENTS.md` can be a first-class contributor, not just a reviewer.
+
+Pipelock is an agent firewall: a network and tool proxy that sits between AI agents and the internet, scanning the HTTP, WebSocket, and MCP traffic routed through it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Coverage is for **mediated** traffic; blocking direct egress that bypasses the proxy is deployment guidance, not a binary-enforced property.
 
 ## Your Role
 
-- **Primary role: review.** Default to review, risk analysis, and actionable handoff guidance.
-- **Do not edit by default.** Never edit files, create files, or modify code unless the user explicitly asks you to.
-- **Edits allowed on explicit request.** If the user clearly asks you to fix, implement, or modify code, you may make the requested changes.
-- You are one part of a two-agent workflow when requested, but do not assume a separate fixer is always required.
-- Your output must be a clean, actionable report that can be handed off directly.
+You support the whole repository: you may build, fix, test, and review. Default to whatever the user actually asks for — implement when asked to implement, review when asked to review. When the ask is ambiguous, review and report rather than edit.
 
-## Default Behavior
+Operating guardrails (these hold regardless of the task):
 
-- **Default to review-only unless explicitly asked to change code.**
-- **Never run destructive commands** (reset, rm, force-push, checkout, clean) unless explicitly asked.
-- **Run tests, vet, and lint automatically** to verify your findings. Use: `go test -race -count=1 ./...` and `golangci-lint run ./...`
-- **Never use network.** No `go mod download`, no `curl`, no Docker pulls. If a test fails due to sandbox/network restrictions, report it as an environment limitation, not a code bug.
-- **Never auto-fix** lint issues, type errors, or formatting unless the user explicitly asked you to make changes.
-- **Never commit, push, or create branches.**
-- **Ask before escalation.** If something seems wrong but you're not sure, flag it with uncertainty rather than acting.
+- **Never commit, push, create branches, or open PRs unless explicitly asked.** Leave completed work as a modified tree or a clear report; a human decides when it lands.
+- **Never run destructive git** (`reset --hard`, `clean -f`, `push --force`, branch/tag delete, `checkout` that discards work) unless explicitly asked. No `--no-verify`, no gpg-bypass.
+- **Use the network only when the task genuinely needs it.** Prefer cached modules and offline verification; avoid gratuitous fetches. When a task legitimately requires it — `go mod download` for a dependency the task is adding, verifying an external spec — it is allowed. If a test fails purely due to sandbox/network restrictions rather than a code defect, report it as an environment limitation, not a code bug.
+- **Verify by reproduction, not assertion.** "PASS" means you ran the command and read the output. For security-relevant claims, run the negative/attack case too and confirm it fails **closed**.
+- **Flag uncertainty instead of guessing.** If something looks wrong but you are not sure, surface it with your confidence level rather than silently acting or silently ignoring it.
+- **Public repo.** Everything here is world-visible. Keep commit messages, code, comments, tests, and fixtures free of personal, infrastructure, or private-planning details, and vendor/provider-neutral (see Code Style).
 
-## Project Context
+## Hard Rules
 
-Pipelock is a security harness for AI agents. Single Go binary, Apache 2.0, public repo.
+These are non-negotiable. Violating any of them breaks the security model.
 
-**What it does:** Sits between an AI agent and the internet. Scans all HTTP requests and MCP protocol traffic for credential exfiltration, prompt injection, SSRF, data leaks, and tool poisoning.
+- **Never weaken capability separation.** The proxy holds no agent secrets by design; deployment must enforce separation. The agent environment may hold secrets but should have no direct network egress; pipelock has network egress but must not hold agent secrets. If pipelock ever needs access to agent secrets, the architecture is wrong. (Pipelock reads local environment variables for env-leak *scanning* — that is detection, not credential storage.)
+- **Never bypass fail-closed defaults.** HITL timeout, non-terminal input, parse errors, context cancellation: all default to **block**. If in doubt, block.
+- **Never add dependencies without justification.** Minimal direct deps is intentional, not a limitation. Every dependency is attack surface. Propose additions in the PR description with rationale.
+- **Never panic on runtime input.** All `panic()` calls in the codebase are post-validation programming errors caught at startup (invalid DLP regex, bad CIDR after config validation). User/agent input must never cause a panic.
+- **DLP runs before DNS resolution.** The blocklist and DLP layers execute before the SSRF/DNS layer. Reordering them would allow secret exfiltration via DNS queries.
 
-**Architecture — capability separation:**
+## Security Invariants
 
-```text
-Agent (has secrets, no network) → Pipelock Proxy (no agent secrets, has network) → Internet
+These must be proven by tests, not assumed from docs or deployment.
+
+- **"Enforced" means the binary enforces it.** If a property depends on deployment, user separation, containers, or network policy, describe it as deployment guidance, not product enforcement.
+- **Allowlist/suppression must not bypass content scanning.** Any allowlist, trusted-destination, or suppression logic must not skip DLP, header scanning, body scanning, or explicit secret detection unless the exception is deliberate, documented, and tested.
+- **Security-sensitive config defaults must have one source of truth.** If docs say "default true," omitting the field from YAML must produce true. New security-sensitive boolean fields must be tested in 6 states: omitted, YAML null/blank, explicit false, explicit true, reload with change, reload without change.
+- **Transport parity must be proven, not claimed.** If a scanning feature applies to multiple surfaces, verify it on each applicable one: fetch, forward proxy, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE. Not every feature applies to every transport (e.g., MCP stdio has no URL scanning path). Document exceptions explicitly and don't claim parity in docs without tests.
+- **Docs are security surface.** Don't claim "automatic escalation" if the code only scores or logs. Don't claim enforcement that only exists at the deployment layer. Review docs when changing behavior.
+- **Hot reload must preserve security state.** Test: first load, first reload, second unrelated reload, downgrade/revocation, stale cached state. Kill switch state (all sources) must survive reloads.
+
+## Quick Reference
+
+| Item | Value |
+|------|-------|
+| Module | `github.com/luckyPipewrench/pipelock` |
+| Go | 1.25+ (CI tests 1.25 and 1.26) |
+| License | Apache 2.0 (core), ELv2 (`enterprise/`) |
+| Binary | Single Go binary; size varies by OS, build tags, and release flags. |
+| Deps | See `go.mod` for the current direct dependencies. Run `make stats` for the live count before citing it anywhere. Minimal direct deps is intentional. |
+
+## Public Documentation Standards
+
+- Keep public docs factual, product- and repo-focused. Do not add personal preferences, private infrastructure notes, unpublished roadmap, or ops-only workflow details.
+- Use exact casing for **Pipelock**. Describe it as an **agent firewall** (or **open-source agent firewall**) only when the surrounding claim is supported by the README and the implementation.
+- Distinguish binary-enforced controls from deployment guidance. If a property depends on sandboxing, containment, containers, user separation, or network policy, say so rather than implying the binary enforces it.
+- Do not publish benchmark, corpus, pattern, preset, dependency, coverage, or release counts unless they were verified from the current source of truth in the same change.
+- State what is enforced, where it is enforced, and what remains deployment-dependent. Avoid promotional framing in technical docs.
+
+### Docs PR checklist
+
+Before merging a README or docs PR that changes feature summaries, release notes, or security claims:
+
+1. Compare every changed claim against the current code, `README.md`, and the relevant `docs/` pages.
+2. Run `make stats` before citing pattern, preset, or dependency counts.
+3. Verify external proof claims (such as benchmark corpus size) against the public benchmark repo or live public results before citing a hard number. If not verified, omit it.
+4. Make sure screenshots, badges, and release claims still match the current release.
+5. Confirm docs distinguish mediated traffic from direct egress, and binary-enforced controls from deployment-enforced controls.
+
+## Build, Test, Lint
+
+```bash
+make build          # Compile with version ldflags
+make test           # go test -race -count=1 ./...
+make test-cover     # Coverage report → coverage.html
+make lint           # go vet + golangci-lint v2 (config in .golangci.yml, gofumpt)
+make bench          # Benchmarks for scanner + mcp
+make fmt            # gofumpt -w . (stricter than gofmt: handles alignment + import grouping)
+make vet            # Static analysis
+make tidy-check     # Verify go.mod/go.sum
+make docker         # Docker image
 ```
 
-**Core components:**
+Before proposing changes for merge, both of these must pass:
 
-| Package | Purpose |
-|---------|---------|
-| `internal/scanner/` | 11-layer URL + response scanning pipeline |
-| `internal/proxy/` | HTTP fetch proxy (/fetch, /health, /metrics) |
-| `internal/mcp/` | MCP stdio proxy, bidirectional scanning, tool poisoning detection |
-| `internal/config/` | YAML config, validation, hot-reload |
-| `internal/cli/` | All cobra commands |
-| `internal/integrity/` | SHA256 workspace file monitoring |
-| `internal/signing/` | Ed25519 key management |
-| `internal/gitprotect/` | Git diff scanning for secrets |
-| `internal/hitl/` | Human-in-the-loop terminal approvals |
-| `internal/metrics/` | Prometheus metrics + JSON stats |
-| `internal/audit/` | Structured JSON logging (zerolog) |
+```bash
+golangci-lint run ./...          # 0 issues (also run with --build-tags enterprise)
+go test -race -count=1 ./...      # all pass
+```
 
-**Scanner pipeline (11 layers, in order):**
-1. Scheme (http/https only)
-2. CRLF injection detection (encoded CR/LF in URLs)
-3. Path traversal detection (encoded dot-dot sequences)
-4. Domain blocklist (deny/allow per mode)
-5. DLP (65 built-in credential patterns + checksum validators + env var leak detection)
-6. Path entropy analysis
-7. Subdomain entropy analysis
-8. SSRF (private IPs, link-local, metadata endpoints, DNS rebinding)
-9. Rate limiting (per-domain sliding window)
-10. URL length (configurable max)
-11. Data budget (per-domain byte limits)
+CI runs lint and tests on **all** code, not just changed files. Run lint before tests: fix lint first, then verify behavior.
 
-**MCP proxy scans three directions:**
-- Server responses → prompt injection
-- Client requests → DLP leaks + injection in tool arguments
-- Tool descriptions → poisoned instructions + rug-pull drift detection
+## Architecture
 
-## Security Review Priorities (in order)
+**Capability separation:** the agent environment (secrets, no direct egress) talks to pipelock (network egress, no agent secrets) which talks to the internet. Three proxy modes on the same port:
+
+- **Fetch** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
+- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through the URL pipeline
+- **WebSocket** (`/ws?url=...`): bidirectional frame scanning, DLP on headers, fragment reassembly
+
+```text
+Agent environment (secrets, no direct egress) → Pipelock (network egress, no agent secrets) → Internet
+```
+
+### Scanner Pipeline (in order)
+
+1. Scheme (http/https only) → 2. CRLF injection → 3. Path traversal → 4. Domain blocklist → 5. DLP (patterns, env leak detection, entropy) → 6. Path entropy → 7. Subdomain entropy → 8. SSRF (private IPs, metadata, DNS rebinding) → 9. Rate limiting → 10. URL length → 11. Data budget
+
+Blocklist and DLP run **before** DNS resolution; SSRF runs **after**. This ordering prevents DNS-based exfiltration.
+
+### MCP Proxy
+
+Wraps any MCP server with bidirectional scanning. Three transport modes:
+- **Stdio** (`-- COMMAND`): subprocess wrapping
+- **Streamable HTTP** (`--upstream URL`): stdio-to-HTTP bridge
+- **HTTP reverse proxy** (`--listen ADDR --upstream URL`): also available via `pipelock run --mcp-listen --mcp-upstream`
+
+Scanning layers:
+- **Response scanning:** prompt injection detection in tool results
+- **Input scanning:** DLP + injection in tool arguments (`mcp_input_scanning`)
+- **Tool scanning:** poisoned descriptions + rug-pull drift detection (`mcp_tool_scanning`)
+- **Tool policy:** pre-execution allow/deny/redirect rules with shell obfuscation detection (`mcp_tool_policy`). Redirect routes matched calls to audited handler programs with a synthetic MCP response.
+- **Chain detection:** subsequence matching on tool call sequences (`tool_chain_detection`)
+- **Session binding:** tool inventory pinning per session (`mcp_session_binding`)
+
+### Config System
+
+YAML config loaded at startup. Hot-reload via fsnotify file watch + SIGHUP signal (100ms debounce). Reload atomically swaps config, scanner, and session manager via `atomic.Pointer[T]`. Kill switch state (all sources) is preserved across reloads.
+
+`internal/config/schema.go` is the authoritative list of top-level sections (`mode`, `enforce`, `fetch_proxy`, `forward_proxy`, `websocket_proxy`, `dlp`, `response_scanning`, the `mcp_*` sections, `adaptive_enforcement`, `kill_switch`, `emit`, `sandbox`, `agents`, and more). When adding a top-level section, update defaults, `Load()`, `Validate()`, the reload path, the preset YAML in `configs/`, docs, and tests together.
+
+Action constants: `config.ActionBlock`, `ActionRedirect`, `ActionWarn`, `ActionAsk`, `ActionStrip`, `ActionForward`, `ActionAllow`.
+
+### Architectural Principles
+
+- **Fail-closed everywhere.** Timeouts, parse errors, non-terminal HITL, context cancellation: all block.
+- **OR-composed kill switch.** Independent sources (config, API, signal, sentinel file) tracked via atomic bools. Any one active = all traffic denied. Deactivating one doesn't affect others.
+- **Fire-and-forget emission.** Webhook uses an async buffered channel. Syslog is synchronous but UDP. Neither blocks the proxy. Queue overflow = drop + Prometheus counter.
+- **Severity is not user-configurable.** Event severity is hardcoded per event type. Users control the emission *threshold* (`min_severity`), not the severity itself. This prevents misconfiguration from hiding critical events.
+- **Port isolation.** When `kill_switch.api_listen` is set, the API runs on a dedicated port. The main port gets no API route registration and no path exemption. The agent cannot self-deactivate.
+
+### Implementation Gotchas
+
+- `cfg.Internal = nil` disables SSRF checks (not an empty slice). Used in tests to avoid DNS lookups.
+- `Scanner.New()` panics on invalid DLP regex/CIDRs. These are programming errors after config validation, never runtime errors.
+- `json.RawMessage("null")` is non-nil in Go. Must use `string(raw) == "null"`, not `raw == nil`. Checking nil would be a bypass vector.
+- HITL uses a single reader goroutine that owns the `bufio.Reader`. Prevents data races on concurrent terminal reads.
+- Tool baseline caps at 10,000 tools per session. Prevents unbounded memory from malicious MCP servers.
+- DLP patterns are auto-prefixed with `(?i)` because agents can uppercase secrets, so matching is always case-insensitive.
+
+## Security Review Priorities (weight findings in this order)
 
 1. **Prompt injection** — bypasses to response/input/tool scanning
 2. **Data exfiltration / DLP** — encoding tricks, splitting attacks, DNS exfil, entropy evasion
-3. **SSRF / network controls** — rebinding, TOCTOU, private IP bypass, metadata access
+3. **SSRF / network controls** — rebinding, TOCTOU, private-IP bypass, metadata access
 
-These are Pipelock's three pillars. Weight findings in these areas highest.
+These are Pipelock's three pillars. When reviewing or hardening, weight findings in these areas highest, and think like an attacker: what is the dumbest bypass (multi-layer encoding, null bytes, homoglyphs, case tricks)? What happens at empty / max-length / mixed-encoding / split-across-frames boundaries? Does the displayed value match the acted-on value?
 
-## Key Design Rules (don't flag these as issues)
+## Testing
 
-- **Fail-closed by design.** HITL timeout, parse errors, context cancellation all default to block. This is intentional.
-- **`cfg.Internal = nil` disables SSRF.** This is NOT a bug — tests use it to avoid DNS lookups.
-- **`scanner.New()` panics on invalid DLP regex.** These are caught after config validation, not runtime errors.
-- **`json.RawMessage("null")` is non-nil.** Checking `== nil` would be a bypass vector. The MCP code handles this correctly.
-- **Single reader goroutine for HITL.** One goroutine owns the bufio.Reader, sends to channel. Not a race condition.
+- **Race detector mandatory:** `-race -count=1` on all tests.
+- High coverage is expected on new code, especially error paths — every `if err != nil` return wants a test. See the README for the current coverage figure rather than quoting one here.
+- Count test cases (including subtests): `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`
+- **No `time.Sleep` for synchronization** and **no fixed ports** in tests — both flake under CI load and both are blocked by `scripts/check-test-stability.sh` for net-new occurrences. Use channels / poll-with-deadline for coordination and bind `:0` then read back the address.
 
-## Code Conventions
+### Patterns
 
-- **Go 1.25+**, module: `github.com/luckyPipewrench/pipelock`
-- **Dependency count is live, not fixed in prose.** Run `make stats` before citing the current direct-dependency count. Don't suggest adding deps without strong justification.
-- **golangci-lint v2** with 19 linters + gofumpt formatter (see `.golangci.yml`)
-- **`cmd.OutOrStdout()`** for output, never raw `fmt.Print`
-- **`0o600`** not `0600` for file permissions (gosec)
-- **`http.MethodGet`** not `"GET"` (usestdlibvars)
-- **`_`** for unused parameters (unparam)
-- **Error wrapping:** `fmt.Errorf("context: %w", err)`
-- **Table-driven tests** where applicable
-- **Race detector mandatory:** all tests run with `-race -count=1`
-- **95% coverage target** across all packages
+```go
+cfg := config.Defaults()
+cfg.Internal = nil                    // Disable SSRF (no DNS in unit tests)
+cmd.SetOut(&buf)                      // CLI output capture (never os.Pipe)
+httptest.NewServer(handler)           // Proxy tests with SSRF disabled
+prometheus.NewRegistry()              // Metrics isolation per test
+net.ListenConfig{}.Listen(ctx, ...)   // Free port binding (noctx compliant)
+```
 
-## Review Output Format
+### Linter Pitfalls
 
-Structure every review as a handoff report:
+| Linter | Rule | Fix |
+|--------|------|-----|
+| errorlint | `err == ErrFoo` | `errors.Is(err, ErrFoo)` (even in tests) |
+| staticcheck | QF1012 | `fmt.Fprintf(w, ...)` not `w.WriteString(fmt.Sprintf(...))` |
+| gosec | G101 | Build fake creds at runtime: `"AKIA" + "IOSFODNN7EXAMPLE"` |
+| errcheck | ignored error | `_, _ = w.Write(b)` for intentional ignores |
+| errcheck | cleanup error | `_ = os.Remove(path)` in error-return cleanup paths |
+| errcheck | fmt output | `_, _ = fmt.Fprintf(w, ...)` when writing to cmd output |
+| usestdlibvars | `"GET"` | `http.MethodGet` |
+| goconst | repeated string | Extract a `const`. Never use `//nolint:goconst`. |
+| gosec | G301 dir perms | `0o750` not `0o755` for directories |
+| gosec | G302/G306 file perms | `0o600` not `0o644` for files |
+| gosec | G304 file inclusion | Use `filepath.Clean(path)`. For trust boundaries, also validate containment (EvalSymlinks + filepath.Rel). |
+| noctx | bare listener | `net.ListenConfig{}.Listen(ctx, ...)` |
+| unparam | unused param | `_` prefix |
+| gofumpt | formatting | Stricter than gofmt. Run `gofumpt -w .` before committing |
+
+**goconst:** always extract a named constant. Production code: package-level `const`. Test code: `const` block at file top. Check existing `config.Action*`, `config.Mode*`, `config.Severity*` before creating new ones. Re-stage `go.mod` after the tidy pre-commit hook runs.
+
+## Non-Obvious Task Traps
+
+- **Adding a DLP pattern:** URL tests (`scanner_test.go`), text tests (`text_dlp_test.go`), all preset YAML files in `configs/`, and docs if the default count changes.
+- **Any transport or security change:** verify parity across all applicable surfaces (fetch, forward, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE). Document transport-specific exceptions and add exploit-style regression tests, not just happy paths.
+
+## CI Pipeline
+
+Public CI (see `.github/workflows/*.yaml` for the current job list; this file is not the source of truth for branch protection) includes:
+
+- **test:** Go 1.25 + 1.26 matrix, race detector, Codecov upload
+- **lint:** golangci-lint v2 (plus the test-stability and pin checks)
+- **build:** compile binary, verify `--version`
+- **govulncheck:** known vulnerability scanning
+- **CodeQL:** security-and-quality static analysis
+- **pipelock:** self-scan (dogfooding the GitHub Action on every PR)
+
+plus platform smoke tests and release/hardening checks.
+
+**Release:** Tag push (`v*`) → GoReleaser v2 → multi-arch binaries + GHCR image + Homebrew formula.
+
+## Code Style
+
+- **gofumpt** formatting (not gofmt). Run `gofumpt -w <file>` after creating/editing.
+- Error wrapping: `fmt.Errorf("context: %w", err)`
+- Table-driven tests with `t.Run()`
+- No stutter: `proxy.Option` not `proxy.ProxyOption`
+- DRY: when two paths carry the same behavior or security meaning, extract a shared helper rather than duplicating it.
+- **File permissions:** always `0o600` for files, `0o750` for directories. Never `0o644`/`0o755`.
+- **Error ignoring:** always `_ = fn()` in cleanup paths (not bare `fn()`). Always `_, _ = fmt.Fprintf(w, ...)` for output writes.
+- **CLI output:** use `cmd.OutOrStdout()` / `cmd.SetOut(&buf)`, never raw `fmt.Print`.
+- **Prefer proper fixes over `//nolint`:** extract constants (goconst), use `filepath.Clean` (G304), split fake creds (G101). Only use `//nolint` when no clean fix exists — and note that the pre-push gate bans net-new `//nolint` directives.
+- **Use existing constants:** check `config.Action*`, `config.Mode*`, `config.Severity*` before creating test-local constants for the same values.
+- **Options structs over long parameter lists.** Functions with more than 6 parameters should take an options struct. Do not append parameters to existing long-signature functions (e.g. `ForwardScannedInput`, `scanHTTPInput`, `RunProxy`); new features add fields to the relevant config/options struct. Broader signature cleanup is an explicit refactor that groups related params into a struct and migrates callers.
+- **Vendor/provider-neutral:** never name a real third-party SaaS, customer, or vendor product in code, comments, tests, or fixtures — even when a real provider motivated the change. Describe the shape/behavior and use neutral placeholders (`api.vendor.example`, `provider-token`, `agent-a`/`agent-b`).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide. PRs are squash-merged.
+
+## When You Are Asked to Review
+
+When the task is review (not implementation), produce a clean handoff report that another agent or a human can act on directly. Run `go test -race -count=1 ./...` and `golangci-lint run ./...` to verify findings before reporting them.
 
 ```text
 ## Review: [branch or scope]
@@ -123,16 +258,21 @@ Structure every review as a handoff report:
 ```
 
 Severity levels:
-- **CRITICAL** — security bypass, data leak, fail-open behavior, test gap on security path
+- **CRITICAL** — security bypass, data leak, fail-open behavior, test gap on a security path
 - **WARNING** — logic bug, missing edge case, convention violation, potential race
-- **INFO** — style, readability, minor optimization, test coverage gap on non-security path
+- **INFO** — style, readability, minor optimization, coverage gap on a non-security path
 
-## What NOT to Flag
+### What NOT to flag
 
-- Don't flag `//nolint` comments — they're reviewed and intentional
-- Don't flag the `tests/` directory being gitignored — that's deliberate
-- Don't flag `tests/pentest.sh` as a broken or no-op script. It defines `section_tool_policy()` as a function, sourced by a private orchestrator that is not in this repo. The helpers (`lib/`, `sections/`, `run-all-security.sh`) live in a separate private security test repository and are present on the developer's machine at runtime. The file is NOT meant to be run standalone.
-- Don't suggest adding dependencies for things already handled by stdlib
-- Don't suggest architectural changes unless there's a concrete bug
-- Don't flag `CLAUDE.md` or `CLAUDE.local.md` as unusual files
-- Don't suggest renaming or restructuring the package layout
+- Don't flag `//nolint` comments that already exist in the tree — they were reviewed and intentional (this does not license *new* ones; the pre-push gate bans net-new `//nolint`).
+- Don't flag the `tests/` directory being gitignored — that's deliberate.
+- Don't flag `tests/pentest.sh` as broken or a no-op. It defines helper functions sourced by a private orchestrator that is not in this repo; the helpers live in a separate private security-test repository present on the developer's machine at runtime. It is not meant to run standalone.
+- Don't suggest adding dependencies for things already handled by stdlib.
+- Don't suggest architectural changes absent a concrete bug.
+- Don't flag `CLAUDE.md`, `CLAUDE.local.md`, or `AGENTS.md` as unusual files.
+- Don't suggest renaming or restructuring the package layout.
+- Don't treat `cfg.Internal = nil`, `Scanner.New()` panics on bad regex, or `json.RawMessage("null")` being non-nil as bugs — see Implementation Gotchas.
+
+## Security
+
+Report vulnerabilities via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories), not public issues.

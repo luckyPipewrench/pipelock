@@ -158,7 +158,7 @@ Action constants: `config.ActionBlock`, `ActionRedirect`, `ActionWarn`, `ActionA
 ### Architectural Principles
 
 - **Fail-closed everywhere.** Timeouts, parse errors, non-terminal HITL, context cancellation: all block.
-- **OR-composed kill switch.** Six independent sources (config, API, Conductor remote kill, Conductor stale bundle, SIGUSR1, sentinel file) are OR-composed. Any one active = all traffic denied. Deactivating one doesn't affect others.
+- **OR-composed kill switch.** Four core activation sources (config, API, SIGUSR1, sentinel file) are OR-composed: any one active = all traffic denied, and deactivating one doesn't affect others. Under the Conductor fleet control plane, remote-kill and stale-bundle add two more OR-composed sources.
 - **Fire-and-forget emission.** Webhook uses async buffered channel. Syslog is synchronous but UDP. Neither blocks the proxy. Queue overflow = drop + Prometheus counter.
 - **Severity is not user-configurable.** Event severity is hardcoded per event type. Users control the emission *threshold* (`min_severity`), not the severity itself. This prevents misconfiguration hiding critical events.
 - **Port isolation.** When `kill_switch.api_listen` is set, the API runs on a dedicated port. Main port gets no API route registration and no path exemption. Agent cannot self-deactivate.

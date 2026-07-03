@@ -48,6 +48,17 @@ var ErrFleetLicenseRequired = errors.New(
 		"administrator",
 )
 
+// ErrAgentsLicenseRequired is returned by VerifyAgentsWithOptions when the
+// supplied license does not carry the agents feature (or no license is
+// present). Callers should refuse to start and surface this error verbatim so
+// the operator sees the missing-entitlement message.
+var ErrAgentsLicenseRequired = errors.New(
+	"this command requires a Pro or Enterprise license " +
+		"that grants the \"agents\" feature; set PIPELOCK_LICENSE_KEY (and " +
+		"PIPELOCK_LICENSE_PUBLIC_KEY on unofficial builds) or contact your " +
+		"administrator",
+)
+
 // RequireFleet verifies the supplied license and returns nil only when it
 // carries the FeatureFleet entitlement. Pass licenseKey="" and publicKeyHex=""
 // to use the environment variables + the build-embedded public key.
@@ -180,14 +191,32 @@ func VerifyFleetWithIntermediate(licenseKey, publicKeyHex, crlFile, intermediate
 // ErrIntermediateRequired. This is the entry point the env-only conductor / fleet
 // CLI commands use so require mode is honoured there, not just in the runtime.
 func VerifyFleetWithOptions(in FleetVerifyInputs) (License, error) {
+	return verifyFeatureWithOptions(FeatureFleet, ErrFleetLicenseRequired, in)
+}
+
+// VerifyAgentsWithOptions verifies a license honouring require-intermediate
+// mode (and any other VerifyOptions knob) resolved from in. It returns the
+// decoded license only when it carries FeatureAgents, failing closed (wrapped
+// in ErrAgentsLicenseRequired) on any verification failure. This is the entry
+// point for env-only Pro/Enterprise server commands (such as
+// `pipelock dashboard serve`) that do not take a config file.
+func VerifyAgentsWithOptions(in FleetVerifyInputs) (License, error) {
+	return verifyFeatureWithOptions(FeatureAgents, ErrAgentsLicenseRequired, in)
+}
+
+// verifyFeatureWithOptions is the shared fail-closed feature gate: any
+// verification failure, and a verified license that lacks the required
+// feature, both return an error wrapping requiredErr so call sites keep a
+// uniform error path without branching on individual failure reasons.
+func verifyFeatureWithOptions(feature string, requiredErr error, in FleetVerifyInputs) (License, error) {
 	lic, err := verifyLicenseInputsOpts(in)
 	if err != nil {
-		return License{}, fmt.Errorf("%w: %w", ErrFleetLicenseRequired, err)
+		return License{}, fmt.Errorf("%w: %w", requiredErr, err)
 	}
-	if !lic.HasFeature(FeatureFleet) {
-		return License{}, fmt.Errorf("%w: license %s does not include the fleet feature "+
+	if !lic.HasFeature(feature) {
+		return License{}, fmt.Errorf("%w: license %s does not include the %s feature "+
 			"(present features: %v)",
-			ErrFleetLicenseRequired, lic.ID, lic.Features)
+			requiredErr, lic.ID, feature, lic.Features)
 	}
 	return lic, nil
 }

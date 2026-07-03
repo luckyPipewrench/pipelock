@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -104,20 +105,57 @@ func (h *Handler) scanDLP(ctx context.Context, sc *scanner.Scanner, req *Request
 }
 
 func scanEmbeddedTextURLs(ctx context.Context, sc *scanner.Scanner, text string) (scanner.Result, bool) {
-	for _, raw := range embeddedHTTPURLTokenRe.FindAllString(text, -1) {
-		token := strings.TrimRight(raw, ".,;)]}")
-		if token == "" {
-			continue
-		}
-		result := sc.Scan(ctx, token)
-		if err := ctx.Err(); err != nil {
-			return scanner.Result{}, false
-		}
-		if !result.Allowed {
-			return result, true
+	seen := make(map[string]struct{})
+	for _, view := range embeddedURLTextViews(text) {
+		for _, raw := range embeddedHTTPURLTokenRe.FindAllString(view, -1) {
+			token := strings.TrimRight(raw, ".,;)]}")
+			if token == "" {
+				continue
+			}
+			if _, ok := seen[token]; ok {
+				continue
+			}
+			seen[token] = struct{}{}
+			result := sc.Scan(ctx, token)
+			if err := ctx.Err(); err != nil {
+				return scanner.Result{}, false
+			}
+			if !result.Allowed && embeddedURLResultIsFinding(result) {
+				return result, true
+			}
 		}
 	}
 	return scanner.Result{}, false
+}
+
+func embeddedURLTextViews(text string) []string {
+	views := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	addView := func(view string) {
+		if _, ok := seen[view]; ok {
+			return
+		}
+		seen[view] = struct{}{}
+		views = append(views, view)
+		if strings.Contains(view, `\/`) {
+			slashDecoded := strings.ReplaceAll(view, `\/`, `/`)
+			if _, ok := seen[slashDecoded]; !ok {
+				seen[slashDecoded] = struct{}{}
+				views = append(views, slashDecoded)
+			}
+		}
+	}
+	addView(text)
+	if strings.Contains(text, "%") {
+		if decoded, err := url.QueryUnescape(text); err == nil && decoded != text {
+			addView(decoded)
+		}
+	}
+	return views
+}
+
+func embeddedURLResultIsFinding(result scanner.Result) bool {
+	return !result.IsInfrastructureError() && !result.IsProtective()
 }
 
 func (h *Handler) scanPromptInjection(ctx context.Context, sc *scanner.Scanner, req *Request) (Response, int) {

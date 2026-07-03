@@ -2186,6 +2186,38 @@ func TestWSProxy_CrossMessageDLP_SplitKey(t *testing.T) {
 	}
 }
 
+func TestWSProxy_UnexpectedContinuationDLPContributesToCrossMessageTail(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	prefix := "AKIA" + "IOSFODNN7"
+	suffix := testWSExample
+
+	writeMaskedClientFrame(t, conn, true, ws.OpContinuation, []byte("data: "+prefix))
+	reply, op, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read tolerated continuation echo: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("upstream echo opcode = %d, want text", op)
+	}
+	if !strings.Contains(string(reply), prefix) {
+		t.Fatalf("expected echo containing tolerated continuation prefix, got %q", reply)
+	}
+
+	writeMaskedClientFrame(t, conn, true, ws.OpContinuation, []byte(suffix))
+	_, _, err = wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected connection closed after split secret in tolerated continuation frames")
+	}
+}
+
 func TestWSProxy_CrossMessageDLP_LabeledSplitKey(t *testing.T) {
 	joined, ok := joinLabeledWSCrossMessageSuffixes(
 		[]byte("part1: AKIAIOS"),

@@ -19,7 +19,7 @@ const CredentialSolicitationRegex = `(?i)(\b(?:send|provide|paste|return|supply|
 
 // MarkdownLinkCredentialExfilRegex detects injected instructions that pair
 // credential collection/copying with a markdown link to an external URL.
-const MarkdownLinkCredentialExfilRegex = `(?is)\b(?:collect|copy|paste|include|append|put|send|upload|post|exfiltrat\w*|leak)\b.{0,80}\b(?:api[_ -]?keys?|tokens?|secrets?|credentials?|passwords?|session[_ -]?secrets?)\b.{0,160}\[[^\]\n]{1,120}\]\(\s*https?://[^)\s]+` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
+const MarkdownLinkCredentialExfilRegex = `(?is)\b(?:collect|copy|paste|include|append|put|send|upload|post|exfiltrat\w*|leak)\b.{0,80}\b(?:api[_ -]?keys?|tokens?|secrets?|credentials?|passwords?|session[_ -]?secrets?)\b.{0,160}(?:\[[^\n]{1,160}\]\(\s*https?://[^)\s]+|<\s*https?://[^>\s]+>|\[[^\n]{1,160}\]\s*\[[^\]\n]{1,80}\].{0,240}\[[^\]\n]{1,80}\]:\s*https?://[^\s]+)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
 
 type providerKeyDomainDefault struct {
 	rule   string

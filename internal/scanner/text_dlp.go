@@ -571,7 +571,15 @@ func decodeHTMLEntities(text string) string {
 	if !strings.Contains(text, "&") {
 		return text
 	}
-	return html.UnescapeString(text)
+	decoded := text
+	for range 4 {
+		next := html.UnescapeString(decoded)
+		if next == decoded {
+			return decoded
+		}
+		decoded = next
+	}
+	return decoded
 }
 
 // checkSecretsInText scans text for leaked secrets (env vars or file-based).

@@ -587,6 +587,53 @@ func TestScanDLP_EmbeddedA2AFilePartURLSSRF(t *testing.T) {
 	}
 }
 
+func TestScanDLP_EmbeddedURLViewsCatchEscapedAndEncodedSSRF(t *testing.T) {
+	cfg := config.Defaults()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "json escaped slash",
+			text: `{"uri":"http:\/\/169.254.169.254\/latest\/meta-data\/"}`,
+		},
+		{
+			name: "percent encoded",
+			text: `{"uri":"http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F"}`,
+		},
+		{
+			name: "percent encoded json escaped slash",
+			text: `{"uri":"http%3A%5C%2F%5C%2F169.254.169.254%5C%2Flatest%5C%2Fmeta-data%5C%2F"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, ok := scanEmbeddedTextURLs(context.Background(), sc, tt.text)
+			if !ok {
+				t.Fatal("expected embedded metadata URL finding")
+			}
+			if result.Scanner != scanner.ScannerSSRFMetadata {
+				t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, scanner.ScannerSSRFMetadata, result.Reason)
+			}
+		})
+	}
+}
+
+func TestScanDLP_EmbeddedURLIgnoresInfrastructureOnlyFailure(t *testing.T) {
+	if embeddedURLResultIsFinding(scanner.Result{Allowed: false, Class: scanner.ClassInfrastructureError}) {
+		t.Fatal("infrastructure-only URL scan failures should not become DLP findings")
+	}
+	if embeddedURLResultIsFinding(scanner.Result{Allowed: false, Class: scanner.ClassProtective}) {
+		t.Fatal("protective URL scan failures should not become DLP findings")
+	}
+	if !embeddedURLResultIsFinding(scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP}) {
+		t.Fatal("threat URL scan failures must remain DLP findings")
+	}
+}
+
 func TestScanToolCall_PolicyDeny(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

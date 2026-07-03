@@ -1830,6 +1830,52 @@ func TestScan_QueryEntropyAllowsCredentiallessDSNExample(t *testing.T) {
 	}
 }
 
+func TestScan_QueryEntropyBlocksCredentiallessDSNUnsafeCarveoutShapes(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name        string
+		dsn         string
+		wantScanner string
+	}{
+		{
+			name:        "ip literal host",
+			dsn:         "postgres://169.254.169.254/metadata",
+			wantScanner: ScannerSSRFMetadata,
+		},
+		{
+			name:        "metadata hostname",
+			dsn:         "postgres://metadata.google.internal/compute",
+			wantScanner: ScannerSSRFMetadata,
+		},
+		{
+			name:        "query exfil",
+			dsn:         "postgres://db.example/app?token=aB3xK9mQ7pR2",
+			wantScanner: ScannerEntropy,
+		},
+		{
+			name:        "opaque path segment",
+			dsn:         "postgres://db.example/aB3xK9mQ7pR2wE5t",
+			wantScanner: ScannerEntropy,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), "https://docs.example.com/guide?example="+url.QueryEscape(tt.dsn))
+			if result.Allowed {
+				t.Fatalf("expected unsafe DSN shape to remain blocked: %s", tt.dsn)
+			}
+			if result.Scanner != tt.wantScanner {
+				t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, tt.wantScanner, result.Reason)
+			}
+		})
+	}
+}
+
 func TestScan_QueryEntropyAllowsReadableHyphenatedSearch(t *testing.T) {
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
@@ -1839,6 +1885,31 @@ func TestScan_QueryEntropyAllowsReadableHyphenatedSearch(t *testing.T) {
 	result := s.Scan(context.Background(), "https://example.com/search?q=glance-2026-summary-report-final")
 	if !result.Allowed {
 		t.Fatalf("readable hyphenated search phrase should not trip entropy: %s", result.Reason)
+	}
+}
+
+func TestScan_QueryEntropyBlocksOverlongReadableHyphenatedTunnel(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 3.5
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://example.com/search?q=anchor-binary-canyon-delta-energy-fabric")
+	if result.Allowed {
+		t.Fatal("expected overlong readable word-list tunnel to remain blocked by entropy")
+	}
+	if result.Scanner != ScannerEntropy {
+		t.Fatalf("scanner = %s, want %s", result.Scanner, ScannerEntropy)
+	}
+}
+
+func TestScan_QueryEntropyCarveoutThresholdBoundary(t *testing.T) {
+	if !shouldSkipQueryValueEntropy("glance-2026-summary-report-final", 4.01, 4.0) {
+		t.Fatal("expected narrow FP carveout just above threshold")
+	}
+	if shouldSkipQueryValueEntropy("glance-2026-summary-report-final", 4.36, 4.0) {
+		t.Fatal("expected entropy above threshold+0.35 to remain blocked")
 	}
 }
 

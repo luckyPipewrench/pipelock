@@ -1587,12 +1587,48 @@ func TestScanTextForDLP_HTMLEntityEncodedSecret(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	result := s.ScanTextForDLP(context.Background(), `<input value="&#65;&#75;&#73;&#65;&#73;&#79;&#83;&#70;&#79;&#68;&#78;&#78;&#55;&#69;&#88;&#65;&#77;&#80;&#76;&#69;">`)
-	if result.Clean {
-		t.Fatal("expected HTML-entity-encoded AWS key to be blocked")
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "decimal",
+			text: `<input value="&#65;&#75;&#73;&#65;&#73;&#79;&#83;&#70;&#79;&#68;&#78;&#78;&#55;&#69;&#88;&#65;&#77;&#80;&#76;&#69;">`,
+		},
+		{
+			name: "hex",
+			text: `<input value="&#x41;&#x4b;&#x49;&#x41;&#x53;&#x4f;&#x53;&#x46;&#x4f;&#x44;&#x4e;&#x4e;&#x37;&#x45;&#x58;&#x41;&#x4d;&#x50;&#x4c;&#x45;">`,
+		},
+		{
+			name: "semicolonless",
+			text: `<input value="&#65&#75&#73&#65&#73&#79&#83&#70&#79&#68&#78&#78&#55&#69&#88&#65&#77&#80&#76&#69">`,
+		},
+		{
+			name: "nested",
+			text: `<input value="&amp;#65;&amp;#75;&amp;#73;&amp;#65;&amp;#73;&amp;#79;&amp;#83;&amp;#70;&amp;#79;&amp;#68;&amp;#78;&amp;#78;&amp;#55;&amp;#69;&amp;#88;&amp;#65;&amp;#77;&amp;#80;&amp;#76;&amp;#69;">`,
+		},
 	}
-	if !hasTextDLPMatch(result.Matches, "AWS Access ID", encodingHTML) {
-		t.Fatalf("expected HTML entity AWS Access ID match, got %+v", result.Matches)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean {
+				t.Fatal("expected HTML-entity-encoded AWS key to be blocked")
+			}
+			if !hasTextDLPMatch(result.Matches, "AWS Access ID", encodingHTML) {
+				t.Fatalf("expected HTML entity AWS Access ID match, got %+v", result.Matches)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_InvalidHTMLEntitiesClean(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.ScanTextForDLP(context.Background(), `literal invalid entities: &#xZZ; &#999999999999; &notasecret;`)
+	if !result.Clean {
+		t.Fatalf("invalid HTML entities should not synthesize a DLP match: %+v", result.Matches)
 	}
 }
 

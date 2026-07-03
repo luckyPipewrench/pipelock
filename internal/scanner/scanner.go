@@ -2708,6 +2708,9 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 			}
 			for _, v := range values {
 				if len(v) >= s.entropyMinLen {
+					if result, blocked := unsafeDatabaseURIQueryValueResult(v); blocked {
+						return result
+					}
 					entropy := ShannonEntropy(v)
 					if shouldSkipQueryValueEntropy(v, entropy, s.entropyThreshold) {
 						continue
@@ -2728,43 +2731,134 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	return Result{Allowed: true}
 }
 
+func unsafeDatabaseURIQueryValueResult(value string) (Result, bool) {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil {
+		return Result{}, false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "postgres", "postgresql", "mysql", "mongodb", "mongodb+srv", "redis", "rediss":
+	default:
+		return Result{}, false
+	}
+
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(u.Hostname())), ".")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		ip = parseAlternativeIP(host)
+	}
+	if ip != nil {
+		scannerLabel := ScannerSSRF
+		reason := fmt.Sprintf("database URI query value points to IP literal host %s", host)
+		if isCloudMetadataIP(ip) {
+			scannerLabel = ScannerSSRFMetadata
+			reason = fmt.Sprintf("database URI query value points to cloud metadata endpoint %s", host)
+		}
+		return Result{Allowed: false, Reason: reason, Scanner: scannerLabel, Score: 1.0}, true
+	}
+	if host == "metadata.google.internal" {
+		return Result{
+			Allowed: false,
+			Reason:  "database URI query value points to cloud metadata hostname metadata.google.internal",
+			Scanner: ScannerSSRFMetadata,
+			Score:   1.0,
+		}, true
+	}
+	return Result{}, false
+}
+
 func shouldSkipQueryValueEntropy(value string, entropy, threshold float64) bool {
 	if entropy <= threshold || entropy > threshold+0.35 {
 		return false
 	}
-	if isCredentiallessDatabaseURI(value) {
+	if isCredentiallessDatabaseURI(value, threshold) {
 		return true
 	}
 	return isHumanReadableHyphenatedQueryValue(value)
 }
 
-func isCredentiallessDatabaseURI(value string) bool {
+func isCredentiallessDatabaseURI(value string, threshold float64) bool {
 	u, err := url.Parse(value)
-	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil {
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "postgres", "postgresql", "mysql", "mongodb", "mongodb+srv", "redis", "rediss":
-		return true
+		return isLowRiskDatabaseURIHost(u.Hostname(), threshold) && isLowRiskDatabaseURIPath(u.EscapedPath(), threshold)
 	default:
 		return false
 	}
 }
 
+func isLowRiskDatabaseURIHost(host string, threshold float64) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil || parseAlternativeIP(host) != nil {
+		return false
+	}
+	switch host {
+	case "metadata.google.internal":
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		if len(label) >= 12 && ShannonEntropy(label) > threshold {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func isLowRiskDatabaseURIPath(path string, threshold float64) bool {
+	if path == "" || path == "/" {
+		return true
+	}
+	for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
+		if segment == "" || len(segment) > 32 {
+			return false
+		}
+		if len(segment) >= 12 && ShannonEntropy(segment) > threshold {
+			return false
+		}
+		for _, r := range segment {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
 func isHumanReadableHyphenatedQueryValue(value string) bool {
-	if !strings.Contains(value, "-") || strings.ContainsAny(value, "_+/=") {
+	if len(value) > 40 || !strings.Contains(value, "-") || strings.ContainsAny(value, "_+/=") {
 		return false
 	}
 	parts := strings.Split(value, "-")
-	if len(parts) < 3 {
+	if len(parts) < 3 || len(parts) > 5 {
 		return false
 	}
 	wordParts := 0
+	yearParts := 0
 	for _, part := range parts {
 		if part == "" {
 			return false
 		}
 		if isYearLike(part) {
+			yearParts++
+			if yearParts > 1 {
+				return false
+			}
 			continue
 		}
 		if !isReadableLowerWord(part) {
@@ -2772,7 +2866,7 @@ func isHumanReadableHyphenatedQueryValue(value string) bool {
 		}
 		wordParts++
 	}
-	return wordParts >= 3
+	return wordParts >= 3 && wordParts <= 4
 }
 
 func isYearLike(part string) bool {

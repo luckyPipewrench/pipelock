@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,27 @@ func TestQuerySession_NoFilter(t *testing.T) {
 	}
 }
 
+func TestQuerySession_MaxEntriesReadTruncates(t *testing.T) {
+	dir := t.TempDir()
+	writeTestEntries(t, dir, "sess-1", 5)
+
+	result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{
+		MaxEntriesRead: 2,
+	})
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("QuerySession should report truncation")
+	}
+	if result.EntriesRead != 2 {
+		t.Fatalf("EntriesRead = %d, want 2", result.EntriesRead)
+	}
+	if len(result.Entries) != 2 {
+		t.Fatalf("len(Entries) = %d, want 2", len(result.Entries))
+	}
+}
+
 func TestQuerySession_FilterByType(t *testing.T) {
 	dir := t.TempDir()
 	writeTestEntries(t, dir, "sess-1", 6)
@@ -85,6 +107,54 @@ func TestQuerySession_FilterByType(t *testing.T) {
 		if e.Type != "request" {
 			t.Errorf("unexpected type %q in filtered results", e.Type)
 		}
+	}
+}
+
+func TestQuerySession_TypeFilterWithMaxEntriesRead(t *testing.T) {
+	dir := t.TempDir()
+	cfg := recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		Redact:             false,
+		CheckpointInterval: 1000,
+	}
+	rec, err := recorder.New(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for i, entryType := range []string{"request", "action_receipt", "request", "action_receipt"} {
+		if err := rec.Record(recorder.Entry{
+			SessionID: "sess-1",
+			Type:      entryType,
+			Transport: testTransport,
+			Summary:   fmt.Sprintf("entry %d", i),
+		}); err != nil {
+			t.Fatalf("Record(%d): %v", i, err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{
+		Type:           "action_receipt",
+		MaxEntriesRead: 3,
+	})
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("QuerySession should report truncation when MaxEntriesRead caps total entries read before filtering")
+	}
+	if result.EntriesRead != 3 {
+		t.Fatalf("EntriesRead = %d, want 3", result.EntriesRead)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1 filtered receipt entry", len(result.Entries))
+	}
+	if result.Entries[0].Type != "action_receipt" || result.Entries[0].Sequence != 1 {
+		t.Fatalf("filtered entry = type %q seq %d, want action_receipt seq 1", result.Entries[0].Type, result.Entries[0].Sequence)
 	}
 }
 
@@ -368,6 +438,63 @@ func TestQuerySession_FilterBySessionID(t *testing.T) {
 	}
 	if len(result.Entries) != 0 {
 		t.Errorf("expected 0 entries for mismatched session, got %d", len(result.Entries))
+	}
+}
+
+func TestQuerySession_DoesNotPrefixMatchSessionIDs(t *testing.T) {
+	dir := t.TempDir()
+	writeTestEntries(t, dir, "sess", 1)
+	writeTestEntries(t, dir, "sess-evil", 3)
+
+	result, err := recorder.QuerySession(dir, "sess", nil)
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if result.TotalFiles != 1 {
+		t.Fatalf("TotalFiles = %d, want 1", result.TotalFiles)
+	}
+	for _, e := range result.Entries {
+		if e.SessionID != "sess" {
+			t.Fatalf("returned entry for session %q, want sess", e.SessionID)
+		}
+	}
+
+	result, err = recorder.QuerySession(dir, "sess", &recorder.QueryFilter{MaxEntriesRead: 2})
+	if err != nil {
+		t.Fatalf("QuerySession with read ceiling: %v", err)
+	}
+	if result.TotalFiles != 1 {
+		t.Fatalf("bounded TotalFiles = %d, want 1", result.TotalFiles)
+	}
+}
+
+func TestQuerySession_FailsOnFilenameSessionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	e := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  0,
+		Timestamp: time.Now().UTC(),
+		SessionID: "other",
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "mismatched session",
+		PrevHash:  recorder.GenesisHash,
+	}
+	e.Hash = recorder.ComputeHash(e)
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(filepath.Join(dir, "evidence-victim-0.jsonl"), append(data, '\n')); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = recorder.QuerySession(dir, "victim", nil)
+	if err == nil {
+		t.Fatal("expected session mismatch error")
+	}
+	if !strings.Contains(err.Error(), `session_id "other" does not match requested session "victim"`) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

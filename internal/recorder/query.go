@@ -23,13 +23,19 @@ type QueryFilter struct {
 	MinSeq    uint64
 	MaxSeq    uint64
 	HasMaxSeq bool // Distinguishes MaxSeq=0 from unset
+
+	// MaxEntriesRead is a hard ceiling on parsed recorder entries for callers
+	// that render evidence in an online UI. Zero means unbounded.
+	MaxEntriesRead int
 }
 
 // QueryResult holds the results of an evidence query.
 type QueryResult struct {
-	Entries    []Entry
-	TotalFiles int
-	FilesRead  int
+	Entries     []Entry
+	TotalFiles  int
+	FilesRead   int
+	EntriesRead int
+	Truncated   bool
 }
 
 // QuerySession reads evidence files for a session and applies filters.
@@ -40,14 +46,14 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
 	}
 
-	prefix := "evidence-" + sessionID + "-"
 	var files []string
 	for _, de := range dirEntries {
 		if de.IsDir() {
 			continue
 		}
 		name := de.Name()
-		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jsonl") {
+		fileSessionID, ok := evidenceFileSessionID(name)
+		if ok && fileSessionID == sessionID {
 			files = append(files, filepath.Join(dir, name))
 		}
 	}
@@ -61,16 +67,37 @@ func QuerySession(dir, sessionID string, filter *QueryFilter) (*QueryResult, err
 	}
 
 	for _, f := range files {
-		entries, err := ReadEntries(f)
+		maxEntries := 0
+		if filter != nil && filter.MaxEntriesRead > 0 {
+			remaining := filter.MaxEntriesRead - result.EntriesRead
+			if remaining <= 0 {
+				result.Truncated = true
+				break
+			}
+			maxEntries = remaining
+		}
+
+		entries, truncated, err := readEntries(f, maxEntries)
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", filepath.Base(f), err)
 		}
 		result.FilesRead++
+		result.EntriesRead += len(entries)
+		if truncated {
+			result.Truncated = true
+		}
 
 		for _, e := range entries {
+			if e.SessionID != sessionID {
+				return nil, fmt.Errorf("reading %s: entry seq %d session_id %q does not match requested session %q", filepath.Base(f), e.Sequence, e.SessionID, sessionID)
+			}
 			if matchesFilter(e, filter) {
 				result.Entries = append(result.Entries, e)
 			}
+		}
+
+		if result.Truncated {
+			break
 		}
 	}
 
@@ -91,18 +118,10 @@ func ListSessions(dir string) ([]string, error) {
 			continue
 		}
 		name := de.Name()
-		if !strings.HasPrefix(name, "evidence-") || !strings.HasSuffix(name, ".jsonl") {
+		sessionID, ok := evidenceFileSessionID(name)
+		if !ok {
 			continue
 		}
-		// Parse session ID: evidence-<session_id>-<seq>.jsonl
-		rest := strings.TrimPrefix(name, "evidence-")
-		rest = strings.TrimSuffix(rest, ".jsonl")
-		// Find the last dash to separate session ID from seq number
-		lastDash := strings.LastIndex(rest, "-")
-		if lastDash < 0 {
-			continue
-		}
-		sessionID := rest[:lastDash]
 		if sessionID != "" {
 			seen[sessionID] = struct{}{}
 		}
@@ -116,20 +135,37 @@ func ListSessions(dir string) ([]string, error) {
 	return sessions, nil
 }
 
+func evidenceFileSessionID(name string) (string, bool) {
+	sessionID, _, ok := parseEvidenceFilename(name)
+	return sessionID, ok
+}
+
+func parseEvidenceFilename(name string) (sessionID string, seqStart int, ok bool) {
+	name = filepath.Base(name)
+	if !strings.HasPrefix(name, "evidence-") || !strings.HasSuffix(name, ".jsonl") {
+		return "", 0, false
+	}
+	rest := strings.TrimPrefix(name, "evidence-")
+	rest = strings.TrimSuffix(rest, ".jsonl")
+	lastDash := strings.LastIndex(rest, "-")
+	if lastDash < 0 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(rest[lastDash+1:])
+	if err != nil {
+		n = 0
+	}
+	return rest[:lastDash], n, true
+}
+
 // extractSeqStart parses the numeric seqStart from an evidence filename.
 // Returns 0 if the filename cannot be parsed.
 func extractSeqStart(path string) int {
-	name := filepath.Base(path)
-	name = strings.TrimSuffix(name, ".jsonl")
-	lastDash := strings.LastIndex(name, "-")
-	if lastDash < 0 {
+	_, seqStart, ok := parseEvidenceFilename(path)
+	if !ok {
 		return 0
 	}
-	n, err := strconv.Atoi(name[lastDash+1:])
-	if err != nil {
-		return 0
-	}
-	return n
+	return seqStart
 }
 
 // matchesFilter checks if an entry matches the given filter criteria.

@@ -42,14 +42,15 @@ func ReceiptHash(r Receipt) (string, error) {
 
 // ChainResult describes the outcome of chain verification.
 type ChainResult struct {
-	Valid        bool
-	ReceiptCount uint64
-	FinalSeq     uint64
-	RootHash     string
-	StartTime    time.Time
-	EndTime      time.Time
-	Error        string // empty if valid
-	BrokenAtSeq  uint64 // set when chain breaks
+	Valid         bool
+	ReceiptCount  uint64
+	FinalSeq      uint64
+	RootHash      string
+	StartTime     time.Time
+	EndTime       time.Time
+	Error         string // empty if valid
+	BrokenAtSeq   uint64 // set when chain breaks
+	BrokenAtIndex int    // zero-based receipt index where chain verification failed
 
 	// SignerKeys is the ordered, de-duplicated set of signer public keys
 	// (hex) observed across the chain's segments, in segment order. A
@@ -139,9 +140,10 @@ func VerifyChainTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
 	normalizedKeys, err := normalizeTrustedKeys(trustedKeys)
 	if err != nil {
 		return ChainResult{
-			Valid:       false,
-			BrokenAtSeq: receipts[0].ActionRecord.ChainSeq,
-			Error:       fmt.Sprintf("seq %d: trusted key set: %v", receipts[0].ActionRecord.ChainSeq, err),
+			Valid:         false,
+			BrokenAtSeq:   receipts[0].ActionRecord.ChainSeq,
+			BrokenAtIndex: 0,
+			Error:         fmt.Sprintf("seq %d: trusted key set: %v", receipts[0].ActionRecord.ChainSeq, err),
 		}
 	}
 
@@ -181,10 +183,12 @@ type chainVerifier struct {
 	signerKeys []string
 	segments   []ChainSegment
 	curSeg     *ChainSegment
+	index      int
 }
 
 func (v *chainVerifier) run(receipts []Receipt) ChainResult {
 	for i := range receipts {
+		v.index = i
 		r := receipts[i]
 		marker := r.ActionRecord.KeyTransition
 
@@ -379,10 +383,11 @@ func (v *chainVerifier) appendSignerKey(key string) {
 
 func (v *chainVerifier) brokenAt(r Receipt, msg string) ChainResult {
 	return ChainResult{
-		Valid:       false,
-		BrokenAtSeq: r.ActionRecord.ChainSeq,
-		Error:       fmt.Sprintf("seq %d: %s", r.ActionRecord.ChainSeq, msg),
-		SignerKeys:  v.signerKeys,
+		Valid:         false,
+		BrokenAtSeq:   r.ActionRecord.ChainSeq,
+		BrokenAtIndex: v.index,
+		Error:         fmt.Sprintf("seq %d: %s", r.ActionRecord.ChainSeq, msg),
+		SignerKeys:    v.signerKeys,
 	}
 }
 
@@ -454,13 +459,23 @@ func ExtractReceiptsWithSessionID(path string) ([]Receipt, string, error) {
 // ExtractReceiptsFromSessionDir reads all evidence files for a session from a
 // recorder directory and returns the action receipts in chain order.
 func ExtractReceiptsFromSessionDir(dir, sessionID string) ([]Receipt, error) {
+	receipts, _, err := ExtractReceiptsFromSessionDirBounded(dir, sessionID, 0)
+	return receipts, err
+}
+
+// ExtractReceiptsFromSessionDirBounded reads action receipts for a session with
+// an optional hard ceiling on parsed recorder entries. The returned boolean is
+// true when the ceiling was reached before the full session was loaded.
+func ExtractReceiptsFromSessionDirBounded(dir, sessionID string, maxEntriesRead int) ([]Receipt, bool, error) {
 	result, err := recorder.QuerySession(filepath.Clean(dir), sessionID, &recorder.QueryFilter{
-		Type: recorderEntryType,
+		Type:           recorderEntryType,
+		MaxEntriesRead: maxEntriesRead,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("querying session receipts: %w", err)
+		return nil, false, fmt.Errorf("querying session receipts: %w", err)
 	}
-	return extractReceiptsFromEntries(result.Entries)
+	receipts, err := extractReceiptsFromEntries(result.Entries)
+	return receipts, result.Truncated, err
 }
 
 func extractReceiptsFromEntries(entries []recorder.Entry) ([]Receipt, error) {

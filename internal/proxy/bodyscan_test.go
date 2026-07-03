@@ -2224,6 +2224,35 @@ func TestExtractMultipart_TransferEncodingDecodeFailureBlocks(t *testing.T) {
 	}
 }
 
+func TestValidateQuotedPrintable(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    []byte
+		wantErr bool
+	}{
+		{name: "plain", body: []byte("clean text")},
+		{name: "hex_upper", body: []byte("sk=2Dant")},
+		{name: "hex_lower", body: []byte("sk=2dant")},
+		{name: "soft_lf", body: []byte("wrapped=\nline")},
+		{name: "soft_crlf", body: []byte("wrapped=\r\nline")},
+		{name: "trailing_equals", body: []byte("bad="), wantErr: true},
+		{name: "short_hex_escape", body: []byte("bad=2"), wantErr: true},
+		{name: "invalid_hex_escape", body: []byte("bad=ZZ"), wantErr: true},
+		{name: "cr_without_lf", body: []byte("bad=\rline"), wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateQuotedPrintable(tc.body)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected invalid quoted-printable escape")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected valid quoted-printable, got %v", err)
+			}
+		})
+	}
+}
+
 // base64Encode76 encodes data as base64 with RFC 2045 line wrapping
 // (76-character lines separated by CRLF), mimicking real MIME encoding.
 func base64Encode76(data string) string {

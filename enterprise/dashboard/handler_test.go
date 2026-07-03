@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -328,6 +329,27 @@ func TestHandler_RedactsRawByDefault(t *testing.T) {
 	}
 }
 
+func TestRedactRawRemovesTemplateReceiptPayload(t *testing.T) {
+	t.Parallel()
+	_, priv := generateDashboardKey(t)
+	rec := signDashboardReceipt(t, priv, 0, receipt.GenesisHash, time.Date(2026, 7, 3, 13, 0, 0, 0, time.UTC))
+	ev := sessionEvidence(testSessionID, []receipt.Receipt{rec}, nil, false, dashboardReceiptReadLimit, dashboardTimelineLimit)
+
+	redacted := redactRaw(ev)
+	if redacted.ReceiptCount != 1 {
+		t.Fatalf("ReceiptCount = %d, want 1", redacted.ReceiptCount)
+	}
+	if redacted.Receipts != nil {
+		t.Fatalf("metadata view must not carry raw receipts into template data")
+	}
+	if redacted.Timeline[0].Destination != redactedDestination {
+		t.Fatalf("Destination = %q, want redacted placeholder", redacted.Timeline[0].Destination)
+	}
+	if redacted.Timeline[0].RawJSON != "" {
+		t.Fatalf("RawJSON should be stripped, got %q", redacted.Timeline[0].RawJSON)
+	}
+}
+
 func TestHandler_RawAccessShowsDetail(t *testing.T) {
 	t.Parallel()
 	dir, trusted := writeTrustedHandlerSession(t)
@@ -409,6 +431,40 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if !strings.Contains(raw.String(), "role=raw") {
 		t.Errorf("audit log should record raw role; got %q", raw.String())
+	}
+}
+
+func TestHandler_AuditWriterSerializesConcurrentRequests(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	var audit strings.Builder
+	handler := New(Options{
+		ReceiptDir:   dir,
+		TrustedKeys:  trusted,
+		HasFeature:   allowAgentsFeature,
+		AuditWriter:  &audit,
+		AuthorizeRaw: allowRawAccess,
+	})
+
+	const requests = 25
+	var wg sync.WaitGroup
+	wg.Add(requests)
+	for i := 0; i < requests; i++ {
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec,
+				httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+			if rec.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200", rec.Code)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := strings.Count(audit.String(), "pipelock-dashboard access"); got != requests {
+		t.Fatalf("audit lines = %d, want %d; log=%q", got, requests, audit.String())
 	}
 }
 

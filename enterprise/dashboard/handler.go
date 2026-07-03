@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
@@ -66,6 +67,7 @@ type dashboardHandler struct {
 	authorize    func(*http.Request) error
 	authorizeRaw func(*http.Request) error
 	auditWriter  io.Writer
+	auditMu      sync.Mutex
 }
 
 // rawAllowed reports whether this request may see the raw view (destinations
@@ -92,6 +94,8 @@ func (d *dashboardHandler) recordAudit(r *http.Request, raw bool) {
 	if session == "" {
 		session = "-"
 	}
+	d.auditMu.Lock()
+	defer d.auditMu.Unlock()
 	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s method=%s path=%q session=%q remote=%s\n",
 		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path, session, r.RemoteAddr)
 }

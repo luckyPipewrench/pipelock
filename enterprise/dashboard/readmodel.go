@@ -81,6 +81,7 @@ type SessionEvidence struct {
 	ID              string
 	Agent           string
 	ReceiptsEnabled bool
+	ReceiptCount    int
 	Receipts        []receipt.Receipt
 	ReadLimited     bool
 	ReadLimit       int
@@ -133,6 +134,7 @@ func NewReadModel(opts Options) *ReadModel {
 // bytes never reach the response. Idempotent and safe on a zero value.
 func redactRaw(ev SessionEvidence) SessionEvidence {
 	ev.RawRedacted = true
+	ev.Receipts = nil
 	for i := range ev.Timeline {
 		ev.Timeline[i].Destination = redactedDestination
 		ev.Timeline[i].RawJSON = ""
@@ -216,6 +218,7 @@ func sessionEvidence(id string, receipts []receipt.Receipt, trustedKeys map[stri
 		ID:              id,
 		Agent:           agentLabel(id, receipts),
 		ReceiptsEnabled: true,
+		ReceiptCount:    len(receipts),
 		Receipts:        append([]receipt.Receipt(nil), receipts...),
 		ReadLimited:     readLimited,
 		ReadLimit:       readLimit,

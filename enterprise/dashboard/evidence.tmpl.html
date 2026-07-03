@@ -247,7 +247,7 @@
               <h1>Evidence · {{.Evidence.Agent}}</h1>
               <div class="muted mono">{{.Evidence.ID}}</div>
             </div>
-            <div class="dim mono">{{len .Evidence.Receipts}}{{if .Evidence.ReadLimited}}+{{end}} receipts</div>
+            <div class="dim mono">{{.Evidence.ReceiptCount}}{{if .Evidence.ReadLimited}}+{{end}} receipts</div>
           </div>
 
           {{if not .Evidence.ReceiptsEnabled}}
@@ -267,7 +267,7 @@
           {{if .Evidence.ReadLimited}}
             <section class="section callout">
               <h2>Dashboard read limit reached</h2>
-              <div class="muted">This online view loaded only the first {{len .Evidence.Receipts}} receipts before the {{.Evidence.ReadLimit}}-entry ceiling. Use offline verification before relying on this session.</div>
+              <div class="muted">This online view loaded only the first {{.Evidence.ReceiptCount}} receipts before the {{.Evidence.ReadLimit}}-entry ceiling. Use offline verification before relying on this session.</div>
             </section>
           {{end}}
 
@@ -307,7 +307,7 @@
           <section class="section">
             <h2>Receipt Timeline</h2>
             {{if .Evidence.TimelineLimited}}
-              <p class="dim">Showing {{.Evidence.TimelineWindow}} {{len .Evidence.Timeline}} of {{len .Evidence.Receipts}}{{if .Evidence.ReadLimited}}+{{end}} loaded receipts.</p>
+              <p class="dim">Showing {{.Evidence.TimelineWindow}} {{len .Evidence.Timeline}} of {{.Evidence.ReceiptCount}}{{if .Evidence.ReadLimited}}+{{end}} loaded receipts.</p>
             {{end}}
             <div class="timeline">
               {{range .Evidence.Timeline}}

@@ -25,7 +25,7 @@ These are non-negotiable. Violating any of them breaks the security model.
 - **Never bypass fail-closed defaults.** HITL timeout, non-terminal input, parse errors, context cancellation: all default to **block**. If in doubt, block.
 - **Never add dependencies without justification.** Minimal direct deps is intentional, not a limitation. Every dependency is attack surface. Propose additions in the PR description with rationale.
 - **Never panic on runtime input.** All `panic()` calls in the codebase are post-validation programming errors caught at startup (invalid DLP regex, bad CIDR after config validation). User/agent input must never cause a panic.
-- **DLP runs before DNS resolution.** Layers 2-3 (blocklist, DLP) execute before layer 6 (SSRF/DNS). Reordering them would allow secret exfiltration via DNS queries.
+- **DLP runs before DNS resolution.** Core and configured DLP execute before SSRF/DNS resolution. Reordering them would allow secret exfiltration via DNS queries.
 
 ## Security Invariants
 
@@ -36,7 +36,7 @@ These must be proven by tests, not assumed from docs or deployment.
 - **Security-sensitive config defaults must have one source of truth.** If docs say "default true," omitting the field from YAML must produce true. New security-sensitive boolean fields must be tested in 6 states: omitted, YAML null/blank, explicit false, explicit true, reload with change, reload without change.
 - **Transport parity must be proven, not claimed.** If a scanning feature applies to multiple surfaces, verify it on each applicable one: fetch, forward proxy, CONNECT, WebSocket, MCP stdio, MCP HTTP/SSE. Not every feature applies to every transport (e.g., MCP stdio has no URL scanning path). Document exceptions explicitly and don't claim parity in docs without tests.
 - **Docs are security surface.** Don't claim "automatic escalation" if the code only scores or logs. Don't claim enforcement that only exists at the deployment layer. Review docs when changing behavior.
-- **Hot reload must preserve security state.** Test: first load, first reload, second unrelated reload, downgrade/revocation, stale cached state. Kill switch state (all 4 sources) must survive reloads.
+- **Hot reload must preserve security state.** Test: first load, first reload, second unrelated reload, downgrade/revocation, stale cached state. Kill switch runtime activation sources must survive reloads.
 
 ## Quick Reference
 
@@ -80,10 +80,12 @@ make tidy-check     # Verify go.mod/go.sum
 make docker         # Docker image
 ```
 
-Pre-commit (both must pass before pushing; also run each with `--build-tags enterprise`):
+Pre-commit (both OSS and enterprise variants must pass before pushing):
 ```bash
 golangci-lint run --new-from-rev=HEAD ./...
+golangci-lint run --build-tags enterprise --new-from-rev=HEAD ./...
 go test -race -count=1 ./...
+go test -tags enterprise -race -count=1 ./...
 ```
 
 CI runs lint and tests on **all** code, not just changed files. Run lint before tests: fix lint first, then verify behavior.
@@ -93,25 +95,26 @@ CI runs lint and tests on **all** code, not just changed files. Run lint before 
 **Capability separation:** the agent environment (secrets, no direct egress) talks to pipelock (network egress, no agent secrets) which talks to the internet. Three proxy modes on the same port:
 
 - **Fetch** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
-- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through the 11-layer pipeline
+- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through the URL scanner
 - **WebSocket** (`/ws?url=...`): bidirectional frame scanning, DLP on headers, fragment reassembly
 
 ```text
 Agent environment (secrets, no direct egress) → Pipelock (network egress, no agent secrets) → Internet
 ```
 
-### Scanner Pipeline
+### URL Scanner
 
-1. Scheme (http/https only) → 2. CRLF injection → 3. Path traversal → 4. Domain blocklist → 5. DLP (patterns, env leak detection, entropy) → 6. Path entropy → 7. Subdomain entropy → 8. SSRF (private IPs, metadata, DNS rebinding) → 9. Rate limiting → 10. URL length → 11. Data budget
+Max URL length is checked before parsing. After parsing and hostname canonicalization, the URL scanner runs: scheme check → CRLF injection → path traversal → strict-mode allowlist → domain blocklist → core SSRF literal-IP floor → SigV4 credential carve-out → core DLP → configured DLP (patterns, env/file leak detection, entropy) → path/query entropy → subdomain entropy → SSRF/DNS (private IPs, metadata, DNS rebinding) → rate limiting → data budget → final context check.
 
-Layers 4-5 run **before** DNS resolution. Layer 8 runs **after**. This ordering prevents DNS-based exfiltration.
+Core DLP and configured DLP run **before** DNS resolution. SSRF/DNS runs **after** those DLP checks. This ordering prevents DNS-based exfiltration.
 
 ### MCP Proxy
 
-Wraps any MCP server with bidirectional scanning. Three transport modes:
+Wraps any MCP server with bidirectional scanning. Four standalone transport modes:
 - **Stdio** (`-- COMMAND`): subprocess wrapping
 - **Streamable HTTP** (`--upstream URL`): stdio-to-HTTP bridge
-- **HTTP reverse proxy** (`--listen ADDR --upstream URL`): also available via `pipelock run --mcp-listen --mcp-upstream`
+- **Stdio-to-WebSocket** (`--upstream ws://...` or `--upstream wss://...`): stdio-to-WebSocket bridge
+- **HTTP reverse proxy** (`--listen ADDR --upstream URL`): HTTP listener mode; also available via `pipelock run --mcp-listen --mcp-upstream`
 
 Scanning layers:
 - **Response scanning:** prompt injection detection in tool results
@@ -123,7 +126,7 @@ Scanning layers:
 
 ### Config System
 
-YAML config loaded at startup. Hot-reload via fsnotify file watch + SIGHUP signal (100ms debounce). Reload atomically swaps config, scanner, and session manager via `atomic.Pointer[T]`. Kill switch state (all 4 sources) is preserved across reloads.
+YAML config loaded at startup. Hot-reload via fsnotify file watch + SIGHUP signal (100ms debounce). Reload atomically swaps config, scanner, and session manager via `atomic.Pointer[T]`. Kill switch runtime activation state is preserved across reloads.
 
 `internal/config/schema.go` is the authoritative list of top-level sections (`mode`, `enforce`, `fetch_proxy`, `forward_proxy`, `websocket_proxy`, `dlp`, `response_scanning`, the `mcp_*` sections, `adaptive_enforcement`, `kill_switch`, `emit`, `sandbox`, `agents`, and more). When adding a top-level section, update defaults, `Load()`, `Validate()`, the reload path, the preset YAML in `configs/`, docs, and tests together.
 
@@ -132,14 +135,14 @@ Action constants: `config.ActionBlock`, `ActionRedirect`, `ActionWarn`, `ActionA
 ### Architectural Principles
 
 - **Fail-closed everywhere.** Timeouts, parse errors, non-terminal HITL, context cancellation: all block.
-- **OR-composed kill switch.** Four independent sources (config, API, SIGUSR1, sentinel file) tracked via atomic bools. Any one active = all traffic denied. Deactivating one doesn't affect others.
+- **OR-composed kill switch.** Six independent sources (config, API, Conductor remote kill, Conductor stale bundle, SIGUSR1, sentinel file) are OR-composed. Any one active = all traffic denied. Deactivating one doesn't affect others.
 - **Fire-and-forget emission.** Webhook uses async buffered channel. Syslog is synchronous but UDP. Neither blocks the proxy. Queue overflow = drop + Prometheus counter.
 - **Severity is not user-configurable.** Event severity is hardcoded per event type. Users control the emission *threshold* (`min_severity`), not the severity itself. This prevents misconfiguration hiding critical events.
 - **Port isolation.** When `kill_switch.api_listen` is set, the API runs on a dedicated port. Main port gets no API route registration and no path exemption. Agent cannot self-deactivate.
 
 ### Implementation Gotchas
 
-- `cfg.Internal = nil` disables SSRF checks (not empty slice). Used in tests to avoid DNS lookups.
+- `cfg.Internal = nil` disables DNS-based configured SSRF checks, not the immutable literal-IP core SSRF floor. Used in tests to avoid DNS lookups.
 - `Scanner.New()` panics on invalid DLP regex/CIDRs. These are programming errors after config validation, never runtime errors.
 - `json.RawMessage("null")` is non-nil in Go. Must use `string(raw) == "null"`, not `raw == nil`. Checking nil would be a bypass vector.
 - HITL uses a single reader goroutine that owns the `bufio.Reader`. Prevents data races on concurrent terminal reads.
@@ -165,7 +168,7 @@ These are Pipelock's three pillars. When reviewing or hardening, weight findings
 
 ```go
 cfg := config.Defaults()
-cfg.Internal = nil                    // Disable SSRF (no DNS in unit tests)
+cfg.Internal = nil                    // Avoid DNS-based SSRF in unit tests; core literal-IP floor remains
 cmd.SetOut(&buf)                      // CLI output capture (never os.Pipe)
 httptest.NewServer(handler)           // Proxy tests with SSRF disabled
 prometheus.NewRegistry()              // Metrics isolation per test
@@ -226,7 +229,7 @@ plus platform smoke tests and release/hardening checks.
 - **Error ignoring:** always `_ = fn()` in cleanup paths (not bare `fn()`). Always `_, _ = fmt.Fprintf(w, ...)` for output writes.
 - **CLI output:** use `cmd.OutOrStdout()` / `cmd.SetOut(&buf)`, never raw `fmt.Print`.
 - **Lint before commit:** run `golangci-lint run ./...` on first draft, not after tests. Fix lint first, then test.
-- **Prefer proper fixes over `//nolint`:** extract constants (goconst), use `filepath.Clean` (G304), split fake creds (G101). Only use `//nolint` when no clean fix exists — and note that the pre-push gate bans net-new `//nolint`.
+- **Prefer proper fixes over `//nolint`:** extract constants (goconst), use `filepath.Clean` (G304), split fake creds (G101). Only use `//nolint` when no clean fix exists and the exception is specific and justified.
 - **Use existing constants:** check `config.Action*`, `config.Mode*`, `config.Severity*` before creating test-local constants for the same values.
 - **Options structs over long parameter lists.** Functions with more than 6 parameters should take an options struct instead. Do not add parameters to existing long-signature functions (e.g. `ForwardScannedInput`, `scanHTTPInput`, `RunProxy`); new features should add fields to the relevant config/options struct, not append more params. Broader signature cleanup should be handled as an explicit refactor that groups related params into a struct and migrates callers.
 - **Vendor/provider-neutral:** never name a real third-party SaaS, customer, or vendor product in code, comments, tests, or fixtures — even when a real provider motivated the change. Describe the shape/behavior and use neutral placeholders (`api.vendor.example`, `provider-token`, `agent-a`/`agent-b`).
@@ -266,14 +269,14 @@ Severity levels:
 
 ### What NOT to flag
 
-- Don't flag `//nolint` comments that already exist in the tree — they were reviewed and intentional (this does not license *new* ones; the pre-push gate bans net-new `//nolint`).
+- Don't flag `//nolint` comments that already exist in the tree — they were reviewed and intentional (this does not license *new* ones; new `//nolint` still requires specific justification).
 - Don't flag the `tests/` directory being gitignored — that's deliberate.
-- Don't flag `tests/pentest.sh` as broken or a no-op. It defines helper functions sourced by an external security-test harness and is not meant to run standalone from this repository.
+- Don't flag `tests/pentest.sh` as broken or a no-op. It is a suite section file: it defines `section_tool_policy()` and relies on helper functions from the suite runner that sources it, so it is not meant to run standalone.
 - Don't suggest adding dependencies for things already handled by stdlib.
 - Don't suggest architectural changes absent a concrete bug.
 - Don't flag `CLAUDE.md`, `CLAUDE.local.md`, or `AGENTS.md` as unusual files.
 - Don't suggest renaming or restructuring the package layout.
-- Don't treat `cfg.Internal = nil`, `Scanner.New()` panics on bad regex, or `json.RawMessage("null")` being non-nil as bugs — see Implementation Gotchas.
+- Don't treat `cfg.Internal = nil` avoiding DNS-based SSRF, `Scanner.New()` panics on bad regex, or `json.RawMessage("null")` being non-nil as bugs — see Implementation Gotchas.
 
 ## Security
 

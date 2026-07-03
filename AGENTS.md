@@ -46,7 +46,7 @@ These must be proven by tests, not assumed from docs or deployment.
 | Go | 1.25+ (CI tests 1.25 and 1.26) |
 | License | Apache 2.0 (core), ELv2 (`enterprise/`) |
 | Binary | Single Go binary; size varies by OS, build tags, and release flags. |
-| Deps | See `go.mod` for the current direct dependencies. Run `make stats` for the live count before citing it anywhere. Minimal direct deps is intentional. |
+| Deps | See `go.mod` for the current direct dependencies. Run `make stats` before citing the current direct-dependency count. Minimal direct deps is intentional. |
 
 ## Public Documentation Standards
 
@@ -102,18 +102,34 @@ golangci-lint run --build-tags enterprise ./...
 **Capability separation:** the agent environment (secrets, no direct egress) talks to pipelock (network egress, no agent secrets) which talks to the internet. Three proxy modes on the same port:
 
 - **Fetch** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
-- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through the URL scanner
+- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through the scanner pipeline
 - **WebSocket** (`/ws?url=...`): bidirectional frame scanning, DLP on headers, fragment reassembly
 
 ```text
 Agent environment (secrets, no direct egress) → Pipelock (network egress, no agent secrets) → Internet
 ```
 
-### URL Scanner
+### Scanner Pipeline
 
-Max URL length is checked before parsing. After parsing and hostname canonicalization, the URL scanner runs: scheme check → CRLF injection → path traversal → strict-mode allowlist → domain blocklist → core SSRF literal-IP floor → SigV4 credential carve-out → core DLP → configured DLP (patterns, env/file leak detection, entropy) → path/query entropy → subdomain entropy → SSRF/DNS (private IPs, metadata, DNS rebinding) → rate limiting → data budget → final context check.
+Max URL length is checked before parsing. After parsing and hostname canonicalization, the URL scanner runs these checks in order:
 
-Core DLP and configured DLP run **before** DNS resolution. SSRF/DNS runs **after** those DLP checks. This ordering prevents DNS-based exfiltration.
+1. Scheme (http/https only)
+2. CRLF injection
+3. Path traversal
+4. Strict-mode allowlist
+5. Domain blocklist
+6. Core SSRF literal-IP floor (an immutable safety floor; runs even when configured SSRF is disabled)
+7. SigV4 presigned-URL credential carve-out
+8. Core DLP (immutable safety floor)
+9. DLP (65 built-in credential patterns + checksum validators + env/file leak detection)
+10. Path entropy analysis
+11. Subdomain entropy analysis
+12. SSRF / DNS resolution (private IPs, metadata, DNS rebinding)
+13. Rate limiting
+14. Data budget
+15. Final context check
+
+Core and configured DLP run **before** DNS resolution; SSRF/DNS runs **after**. This ordering prevents DNS-based exfiltration.
 
 ### MCP Proxy
 

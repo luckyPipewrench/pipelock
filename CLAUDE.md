@@ -1,6 +1,21 @@
-# CLAUDE.md: Pipelock Development Guide
+# CLAUDE.md — Pipelock Development & Review Guide
 
-Pipelock is an agent firewall: a network and tool proxy that sits between AI agents and the internet, scanning the HTTP, WebSocket, and MCP traffic routed through it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Coverage is for mediated traffic; blocking direct egress that bypasses the proxy is deployment guidance, not a binary-enforced property.
+This is the working guide for Claude Code in this repository. `AGENTS.md` is its twin for other AI coding agents: the two files are kept in sync and differ only in the agent they name. It covers build, test, lint, architecture, security invariants, and the PR workflow, so you can build, test, and review — not just review.
+
+Pipelock is an agent firewall: a network and tool proxy that sits between AI agents and the internet, scanning the HTTP, WebSocket, and MCP traffic routed through it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Coverage is for **mediated** traffic; blocking direct egress that bypasses the proxy is deployment guidance, not a binary-enforced property.
+
+## Your Role
+
+You support the whole repository: you may build, fix, test, and review. Default to whatever the user actually asks for — implement when asked to implement, review when asked to review. When the ask is ambiguous, review and report rather than edit.
+
+Operating guardrails (these hold regardless of the task):
+
+- **Never commit, push, create branches, or open PRs unless explicitly asked.** Leave completed work as a modified tree or a clear report; a human decides when it lands.
+- **Never run destructive git** (`reset --hard`, `clean -f`, `push --force`, branch/tag delete, `checkout` that discards work) unless explicitly asked. No `--no-verify`, no gpg-bypass.
+- **Use the network only when the task genuinely needs it.** Prefer cached modules and offline verification; avoid gratuitous fetches. When a task legitimately requires it — `go mod download` for a dependency the task is adding, verifying an external spec — it is allowed. If a test fails purely due to sandbox/network restrictions rather than a code defect, report it as an environment limitation, not a code bug.
+- **Verify by reproduction, not assertion.** "PASS" means you ran the command and read the output. For security-relevant claims, run the negative/attack case too and confirm it fails **closed**.
+- **Flag uncertainty instead of guessing.** If something looks wrong but you are not sure, surface it with your confidence level rather than silently acting or silently ignoring it.
+- **Public repo.** Everything here is world-visible. Keep commit messages, code, comments, tests, and fixtures free of personal, infrastructure, or private-planning details, and vendor/provider-neutral (see Code Style).
 
 ## Hard Rules
 
@@ -65,20 +80,20 @@ make tidy-check     # Verify go.mod/go.sum
 make docker         # Docker image
 ```
 
-Pre-commit (both must pass before pushing):
+Pre-commit (both must pass before pushing; also run each with `--build-tags enterprise`):
 ```bash
 golangci-lint run --new-from-rev=HEAD ./...
 go test -race -count=1 ./...
 ```
 
-CI runs lint and tests on **all** code, not just changed files.
+CI runs lint and tests on **all** code, not just changed files. Run lint before tests: fix lint first, then verify behavior.
 
 ## Architecture
 
 **Capability separation:** the agent environment (secrets, no direct egress) talks to pipelock (network egress, no agent secrets) which talks to the internet. Three proxy modes on the same port:
 
 - **Fetch** (`/fetch?url=...`): fetches URL, extracts text, scans response for injection
-- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through 11-layer pipeline
+- **Forward** (CONNECT + absolute-URI): standard HTTP proxy via `HTTPS_PROXY`, scans hostname through the 11-layer pipeline
 - **WebSocket** (`/ws?url=...`): bidirectional frame scanning, DLP on headers, fragment reassembly
 
 ```text
@@ -131,11 +146,20 @@ Action constants: `config.ActionBlock`, `ActionRedirect`, `ActionWarn`, `ActionA
 - Tool baseline caps at 10,000 tools per session. Prevents unbounded memory from malicious MCP servers.
 - DLP patterns are auto-prefixed with `(?i)` because agents can uppercase secrets, so matching is always case-insensitive.
 
+## Security Review Priorities (weight findings in this order)
+
+1. **Prompt injection** — bypasses to response/input/tool scanning
+2. **Data exfiltration / DLP** — encoding tricks, splitting attacks, DNS exfil, entropy evasion
+3. **SSRF / network controls** — rebinding, TOCTOU, private-IP bypass, metadata access
+
+These are Pipelock's three pillars. When reviewing or hardening, weight findings in these areas highest, and think like an attacker: what is the dumbest bypass (multi-layer encoding, null bytes, homoglyphs, case tricks)? What happens at empty / max-length / mixed-encoding / split-across-frames boundaries? Does the displayed value match the acted-on value?
+
 ## Testing
 
 - **Race detector mandatory**: `-race -count=1` on all tests.
-- **95% coverage target** on new code. See README for current count.
+- **95% coverage target** on new code, especially error paths — every `if err != nil` return wants a test. See README for the current count.
 - Count test cases (including subtests): `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`
+- **No `time.Sleep` for synchronization** and **no fixed ports** in tests — both flake under CI load and both are blocked by `scripts/check-test-stability.sh` for net-new occurrences. Use channels / poll-with-deadline for coordination and bind `:0` then read back the address.
 
 ### Patterns
 
@@ -181,7 +205,7 @@ These tasks have steps that are easy to miss:
 Public CI (see `.github/workflows/*.yaml` for the current job list; this file is not the source of truth for branch protection) includes:
 
 - **test:** Go 1.25 + 1.26 matrix, race detector, Codecov upload
-- **lint:** golangci-lint v2
+- **lint:** golangci-lint v2 (plus the test-stability and pin checks)
 - **build:** compile binary, verify `--version`
 - **govulncheck:** known vulnerability scanning
 - **CodeQL:** security-and-quality static analysis
@@ -197,15 +221,59 @@ plus platform smoke tests and release/hardening checks.
 - Error wrapping: `fmt.Errorf("context: %w", err)`
 - Table-driven tests with `t.Run()`
 - No stutter: `proxy.Option` not `proxy.ProxyOption`
-- DRY: when two paths carry the same behavior or security meaning, extract a shared helper rather than duplicating it
+- DRY: when two paths carry the same behavior or security meaning, extract a shared helper rather than duplicating it.
 - **File permissions:** always `0o600` for files, `0o750` for directories. Never `0o644`/`0o755`.
 - **Error ignoring:** always `_ = fn()` in cleanup paths (not bare `fn()`). Always `_, _ = fmt.Fprintf(w, ...)` for output writes.
+- **CLI output:** use `cmd.OutOrStdout()` / `cmd.SetOut(&buf)`, never raw `fmt.Print`.
 - **Lint before commit:** run `golangci-lint run ./...` on first draft, not after tests. Fix lint first, then test.
-- **Prefer proper fixes over `//nolint`:** extract constants (goconst), use `filepath.Clean` (G304), split fake creds (G101). Only use `//nolint` when no clean fix exists.
+- **Prefer proper fixes over `//nolint`:** extract constants (goconst), use `filepath.Clean` (G304), split fake creds (G101). Only use `//nolint` when no clean fix exists — and note that the pre-push gate bans net-new `//nolint`.
 - **Use existing constants:** check `config.Action*`, `config.Mode*`, `config.Severity*` before creating test-local constants for the same values.
 - **Options structs over long parameter lists.** Functions with more than 6 parameters should take an options struct instead. Do not add parameters to existing long-signature functions (e.g. `ForwardScannedInput`, `scanHTTPInput`, `RunProxy`); new features should add fields to the relevant config/options struct, not append more params. Broader signature cleanup should be handled as an explicit refactor that groups related params into a struct and migrates callers.
+- **Vendor/provider-neutral:** never name a real third-party SaaS, customer, or vendor product in code, comments, tests, or fixtures — even when a real provider motivated the change. Describe the shape/behavior and use neutral placeholders (`api.vendor.example`, `provider-token`, `agent-a`/`agent-b`).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide. PRs are squash-merged.
+
+## When You Are Asked to Review
+
+When the task is review (not implementation), produce a clean handoff report that another agent or a human can act on directly. Run `go test -race -count=1 ./...` and `golangci-lint run ./...` to verify findings before reporting them.
+
+```text
+## Review: [branch or scope]
+
+### Critical (must fix before merge)
+- **[severity]** `file:line` — description
+  Repro: `command to reproduce`
+
+### Warning (should fix)
+- ...
+
+### Info (optional improvements)
+- ...
+
+### Test Results
+- `go test -race -count=1 ./...` — PASS/FAIL (note any env failures)
+- `golangci-lint run ./...` — clean / N issues
+
+### Suggested Next Actions
+1. [specific action with exact command if applicable]
+2. ...
+```
+
+Severity levels:
+- **CRITICAL** — security bypass, data leak, fail-open behavior, test gap on a security path
+- **WARNING** — logic bug, missing edge case, convention violation, potential race
+- **INFO** — style, readability, minor optimization, coverage gap on a non-security path
+
+### What NOT to flag
+
+- Don't flag `//nolint` comments that already exist in the tree — they were reviewed and intentional (this does not license *new* ones; the pre-push gate bans net-new `//nolint`).
+- Don't flag the `tests/` directory being gitignored — that's deliberate.
+- Don't flag `tests/pentest.sh` as broken or a no-op. It defines helper functions sourced by an external security-test harness and is not meant to run standalone from this repository.
+- Don't suggest adding dependencies for things already handled by stdlib.
+- Don't suggest architectural changes absent a concrete bug.
+- Don't flag `CLAUDE.md`, `CLAUDE.local.md`, or `AGENTS.md` as unusual files.
+- Don't suggest renaming or restructuring the package layout.
+- Don't treat `cfg.Internal = nil`, `Scanner.New()` panics on bad regex, or `json.RawMessage("null")` being non-nil as bugs — see Implementation Gotchas.
 
 ## Security
 

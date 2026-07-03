@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -3139,6 +3140,735 @@ func TestValidate_InvalidArgKey(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected validation error for invalid arg_key regex")
 	}
+}
+
+// --- Structural argument validators ---
+
+const (
+	structuralTool        = "transfer"
+	structuralToolPattern = "^transfer$"
+	structuralArgKey      = "^amount$"
+	structuralRuleName    = "structural-rule"
+)
+
+func TestStructuralValidators_DangerousValuesMatch(t *testing.T) {
+	lenGT := 3
+	for _, tc := range []struct {
+		name string
+		rule config.ToolPolicyRule
+		args string
+	}{
+		{
+			name: "number over gt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("10000"),
+			},
+			args: `{"amount":10001}`,
+		},
+		{
+			name: "length over gt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^path$",
+				ArgLenGT:    &lenGT,
+			},
+			args: `{"path":"abcd"}`,
+		},
+		{
+			name: "dangerous value in set",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^mode$",
+				ArgValueIn:  []string{"rw", "admin"},
+			},
+			args: `{"mode":"admin"}`,
+		},
+		{
+			name: "wrong required type",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^payload$",
+				ArgType:     "string",
+			},
+			args: `{"payload":{"nested":true}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := structuralPolicy(t, tc.rule)
+			v := pc.CheckRequest(structuralRequest(tc.args))
+			if !v.Matched || v.Action != config.ActionBlock {
+				t.Fatalf("verdict = %+v, want block match", v)
+			}
+		})
+	}
+}
+
+func TestStructuralValidators_SafeValuesDoNotMatch(t *testing.T) {
+	pc := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        structuralRuleName,
+		ToolPattern: structuralToolPattern,
+		ArgKey:      structuralArgKey,
+		ArgNumberGT: jsonNumberPtr("10000"),
+	})
+
+	over := pc.CheckRequest(structuralRequest(`{"amount":10001}`))
+	if !over.Matched {
+		t.Fatal("over-threshold value should match")
+	}
+	under := pc.CheckRequest(structuralRequest(`{"amount":10000}`))
+	if under.Matched {
+		t.Fatalf("in-range value should not match, got %+v", under)
+	}
+}
+
+func TestStructuralValidators_WrongTypeNumericComparatorFailsClosed(t *testing.T) {
+	pc := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        structuralRuleName,
+		ToolPattern: structuralToolPattern,
+		ArgKey:      structuralArgKey,
+		ArgNumberGT: jsonNumberPtr("10000"),
+	})
+
+	v := pc.CheckRequest(structuralRequest(`{"amount":"99999"}`))
+	if !v.Matched || v.Action != config.ActionBlock {
+		t.Fatalf("wrong-type numeric value should fail closed, got %+v", v)
+	}
+}
+
+func TestStructuralValidators_AbsentKeyBoundFailsClosedValueInDoesNot(t *testing.T) {
+	boundPolicy := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        "missing-bound",
+		ToolPattern: structuralToolPattern,
+		ArgKey:      structuralArgKey,
+		ArgNumberGT: jsonNumberPtr("10000"),
+	})
+	if v := boundPolicy.CheckRequest(structuralRequest(`{"other":1}`)); !v.Matched {
+		t.Fatalf("absent bound arg_key should fail closed, got %+v", v)
+	}
+
+	valuePolicy := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        "missing-value",
+		ToolPattern: structuralToolPattern,
+		ArgKey:      "^mode$",
+		ArgValueIn:  []string{"admin"},
+	})
+	if v := valuePolicy.CheckRequest(structuralRequest(`{"other":"admin"}`)); v.Matched {
+		t.Fatalf("absent arg_value_in-only arg_key should not match, got %+v", v)
+	}
+}
+
+func TestStructuralValidators_NumericFidelity(t *testing.T) {
+	pc := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        structuralRuleName,
+		ToolPattern: structuralToolPattern,
+		ArgKey:      structuralArgKey,
+		ArgNumberGT: jsonNumberPtr("1000000000"),
+	})
+
+	for _, tc := range []struct {
+		name    string
+		value   string
+		matched bool
+	}{
+		{name: "scientific equal is not greater", value: "1e9", matched: false},
+		{name: "integer below threshold", value: "999999999", matched: false},
+		{name: "integer above threshold", value: "1000000001", matched: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := pc.CheckRequest(structuralRequest(fmt.Sprintf(`{"amount":%s}`, tc.value)))
+			if v.Matched != tc.matched {
+				t.Fatalf("matched = %v, want %v; verdict = %+v", v.Matched, tc.matched, v)
+			}
+		})
+	}
+}
+
+func TestStructuralValidators_AdversarialArgsFailClosedNoPanic(t *testing.T) {
+	pc := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        structuralRuleName,
+		ToolPattern: structuralToolPattern,
+		ArgKey:      structuralArgKey,
+		ArgNumberGT: jsonNumberPtr("10000"),
+	})
+
+	for _, tc := range []struct {
+		name string
+		run  func() Verdict
+	}{
+		{
+			name: "deeply nested",
+			run: func() Verdict {
+				return pc.CheckRequest(structuralRequest(fmt.Sprintf(`{"amount":%s}`, deepPolicyJSONObject("leaf", 100))))
+			},
+		},
+		{
+			name: "huge number",
+			run: func() Verdict {
+				return pc.CheckRequest(structuralRequest(`{"amount":1e1000001}`))
+			},
+		},
+		{
+			name: "non numeric",
+			run: func() Verdict {
+				return pc.CheckRequest(structuralRequest(`{"amount":{}}`))
+			},
+		},
+		{
+			name: "malformed raw json",
+			run: func() Verdict {
+				return pc.CheckToolCallWithArgs(structuralTool, nil, json.RawMessage(`{"amount":`))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("panic: %v", r)
+				}
+			}()
+			v := tc.run()
+			if !v.Matched || v.Action != config.ActionBlock {
+				t.Fatalf("adversarial input should fail closed, got %+v", v)
+			}
+		})
+	}
+}
+
+func TestStructuralValidators_ReachabilityWithoutArgPattern(t *testing.T) {
+	pc := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        "reachable-structural",
+		ToolPattern: structuralToolPattern,
+		ArgKey:      structuralArgKey,
+		ArgNumberGT: jsonNumberPtr("10000"),
+	})
+
+	v := pc.CheckRequest(structuralRequest(`{"amount":10001}`))
+	if !v.Matched {
+		t.Fatal("structural-validator rule without arg_pattern should receive raw args and match")
+	}
+}
+
+func TestStructuralValidators_RawArgsMissingWithArgPatternFailsClosed(t *testing.T) {
+	pc := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        structuralRuleName,
+		ToolPattern: structuralToolPattern,
+		ArgPattern:  "anything",
+		ArgKey:      structuralArgKey,
+		ArgNumberGT: jsonNumberPtr("10000"),
+	})
+
+	v := pc.CheckToolCall(structuralTool, []string{"anything"})
+	if !v.Matched {
+		t.Fatal("structural bound rule should fail closed instead of skipping when raw args are unavailable")
+	}
+	if !slices.Equal(v.Rules, []string{structuralRuleName, uninspectableJSONDepthRule}) {
+		t.Fatalf("Rules = %v, want [%q %q]", v.Rules, structuralRuleName, uninspectableJSONDepthRule)
+	}
+
+	if v := pc.CheckToolCall(structuralTool, []string{"safe"}); !v.Matched {
+		t.Fatal("key-scoped structural rule should fail closed before using unscoped arg strings")
+	}
+
+	valuePolicy := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        "value-only",
+		ToolPattern: structuralToolPattern,
+		ArgPattern:  "anything",
+		ArgKey:      "^mode$",
+		ArgValueIn:  []string{"admin"},
+	})
+	if v := valuePolicy.CheckToolCall(structuralTool, []string{"anything"}); !v.Matched {
+		t.Fatal("value-in structural rule should fail closed on absent raw args")
+	}
+}
+
+func TestStructuralValidators_DepthPrescanRejectsDeepJSON(t *testing.T) {
+	if truncated, valid := structuralJSONDepthTruncated(json.RawMessage(`{"amount":1}`)); truncated || !valid {
+		t.Fatalf("shallow JSON truncated=%v valid=%v, want false/true", truncated, valid)
+	}
+	if truncated, valid := structuralJSONDepthTruncated(json.RawMessage(`{"amount":`)); truncated || valid {
+		t.Fatalf("malformed JSON truncated=%v valid=%v, want false/false", truncated, valid)
+	}
+	if truncated, valid := structuralJSONDepthTruncated(json.RawMessage(fmt.Sprintf(`{"amount":%s}`, deepPolicyJSONObject("leaf", 100)))); !truncated || !valid {
+		t.Fatalf("deep JSON truncated=%v valid=%v, want true/true", truncated, valid)
+	}
+}
+
+func TestStructuralValuesForArgKeyEdgeCases(t *testing.T) {
+	keyPattern := regexp.MustCompile("^amount$")
+
+	if _, truncated, ok := structuralValuesForArgKey(json.RawMessage(`{} {}`), keyPattern); truncated || ok {
+		t.Fatalf("multiple JSON values truncated=%v ok=%v, want false/false", truncated, ok)
+	}
+	if _, truncated, ok := structuralValuesForArgKey(json.RawMessage(`[]`), keyPattern); truncated || !ok {
+		t.Fatalf("non-object JSON truncated=%v ok=%v, want false/true", truncated, ok)
+	}
+	if _, truncated, ok := structuralValuesForArgKey(json.RawMessage(`{"amount":1}`), nil); truncated || !ok {
+		t.Fatalf("nil key pattern truncated=%v ok=%v, want false/true", truncated, ok)
+	}
+}
+
+func TestStructuralValueBranchCoverage(t *testing.T) {
+	if (&CompiledRule{ArgType: "string"}).matchStructuralValue("safe") {
+		t.Fatal("type-only rule should not match when the value has the required type")
+	}
+	if !(&CompiledRule{ArgType: "integer"}).matchStructuralValue("not-a-number") {
+		t.Fatal("integer type guard should fail closed on non-number values")
+	}
+	if (&CompiledRule{ArgType: "integer"}).matchStructuralValue(json.Number("1")) {
+		t.Fatal("integer type guard should not match integer JSON numbers")
+	}
+	if !(&CompiledRule{ArgType: "integer"}).matchStructuralValue(json.Number("1.5")) {
+		t.Fatal("integer type guard should fail closed on non-integer JSON numbers")
+	}
+	if !(&CompiledRule{ArgType: "boolean"}).matchStructuralValue("true") {
+		t.Fatal("boolean type guard should fail closed on non-boolean values")
+	}
+	if !(&CompiledRule{ArgType: "array"}).matchStructuralValue("not-array") {
+		t.Fatal("array type guard should fail closed on non-array values")
+	}
+	if !(&CompiledRule{ArgType: "object"}).matchStructuralValue("not-object") {
+		t.Fatal("object type guard should fail closed on non-object values")
+	}
+	if !(&CompiledRule{ArgType: "unknown"}).matchStructuralValue("value") {
+		t.Fatal("unknown compiled type should fail closed")
+	}
+
+	if !(&CompiledRule{ArgNumberGT: jsonNumberPtr("not-a-number")}).matchStructuralValue(json.Number("1")) {
+		t.Fatal("invalid compiled gt threshold should fail closed")
+	}
+	if (&CompiledRule{ArgNumberLT: jsonNumberPtr("10")}).matchStructuralValue(json.Number("10")) {
+		t.Fatal("value equal to lt threshold should not match")
+	}
+	if !(&CompiledRule{ArgNumberLT: jsonNumberPtr("not-a-number")}).matchStructuralValue(json.Number("1")) {
+		t.Fatal("invalid compiled lt threshold should fail closed")
+	}
+
+	lenGT := 3
+	lenLT := 3
+	if (&CompiledRule{ArgLenGT: &lenGT}).matchStructuralValue("abc") {
+		t.Fatal("length equal to gt threshold should not match")
+	}
+	if (&CompiledRule{ArgLenLT: &lenLT}).matchStructuralValue("abc") {
+		t.Fatal("length equal to lt threshold should not match")
+	}
+	if (&CompiledRule{ArgValueIn: map[string]struct{}{"admin": {}}}).matchStructuralValue("user") {
+		t.Fatal("value outside arg_value_in should not match")
+	}
+}
+
+func TestStructuralValidators_TypeGuardComposition(t *testing.T) {
+	pc := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        structuralRuleName,
+		ToolPattern: structuralToolPattern,
+		ArgKey:      structuralArgKey,
+		ArgType:     "number",
+		ArgNumberGT: jsonNumberPtr("10000"),
+	})
+
+	if v := pc.CheckRequest(structuralRequest(`{"amount":10001}`)); !v.Matched {
+		t.Fatalf("matching type with dangerous range should match, got %+v", v)
+	}
+	if v := pc.CheckRequest(structuralRequest(`{"amount":9999}`)); v.Matched {
+		t.Fatalf("matching type with safe range should not match, got %+v", v)
+	}
+	if v := pc.CheckRequest(structuralRequest(`{"amount":"10001"}`)); !v.Matched {
+		t.Fatalf("type mismatch should fail closed, got %+v", v)
+	}
+}
+
+func TestStructuralValidators_BatchRequestOverRangeMatches(t *testing.T) {
+	pc := structuralPolicy(t, config.ToolPolicyRule{
+		Name:        "batch-over-range",
+		ToolPattern: structuralToolPattern,
+		ArgKey:      structuralArgKey,
+		ArgNumberGT: jsonNumberPtr("10000"),
+	})
+
+	batch := fmt.Sprintf(`[
+		{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe","arguments":{"amount":10001}}},
+		{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":%q,"arguments":{"amount":10001}}}
+	]`, structuralTool)
+	v := pc.CheckRequest([]byte(batch))
+	if !v.Matched || v.Action != config.ActionBlock {
+		t.Fatalf("batch structural validator should match over-range tools/call, got %+v", v)
+	}
+}
+
+func TestStructuralValidators_FailClosedMatrix(t *testing.T) {
+	lenGT := 3
+	lenLT := 3
+	tests := []struct {
+		name    string
+		rule    config.ToolPolicyRule
+		args    string
+		matched bool
+	}{
+		{
+			name: "type and bound safe number",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgType:     "number",
+				ArgNumberGT: jsonNumberPtr("10.5"),
+			},
+			args:    `{"amount":10}`,
+			matched: false,
+		},
+		{
+			name: "fractional threshold less than integer",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("10.5"),
+			},
+			args:    `{"amount":11}`,
+			matched: true,
+		},
+		{
+			name: "negative number below lt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberLT: jsonNumberPtr("-1"),
+			},
+			args:    `{"amount":-2}`,
+			matched: true,
+		},
+		{
+			name: "type and value in require both dangerous",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^mode$",
+				ArgType:     "string",
+				ArgValueIn:  []string{"admin"},
+			},
+			args:    `{"mode":"user"}`,
+			matched: false,
+		},
+		{
+			name: "type mismatch with value in fails closed",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^mode$",
+				ArgType:     "string",
+				ArgValueIn:  []string{"admin"},
+			},
+			args:    `{"mode":false}`,
+			matched: true,
+		},
+		{
+			name: "bound and value in require both dangerous",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("10"),
+				ArgValueIn:  []string{"11"},
+			},
+			args:    `{"amount":12}`,
+			matched: false,
+		},
+		{
+			name: "bound and value in both dangerous",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("10"),
+				ArgValueIn:  []string{"11"},
+			},
+			args:    `{"amount":11}`,
+			matched: true,
+		},
+		{
+			name: "matching key regex ORs over values",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^amount",
+				ArgNumberGT: jsonNumberPtr("10"),
+			},
+			args:    `{"amount_safe":1,"amount_danger":11}`,
+			matched: true,
+		},
+		{
+			name: "present null type guard fails closed",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^payload$",
+				ArgType:     "object",
+			},
+			args:    `{"payload":null}`,
+			matched: true,
+		},
+		{
+			name: "value in null matches present null",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^payload$",
+				ArgValueIn:  []string{"null"},
+			},
+			args:    `{"payload":null}`,
+			matched: true,
+		},
+		{
+			name: "empty string below len lt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^payload$",
+				ArgLenLT:    &lenLT,
+			},
+			args:    `{"payload":""}`,
+			matched: true,
+		},
+		{
+			name: "empty array below len lt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^payload$",
+				ArgLenLT:    &lenLT,
+			},
+			args:    `{"payload":[]}`,
+			matched: true,
+		},
+		{
+			name: "array over len gt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^payload$",
+				ArgLenGT:    &lenGT,
+			},
+			args:    `{"payload":[1,2,3,4]}`,
+			matched: true,
+		},
+		{
+			name: "boolean where number expected fails closed",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("10"),
+			},
+			args:    `{"amount":true}`,
+			matched: true,
+		},
+		{
+			name: "object where length expected fails closed",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^payload$",
+				ArgLenGT:    &lenGT,
+			},
+			args:    `{"payload":{}}`,
+			matched: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := structuralPolicy(t, tc.rule)
+			v := pc.CheckRequest(structuralRequest(tc.args))
+			if v.Matched != tc.matched {
+				t.Fatalf("matched = %v, want %v; verdict = %+v", v.Matched, tc.matched, v)
+			}
+		})
+	}
+}
+
+func TestValidate_StructuralValidators(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rule    config.ToolPolicyRule
+		wantErr bool
+	}{
+		{
+			name: "arg_key structural without arg_pattern is valid",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("10000"),
+			},
+		},
+		{
+			name: "structural without arg_key is invalid",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgNumberGT: jsonNumberPtr("10000"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid arg_type",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgType:     "float",
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid arg_number_gt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("not-a-number"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid arg_number_lt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberLT: jsonNumberPtr("1e10001"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "unsatisfiable numeric range",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgNumberGT: jsonNumberPtr("10"),
+				ArgNumberLT: jsonNumberPtr("10"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "unsatisfiable length range",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^path$",
+				ArgLenGT:    intPtr(5),
+				ArgLenLT:    intPtr(5),
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative arg_len_gt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^path$",
+				ArgLenGT:    intPtr(-1),
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative arg_len_lt",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^path$",
+				ArgLenLT:    intPtr(-1),
+			},
+			wantErr: true,
+		},
+		{
+			name: "numeric bound with string type",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgType:     "string",
+				ArgNumberGT: jsonNumberPtr("10"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "numeric bound with integer type is valid",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      structuralArgKey,
+				ArgType:     "integer",
+				ArgNumberGT: jsonNumberPtr("10"),
+			},
+		},
+		{
+			name: "length bound with number type",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^path$",
+				ArgType:     "number",
+				ArgLenGT:    intPtr(3),
+			},
+			wantErr: true,
+		},
+		{
+			name: "length bound with array type is valid",
+			rule: config.ToolPolicyRule{
+				Name:        structuralRuleName,
+				ToolPattern: structuralToolPattern,
+				ArgKey:      "^items$",
+				ArgType:     "array",
+				ArgLenGT:    intPtr(3),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.MCPToolPolicy.Enabled = true
+			cfg.MCPToolPolicy.Action = config.ActionBlock
+			cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{tc.rule}
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func structuralPolicy(t *testing.T, rule config.ToolPolicyRule) *Config {
+	t.Helper()
+	cfg := config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionBlock,
+		Rules:   []config.ToolPolicyRule{rule},
+	}
+	pc := New(cfg)
+	if pc == nil {
+		t.Fatal("New returned nil")
+	}
+	return pc
+}
+
+func structuralRequest(args string) []byte {
+	return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, structuralTool, args))
+}
+
+func jsonNumberPtr(value string) *json.Number {
+	n := json.Number(value)
+	return &n
+}
+
+func intPtr(value int) *int {
+	return &value
 }
 
 // --- Gauntlet regression tests ---

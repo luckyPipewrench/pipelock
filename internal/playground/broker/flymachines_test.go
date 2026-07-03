@@ -376,11 +376,15 @@ func TestFlyListManagedMachinesPagedObjectResponse(t *testing.T) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if got := r.URL.Query().Get("summary"); got != "true" {
-			t.Fatalf("summary query = %q, want true", got)
+		// REGRESSION GUARD: ListManagedMachines MUST NOT request summary=true.
+		// Fly's summary list response strips config.metadata to null, which makes
+		// the pipelock_role tag filter drop every machine and the reaper reap
+		// nothing (orphaned VMs pile up). See ListManagedMachines comment.
+		if got := r.URL.Query().Get("summary"); got != "" {
+			t.Fatalf("summary query = %q, want unset (summary strips metadata)", got)
 		}
-		if got := r.URL.Query().Get("limit"); got != "200" {
-			t.Fatalf("limit query = %q, want 200", got)
+		if want := strconv.Itoa(flyListPageSize); r.URL.Query().Get("limit") != want {
+			t.Fatalf("limit query = %q, want %q", r.URL.Query().Get("limit"), want)
 		}
 		cursor := r.URL.Query().Get("cursor")
 		cursors = append(cursors, cursor)
@@ -419,6 +423,35 @@ func TestFlyListManagedMachinesPagedObjectResponse(t *testing.T) {
 	}
 	if machines[0].ID != "m-page-1" || machines[1].ID != "m-page-2" {
 		t.Fatalf("machine IDs = %q, %q; want m-page-1, m-page-2", machines[0].ID, machines[1].ID)
+	}
+}
+
+// TestFlyListManagedMachinesFlySummaryStripsMetadata reproduces the live Fly
+// behavior that broke the orphan reaper: the summary list response returns
+// config.metadata as null. This mock mimics that — it strips metadata whenever
+// summary=true is requested. If ListManagedMachines ever requests summary mode
+// again, the tag filter drops every machine and this test fails with 0 machines,
+// which is exactly the production symptom (per-visitor VMs never reaped).
+func TestFlyListManagedMachinesFlySummaryStripsMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("summary") == "true" {
+			// Fly summary mode: metadata stripped to null.
+			_, _ = w.Write([]byte(`[{"id": "m-tagged", "state": "started", "created_at": "2026-06-25T10:00:00Z", "config": {"metadata": null}}]`))
+			return
+		}
+		// Full mode: metadata present.
+		_, _ = w.Write([]byte(`[{"id": "m-tagged", "state": "started", "created_at": "2026-06-25T10:00:00Z", "config": {"metadata": {"pipelock_role": "playground-vm"}}}]`))
+	}))
+	defer srv.Close()
+
+	fly := newTestFly(srv)
+	machines, err := fly.ListManagedMachines(context.Background())
+	if err != nil {
+		t.Fatalf("ListManagedMachines: %v", err)
+	}
+	if len(machines) != 1 || machines[0].ID != "m-tagged" {
+		t.Fatalf("got %d machines (%v), want 1 (m-tagged); a 0 result means summary=true stripped metadata", len(machines), machines)
 	}
 }
 

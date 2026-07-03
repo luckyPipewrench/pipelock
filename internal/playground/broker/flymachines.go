@@ -36,6 +36,12 @@ const defaultWaitTimeout = 60 * time.Second
 // misbehaving/huge response cannot exhaust broker memory.
 const flyMaxBodyBytes = 1 << 20 // 1 MiB
 
+// flyListPageSize caps the per-page machine count in ListManagedMachines. It is
+// kept well under the Fly API maximum so a full (non-summary) machine page stays
+// under flyMaxBodyBytes even during a large orphan event; the cursor loop handles
+// the extra pages. See ListManagedMachines for why summary mode is not used.
+const flyListPageSize = 50
+
 // flyRequestIDHeader is the Fly API response header that carries a per-request
 // trace identifier. Including it in error messages lets operators debug failures
 // with Fly support without exposing potentially secret response-body content.
@@ -238,7 +244,22 @@ func (f *FlyMachines) ListManagedMachines(ctx context.Context) ([]Machine, error
 		return nil, err
 	}
 	path := fmt.Sprintf("/apps/%s/machines", url.PathEscape(f.AppName))
-	query := url.Values{"summary": []string{"true"}, "limit": []string{"200"}}
+	// Do NOT set summary=true: Fly's summary list response strips config.metadata
+	// to null, and this reaper filters managed machines on the
+	// pipelock_role=playground-vm metadata tag. With summary=true the filter drops
+	// EVERY machine, ListManagedMachines returns empty, and the reaper silently
+	// reaps nothing while per-visitor VMs accumulate forever (observed live:
+	// 14 orphaned VMs after a week). The full list response carries both
+	// config.metadata and created_at, which the reaper's tag filter and grace
+	// check require.
+	//
+	// Page size is kept modest (not the API max): full machine objects are
+	// larger than summary rows, and the response body is capped at flyMaxBodyBytes
+	// (1 MiB) in do(). A too-large page could exceed that cap during a large
+	// orphan event, fail to parse, and stall cleanup exactly when it matters most.
+	// More pages of a bounded size is the safer trade; the cursor loop below
+	// handles pagination.
+	query := url.Values{"limit": []string{strconv.Itoa(flyListPageSize)}}
 	var raw []flyListMachine
 	for {
 		respBody, err := f.do(ctx, http.MethodGet, path, query, nil)

@@ -110,6 +110,53 @@ func TestReaperReconcileOnce(t *testing.T) {
 	}
 }
 
+func TestReaperReconcileHeartbeatLog(t *testing.T) {
+	baseTime := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+
+	// A reconcile that finds nothing MUST still log a heartbeat. This is the
+	// observability that was missing when the production reaper was blinded by
+	// Fly summary mode and silently reaped nothing for a week.
+	t.Run("zero machines logs managed=0", func(t *testing.T) {
+		fp := &fakeProvider{}
+		var logBuf bytes.Buffer
+		reaper, err := NewReaper(ReaperConfig{
+			Provider:  fp,
+			ActiveIDs: func() map[string]struct{} { return nil },
+			Now:       func() time.Time { return baseTime },
+			Log:       &logBuf,
+		})
+		if err != nil {
+			t.Fatalf("NewReaper: %v", err)
+		}
+		if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+			t.Fatalf("ReconcileOnce: %v", err)
+		}
+		if !strings.Contains(logBuf.String(), "reaper: reconcile managed=0") {
+			t.Errorf("want managed=0 heartbeat, got: %q", logBuf.String())
+		}
+	})
+
+	t.Run("zero-CreatedAt tagged machine logs skipped_unknown_age", func(t *testing.T) {
+		fp := &fakeProvider{managedMachines: []Machine{{ID: "unknown", State: "started"}}}
+		var logBuf bytes.Buffer
+		reaper, err := NewReaper(ReaperConfig{
+			Provider:  fp,
+			ActiveIDs: func() map[string]struct{} { return nil },
+			Now:       func() time.Time { return baseTime },
+			Log:       &logBuf,
+		})
+		if err != nil {
+			t.Fatalf("NewReaper: %v", err)
+		}
+		if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+			t.Fatalf("ReconcileOnce: %v", err)
+		}
+		if !strings.Contains(logBuf.String(), "skipped_unknown_age=1") {
+			t.Errorf("want skipped_unknown_age=1 in heartbeat, got: %q", logBuf.String())
+		}
+	})
+}
+
 func TestReaperReconcileOnceListError(t *testing.T) {
 	fp := &fakeProvider{listErr: errors.New("provider down")}
 	reaper, err := NewReaper(ReaperConfig{

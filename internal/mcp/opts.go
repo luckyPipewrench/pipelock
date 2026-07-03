@@ -72,6 +72,7 @@ type MCPProxyOpts struct {
 	// Session and adaptive enforcement
 	Store         session.Store
 	Rec           session.Recorder // set by RunProxy after Store.GetOrCreate
+	BaselineRec   session.ToolCallBaselineRecorder
 	Baseline      session.BaselineChecker
 	BaselineFn    func() session.BaselineChecker
 	AdaptiveCfg   *config.AdaptiveEnforcement

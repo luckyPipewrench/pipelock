@@ -286,9 +286,25 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 			viewLabel string
 		}
 		candidates := []seedCandidate{{seedText, "", ViewForMatching}}
+		appendInvisibleSpacedSeedCandidate := func(candidateText, encoded, viewLabel string) {
+			// Invisible-separator reassembly: ForMatching STRIPS zero-width chars, so
+			// a seed whose inter-word spaces are zero-width (U+200B, U+1160, U+3164)
+			// collapses to one merged token with no word boundaries and evades
+			// DetectSpans. Replace invisibles with spaces FIRST to restore the
+			// boundaries. Mirrors scanCoreResponse's spaced pass. (Space-LIKE
+			// separators such as NBSP/en-dash survive ForMatching already; this
+			// covers the zero-width class they do not.)
+			matching := normalize.ForMatching(candidateText)
+			spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(candidateText))
+			if spaced != matching {
+				candidates = append(candidates, seedCandidate{spaced, encoded, spanViewLabel("invisible_spaced", viewLabel)})
+			}
+		}
+		appendInvisibleSpacedSeedCandidate(text, "", ViewForMatching)
 		// URL-decoded variant
 		if decoded := IterativeDecode(seedText); decoded != seedText {
 			candidates = append(candidates, seedCandidate{decoded, "url", spanViewLabel("url_decoded", ViewForMatching)})
+			appendInvisibleSpacedSeedCandidate(decoded, "url", spanViewLabel("url_decoded", ViewForMatching))
 		}
 		// Base64-decoded variant
 		for _, enc := range []*base64.Encoding{
@@ -296,16 +312,22 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
 			if decoded, err := enc.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
-				candidates = append(candidates, seedCandidate{string(decoded), "base64", spanViewLabel("base64_decoded", ViewForMatching)})
+				decodedText := string(decoded)
+				candidates = append(candidates, seedCandidate{decodedText, "base64", spanViewLabel("base64_decoded", ViewForMatching)})
+				appendInvisibleSpacedSeedCandidate(decodedText, "base64", spanViewLabel("base64_decoded", ViewForMatching))
 			}
 		}
 		// Hex-decoded variant
 		if decoded, err := hex.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
-			candidates = append(candidates, seedCandidate{string(decoded), "hex", spanViewLabel("hex_decoded", ViewForMatching)})
+			decodedText := string(decoded)
+			candidates = append(candidates, seedCandidate{decodedText, "hex", spanViewLabel("hex_decoded", ViewForMatching)})
+			appendInvisibleSpacedSeedCandidate(decodedText, "hex", spanViewLabel("hex_decoded", ViewForMatching))
 		}
 		// Base32-decoded variant
 		if decoded, err := base32.StdEncoding.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
-			candidates = append(candidates, seedCandidate{string(decoded), "base32", spanViewLabel("base32_decoded", ViewForMatching)})
+			decodedText := string(decoded)
+			candidates = append(candidates, seedCandidate{decodedText, "base32", spanViewLabel("base32_decoded", ViewForMatching)})
+			appendInvisibleSpacedSeedCandidate(decodedText, "base32", spanViewLabel("base32_decoded", ViewForMatching))
 		}
 		// Segment-level decoding: split on the same delimiters as decodeTextSegments()
 		// to maintain parity. Catches encoded seed phrases embedded in URLs within
@@ -317,6 +339,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 			}
 			for _, d := range decodeEncodings(seg) {
 				candidates = append(candidates, seedCandidate{d.text, d.encoding, spanViewLabel(d.encoding+"_decoded", "text_segment")})
+				appendInvisibleSpacedSeedCandidate(d.text, d.encoding, spanViewLabel(d.encoding+"_decoded", "text_segment"))
 			}
 		}
 		for _, c := range candidates {

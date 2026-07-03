@@ -451,8 +451,7 @@ func implausibleReloadTeardownReasons(oldCfg, newCfg *config.Config) []string {
 		reasons = append(reasons, "dlp.patterns emptied")
 	}
 	if oldCfg.BehavioralBaseline.Enabled && newCfg.BehavioralBaseline.Enabled &&
-		oldCfg.BehavioralBaseline.DeviationAction == config.ActionBlock &&
-		newCfg.BehavioralBaseline.DeviationAction != config.ActionBlock {
+		config.ActionDowngraded(oldCfg.BehavioralBaseline.DeviationAction, newCfg.BehavioralBaseline.DeviationAction) {
 		reasons = append(reasons, "behavioral_baseline.deviation_action downgraded")
 	}
 

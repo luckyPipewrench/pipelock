@@ -158,6 +158,12 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 
 	// Primary: drop invisible chars, then normalize. Catches mid-word ZW insertion
 	// where the attacker splits a keyword: "igno\u200bre" → "ignore" (detected).
+	// Capture the pre-strip (post-excise) content FIRST so the Secondary spaced
+	// pass can reassemble word boundaries from text that still contains the
+	// invisibles. Running ReplaceInvisibleWithSpace on the already-stripped
+	// content below would be a no-op (nothing left to replace) and silently
+	// disable the pass - see scanCoreResponse, which reassembles from `original`.
+	preStripContent := content
 	content = normalize.ForMatching(content)
 	matchContent := content
 
@@ -175,8 +181,12 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	// word-boundary collapse where the attacker uses ZW instead of space:
 	// "ignore\u200ball" → ForMatching drops ZW → "ignoreall" (bypass).
 	// Replacing with space first → "ignore all" → regex `ignore\s+all` matches.
+	// Reassemble from preStripContent (invisibles intact), NOT content (already
+	// stripped): config patterns with literal inter-word spaces ("you are now")
+	// have no other surviving defense because the opt-space pass only relaxes
+	// trailing \s+, not literal spaces inside the alternation.
 	if len(matches) == 0 {
-		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(content))
+		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(preStripContent))
 		if spaced != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, s.matchResponsePatternsPreFiltered(spaced)), ViewInvisibleSpaced))
 			if len(matches) > 0 {
@@ -789,6 +799,12 @@ func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string) respo
 	normalized := normalize.ForMatching(decoded)
 	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized)); len(matches) > 0 {
 		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
+	}
+	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(decoded))
+	if spaced != normalized {
+		if matches := filterDefensiveCredentialSolicitationMatches(spaced, matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, spaced)); len(matches) > 0 {
+			return responseMatchSet{matches: withResponseSpans(matches, spanViewLabel("invisible_spaced", decodedViewLabel)), content: spaced}
+		}
 	}
 	if len(s.responseOptSpacePatterns) > 0 {
 		if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized)); len(matches) > 0 {

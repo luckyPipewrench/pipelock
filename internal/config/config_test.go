@@ -5060,6 +5060,196 @@ func TestValidate_MCPToolPolicyRuleInvalidPerRuleAction(t *testing.T) {
 	}
 }
 
+func TestValidate_StructuralValidators(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rule    ToolPolicyRule
+		wantErr string
+	}{
+		{
+			name: "arg_key structural without arg_pattern is valid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^amount$",
+				ArgNumberGT: testJSONNumberPtr("10000"),
+			},
+		},
+		{
+			name: "structural without arg_key is invalid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgNumberGT: testJSONNumberPtr("10000"),
+			},
+			wantErr: "structural argument validators but no arg_key",
+		},
+		{
+			name: "invalid arg_type",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^amount$",
+				ArgType:     "float",
+			},
+			wantErr: `invalid arg_type "float"`,
+		},
+		{
+			name: "invalid arg_number_gt",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^amount$",
+				ArgNumberGT: testJSONNumberPtr("not-a-number"),
+			},
+			wantErr: `invalid arg_number_gt "not-a-number"`,
+		},
+		{
+			name: "invalid arg_number_lt",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^amount$",
+				ArgNumberLT: testJSONNumberPtr("1e10001"),
+			},
+			wantErr: `invalid arg_number_lt "1e10001"`,
+		},
+		{
+			name: "unsatisfiable numeric range",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^amount$",
+				ArgNumberGT: testJSONNumberPtr("10"),
+				ArgNumberLT: testJSONNumberPtr("10"),
+			},
+			wantErr: "unsatisfiable numeric range",
+		},
+		{
+			name: "numeric bound with string type",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^amount$",
+				ArgType:     "string",
+				ArgNumberGT: testJSONNumberPtr("10"),
+			},
+			wantErr: `arg_type "string" with numeric bounds`,
+		},
+		{
+			name: "numeric bound with integer type is valid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^amount$",
+				ArgType:     "integer",
+				ArgNumberGT: testJSONNumberPtr("10"),
+				ArgNumberLT: testJSONNumberPtr("100"),
+			},
+		},
+		{
+			name: "arg_value_in with arg_key is valid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^currency$",
+				ArgValueIn:  []string{"BTC", "ETH"},
+			},
+		},
+		{
+			name: "arg_value_in without arg_key is invalid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgValueIn:  []string{"BTC"},
+			},
+			wantErr: "structural argument validators but no arg_key",
+		},
+		{
+			name: "negative arg_len_lt",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^path$",
+				ArgLenLT:    testIntPtr(-1),
+			},
+			wantErr: "invalid arg_len_lt -1",
+		},
+		{
+			name: "unsatisfiable length range",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^path$",
+				ArgLenGT:    testIntPtr(5),
+				ArgLenLT:    testIntPtr(5),
+			},
+			wantErr: "unsatisfiable length range",
+		},
+		{
+			name: "length bound with number type",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^path$",
+				ArgType:     "number",
+				ArgLenGT:    testIntPtr(3),
+			},
+			wantErr: `arg_type "number" with length bounds`,
+		},
+		{
+			name: "length bound with array type is valid",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^items$",
+				ArgType:     "array",
+				ArgLenGT:    testIntPtr(3),
+			},
+		},
+		{
+			name: "negative length bound",
+			rule: ToolPolicyRule{
+				Name:        "structural",
+				ToolPattern: "^transfer$",
+				ArgKey:      "^path$",
+				ArgLenGT:    testIntPtr(-1),
+			},
+			wantErr: "invalid arg_len_gt -1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.MCPToolPolicy.Enabled = true
+			cfg.MCPToolPolicy.Action = ActionBlock
+			cfg.MCPToolPolicy.Rules = []ToolPolicyRule{tc.rule}
+
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() err = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() err = nil, want substring %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() err = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func testJSONNumberPtr(value string) *json.Number {
+	n := json.Number(value)
+	return &n
+}
+
+func testIntPtr(value int) *int {
+	return &value
+}
+
 func TestValidateReload_MCPToolPolicyDisabled(t *testing.T) {
 	old := Defaults()
 	old.MCPToolPolicy.Enabled = true

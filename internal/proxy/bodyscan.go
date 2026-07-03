@@ -844,8 +844,8 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 		// Decode Content-Transfer-Encoding before scanning. Go's
 		// multipart.Reader does NOT decode CTE, so base64/QP content
 		// reaches the scanner as raw encoded text. Decode it so DLP
-		// patterns match the actual secret. If decoding fails, scan raw
-		// (fail-closed: don't skip, raw scan still catches plaintext).
+		// patterns match the actual secret. If decoding fails, block:
+		// raw encoded bytes are not a complete inspection of the content.
 		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
 		rawBody := string(partBody)
 		switch cte {
@@ -859,24 +859,26 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 				return r
 			}, rawBody)
 			decoded, err := base64.StdEncoding.DecodeString(cleaned)
-			if err == nil {
-				// Scan BOTH decoded (catches actual secrets) and raw
-				// (catches patterns visible in encoded form).
-				result = append(result, string(decoded))
+			if err != nil {
+				return nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
-			// Always scan raw form too - fail-closed on decode failure,
-			// and catches patterns visible in encoded form.
+			// Scan BOTH decoded (catches actual secrets) and raw
+			// (catches patterns visible in encoded form).
+			result = append(result, string(decoded))
 			result = append(result, rawBody)
 		case "quoted-printable":
 			decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(partBody)))
-			if err == nil {
-				result = append(result, string(decoded))
+			if err != nil {
+				return nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
+			result = append(result, string(decoded))
 			result = append(result, rawBody)
-		default:
+		case "", "7bit", "8bit", "binary":
 			if len(partBody) > 0 {
 				result = append(result, rawBody)
 			}
+		default:
+			return nil, fmt.Sprintf("unsupported multipart part content-transfer-encoding %q", cte)
 		}
 
 		// Include field name and filename in extracted text (can carry exfil data).

@@ -408,6 +408,8 @@ response_scanning:
       regex: '(?i)(treat|consider|regard|reinterpret|downgrade)\s+((?:the|all)\s+)?(previous|prior|above|earlier|system|policy|original|existing)\s+(\w+\s+)?(text|instructions?|rules|directives|guidelines|safeguards|constraints|controls|checks|context|prompt|policies|guardrails|parameters)\s+((as|to)\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)'
     - name: "Priority Override"
       regex: '(?i)prioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)'
+    - name: "Markdown Link Credential Exfiltration"
+      regex: '(?is)\b(?:collect|copy|paste|include|append|put|send|upload|post|exfiltrat\w*|leak)\b.{0,80}\b(?:api[_ -]?keys?|tokens?|secrets?|credentials?|passwords?|session[_ -]?secrets?)\b.{0,160}\[[^\]\n]{1,120}\]\(\s*https?://[^)\s]+'
 
 mcp_input_scanning:
   enabled: true

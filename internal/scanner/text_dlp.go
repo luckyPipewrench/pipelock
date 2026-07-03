@@ -8,6 +8,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"html"
 	"net/url"
 	"regexp"
 	"strings"
@@ -392,6 +393,10 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 		matches = append(matches, s.matchDLPPatterns(decoded, "url")...)
 	}
 
+	if decoded := decodeHTMLEntities(cleaned); decoded != cleaned {
+		matches = append(matches, s.matchDLPPatterns(decoded, encodingHTML)...)
+	}
+
 	// Dot-collapse check: catches secrets split across DNS subdomains
 	// (e.g. "sk-ant-api03.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03AABBCCDDEEFFGGHH...").
 	// Only applied when text contains dots that could be subdomain separators.
@@ -560,6 +565,13 @@ func textDLPEncodingSegmentViews(cleaned string) []spanTextView {
 		})
 	}
 	return views
+}
+
+func decodeHTMLEntities(text string) string {
+	if !strings.Contains(text, "&") {
+		return text
+	}
+	return html.UnescapeString(text)
 }
 
 // checkSecretsInText scans text for leaked secrets (env vars or file-based).

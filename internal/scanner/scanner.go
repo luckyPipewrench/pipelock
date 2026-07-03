@@ -1462,6 +1462,7 @@ const (
 	encodingBase64 = "base64"
 	encodingBase32 = "base32"
 	encodingURL    = "url"
+	encodingHTML   = "html_entity"
 )
 
 const (
@@ -2708,6 +2709,9 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 			for _, v := range values {
 				if len(v) >= s.entropyMinLen {
 					entropy := ShannonEntropy(v)
+					if shouldSkipQueryValueEntropy(v, entropy, s.entropyThreshold) {
+						continue
+					}
 					if entropy > s.entropyThreshold {
 						return Result{
 							Allowed: false,
@@ -2722,6 +2726,88 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	}
 
 	return Result{Allowed: true}
+}
+
+func shouldSkipQueryValueEntropy(value string, entropy, threshold float64) bool {
+	if entropy <= threshold || entropy > threshold+0.35 {
+		return false
+	}
+	if isCredentiallessDatabaseURI(value) {
+		return true
+	}
+	return isHumanReadableHyphenatedQueryValue(value)
+}
+
+func isCredentiallessDatabaseURI(value string) bool {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "postgres", "postgresql", "mysql", "mongodb", "mongodb+srv", "redis", "rediss":
+		return true
+	default:
+		return false
+	}
+}
+
+func isHumanReadableHyphenatedQueryValue(value string) bool {
+	if !strings.Contains(value, "-") || strings.ContainsAny(value, "_+/=") {
+		return false
+	}
+	parts := strings.Split(value, "-")
+	if len(parts) < 3 {
+		return false
+	}
+	wordParts := 0
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if isYearLike(part) {
+			continue
+		}
+		if !isReadableLowerWord(part) {
+			return false
+		}
+		wordParts++
+	}
+	return wordParts >= 3
+}
+
+func isYearLike(part string) bool {
+	if len(part) != 4 {
+		return false
+	}
+	for _, r := range part {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isReadableLowerWord(part string) bool {
+	if len(part) < 3 || len(part) > 12 {
+		return false
+	}
+	hasVowel := false
+	consonantRun := 0
+	for _, r := range part {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+		if strings.ContainsRune("aeiouy", r) {
+			hasVowel = true
+			consonantRun = 0
+			continue
+		}
+		consonantRun++
+		if consonantRun > 4 {
+			return false
+		}
+	}
+	return hasVowel
 }
 
 // ShannonEntropy calculates the Shannon entropy of a string in bits per character.

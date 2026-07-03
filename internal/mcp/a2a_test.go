@@ -264,6 +264,8 @@ func TestIsA2AMethod(t *testing.T) {
 		want   bool
 	}{
 		{"SendMessage", true},
+		{"message/send", true},
+		{"message/stream", true},
 		{"SendStreamingMessage", true},
 		{"GetTask", true},
 		{"ListTasks", true},

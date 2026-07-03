@@ -1818,6 +1818,46 @@ func TestScan_EntropyInQueryParam(t *testing.T) {
 	}
 }
 
+func TestScan_QueryEntropyAllowsCredentiallessDSNExample(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://docs.example.com/guide?example=postgres://localhost:5432/mydb")
+	if !result.Allowed {
+		t.Fatalf("credential-less DSN example should not trip entropy: %s", result.Reason)
+	}
+}
+
+func TestScan_QueryEntropyAllowsReadableHyphenatedSearch(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://example.com/search?q=glance-2026-summary-report-final")
+	if !result.Allowed {
+		t.Fatalf("readable hyphenated search phrase should not trip entropy: %s", result.Reason)
+	}
+}
+
+func TestScan_QueryEntropyStillBlocksOpaqueToken(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://example.com/search?q=aB3xK9mQ7pR2wE5tY8uI0oL4")
+	if result.Allowed {
+		t.Fatal("expected compact opaque query token to remain blocked by entropy")
+	}
+	if result.Scanner != ScannerEntropy {
+		t.Fatalf("scanner = %s, want %s", result.Scanner, ScannerEntropy)
+	}
+}
+
 func TestScan_URLWithEncodedCharacters(t *testing.T) {
 	s := New(testConfig())
 	// URL-encoded characters in path - should be treated normally

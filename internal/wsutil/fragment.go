@@ -19,10 +19,11 @@ const (
 
 // FragmentState tracks WebSocket message fragment reassembly.
 type FragmentState struct {
-	Opcode   ws.OpCode
-	buf      bytes.Buffer
-	MaxBytes int
-	Active   bool
+	Opcode                      ws.OpCode
+	buf                         bytes.Buffer
+	MaxBytes                    int
+	Active                      bool
+	AllowUnexpectedContinuation bool
 }
 
 // Process handles fragment reassembly. Returns (complete, message, closeCode, closeReason).
@@ -30,6 +31,13 @@ type FragmentState struct {
 func (f *FragmentState) Process(hdr ws.Header, payload []byte) (complete bool, msg []byte, closeCode ws.StatusCode, closeReason string) {
 	switch {
 	case hdr.OpCode == ws.OpContinuation && !f.Active:
+		if f.AllowUnexpectedContinuation {
+			if len(payload) > f.MaxBytes {
+				return false, nil, ws.StatusMessageTooBig, ReasonMessageTooLarge
+			}
+			f.Opcode = ws.OpText
+			return true, payload, 0, ""
+		}
 		// Unexpected continuation without a started fragment.
 		return false, nil, ws.StatusProtocolError, "unexpected continuation frame"
 

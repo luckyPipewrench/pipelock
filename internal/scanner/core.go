@@ -153,6 +153,10 @@ func coreResponsePatternDefs() []coreResponsePattern {
 			regex: config.CredentialSolicitationRegex,
 		},
 		{
+			name:  "Markdown Link Credential Exfiltration",
+			regex: config.MarkdownLinkCredentialExfilRegex,
+		},
+		{
 			name:  "System Prompt Disclosure",
 			regex: `(?is)\b(output|print|reveal|show|display|dump|return|exfiltrate)\b.{0,80}\b(system\s+prompt|tool\s+definitions?|developer\s+instructions?)\b`,
 		},
@@ -497,6 +501,10 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 	// URL-decoded variant.
 	if decoded := IterativeDecode(cleaned); decoded != cleaned {
 		matches = append(matches, s.matchCoreDLPPatterns(decoded, "url")...)
+	}
+
+	if decoded := decodeHTMLEntities(cleaned); decoded != cleaned {
+		matches = append(matches, s.matchCoreDLPPatterns(decoded, encodingHTML)...)
 	}
 
 	// Subdomain dot-collapse.

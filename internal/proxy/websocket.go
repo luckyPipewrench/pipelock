@@ -1641,7 +1641,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 // clientToUpstream reads frames from client, DLP-scans text, writes to upstream.
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
-	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
+	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg, AllowUnexpectedContinuation: true}
 	var crossMsgTail []byte // rolling tail for cross-message DLP scanning
 	log := r.proxy.logger.With("agent", r.agent)
 	redactionEnabled := r.redaction != nil && r.redaction.required

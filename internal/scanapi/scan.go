@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -17,6 +18,8 @@ import (
 
 // jsonNull is the literal JSON null, used to detect nil-equivalent RawMessage values.
 const jsonNull = "null"
+
+var embeddedHTTPURLTokenRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>\\]+`)
 
 // executeScan dispatches to the appropriate scanner for the requested kind.
 // Returns both the response body and the HTTP status code.
@@ -75,6 +78,7 @@ func (h *Handler) scanDLP(ctx context.Context, sc *scanner.Scanner, req *Request
 	}
 
 	result := sc.ScanTextForDLP(ctx, req.Input.Text)
+	urlResult, hasURLFinding := scanEmbeddedTextURLs(ctx, sc, req.Input.Text)
 
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
@@ -85,13 +89,35 @@ func (h *Handler) scanDLP(ctx context.Context, sc *scanner.Scanner, req *Request
 		Kind:   req.Kind,
 		ScanID: generateScanID(),
 	}
-	if result.Clean {
+	if result.Clean && !hasURLFinding {
 		resp.Decision = DecisionAllow
 	} else {
 		resp.Decision = DecisionDeny
-		resp.Findings = dlpFindings(result, req.Options)
+		if !result.Clean {
+			resp.Findings = append(resp.Findings, dlpFindings(result, req.Options)...)
+		}
+		if hasURLFinding {
+			resp.Findings = append(resp.Findings, urlFindings(urlResult)...)
+		}
 	}
 	return resp, http.StatusOK
+}
+
+func scanEmbeddedTextURLs(ctx context.Context, sc *scanner.Scanner, text string) (scanner.Result, bool) {
+	for _, raw := range embeddedHTTPURLTokenRe.FindAllString(text, -1) {
+		token := strings.TrimRight(raw, ".,;)]}")
+		if token == "" {
+			continue
+		}
+		result := sc.Scan(ctx, token)
+		if err := ctx.Err(); err != nil {
+			return scanner.Result{}, false
+		}
+		if !result.Allowed {
+			return result, true
+		}
+	}
+	return scanner.Result{}, false
 }
 
 func (h *Handler) scanPromptInjection(ctx context.Context, sc *scanner.Scanner, req *Request) (Response, int) {

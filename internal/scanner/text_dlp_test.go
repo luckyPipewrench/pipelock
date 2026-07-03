@@ -1582,6 +1582,20 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_HTMLEntityEncodedSecret(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.ScanTextForDLP(context.Background(), `<input value="&#65;&#75;&#73;&#65;&#73;&#79;&#83;&#70;&#79;&#68;&#78;&#78;&#55;&#69;&#88;&#65;&#77;&#80;&#76;&#69;">`)
+	if result.Clean {
+		t.Fatal("expected HTML-entity-encoded AWS key to be blocked")
+	}
+	if !hasTextDLPMatch(result.Matches, "AWS Access ID", encodingHTML) {
+		t.Fatalf("expected HTML entity AWS Access ID match, got %+v", result.Matches)
+	}
+}
+
 func TestScanTextForDLP_StackedDecodeFixpoint(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)

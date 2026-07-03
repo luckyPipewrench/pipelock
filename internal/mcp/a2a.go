@@ -286,6 +286,10 @@ var a2aMethods = map[string]bool{
 	"ListTaskPushNotificationConfigs":  true,
 	"DeleteTaskPushNotificationConfig": true,
 	"GetExtendedAgentCard":             true,
+	// Current A2A JSON-RPC method names use slash-delimited lowercase
+	// verbs. Keep the legacy CamelCase names above for compatibility.
+	"message/send":   true,
+	"message/stream": true,
 }
 
 // IsA2AMethod returns true if the JSON-RPC method name is an A2A method.
@@ -469,6 +473,7 @@ type A2AProvider struct {
 type A2AAgentCard struct {
 	Name                 string          `json:"name,omitempty"`
 	Description          string          `json:"description,omitempty"`
+	URL                  string          `json:"url,omitempty"`
 	Version              string          `json:"version,omitempty"`
 	DocumentationURL     string          `json:"documentationUrl,omitempty"`
 	IconURL              string          `json:"iconUrl,omitempty"`
@@ -523,6 +528,8 @@ func HashAgentCard(card A2AAgentCard) string {
 	_, _ = h.Write([]byte(card.Name))
 	h.Write([]byte{0})
 	_, _ = h.Write([]byte(card.Description))
+	h.Write([]byte{0})
+	_, _ = h.Write([]byte(card.URL))
 	h.Write([]byte{0})
 
 	// Skills (sorted by ID for determinism)

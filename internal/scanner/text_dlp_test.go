@@ -8,6 +8,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"html"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +36,20 @@ func stackedDLPFixture(secret string, layers int) string {
 			continue
 		}
 		out = base64.StdEncoding.EncodeToString([]byte(out))
+	}
+	return out
+}
+
+func htmlEntityFixture(secret string, layers int) string {
+	var b strings.Builder
+	for _, r := range secret {
+		b.WriteString("&#")
+		b.WriteString(strconv.Itoa(int(r)))
+		b.WriteString(";")
+	}
+	out := b.String()
+	for i := 1; i < layers; i++ {
+		out = html.EscapeString(out)
 	}
 	return out
 }
@@ -1089,6 +1104,32 @@ func TestScanTextForDLP_DecodesDelimiterSplitStructuredPayloadSegment(t *testing
 				t.Fatalf("expected %s %q match, got %+v", tt.wantEnc, testAnthropicName, result.Matches)
 			}
 		})
+	}
+}
+
+func TestScanTextForDLP_DecodesDeepHTMLEntitySecret(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	secret := "AKIA" + strings.Repeat("Q", 16)
+	text := "payload=" + htmlEntityFixture(secret, 6)
+
+	result := s.ScanTextForDLP(context.Background(), text)
+	if result.Clean {
+		t.Fatal("expected deeply HTML-entity-encoded AWS access key to be detected")
+	}
+	if !hasTextDLPMatch(result.Matches, "AWS Access ID", encodingHTML) {
+		t.Fatalf("expected HTML-entity AWS Access ID match, got %+v", result.Matches)
+	}
+}
+
+func TestDecodeHTMLEntitiesSingleEncodedResolvesInOnePass(t *testing.T) {
+	decoded, passes := decodeHTMLEntitiesWithPassCount("safe &amp; sound")
+	if decoded != "safe & sound" {
+		t.Fatalf("decoded = %q, want %q", decoded, "safe & sound")
+	}
+	if passes != 1 {
+		t.Fatalf("passes = %d, want 1", passes)
 	}
 }
 

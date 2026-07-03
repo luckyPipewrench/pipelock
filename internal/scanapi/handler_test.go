@@ -622,6 +622,42 @@ func TestScanDLP_EmbeddedURLViewsCatchEscapedAndEncodedSSRF(t *testing.T) {
 	}
 }
 
+func TestScanDLP_DoublePercentEncodedEmbeddedURLBlocks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
+
+	text := `{"uri":"http%253A%252F%252F169.254.169.254%252Flatest%252Fmeta-data%252F"}`
+	payload, err := json.Marshal(Request{Kind: KindDLP, Input: Input{Text: text}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want %q", resp.Decision, DecisionDeny)
+	}
+	if len(resp.Findings) == 0 {
+		t.Fatal("expected embedded URL finding")
+	}
+	if resp.Findings[0].RuleID != "URL-ssrf_metadata" {
+		t.Fatalf("RuleID = %q, want URL-ssrf_metadata", resp.Findings[0].RuleID)
+	}
+}
+
 func TestScanDLP_EmbeddedURLIgnoresInfrastructureOnlyFailure(t *testing.T) {
 	if embeddedURLResultIsFinding(scanner.Result{Allowed: false, Class: scanner.ClassInfrastructureError}) {
 		t.Fatal("infrastructure-only URL scan failures should not become DLP findings")

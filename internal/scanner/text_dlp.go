@@ -568,18 +568,25 @@ func textDLPEncodingSegmentViews(cleaned string) []spanTextView {
 }
 
 func decodeHTMLEntities(text string) string {
+	decoded, _ := decodeHTMLEntitiesWithPassCount(text)
+	return decoded
+}
+
+func decodeHTMLEntitiesWithPassCount(text string) (string, int) {
 	if !strings.Contains(text, "&") {
-		return text
+		return text, 0
 	}
 	decoded := text
-	for range 4 {
+	passes := 0
+	for range 16 {
 		next := html.UnescapeString(decoded)
 		if next == decoded {
-			return decoded
+			return decoded, passes
 		}
+		passes++
 		decoded = next
 	}
-	return decoded
+	return decoded, passes
 }
 
 // checkSecretsInText scans text for leaked secrets (env vars or file-based).

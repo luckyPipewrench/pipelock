@@ -233,7 +233,10 @@ const (
 	// JSON-object encodings (`eyA`, `ew[o/k/0]`, `e30`, `e30=`), so compact
 	// JWTs with whitespace or empty claims are not dropped. See
 	// TestTextDLP_DottedTokenPatterns.
-	goldenHashDefaults = "0c8208c1e050a6bf3f2d578ad353a101fcf905b3c27255c047a3f236433bac69"
+	// Re-bumped for Markdown Link Credential Exfiltration, which extends the
+	// response-injection defaults from image-only markdown exfil to ordinary
+	// markdown links that solicit credentials.
+	goldenHashDefaults = "604f9e094b8fe6d3713c0db399b662a70da8fb113fbb52e9cea9c5fa84150ed6"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -345,7 +348,10 @@ const (
 	// ToolPolicyRule fields are policy-semantic even when zero-valued because
 	// non-zero values change tool-call decisions.
 	// Re-bumped for defer.max_cascade_depth: see goldenHashDefaults note above.
-	goldenHashRichConfig = "873f7742304ad83946f53a32e69b15b0cd58dc5cbbd7d05534b836155b8fe633"
+	// Re-bumped for Markdown Link Credential Exfiltration: see goldenHashDefaults
+	// note above; the rich fixture inherits the default response-scanning pattern
+	// set, so the hash shifts in lockstep.
+	goldenHashRichConfig = "edf802b9962e6fe230c45496133ef14bf4c0122ce2da238c38eaa25636794151"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

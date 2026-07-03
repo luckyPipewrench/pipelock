@@ -2194,7 +2194,7 @@ func TestWSProxy_UnexpectedContinuationDLPContributesToCrossMessageTail(t *testi
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }() // test
 
 	prefix := "AKIA" + "IOSFODNN7"
 	suffix := testWSExample

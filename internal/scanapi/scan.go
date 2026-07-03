@@ -22,6 +22,8 @@ const jsonNull = "null"
 
 var embeddedHTTPURLTokenRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>\\]+`)
 
+const maxEmbeddedURLPercentDecodePasses = 3
+
 // executeScan dispatches to the appropriate scanner for the requested kind.
 // Returns both the response body and the HTTP status code.
 // 200 = completed (allow or deny), 503 = retryable failure, 500 = internal error.
@@ -146,10 +148,17 @@ func embeddedURLTextViews(text string) []string {
 		}
 	}
 	addView(text)
-	if strings.Contains(text, "%") {
-		if decoded, err := url.QueryUnescape(text); err == nil && decoded != text {
-			addView(decoded)
+	percentDecoded := text
+	for range maxEmbeddedURLPercentDecodePasses {
+		if !strings.Contains(percentDecoded, "%") {
+			break
 		}
+		decoded, err := url.QueryUnescape(percentDecoded)
+		if err != nil || decoded == percentDecoded {
+			break
+		}
+		addView(decoded)
+		percentDecoded = decoded
 	}
 	return views
 }

@@ -16,9 +16,15 @@ type cascadeAdmission struct {
 	policy deferred.ReceiptPolicy
 }
 
+type cascadeResolution struct {
+	index  int
+	depth  int
+	parent string
+}
+
 func lintDeferredCascadeReceipts(receipts []actionreceipt.Receipt) error {
 	admissions := make(map[string]cascadeAdmission)
-	resolutionDepths := make(map[string]int)
+	resolutions := make(map[string]cascadeResolution)
 	for i, rcpt := range receipts {
 		ar := rcpt.ActionRecord
 		if ar.DeferID == "" {
@@ -45,14 +51,39 @@ func lintDeferredCascadeReceipts(receipts []actionreceipt.Receipt) error {
 			if !parentFound || parentAdmission.index >= i {
 				return fmt.Errorf("defer cascade lint: resolution %q references missing earlier parent admission %q", ar.DeferID, cascade.ParentDeferID)
 			}
-			if parentDepth, parentResolved := resolutionDepths[cascade.ParentDeferID]; parentResolved && cascade.CascadeDepth != parentDepth+1 {
-				return fmt.Errorf("defer cascade lint: resolution %q depth %d does not equal parent %q depth %d + 1", ar.DeferID, cascade.CascadeDepth, cascade.ParentDeferID, parentDepth)
-			}
+		}
+		if cascade.CascadeDepth <= 0 {
+			return fmt.Errorf("defer cascade lint: resolution %q has invalid cascade depth %d", ar.DeferID, cascade.CascadeDepth)
+		}
+		if cascade.ParentDeferID == "" && cascade.CascadeDepth != 1 {
+			return fmt.Errorf("defer cascade lint: resolution %q root depth %d does not equal 1", ar.DeferID, cascade.CascadeDepth)
+		}
+		if cascade.Linkage != "" && cascade.Linkage != deferred.LinkageSessionPendingAncestor {
+			return fmt.Errorf("defer cascade lint: resolution %q has unsupported cascade linkage %q", ar.DeferID, cascade.Linkage)
 		}
 		if admission.policy.Bounds.MaxCascadeDepth > 0 && cascade.CascadeDepth > admission.policy.Bounds.MaxCascadeDepth {
 			return fmt.Errorf("defer cascade lint: resolution %q depth %d exceeds admission max_cascade_depth %d", ar.DeferID, cascade.CascadeDepth, admission.policy.Bounds.MaxCascadeDepth)
 		}
-		resolutionDepths[ar.DeferID] = cascade.CascadeDepth
+		if prior, exists := resolutions[ar.DeferID]; exists {
+			return fmt.Errorf("defer cascade lint: resolution %q has duplicate cascade resolution at receipts %d and %d", ar.DeferID, prior.index, i)
+		}
+		resolutions[ar.DeferID] = cascadeResolution{
+			index:  i,
+			depth:  cascade.CascadeDepth,
+			parent: cascade.ParentDeferID,
+		}
+	}
+	for deferID, resolution := range resolutions {
+		if resolution.parent == "" {
+			continue
+		}
+		parent, found := resolutions[resolution.parent]
+		if !found {
+			return fmt.Errorf("defer cascade lint: resolution %q references parent %q without a cascade resolution", deferID, resolution.parent)
+		}
+		if resolution.depth != parent.depth+1 {
+			return fmt.Errorf("defer cascade lint: resolution %q depth %d does not equal parent %q depth %d + 1", deferID, resolution.depth, resolution.parent, parent.depth)
+		}
 	}
 	return nil
 }

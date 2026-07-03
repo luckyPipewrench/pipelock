@@ -67,8 +67,49 @@ func TestLintDeferredCascadeReceipts(t *testing.T) {
 			want:     "does not equal parent",
 		},
 		{
+			name:     "child before parent depth mismatch",
+			receipts: []receipt.Receipt{admit("parent"), admit("child"), resolve("child", "parent", 3), resolve("parent", "", 1)},
+			want:     "does not equal parent",
+		},
+		{
+			name:     "missing parent resolution",
+			receipts: []receipt.Receipt{admit("parent"), admit("child"), resolve("child", "parent", 2)},
+			want:     "without a cascade resolution",
+		},
+		{
+			name:     "invalid zero depth",
+			receipts: []receipt.Receipt{admit("child"), resolve("child", "", 0)},
+			want:     "invalid cascade depth",
+		},
+		{
+			name:     "invalid root depth",
+			receipts: []receipt.Receipt{admit("child"), resolve("child", "", 2)},
+			want:     "root depth",
+		},
+		{
+			name: "unsupported linkage",
+			receipts: []receipt.Receipt{admit("child"), {ActionRecord: receipt.ActionRecord{
+				DeferID:       "child",
+				DecisionPhase: receipt.DecisionPhaseResolution,
+				ResolutionPolicy: deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{
+					Bounds: bounds,
+					Cascade: &deferred.ReceiptCascade{
+						CascadeDepth: 1,
+						Linkage:      "unknown_linkage",
+					},
+				}),
+			}}},
+			want: "unsupported cascade linkage",
+		},
+		{
+			name:     "duplicate cascade resolution",
+			receipts: []receipt.Receipt{admit("child"), resolve("child", "", 1), resolve("child", "", 1)},
+			want:     "duplicate cascade resolution",
+		},
+		{
 			name: "depth exceeds bound",
 			receipts: []receipt.Receipt{
+				admit("parent"),
 				{ActionRecord: receipt.ActionRecord{
 					DeferID:       "child",
 					DecisionPhase: receipt.DecisionPhaseDefer,
@@ -76,7 +117,8 @@ func TestLintDeferredCascadeReceipts(t *testing.T) {
 						MaxCascadeDepth: 1,
 					}, config.DeferResolutionPolicy{}),
 				}},
-				resolve("child", "", 2),
+				resolve("parent", "", 1),
+				resolve("child", "parent", 2),
 			},
 			want: "exceeds admission max_cascade_depth",
 		},

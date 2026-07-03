@@ -7,6 +7,7 @@ package dashboard
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -20,9 +21,14 @@ const (
 
 // Options configures the read-only Evidence dashboard.
 type Options struct {
-	ReceiptDir       string
-	TrustedKeys      map[string]TrustedKey
-	HasFeature       func(string) bool
+	ReceiptDir  string
+	TrustedKeys map[string]TrustedKey
+	HasFeature  func(string) bool
+	// Authorize, when non-nil, runs per request after the license-feature check
+	// and fails the request closed (403) on a non-nil error. It is the handler's
+	// authentication/authorization seam, distinct from the license entitlement
+	// check. Nil means the surrounding router must own authentication.
+	Authorize        func(*http.Request) error
 	ReceiptReadLimit int
 	TimelineLimit    int
 }

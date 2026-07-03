@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -246,6 +247,40 @@ func TestHandler_AbsenceRender(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q: %s", want, body)
 		}
+	}
+}
+
+func TestHandler_AuthorizeFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+
+	// A rejecting authorizer must fail closed even when the feature is present.
+	denied := New(Options{
+		ReceiptDir: dir,
+		HasFeature: allowAgentsFeature,
+		Authorize:  func(*http.Request) error { return errors.New("no principal") },
+	})
+	rec := httptest.NewRecorder()
+	denied.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("rejecting Authorize status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if strings.Contains(rec.Body.String(), "Scorecard") {
+		t.Fatal("forbidden response must not contain evidence body")
+	}
+
+	// An accepting authorizer reaches the handler.
+	allowed := New(Options{
+		ReceiptDir: dir,
+		HasFeature: allowAgentsFeature,
+		Authorize:  func(*http.Request) error { return nil },
+	})
+	rec = httptest.NewRecorder()
+	allowed.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("accepting Authorize status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 

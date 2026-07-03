@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+	contentSecurityPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 	contentTypeHTML       = "text/html; charset=utf-8"
 	contentTypeText       = "text/plain; charset=utf-8"
 )
@@ -33,12 +33,21 @@ type pageData struct {
 }
 
 // New returns a read-only HTTP handler for the Enterprise Evidence dashboard.
+//
+// SECURITY: this handler serves sensitive evidence (signed receipt payloads,
+// destinations, block reasons, signer fingerprints, session IDs). The
+// license-feature check is NOT authentication. Mount this handler ONLY on an
+// authenticated, admin-only listener, and never on the agent-reachable proxy
+// port. Set Options.Authorize to enforce an authenticated principal per
+// request; it fails closed when it returns an error. When Authorize is nil the
+// surrounding router MUST provide the authentication boundary.
 func New(opts Options) http.Handler {
 	model := NewReadModel(opts)
 	mux := http.NewServeMux()
 	d := &dashboardHandler{
 		model:      model,
 		hasFeature: opts.HasFeature,
+		authorize:  opts.Authorize,
 	}
 	mux.Handle("/", d.gate(http.HandlerFunc(d.handleIndex)))
 	mux.Handle("/session/", d.gate(http.HandlerFunc(d.handleSession)))
@@ -48,6 +57,7 @@ func New(opts Options) http.Handler {
 type dashboardHandler struct {
 	model      *ReadModel
 	hasFeature func(string) bool
+	authorize  func(*http.Request) error
 }
 
 func (d *dashboardHandler) gate(next http.Handler) http.Handler {
@@ -61,6 +71,16 @@ func (d *dashboardHandler) gate(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte("Pipelock Enterprise agents feature required\n"))
 			return
+		}
+		// Authentication boundary. The license check above is entitlement, not
+		// identity; fail closed when a configured authorizer rejects the request.
+		if d.authorize != nil {
+			if err := d.authorize(r); err != nil {
+				w.Header().Set("Content-Type", contentTypeText)
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("forbidden\n"))
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

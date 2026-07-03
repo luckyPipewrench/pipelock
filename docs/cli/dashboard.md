@@ -28,7 +28,8 @@ pipelock dashboard serve \
   --trusted-signer 'file=/etc/pipelock/receipt-signing.pub,source=ops runbook'
 ```
 
-Then open `http://127.0.0.1:8896/` in a browser. The browser prompts for
+Then open `http://127.0.0.1:8896/` in a browser (`https://` when
+`--tls-cert`/`--tls-key` are set). The browser prompts for
 credentials: enter any username and the token file's contents as the password.
 Automation can send the same token as a bearer header:
 

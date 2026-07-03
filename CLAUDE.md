@@ -90,6 +90,13 @@ go test -tags enterprise -race -count=1 ./...
 
 CI runs lint and tests on **all** code, not just changed files. Run lint before tests: fix lint first, then verify behavior.
 
+The pre-commit lint above is diff-scoped (`--new-from-rev`); CI lints the whole repo. To reproduce CI's full-repo lint locally before a larger change:
+
+```bash
+golangci-lint run ./...
+golangci-lint run --build-tags enterprise ./...
+```
+
 ## Architecture
 
 **Capability separation:** the agent environment (secrets, no direct egress) talks to pipelock (network egress, no agent secrets) which talks to the internet. Three proxy modes on the same port:

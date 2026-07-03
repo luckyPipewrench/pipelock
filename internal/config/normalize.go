@@ -303,6 +303,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Defer.MaxPendingBytes <= 0 {
 		c.Defer.MaxPendingBytes = 1024 * 1024
 	}
+	if c.Defer.MaxCascadeDepth == 0 {
+		c.Defer.MaxCascadeDepth = 8
+	}
 	if c.RequestPolicy.OnParseError == "" {
 		c.RequestPolicy.OnParseError = ActionBlock
 	}

@@ -1,0 +1,77 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package mcp
+
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+)
+
+func TestEmitDeferredResolutionReceiptCarriesCascadePolicy(t *testing.T) {
+	emitter, rec, dir := newTestReceiptEmitter(t)
+	t.Cleanup(func() { _ = rec.Close() })
+
+	opts := MCPProxyOpts{
+		ReceiptEmitter:  emitter,
+		PolicyHash:      "policy-hash",
+		RequireReceipts: true,
+		Transport:       deferred.SurfaceMCPStdio,
+	}
+	var log bytes.Buffer
+	err := EmitDeferredResolutionReceipt(opts, &log, deferred.Resolution{
+		DeferID:          "child-defer",
+		ParentActionID:   "child-action",
+		FinalDecision:    config.ActionBlock,
+		ResolutionSource: deferred.SourceCascade,
+		Authority: deferred.AuthoritySnapshot{
+			SessionID:         "session-a",
+			SessionIDOriginal: "session-a",
+		},
+		ParentDeferID: "parent-defer",
+		CascadeDepth:  2,
+		Linkage:       deferred.LinkageSessionPendingAncestor,
+		Policy: deferred.ResolutionPolicy{
+			Timeout:              2 * time.Second,
+			MaxPending:           64,
+			MaxPendingPerSession: 8,
+			MaxPendingBytes:      1024 * 1024,
+			MaxCascadeDepth:      8,
+		},
+		Target: "neutral_tool",
+		Method: "tools/call",
+		Reason: "policy",
+	})
+	if err != nil {
+		t.Fatalf("EmitDeferredResolutionReceipt: %v log=%q", err, log.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+	recorded := findActionReceiptHTTP(t, readReceiptEntriesHTTP(t, dir)).ActionRecord
+	if recorded.ResolutionSource != deferred.SourceCascade {
+		t.Fatalf("resolution_source = %q, want cascade", recorded.ResolutionSource)
+	}
+	if recorded.DecisionPhase != receipt.DecisionPhaseResolution {
+		t.Fatalf("decision_phase = %q, want resolution", recorded.DecisionPhase)
+	}
+	var policy deferred.ReceiptPolicy
+	if err := json.Unmarshal([]byte(recorded.ResolutionPolicy), &policy); err != nil {
+		t.Fatalf("resolution_policy JSON: %v", err)
+	}
+	if policy.Cascade == nil {
+		t.Fatal("resolution_policy.cascade missing")
+	}
+	if policy.Cascade.ParentDeferID != "parent-defer" ||
+		policy.Cascade.CascadeDepth != 2 ||
+		policy.Cascade.Linkage != deferred.LinkageSessionPendingAncestor ||
+		policy.Bounds.MaxCascadeDepth != 8 {
+		t.Fatalf("resolution_policy = %+v", policy)
+	}
+}

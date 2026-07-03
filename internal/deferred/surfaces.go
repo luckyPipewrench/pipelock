@@ -46,31 +46,31 @@ var surfaceSupport = []SurfaceSupport{
 		Surface:          SurfaceMCPHTTPListener,
 		Status:           StatusNotYetSupported,
 		RejectReason:     "reverse HTTP/SSE clients do not have a portable deferred-response and later-notification resume contract",
-		UnblockCondition: "add a cooperative pending-response protocol with tested later delivery semantics",
+		UnblockCondition: "add a cooperative pending-response protocol with tested later delivery semantics and stable per-session IDs for cascade linkage",
 	},
 	{
 		Surface:          SurfaceMCPWS,
 		Status:           StatusNotYetSupported,
 		RejectReason:     "ordered bidirectional streams need in-order buffering and backpressure before a held frame can resume without reordering",
-		UnblockCondition: "add ordered hold queues with bounded backpressure and no-reorder parity tests",
+		UnblockCondition: "add ordered hold queues with bounded backpressure, no-reorder parity tests, and stable per-session IDs for cascade linkage",
 	},
 	{
 		Surface:          SurfaceForwardProxy,
 		Status:           StatusNotYetSupported,
 		RejectReason:     "the client is blocked on one synchronous response and Pipelock has no later resume path",
-		UnblockCondition: "use a cooperative asynchronous action protocol instead of a synchronous proxy response",
+		UnblockCondition: "use a cooperative asynchronous action protocol instead of a synchronous proxy response, with stable per-session IDs for cascade linkage",
 	},
 	{
 		Surface:          SurfaceCONNECT,
 		Status:           StatusNotYetSupported,
 		RejectReason:     "the client is blocked on one synchronous tunnel decision and Pipelock has no later resume path",
-		UnblockCondition: "use a cooperative asynchronous action protocol instead of a synchronous proxy response",
+		UnblockCondition: "use a cooperative asynchronous action protocol instead of a synchronous proxy response, with stable per-session IDs for cascade linkage",
 	},
 	{
 		Surface:          SurfaceFetch,
 		Status:           StatusNotYetSupported,
 		RejectReason:     "the caller is blocked on one fetch response and Pipelock has no later resume path",
-		UnblockCondition: "use a cooperative asynchronous action protocol instead of a synchronous fetch response",
+		UnblockCondition: "use a cooperative asynchronous action protocol instead of a synchronous fetch response, with stable per-session IDs for cascade linkage",
 	},
 }
 
@@ -86,7 +86,7 @@ func LookupSurface(surface string) SurfaceSupport {
 		Surface:          surface,
 		Status:           StatusNotYetSupported,
 		RejectReason:     "surface is not registered for held-action resume",
-		UnblockCondition: "register the surface with a tested withhold and resume path",
+		UnblockCondition: "register the surface with a tested withhold and resume path plus stable per-session IDs for cascade linkage",
 	}
 }
 

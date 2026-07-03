@@ -23,6 +23,8 @@ import (
 	"time"
 	"unicode"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
@@ -111,7 +113,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMCPToolPolicy(); err != nil {
 		return warnings, err
 	}
-	if err := c.validateDefer(); err != nil {
+	if err := c.validateDefer(&warnings); err != nil {
 		return warnings, err
 	}
 	if err := c.validateGitProtection(); err != nil {
@@ -1137,7 +1139,7 @@ func ParseBoundedJSONNumber(n json.Number) (*big.Rat, bool) {
 	return new(big.Rat).SetFrac(num, den), true
 }
 
-func (c *Config) validateDefer() error {
+func (c *Config) validateDefer(warnings *[]Warning) error {
 	if c.Defer.TimeoutSeconds <= 0 {
 		return fmt.Errorf("defer.timeout_seconds must be positive")
 	}
@@ -1149,6 +1151,49 @@ func (c *Config) validateDefer() error {
 	}
 	if c.Defer.MaxPendingBytes <= 0 {
 		return fmt.Errorf("defer.max_pending_bytes must be positive")
+	}
+	if c.Defer.MaxCascadeDepth < 0 {
+		return fmt.Errorf("defer.max_cascade_depth must be >= 0")
+	}
+	if warnings != nil && !c.Defer.Enabled && c.deferFieldExplicit("max_cascade_depth") {
+		*warnings = append(*warnings, Warning{
+			Field:   "defer.max_cascade_depth",
+			Message: "is set while defer.enabled is false; the cascade-depth bound is inert until defer is enabled",
+		})
+	}
+	return nil
+}
+
+func (c *Config) deferFieldExplicit(field string) bool {
+	if len(c.rawBytes) == 0 {
+		return c.Defer.MaxCascadeDepth != 0
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(c.rawBytes, &root); err != nil {
+		return false
+	}
+	if len(root.Content) == 0 {
+		return false
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return false
+	}
+	deferNode := mappingValue(doc, "defer")
+	if deferNode == nil || deferNode.Kind != yaml.MappingNode {
+		return false
+	}
+	return mappingValue(deferNode, field) != nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
 	}
 	return nil
 }

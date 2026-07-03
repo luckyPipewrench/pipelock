@@ -82,6 +82,11 @@ func TestValidateDeferSettingsRejectInvalidValues(t *testing.T) {
 			mut:  func(c *Config) { c.Defer.MaxPendingBytes = 0 },
 			want: "defer.max_pending_bytes must be positive",
 		},
+		{
+			name: "max cascade depth",
+			mut:  func(c *Config) { c.Defer.MaxCascadeDepth = -1 },
+			want: "defer.max_cascade_depth must be >= 0",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -93,6 +98,116 @@ func TestValidateDeferSettingsRejectInvalidValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeferMaxCascadeDepthDefaultsAndReloadStates(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{
+			name: "omitted",
+			yaml: "mode: balanced\n",
+			want: 8,
+		},
+		{
+			name: "yaml null blank",
+			yaml: "mode: balanced\ndefer:\n  max_cascade_depth:\n",
+			want: 8,
+		},
+		{
+			name: "explicit zero",
+			yaml: "mode: balanced\ndefer:\n  max_cascade_depth: 0\n",
+			want: 8,
+		},
+		{
+			name: "explicit value",
+			yaml: "mode: balanced\ndefer:\n  max_cascade_depth: 5\n",
+			want: 5,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := loadDeferYAML(t, tt.yaml)
+			if cfg.Defer.MaxCascadeDepth != tt.want {
+				t.Fatalf("MaxCascadeDepth = %d, want %d", cfg.Defer.MaxCascadeDepth, tt.want)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipelock.yaml")
+	writeConfigYAML(t, path, "mode: balanced\ndefer:\n  max_cascade_depth: 4\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load initial: %v", err)
+	}
+	if cfg.Defer.MaxCascadeDepth != 4 {
+		t.Fatalf("initial MaxCascadeDepth = %d, want 4", cfg.Defer.MaxCascadeDepth)
+	}
+	writeConfigYAML(t, path, "mode: balanced\ndefer:\n  max_cascade_depth: 6\n")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load changed: %v", err)
+	}
+	if cfg.Defer.MaxCascadeDepth != 6 {
+		t.Fatalf("changed MaxCascadeDepth = %d, want 6", cfg.Defer.MaxCascadeDepth)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load unchanged: %v", err)
+	}
+	if cfg.Defer.MaxCascadeDepth != 6 {
+		t.Fatalf("unchanged MaxCascadeDepth = %d, want 6", cfg.Defer.MaxCascadeDepth)
+	}
+}
+
+func TestValidateDeferMaxCascadeDepthWarnsWhenDisabled(t *testing.T) {
+	cfg := loadDeferYAML(t, "mode: balanced\ndefer:\n  enabled: false\n  max_cascade_depth: 4\n")
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings() error = %v", err)
+	}
+	if !hasDeferWarning(warnings, "defer.max_cascade_depth") {
+		t.Fatalf("warnings = %+v, want defer.max_cascade_depth warning", warnings)
+	}
+
+	cfg = loadDeferYAML(t, "mode: balanced\ndefer:\n  enabled: false\n")
+	warnings, err = cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings() without explicit value error = %v", err)
+	}
+	if hasDeferWarning(warnings, "defer.max_cascade_depth") {
+		t.Fatalf("warnings = %+v, want no max_cascade_depth warning", warnings)
+	}
+}
+
+func loadDeferYAML(t *testing.T, src string) *Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	writeConfigYAML(t, path, src)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q): %v", src, err)
+	}
+	return cfg
+}
+
+func writeConfigYAML(t *testing.T, path, src string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func hasDeferWarning(warnings []Warning, field string) bool {
+	for _, warning := range warnings {
+		if warning.Field == field {
+			return true
+		}
+	}
+	return false
 }
 
 func TestValidateDeferMCPToolPolicyRejectsInvalidResolverProfiles(t *testing.T) {

@@ -430,6 +430,7 @@ func Defaults() *Config {
 			MaxPending:           64,
 			MaxPendingPerSession: 8,
 			MaxPendingBytes:      1024 * 1024,
+			MaxCascadeDepth:      8,
 		},
 		GitProtection: GitProtection{
 			Enabled:         false,

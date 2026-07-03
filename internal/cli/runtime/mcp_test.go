@@ -109,6 +109,7 @@ func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
 	cfg.Defer.MaxPending = 5
 	cfg.Defer.MaxPendingPerSession = 3
 	cfg.Defer.MaxPendingBytes = 2048
+	cfg.Defer.MaxCascadeDepth = 6
 	cfg.FlightRecorder.Dir = t.TempDir()
 	manager := buildDeferManager(cfg)
 	if manager == nil {
@@ -118,7 +119,7 @@ func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
 		t.Fatalf("JournalPath = %q, want %q", got, want)
 	}
 	policy := manager.Policy()
-	if policy.Timeout != 7*time.Second || policy.MaxPending != 5 || policy.MaxPendingPerSession != 3 || policy.MaxPendingBytes != 2048 {
+	if policy.Timeout != 7*time.Second || policy.MaxPending != 5 || policy.MaxPendingPerSession != 3 || policy.MaxPendingBytes != 2048 || policy.MaxCascadeDepth != 6 {
 		t.Fatalf("manager policy = %+v", policy)
 	}
 
@@ -200,7 +201,7 @@ func TestRecoverDeferredActionsBlocksPendingJournal(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	if err := recoverDeferredActions(manager, emitter, nil, "policy-hash", &log); err != nil {
+	if err := recoverDeferredActions(manager, manager.JournalPath(), emitter, nil, "policy-hash", &log); err != nil {
 		t.Fatalf("recoverDeferredActions: %v", err)
 	}
 	pending, err = deferred.PendingJournal(manager.JournalPath())
@@ -213,6 +214,131 @@ func TestRecoverDeferredActionsBlocksPendingJournal(t *testing.T) {
 	if log.String() != "" {
 		t.Fatalf("recovery log = %q, want empty", log.String())
 	}
+}
+
+func TestRecoverDeferredActionsRunsWithoutLiveManager(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Defer.Enabled = true
+	cfg.FlightRecorder.Dir = dir
+	manager := buildDeferManager(cfg)
+	if manager == nil {
+		t.Fatal("buildDeferManager returned nil")
+	}
+	for _, id := range []string{"a", "b"} {
+		if err := manager.Hold(deferred.HeldAction{
+			DeferID:   id,
+			ActionID:  id,
+			Target:    "neutral_tool",
+			Surface:   deferred.SurfaceMCPStdio,
+			Method:    "tools/call",
+			Reason:    "policy",
+			SizeBytes: 1,
+			Authority: deferred.AuthoritySnapshot{
+				SessionID:         "sess",
+				SessionIDOriginal: "sess",
+			},
+			Resolve: func(deferred.Resolution) {},
+		}); err != nil {
+			t.Fatalf("Hold(%s): %v", id, err)
+		}
+	}
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                filepath.Join(dir, "receipts-disabled"),
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "config-hash",
+		Principal:  "local",
+		Actor:      "pipelock",
+	})
+	if emitter == nil {
+		t.Fatal("receipt.NewEmitter returned nil")
+	}
+
+	var log bytes.Buffer
+	if err := recoverDeferredActions(nil, manager.JournalPath(), emitter, nil, "policy-hash", &log); err != nil {
+		t.Fatalf("recoverDeferredActions without manager: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+	pending, err := deferred.PendingJournal(manager.JournalPath())
+	if err != nil {
+		t.Fatalf("PendingJournal after journal-only recovery: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending after journal-only recovery = %d, want 0", len(pending))
+	}
+	records := readRuntimeActionRecords(t, filepath.Join(dir, "receipts-disabled"))
+	if len(records) != 2 {
+		t.Fatalf("recovery receipt count = %d, want 2", len(records))
+	}
+	if records[0].DeferID != "a" || records[1].DeferID != "b" {
+		t.Fatalf("recovery order = %q,%q; want a,b", records[0].DeferID, records[1].DeferID)
+	}
+	for _, record := range records {
+		if record.ResolutionSource != deferred.SourceRestartRecovery {
+			t.Fatalf("resolution_source = %q, want restart_recovery", record.ResolutionSource)
+		}
+	}
+	var childPolicy deferred.ReceiptPolicy
+	if err := json.Unmarshal([]byte(records[1].ResolutionPolicy), &childPolicy); err != nil {
+		t.Fatalf("child recovery resolution_policy JSON: %v", err)
+	}
+	if childPolicy.Cascade == nil {
+		t.Fatal("child recovery resolution_policy.cascade missing")
+	}
+	if childPolicy.Cascade.ParentDeferID != "a" ||
+		childPolicy.Cascade.CascadeDepth != 2 ||
+		childPolicy.Cascade.Linkage != deferred.LinkageSessionPendingAncestor ||
+		childPolicy.Bounds.MaxCascadeDepth != cfg.Defer.MaxCascadeDepth {
+		t.Fatalf("child recovery resolution_policy = %+v, want parent/depth/linkage plus max_cascade_depth %d", childPolicy, cfg.Defer.MaxCascadeDepth)
+	}
+	manager.ResolveAll(config.ActionBlock, deferred.SourceCancel)
+}
+
+func readRuntimeActionRecords(t *testing.T, dir string) []receipt.ActionRecord {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", dir, err)
+	}
+	var records []receipt.ActionRecord
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		batch, err := recorder.ReadEntries(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("ReadEntries(%s): %v", entry.Name(), err)
+		}
+		for _, recEntry := range batch {
+			if recEntry.Type != "action_receipt" {
+				continue
+			}
+			data, err := json.Marshal(recEntry.Detail)
+			if err != nil {
+				t.Fatalf("marshal detail: %v", err)
+			}
+			var rcpt receipt.Receipt
+			if err := json.Unmarshal(data, &rcpt); err != nil {
+				t.Fatalf("unmarshal receipt: %v", err)
+			}
+			records = append(records, rcpt.ActionRecord)
+		}
+	}
+	return records
 }
 
 func TestBuildRedirectRT_WithFetchListen(t *testing.T) {

@@ -4,6 +4,7 @@
 package deferred
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -143,9 +144,10 @@ func TestPolicyStringHelpers(t *testing.T) {
 		MaxPending:           3,
 		MaxPendingPerSession: 2,
 		MaxPendingBytes:      512,
+		MaxCascadeDepth:      4,
 	}
 	got := policy.String()
-	for _, want := range []string{`"max_pending":3`, `"max_pending_per_session":2`, `"max_pending_bytes":512`} {
+	for _, want := range []string{`"max_pending":3`, `"max_pending_per_session":2`, `"max_pending_bytes":512`, `"max_cascade_depth":4`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("ResolutionPolicy.String() = %q, want %s", got, want)
 		}
@@ -159,6 +161,21 @@ func TestPolicyStringHelpers(t *testing.T) {
 			t.Fatalf("ReceiptPolicyString() = %q, want %s", receiptPolicy, want)
 		}
 	}
+	withCascade := ReceiptPolicyStringFor(ReceiptPolicyOptions{
+		Bounds: policy,
+		Cascade: &ReceiptCascade{
+			ParentDeferID: "parent",
+			CascadeDepth:  2,
+			Linkage:       LinkageSessionPendingAncestor,
+		},
+	})
+	var parsed ReceiptPolicy
+	if err := json.Unmarshal([]byte(withCascade), &parsed); err != nil {
+		t.Fatalf("ReceiptPolicyStringFor cascade JSON: %v", err)
+	}
+	if parsed.Cascade == nil || parsed.Cascade.ParentDeferID != "parent" || parsed.Cascade.CascadeDepth != 2 || parsed.Cascade.Linkage != LinkageSessionPendingAncestor {
+		t.Fatalf("parsed cascade policy = %+v", parsed.Cascade)
+	}
 }
 
 func TestManagerDefaultsNilHelpersAndValidation(t *testing.T) {
@@ -167,7 +184,8 @@ func TestManagerDefaultsNilHelpersAndValidation(t *testing.T) {
 	if policy.Timeout != DefaultTimeoutSeconds*time.Second ||
 		policy.MaxPending != DefaultMaxPending ||
 		policy.MaxPendingPerSession != DefaultMaxPendingSession ||
-		policy.MaxPendingBytes != DefaultMaxPendingBytes {
+		policy.MaxPendingBytes != DefaultMaxPendingBytes ||
+		policy.MaxCascadeDepth != DefaultMaxCascadeDepth {
 		t.Fatalf("default policy = %+v", policy)
 	}
 	if m.Enabled() {
@@ -325,14 +343,14 @@ func TestResolvePolicyReloadAllowBlockAndStillHeld(t *testing.T) {
 			ActionID:  "block",
 			Target:    "tool",
 			SizeBytes: 1,
-			Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "orig"},
+			Authority: AuthoritySnapshot{SessionID: "s2", SessionIDOriginal: "orig"},
 		},
 		{
 			DeferID:   "still-held",
 			ActionID:  "still-held",
 			Target:    "tool",
 			SizeBytes: 1,
-			Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "orig"},
+			Authority: AuthoritySnapshot{SessionID: "s3", SessionIDOriginal: "orig"},
 			RulePolicy: config.DeferResolutionPolicy{
 				AllowOn: config.DeferAllowOn{PolicyPermits: true},
 			},
@@ -393,6 +411,476 @@ func TestResolvePolicyReloadErrorBlocks(t *testing.T) {
 	got := <-ch
 	if got.FinalDecision != config.ActionBlock || got.ResolutionSource != SourcePolicyReload {
 		t.Fatalf("reload error resolved %+v, want block policy_reload", got)
+	}
+}
+
+func TestManagerDerivesSessionPendingAncestorLinkage(t *testing.T) {
+	tests := []struct {
+		name    string
+		session string
+	}{
+		{name: "named session", session: "s1"},
+		{name: "empty session group", session: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 8, MaxCascadeDepth: 8})
+			for i, id := range []string{"a", "b", "c"} {
+				if err := m.Hold(HeldAction{
+					DeferID:   id,
+					ActionID:  id,
+					Target:    "tool",
+					SizeBytes: 1,
+					Authority: AuthoritySnapshot{SessionID: tt.session, SessionIDOriginal: tt.session},
+					Resolve:   func(Resolution) {},
+				}); err != nil {
+					t.Fatalf("Hold(%s): %v", id, err)
+				}
+				held, ok := m.Held(id)
+				if !ok {
+					t.Fatalf("Held(%s) missing", id)
+				}
+				if held.CascadeDepth != i+1 || held.Linkage != LinkageSessionPendingAncestor {
+					t.Fatalf("Held(%s) depth/linkage = %d/%q", id, held.CascadeDepth, held.Linkage)
+				}
+			}
+			b, _ := m.Held("b")
+			c, _ := m.Held("c")
+			if b.ParentDeferID != "a" || c.ParentDeferID != "b" {
+				t.Fatalf("parents b=%q c=%q, want a/b", b.ParentDeferID, c.ParentDeferID)
+			}
+		})
+	}
+}
+
+func TestManagerLinkageResetAndCrossSessionIsolation(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 8, MaxCascadeDepth: 8})
+	resolved := make(chan Resolution, 4)
+	hold := func(id, session string) {
+		t.Helper()
+		if err := m.Hold(HeldAction{
+			DeferID:   id,
+			ActionID:  id,
+			Target:    "tool",
+			SizeBytes: 1,
+			Authority: AuthoritySnapshot{SessionID: session, SessionIDOriginal: session},
+			Resolve:   func(res Resolution) { resolved <- res },
+		}); err != nil {
+			t.Fatalf("Hold(%s): %v", id, err)
+		}
+	}
+	hold("a", "s1")
+	hold("b", "s2")
+	b, _ := m.Held("b")
+	if b.ParentDeferID != "" || b.CascadeDepth != 1 {
+		t.Fatalf("cross-session hold linked: %+v", b)
+	}
+	if err := m.Resolve("a", config.ActionAllow, SourceApproval); err != nil {
+		t.Fatalf("Resolve(a): %v", err)
+	}
+	<-resolved
+	hold("c", "s1")
+	c, _ := m.Held("c")
+	if c.ParentDeferID != "" || c.CascadeDepth != 1 {
+		t.Fatalf("reset hold = %+v, want root depth 1", c)
+	}
+}
+
+func TestManagerCascadeLimitDeniesBeforeStateAndJournal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+	m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 8, MaxCascadeDepth: 2, JournalPath: path})
+	for _, id := range []string{"a", "b"} {
+		if err := m.Hold(HeldAction{
+			DeferID:   id,
+			ActionID:  id,
+			Target:    "tool",
+			SizeBytes: 1,
+			Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+			Resolve:   func(Resolution) {},
+		}); err != nil {
+			t.Fatalf("Hold(%s): %v", id, err)
+		}
+	}
+	err := m.Hold(HeldAction{
+		DeferID:   "c",
+		ActionID:  "c",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(Resolution) {},
+	})
+	var limitErr *CascadeLimitError
+	if !errors.Is(err, ErrCascadeLimit) || !errors.As(err, &limitErr) {
+		t.Fatalf("Hold(c) error = %v, want CascadeLimitError", err)
+	}
+	if limitErr.Depth != 3 || limitErr.Limit != 2 || limitErr.ParentDeferID != "b" {
+		t.Fatalf("limit error = %+v", limitErr)
+	}
+	if HoldFailureSource(err) != SourceCascadeLimit {
+		t.Fatalf("HoldFailureSource = %q, want cascade_limit", HoldFailureSource(err))
+	}
+	if _, ok := m.Held("c"); ok {
+		t.Fatal("limit-denied action was held")
+	}
+	pending, journalErr := PendingJournal(path)
+	if journalErr != nil {
+		t.Fatalf("PendingJournal: %v", journalErr)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("pending journal count = %d, want 2", len(pending))
+	}
+}
+
+func TestManagerSequentialRatchetBoundedByCascadeDepth(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 2, MaxCascadeDepth: 3})
+	resolved := make(chan Resolution, 3)
+	hold := func(id string) error {
+		return m.Hold(HeldAction{
+			DeferID:   id,
+			ActionID:  id,
+			Target:    "tool",
+			SizeBytes: 1,
+			Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+			Resolve:   func(res Resolution) { resolved <- res },
+		})
+	}
+	for _, id := range []string{"a", "b"} {
+		if err := hold(id); err != nil {
+			t.Fatalf("Hold(%s): %v", id, err)
+		}
+	}
+	if err := m.Resolve("a", config.ActionAllow, SourceApproval); err != nil {
+		t.Fatalf("Resolve(a): %v", err)
+	}
+	<-resolved
+	if err := hold("c"); err != nil {
+		t.Fatalf("Hold(c): %v", err)
+	}
+	if err := m.Resolve("b", config.ActionAllow, SourceApproval); err != nil {
+		t.Fatalf("Resolve(b): %v", err)
+	}
+	<-resolved
+	err := hold("d")
+	if !errors.Is(err, ErrCascadeLimit) {
+		t.Fatalf("Hold(d) error = %v, want ErrCascadeLimit", err)
+	}
+	if got := len(m.Snapshot()); got != 1 {
+		t.Fatalf("pending count = %d, want 1", got)
+	}
+}
+
+func TestManagerDefaultBurstCompatUsesSessionCapacityBeforeCascadeLimit(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Hour})
+	for i := 0; i < DefaultMaxPendingSession; i++ {
+		id := fmt.Sprintf("d%d", i)
+		if err := m.Hold(HeldAction{
+			DeferID:   id,
+			ActionID:  id,
+			Target:    "tool",
+			SizeBytes: 1,
+			Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+			Resolve:   func(Resolution) {},
+		}); err != nil {
+			t.Fatalf("Hold(%s): %v", id, err)
+		}
+	}
+	err := m.Hold(HeldAction{
+		DeferID:   "overflow",
+		ActionID:  "overflow",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(Resolution) {},
+	})
+	if !errors.Is(err, ErrCapacity) || errors.Is(err, ErrCascadeLimit) {
+		t.Fatalf("overflow error = %v, want capacity only", err)
+	}
+	if HoldFailureSource(err) != SourceCapacity {
+		t.Fatalf("HoldFailureSource = %q, want capacity", HoldFailureSource(err))
+	}
+}
+
+func TestManagerCascadeBlockDescendantsAndAllowDoesNotPropagate(t *testing.T) {
+	t.Run("block cascades descendants", func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 8, MaxCascadeDepth: 8})
+		resolved := make(chan Resolution, 3)
+		for _, id := range []string{"a", "b", "c"} {
+			if err := m.Hold(HeldAction{
+				DeferID:   id,
+				ActionID:  id,
+				Target:    "tool",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+				Resolve:   func(res Resolution) { resolved <- res },
+			}); err != nil {
+				t.Fatalf("Hold(%s): %v", id, err)
+			}
+		}
+		if err := m.Resolve("a", config.ActionBlock, SourceApproval); err != nil {
+			t.Fatalf("Resolve(a): %v", err)
+		}
+		got := map[string]Resolution{}
+		for i := 0; i < 3; i++ {
+			res := <-resolved
+			got[res.DeferID] = res
+		}
+		if got["a"].ResolutionSource != SourceApproval {
+			t.Fatalf("parent source = %q, want approval", got["a"].ResolutionSource)
+		}
+		for _, id := range []string{"b", "c"} {
+			if got[id].FinalDecision != config.ActionBlock || got[id].ResolutionSource != SourceCascade {
+				t.Fatalf("%s resolution = %+v, want block cascade", id, got[id])
+			}
+			if got[id].CascadeDepth == 0 || got[id].Linkage != LinkageSessionPendingAncestor {
+				t.Fatalf("%s linkage fields missing: %+v", id, got[id])
+			}
+		}
+	})
+
+	t.Run("allow leaves child held", func(t *testing.T) {
+		m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 4, MaxPendingPerSession: 4, MaxCascadeDepth: 4})
+		resolved := make(chan Resolution, 2)
+		for _, id := range []string{"a", "b"} {
+			if err := m.Hold(HeldAction{
+				DeferID:   id,
+				ActionID:  id,
+				Target:    "tool",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+				Resolve:   func(res Resolution) { resolved <- res },
+			}); err != nil {
+				t.Fatalf("Hold(%s): %v", id, err)
+			}
+		}
+		if err := m.Resolve("a", config.ActionAllow, SourceApproval); err != nil {
+			t.Fatalf("Resolve(a): %v", err)
+		}
+		if got := <-resolved; got.DeferID != "a" || got.FinalDecision != config.ActionAllow {
+			t.Fatalf("parent resolution = %+v", got)
+		}
+		if _, ok := m.Held("b"); !ok {
+			t.Fatal("child was resolved by parent allow")
+		}
+		if err := m.Resolve("b", config.ActionAllow, SourceApproval); err != nil {
+			t.Fatalf("Resolve(b): %v", err)
+		}
+		if got := <-resolved; got.DeferID != "b" || got.FinalDecision != config.ActionAllow || got.ResolutionSource != SourceApproval {
+			t.Fatalf("child resolution = %+v", got)
+		}
+	})
+}
+
+func TestManagerParentBlockCallbackCannotAllowChildBeforeCascade(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 4, MaxPendingPerSession: 4, MaxCascadeDepth: 4})
+	resolved := make(chan Resolution, 2)
+	if err := m.Hold(HeldAction{
+		DeferID:   "a",
+		ActionID:  "a",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve: func(res Resolution) {
+			if err := m.Resolve("b", config.ActionAllow, SourceApproval); err != nil && !errors.Is(err, ErrNotFound) {
+				t.Errorf("Resolve(b allow) from parent callback: %v", err)
+			}
+			resolved <- res
+		},
+	}); err != nil {
+		t.Fatalf("Hold(a): %v", err)
+	}
+	if err := m.Hold(HeldAction{
+		DeferID:   "b",
+		ActionID:  "b",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(res Resolution) { resolved <- res },
+	}); err != nil {
+		t.Fatalf("Hold(b): %v", err)
+	}
+	if err := m.Resolve("a", config.ActionBlock, SourceApproval); err != nil {
+		t.Fatalf("Resolve(a): %v", err)
+	}
+	got := map[string]Resolution{}
+	for i := 0; i < 2; i++ {
+		res := waitResolution(t, resolved)
+		got[res.DeferID] = res
+	}
+	if got["b"].FinalDecision != config.ActionBlock || got["b"].ResolutionSource != SourceCascade {
+		t.Fatalf("child resolution = %+v, want fail-closed cascade block", got["b"])
+	}
+}
+
+func TestManagerTimeoutAndStepUpCascadeBlockChildren(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		resolved := make(chan Resolution, 2)
+		m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 4, MaxPendingPerSession: 4, MaxCascadeDepth: 4})
+		for _, id := range []string{"a", "b"} {
+			if err := m.Hold(HeldAction{
+				DeferID:   id,
+				ActionID:  id,
+				Target:    "tool",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+				Resolve:   func(res Resolution) { resolved <- res },
+			}); err != nil {
+				t.Fatalf("Hold(%s): %v", id, err)
+			}
+		}
+		if err := m.Resolve("a", config.ActionBlock, SourceTimeout); err != nil {
+			t.Fatalf("Resolve(a timeout): %v", err)
+		}
+		got := map[string]Resolution{}
+		for i := 0; i < 2; i++ {
+			res := waitResolution(t, resolved)
+			got[res.DeferID] = res
+		}
+		if got["a"].ResolutionSource != SourceTimeout || got["b"].ResolutionSource != SourceCascade {
+			t.Fatalf("timeout cascade resolutions = %+v", got)
+		}
+	})
+
+	t.Run("step up", func(t *testing.T) {
+		resolved := make(chan Resolution, 2)
+		m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 4, MaxPendingPerSession: 4, MaxCascadeDepth: 4})
+		for _, action := range []HeldAction{
+			{
+				DeferID:   "a",
+				ActionID:  "a",
+				Target:    "tool",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+				RulePolicy: config.DeferResolutionPolicy{
+					StepUpOn: config.DeferStepUpOn{ApprovalRequestsHuman: true},
+				},
+			},
+			{
+				DeferID:   "b",
+				ActionID:  "b",
+				Target:    "tool",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+			},
+		} {
+			action := action
+			action.Resolve = func(res Resolution) { resolved <- res }
+			if err := m.Hold(action); err != nil {
+				t.Fatalf("Hold(%s): %v", action.DeferID, err)
+			}
+		}
+		if err := m.ResolveApproval("a", config.ActionAsk); err != nil {
+			t.Fatalf("ResolveApproval(a): %v", err)
+		}
+		got := map[string]Resolution{}
+		for i := 0; i < 2; i++ {
+			res := <-resolved
+			got[res.DeferID] = res
+		}
+		if got["a"].FinalDecision != config.ActionAsk || got["b"].ResolutionSource != SourceCascade {
+			t.Fatalf("step-up cascade resolutions = %+v", got)
+		}
+	})
+}
+
+func TestManagerCascadeFixpointCatchesAttachDuringCascade(t *testing.T) {
+	m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 8, MaxCascadeDepth: 8})
+	resolved := make(chan Resolution, 4)
+	for _, id := range []string{"a", "b", "c"} {
+		id := id
+		if err := m.Hold(HeldAction{
+			DeferID:   id,
+			ActionID:  id,
+			Target:    "tool",
+			SizeBytes: 1,
+			Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+			Resolve: func(res Resolution) {
+				if res.DeferID == "b" && res.ResolutionSource == SourceCascade {
+					if err := m.Hold(HeldAction{
+						DeferID:   "d",
+						ActionID:  "d",
+						Target:    "tool",
+						SizeBytes: 1,
+						Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+						Resolve:   func(res Resolution) { resolved <- res },
+					}); err != nil {
+						t.Errorf("Hold(d) during cascade: %v", err)
+					}
+				}
+				resolved <- res
+			},
+		}); err != nil {
+			t.Fatalf("Hold(%s): %v", id, err)
+		}
+	}
+	if err := m.Resolve("a", config.ActionBlock, SourceApproval); err != nil {
+		t.Fatalf("Resolve(a): %v", err)
+	}
+	got := map[string]Resolution{}
+	for i := 0; i < 4; i++ {
+		res := waitResolution(t, resolved)
+		got[res.DeferID] = res
+	}
+	for _, id := range []string{"b", "c", "d"} {
+		if got[id].FinalDecision != config.ActionBlock || got[id].ResolutionSource != SourceCascade {
+			t.Fatalf("%s resolution = %+v, want cascade block", id, got[id])
+		}
+	}
+	if got["d"].ParentDeferID != "c" || got["d"].CascadeDepth != 4 {
+		t.Fatalf("attach-during-cascade child linkage = %+v, want parent c depth 4", got["d"])
+	}
+	if pending := m.Snapshot(); len(pending) != 0 {
+		t.Fatalf("pending after cascade fixpoint = %+v, want none", pending)
+	}
+}
+
+func TestManagerConcurrentResolveAllAndCascadeResolveExactlyOnce(t *testing.T) {
+	for iter := 0; iter < 25; iter++ {
+		m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 16, MaxPendingPerSession: 16, MaxCascadeDepth: 16})
+		resolved := make(chan Resolution, 8)
+		for i := 0; i < 8; i++ {
+			id := fmt.Sprintf("d%d", i)
+			if err := m.Hold(HeldAction{
+				DeferID:   id,
+				ActionID:  id,
+				Target:    "tool",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+				Resolve:   func(res Resolution) { resolved <- res },
+			}); err != nil {
+				t.Fatalf("iter %d Hold(%s): %v", iter, id, err)
+			}
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = m.Resolve("d0", config.ActionBlock, SourceApproval)
+		}()
+		go func() {
+			defer wg.Done()
+			m.ResolveAll(config.ActionBlock, SourceKillSwitch)
+		}()
+		wg.Wait()
+
+		seen := map[string]Resolution{}
+		for i := 0; i < 8; i++ {
+			res := waitResolution(t, resolved)
+			if _, exists := seen[res.DeferID]; exists {
+				t.Fatalf("iter %d duplicate resolution for %s", iter, res.DeferID)
+			}
+			if res.FinalDecision != config.ActionBlock {
+				t.Fatalf("iter %d resolution = %+v, want block", iter, res)
+			}
+			seen[res.DeferID] = res
+		}
+		select {
+		case extra := <-resolved:
+			t.Fatalf("iter %d extra resolution: %+v", iter, extra)
+		default:
+		}
+		if pending := m.Snapshot(); len(pending) != 0 {
+			t.Fatalf("iter %d pending after concurrent resolve = %+v, want none", iter, pending)
+		}
 	}
 }
 
@@ -464,8 +952,11 @@ func TestResolveAllKillSwitchBlocksHeldActions(t *testing.T) {
 	m.ResolveAll(config.ActionBlock, SourceKillSwitch)
 	for i := 0; i < 2; i++ {
 		got := <-ch
-		if got.FinalDecision != config.ActionBlock || got.ResolutionSource != SourceKillSwitch {
-			t.Fatalf("kill switch resolution = %+v, want block kill_switch", got)
+		if got.FinalDecision != config.ActionBlock {
+			t.Fatalf("kill switch resolution = %+v, want block", got)
+		}
+		if got.ResolutionSource != SourceKillSwitch && got.ResolutionSource != SourceCascade {
+			t.Fatalf("kill switch resolution = %+v, want kill_switch or cascade", got)
 		}
 	}
 }
@@ -503,6 +994,52 @@ func TestRecordRestartRecoveryClearsPendingJournal(t *testing.T) {
 		t.Fatalf("pending count after recovery = %d, want 0", len(pending))
 	}
 	_ = m.Resolve("d1", config.ActionBlock, SourceCancel)
+}
+
+func TestPendingJournalRoundTripsCascadeFieldsAndPreUpgradeEntries(t *testing.T) {
+	t.Run("roundtrip cascade fields", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+		m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 4, MaxPendingPerSession: 4, MaxCascadeDepth: 4, JournalPath: path})
+		for _, id := range []string{"a", "b"} {
+			if err := m.Hold(HeldAction{
+				DeferID:   id,
+				ActionID:  id,
+				Target:    "tool",
+				Surface:   SurfaceMCPStdio,
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+				Resolve:   func(Resolution) {},
+			}); err != nil {
+				t.Fatalf("Hold(%s): %v", id, err)
+			}
+		}
+		pending, err := PendingJournal(path)
+		if err != nil {
+			t.Fatalf("PendingJournal: %v", err)
+		}
+		byID := map[string]HeldAction{}
+		for _, held := range pending {
+			byID[held.DeferID] = held
+		}
+		if byID["b"].ParentDeferID != "a" || byID["b"].CascadeDepth != 2 || byID["b"].Linkage != LinkageSessionPendingAncestor {
+			t.Fatalf("roundtripped child = %+v", byID["b"])
+		}
+	})
+
+	t.Run("pre-upgrade entry", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+		line := `{"defer_id":"legacy","action_id":"legacy-action","state":"deferred_held","authority":{"SessionID":"s1","SessionIDOriginal":"s1"},"timestamp":"2026-07-03T00:00:00Z"}` + "\n"
+		if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		pending, err := PendingJournal(path)
+		if err != nil {
+			t.Fatalf("PendingJournal: %v", err)
+		}
+		if len(pending) != 1 || pending[0].CascadeDepth != 0 || pending[0].ParentDeferID != "" || pending[0].Linkage != "" {
+			t.Fatalf("pre-upgrade pending = %+v", pending)
+		}
+	})
 }
 
 func TestPendingJournalEmptyMissingMalformedAndLongLine(t *testing.T) {
@@ -553,6 +1090,7 @@ func TestManagerTimerRace(t *testing.T) {
 		Timeout:              time.Nanosecond,
 		MaxPending:           512,
 		MaxPendingPerSession: 512,
+		MaxCascadeDepth:      512,
 		MaxPendingBytes:      1024 * 1024,
 	})
 	var wg sync.WaitGroup
@@ -584,4 +1122,15 @@ func TestManagerTimerRace(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timer resolutions did not complete")
 	}
+}
+
+func waitResolution(t *testing.T, ch <-chan Resolution) Resolution {
+	t.Helper()
+	select {
+	case res := <-ch:
+		return res
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for deferred resolution")
+	}
+	return Resolution{}
 }

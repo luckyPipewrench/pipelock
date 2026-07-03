@@ -17,24 +17,28 @@ import (
 )
 
 const (
-	StateHeld                = "deferred_held"
-	StateResolving           = "resolving"
-	StateResolvedAllow       = "resolved_allow"
-	StateResolvedBlock       = "resolved_block"
-	StateResolvedStepUp      = "resolved_step_up"
-	SourceContext            = "context"
-	SourceTimeout            = "timeout"
-	SourceCancel             = "cancel"
-	SourceRestartRecovery    = "restart_recovery"
-	SourceKillSwitch         = "kill_switch"
-	SourceCapacity           = "capacity"
-	SourcePolicyReload       = "policy_reload"
-	SourceApproval           = "approval"
-	SourceToolInventory      = "tool_inventory"
-	DefaultTimeoutSeconds    = 2
-	DefaultMaxPending        = 64
-	DefaultMaxPendingSession = 8
-	DefaultMaxPendingBytes   = 1024 * 1024
+	StateHeld                     = "deferred_held"
+	StateResolving                = "resolving"
+	StateResolvedAllow            = "resolved_allow"
+	StateResolvedBlock            = "resolved_block"
+	StateResolvedStepUp           = "resolved_step_up"
+	SourceContext                 = "context"
+	SourceTimeout                 = "timeout"
+	SourceCancel                  = "cancel"
+	SourceRestartRecovery         = "restart_recovery"
+	SourceKillSwitch              = "kill_switch"
+	SourceCapacity                = "capacity"
+	SourceCascade                 = "cascade"
+	SourceCascadeLimit            = "cascade_limit"
+	SourcePolicyReload            = "policy_reload"
+	SourceApproval                = "approval"
+	SourceToolInventory           = "tool_inventory"
+	LinkageSessionPendingAncestor = "session_pending_ancestor"
+	DefaultTimeoutSeconds         = 2
+	DefaultMaxPending             = 64
+	DefaultMaxPendingSession      = 8
+	DefaultMaxPendingBytes        = 1024 * 1024
+	DefaultMaxCascadeDepth        = DefaultMaxPendingSession
 )
 
 // Config controls held-action bounds and timers.
@@ -44,6 +48,7 @@ type Config struct {
 	MaxPending           int
 	MaxPendingPerSession int
 	MaxPendingBytes      int
+	MaxCascadeDepth      int
 	JournalPath          string
 }
 
@@ -53,6 +58,7 @@ type ResolutionPolicy struct {
 	MaxPending           int           `json:"max_pending"`
 	MaxPendingPerSession int           `json:"max_pending_per_session"`
 	MaxPendingBytes      int           `json:"max_pending_bytes"`
+	MaxCascadeDepth      int           `json:"max_cascade_depth"`
 }
 
 func (p ResolutionPolicy) String() string {
@@ -63,17 +69,35 @@ func (p ResolutionPolicy) String() string {
 	return string(data)
 }
 
+type ReceiptCascade struct {
+	ParentDeferID string `json:"parent_defer_id,omitempty"`
+	CascadeDepth  int    `json:"cascade_depth"`
+	Linkage       string `json:"linkage,omitempty"`
+}
+
 type ReceiptPolicy struct {
 	Bounds   ResolutionPolicy     `json:"bounds"`
 	AllowOn  config.DeferAllowOn  `json:"allow_on,omitempty"`
 	StepUpOn config.DeferStepUpOn `json:"step_up_on,omitempty"`
+	Cascade  *ReceiptCascade      `json:"cascade,omitempty"`
+}
+
+type ReceiptPolicyOptions struct {
+	Bounds  ResolutionPolicy
+	Rule    config.DeferResolutionPolicy
+	Cascade *ReceiptCascade
 }
 
 func ReceiptPolicyString(bounds ResolutionPolicy, rule config.DeferResolutionPolicy) string {
+	return ReceiptPolicyStringFor(ReceiptPolicyOptions{Bounds: bounds, Rule: rule})
+}
+
+func ReceiptPolicyStringFor(opts ReceiptPolicyOptions) string {
 	data, err := json.Marshal(ReceiptPolicy{
-		Bounds:   bounds,
-		AllowOn:  rule.AllowOn,
-		StepUpOn: rule.StepUpOn,
+		Bounds:   opts.Bounds,
+		AllowOn:  opts.Rule.AllowOn,
+		StepUpOn: opts.Rule.StepUpOn,
+		Cascade:  opts.Cascade,
 	})
 	if err != nil {
 		return ""
@@ -91,23 +115,26 @@ type AuthoritySnapshot struct {
 
 // HeldAction is the immutable action payload stored while awaiting resolution.
 type HeldAction struct {
-	DeferID    string
-	ActionID   string
-	Target     string
-	Reason     string
-	Surface    string
-	Method     string
-	SizeBytes  int
-	Policy     ResolutionPolicy
-	RulePolicy config.DeferResolutionPolicy
-	Authority  AuthoritySnapshot
-	Deadline   time.Time
-	Payload    []byte
-	ArgDigest  string
-	Resolve    func(Resolution)
-	timer      *time.Timer
-	state      string
-	createdAt  time.Time
+	DeferID       string
+	ActionID      string
+	Target        string
+	Reason        string
+	Surface       string
+	Method        string
+	SizeBytes     int
+	Policy        ResolutionPolicy
+	RulePolicy    config.DeferResolutionPolicy
+	Authority     AuthoritySnapshot
+	ParentDeferID string
+	CascadeDepth  int
+	Linkage       string
+	Deadline      time.Time
+	Payload       []byte
+	ArgDigest     string
+	Resolve       func(Resolution)
+	timer         *time.Timer
+	state         string
+	createdAt     time.Time
 }
 
 // Resolution is delivered exactly once for a held action.
@@ -117,6 +144,10 @@ type Resolution struct {
 	FinalDecision    string
 	ResolutionSource string
 	Authority        AuthoritySnapshot
+	ParentDeferID    string
+	CascadeDepth     int
+	Linkage          string
+	Policy           ResolutionPolicy
 	Target           string
 	Method           string
 	Reason           string
@@ -127,16 +158,38 @@ type Manager struct {
 	mu             sync.Mutex
 	cfg            Config
 	holds          map[string]*HeldAction
-	bySession      map[string]int
+	sessionHolds   map[string][]string
 	totalBytes     int
 	pendingJournal map[string]journalEntry
 }
 
 var (
-	ErrDisabled = errors.New("defer manager disabled")
-	ErrCapacity = errors.New("defer capacity exceeded")
-	ErrNotFound = errors.New("defer hold not found")
+	ErrDisabled     = errors.New("defer manager disabled")
+	ErrCapacity     = errors.New("defer capacity exceeded")
+	ErrNotFound     = errors.New("defer hold not found")
+	ErrCascadeLimit = errors.New("defer cascade depth exceeded")
 )
+
+type CascadeLimitError struct {
+	Depth         int
+	Limit         int
+	ParentDeferID string
+}
+
+func (e *CascadeLimitError) Error() string {
+	return fmt.Sprintf("%s: depth %d exceeds limit %d", ErrCascadeLimit, e.Depth, e.Limit)
+}
+
+func (e *CascadeLimitError) Unwrap() error {
+	return ErrCascadeLimit
+}
+
+func HoldFailureSource(err error) string {
+	if errors.Is(err, ErrCascadeLimit) {
+		return SourceCascadeLimit
+	}
+	return SourceCapacity
+}
 
 // NewManager constructs a bounded held-action manager.
 func NewManager(cfg Config) *Manager {
@@ -152,10 +205,13 @@ func NewManager(cfg Config) *Manager {
 	if cfg.MaxPendingBytes <= 0 {
 		cfg.MaxPendingBytes = DefaultMaxPendingBytes
 	}
+	if cfg.MaxCascadeDepth <= 0 {
+		cfg.MaxCascadeDepth = DefaultMaxCascadeDepth
+	}
 	return &Manager{
 		cfg:            cfg,
 		holds:          make(map[string]*HeldAction),
-		bySession:      make(map[string]int),
+		sessionHolds:   make(map[string][]string),
 		pendingJournal: make(map[string]journalEntry),
 	}
 }
@@ -173,6 +229,7 @@ func (m *Manager) Policy() ResolutionPolicy {
 		MaxPending:           m.cfg.MaxPending,
 		MaxPendingPerSession: m.cfg.MaxPendingPerSession,
 		MaxPendingBytes:      m.cfg.MaxPendingBytes,
+		MaxCascadeDepth:      m.cfg.MaxCascadeDepth,
 	}
 }
 
@@ -210,17 +267,32 @@ func (m *Manager) Hold(action HeldAction) error {
 		return fmt.Errorf("defer hold %q already exists", action.DeferID)
 	}
 	if len(m.holds) >= m.cfg.MaxPending ||
-		m.bySession[action.Authority.SessionID] >= m.cfg.MaxPendingPerSession ||
+		len(m.sessionHolds[action.Authority.SessionID]) >= m.cfg.MaxPendingPerSession ||
 		action.SizeBytes > m.cfg.MaxPendingBytes ||
 		m.totalBytes > m.cfg.MaxPendingBytes-action.SizeBytes {
 		m.mu.Unlock()
 		return ErrCapacity
 	}
+	action.Linkage = LinkageSessionPendingAncestor
+	action.CascadeDepth = 1
+	if ids := m.sessionHolds[action.Authority.SessionID]; len(ids) > 0 {
+		parent := m.holds[ids[len(ids)-1]]
+		action.ParentDeferID = parent.DeferID
+		action.CascadeDepth = parent.CascadeDepth + 1
+	}
+	if action.CascadeDepth > m.cfg.MaxCascadeDepth {
+		m.mu.Unlock()
+		return &CascadeLimitError{
+			Depth:         action.CascadeDepth,
+			Limit:         m.cfg.MaxCascadeDepth,
+			ParentDeferID: action.ParentDeferID,
+		}
+	}
 	journalAction := action
 	stored := action
 	held := &stored
 	m.holds[action.DeferID] = held
-	m.bySession[action.Authority.SessionID]++
+	m.sessionHolds[action.Authority.SessionID] = append(m.sessionHolds[action.Authority.SessionID], action.DeferID)
 	m.totalBytes += action.SizeBytes
 	m.mu.Unlock()
 
@@ -258,10 +330,7 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 	}
 	held.state = StateResolving
 	delete(m.holds, deferID)
-	m.bySession[held.Authority.SessionID]--
-	if m.bySession[held.Authority.SessionID] <= 0 {
-		delete(m.bySession, held.Authority.SessionID)
-	}
+	m.removeSessionHoldLocked(held.Authority.SessionID, deferID)
 	m.totalBytes -= held.SizeBytes
 	if held.timer != nil {
 		held.timer.Stop()
@@ -275,12 +344,19 @@ func (m *Manager) Resolve(deferID, finalDecision, source string) error {
 		state = resolvedState(finalDecision)
 		_ = m.appendJournal(journalEntryFromHeld(*held, state, source))
 	}
+	if finalDecision != config.ActionAllow && source != SourceCascade {
+		m.cascadeBlockDescendants([]string{held.DeferID})
+	}
 	held.Resolve(Resolution{
 		DeferID:          held.DeferID,
 		ParentActionID:   held.ActionID,
 		FinalDecision:    finalDecision,
 		ResolutionSource: source,
 		Authority:        held.Authority,
+		ParentDeferID:    held.ParentDeferID,
+		CascadeDepth:     held.CascadeDepth,
+		Linkage:          held.Linkage,
+		Policy:           held.Policy,
 		Target:           held.Target,
 		Method:           held.Method,
 		Reason:           held.Reason,
@@ -308,6 +384,14 @@ func (m *Manager) RecordRestartRecovery(held HeldAction) error {
 	if m == nil {
 		return ErrDisabled
 	}
+	return m.appendJournal(journalEntryFromHeld(held, StateResolvedBlock, SourceRestartRecovery))
+}
+
+func RecordRestartRecoveryJournal(path string, held HeldAction) error {
+	if path == "" {
+		return nil
+	}
+	m := &Manager{cfg: Config{JournalPath: path}}
 	return m.appendJournal(journalEntryFromHeld(held, StateResolvedBlock, SourceRestartRecovery))
 }
 
@@ -420,6 +504,45 @@ func (m *Manager) snapshotOne(deferID string) (HeldAction, error) {
 	return cp, nil
 }
 
+func (m *Manager) removeSessionHoldLocked(sessionID, deferID string) {
+	ids := m.sessionHolds[sessionID]
+	for i, id := range ids {
+		if id == deferID {
+			ids = append(ids[:i], ids[i+1:]...)
+			break
+		}
+	}
+	if len(ids) == 0 {
+		delete(m.sessionHolds, sessionID)
+		return
+	}
+	m.sessionHolds[sessionID] = ids
+}
+
+func (m *Manager) cascadeBlockDescendants(parentIDs []string) {
+	frontier := append([]string(nil), parentIDs...)
+	for len(frontier) > 0 {
+		m.mu.Lock()
+		children := make([]string, 0)
+		for id, held := range m.holds {
+			for _, parentID := range frontier {
+				if held.ParentDeferID == parentID {
+					children = append(children, id)
+					break
+				}
+			}
+		}
+		m.mu.Unlock()
+		if len(children) == 0 {
+			return
+		}
+		for _, id := range children {
+			_ = m.Resolve(id, config.ActionBlock, SourceCascade)
+		}
+		frontier = children
+	}
+}
+
 func resolvedState(finalDecision string) string {
 	switch finalDecision {
 	case "allow":
@@ -432,36 +555,44 @@ func resolvedState(finalDecision string) string {
 }
 
 type journalEntry struct {
-	DeferID    string                       `json:"defer_id"`
-	ActionID   string                       `json:"action_id"`
-	State      string                       `json:"state"`
-	Source     string                       `json:"source,omitempty"`
-	Target     string                       `json:"target,omitempty"`
-	Surface    string                       `json:"surface,omitempty"`
-	Method     string                       `json:"method,omitempty"`
-	Reason     string                       `json:"reason,omitempty"`
-	Authority  AuthoritySnapshot            `json:"authority"`
-	RulePolicy config.DeferResolutionPolicy `json:"rule_policy,omitempty"`
-	Deadline   time.Time                    `json:"deadline,omitempty"`
-	Timestamp  time.Time                    `json:"timestamp"`
-	SizeBytes  int                          `json:"size_bytes,omitempty"`
+	DeferID       string                       `json:"defer_id"`
+	ActionID      string                       `json:"action_id"`
+	State         string                       `json:"state"`
+	Source        string                       `json:"source,omitempty"`
+	Target        string                       `json:"target,omitempty"`
+	Surface       string                       `json:"surface,omitempty"`
+	Method        string                       `json:"method,omitempty"`
+	Reason        string                       `json:"reason,omitempty"`
+	Authority     AuthoritySnapshot            `json:"authority"`
+	Policy        ResolutionPolicy             `json:"policy,omitempty"`
+	RulePolicy    config.DeferResolutionPolicy `json:"rule_policy,omitempty"`
+	ParentDeferID string                       `json:"parent_defer_id,omitempty"`
+	CascadeDepth  int                          `json:"cascade_depth,omitempty"`
+	Linkage       string                       `json:"linkage,omitempty"`
+	Deadline      time.Time                    `json:"deadline,omitempty"`
+	Timestamp     time.Time                    `json:"timestamp"`
+	SizeBytes     int                          `json:"size_bytes,omitempty"`
 }
 
 func journalEntryFromHeld(held HeldAction, state, source string) journalEntry {
 	return journalEntry{
-		DeferID:    held.DeferID,
-		ActionID:   held.ActionID,
-		State:      state,
-		Source:     source,
-		Target:     held.Target,
-		Surface:    held.Surface,
-		Method:     held.Method,
-		Reason:     held.Reason,
-		Authority:  held.Authority,
-		RulePolicy: held.RulePolicy,
-		Deadline:   held.Deadline,
-		Timestamp:  time.Now().UTC(),
-		SizeBytes:  held.SizeBytes,
+		DeferID:       held.DeferID,
+		ActionID:      held.ActionID,
+		State:         state,
+		Source:        source,
+		Target:        held.Target,
+		Surface:       held.Surface,
+		Method:        held.Method,
+		Reason:        held.Reason,
+		Authority:     held.Authority,
+		Policy:        held.Policy,
+		RulePolicy:    held.RulePolicy,
+		ParentDeferID: held.ParentDeferID,
+		CascadeDepth:  held.CascadeDepth,
+		Linkage:       held.Linkage,
+		Deadline:      held.Deadline,
+		Timestamp:     time.Now().UTC(),
+		SizeBytes:     held.SizeBytes,
 	}
 }
 
@@ -523,16 +654,20 @@ func PendingJournal(path string) ([]HeldAction, error) {
 	out := make([]HeldAction, 0, len(pending))
 	for _, entry := range pending {
 		out = append(out, HeldAction{
-			DeferID:    entry.DeferID,
-			ActionID:   entry.ActionID,
-			Target:     entry.Target,
-			Reason:     entry.Reason,
-			Surface:    entry.Surface,
-			Method:     entry.Method,
-			SizeBytes:  entry.SizeBytes,
-			RulePolicy: entry.RulePolicy,
-			Authority:  entry.Authority,
-			Deadline:   entry.Deadline,
+			DeferID:       entry.DeferID,
+			ActionID:      entry.ActionID,
+			Target:        entry.Target,
+			Reason:        entry.Reason,
+			Surface:       entry.Surface,
+			Method:        entry.Method,
+			SizeBytes:     entry.SizeBytes,
+			Policy:        entry.Policy,
+			RulePolicy:    entry.RulePolicy,
+			Authority:     entry.Authority,
+			ParentDeferID: entry.ParentDeferID,
+			CascadeDepth:  entry.CascadeDepth,
+			Linkage:       entry.Linkage,
+			Deadline:      entry.Deadline,
 		})
 	}
 	return out, nil

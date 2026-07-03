@@ -150,6 +150,14 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 		report.Error = unpinnedReceiptBanner
 		report.Valid = opts.allowUnpinned
 	}
+	if res.Valid {
+		if lintErr := lintDeferredCascadeReceipts(receipts); lintErr != nil {
+			report.Valid = false
+			report.Error = lintErr.Error()
+			emitChainReport(stdout, stderr, report, opts.jsonOutput)
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, lintErr)
+		}
+	}
 	emitChainReport(stdout, stderr, report, opts.jsonOutput)
 	if !res.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))

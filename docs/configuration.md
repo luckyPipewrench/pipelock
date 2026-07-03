@@ -991,6 +991,7 @@ defer:                            # top-level section
   max_pending: 64                 # total concurrent holds (overflow denies the new action)
   max_pending_per_session: 8      # per-session concurrent holds
   max_pending_bytes: 1048576      # total held-payload budget
+  max_cascade_depth: 8            # max same-session pending-ancestor chain depth
 
 mcp_tool_policy:
   enabled: true
@@ -1008,6 +1009,10 @@ mcp_tool_policy:
           approval: true                   # allow only when the resolver returns an affirmative result
           tool_inventory_baseline: false   # or: re-confirm against the pinned tool inventory baseline
 ```
+
+When a new held action is admitted while another action from the same session is still pending, Pipelock records a derived linkage kind of `session_pending_ancestor`: the new action's parent is the newest still-held action in that session, and its cascade depth is the parent depth plus one. This is a temporal fact observed by the proxy, not a claim that the child consumed the parent's data.
+
+`max_cascade_depth` bounds that continuous same-session defer pressure. If the next hold would exceed the limit, Pipelock denies it before creating held state and emits a resolution receipt with `resolution_source: "cascade_limit"`. If a parent later resolves to anything other than allow, still-held descendants block immediately with `resolution_source: "cascade"`. A parent allow does not allow descendants; each descendant still needs its own affirmative resolution signal.
 
 `resolution_policy.allow_on.policy_permits` is rejected on the supported defer transports because they do not own a live config-reload callback. Each held action emits a hash-chained defer receipt and a resolution receipt bound to the original call; `pipelock verify-receipt --clean-report` derives a minimal offline-verifiable report that fails closed on any incomplete, duplicate, identity-changed, or non-terminal defer pair. Defer is free-tier.
 

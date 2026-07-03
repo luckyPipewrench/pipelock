@@ -1119,24 +1119,42 @@ func ForwardScannedInput(
 				},
 			})
 			if holdErr != nil {
+				source := deferred.HoldFailureSource(holdErr)
+				cascadeDepth := 0
+				parentDeferID := ""
+				linkage := ""
+				var limitErr *deferred.CascadeLimitError
+				if errors.As(holdErr, &limitErr) {
+					cascadeDepth = limitErr.Depth
+					parentDeferID = limitErr.ParentDeferID
+					linkage = deferred.LinkageSessionPendingAncestor
+				}
 				_ = emitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
 					DeferID:          actionID,
 					ParentActionID:   actionID,
 					FinalDecision:    config.ActionBlock,
-					ResolutionSource: deferred.SourceCapacity,
+					ResolutionSource: source,
 					Authority: deferred.AuthoritySnapshot{
 						SessionID:         receiptSessionID,
 						SessionIDOriginal: receiptSessionIDOriginal,
 					},
-					Target: toolCallName,
-					Method: verdict.Method,
-					Reason: reasonStr,
+					ParentDeferID: parentDeferID,
+					CascadeDepth:  cascadeDepth,
+					Linkage:       linkage,
+					Policy:        manager.Policy(),
+					Target:        toolCallName,
+					Method:        verdict.Method,
+					Reason:        reasonStr,
 				})
 				if !isNotification {
+					errorMessage := "pipelock: defer capacity exceeded"
+					if source == deferred.SourceCascadeLimit {
+						errorMessage = "pipelock: defer cascade depth exceeded"
+					}
 					blockedCh <- BlockedRequest{
 						ID:           verdict.ID,
 						ErrorCode:    -32002,
-						ErrorMessage: "pipelock: defer capacity exceeded",
+						ErrorMessage: errorMessage,
 					}
 				}
 				effectiveAction = config.ActionBlock

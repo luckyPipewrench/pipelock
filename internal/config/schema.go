@@ -640,6 +640,7 @@ type DeferConfig struct {
 	MaxPending           int  `yaml:"max_pending"`
 	MaxPendingPerSession int  `yaml:"max_pending_per_session"`
 	MaxPendingBytes      int  `yaml:"max_pending_bytes"`
+	MaxCascadeDepth      int  `yaml:"max_cascade_depth"`
 }
 
 // DeferResolutionPolicy defines which affirmative signals may turn a held

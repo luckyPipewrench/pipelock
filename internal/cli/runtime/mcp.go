@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -270,34 +271,48 @@ func buildDeferManager(cfg *config.Config) *deferred.Manager {
 	if cfg == nil || !cfg.Defer.Enabled {
 		return nil
 	}
-	journalPath := ""
-	if cfg.FlightRecorder.Dir != "" {
-		journalPath = filepath.Join(cfg.FlightRecorder.Dir, "deferred-actions.jsonl")
-	}
 	return deferred.NewManager(deferred.Config{
 		Enabled:              cfg.Defer.Enabled,
 		Timeout:              time.Duration(cfg.Defer.TimeoutSeconds) * time.Second,
 		MaxPending:           cfg.Defer.MaxPending,
 		MaxPendingPerSession: cfg.Defer.MaxPendingPerSession,
 		MaxPendingBytes:      cfg.Defer.MaxPendingBytes,
-		JournalPath:          journalPath,
+		MaxCascadeDepth:      cfg.Defer.MaxCascadeDepth,
+		JournalPath:          deferJournalPath(cfg),
 	})
+}
+
+func deferJournalPath(cfg *config.Config) string {
+	if cfg == nil || cfg.FlightRecorder.Dir == "" {
+		return ""
+	}
+	return filepath.Join(cfg.FlightRecorder.Dir, "deferred-actions.jsonl")
 }
 
 func recoverDeferredActions(
 	manager *deferred.Manager,
+	journalPath string,
 	receiptEmitter *receipt.Emitter,
 	v2ReceiptEmitter *proxydecision.Emitter,
 	policyHash string,
 	logW io.Writer,
 ) error {
-	if manager == nil || manager.JournalPath() == "" {
+	if journalPath == "" && manager != nil {
+		journalPath = manager.JournalPath()
+	}
+	if journalPath == "" {
 		return nil
 	}
-	pending, err := deferred.PendingJournal(manager.JournalPath())
+	pending, err := deferred.PendingJournal(journalPath)
 	if err != nil {
 		return fmt.Errorf("reading deferred action journal: %w", err)
 	}
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].CascadeDepth != pending[j].CascadeDepth {
+			return pending[i].CascadeDepth < pending[j].CascadeDepth
+		}
+		return pending[i].DeferID < pending[j].DeferID
+	})
 	for _, held := range pending {
 		opts := mcp.MCPProxyOpts{
 			ReceiptEmitter:   receiptEmitter,
@@ -312,13 +327,22 @@ func recoverDeferredActions(
 			FinalDecision:    config.ActionBlock,
 			ResolutionSource: deferred.SourceRestartRecovery,
 			Authority:        held.Authority,
+			ParentDeferID:    held.ParentDeferID,
+			CascadeDepth:     held.CascadeDepth,
+			Linkage:          held.Linkage,
+			Policy:           held.Policy,
 			Target:           held.Target,
 			Method:           held.Method,
 			Reason:           held.Reason,
 		}); err != nil {
 			return fmt.Errorf("emitting deferred restart recovery receipt %q: %w", held.DeferID, err)
 		}
-		if err := manager.RecordRestartRecovery(held); err != nil {
+		if manager != nil {
+			err = manager.RecordRestartRecovery(held)
+		} else {
+			err = deferred.RecordRestartRecoveryJournal(journalPath, held)
+		}
+		if err != nil {
 			return fmt.Errorf("recording deferred restart recovery %q: %w", held.DeferID, err)
 		}
 	}
@@ -974,7 +998,7 @@ Key-free evidence capture:
 				policyAction = policyCfg.Action
 			}
 			deferManager := buildDeferManager(cfg)
-			if err := recoverDeferredActions(deferManager, receiptEmitter, v2ReceiptEmitter, captureConfigHash, cmd.ErrOrStderr()); err != nil {
+			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), receiptEmitter, v2ReceiptEmitter, captureConfigHash, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 			if hasUpstream {

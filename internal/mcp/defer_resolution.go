@@ -26,6 +26,18 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	if final == "step_up" {
 		final = config.ActionAsk
 	}
+	var cascade *deferred.ReceiptCascade
+	if res.CascadeDepth > 0 || res.ParentDeferID != "" || res.Linkage != "" {
+		cascade = &deferred.ReceiptCascade{
+			ParentDeferID: res.ParentDeferID,
+			CascadeDepth:  res.CascadeDepth,
+			Linkage:       res.Linkage,
+		}
+	}
+	resolutionPolicy := ""
+	if cascade != nil {
+		resolutionPolicy = deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
+	}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
 		Emitter:           opts.receiptEmitter(),
 		V2Emitter:         opts.v2ReceiptEmitter(),
@@ -44,6 +56,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		RequireReceipt:    true,
 		DecisionPhase:     receipt.DecisionPhaseResolution,
 		DeferID:           res.DeferID,
+		ResolutionPolicy:  resolutionPolicy,
 		ResolutionSource:  res.ResolutionSource,
 		SessionID:         res.Authority.SessionID,
 		SessionIDOriginal: res.Authority.SessionIDOriginal,

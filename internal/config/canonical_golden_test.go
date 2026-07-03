@@ -181,6 +181,8 @@ const (
 	// hard-blocked ordinary credential setup documentation ("provide your API
 	// key in config"). Imperative solicitations to the requester still block.
 	// Detection-relevant change.
+	// Re-bumped for defer.max_cascade_depth. The bound changes held-action
+	// admission decisions, so it participates in the signed policy hash.
 	// Re-bumped for removal of vestigial DeferConfig.ResolutionTriggers
 	// field. The field had zero runtime consumers (only validated/defaulted)
 	// and was dropped in v2.8 before any release shipped it.
@@ -231,7 +233,7 @@ const (
 	// JSON-object encodings (`eyA`, `ew[o/k/0]`, `e30`, `e30=`), so compact
 	// JWTs with whitespace or empty claims are not dropped. See
 	// TestTextDLP_DottedTokenPatterns.
-	goldenHashDefaults = "eccdfd0b83416de46dd9247c7a5986558834e2f9be5e21ae0fda9c280c6bc8bc"
+	goldenHashDefaults = "0c8208c1e050a6bf3f2d578ad353a101fcf905b3c27255c047a3f236433bac69"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -342,7 +344,8 @@ const (
 	// Re-bumped for MCP tool-policy structural argument validators. New
 	// ToolPolicyRule fields are policy-semantic even when zero-valued because
 	// non-zero values change tool-call decisions.
-	goldenHashRichConfig = "9bea5ad49aacea8ab8e7e2ec68fdfb567f39526ffa5485f682f3b77749dc6b2a"
+	// Re-bumped for defer.max_cascade_depth: see goldenHashDefaults note above.
+	goldenHashRichConfig = "873f7742304ad83946f53a32e69b15b0cd58dc5cbbd7d05534b836155b8fe633"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

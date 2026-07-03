@@ -564,8 +564,8 @@ type journalEntry struct {
 	Method        string                       `json:"method,omitempty"`
 	Reason        string                       `json:"reason,omitempty"`
 	Authority     AuthoritySnapshot            `json:"authority"`
-	Policy        ResolutionPolicy             `json:"policy,omitempty"`
-	RulePolicy    config.DeferResolutionPolicy `json:"rule_policy,omitempty"`
+	Policy        ResolutionPolicy             `json:"policy"`
+	RulePolicy    config.DeferResolutionPolicy `json:"rule_policy"`
 	ParentDeferID string                       `json:"parent_defer_id,omitempty"`
 	CascadeDepth  int                          `json:"cascade_depth,omitempty"`
 	Linkage       string                       `json:"linkage,omitempty"`

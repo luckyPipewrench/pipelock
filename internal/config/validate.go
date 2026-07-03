@@ -1165,8 +1165,11 @@ func (c *Config) validateDefer(warnings *[]Warning) error {
 }
 
 func (c *Config) deferFieldExplicit(field string) bool {
+	// No raw YAML means the config was built programmatically (Defaults(),
+	// tests, SDK callers); nothing was explicitly set by an operator, so the
+	// inert-field warning would be spurious noise.
 	if len(c.rawBytes) == 0 {
-		return c.Defer.MaxCascadeDepth != 0
+		return false
 	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(c.rawBytes, &root); err != nil {

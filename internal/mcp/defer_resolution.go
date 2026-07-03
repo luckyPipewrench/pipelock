@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"errors"
 	"io"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -34,10 +35,9 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 			Linkage:       res.Linkage,
 		}
 	}
-	resolutionPolicy := ""
-	if cascade != nil {
-		resolutionPolicy = deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
-	}
+	// Unconditional so capacity denials (no cascade context) still record the
+	// policy bounds; Cascade stays nil and marshals away via omitempty.
+	resolutionPolicy := deferred.ReceiptPolicyStringFor(deferred.ReceiptPolicyOptions{Bounds: res.Policy, Cascade: cascade})
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
 		Emitter:           opts.receiptEmitter(),
 		V2Emitter:         opts.v2ReceiptEmitter(),
@@ -65,4 +65,49 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 
 func emitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferred.Resolution) error {
 	return EmitDeferredResolutionReceipt(opts, logW, res)
+}
+
+// holdFailureResolution carries the surface-specific fields for a failed
+// Manager.Hold so both defer transports emit identical denial receipts.
+type holdFailureResolution struct {
+	DeferID   string
+	Authority deferred.AuthoritySnapshot
+	Policy    deferred.ResolutionPolicy
+	Target    string
+	Method    string
+	Reason    string
+}
+
+// emitHoldFailureResolution classifies a failed Hold (capacity vs cascade
+// limit), emits the blocking resolution receipt, and returns the client-facing
+// error message. Shared by the stdio and HTTP-forward defer paths.
+func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error, hf holdFailureResolution) string {
+	source := deferred.HoldFailureSource(holdErr)
+	cascadeDepth := 0
+	parentDeferID := ""
+	linkage := ""
+	var limitErr *deferred.CascadeLimitError
+	if errors.As(holdErr, &limitErr) {
+		cascadeDepth = limitErr.Depth
+		parentDeferID = limitErr.ParentDeferID
+		linkage = deferred.LinkageSessionPendingAncestor
+	}
+	_ = emitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
+		DeferID:          hf.DeferID,
+		ParentActionID:   hf.DeferID,
+		FinalDecision:    config.ActionBlock,
+		ResolutionSource: source,
+		Authority:        hf.Authority,
+		ParentDeferID:    parentDeferID,
+		CascadeDepth:     cascadeDepth,
+		Linkage:          linkage,
+		Policy:           hf.Policy,
+		Target:           hf.Target,
+		Method:           hf.Method,
+		Reason:           hf.Reason,
+	})
+	if source == deferred.SourceCascadeLimit {
+		return "pipelock: defer cascade depth exceeded"
+	}
+	return "pipelock: defer capacity exceeded"
 }

@@ -129,6 +129,30 @@ func TestLintDeferredCascadeReceipts(t *testing.T) {
 			},
 			want: "no earlier admission receipt",
 		},
+		{
+			name: "malformed admission policy fails closed",
+			receipts: []receipt.Receipt{
+				{ActionRecord: receipt.ActionRecord{
+					DeferID:          "child",
+					DecisionPhase:    receipt.DecisionPhaseDefer,
+					ResolutionPolicy: "{not json",
+				}},
+				resolve("child", "", 1),
+			},
+			want: "malformed resolution policy",
+		},
+		{
+			name: "malformed resolution policy fails closed",
+			receipts: []receipt.Receipt{
+				admit("child"),
+				{ActionRecord: receipt.ActionRecord{
+					DeferID:          "child",
+					DecisionPhase:    receipt.DecisionPhaseResolution,
+					ResolutionPolicy: "{not json",
+				}},
+			},
+			want: "malformed resolution policy",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

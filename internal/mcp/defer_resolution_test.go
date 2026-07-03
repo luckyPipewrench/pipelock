@@ -75,3 +75,60 @@ func TestEmitDeferredResolutionReceiptCarriesCascadePolicy(t *testing.T) {
 		t.Fatalf("resolution_policy = %+v", policy)
 	}
 }
+
+func TestEmitDeferredResolutionReceiptNonCascadeCarriesBounds(t *testing.T) {
+	emitter, rec, dir := newTestReceiptEmitter(t)
+	t.Cleanup(func() { _ = rec.Close() })
+
+	opts := MCPProxyOpts{
+		ReceiptEmitter:  emitter,
+		PolicyHash:      "policy-hash",
+		RequireReceipts: true,
+		Transport:       deferred.SurfaceMCPStdio,
+	}
+	var log bytes.Buffer
+	// Mirrors a plain capacity-exceeded Hold() failure: no cascade metadata.
+	err := EmitDeferredResolutionReceipt(opts, &log, deferred.Resolution{
+		DeferID:          "capacity-defer",
+		ParentActionID:   "capacity-defer",
+		FinalDecision:    config.ActionBlock,
+		ResolutionSource: deferred.SourceCapacity,
+		Authority: deferred.AuthoritySnapshot{
+			SessionID:         "session-a",
+			SessionIDOriginal: "session-a",
+		},
+		Policy: deferred.ResolutionPolicy{
+			Timeout:              2 * time.Second,
+			MaxPending:           64,
+			MaxPendingPerSession: 8,
+			MaxPendingBytes:      1024 * 1024,
+			MaxCascadeDepth:      8,
+		},
+		Target: "neutral_tool",
+		Method: "tools/call",
+		Reason: "capacity",
+	})
+	if err != nil {
+		t.Fatalf("EmitDeferredResolutionReceipt: %v log=%q", err, log.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+	recorded := findActionReceiptHTTP(t, readReceiptEntriesHTTP(t, dir)).ActionRecord
+	if recorded.ResolutionSource != deferred.SourceCapacity {
+		t.Fatalf("resolution_source = %q, want capacity", recorded.ResolutionSource)
+	}
+	if recorded.ResolutionPolicy == "" {
+		t.Fatal("resolution_policy missing on non-cascade denial")
+	}
+	var policy deferred.ReceiptPolicy
+	if err := json.Unmarshal([]byte(recorded.ResolutionPolicy), &policy); err != nil {
+		t.Fatalf("resolution_policy JSON: %v", err)
+	}
+	if policy.Cascade != nil {
+		t.Fatalf("resolution_policy.cascade = %+v, want nil", policy.Cascade)
+	}
+	if policy.Bounds.MaxCascadeDepth != 8 || policy.Bounds.MaxPending != 64 {
+		t.Fatalf("resolution_policy bounds = %+v", policy.Bounds)
+	}
+}

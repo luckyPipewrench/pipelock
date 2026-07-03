@@ -269,38 +269,18 @@ func RunHTTPProxy(
 				},
 			})
 			if holdErr != nil {
-				source := deferred.HoldFailureSource(holdErr)
-				cascadeDepth := 0
-				parentDeferID := ""
-				linkage := ""
-				var limitErr *deferred.CascadeLimitError
-				if errors.As(holdErr, &limitErr) {
-					cascadeDepth = limitErr.Depth
-					parentDeferID = limitErr.ParentDeferID
-					linkage = deferred.LinkageSessionPendingAncestor
-				}
-				_ = emitDeferredResolutionReceipt(fwdOpts, safeLogW, deferred.Resolution{
-					DeferID:          deferredReq.DeferID,
-					ParentActionID:   deferredReq.DeferID,
-					FinalDecision:    config.ActionBlock,
-					ResolutionSource: source,
+				errorMessage := emitHoldFailureResolution(fwdOpts, safeLogW, holdErr, holdFailureResolution{
+					DeferID: deferredReq.DeferID,
 					Authority: deferred.AuthoritySnapshot{
 						SessionID:         deferredReq.SessionID,
 						SessionIDOriginal: deferredReq.SessionIDOriginal,
 					},
-					ParentDeferID: parentDeferID,
-					CascadeDepth:  cascadeDepth,
-					Linkage:       linkage,
-					Policy:        manager.Policy(),
-					Target:        deferredReq.ToolName,
-					Method:        deferredReq.Method,
-					Reason:        deferredReq.Reason,
+					Policy: manager.Policy(),
+					Target: deferredReq.ToolName,
+					Method: deferredReq.Method,
+					Reason: deferredReq.Reason,
 				})
 				if !deferredReq.IsNotification {
-					errorMessage := "pipelock: defer capacity exceeded"
-					if source == deferred.SourceCascadeLimit {
-						errorMessage = "pipelock: defer cascade depth exceeded"
-					}
 					_ = safeClientOut.WriteMessage(blockRequestResponse(BlockedRequest{
 						ID:           deferredReq.ID,
 						ErrorCode:    -32002,

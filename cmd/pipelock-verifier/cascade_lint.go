@@ -31,13 +31,20 @@ func lintDeferredCascadeReceipts(receipts []actionreceipt.Receipt) error {
 			continue
 		}
 		if ar.DecisionPhase == actionreceipt.DecisionPhaseDefer {
-			admissions[ar.DeferID] = cascadeAdmission{index: i, policy: parseReceiptPolicy(ar.ResolutionPolicy)}
+			policy, err := parseReceiptPolicy(ar.ResolutionPolicy)
+			if err != nil {
+				return fmt.Errorf("defer cascade lint: admission %q has malformed resolution policy: %w", ar.DeferID, err)
+			}
+			admissions[ar.DeferID] = cascadeAdmission{index: i, policy: policy}
 			continue
 		}
 		if ar.DecisionPhase != actionreceipt.DecisionPhaseResolution {
 			continue
 		}
-		policy, ok := parseReceiptPolicyCascade(ar.ResolutionPolicy)
+		policy, ok, err := parseReceiptPolicyCascade(ar.ResolutionPolicy)
+		if err != nil {
+			return fmt.Errorf("defer cascade lint: resolution %q has malformed resolution policy: %w", ar.DeferID, err)
+		}
 		if !ok {
 			continue
 		}
@@ -88,18 +95,23 @@ func lintDeferredCascadeReceipts(receipts []actionreceipt.Receipt) error {
 	return nil
 }
 
-func parseReceiptPolicyCascade(raw string) (deferred.ReceiptPolicy, bool) {
-	policy := parseReceiptPolicy(raw)
-	return policy, policy.Cascade != nil
+func parseReceiptPolicyCascade(raw string) (deferred.ReceiptPolicy, bool, error) {
+	policy, err := parseReceiptPolicy(raw)
+	if err != nil {
+		return deferred.ReceiptPolicy{}, false, err
+	}
+	return policy, policy.Cascade != nil, nil
 }
 
-func parseReceiptPolicy(raw string) deferred.ReceiptPolicy {
+// parseReceiptPolicy fails closed: a malformed policy string is a lint error,
+// never an empty policy, so bad receipts cannot bypass the cascade checks.
+func parseReceiptPolicy(raw string) (deferred.ReceiptPolicy, error) {
 	var policy deferred.ReceiptPolicy
 	if raw == "" {
-		return policy
+		return policy, nil
 	}
 	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
-		return deferred.ReceiptPolicy{}
+		return deferred.ReceiptPolicy{}, err
 	}
-	return policy
+	return policy, nil
 }

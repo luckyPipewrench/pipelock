@@ -183,6 +183,20 @@ func TestValidateDeferMaxCascadeDepthWarnsWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestValidateDeferNoCascadeDepthWarningFromDefaults(t *testing.T) {
+	// Programmatic configs have no raw YAML; the resolved default depth must
+	// not be mistaken for an operator-set value.
+	cfg := Defaults()
+	cfg.Defer.Enabled = false
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings() error = %v", err)
+	}
+	if hasDeferWarning(warnings, "defer.max_cascade_depth") {
+		t.Fatalf("warnings = %+v, want no max_cascade_depth warning from Defaults()", warnings)
+	}
+}
+
 func loadDeferYAML(t *testing.T, src string) *Config {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pipelock.yaml")

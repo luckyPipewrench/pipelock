@@ -505,7 +505,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// All clean - proceed (with block_all and CEE checks).
 	if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
 		if toolName != "" {
-			baselineDecision := recordMCPToolCallAndCheckBaseline(opts, rec, toolName)
+			baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), toolName)
 			switch baselineDecision.Action {
 			case config.ActionBlock, config.ActionAsk:
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", baselineDecision.Detail)
@@ -683,7 +683,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	if toolName != "" {
-		baselineDecision := recordMCPToolCallAndCheckBaseline(opts, rec, toolName)
+		baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), toolName)
 		if baselineDecision.Action != "" {
 			reasons = append(reasons, baselineDecision.Detail)
 			effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)

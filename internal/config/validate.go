@@ -6,9 +6,11 @@ package config
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -950,13 +952,19 @@ func (c *Config) validateMCPToolPolicy() error {
 				return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_pattern: %w", r.Name, err)
 			}
 		}
+		hasStructuralValidators := r.hasStructuralArgValidators()
 		if r.ArgKey != "" {
-			if r.ArgPattern == "" {
+			if r.ArgPattern == "" && !hasStructuralValidators {
 				return fmt.Errorf("mcp_tool_policy rule %q has arg_key without arg_pattern", r.Name)
 			}
 			if _, err := regexp.Compile(r.ArgKey); err != nil {
 				return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_key: %w", r.Name, err)
 			}
+		} else if hasStructuralValidators {
+			return fmt.Errorf("mcp_tool_policy rule %q has structural argument validators but no arg_key", r.Name)
+		}
+		if err := validateToolPolicyStructuralArgs(r); err != nil {
+			return err
 		}
 		if r.Action != "" {
 			switch r.Action {
@@ -1003,6 +1011,130 @@ func (c *Config) validateMCPToolPolicy() error {
 		}
 	}
 	return nil
+}
+
+func (r ToolPolicyRule) hasStructuralArgValidators() bool {
+	return r.ArgType != "" ||
+		r.ArgNumberGT != nil ||
+		r.ArgNumberLT != nil ||
+		r.ArgLenGT != nil ||
+		r.ArgLenLT != nil ||
+		len(r.ArgValueIn) > 0
+}
+
+func validateToolPolicyStructuralArgs(r ToolPolicyRule) error {
+	switch r.ArgType {
+	case "", "string", "number", "integer", "boolean", "array", "object":
+		// valid
+	default:
+		return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_type %q: must be string, number, integer, boolean, array, or object", r.Name, r.ArgType)
+	}
+	if err := validateToolPolicyStructuralTypeCompatibility(r); err != nil {
+		return err
+	}
+	var gt, lt *big.Rat
+	if r.ArgNumberGT != nil {
+		var ok bool
+		if gt, ok = ParseBoundedJSONNumber(*r.ArgNumberGT); !ok {
+			return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_number_gt %q", r.Name, r.ArgNumberGT.String())
+		}
+	}
+	if r.ArgNumberLT != nil {
+		var ok bool
+		if lt, ok = ParseBoundedJSONNumber(*r.ArgNumberLT); !ok {
+			return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_number_lt %q", r.Name, r.ArgNumberLT.String())
+		}
+	}
+	if gt != nil && lt != nil && gt.Cmp(lt) >= 0 {
+		return fmt.Errorf("mcp_tool_policy rule %q has unsatisfiable numeric range: arg_number_gt must be less than arg_number_lt", r.Name)
+	}
+	if r.ArgLenGT != nil && *r.ArgLenGT < 0 {
+		return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_len_gt %d: must be non-negative", r.Name, *r.ArgLenGT)
+	}
+	if r.ArgLenLT != nil && *r.ArgLenLT < 0 {
+		return fmt.Errorf("mcp_tool_policy rule %q has invalid arg_len_lt %d: must be non-negative", r.Name, *r.ArgLenLT)
+	}
+	if r.ArgLenGT != nil && r.ArgLenLT != nil && *r.ArgLenGT >= *r.ArgLenLT {
+		return fmt.Errorf("mcp_tool_policy rule %q has unsatisfiable length range: arg_len_gt must be less than arg_len_lt", r.Name)
+	}
+	return nil
+}
+
+func validateToolPolicyStructuralTypeCompatibility(r ToolPolicyRule) error {
+	if r.ArgType == "" {
+		return nil
+	}
+	hasNumberBound := r.ArgNumberGT != nil || r.ArgNumberLT != nil
+	if hasNumberBound && r.ArgType != "number" && r.ArgType != "integer" {
+		return fmt.Errorf("mcp_tool_policy rule %q has arg_type %q with numeric bounds: arg_type must be number or integer", r.Name, r.ArgType)
+	}
+	hasLengthBound := r.ArgLenGT != nil || r.ArgLenLT != nil
+	if hasLengthBound && r.ArgType != "string" && r.ArgType != "array" {
+		return fmt.Errorf("mcp_tool_policy rule %q has arg_type %q with length bounds: arg_type must be string or array", r.Name, r.ArgType)
+	}
+	return nil
+}
+
+const (
+	toolPolicyMaxNumberChars  = 4096
+	toolPolicyMaxNumberExpAbs = 10000
+)
+
+var toolPolicyJSONNumberPattern = regexp.MustCompile(`^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$`)
+
+// ParseBoundedJSONNumber parses a JSON number into an exact big.Rat, rejecting
+// values that are empty, over-long, malformed, or whose exponent magnitude
+// exceeds a safe bound. The exponent is bounded BEFORE any big-number
+// construction, so an attacker-supplied value like 1e1000000 (a few bytes) is
+// rejected in microseconds rather than forcing a multi-megabyte allocation. It
+// deliberately never calls big.Rat.SetString on the raw string, because
+// SetString eagerly expands a large exponent (10^1000000 → ~17ms) before any
+// bound can apply. Shared by config validation and the MCP tool-policy engine
+// so the parse+bounds logic has a single source of truth.
+func ParseBoundedJSONNumber(n json.Number) (*big.Rat, bool) {
+	s := n.String()
+	if len(s) == 0 || len(s) > toolPolicyMaxNumberChars || !toolPolicyJSONNumberPattern.MatchString(s) {
+		return nil, false
+	}
+
+	base, expPart, hasExp := strings.Cut(strings.ToLower(s), "e")
+	exp := 0
+	if hasExp {
+		parsed, err := strconv.Atoi(expPart)
+		if err != nil || parsed > toolPolicyMaxNumberExpAbs || parsed < -toolPolicyMaxNumberExpAbs {
+			return nil, false
+		}
+		exp = parsed
+	}
+
+	negative := strings.HasPrefix(base, "-")
+	base = strings.TrimPrefix(base, "-")
+	intPart, fracPart, hasFrac := strings.Cut(base, ".")
+	digits := intPart
+	scale := 0
+	if hasFrac {
+		digits += fracPart
+		scale = len(fracPart)
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		digits = "0"
+	}
+
+	num := new(big.Int)
+	if _, ok := num.SetString(digits, 10); !ok {
+		return nil, false
+	}
+	if negative {
+		num.Neg(num)
+	}
+	den := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
+	if exp >= 0 {
+		num.Mul(num, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exp)), nil))
+	} else {
+		den.Mul(den, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exp)), nil))
+	}
+	return new(big.Rat).SetFrac(num, den), true
 }
 
 func (c *Config) validateDefer() error {

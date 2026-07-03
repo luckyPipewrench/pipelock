@@ -339,7 +339,10 @@ const (
 	// header/payload edge-case polish: see goldenHashDefaults note above. The
 	// rich fixture inherits the default DLP pattern set (include_defaults: true),
 	// so the hash shifts in lockstep.
-	goldenHashRichConfig = "06714a1deedfcd869f0a249d2b0fb8c46e38847f99d2e8c13c1e331f2414805f"
+	// Re-bumped for MCP tool-policy structural argument validators. New
+	// ToolPolicyRule fields are policy-semantic even when zero-valued because
+	// non-zero values change tool-call decisions.
+	goldenHashRichConfig = "9bea5ad49aacea8ab8e7e2ec68fdfb567f39526ffa5485f682f3b77749dc6b2a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

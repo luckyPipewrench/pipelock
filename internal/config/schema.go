@@ -5,6 +5,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"time"
@@ -679,6 +680,12 @@ type ToolPolicyRule struct {
 	ToolPattern      string                 `yaml:"tool_pattern"`     // regex matching tool name
 	ArgPattern       string                 `yaml:"arg_pattern"`      // regex matching argument values (optional)
 	ArgKey           string                 `yaml:"arg_key"`          // regex scoping arg_pattern to specific argument keys (optional)
+	ArgType          string                 `yaml:"arg_type"`         // required JSON type guard for arg_key value (optional)
+	ArgNumberGT      *json.Number           `yaml:"arg_number_gt"`    // match when arg_key numeric value is greater than this (optional)
+	ArgNumberLT      *json.Number           `yaml:"arg_number_lt"`    // match when arg_key numeric value is less than this (optional)
+	ArgLenGT         *int                   `yaml:"arg_len_gt"`       // match when arg_key string/array length is greater than this (optional)
+	ArgLenLT         *int                   `yaml:"arg_len_lt"`       // match when arg_key string/array length is less than this (optional)
+	ArgValueIn       []string               `yaml:"arg_value_in"`     // dangerous canonical values for arg_key value (optional)
 	Action           string                 `yaml:"action"`           // per-rule override: warn, block, redirect, defer (optional)
 	RedirectProfile  string                 `yaml:"redirect_profile"` // key in redirect_profiles (required when action=redirect)
 	ResolutionPolicy *DeferResolutionPolicy `yaml:"resolution_policy,omitempty" json:"resolution_policy,omitempty"`

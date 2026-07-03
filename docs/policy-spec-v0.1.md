@@ -207,8 +207,16 @@ mcp:
 | `name` | string | yes | Rule identifier |
 | `tool_pattern` | string | yes | Regex matching tool name |
 | `arg_pattern` | string | no | Regex matching argument values |
-| `arg_key` | string | no | Regex scoping `arg_pattern` to top-level argument keys. Requires `arg_pattern`; specifying `arg_key` without `arg_pattern` is a validation error. |
-| `action` | string | no | `block` or `warn` |
+| `arg_key` | string | no | Regex scoping `arg_pattern` or structural validators to top-level argument keys. Required when any structural validator is set. |
+| `arg_type` | string | no | Required JSON type guard (`string`, `number`, `integer`, `boolean`, `array`, `object`). Type mismatch is dangerous and matches fail-closed. Standalone `arg_type` matches when the value is not that type. With numeric bounds, it must be `number` or `integer`; with length bounds, it must be `string` or `array`. |
+| `arg_number_gt` | number | no | Dangerous numeric condition: match when the parsed JSON number is strictly greater than this threshold. |
+| `arg_number_lt` | number | no | Dangerous numeric condition: match when the parsed JSON number is strictly less than this threshold. |
+| `arg_len_gt` | integer | no | Dangerous length condition: match when a string rune count or array element count is strictly greater than this non-negative threshold. |
+| `arg_len_lt` | integer | no | Dangerous length condition: match when a string rune count or array element count is strictly less than this non-negative threshold. |
+| `arg_value_in` | string array | no | Dangerous value set: match when the canonical value at `arg_key` is in this set. |
+| `action` | string | no | `block`, `warn`, `redirect`, or `defer` |
+
+Structural validators describe dangerous conditions in the default-allow denylist model. Within one rule, `tool_pattern`, optional `arg_pattern`, and every configured structural validator AND together. Numeric checks compare parsed JSON numbers losslessly. Bound, type, and length validators fail closed when the value is absent or unevaluable; `arg_value_in` alone does not match an absent key.
 
 ## Audit Event Format
 

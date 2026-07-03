@@ -83,11 +83,39 @@ type BaselineDecision struct {
 	Detail  string
 }
 
+// BaselineMetrics is the transport-neutral behavioral baseline metric set.
+// It intentionally mirrors proxy/baseline.SessionMetrics without importing the
+// proxy package here.
+type BaselineMetrics struct {
+	ToolCalls   int
+	UniqueTools int
+	Domains     int
+	Requests    int
+	BytesTotal  int64
+	DurationSec float64
+}
+
+// ToolCallBaselineRecorder exposes committed and provisional MCP tool-call
+// metrics. Provisional metrics include the current attempt without mutating
+// the committed recorder state.
+type ToolCallBaselineRecorder interface {
+	BaselineMetrics() BaselineMetrics
+	ProvisionalToolCallMetrics(toolName string) BaselineMetrics
+	RecordToolCall(toolName string)
+}
+
 // BaselineChecker evaluates a live recorder against an identity-keyed
 // behavioral baseline without coupling MCP callers to proxy internals.
 type BaselineChecker interface {
 	CheckBaselineForRecorder(agentKey string, rec Recorder) BaselineDecision
 	RecordBaselineForRecorder(agentKey string, rec Recorder)
+}
+
+// BaselineMetricsChecker evaluates explicit metric snapshots against an
+// identity-keyed behavioral baseline.
+type BaselineMetricsChecker interface {
+	CheckBaselineForMetrics(agentKey string, metrics BaselineMetrics) BaselineDecision
+	RecordBaselineMetrics(agentKey string, metrics BaselineMetrics)
 }
 
 // TaskContext describes the current task boundary attached to a live session.

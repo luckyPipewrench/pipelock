@@ -3114,7 +3114,7 @@ func TestSessionManager_CheckBaseline_BlockAction(t *testing.T) {
 	sess := sm.GetOrCreate("block-test|10.0.0.1")
 	sess.RecordBytes(100)
 	sess.RecordToolCall("tool_a")
-	sm.BaselineManager().RecordSession("block-test", sess.BaselineMetrics())
+	sm.RecordBaselineForAgent("block-test", sess)
 
 	// Create a session with wildly different metrics.
 	sess2 := sm.GetOrCreate("block-test|10.0.0.2")

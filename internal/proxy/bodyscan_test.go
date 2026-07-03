@@ -2190,6 +2190,11 @@ func TestExtractMultipart_TransferEncodingDecodeFailureBlocks(t *testing.T) {
 			body: "clean=ZZ",
 		},
 		{
+			name: "invalid_quoted_printable_byte",
+			cte:  "quoted-printable",
+			body: "clean\x01data",
+		},
+		{
 			name: "unsupported_encoding",
 			cte:  "x-secret-wrapper",
 			body: encodedSecret,

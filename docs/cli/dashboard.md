@@ -49,7 +49,8 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 | Flag | Default | Purpose |
 |---|---|---|
 | `--receipt-dir` | (required) | Flight-recorder evidence directory holding action receipts (the runtime's `flight_recorder.dir`). |
-| `--auth-token-file` | (required) | File containing the operator token required on every request. |
+| `--auth-token-file` | (required) | File containing the operator token required on every request. Grants the redacted metadata view. |
+| `--raw-token-file` | none | Optional second, higher-privilege token that unlocks raw destinations and signed payloads. Must differ from `--auth-token-file`. |
 | `--listen` | `127.0.0.1:8896` | Dashboard listener address. Non-loopback addresses require `--tls-cert`/`--tls-key`. |
 | `--trusted-signer` | none | Trusted receipt signing key: `(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)[,source=LABEL]`. Repeatable. `source` is shown in the UI as the reason the key is trusted. |
 | `--license-crl-file` | none | Signed license revocation list; falls back to `PIPELOCK_LICENSE_CRL_FILE`. |
@@ -82,9 +83,21 @@ the server is running stops serving.
 - **No trust-on-first-use.** Signer keys are trusted only via
   `--trusted-signer`. With no trusted keys configured the dashboard still
   serves, and the Authentic line honestly reports every signer as Unverified.
-- **Sensitive by design.** The evidence view includes destinations, block
-  reasons, signer fingerprints, and session IDs. Treat the listener like an
-  admin API: keep it loopback or behind TLS on a network only operators reach.
+- **Redacted by default (least privilege).** The metadata token sees the
+  scorecard, hashes, timeline verdicts/reasons/timestamps, and the offline
+  verify command — but receipt destinations and full signed payloads are
+  redacted, because a destination URL can carry a capability token and the raw
+  payload is the largest exfil surface. Raw detail is shown only to a request
+  that authenticates with `--raw-token-file`; with no raw token configured, raw
+  is redacted for everyone (fail closed). Redaction happens before templating,
+  so the raw bytes never reach a metadata-view response. The scorecard — the
+  actual proof — does not depend on the raw fields.
+- **Access is audited.** Every authenticated request is written to an access log
+  on stderr (role `metadata` or `raw`, method, path, session, remote address).
+  Viewing evidence is itself a recorded action.
+- **Sensitive by design.** Even the metadata view exposes reasons, signer
+  fingerprints, and session IDs. Treat the listener like an admin API: keep it
+  loopback or behind TLS on a network only operators reach.
 
 ### Verify it yourself
 

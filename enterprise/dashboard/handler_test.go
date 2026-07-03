@@ -116,6 +116,9 @@ func TestHandler_HostileEvidenceRenderEscapesReceiptFields(t *testing.T) {
 			keyHex: {Source: trustedKeySource},
 		},
 		HasFeature: allowAgentsFeature,
+		// Grant raw so the signed payload + destination render and their
+		// auto-escaping is exercised; escaping must hold in the raw view.
+		AuthorizeRaw: allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
@@ -286,6 +289,147 @@ func TestHandler_AuthorizeFailsClosed(t *testing.T) {
 
 func allowAgentsFeature(feature string) bool {
 	return feature == license.FeatureAgents
+}
+
+// allowRawAccess is an AuthorizeRaw that grants every request the raw view.
+func allowRawAccess(*http.Request) error { return nil }
+
+func TestHandler_RedactsRawByDefault(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	// No AuthorizeRaw configured => raw is redacted for everyone (fail closed).
+	handler := New(Options{
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, testTarget) {
+		t.Errorf("metadata view leaked the raw destination %q", testTarget)
+	}
+	if !strings.Contains(body, redactedDestination) {
+		t.Errorf("metadata view should show the redaction placeholder")
+	}
+	if strings.Contains(body, `"action_id"`) || strings.Contains(body, "Signed JSON payload") {
+		t.Errorf("metadata view leaked the raw signed payload")
+	}
+	if !strings.Contains(body, "Metadata view") {
+		t.Errorf("metadata view should show the redaction banner")
+	}
+	// The scorecard (the actual proof) must still render without the raw fields.
+	if !strings.Contains(body, "Scorecard") {
+		t.Errorf("scorecard must render in the metadata view")
+	}
+}
+
+func TestHandler_RawAccessShowsDetail(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	handler := New(Options{
+		ReceiptDir:   dir,
+		TrustedKeys:  trusted,
+		HasFeature:   allowAgentsFeature,
+		AuthorizeRaw: allowRawAccess,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, testTarget) {
+		t.Errorf("raw view should show the destination %q", testTarget)
+	}
+	if !strings.Contains(body, "Signed JSON payload") {
+		t.Errorf("raw view should show the signed payload")
+	}
+	if strings.Contains(body, redactedDestination) {
+		t.Errorf("raw view should not show the redaction placeholder")
+	}
+	if strings.Contains(body, "Metadata view") {
+		t.Errorf("raw view should not show the metadata redaction banner")
+	}
+}
+
+func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	var meta strings.Builder
+	metaHandler := New(Options{
+		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+		AuditWriter: &meta,
+	})
+	metaHandler.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+	if !strings.Contains(meta.String(), "role=metadata") {
+		t.Errorf("audit log should record metadata role; got %q", meta.String())
+	}
+	if !strings.Contains(meta.String(), "session=\""+testSessionID+"\"") {
+		t.Errorf("audit log should record the session; got %q", meta.String())
+	}
+
+	// Session carried as a query param (index route) is recorded too.
+	var q strings.Builder
+	qHandler := New(Options{
+		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+		AuditWriter: &q,
+	})
+	qHandler.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?session="+testSessionID, nil))
+	if !strings.Contains(q.String(), "session=\""+testSessionID+"\"") {
+		t.Errorf("audit log should record the query-param session; got %q", q.String())
+	}
+
+	// No identifiable session (bare /session/) records the "-" placeholder.
+	var none strings.Builder
+	noneHandler := New(Options{
+		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+		AuditWriter: &none,
+	})
+	noneHandler.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/", nil))
+	if !strings.Contains(none.String(), "session=\"-\"") {
+		t.Errorf("audit log should record '-' for an empty session; got %q", none.String())
+	}
+
+	var raw strings.Builder
+	rawHandler := New(Options{
+		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+		AuthorizeRaw: allowRawAccess, AuditWriter: &raw,
+	})
+	rawHandler.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	if !strings.Contains(raw.String(), "role=raw") {
+		t.Errorf("audit log should record raw role; got %q", raw.String())
+	}
+}
+
+func TestHandler_AuditNotWrittenForUnauthorized(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	var buf strings.Builder
+	handler := New(Options{
+		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+		Authorize:   func(*http.Request) error { return errors.New("denied") },
+		AuditWriter: &buf,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("denied request must not be audited as access; got %q", buf.String())
+	}
 }
 
 func signAlteredReceipt(r receipt.Receipt, priv ed25519.PrivateKey) (receipt.Receipt, error) {

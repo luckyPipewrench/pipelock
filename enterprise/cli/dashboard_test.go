@@ -110,10 +110,105 @@ func TestDashboardCmd_Tree(t *testing.T) {
 	if err != nil || serve.Use != "serve" {
 		t.Fatalf("dashboard serve subcommand not found: %v", err)
 	}
-	for _, flag := range []string{"listen", "receipt-dir", "auth-token-file", "trusted-signer", "license-crl-file", "tls-cert", "tls-key"} {
+	for _, flag := range []string{"listen", "receipt-dir", "auth-token-file", "raw-token-file", "trusted-signer", "license-crl-file", "tls-cert", "tls-key"} {
 		if serve.Flags().Lookup(flag) == nil {
 			t.Errorf("serve is missing --%s", flag)
 		}
+	}
+}
+
+func writeDashRawTokenFile(t *testing.T) (path, token string) {
+	t.Helper()
+	token = "dash-raw-" + "elevated-token"
+	path = filepath.Join(t.TempDir(), "dashboard-raw.token")
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path, token
+}
+
+func TestDashboardServe_RawTokenMustDifferFromAuthToken(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	// Point --raw-token-file at the SAME file as --auth-token-file: identical
+	// tokens make the two roles indistinguishable and must be rejected.
+	tokenFile := writeDashTokenFile(t)
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", tokenFile,
+		"--raw-token-file", tokenFile,
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("identical raw+auth token: want must-differ error, got %v", err)
+	}
+}
+
+func TestDashboardServe_RawTokenElevatesAndAudits(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	rawTokenFile, rawToken := writeDashRawTokenFile(t)
+
+	out := &dashSyncBuffer{}
+	errOut := &dashSyncBuffer{}
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", writeDashTokenFile(t),
+		"--raw-token-file", rawTokenFile,
+		"--listen", "127.0.0.1:0",
+	})
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+
+	testwait.For(t, 10*time.Second, func() bool { return out.contains("dashboard listening on") },
+		"serve never printed the listening banner; stderr: %s", errOut.String())
+	m := regexp.MustCompile(`listening on http://(127\.0\.0\.1:\d+)`).FindStringSubmatch(out.String())
+	if m == nil {
+		t.Fatalf("could not parse listen address from %q", out.String())
+	}
+	base := "http://" + m[1]
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	do := func(tok string) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+
+	// The raw token is a valid operator token (metadata-level access too).
+	if code := do(rawToken); code != http.StatusOK {
+		t.Fatalf("raw token access = %d, want 200", code)
+	}
+	// Its access is audited on stderr with the raw role.
+	testwait.For(t, 5*time.Second, func() bool { return errOut.contains("role=raw") },
+		"raw access was not audited; stderr: %s", errOut.String())
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve shutdown error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not shut down")
 	}
 }
 
@@ -362,7 +457,9 @@ func TestDashboardServe_InvalidTLSMaterialFailsServe(t *testing.T) {
 }
 
 func TestDashboardAuthorizeFunc(t *testing.T) {
-	authorize := dashboardAuthorizeFunc(dashTestToken)
+	authorize := dashboardAuthorizeFunc(func(r *http.Request) bool {
+		return dashboardTokenMatches(r, dashTestToken)
+	})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1/", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -517,7 +614,7 @@ func TestDashboardServe_TLSEndToEnd(t *testing.T) {
 	}
 }
 
-func TestDashboardRequestAuthorized(t *testing.T) {
+func TestDashboardTokenMatches(t *testing.T) {
 	tests := []struct {
 		name  string
 		token string
@@ -554,8 +651,8 @@ func TestDashboardRequestAuthorized(t *testing.T) {
 				t.Fatalf("NewRequest: %v", err)
 			}
 			tc.setup(req)
-			if got := dashboardRequestAuthorized(req, tc.token); got != tc.want {
-				t.Errorf("dashboardRequestAuthorized = %v, want %v", got, tc.want)
+			if got := dashboardTokenMatches(req, tc.token); got != tc.want {
+				t.Errorf("dashboardTokenMatches = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -698,19 +795,19 @@ func TestDashboardRuntimeHasFeature(t *testing.T) {
 
 func TestLoadDashboardTokenFile(t *testing.T) {
 	t.Run("valid token trimmed", func(t *testing.T) {
-		got, err := loadDashboardTokenFile(writeDashTokenFile(t))
+		got, err := loadDashboardTokenFile("--auth-token-file", writeDashTokenFile(t))
 		if err != nil || got != dashTestToken {
 			t.Fatalf("got (%q, %v), want (%q, nil)", got, err, dashTestToken)
 		}
 	})
 	t.Run("empty path", func(t *testing.T) {
-		if _, err := loadDashboardTokenFile("  "); err == nil ||
+		if _, err := loadDashboardTokenFile("--auth-token-file", "  "); err == nil ||
 			!strings.Contains(err.Error(), "required") {
 			t.Fatalf("want required error, got %v", err)
 		}
 	})
 	t.Run("missing file", func(t *testing.T) {
-		if _, err := loadDashboardTokenFile(filepath.Join(t.TempDir(), "nope")); err == nil ||
+		if _, err := loadDashboardTokenFile("--auth-token-file", filepath.Join(t.TempDir(), "nope")); err == nil ||
 			!strings.Contains(err.Error(), "read --auth-token-file") {
 			t.Fatalf("want read error, got %v", err)
 		}
@@ -720,7 +817,7 @@ func TestLoadDashboardTokenFile(t *testing.T) {
 		if err := os.WriteFile(path, []byte(" \n"), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
-		if _, err := loadDashboardTokenFile(path); err == nil ||
+		if _, err := loadDashboardTokenFile("--auth-token-file", path); err == nil ||
 			!strings.Contains(err.Error(), "is empty") {
 			t.Fatalf("want empty error, got %v", err)
 		}

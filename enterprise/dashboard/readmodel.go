@@ -7,12 +7,18 @@ package dashboard
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
+
+// redactedDestination replaces a receipt Destination in the metadata view. A
+// destination URL can carry a capability token or secret in its query string,
+// so it is only shown to a request that authenticated with raw access.
+const redactedDestination = "[redacted — raw access required]"
 
 const (
 	dashboardReceiptReadLimit = 5000
@@ -28,7 +34,18 @@ type Options struct {
 	// and fails the request closed (403) on a non-nil error. It is the handler's
 	// authentication/authorization seam, distinct from the license entitlement
 	// check. Nil means the surrounding router must own authentication.
-	Authorize        func(*http.Request) error
+	Authorize func(*http.Request) error
+	// AuthorizeRaw gates the sensitive raw view (receipt destinations and full
+	// signed payloads). A request is shown raw detail only when AuthorizeRaw is
+	// non-nil AND returns nil for it; every other authenticated request gets the
+	// redacted metadata view. Nil means raw detail is redacted for everyone
+	// (fail closed): a destination URL can carry a capability token, and the raw
+	// payload is the largest exfil surface, so raw is least-privilege by default.
+	AuthorizeRaw func(*http.Request) error
+	// AuditWriter, when non-nil, receives one line per authenticated dashboard
+	// request (role, method, path, session, remote address). Viewing evidence is
+	// itself an audited action. Nil disables the access log.
+	AuditWriter      io.Writer
 	ReceiptReadLimit int
 	TimelineLimit    int
 }
@@ -74,6 +91,9 @@ type SessionEvidence struct {
 	Scorecard       Scorecard
 	Timeline        []TimelineItem
 	TrustedKeyText  string
+	// RawRedacted is true when this view was rendered without raw access, so the
+	// template shows a "raw access required" note instead of the signed payload.
+	RawRedacted bool
 }
 
 // TimelineItem is one rendered receipt row.
@@ -105,6 +125,19 @@ func NewReadModel(opts Options) *ReadModel {
 		receiptReadLimit: receiptReadLimit,
 		timelineLimit:    timelineLimit,
 	}
+}
+
+// redactRaw strips the raw exfil surface from an evidence view: every receipt's
+// destination and full signed payload. It operates on the freshly built value
+// from Session, so callers hand the redacted copy to the template and the raw
+// bytes never reach the response. Idempotent and safe on a zero value.
+func redactRaw(ev SessionEvidence) SessionEvidence {
+	ev.RawRedacted = true
+	for i := range ev.Timeline {
+		ev.Timeline[i].Destination = redactedDestination
+		ev.Timeline[i].RawJSON = ""
+	}
+	return ev
 }
 
 // Sessions lists available recorder sessions and computes their compact state.

@@ -7,9 +7,12 @@ package dashboard
 import (
 	"bytes"
 	"embed"
+	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
@@ -30,6 +33,7 @@ type pageData struct {
 	SelectedSession string
 	Evidence        SessionEvidence
 	HasEvidence     bool
+	RawAllowed      bool
 }
 
 // New returns a read-only HTTP handler for the Enterprise Evidence dashboard.
@@ -45,9 +49,11 @@ func New(opts Options) http.Handler {
 	model := NewReadModel(opts)
 	mux := http.NewServeMux()
 	d := &dashboardHandler{
-		model:      model,
-		hasFeature: opts.HasFeature,
-		authorize:  opts.Authorize,
+		model:        model,
+		hasFeature:   opts.HasFeature,
+		authorize:    opts.Authorize,
+		authorizeRaw: opts.AuthorizeRaw,
+		auditWriter:  opts.AuditWriter,
 	}
 	mux.Handle("/", d.gate(http.HandlerFunc(d.handleIndex)))
 	mux.Handle("/session/", d.gate(http.HandlerFunc(d.handleSession)))
@@ -55,9 +61,39 @@ func New(opts Options) http.Handler {
 }
 
 type dashboardHandler struct {
-	model      *ReadModel
-	hasFeature func(string) bool
-	authorize  func(*http.Request) error
+	model        *ReadModel
+	hasFeature   func(string) bool
+	authorize    func(*http.Request) error
+	authorizeRaw func(*http.Request) error
+	auditWriter  io.Writer
+}
+
+// rawAllowed reports whether this request may see the raw view (destinations
+// and full signed payloads). Fail closed: raw is shown only when an authorizer
+// is configured and accepts the request.
+func (d *dashboardHandler) rawAllowed(r *http.Request) bool {
+	return d.authorizeRaw != nil && d.authorizeRaw(r) == nil
+}
+
+// recordAudit writes one access-log line for an authenticated request. Viewing
+// evidence is itself an audited action. No-op when no writer is configured.
+func (d *dashboardHandler) recordAudit(r *http.Request, raw bool) {
+	if d.auditWriter == nil {
+		return
+	}
+	role := "metadata"
+	if raw {
+		role = "raw"
+	}
+	session := r.URL.Query().Get("session")
+	if session == "" {
+		session = strings.TrimPrefix(r.URL.Path, "/session/")
+	}
+	if session == "" {
+		session = "-"
+	}
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s method=%s path=%q session=%q remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path, session, r.RemoteAddr)
 }
 
 func (d *dashboardHandler) gate(next http.Handler) http.Handler {
@@ -82,6 +118,7 @@ func (d *dashboardHandler) gate(next http.Handler) http.Handler {
 				return
 			}
 		}
+		d.recordAudit(r, d.rawAllowed(r))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -105,7 +142,7 @@ func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if selected == "" && len(sessions) > 0 {
 		selected = sessions[0].ID
 	}
-	d.render(w, sessions, selected)
+	d.render(w, sessions, selected, d.rawAllowed(r))
 }
 
 func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +160,7 @@ func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "could not read evidence sessions", http.StatusInternalServerError)
 		return
 	}
-	d.render(w, sessions, selected)
+	d.render(w, sessions, selected, d.rawAllowed(r))
 }
 
 func requireGet(w http.ResponseWriter, r *http.Request) bool {
@@ -135,16 +172,23 @@ func requireGet(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func (d *dashboardHandler) render(w http.ResponseWriter, sessions []SessionSummary, selected string) {
+func (d *dashboardHandler) render(w http.ResponseWriter, sessions []SessionSummary, selected string, raw bool) {
 	data := pageData{
 		Sessions:        sessions,
 		SelectedSession: selected,
+		RawAllowed:      raw,
 	}
 	if selected != "" {
 		evidence, err := d.model.Session(selected)
 		if err != nil {
 			http.Error(w, "could not read selected evidence", http.StatusInternalServerError)
 			return
+		}
+		// Fail closed: strip destinations and signed payloads in Go before
+		// templating unless this request is authorized for raw, so the raw
+		// bytes never reach the response.
+		if !raw {
+			evidence = redactRaw(evidence)
 		}
 		data.Evidence = evidence
 		data.HasEvidence = true

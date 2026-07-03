@@ -257,6 +257,13 @@
             </section>
           {{end}}
 
+          {{if not .RawAllowed}}
+            <section class="section callout">
+              <h2>Metadata view</h2>
+              <div class="muted">Receipt destinations and signed payloads are redacted. Raw access requires the raw operator token; the scorecard, hashes, and offline verifier below do not depend on the raw fields.</div>
+            </section>
+          {{end}}
+
           {{if .Evidence.ReadLimited}}
             <section class="section callout">
               <h2>Dashboard read limit reached</h2>
@@ -314,10 +321,14 @@
                     <div><div class="label">Prev → Hash</div><div class="value mono">{{.PrevShort}} → {{.HashShort}}</div></div>
                   </div>
                   {{if .Unverifiable}}<div class="sub">This receipt is at or after the break and is unverifiable.</div>{{end}}
+                  {{if .RawJSON}}
                   <details>
                     <summary>Signed JSON payload</summary>
                     <pre>{{.RawJSON}}</pre>
                   </details>
+                  {{else}}
+                  <div class="sub">Signed payload and destination hidden — raw access required.</div>
+                  {{end}}
                 </article>
               {{else}}
                 <div class="empty">No receipt timeline is available for this session.</div>

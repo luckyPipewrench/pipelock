@@ -53,6 +53,7 @@ type dashboardServeOptions struct {
 	listen         string
 	receiptDir     string
 	authTokenFile  string
+	rawTokenFile   string
 	trustedSigners []string
 	licenseCRLFile string
 	tlsCert        string
@@ -69,6 +70,12 @@ directory. Every request must authenticate with the operator token from
 --auth-token-file, sent either as "Authorization: Bearer <token>" or as the
 password of an HTTP Basic prompt (any username). The license feature check is
 entitlement, not identity; the token is the authentication boundary.
+
+By default the view is redacted: receipt destinations and signed payloads are
+hidden, because a destination URL can carry a capability token and the payload
+is the largest exfil surface. Supply --raw-token-file to issue a second,
+higher-privilege token whose holders see the full raw detail. Every
+authenticated request is written to the access log on stderr.
 
 Without --tls-cert/--tls-key the listener refuses non-loopback addresses,
 because the operator token would transit in cleartext.`,
@@ -89,7 +96,9 @@ because the operator token would transit in cleartext.`,
 	cmd.Flags().StringVar(&opts.receiptDir, "receipt-dir", "",
 		"flight-recorder evidence directory holding action receipts (flight_recorder.dir)")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
-		"file containing the operator token required on every dashboard request")
+		"file containing the operator token required on every dashboard request (redacted metadata view)")
+	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
+		"optional file containing a higher-privilege token that unlocks raw destinations and signed payloads; must differ from --auth-token-file")
 	cmd.Flags().StringArrayVar(&opts.trustedSigners, "trusted-signer", nil,
 		"trusted receipt signing key as comma-separated kv pairs: "+
 			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
@@ -103,9 +112,22 @@ because the operator token would transit in cleartext.`,
 }
 
 func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic license.License) error {
-	token, err := loadDashboardTokenFile(opts.authTokenFile)
+	token, err := loadDashboardTokenFile("--auth-token-file", opts.authTokenFile)
 	if err != nil {
 		return err
+	}
+	// Optional raw-access token: elevates a request from the redacted metadata
+	// view to full destinations + signed payloads. Must differ from the
+	// metadata token so the two roles are actually distinguishable.
+	var rawToken string
+	if strings.TrimSpace(opts.rawTokenFile) != "" {
+		rawToken, err = loadDashboardTokenFile("--raw-token-file", opts.rawTokenFile)
+		if err != nil {
+			return err
+		}
+		if subtle.ConstantTimeCompare([]byte(rawToken), []byte(token)) == 1 {
+			return errors.New("--raw-token-file must differ from --auth-token-file")
+		}
 	}
 	trusted, err := parseTrustedSigners(opts.trustedSigners)
 	if err != nil {
@@ -130,13 +152,29 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			"pipelock: warning: no --trusted-signer configured; the Authentic line will render every signer as Unverified")
 	}
 
+	// metaAuthorized gates all access: the metadata token OR the raw token (a
+	// raw holder is also a valid operator). rawAuthorized gates only the
+	// sensitive raw view and matches the raw token alone.
+	metaAuthorized := func(r *http.Request) bool {
+		if dashboardTokenMatches(r, token) {
+			return true
+		}
+		return rawToken != "" && dashboardTokenMatches(r, rawToken)
+	}
+	rawAuthorized := func(r *http.Request) bool {
+		return rawToken != "" && dashboardTokenMatches(r, rawToken)
+	}
+
 	inner := dashboard.New(dashboard.Options{
-		ReceiptDir:  opts.receiptDir,
-		TrustedKeys: trusted,
-		HasFeature:  dashboardRuntimeHasFeature(lic),
-		Authorize:   dashboardAuthorizeFunc(token),
+		ReceiptDir:   opts.receiptDir,
+		TrustedKeys:  trusted,
+		HasFeature:   dashboardRuntimeHasFeature(lic),
+		Authorize:    dashboardAuthorizeFunc(metaAuthorized),
+		AuthorizeRaw: dashboardAuthorizeFunc(rawAuthorized),
+		// Viewing evidence is itself audited; the access log goes to stderr.
+		AuditWriter: cmd.ErrOrStderr(),
 	})
-	handler := dashboardAuthHandler(token, inner)
+	handler := dashboardAuthHandler(metaAuthorized, inner)
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -223,12 +261,13 @@ func validateDashboardListen(opts dashboardServeOptions) error {
 		"every request carries the operator token, so add --tls-cert/--tls-key or keep --listen on 127.0.0.1", opts.listen)
 }
 
-// dashboardAuthorizeFunc is the Options.Authorize seam: defense in depth
-// behind the outer dashboardAuthHandler boundary, so the dashboard handler
-// itself fails closed (403) if it is ever mounted without that boundary.
-func dashboardAuthorizeFunc(token string) func(*http.Request) error {
+// dashboardAuthorizeFunc adapts a boolean request predicate to the
+// Options.Authorize / Options.AuthorizeRaw seam: defense in depth behind the
+// outer dashboardAuthHandler boundary, so the dashboard handler itself fails
+// closed (403) if it is ever mounted without that boundary.
+func dashboardAuthorizeFunc(authorized func(*http.Request) bool) func(*http.Request) error {
 	return func(r *http.Request) error {
-		if !dashboardRequestAuthorized(r, token) {
+		if !authorized(r) {
 			return errors.New("dashboard request not authenticated")
 		}
 		return nil
@@ -237,11 +276,11 @@ func dashboardAuthorizeFunc(token string) func(*http.Request) error {
 
 // dashboardAuthHandler is the outer authentication boundary. It answers 401
 // with a WWW-Authenticate challenge so browsers prompt for credentials; the
-// inner dashboard handler re-checks the same token via Options.Authorize as
+// inner dashboard handler re-checks the same predicate via Options.Authorize as
 // defense in depth.
-func dashboardAuthHandler(token string, next http.Handler) http.Handler {
+func dashboardAuthHandler(authorized func(*http.Request) bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !dashboardRequestAuthorized(r, token) {
+		if !authorized(r) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="pipelock dashboard", charset="UTF-8"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
@@ -250,10 +289,10 @@ func dashboardAuthHandler(token string, next http.Handler) http.Handler {
 	})
 }
 
-// dashboardRequestAuthorized accepts the operator token as either a Bearer
-// token (automation) or the password of an HTTP Basic credential (browsers;
-// the username is ignored). Comparisons are constant-time.
-func dashboardRequestAuthorized(r *http.Request, token string) bool {
+// dashboardTokenMatches accepts the operator token as either a Bearer token
+// (automation) or the password of an HTTP Basic credential (browsers; the
+// username is ignored). Comparisons are constant-time.
+func dashboardTokenMatches(r *http.Request, token string) bool {
 	if token == "" {
 		return false // fail closed: no configured token means no access
 	}
@@ -373,10 +412,9 @@ func parseTrustedSignerSpec(raw string) (keyHex, source string, err error) {
 	return hex.EncodeToString(pub), source, nil
 }
 
-// loadDashboardTokenFile reads and validates the required operator token file.
+// loadDashboardTokenFile reads and validates a required operator token file.
 // Mirrors the conductor loadTokenFile semantics: trimmed and non-empty.
-func loadDashboardTokenFile(path string) (string, error) {
-	const flag = "--auth-token-file"
+func loadDashboardTokenFile(flag, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("%s is required", flag)
 	}

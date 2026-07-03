@@ -138,10 +138,11 @@ func sessionSummary(id string, receipts []receipt.Receipt, trustedKeys map[strin
 		}
 	}
 
-	result := computeScorecard(receipts, trustedKeys, id)
-	scorecard := result.Scorecard
+	var scorecard Scorecard
 	if readLimited {
 		scorecard = readLimitedScorecard(len(receipts), readLimit)
+	} else {
+		scorecard = computeScorecard(receipts, trustedKeys, id).Scorecard
 	}
 	return SessionSummary{
 		ID:              id,

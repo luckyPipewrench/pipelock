@@ -181,6 +181,24 @@ func TestComputeScorecard_RotatedChainDoesNotTrustPresentKeysForAuthentic(t *tes
 	if partialTrust.Chain.UntrustedSignerKey != keyB {
 		t.Fatalf("UntrustedSignerKey = %q, want %q", partialTrust.Chain.UntrustedSignerKey, keyB)
 	}
+	if partialTrust.Chain.BrokenAtIndex != 2 {
+		t.Fatalf("BrokenAtIndex = %d, want 2", partialTrust.Chain.BrokenAtIndex)
+	}
+	if !strings.Contains(partialTrust.Scorecard.Completeness.Detail, "2 of 4 receipts verifiable; 2 lost") {
+		t.Fatalf("Completeness.Detail = %q, want trusted-key break to count receipts at/after broken index lost", partialTrust.Scorecard.Completeness.Detail)
+	}
+
+	evidence := sessionEvidence(testSessionID, chain, map[string]TrustedKey{
+		keyA: {Source: trustedKeySource},
+	}, false, dashboardReceiptReadLimit, dashboardTimelineLimit)
+	if evidence.Chain.UntrustedSignerKey != keyB {
+		t.Fatalf("evidence UntrustedSignerKey = %q, want %q", evidence.Chain.UntrustedSignerKey, keyB)
+	}
+	for i, item := range evidence.Timeline {
+		if got, want := item.Unverifiable, i >= evidence.Chain.BrokenAtIndex; got != want {
+			t.Fatalf("timeline index %d seq %d Unverifiable = %t, want %t", i, item.Seq, got, want)
+		}
+	}
 }
 
 func TestComputeScorecard_ReadLimitedDowngradesGreenProofLines(t *testing.T) {

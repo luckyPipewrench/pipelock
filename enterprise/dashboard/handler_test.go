@@ -132,6 +132,18 @@ func TestHandler_HostileEvidenceRenderEscapesReceiptFields(t *testing.T) {
 	if strings.Contains(body, hostileJSON) {
 		t.Fatal("response contains raw script-breaking JSON payload")
 	}
+	if strings.Contains(body, `href="javascript:`) {
+		t.Fatal("response contains javascript URL in href attribute")
+	}
+	for _, rawAttr := range []string{
+		`="` + hostileJSURL + `"`,
+		`='` + hostileJSURL + `'`,
+		`=` + hostileJSURL,
+	} {
+		if strings.Contains(body, rawAttr) {
+			t.Fatalf("response contains raw javascript URL in attribute context: %q", rawAttr)
+		}
+	}
 	if !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
 		t.Fatal("response should contain HTML-escaped script text")
 	}
@@ -140,6 +152,42 @@ func TestHandler_HostileEvidenceRenderEscapesReceiptFields(t *testing.T) {
 	}
 	if !strings.Contains(body, "\\u003c/script\\u003e") {
 		t.Fatal("response should contain JSON-escaped closing script token in signed payload")
+	}
+	escapedRequestID := "&#34;request_id&#34;: &#34;" + hostileJSURL + "&#34;"
+	if !strings.Contains(body, escapedRequestID) {
+		t.Fatal("javascript URL field should render only as escaped text in the signed payload")
+	}
+}
+
+func TestHandler_MethodAndPathRejection(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	handler := New(Options{
+		ReceiptDir: dir,
+		HasFeature: allowAgentsFeature,
+	})
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		want   int
+	}{
+		{name: "post index", method: http.MethodPost, path: "/", want: http.StatusMethodNotAllowed},
+		{name: "nested session path", method: http.MethodGet, path: "/session/foo/bar", want: http.StatusNotFound},
+		{name: "unknown path", method: http.MethodGet, path: "/nope", want: http.StatusNotFound},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, nil)
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("%s %s status = %d, want %d; body=%s", tc.method, tc.path, rec.Code, tc.want, rec.Body.String())
+			}
+		})
 	}
 }
 

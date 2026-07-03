@@ -136,32 +136,36 @@ func ListSessions(dir string) ([]string, error) {
 }
 
 func evidenceFileSessionID(name string) (string, bool) {
+	sessionID, _, ok := parseEvidenceFilename(name)
+	return sessionID, ok
+}
+
+func parseEvidenceFilename(name string) (sessionID string, seqStart int, ok bool) {
+	name = filepath.Base(name)
 	if !strings.HasPrefix(name, "evidence-") || !strings.HasSuffix(name, ".jsonl") {
-		return "", false
+		return "", 0, false
 	}
 	rest := strings.TrimPrefix(name, "evidence-")
 	rest = strings.TrimSuffix(rest, ".jsonl")
 	lastDash := strings.LastIndex(rest, "-")
 	if lastDash < 0 {
-		return "", false
+		return "", 0, false
 	}
-	return rest[:lastDash], true
+	n, err := strconv.Atoi(rest[lastDash+1:])
+	if err != nil {
+		n = 0
+	}
+	return rest[:lastDash], n, true
 }
 
 // extractSeqStart parses the numeric seqStart from an evidence filename.
 // Returns 0 if the filename cannot be parsed.
 func extractSeqStart(path string) int {
-	name := filepath.Base(path)
-	name = strings.TrimSuffix(name, ".jsonl")
-	lastDash := strings.LastIndex(name, "-")
-	if lastDash < 0 {
+	_, seqStart, ok := parseEvidenceFilename(path)
+	if !ok {
 		return 0
 	}
-	n, err := strconv.Atoi(name[lastDash+1:])
-	if err != nil {
-		return 0
-	}
-	return n
+	return seqStart
 }
 
 // matchesFilter checks if an entry matches the given filter criteria.

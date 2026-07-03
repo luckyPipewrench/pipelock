@@ -5,6 +5,7 @@
 package dashboard
 
 import (
+	"bytes"
 	"embed"
 	"html/template"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 )
 
 const (
-	contentSecurityPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'"
+	contentSecurityPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
 	contentTypeHTML       = "text/html; charset=utf-8"
 	contentTypeText       = "text/plain; charset=utf-8"
 )
@@ -70,9 +71,7 @@ func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !requireGet(w, r) {
 		return
 	}
 
@@ -90,9 +89,7 @@ func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if !requireGet(w, r) {
 		return
 	}
 
@@ -107,6 +104,15 @@ func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	d.render(w, sessions, selected)
+}
+
+func requireGet(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet {
+		return true
+	}
+	w.Header().Set("Allow", http.MethodGet)
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return false
 }
 
 func (d *dashboardHandler) render(w http.ResponseWriter, sessions []SessionSummary, selected string) {
@@ -124,8 +130,11 @@ func (d *dashboardHandler) render(w http.ResponseWriter, sessions []SessionSumma
 		data.HasEvidence = true
 	}
 
-	w.Header().Set("Content-Type", contentTypeHTML)
-	if err := evidenceTemplate.Execute(w, data); err != nil {
+	var buf bytes.Buffer
+	if err := evidenceTemplate.Execute(&buf, data); err != nil {
 		http.Error(w, "could not render evidence", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
 }

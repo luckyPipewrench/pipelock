@@ -65,11 +65,13 @@ func computeScorecard(receipts []receipt.Receipt, trustedKeys map[string]Trusted
 	structural := receipt.VerifyChainTrusted(receipts, signers)
 	trustedSessionKeys := trustedKeysForSession(signers, trustedKeys)
 
-	authentic := authenticLine(signers, trustedSessionKeys, trustedKeys, structural)
 	chain := structural
+	var authentic Line
 	if len(trustedSessionKeys) > 0 {
 		chain = receipt.VerifyChainTrusted(receipts, trustedSessionKeys)
 		authentic = authenticLineFromTrustedResult(chain, trustedSessionKeys, trustedKeys, uint64(len(receipts)))
+	} else {
+		authentic = unverifiedAuthenticLine(signers, structural)
 	}
 
 	anchoredState, anchoredChip, anchoredDetail, anchoredSub := anchorState(sessionID)
@@ -113,11 +115,7 @@ func absentScorecard() Scorecard {
 	}
 }
 
-func authenticLine(signers, trustedSessionKeys []string, trustedKeys map[string]TrustedKey, chain receipt.ChainResult) Line {
-	if len(trustedSessionKeys) > 0 {
-		return authenticLineFromTrustedResult(chain, trustedSessionKeys, trustedKeys, chain.ReceiptCount)
-	}
-
+func unverifiedAuthenticLine(signers []string, chain receipt.ChainResult) Line {
 	detail := fmt.Sprintf(
 		"Signer key %s is not in the trusted-key set; signatures are well-formed but UNTRUSTED.",
 		formatKeyList(signers),
@@ -206,28 +204,12 @@ func untamperedLine(chain receipt.ChainResult, receiptCount int) Line {
 }
 
 func anchorState(_ string) (state, chip, detail, sub string) {
-	const (
-		externalAnchor = "external"
-		localAnchor    = "local"
-		noAnchor       = "none"
-	)
-	switch noAnchor {
-	case externalAnchor:
-		return StateVerify,
-			"Externally anchored",
-			"External inclusion proof recorded; ordering is backed by an external anchor.",
-			"External proof details were verified for this session."
-	case localAnchor:
-		return StateWarn,
-			"Local anchor",
-			"Local inclusion proof recorded, but no external anchor was available.",
-			"Ordering rests on local evidence and the hash chain."
-	default:
-		return StateWarn,
-			chipNotAnchored,
-			"no inclusion proof - local or external - was recorded; ordering rests on the hash chain alone.",
-			"Add an external inclusion proof before treating ordering as independently anchored."
-	}
+	// MVP always reports not-anchored. TODO: wire real external/local inclusion-proof detection and return
+	// the external/local states here; keep the chip derived from the state so it cannot misreport.
+	return StateWarn,
+		chipNotAnchored,
+		"no inclusion proof - local or external - was recorded; ordering rests on the hash chain alone.",
+		"Add an external inclusion proof before treating ordering as independently anchored."
 }
 
 func completenessLine(chain receipt.ChainResult, receipts []receipt.Receipt) Line {

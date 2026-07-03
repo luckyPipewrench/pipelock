@@ -110,6 +110,54 @@ func TestQuerySession_FilterByType(t *testing.T) {
 	}
 }
 
+func TestQuerySession_TypeFilterWithMaxEntriesRead(t *testing.T) {
+	dir := t.TempDir()
+	cfg := recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		Redact:             false,
+		CheckpointInterval: 1000,
+	}
+	rec, err := recorder.New(cfg, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for i, entryType := range []string{"request", "action_receipt", "request", "action_receipt"} {
+		if err := rec.Record(recorder.Entry{
+			SessionID: "sess-1",
+			Type:      entryType,
+			Transport: testTransport,
+			Summary:   fmt.Sprintf("entry %d", i),
+		}); err != nil {
+			t.Fatalf("Record(%d): %v", i, err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	result, err := recorder.QuerySession(dir, "sess-1", &recorder.QueryFilter{
+		Type:           "action_receipt",
+		MaxEntriesRead: 3,
+	})
+	if err != nil {
+		t.Fatalf("QuerySession: %v", err)
+	}
+	if !result.Truncated {
+		t.Fatal("QuerySession should report truncation when MaxEntriesRead caps total entries read before filtering")
+	}
+	if result.EntriesRead != 3 {
+		t.Fatalf("EntriesRead = %d, want 3", result.EntriesRead)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1 filtered receipt entry", len(result.Entries))
+	}
+	if result.Entries[0].Type != "action_receipt" || result.Entries[0].Sequence != 1 {
+		t.Fatalf("filtered entry = type %q seq %d, want action_receipt seq 1", result.Entries[0].Type, result.Entries[0].Sequence)
+	}
+}
+
 func TestQuerySession_FilterByTransport(t *testing.T) {
 	dir := t.TempDir()
 	writeTestEntries(t, dir, "sess-1", 6)

@@ -1094,7 +1094,7 @@ behavioral_baseline:
 | `deviation_action` | `"warn"` | Action for locked-profile deviations: `warn`, `ask`, or `block` |
 | `auto_ratify` | `false` | Automatically lock learned profiles. Dangerous for production because poisoned training traffic can approve itself. |
 | `sensitivity_sigma` | `2.0` | Standard-deviation multiplier for deviation detection |
-| `lock_dimensions` | `tool_calls`, `unique_tools`, `domains`, `duration`, `requests` | Optional subset of `tool_calls`, `unique_tools`, `domains`, `duration`, `requests`. `bytes` remains stored in profiles for compatibility but is not part of default enforcement until transport byte recording is wired into session state. |
+| `lock_dimensions` | `tool_calls`, `unique_tools`, `domains`, `duration`, `requests` | Optional subset of `tool_calls`, `unique_tools`, `domains`, `bytes`, `duration`, `requests`. `bytes` remains stored in profiles for compatibility but is not part of default enforcement until transport byte recording is wired into session state. |
 | `poison_resistance` | `true` | Trim high-sigma training outliers before building the profile |
 | `seasonality_mode` | `"none"` | Seasonality mode; only `none` is currently enforced |
 

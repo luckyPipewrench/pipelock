@@ -1110,6 +1110,97 @@ func TestScanTextForDLP_AllowsOfficialAWSExampleCredentialDocs(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_OfficialAWSExampleCredentialDocsWholeTokenOnly(t *testing.T) {
+	s := New(testConfig())
+	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	realKey := "AKIA" + strings.Repeat("Q", 16)
+
+	tests := []struct {
+		name      string
+		text      string
+		wantClean bool
+	}{
+		{
+			name:      "superstring_key_in_doc_context_blocks",
+			text:      "example credential fixture\naws_access_key_id = " + key + strings.Repeat("0", 10),
+			wantClean: false,
+		},
+		{
+			name:      "broadened_sample_marker_allows_whole_token_dummy",
+			text:      "// sample credential\naws_access_key_id = " + key,
+			wantClean: true,
+		},
+		{
+			name:      "bare_key_without_marker_blocks",
+			text:      "exfil key " + key,
+			wantClean: false,
+		},
+		{
+			name:      "adjacent_real_key_still_blocks",
+			text:      "example credentials:\naws_access_key_id = " + key + " " + realKey,
+			wantClean: false,
+		},
+		{
+			// "example" in a hostname (api.vendor.example) is NOT a documentation
+			// marker: the example key in a live URL must still block.
+			name:      "example_in_hostname_is_not_a_doc_marker_blocks",
+			text:      "https://api.vendor.example/v1/keys#" + key,
+			wantClean: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean != tt.wantClean {
+				t.Fatalf("Clean=%v, want %v, matches=%+v", result.Clean, tt.wantClean, result.Matches)
+			}
+			if !tt.wantClean && !hasTextDLPMatch(result.Matches, "AWS Access ID", "") {
+				t.Fatalf("expected AWS Access ID match, got %+v", result.Matches)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_UnicodePrefixedBareKeyStillBlocks(t *testing.T) {
+	// A rune that changes byte length when lowercased (U+212A KELVIN SIGN -> "k")
+	// must not shift doc-marker offsets away from credential byte spans.
+	s := New(testConfig())
+	defer s.Close()
+
+	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	prefix := strings.Repeat("K", 10)
+
+	tests := []struct {
+		name      string
+		input     string
+		wantClean bool
+	}{
+		{
+			name:      "legitimate_doc_marker_allows_whole_token_dummy",
+			input:     prefix + "example credential fixture\naws_access_key_id = " + key,
+			wantClean: true,
+		},
+		{
+			name:      "self_overlapping_marker_still_blocks",
+			input:     prefix + key + " credential",
+			wantClean: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.input)
+			if result.Clean != tt.wantClean {
+				t.Fatalf("Clean=%v, want %v, matches=%+v", result.Clean, tt.wantClean, result.Matches)
+			}
+			if !tt.wantClean && !hasTextDLPMatch(result.Matches, "AWS Access ID", "") {
+				t.Fatalf("expected AWS Access ID match, got %+v", result.Matches)
+			}
+		})
+	}
+}
+
 // TestEnvVarSecret_WhitespaceViewMechanism locks the exact path that fired in
 // production. A wrapped tool RESULT and a wrapped first-party MCP tool's
 // security-review input both blocked on "Environment Variable Secret" because

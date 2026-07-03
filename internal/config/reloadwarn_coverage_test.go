@@ -95,6 +95,32 @@ func TestReloadActionStrengthCoversAllOrderedActions(t *testing.T) {
 	}
 }
 
+func TestActionDowngradedExportedWrapper(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		oldAction string
+		newAction string
+		want      bool
+	}{
+		{name: "block_to_warn_downgrades", oldAction: ActionBlock, newAction: ActionWarn, want: true},
+		{name: "warn_to_block_not_downgrade", oldAction: ActionWarn, newAction: ActionBlock, want: false},
+		{name: "unknown_action_not_downgrade", oldAction: "bogus", newAction: ActionWarn, want: false},
+		{name: "unknown_new_action_not_downgrade", oldAction: ActionWarn, newAction: "bogus", want: false},
+		{name: "same_action_not_downgrade", oldAction: ActionWarn, newAction: ActionWarn, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := ActionDowngraded(tc.oldAction, tc.newAction); got != tc.want {
+				t.Fatalf("ActionDowngraded(%q, %q) = %v, want %v", tc.oldAction, tc.newAction, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSuppressCoverageHelpersEdgeCases(t *testing.T) {
 	t.Parallel()
 

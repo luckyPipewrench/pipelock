@@ -1574,6 +1574,16 @@ func TestImplausibleReloadTeardownReasons_BehavioralBaselineWeakening(t *testing
 		t.Fatalf("baseline downgrade reasons = %v, want behavioral_baseline.deviation_action downgraded", reasons)
 	}
 
+	// A non-block downgrade (ask -> warn) must also be rejected: the guard ranks
+	// enforcement strength (warn < ask < block) rather than special-casing block.
+	askOld := oldCfg.Clone()
+	askOld.BehavioralBaseline.DeviationAction = config.ActionAsk
+	askToWarn := askOld.Clone()
+	askToWarn.BehavioralBaseline.DeviationAction = config.ActionWarn
+	if reasons := implausibleReloadTeardownReasons(askOld, askToWarn); !containsString(reasons, "behavioral_baseline.deviation_action downgraded") {
+		t.Fatalf("ask->warn downgrade reasons = %v, want behavioral_baseline.deviation_action downgraded", reasons)
+	}
+
 	// A live profile_dir move orphans locked profiles on the next restart
 	// (Reconfigure does not reload the new dir), so it must be rejected as a
 	// teardown rather than hot-applied.

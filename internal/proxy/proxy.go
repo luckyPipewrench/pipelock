@@ -544,6 +544,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// initialize must not be silently swallowed (that leaves enforcement
 			// off while the operator believes deviations are blocked).
 			if err := sm.EnableBaseline(&cfg.BehavioralBaseline); err != nil {
+				// Fail closed AND clean up: sm is not yet stored in
+				// sessionMgrPtr, so nothing else would ever close its
+				// background goroutines (mirrors the Reload staging path).
+				sm.Close()
 				return nil, fmt.Errorf("behavioral baseline init: %w", err)
 			}
 		}

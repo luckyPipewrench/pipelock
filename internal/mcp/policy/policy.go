@@ -8,9 +8,12 @@ package policy
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -139,8 +142,14 @@ type CompiledRule struct {
 	ToolPattern      *regexp.Regexp
 	ArgPattern       *regexp.Regexp // nil = match on tool name alone
 	ArgKey           *regexp.Regexp // nil = match all arg values; non-nil = scope to matching keys
-	Action           string         // per-rule override, empty = use Config.Action
-	RedirectProfile  string         // key in redirect_profiles (when action=redirect)
+	ArgType          string
+	ArgNumberGT      *json.Number
+	ArgNumberLT      *json.Number
+	ArgLenGT         *int
+	ArgLenLT         *int
+	ArgValueIn       map[string]struct{}
+	Action           string // per-rule override, empty = use Config.Action
+	RedirectProfile  string // key in redirect_profiles (when action=redirect)
 	ResolutionPolicy config.DeferResolutionPolicy
 }
 
@@ -169,6 +178,11 @@ func New(cfg config.MCPToolPolicy) *Config {
 		compiled := &CompiledRule{
 			Name:            r.Name,
 			ToolPattern:     regexp.MustCompile(r.ToolPattern),
+			ArgType:         r.ArgType,
+			ArgNumberGT:     r.ArgNumberGT,
+			ArgNumberLT:     r.ArgNumberLT,
+			ArgLenGT:        r.ArgLenGT,
+			ArgLenLT:        r.ArgLenLT,
 			Action:          r.Action,
 			RedirectProfile: r.RedirectProfile,
 		}
@@ -180,6 +194,12 @@ func New(cfg config.MCPToolPolicy) *Config {
 		}
 		if r.ArgKey != "" {
 			compiled.ArgKey = regexp.MustCompile(r.ArgKey)
+		}
+		if len(r.ArgValueIn) > 0 {
+			compiled.ArgValueIn = make(map[string]struct{}, len(r.ArgValueIn))
+			for _, value := range r.ArgValueIn {
+				compiled.ArgValueIn[value] = struct{}{}
+			}
 		}
 		pc.Rules = append(pc.Rules, compiled)
 	}
@@ -196,8 +216,9 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 
 // CheckToolCallWithArgs evaluates a tool call against policy rules.
 // argStrings contains all argument values (for rules without arg_key).
-// rawArgs is the raw JSON arguments (for rules with arg_key that need
-// key-scoped extraction). rawArgs may be nil if no rules use arg_key.
+// rawArgs is the raw JSON arguments (for rules with arg_key or structural
+// validators that need parsed argument values). rawArgs may be nil when callers
+// cannot provide the original JSON.
 //
 // Three matching strategies handle different evasion techniques:
 //  1. Joined string - catches array-split evasion (["rm","-rf","/"])
@@ -254,35 +275,21 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			continue
 		}
 
-		// No arg pattern - tool name match alone triggers the rule.
-		if rule.ArgPattern == nil {
-			matchedRules = append(matchedRules, rule.Name)
-			action := rule.Action
-			if action == "" {
-				action = pc.Action
-			}
-			prev := strictest
-			strictest = StricterAction(strictest, action)
-			if strictest != prev && action == config.ActionRedirect {
-				redirectProfile = rule.RedirectProfile
-			}
-			if strictest != prev && action == config.ActionDefer {
-				resolutionPolicy = rule.ResolutionPolicy
-			}
-			continue
-		}
-
 		// Key-scoped rules: extract only values under matching top-level keys,
 		// then normalize and match those instead of all values. If raw
-		// arguments are unavailable, skip the rule rather than falling
-		// back to unscoped matching (safety net for future callers).
+		// arguments are unavailable, skip best-effort pattern-only rules rather
+		// than falling back to unscoped matching; structural validators need raw
+		// JSON, so they fail closed instead.
 		ruleTokens, ruleJoined := tokens, joined
 		ruleAltTokens, ruleAltJoined := altTokens, altJoined
 		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
-		if rule.ArgKey != nil {
-			if len(rawArgs) == 0 {
-				continue // cannot scope without raw JSON - skip rule
+		if rule.ArgKey != nil && len(rawArgs) == 0 {
+			if rule.hasStructuralValidators() {
+				return uninspectableStructuralArgsVerdict(rule.Name)
 			}
+			continue
+		}
+		if rule.ArgKey != nil && rule.ArgPattern != nil {
 			scoped := jsonrpc.ExtractStringsForKeysResult(rawArgs, rule.ArgKey)
 			if scoped.Truncated {
 				return uninspectableJSONDepthVerdict()
@@ -293,22 +300,34 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
 		}
 
-		if matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
+		argPatternMatched := rule.ArgPattern == nil ||
+			matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
 			matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
-			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined) {
-			matchedRules = append(matchedRules, rule.Name)
-			action := rule.Action
-			if action == "" {
-				action = pc.Action
-			}
-			prev := strictest
-			strictest = StricterAction(strictest, action)
-			if strictest != prev && action == config.ActionRedirect {
-				redirectProfile = rule.RedirectProfile
-			}
-			if strictest != prev && action == config.ActionDefer {
-				resolutionPolicy = rule.ResolutionPolicy
-			}
+			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined)
+		if !argPatternMatched {
+			continue
+		}
+
+		structuralMatched, uninspectable := rule.matchStructuralValidators(rawArgs)
+		if uninspectable {
+			return uninspectableJSONDepthVerdict()
+		}
+		if !structuralMatched {
+			continue
+		}
+
+		matchedRules = append(matchedRules, rule.Name)
+		action := rule.Action
+		if action == "" {
+			action = pc.Action
+		}
+		prev := strictest
+		strictest = StricterAction(strictest, action)
+		if strictest != prev && action == config.ActionRedirect {
+			redirectProfile = rule.RedirectProfile
+		}
+		if strictest != prev && action == config.ActionDefer {
+			resolutionPolicy = rule.ResolutionPolicy
 		}
 	}
 
@@ -396,6 +415,235 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 	return false
 }
 
+const structuralMaxArgDepth = 64
+
+func (rule *CompiledRule) hasStructuralValidators() bool {
+	return rule.ArgType != "" ||
+		rule.ArgNumberGT != nil ||
+		rule.ArgNumberLT != nil ||
+		rule.ArgLenGT != nil ||
+		rule.ArgLenLT != nil ||
+		len(rule.ArgValueIn) > 0
+}
+
+func (rule *CompiledRule) hasAbsentFailClosedValidator() bool {
+	return rule.ArgType != "" ||
+		rule.ArgNumberGT != nil ||
+		rule.ArgNumberLT != nil ||
+		rule.ArgLenGT != nil ||
+		rule.ArgLenLT != nil
+}
+
+func (rule *CompiledRule) matchStructuralValidators(rawArgs json.RawMessage) (matched bool, uninspectable bool) {
+	if !rule.hasStructuralValidators() {
+		return true, false
+	}
+
+	values, truncated, ok := structuralValuesForArgKey(rawArgs, rule.ArgKey)
+	if truncated || !ok {
+		return false, true
+	}
+	if len(values) == 0 {
+		return rule.hasAbsentFailClosedValidator(), false
+	}
+	for _, value := range values {
+		if rule.matchStructuralValue(value) {
+			return true, false
+		}
+	}
+	return false, false
+}
+
+func structuralValuesForArgKey(rawArgs json.RawMessage, keyPattern *regexp.Regexp) ([]interface{}, bool, bool) {
+	if len(rawArgs) == 0 || string(rawArgs) == jsonrpc.Null {
+		return nil, false, true
+	}
+	truncated, valid := structuralJSONDepthTruncated(rawArgs)
+	if truncated || !valid {
+		return nil, truncated, valid
+	}
+	dec := json.NewDecoder(bytes.NewReader(rawArgs))
+	dec.UseNumber()
+	var parsed interface{}
+	if err := dec.Decode(&parsed); err != nil {
+		return nil, false, false
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, false, false
+	}
+	args, ok := parsed.(map[string]interface{})
+	if !ok || keyPattern == nil {
+		return nil, false, true
+	}
+
+	var values []interface{}
+	for _, key := range jsonrpc.SortedKeys(args) {
+		if keyPattern.MatchString(key) {
+			values = append(values, args[key])
+		}
+	}
+	return values, false, true
+}
+
+func structuralJSONDepthTruncated(rawArgs json.RawMessage) (bool, bool) {
+	dec := json.NewDecoder(bytes.NewReader(rawArgs))
+	depth := 0
+	sawToken := false
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return false, sawToken && depth == 0
+		}
+		if err != nil {
+			return false, false
+		}
+		sawToken = true
+		delim, ok := tok.(json.Delim)
+		if !ok {
+			continue
+		}
+		switch delim {
+		case '{', '[':
+			depth++
+			if depth > structuralMaxArgDepth+1 {
+				return true, true
+			}
+		case '}', ']':
+			depth--
+		}
+	}
+}
+
+func (rule *CompiledRule) matchStructuralValue(value interface{}) bool {
+	hasNonTypeValidator := rule.ArgNumberGT != nil ||
+		rule.ArgNumberLT != nil ||
+		rule.ArgLenGT != nil ||
+		rule.ArgLenLT != nil ||
+		len(rule.ArgValueIn) > 0
+
+	if rule.ArgType != "" {
+		if !structuralValueHasType(value, rule.ArgType) {
+			return true
+		}
+		if !hasNonTypeValidator {
+			return false
+		}
+	}
+
+	if rule.ArgNumberGT != nil || rule.ArgNumberLT != nil {
+		valueNumber, ok := value.(json.Number)
+		if !ok {
+			return true
+		}
+		valueRat, ok := config.ParseBoundedJSONNumber(valueNumber)
+		if !ok {
+			return true
+		}
+		if rule.ArgNumberGT != nil {
+			threshold, ok := config.ParseBoundedJSONNumber(*rule.ArgNumberGT)
+			if !ok {
+				return true // unevaluable compiled threshold: fail closed (match)
+			}
+			if valueRat.Cmp(threshold) <= 0 {
+				return false
+			}
+		}
+		if rule.ArgNumberLT != nil {
+			threshold, ok := config.ParseBoundedJSONNumber(*rule.ArgNumberLT)
+			if !ok {
+				return true // unevaluable compiled threshold: fail closed (match)
+			}
+			if valueRat.Cmp(threshold) >= 0 {
+				return false
+			}
+		}
+	}
+
+	if rule.ArgLenGT != nil || rule.ArgLenLT != nil {
+		length, ok := structuralValueLength(value)
+		if !ok {
+			return true
+		}
+		if rule.ArgLenGT != nil && length <= *rule.ArgLenGT {
+			return false
+		}
+		if rule.ArgLenLT != nil && length >= *rule.ArgLenLT {
+			return false
+		}
+	}
+
+	if len(rule.ArgValueIn) > 0 {
+		canonical, ok := canonicalStructuralValue(value)
+		if !ok {
+			return true
+		}
+		if _, ok := rule.ArgValueIn[canonical]; !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+func structuralValueHasType(value interface{}, argType string) bool {
+	switch argType {
+	case "string":
+		_, ok := value.(string)
+		return ok
+	case "number":
+		_, ok := value.(json.Number)
+		return ok
+	case "integer":
+		number, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		rat, ok := config.ParseBoundedJSONNumber(number)
+		return ok && rat.Denom().Cmp(big.NewInt(1)) == 0
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "array":
+		_, ok := value.([]interface{})
+		return ok
+	case "object":
+		_, ok := value.(map[string]interface{})
+		return ok
+	default:
+		return false
+	}
+}
+
+func structuralValueLength(value interface{}) (int, bool) {
+	switch typed := value.(type) {
+	case string:
+		return utf8.RuneCountInString(typed), true
+	case []interface{}:
+		return len(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func canonicalStructuralValue(value interface{}) (string, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return "null", true
+	case string:
+		return typed, true
+	case json.Number:
+		return typed.String(), true
+	case bool:
+		return strconv.FormatBool(typed), true
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
+	}
+}
+
 // CheckRequest evaluates a JSON-RPC request (single or batch) against policy.
 // Returns a clean verdict for non-tools/call methods and unparseable messages.
 func (pc *Config) CheckRequest(line []byte) Verdict {
@@ -435,12 +683,12 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 		argStrings = extracted.Strings
 	}
 
-	// If any rule uses ArgKey, we need per-rule key-scoped extraction.
-	// Pass raw arguments so CheckToolCallWithArgs can extract per-key.
+	// If any rule uses ArgKey or structural validators, pass raw arguments so
+	// CheckToolCallWithArgs can extract per-key and inspect parsed JSON values.
 	var rawArgs json.RawMessage
 	if hasArgs {
 		for _, rule := range pc.Rules {
-			if rule.ArgKey != nil {
+			if rule.ArgKey != nil || rule.hasStructuralValidators() {
 				rawArgs = tc.Arguments
 				break
 			}
@@ -457,6 +705,18 @@ func uninspectableJSONDepthVerdict() Verdict {
 		Matched: true,
 		Action:  config.ActionBlock,
 		Rules:   []string{uninspectableJSONDepthRule},
+	}
+}
+
+func uninspectableStructuralArgsVerdict(ruleName string) Verdict {
+	rules := []string{uninspectableJSONDepthRule}
+	if ruleName != "" {
+		rules = []string{ruleName, uninspectableJSONDepthRule}
+	}
+	return Verdict{
+		Matched: true,
+		Action:  config.ActionBlock,
+		Rules:   rules,
 	}
 }
 

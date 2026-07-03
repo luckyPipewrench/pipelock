@@ -822,16 +822,47 @@ func (s *SessionState) RecordToolCall(toolName string) {
 
 // BaselineMetrics returns a snapshot of the session's accumulated metrics
 // suitable for passing to baseline.Manager.RecordSession or Check.
-func (s *SessionState) BaselineMetrics() baseline.SessionMetrics {
+func (s *SessionState) BaselineMetrics() session.BaselineMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return baseline.SessionMetrics{
+	return session.BaselineMetrics{
 		ToolCalls:   s.toolCalls,
 		UniqueTools: len(s.uniqueTools),
 		Domains:     countUniqueDomains(s.domainWindows),
 		BytesTotal:  s.bytesTotal,
 		DurationSec: s.lastActivity.Sub(s.created).Seconds(),
 		Requests:    s.requestCount,
+	}
+}
+
+// ProvisionalToolCallMetrics returns metrics that include toolName as the
+// current MCP attempt without committing it to the session.
+func (s *SessionState) ProvisionalToolCallMetrics(toolName string) session.BaselineMetrics {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	uniqueTools := len(s.uniqueTools)
+	if _, ok := s.uniqueTools[toolName]; !ok {
+		uniqueTools++
+	}
+	return session.BaselineMetrics{
+		ToolCalls:   s.toolCalls + 1,
+		UniqueTools: uniqueTools,
+		Domains:     countUniqueDomains(s.domainWindows),
+		BytesTotal:  s.bytesTotal,
+		DurationSec: s.lastActivity.Sub(s.created).Seconds(),
+		Requests:    s.requestCount,
+	}
+}
+
+func baselineSessionMetrics(metrics session.BaselineMetrics) baseline.SessionMetrics {
+	return baseline.SessionMetrics{
+		ToolCalls:   metrics.ToolCalls,
+		UniqueTools: metrics.UniqueTools,
+		Domains:     metrics.Domains,
+		BytesTotal:  metrics.BytesTotal,
+		DurationSec: metrics.DurationSec,
+		Requests:    metrics.Requests,
 	}
 }
 
@@ -1102,8 +1133,11 @@ func (sm *SessionManager) CheckBaseline(agentKey string, sess *SessionState) *Ba
 	if snap == nil || snap.mgr == nil {
 		return nil
 	}
-	metrics := sess.BaselineMetrics()
-	deviations, err := snap.mgr.CheckErr(agentKey, metrics)
+	return sm.checkBaselineMetrics(snap, agentKey, sess.BaselineMetrics())
+}
+
+func (sm *SessionManager) checkBaselineMetrics(snap *baselineSnapshot, agentKey string, metrics session.BaselineMetrics) *BaselineResult {
+	deviations, err := snap.mgr.CheckErr(agentKey, baselineSessionMetrics(metrics))
 	if err != nil {
 		return &BaselineResult{
 			Blocked: true,
@@ -1136,6 +1170,23 @@ func (sm *SessionManager) CheckBaselineFailClosed(agentKey string, sess *Session
 	return sm.CheckBaseline(agentKey, sess)
 }
 
+func (sm *SessionManager) checkBaselineMetricsFailClosed(agentKey string, metrics session.BaselineMetrics) (res *BaselineResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = &BaselineResult{
+				Blocked: true,
+				Action:  config.ActionBlock,
+				Err:     fmt.Errorf("baseline check failed: %v", r),
+			}
+		}
+	}()
+	snap := sm.baselinePtr.Load()
+	if snap == nil || snap.mgr == nil {
+		return nil
+	}
+	return sm.checkBaselineMetrics(snap, agentKey, metrics)
+}
+
 // CheckBaselineForRecorder adapts the proxy baseline checker to the shared
 // session.BaselineChecker interface used by MCP transports.
 func (sm *SessionManager) CheckBaselineForRecorder(agentKey string, rec session.Recorder) session.BaselineDecision {
@@ -1154,6 +1205,24 @@ func (sm *SessionManager) CheckBaselineForRecorder(agentKey string, rec session.
 	}
 }
 
+// CheckBaselineForMetrics evaluates explicit transport-neutral baseline
+// metrics. MCP uses this for provisional tool-call checks that must not mutate
+// the committed recorder.
+func (sm *SessionManager) CheckBaselineForMetrics(agentKey string, metrics session.BaselineMetrics) session.BaselineDecision {
+	if agentKey == "" {
+		return session.BaselineDecision{}
+	}
+	result := sm.checkBaselineMetricsFailClosed(agentKey, metrics)
+	if result == nil {
+		return session.BaselineDecision{}
+	}
+	return session.BaselineDecision{
+		Blocked: result.Blocked,
+		Action:  result.Action,
+		Detail:  baselineDecisionDetail(result),
+	}
+}
+
 // RecordBaselineForRecorder records an invocation recorder under an explicit
 // identity key for MCP transports.
 func (sm *SessionManager) RecordBaselineForRecorder(agentKey string, rec session.Recorder) {
@@ -1162,6 +1231,19 @@ func (sm *SessionManager) RecordBaselineForRecorder(agentKey string, rec session
 		return
 	}
 	sm.RecordBaselineForAgent(agentKey, sess)
+}
+
+// RecordBaselineMetrics records an explicit transport-neutral sample under an
+// identity key.
+func (sm *SessionManager) RecordBaselineMetrics(agentKey string, metrics session.BaselineMetrics) {
+	snap := sm.baselinePtr.Load()
+	if snap == nil || snap.mgr == nil || agentKey == "" {
+		return
+	}
+	if err := baseline.ValidateAgentKey(agentKey); err != nil {
+		return
+	}
+	snap.mgr.RecordSession(agentKey, baselineSessionMetrics(metrics))
 }
 
 func baselineDecisionDetail(result *BaselineResult) string {
@@ -1193,8 +1275,7 @@ func (sm *SessionManager) RecordBaselineForAgent(identityKey string, sess *Sessi
 	if err := baseline.ValidateAgentKey(identityKey); err != nil {
 		return
 	}
-	bm := sess.BaselineMetrics()
-	snap.mgr.RecordSession(identityKey, bm)
+	snap.mgr.RecordSession(identityKey, baselineSessionMetrics(sess.BaselineMetrics()))
 }
 
 // recordSessionBaseline records the session's accumulated metrics into the

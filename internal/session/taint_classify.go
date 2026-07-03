@@ -115,6 +115,17 @@ func ClassifyPathSensitivityWithConfidence(targetPath string, protectedPatterns,
 	return ActionClassification{Sensitivity: SensitivityNormal, Confident: confident}
 }
 
+// failSafeSensitivity elevates an otherwise-normal read/browse action to
+// Protected when fail-safe classification is enabled and the target could not be
+// confidently classified. Centralizes the fail-safe read-path downgrade so the
+// stdio/HTTP read branches do not repeat it.
+func failSafeSensitivity(opts ClassificationOptions, confident bool) ActionSensitivity {
+	if opts.FailSafe && !confident {
+		return SensitivityProtected
+	}
+	return SensitivityNormal
+}
+
 // ClassifyHTTPAction returns the taint policy action class for an HTTP request.
 func ClassifyHTTPAction(method, targetPath string, protectedPatterns, elevatedPatterns []string) (ActionClass, ActionSensitivity) {
 	classified := ClassifyHTTPActionWithOptions(method, targetPath, protectedPatterns, elevatedPatterns, ClassificationOptions{})
@@ -127,11 +138,7 @@ func ClassifyHTTPActionWithOptions(method, targetPath string, protectedPatterns,
 	pathClass := ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, opts)
 	switch strings.ToUpper(method) {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
-		sensitivity := SensitivityNormal
-		if opts.FailSafe && !pathClass.Confident {
-			sensitivity = SensitivityProtected
-		}
-		return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, Confident: pathClass.Confident}
+		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), Confident: pathClass.Confident}
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 		return ActionClassification{Class: ActionClassPublish, Sensitivity: pathClass.Sensitivity, Confident: pathClass.Confident}
 	default:
@@ -187,11 +194,7 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 
 	if looksLikeReadTool(name) || category == "read" || category == "list" {
 		pathClass := ClassifyPathSensitivityWithConfidence(targetPath, protectedPatterns, elevatedPatterns, opts)
-		sensitivity := SensitivityNormal
-		if opts.FailSafe && !pathClass.Confident {
-			sensitivity = SensitivityProtected
-		}
-		return ActionClassification{Class: ActionClassRead, Sensitivity: sensitivity, ActionRef: targetPath, Confident: pathClass.Confident}
+		return ActionClassification{Class: ActionClassRead, Sensitivity: failSafeSensitivity(opts, pathClass.Confident), ActionRef: targetPath, Confident: pathClass.Confident}
 	}
 
 	if hasExecIntent(argsJSON) {

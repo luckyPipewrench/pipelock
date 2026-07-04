@@ -242,7 +242,10 @@ const (
 	// Re-bumped for removing generic navigation verbs from the markdown-link
 	// credential-exfil branch, so docs that say to visit/click setup links stay
 	// clean unless an actual exfiltration verb is present.
-	goldenHashDefaults = "8148b25e769f97ccb8fa00c97f9b23f27d7d88e8e35b2fa9f6e983b2cf99efe9"
+	// Re-bumped for bounded size-exempt response scanning: the per-response
+	// and per-proxy-instance scan ceilings plus the explicit unscannable passthrough
+	// allowlist change response-size enforcement.
+	goldenHashDefaults = "0faa8878fbaf9513f8bbc070539e890e2a18dfd0ad707554aa91f1c4b80da8c8"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -359,7 +362,9 @@ const (
 	// set, so the hash shifts in lockstep.
 	// Re-bumped for the generic-navigation false-positive tightening: see
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "10c9290ccb4ae994c06b4f3cf2f7baa2b6e105cf6d51021ff4d1263c3e4cf54a"
+	// Re-bumped for bounded size-exempt response scanning: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "2577be7a5dd02af11d0fa731063f37235518dc9df968a1c5286afff1d36410a7"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -948,5 +953,55 @@ func TestCanonicalPolicyHash_GoldenInvariantUnderOpsFields(t *testing.T) {
 	got := cfg.computeCanonicalPolicyHash()
 	if got != goldenHashRichConfig {
 		t.Errorf("ops-field invariance broken.\n  want %s (rich-config golden)\n  got  %s\n\nA field in policySemanticView is not being zeroed. Check the field list in canonical.go:policySemanticView against the ops-field swap set in goldenRichYAMLWithOpsFieldsChanged.", goldenHashRichConfig, got)
+	}
+}
+
+// TestCanonicalPolicyHash_UnscannablePassthrough exercises the canonical
+// serialization + sort of unscannable_passthrough entries (so the policy hash
+// binds them) and the deep-copy clone path. Entries are supplied unsorted and
+// differ in each sort key so the canonical comparator branches all run.
+func TestCanonicalPolicyHash_UnscannablePassthrough(t *testing.T) {
+	entries := []UnscannablePassthroughEntry{
+		{Host: "b.example.com", Paths: []string{"/z.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r2", Added: "2026-02-01", Expires: "2099-02-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/y.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/zip"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r3", Added: "2026-01-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-03-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-09-09"},
+	}
+
+	withPT := Defaults()
+	withPT.ResponseScanning.UnscannablePassthrough = append([]UnscannablePassthroughEntry(nil), entries...)
+	hWith := withPT.CanonicalPolicyHash()
+
+	base := Defaults()
+	hBase := base.CanonicalPolicyHash()
+	if hWith == hBase {
+		t.Fatal("unscannable_passthrough entries must change the canonical policy hash")
+	}
+
+	// Order invariance: the same entries in a different input order must
+	// canonicalize to the same hash.
+	shuffled := Defaults()
+	rev := make([]UnscannablePassthroughEntry, len(entries))
+	for i, e := range entries {
+		rev[len(entries)-1-i] = e
+	}
+	shuffled.ResponseScanning.UnscannablePassthrough = rev
+	if got := shuffled.CanonicalPolicyHash(); got != hWith {
+		t.Fatalf("passthrough hash is order-sensitive: %s vs %s", got, hWith)
+	}
+
+	// Clone must deep-copy the passthrough slice (and its nested slices) so a
+	// runtime caller cannot alias back into the loaded config.
+	clone := withPT.Clone()
+	if len(clone.ResponseScanning.UnscannablePassthrough) != len(entries) {
+		t.Fatalf("clone dropped passthrough entries: got %d want %d", len(clone.ResponseScanning.UnscannablePassthrough), len(entries))
+	}
+	clone.ResponseScanning.UnscannablePassthrough[0].Paths[0] = "/mutated"
+	clone.ResponseScanning.UnscannablePassthrough[0].Host = "mutated.example.com"
+	if withPT.CanonicalPolicyHash() != hWith {
+		t.Fatal("mutating the clone aliased back into the source config")
 	}
 }

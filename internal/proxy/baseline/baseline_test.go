@@ -5,6 +5,7 @@ package baseline
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,6 +14,13 @@ import (
 )
 
 const testAgent = "agent-1"
+
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0o000 does not make files unreadable for EUID 0")
+	}
+}
 
 // makeReadOnly removes all permissions from a directory for testing.
 // 0o000 satisfies gosec G302 (<=0o600) and prevents any file writes.
@@ -646,6 +654,28 @@ func TestBaseline_LoadProfiles_VerifiesLockedProfileIntegrityManifest(t *testing
 	}
 }
 
+func TestBaseline_LoadProfiles_AllowsAgentNamedManifestUnderEnforcement(t *testing.T) {
+	dir := t.TempDir()
+	const agentKey = "manifest"
+	_ = seedLockedProfileFor(t, dir, agentKey)
+
+	restarted, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager with agent named manifest: %v", err)
+	}
+	if state := restarted.GetState(agentKey); state != StateLocked {
+		t.Fatalf("state = %q, want %q", state, StateLocked)
+	}
+	if devs := restarted.Check(agentKey, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("agent named manifest must still enforce")
+	}
+}
+
 func TestBaseline_LoadProfiles_FailsClosedOnLockedProfileTamperUnderEnforcement(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -669,6 +699,21 @@ func TestBaseline_LoadProfiles_FailsClosedOnLockedProfileTamperUnderEnforcement(
 				}
 				if err := os.Mkdir(path, 0o750); err != nil {
 					t.Fatalf("mkdir profile path: %v", err)
+				}
+			},
+		},
+		{
+			name: "profile_symlink",
+			tamper: func(t *testing.T, _, path string) {
+				t.Helper()
+				data := copyFileBytes(t, path)
+				target := filepath.Join(t.TempDir(), "copied-profile")
+				writeFileBytes(t, target, data)
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("remove profile: %v", err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatalf("symlink profile path: %v", err)
 				}
 			},
 		},
@@ -767,6 +812,22 @@ func TestBaseline_LoadProfiles_FailsClosedOnLockedProfileTamperUnderEnforcement(
 				t.Helper()
 				if err := os.Remove(baselineIntegrityManifestPath(dir)); err != nil {
 					t.Fatalf("delete manifest: %v", err)
+				}
+			},
+		},
+		{
+			name: "manifest_symlink",
+			tamper: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				manifestPath := baselineIntegrityManifestPath(dir)
+				data := copyFileBytes(t, manifestPath)
+				target := filepath.Join(t.TempDir(), "copied-manifest")
+				writeFileBytes(t, target, data)
+				if err := os.Remove(manifestPath); err != nil {
+					t.Fatalf("remove manifest: %v", err)
+				}
+				if err := os.Symlink(target, manifestPath); err != nil {
+					t.Fatalf("symlink manifest path: %v", err)
 				}
 			},
 		},
@@ -1000,6 +1061,33 @@ func TestBaseline_ResetLastLockedProfilePersistsEmptyIntegrityManifest(t *testin
 	}
 	if agents := restarted.ListAgents(); len(agents) != 0 {
 		t.Fatalf("agents after reset restart = %v, want none", agents)
+	}
+}
+
+func TestBaseline_ResetManifestFailureRestoresPersistedProfile(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := seedLockedProfile(t, dir)
+	mgr, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := os.WriteFile(baselineIntegrityKeyPath(dir), []byte("not-a-valid-key\n"), 0o600); err != nil {
+		t.Fatalf("corrupt integrity key: %v", err)
+	}
+
+	if err := mgr.Reset(testAgent); err == nil {
+		t.Fatal("Reset: want manifest update error")
+	}
+	if _, err := os.Stat(profilePath); err != nil {
+		t.Fatalf("profile should be restored after manifest update failure: %v", err)
+	}
+	if devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("in-memory enforcement must remain active after failed reset")
 	}
 }
 
@@ -2039,6 +2127,7 @@ func TestBaseline_IntegrityIOErrorsFailClosed(t *testing.T) {
 	highWaterPath := func(dir string) string { return baselineIntegrityKeyPath(dir) + ".generation" }
 
 	t.Run("unreadable_key", func(t *testing.T) {
+		skipIfRoot(t)
 		dir := t.TempDir()
 		seedLockedProfile(t, dir)
 		keyPath := baselineIntegrityKeyPath(dir)
@@ -2054,6 +2143,7 @@ func TestBaseline_IntegrityIOErrorsFailClosed(t *testing.T) {
 	})
 
 	t.Run("unreadable_high_water", func(t *testing.T) {
+		skipIfRoot(t)
 		dir := t.TempDir()
 		seedLockedProfile(t, dir)
 		hw := highWaterPath(dir)
@@ -2094,6 +2184,9 @@ func TestBaseline_IntegrityIOErrorsFailClosed(t *testing.T) {
 		if err := mgr.Ratify(testAgent); err == nil {
 			t.Fatal("want persist error when integrity key directory cannot be created")
 		}
+		if _, err := os.Stat(filepath.Join(dir, testAgent+profileFileExt)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("profile should be removed after manifest persistence failure, stat error = %v", err)
+		}
 	})
 }
 
@@ -2109,11 +2202,106 @@ func TestBaseline_IntegrityGenerationInvariants(t *testing.T) {
 	if err := mgr.writeIntegrityHighWater(0); err == nil {
 		t.Fatal("want error writing a zero generation high-water")
 	}
+	if err := mgr.acceptIntegrityManifestGeneration(0); err == nil {
+		t.Fatal("want error accepting a zero generation manifest")
+	}
 	if err := mgr.writeIntegrityHighWater(math.MaxUint64); err != nil {
 		t.Fatalf("write max high-water: %v", err)
 	}
 	if _, err := mgr.nextIntegrityManifestGeneration(); err == nil {
 		t.Fatal("want overflow error advancing past the maximum generation")
+	}
+}
+
+func TestBaseline_VerifyIntegrityManifestRejectsMalformedFiles(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	valid := integrityManifest{
+		SchemaVersion: integrityManifestVersion,
+		Algorithm:     integrityManifestAlg,
+		Generation:    1,
+	}
+	mac, err := signIntegrityManifest(valid, key)
+	if err != nil {
+		t.Fatalf("sign manifest: %v", err)
+	}
+	mustJSON := func(t *testing.T, file integrityManifestFile) []byte {
+		t.Helper()
+		data, err := json.Marshal(file)
+		if err != nil {
+			t.Fatalf("marshal manifest file: %v", err)
+		}
+		return data
+	}
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "invalid_json", data: []byte("{")},
+		{name: "trailing_data", data: append(mustJSON(t, integrityManifestFile{Manifest: valid, HMAC: mac}), []byte("\n{}")...)},
+		{name: "wrong_schema", data: mustJSON(t, integrityManifestFile{Manifest: integrityManifest{SchemaVersion: 99, Algorithm: integrityManifestAlg}, HMAC: mac})},
+		{name: "wrong_algorithm", data: mustJSON(t, integrityManifestFile{Manifest: integrityManifest{SchemaVersion: integrityManifestVersion, Algorithm: "none"}, HMAC: mac})},
+		{name: "bad_hmac_hex", data: mustJSON(t, integrityManifestFile{Manifest: valid, HMAC: "not-hex"})},
+		{name: "short_hmac", data: mustJSON(t, integrityManifestFile{Manifest: valid, HMAC: "abcd"})},
+		{name: "hmac_mismatch", data: mustJSON(t, integrityManifestFile{Manifest: valid, HMAC: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"})},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := verifyIntegrityManifest(tc.data, key); err == nil {
+				t.Fatal("verifyIntegrityManifest: want error")
+			}
+		})
+	}
+}
+
+func TestBaseline_PersistedProfileFilesExistEdges(t *testing.T) {
+	dir := t.TempDir()
+	mgr := &Manager{cfg: Config{ProfileDir: dir}}
+
+	exists, err := mgr.persistedProfileFilesExist(nil)
+	if err != nil {
+		t.Fatalf("empty dir scan: %v", err)
+	}
+	if exists {
+		t.Fatal("empty dir should not report profiles")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write manifest-named profile: %v", err)
+	}
+	exists, err = mgr.persistedProfileFilesExist(map[string]bool{"manifest": true})
+	if err != nil {
+		t.Fatalf("excluded profile scan: %v", err)
+	}
+	if exists {
+		t.Fatal("excluded manifest-named profile should not count")
+	}
+	exists, err = mgr.persistedProfileFilesExist(nil)
+	if err != nil {
+		t.Fatalf("profile scan: %v", err)
+	}
+	if !exists {
+		t.Fatal("manifest-named profile should count")
+	}
+
+	badDir := t.TempDir()
+	mgr.cfg.ProfileDir = badDir
+	if err := os.Mkdir(filepath.Join(badDir, "bad.json"), 0o750); err != nil {
+		t.Fatalf("mkdir profile path: %v", err)
+	}
+	if _, err := mgr.persistedProfileFilesExist(nil); err == nil {
+		t.Fatal("directory profile path should error")
+	}
+
+	mgr.cfg.ProfileDir = filepath.Join(t.TempDir(), "missing")
+	if _, err := mgr.persistedProfileFilesExist(nil); err == nil {
+		t.Fatal("missing profile directory should error")
+	}
+}
+
+func TestBaseline_PersistIntegrityManifestSkipsWithoutProfileDir(t *testing.T) {
+	mgr := &Manager{}
+	if err := mgr.persistIntegrityManifest(nil); err != nil {
+		t.Fatalf("persistIntegrityManifest without ProfileDir: %v", err)
 	}
 }
 

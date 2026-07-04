@@ -8,6 +8,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"html"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +36,20 @@ func stackedDLPFixture(secret string, layers int) string {
 			continue
 		}
 		out = base64.StdEncoding.EncodeToString([]byte(out))
+	}
+	return out
+}
+
+func htmlEntityFixture(secret string, layers int) string {
+	var b strings.Builder
+	for _, r := range secret {
+		b.WriteString("&#")
+		b.WriteString(strconv.Itoa(int(r)))
+		b.WriteString(";")
+	}
+	out := b.String()
+	for i := 1; i < layers; i++ {
+		out = html.EscapeString(out)
 	}
 	return out
 }
@@ -1092,6 +1107,32 @@ func TestScanTextForDLP_DecodesDelimiterSplitStructuredPayloadSegment(t *testing
 	}
 }
 
+func TestScanTextForDLP_DecodesDeepHTMLEntitySecret(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	secret := "AKIA" + strings.Repeat("Q", 16)
+	text := "payload=" + htmlEntityFixture(secret, 6)
+
+	result := s.ScanTextForDLP(context.Background(), text)
+	if result.Clean {
+		t.Fatal("expected deeply HTML-entity-encoded AWS access key to be detected")
+	}
+	if !hasTextDLPMatch(result.Matches, "AWS Access ID", encodingHTML) {
+		t.Fatalf("expected HTML-entity AWS Access ID match, got %+v", result.Matches)
+	}
+}
+
+func TestDecodeHTMLEntitiesSingleEncodedResolvesInOnePass(t *testing.T) {
+	decoded, passes := decodeHTMLEntitiesWithPassCount("safe &amp; sound")
+	if decoded != "safe & sound" {
+		t.Fatalf("decoded = %q, want %q", decoded, "safe & sound")
+	}
+	if passes != 1 {
+		t.Fatalf("passes = %d, want 1", passes)
+	}
+}
+
 func TestScanTextForDLP_AllowsOfficialAWSExampleCredentialDocs(t *testing.T) {
 	s := New(testConfig())
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
@@ -1579,6 +1620,78 @@ func TestScanTextForDLP_DoubleURLEncoding(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected AWS Access ID pattern match, got: %v", result.Matches)
+	}
+}
+
+func TestScanTextForDLP_HTMLEntityEncodedSecret(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "decimal",
+			text: `<input value="&#65;&#75;&#73;&#65;&#73;&#79;&#83;&#70;&#79;&#68;&#78;&#78;&#55;&#69;&#88;&#65;&#77;&#80;&#76;&#69;">`,
+		},
+		{
+			name: "hex",
+			text: `<input value="&#x41;&#x4b;&#x49;&#x41;&#x53;&#x4f;&#x53;&#x46;&#x4f;&#x44;&#x4e;&#x4e;&#x37;&#x45;&#x58;&#x41;&#x4d;&#x50;&#x4c;&#x45;">`,
+		},
+		{
+			name: "semicolonless",
+			text: `<input value="&#65&#75&#73&#65&#73&#79&#83&#70&#79&#68&#78&#78&#55&#69&#88&#65&#77&#80&#76&#69">`,
+		},
+		{
+			name: "nested",
+			text: `<input value="&amp;#65;&amp;#75;&amp;#73;&amp;#65;&amp;#73;&amp;#79;&amp;#83;&amp;#70;&amp;#79;&amp;#68;&amp;#78;&amp;#78;&amp;#55;&amp;#69;&amp;#88;&amp;#65;&amp;#77;&amp;#80;&amp;#76;&amp;#69;">`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), tt.text)
+			if result.Clean {
+				t.Fatal("expected HTML-entity-encoded AWS key to be blocked")
+			}
+			if !hasTextDLPMatch(result.Matches, "AWS Access ID", encodingHTML) {
+				t.Fatalf("expected HTML entity AWS Access ID match, got %+v", result.Matches)
+			}
+		})
+	}
+}
+
+func TestScanTextForDLP_HTMLEntityWrappedBase64Secret(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	secret := testAnthropicPrefix + strings.Repeat("q", 25)
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	result := s.ScanTextForDLP(context.Background(), `<span data-token="`+htmlEntityFixture(encoded, 1)+`"></span>`)
+	if result.Clean {
+		t.Fatal("expected HTML-entity-wrapped base64 secret to be detected")
+	}
+	if !hasTextDLPMatch(result.Matches, testAnthropicName, encodingBase64) {
+		t.Fatalf("expected base64 %q match after HTML decode, got %+v", testAnthropicName, result.Matches)
+	}
+
+	benign := base64.StdEncoding.EncodeToString([]byte("ordinary prose about deployment notes and support routing"))
+	clean := s.ScanTextForDLP(context.Background(), `<p>`+htmlEntityFixture(benign, 1)+`</p>`)
+	if !clean.Clean {
+		t.Fatalf("benign HTML-entity-wrapped prose should stay clean: %+v", clean.Matches)
+	}
+}
+
+func TestScanTextForDLP_InvalidHTMLEntitiesClean(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.ScanTextForDLP(context.Background(), `literal invalid entities: &#xZZ; &#999999999999; &notasecret;`)
+	if !result.Clean {
+		t.Fatalf("invalid HTML entities should not synthesize a DLP match: %+v", result.Matches)
 	}
 }
 

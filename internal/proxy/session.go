@@ -826,12 +826,13 @@ func (s *SessionState) BaselineMetrics() session.BaselineMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return session.BaselineMetrics{
-		ToolCalls:   s.toolCalls,
-		UniqueTools: len(s.uniqueTools),
-		Domains:     countUniqueDomains(s.domainWindows),
-		BytesTotal:  s.bytesTotal,
-		DurationSec: s.lastActivity.Sub(s.created).Seconds(),
-		Requests:    s.requestCount,
+		ToolCalls:      s.toolCalls,
+		UniqueTools:    len(s.uniqueTools),
+		ToolIdentities: sortedToolIdentities(s.uniqueTools),
+		Domains:        countUniqueDomains(s.domainWindows),
+		BytesTotal:     s.bytesTotal,
+		DurationSec:    s.lastActivity.Sub(s.created).Seconds(),
+		Requests:       s.requestCount,
 	}
 }
 
@@ -845,25 +846,53 @@ func (s *SessionState) ProvisionalToolCallMetrics(toolName string) session.Basel
 	if _, ok := s.uniqueTools[toolName]; !ok {
 		uniqueTools++
 	}
+	toolIdentities := sortedToolIdentities(s.uniqueTools)
+	if toolName != "" && !stringSliceContains(toolIdentities, toolName) {
+		toolIdentities = append(toolIdentities, toolName)
+		sort.Strings(toolIdentities)
+	}
 	return session.BaselineMetrics{
-		ToolCalls:   s.toolCalls + 1,
-		UniqueTools: uniqueTools,
-		Domains:     countUniqueDomains(s.domainWindows),
-		BytesTotal:  s.bytesTotal,
-		DurationSec: s.lastActivity.Sub(s.created).Seconds(),
-		Requests:    s.requestCount,
+		ToolCalls:      s.toolCalls + 1,
+		UniqueTools:    uniqueTools,
+		ToolIdentities: toolIdentities,
+		Domains:        countUniqueDomains(s.domainWindows),
+		BytesTotal:     s.bytesTotal,
+		DurationSec:    s.lastActivity.Sub(s.created).Seconds(),
+		Requests:       s.requestCount,
 	}
 }
 
 func baselineSessionMetrics(metrics session.BaselineMetrics) baseline.SessionMetrics {
 	return baseline.SessionMetrics{
-		ToolCalls:   metrics.ToolCalls,
-		UniqueTools: metrics.UniqueTools,
-		Domains:     metrics.Domains,
-		BytesTotal:  metrics.BytesTotal,
-		DurationSec: metrics.DurationSec,
-		Requests:    metrics.Requests,
+		ToolCalls:      metrics.ToolCalls,
+		UniqueTools:    metrics.UniqueTools,
+		ToolIdentities: append([]string(nil), metrics.ToolIdentities...),
+		Domains:        metrics.Domains,
+		BytesTotal:     metrics.BytesTotal,
+		DurationSec:    metrics.DurationSec,
+		Requests:       metrics.Requests,
 	}
+}
+
+func sortedToolIdentities(tools map[string]struct{}) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	identities := make([]string, 0, len(tools))
+	for tool := range tools {
+		identities = append(identities, tool)
+	}
+	sort.Strings(identities)
+	return identities
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // Session key classification constants.

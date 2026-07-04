@@ -233,7 +233,16 @@ const (
 	// JSON-object encodings (`eyA`, `ew[o/k/0]`, `e30`, `e30=`), so compact
 	// JWTs with whitespace or empty claims are not dropped. See
 	// TestTextDLP_DottedTokenPatterns.
-	goldenHashDefaults = "0c8208c1e050a6bf3f2d578ad353a101fcf905b3c27255c047a3f236433bac69"
+	// Re-bumped for Markdown Link Credential Exfiltration, which extends the
+	// response-injection defaults from image-only markdown exfil to ordinary
+	// markdown links that solicit credentials.
+	// Re-bumped for tightening Markdown Link Credential Exfiltration with an
+	// exfiltration-direction cue, so ordinary credential setup docs with later
+	// links no longer match while credential-to-link exfil prompts still block.
+	// Re-bumped for removing generic navigation verbs from the markdown-link
+	// credential-exfil branch, so docs that say to visit/click setup links stay
+	// clean unless an actual exfiltration verb is present.
+	goldenHashDefaults = "8148b25e769f97ccb8fa00c97f9b23f27d7d88e8e35b2fa9f6e983b2cf99efe9"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -345,7 +354,12 @@ const (
 	// ToolPolicyRule fields are policy-semantic even when zero-valued because
 	// non-zero values change tool-call decisions.
 	// Re-bumped for defer.max_cascade_depth: see goldenHashDefaults note above.
-	goldenHashRichConfig = "873f7742304ad83946f53a32e69b15b0cd58dc5cbbd7d05534b836155b8fe633"
+	// Re-bumped for Markdown Link Credential Exfiltration: see goldenHashDefaults
+	// note above; the rich fixture inherits the default response-scanning pattern
+	// set, so the hash shifts in lockstep.
+	// Re-bumped for the generic-navigation false-positive tightening: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "10c9290ccb4ae994c06b4f3cf2f7baa2b6e105cf6d51021ff4d1263c3e4cf54a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

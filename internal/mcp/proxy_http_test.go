@@ -5604,6 +5604,26 @@ func TestScanHTTPInput_A2ABlockAction(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_A2AMessageSendFilePartSSRFBlock(t *testing.T) {
+	sc := scanner.New(config.Defaults())
+	t.Cleanup(sc.Close)
+
+	a2aCfg := &config.A2AScanning{
+		Enabled: true,
+		Action:  config.ActionBlock,
+	}
+
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/"}}]}}}`)
+	var logBuf bytes.Buffer
+	blocked := scanHTTPInput(msg, &logBuf, "test-session", "audit-key", MCPProxyOpts{Scanner: sc, A2ACfg: a2aCfg})
+	if blocked == nil {
+		t.Fatal("expected modern A2A message/send FilePart SSRF to block")
+	}
+	if !strings.Contains(logBuf.String(), "a2a input") {
+		t.Errorf("expected a2a input log, got: %s", logBuf.String())
+	}
+}
+
 // TestScanHTTPInput_A2AWarnAction exercises the A2A input scanning warn path.
 func TestScanHTTPInput_A2AWarnAction(t *testing.T) {
 	sc := testScannerForHTTP(t)
@@ -5810,6 +5830,42 @@ func TestScanHTTPInputDecision_RequireReceiptsBlocksEmissionFailure(t *testing.T
 	}
 	if !strings.Contains(string(decision.Blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
 		t.Fatalf("error data = %s, want %s", decision.Blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+}
+
+func TestScanHTTPInputDecision_BlockReceiptFailureLogsAuditGap(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(jsonToolsCallDangerous)
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	policyCfg := &policy.Config{
+		Action: config.ActionBlock,
+		Rules: []*policy.CompiledRule{
+			{Name: "block-dangerous", ToolPattern: regexp.MustCompile(`dangerous_tool`), Action: config.ActionBlock},
+		},
+	}
+
+	var logBuf bytes.Buffer
+	decision := scanHTTPInputDecision(msg, &logBuf, "sess", "sess", MCPProxyOpts{
+		Scanner:         sc,
+		PolicyCfg:       policyCfg,
+		ReceiptEmitter:  receiptEmitter,
+		RequireReceipts: true,
+		Transport:       "mcp_http",
+	})
+	if decision.Blocked == nil {
+		t.Fatal("policy block must still block even when block receipt emission fails")
+	}
+	if decision.Blocked.ErrorCode != -32002 {
+		t.Fatalf("error code = %d, want policy block -32002", decision.Blocked.ErrorCode)
+	}
+	if !strings.Contains(logBuf.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", logBuf.String())
 	}
 }
 
@@ -6140,6 +6196,77 @@ func TestHTTPListener_A2AHeaderBlock(t *testing.T) {
 	respBody, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(respBody), "A2A header") {
 		t.Errorf("expected A2A header block response, got: %s", string(respBody))
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("timeout")
+	}
+}
+
+func TestHTTPListener_A2AHeaderBlockReceiptFailureLogsAuditGap(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream called: A2A header block must prevent forwarding")
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+	a2aCfg := &config.A2AScanning{
+		Enabled: true,
+		Action:  config.ActionBlock,
+	}
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	var logBuf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
+			Scanner:         sc,
+			A2ACfg:          a2aCfg,
+			ReceiptEmitter:  receiptEmitter,
+			RequireReceipts: true,
+		})
+	}()
+
+	baseURL := "http://" + addr
+	waitForHTTPHealth(t, baseURL)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("A2A-Extensions", "ftp://attacker.example.com/exfil")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, httpErr := client.Do(req)
+	if httpErr != nil {
+		t.Fatalf("POST: %v", httpErr)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(respBody), "A2A header") {
+		t.Errorf("expected A2A header block response, got: %s", string(respBody))
+	}
+	if !strings.Contains(logBuf.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", logBuf.String())
 	}
 
 	cancel()

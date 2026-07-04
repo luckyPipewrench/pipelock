@@ -392,6 +392,112 @@ func TestScanAgentCard_CleanCard(t *testing.T) {
 	}
 }
 
+func TestScanAgentCard_URLFieldSSRFScanned(t *testing.T) {
+	cfg := enabledA2ACfg()
+	sc := scanner.New(config.Defaults())
+	defer sc.Close()
+
+	card := A2AAgentCard{
+		Name:        "data-fetcher",
+		Description: "Fetches data on request.",
+		URL:         "http://169.254.169.254/latest/meta-data/",
+		Skills:      []A2ASkill{{ID: "fetch", Name: "Fetch", Description: "Fetches a resource."}},
+	}
+	body, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	result := ScanAgentCard(context.Background(), body, sc, NewCardBaseline(10),
+		CardCacheKeyFromRequest("https://agent.example/.well-known/agent-card.json", ""), cfg)
+	if result.Clean {
+		t.Fatal("expected Agent Card metadata URL to be blocked by URL scanner")
+	}
+	if len(result.Findings.URLFindings) == 0 {
+		t.Fatal("expected URL finding for Agent Card url")
+	}
+}
+
+func TestScanAgentCard_SiblingURLFieldsSSRFScanned(t *testing.T) {
+	cfg := enabledA2ACfg()
+	sc := scanner.New(config.Defaults())
+	defer sc.Close()
+
+	tests := []struct {
+		name   string
+		mutate func(*A2AAgentCard)
+	}{
+		{
+			name: "documentationUrl",
+			mutate: func(card *A2AAgentCard) {
+				card.DocumentationURL = "http://169.254.169.254/latest/meta-data/"
+			},
+		},
+		{
+			name: "iconUrl",
+			mutate: func(card *A2AAgentCard) {
+				card.IconURL = "http://169.254.169.254/latest/meta-data/"
+			},
+		},
+		{
+			name: "provider.url",
+			mutate: func(card *A2AAgentCard) {
+				card.Provider.URL = "http://169.254.169.254/latest/meta-data/"
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			card := A2AAgentCard{
+				Name:        "data-fetcher",
+				Description: "Fetches data on request.",
+				URL:         "https://agent.example/a2a",
+				Skills:      []A2ASkill{{ID: "fetch", Name: "Fetch", Description: "Fetches a resource."}},
+			}
+			tt.mutate(&card)
+			body, err := json.Marshal(card)
+			if err != nil {
+				t.Fatalf("marshal card: %v", err)
+			}
+			result := ScanAgentCard(context.Background(), body, sc, NewCardBaseline(10),
+				CardCacheKeyFromRequest("https://agent.example/.well-known/agent-card.json", ""), cfg)
+			if result.Clean {
+				t.Fatalf("expected Agent Card %s metadata URL to be blocked by URL scanner", tt.name)
+			}
+			if len(result.Findings.URLFindings) == 0 {
+				t.Fatalf("expected URL finding for Agent Card %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestScanAgentCard_BenignURLFieldsPass(t *testing.T) {
+	cfg := enabledA2ACfg()
+	cfg.DetectCardDrift = false
+	scannerCfg := config.Defaults()
+	scannerCfg.Internal = nil
+	sc := scanner.New(scannerCfg)
+	defer sc.Close()
+
+	card := A2AAgentCard{
+		Name:             "data-fetcher",
+		Description:      "Fetches data on request.",
+		URL:              "https://agent.example/a2a",
+		DocumentationURL: "https://docs.example/a2a",
+		IconURL:          "https://assets.example/icon.png",
+		Provider:         A2AProvider{Name: "Example", URL: "https://provider.example"},
+		Skills:           []A2ASkill{{ID: "fetch", Name: "Fetch", Description: "Fetches a resource."}},
+	}
+	body, err := json.Marshal(card)
+	if err != nil {
+		t.Fatalf("marshal card: %v", err)
+	}
+	result := ScanAgentCard(context.Background(), body, sc, NewCardBaseline(10),
+		CardCacheKeyFromRequest("https://agent.example/.well-known/agent-card.json", ""), cfg)
+	if !result.Clean {
+		t.Fatalf("benign Agent Card URL fields should pass: %+v", result)
+	}
+}
+
 func TestScanAgentCard_DriftDetection(t *testing.T) {
 	card1 := A2AAgentCard{
 		Name:   "Agent",
@@ -589,6 +695,21 @@ func TestScanA2ARequestBody_URLFieldScanned(t *testing.T) {
 	}
 	if len(result.URLFindings) == 0 {
 		t.Error("expected URL findings for blocked scheme")
+	}
+}
+
+func TestScanA2ARequestBody_FilePartURISSRFScanned(t *testing.T) {
+	cfg := enabledA2ACfg()
+	sc := scanner.New(config.Defaults())
+	defer sc.Close()
+
+	body := []byte(`{"jsonrpc":"2.0","id":"req-012","method":"message/send","params":{"message":{"messageId":"msg-012","role":"user","parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/","mimeType":"text/plain"}}]}}}`)
+	result := ScanA2ARequestBody(context.Background(), body, sc, cfg)
+	if result.Clean {
+		t.Fatal("expected FilePart metadata URI to be blocked by URL scanner")
+	}
+	if len(result.URLFindings) == 0 {
+		t.Fatal("expected URL finding for FilePart URI")
 	}
 }
 

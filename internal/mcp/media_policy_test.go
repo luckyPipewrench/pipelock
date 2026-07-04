@@ -744,3 +744,50 @@ func TestForwardScanned_MediaPolicyBlocksToolResultAudio_EmitsReceipt(t *testing
 		t.Fatalf("target = %q, want response:42", receipts[0].ActionRecord.Target)
 	}
 }
+
+func TestForwardScanned_MediaPolicyBlockReceiptFailureLogsAuditGap(t *testing.T) {
+	sc, cfg := newMCPScannerWithMediaPolicy(t)
+	line := fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":42,"result":{"content":[{"type":"audio","mimeType":"audio/mpeg","data":"%s"}]}}`,
+		base64.StdEncoding.EncodeToString([]byte("fake audio bytes")),
+	)
+
+	emitter, rec, _, _ := newReceiptTestHarness(t)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	var out, log bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(line+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		nil,
+		MCPProxyOpts{
+			Scanner:         sc,
+			MediaPolicy:     &cfg.MediaPolicy,
+			ReceiptEmitter:  emitter,
+			RequireReceipts: true,
+			Transport:       transportMCPStdio,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("expected no injection finding for media-policy block")
+	}
+
+	var resp rpcError
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &resp); err != nil {
+		t.Fatalf("unmarshal block response: %v", err)
+	}
+	if string(resp.ID) != "42" {
+		t.Fatalf("block response id = %s, want 42", string(resp.ID))
+	}
+	if !strings.Contains(log.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", log.String())
+	}
+	if !strings.Contains(log.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", log.String())
+	}
+}

@@ -1818,6 +1818,170 @@ func TestScan_EntropyInQueryParam(t *testing.T) {
 	}
 }
 
+func TestScan_QueryEntropyAllowsCredentiallessDSNExample(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://docs.example.com/guide?example=postgres://localhost:5432/mydb")
+	if !result.Allowed {
+		t.Fatalf("credential-less DSN example should not trip entropy: %s", result.Reason)
+	}
+}
+
+func TestScan_QueryEntropyBlocksCredentiallessDSNUnsafeCarveoutShapes(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name        string
+		dsn         string
+		wantScanner string
+	}{
+		{
+			name:        "ip literal host",
+			dsn:         "postgres://169.254.169.254/metadata",
+			wantScanner: ScannerSSRFMetadata,
+		},
+		{
+			name:        "credentialed ip literal host",
+			dsn:         "postgres://user:pa" + "ss@169.254.169.254/metadata",
+			wantScanner: ScannerSSRFMetadata,
+		},
+		{
+			name:        "metadata hostname",
+			dsn:         "postgres://metadata.google.internal/compute",
+			wantScanner: ScannerSSRFMetadata,
+		},
+		{
+			name:        "credentialed metadata hostname",
+			dsn:         "postgres://user:pa" + "ss@metadata.google.internal/compute",
+			wantScanner: ScannerSSRFMetadata,
+		},
+		{
+			name:        "query exfil",
+			dsn:         "postgres://db.example/app?token=aB3xK9mQ7pR2",
+			wantScanner: ScannerEntropy,
+		},
+		{
+			name:        "opaque path segment",
+			dsn:         "postgres://db.example/aB3xK9mQ7pR2wE5t",
+			wantScanner: ScannerEntropy,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), "https://docs.example.com/guide?example="+url.QueryEscape(tt.dsn))
+			if result.Allowed {
+				t.Fatalf("expected unsafe DSN shape to remain blocked: %s", tt.dsn)
+			}
+			if result.Scanner != tt.wantScanner {
+				t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, tt.wantScanner, result.Reason)
+			}
+		})
+	}
+}
+
+func TestDatabaseURIEntropyCarveoutHelpers(t *testing.T) {
+	const threshold = 4.0
+
+	if !isDatabaseURIScheme("postgresql") {
+		t.Fatal("postgresql should be a database URI scheme")
+	}
+	if isDatabaseURIScheme("https") {
+		t.Fatal("https should not be a database URI scheme")
+	}
+
+	if !isLowRiskDatabaseURIHost("db-01.vendor.example.", threshold) {
+		t.Fatal("readable database hostname should be low risk")
+	}
+	if isLowRiskDatabaseURIHost("169.254.169.254", threshold) {
+		t.Fatal("IP literal database hostname should not be low risk")
+	}
+	if isLowRiskDatabaseURIHost("metadata.google.internal", threshold) {
+		t.Fatal("metadata hostname should not be low risk")
+	}
+
+	if !isLowRiskDatabaseURIPath("/app/schema_v1", threshold) {
+		t.Fatal("readable database path should be low risk")
+	}
+	if isLowRiskDatabaseURIPath("/aB3xK9mQ7pR2wE5tY8uI3nM6qL4sV0", threshold) {
+		t.Fatal("opaque database path should not be low risk")
+	}
+
+	if !isCredentiallessDatabaseURI("postgres://db.vendor.example:5432/app", threshold) {
+		t.Fatal("credentialless readable DSN should qualify for entropy carve-out")
+	}
+	if isCredentiallessDatabaseURI("postgres://user:pa"+"ss@db.vendor.example:5432/app", threshold) {
+		t.Fatal("credentialed DSN should not qualify for entropy carve-out")
+	}
+
+	result, blocked := unsafeDatabaseURIQueryValueResult("postgres://user:pa" + "ss@169.254.169.254/app")
+	if !blocked {
+		t.Fatal("credentialed metadata DSN should be blocked before entropy carve-out")
+	}
+	if result.Scanner != ScannerSSRFMetadata {
+		t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, ScannerSSRFMetadata, result.Reason)
+	}
+}
+
+func TestScan_QueryEntropyAllowsReadableHyphenatedSearch(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://example.com/search?q=glance-2026-summary-report-final")
+	if !result.Allowed {
+		t.Fatalf("readable hyphenated search phrase should not trip entropy: %s", result.Reason)
+	}
+}
+
+func TestScan_QueryEntropyBlocksOverlongReadableHyphenatedTunnel(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 3.5
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://example.com/search?q=anchor-binary-canyon-delta-energy-fabric")
+	if result.Allowed {
+		t.Fatal("expected overlong readable word-list tunnel to remain blocked by entropy")
+	}
+	if result.Scanner != ScannerEntropy {
+		t.Fatalf("scanner = %s, want %s", result.Scanner, ScannerEntropy)
+	}
+}
+
+func TestScan_QueryEntropyCarveoutThresholdBoundary(t *testing.T) {
+	if !shouldSkipQueryValueEntropy("glance-2026-summary-report-final", 4.01, 4.0) {
+		t.Fatal("expected narrow FP carveout just above threshold")
+	}
+	if shouldSkipQueryValueEntropy("glance-2026-summary-report-final", 4.36, 4.0) {
+		t.Fatal("expected entropy above threshold+0.35 to remain blocked")
+	}
+}
+
+func TestScan_QueryEntropyStillBlocksOpaqueToken(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://example.com/search?q=aB3xK9mQ7pR2wE5tY8uI0oL4")
+	if result.Allowed {
+		t.Fatal("expected compact opaque query token to remain blocked by entropy")
+	}
+	if result.Scanner != ScannerEntropy {
+		t.Fatalf("scanner = %s, want %s", result.Scanner, ScannerEntropy)
+	}
+}
+
 func TestScan_URLWithEncodedCharacters(t *testing.T) {
 	s := New(testConfig())
 	// URL-encoded characters in path - should be treated normally
@@ -5049,6 +5213,24 @@ func TestScan_QueryEntropyExclusion_SkipsQueryEntropy(t *testing.T) {
 	if !result.Allowed {
 		t.Errorf("expected query entropy to be skipped on excluded host, got blocked: scanner=%s reason=%s",
 			result.Scanner, result.Reason)
+	}
+}
+
+func TestScan_QueryEntropyExclusion_DoesNotSkipDatabaseURISSRF(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
+	s := New(cfg)
+	defer s.Close()
+
+	url := "https://examplebucket.s3.amazonaws.com/files/abc.pdf" +
+		"?redirect=postgres://169.254.169.254/latest/meta-data"
+	result := s.Scan(context.Background(), url)
+	if result.Allowed {
+		t.Fatal("expected database URI targeting metadata IP to remain blocked on query-entropy-excluded host")
+	}
+	if result.Scanner != ScannerSSRFMetadata {
+		t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, ScannerSSRFMetadata, result.Reason)
 	}
 }
 

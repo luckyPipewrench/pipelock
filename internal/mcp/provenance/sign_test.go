@@ -578,3 +578,19 @@ func TestEmbedInToolsList_MalformedToolJSON(t *testing.T) {
 		t.Error("modified response should not be nil")
 	}
 }
+
+func TestToolDigestRaw(t *testing.T) {
+	raw := json.RawMessage(`{"name":"read","description":"d","inputSchema":{"type":"object"}}`)
+	got := ToolDigestRaw(raw)
+	if got == "" {
+		t.Fatal("ToolDigestRaw returned empty for a valid tool object")
+	}
+	// Canonical: key order and whitespace must not change the digest.
+	reordered := json.RawMessage(`{ "inputSchema":{"type":"object"} ,  "description":"d" , "name":"read" }`)
+	if ToolDigestRaw(reordered) != got {
+		t.Error("ToolDigestRaw should be invariant to key order and whitespace")
+	}
+	if ToolDigestRaw(json.RawMessage(`not-json`)) != "" {
+		t.Error("ToolDigestRaw should return empty for invalid input")
+	}
+}

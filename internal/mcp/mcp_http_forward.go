@@ -255,7 +255,11 @@ func RunHTTPProxy(
 						} else if scanErr != nil {
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 						} else if !foundInjection {
-							commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), deferredReq.ToolName)
+							baselineIdentity := deferredReq.BaselineIdentity
+							if baselineIdentity == "" {
+								baselineIdentity = mcpFrameBaselineIdentity(ParseMCPFrame(deferredReq.ForwardMessage))
+							}
+							commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), baselineIdentity)
 						}
 					default:
 						if !deferredReq.IsNotification {
@@ -367,7 +371,7 @@ func RunHTTPProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			lastScanErr = scanErr
 		} else if !foundInjection {
-			commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), frame.ToolCallName)
+			commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), mcpFrameBaselineIdentity(frame))
 		}
 
 		// After first successful response with a session ID, start GET stream

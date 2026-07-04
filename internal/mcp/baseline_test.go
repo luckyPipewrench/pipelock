@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -29,8 +30,9 @@ type baselineTestRecorder struct {
 
 func (r *baselineTestRecorder) BaselineMetrics() session.BaselineMetrics {
 	return session.BaselineMetrics{
-		ToolCalls:   r.toolCalls,
-		UniqueTools: len(r.tools),
+		ToolCalls:      r.toolCalls,
+		UniqueTools:    len(r.tools),
+		ToolIdentities: sortedBaselineToolIdentities(r.tools),
 	}
 }
 
@@ -39,9 +41,15 @@ func (r *baselineTestRecorder) ProvisionalToolCallMetrics(toolName string) sessi
 	if _, ok := r.tools[toolName]; !ok {
 		uniqueTools++
 	}
+	toolIdentities := sortedBaselineToolIdentities(r.tools)
+	if !containsBaselineToolIdentity(toolIdentities, toolName) {
+		toolIdentities = append(toolIdentities, toolName)
+		sort.Strings(toolIdentities)
+	}
 	return session.BaselineMetrics{
-		ToolCalls:   r.toolCalls + 1,
-		UniqueTools: uniqueTools,
+		ToolCalls:      r.toolCalls + 1,
+		UniqueTools:    uniqueTools,
+		ToolIdentities: toolIdentities,
 	}
 }
 
@@ -67,6 +75,7 @@ type identityBaselineChecker struct {
 	t               *testing.T
 	wantAgentKey    string
 	blockedAgentKey string
+	blockedAction   string
 	checks          int
 	records         []session.BaselineMetrics
 }
@@ -77,7 +86,7 @@ func (c *identityBaselineChecker) CheckBaselineForRecorder(agentKey string, rec 
 		c.t.Fatalf("baseline checked agent key %q, want identity key %q", agentKey, c.wantAgentKey)
 	}
 	if agentKey == c.blockedAgentKey {
-		return session.BaselineDecision{Blocked: true, Action: config.ActionBlock, Detail: "baseline deviation: tool_calls"}
+		return session.BaselineDecision{Blocked: true, Action: c.actionOrBlock(), Detail: "baseline deviation: tool_calls"}
 	}
 	return session.BaselineDecision{}
 }
@@ -97,13 +106,20 @@ func (c *identityBaselineChecker) CheckBaselineForMetrics(agentKey string, metri
 		c.t.Fatalf("baseline checked with unique_tools=%d, want provisional 1", metrics.UniqueTools)
 	}
 	if agentKey == c.blockedAgentKey {
-		return session.BaselineDecision{Blocked: true, Action: config.ActionBlock, Detail: "baseline deviation: tool_calls"}
+		return session.BaselineDecision{Blocked: true, Action: c.actionOrBlock(), Detail: "baseline deviation: tool_calls"}
 	}
 	return session.BaselineDecision{}
 }
 
 func (c *identityBaselineChecker) RecordBaselineMetrics(_ string, metrics session.BaselineMetrics) {
 	c.records = append(c.records, metrics)
+}
+
+func (c *identityBaselineChecker) actionOrBlock() string {
+	if c.blockedAction != "" {
+		return c.blockedAction
+	}
+	return config.ActionBlock
 }
 
 func TestMCPBaselineCheckUsesProvisionalToolCallWithoutCommitting(t *testing.T) {
@@ -154,6 +170,48 @@ func TestMCPBehavioralBaselineUsesIdentityKeyNotInvocationKey(t *testing.T) {
 
 	if blocked == nil {
 		t.Fatal("MCP baseline deviation was allowed; want JSON-RPC block")
+	}
+}
+
+func TestScanHTTPInputDecision_A2ABehavioralBaselineDeviationBlocks(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		action string
+	}{
+		{name: "block action", action: config.ActionBlock},
+		{name: "ask action", action: config.ActionAsk},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			sc := scanner.New(cfg)
+			t.Cleanup(sc.Close)
+
+			rec := &baselineTestRecorder{}
+			checker := &identityBaselineChecker{
+				t:               t,
+				wantAgentKey:    "identity-k",
+				blockedAgentKey: "identity-k",
+				blockedAction:   tc.action,
+			}
+			msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"text":"hello peer"}]}}}`)
+			decision := scanHTTPInputDecision(msg, io.Discard, "mcp-http-42", "mcp-http-42", MCPProxyOpts{
+				Scanner:                sc,
+				Rec:                    rec,
+				Baseline:               checker,
+				AddressProtectionAgent: "identity-k",
+				Transport:              "mcp_http_listener",
+				A2ACfg:                 &config.A2AScanning{Enabled: true, Action: config.ActionBlock},
+			})
+
+			if decision.Blocked == nil {
+				t.Fatal("A2A behavioral baseline deviation was allowed; want JSON-RPC block")
+			}
+		})
 	}
 }
 
@@ -386,4 +444,29 @@ func newBaselineTestDeferManager(t *testing.T) *deferred.Manager {
 		MaxPendingPerSession: 4,
 		MaxPendingBytes:      4096,
 	})
+}
+
+func TestBaselineIdentityHelpers(t *testing.T) {
+	if got := a2aBaselineIdentity("definitely-not-an-a2a-method"); got != "" {
+		t.Errorf("a2aBaselineIdentity(non-A2A) = %q, want empty", got)
+	}
+	if got := a2aBaselineIdentity(""); got != "" {
+		t.Errorf("a2aBaselineIdentity(empty) = %q, want empty", got)
+	}
+	if got := toolBaselineIdentity(""); got != "" {
+		t.Errorf("toolBaselineIdentity(empty) = %q, want empty", got)
+	}
+	if got := toolBaselineIdentity("read"); got != "tool:read" {
+		t.Errorf("toolBaselineIdentity(read) = %q, want tool:read", got)
+	}
+	if got := a2aBaselineIdentity("SendMessage"); got != "a2a:SendMessage" {
+		t.Errorf("a2aBaselineIdentity(SendMessage) = %q, want a2a:SendMessage", got)
+	}
+	ids := []string{"tool:read", "a2a:message/send"}
+	if !containsBaselineToolIdentity(ids, "a2a:message/send") {
+		t.Error("containsBaselineToolIdentity should find a present identity")
+	}
+	if containsBaselineToolIdentity(ids, "tool:write") {
+		t.Error("containsBaselineToolIdentity should not find an absent identity")
+	}
 }

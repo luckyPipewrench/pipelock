@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,5 +131,38 @@ func TestEmitDeferredResolutionReceiptNonCascadeCarriesBounds(t *testing.T) {
 	}
 	if policy.Bounds.MaxCascadeDepth != 8 || policy.Bounds.MaxPending != 64 {
 		t.Fatalf("resolution_policy bounds = %+v", policy.Bounds)
+	}
+}
+
+func TestEmitDeferredResolutionReceiptBlockFailureLogsAuditGap(t *testing.T) {
+	emitter, rec, _ := newTestReceiptEmitter(t)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+
+	opts := MCPProxyOpts{
+		ReceiptEmitter:  emitter,
+		PolicyHash:      "policy-hash",
+		RequireReceipts: true,
+		Transport:       deferred.SurfaceMCPStdio,
+	}
+	var log bytes.Buffer
+	err := EmitDeferredResolutionReceipt(opts, &log, deferred.Resolution{
+		DeferID:          "blocked-defer",
+		ParentActionID:   "blocked-defer",
+		FinalDecision:    config.ActionBlock,
+		ResolutionSource: deferred.SourceTimeout,
+		Target:           "neutral_tool",
+		Method:           "tools/call",
+		Reason:           "timeout",
+	})
+	if err == nil {
+		t.Fatal("expected closed recorder to fail required resolution receipt")
+	}
+	if !strings.Contains(log.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", log.String())
+	}
+	if !strings.Contains(log.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", log.String())
 	}
 }

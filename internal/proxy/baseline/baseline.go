@@ -92,6 +92,7 @@ type Profile struct {
 	SessionCount         int            `json:"session_count"`
 	ObservedSessionCount int            `json:"observed_session_count,omitempty"`
 	TrimmedSessionCount  int            `json:"trimmed_session_count,omitempty"`
+	ToolIdentities       []string       `json:"tool_identities,omitempty"`
 	Ratified             bool           `json:"ratified"`
 	RatifiedAt           *time.Time     `json:"ratified_at,omitempty"`
 	Metrics              ProfileMetrics `json:"metrics"`
@@ -126,12 +127,13 @@ type Deviation struct {
 
 // SessionMetrics is what we collect per session for baseline learning.
 type SessionMetrics struct {
-	ToolCalls   int     `json:"tool_calls"`
-	UniqueTools int     `json:"unique_tools"`
-	Domains     int     `json:"domains"`
-	BytesTotal  int64   `json:"bytes_total"`
-	DurationSec float64 `json:"duration_sec"`
-	Requests    int     `json:"requests"`
+	ToolCalls      int      `json:"tool_calls"`
+	UniqueTools    int      `json:"unique_tools"`
+	ToolIdentities []string `json:"tool_identities,omitempty"`
+	Domains        int      `json:"domains"`
+	BytesTotal     int64    `json:"bytes_total"`
+	DurationSec    float64  `json:"duration_sec"`
+	Requests       int      `json:"requests"`
 }
 
 // Config for behavioral baseline.
@@ -149,6 +151,12 @@ type Config struct {
 
 // seasonalityNone is the only supported seasonality mode.
 const seasonalityNone = "none"
+
+// a2aToolIdentityPrefix identifies A2A method entries in the shared
+// tool-identity baseline dimension. The MCP layer synthesizes these as
+// "a2a:<method>" so A2A methods reuse the tool-call machinery without
+// colliding with ordinary tool names.
+const a2aToolIdentityPrefix = "a2a:"
 
 // supportedDimensions is the complete list of accepted metric names.
 var supportedDimensions = []string{
@@ -394,6 +402,17 @@ func (m *Manager) Check(agentKey string, current SessionMetrics) []Deviation {
 
 	dims := m.activeDimensions()
 	var deviations []Deviation
+	for _, identity := range current.ToolIdentities {
+		if isA2AToolIdentity(identity) && !contains(as.profile.ToolIdentities, identity) {
+			deviations = append(deviations, Deviation{
+				Metric:   "tool_identity:" + identity,
+				Baseline: Range{Min: 0, Max: 0, Mean: 0, StdDev: 0},
+				Observed: 1,
+				Delta:    1,
+				Severity: severityHigh,
+			})
+		}
+	}
 
 	type metricCheck struct {
 		name     string
@@ -592,6 +611,7 @@ func cloneProfileSnapshot(profile *Profile, agentKey string, state ProfileState)
 	cp := *profile
 	cp.AgentKey = agentKey
 	cp.State = state
+	cp.ToolIdentities = append([]string(nil), profile.ToolIdentities...)
 	if cp.RatifiedAt != nil {
 		ratifiedAt := *cp.RatifiedAt
 		cp.RatifiedAt = &ratifiedAt
@@ -625,6 +645,7 @@ func (m *Manager) buildProfile(agentKey string, sessions []SessionMetrics) *Prof
 		SessionCount:         retained,
 		ObservedSessionCount: observed,
 		TrimmedSessionCount:  trimmed,
+		ToolIdentities:       collectToolIdentities(data),
 		Metrics: ProfileMetrics{
 			ToolCallsPerSession:   computeRange(extractFloat64s(data, func(s SessionMetrics) float64 { return float64(s.ToolCalls) })),
 			UniqueToolsPerSession: computeRange(extractFloat64s(data, func(s SessionMetrics) float64 { return float64(s.UniqueTools) })),
@@ -815,6 +836,32 @@ func (m *Manager) loadProfiles() error {
 }
 
 // Helper functions.
+
+func collectToolIdentities(sessions []SessionMetrics) []string {
+	seen := make(map[string]struct{})
+	for _, session := range sessions {
+		for _, identity := range session.ToolIdentities {
+			identity = strings.TrimSpace(identity)
+			if identity == "" {
+				continue
+			}
+			seen[identity] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	identities := make([]string, 0, len(seen))
+	for identity := range seen {
+		identities = append(identities, identity)
+	}
+	sort.Strings(identities)
+	return identities
+}
+
+func isA2AToolIdentity(identity string) bool {
+	return strings.HasPrefix(identity, a2aToolIdentityPrefix)
+}
 
 func extractFloat64s(sessions []SessionMetrics, fn func(SessionMetrics) float64) []float64 {
 	vals := make([]float64, len(sessions))

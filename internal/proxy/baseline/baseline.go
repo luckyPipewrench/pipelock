@@ -98,6 +98,7 @@ const (
 	integrityManifestAlg      = "HMAC-SHA256"
 	integrityKeyBytes         = 32
 	integrityStateMaxSize     = 4 * 1024
+	baselineProfileMaxSize    = 1024 * 1024
 )
 
 // Profile is a learned behavioral baseline for an agent.
@@ -586,7 +587,7 @@ func (m *Manager) Reset(agentKey string) error {
 	if m.cfg.ProfileDir != "" {
 		path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
 		m.persistMu.Lock()
-		oldProfile, hadProfile, readErr := readExistingRegularFileForRestore(path, "persisted baseline profile")
+		oldProfile, hadProfile, readErr := readExistingRegularFileForRestore(path, "persisted baseline profile", baselineProfileMaxSize)
 		if readErr != nil {
 			m.persistMu.Unlock()
 			return fmt.Errorf("reading persisted profile for agent %q before reset: %w", agentKey, readErr)
@@ -596,7 +597,10 @@ func (m *Manager) Reset(agentKey string) error {
 			return fmt.Errorf("removing persisted profile for agent %q: %w", agentKey, err)
 		}
 		if err := m.persistIntegrityManifestLocked(map[string]bool{agentKey: true}); err != nil {
-			restoreErr := restoreProfileAfterManifestFailure(path, oldProfile, hadProfile)
+			var restoreErr error
+			if !integrityManifestAlreadyCommitted(err) {
+				restoreErr = restoreProfileAfterManifestFailure(path, oldProfile, hadProfile)
+			}
 			m.persistMu.Unlock()
 			if restoreErr != nil {
 				err = fmt.Errorf("%w; restoring persisted profile after manifest failure: %w", err, restoreErr)
@@ -820,7 +824,7 @@ func (m *Manager) persistProfile(agentKey string) error {
 	}
 
 	path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
-	oldProfile, hadProfile, readErr := readExistingRegularFileForRestore(path, "persisted baseline profile")
+	oldProfile, hadProfile, readErr := readExistingRegularFileForRestore(path, "persisted baseline profile", baselineProfileMaxSize)
 	if readErr != nil {
 		return fmt.Errorf("reading existing profile before persist: %w", readErr)
 	}
@@ -828,7 +832,10 @@ func (m *Manager) persistProfile(agentKey string) error {
 		return m.logIntegrityPersistenceFailure("profile_write_failed", err, "agent_key", agentKey)
 	}
 	if err := m.persistIntegrityManifestLocked(nil); err != nil {
-		restoreErr := restoreProfileAfterManifestFailure(path, oldProfile, hadProfile)
+		var restoreErr error
+		if !integrityManifestAlreadyCommitted(err) {
+			restoreErr = restoreProfileAfterManifestFailure(path, oldProfile, hadProfile)
+		}
 		if restoreErr != nil {
 			err = fmt.Errorf("%w; restoring previous profile after manifest failure: %w", err, restoreErr)
 		}
@@ -899,7 +906,7 @@ func (m *Manager) integrityGenerationDigest(generation uint64) string {
 
 func (m *Manager) loadIntegrityKey(create bool) ([]byte, error) {
 	path := filepath.Clean(m.cfg.IntegrityKeyPath)
-	data, err := readRegularFileNoSymlink(path, "baseline integrity key", 0)
+	data, err := readRegularFileNoSymlink(path, "baseline integrity key", integrityStateMaxSize)
 	if err == nil {
 		key, decodeErr := hex.DecodeString(strings.TrimSpace(string(data)))
 		if decodeErr != nil {
@@ -974,10 +981,7 @@ func (m *Manager) writeIntegrityHighWater(generation uint64) error {
 	return nil
 }
 
-func (m *Manager) nextIntegrityManifestGeneration() (uint64, error) {
-	integrityHighWaterMu.Lock()
-	defer integrityHighWaterMu.Unlock()
-
+func (m *Manager) nextIntegrityManifestGenerationLocked() (uint64, error) {
 	highWater, found, err := m.readIntegrityHighWater()
 	if err != nil {
 		return 0, fmt.Errorf("baseline integrity generation unreadable, cannot sign manifest: %w", err)
@@ -989,10 +993,14 @@ func (m *Manager) nextIntegrityManifestGeneration() (uint64, error) {
 			return 0, errors.New("baseline integrity generation overflow")
 		}
 	}
-	if err := m.writeIntegrityHighWater(next); err != nil {
-		return 0, err
-	}
 	return next, nil
+}
+
+func (m *Manager) nextIntegrityManifestGeneration() (uint64, error) {
+	integrityHighWaterMu.Lock()
+	defer integrityHighWaterMu.Unlock()
+
+	return m.nextIntegrityManifestGenerationLocked()
 }
 
 func (m *Manager) acceptIntegrityManifestGeneration(generation uint64) error {
@@ -1053,8 +1061,8 @@ func readRegularFileNoSymlink(path, label string, maxSize int64) ([]byte, error)
 	return data, nil
 }
 
-func readExistingRegularFileForRestore(path, label string) ([]byte, bool, error) {
-	data, err := readRegularFileNoSymlink(path, label, 0)
+func readExistingRegularFileForRestore(path, label string, maxSize int64) ([]byte, bool, error) {
+	data, err := readRegularFileNoSymlink(path, label, maxSize)
 	if err == nil {
 		return data, true, nil
 	}
@@ -1073,6 +1081,23 @@ func restoreProfileAfterManifestFailure(path string, oldData []byte, hadProfile 
 		return err
 	}
 	return nil
+}
+
+type integrityManifestCommittedError struct {
+	err error
+}
+
+func (e integrityManifestCommittedError) Error() string {
+	return e.err.Error()
+}
+
+func (e integrityManifestCommittedError) Unwrap() error {
+	return e.err
+}
+
+func integrityManifestAlreadyCommitted(err error) bool {
+	var committed integrityManifestCommittedError
+	return errors.As(err, &committed)
 }
 
 func (m *Manager) integrityLogAttrs(failureClass string, err error, attrs ...any) []any {
@@ -1201,7 +1226,7 @@ func (m *Manager) persistIntegrityManifestLocked(exclude map[string]bool) error 
 			return fmt.Errorf("refusing to manifest locked profile: %w", err)
 		}
 		path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
-		data, err := readRegularFileNoSymlink(path, "locked baseline profile", 0)
+		data, err := readRegularFileNoSymlink(path, "locked baseline profile", baselineProfileMaxSize)
 		if err != nil {
 			return m.logIntegrityPersistenceFailure("profile_read_failed", fmt.Errorf("reading locked profile %q for integrity manifest: %w", agentKey, err), "agent_key", agentKey)
 		}
@@ -1235,7 +1260,10 @@ func (m *Manager) persistIntegrityManifestLocked(exclude map[string]bool) error 
 	if err != nil {
 		return m.logIntegrityPersistenceFailure("key_load_failed", err)
 	}
-	generation, err := m.nextIntegrityManifestGeneration()
+	integrityHighWaterMu.Lock()
+	defer integrityHighWaterMu.Unlock()
+
+	generation, err := m.nextIntegrityManifestGenerationLocked()
 	if err != nil {
 		return m.logIntegrityPersistenceFailure("generation_advance_failed", err)
 	}
@@ -1262,6 +1290,10 @@ func (m *Manager) persistIntegrityManifestLocked(exclude map[string]bool) error 
 	if err := atomicfile.Write(manifestPath, data, 0o600); err != nil {
 		return m.logIntegrityPersistenceFailure("manifest_write_failed", err, "generation", generation)
 	}
+	if err := m.writeIntegrityHighWater(generation); err != nil {
+		err = m.logIntegrityPersistenceFailure("generation_advance_failed", err, "generation", generation)
+		return integrityManifestCommittedError{err: err}
+	}
 	return nil
 }
 
@@ -1278,7 +1310,7 @@ func (m *Manager) verifyPersistedIntegrity(entries []os.DirEntry) (map[string]Pr
 		hasProfileFiles = true
 	}
 
-	manifestData, err := readRegularFileNoSymlink(m.integrityManifestPath(), "baseline integrity manifest", 0)
+	manifestData, err := readRegularFileNoSymlink(m.integrityManifestPath(), "baseline integrity manifest", baselineProfileMaxSize)
 	if errors.Is(err, os.ErrNotExist) {
 		if hasProfileFiles {
 			err := fmt.Errorf("baseline integrity manifest missing while persisted profiles exist under enforcing deviation_action %q", m.cfg.DeviationAction)
@@ -1329,7 +1361,7 @@ func (m *Manager) verifyPersistedIntegrity(entries []os.DirEntry) (map[string]Pr
 		}
 
 		path := filepath.Join(m.cfg.ProfileDir, expected.AgentKey+profileFileExt)
-		data, err := readRegularFileNoSymlink(path, "locked baseline profile", 0)
+		data, err := readRegularFileNoSymlink(path, "locked baseline profile", baselineProfileMaxSize)
 		if err != nil {
 			err := fmt.Errorf("reading locked baseline profile %q required by integrity manifest: %w", expected.AgentKey, err)
 			return nil, m.logIntegrityVerificationFailure("profile_read_failed", err, "agent_key", expected.AgentKey, "generation", manifest.Generation)
@@ -1396,7 +1428,7 @@ func (m *Manager) loadProfiles() error {
 			profile = verifiedProfile
 		} else {
 			path := filepath.Join(m.cfg.ProfileDir, entry.Name())
-			data, err := readRegularFileNoSymlink(path, "persisted baseline profile", 0)
+			data, err := readRegularFileNoSymlink(path, "persisted baseline profile", baselineProfileMaxSize)
 			if err != nil {
 				// A persisted profile that exists but cannot be read may be a
 				// locked, enforcing profile. Under an enforcing action we cannot

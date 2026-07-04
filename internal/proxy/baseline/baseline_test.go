@@ -718,6 +718,19 @@ func TestBaseline_LoadProfiles_FailsClosedOnLockedProfileTamperUnderEnforcement(
 			},
 		},
 		{
+			name: "profile_oversized",
+			tamper: func(t *testing.T, _, path string) {
+				t.Helper()
+				oversized := make([]byte, baselineProfileMaxSize+1)
+				for i := range oversized {
+					oversized[i] = 'a'
+				}
+				if err := os.WriteFile(path, oversized, 0o600); err != nil {
+					t.Fatalf("write oversized profile: %v", err)
+				}
+			},
+		},
+		{
 			name: "state_downgrade",
 			tamper: func(t *testing.T, _, path string) {
 				t.Helper()
@@ -1982,17 +1995,22 @@ func TestBaseline_IntegrityKeyPathInsideProfileDirRejected(t *testing.T) {
 // or is the wrong length must fail closed under enforcement rather than be
 // treated as a usable key.
 func TestBaseline_CorruptIntegrityKeyRejectedUnderEnforcement(t *testing.T) {
+	oversizedKey := make([]byte, integrityStateMaxSize+1)
+	for i := range oversizedKey {
+		oversizedKey[i] = 'a'
+	}
 	for _, tc := range []struct {
 		name string
-		key  string
+		key  []byte
 	}{
-		{name: "non_hex", key: "zzzz-not-hex-key\n"},
-		{name: "short_hex", key: "abcd\n"},
+		{name: "non_hex", key: []byte("zzzz-not-hex-key\n")},
+		{name: "short_hex", key: []byte("abcd\n")},
+		{name: "oversized", key: oversizedKey},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			seedLockedProfile(t, dir)
-			if err := os.WriteFile(baselineIntegrityKeyPath(dir), []byte(tc.key), 0o600); err != nil {
+			if err := os.WriteFile(baselineIntegrityKeyPath(dir), tc.key, 0o600); err != nil {
 				t.Fatalf("overwrite integrity key: %v", err)
 			}
 			if _, err := NewManager(Config{
@@ -2188,11 +2206,36 @@ func TestBaseline_IntegrityIOErrorsFailClosed(t *testing.T) {
 			t.Fatalf("profile should be removed after manifest persistence failure, stat error = %v", err)
 		}
 	})
+
+	t.Run("manifest_dir_conflict_does_not_advance_high_water", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "profiles")
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir profile dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, integrityManifestDirName), []byte("not-a-directory"), 0o600); err != nil {
+			t.Fatalf("write manifest dir blocker: %v", err)
+		}
+
+		mgr, err := NewManager(Config{Enabled: true, LearningWindow: 3, ProfileDir: dir})
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		for range 3 {
+			mgr.RecordSession(testAgent, normalMetrics())
+		}
+		if err := mgr.Ratify(testAgent); err == nil {
+			t.Fatal("want persist error when integrity manifest directory cannot be created")
+		}
+		if _, err := os.Stat(highWaterPath(dir)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("high-water should not advance before manifest write succeeds, stat error = %v", err)
+		}
+	})
 }
 
 // TestBaseline_IntegrityGenerationInvariants directly exercises the
 // generation high-water invariants: a zero generation is rejected, and the
-// monotonic counter refuses to advance past its maximum (overflow).
+// next generation refuses to advance past its maximum (overflow).
 func TestBaseline_IntegrityGenerationInvariants(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := NewManager(Config{Enabled: true, LearningWindow: 3, ProfileDir: dir})

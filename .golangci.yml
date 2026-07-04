@@ -91,6 +91,11 @@ linters:
       - path: internal/playground/liverun\.go
         linters: [gosec]
         text: "G101"
+      # The liveproof harness deliberately builds the shipped binary and runs
+      # it through customer-visible CLI/proxy surfaces.
+      - path: internal/liveproof/liveproof_test\.go
+        linters: [gosec]
+        text: "G204"
   settings:
     gosec:
       excludes:

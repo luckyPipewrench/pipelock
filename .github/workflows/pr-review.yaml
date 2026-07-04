@@ -10,14 +10,12 @@ permissions:
 
 jobs:
   review:
-    # Restrict to repo members. Some /review modes execute code from the
-    # PR's merge ref in this workflow's secret scope, so the trigger needs
-    # a permission gate beyond the comment body check (the body is
-    # user-controlled, author_association is not).
+    # Restrict to the repository owner account. Some /review modes execute
+    # code from the PR's merge ref in this workflow's secret scope, so the
+    # trigger needs a permission gate beyond the comment body check.
     if: >-
-      (github.event.comment.author_association == 'OWNER' ||
-       github.event.comment.author_association == 'MEMBER' ||
-       github.event.comment.author_association == 'COLLABORATOR') &&
+      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.author_association == 'OWNER' &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review deep' ||
@@ -67,4 +65,6 @@ jobs:
           REVIEW_MODE: ${{ steps.mode.outputs.mode }}
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
+          PR_REVIEW_MODEL_FAST: gpt-5.4-mini
+          PR_REVIEW_MODEL_DEEP: gpt-5.5
         run: python scripts/pr-review.py

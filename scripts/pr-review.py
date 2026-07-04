@@ -40,6 +40,7 @@ import requests
 MAX_DIFF_CHARS = 100_000
 DEFAULT_MODEL_FAST = "gpt-5.4-mini"
 DEFAULT_MODEL_DEEP = "gpt-5.5"
+DEFAULT_TEMPERATURE = 0.2
 
 PROMPT_SECURITY = """You are reviewing a pull request for Pipelock, an AI agent firewall and security boundary product. Pipelock is a network proxy that sits between AI agents and the internet, scanning HTTP/WebSocket/MCP traffic for secret exfiltration, prompt injection, SSRF, and tool poisoning.
 
@@ -127,6 +128,31 @@ def truncate_diff(diff: str, max_chars: int = MAX_DIFF_CHARS) -> str:
     return truncated + f"\n\n... (diff truncated at {max_chars} chars, {len(diff)} total)"
 
 
+def model_supports_custom_temperature(model: str) -> bool:
+    """Return whether chat completions should send a non-default temperature."""
+    normalized = model.strip().lower()
+    model_name = normalized.rsplit("/", 1)[-1]
+    return not model_name.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def build_llm_payload(model: str, system_prompt: str, diff: str) -> dict:
+    """Build the chat completions payload for the selected review model."""
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": f"Review this pull request diff:\n\n```diff\n{diff}\n```",
+            },
+        ],
+        "max_completion_tokens": 4096,
+    }
+    if model_supports_custom_temperature(model):
+        payload["temperature"] = DEFAULT_TEMPERATURE
+    return payload
+
+
 def call_llm(diff: str, mode: str, system_prompt: str) -> str:
     """Send the diff to the LLM and return the review."""
     litellm_url = os.environ.get("LITELLM_BASE_URL", "")
@@ -151,18 +177,7 @@ def call_llm(diff: str, mode: str, system_prompt: str) -> str:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": f"Review this pull request diff:\n\n```diff\n{diff}\n```",
-            },
-        ],
-        "temperature": 0.2,
-        "max_completion_tokens": 4096,
-    }
+    payload = build_llm_payload(model, system_prompt, diff)
 
     resp = requests.post(api_url, headers=headers, json=payload, timeout=120)
     if resp.status_code != 200:

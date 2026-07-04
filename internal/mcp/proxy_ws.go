@@ -204,7 +204,7 @@ func RunWSProxy(
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)
 			break
 		}
-		commitMCPToolCall(baselineMetricsRecorder(wsOpts, rec), frame.ToolCallName)
+		commitMCPToolCall(baselineMetricsRecorder(wsOpts, rec), mcpFrameBaselineIdentity(frame))
 	}
 
 	// Close the WS connection to unblock ForwardScanned's ReadMessage. The

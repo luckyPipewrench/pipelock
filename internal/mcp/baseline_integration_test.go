@@ -81,12 +81,145 @@ func TestMCPBehavioralBaselineRealStdioProxyLearnsAndBlocksUnderIdentityKey(t *t
 	assertNoInvocationBaselineAgents(t, mgr)
 }
 
+func TestMCPA2ABehavioralBaselineLearnsLocksAndReloads(t *testing.T) {
+	testCases := []struct {
+		name   string
+		reload bool
+	}{
+		{name: "locked manager", reload: false},
+		{name: "reloaded locked manager", reload: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			sc := scanner.New(cfg)
+			t.Cleanup(sc.Close)
+
+			profileDir := t.TempDir()
+			sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
+			t.Cleanup(sm.Close)
+			baselineCfg := &config.BehavioralBaseline{
+				Enabled:          true,
+				LearningWindow:   2,
+				DeviationAction:  config.ActionBlock,
+				ProfileDir:       profileDir,
+				AutoRatify:       false,
+				SensitivitySigma: 2.0,
+				LockDimensions:   []string{"tool_calls", "unique_tools"},
+				SeasonalityMode:  config.SeasonalityModeNone,
+			}
+			if err := sm.EnableBaseline(baselineCfg); err != nil {
+				t.Fatalf("EnableBaseline: %v", err)
+			}
+
+			const identityKey = "agent-a"
+			for i := 0; i < baselineCfg.LearningWindow; i++ {
+				stdout, stderr := runMCPStdioBaselineMessages(t, sc, sm, identityKey, a2aSendMessageRequest(i+1))
+				if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
+					t.Fatalf("learning A2A invocation %d unexpectedly blocked\nstdout=%s\nstderr=%s", i, stdout, stderr)
+				}
+			}
+
+			mgr := sm.BaselineManager()
+			if state := mgr.GetState(identityKey); state != baseline.StateRatify {
+				t.Fatalf("identity-key profile state = %q, want %q", state, baseline.StateRatify)
+			}
+			profile := mgr.GetProfile(identityKey)
+			if profile == nil || !containsString(profile.ToolIdentities, "a2a:SendMessage") {
+				t.Fatalf("learned profile identities = %v, want a2a:SendMessage", profile)
+			}
+			if err := mgr.Ratify(identityKey); err != nil {
+				t.Fatalf("Ratify(%q): %v", identityKey, err)
+			}
+
+			activeSM := sm
+			if tc.reload {
+				reloaded := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
+				t.Cleanup(reloaded.Close)
+				if err := reloaded.EnableBaseline(baselineCfg); err != nil {
+					t.Fatalf("EnableBaseline after reload: %v", err)
+				}
+				activeSM = reloaded
+				reloadedProfile := activeSM.BaselineManager().GetProfile(identityKey)
+				if reloadedProfile == nil || !containsString(reloadedProfile.ToolIdentities, "a2a:SendMessage") {
+					t.Fatalf("reloaded profile identities = %v, want a2a:SendMessage", reloadedProfile)
+				}
+			}
+
+			allowedStdout, allowedStderr := runMCPStdioBaselineMessages(t, sc, activeSM, identityKey, a2aSendMessageRequest(10))
+			if strings.Contains(allowedStdout, `"error"`) || strings.Contains(allowedStderr, "baseline deviation") {
+				t.Fatalf("learned A2A method was blocked\nstdout=%s\nstderr=%s", allowedStdout, allowedStderr)
+			}
+
+			blockedStdout, blockedStderr := runMCPStdioBaselineMessages(t, sc, activeSM, identityKey, a2aGetTaskRequest(11))
+			if !strings.Contains(blockedStdout, `"error"`) {
+				t.Fatalf("unlearned A2A method was allowed\nstdout=%s\nstderr=%s", blockedStdout, blockedStderr)
+			}
+			if !strings.Contains(blockedStderr, "baseline deviation") {
+				t.Fatalf("unlearned A2A method did not log baseline block\nstdout=%s\nstderr=%s", blockedStdout, blockedStderr)
+			}
+		})
+	}
+}
+
+func TestMCPBehavioralBaselineToolCallNameBehaviorUnchanged(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
+	t.Cleanup(sm.Close)
+	baselineCfg := &config.BehavioralBaseline{
+		Enabled:          true,
+		LearningWindow:   2,
+		DeviationAction:  config.ActionBlock,
+		ProfileDir:       t.TempDir(),
+		AutoRatify:       false,
+		SensitivitySigma: 2.0,
+		LockDimensions:   []string{"tool_calls", "unique_tools"},
+		SeasonalityMode:  config.SeasonalityModeNone,
+	}
+	if err := sm.EnableBaseline(baselineCfg); err != nil {
+		t.Fatalf("EnableBaseline: %v", err)
+	}
+
+	const identityKey = "agent-a"
+	for i := 0; i < baselineCfg.LearningWindow; i++ {
+		stdout, stderr := runMCPStdioBaselineInvocation(t, sc, sm, identityKey, "steady_tool")
+		if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
+			t.Fatalf("learning tool invocation %d unexpectedly blocked\nstdout=%s\nstderr=%s", i, stdout, stderr)
+		}
+	}
+	if err := sm.BaselineManager().Ratify(identityKey); err != nil {
+		t.Fatalf("Ratify(%q): %v", identityKey, err)
+	}
+
+	stdout, stderr := runMCPStdioBaselineInvocation(t, sc, sm, identityKey, "different_tool")
+	if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
+		t.Fatalf("single different tool call changed behavior; expected existing count-based allow\nstdout=%s\nstderr=%s", stdout, stderr)
+	}
+}
+
 func runMCPStdioBaselineInvocation(t *testing.T, sc *scanner.Scanner, sm *proxy.SessionManager, identityKey string, toolNames ...string) (string, string) {
 	t.Helper()
 
-	var stdin strings.Builder
+	messages := make([]string, 0, len(toolNames))
 	for i, toolName := range toolNames {
-		_, _ = fmt.Fprintf(&stdin, `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":{}}}`+"\n", i+1, toolName)
+		messages = append(messages, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":{}}}`, i+1, toolName))
+	}
+	return runMCPStdioBaselineMessages(t, sc, sm, identityKey, messages...)
+}
+
+func runMCPStdioBaselineMessages(t *testing.T, sc *scanner.Scanner, sm *proxy.SessionManager, identityKey string, messages ...string) (string, string) {
+	t.Helper()
+
+	var stdin strings.Builder
+	for _, message := range messages {
+		stdin.WriteString(message)
+		stdin.WriteByte('\n')
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -103,6 +236,23 @@ func runMCPStdioBaselineInvocation(t *testing.T, sc *scanner.Scanner, sm *proxy.
 		t.Fatalf("RunProxy: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
 	return stdout.String(), stderr.String()
+}
+
+func a2aSendMessageRequest(id int) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"SendMessage","params":{"message":{"parts":[{"text":"hello peer"}]}}}`, id)
+}
+
+func a2aGetTaskRequest(id int) string {
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"GetTask","params":{"id":"task-a"}}`, id)
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestMCPBaselineHelperProcess(t *testing.T) {

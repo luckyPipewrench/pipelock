@@ -113,6 +113,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// downstream gates (DoW, taint) see the redacted args while
 	// ID / Method / ToolCallName stay stable.
 	frame := ParseMCPFrame(msg)
+	baselineIdentity := mcpFrameBaselineIdentity(frame)
 	defer func() {
 		// A2A methods are not tools/call, so actionID stays empty on the
 		// tools/call path above. Mint an actionID lazily only when an A2A request
@@ -504,8 +505,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 
 	// All clean - proceed (with block_all and CEE checks).
 	if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
-		if toolName != "" {
-			baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), toolName)
+		if baselineIdentity != "" {
+			baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), baselineIdentity)
 			switch baselineDecision.Action {
 			case config.ActionBlock, config.ActionAsk:
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", baselineDecision.Detail)
@@ -682,8 +683,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 	}
 
-	if toolName != "" {
-		baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), toolName)
+	if baselineIdentity != "" {
+		baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), baselineIdentity)
 		if baselineDecision.Action != "" {
 			reasons = append(reasons, baselineDecision.Detail)
 			effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)

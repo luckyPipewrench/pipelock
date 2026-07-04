@@ -407,6 +407,7 @@ func ForwardScannedInput(
 		if verdict.Method == methodToolsCall {
 			toolCallName = frame.ToolCallName
 		}
+		baselineIdentity := mcpFrameBaselineIdentity(frame)
 		captureActionClass := captureMCPFrameActionClass(toolCallName, verdict.Method, string(frame.Args))
 
 		// Session binding side effects. Fire the diagnostic log and
@@ -661,12 +662,12 @@ func ForwardScannedInput(
 
 		// All clean - forward (with block_all and CEE checks).
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
-			if toolCallName != "" {
-				baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), toolCallName)
+			if baselineIdentity != "" {
+				baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), baselineIdentity)
 				switch baselineDecision.Action {
 				case config.ActionBlock, config.ActionAsk:
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
-						lineNum, methodToolsCall, baselineDecision.Detail)
+						lineNum, verdict.Method, baselineDecision.Detail)
 					recordAdaptiveSignal(session.SignalBlock)
 					errMsg := ""
 					if baselineDecision.Action == config.ActionAsk {
@@ -796,7 +797,7 @@ func ForwardScannedInput(
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
-			commitMCPToolCall(baselineMetricsRecorder(opts, rec), toolCallName)
+			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
@@ -866,8 +867,8 @@ func ForwardScannedInput(
 			}
 		}
 
-		if toolCallName != "" {
-			baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), toolCallName)
+		if baselineIdentity != "" {
+			baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), baselineIdentity)
 			if baselineDecision.Action != "" {
 				reasons = append(reasons, baselineDecision.Detail)
 				// Recompute so the block/warn reason includes the baseline
@@ -1260,7 +1261,7 @@ func ForwardScannedInput(
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
-			commitMCPToolCall(baselineMetricsRecorder(opts, rec), toolCallName)
+			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
 		}
 
 		// Signal recording: record after action is taken.

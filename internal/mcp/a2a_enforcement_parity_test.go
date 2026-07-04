@@ -201,6 +201,60 @@ func TestForwardScannedInput_A2ADoWBlock(t *testing.T) {
 	}
 }
 
+func TestForwardScannedInput_A2ADoWBlockLeavesNoChainTrace(t *testing.T) {
+	sc := testInputScanner(t)
+	opts := testOpts(sc)
+	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionWarn, OnParseError: config.ActionBlock}
+	opts.ChainMatcher = testA2AChainMatcher()
+	opts.DoWCheck = func(identity, _ string) (bool, string, string, string) {
+		if identity == a2aBaselineIdentity(testA2AMethod) {
+			return false, config.ActionBlock, testA2ADoWReason, testA2ADoWBudgetType
+		}
+		return true, "", "", ""
+	}
+
+	input := string(testA2ARequest(1, testA2AMethod)) + "\n" +
+		string(testA2ARequest(2, testA2ASecondMethod)) + "\n"
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(input)),
+		transport.NewStdioWriter(&serverIn),
+		&logW,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		opts,
+	)
+
+	if strings.Contains(serverIn.String(), testA2AMethod) {
+		t.Fatalf("expected DoW-blocked A2A request not to forward, got: %s", serverIn.String())
+	}
+	if !strings.Contains(serverIn.String(), testA2ASecondMethod) {
+		t.Fatalf("DoW-blocked A2A request left a chain trace; second request did not forward: %s", serverIn.String())
+	}
+	var gotDoWBlock bool
+	for br := range blockedCh {
+		if strings.Contains(br.ErrorMessage, testA2ADoWReason) {
+			gotDoWBlock = true
+			continue
+		}
+		if strings.Contains(br.ErrorMessage, testA2AChainPattern) {
+			t.Fatalf("DoW-blocked A2A request left a chain trace; chain block: %+v", br)
+		}
+		t.Fatalf("unexpected block: %+v; log=%s", br, logW.String())
+	}
+	if !gotDoWBlock {
+		t.Fatalf("expected A2A DoW block; log=%s", logW.String())
+	}
+	if !strings.Contains(logW.String(), testA2ADoWReason) {
+		t.Fatalf("expected DoW reason in log, got: %s", logW.String())
+	}
+}
+
 func TestForwardScannedInput_A2ADoWAllowDoesNotFalseBlock(t *testing.T) {
 	sc := testInputScanner(t)
 	opts := testOpts(sc)

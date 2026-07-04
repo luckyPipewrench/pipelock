@@ -308,12 +308,41 @@ func initCoreScanner() *compiledCoreScanner {
 // Returns filtered matches found by core patterns only; the caller should run
 // the main response scanner separately if enabled.
 func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []ResponseMatch {
-	coreSet := s.scanCoreResponse(ctx, content)
-	matches := filterEducationalQuotedResponseMatches(coreSet.content, coreSet.matches)
-	return filterDefensiveCredentialSolicitationMatches(coreSet.content, matches)
+	coreSet := s.scanCoreResponse(ctx, content, nil)
+	return coreSet.matches
 }
 
-func (s *Scanner) scanCoreResponse(ctx context.Context, content string) responseMatchSet {
+type coreResponseSuppressor func([]ResponseMatch) []ResponseMatch
+
+func filterCoreResponsePass(content, educationalContent string, matches []ResponseMatch, viewLabel string, suppress coreResponseSuppressor) []ResponseMatch {
+	matches = filterDefensiveCredentialSolicitationMatches(content, matches)
+	matches = filterEducationalQuotedResponseMatches(content, matches)
+	if educationalContent != "" && educationalContent != content && len(educationalContent) == len(content) {
+		matches = filterCoreEducationalContent(educationalContent, matches)
+	}
+	matches = withResponseSpans(matches, viewLabel)
+	if suppress != nil {
+		matches = suppress(matches)
+	}
+	return matches
+}
+
+func filterCoreEducationalContent(content string, matches []ResponseMatch) []ResponseMatch {
+	filtered := matches[:0]
+	for _, match := range matches {
+		adjusted := match
+		end := adjusted.Position + adjusted.matchLength
+		if adjusted.Position >= 0 && end <= len(content) && adjusted.Position < end {
+			adjusted.MatchText = content[adjusted.Position:end]
+		}
+		if len(filterEducationalQuotedResponseMatches(content, []ResponseMatch{adjusted})) > 0 {
+			filtered = append(filtered, match)
+		}
+	}
+	return filtered
+}
+
+func (s *Scanner) scanCoreResponse(ctx context.Context, content string, suppress coreResponseSuppressor) responseMatchSet {
 	if s.core == nil {
 		return responseMatchSet{}
 	}
@@ -328,37 +357,37 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 	content = normalize.ForMatching(content)
 
 	// Each pass drops defensive anti-solicitation matches (e.g. "never send
-	// your password to us") via filterDefensiveCredentialSolicitationMatches
-	// BEFORE treating the pass as a hit, so an all-defensive pass falls through
-	// to the later encoded passes. Filtering here, not in the caller, closes a
-	// masking bypass where a defensive decoy sentence short-circuits the scan
-	// and hides a leetspeak/base64 solicitation that only a later pass catches.
+	// your password to us"), educational quoted examples, and operator
+	// suppressions BEFORE treating the pass as a hit, so an all-filtered pass
+	// falls through to the later encoded passes. Filtering here, not in the
+	// caller, closes masking bypasses where an early false-positive decoy
+	// short-circuits the scan and hides a later normalized/base64 finding.
 
 	// Primary pass.
-	if matches := filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, content)); len(matches) > 0 {
-		return responseMatchSet{matches: withResponseSpans(matches, ViewForMatching), content: content}
+	if matches := filterCoreResponsePass(content, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
+		return responseMatchSet{matches: matches, content: content}
 	}
 
 	// Secondary: replace invisible chars with spaces.
 	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 	if spaced != content {
-		if matches := filterDefensiveCredentialSolicitationMatches(spaced, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced)); len(matches) > 0 {
-			return responseMatchSet{matches: withResponseSpans(matches, ViewInvisibleSpaced), content: spaced}
+		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced), ViewInvisibleSpaced, suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: spaced}
 		}
 	}
 
 	// Tertiary: leetspeak normalization.
 	leeted := normalize.Leetspeak(content)
 	if leeted != content {
-		if matches := filterDefensiveCredentialSolicitationMatches(leeted, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted)); len(matches) > 0 {
-			return responseMatchSet{matches: withResponseSpans(matches, ViewLeetspeak), content: leeted}
+		if matches := filterCoreResponsePass(leeted, content, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted), ViewLeetspeak, suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: leeted}
 		}
 	}
 
 	// Quaternary: optional-whitespace matching.
 	if len(s.core.responseOptSpacePatterns) > 0 {
-		if matches := filterDefensiveCredentialSolicitationMatches(content, matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content)); len(matches) > 0 {
-			return responseMatchSet{matches: withResponseSpans(matches, ViewForMatching), content: content}
+		if matches := filterCoreResponsePass(content, "", matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content), ViewForMatching, suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: content}
 		}
 	}
 
@@ -366,15 +395,15 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 	if len(s.core.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
 		if folded != content {
-			if matches := filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded)); len(matches) > 0 {
-				return responseMatchSet{matches: withResponseSpans(matches, ViewVowelFold), content: folded}
+			if matches := filterCoreResponsePass(folded, content, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
+				return responseMatchSet{matches: matches, content: folded}
 			}
 		}
 	}
 
 	// Senary: base64/hex decode pass for encoded injection payloads.
 	if hasEncodedRun(content) {
-		if decodedSet := s.matchDecodedCoreResponse(content); len(decodedSet.matches) > 0 {
+		if decodedSet := s.matchDecodedCoreResponse(content, suppress); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}
 	}
@@ -384,14 +413,14 @@ func (s *Scanner) scanCoreResponse(ctx context.Context, content string) response
 
 // matchDecodedCoreResponse tries base64/hex decoding content and checks the
 // decoded result against core response patterns. Entry point for the senary pass.
-func (s *Scanner) matchDecodedCoreResponse(content string) responseMatchSet {
-	return s.matchDecodedCoreResponseRecursive(content, 0)
+func (s *Scanner) matchDecodedCoreResponse(content string, suppress coreResponseSuppressor) responseMatchSet {
+	return s.matchDecodedCoreResponseRecursive(content, 0, suppress)
 }
 
 // matchDecodedCoreResponseRecursive is the recursive implementation of
 // matchDecodedCoreResponse. Mirrors the main scanner's matchDecodedResponseRecursive
 // but uses only core response patterns.
-func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) responseMatchSet {
+func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
@@ -410,20 +439,20 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 	} {
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
-			if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
-			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
-		if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
+		if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}
-		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}
 	}
@@ -437,20 +466,20 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 		} {
 			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
-				if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
+				if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
 					return decodedSet
 				}
-				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
 					return decodedSet
 				}
 			}
 		}
 		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			d := string(decoded)
-			if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedCoreNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
-			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
 				return decodedSet
 			}
 		}
@@ -459,15 +488,28 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) r
 	return responseMatchSet{}
 }
 
-func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string) responseMatchSet {
+func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, suppress coreResponseSuppressor) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
-	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized)); len(matches) > 0 {
-		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
+	if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
+		return responseMatchSet{matches: matches, content: normalized}
 	}
 	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(decoded))
 	if spaced != normalized {
-		if matches := filterDefensiveCredentialSolicitationMatches(spaced, matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced)); len(matches) > 0 {
-			return responseMatchSet{matches: withResponseSpans(matches, spanViewLabel("invisible_spaced", decodedViewLabel)), content: spaced}
+		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: spaced}
+		}
+	}
+	if len(s.core.responseOptSpacePatterns) > 0 {
+		if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: normalized}
+		}
+	}
+	if len(s.core.responseVowelFoldPatterns) > 0 {
+		folded := normalize.FoldVowels(normalized)
+		if folded != normalized {
+			if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
+				return responseMatchSet{matches: matches, content: folded}
+			}
 		}
 	}
 	return responseMatchSet{}

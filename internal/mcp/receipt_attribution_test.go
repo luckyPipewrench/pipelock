@@ -313,6 +313,16 @@ func TestEmitMCPToolReceiptLogsV2EmitError(t *testing.T) {
 	}
 }
 
+func TestEmitMCPToolReceipt_RequiredEmptyActionIDFailsClosed(t *testing.T) {
+	err := emitMCPToolReceipt(mcpToolReceiptOpts{
+		RequireReceipt: true,
+		Verdict:        config.ActionAllow,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("err = %v, want ErrReceiptRequired", err)
+	}
+}
+
 func TestFirstNonEmpty(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

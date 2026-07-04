@@ -8,8 +8,6 @@ package tools
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +18,7 @@ import (
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -29,6 +28,18 @@ type ToolDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	raw         json.RawMessage
+}
+
+func (t *ToolDef) UnmarshalJSON(data []byte) error {
+	type toolDefAlias ToolDef
+	var decoded toolDefAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*t = ToolDef(decoded)
+	t.raw = append(t.raw[:0], data...)
+	return nil
 }
 
 // toolsListResult is the result payload of an MCP tools/list response.
@@ -533,15 +544,14 @@ var contextLeakParamPattern = regexp.MustCompile(
 		`)\b`,
 )
 
-// hashTool computes a SHA256 hash of a tool's description and inputSchema.
+// hashTool computes the same full-tool-object digest that provenance
+// attestation verifies: every tool field is covered, with only Pipelock's own
+// embedded provenance _meta member stripped before hashing.
 func hashTool(t ToolDef) string {
-	h := sha256.New()
-	h.Write([]byte(t.Description))
-	h.Write([]byte{0}) // null byte separator
-	if len(t.InputSchema) > 0 {
-		h.Write(t.InputSchema)
+	if len(t.raw) > 0 {
+		return provenance.ToolDigestRaw(t.raw)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return provenance.ToolDigest(t.Name, t.Description, t.InputSchema)
 }
 
 // extractToolText extracts all scannable text from a tool definition.

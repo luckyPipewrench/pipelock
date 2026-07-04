@@ -168,6 +168,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			Decision:          taintEval,
 			Report:            redactionReport,
 			ContractGate:      receiptContractGate,
+			RequireReceipts:   requireReceipts,
 			RequireReceipt:    requiredReceipt,
 			DecisionPhase:     receiptDecisionPhase,
 			DeferID:           receiptDeferID,

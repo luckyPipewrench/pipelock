@@ -5813,6 +5813,42 @@ func TestScanHTTPInputDecision_RequireReceiptsBlocksEmissionFailure(t *testing.T
 	}
 }
 
+func TestScanHTTPInputDecision_BlockReceiptFailureLogsAuditGap(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(jsonToolsCallDangerous)
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	policyCfg := &policy.Config{
+		Action: config.ActionBlock,
+		Rules: []*policy.CompiledRule{
+			{Name: "block-dangerous", ToolPattern: regexp.MustCompile(`dangerous_tool`), Action: config.ActionBlock},
+		},
+	}
+
+	var logBuf bytes.Buffer
+	decision := scanHTTPInputDecision(msg, &logBuf, "sess", "sess", MCPProxyOpts{
+		Scanner:         sc,
+		PolicyCfg:       policyCfg,
+		ReceiptEmitter:  receiptEmitter,
+		RequireReceipts: true,
+		Transport:       "mcp_http",
+	})
+	if decision.Blocked == nil {
+		t.Fatal("policy block must still block even when block receipt emission fails")
+	}
+	if decision.Blocked.ErrorCode != -32002 {
+		t.Fatalf("error code = %d, want policy block -32002", decision.Blocked.ErrorCode)
+	}
+	if !strings.Contains(logBuf.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", logBuf.String())
+	}
+}
+
 // A clean A2A allow whose required allow-receipt emission fails must fail closed
 // (block before forwarding), exactly like the tools/call require_receipts path.
 // This proves the synthesized A2A allow receipt is wired into the same

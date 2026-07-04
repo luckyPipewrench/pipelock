@@ -71,6 +71,13 @@ func ToolDigest(name, description string, inputSchema json.RawMessage) string {
 	})
 }
 
+// ToolDigestRaw computes the same canonical SHA-256 that provenance verification
+// uses for a raw MCP tool object. The digest covers the full tool object with
+// only Pipelock's embedded provenance _meta member removed.
+func ToolDigestRaw(raw json.RawMessage) string {
+	return toolDigestRaw(raw)
+}
+
 func toolDigest(tool ToolDef) string {
 	fields := map[string]json.RawMessage{
 		"name":        mustMarshal(tool.Name),

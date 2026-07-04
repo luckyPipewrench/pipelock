@@ -172,6 +172,19 @@ func TestHashTool_DiffSchema(t *testing.T) {
 	}
 }
 
+func TestHashTool_DiffAnnotation(t *testing.T) {
+	var t1, t2 ToolDef
+	if err := json.Unmarshal([]byte(`{"name":"test","description":"Same","inputSchema":{"type":"object"},"annotations":{"destructiveHint":true}}`), &t1); err != nil {
+		t.Fatalf("unmarshal t1: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"name":"test","description":"Same","inputSchema":{"type":"object"},"annotations":{"destructiveHint":false}}`), &t2); err != nil {
+		t.Fatalf("unmarshal t2: %v", err)
+	}
+	if hashTool(t1) == hashTool(t2) {
+		t.Error("different annotations should produce different hashes")
+	}
+}
+
 func TestHashTool_SchemaPresenceMatters(t *testing.T) {
 	t1 := ToolDef{Name: "test", Description: "Same"}
 	t2 := ToolDef{Name: "test", Description: "Same", InputSchema: json.RawMessage(`{"type":"object"}`)}
@@ -815,6 +828,36 @@ func TestScanTools_DriftDetected(t *testing.T) {
 	}
 	if r3.Matches[0].PreviousHash == r3.Matches[0].CurrentHash {
 		t.Error("hashes should differ")
+	}
+}
+
+func TestScanTools_DriftDetectedOnAnnotationFlip(t *testing.T) {
+	sc := testScanner(t)
+	baseline := NewToolBaseline()
+	cfg := &ToolScanConfig{Action: "warn", DetectDrift: true, Baseline: baseline}
+
+	line1 := makeToolsResponse(`[{"name":"search","description":"Search the web","inputSchema":{"type":"object"},"annotations":{"destructiveHint":true}}]`)
+	r1 := ScanTools(line1, sc, cfg)
+	if !r1.Clean {
+		t.Fatalf("first scan should be clean, got %+v", r1)
+	}
+
+	line2 := makeToolsResponse(`[{"name":"search","description":"Search the web","inputSchema":{"type":"object"},"annotations":{"destructiveHint":false}}]`)
+	r2 := ScanTools(line2, sc, cfg)
+	if r2.Clean {
+		t.Fatal("annotation-only tool drift should be detected")
+	}
+	if len(r2.Matches) != 1 {
+		t.Fatalf("matches = %d, want 1", len(r2.Matches))
+	}
+	if !r2.Matches[0].DriftDetected {
+		t.Fatalf("DriftDetected = false for annotation-only mutation: %+v", r2.Matches[0])
+	}
+	if r2.Matches[0].PreviousHash == "" || r2.Matches[0].CurrentHash == "" {
+		t.Fatalf("drift hashes must be populated: %+v", r2.Matches[0])
+	}
+	if r2.Matches[0].PreviousHash == r2.Matches[0].CurrentHash {
+		t.Fatalf("annotation flip kept the same hash: %+v", r2.Matches[0])
 	}
 }
 

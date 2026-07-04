@@ -506,6 +506,7 @@ func ForwardScannedInput(
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
 			layer, pattern, severity := pickAttribution(eval)
+			requireReceipts := opts.requireReceipts()
 			receiptOpts := mcpToolReceiptOpts{
 				Emitter:           receiptEmitter,
 				V2Emitter:         v2ReceiptEmitter,
@@ -522,7 +523,8 @@ func ForwardScannedInput(
 				Severity:          severity,
 				Decision:          taintDecision,
 				Report:            redactionReport,
-				RequireReceipt:    (opts.requireReceipts() && receiptVerdict != config.ActionBlock) || receiptVerdict == config.ActionDefer,
+				RequireReceipts:   requireReceipts,
+				RequireReceipt:    (requireReceipts && receiptVerdict != config.ActionBlock) || receiptVerdict == config.ActionDefer,
 				DecisionPhase:     receiptDecisionPhase,
 				DeferID:           receiptDeferID,
 				ResolutionPolicy:  receiptResolutionPolicy,

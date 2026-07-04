@@ -443,6 +443,9 @@ func RunHTTPListenerProxy(
 						}),
 					}); emitErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: receipt emission failed: %v\n", emitErr)
+						if baseOpts.requireReceipts() {
+							logBlockReceiptAuditGap(safeLogW, emitErr)
+						}
 					}
 				}
 				w.Header().Set("Content-Type", "application/json")

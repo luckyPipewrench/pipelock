@@ -136,6 +136,37 @@ func TestReaperReconcileHeartbeatLog(t *testing.T) {
 		}
 	})
 
+	t.Run("recurring zero machines logs alert", func(t *testing.T) {
+		fp := &fakeProvider{}
+		var logBuf bytes.Buffer
+		reaper, err := NewReaper(ReaperConfig{
+			Provider:  fp,
+			ActiveIDs: func() map[string]struct{} { return nil },
+			Now:       func() time.Time { return baseTime },
+			Log:       &logBuf,
+		})
+		if err != nil {
+			t.Fatalf("NewReaper: %v", err)
+		}
+		for i := 0; i < managedZeroAlertThreshold-1; i++ {
+			if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+				t.Fatalf("ReconcileOnce before threshold: %v", err)
+			}
+		}
+		if strings.Contains(logBuf.String(), "event=managed_zero_recurred") {
+			t.Fatalf("alert fired before threshold: %q", logBuf.String())
+		}
+		if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+			t.Fatalf("ReconcileOnce at threshold: %v", err)
+		}
+		if !strings.Contains(logBuf.String(), "event=managed_zero_recurred") {
+			t.Fatalf("missing recurring managed=0 alert: %q", logBuf.String())
+		}
+		if !strings.Contains(logBuf.String(), "consecutive=3") {
+			t.Fatalf("missing consecutive count in alert: %q", logBuf.String())
+		}
+	})
+
 	t.Run("zero-CreatedAt tagged machine logs skipped_unknown_age", func(t *testing.T) {
 		fp := &fakeProvider{managedMachines: []Machine{{ID: "unknown", State: "started"}}}
 		var logBuf bytes.Buffer

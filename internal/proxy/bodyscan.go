@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"path"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -157,9 +156,11 @@ func (f *sizeExemptResponseReadError) Error() string {
 	return f.Reason
 }
 
-var sizeExemptScanInflightBytes atomic.Int64
+type sizeExemptScanBudget struct {
+	inflightBytes atomic.Int64
+}
 
-func readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int) ([]byte, *sizeExemptResponseReadError) {
+func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int) ([]byte, *sizeExemptResponseReadError) {
 	ceiling := int64(scanMaxBytes)
 	if ceiling <= 0 {
 		ceiling = int64(config.DefaultSizeExemptScanMaxBytes)
@@ -168,13 +169,13 @@ func readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, s
 	if inflightLimit <= 0 {
 		inflightLimit = int64(config.DefaultSizeExemptScanMaxInflightBytes)
 	}
-	if !reserveSizeExemptScanBytes(ceiling, inflightLimit) {
+	if !b.reserveSizeExemptScanBytes(ceiling, inflightLimit) {
 		return nil, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureInflight,
-			Reason: fmt.Sprintf("size-exempt response scan for %s would reserve %d bytes and exceed process-wide response_scanning.size_exempt_scan_max_inflight_bytes %d bytes", responseSizeHost(host), ceiling, inflightLimit),
+			Reason: fmt.Sprintf("size-exempt response scan for %s would reserve %d bytes and exceed this proxy instance's response_scanning.size_exempt_scan_max_inflight_bytes %d bytes", responseSizeHost(host), ceiling, inflightLimit),
 		}
 	}
-	defer releaseSizeExemptScanBytes(ceiling)
+	defer b.releaseSizeExemptScanBytes(ceiling)
 
 	fullBody, err := io.ReadAll(io.LimitReader(io.MultiReader(bytes.NewReader(prefix), body), ceiling+1))
 	if err != nil {
@@ -193,26 +194,30 @@ func readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, s
 	return fullBody, nil
 }
 
-func reserveSizeExemptScanBytes(bytesToReserve, limit int64) bool {
+func (b *sizeExemptScanBudget) reserveSizeExemptScanBytes(bytesToReserve, limit int64) bool {
 	if bytesToReserve <= 0 {
 		return true
 	}
 	for {
-		current := sizeExemptScanInflightBytes.Load()
+		current := b.inflightBytes.Load()
 		if current > limit-bytesToReserve {
 			return false
 		}
-		if sizeExemptScanInflightBytes.CompareAndSwap(current, current+bytesToReserve) {
+		if b.inflightBytes.CompareAndSwap(current, current+bytesToReserve) {
 			return true
 		}
 	}
 }
 
-func releaseSizeExemptScanBytes(bytesToRelease int64) {
+func (b *sizeExemptScanBudget) releaseSizeExemptScanBytes(bytesToRelease int64) {
 	if bytesToRelease <= 0 {
 		return
 	}
-	sizeExemptScanInflightBytes.Add(-bytesToRelease)
+	b.inflightBytes.Add(-bytesToRelease)
+}
+
+func (b *sizeExemptScanBudget) resetForTest() {
+	b.inflightBytes.Store(0)
 }
 
 func responseSizeHost(host string) string {
@@ -227,25 +232,46 @@ type unscannablePassthroughMatch struct {
 	ContentType string
 }
 
-func matchUnscannablePassthrough(host, pathValue, contentType string, entries []config.UnscannablePassthroughEntry, now time.Time) (unscannablePassthroughMatch, bool) {
+type unscannablePassthroughRequest struct {
+	Host          string
+	Path          string
+	ContentType   string
+	Header        http.Header
+	ContentLength int64
+	SizeExempt    bool
+	Now           time.Time
+}
+
+func matchUnscannablePassthrough(req unscannablePassthroughRequest, entries []config.UnscannablePassthroughEntry) (unscannablePassthroughMatch, bool) {
 	if len(entries) == 0 {
 		return unscannablePassthroughMatch{}, false
 	}
-	mediaType := responseMediaType(contentType)
+	if !req.SizeExempt || req.ContentLength <= 0 || !contentDispositionAttachment(req.Header.Get("Content-Disposition")) {
+		return unscannablePassthroughMatch{}, false
+	}
+	mediaType := responseMediaType(req.ContentType)
+	if mediaType == "" || configTextualPassthroughType(mediaType) {
+		return unscannablePassthroughMatch{}, false
+	}
+	pathValue := req.Path
 	if pathValue == "" {
 		pathValue = "/"
 	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
 	for _, entry := range entries {
-		if !scanner.MatchDomain(host, entry.Host) {
+		if !scanner.MatchDomain(req.Host, entry.Host) {
 			continue
 		}
 		if unscannablePassthroughExpired(entry.Expires, now) {
 			continue
 		}
-		if len(entry.PathPrefixes) > 0 && !pathMatchesAnyPrefix(pathValue, entry.PathPrefixes) {
+		if !pathMatchesAnyExact(pathValue, entry.Paths) {
 			continue
 		}
-		if len(entry.ContentTypes) > 0 && !contentTypeMatchesAny(mediaType, entry.ContentTypes) {
+		if !contentTypeMatchesAny(mediaType, entry.ContentTypes) {
 			continue
 		}
 		return unscannablePassthroughMatch{Entry: entry, ContentType: mediaType}, true
@@ -259,6 +285,37 @@ func responseMediaType(contentType string) string {
 		return mediaType
 	}
 	return ""
+}
+
+func unscannablePassthroughReason(host, pathValue, contentType, reason string) string {
+	return fmt.Sprintf("unscannable passthrough: host=%q path=%q content_type=%q reason=%q", host, pathValue, contentType, reason)
+}
+
+func contentDispositionAttachment(contentDisposition string) bool {
+	disposition, _, err := mime.ParseMediaType(strings.TrimSpace(contentDisposition))
+	return err == nil && strings.EqualFold(disposition, "attachment")
+}
+
+func configTextualPassthroughType(mediaType string) bool {
+	if strings.HasPrefix(mediaType, "text/") {
+		return true
+	}
+	switch mediaType {
+	case contentTypeJSON,
+		"application/ld+json",
+		"application/x-ndjson",
+		"application/xml",
+		"application/xhtml+xml",
+		"application/javascript",
+		"application/ecmascript",
+		"application/x-www-form-urlencoded",
+		"application/x-yaml",
+		"application/yaml",
+		"image/svg+xml":
+		return true
+	default:
+		return strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
+	}
 }
 
 func unscannablePassthroughExpired(expires string, now time.Time) bool {
@@ -275,47 +332,18 @@ func unscannablePassthroughExpired(expires string, now time.Time) bool {
 	return expireDate.Before(today)
 }
 
-func pathMatchesAnyPrefix(pathValue string, prefixes []string) bool {
-	canonicalPath, ok := canonicalUnscannablePassthroughPath(pathValue)
+func pathMatchesAnyExact(pathValue string, paths []string) bool {
+	canonicalPath, ok := config.CanonicalUnscannablePassthroughPath(pathValue)
 	if !ok {
 		return false
 	}
-	for _, prefix := range prefixes {
-		canonicalPrefix, prefixOK := canonicalUnscannablePassthroughPath(prefix)
-		if prefixOK && pathMatchesPrefixBoundary(canonicalPath, canonicalPrefix) {
+	for _, candidate := range paths {
+		canonicalCandidate, candidateOK := config.CanonicalUnscannablePassthroughPath(candidate)
+		if candidateOK && canonicalPath == canonicalCandidate {
 			return true
 		}
 	}
 	return false
-}
-
-func canonicalUnscannablePassthroughPath(raw string) (string, bool) {
-	if raw == "" {
-		raw = "/"
-	}
-	decoded, err := url.PathUnescape(raw)
-	if err != nil || !strings.HasPrefix(decoded, "/") {
-		return "", false
-	}
-	withoutTrailingSlash := strings.TrimRight(decoded, "/")
-	if withoutTrailingSlash == "" {
-		withoutTrailingSlash = "/"
-	}
-	if path.Clean(decoded) != withoutTrailingSlash {
-		return "", false
-	}
-	return decoded, true
-}
-
-func pathMatchesPrefixBoundary(pathValue, prefix string) bool {
-	prefix = strings.TrimRight(prefix, "/")
-	if prefix == "" {
-		prefix = "/"
-	}
-	if prefix == "/" {
-		return true
-	}
-	return pathValue == prefix || strings.HasPrefix(pathValue, prefix+"/")
 }
 
 func contentTypeMatchesAny(mediaType string, allowed []string) bool {

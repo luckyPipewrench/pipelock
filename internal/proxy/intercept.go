@@ -68,6 +68,19 @@ func interceptContractLoader(ic *InterceptContext) *contractruntime.Loader {
 	return ic.Proxy.currentContractLoader()
 }
 
+func interceptSizeExemptScanBudget(ic *InterceptContext) *sizeExemptScanBudget {
+	if ic != nil && ic.Proxy != nil {
+		return &ic.Proxy.sizeExemptScanBudget
+	}
+	if ic == nil {
+		return &sizeExemptScanBudget{}
+	}
+	if ic.sizeExemptScanBudget == nil {
+		ic.sizeExemptScanBudget = &sizeExemptScanBudget{}
+	}
+	return ic.sizeExemptScanBudget
+}
+
 // InterceptContext carries shared state for TLS-intercepted tunnel processing.
 // Groups parameters that flow through interceptTunnel → newInterceptHandler → interceptRecordSignal.
 type InterceptContext struct {
@@ -97,9 +110,10 @@ type InterceptContext struct {
 	EnvelopeEmitter *envelope.Emitter
 	// EnvelopeEmitterSet distinguishes an explicit nil admission snapshot
 	// from tests that omitted the snapshot entirely.
-	EnvelopeEmitterSet bool
-	Recorder           session.Recorder
-	KillSwitch         *killswitch.Controller
+	EnvelopeEmitterSet   bool
+	Recorder             session.Recorder
+	KillSwitch           *killswitch.Controller
+	sizeExemptScanBudget *sizeExemptScanBudget
 }
 
 // Validate checks that required fields are set. Returns an error if any
@@ -1609,38 +1623,6 @@ func newInterceptHandler(
 			return
 		}
 
-		if match, ok := matchUnscannablePassthrough(ic.TargetHost, r.URL.EscapedPath(), resp.Header.Get("Content-Type"), ic.Config.ResponseScanning.UnscannablePassthrough, time.Now()); ok {
-			reason := fmt.Sprintf("unscannable passthrough: host=%s path=%s content_type=%s reason=%s", ic.TargetHost, r.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
-			ic.Logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
-			if interceptEmitReceiptOrBlock(ic, w, actx, withInterceptRedaction(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionAllow,
-				Layer:     "unscannable_passthrough",
-				Pattern:   reason,
-				Transport: "intercept",
-				Method:    r.Method,
-				Target:    targetURL,
-				RequestID: ic.RequestID,
-				Agent:     ic.Agent,
-			})) {
-				return
-			}
-			for k, vv := range resp.Header {
-				for _, v := range vv {
-					w.Header().Add(k, v)
-				}
-			}
-			removeHopByHopHeaders(w.Header())
-			w.WriteHeader(resp.StatusCode)
-			written, _ := io.Copy(w, resp.Body)
-			ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
-			ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
-			if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding {
-				ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
-			}
-			return
-		}
-
 		// Buffer response for scanning (scan-then-send, fail-closed).
 		maxResp := ic.Config.TLSInterception.MaxResponseBytes
 		if maxResp <= 0 {
@@ -1668,8 +1650,47 @@ func newInterceptHandler(
 		}
 		if int64(len(respBody)) > maxResp {
 			if isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains) {
+				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
+					Host:          ic.TargetHost,
+					Path:          r.URL.EscapedPath(),
+					ContentType:   resp.Header.Get("Content-Type"),
+					Header:        resp.Header,
+					ContentLength: resp.ContentLength,
+					SizeExempt:    true,
+					Now:           time.Now(),
+				}, ic.Config.ResponseScanning.UnscannablePassthrough); ok {
+					reason := unscannablePassthroughReason(ic.TargetHost, r.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
+					ic.Logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
+					if interceptEmitReceiptOrBlock(ic, w, actx, withInterceptRedaction(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionAllow,
+						Layer:     "unscannable_passthrough",
+						Pattern:   reason,
+						Transport: "intercept",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: ic.RequestID,
+						Agent:     ic.Agent,
+					})) {
+						return
+					}
+					for k, vv := range resp.Header {
+						for _, v := range vv {
+							w.Header().Add(k, v)
+						}
+					}
+					removeHopByHopHeaders(w.Header())
+					w.WriteHeader(resp.StatusCode)
+					written, _ := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
+					ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
+					if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding {
+						ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
+					}
+					return
+				}
 				var scanFailure *sizeExemptResponseReadError
-				respBody, scanFailure = readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes)
+				respBody, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes)
 				if scanFailure != nil {
 					if scanFailure.Err != nil {
 						ic.Logger.LogError(actx, scanFailure.Err)

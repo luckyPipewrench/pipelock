@@ -12,7 +12,7 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 	validEntry := func() UnscannablePassthroughEntry {
 		return UnscannablePassthroughEntry{
 			Host:         "downloads.example.com",
-			PathPrefixes: []string{"/artifacts"},
+			Paths:        []string{"/artifacts/pkg.bin"},
 			ContentTypes: []string{"application/octet-stream"},
 			Reason:       "opaque signed archive",
 			Added:        "2026-07-04",
@@ -40,39 +40,95 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 			wantErr: ".reason is required",
 		},
 		{
-			name: "empty path prefix",
+			name: "deprecated path prefix",
 			mutate: func(entry *UnscannablePassthroughEntry) {
 				entry.PathPrefixes = []string{" "}
 			},
-			wantErr: ".path_prefixes[0] is empty",
+			wantErr: ".path_prefixes is not supported",
 		},
 		{
-			name: "relative path prefix",
+			name: "empty paths",
 			mutate: func(entry *UnscannablePassthroughEntry) {
-				entry.PathPrefixes = []string{"artifacts"}
+				entry.Paths = nil
+			},
+			wantErr: ".paths must contain at least one exact path",
+		},
+		{
+			name: "empty path",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Paths = []string{" "}
+			},
+			wantErr: ".paths[0] is empty",
+		},
+		{
+			name: "relative path",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Paths = []string{"artifacts"}
 			},
 			wantErr: "must start with /",
 		},
 		{
 			name: "bad path escape",
 			mutate: func(entry *UnscannablePassthroughEntry) {
-				entry.PathPrefixes = []string{"/artifacts/%zz"}
+				entry.Paths = []string{"/artifacts/%zz"}
 			},
-			wantErr: "is not a valid escaped path",
+			wantErr: "must be an exact non-root canonical path",
 		},
 		{
-			name: "traversal path prefix",
+			name: "traversal path",
 			mutate: func(entry *UnscannablePassthroughEntry) {
-				entry.PathPrefixes = []string{"/artifacts/../private"}
+				entry.Paths = []string{"/artifacts/../private"}
 			},
-			wantErr: "must not contain traversal or non-canonical path segments",
+			wantErr: "must be an exact non-root canonical path",
 		},
 		{
-			name: "non canonical path prefix",
+			name: "double encoded traversal path",
 			mutate: func(entry *UnscannablePassthroughEntry) {
-				entry.PathPrefixes = []string{"/artifacts//pkg"}
+				entry.Paths = []string{"/artifacts/%252e%252e/private"}
 			},
-			wantErr: "must not contain traversal or non-canonical path segments",
+			wantErr: "must be an exact non-root canonical path",
+		},
+		{
+			name: "non canonical path",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Paths = []string{"/artifacts//pkg"}
+			},
+			wantErr: "must be an exact non-root canonical path",
+		},
+		{
+			name: "trailing slash path",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Paths = []string{"/artifacts/pkg.bin/"}
+			},
+			wantErr: "must be an exact non-root canonical path",
+		},
+		{
+			name: "root path",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Paths = []string{"/"}
+			},
+			wantErr: "must be an exact non-root canonical path",
+		},
+		{
+			name: "encoded slash path",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Paths = []string{"/artifacts%2fpkg.bin"}
+			},
+			wantErr: "must be an exact non-root canonical path",
+		},
+		{
+			name: "path parameter",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Paths = []string{"/artifacts/pkg.bin;download"}
+			},
+			wantErr: "must be an exact non-root canonical path",
+		},
+		{
+			name: "empty content types",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.ContentTypes = nil
+			},
+			wantErr: ".content_types must contain at least one non-textual media type",
 		},
 		{
 			name: "empty content type",
@@ -87,6 +143,13 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 				entry.ContentTypes = []string{"application/"}
 			},
 			wantErr: ".content_types[0]",
+		},
+		{
+			name: "textual content type",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.ContentTypes = []string{"text/plain"}
+			},
+			wantErr: "textual/scannable",
 		},
 		{
 			name: "missing expires",
@@ -108,6 +171,20 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 				entry.Expires = "07/04/2099"
 			},
 			wantErr: ".expires",
+		},
+		{
+			name: "expired expires date",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Expires = "2000-01-01"
+			},
+			wantErr: "already expired",
+		},
+		{
+			name: "reason control character",
+			mutate: func(entry *UnscannablePassthroughEntry) {
+				entry.Reason = "opaque\narchive"
+			},
+			wantErr: "control characters",
 		},
 	}
 
@@ -133,7 +210,7 @@ func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
 		Host:         " Downloads.Example.COM. ",
-		PathPrefixes: []string{" /artifacts/ "},
+		Paths:        []string{" /artifacts/pkg.bin "},
 		ContentTypes: []string{" Application/Octet-Stream; Charset=binary "},
 		Reason:       " opaque signed archive ",
 		Added:        " 2026-07-04 ",
@@ -148,8 +225,8 @@ func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 	if got.Host != "downloads.example.com" {
 		t.Fatalf("host = %q, want normalized hostname", got.Host)
 	}
-	if got.PathPrefixes[0] != "/artifacts/" {
-		t.Fatalf("path prefix = %q, want trimmed original slash form", got.PathPrefixes[0])
+	if got.Paths[0] != "/artifacts/pkg.bin" {
+		t.Fatalf("path = %q, want trimmed exact path", got.Paths[0])
 	}
 	if got.ContentTypes[0] != "application/octet-stream" {
 		t.Fatalf("content type = %q, want media type only", got.ContentTypes[0])
@@ -205,7 +282,7 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
 	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
 		Host:         "downloads.example.com",
-		PathPrefixes: []string{"/artifacts"},
+		Paths:        []string{"/artifacts/pkg.bin"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
 		Expires:      "2099-01-01",
@@ -213,14 +290,14 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 
 	clone := cfg.Clone()
 	clone.ResponseScanning.SizeExemptDomains[0] = "mutated.example.com"
-	clone.ResponseScanning.UnscannablePassthrough[0].PathPrefixes[0] = "/mutated"
+	clone.ResponseScanning.UnscannablePassthrough[0].Paths[0] = "/mutated"
 	clone.ResponseScanning.UnscannablePassthrough[0].ContentTypes[0] = "text/plain"
 
 	if got := cfg.ResponseScanning.SizeExemptDomains[0]; got != "downloads.example.com" {
 		t.Fatalf("source size-exempt domain = %q, want no alias", got)
 	}
-	if got := cfg.ResponseScanning.UnscannablePassthrough[0].PathPrefixes[0]; got != "/artifacts" {
-		t.Fatalf("source path prefix = %q, want no alias", got)
+	if got := cfg.ResponseScanning.UnscannablePassthrough[0].Paths[0]; got != "/artifacts/pkg.bin" {
+		t.Fatalf("source path = %q, want no alias", got)
 	}
 	if got := cfg.ResponseScanning.UnscannablePassthrough[0].ContentTypes[0]; got != "application/octet-stream" {
 		t.Fatalf("source content type = %q, want no alias", got)

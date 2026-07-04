@@ -81,6 +81,12 @@ func testAgentPost(t *testing.T, url, body string) *http.Response {
 // test server fronting it. Returns the proxy test server.
 func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc) *httptest.Server {
 	t.Helper()
+	proxy, _ := reverseTestSetupWithHandler(t, cfg, upstreamHandler)
+	return proxy
+}
+
+func reverseTestSetupWithHandler(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc) (*httptest.Server, *ReverseProxyHandler) {
+	t.Helper()
 
 	upstream := newIPv4Server(t, upstreamHandler)
 	t.Cleanup(upstream.Close)
@@ -119,7 +125,7 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 	proxy := newIPv4Server(t, handler)
 	t.Cleanup(proxy.Close)
 
-	return proxy
+	return proxy, handler
 }
 
 type reverseLiveLockTransport struct {
@@ -1522,10 +1528,11 @@ func TestReverseProxy_ResponseSizeExemptDomainDeliversCleanOversizeWithinCeiling
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
 	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.ResponseScanning.Patterns = sizeExemptCleanResponsePatterns()
 	cfg.ResponseScanning.SizeExemptScanMaxBytes = 2 * reverseProxyMaxBodyBytes
 	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 4 * reverseProxyMaxBodyBytes
 
-	body := strings.Repeat("clean-", 220000)
+	body := strings.Repeat("x", reverseProxyMaxBodyBytes+1)
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)

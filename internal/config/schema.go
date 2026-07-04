@@ -705,19 +705,20 @@ type ResponseScanning struct {
 	ExemptDomains                  []string                      `yaml:"exempt_domains"`                      // responses from these hosts skip injection scanning (DLP still applies)
 	SizeExemptDomains              []string                      `yaml:"size_exempt_domains"`                 // trusted hosts whose oversized responses get a larger bounded whole-buffer scan
 	SizeExemptScanMaxBytes         int                           `yaml:"size_exempt_scan_max_bytes"`          // per-response in-memory ceiling for over-cap size-exempt responses
-	SizeExemptScanMaxInflightBytes int                           `yaml:"size_exempt_scan_max_inflight_bytes"` // process-wide in-flight memory budget for size-exempt response scans
+	SizeExemptScanMaxInflightBytes int                           `yaml:"size_exempt_scan_max_inflight_bytes"` // per-proxy-instance in-flight memory budget for size-exempt response scans
 	UnscannablePassthrough         []UnscannablePassthroughEntry `yaml:"unscannable_passthrough"`             // explicit audited stream-unscanned allowlist for opaque responses
 	SSEStreaming                   GenericSSEScanning            `yaml:"sse_streaming"`                       // generic text/event-stream inline scanning (LLM SSE)
 	MCPServers                     []MCPResponseServerTrust      `yaml:"mcp_servers"`                         // per-server MCP response trust overrides
 }
 
 type UnscannablePassthroughEntry struct {
-	Host         string   `yaml:"host"`          // exact host or *.wildcard
-	PathPrefixes []string `yaml:"path_prefixes"` // optional; empty = all paths
-	ContentTypes []string `yaml:"content_types"` // optional media types; params ignored at match time
-	Reason       string   `yaml:"reason"`        // required justification
+	Host         string   `yaml:"host"`          // exact host or *.wildcard; must also be in size_exempt_domains
+	Paths        []string `yaml:"paths"`         // required exact canonical paths
+	PathPrefixes []string `yaml:"path_prefixes"` // rejected; retained only to produce an explicit migration error
+	ContentTypes []string `yaml:"content_types"` // required non-textual media types; params ignored at match time
+	Reason       string   `yaml:"reason"`        // required justification; control characters rejected
 	Added        string   `yaml:"added"`         // optional ISO date (YYYY-MM-DD)
-	Expires      string   `yaml:"expires"`       // required ISO date (YYYY-MM-DD); past entries are inactive
+	Expires      string   `yaml:"expires"`       // required future/present ISO date (YYYY-MM-DD)
 }
 
 // MCPResponseTrustForServer returns the configured MCP response trust class for

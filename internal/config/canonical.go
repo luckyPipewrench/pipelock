@@ -269,7 +269,7 @@ func canonicalUnscannablePassthrough(entries []UnscannablePassthroughEntry) []Un
 	out := make([]UnscannablePassthroughEntry, len(entries))
 	for i, entry := range entries {
 		out[i] = entry
-		out[i].PathPrefixes = sortedCopy(entry.PathPrefixes)
+		out[i].Paths = sortedCopy(entry.Paths)
 		out[i].ContentTypes = sortedCopy(entry.ContentTypes)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -277,8 +277,8 @@ func canonicalUnscannablePassthrough(entries []UnscannablePassthroughEntry) []Un
 		if a.Host != b.Host {
 			return a.Host < b.Host
 		}
-		if strings.Join(a.PathPrefixes, "\x00") != strings.Join(b.PathPrefixes, "\x00") {
-			return strings.Join(a.PathPrefixes, "\x00") < strings.Join(b.PathPrefixes, "\x00")
+		if strings.Join(a.Paths, "\x00") != strings.Join(b.Paths, "\x00") {
+			return strings.Join(a.Paths, "\x00") < strings.Join(b.Paths, "\x00")
 		}
 		if strings.Join(a.ContentTypes, "\x00") != strings.Join(b.ContentTypes, "\x00") {
 			return strings.Join(a.ContentTypes, "\x00") < strings.Join(b.ContentTypes, "\x00")

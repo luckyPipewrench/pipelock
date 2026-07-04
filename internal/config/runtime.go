@@ -268,8 +268,8 @@ func cloneUnscannablePassthrough(src []UnscannablePassthroughEntry) []Unscannabl
 	dst := make([]UnscannablePassthroughEntry, len(src))
 	for i := range src {
 		dst[i] = src[i]
-		if src[i].PathPrefixes != nil {
-			dst[i].PathPrefixes = append([]string(nil), src[i].PathPrefixes...)
+		if src[i].Paths != nil {
+			dst[i].Paths = append([]string(nil), src[i].Paths...)
 		}
 		if src[i].ContentTypes != nil {
 			dst[i].ContentTypes = append([]string(nil), src[i].ContentTypes...)

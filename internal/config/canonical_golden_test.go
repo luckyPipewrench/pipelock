@@ -243,7 +243,7 @@ const (
 	// credential-exfil branch, so docs that say to visit/click setup links stay
 	// clean unless an actual exfiltration verb is present.
 	// Re-bumped for bounded size-exempt response scanning: the per-response
-	// and process-wide scan ceilings plus the explicit unscannable passthrough
+	// and per-proxy-instance scan ceilings plus the explicit unscannable passthrough
 	// allowlist change response-size enforcement.
 	goldenHashDefaults = "0faa8878fbaf9513f8bbc070539e890e2a18dfd0ad707554aa91f1c4b80da8c8"
 
@@ -962,13 +962,13 @@ func TestCanonicalPolicyHash_GoldenInvariantUnderOpsFields(t *testing.T) {
 // differ in each sort key so the canonical comparator branches all run.
 func TestCanonicalPolicyHash_UnscannablePassthrough(t *testing.T) {
 	entries := []UnscannablePassthroughEntry{
-		{Host: "b.example.com", PathPrefixes: []string{"/z"}, ContentTypes: []string{"text/plain"}, Reason: "r2", Added: "2026-02-01", Expires: "2099-02-01"},
-		{Host: "a.example.com", PathPrefixes: []string{"/x"}, ContentTypes: []string{"text/plain"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", PathPrefixes: []string{"/y"}, ContentTypes: []string{"text/plain"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", PathPrefixes: []string{"/x"}, ContentTypes: []string{"text/html"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", PathPrefixes: []string{"/x"}, ContentTypes: []string{"text/plain"}, Reason: "r3", Added: "2026-01-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", PathPrefixes: []string{"/x"}, ContentTypes: []string{"text/plain"}, Reason: "r1", Added: "2026-03-01", Expires: "2099-01-01"},
-		{Host: "a.example.com", PathPrefixes: []string{"/x"}, ContentTypes: []string{"text/plain"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-09-09"},
+		{Host: "b.example.com", Paths: []string{"/z.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r2", Added: "2026-02-01", Expires: "2099-02-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/y.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/zip"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r3", Added: "2026-01-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-03-01", Expires: "2099-01-01"},
+		{Host: "a.example.com", Paths: []string{"/x.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "r1", Added: "2026-01-01", Expires: "2099-09-09"},
 	}
 
 	withPT := Defaults()
@@ -999,7 +999,7 @@ func TestCanonicalPolicyHash_UnscannablePassthrough(t *testing.T) {
 	if len(clone.ResponseScanning.UnscannablePassthrough) != len(entries) {
 		t.Fatalf("clone dropped passthrough entries: got %d want %d", len(clone.ResponseScanning.UnscannablePassthrough), len(entries))
 	}
-	clone.ResponseScanning.UnscannablePassthrough[0].PathPrefixes[0] = "/mutated"
+	clone.ResponseScanning.UnscannablePassthrough[0].Paths[0] = "/mutated"
 	clone.ResponseScanning.UnscannablePassthrough[0].Host = "mutated.example.com"
 	if withPT.CanonicalPolicyHash() != hWith {
 		t.Fatal("mutating the clone aliased back into the source config")

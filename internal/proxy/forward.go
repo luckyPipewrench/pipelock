@@ -1922,43 +1922,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if match, ok := matchUnscannablePassthrough(fwdRespHost, resp.Request.URL.EscapedPath(), resp.Header.Get("Content-Type"), cfg.ResponseScanning.UnscannablePassthrough, time.Now()); ok {
-		reason := fmt.Sprintf("unscannable passthrough: host=%s path=%s content_type=%s reason=%s", fwdRespHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
-		p.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
-		emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
-			ActionID:            actionID,
-			Verdict:             config.ActionAllow,
-			Layer:               "unscannable_passthrough",
-			Pattern:             reason,
-			Transport:           "forward",
-			Method:              r.Method,
-			Target:              targetURL,
-			RequestID:           requestID,
-			Agent:               agent,
-			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
-			SessionContaminated: forwardTaint.Risk.Contaminated,
-			RecentTaintSources:  forwardTaint.Risk.Sources,
-			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
-			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
-			AuthorityKind:       forwardTaint.Authority.String(),
-			TaintDecision:       forwardTaint.Result.Decision.String(),
-			TaintDecisionReason: forwardTaint.Result.Reason,
-			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-		}))
-		copyResponseHeaders(w.Header(), resp.Header)
-		w.WriteHeader(resp.StatusCode)
-		written, _ := io.Copy(w, resp.Body)
-		sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
-		_ = resolved.Budget.RecordBytes(written)
-		duration := time.Since(start)
-		p.metrics.RecordAllowed(duration, agentLabel)
-		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
-		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
-			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
-		}
-		return
-	}
-
 	// Response injection scanning: buffer-then-scan-then-send when enabled.
 	// Headers are copied AFTER the scan decision so blocked responses don't
 	// leak upstream headers (Set-Cookie, Content-Encoding, etc.) to the client.
@@ -2013,8 +1976,52 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				// Could not fully inspect the response within the configured
 				// scan cap - block fail-closed, matching intercept/reverse.
 				if fwdRespSizeExempt {
+					if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
+						Host:          fwdRespHost,
+						Path:          resp.Request.URL.EscapedPath(),
+						ContentType:   resp.Header.Get("Content-Type"),
+						Header:        resp.Header,
+						ContentLength: resp.ContentLength,
+						SizeExempt:    true,
+						Now:           time.Now(),
+					}, cfg.ResponseScanning.UnscannablePassthrough); ok {
+						reason := unscannablePassthroughReason(fwdRespHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
+						p.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
+						emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+							ActionID:            actionID,
+							Verdict:             config.ActionAllow,
+							Layer:               "unscannable_passthrough",
+							Pattern:             reason,
+							Transport:           "forward",
+							Method:              r.Method,
+							Target:              targetURL,
+							RequestID:           requestID,
+							Agent:               agent,
+							SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+							SessionContaminated: forwardTaint.Risk.Contaminated,
+							RecentTaintSources:  forwardTaint.Risk.Sources,
+							SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+							SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+							AuthorityKind:       forwardTaint.Authority.String(),
+							TaintDecision:       forwardTaint.Result.Decision.String(),
+							TaintDecisionReason: forwardTaint.Result.Reason,
+							TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+						}))
+						copyResponseHeaders(w.Header(), resp.Header)
+						w.WriteHeader(resp.StatusCode)
+						written, _ := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+						sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
+						_ = resolved.Budget.RecordBytes(written)
+						duration := time.Since(start)
+						p.metrics.RecordAllowed(duration, agentLabel)
+						p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
+						if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+							recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+						}
+						return
+					}
 					var scanFailure *sizeExemptResponseReadError
-					respBody, scanFailure = readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
+					respBody, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
 					if scanFailure != nil {
 						if scanFailure.Err != nil {
 							p.logger.LogError(actx, scanFailure.Err)

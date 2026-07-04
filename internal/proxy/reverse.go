@@ -63,24 +63,25 @@ type ReverseProxyBlockResponse struct {
 // to a configured upstream URL. Request bodies are scanned for DLP patterns
 // (secret exfiltration) and response bodies are scanned for prompt injection.
 type ReverseProxyHandler struct {
-	upstream            *url.URL
-	proxy               *httputil.ReverseProxy
-	cfgPtr              *atomic.Pointer[config.Config]
-	scPtr               *atomic.Pointer[scanner.Scanner]
-	redactionRuntimePtr *atomic.Pointer[redactionRuntime]
-	logger              *audit.Logger
-	metrics             *metrics.Metrics
-	ks                  *killswitch.Controller
-	captureObs          capture.CaptureObserver
-	shieldEngine        *shield.Engine
-	envelopeEmitterPtr  *atomic.Pointer[envelope.Emitter]
-	envelopeVerifierPtr *atomic.Pointer[envelope.Verifier]
-	receiptEmitterPtr   *atomic.Pointer[receipt.Emitter]
-	v2EmitterPtr        *atomic.Pointer[proxydecision.Emitter]
-	contractLoaderPtr   *atomic.Pointer[contractruntime.Loader]
-	reqPolicyFn         func(requestPolicyInput) requestPolicyResult                 // nil = disabled
-	reqPolicyPrepareFn  func(*http.Request, *requestPolicyInput) requestPolicyResult // nil = no body pre-read
-	reloadMu            *sync.RWMutex
+	upstream             *url.URL
+	proxy                *httputil.ReverseProxy
+	cfgPtr               *atomic.Pointer[config.Config]
+	scPtr                *atomic.Pointer[scanner.Scanner]
+	redactionRuntimePtr  *atomic.Pointer[redactionRuntime]
+	logger               *audit.Logger
+	metrics              *metrics.Metrics
+	ks                   *killswitch.Controller
+	captureObs           capture.CaptureObserver
+	shieldEngine         *shield.Engine
+	envelopeEmitterPtr   *atomic.Pointer[envelope.Emitter]
+	envelopeVerifierPtr  *atomic.Pointer[envelope.Verifier]
+	receiptEmitterPtr    *atomic.Pointer[receipt.Emitter]
+	v2EmitterPtr         *atomic.Pointer[proxydecision.Emitter]
+	contractLoaderPtr    *atomic.Pointer[contractruntime.Loader]
+	reqPolicyFn          func(requestPolicyInput) requestPolicyResult                 // nil = disabled
+	reqPolicyPrepareFn   func(*http.Request, *requestPolicyInput) requestPolicyResult // nil = no body pre-read
+	sizeExemptScanBudget sizeExemptScanBudget
+	reloadMu             *sync.RWMutex
 }
 
 // NewReverseProxy creates a reverse proxy handler that scans request and
@@ -1416,25 +1417,6 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 
-	if match, ok := matchUnscannablePassthrough(revHost, resp.Request.URL.EscapedPath(), resp.Header.Get("Content-Type"), cfg.ResponseScanning.UnscannablePassthrough, time.Now()); ok {
-		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
-		reason := fmt.Sprintf("unscannable passthrough: host=%s path=%s content_type=%s reason=%s", revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
-		rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
-		emitReverseReceipt(receipt.EmitOpts{
-			ActionID:  actionID,
-			Verdict:   config.ActionAllow,
-			Layer:     "unscannable_passthrough",
-			Pattern:   reason,
-			Transport: "reverse",
-			Method:    resp.Request.Method,
-			Target:    targetURL,
-			RequestID: requestID,
-			Agent:     agent,
-		})
-		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
-		return nil
-	}
-
 	// Read response body with size limit. Use a separate limited reader
 	// so the original body remains open for oversized passthrough.
 	maxBytes := reverseProxyMaxBodyBytes
@@ -1468,8 +1450,35 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// requests) and ensures response scanning cannot be bypassed by size.
 	if len(body) > maxBytes {
 		if revRespSizeExempt {
+			if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
+				Host:          revHost,
+				Path:          resp.Request.URL.EscapedPath(),
+				ContentType:   resp.Header.Get("Content-Type"),
+				Header:        resp.Header,
+				ContentLength: resp.ContentLength,
+				SizeExempt:    true,
+				Now:           time.Now(),
+			}, cfg.ResponseScanning.UnscannablePassthrough); ok {
+				actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+				reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
+				rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionAllow,
+					Layer:     "unscannable_passthrough",
+					Pattern:   reason,
+					Transport: "reverse",
+					Method:    resp.Request.Method,
+					Target:    targetURL,
+					RequestID: requestID,
+					Agent:     agent,
+				})
+				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
+				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
+				return nil
+			}
 			var scanFailure *sizeExemptResponseReadError
-			body, scanFailure = readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
+			body, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
 			if scanFailure != nil {
 				_ = resp.Body.Close()
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")

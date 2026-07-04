@@ -936,6 +936,15 @@ mcp_tool_scanning:
 | `action` | `"warn"` | warn or block |
 | `detect_drift` | `false` | Alert on tool description changes |
 
+When `detect_drift` is enabled, Pipelock hashes the canonical full tool object
+from `tools/list`, excluding only Pipelock's own provenance attestation in
+`_meta["com.pipelock/provenance"]`. Other `_meta` fields are part of the drift
+hash. If an MCP server publishes volatile values such as nonces, timestamps,
+request IDs, or per-list counters in the tool object, that tool will drift on
+every `tools/list`. Keep `tools/list` definitions stable: move changing values
+to tool call arguments, tool results, or an out-of-band capability endpoint, and
+leave `_meta` for stable metadata unless drift on that value is intentional.
+
 ## MCP Tool Policy
 
 Pre-execution rules that block or warn before tool calls reach the MCP server. Ships with 17 built-in rules covering destructive operations, credential access, network exfiltration, persistence mechanisms, and encoded command execution.

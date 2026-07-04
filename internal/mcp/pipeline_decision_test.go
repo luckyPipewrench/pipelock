@@ -162,6 +162,58 @@ func TestEmitMCPDecision_EmptyActionIDSkipsReceipt(t *testing.T) {
 	}
 }
 
+func TestEmitMCPDecision_RequiredEmptyActionIDFailsClosed(t *testing.T) {
+	emitter, _, dir, _ := newReceiptTestHarness(t)
+
+	_, err := EmitMCPDecision(emitter, nil, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			Verdict: config.ActionAllow,
+			// ActionID intentionally empty: RequireReceipt must fail closed
+			// instead of treating the missing receipt as a silent skip.
+		},
+		RequireReceipt: true,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("err = %v, want ErrReceiptRequired", err)
+	}
+	var log bytes.Buffer
+	logReceiptEmitFailure(&log, err, true, config.ActionAllow)
+	if !strings.Contains(log.String(), "event=block_receipt_emit_failed") || !strings.Contains(log.String(), "audit_gap=true") {
+		t.Fatalf("missing audit-gap warning for required empty ActionID: %q", log.String())
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "evidence-proxy-0.jsonl")); !os.IsNotExist(statErr) {
+		t.Errorf("evidence file created despite empty ActionID; stat err = %v", statErr)
+	}
+}
+
+func TestEmitMCPDecision_RequiredEmptyActionIDDoesNotInjectEnvelope(t *testing.T) {
+	emitter, _, _, _ := newReceiptTestHarness(t)
+	envEmitter := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "policy-h"})
+	inbound := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{}}}`)
+
+	out, err := EmitMCPDecision(emitter, nil, envEmitter, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			Verdict: config.ActionAllow,
+		},
+		Envelope: &envelope.BuildOpts{
+			ActionID: "must-not-leak",
+			Action:   "tool_call",
+			Verdict:  config.ActionAllow,
+		},
+		InboundMsg:     inbound,
+		RequireReceipt: true,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("err = %v, want ErrReceiptRequired", err)
+	}
+	if !bytes.Equal(out, inbound) {
+		t.Fatalf("outbound was rewritten despite required receipt failure: %s", out)
+	}
+	if strings.Contains(string(out), "must-not-leak") || strings.Contains(string(out), "com.pipelock/mediation") {
+		t.Fatalf("outbound leaked mediation envelope after required receipt failure: %s", out)
+	}
+}
+
 func TestEmitMCPDecision_ReceiptOnly(t *testing.T) {
 	emitter, _, dir, _ := newReceiptTestHarness(t)
 

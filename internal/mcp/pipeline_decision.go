@@ -30,11 +30,10 @@ var ErrReceiptRequired = errors.New("receipt required but not emitted")
 // would force this file to evolve every time the receipt schema gains
 // a field; wrapping keeps MCPDecision as pure routing.
 type MCPDecision struct {
-	// Receipt is handed straight to receipt.Emitter.Emit when the
-	// decision should produce a receipt. A zero-value Receipt (in
-	// particular, empty ActionID) is the skip signal. The emission
-	// path already no-ops on empty ActionID but surfacing the skip
-	// explicitly here keeps the decision contract legible at callers.
+	// Receipt is handed straight to receipt.Emitter.Emit when the decision should
+	// produce a receipt. A zero-value Receipt (in particular, empty ActionID) is
+	// the skip signal unless RequireReceipt is set, in which case the decision
+	// fails closed.
 	Receipt receipt.EmitOpts
 
 	// Envelope, if non-nil, is injected into InboundMsg via the
@@ -69,19 +68,18 @@ type MCPDecision struct {
 //
 // Both emitters are nil-safe:
 //
-//   - nil receiptEmitter: receipt stage is skipped silently.
+//   - nil receiptEmitter: receipt stage is skipped silently unless
+//     RequireReceipt is set, in which case the decision fails closed.
 //   - nil envelopeEmitter or nil d.Envelope: envelope stage is
 //     skipped and the input message flows through unchanged.
-//   - empty d.Receipt.ActionID: receipt stage is skipped (the
-//     downstream emitter interprets this as "no receipt for this
-//     decision"; surfacing the check here avoids an unnecessary
-//     call and keeps the contract legible at gate sites).
+//   - empty d.Receipt.ActionID: receipt stage is skipped unless
+//     RequireReceipt is set, in which case the decision fails closed.
 //
-// Receipt and envelope emission are independent: a failed receipt
-// emit does not block envelope injection and a nil envelope does
-// not block receipt emission. This matches today's scatter-gather
-// callsites where the two are inlined in sequence with no
-// cross-dependency.
+// Receipt and envelope emission are independent unless RequireReceipt turns a
+// missing or failed receipt into a blocking error: best-effort receipt failures
+// do not block envelope injection, and a nil envelope does not block receipt
+// emission. Required receipt failures return before envelope injection so the
+// caller never receives rewritten bytes for a fail-closed decision.
 //
 // Callers that want fine-grained control (e.g., conditional
 // injection based on session taint state) assemble their Envelope
@@ -96,8 +94,10 @@ func EmitMCPDecision(
 	outbound = d.InboundMsg
 
 	v1Emitted := false
-	receiptRequired := d.RequireReceipt && d.Receipt.ActionID != ""
-	if receiptRequired && receiptEmitter == nil {
+	receiptRequired := d.RequireReceipt
+	if receiptRequired && d.Receipt.ActionID == "" {
+		err = fmt.Errorf("empty action id: %w", ErrReceiptRequired)
+	} else if receiptRequired && receiptEmitter == nil {
 		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
 	} else if receiptEmitter != nil && d.Receipt.ActionID != "" {
 		err = receiptEmitter.Emit(d.Receipt)
@@ -106,8 +106,11 @@ func EmitMCPDecision(
 		// error. The two stages are independent at today's callsites
 		// and coupling them here would break parity.
 	}
-	if receiptRequired && err != nil {
+	if receiptRequired && err != nil && !errors.Is(err, ErrReceiptRequired) {
 		err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)
+	}
+	if receiptRequired && err != nil {
+		return outbound, err
 	}
 	if v1Emitted && v2Emitter != nil {
 		if v2Decision, ok := mcpV2DecisionFromReceipt(d.Receipt); ok {

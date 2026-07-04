@@ -323,6 +323,25 @@ func TestEmitMCPToolReceipt_RequiredEmptyActionIDFailsClosed(t *testing.T) {
 	}
 }
 
+func TestEmitMCPToolReceipt_RequiredEmptyActionIDLogsAuditGap(t *testing.T) {
+	var log bytes.Buffer
+	err := emitMCPToolReceipt(mcpToolReceiptOpts{
+		Log:             &log,
+		RequireReceipts: true,
+		RequireReceipt:  true,
+		Verdict:         config.ActionAllow,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("err = %v, want ErrReceiptRequired", err)
+	}
+	if !strings.Contains(log.String(), "receipt emission failed") {
+		t.Fatalf("missing receipt failure log: %q", log.String())
+	}
+	if !strings.Contains(log.String(), "event=block_receipt_emit_failed") || !strings.Contains(log.String(), "audit_gap=true") {
+		t.Fatalf("missing audit-gap warning for required empty ActionID: %q", log.String())
+	}
+}
+
 func TestEmitMCPToolReceipt_AuditGapGateNegativePaths(t *testing.T) {
 	testCases := []struct {
 		name            string

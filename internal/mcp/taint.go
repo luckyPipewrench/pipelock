@@ -308,7 +308,9 @@ type mcpToolReceiptOpts struct {
 func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 	if opts.ActionID == "" {
 		if opts.RequireReceipt {
-			return fmt.Errorf("empty action id: %w", ErrReceiptRequired)
+			err := fmt.Errorf("empty action id: %w", ErrReceiptRequired)
+			logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)
+			return err
 		}
 		return nil
 	}
@@ -372,7 +374,7 @@ func logReceiptEmitFailure(logW io.Writer, err error, requireReceipts bool, verd
 		return
 	}
 	_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", err)
-	if requireReceipts && verdict == config.ActionBlock {
+	if requireReceipts && (verdict == config.ActionBlock || errors.Is(err, ErrReceiptRequired)) {
 		logBlockReceiptAuditGap(logW, err)
 	}
 }

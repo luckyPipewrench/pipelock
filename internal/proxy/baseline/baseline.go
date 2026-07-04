@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -297,10 +298,15 @@ func (m *Manager) Reconfigure(cfg Config) error {
 		}
 
 		m.mu.Lock()
+		profileDirChanged := !sameProfileDir(m.cfg.ProfileDir, cfg.ProfileDir)
 		m.cfg = cfg
-		for agentKey, loaded := range candidate.agents {
-			if existing, ok := m.agents[agentKey]; !ok || existing.profile == nil {
-				m.agents[agentKey] = loaded
+		if profileDirChanged {
+			m.agents = candidate.agents
+		} else {
+			for agentKey, loaded := range candidate.agents {
+				if existing, ok := m.agents[agentKey]; !ok || existing.profile == nil {
+					m.agents[agentKey] = loaded
+				}
 			}
 		}
 		m.mu.Unlock()
@@ -311,6 +317,13 @@ func (m *Manager) Reconfigure(cfg Config) error {
 	m.cfg = cfg
 	m.mu.Unlock()
 	return nil
+}
+
+func sameProfileDir(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // RecordSession adds a completed session's metrics to the learning set.
@@ -767,6 +780,10 @@ func (m *Manager) loadProfiles() error {
 			if m.cfg.enforces() {
 				return fmt.Errorf("reading persisted baseline profile %q under enforcing deviation_action %q (refusing to start without it; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
 			}
+			slog.Warn("skipping unreadable persisted baseline profile",
+				"profile", entry.Name(),
+				"deviation_action", m.cfg.DeviationAction,
+				"error", err)
 			continue
 		}
 
@@ -775,6 +792,10 @@ func (m *Manager) loadProfiles() error {
 			if m.cfg.enforces() {
 				return fmt.Errorf("parsing persisted baseline profile %q under enforcing deviation_action %q (refusing to start with a corrupt profile; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
 			}
+			slog.Warn("skipping corrupt persisted baseline profile",
+				"profile", entry.Name(),
+				"deviation_action", m.cfg.DeviationAction,
+				"error", err)
 			continue
 		}
 

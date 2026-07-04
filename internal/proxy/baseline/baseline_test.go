@@ -470,6 +470,31 @@ func seedLockedProfileFor(t *testing.T, dir, agentKey string) string {
 	return path
 }
 
+func rewriteProfileToolCallsMean(t *testing.T, path string, mean float64) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	var profile Profile
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatalf("unmarshal profile: %v", err)
+	}
+	profile.Metrics.ToolCallsPerSession = Range{
+		Min:    mean,
+		Max:    mean,
+		Mean:   mean,
+		StdDev: 0,
+	}
+	data, err = json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal profile: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+}
+
 // TestBaseline_LoadProfiles_FailsClosedOnCorruptProfileUnderEnforcement proves
 // that a persisted profile which exists but cannot be read or parsed fails the
 // manager's startup when the deviation action is enforcing (ask/block).
@@ -533,9 +558,10 @@ func TestBaseline_LoadProfiles_FailsClosedOnCorruptProfileUnderEnforcement(t *te
 
 func TestBaseline_ReconfigureLoadsProfilesBeforeCommittingEnforcingConfig(t *testing.T) {
 	startDir := t.TempDir()
+	_ = seedLockedProfile(t, startDir)
 	mgr, err := NewManager(Config{
 		Enabled:         true,
-		DeviationAction: deviationActionWarn,
+		DeviationAction: deviationActionBlock,
 		ProfileDir:      startDir,
 	})
 	if err != nil {
@@ -556,11 +582,17 @@ func TestBaseline_ReconfigureLoadsProfilesBeforeCommittingEnforcingConfig(t *tes
 	if err == nil {
 		t.Fatal("Reconfigure: want fail-closed error for corrupt profile under block")
 	}
-	if mgr.cfg.DeviationAction != deviationActionWarn {
-		t.Fatalf("failed Reconfigure committed deviation_action = %q, want %q", mgr.cfg.DeviationAction, deviationActionWarn)
+	if mgr.cfg.DeviationAction != deviationActionBlock {
+		t.Fatalf("failed Reconfigure committed deviation_action = %q, want %q", mgr.cfg.DeviationAction, deviationActionBlock)
 	}
 	if mgr.cfg.ProfileDir != startDir {
 		t.Fatalf("failed Reconfigure committed profile_dir = %q, want %q", mgr.cfg.ProfileDir, startDir)
+	}
+	if state := mgr.GetState(testAgent); state != StateLocked {
+		t.Fatalf("failed Reconfigure changed profile state = %q, want %q", state, StateLocked)
+	}
+	if devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("failed Reconfigure must preserve existing locked-profile enforcement")
 	}
 }
 
@@ -589,6 +621,40 @@ func TestBaseline_ReconfigureLoadsValidProfilesUnderEnforcement(t *testing.T) {
 	}
 	if devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
 		t.Fatal("reconfigured locked profile must detect deviations")
+	}
+}
+
+func TestBaseline_ReconfigureReplacesProfilesWhenProfileDirChanges(t *testing.T) {
+	startDir := t.TempDir()
+	_ = seedLockedProfile(t, startDir)
+	mgr, err := NewManager(Config{
+		Enabled:         true,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      startDir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	reloadDir := t.TempDir()
+	reloadPath := seedLockedProfile(t, reloadDir)
+	rewriteProfileToolCallsMean(t, reloadPath, 100)
+
+	if err := mgr.Reconfigure(Config{
+		Enabled:         true,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      reloadDir,
+	}); err != nil {
+		t.Fatalf("Reconfigure with replacement profile dir: %v", err)
+	}
+
+	replacementMetrics := normalMetrics()
+	replacementMetrics.ToolCalls = 100
+	if devs := mgr.Check(testAgent, replacementMetrics); len(devs) != 0 {
+		t.Fatalf("reconfigured manager kept stale profile, got deviations: %+v", devs)
+	}
+	if devs := mgr.Check(testAgent, normalMetrics()); len(devs) == 0 {
+		t.Fatal("reconfigured manager must enforce replacement profile from new profile dir")
 	}
 }
 

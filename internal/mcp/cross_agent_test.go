@@ -171,6 +171,34 @@ func TestEvaluateMCPInputGates_CrossAgentA2ARequest(t *testing.T) {
 	}
 }
 
+func TestEvaluateMCPInputGates_CrossAgentA2ARecordedWhenDoWBlocksWithoutA2AScanning(t *testing.T) {
+	t.Parallel()
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	contaminateRecorder(rec, true)
+	dow := func(_, _ string) (bool, string, string, string) {
+		return false, config.ActionBlock, "dow: a2a budget exceeded", "calls"
+	}
+
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"text":"hello peer"}]}}}`)
+	frame := ParseMCPFrame(msg)
+	eval := EvaluateMCPInputGates(context.Background(), frame, msg, "sess-1",
+		MCPProxyOpts{Scanner: sc, Rec: rec, TaintCfg: &cfg.Taint, DoWCheck: dow},
+		config.ActionWarn, config.ActionWarn, true)
+
+	if eval.BlockingGate != blockingGateDoW {
+		t.Fatalf("expected DoW block, got %q", eval.BlockingGate)
+	}
+	srcs := crossAgentSources(rec)
+	if len(srcs) != 1 || srcs[0].MatchReason != "cross_agent_a2a_request" {
+		t.Fatalf("A2A DoW block without A2A scanning must still record cross-agent source, got %+v", srcs)
+	}
+	if !eval.CrossAgentEscalate {
+		t.Fatal("hostile A2A propagation must request escalation before DoW short-circuits")
+	}
+}
+
 // stdio parity: the stdio gate records cross-agent taint on a tool call.
 func TestEvaluateMCPInputGatesStdio_CrossAgentToolCall(t *testing.T) {
 	t.Parallel()
@@ -188,6 +216,34 @@ func TestEvaluateMCPInputGatesStdio_CrossAgentToolCall(t *testing.T) {
 	srcs := crossAgentSources(rec)
 	if len(srcs) != 1 || srcs[0].MatchReason != "cross_agent_mcp_tool_call" {
 		t.Fatalf("stdio cross-agent source = %+v", srcs)
+	}
+}
+
+func TestEvaluateMCPInputGatesStdio_CrossAgentA2ARecordedWhenDoWBlocksWithoutA2AScanning(t *testing.T) {
+	t.Parallel()
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	contaminateRecorder(rec, true)
+	dow := func(_, _ string) (bool, string, string, string) {
+		return false, config.ActionBlock, "dow: a2a budget exceeded", "calls"
+	}
+
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"text":"hello peer"}]}}}`)
+	frame := ParseMCPFrame(msg)
+	eval := EvaluateMCPInputGatesStdio(context.Background(), frame, msg, msg, nil,
+		MCPProxyOpts{Scanner: sc, Rec: rec, TaintCfg: &cfg.Taint, DoWCheck: dow},
+		config.ActionWarn, config.ActionBlock)
+
+	if eval.BlockingGate != blockingGateDoW {
+		t.Fatalf("expected DoW block, got %q", eval.BlockingGate)
+	}
+	srcs := crossAgentSources(rec)
+	if len(srcs) != 1 || srcs[0].MatchReason != "cross_agent_a2a_request" {
+		t.Fatalf("stdio A2A DoW block without A2A scanning must still record cross-agent source, got %+v", srcs)
+	}
+	if !eval.CrossAgentEscalate {
+		t.Fatal("hostile stdio A2A propagation must request escalation before DoW short-circuits")
 	}
 }
 

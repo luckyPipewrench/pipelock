@@ -122,34 +122,23 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 
 	// Core response patterns run FIRST - immutable safety floor.
 	// These run regardless of response_scanning.enabled.
-	if coreSet := s.scanCoreResponse(ctx, content); len(coreSet.matches) > 0 {
-		// Defensive anti-solicitation filtering happens per-pass inside
-		// scanCoreResponse (not here), so an all-defensive early pass cannot
-		// mask an encoded solicitation that only a later pass catches.
-		coreMatches := filterSuppressed(filterEducationalQuotedResponseMatches(coreSet.content, coreSet.matches))
-		if len(coreMatches) == 0 {
-			if !s.responseEnabled {
-				return ResponseScanResult{Clean: true}
-			}
-		} else {
-			result := ResponseScanResult{
-				Clean:   false,
-				Matches: coreMatches,
-			}
-			// Support strip/ask actions on core matches so callers that
-			// configured strip still get TransformedContent.
-			if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
-				transformed := normalize.ForMatching(content)
-				for _, p := range s.core.responsePatterns {
-					replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-					transformed = p.re.ReplaceAllString(transformed, replacement)
-				}
-				if transformed != normalize.ForMatching(content) {
-					result.TransformedContent = transformed
-				}
-			}
-			return result
+	if coreSet := s.scanCoreResponse(ctx, content, filterSuppressed); len(coreSet.matches) > 0 {
+		result := ResponseScanResult{
+			Clean:   false,
+			Matches: coreSet.matches,
 		}
+		// Support strip/ask actions on core matches so callers that
+		// configured strip still get TransformedContent.
+		if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
+			transformed := normalize.ForMatching(content)
+			transformed = redactResponsePatterns(transformed, s.core.responsePatterns)
+			transformed = redactResponsePatterns(transformed, s.core.responseOptSpacePatterns)
+			transformed = redactResponsePatterns(transformed, s.core.responseVowelFoldPatterns)
+			if transformed != normalize.ForMatching(content) {
+				result.TransformedContent = transformed
+			}
+		}
+		return result
 	}
 
 	if !s.responseEnabled {
@@ -271,18 +260,9 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 
 	if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
 		transformed := content
-		for _, p := range s.responsePatterns {
-			replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-			transformed = p.re.ReplaceAllString(transformed, replacement)
-		}
-		for _, p := range s.responseOptSpacePatterns {
-			replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-			transformed = p.re.ReplaceAllString(transformed, replacement)
-		}
-		for _, p := range s.responseVowelFoldPatterns {
-			replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-			transformed = p.re.ReplaceAllString(transformed, replacement)
-		}
+		transformed = redactResponsePatterns(transformed, s.responsePatterns)
+		transformed = redactResponsePatterns(transformed, s.responseOptSpacePatterns)
+		transformed = redactResponsePatterns(transformed, s.responseVowelFoldPatterns)
 		// If redaction had no effect (detection came from a transformed pass
 		// like vowel-fold or decoded where patterns don't match the original
 		// text form), leave TransformedContent empty. Callers treat empty
@@ -293,6 +273,14 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	}
 
 	return result
+}
+
+func redactResponsePatterns(content string, patterns []*compiledPattern) string {
+	for _, p := range patterns {
+		replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
+		content = p.re.ReplaceAllString(content, replacement)
+	}
+	return content
 }
 
 func responseMatchLogicalKey(match ResponseMatch) string {

@@ -178,10 +178,18 @@ func EnforceableInboundTextDLPMatches(text string, matches []TextDLPMatch) []Tex
 		return nil
 	}
 
+	var awsCtx inboundAWSAccessIDContext
+	haveAWSCtx := false
 	enforceable := make([]TextDLPMatch, 0, len(matches))
 	for _, match := range matches {
-		if IsLowConfidenceInboundAWSAccessID(text, match) {
-			continue
+		if isInboundAWSAccessIDWhitespaceMatch(match) {
+			if !haveAWSCtx {
+				awsCtx = newInboundAWSAccessIDContext(text)
+				haveAWSCtx = true
+			}
+			if isLowConfidenceInboundAWSAccessID(awsCtx, match) {
+				continue
+			}
 		}
 		enforceable = append(enforceable, match)
 	}
@@ -201,7 +209,34 @@ func EnforceableInboundTextDLPMatches(text string, matches []TextDLPMatch) []Tex
 // credential-context text stay high-confidence and must still be blocked by the
 // caller.
 func IsLowConfidenceInboundAWSAccessID(text string, match TextDLPMatch) bool {
-	if match.PatternName != patternNameAWSAccessID || match.Encoded != "whitespace" {
+	if !isInboundAWSAccessIDWhitespaceMatch(match) {
+		return false
+	}
+	return isLowConfidenceInboundAWSAccessID(newInboundAWSAccessIDContext(text), match)
+}
+
+type inboundAWSAccessIDContext struct {
+	cleaned          string
+	compacted        string
+	compactedOffsets []int
+}
+
+func newInboundAWSAccessIDContext(text string) inboundAWSAccessIDContext {
+	cleaned := normalize.ForDLP(text)
+	compacted, compactedOffsets := compactTextDLPWhitespaceWithOffsets(cleaned)
+	return inboundAWSAccessIDContext{
+		cleaned:          cleaned,
+		compacted:        compacted,
+		compactedOffsets: compactedOffsets,
+	}
+}
+
+func isInboundAWSAccessIDWhitespaceMatch(match TextDLPMatch) bool {
+	return match.PatternName == patternNameAWSAccessID && match.Encoded == "whitespace"
+}
+
+func isLowConfidenceInboundAWSAccessID(ctx inboundAWSAccessIDContext, match TextDLPMatch) bool {
+	if !isInboundAWSAccessIDWhitespaceMatch(match) {
 		return false
 	}
 	span := match.Span()
@@ -209,13 +244,11 @@ func IsLowConfidenceInboundAWSAccessID(text string, match TextDLPMatch) bool {
 		return false
 	}
 
-	cleaned := normalize.ForDLP(text)
-	compacted, compactedOffsets := compactTextDLPWhitespaceWithOffsets(cleaned)
-	if compacted == cleaned || span.ByteStart < 0 || span.ByteEnd > len(compacted) || span.ByteStart >= span.ByteEnd {
+	if ctx.compacted == ctx.cleaned || span.ByteStart < 0 || span.ByteEnd > len(ctx.compacted) || span.ByteStart >= span.ByteEnd {
 		return false
 	}
 
-	candidate := compacted[span.ByteStart:span.ByteEnd]
+	candidate := ctx.compacted[span.ByteStart:span.ByteEnd]
 	if !containsASCIILower(candidate) {
 		return false
 	}
@@ -229,11 +262,11 @@ func IsLowConfidenceInboundAWSAccessID(text string, match TextDLPMatch) bool {
 		return false
 	}
 
-	rawStart := compactedOffsets[span.ByteStart]
-	rawEnd := compactedOffsets[span.ByteEnd-1] + 1
+	rawStart := ctx.compactedOffsets[span.ByteStart]
+	rawEnd := ctx.compactedOffsets[span.ByteEnd-1] + 1
 	windowStart := max(0, rawStart-96)
-	windowEnd := min(len(cleaned), rawEnd+96)
-	return !containsCredentialContext(cleaned[windowStart:windowEnd])
+	windowEnd := min(len(ctx.cleaned), rawEnd+96)
+	return !containsCredentialContext(ctx.cleaned[windowStart:windowEnd])
 }
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.

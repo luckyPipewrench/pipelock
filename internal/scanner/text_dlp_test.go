@@ -3242,6 +3242,83 @@ func TestIsLowConfidenceInboundAWSAccessID(t *testing.T) {
 			}
 		})
 	}
+
+	guardText := strings.Join([]string{
+		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"OCR", "context", "for", "assistant", "safety", "review",
+	}, " ")
+	validWhitespaceSpan := MatchSpan{
+		ByteStart: 0,
+		ByteEnd:   12,
+		ViewLabel: dlpViewLabel("whitespace"),
+		RuleID:    patternNameAWSAccessID,
+	}
+	guardTests := []struct {
+		name  string
+		match TextDLPMatch
+	}{
+		{
+			name: "wrong pattern name",
+			match: TextDLPMatch{
+				PatternName: "Other Pattern",
+				Encoded:     "whitespace",
+				span:        validWhitespaceSpan,
+			},
+		},
+		{
+			name: "non whitespace encoded view",
+			match: TextDLPMatch{
+				PatternName: patternNameAWSAccessID,
+				Encoded:     "",
+				span:        validWhitespaceSpan,
+			},
+		},
+		{
+			name: "invalid span metadata",
+			match: TextDLPMatch{
+				PatternName: patternNameAWSAccessID,
+				Encoded:     "whitespace",
+				span:        MatchSpan{},
+			},
+		},
+		{
+			name: "negative span",
+			match: TextDLPMatch{
+				PatternName: patternNameAWSAccessID,
+				Encoded:     "whitespace",
+				span: MatchSpan{
+					ByteStart: -1,
+					ByteEnd:   4,
+					ViewLabel: dlpViewLabel("whitespace"),
+					RuleID:    patternNameAWSAccessID,
+				},
+			},
+		},
+		{
+			name: "out of range span",
+			match: TextDLPMatch{
+				PatternName: patternNameAWSAccessID,
+				Encoded:     "whitespace",
+				span: MatchSpan{
+					ByteStart: 0,
+					ByteEnd:   len(guardText) + 100,
+					ViewLabel: dlpViewLabel("whitespace"),
+					RuleID:    patternNameAWSAccessID,
+				},
+			},
+		},
+	}
+
+	for _, tt := range guardTests {
+		tt := tt
+		t.Run("guard "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := IsLowConfidenceInboundAWSAccessID(guardText, tt.match); got {
+				t.Fatalf("IsLowConfidenceInboundAWSAccessID = true for guard case %q, want false", tt.name)
+			}
+		})
+	}
 }
 
 func TestEnforceableInboundTextDLPMatches(t *testing.T) {

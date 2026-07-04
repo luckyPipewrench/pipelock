@@ -1848,8 +1848,18 @@ func TestScan_QueryEntropyBlocksCredentiallessDSNUnsafeCarveoutShapes(t *testing
 			wantScanner: ScannerSSRFMetadata,
 		},
 		{
+			name:        "credentialed ip literal host",
+			dsn:         "postgres://user:pa" + "ss@169.254.169.254/metadata",
+			wantScanner: ScannerSSRFMetadata,
+		},
+		{
 			name:        "metadata hostname",
 			dsn:         "postgres://metadata.google.internal/compute",
+			wantScanner: ScannerSSRFMetadata,
+		},
+		{
+			name:        "credentialed metadata hostname",
+			dsn:         "postgres://user:pa" + "ss@metadata.google.internal/compute",
 			wantScanner: ScannerSSRFMetadata,
 		},
 		{
@@ -1873,6 +1883,49 @@ func TestScan_QueryEntropyBlocksCredentiallessDSNUnsafeCarveoutShapes(t *testing
 				t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, tt.wantScanner, result.Reason)
 			}
 		})
+	}
+}
+
+func TestDatabaseURIEntropyCarveoutHelpers(t *testing.T) {
+	const threshold = 4.0
+
+	if !isDatabaseURIScheme("postgresql") {
+		t.Fatal("postgresql should be a database URI scheme")
+	}
+	if isDatabaseURIScheme("https") {
+		t.Fatal("https should not be a database URI scheme")
+	}
+
+	if !isLowRiskDatabaseURIHost("db-01.vendor.example.", threshold) {
+		t.Fatal("readable database hostname should be low risk")
+	}
+	if isLowRiskDatabaseURIHost("169.254.169.254", threshold) {
+		t.Fatal("IP literal database hostname should not be low risk")
+	}
+	if isLowRiskDatabaseURIHost("metadata.google.internal", threshold) {
+		t.Fatal("metadata hostname should not be low risk")
+	}
+
+	if !isLowRiskDatabaseURIPath("/app/schema_v1", threshold) {
+		t.Fatal("readable database path should be low risk")
+	}
+	if isLowRiskDatabaseURIPath("/aB3xK9mQ7pR2wE5tY8uI3nM6qL4sV0", threshold) {
+		t.Fatal("opaque database path should not be low risk")
+	}
+
+	if !isCredentiallessDatabaseURI("postgres://db.vendor.example:5432/app", threshold) {
+		t.Fatal("credentialless readable DSN should qualify for entropy carve-out")
+	}
+	if isCredentiallessDatabaseURI("postgres://user:pa"+"ss@db.vendor.example:5432/app", threshold) {
+		t.Fatal("credentialed DSN should not qualify for entropy carve-out")
+	}
+
+	result, blocked := unsafeDatabaseURIQueryValueResult("postgres://user:pa" + "ss@169.254.169.254/app")
+	if !blocked {
+		t.Fatal("credentialed metadata DSN should be blocked before entropy carve-out")
+	}
+	if result.Scanner != ScannerSSRFMetadata {
+		t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, ScannerSSRFMetadata, result.Reason)
 	}
 }
 

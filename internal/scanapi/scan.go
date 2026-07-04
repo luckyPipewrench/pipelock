@@ -22,7 +22,15 @@ const jsonNull = "null"
 
 var embeddedHTTPURLTokenRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>\\]+`)
 
-const maxEmbeddedURLPercentDecodePasses = 3
+const (
+	maxEmbeddedURLPercentDecodePasses = 3
+	maxEmbeddedURLScans               = 32
+)
+
+type embeddedURLScanResults struct {
+	results   []scanner.Result
+	truncated bool
+}
 
 // executeScan dispatches to the appropriate scanner for the requested kind.
 // Returns both the response body and the HTTP status code.
@@ -81,7 +89,7 @@ func (h *Handler) scanDLP(ctx context.Context, sc *scanner.Scanner, req *Request
 	}
 
 	result := sc.ScanTextForDLP(ctx, req.Input.Text)
-	urlResult, hasURLFinding := scanEmbeddedTextURLs(ctx, sc, req.Input.Text)
+	urlResults := scanEmbeddedTextURLs(ctx, sc, req.Input.Text)
 
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
@@ -92,22 +100,48 @@ func (h *Handler) scanDLP(ctx context.Context, sc *scanner.Scanner, req *Request
 		Kind:   req.Kind,
 		ScanID: generateScanID(),
 	}
-	if result.Clean && !hasURLFinding {
+	if result.Clean && len(urlResults.results) == 0 && !urlResults.truncated {
 		resp.Decision = DecisionAllow
 	} else {
 		resp.Decision = DecisionDeny
 		if !result.Clean {
 			resp.Findings = append(resp.Findings, dlpFindings(result, req.Options)...)
 		}
-		if hasURLFinding {
+		for _, urlResult := range urlResults.results {
 			resp.Findings = append(resp.Findings, urlFindings(urlResult)...)
+		}
+		if urlResults.truncated {
+			resp.Findings = append(resp.Findings, embeddedURLTruncatedFinding())
 		}
 	}
 	return resp, http.StatusOK
 }
 
-func scanEmbeddedTextURLs(ctx context.Context, sc *scanner.Scanner, text string) (scanner.Result, bool) {
+func scanEmbeddedTextURLs(ctx context.Context, sc *scanner.Scanner, text string) embeddedURLScanResults {
+	tokens, truncated := embeddedHTTPURLTokens(text, maxEmbeddedURLScans)
+	results := embeddedURLScanResults{truncated: truncated}
+	seenFindings := make(map[string]struct{})
+	for _, token := range tokens {
+		result := sc.Scan(ctx, token)
+		if err := ctx.Err(); err != nil {
+			return embeddedURLScanResults{}
+		}
+		if result.Allowed || !embeddedURLResultIsFinding(result) {
+			continue
+		}
+		key := result.Scanner + "\x00" + result.Reason + "\x00" + result.Hint
+		if _, ok := seenFindings[key]; ok {
+			continue
+		}
+		seenFindings[key] = struct{}{}
+		results.results = append(results.results, result)
+	}
+	return results
+}
+
+func embeddedHTTPURLTokens(text string, limit int) ([]string, bool) {
 	seen := make(map[string]struct{})
+	tokens := make([]string, 0, limit)
 	for _, view := range embeddedURLTextViews(text) {
 		for _, raw := range embeddedHTTPURLTokenRe.FindAllString(view, -1) {
 			token := strings.TrimRight(raw, ".,;)]}")
@@ -118,16 +152,13 @@ func scanEmbeddedTextURLs(ctx context.Context, sc *scanner.Scanner, text string)
 				continue
 			}
 			seen[token] = struct{}{}
-			result := sc.Scan(ctx, token)
-			if err := ctx.Err(); err != nil {
-				return scanner.Result{}, false
+			if len(tokens) >= limit {
+				return tokens, true
 			}
-			if !result.Allowed && embeddedURLResultIsFinding(result) {
-				return result, true
-			}
+			tokens = append(tokens, token)
 		}
 	}
-	return scanner.Result{}, false
+	return tokens, false
 }
 
 func embeddedURLTextViews(text string) []string {
@@ -164,7 +195,16 @@ func embeddedURLTextViews(text string) []string {
 }
 
 func embeddedURLResultIsFinding(result scanner.Result) bool {
-	return !result.IsInfrastructureError() && !result.IsProtective()
+	return !result.IsInfrastructureError()
+}
+
+func embeddedURLTruncatedFinding() Finding {
+	return Finding{
+		Scanner:  "url",
+		RuleID:   "URL-embedded-url-scan-truncated",
+		Severity: "medium",
+		Message:  "Embedded URL scan stopped after bounded inspection limit",
+	}
 }
 
 func (h *Handler) scanPromptInjection(ctx context.Context, sc *scanner.Scanner, req *Request) (Response, int) {

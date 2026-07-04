@@ -393,8 +393,12 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 		matches = append(matches, s.matchDLPPatterns(decoded, "url")...)
 	}
 
+	segmentViews := textDLPEncodingSegmentViews(cleaned)
+	segmentDecodeViews := segmentViews
 	if decoded := decodeHTMLEntities(cleaned); decoded != cleaned {
 		matches = append(matches, s.matchDLPPatterns(decoded, encodingHTML)...)
+		matches = append(matches, s.decodeAndMatchRecursive(decoded, 0)...)
+		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(decoded)...)
 	}
 
 	// Dot-collapse check: catches secrets split across DNS subdomains
@@ -407,7 +411,6 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 		}
 	}
 
-	segmentViews := textDLPEncodingSegmentViews(cleaned)
 	if len(segmentViews) > 1 {
 		matches = append(matches, s.matchDLPPatterns(segmentViews[1].text, "whitespace")...)
 	}
@@ -445,7 +448,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 	// Warn-only matches must not gate off further scanning - an enforced
 	// match might hide in a decoded segment.
 	if !hasEnforcedMatch(matches) {
-		for _, view := range segmentViews {
+		for _, view := range segmentDecodeViews {
 			matches = append(matches, s.decodeTextSegments(view.text)...)
 			if hasEnforcedMatch(matches) {
 				break
@@ -563,6 +566,21 @@ func textDLPEncodingSegmentViews(cleaned string) []spanTextView {
 			text:      compacted,
 			viewLabel: spanViewLabel("whitespace", ViewDLPNormalized),
 		})
+	}
+	return views
+}
+
+func appendUniqueTextDLPViews(views []spanTextView, candidates ...spanTextView) []spanTextView {
+	seen := make(map[string]struct{}, len(views)+len(candidates))
+	for _, view := range views {
+		seen[view.text] = struct{}{}
+	}
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate.text]; ok {
+			continue
+		}
+		seen[candidate.text] = struct{}{}
+		views = append(views, candidate)
 	}
 	return views
 }

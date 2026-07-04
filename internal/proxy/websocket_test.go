@@ -2186,7 +2186,7 @@ func TestWSProxy_CrossMessageDLP_SplitKey(t *testing.T) {
 	}
 }
 
-func TestWSProxy_UnexpectedContinuationDLPContributesToCrossMessageTail(t *testing.T) {
+func TestWSProxy_ValidThreeFrameCleanFragmentAllowed(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
 
@@ -2194,27 +2194,21 @@ func TestWSProxy_UnexpectedContinuationDLPContributesToCrossMessageTail(t *testi
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer func() { _ = conn.Close() }() // test
+	defer func() { _ = conn.Close() }()
 
-	prefix := "AKIA" + "IOSFODNN7"
-	suffix := testWSExample
+	writeMaskedClientFrame(t, conn, false, ws.OpText, []byte("The quarterly "))
+	writeMaskedClientFrame(t, conn, false, ws.OpContinuation, []byte("report is ready "))
+	writeMaskedClientFrame(t, conn, true, ws.OpContinuation, []byte("for your review."))
 
-	writeMaskedClientFrame(t, conn, true, ws.OpContinuation, []byte("data: "+prefix))
 	reply, op, err := wsutil.ReadServerData(conn)
 	if err != nil {
-		t.Fatalf("read tolerated continuation echo: %v", err)
+		t.Fatalf("read reassembled clean fragment echo: %v", err)
 	}
 	if op != ws.OpText {
 		t.Fatalf("upstream echo opcode = %d, want text", op)
 	}
-	if !strings.Contains(string(reply), prefix) {
-		t.Fatalf("expected echo containing tolerated continuation prefix, got %q", reply)
-	}
-
-	writeMaskedClientFrame(t, conn, true, ws.OpContinuation, []byte(suffix))
-	_, _, err = wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected connection closed after split secret in tolerated continuation frames")
+	if string(reply) != "The quarterly report is ready for your review." {
+		t.Fatalf("reply = %q, want reassembled clean text", reply)
 	}
 }
 

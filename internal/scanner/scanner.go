@@ -2742,7 +2742,7 @@ func isDatabaseURIScheme(scheme string) bool {
 
 func unsafeDatabaseURIQueryValueResult(value string) (Result, bool) {
 	u, err := url.Parse(value)
-	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil {
+	if err != nil || u.Scheme == "" || u.Host == "" {
 		return Result{}, false
 	}
 	if !isDatabaseURIScheme(u.Scheme) {

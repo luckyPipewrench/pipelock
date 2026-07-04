@@ -1662,6 +1662,28 @@ func TestScanTextForDLP_HTMLEntityEncodedSecret(t *testing.T) {
 	}
 }
 
+func TestScanTextForDLP_HTMLEntityWrappedBase64Secret(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	secret := testAnthropicPrefix + strings.Repeat("q", 25)
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	result := s.ScanTextForDLP(context.Background(), `<span data-token="`+htmlEntityFixture(encoded, 1)+`"></span>`)
+	if result.Clean {
+		t.Fatal("expected HTML-entity-wrapped base64 secret to be detected")
+	}
+	if !hasTextDLPMatch(result.Matches, testAnthropicName, encodingBase64) {
+		t.Fatalf("expected base64 %q match after HTML decode, got %+v", testAnthropicName, result.Matches)
+	}
+
+	benign := base64.StdEncoding.EncodeToString([]byte("ordinary prose about deployment notes and support routing"))
+	clean := s.ScanTextForDLP(context.Background(), `<p>`+htmlEntityFixture(benign, 1)+`</p>`)
+	if !clean.Clean {
+		t.Fatalf("benign HTML-entity-wrapped prose should stay clean: %+v", clean.Matches)
+	}
+}
+
 func TestScanTextForDLP_InvalidHTMLEntitiesClean(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)

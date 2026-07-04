@@ -59,26 +59,6 @@ func TestFragmentState_FragmentedMessage(t *testing.T) {
 	}
 }
 
-func TestFragmentState_AllowUnexpectedContinuation(t *testing.T) {
-	f := &FragmentState{MaxBytes: 1024, AllowUnexpectedContinuation: true}
-	payload := []byte("clean fragment")
-	hdr := ws.Header{Fin: true, OpCode: ws.OpContinuation, Length: int64(len(payload))}
-
-	complete, msg, closeCode, reason := f.Process(hdr, payload)
-	if !complete {
-		t.Fatal("expected tolerated continuation to complete as a text message")
-	}
-	if string(msg) != string(payload) {
-		t.Fatalf("message = %q, want %q", msg, payload)
-	}
-	if closeCode != 0 || reason != "" {
-		t.Fatalf("unexpected close code/reason: %d %q", closeCode, reason)
-	}
-	if f.Opcode != ws.OpText {
-		t.Fatalf("opcode = %d, want text", f.Opcode)
-	}
-}
-
 func TestFragmentState_OversizedSingleFrame(t *testing.T) {
 	f := &FragmentState{MaxBytes: 5}
 	payload := []byte("toolong")

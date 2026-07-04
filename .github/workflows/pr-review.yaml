@@ -15,6 +15,7 @@ jobs:
     # trigger needs a permission gate beyond the comment body check.
     if: >-
       github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.author_association == 'OWNER' &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review deep' ||

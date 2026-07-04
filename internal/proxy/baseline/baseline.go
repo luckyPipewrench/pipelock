@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	appconfig "github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // safeAgentKeyRe restricts agent keys to alphanumeric, hyphens, underscores,
@@ -173,6 +176,32 @@ type Manager struct {
 	mu     sync.RWMutex
 }
 
+// Deviation actions. "warn" is observational; "ask" (HITL) and "block" both
+// take a consequential action on a deviation, so they are enforcing.
+const (
+	deviationActionWarn  = appconfig.ActionWarn
+	deviationActionAsk   = appconfig.ActionAsk
+	deviationActionBlock = appconfig.ActionBlock
+)
+
+// enforces reports whether a deviation from a locked profile takes a
+// consequential action (ask=HITL, block=deny) rather than only observing
+// (warn). Under enforcement, a persisted profile that exists but cannot be
+// read or parsed must fail closed at load: silently skipping it would erase
+// active enforcement for that agent on the next restart (fail-open).
+func (c Config) enforces() bool {
+	return c.DeviationAction == deviationActionAsk || c.DeviationAction == deviationActionBlock
+}
+
+func validateDeviationAction(action string) error {
+	switch action {
+	case deviationActionWarn, deviationActionAsk, deviationActionBlock:
+		return nil
+	default:
+		return fmt.Errorf("unsupported deviation_action %q: valid values are warn, ask, or block", action)
+	}
+}
+
 // NewManager creates a new baseline manager. If ProfileDir is set and exists,
 // persisted profiles are loaded.
 func NewManager(cfg Config) (*Manager, error) {
@@ -183,7 +212,10 @@ func NewManager(cfg Config) (*Manager, error) {
 		cfg.SensitivitySigma = 2.0 // Default: 2 sigma.
 	}
 	if cfg.DeviationAction == "" {
-		cfg.DeviationAction = "warn"
+		cfg.DeviationAction = deviationActionWarn
+	}
+	if err := validateDeviationAction(cfg.DeviationAction); err != nil {
+		return nil, err
 	}
 	if cfg.SeasonalityMode == "" {
 		cfg.SeasonalityMode = seasonalityNone
@@ -233,7 +265,10 @@ func (m *Manager) Reconfigure(cfg Config) error {
 		cfg.SensitivitySigma = 2.0
 	}
 	if cfg.DeviationAction == "" {
-		cfg.DeviationAction = "warn"
+		cfg.DeviationAction = deviationActionWarn
+	}
+	if err := validateDeviationAction(cfg.DeviationAction); err != nil {
+		return err
 	}
 	if cfg.SeasonalityMode == "" {
 		cfg.SeasonalityMode = seasonalityNone
@@ -254,12 +289,41 @@ func (m *Manager) Reconfigure(cfg Config) error {
 		if err := os.MkdirAll(cfg.ProfileDir, 0o750); err != nil {
 			return fmt.Errorf("creating profile dir: %w", err)
 		}
+		candidate := &Manager{
+			cfg:    cfg,
+			agents: make(map[string]*agentState),
+		}
+		if err := candidate.loadProfiles(); err != nil {
+			return fmt.Errorf("loading profiles: %w", err)
+		}
+
+		m.mu.Lock()
+		profileDirChanged := !sameProfileDir(m.cfg.ProfileDir, cfg.ProfileDir)
+		m.cfg = cfg
+		if profileDirChanged {
+			m.agents = candidate.agents
+		} else {
+			for agentKey, loaded := range candidate.agents {
+				if existing, ok := m.agents[agentKey]; !ok || existing.profile == nil {
+					m.agents[agentKey] = loaded
+				}
+			}
+		}
+		m.mu.Unlock()
+		return nil
 	}
 
 	m.mu.Lock()
 	m.cfg = cfg
 	m.mu.Unlock()
 	return nil
+}
+
+func sameProfileDir(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // RecordSession adds a completed session's metrics to the learning set.
@@ -708,11 +772,30 @@ func (m *Manager) loadProfiles() error {
 		path := filepath.Join(m.cfg.ProfileDir, entry.Name())
 		data, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
+			// A persisted profile that exists but cannot be read may be a
+			// locked, enforcing profile. Under an enforcing action we cannot
+			// prove it is not, so fail closed rather than silently start with
+			// enforcement erased. Observational (warn) mode has no enforcement
+			// to lose, so it skips.
+			if m.cfg.enforces() {
+				return fmt.Errorf("reading persisted baseline profile %q under enforcing deviation_action %q (refusing to start without it; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
+			}
+			slog.Warn("skipping unreadable persisted baseline profile",
+				"profile", entry.Name(),
+				"deviation_action", m.cfg.DeviationAction,
+				"error", err)
 			continue
 		}
 
 		var profile Profile
 		if err := json.Unmarshal(data, &profile); err != nil {
+			if m.cfg.enforces() {
+				return fmt.Errorf("parsing persisted baseline profile %q under enforcing deviation_action %q (refusing to start with a corrupt profile; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
+			}
+			slog.Warn("skipping corrupt persisted baseline profile",
+				"profile", entry.Name(),
+				"deviation_action", m.cfg.DeviationAction,
+				"error", err)
 			continue
 		}
 

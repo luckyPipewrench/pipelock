@@ -2520,7 +2520,7 @@ behavioral_baseline:
 | `poison_resistance` | `true` | Trim outlier sessions when building the profile, so adversarial sessions during learning have bounded influence |
 | `seasonality_mode` | `none` | Only `none` is implemented. `labeled` and `time` are reserved and rejected by the baseline engine at startup. |
 
-Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement applies only to a **locked** profile; a profile in any earlier state (including `ratify`) produces no deviations. Profiles persist to `profile_dir` (one JSON file per agent, carrying the lifecycle state) and survive restarts.
+Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement applies only to a **locked** profile; a profile in any earlier state (including `ratify`) produces no deviations. Profiles persist to `profile_dir` (one JSON file per agent, carrying the lifecycle state) and survive restarts. If a persisted profile exists but cannot be read or parsed and `deviation_action` is `ask` or `block`, Pipelock fails closed: it refuses to start rather than come up with that agent's enforcement silently disabled (fix or restore the file). In `warn` (observational) mode an unreadable profile is skipped.
 
 **Locking a profile (current limitation).** A profile reaches `locked` only via `auto_ratify: true`, which locks automatically at the end of the learning window. There is no operator ratify command in this release: a profile learned without `auto_ratify` stays in `ratify` and never enforces. So today the practical choices are `auto_ratify: true` (accepting the documented learning-window poisoning risk) or leaving the baseline observe-only. Do not rely on a manual operator-approval step before enforcement — it is not yet wired.
 

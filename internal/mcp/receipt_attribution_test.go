@@ -362,6 +362,11 @@ func TestEmitMCPToolReceipt_AuditGapGateNegativePaths(t *testing.T) {
 	}
 }
 
+func TestReceiptEmitFailureLogNilWriters(t *testing.T) {
+	logReceiptEmitFailure(nil, errors.New("boom"), true, config.ActionBlock)
+	logBlockReceiptAuditGap(nil, errors.New("boom"))
+}
+
 func TestFirstNonEmpty(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

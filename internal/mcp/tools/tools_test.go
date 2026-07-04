@@ -3443,4 +3443,7 @@ func TestToolDefUnmarshalJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{invalid`), &td); err == nil {
 		t.Error("expected an error unmarshaling invalid JSON")
 	}
+	if err := json.Unmarshal([]byte(`{"name":{}}`), &td); err == nil {
+		t.Error("expected an error unmarshaling wrong-shaped JSON")
+	}
 }

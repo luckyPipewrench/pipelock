@@ -1489,6 +1489,20 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
 					Closer: resp.Body,
 				}
+				rp.captureObs.ObserveResponseVerdict(resp.Request.Context(), &capture.ResponseVerdictRecord{
+					Subsurface:        "response_reverse",
+					Transport:         "reverse",
+					SessionID:         captureSessionKey(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
+					SessionIDOriginal: captureSessionKeyOriginal(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
+					ConfigHash:        cfg.CanonicalPolicyHash(),
+					Agent:             resp.Request.Header.Get("X-Pipelock-Agent"),
+					Profile:           edition.ProfileDefault,
+					ActionClass:       captureHTTPActionClass(resp.Request.Method),
+					Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
+					TransformKind:     capture.TransformRaw,
+					EffectiveAction:   config.ActionAllow,
+					Outcome:           captureOutcome(config.ActionAllow, true),
+				})
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 				return nil
 			}

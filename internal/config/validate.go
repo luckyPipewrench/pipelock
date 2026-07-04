@@ -998,21 +998,7 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 }
 
 func hostMatchesResponseSizeExemptDomain(host string, domains []string) bool {
-	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	for _, domain := range domains {
-		d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
-		if strings.HasPrefix(d, "*.") {
-			suffix := strings.TrimPrefix(d, "*.")
-			if h == suffix || strings.HasSuffix(h, "."+suffix) {
-				return true
-			}
-			continue
-		}
-		if h == d {
-			return true
-		}
-	}
-	return false
+	return hostMatchesPassthrough(host, domains)
 }
 
 func (c *Config) validateMCPInputScanning() error {

@@ -24,10 +24,9 @@ const jsonNull = "null"
 var embeddedHTTPURLTokenRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>\\]+`)
 
 const (
-	maxEmbeddedURLPercentDecodePasses = 3
-	maxEmbeddedURLHTMLDecodePasses    = 3
-	maxEmbeddedURLScans               = 32
-	maxEmbeddedURLTextViews           = 16
+	maxEmbeddedURLDecodePasses = 6 // combined percent + HTML-entity decode passes
+	maxEmbeddedURLScans        = 32
+	maxEmbeddedURLTextViews    = 16
 )
 
 type embeddedURLScanResults struct {
@@ -186,7 +185,7 @@ func embeddedURLTextViews(text string) []string {
 	}
 	addView(text)
 
-	for range maxEmbeddedURLPercentDecodePasses + maxEmbeddedURLHTMLDecodePasses {
+	for range maxEmbeddedURLDecodePasses {
 		startLen := len(views)
 		for _, view := range views[:startLen] {
 			if strings.Contains(view, "%") {

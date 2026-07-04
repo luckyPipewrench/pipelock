@@ -715,6 +715,21 @@ func TestScanTools_ConfusableNameCollisionKeepsOtherPoisonFindings(t *testing.T)
 	}
 }
 
+func TestScanTools_ExactDuplicateNameNotCollision(t *testing.T) {
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{Action: "block"}
+	line := makeToolsResponse(`[{"name":"read_file","description":"Reads a file from disk."},{"name":"read_file","description":"Reads a file from disk."}]`)
+	result := ScanTools(line, sc, cfg)
+	if !result.IsToolsList {
+		t.Fatal("should detect tools/list")
+	}
+	for _, match := range result.Matches {
+		if slices.Contains(match.ToolPoison, "Confusable Tool Name Collision") {
+			t.Fatalf("exact duplicate names should not be flagged as confusable collision, got %+v", result.Matches)
+		}
+	}
+}
+
 func TestScanTools_DistinctUnicodeToolNamesClean(t *testing.T) {
 	sc := testScanner(t)
 	cfg := &ToolScanConfig{Action: "block"}

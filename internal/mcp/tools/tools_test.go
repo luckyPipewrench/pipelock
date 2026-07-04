@@ -3428,3 +3428,19 @@ func TestScanTools_ExtraPoisonNilRegex(t *testing.T) {
 		t.Error("nil Re should be skipped, result should be clean")
 	}
 }
+
+func TestToolDefUnmarshalJSON(t *testing.T) {
+	var td ToolDef
+	if err := json.Unmarshal([]byte(`{"name":"read","description":"d","inputSchema":{"type":"object"}}`), &td); err != nil {
+		t.Fatalf("unmarshal valid tool: %v", err)
+	}
+	if td.Name != "read" {
+		t.Errorf("Name = %q, want read", td.Name)
+	}
+	if len(td.raw) == 0 {
+		t.Error("raw tool bytes should be captured on unmarshal")
+	}
+	if err := json.Unmarshal([]byte(`{invalid`), &td); err == nil {
+		t.Error("expected an error unmarshaling invalid JSON")
+	}
+}

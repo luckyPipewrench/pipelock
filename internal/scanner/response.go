@@ -131,10 +131,9 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 		// configured strip still get TransformedContent.
 		if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
 			transformed := normalize.ForMatching(content)
-			for _, p := range s.core.responsePatterns {
-				replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-				transformed = p.re.ReplaceAllString(transformed, replacement)
-			}
+			transformed = redactResponsePatterns(transformed, s.core.responsePatterns)
+			transformed = redactResponsePatterns(transformed, s.core.responseOptSpacePatterns)
+			transformed = redactResponsePatterns(transformed, s.core.responseVowelFoldPatterns)
 			if transformed != normalize.ForMatching(content) {
 				result.TransformedContent = transformed
 			}
@@ -283,6 +282,14 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 	}
 
 	return result
+}
+
+func redactResponsePatterns(content string, patterns []*compiledPattern) string {
+	for _, p := range patterns {
+		replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
+		content = p.re.ReplaceAllString(content, replacement)
+	}
+	return content
 }
 
 func responseMatchLogicalKey(match ResponseMatch) string {

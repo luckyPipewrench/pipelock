@@ -317,7 +317,7 @@ type coreResponseSuppressor func([]ResponseMatch) []ResponseMatch
 func filterCoreResponsePass(content, educationalContent string, matches []ResponseMatch, viewLabel string, suppress coreResponseSuppressor) []ResponseMatch {
 	matches = filterDefensiveCredentialSolicitationMatches(content, matches)
 	matches = filterEducationalQuotedResponseMatches(content, matches)
-	if educationalContent != "" && educationalContent != content && len(educationalContent) == len(content) {
+	if educationalContent != "" && educationalContent != content && hasIdentityByteOffsetMap(educationalContent, content) {
 		matches = filterCoreEducationalContent(educationalContent, matches)
 	}
 	matches = withResponseSpans(matches, viewLabel)
@@ -325,6 +325,18 @@ func filterCoreResponsePass(content, educationalContent string, matches []Respon
 		matches = suppress(matches)
 	}
 	return matches
+}
+
+func hasIdentityByteOffsetMap(source, transformed string) bool {
+	if len(source) != len(transformed) {
+		return false
+	}
+	for i := 0; i < len(source); i++ {
+		if source[i] >= 0x80 || transformed[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 func filterCoreEducationalContent(content string, matches []ResponseMatch) []ResponseMatch {

@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--auth-token-file` grants the redacted metadata view, while optional
   `--raw-token-file` unlocks raw destinations and signed payloads.
 - Enterprise Evidence dashboard access is audited on stderr with role, method,
-  path, session, and remote address for each authenticated request.
+  path, session, `session_sha256`, and remote address for each authenticated
+  request.
 
 ### Changed
 

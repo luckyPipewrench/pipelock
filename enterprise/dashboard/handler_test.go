@@ -419,57 +419,63 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Parallel()
 	dir, trusted := writeTrustedHandlerSession(t)
 
-	var meta strings.Builder
-	metaHandler := New(Options{
-		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
-		AuditWriter: &meta,
+	t.Run("metadata_role_and_path_session", func(t *testing.T) {
+		var meta strings.Builder
+		metaHandler := New(Options{
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			AuditWriter: &meta,
+		})
+		metaHandler.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+		if !strings.Contains(meta.String(), "role=metadata") {
+			t.Errorf("audit log should record metadata role; got %q", meta.String())
+		}
+		if !strings.Contains(meta.String(), "session=\""+testSessionID+"\"") {
+			t.Errorf("audit log should record the session; got %q", meta.String())
+		}
+		if !strings.Contains(meta.String(), "session_sha256=") {
+			t.Errorf("audit log should record the session hash; got %q", meta.String())
+		}
 	})
-	metaHandler.ServeHTTP(httptest.NewRecorder(),
-		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
-	if !strings.Contains(meta.String(), "role=metadata") {
-		t.Errorf("audit log should record metadata role; got %q", meta.String())
-	}
-	if !strings.Contains(meta.String(), "session=\""+testSessionID+"\"") {
-		t.Errorf("audit log should record the session; got %q", meta.String())
-	}
-	if !strings.Contains(meta.String(), "session_sha256=") {
-		t.Errorf("audit log should record the session hash; got %q", meta.String())
-	}
 
-	// Session carried as a query param (index route) is recorded too.
-	var q strings.Builder
-	qHandler := New(Options{
-		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
-		AuditWriter: &q,
+	t.Run("query_param_session", func(t *testing.T) {
+		var q strings.Builder
+		qHandler := New(Options{
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			AuditWriter: &q,
+		})
+		qHandler.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?session="+testSessionID, nil))
+		if !strings.Contains(q.String(), "session=\""+testSessionID+"\"") {
+			t.Errorf("audit log should record the query-param session; got %q", q.String())
+		}
 	})
-	qHandler.ServeHTTP(httptest.NewRecorder(),
-		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?session="+testSessionID, nil))
-	if !strings.Contains(q.String(), "session=\""+testSessionID+"\"") {
-		t.Errorf("audit log should record the query-param session; got %q", q.String())
-	}
 
-	// No identifiable session (bare /session/) records the "-" placeholder.
-	var none strings.Builder
-	noneHandler := New(Options{
-		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
-		AuditWriter: &none,
+	t.Run("empty_session", func(t *testing.T) {
+		var none strings.Builder
+		noneHandler := New(Options{
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			AuditWriter: &none,
+		})
+		noneHandler.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/", nil))
+		if !strings.Contains(none.String(), "session=\"-\"") {
+			t.Errorf("audit log should record '-' for an empty session; got %q", none.String())
+		}
 	})
-	noneHandler.ServeHTTP(httptest.NewRecorder(),
-		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/", nil))
-	if !strings.Contains(none.String(), "session=\"-\"") {
-		t.Errorf("audit log should record '-' for an empty session; got %q", none.String())
-	}
 
-	var raw strings.Builder
-	rawHandler := New(Options{
-		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
-		AuthorizeRaw: allowRawAccess, AuditWriter: &raw,
+	t.Run("raw_role", func(t *testing.T) {
+		var raw strings.Builder
+		rawHandler := New(Options{
+			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			AuthorizeRaw: allowRawAccess, AuditWriter: &raw,
+		})
+		rawHandler.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+		if !strings.Contains(raw.String(), "role=raw") {
+			t.Errorf("audit log should record raw role; got %q", raw.String())
+		}
 	})
-	rawHandler.ServeHTTP(httptest.NewRecorder(),
-		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
-	if !strings.Contains(raw.String(), "role=raw") {
-		t.Errorf("audit log should record raw role; got %q", raw.String())
-	}
 }
 
 func TestAuditSessionFieldNormalizesAndBoundsDisplay(t *testing.T) {

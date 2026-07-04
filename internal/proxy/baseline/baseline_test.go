@@ -303,6 +303,59 @@ func TestBaseline_DeviationDetection(t *testing.T) {
 	}
 }
 
+func TestBaseline_A2AIdentityDeviation(t *testing.T) {
+	cfg := Config{
+		Enabled: true, LearningWindow: 3, ProfileDir: t.TempDir(),
+		SensitivitySigma: 2.0,
+	}
+	mgr, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+	if err := mgr.Ratify(testAgent); err != nil {
+		t.Fatalf("Ratify: %v", err)
+	}
+	// A locked profile that never learned this A2A method: seeing it now is a
+	// deviation. This exercises the A2A tool-identity branch in Check.
+	current := normalMetrics()
+	current.ToolIdentities = []string{"a2a:message/send"}
+	devs := mgr.Check(testAgent, current)
+	found := false
+	for _, d := range devs {
+		if d.Metric == "tool_identity:a2a:message/send" {
+			found = true
+			if d.Severity != severityHigh {
+				t.Errorf("A2A identity deviation severity = %q, want %q", d.Severity, severityHigh)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a tool_identity deviation for an unlearned A2A method, got %+v", devs)
+	}
+}
+
+func TestCollectToolIdentities(t *testing.T) {
+	got := collectToolIdentities([]SessionMetrics{
+		{ToolIdentities: []string{"a2a:message/send", "  ", "tool:read"}},
+		{ToolIdentities: []string{"a2a:message/send", "tool:write"}},
+	})
+	want := []string{"a2a:message/send", "tool:read", "tool:write"}
+	if len(got) != len(want) {
+		t.Fatalf("collectToolIdentities = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("collectToolIdentities[%d] = %q, want %q (full %v)", i, got[i], want[i], got)
+		}
+	}
+	if collectToolIdentities(nil) != nil {
+		t.Error("collectToolIdentities(nil) should be nil")
+	}
+}
+
 func TestBaseline_UnratifiedNoEnforcement(t *testing.T) {
 	cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: t.TempDir()}
 	mgr, err := NewManager(cfg)

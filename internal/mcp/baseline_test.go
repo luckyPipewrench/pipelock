@@ -445,3 +445,25 @@ func newBaselineTestDeferManager(t *testing.T) *deferred.Manager {
 		MaxPendingBytes:      4096,
 	})
 }
+
+func TestBaselineIdentityHelpers(t *testing.T) {
+	if got := a2aBaselineIdentity("definitely-not-an-a2a-method"); got != "" {
+		t.Errorf("a2aBaselineIdentity(non-A2A) = %q, want empty", got)
+	}
+	if got := a2aBaselineIdentity(""); got != "" {
+		t.Errorf("a2aBaselineIdentity(empty) = %q, want empty", got)
+	}
+	if got := toolBaselineIdentity(""); got != "" {
+		t.Errorf("toolBaselineIdentity(empty) = %q, want empty", got)
+	}
+	if got := toolBaselineIdentity("read"); got != "tool:read" {
+		t.Errorf("toolBaselineIdentity(read) = %q, want tool:read", got)
+	}
+	ids := []string{"tool:read", "a2a:message/send"}
+	if !containsBaselineToolIdentity(ids, "a2a:message/send") {
+		t.Error("containsBaselineToolIdentity should find a present identity")
+	}
+	if containsBaselineToolIdentity(ids, "tool:write") {
+		t.Error("containsBaselineToolIdentity should not find an absent identity")
+	}
+}

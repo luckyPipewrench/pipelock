@@ -505,6 +505,7 @@ func TestBaseline_LoadProfiles_FailsClosedOnCorruptProfileUnderEnforcement(t *te
 		{"malformed_json_block_fails_closed", deviationActionBlock, corruptJSON, true},
 		{"read_error_block_fails_closed", deviationActionBlock, replaceWithBrokenSymlink, true},
 		{"malformed_json_ask_fails_closed", deviationActionAsk, corruptJSON, true},
+		{"read_error_ask_fails_closed", deviationActionAsk, replaceWithBrokenSymlink, true},
 		{"malformed_json_warn_starts_skipping", deviationActionWarn, corruptJSON, false},
 		{"read_error_warn_starts_skipping", deviationActionWarn, replaceWithBrokenSymlink, false},
 	}
@@ -527,6 +528,67 @@ func TestBaseline_LoadProfiles_FailsClosedOnCorruptProfileUnderEnforcement(t *te
 				t.Fatalf("NewManager: want success under deviation_action %q, got %v", tc.action, err)
 			}
 		})
+	}
+}
+
+func TestBaseline_ReconfigureLoadsProfilesBeforeCommittingEnforcingConfig(t *testing.T) {
+	startDir := t.TempDir()
+	mgr, err := NewManager(Config{
+		Enabled:         true,
+		DeviationAction: deviationActionWarn,
+		ProfileDir:      startDir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	reloadDir := t.TempDir()
+	path := seedLockedProfile(t, reloadDir)
+	if err := os.WriteFile(path, []byte("{ not valid json"), 0o600); err != nil {
+		t.Fatalf("corrupt profile: %v", err)
+	}
+
+	err = mgr.Reconfigure(Config{
+		Enabled:         true,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      reloadDir,
+	})
+	if err == nil {
+		t.Fatal("Reconfigure: want fail-closed error for corrupt profile under block")
+	}
+	if mgr.cfg.DeviationAction != deviationActionWarn {
+		t.Fatalf("failed Reconfigure committed deviation_action = %q, want %q", mgr.cfg.DeviationAction, deviationActionWarn)
+	}
+	if mgr.cfg.ProfileDir != startDir {
+		t.Fatalf("failed Reconfigure committed profile_dir = %q, want %q", mgr.cfg.ProfileDir, startDir)
+	}
+}
+
+func TestBaseline_ReconfigureLoadsValidProfilesUnderEnforcement(t *testing.T) {
+	mgr, err := NewManager(Config{
+		Enabled:         true,
+		DeviationAction: deviationActionWarn,
+		ProfileDir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	reloadDir := t.TempDir()
+	_ = seedLockedProfile(t, reloadDir)
+
+	if err := mgr.Reconfigure(Config{
+		Enabled:         true,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      reloadDir,
+	}); err != nil {
+		t.Fatalf("Reconfigure with intact profile under block: %v", err)
+	}
+	if state := mgr.GetState(testAgent); state != StateLocked {
+		t.Fatalf("reconfigured profile state = %q, want %q", state, StateLocked)
+	}
+	if devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("reconfigured locked profile must detect deviations")
 	}
 }
 

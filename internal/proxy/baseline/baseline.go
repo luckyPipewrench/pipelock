@@ -288,6 +288,23 @@ func (m *Manager) Reconfigure(cfg Config) error {
 		if err := os.MkdirAll(cfg.ProfileDir, 0o750); err != nil {
 			return fmt.Errorf("creating profile dir: %w", err)
 		}
+		candidate := &Manager{
+			cfg:    cfg,
+			agents: make(map[string]*agentState),
+		}
+		if err := candidate.loadProfiles(); err != nil {
+			return fmt.Errorf("loading profiles: %w", err)
+		}
+
+		m.mu.Lock()
+		m.cfg = cfg
+		for agentKey, loaded := range candidate.agents {
+			if existing, ok := m.agents[agentKey]; !ok || existing.profile == nil {
+				m.agents[agentKey] = loaded
+			}
+		}
+		m.mu.Unlock()
+		return nil
 	}
 
 	m.mu.Lock()

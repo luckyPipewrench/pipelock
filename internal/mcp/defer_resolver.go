@@ -238,8 +238,8 @@ func parseDeferResolverDecision(stdout string) (string, error) {
 		return config.ActionAllow, nil
 	case config.ActionBlock:
 		return config.ActionBlock, nil
-	case "step_up":
-		return "step_up", nil
+	case config.ActionStepUp:
+		return config.ActionStepUp, nil
 	default:
 		return config.ActionBlock, fmt.Errorf("invalid defer resolver terminal token %q", fields[0])
 	}

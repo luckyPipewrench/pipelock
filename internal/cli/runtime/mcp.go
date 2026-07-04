@@ -351,6 +351,24 @@ func startDeferredOperatorAPI(
 	return stop, nil
 }
 
+func startDeferredOperatorAPIOrReport(
+	ctx context.Context,
+	cfg *config.Config,
+	deferManager *deferred.Manager,
+	logger *audit.Logger,
+	stderr io.Writer,
+	sentryClient *plsentry.Client,
+) (func(), error) {
+	stop, err := startDeferredOperatorAPI(ctx, cfg, deferManager, logger, stderr)
+	if err != nil {
+		if sentryClient != nil {
+			sentryClient.CaptureError(err)
+		}
+		return nil, err
+	}
+	return stop, nil
+}
+
 func recoverDeferredActions(
 	manager *deferred.Manager,
 	journalPath string,
@@ -1190,11 +1208,8 @@ Key-free evidence capture:
 				if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPUpstream, cfg); err != nil {
 					return err
 				}
-				stopDeferAPI, deferAPIErr := startDeferredOperatorAPI(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr())
+				stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
 				if deferAPIErr != nil {
-					if sentryClient != nil {
-						sentryClient.CaptureError(deferAPIErr)
-					}
 					return deferAPIErr
 				}
 				defer stopDeferAPI()
@@ -1303,11 +1318,8 @@ Key-free evidence capture:
 				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 				defer cancel()
 
-				stopDeferAPI, deferAPIErr := startDeferredOperatorAPI(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr())
+				stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
 				if deferAPIErr != nil {
-					if sentryClient != nil {
-						sentryClient.CaptureError(deferAPIErr)
-					}
 					return deferAPIErr
 				}
 				defer stopDeferAPI()
@@ -1414,11 +1426,8 @@ Key-free evidence capture:
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			stopDeferAPI, deferAPIErr := startDeferredOperatorAPI(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr())
+			stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
 			if deferAPIErr != nil {
-				if sentryClient != nil {
-					sentryClient.CaptureError(deferAPIErr)
-				}
 				return deferAPIErr
 			}
 			defer stopDeferAPI()

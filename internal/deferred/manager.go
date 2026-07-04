@@ -484,7 +484,7 @@ func approvalDecision(rp config.DeferResolutionPolicy, finalDecision string) str
 		if rp.AllowOn.Approval {
 			return config.ActionAllow
 		}
-	case config.ActionAsk, "step_up":
+	case config.ActionAsk, config.ActionStepUp:
 		if rp.StepUpOn.ApprovalRequestsHuman {
 			return config.ActionAsk
 		}

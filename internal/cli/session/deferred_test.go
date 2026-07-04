@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -71,6 +72,106 @@ func TestClient_DeferredMethods(t *testing.T) {
 	}
 	if strings.Join(paths, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("paths:\ngot:\n%s\nwant:\n%s", strings.Join(paths, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestClient_DeferredMethods_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		call       func(*Client) error
+		statusCode int
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "list non-200",
+			call:       func(c *Client) error { _, err := c.DeferredList(context.Background()); return err },
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":"list failed"}`,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:       "list invalid JSON",
+			call:       func(c *Client) error { _, err := c.DeferredList(context.Background()); return err },
+			statusCode: http.StatusOK,
+			body:       `not-json`,
+		},
+		{
+			name:       "approve unknown id",
+			call:       func(c *Client) error { _, err := c.DeferredApprove(context.Background(), deferredCLIID); return err },
+			statusCode: http.StatusNotFound,
+			body:       `{"error":"unknown defer id"}`,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "approve already resolved",
+			call:       func(c *Client) error { _, err := c.DeferredApprove(context.Background(), deferredCLIID); return err },
+			statusCode: http.StatusConflict,
+			body:       `{"error":"already resolved"}`,
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "approve invalid JSON",
+			call:       func(c *Client) error { _, err := c.DeferredApprove(context.Background(), deferredCLIID); return err },
+			statusCode: http.StatusOK,
+			body:       `not-json`,
+		},
+		{
+			name:       "deny unknown id",
+			call:       func(c *Client) error { _, err := c.DeferredDeny(context.Background(), deferredCLIID); return err },
+			statusCode: http.StatusNotFound,
+			body:       `{"error":"unknown defer id"}`,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "deny already resolved",
+			call:       func(c *Client) error { _, err := c.DeferredDeny(context.Background(), deferredCLIID); return err },
+			statusCode: http.StatusConflict,
+			body:       `{"error":"already resolved"}`,
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "deny invalid JSON",
+			call:       func(c *Client) error { _, err := c.DeferredDeny(context.Background(), deferredCLIID); return err },
+			statusCode: http.StatusOK,
+			body:       `not-json`,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assertBearer(t, r)
+				w.Header().Set("Content-Type", contentTypeJSON)
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			c := newClient(endpoint{URL: srv.URL, Token: testToken})
+			err := tt.call(c)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if tt.wantStatus == 0 {
+				if !strings.Contains(err.Error(), "decode response") {
+					t.Fatalf("error = %q, want decode failure", err)
+				}
+				return
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("error type = %T, want *APIError", err)
+			}
+			if apiErr.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", apiErr.StatusCode, tt.wantStatus)
+			}
+		})
 	}
 }
 

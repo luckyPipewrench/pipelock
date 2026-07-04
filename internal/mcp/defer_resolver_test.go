@@ -73,7 +73,7 @@ func TestExecuteDeferApprovalResolverStrictResults(t *testing.T) {
 		{
 			name:    "step up",
 			profile: config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf step_up"}},
-			want:    "step_up",
+			want:    config.ActionStepUp,
 		},
 		{
 			name:    "ambiguous output",

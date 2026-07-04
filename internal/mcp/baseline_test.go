@@ -459,6 +459,9 @@ func TestBaselineIdentityHelpers(t *testing.T) {
 	if got := toolBaselineIdentity("read"); got != "tool:read" {
 		t.Errorf("toolBaselineIdentity(read) = %q, want tool:read", got)
 	}
+	if got := a2aBaselineIdentity("SendMessage"); got != "a2a:SendMessage" {
+		t.Errorf("a2aBaselineIdentity(SendMessage) = %q, want a2a:SendMessage", got)
+	}
 	ids := []string{"tool:read", "a2a:message/send"}
 	if !containsBaselineToolIdentity(ids, "a2a:message/send") {
 		t.Error("containsBaselineToolIdentity should find a present identity")

@@ -296,8 +296,14 @@ func ForwardScannedInput(
 		}
 
 		pendingToolCallName := frame.ToolCallName
+		pendingMCPMethod := methodToolsCall
+		pendingReceiptTarget := pendingToolCallName
+		if pendingReceiptTarget == "" && IsA2AMethod(frame.Method) {
+			pendingMCPMethod = frame.Method
+			pendingReceiptTarget = frame.Method
+		}
 		pendingActionID := ""
-		if pendingToolCallName != "" {
+		if pendingReceiptTarget != "" {
 			pendingActionID = receipt.NewActionID()
 		}
 		rpcID := frame.ID
@@ -319,8 +325,8 @@ func ForwardScannedInput(
 							Pattern:   pattern,
 							Severity:  severity,
 							Transport: opts.Transport,
-							Target:    pendingToolCallName,
-							MCPMethod: methodToolsCall,
+							Target:    pendingReceiptTarget,
+							MCPMethod: pendingMCPMethod,
 							ToolName:  pendingToolCallName,
 						}),
 					}); emitErr != nil {
@@ -358,8 +364,8 @@ func ForwardScannedInput(
 						Severity:         severity,
 						RedactionProfile: redactionCfg.Profile,
 						Transport:        opts.Transport,
-						Target:           pendingToolCallName,
-						MCPMethod:        methodToolsCall,
+						Target:           pendingReceiptTarget,
+						MCPMethod:        pendingMCPMethod,
 						ToolName:         pendingToolCallName,
 					}),
 				}); emitErr != nil {
@@ -485,10 +491,17 @@ func ForwardScannedInput(
 			})
 		}
 
-		// Pre-generate actionID for tools/call only - metadata methods
-		// (tools/list, initialize, notifications) don't produce receipts.
+		// Pre-generate actionID for receipt-bearing calls only. Metadata methods
+		// (tools/list, initialize) do not produce receipts, while A2A method
+		// calls use the JSON-RPC method as their receipt target.
 		actionID := ""
-		if verdict.Method == methodToolsCall {
+		receiptTarget := toolCallName
+		receiptBearingMethod := verdict.Method == methodToolsCall
+		if receiptTarget == "" && IsA2AMethod(verdict.Method) {
+			receiptTarget = verdict.Method
+			receiptBearingMethod = true
+		}
+		if receiptBearingMethod {
 			if pendingActionID != "" {
 				actionID = pendingActionID
 			} else {
@@ -504,6 +517,9 @@ func ForwardScannedInput(
 		receiptSessionIDOriginal := ""
 
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) error {
+			if verdict.Method != methodToolsCall && receiptVerdict == config.ActionAllow && !opts.requireReceipts() {
+				return nil
+			}
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
 			layer, pattern, severity := pickAttribution(eval)
@@ -517,6 +533,7 @@ func ForwardScannedInput(
 				ActionID:          actionID,
 				MCPMethod:         verdict.Method,
 				ToolName:          toolCallName,
+				Target:            receiptTarget,
 				Verdict:           receiptVerdict,
 				Layer:             layer,
 				Pattern:           pattern,
@@ -684,7 +701,7 @@ func ForwardScannedInput(
 					continue
 				case config.ActionWarn:
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",
-						lineNum, methodToolsCall, baselineDecision.Detail)
+						lineNum, verdict.Method, baselineDecision.Detail)
 					recordAdaptiveSignal(session.SignalNearMiss)
 				}
 			}

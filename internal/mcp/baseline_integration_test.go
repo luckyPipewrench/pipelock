@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -127,7 +128,7 @@ func TestMCPA2ABehavioralBaselineLearnsLocksAndReloads(t *testing.T) {
 				t.Fatalf("identity-key profile state = %q, want %q", state, baseline.StateRatify)
 			}
 			profile := mgr.GetProfile(identityKey)
-			if profile == nil || !containsString(profile.ToolIdentities, "a2a:SendMessage") {
+			if profile == nil || !slices.Contains(profile.ToolIdentities, "a2a:SendMessage") {
 				t.Fatalf("learned profile identities = %v, want a2a:SendMessage", profile)
 			}
 			if err := mgr.Ratify(identityKey); err != nil {
@@ -143,7 +144,7 @@ func TestMCPA2ABehavioralBaselineLearnsLocksAndReloads(t *testing.T) {
 				}
 				activeSM = reloaded
 				reloadedProfile := activeSM.BaselineManager().GetProfile(identityKey)
-				if reloadedProfile == nil || !containsString(reloadedProfile.ToolIdentities, "a2a:SendMessage") {
+				if reloadedProfile == nil || !slices.Contains(reloadedProfile.ToolIdentities, "a2a:SendMessage") {
 					t.Fatalf("reloaded profile identities = %v, want a2a:SendMessage", reloadedProfile)
 				}
 			}
@@ -170,6 +171,99 @@ func TestMCPA2ABehavioralBaselineLearnsLocksAndReloads(t *testing.T) {
 			}
 		})
 	}
+	t.Run("unrelated config reload preserves locked A2A identities", func(t *testing.T) {
+		sc, sm, baselineCfg, identityKey := newLockedA2ABaselineHarness(t)
+		baselineCfg.SensitivitySigma = 3.5
+		if err := sm.ReconfigureBaseline(baselineCfg); err != nil {
+			t.Fatalf("ReconfigureBaseline unrelated change: %v", err)
+		}
+		reloadedProfile := sm.BaselineManager().GetProfile(identityKey)
+		if reloadedProfile == nil || !slices.Contains(reloadedProfile.ToolIdentities, "a2a:SendMessage") {
+			t.Fatalf("reloaded profile identities = %v, want a2a:SendMessage", reloadedProfile)
+		}
+		allowedStdout, allowedStderr := runMCPStdioBaselineMessages(t, sc, sm, identityKey, a2aSendMessageRequest(20))
+		if strings.Contains(allowedStdout, `"error"`) || strings.Contains(allowedStderr, "baseline deviation") {
+			t.Fatalf("unrelated reload lost learned A2A method\nstdout=%s\nstderr=%s", allowedStdout, allowedStderr)
+		}
+		blockedStdout, blockedStderr := runMCPStdioBaselineMessages(t, sc, sm, identityKey, a2aGetTaskRequest(21))
+		if !strings.Contains(blockedStdout, `"error"`) || !strings.Contains(blockedStderr, "baseline deviation") {
+			t.Fatalf("unrelated reload did not preserve locked enforcement\nstdout=%s\nstderr=%s", blockedStdout, blockedStderr)
+		}
+	})
+
+	t.Run("disabled reload revokes locked A2A enforcement", func(t *testing.T) {
+		sc, sm, baselineCfg, identityKey := newLockedA2ABaselineHarness(t)
+		disabled := *baselineCfg
+		disabled.Enabled = false
+		if err := sm.ReconfigureBaseline(&disabled); err != nil {
+			t.Fatalf("ReconfigureBaseline disabled: %v", err)
+		}
+		if sm.BaselineManager() != nil {
+			t.Fatal("disabled baseline reload left a manager installed")
+		}
+		stdout, stderr := runMCPStdioBaselineMessages(t, sc, sm, identityKey, a2aGetTaskRequest(22))
+		if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
+			t.Fatalf("disabled baseline reload still blocked A2A request\nstdout=%s\nstderr=%s", stdout, stderr)
+		}
+	})
+
+	t.Run("profile dir reload drops stale in-memory A2A identities", func(t *testing.T) {
+		sc, sm, baselineCfg, identityKey := newLockedA2ABaselineHarness(t)
+		changed := *baselineCfg
+		changed.ProfileDir = t.TempDir()
+		if err := sm.ReconfigureBaseline(&changed); err != nil {
+			t.Fatalf("ReconfigureBaseline profile dir change: %v", err)
+		}
+		if profile := sm.BaselineManager().GetProfile(identityKey); profile != nil {
+			t.Fatalf("profile dir change kept stale profile identities: %v", profile.ToolIdentities)
+		}
+		stdout, stderr := runMCPStdioBaselineMessages(t, sc, sm, identityKey, a2aGetTaskRequest(23))
+		if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
+			t.Fatalf("profile dir change served stale locked A2A identity\nstdout=%s\nstderr=%s", stdout, stderr)
+		}
+	})
+}
+
+func newLockedA2ABaselineHarness(t *testing.T) (*scanner.Scanner, *proxy.SessionManager, *config.BehavioralBaseline, string) {
+	t.Helper()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
+	t.Cleanup(sm.Close)
+	baselineCfg := &config.BehavioralBaseline{
+		Enabled:          true,
+		LearningWindow:   2,
+		DeviationAction:  config.ActionBlock,
+		ProfileDir:       t.TempDir(),
+		AutoRatify:       false,
+		SensitivitySigma: 2.0,
+		LockDimensions:   []string{"tool_calls", "unique_tools"},
+		SeasonalityMode:  config.SeasonalityModeNone,
+	}
+	if err := sm.EnableBaseline(baselineCfg); err != nil {
+		t.Fatalf("EnableBaseline: %v", err)
+	}
+
+	const identityKey = "agent-a"
+	for i := 0; i < baselineCfg.LearningWindow; i++ {
+		stdout, stderr := runMCPStdioBaselineMessages(t, sc, sm, identityKey, a2aSendMessageRequest(i+1))
+		if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
+			t.Fatalf("learning A2A invocation %d unexpectedly blocked\nstdout=%s\nstderr=%s", i, stdout, stderr)
+		}
+	}
+	mgr := sm.BaselineManager()
+	profile := mgr.GetProfile(identityKey)
+	if profile == nil || !slices.Contains(profile.ToolIdentities, "a2a:SendMessage") {
+		t.Fatalf("learned profile identities = %v, want a2a:SendMessage", profile)
+	}
+	if err := mgr.Ratify(identityKey); err != nil {
+		t.Fatalf("Ratify(%q): %v", identityKey, err)
+	}
+	return sc, sm, baselineCfg, identityKey
 }
 
 func TestMCPBehavioralBaselineToolCallNameBehaviorUnchanged(t *testing.T) {
@@ -310,15 +404,6 @@ func a2aGetTaskRequest(id int) string {
 
 func a2aGetTaskNotification() string {
 	return `{"jsonrpc":"2.0","method":"GetTask","params":{"id":"task-a"}}`
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestMCPBaselineHelperProcess(t *testing.T) {

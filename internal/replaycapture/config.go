@@ -48,7 +48,7 @@ func labConfig(s Scenario) (*config.Config, error) {
 	case "allowed-safe-read":
 		allowFixtureHosts(cfg, labDocsHost)
 	case "secret-exfil-url-blocked":
-		cfg.Internal = nil // blocked at DLP, before any DNS
+		disableConfiguredSSRF(cfg) // blocked at DLP, before any DNS
 		ensureAWSPattern(cfg)
 	case "prompt-injection-response-blocked":
 		allowFixtureHosts(cfg, labContentHost)
@@ -59,12 +59,22 @@ func labConfig(s Scenario) (*config.Config, error) {
 	case "operation-aware-policy":
 		allowFixtureHosts(cfg, labAPIHost)
 		enableOperationPolicy(cfg)
+	case "poisoned-ticket-webhook-exfil", "poisoned-readme-key-paste", "hostile-page-session-keys":
+		disableConfiguredSSRF(cfg)
+		enableForwardBodyDLP(cfg)
 	default:
 		return nil, fmt.Errorf("unknown scenario id %q", s.ID)
 	}
 
 	cfg.ApplyDefaults()
 	return cfg, nil
+}
+
+// disableConfiguredSSRF disables DNS-based configured SSRF checks for scenarios
+// whose proof must stop at an earlier scanner layer. Core literal-IP SSRF still
+// runs inside the scanner safety floor.
+func disableConfiguredSSRF(cfg *config.Config) {
+	cfg.Internal = []string{}
 }
 
 // allowFixtureHosts lets the proxy reach local httptest fixtures through stable
@@ -120,4 +130,12 @@ func enableOperationPolicy(cfg *config.Config) {
 		},
 		Reason: "destructive mutations require review",
 	}}
+}
+
+// enableForwardBodyDLP drives request-body DLP in block mode while keeping the
+// default DLP pattern set intact.
+func enableForwardBodyDLP(cfg *config.Config) {
+	cfg.ForwardProxy.Enabled = true
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
 }

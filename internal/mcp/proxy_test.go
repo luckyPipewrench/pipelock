@@ -342,6 +342,40 @@ func TestForwardScanned_BlockAction_EmitsReceipt(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_BlockReceiptFailureLogsAuditGap(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionBlock)
+	var out, log bytes.Buffer
+	emitter, rec, _, _ := newReceiptTestHarness(t)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	tracker := NewRequestTracker()
+	tracker.Track(json.RawMessage(`42`))
+
+	found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(injectionResponse+"\n")), transport.NewStdioWriter(&out), &log, tracker, MCPProxyOpts{
+		Scanner:         sc,
+		ReceiptEmitter:  emitter,
+		Transport:       transportMCPStdio,
+		RequireReceipts: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+	if !strings.Contains(out.String(), "prompt injection detected") {
+		t.Fatalf("expected block response to be written, got: %s", out.String())
+	}
+	if !strings.Contains(log.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", log.String())
+	}
+	if !strings.Contains(log.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", log.String())
+	}
+}
+
 func TestForwardScanned_BlockAction_DualEmitsV2PolicyHash(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionBlock)
 	var out, log bytes.Buffer

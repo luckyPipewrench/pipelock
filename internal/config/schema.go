@@ -122,6 +122,9 @@ const (
 	OutputFile       = "file"
 	OutputBoth       = "both"
 
+	DefaultSizeExemptScanMaxBytes         = 64 * 1024 * 1024
+	DefaultSizeExemptScanMaxInflightBytes = 256 * 1024 * 1024
+
 	// DefaultMaxGap is the default maximum number of non-matching tool calls
 	// allowed between consecutive steps in a chain pattern.
 	DefaultMaxGap = 3
@@ -694,15 +697,28 @@ type ToolPolicyRule struct {
 
 // ResponseScanning configures scanning of fetched page content for prompt injection.
 type ResponseScanning struct {
-	Enabled           bool                     `yaml:"enabled"`
-	Action            string                   `yaml:"action"`              // strip, warn, block, ask
-	AskTimeoutSeconds int                      `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
-	IncludeDefaults   *bool                    `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
-	Patterns          []ResponseScanPattern    `yaml:"patterns"`
-	ExemptDomains     []string                 `yaml:"exempt_domains"`      // responses from these hosts skip injection scanning (DLP still applies)
-	SizeExemptDomains []string                 `yaml:"size_exempt_domains"` // trusted hosts whose oversized responses may stream through instead of failing the scan cap
-	SSEStreaming      GenericSSEScanning       `yaml:"sse_streaming"`       // generic text/event-stream inline scanning (LLM SSE)
-	MCPServers        []MCPResponseServerTrust `yaml:"mcp_servers"`         // per-server MCP response trust overrides
+	Enabled                        bool                          `yaml:"enabled"`
+	Action                         string                        `yaml:"action"`              // strip, warn, block, ask
+	AskTimeoutSeconds              int                           `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
+	IncludeDefaults                *bool                         `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
+	Patterns                       []ResponseScanPattern         `yaml:"patterns"`
+	ExemptDomains                  []string                      `yaml:"exempt_domains"`                      // responses from these hosts skip injection scanning (DLP still applies)
+	SizeExemptDomains              []string                      `yaml:"size_exempt_domains"`                 // trusted hosts whose oversized responses get a larger bounded whole-buffer scan
+	SizeExemptScanMaxBytes         int                           `yaml:"size_exempt_scan_max_bytes"`          // per-response in-memory ceiling for over-cap size-exempt responses
+	SizeExemptScanMaxInflightBytes int                           `yaml:"size_exempt_scan_max_inflight_bytes"` // per-proxy-instance in-flight memory budget for size-exempt response scans
+	UnscannablePassthrough         []UnscannablePassthroughEntry `yaml:"unscannable_passthrough"`             // explicit audited stream-unscanned allowlist for opaque responses
+	SSEStreaming                   GenericSSEScanning            `yaml:"sse_streaming"`                       // generic text/event-stream inline scanning (LLM SSE)
+	MCPServers                     []MCPResponseServerTrust      `yaml:"mcp_servers"`                         // per-server MCP response trust overrides
+}
+
+type UnscannablePassthroughEntry struct {
+	Host         string   `yaml:"host"`          // exact host or *.wildcard; must also be in size_exempt_domains
+	Paths        []string `yaml:"paths"`         // required exact canonical paths
+	PathPrefixes []string `yaml:"path_prefixes"` // rejected; retained only to produce an explicit migration error
+	ContentTypes []string `yaml:"content_types"` // required non-textual media types; params ignored at match time
+	Reason       string   `yaml:"reason"`        // required justification; control characters rejected
+	Added        string   `yaml:"added"`         // optional ISO date (YYYY-MM-DD)
+	Expires      string   `yaml:"expires"`       // required future/present ISO date (YYYY-MM-DD)
 }
 
 // MCPResponseTrustForServer returns the configured MCP response trust class for

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -63,6 +64,115 @@ func ValidateTrustedDomains(domains []string, label string) error {
 		domains[i] = d
 	}
 	return nil
+}
+
+func validateUnscannablePassthrough(entries []UnscannablePassthroughEntry) error {
+	for i := range entries {
+		field := fmt.Sprintf("response_scanning.unscannable_passthrough[%d]", i)
+		host := []string{entries[i].Host}
+		if err := ValidateTrustedDomains(host, field+".host"); err != nil {
+			return err
+		}
+		entries[i].Host = host[0]
+		entries[i].Reason = strings.TrimSpace(entries[i].Reason)
+		if entries[i].Reason == "" {
+			return fmt.Errorf("%s.reason is required", field)
+		}
+		if len(entries[i].Reason) > 200 {
+			return fmt.Errorf("%s.reason must be 200 characters or fewer", field)
+		}
+		if strings.IndexFunc(entries[i].Reason, unicode.IsControl) >= 0 {
+			return fmt.Errorf("%s.reason must not contain control characters", field)
+		}
+		if len(entries[i].PathPrefixes) > 0 {
+			return fmt.Errorf("%s.path_prefixes is not supported for unscannable passthrough; use exact paths", field)
+		}
+		if len(entries[i].Paths) == 0 {
+			return fmt.Errorf("%s.paths must contain at least one exact path", field)
+		}
+		for j, rawPath := range entries[i].Paths {
+			trimmed := strings.TrimSpace(rawPath)
+			if trimmed == "" {
+				return fmt.Errorf("%s.paths[%d] is empty", field, j)
+			}
+			if !strings.HasPrefix(trimmed, "/") {
+				return fmt.Errorf("%s.paths[%d] %q must start with /", field, j, rawPath)
+			}
+			canonicalPath, ok := CanonicalUnscannablePassthroughPath(trimmed)
+			if !ok {
+				return fmt.Errorf("%s.paths[%d] %q must be an exact non-root canonical path without traversal, encoded topology changes, controls, or path parameters", field, j, rawPath)
+			}
+			entries[i].Paths[j] = canonicalPath
+		}
+		if len(entries[i].ContentTypes) == 0 {
+			return fmt.Errorf("%s.content_types must contain at least one non-textual media type", field)
+		}
+		for j, raw := range entries[i].ContentTypes {
+			ct := strings.TrimSpace(strings.ToLower(raw))
+			if ct == "" {
+				return fmt.Errorf("%s.content_types[%d] is empty", field, j)
+			}
+			mediaType, _, err := mime.ParseMediaType(ct)
+			if err != nil {
+				return fmt.Errorf("%s.content_types[%d] %q is invalid: %w", field, j, raw, err)
+			}
+			if isTextualUnscannablePassthroughType(mediaType) {
+				return fmt.Errorf("%s.content_types[%d] %q is textual/scannable and cannot be used for unscannable passthrough", field, j, raw)
+			}
+			entries[i].ContentTypes[j] = mediaType
+		}
+		for _, dateField := range []struct {
+			name  string
+			value string
+		}{
+			{name: "added", value: entries[i].Added},
+			{name: "expires", value: entries[i].Expires},
+		} {
+			if strings.TrimSpace(dateField.value) == "" {
+				if dateField.name == "expires" {
+					return fmt.Errorf("%s.expires is required", field)
+				}
+				continue
+			}
+			parsed, err := time.Parse("2006-01-02", strings.TrimSpace(dateField.value))
+			if err != nil {
+				return fmt.Errorf("%s.%s %q must be YYYY-MM-DD: %w", field, dateField.name, dateField.value, err)
+			}
+			if dateField.name == "expires" && parsed.Before(todayUTC()) {
+				return fmt.Errorf("%s.expires %q is already expired", field, dateField.value)
+			}
+		}
+		entries[i].Added = strings.TrimSpace(entries[i].Added)
+		entries[i].Expires = strings.TrimSpace(entries[i].Expires)
+	}
+	return nil
+}
+
+func todayUTC() time.Time {
+	y, m, d := time.Now().UTC().Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+func isTextualUnscannablePassthroughType(mediaType string) bool {
+	if strings.HasPrefix(mediaType, "text/") {
+		return true
+	}
+	switch mediaType {
+	case "application/json",
+		"application/ld+json",
+		"application/x-ndjson",
+		"application/xml",
+		"application/xhtml+xml",
+		"application/javascript",
+		"application/ecmascript",
+		"application/x-www-form-urlencoded",
+		"application/x-yaml",
+		"application/yaml",
+		"image/svg+xml":
+		return true
+	default:
+		return strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
+	}
 }
 
 // Warning is a non-fatal advisory surfaced during Validate. Callers render
@@ -822,6 +932,23 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	if err := ValidateTrustedDomains(c.ResponseScanning.SizeExemptDomains, "response_scanning.size_exempt_domains"); err != nil {
 		return err
 	}
+	if c.ResponseScanning.SizeExemptScanMaxBytes <= 0 {
+		return fmt.Errorf("response_scanning.size_exempt_scan_max_bytes must be > 0")
+	}
+	if c.ResponseScanning.SizeExemptScanMaxInflightBytes <= 0 {
+		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be > 0")
+	}
+	if c.ResponseScanning.SizeExemptScanMaxInflightBytes < c.ResponseScanning.SizeExemptScanMaxBytes {
+		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be >= response_scanning.size_exempt_scan_max_bytes")
+	}
+	if err := validateUnscannablePassthrough(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
+	}
+	for i, entry := range c.ResponseScanning.UnscannablePassthrough {
+		if !hostMatchesResponseSizeExemptDomain(entry.Host, c.ResponseScanning.SizeExemptDomains) {
+			return fmt.Errorf("response_scanning.unscannable_passthrough[%d].host %q must match response_scanning.size_exempt_domains", i, entry.Host)
+		}
+	}
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {
 		*warnings = append(*warnings, Warning{
 			Field:   "response_scanning.exempt_domains",
@@ -868,6 +995,10 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 		}
 	}
 	return nil
+}
+
+func hostMatchesResponseSizeExemptDomain(host string, domains []string) bool {
+	return hostMatchesPassthrough(host, domains)
 }
 
 func (c *Config) validateMCPInputScanning() error {

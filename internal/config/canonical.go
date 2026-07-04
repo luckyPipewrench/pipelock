@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -215,6 +216,7 @@ func (c *Config) policySemanticView() Config {
 	view.Taint.TrustedMCPServers = sortedCopy(view.Taint.TrustedMCPServers)
 	view.A2AScanning.TrustedAgentCardKeys = canonicalA2ATrustedCardKeys(view.A2AScanning.TrustedAgentCardKeys)
 	view.ResponseScanning.SizeExemptDomains = sortedCopy(view.ResponseScanning.SizeExemptDomains)
+	view.ResponseScanning.UnscannablePassthrough = canonicalUnscannablePassthrough(view.ResponseScanning.UnscannablePassthrough)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
 	if view.Redaction.Enabled {
 		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
@@ -256,6 +258,38 @@ func canonicalA2ATrustedCardKeys(keys []A2ATrustedCardKey) []A2ATrustedCardKey {
 		left, _ := json.Marshal(out[i].AllowedOrigins)
 		right, _ := json.Marshal(out[j].AllowedOrigins)
 		return string(left) < string(right)
+	})
+	return out
+}
+
+func canonicalUnscannablePassthrough(entries []UnscannablePassthroughEntry) []UnscannablePassthroughEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]UnscannablePassthroughEntry, len(entries))
+	for i, entry := range entries {
+		out[i] = entry
+		out[i].Paths = sortedCopy(entry.Paths)
+		out[i].ContentTypes = sortedCopy(entry.ContentTypes)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Host != b.Host {
+			return a.Host < b.Host
+		}
+		if strings.Join(a.Paths, "\x00") != strings.Join(b.Paths, "\x00") {
+			return strings.Join(a.Paths, "\x00") < strings.Join(b.Paths, "\x00")
+		}
+		if strings.Join(a.ContentTypes, "\x00") != strings.Join(b.ContentTypes, "\x00") {
+			return strings.Join(a.ContentTypes, "\x00") < strings.Join(b.ContentTypes, "\x00")
+		}
+		if a.Reason != b.Reason {
+			return a.Reason < b.Reason
+		}
+		if a.Added != b.Added {
+			return a.Added < b.Added
+		}
+		return a.Expires < b.Expires
 	})
 	return out
 }

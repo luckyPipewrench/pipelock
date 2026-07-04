@@ -470,6 +470,128 @@ func TestValidate_ResponseScanningSizeExemptDomainsBroadWildcard(t *testing.T) {
 	}
 }
 
+func TestValidate_ResponseScanningSizeExemptInflightBelowPerScan(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptScanMaxBytes = 1024
+	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 512
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error when size_exempt_scan_max_inflight_bytes is below size_exempt_scan_max_bytes")
+	}
+}
+
+func TestValidate_ResponseScanningSizeExemptInflightEqualsPerScan(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptScanMaxBytes = 1024
+	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 1024
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with equal size-exempt scan/inflight limits = %v", err)
+	}
+}
+
+func TestValidate_ResponseScanningUnscannablePassthroughRejectsHostNotSizeExempt(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
+	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
+		Host:         "other.example.com",
+		Paths:        []string{"/artifacts/pkg.bin"},
+		ContentTypes: []string{"application/octet-stream"},
+		Reason:       "opaque signed archive",
+		Expires:      "2099-12-31",
+	}}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "response_scanning.unscannable_passthrough[0].host") {
+		t.Fatalf("Validate() error = %v, want host/size_exempt_domains error", err)
+	}
+}
+
+func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		entry   UnscannablePassthroughEntry
+		wantErr bool
+	}{
+		{
+			name: "valid",
+			entry: UnscannablePassthroughEntry{
+				Host:         " Downloads.Example.COM. ",
+				Paths:        []string{"/artifacts/pkg.bin"},
+				ContentTypes: []string{"Application/Octet-Stream; charset=binary"},
+				Reason:       "opaque signed archive",
+				Added:        "2026-07-04",
+				Expires:      "2099-12-31",
+			},
+		},
+		{
+			name:    "missing reason",
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Expires: "2099-12-31"},
+			wantErr: true,
+		},
+		{
+			name:    "url host",
+			entry:   UnscannablePassthroughEntry{Host: "https://downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			wantErr: true,
+		},
+		{
+			name:    "bad date",
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "July 4 2026"},
+			wantErr: true,
+		},
+		{
+			name:    "missing expires",
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque"},
+			wantErr: true,
+		},
+		{
+			name:    "bad path prefix",
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/pkg.bin"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31", PathPrefixes: []string{"artifacts/"}},
+			wantErr: true,
+		},
+		{
+			name:    "path traversal",
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/../private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			wantErr: true,
+		},
+		{
+			name:    "escaped path traversal",
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts/%252e%252e/private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			wantErr: true,
+		},
+		{
+			name:    "non canonical path",
+			entry:   UnscannablePassthroughEntry{Host: "downloads.example.com", Paths: []string{"/artifacts//private"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque", Expires: "2099-12-31"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
+			cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{tt.entry}
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+			got := cfg.ResponseScanning.UnscannablePassthrough[0]
+			if got.Host != "downloads.example.com" {
+				t.Fatalf("host = %q, want normalized downloads.example.com", got.Host)
+			}
+			if got.ContentTypes[0] != "application/octet-stream" {
+				t.Fatalf("content type = %q, want application/octet-stream", got.ContentTypes[0])
+			}
+		})
+	}
+}
+
 func TestValidate_ExemptDomainsValidatedWhenDisabled(t *testing.T) {
 	// exempt_domains must be validated even when the parent section is disabled.
 	// Prevents dormant bad config from activating silently on reload.
@@ -3067,6 +3189,44 @@ func TestApplyDefaults_AskTimeoutPreserved(t *testing.T) {
 	cfg.ApplyDefaults()
 	if cfg.ResponseScanning.AskTimeoutSeconds != 10 {
 		t.Errorf("expected ask timeout 10 preserved, got %d", cfg.ResponseScanning.AskTimeoutSeconds)
+	}
+}
+
+func TestApplyDefaults_ResponseScanningSizeExemptScanDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		perScan  int
+		inflight int
+	}{
+		{name: "omitted"},
+		{name: "zero", perScan: 0, inflight: 0},
+		{name: "negative", perScan: -1, inflight: -1},
+		{name: "explicit", perScan: 2048, inflight: 4096},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.ResponseScanning.SizeExemptScanMaxBytes = tt.perScan
+			cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = tt.inflight
+			cfg.ApplyDefaults()
+			wantPerScan := DefaultSizeExemptScanMaxBytes
+			wantInflight := DefaultSizeExemptScanMaxInflightBytes
+			if tt.perScan > 0 {
+				wantPerScan = tt.perScan
+			}
+			if tt.inflight > 0 {
+				wantInflight = tt.inflight
+			}
+			if cfg.ResponseScanning.SizeExemptScanMaxBytes != wantPerScan {
+				t.Fatalf("size_exempt_scan_max_bytes = %d, want %d", cfg.ResponseScanning.SizeExemptScanMaxBytes, wantPerScan)
+			}
+			if cfg.ResponseScanning.SizeExemptScanMaxInflightBytes != wantInflight {
+				t.Fatalf("size_exempt_scan_max_inflight_bytes = %d, want %d", cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, wantInflight)
+			}
+		})
 	}
 }
 

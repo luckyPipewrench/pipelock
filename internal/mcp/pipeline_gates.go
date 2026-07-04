@@ -92,8 +92,14 @@ type MCPInputEvaluation struct {
 	// blocked.
 	A2AEffectiveAction string
 
+	// EnforcementIdentity is the per-action key used by DoW and
+	// chain detection: raw tool name for tools/call, or the
+	// namespaced A2A method identity for A2A methods.
+	EnforcementIdentity string
+
 	// DoW fields are populated when DoWCheck is non-nil and the
-	// message is a tools/call with a non-empty ToolCallName.
+	// message is a tools/call with a non-empty ToolCallName or an
+	// A2A method with a baseline identity.
 	DoWAllowed    bool
 	DoWAction     string
 	DoWReason     string
@@ -103,7 +109,8 @@ type MCPInputEvaluation struct {
 	PolicyVerdict policy.Verdict
 
 	// Chain fields are populated when chainMatcher is non-nil and
-	// the message is a tools/call with a non-empty ToolCallName.
+	// the message is a tools/call with a non-empty ToolCallName or
+	// an A2A method with a baseline identity.
 	// Note that chainMatcher.Record mutates session chain state on
 	// every call; the gate ordering after DoW preserves the
 	// pre-refactor contract that DoW-block messages do not leave a
@@ -158,10 +165,27 @@ type MCPInputEvaluation struct {
 	CrossAgentEscalate bool
 }
 
+func mcpFrameEnforcementIdentity(frame MCPFrame, method string) string {
+	if frame.IsToolsCall() {
+		return strings.TrimSpace(frame.ToolCallName)
+	}
+	if method == "" {
+		method = frame.Method
+	}
+	return a2aBaselineIdentity(method)
+}
+
+func mcpFrameDoWArgs(frame MCPFrame, msg []byte) string {
+	if frame.IsToolsCall() {
+		return string(frame.Args)
+	}
+	return string(msg)
+}
+
 // EvaluateMCPInputGates runs the configured inbound gates for one
 // MCP request and returns their aggregated verdict. Each gate is
 // nil-safe: the helper skips gates whose config is nil or whose
-// preconditions are not met (e.g., DoW is tools/call-only).
+// preconditions are not met.
 //
 // Gate execution order (semantic, not cosmetic). Sequence is fixed by
 // the code below; see per-gate comments for placement rationale:
@@ -170,12 +194,13 @@ type MCPInputEvaluation struct {
 //     ContentVerdict.ID / Method used by later short-circuit paths.
 //   - A2A body scan when a2aCfg is enabled and the method matches
 //     IsA2AMethod. A block verdict short-circuits the remaining
-//     tools/call-scoped gates.
-//   - denial-of-wallet check for tools/call with a non-empty tool name.
+//     enforcement gates.
+//   - denial-of-wallet check for tools/call with a non-empty tool name
+//     or A2A method with a baseline identity.
 //   - policy check against the full message bytes.
-//   - chain detection for tools/call. Mutates chain-matcher session
-//     state; running after DoW preserves the contract that DoW-block
-//     messages do not leave a chain trace.
+//   - chain detection for tools/call and A2A method identities.
+//     Mutates chain-matcher session state; running after DoW preserves
+//     the contract that DoW-block messages do not leave a chain trace.
 //   - parse-error short-circuit from ContentVerdict.Error. Runs after
 //     the stateful gates above so every configured gate contributes
 //     its audit signals before the block verdict is emitted.
@@ -226,22 +251,23 @@ func EvaluateMCPInputGates(
 		eval.ContentVerdict.Error = frame.ParseErr.Error()
 	}
 
-	// A2A body scan. Runs before the tools/call-scoped
-	// gates so an A2A body block short-circuits them.
-	if a2aCfg != nil && a2aCfg.Enabled {
-		method := eval.ContentVerdict.Method
-		if method == "" {
-			method = frame.Method
-			if eval.ContentVerdict.ID == nil {
-				eval.ContentVerdict.ID = frame.ID
-			}
+	method := eval.ContentVerdict.Method
+	if method == "" {
+		method = frame.Method
+		if eval.ContentVerdict.ID == nil {
+			eval.ContentVerdict.ID = frame.ID
 		}
-		if IsA2AMethod(method) {
-			// Cross-agent contamination: a contaminated session emitting an
-			// A2A request to a peer agent propagates taint across the boundary.
-			// Recorded before the A2A content scan so the evidence is captured
-			// regardless of the content verdict (the emit happened either way).
-			observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryA2ARequest)
+	}
+	if IsA2AMethod(method) {
+		// Cross-agent contamination: a contaminated session emitting an
+		// A2A request to a peer agent propagates taint across the boundary.
+		// Recorded before the A2A content scan and enforcement gates so the
+		// evidence is captured regardless of which later gate short-circuits.
+		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryA2ARequest)
+
+		// A2A body scan. Runs before the enforcement gates so an
+		// A2A body block short-circuits them.
+		if a2aCfg != nil && a2aCfg.Enabled {
 			eval.A2AResult = ScanA2ARequestBody(ctx, msg, sc, a2aCfg)
 			if !eval.A2AResult.Clean {
 				action := eval.A2AResult.Action
@@ -267,9 +293,13 @@ func EvaluateMCPInputGates(
 		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryMCPToolCall)
 	}
 
-	// DoW. Only for tools/call with a tool name.
-	if opts.DoWCheck != nil && frame.IsToolsCall() && frame.ToolCallName != "" {
-		allowed, action, reason, budgetType := opts.DoWCheck(frame.ToolCallName, string(frame.Args))
+	enforcementIdentity := mcpFrameEnforcementIdentity(frame, eval.ContentVerdict.Method)
+	eval.EnforcementIdentity = enforcementIdentity
+
+	// DoW. Applies to tools/call by tool name and to A2A methods by the
+	// namespaced method identity.
+	if opts.DoWCheck != nil && enforcementIdentity != "" {
+		allowed, action, reason, budgetType := opts.DoWCheck(enforcementIdentity, mcpFrameDoWArgs(frame, msg))
 		eval.DoWAllowed = allowed
 		eval.DoWAction = action
 		eval.DoWReason = reason
@@ -305,8 +335,8 @@ func EvaluateMCPInputGates(
 	// chain. Mutates chain-matcher session state; ordering
 	// after DoW preserves the pre-refactor contract that DoW-block
 	// messages do not leave a chain trace.
-	if chainMatcher != nil && frame.IsToolsCall() && frame.ToolCallName != "" {
-		cv := chainMatcher.Record(sessionKey, frame.ToolCallName, string(msg))
+	if chainMatcher != nil && enforcementIdentity != "" {
+		cv := chainMatcher.Record(sessionKey, enforcementIdentity, string(msg))
 		if cv.Matched {
 			eval.ChainMatched = true
 			eval.ChainPatternName = cv.PatternName
@@ -371,8 +401,8 @@ func EvaluateMCPInputGates(
 //
 //   - policy runs before DoW. HTTP runs policy after DoW; stdio's
 //     pre-refactor order placed the policy check ahead of the
-//     tools/call-scoped gates, so the policy verdict is materialized
-//     before any tools/call-scoped gate can short-circuit.
+//     enforcement gates, so the policy verdict is materialized
+//     before DoW or chain can short-circuit.
 //   - session binding is two-phase, wrapping DoW. The batch pre-check
 //     fires before DoW; the tool-name check fires after. Batches are
 //     rejected earlier in the caller, so the pre-check is
@@ -382,15 +412,13 @@ func EvaluateMCPInputGates(
 //     has no frozen-tool gate; it lives only on the stdio transport
 //     to enforce airlock-hard-tier tool snapshots.
 //
-// Unlike HTTP, stdio does not have an A2A body gate; A2A methods flow
-// through a separate path. The helper omits the a2a_body gate
-// entirely.
-//
 // Gate execution order (semantic, not cosmetic). Sequence is fixed
 // by the code below; see per-gate comments for placement rationale:
 //
 //   - content scan via ScanRequest. Always runs. Establishes
 //     ContentVerdict.ID / Method used by later short-circuit paths.
+//   - A2A body scan when a2aCfg is enabled and the method matches
+//     IsA2AMethod. A block verdict short-circuits the remaining gates.
 //   - policy check. Populates PolicyVerdict without short-circuit;
 //     the caller folds matched policy into the effective action.
 //   - session binding batch pre-check. Populates BindingAction /
@@ -398,8 +426,9 @@ func EvaluateMCPInputGates(
 //     active. No short-circuit -- batches are rejected earlier in
 //     the caller path.
 //   - tool name extraction from the frame for the tools/call gates.
-//   - denial-of-wallet check for tools/call with a non-empty tool
-//     name. Blocks short-circuit; warns populate DoWAction.
+//   - denial-of-wallet check for tools/call with a non-empty tool name
+//     or A2A method with a baseline identity. Blocks short-circuit;
+//     warns populate DoWAction.
 //   - session binding tool check for tools/call. Overrides the
 //     batch pre-check when it fires (missing tool name, no baseline,
 //     unknown tool). No short-circuit -- the caller folds
@@ -407,9 +436,9 @@ func EvaluateMCPInputGates(
 //   - frozen tool enforcement. Short-circuits on a block verdict
 //     when the session has a frozen snapshot and the tool is either
 //     unparseable or not in the snapshot.
-//   - chain detection for tools/call. Mutates chain-matcher session
-//     state; the 1:1 stdio architecture uses the literal "default"
-//     session key. Matched patterns populate chain fields;
+//   - chain detection for tools/call and A2A method identities. Mutates
+//     chain-matcher session state; the 1:1 stdio architecture uses the
+//     literal "default" session key. Matched patterns populate chain fields;
 //     Block-action matches short-circuit.
 //   - parse-error short-circuit from ContentVerdict.Error. Runs
 //     after the stateful gates so audit signals are recorded before
@@ -442,6 +471,7 @@ func EvaluateMCPInputGatesStdio(
 	sc := opts.scanner()
 	policyCfg := opts.policyCfg()
 	chainMatcher := opts.chainMatcher()
+	a2aCfg := opts.a2aCfg()
 
 	// content scan. Always runs on stdio (inputCfg is not
 	// consulted at this layer -- the caller gates enablement via
@@ -452,6 +482,32 @@ func EvaluateMCPInputGatesStdio(
 		eval.ContentVerdict.Method = frame.Method
 		eval.ContentVerdict.Clean = false
 		eval.ContentVerdict.Error = frame.ParseErr.Error()
+	}
+
+	method := eval.ContentVerdict.Method
+	if method == "" {
+		method = frame.Method
+		if eval.ContentVerdict.ID == nil {
+			eval.ContentVerdict.ID = frame.ID
+		}
+	}
+	if IsA2AMethod(method) {
+		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryA2ARequest)
+
+		if a2aCfg != nil && a2aCfg.Enabled {
+			eval.A2AResult = ScanA2ARequestBody(ctx, msg, sc, a2aCfg)
+			if !eval.A2AResult.Clean {
+				action := eval.A2AResult.Action
+				if action == "" {
+					action = a2aCfg.Action
+				}
+				eval.A2AEffectiveAction = action
+				if action == config.ActionBlock {
+					eval.BlockingGate = blockingGateA2ABody
+					return eval
+				}
+			}
+		}
 	}
 
 	// policy. No short-circuit; policy participates in the
@@ -474,6 +530,8 @@ func EvaluateMCPInputGatesStdio(
 	if eval.ContentVerdict.Method == methodToolsCall {
 		toolCallName = frame.ToolCallName
 	}
+	enforcementIdentity := mcpFrameEnforcementIdentity(frame, eval.ContentVerdict.Method)
+	eval.EnforcementIdentity = enforcementIdentity
 
 	// Cross-agent contamination for tools/call. Recorded BEFORE the
 	// short-circuiting DoW/binding/frozen/chain/taint gates so the cross_agent
@@ -483,9 +541,10 @@ func EvaluateMCPInputGatesStdio(
 		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryMCPToolCall)
 	}
 
-	// DoW. Only for tools/call with a tool name.
-	if opts.DoWCheck != nil && eval.ContentVerdict.Method == methodToolsCall && toolCallName != "" {
-		allowed, action, reason, budgetType := opts.DoWCheck(toolCallName, string(frame.Args))
+	// DoW. Applies to tools/call by tool name and to A2A methods by the
+	// namespaced method identity.
+	if opts.DoWCheck != nil && enforcementIdentity != "" {
+		allowed, action, reason, budgetType := opts.DoWCheck(enforcementIdentity, mcpFrameDoWArgs(frame, msg))
 		eval.DoWAllowed = allowed
 		eval.DoWAction = action
 		eval.DoWReason = reason
@@ -530,8 +589,8 @@ func EvaluateMCPInputGatesStdio(
 
 	// chain detection. Stdio is 1:1 session-per-process;
 	// the literal "default" session key is correct.
-	if chainMatcher != nil && toolCallName != "" {
-		cv := chainMatcher.Record("default", toolCallName, string(msg))
+	if chainMatcher != nil && enforcementIdentity != "" {
+		cv := chainMatcher.Record("default", enforcementIdentity, string(msg))
 		if cv.Matched {
 			eval.ChainMatched = true
 			eval.ChainPatternName = cv.PatternName

@@ -801,6 +801,15 @@ response_scanning:
     - "*.vendor.example"
   size_exempt_domains:          # trusted large-download hosts; scan cap only
     - "downloads.example.com"
+  size_exempt_scan_max_bytes: 67108864
+  size_exempt_scan_max_inflight_bytes: 268435456
+  unscannable_passthrough:      # explicit audited stream-unscanned valve
+    - host: "downloads.example.com"
+      paths: ["/opaque/pkg.bin"]
+      content_types: ["application/octet-stream"]
+      reason: "opaque signed archive"
+      added: "2026-07-04"
+      expires: "2099-12-31"
   mcp_servers:                  # MCP response trust classes; default is untrusted/block
     - server: "analysis-server"
       trust: "reasoning"        # reasoning => warn; untrusted => block
@@ -816,7 +825,10 @@ response_scanning:
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
 | `include_defaults` | `true` | Merge with 29 built-in patterns |
 | `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
-| `size_exempt_domains` | `[]` | Trusted hosts whose oversized forward-proxy, TLS-intercepted, or reverse-proxy responses may stream through instead of failing the scan ceiling. Request-side scanning and budget accounting still run. |
+| `size_exempt_domains` | `[]` | Trusted hosts whose oversized forward-proxy, TLS-intercepted, or reverse-proxy responses use the larger bounded whole-buffer scan ceiling instead of failing the normal scan cap. |
+| `size_exempt_scan_max_bytes` | `67108864` | Maximum bytes read into memory for one over-cap response from a `size_exempt_domains` host before the existing response scanners run. Exceeding this ceiling blocks fail-closed with no upstream bytes delivered. |
+| `size_exempt_scan_max_inflight_bytes` | `268435456` | Per-proxy-instance memory reservation budget for concurrent over-cap size-exempt scans. If a scan cannot reserve its ceiling immediately, the response blocks fail-closed instead of waiting. |
+| `unscannable_passthrough` | `[]` | Structured allowlist for deliberately unscannable opaque artifact responses. Matching entries stream unscanned and emit an audit warning plus an allow receipt on every use. Requires `host`, exact `paths`, non-textual `content_types`, `reason`, and non-expired `expires`; optional `added` documents the entry. The host must also match `size_exempt_domains`, the response must exceed the normal scan cap, include a positive `Content-Length`, and declare `Content-Disposition: attachment`. |
 | `mcp_servers` | `[]` | Per-MCP-server response trust classes keyed by `pipelock mcp proxy --server-name`. Omitted, missing, malformed, or non-matching servers are treated as `untrusted` and block response-injection findings. `reasoning` is an explicit opt-in that logs/warns but forwards the response. |
 | `patterns` | 29 built-in | Injection and state/control poisoning patterns |
 
@@ -851,7 +863,9 @@ For forward-proxy and TLS-intercepted traffic, an exempt host's response streams
 
 Non-exempt responses that must be buffered for response scanning, Browser Shield, or media policy block fail-closed if they exceed the configured scan cap (`fetch_proxy.max_response_mb` or `tls_interception.max_response_bytes`). The block uses reason code `response_size` and names the host, observed size, scan ceiling, and the knob to raise. Data-budget truncation is separate and remains an explicit budget policy.
 
-Use `size_exempt_domains` for trusted large-download hosts when the default fail-closed scan ceiling blocks legitimate artifacts such as package headers, signed binaries, or model weights. This exemption is narrower than `exempt_domains`: it only takes effect after the response exceeds the scan cap. Smaller responses from the same host still take the normal buffered scanning path. The exemption applies to forward proxy, TLS interception, and reverse proxy responses. MCP-HTTP responses and compressed (`Content-Encoding`) responses still fail closed when they cannot be fully scanned, regardless of this list.
+Use `size_exempt_domains` for trusted large-download hosts when the default fail-closed scan ceiling blocks legitimate artifacts such as package headers, signed binaries, or model weights. This exemption is narrower than `exempt_domains`: it only takes effect after the response exceeds the normal scan cap. Pipelock then buffers the full response up to `size_exempt_scan_max_bytes`, runs the same whole-buffer response pipeline used for under-cap bodies, and delivers bytes only after the verdict is clean or transformed by policy. Responses over that ceiling, read errors, scan errors, and exhausted `size_exempt_scan_max_inflight_bytes` reservations block fail-closed without delivering upstream bytes. Smaller responses from the same host still take the normal buffered scanning path. The exemption applies to forward proxy, TLS interception, and reverse proxy responses. MCP-HTTP responses and compressed (`Content-Encoding`) responses still fail closed when they cannot be fully scanned, regardless of this list.
+
+Use `unscannable_passthrough` only for opaque-by-construction artifact downloads that cannot be meaningfully scanned and must remain byte-streamed. This is intentionally stricter than `size_exempt_domains`: passthrough is considered only after a response exceeds the normal scan cap, the host is also in `size_exempt_domains`, the path is an exact configured `paths` match, the response media type is a configured non-textual `content_types` value, `Content-Length` is present and positive, and `Content-Disposition` is `attachment`. Missing, malformed, expired, textual, prefix-style, inline, or chunked entries fall back to bounded scanning and then fail closed if they still cannot be inspected. Every match records the host, path, content type, and sanitized operator reason in an audit warning and receipt; keep `reason` audit-safe and free of secrets or private ticket details.
 
 ### Generic SSE streaming (`response_scanning.sse_streaming`)
 

@@ -319,42 +319,43 @@ type editionSnapshot struct{ edition.Edition }
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
-	cfgPtr              atomic.Pointer[config.Config]
-	scannerPtr          atomic.Pointer[scanner.Scanner]
-	editionPtr          atomic.Pointer[editionSnapshot]
-	sessionMgrPtr       atomic.Pointer[SessionManager]         // nil when profiling disabled
-	certCachePtr        atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
-	entropyTrackerPtr   atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
-	fragmentBufferPtr   atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
-	redactionRuntimePtr atomic.Pointer[redactionRuntime]       // nil when redaction disabled
-	redactMatcherPtr    atomic.Pointer[redact.Matcher]         // nil when redaction disabled
-	reqPolicyPtr        atomic.Pointer[reqpolicy.Matcher]      // nil when request_policy disabled
-	contractLoaderPtr   atomic.Pointer[contractruntime.Loader] // nil when learn_lock is disabled
-	logger              *audit.Logger
-	metrics             *metrics.Metrics
-	ks                  *killswitch.Controller
-	ksAPI               *killswitch.APIHandler
-	sessionAPI          *SessionAPIHandler
-	dialer              *net.Dialer
-	client              *http.Client
-	tlsTransport        *http.Transport // shared Transport for TLS interception upstream connections
-	server              *http.Server
-	agentServers        []*http.Server // per-agent listeners (managed by CLI)
-	startTime           time.Time
-	reloadMu            sync.RWMutex // serializes Reload and coherent request-time runtime snapshots
-	approver            *hitl.Approver
-	a2aCardBaseline     *mcp.CardBaseline // Agent Card drift detection across requests
-	captureObs          capture.CaptureObserver
-	recorder            *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
-	receiptEmitterPtr   atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
-	v2EmitterPtr        atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
-	receiptKeyPath      string                                // active signing key path, for reload comparison
-	envelopeEmitterPtr  atomic.Pointer[envelope.Emitter]      // mediation envelope emitter (nil = disabled)
-	envelopeVerifierPtr atomic.Pointer[envelope.Verifier]     // inbound mediation envelope verifier (nil = disabled)
-	shieldEngine        *shield.Engine                        // browser shield HTML/JS rewriter (nil = not initialized)
-	frozenTools         *FrozenToolRegistry                   // frozen tool inventories for airlock hard tier
-	wd                  *health.Watchdog                      // wedge-detection watchdog (nil = disabled)
-	probeInflight       atomic.Bool                           // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
+	cfgPtr               atomic.Pointer[config.Config]
+	scannerPtr           atomic.Pointer[scanner.Scanner]
+	editionPtr           atomic.Pointer[editionSnapshot]
+	sessionMgrPtr        atomic.Pointer[SessionManager]         // nil when profiling disabled
+	certCachePtr         atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
+	entropyTrackerPtr    atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
+	fragmentBufferPtr    atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
+	redactionRuntimePtr  atomic.Pointer[redactionRuntime]       // nil when redaction disabled
+	redactMatcherPtr     atomic.Pointer[redact.Matcher]         // nil when redaction disabled
+	reqPolicyPtr         atomic.Pointer[reqpolicy.Matcher]      // nil when request_policy disabled
+	contractLoaderPtr    atomic.Pointer[contractruntime.Loader] // nil when learn_lock is disabled
+	logger               *audit.Logger
+	metrics              *metrics.Metrics
+	ks                   *killswitch.Controller
+	ksAPI                *killswitch.APIHandler
+	sessionAPI           *SessionAPIHandler
+	dialer               *net.Dialer
+	client               *http.Client
+	tlsTransport         *http.Transport // shared Transport for TLS interception upstream connections
+	server               *http.Server
+	agentServers         []*http.Server // per-agent listeners (managed by CLI)
+	startTime            time.Time
+	reloadMu             sync.RWMutex // serializes Reload and coherent request-time runtime snapshots
+	approver             *hitl.Approver
+	a2aCardBaseline      *mcp.CardBaseline // Agent Card drift detection across requests
+	captureObs           capture.CaptureObserver
+	sizeExemptScanBudget sizeExemptScanBudget
+	recorder             *recorder.Recorder                    // flight recorder for tamper-evident evidence (nil = disabled)
+	receiptEmitterPtr    atomic.Pointer[receipt.Emitter]       // v1 action receipt emitter (nil = disabled)
+	v2EmitterPtr         atomic.Pointer[proxydecision.Emitter] // v2 proxy_decision emitter, dual-emitted with v1 (nil = disabled)
+	receiptKeyPath       string                                // active signing key path, for reload comparison
+	envelopeEmitterPtr   atomic.Pointer[envelope.Emitter]      // mediation envelope emitter (nil = disabled)
+	envelopeVerifierPtr  atomic.Pointer[envelope.Verifier]     // inbound mediation envelope verifier (nil = disabled)
+	shieldEngine         *shield.Engine                        // browser shield HTML/JS rewriter (nil = not initialized)
+	frozenTools          *FrozenToolRegistry                   // frozen tool inventories for airlock hard tier
+	wd                   *health.Watchdog                      // wedge-detection watchdog (nil = disabled)
+	probeInflight        atomic.Bool                           // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
 }
 
 // Option configures optional Proxy behavior.

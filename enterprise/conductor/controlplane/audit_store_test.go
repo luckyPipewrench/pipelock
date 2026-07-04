@@ -126,6 +126,30 @@ func TestSQLiteAuditStoreListsLocalAuditEvidence(t *testing.T) {
 	}
 }
 
+func TestSQLiteAuditStoreListEvidenceTrimsScopeForQuery(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	if _, err := store.put(context.Background(), batch); err != nil {
+		t.Fatalf("put() error = %v", err)
+	}
+
+	got, err := store.ListAuditBatchEvidence(context.Background(), AuditEvidenceQuery{
+		OrgID:        " \t" + batch.Identity.OrgID + "\n",
+		FleetID:      "\n" + batch.Identity.FleetID + " ",
+		ReceivedFrom: testNow.Add(-time.Minute),
+		ReceivedTo:   testNow.Add(time.Minute),
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditBatchEvidence(padded scope) error = %v", err)
+	}
+	if len(got) != 1 || got[0].Summary.BatchID != batch.Envelope.BatchID {
+		t.Fatalf("ListAuditBatchEvidence(padded scope) = %+v, want batch %q", got, batch.Envelope.BatchID)
+	}
+}
+
 func TestSQLiteAuditStoreEvidenceFailsClosedOnTruncation(t *testing.T) {
 	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
 	defer func() { _ = store.Close() }()
@@ -192,6 +216,30 @@ func TestSQLiteAuditStoreEvidenceQueryValidation(t *testing.T) {
 	badWindow.ReceivedTo = badWindow.ReceivedFrom
 	if _, err := store.ListAuditBatchEvidence(context.Background(), badWindow); !errors.Is(err, ErrInvalidStoreRecord) {
 		t.Fatalf("bad window ListAuditBatchEvidence() error = %v, want ErrInvalidStoreRecord", err)
+	}
+}
+
+func TestSQLiteAuditStoreEvidenceRejectsWhitespaceScopeBeforeQuery(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	query := AuditEvidenceQuery{
+		OrgID:        " \t\n",
+		FleetID:      defaultFollowerIdentity().FleetID,
+		ReceivedFrom: testNow.Add(-time.Minute),
+		ReceivedTo:   testNow.Add(time.Minute),
+	}
+	if _, err := store.ListAuditBatchEvidence(context.Background(), query); !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("ListAuditBatchEvidence(whitespace org after close) error = %v, want ErrInvalidStoreRecord", err)
+	}
+
+	query.OrgID = defaultFollowerIdentity().OrgID
+	query.FleetID = "\n\t "
+	if _, err := store.ListAuditBatchEvidence(context.Background(), query); !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("ListAuditBatchEvidence(whitespace fleet after close) error = %v, want ErrInvalidStoreRecord", err)
 	}
 }
 
@@ -409,6 +457,58 @@ func TestSQLiteAuditStoreListOrdersAndLimits(t *testing.T) {
 	}
 	if len(clipped) != 2 {
 		t.Fatalf("clipped len = %d, want 2", len(clipped))
+	}
+}
+
+func TestSQLiteAuditStoreListTrimsScopeForQuery(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	identity := defaultFollowerIdentity()
+	batch := signedAcceptedAuditBatch(t, identity, testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	if _, err := store.put(context.Background(), batch); err != nil {
+		t.Fatalf("put() error = %v", err)
+	}
+
+	got, err := store.ListAuditBatches(context.Background(), AuditBatchQuery{
+		OrgID:   " \t" + identity.OrgID + "\n",
+		FleetID: "\n" + identity.FleetID + " ",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditBatches(padded scope) error = %v", err)
+	}
+	if len(got) != 1 || got[0].BatchID != batch.Envelope.BatchID {
+		t.Fatalf("ListAuditBatches(padded scope) = %+v, want batch %q", got, batch.Envelope.BatchID)
+	}
+}
+
+func TestSQLiteAuditStoreListRejectsEmptyOrgBeforeQuery(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	identity := defaultFollowerIdentity()
+	batch := signedAcceptedAuditBatch(t, identity, testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	if _, err := store.put(context.Background(), batch); err != nil {
+		t.Fatalf("put() error = %v", err)
+	}
+
+	got, err := store.ListAuditBatches(context.Background(), AuditBatchQuery{Limit: 10})
+	if !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("ListAuditBatches(empty org) error = %v, want ErrInvalidStoreRecord", err)
+	}
+	if got != nil {
+		t.Fatalf("ListAuditBatches(empty org) rows = %+v, want nil", got)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	got, err = store.ListAuditBatches(context.Background(), AuditBatchQuery{OrgID: " \t\n", Limit: 10})
+	if !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("ListAuditBatches(whitespace org after close) error = %v, want ErrInvalidStoreRecord", err)
+	}
+	if got != nil {
+		t.Fatalf("ListAuditBatches(whitespace org after close) rows = %+v, want nil", got)
 	}
 }
 

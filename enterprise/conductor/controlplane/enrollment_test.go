@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,6 +153,112 @@ func TestFileEnrollmentStoreRejectsDuplicateActiveInstance(t *testing.T) {
 	consume.Token = second.Token
 	if _, err := store.ConsumeEnrollmentToken(context.Background(), consume); !errors.Is(err, ErrEnrollmentActiveInstance) {
 		t.Fatalf("ConsumeEnrollmentToken(second) error = %v, want ErrEnrollmentActiveInstance", err)
+	}
+}
+
+func TestFileEnrollmentStoreRejectsEnrollmentTokenReuse(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "token-one-use",
+		Identity: defaultFollowerIdentity(),
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+	pub, _ := testAuditSigner(t)
+	consume := ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-1",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), consume); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken(first) error = %v", err)
+	}
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), consume); !errors.Is(err, ErrEnrollmentTokenConsumed) {
+		t.Fatalf("ConsumeEnrollmentToken(reuse) error = %v, want ErrEnrollmentTokenConsumed", err)
+	}
+}
+
+func TestFileEnrollmentStoreConcurrentTokenConsumeAllowsOneWinner(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "token-race",
+		Identity: defaultFollowerIdentity(),
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+	pub, _ := testAuditSigner(t)
+	consume := ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-1",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}
+
+	const workers = 16
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := store.ConsumeEnrollmentToken(context.Background(), consume)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	consumed := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrEnrollmentTokenConsumed):
+			consumed++
+		default:
+			t.Fatalf("ConsumeEnrollmentToken(concurrent) unexpected error = %v", err)
+		}
+	}
+	if successes != 1 || consumed != workers-1 {
+		t.Fatalf("concurrent consume successes=%d consumed=%d, want 1/%d", successes, consumed, workers-1)
+	}
+
+	tokens, err := store.ListEnrollmentTokens(context.Background(), EnrollmentTokenListQuery{TokenID: "token-race", Now: testNow})
+	if err != nil {
+		t.Fatalf("ListEnrollmentTokens() error = %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].State != EnrollmentTokenStateConsumed {
+		t.Fatalf("token state after concurrent consume = %+v, want one consumed token", tokens)
+	}
+	followers, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: defaultFollowerIdentity().OrgID})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers() error = %v", err)
+	}
+	if len(followers) != 1 || followers[0].InstanceID != defaultFollowerIdentity().InstanceID {
+		t.Fatalf("followers after concurrent consume = %+v, want one enrolled follower", followers)
 	}
 }
 

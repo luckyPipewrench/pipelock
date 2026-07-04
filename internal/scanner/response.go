@@ -260,18 +260,9 @@ func (s *Scanner) ScanResponseWithSuppress(ctx context.Context, content, suppres
 
 	if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
 		transformed := content
-		for _, p := range s.responsePatterns {
-			replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-			transformed = p.re.ReplaceAllString(transformed, replacement)
-		}
-		for _, p := range s.responseOptSpacePatterns {
-			replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-			transformed = p.re.ReplaceAllString(transformed, replacement)
-		}
-		for _, p := range s.responseVowelFoldPatterns {
-			replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-			transformed = p.re.ReplaceAllString(transformed, replacement)
-		}
+		transformed = redactResponsePatterns(transformed, s.responsePatterns)
+		transformed = redactResponsePatterns(transformed, s.responseOptSpacePatterns)
+		transformed = redactResponsePatterns(transformed, s.responseVowelFoldPatterns)
 		// If redaction had no effect (detection came from a transformed pass
 		// like vowel-fold or decoded where patterns don't match the original
 		// text form), leave TransformedContent empty. Callers treat empty

@@ -553,6 +553,250 @@ func TestScanURL_Blocked(t *testing.T) {
 	}
 }
 
+func TestScanDLP_EmbeddedA2AFilePartURLSSRF(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
+
+	text := `{"jsonrpc_messages":[{"jsonrpc":"2.0","id":"req-012","method":"message/send","params":{"message":{"messageId":"msg-012","role":"user","parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/","mimeType":"text/plain"}}]}}}]}`
+	payload, err := json.Marshal(Request{Kind: KindDLP, Input: Input{Text: text}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want %q", resp.Decision, DecisionDeny)
+	}
+	if len(resp.Findings) == 0 {
+		t.Fatal("expected embedded URL finding")
+	}
+	if resp.Findings[0].RuleID != "URL-ssrf_metadata" {
+		t.Fatalf("RuleID = %q, want URL-ssrf_metadata", resp.Findings[0].RuleID)
+	}
+}
+
+func TestScanDLP_EmbeddedURLViewsCatchEscapedAndEncodedSSRF(t *testing.T) {
+	cfg := config.Defaults()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "json escaped slash",
+			text: `{"uri":"http:\/\/169.254.169.254\/latest\/meta-data\/"}`,
+		},
+		{
+			name: "percent encoded",
+			text: `{"uri":"http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F"}`,
+		},
+		{
+			name: "percent encoded json escaped slash",
+			text: `{"uri":"http%3A%5C%2F%5C%2F169.254.169.254%5C%2Flatest%5C%2Fmeta-data%5C%2F"}`,
+		},
+		{
+			name: "html entity encoded",
+			text: `{"uri":"http&#x3a;&#x2f;&#x2f;169.254.169.254&#x2f;latest&#x2f;meta-data&#x2f;"}`,
+		},
+		{
+			name: "percent encoded html entity",
+			text: `{"uri":"http%26%23x3a%3b%26%23x2f%3b%26%23x2f%3b169.254.169.254%26%23x2f%3blatest%26%23x2f%3bmeta-data%26%23x2f%3b"}`,
+		},
+		{
+			name: "four step alternating percent html entity",
+			text: `{"uri":"http%26%23x25%3b26%26%23x25%3b23x3a%26%23x25%3b3b%26%23x25%3b26%26%23x25%3b23x2f%26%23x25%3b3b%26%23x25%3b26%26%23x25%3b23x2f%26%23x25%3b3b169.254.169.254%26%23x25%3b26%26%23x25%3b23x2f%26%23x25%3b3blatest%26%23x25%3b26%26%23x25%3b23x2f%26%23x25%3b3bmeta-data%26%23x25%3b26%26%23x25%3b23x2f%26%23x25%3b3b"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := scanEmbeddedTextURLs(context.Background(), sc, tt.text)
+			if len(results.results) == 0 {
+				t.Fatal("expected embedded metadata URL finding")
+			}
+			if results.results[0].Scanner != scanner.ScannerSSRFMetadata {
+				t.Fatalf("scanner = %s, want %s; reason=%s", results.results[0].Scanner, scanner.ScannerSSRFMetadata, results.results[0].Reason)
+			}
+		})
+	}
+}
+
+func TestScanDLP_DoublePercentEncodedEmbeddedURLBlocks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
+
+	text := `{"uri":"http%253A%252F%252F169.254.169.254%252Flatest%252Fmeta-data%252F"}`
+	payload, err := json.Marshal(Request{Kind: KindDLP, Input: Input{Text: text}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want %q", resp.Decision, DecisionDeny)
+	}
+	if len(resp.Findings) == 0 {
+		t.Fatal("expected embedded URL finding")
+	}
+	if resp.Findings[0].RuleID != "URL-ssrf_metadata" {
+		t.Fatalf("RuleID = %q, want URL-ssrf_metadata", resp.Findings[0].RuleID)
+	}
+}
+
+func TestScanDLP_EmbeddedURLIgnoresInfrastructureOnlyFailure(t *testing.T) {
+	if embeddedURLResultIsFinding(scanner.Result{Allowed: false, Class: scanner.ClassInfrastructureError}) {
+		t.Fatal("infrastructure-only URL scan failures should not become DLP findings")
+	}
+	if !embeddedURLResultIsFinding(scanner.Result{Allowed: false, Class: scanner.ClassProtective}) {
+		t.Fatal("protective URL scan failures must become DLP findings")
+	}
+	if !embeddedURLResultIsFinding(scanner.Result{Allowed: false, Scanner: scanner.ScannerDLP}) {
+		t.Fatal("threat URL scan failures must remain DLP findings")
+	}
+}
+
+func TestScanDLP_EmbeddedURLCollectsAllFindings(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
+
+	text := `{"uris":["http://169.254.169.254/latest/meta-data/","https://blocked.vendor.example/path"]}`
+	payload, err := json.Marshal(Request{Kind: KindDLP, Input: Input{Text: text}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want %q", resp.Decision, DecisionDeny)
+	}
+	if !hasScanAPIFinding(resp.Findings, "URL-core_ssrf") {
+		t.Fatalf("expected metadata URL finding, got %+v", resp.Findings)
+	}
+	if !hasScanAPIFinding(resp.Findings, "BLOCK-Domain") {
+		t.Fatalf("expected blocklist URL finding, got %+v", resp.Findings)
+	}
+}
+
+func TestScanDLP_EmbeddedURLProtectiveDenySurfaces(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 1
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	results := scanEmbeddedTextURLs(context.Background(), sc, `https://api.vendor.example/one https://api.vendor.example/two`)
+	if len(results.results) != 1 {
+		t.Fatalf("expected one protective URL finding, got %+v", results.results)
+	}
+	if results.results[0].Scanner != scanner.ScannerRateLimit {
+		t.Fatalf("scanner = %s, want %s; reason=%s", results.results[0].Scanner, scanner.ScannerRateLimit, results.results[0].Reason)
+	}
+}
+
+func TestScanDLP_EmbeddedURLScanCapTruncatesAndDenies(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
+
+	var b strings.Builder
+	for i := 0; i < maxEmbeddedURLScans+1; i++ {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		_, _ = b.WriteString("https://api")
+		_, _ = b.WriteString(strconv.Itoa(i))
+		_, _ = b.WriteString(".vendor.example/path")
+	}
+	payload, err := json.Marshal(Request{Kind: KindDLP, Input: Input{Text: b.String()}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want %q", resp.Decision, DecisionDeny)
+	}
+	if !hasScanAPIFinding(resp.Findings, "URL-embedded-url-scan-truncated") {
+		t.Fatalf("expected truncation finding, got %+v", resp.Findings)
+	}
+
+	tokens, truncated := embeddedHTTPURLTokens(b.String(), 2)
+	if !truncated {
+		t.Fatal("expected embedded URL token extraction to report truncation")
+	}
+	if len(tokens) != 2 {
+		t.Fatalf("tokens = %d, want 2", len(tokens))
+	}
+}
+
+func hasScanAPIFinding(findings []Finding, ruleID string) bool {
+	for _, finding := range findings {
+		if finding.RuleID == ruleID {
+			return true
+		}
+	}
+	return false
+}
+
 func TestScanToolCall_PolicyDeny(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

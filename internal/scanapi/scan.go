@@ -186,7 +186,7 @@ func embeddedURLTextViews(text string) []string {
 	}
 	addView(text)
 
-	for range max(maxEmbeddedURLPercentDecodePasses, maxEmbeddedURLHTMLDecodePasses) {
+	for range maxEmbeddedURLPercentDecodePasses + maxEmbeddedURLHTMLDecodePasses {
 		startLen := len(views)
 		for _, view := range views[:startLen] {
 			if strings.Contains(view, "%") {

@@ -126,6 +126,30 @@ func TestSQLiteAuditStoreListsLocalAuditEvidence(t *testing.T) {
 	}
 }
 
+func TestSQLiteAuditStoreListEvidenceTrimsScopeForQuery(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	if _, err := store.put(context.Background(), batch); err != nil {
+		t.Fatalf("put() error = %v", err)
+	}
+
+	got, err := store.ListAuditBatchEvidence(context.Background(), AuditEvidenceQuery{
+		OrgID:        " \t" + batch.Identity.OrgID + "\n",
+		FleetID:      "\n" + batch.Identity.FleetID + " ",
+		ReceivedFrom: testNow.Add(-time.Minute),
+		ReceivedTo:   testNow.Add(time.Minute),
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditBatchEvidence(padded scope) error = %v", err)
+	}
+	if len(got) != 1 || got[0].Summary.BatchID != batch.Envelope.BatchID {
+		t.Fatalf("ListAuditBatchEvidence(padded scope) = %+v, want batch %q", got, batch.Envelope.BatchID)
+	}
+}
+
 func TestSQLiteAuditStoreEvidenceFailsClosedOnTruncation(t *testing.T) {
 	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
 	defer func() { _ = store.Close() }()
@@ -433,6 +457,29 @@ func TestSQLiteAuditStoreListOrdersAndLimits(t *testing.T) {
 	}
 	if len(clipped) != 2 {
 		t.Fatalf("clipped len = %d, want 2", len(clipped))
+	}
+}
+
+func TestSQLiteAuditStoreListTrimsScopeForQuery(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	identity := defaultFollowerIdentity()
+	batch := signedAcceptedAuditBatch(t, identity, testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	if _, err := store.put(context.Background(), batch); err != nil {
+		t.Fatalf("put() error = %v", err)
+	}
+
+	got, err := store.ListAuditBatches(context.Background(), AuditBatchQuery{
+		OrgID:   " \t" + identity.OrgID + "\n",
+		FleetID: "\n" + identity.FleetID + " ",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditBatches(padded scope) error = %v", err)
+	}
+	if len(got) != 1 || got[0].BatchID != batch.Envelope.BatchID {
+		t.Fatalf("ListAuditBatches(padded scope) = %+v, want batch %q", got, batch.Envelope.BatchID)
 	}
 }
 

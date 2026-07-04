@@ -274,6 +274,59 @@ func TestHandleDeferredAction_EmptyIDBadRequest(t *testing.T) {
 	}
 }
 
+func TestHandleDeferredAction_MalformedPathsFailClosed(t *testing.T) {
+	mgr := newDeferManager()
+	rec := &resolveCapture{}
+	seedHold(t, mgr, "0193defer00000000000000000016", true, rec.cb)
+	h := deferredTestHandler(mgr)
+
+	cases := []struct {
+		name string
+		path string
+		want int
+	}{
+		{
+			name: "double encoded slash",
+			path: "/api/v1/deferred/%252f/approve",
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "encoded nul",
+			path: "/api/v1/deferred/%00/approve",
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "encoded dot dot remains unknown id",
+			path: "/api/v1/deferred/%2e%2e/approve",
+			want: http.StatusNotFound,
+		},
+		{
+			name: "trailing slash",
+			path: "/api/v1/deferred/0193defer00000000000000000016/approve/",
+			want: http.StatusNotFound,
+		},
+		{
+			name: "unknown suffix",
+			path: "/api/v1/deferred/0193defer00000000000000000016/approve/extra",
+			want: http.StatusNotFound,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer "+deferredTestToken)
+			rr := httptest.NewRecorder()
+			h.HandleDeferredAction(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("status=%d, want %d; body=%s", rr.Code, tc.want, rr.Body.String())
+			}
+			if n, _ := rec.snapshot(); n != 0 {
+				t.Fatalf("malformed path resolved a hold: %d", n)
+			}
+		})
+	}
+}
+
 // TestHandleDeferredAction_RateLimited proves the deferred mutate bucket caps
 // request volume: after the limit is reached the next request is rejected 429
 // before it can touch the manager. checkRateLimit runs before preflight, so a

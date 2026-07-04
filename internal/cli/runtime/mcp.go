@@ -315,10 +315,17 @@ func startDeferredOperatorAPI(
 	if cfg == nil || cfg.KillSwitch.APIListen == "" || deferManager == nil || !deferManager.Enabled() {
 		return func() {}, nil
 	}
+	apiToken := cfg.KillSwitch.APIToken
+	if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
+		apiToken = envToken
+	}
+	if apiToken == "" {
+		return func() {}, fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token or %s to be set", killswitch.EnvAPIToken)
+	}
 	sessionAPI := proxy.NewSessionAPIHandler(proxy.SessionAPIOptions{
 		Logger:   logger,
 		Deferred: deferManager,
-		APIToken: cfg.KillSwitch.APIToken,
+		APIToken: apiToken,
 	})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/deferred", sessionAPI.HandleDeferredList)

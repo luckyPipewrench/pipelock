@@ -138,6 +138,9 @@ func extractDeferIDWithAction(r *http.Request, action string) (string, bool) {
 	if err != nil || id == "" || strings.ContainsAny(id, "/\x00") {
 		return "", false
 	}
+	if decodedAgain, err := url.PathUnescape(id); err == nil && strings.ContainsAny(decodedAgain, "/\x00") {
+		return "", false
+	}
 	return id, true
 }
 

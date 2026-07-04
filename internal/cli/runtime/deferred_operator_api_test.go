@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -171,6 +172,52 @@ func TestStartDeferredOperatorAPI_ServesDeferredRoutes(t *testing.T) {
 	if got := mgr.Snapshot(); len(got) != 0 {
 		t.Fatalf("hold still held after deny: %d", len(got))
 	}
+}
+
+func TestStartDeferredOperatorAPI_UsesEnvAPIToken(t *testing.T) {
+	const token = "op-env-token" //nolint:gosec // test value
+	t.Setenv(killswitch.EnvAPIToken, token)
+	addr := freeAddr(t)
+	cfg := &config.Config{}
+	cfg.KillSwitch.APIListen = addr
+	mgr := deferredOpTestManager(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop, err := startDeferredOperatorAPI(ctx, cfg, mgr, audit.NewNop(), io.Discard)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer stop()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	base := "http://" + addr
+	testwait.For(t, 3*time.Second, func() bool {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/deferred", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, reqErr := client.Do(req)
+		if reqErr != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, "deferred operator API with env token on %s", addr)
+}
+
+func TestStartDeferredOperatorAPI_MissingTokenFailsFast(t *testing.T) {
+	t.Setenv(killswitch.EnvAPIToken, "")
+	cfg := &config.Config{}
+	cfg.KillSwitch.APIListen = freeAddr(t)
+
+	stop, err := startDeferredOperatorAPI(context.Background(), cfg, deferredOpTestManager(t), audit.NewNop(), io.Discard)
+	if err == nil {
+		stop()
+		t.Fatal("expected missing token error, got nil")
+	}
+	if stop == nil {
+		t.Fatal("stop must be non-nil on error")
+	}
+	stop()
 }
 
 // TestStartDeferredOperatorAPI_BindErrorIsFatal proves a bind conflict on

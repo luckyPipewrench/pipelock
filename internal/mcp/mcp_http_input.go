@@ -330,6 +330,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		toolName = frame.ToolCallName
 	}
+	enforcementTarget := toolName
+	if enforcementTarget == "" {
+		enforcementTarget = eval.EnforcementIdentity
+	}
+	enforcementKind := "tools/call"
+	if toolName == "" && enforcementTarget != "" {
+		enforcementKind = "mcp method"
+	}
 	captureActionClass := captureMCPFrameActionClass(toolName, verdict.Method, string(frame.Args))
 	logTaintDecision := func() {
 		if auditLogger == nil {
@@ -382,10 +390,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case blockingGateDoW:
-		_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
-			toolName, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
+		_, _ = fmt.Fprintf(logW, "pipelock: %s %q DoW %s: %s (%s)\n",
+			enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
 		if auditLogger != nil {
-			auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolName), "denial_of_wallet", eval.DoWReason)
+			auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), "denial_of_wallet", eval.DoWReason)
 		}
 		if m != nil {
 			m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -398,7 +406,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 			eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
 		if auditLogger != nil {
-			auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, toolName, auditSessionKey)
+			auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, enforcementTarget, auditSessionKey)
 		}
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
@@ -448,10 +456,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 	}
 	if eval.DoWAction != "" && !eval.DoWAllowed && eval.DoWAction != config.ActionBlock {
-		_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
-			toolName, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
+		_, _ = fmt.Fprintf(logW, "pipelock: %s %q DoW %s: %s (%s)\n",
+			enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
 		if auditLogger != nil {
-			auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", toolName), "denial_of_wallet", eval.DoWReason, 0)
+			auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), "denial_of_wallet", eval.DoWReason, 0)
 		}
 		recordAdaptiveSignal(session.SignalNearMiss)
 	}
@@ -461,7 +469,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 			eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
 		if auditLogger != nil {
-			auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, toolName, auditSessionKey)
+			auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, enforcementTarget, auditSessionKey)
 		}
 	}
 

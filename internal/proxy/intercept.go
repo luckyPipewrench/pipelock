@@ -68,6 +68,19 @@ func interceptContractLoader(ic *InterceptContext) *contractruntime.Loader {
 	return ic.Proxy.currentContractLoader()
 }
 
+func interceptSizeExemptScanBudget(ic *InterceptContext) *sizeExemptScanBudget {
+	if ic != nil && ic.Proxy != nil {
+		return &ic.Proxy.sizeExemptScanBudget
+	}
+	if ic == nil {
+		return &sizeExemptScanBudget{}
+	}
+	if ic.sizeExemptScanBudget == nil {
+		ic.sizeExemptScanBudget = &sizeExemptScanBudget{}
+	}
+	return ic.sizeExemptScanBudget
+}
+
 // InterceptContext carries shared state for TLS-intercepted tunnel processing.
 // Groups parameters that flow through interceptTunnel → newInterceptHandler → interceptRecordSignal.
 type InterceptContext struct {
@@ -97,9 +110,10 @@ type InterceptContext struct {
 	EnvelopeEmitter *envelope.Emitter
 	// EnvelopeEmitterSet distinguishes an explicit nil admission snapshot
 	// from tests that omitted the snapshot entirely.
-	EnvelopeEmitterSet bool
-	Recorder           session.Recorder
-	KillSwitch         *killswitch.Controller
+	EnvelopeEmitterSet   bool
+	Recorder             session.Recorder
+	KillSwitch           *killswitch.Controller
+	sizeExemptScanBudget *sizeExemptScanBudget
 }
 
 // Validate checks that required fields are set. Returns an error if any
@@ -1636,50 +1650,110 @@ func newInterceptHandler(
 		}
 		if int64(len(respBody)) > maxResp {
 			if isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains) {
-				if interceptEmitReceiptOrBlock(ic, w, actx, withInterceptRedaction(receipt.EmitOpts{
+				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
+					Host:              ic.TargetHost,
+					Path:              r.URL.EscapedPath(),
+					ContentType:       resp.Header.Get("Content-Type"),
+					Header:            resp.Header,
+					ContentLength:     resp.ContentLength,
+					SizeExemptDomains: ic.Config.ResponseScanning.SizeExemptDomains,
+					Now:               time.Now(),
+				}, ic.Config.ResponseScanning.UnscannablePassthrough); ok {
+					reason := unscannablePassthroughReason(ic.TargetHost, r.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
+					ic.Logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
+					if interceptEmitReceiptOrBlock(ic, w, actx, withInterceptRedaction(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionAllow,
+						Layer:     "unscannable_passthrough",
+						Pattern:   reason,
+						Transport: "intercept",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: ic.RequestID,
+						Agent:     ic.Agent,
+					})) {
+						return
+					}
+					for k, vv := range resp.Header {
+						for _, v := range vv {
+							w.Header().Add(k, v)
+						}
+					}
+					removeHopByHopHeaders(w.Header())
+					w.WriteHeader(resp.StatusCode)
+					written, _ := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
+					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
+					if ic.Proxy != nil {
+						ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+							Subsurface:        "response_intercept",
+							Transport:         "connect",
+							SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+							SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
+							RequestID:         ic.RequestID,
+							ConfigHash:        ic.Config.CanonicalPolicyHash(),
+							Agent:             ic.Agent,
+							Profile:           ic.Profile,
+							ActionClass:       captureHTTPActionClass(r.Method),
+							Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+							TransformKind:     capture.TransformRaw,
+							EffectiveAction:   config.ActionAllow,
+							Outcome:           captureOutcome(config.ActionAllow, true),
+						})
+					}
+					ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
+					if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding {
+						ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
+					}
+					return
+				}
+				var scanFailure *sizeExemptResponseReadError
+				var releaseSizeExemptScan sizeExemptScanRelease
+				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes)
+				if scanFailure != nil {
+					if scanFailure.Err != nil {
+						ic.Logger.LogError(actx, scanFailure.Err)
+					}
+					ic.Logger.LogBlocked(actx, "tls_response_blocked", scanFailure.Reason)
+					ic.Metrics.RecordTLSResponseBlocked(string(scanFailure.Kind))
+					_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionBlock,
+						Layer:     "tls_response_blocked",
+						Pattern:   scanFailure.Reason,
+						Transport: "intercept",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: ic.RequestID,
+						Agent:     ic.Agent,
+					}))
+					info := blockInfoFor(blockreason.ResponseSize, "tls_response_blocked")
+					if scanFailure.Kind == sizeExemptReadFailureReadError {
+						info = blockInfoFor(blockreason.ParseError, "tls_response_blocked")
+					}
+					writeBlockedError(w, info, "blocked: "+scanFailure.Reason, http.StatusForbidden)
+					return
+				}
+				defer releaseSizeExemptScan()
+			} else {
+				reason := responseSizeBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes")
+				ic.Logger.LogBlocked(actx, "tls_response_blocked", reason)
+				ic.Metrics.RecordTLSResponseBlocked("oversized")
+				_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 					ActionID:  actionID,
-					Verdict:   config.ActionAllow,
+					Verdict:   config.ActionBlock,
+					Layer:     "tls_response_blocked",
+					Pattern:   reason,
 					Transport: "intercept",
 					Method:    r.Method,
 					Target:    targetURL,
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
-				})) {
-					return
-				}
-				for k, vv := range resp.Header {
-					for _, v := range vv {
-						w.Header().Add(k, v)
-					}
-				}
-				w.Header().Del("Content-Length")
-				removeHopByHopHeaders(w.Header())
-				w.WriteHeader(resp.StatusCode)
-				written, _ := w.Write(respBody)
-				copied, _ := io.Copy(w, resp.Body)
-				totalWritten := int64(written) + copied
-				ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(totalWritten))
-				ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.ResponseSize, "tls_response_blocked"),
+					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
-			reason := responseSizeBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes")
-			ic.Logger.LogBlocked(actx, "tls_response_blocked", reason)
-			ic.Metrics.RecordTLSResponseBlocked("oversized")
-			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionBlock,
-				Layer:     "tls_response_blocked",
-				Pattern:   reason,
-				Transport: "intercept",
-				Method:    r.Method,
-				Target:    targetURL,
-				RequestID: ic.RequestID,
-				Agent:     ic.Agent,
-			}))
-			writeBlockedError(w,
-				blockInfoFor(blockreason.ResponseSize, "tls_response_blocked"),
-				"blocked: "+reason, http.StatusForbidden)
-			return
 		}
 
 		// Browser Shield on intercepted response body.

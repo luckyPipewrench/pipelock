@@ -443,8 +443,10 @@ func Defaults() *Config {
 			PrePushScan:     true,
 		},
 		ResponseScanning: ResponseScanning{
-			Enabled: true,
-			Action:  "warn",
+			Enabled:                        true,
+			Action:                         "warn",
+			SizeExemptScanMaxBytes:         DefaultSizeExemptScanMaxBytes,
+			SizeExemptScanMaxInflightBytes: DefaultSizeExemptScanMaxInflightBytes,
 			SSEStreaming: GenericSSEScanning{
 				Enabled:       true,
 				Action:        ActionBlock,

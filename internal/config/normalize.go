@@ -248,6 +248,12 @@ func (c *Config) ApplyDefaults() {
 	if c.ResponseScanning.Enabled && c.ResponseScanning.Action == "" {
 		c.ResponseScanning.Action = ActionWarn
 	}
+	if c.ResponseScanning.SizeExemptScanMaxBytes <= 0 {
+		c.ResponseScanning.SizeExemptScanMaxBytes = DefaultSizeExemptScanMaxBytes
+	}
+	if c.ResponseScanning.SizeExemptScanMaxInflightBytes <= 0 {
+		c.ResponseScanning.SizeExemptScanMaxInflightBytes = DefaultSizeExemptScanMaxInflightBytes
+	}
 	if c.ResponseScanning.Action == ActionAsk && c.ResponseScanning.AskTimeoutSeconds <= 0 {
 		c.ResponseScanning.AskTimeoutSeconds = 30
 	}

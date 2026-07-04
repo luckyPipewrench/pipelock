@@ -413,6 +413,14 @@ func ForwardScannedInput(
 		if verdict.Method == methodToolsCall {
 			toolCallName = frame.ToolCallName
 		}
+		enforcementTarget := toolCallName
+		if enforcementTarget == "" {
+			enforcementTarget = eval.EnforcementIdentity
+		}
+		enforcementKind := "tools/call"
+		if toolCallName == "" && enforcementTarget != "" {
+			enforcementKind = "mcp method"
+		}
 		baselineIdentity := mcpFrameBaselineIdentity(frame)
 		captureActionClass := captureMCPFrameActionClass(toolCallName, verdict.Method, string(frame.Args))
 
@@ -465,7 +473,7 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 				eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
 			if auditLogger != nil {
-				auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, toolCallName, "default")
+				auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, enforcementTarget, "default")
 			}
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
 				Subsurface:        "chain_detection",
@@ -476,8 +484,8 @@ func ForwardScannedInput(
 				Profile:           opts.captureProfile(),
 				ActionClass:       captureActionClass,
 				Request: capture.CaptureRequest{
-					ToolName:  toolCallName,
-					MCPMethod: methodToolsCall,
+					ToolName:  enforcementTarget,
+					MCPMethod: verdict.Method,
 					RPCID:     captureRPCID(verdict.ID),
 				},
 				RawFindings: []capture.Finding{{
@@ -584,8 +592,8 @@ func ForwardScannedInput(
 		// reuse it verbatim as the BlockedRequest.LogMessage.
 		var dowLogMsg string
 		if !eval.DoWAllowed && eval.DoWAction != "" {
-			dowLogMsg = fmt.Sprintf("pipelock: input line %d: tools/call %q DoW %s: %s (%s)",
-				lineNum, toolCallName, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
+			dowLogMsg = fmt.Sprintf("pipelock: input line %d: %s %q DoW %s: %s (%s)",
+				lineNum, enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
 			_, _ = fmt.Fprintln(logW, dowLogMsg)
 		}
 
@@ -594,9 +602,27 @@ func ForwardScannedInput(
 		// The response shape (JSON-RPC error code, LogMessage) stays
 		// here because it is transport-specific.
 		switch eval.BlockingGate {
+		case blockingGateA2ABody:
+			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: a2a input blocked (%s)\n", lineNum, eval.A2AResult.Reason)
+			switch {
+			case eval.A2AResult.IsAdaptiveNeutral():
+			case eval.A2AResult.IsConfigMismatch():
+				recordAdaptiveSignal(session.SignalNearMiss)
+			default:
+				recordAdaptiveSignal(session.SignalBlock)
+			}
+			blockedCh <- BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (a2a input scanning)", lineNum),
+				ErrorCode:      -32001,
+				ErrorMessage:   "pipelock: request blocked by A2A input scanning",
+			}
+			_ = emitToolReceipt(config.ActionBlock)
+			continue
 		case blockingGateDoW:
 			if auditLogger != nil {
-				auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "denial_of_wallet", eval.DoWReason)
+				auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), "denial_of_wallet", eval.DoWReason)
 			}
 			if m != nil {
 				m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -665,13 +691,20 @@ func ForwardScannedInput(
 		}
 
 		// Non-blocking warn-level side effects from gates that did not
-		// short-circuit. DoW warn: audit anomaly + near-miss signal
-		// (the diagnostic log already ran above). Taint approved:
-		// audit the pre-approval decision so the operator sees the
-		// approval happened.
+		// short-circuit. A2A warn logs and records a near-miss unless the
+		// finding is adaptive-neutral. DoW warn: audit anomaly + near-miss
+		// signal (the diagnostic log already ran above). Taint approved:
+		// audit the pre-approval decision so the operator sees the approval
+		// happened.
+		if !eval.A2AResult.Clean && eval.A2AEffectiveAction != "" && eval.A2AEffectiveAction != config.ActionBlock {
+			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: a2a input warning (%s)\n", lineNum, eval.A2AResult.Reason)
+			if !eval.A2AResult.IsAdaptiveNeutral() {
+				recordAdaptiveSignal(session.SignalNearMiss)
+			}
+		}
 		if !eval.DoWAllowed && eval.DoWAction != "" {
 			if auditLogger != nil {
-				auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "denial_of_wallet", eval.DoWReason, 0)
+				auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", enforcementTarget), "denial_of_wallet", eval.DoWReason, 0)
 			}
 			recordAdaptiveSignal(session.SignalNearMiss)
 		}

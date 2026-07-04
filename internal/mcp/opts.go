@@ -25,7 +25,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-// DoWCheckFunc checks a tool call against denial-of-wallet budgets.
+// DoWCheckFunc checks an MCP action identity against denial-of-wallet budgets.
+// The identity is a raw tool name for tools/call and "a2a:<Method>" for A2A.
 // Returns (allowed, action, reason, budgetType). Action is "block" or "warn".
 // When action is "warn", the caller logs but does not block the request.
 type DoWCheckFunc func(toolName, argsJSON string) (allowed bool, action, reason, budgetType string)

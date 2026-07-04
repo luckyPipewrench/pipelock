@@ -20,7 +20,7 @@ LLM configuration (one of, not needed for /review stats):
 
 Model selection:
   PR_REVIEW_MODEL_FAST  - Model for default/tests/docs (default: gpt-5.4-mini)
-  PR_REVIEW_MODEL_DEEP  - Model for /review deep (default: gpt-5.4)
+  PR_REVIEW_MODEL_DEEP  - Model for /review deep (default: gpt-5.5)
 
 The PR_REVIEW_MODEL_FAST env var keeps its name for backwards compatibility
 with any existing repo-secrets overrides; the user-facing /review fast
@@ -39,7 +39,7 @@ import requests
 
 MAX_DIFF_CHARS = 100_000
 DEFAULT_MODEL_FAST = "gpt-5.4-mini"
-DEFAULT_MODEL_DEEP = "gpt-5.4"
+DEFAULT_MODEL_DEEP = "gpt-5.5"
 
 PROMPT_SECURITY = """You are reviewing a pull request for Pipelock, an AI agent firewall and security boundary product. Pipelock is a network proxy that sits between AI agents and the internet, scanning HTTP/WebSocket/MCP traffic for secret exfiltration, prompt injection, SSRF, and tool poisoning.
 

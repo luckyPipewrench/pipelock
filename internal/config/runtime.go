@@ -220,6 +220,12 @@ func (c *Config) Clone() *Config {
 	if c.ResponseScanning.ExemptDomains != nil {
 		clone.ResponseScanning.ExemptDomains = append([]string(nil), c.ResponseScanning.ExemptDomains...)
 	}
+	if c.ResponseScanning.SizeExemptDomains != nil {
+		clone.ResponseScanning.SizeExemptDomains = append([]string(nil), c.ResponseScanning.SizeExemptDomains...)
+	}
+	if c.ResponseScanning.UnscannablePassthrough != nil {
+		clone.ResponseScanning.UnscannablePassthrough = cloneUnscannablePassthrough(c.ResponseScanning.UnscannablePassthrough)
+	}
 	if c.Taint.TrustedMCPServers != nil {
 		clone.Taint.TrustedMCPServers = append([]string(nil), c.Taint.TrustedMCPServers...)
 	}
@@ -250,6 +256,26 @@ func cloneDLPPatterns(src []DLPPattern) []DLPPattern {
 		dst[i] = src[i]
 		if src[i].ExemptDomains != nil {
 			dst[i].ExemptDomains = append([]string(nil), src[i].ExemptDomains...)
+		}
+	}
+	return dst
+}
+
+func cloneUnscannablePassthrough(src []UnscannablePassthroughEntry) []UnscannablePassthroughEntry {
+	if src == nil {
+		return nil
+	}
+	dst := make([]UnscannablePassthroughEntry, len(src))
+	for i := range src {
+		dst[i] = src[i]
+		if src[i].Paths != nil {
+			dst[i].Paths = append([]string(nil), src[i].Paths...)
+		}
+		if src[i].PathPrefixes != nil {
+			dst[i].PathPrefixes = append([]string(nil), src[i].PathPrefixes...)
+		}
+		if src[i].ContentTypes != nil {
+			dst[i].ContentTypes = append([]string(nil), src[i].ContentTypes...)
 		}
 	}
 	return dst

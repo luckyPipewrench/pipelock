@@ -957,11 +957,17 @@ func scanToolsBatch(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) ToolS
 // scanToolDefs scans a slice of tool definitions for injection, poisoning, and drift.
 func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []ToolScanMatch {
 	var matches []ToolScanMatch
+	confusableNames := confusableToolNameCollisions(tools)
 
 	for _, tool := range tools {
 		var match ToolScanMatch
 		match.ToolName = tool.Name
 		hasFinding := false
+
+		if confusableNames[tool.Name] {
+			match.ToolPoison = append(match.ToolPoison, "Confusable Tool Name Collision")
+			hasFinding = true
+		}
 
 		// Extract param names once for both text scanning and drift tracking.
 		var paramNames []string
@@ -984,7 +990,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 			// Normalization prevents zero-width char and confusable bypasses.
 			poison := checkToolPoison(normalize.ForToolText(text))
 			if len(poison) > 0 {
-				match.ToolPoison = poison
+				match.ToolPoison = append(match.ToolPoison, poison...)
 				hasFinding = true
 			}
 
@@ -1066,6 +1072,23 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 	}
 
 	return matches
+}
+
+func confusableToolNameCollisions(tools []ToolDef) map[string]bool {
+	byNormalized := make(map[string]string, len(tools))
+	collisions := make(map[string]bool)
+	for _, tool := range tools {
+		normalized := normalize.ForMatching(tool.Name)
+		if prev, ok := byNormalized[normalized]; ok {
+			if prev != tool.Name {
+				collisions[prev] = true
+				collisions[tool.Name] = true
+			}
+			continue
+		}
+		byNormalized[normalized] = tool.Name
+	}
+	return collisions
 }
 
 // LogToolFindings writes per-tool scan findings to the log writer.

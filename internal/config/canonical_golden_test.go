@@ -242,7 +242,16 @@ const (
 	// Re-bumped for removing generic navigation verbs from the markdown-link
 	// credential-exfil branch, so docs that say to visit/click setup links stay
 	// clean unless an actual exfiltration verb is present.
-	goldenHashDefaults = "8148b25e769f97ccb8fa00c97f9b23f27d7d88e8e35b2fa9f6e983b2cf99efe9"
+	// Re-bumped for markdown-link credential-exfil intent anchoring: the
+	// destination cue now has to bind directly to the markdown/angle link, so
+	// credential setup docs that later open guide links stay clean while
+	// credential-to-link transfer prompts still block.
+	// Re-bumped for markdown-link credential-exfil bypass coverage: short
+	// destination nouns between the cue and link, whitespace-split credential
+	// nouns, and link-first submit/paste-there phrasing now still block.
+	// Re-bumped for same-class destination cue coverage: "in [form]" and
+	// "at [portal]" now block like "into [form]" and "to [portal]".
+	goldenHashDefaults = "c4db808239e4a48660e5cd60ab3729433e61e2d118ff59044a65566053f8292d"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -359,7 +368,13 @@ const (
 	// set, so the hash shifts in lockstep.
 	// Re-bumped for the generic-navigation false-positive tightening: see
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "10c9290ccb4ae994c06b4f3cf2f7baa2b6e105cf6d51021ff4d1263c3e4cf54a"
+	// Re-bumped for markdown-link credential-exfil intent anchoring: see
+	// goldenHashDefaults note above.
+	// Re-bumped for markdown-link credential-exfil bypass coverage: see
+	// goldenHashDefaults note above.
+	// Re-bumped for same-class destination cue coverage: see goldenHashDefaults
+	// note above.
+	goldenHashRichConfig = "67522bdcda97477f860a8211209e6334bdd2ac1fb45750ccbe6005261d6bef9a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

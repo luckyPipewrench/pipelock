@@ -38,6 +38,7 @@ func (s *SQLiteAuditStore) ListAuditBatchEvidence(ctx context.Context, q AuditEv
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: context", ErrAuditSinkRequired)
 	}
+	q.OrgID, q.FleetID = normalizeAuditScope(q.OrgID, q.FleetID)
 	if q.OrgID == "" || q.FleetID == "" {
 		return nil, fmt.Errorf("%w: org_id and fleet_id required", ErrInvalidStoreRecord)
 	}

@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +206,23 @@ func TestRunRollback_StaleCounterRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "conductor rejected request") {
 		t.Fatalf("error = %v, want stale-counter rejection", err)
+	}
+}
+
+func TestRunRollback_DefaultCounterFromClockIsObservable(t *testing.T) {
+	opts := newRollbackRig(t, 0)
+	opts.counter = 0
+	opts.authorizationID = ""
+	cmd, out := rollbackCobra(t)
+	if err := runRollback(cmd, opts); err != nil {
+		t.Fatalf("rollback error = %v", err)
+	}
+	wantCounter := strconv.FormatInt(opts.now().Unix(), 10)
+	if !strings.Contains(out.String(), "counter="+wantCounter) {
+		t.Fatalf("output %q missing clock-derived counter %s", out.String(), wantCounter)
+	}
+	if !strings.Contains(out.String(), "authorization_id=rollback-42-to-41-"+wantCounter) {
+		t.Fatalf("output %q missing counter-derived authorization id", out.String())
 	}
 }
 

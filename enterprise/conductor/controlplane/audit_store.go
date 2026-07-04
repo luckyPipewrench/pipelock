@@ -66,6 +66,10 @@ type AuditPruneResult struct {
 	Before  time.Time
 }
 
+func normalizeAuditScope(orgID, fleetID string) (string, string) {
+	return strings.TrimSpace(orgID), strings.TrimSpace(fleetID)
+}
+
 func OpenSQLiteAuditStore(ctx context.Context, path string) (*SQLiteAuditStore, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("conductor audit store path is required")
@@ -356,6 +360,10 @@ func (s *SQLiteAuditStore) ListAuditBatches(ctx context.Context, q AuditBatchQue
 	}
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: context", ErrAuditSinkRequired)
+	}
+	q.OrgID, q.FleetID = normalizeAuditScope(q.OrgID, q.FleetID)
+	if q.OrgID == "" {
+		return nil, fmt.Errorf("%w: org_id required", ErrInvalidStoreRecord)
 	}
 	limit := normalizeAuditLimit(q.Limit)
 	query := `

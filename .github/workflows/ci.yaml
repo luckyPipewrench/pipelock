@@ -207,6 +207,9 @@ jobs:
       - name: Test stability policy
         run: bash scripts/check-test-stability.sh
 
+      - name: Config consumption policy
+        run: bash scripts/check-config-consumption.sh
+
   helm:
     needs: [security-scan]
     runs-on: ubuntu-latest

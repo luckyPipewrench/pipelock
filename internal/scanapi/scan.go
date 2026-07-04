@@ -153,7 +153,7 @@ func embeddedURLTextViews(text string) []string {
 		if !strings.Contains(percentDecoded, "%") {
 			break
 		}
-		decoded, err := url.QueryUnescape(percentDecoded)
+		decoded, err := url.PathUnescape(percentDecoded)
 		if err != nil || decoded == percentDecoded {
 			break
 		}

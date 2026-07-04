@@ -2707,10 +2707,10 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 				}
 			}
 			for _, v := range values {
+				if result, blocked := unsafeDatabaseURIQueryValueResult(v); blocked {
+					return result
+				}
 				if len(v) >= s.entropyMinLen {
-					if result, blocked := unsafeDatabaseURIQueryValueResult(v); blocked {
-						return result
-					}
 					entropy := ShannonEntropy(v)
 					if shouldSkipQueryValueEntropy(v, entropy, s.entropyThreshold) {
 						continue
@@ -2731,14 +2731,21 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	return Result{Allowed: true}
 }
 
+func isDatabaseURIScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "postgres", "postgresql", "mysql", "mongodb", "mongodb+srv", "redis", "rediss":
+		return true
+	default:
+		return false
+	}
+}
+
 func unsafeDatabaseURIQueryValueResult(value string) (Result, bool) {
 	u, err := url.Parse(value)
 	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil {
 		return Result{}, false
 	}
-	switch strings.ToLower(u.Scheme) {
-	case "postgres", "postgresql", "mysql", "mongodb", "mongodb+srv", "redis", "rediss":
-	default:
+	if !isDatabaseURIScheme(u.Scheme) {
 		return Result{}, false
 	}
 
@@ -2782,12 +2789,10 @@ func isCredentiallessDatabaseURI(value string, threshold float64) bool {
 	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	switch strings.ToLower(u.Scheme) {
-	case "postgres", "postgresql", "mysql", "mongodb", "mongodb+srv", "redis", "rediss":
-		return isLowRiskDatabaseURIHost(u.Hostname(), threshold) && isLowRiskDatabaseURIPath(u.EscapedPath(), threshold)
-	default:
+	if !isDatabaseURIScheme(u.Scheme) {
 		return false
 	}
+	return isLowRiskDatabaseURIHost(u.Hostname(), threshold) && isLowRiskDatabaseURIPath(u.EscapedPath(), threshold)
 }
 
 func isLowRiskDatabaseURIHost(host string, threshold float64) bool {

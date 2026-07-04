@@ -1079,15 +1079,6 @@ func confusableToolNameCollisions(tools []ToolDef) map[string]bool {
 	collisions := make(map[string]bool)
 	for _, tool := range tools {
 		normalized := normalize.ForMatching(tool.Name)
-		if normalized == "" || normalized == tool.Name {
-			if prev, ok := byNormalized[normalized]; ok && prev != tool.Name {
-				collisions[prev] = true
-				collisions[tool.Name] = true
-			} else if !ok {
-				byNormalized[normalized] = tool.Name
-			}
-			continue
-		}
 		if prev, ok := byNormalized[normalized]; ok {
 			if prev != tool.Name {
 				collisions[prev] = true

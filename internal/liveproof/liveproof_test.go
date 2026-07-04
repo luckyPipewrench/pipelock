@@ -49,6 +49,12 @@ const (
 	liveproofAPIToken = "liveproof-admin-token"
 	baselineAgent     = "liveproof-baseline"
 	taintAgent        = "liveproof-taint"
+
+	// heldSettleTimeout is how long a held MCP request is observed to stay
+	// unanswered before the test concludes it is genuinely held.
+	heldSettleTimeout = 250 * time.Millisecond
+	// rpcReadTimeout bounds waiting for a single JSON-RPC response line.
+	rpcReadTimeout = 5 * time.Second
 )
 
 var (
@@ -154,12 +160,12 @@ func TestLiveProofDeferredCascade(t *testing.T) {
 	requireMCPHandshake(t, proxy)
 
 	t.Run("operator deny resolves held parent closed", func(t *testing.T) {
-		const rawSecret = "LIVEPROOF_RAW_ARGS_SHOULD_NOT_LEAK"
-		proxy.send(t, `{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"live_defer","arguments":{"payload":"`+rawSecret+`"}}}`)
-		proxy.requireNoResponse(t, "held parent before operator deny", 250*time.Millisecond)
+		const rawArgsMarker = "LIVEPROOF_RAW_ARGS_SHOULD_NOT_LEAK"
+		proxy.send(t, `{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"live_defer","arguments":{"payload":"`+rawArgsMarker+`"}}}`)
+		proxy.requireNoResponse(t, "held parent before operator deny")
 
 		list, raw := waitDeferredList(t, bin, apiAddr, 1)
-		if strings.Contains(raw, rawSecret) || strings.Contains(raw, "arguments") || strings.Contains(raw, "arg_digest") {
+		if strings.Contains(raw, rawArgsMarker) || strings.Contains(raw, "arguments") || strings.Contains(raw, "arg_digest") {
 			t.Fatalf("deferred list leaked raw held payload/args/digest:\n%s", raw)
 		}
 		parent := findHeldByDepth(t, list, 1)
@@ -167,7 +173,7 @@ func TestLiveProofDeferredCascade(t *testing.T) {
 		out := runDeferredCLI(t, bin, apiAddr, "deny", parent.DeferID)
 		requireContains(t, "operator deny output", out, "deny "+parent.DeferID+" -> block")
 
-		resp := proxy.readRPCResponse(t, "denied parent response", 5*time.Second)
+		resp := proxy.readRPCResponse(t, "denied parent response")
 		requireRPCError(t, resp, "100", "pipelock: deferred action denied")
 		if got := upstream.toolCallCount(); got != 0 {
 			t.Fatalf("denied parent reached upstream tool handler %d time(s), want 0", got)
@@ -176,9 +182,9 @@ func TestLiveProofDeferredCascade(t *testing.T) {
 
 	t.Run("parent deny cascades to held child", func(t *testing.T) {
 		proxy.send(t, `{"jsonrpc":"2.0","id":200,"method":"tools/call","params":{"name":"live_defer","arguments":{"label":"cascade-parent"}}}`)
-		proxy.requireNoResponse(t, "held cascade parent", 250*time.Millisecond)
+		proxy.requireNoResponse(t, "held cascade parent")
 		proxy.send(t, `{"jsonrpc":"2.0","id":201,"method":"tools/call","params":{"name":"live_defer","arguments":{"label":"cascade-child"}}}`)
-		proxy.requireNoResponse(t, "held cascade child", 250*time.Millisecond)
+		proxy.requireNoResponse(t, "held cascade child")
 
 		list, _ := waitDeferredList(t, bin, apiAddr, 2)
 		parent := findHeldByDepth(t, list, 1)
@@ -191,8 +197,8 @@ func TestLiveProofDeferredCascade(t *testing.T) {
 		requireContains(t, "operator cascade deny output", out, "deny "+parent.DeferID+" -> block")
 
 		responses := []liveRPCResponse{
-			proxy.readRPCResponse(t, "cascade response 1", 5*time.Second),
-			proxy.readRPCResponse(t, "cascade response 2", 5*time.Second),
+			proxy.readRPCResponse(t, "cascade response 1"),
+			proxy.readRPCResponse(t, "cascade response 2"),
 		}
 		requireRPCErrorIDs(t, responses, map[string]string{
 			"200": "pipelock: deferred action denied",
@@ -206,9 +212,9 @@ func TestLiveProofDeferredCascade(t *testing.T) {
 
 	t.Run("cascade depth cap denies over-depth action closed", func(t *testing.T) {
 		proxy.send(t, `{"jsonrpc":"2.0","id":300,"method":"tools/call","params":{"name":"live_defer","arguments":{"label":"depth-root"}}}`)
-		proxy.requireNoResponse(t, "held depth root", 250*time.Millisecond)
+		proxy.requireNoResponse(t, "held depth root")
 		proxy.send(t, `{"jsonrpc":"2.0","id":301,"method":"tools/call","params":{"name":"live_defer","arguments":{"label":"depth-child"}}}`)
-		proxy.requireNoResponse(t, "held depth child", 250*time.Millisecond)
+		proxy.requireNoResponse(t, "held depth child")
 
 		list, _ := waitDeferredList(t, bin, apiAddr, 2)
 		root := findHeldByDepth(t, list, 1)
@@ -218,15 +224,15 @@ func TestLiveProofDeferredCascade(t *testing.T) {
 		}
 
 		proxy.send(t, `{"jsonrpc":"2.0","id":302,"method":"tools/call","params":{"name":"live_defer","arguments":{"label":"over-depth"}}}`)
-		overDepth := proxy.readRPCResponse(t, "over-depth response", 5*time.Second)
+		overDepth := proxy.readRPCResponse(t, "over-depth response")
 		requireRPCError(t, overDepth, "302", "pipelock: defer cascade depth exceeded")
 		waitFlightRecorderResolutionSource(t, evidenceDir, "cascade_limit")
 
 		out := runDeferredCLI(t, bin, apiAddr, "deny", root.DeferID)
 		requireContains(t, "operator depth cleanup output", out, "deny "+root.DeferID+" -> block")
 		responses := []liveRPCResponse{
-			proxy.readRPCResponse(t, "depth cleanup response 1", 5*time.Second),
-			proxy.readRPCResponse(t, "depth cleanup response 2", 5*time.Second),
+			proxy.readRPCResponse(t, "depth cleanup response 1"),
+			proxy.readRPCResponse(t, "depth cleanup response 2"),
 		}
 		requireRPCErrorIDs(t, responses, map[string]string{
 			"300": "pipelock: deferred action denied",
@@ -462,20 +468,20 @@ func (p *liveMCPProxy) send(t *testing.T, msg string) {
 	}
 }
 
-func (p *liveMCPProxy) requireNoResponse(t *testing.T, label string, timeout time.Duration) {
+func (p *liveMCPProxy) requireNoResponse(t *testing.T, label string) {
 	t.Helper()
 	select {
 	case line := <-p.stdout:
 		t.Fatalf("%s produced unexpected stdout response while held: %s\nstderr:\n%s", label, line, p.stderr.String())
 	case err := <-p.errCh:
 		t.Fatalf("%s: mcp proxy exited while waiting for held request: %v\nstderr:\n%s", label, err, p.stderr.String())
-	case <-time.After(timeout):
+	case <-time.After(heldSettleTimeout):
 	}
 }
 
-func (p *liveMCPProxy) readRPCResponse(t *testing.T, label string, timeout time.Duration) liveRPCResponse {
+func (p *liveMCPProxy) readRPCResponse(t *testing.T, label string) liveRPCResponse {
 	t.Helper()
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(rpcReadTimeout)
 	defer timer.Stop()
 	for {
 		select {
@@ -508,13 +514,13 @@ type liveRPCResponse struct {
 func requireMCPHandshake(t *testing.T, proxy *liveMCPProxy) {
 	t.Helper()
 	proxy.send(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"liveproof","version":"1.0.0"}}}`)
-	initResp := proxy.readRPCResponse(t, "initialize response", 5*time.Second)
+	initResp := proxy.readRPCResponse(t, "initialize response")
 	if string(initResp.ID) != "1" || initResp.Error != nil || len(initResp.Result) == 0 {
 		t.Fatalf("initialize response = %+v, want result id 1", initResp)
 	}
 	proxy.send(t, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 	proxy.send(t, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
-	listResp := proxy.readRPCResponse(t, "tools/list response", 5*time.Second)
+	listResp := proxy.readRPCResponse(t, "tools/list response")
 	if string(listResp.ID) != "2" || listResp.Error != nil || !bytes.Contains(listResp.Result, []byte("live_defer")) {
 		t.Fatalf("tools/list response = %+v, want live_defer result", listResp)
 	}
@@ -757,6 +763,8 @@ type liveDeferredHeld struct {
 func waitDeferredList(t *testing.T, bin, apiAddr string, wantCount int) (liveDeferredList, string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 	var lastRaw string
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -781,7 +789,7 @@ func waitDeferredList(t *testing.T, bin, apiAddr string, wantCount int) (liveDef
 				return list, out
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		<-ticker.C
 	}
 	t.Fatalf("deferred list count did not reach %d; lastErr=%v raw=%s", wantCount, lastErr, lastRaw)
 	return liveDeferredList{}, ""
@@ -1059,6 +1067,8 @@ type liveDeferredJournalEntry struct {
 func waitDeferredJournalSource(t *testing.T, path, deferID, source string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 	var last []liveDeferredJournalEntry
 	for time.Now().Before(deadline) {
 		entries := readDeferredJournal(t, path)
@@ -1068,7 +1078,7 @@ func waitDeferredJournalSource(t *testing.T, path, deferID, source string) {
 				return
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		<-ticker.C
 	}
 	t.Fatalf("deferred journal missing defer_id=%s source=%s; entries=%+v", deferID, source, last)
 }
@@ -1101,6 +1111,8 @@ func readDeferredJournal(t *testing.T, path string) []liveDeferredJournalEntry {
 func waitFlightRecorderResolutionSource(t *testing.T, dir, source string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 	var last []string
 	for time.Now().Before(deadline) {
 		sources := readFlightRecorderResolutionSources(t, dir)
@@ -1110,7 +1122,7 @@ func waitFlightRecorderResolutionSource(t *testing.T, dir, source string) {
 				return
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		<-ticker.C
 	}
 	t.Fatalf("flight recorder missing resolution_source=%s; sources=%v", source, last)
 }

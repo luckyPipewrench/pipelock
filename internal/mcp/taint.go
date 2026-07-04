@@ -290,6 +290,7 @@ type mcpToolReceiptOpts struct {
 	Decision          taintDecision
 	Report            *redact.Report
 	ContractGate      *mcpContractGateOutput
+	RequireReceipts   bool
 	RequireReceipt    bool
 	DecisionPhase     string
 	DeferID           string
@@ -306,6 +307,9 @@ type mcpToolReceiptOpts struct {
 // pipeline goes through a single emission entry point.
 func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 	if opts.ActionID == "" {
+		if opts.RequireReceipt {
+			return fmt.Errorf("empty action id: %w", ErrReceiptRequired)
+		}
 		return nil
 	}
 	target := opts.Target
@@ -349,9 +353,7 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		Receipt:        emitOpts,
 		RequireReceipt: opts.RequireReceipt,
 	}); err != nil {
-		if opts.Log != nil {
-			_, _ = fmt.Fprintf(opts.Log, "pipelock: receipt emission failed: %v\n", err)
-		}
+		logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)
 		// Only a failure of the authoritative v1 action receipt under
 		// RequireReceipt escalates to a block (ErrReceiptRequired). A
 		// best-effort emit failure (require off) or a v2-only failure
@@ -363,6 +365,23 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		}
 	}
 	return nil
+}
+
+func logReceiptEmitFailure(logW io.Writer, err error, requireReceipts bool, verdict string) {
+	if logW == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", err)
+	if requireReceipts && verdict == config.ActionBlock {
+		logBlockReceiptAuditGap(logW, err)
+	}
+}
+
+func logBlockReceiptAuditGap(logW io.Writer, err error) {
+	if logW == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(logW, "pipelock: warning event=block_receipt_emit_failed audit_gap=true %v\n", err)
 }
 
 // pickAttribution derives the receipt Layer / Pattern / Severity for a

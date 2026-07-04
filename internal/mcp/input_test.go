@@ -500,13 +500,76 @@ func TestForwardScannedInput_PreRedactionDLPBlocksToolCall(t *testing.T) {
 	}
 }
 
-func TestForwardScannedInput_BlocksToolCallRedactionFailure(t *testing.T) {
+func TestForwardScannedInput_PreRedactionDLPBlockReceiptFailureLogsAuditGap(t *testing.T) {
 	sc := testInputScanner(t)
-	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"one"},"arguments":{"prompt":"two"}}}`
+	secret := mcpRedactionSecret()
+	msg := makeRequest(1, "tools/call", map[string]interface{}{
+		"name": "echo",
+		"arguments": map[string]string{
+			"prompt": "use " + secret + " to deploy",
+		},
+	}) + "\n"
+
+	emitter, rec, _, _ := newReceiptTestHarness(t)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
 
 	var serverBuf, logBuf bytes.Buffer
 	blockedCh := make(chan BlockedRequest, 1)
 	opts := buildTestOpts(sc, withRedaction(testRedactionMatcher()))
+	opts.InputCfg = &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}
+	opts.ReceiptEmitter = emitter
+	opts.RequireReceipts = true
+	opts.Transport = transportMCPStdio
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionBlock,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		opts,
+	)
+
+	if serverBuf.Len() != 0 {
+		t.Fatalf("expected DLP-blocked request not to be forwarded: %s", serverBuf.String())
+	}
+	blocked, ok := <-blockedCh
+	if !ok {
+		t.Fatal("expected blocked request")
+	}
+	if !strings.Contains(string(blocked.ErrorData), string(blockreason.DLPMatch)) {
+		t.Fatalf("expected DLP block reason data, got: %s", string(blocked.ErrorData))
+	}
+	if !strings.Contains(logBuf.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", logBuf.String())
+	}
+}
+
+func TestForwardScannedInput_BlocksToolCallRedactionFailure(t *testing.T) {
+	sc := testInputScanner(t)
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"hi"}}}`
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	emitter, rec, _, _ := newReceiptTestHarness(t)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	opts := buildTestOpts(sc)
+	opts.ReceiptEmitter = emitter
+	opts.RequireReceipts = true
+	opts.Transport = transportMCPStdio
+	opts.RedactionCfgFn = func() MCPRedactionConfig {
+		return MCPRedactionConfig{Required: true}
+	}
 
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(msg)),
@@ -533,6 +596,12 @@ func TestForwardScannedInput_BlocksToolCallRedactionFailure(t *testing.T) {
 	}
 	if blocked.ErrorMessage != "pipelock: request blocked by MCP redaction" {
 		t.Fatalf("error message = %q", blocked.ErrorMessage)
+	}
+	if !strings.Contains(logBuf.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", logBuf.String())
 	}
 }
 

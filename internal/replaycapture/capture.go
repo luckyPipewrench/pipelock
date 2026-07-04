@@ -256,6 +256,12 @@ func driveScenario(ctx context.Context, s Scenario, h http.Handler) error {
 			return fmt.Errorf("operation-aware mutation block reason = %q, want request_policy_deny", got)
 		}
 		return nil
+	case "poisoned-ticket-webhook-exfil":
+		return forwardBodyDLPBlocked(ctx, h, syntheticHTTPSURL(synthTicketWebhookHost, synthTicketWebhookPath), poisonedTicketWebhookBody(), s.ID)
+	case "poisoned-readme-key-paste":
+		return forwardBodyDLPBlocked(ctx, h, syntheticHTTPSURL(synthPasteHost, synthPastePath), poisonedReadmePasteBody(), s.ID)
+	case "hostile-page-session-keys":
+		return forwardBodyDLPBlocked(ctx, h, syntheticHTTPSURL(synthSessionSinkHost, synthSessionKeysPath), hostilePageSessionKeysBody(), s.ID)
 	default:
 		return fmt.Errorf("unknown scenario id %q", s.ID)
 	}
@@ -296,6 +302,30 @@ func forwardPostThrough(ctx context.Context, h http.Handler, target, body string
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+func forwardBodyDLPBlocked(ctx context.Context, h http.Handler, target, body, scenarioID string) error {
+	resp := forwardPostThrough(ctx, h, target, body)
+	if resp.Code != http.StatusForbidden {
+		return fmt.Errorf("%s status = %d, want %d", scenarioID, resp.Code, http.StatusForbidden)
+	}
+	return nil
+}
+
+func syntheticHTTPSURL(host, path string) string {
+	return "https://" + host + path
+}
+
+func poisonedTicketWebhookBody() string {
+	return `{"customer_id":"customer-example-001","credential":"` + SyntheticPrivateKeyHeader() + `"}`
+}
+
+func poisonedReadmePasteBody() string {
+	return `{"source":"README.example.md","api_key":"` + SyntheticOpenAIProjectKey() + `"}`
+}
+
+func hostilePageSessionKeysBody() string {
+	return `{"page":"hostile.example","session_token":"` + SyntheticSessionJWT() + `"}`
 }
 
 // newBenignBackend serves a harmless lab document for the allowed-read scenario.

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,8 @@ const (
 	// defaultReaperInterval is how often the background reconciliation loop
 	// ticks.
 	defaultReaperInterval = 2 * time.Minute
+
+	managedZeroAlertThreshold = 3
 )
 
 // ReaperConfig configures the orphan-VM reaper.
@@ -56,6 +59,9 @@ type Reaper struct {
 	grace     time.Duration
 	interval  time.Duration
 	log       io.Writer
+
+	mu                     sync.Mutex
+	managedZeroConsecutive int
 }
 
 // NewReaper validates cfg and returns a Reaper.
@@ -142,7 +148,22 @@ func (r *Reaper) ReconcileOnce(ctx context.Context) (int, error) {
 	// the provider list/filter has been blinded (e.g. an API-shape regression).
 	_, _ = fmt.Fprintf(r.log, "reaper: reconcile managed=%d active=%d destroyed=%d skipped_active=%d skipped_young=%d skipped_unknown_age=%d destroy_errors=%d\n",
 		len(machines), len(active), destroyed, skippedActive, skippedYoung, skippedUnknownAge, destroyErrors)
+	if consecutive := r.updateManagedZeroConsecutive(len(machines)); consecutive >= managedZeroAlertThreshold {
+		_, _ = fmt.Fprintf(r.log, "reaper: warning event=managed_zero_recurred managed=0 consecutive=%d alert_threshold=%d\n",
+			consecutive, managedZeroAlertThreshold)
+	}
 	return destroyed, nil
+}
+
+func (r *Reaper) updateManagedZeroConsecutive(managed int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if managed == 0 {
+		r.managedZeroConsecutive++
+		return r.managedZeroConsecutive
+	}
+	r.managedZeroConsecutive = 0
+	return 0
 }
 
 // Run calls ReconcileOnce immediately (startup reconciliation), then ticks

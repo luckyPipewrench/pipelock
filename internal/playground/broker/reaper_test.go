@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -133,6 +134,37 @@ func TestReaperReconcileHeartbeatLog(t *testing.T) {
 		}
 		if !strings.Contains(logBuf.String(), "reaper: reconcile managed=0") {
 			t.Errorf("want managed=0 heartbeat, got: %q", logBuf.String())
+		}
+	})
+
+	t.Run("recurring zero machines logs alert", func(t *testing.T) {
+		fp := &fakeProvider{}
+		var logBuf bytes.Buffer
+		reaper, err := NewReaper(ReaperConfig{
+			Provider:  fp,
+			ActiveIDs: func() map[string]struct{} { return nil },
+			Now:       func() time.Time { return baseTime },
+			Log:       &logBuf,
+		})
+		if err != nil {
+			t.Fatalf("NewReaper: %v", err)
+		}
+		for i := 0; i < managedZeroAlertThreshold-1; i++ {
+			if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+				t.Fatalf("ReconcileOnce before threshold: %v", err)
+			}
+		}
+		if strings.Contains(logBuf.String(), "event=managed_zero_recurred") {
+			t.Fatalf("alert fired before threshold: %q", logBuf.String())
+		}
+		if _, err := reaper.ReconcileOnce(context.Background()); err != nil {
+			t.Fatalf("ReconcileOnce at threshold: %v", err)
+		}
+		if !strings.Contains(logBuf.String(), "event=managed_zero_recurred") {
+			t.Fatalf("missing recurring managed=0 alert: %q", logBuf.String())
+		}
+		if !strings.Contains(logBuf.String(), fmt.Sprintf("consecutive=%d", managedZeroAlertThreshold)) {
+			t.Fatalf("missing consecutive count in alert: %q", logBuf.String())
 		}
 	})
 

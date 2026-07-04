@@ -442,7 +442,7 @@ func RunHTTPListenerProxy(
 							Target: mcpReceiptA2AHeaderTarget,
 						}),
 					}); emitErr != nil {
-						_, _ = fmt.Fprintf(safeLogW, "pipelock: receipt emission failed: %v\n", emitErr)
+						logReceiptEmitFailure(safeLogW, emitErr, baseOpts.requireReceipts(), config.ActionBlock)
 					}
 				}
 				w.Header().Set("Content-Type", "application/json")

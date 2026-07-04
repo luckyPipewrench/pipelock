@@ -53,6 +53,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 		Pattern:           res.Reason,
 		Severity:          config.SeverityHigh,
 		Decision:          taintDecision{Authority: session.AuthorityUserBroad, Result: session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "defer_resolution"}},
+		RequireReceipts:   opts.requireReceipts(),
 		RequireReceipt:    true,
 		DecisionPhase:     receipt.DecisionPhaseResolution,
 		DeferID:           res.DeferID,

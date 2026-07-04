@@ -16,7 +16,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
 
 .PHONY: all build build-verifier test bench bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check \
-	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check hermes-e2e
+	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check hermes-e2e test-liveproof
 
 all: build
 
@@ -61,6 +61,12 @@ test-cover:
 # network (pip). Behind the hermes_e2e build tag so it never runs in `make test`.
 hermes-e2e:
 	go test -tags hermes_e2e -run TestHermesLiveE2E -count=1 -v ./internal/cli/hermes/...
+
+# test-liveproof runs the shipped-binary live-proof harness. It is build-tagged
+# because it builds a real pipelock binary, writes real configs, binds real
+# ephemeral ports, and is slower/portful enough to keep out of default CI.
+test-liveproof:
+	go test -tags liveproof -run TestLiveProof -count=1 -v ./internal/liveproof/...
 
 bench:
 	go test -bench=. -benchmem -count=3 -run=^$$ ./internal/scanner/ ./internal/mcp/

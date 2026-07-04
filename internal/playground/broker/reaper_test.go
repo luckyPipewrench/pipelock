@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -162,7 +163,7 @@ func TestReaperReconcileHeartbeatLog(t *testing.T) {
 		if !strings.Contains(logBuf.String(), "event=managed_zero_recurred") {
 			t.Fatalf("missing recurring managed=0 alert: %q", logBuf.String())
 		}
-		if !strings.Contains(logBuf.String(), "consecutive=3") {
+		if !strings.Contains(logBuf.String(), fmt.Sprintf("consecutive=%d", managedZeroAlertThreshold)) {
 			t.Fatalf("missing consecutive count in alert: %q", logBuf.String())
 		}
 	})

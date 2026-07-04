@@ -6186,6 +6186,77 @@ func TestHTTPListener_A2AHeaderBlock(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_A2AHeaderBlockReceiptFailureLogsAuditGap(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream called: A2A header block must prevent forwarding")
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+	a2aCfg := &config.A2AScanning{
+		Enabled: true,
+		Action:  config.ActionBlock,
+	}
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	var logBuf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
+			Scanner:         sc,
+			A2ACfg:          a2aCfg,
+			ReceiptEmitter:  receiptEmitter,
+			RequireReceipts: true,
+		})
+	}()
+
+	baseURL := "http://" + addr
+	waitForHTTPHealth(t, baseURL)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("A2A-Extensions", "ftp://attacker.example.com/exfil")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, httpErr := client.Do(req)
+	if httpErr != nil {
+		t.Fatalf("POST: %v", httpErr)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(respBody), "A2A header") {
+		t.Errorf("expected A2A header block response, got: %s", string(respBody))
+	}
+	if !strings.Contains(logBuf.String(), "event=block_receipt_emit_failed") {
+		t.Fatalf("missing block receipt audit-gap event in log: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "audit_gap=true") {
+		t.Fatalf("missing audit_gap marker in log: %s", logBuf.String())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("timeout")
+	}
+}
+
 // TestHTTPListener_AuthDLPWithAdaptiveSignal exercises the auth header DLP
 // block path with an active adaptive enforcement store, ensuring the block
 // signal is recorded.

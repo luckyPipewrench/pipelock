@@ -323,6 +323,45 @@ func TestEmitMCPToolReceipt_RequiredEmptyActionIDFailsClosed(t *testing.T) {
 	}
 }
 
+func TestEmitMCPToolReceipt_AuditGapGateNegativePaths(t *testing.T) {
+	testCases := []struct {
+		name            string
+		requireReceipts bool
+		verdict         string
+	}{
+		{name: "not required block", requireReceipts: false, verdict: config.ActionBlock},
+		{name: "required warn", requireReceipts: true, verdict: config.ActionWarn},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			emitter, rec, _, _ := newReceiptTestHarness(t)
+			if err := rec.Close(); err != nil {
+				t.Fatalf("recorder.Close: %v", err)
+			}
+			var log bytes.Buffer
+			err := emitMCPToolReceipt(mcpToolReceiptOpts{
+				Emitter:         emitter,
+				Log:             &log,
+				ActionID:        "mcp-tool-receipt-fails",
+				MCPMethod:       methodToolsCall,
+				ToolName:        "shell",
+				Verdict:         tc.verdict,
+				RequireReceipts: tc.requireReceipts,
+			})
+			if err != nil {
+				t.Fatalf("emitMCPToolReceipt: %v", err)
+			}
+			if !strings.Contains(log.String(), "receipt emission failed") {
+				t.Fatalf("missing receipt failure log: %q", log.String())
+			}
+			if strings.Contains(log.String(), "event=block_receipt_emit_failed") || strings.Contains(log.String(), "audit_gap=true") {
+				t.Fatalf("unexpected audit-gap log for %s: %q", tc.name, log.String())
+			}
+		})
+	}
+}
+
 func TestFirstNonEmpty(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -324,10 +324,7 @@ func ForwardScannedInput(
 							ToolName:  pendingToolCallName,
 						}),
 					}); emitErr != nil {
-						_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
-						if opts.requireReceipts() {
-							logBlockReceiptAuditGap(logW, emitErr)
-						}
+						logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
 					}
 				}
 				blockedCh <- BlockedRequest{
@@ -366,10 +363,7 @@ func ForwardScannedInput(
 						ToolName:         pendingToolCallName,
 					}),
 				}); emitErr != nil {
-					_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
-					if opts.requireReceipts() {
-						logBlockReceiptAuditGap(logW, emitErr)
-					}
+					logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
 				}
 			}
 			blockedCh <- BlockedRequest{

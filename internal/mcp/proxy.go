@@ -327,10 +327,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						Severity:  config.SeverityHigh,
 					}),
 				}); emitErr != nil {
-					_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
-					if opts.requireReceipts() {
-						logBlockReceiptAuditGap(logW, emitErr)
-					}
+					logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), config.ActionBlock)
 				}
 			}
 			if adaptiveCfg != nil && adaptiveCfg.Enabled {
@@ -650,13 +647,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}),
 			RequireReceipt: opts.requireReceipts() && effectiveAction != config.ActionBlock,
 		}); emitErr != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
+			logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), effectiveAction)
 			if opts.requireReceipts() && effectiveAction != config.ActionBlock {
 				outbound = blockResponseReason(verdict.ID, "receipt emission failed")
 				effectiveAction = config.ActionBlock
 				writeContext = "writing block response"
-			} else if opts.requireReceipts() && effectiveAction == config.ActionBlock {
-				logBlockReceiptAuditGap(logW, emitErr)
 			}
 		}
 		if err := writer.WriteMessage(outbound); err != nil {

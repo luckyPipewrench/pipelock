@@ -4,10 +4,16 @@
 package replaycapture
 
 import (
+	"context"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // newTestEngine builds an Engine with a fresh lab key under a temp dir.
@@ -18,6 +24,46 @@ func newTestEngine(t *testing.T) *Engine {
 		t.Fatalf("NewEngine: %v", err)
 	}
 	return eng
+}
+
+func TestDefaultScenarios_PublicContract(t *testing.T) {
+	t.Parallel()
+
+	want := []struct {
+		id        string
+		transport string
+		verdict   string
+		layer     string
+	}{
+		{"allowed-safe-read", TransportFetch, verdictAllow, ""},
+		{"secret-exfil-url-blocked", TransportFetch, verdictBlock, "core_dlp"},
+		{"prompt-injection-response-blocked", TransportFetch, verdictBlock, "response_scan"},
+		{"ssrf-internal-target-blocked", TransportFetch, verdictBlock, "ssrf_metadata"},
+		{"operation-aware-policy", TransportForward, verdictBlock, "request_policy"},
+		{"poisoned-ticket-webhook-exfil", TransportForward, verdictBlock, "body_dlp"},
+		{"poisoned-readme-key-paste", TransportForward, verdictBlock, "body_dlp"},
+		{"hostile-page-session-keys", TransportForward, verdictBlock, "body_dlp"},
+	}
+
+	got := DefaultScenarios()
+	if len(got) != len(want) {
+		t.Fatalf("DefaultScenarios count = %d, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		s := got[i]
+		if s.ID != w.id {
+			t.Errorf("scenario[%d].ID = %q, want %q", i, s.ID, w.id)
+		}
+		if s.Transport != w.transport {
+			t.Errorf("%s transport = %q, want %q", s.ID, s.Transport, w.transport)
+		}
+		if s.ExpectedVerdict != w.verdict {
+			t.Errorf("%s verdict = %q, want %q", s.ID, s.ExpectedVerdict, w.verdict)
+		}
+		if s.ExpectedLayer != w.layer {
+			t.Errorf("%s layer = %q, want %q", s.ID, s.ExpectedLayer, w.layer)
+		}
+	}
 }
 
 // TestCapture_AllScenarios drives every default scenario through a real proxy
@@ -72,6 +118,99 @@ func TestCapture_AllScenarios(t *testing.T) {
 	}
 }
 
+func TestCapture_DecisivePatternsMatchPublishedClaims(t *testing.T) {
+	t.Parallel()
+
+	wantPatterns := map[string]string{
+		"secret-exfil-url-blocked":      patternText("core DLP match: AWS Access ID (critical)"),
+		"poisoned-ticket-webhook-exfil": patternText("request body contains secret: Private ", "Key Header"),
+		"poisoned-readme-key-paste":     patternText("request body contains secret: OpenAI API ", "Key"),
+		"hostile-page-session-keys":     patternText("request body contains secret: JWT Token"),
+	}
+
+	for _, s := range DefaultScenarios() {
+		wantPattern, ok := wantPatterns[s.ID]
+		if !ok {
+			continue
+		}
+		s := s
+		t.Run(s.ID, func(t *testing.T) {
+			t.Parallel()
+
+			eng := newTestEngine(t)
+			got, err := eng.Capture(s)
+			if err != nil {
+				t.Fatalf("Capture(%s): %v", s.ID, err)
+			}
+			decisive := decisiveReceipt(got.Receipts, s.ExpectedVerdict)
+			if decisive == nil {
+				t.Fatalf("no receipt with expected verdict %q; got verdicts %v",
+					s.ExpectedVerdict, verdictsOf(got.Receipts))
+			}
+			if decisive.ActionRecord.Layer != s.ExpectedLayer {
+				t.Fatalf("decisive layer=%q want %q", decisive.ActionRecord.Layer, s.ExpectedLayer)
+			}
+			if decisive.ActionRecord.Pattern != wantPattern {
+				t.Fatalf("decisive pattern=%q want %q", decisive.ActionRecord.Pattern, wantPattern)
+			}
+		})
+	}
+}
+
+func TestForwardBodyDLPSecretDrivenNotBlanketBlock(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		scenarioID string
+		target     string
+		secretBody string
+	}{
+		{
+			scenarioID: "poisoned-ticket-webhook-exfil",
+			target:     syntheticHTTPSURL(synthTicketWebhookHost, synthTicketWebhookPath),
+			secretBody: poisonedTicketWebhookBody(),
+		},
+		{
+			scenarioID: "poisoned-readme-key-paste",
+			target:     syntheticHTTPSURL(synthPasteHost, synthPastePath),
+			secretBody: poisonedReadmePasteBody(),
+		},
+		{
+			scenarioID: "hostile-page-session-keys",
+			target:     syntheticHTTPSURL(synthSessionSinkHost, synthSessionKeysPath),
+			secretBody: hostilePageSessionKeysBody(),
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.scenarioID, func(t *testing.T) {
+			t.Parallel()
+
+			h, closeProxy := testProxyHandler(t, scenarioByID(t, tc.scenarioID))
+			defer closeProxy()
+
+			ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
+			defer cancel()
+
+			secretResp := forwardPostThrough(ctx, h, tc.target, tc.secretBody)
+			if secretResp.Code != http.StatusForbidden {
+				t.Fatalf("secret POST status = %d, want %d", secretResp.Code, http.StatusForbidden)
+			}
+
+			benignResp := forwardPostThrough(ctx, h, tc.target, `{"note":"benign lab control body","contains_secret":false}`)
+			if benignResp.Code == http.StatusForbidden {
+				t.Fatalf("benign POST was blanket-blocked at same destination: status=%d reason=%q body=%q",
+					benignResp.Code, benignResp.Header().Get("X-Pipelock-Block-Reason"), benignResp.Body.String())
+			}
+			if reason := benignResp.Header().Get("X-Pipelock-Block-Reason"); reason != "" {
+				t.Fatalf("benign POST returned Pipelock block reason %q with status %d", reason, benignResp.Code)
+			}
+			t.Logf("benign control to %s status=%d (not a Pipelock body_dlp block)", tc.target, benignResp.Code)
+		})
+	}
+}
+
 // TestCapture_RedactsSecretBeforeSign proves the secret-exfil scenario never
 // publishes the raw synthetic key: redaction runs before signing, so the signed
 // receipt target carries a placeholder, not the key.
@@ -114,4 +253,38 @@ func verdictsOf(receipts []receipt.Receipt) []string {
 		out = append(out, r.ActionRecord.Verdict)
 	}
 	return out
+}
+
+func scenarioByID(t *testing.T, id string) Scenario {
+	t.Helper()
+	for _, s := range DefaultScenarios() {
+		if s.ID == id {
+			return s
+		}
+	}
+	t.Fatalf("scenario %q not found", id)
+	return Scenario{}
+}
+
+func testProxyHandler(t *testing.T, s Scenario) (http.Handler, func()) {
+	t.Helper()
+
+	cfg, err := labConfig(s)
+	if err != nil {
+		t.Fatalf("labConfig(%s): %v", s.ID, err)
+	}
+	sc := scanner.New(cfg)
+	p, err := proxy.New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		sc.Close()
+		t.Fatalf("proxy.New(%s): %v", s.ID, err)
+	}
+	return p.Handler(), func() {
+		p.Close()
+		sc.Close()
+	}
+}
+
+func patternText(parts ...string) string {
+	return strings.Join(parts, "")
 }

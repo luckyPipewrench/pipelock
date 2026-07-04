@@ -201,6 +201,38 @@ func (c *Client) BaselineForget(ctx context.Context, agent string) (proxy.Baseli
 	return resp, nil
 }
 
+// DeferredList fetches the pending held (deferred) actions from the operator
+// admin API.
+func (c *Client) DeferredList(ctx context.Context) (proxy.DeferredListResponse, error) {
+	target := c.base + "/api/v1/deferred"
+	var resp proxy.DeferredListResponse
+	if err := c.do(ctx, http.MethodGet, target, nil, &resp); err != nil {
+		return proxy.DeferredListResponse{}, err
+	}
+	return resp, nil
+}
+
+// DeferredApprove approves a held action by defer id. The action only opens if
+// its rule permits approval; otherwise the server resolves it closed and the
+// returned FinalDecision reports the actual (block) outcome.
+func (c *Client) DeferredApprove(ctx context.Context, deferID string) (proxy.DeferredResolveResult, error) {
+	return c.deferredResolve(ctx, deferID, "approve")
+}
+
+// DeferredDeny denies a held action by defer id, resolving it closed (blocked).
+func (c *Client) DeferredDeny(ctx context.Context, deferID string) (proxy.DeferredResolveResult, error) {
+	return c.deferredResolve(ctx, deferID, "deny")
+}
+
+func (c *Client) deferredResolve(ctx context.Context, deferID, action string) (proxy.DeferredResolveResult, error) {
+	target := c.base + "/api/v1/deferred/" + url.PathEscape(deferID) + "/" + action
+	var resp proxy.DeferredResolveResult
+	if err := c.do(ctx, http.MethodPost, target, nil, &resp); err != nil {
+		return proxy.DeferredResolveResult{}, err
+	}
+	return resp, nil
+}
+
 // do performs the HTTP call with bearer auth, decodes the JSON response
 // into out, and returns a typed APIError for non-2xx statuses so the
 // caller can map each class to a distinct exit code.

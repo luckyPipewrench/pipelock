@@ -74,6 +74,7 @@ const (
 	apiVersionSegment  = "v1"
 	apiSessionsSegment = "sessions"
 	apiBaselineSegment = "baseline"
+	apiDeferredSegment = "deferred"
 )
 
 // Admin API action names used as rate-limiter keys. Extracted so
@@ -88,6 +89,7 @@ const (
 	sessionAPIActionTerminate = "terminate"
 	sessionAPIActionAdaptive  = "adaptive"
 	sessionAPIActionBaseline  = "baseline"
+	sessionAPIActionDeferred  = "deferred"
 )
 
 // tierNotQuarantinedReason is the explanation returned for sessions that
@@ -173,6 +175,7 @@ func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
 			sessionAPIActionTerminate: {windowStart: time.Now()},
 			sessionAPIActionAdaptive:  {windowStart: time.Now()},
 			sessionAPIActionBaseline:  {windowStart: time.Now()},
+			sessionAPIActionDeferred:  {windowStart: time.Now()},
 		},
 	}
 	// Seed the atomic token pointer from the constructor input. Stored via

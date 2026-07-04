@@ -7,9 +7,15 @@
 package baseline
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -20,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	appconfig "github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -84,6 +91,15 @@ const poisonTrimSigma = 3.0
 // profileFileExt is the file extension for persisted profiles.
 const profileFileExt = ".json"
 
+const (
+	integrityManifestDirName  = ".integrity"
+	integrityManifestFileName = "manifest.json"
+	integrityManifestVersion  = 1
+	integrityManifestAlg      = "HMAC-SHA256"
+	integrityKeyBytes         = 32
+	integrityStateMaxSize     = 4 * 1024
+)
+
 // Profile is a learned behavioral baseline for an agent.
 type Profile struct {
 	AgentKey             string         `json:"agent_key"`
@@ -145,6 +161,31 @@ type Config struct {
 	LockDimensions   []string `yaml:"lock_dimensions"`
 	PoisonResistance bool     `yaml:"poison_resistance"`
 	SeasonalityMode  string   `yaml:"seasonality_mode"`
+	IntegrityKeyPath string   `yaml:"-"`
+}
+
+type integrityManifestFile struct {
+	Manifest integrityManifest `json:"manifest"`
+	HMAC     string            `json:"hmac_sha256"`
+}
+
+type integrityManifest struct {
+	SchemaVersion int                      `json:"schema_version"`
+	Algorithm     string                   `json:"algorithm"`
+	Generation    uint64                   `json:"generation"`
+	Profiles      []integrityManifestEntry `json:"profiles"`
+}
+
+type integrityManifestEntry struct {
+	AgentKey string       `json:"agent_key"`
+	SHA256   string       `json:"sha256"`
+	State    ProfileState `json:"state"`
+}
+
+type integrityHighWaterState struct {
+	Generation uint64 `json:"generation"`
+	Context    string `json:"context"`
+	Digest     string `json:"digest"`
 }
 
 // seasonalityNone is the only supported seasonality mode.
@@ -175,6 +216,8 @@ type Manager struct {
 	agents map[string]*agentState
 	mu     sync.RWMutex
 }
+
+var integrityHighWaterMu sync.Mutex
 
 // Deviation actions. "warn" is observational; "ask" (HITL) and "block" both
 // take a consequential action on a deviation, so they are enforcing.
@@ -219,6 +262,9 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 	if cfg.SeasonalityMode == "" {
 		cfg.SeasonalityMode = seasonalityNone
+	}
+	if err := normalizeIntegrityConfig(&cfg); err != nil {
+		return nil, err
 	}
 
 	// Validate SeasonalityMode. Only "none" is implemented.
@@ -272,6 +318,9 @@ func (m *Manager) Reconfigure(cfg Config) error {
 	}
 	if cfg.SeasonalityMode == "" {
 		cfg.SeasonalityMode = seasonalityNone
+	}
+	if err := normalizeIntegrityConfig(&cfg); err != nil {
+		return err
 	}
 	if cfg.SeasonalityMode != seasonalityNone {
 		return fmt.Errorf("unsupported seasonality_mode %q: only \"none\" is supported", cfg.SeasonalityMode)
@@ -538,6 +587,9 @@ func (m *Manager) Reset(agentKey string) error {
 		if err := os.Remove(filepath.Clean(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("removing persisted profile for agent %q: %w", agentKey, err)
 		}
+		if err := m.persistIntegrityManifest(map[string]bool{agentKey: true}); err != nil {
+			return fmt.Errorf("updating profile integrity manifest after reset for agent %q: %w", agentKey, err)
+		}
 	}
 
 	as.profile = nil
@@ -751,7 +803,471 @@ func (m *Manager) persistProfile(agentKey string) error {
 	}
 
 	path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
-	return os.WriteFile(filepath.Clean(path), data, 0o600)
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
+		return err
+	}
+	if err := m.persistIntegrityManifest(nil); err != nil {
+		return fmt.Errorf("persisting profile integrity manifest: %w", err)
+	}
+	return nil
+}
+
+func normalizeIntegrityConfig(cfg *Config) error {
+	if cfg.ProfileDir == "" {
+		return nil
+	}
+	if cfg.IntegrityKeyPath == "" {
+		cfg.IntegrityKeyPath = filepath.Clean(cfg.ProfileDir) + ".integrity.key"
+	}
+	cfg.IntegrityKeyPath = filepath.Clean(cfg.IntegrityKeyPath)
+	inside, err := pathWithin(cfg.IntegrityKeyPath, cfg.ProfileDir)
+	if err != nil {
+		return fmt.Errorf("validating baseline integrity key path: %w", err)
+	}
+	if inside {
+		return fmt.Errorf("baseline integrity key path %q must be outside profile_dir %q", cfg.IntegrityKeyPath, cfg.ProfileDir)
+	}
+	return nil
+}
+
+func pathWithin(path, dir string) (bool, error) {
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return false, err
+	}
+	absDir, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil {
+		return false, err
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))), nil
+}
+
+func (m *Manager) integrityManifestPath() string {
+	return filepath.Join(m.cfg.ProfileDir, integrityManifestDirName, integrityManifestFileName)
+}
+
+func (m *Manager) integrityHighWaterPath() string {
+	return filepath.Clean(m.cfg.IntegrityKeyPath) + ".generation"
+}
+
+func (m *Manager) integrityStateContextID() string {
+	profileDir, err := filepath.Abs(filepath.Clean(m.cfg.ProfileDir))
+	if err != nil {
+		profileDir = filepath.Clean(m.cfg.ProfileDir)
+	}
+	keyPath, err := filepath.Abs(filepath.Clean(m.cfg.IntegrityKeyPath))
+	if err != nil {
+		keyPath = filepath.Clean(m.cfg.IntegrityKeyPath)
+	}
+	sum := sha256.Sum256([]byte("baseline-integrity-generation-v1\n" + profileDir + "\n" + keyPath))
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Manager) integrityGenerationDigest(generation uint64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("baseline-integrity-generation-v1\n%s\n%d", m.integrityStateContextID(), generation)))
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Manager) loadIntegrityKey(create bool) ([]byte, error) {
+	path := filepath.Clean(m.cfg.IntegrityKeyPath)
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("baseline integrity key must not be a symlink")
+		}
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("baseline integrity key must be a regular file")
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, fmt.Errorf("reading baseline integrity key: %w", readErr)
+		}
+		key, decodeErr := hex.DecodeString(strings.TrimSpace(string(data)))
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decoding baseline integrity key: %w", decodeErr)
+		}
+		if len(key) != integrityKeyBytes {
+			return nil, fmt.Errorf("baseline integrity key length = %d, want %d", len(key), integrityKeyBytes)
+		}
+		return key, nil
+	}
+	if !create || !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("stat baseline integrity key: %w", err)
+	}
+
+	key := make([]byte, integrityKeyBytes)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generating baseline integrity key: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, fmt.Errorf("creating baseline integrity key directory: %w", err)
+	}
+	if err := atomicfile.Write(path, []byte(hex.EncodeToString(key)+"\n"), 0o600); err != nil {
+		return nil, fmt.Errorf("writing baseline integrity key: %w", err)
+	}
+	return key, nil
+}
+
+func (m *Manager) readIntegrityHighWater() (uint64, bool, error) {
+	path := m.integrityHighWaterPath()
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("stat baseline integrity generation high-water: %w", statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return 0, false, errors.New("baseline integrity generation high-water must not be a symlink")
+	}
+	if !info.Mode().IsRegular() {
+		return 0, false, errors.New("baseline integrity generation high-water must be a regular file")
+	}
+	if info.Size() > integrityStateMaxSize {
+		return 0, false, errors.New("baseline integrity generation high-water exceeds maximum size")
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return 0, false, fmt.Errorf("read baseline integrity generation high-water: %w", err)
+	}
+	var state integrityHighWaterState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return 0, false, fmt.Errorf("parse baseline integrity generation high-water: %w", err)
+	}
+	if state.Generation == 0 {
+		return 0, false, errors.New("baseline integrity generation high-water must be greater than zero")
+	}
+	if state.Context != m.integrityStateContextID() {
+		return 0, false, errors.New("baseline integrity generation high-water context mismatch")
+	}
+	if state.Digest != m.integrityGenerationDigest(state.Generation) {
+		return 0, false, errors.New("baseline integrity generation high-water digest mismatch")
+	}
+	return state.Generation, true, nil
+}
+
+func (m *Manager) writeIntegrityHighWater(generation uint64) error {
+	if generation == 0 {
+		return errors.New("baseline integrity generation must be greater than zero")
+	}
+	path := m.integrityHighWaterPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("creating baseline integrity generation directory: %w", err)
+	}
+	data, err := json.Marshal(integrityHighWaterState{
+		Generation: generation,
+		Context:    m.integrityStateContextID(),
+		Digest:     m.integrityGenerationDigest(generation),
+	})
+	if err != nil {
+		return fmt.Errorf("marshaling baseline integrity generation high-water: %w", err)
+	}
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
+		return fmt.Errorf("writing baseline integrity generation high-water: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) nextIntegrityManifestGeneration() (uint64, error) {
+	integrityHighWaterMu.Lock()
+	defer integrityHighWaterMu.Unlock()
+
+	highWater, found, err := m.readIntegrityHighWater()
+	if err != nil {
+		return 0, fmt.Errorf("baseline integrity generation unreadable, cannot sign manifest: %w", err)
+	}
+	next := uint64(1)
+	if found {
+		next = highWater + 1
+		if next == 0 {
+			return 0, errors.New("baseline integrity generation overflow")
+		}
+	}
+	if err := m.writeIntegrityHighWater(next); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+func (m *Manager) acceptIntegrityManifestGeneration(generation uint64) error {
+	if generation == 0 {
+		return errors.New("baseline integrity manifest generation must be greater than zero")
+	}
+
+	integrityHighWaterMu.Lock()
+	defer integrityHighWaterMu.Unlock()
+
+	highWater, found, err := m.readIntegrityHighWater()
+	if err != nil {
+		return fmt.Errorf("baseline integrity generation unreadable, cannot verify rollback: %w", err)
+	}
+	if found && generation < highWater {
+		return fmt.Errorf("baseline integrity manifest rollback rejected: generation %d below accepted %d", generation, highWater)
+	}
+	if !found || generation > highWater {
+		if err := m.writeIntegrityHighWater(generation); err != nil {
+			return fmt.Errorf("persist baseline integrity generation high-water: %w", err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) integrityTrustedStateExists() (bool, error) {
+	for _, path := range []string{m.cfg.IntegrityKeyPath, m.integrityHighWaterPath()} {
+		_, err := os.Lstat(filepath.Clean(path))
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func signIntegrityManifest(manifest integrityManifest, key []byte) (string, error) {
+	canonical, err := json.Marshal(manifest)
+	if err != nil {
+		return "", fmt.Errorf("marshaling canonical integrity manifest: %w", err)
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(canonical)
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func verifyIntegrityManifest(data, key []byte) (integrityManifest, error) {
+	var file integrityManifestFile
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&file); err != nil {
+		return integrityManifest{}, fmt.Errorf("decoding integrity manifest: %w", err)
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return integrityManifest{}, errors.New("decoding integrity manifest: trailing data after manifest")
+		}
+		return integrityManifest{}, fmt.Errorf("decoding integrity manifest: %w", err)
+	}
+	if file.Manifest.SchemaVersion != integrityManifestVersion {
+		return integrityManifest{}, fmt.Errorf("integrity manifest schema_version = %d, want %d", file.Manifest.SchemaVersion, integrityManifestVersion)
+	}
+	if file.Manifest.Algorithm != integrityManifestAlg {
+		return integrityManifest{}, fmt.Errorf("integrity manifest algorithm = %q, want %q", file.Manifest.Algorithm, integrityManifestAlg)
+	}
+	want, err := hex.DecodeString(file.HMAC)
+	if err != nil {
+		return integrityManifest{}, fmt.Errorf("decoding integrity manifest hmac: %w", err)
+	}
+	if len(want) != sha256.Size {
+		return integrityManifest{}, fmt.Errorf("integrity manifest hmac length = %d, want %d", len(want), sha256.Size)
+	}
+	gotHex, err := signIntegrityManifest(file.Manifest, key)
+	if err != nil {
+		return integrityManifest{}, err
+	}
+	got, err := hex.DecodeString(gotHex)
+	if err != nil {
+		return integrityManifest{}, err
+	}
+	if !hmac.Equal(got, want) {
+		return integrityManifest{}, errors.New("integrity manifest hmac verification failed")
+	}
+	return file.Manifest, nil
+}
+
+func profileBytesHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Manager) persistedProfileFilesExist(exclude map[string]bool) (bool, error) {
+	entries, err := os.ReadDir(filepath.Clean(m.cfg.ProfileDir))
+	if err != nil {
+		return false, fmt.Errorf("reading profile directory: %w", err)
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != profileFileExt || entry.Name() == integrityManifestFileName {
+			continue
+		}
+		agentKey := strings.TrimSuffix(entry.Name(), profileFileExt)
+		if exclude[agentKey] {
+			continue
+		}
+		if entry.IsDir() {
+			return false, fmt.Errorf("persisted baseline profile path %q is a directory", entry.Name())
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func (m *Manager) persistIntegrityManifest(exclude map[string]bool) error {
+	if m.cfg.ProfileDir == "" {
+		return nil
+	}
+
+	keys := make([]string, 0, len(m.agents))
+	for agentKey, as := range m.agents {
+		if exclude[agentKey] || as == nil || as.profile == nil || as.profile.State != StateLocked {
+			continue
+		}
+		keys = append(keys, agentKey)
+	}
+	sort.Strings(keys)
+
+	entries := make([]integrityManifestEntry, 0, len(keys))
+	for _, agentKey := range keys {
+		if err := validateAgentKey(agentKey); err != nil {
+			return fmt.Errorf("refusing to manifest locked profile: %w", err)
+		}
+		path := filepath.Join(m.cfg.ProfileDir, agentKey+profileFileExt)
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			return fmt.Errorf("reading locked profile %q for integrity manifest: %w", agentKey, err)
+		}
+		entries = append(entries, integrityManifestEntry{
+			AgentKey: agentKey,
+			SHA256:   profileBytesHash(data),
+			State:    StateLocked,
+		})
+	}
+
+	hasProfiles, err := m.persistedProfileFilesExist(exclude)
+	if err != nil {
+		return err
+	}
+	manifestPath := m.integrityManifestPath()
+	if len(entries) == 0 && !hasProfiles {
+		trustedState, err := m.integrityTrustedStateExists()
+		if err != nil {
+			return fmt.Errorf("checking baseline integrity trusted state: %w", err)
+		}
+		if !trustedState {
+			if err := os.Remove(filepath.Clean(manifestPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("removing empty baseline integrity manifest: %w", err)
+			}
+			_ = os.Remove(filepath.Clean(filepath.Dir(manifestPath)))
+			return nil
+		}
+	}
+
+	key, err := m.loadIntegrityKey(true)
+	if err != nil {
+		return err
+	}
+	generation, err := m.nextIntegrityManifestGeneration()
+	if err != nil {
+		return err
+	}
+	manifest := integrityManifest{
+		SchemaVersion: integrityManifestVersion,
+		Algorithm:     integrityManifestAlg,
+		Generation:    generation,
+		Profiles:      entries,
+	}
+	mac, err := signIntegrityManifest(manifest, key)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(integrityManifestFile{
+		Manifest: manifest,
+		HMAC:     mac,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling integrity manifest: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
+		return fmt.Errorf("creating baseline integrity manifest directory: %w", err)
+	}
+	return atomicfile.Write(manifestPath, data, 0o600)
+}
+
+func (m *Manager) verifyPersistedIntegrity(entries []os.DirEntry) (map[string]Profile, error) {
+	hasProfileFiles := false
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != profileFileExt {
+			continue
+		}
+		if entry.IsDir() {
+			return nil, fmt.Errorf("persisted baseline JSON path %q is a directory under enforcing deviation_action %q", entry.Name(), m.cfg.DeviationAction)
+		}
+		if entry.Name() != integrityManifestFileName {
+			hasProfileFiles = true
+		}
+	}
+
+	manifestData, err := os.ReadFile(filepath.Clean(m.integrityManifestPath()))
+	if errors.Is(err, os.ErrNotExist) {
+		if hasProfileFiles {
+			return nil, fmt.Errorf("baseline integrity manifest missing while persisted profiles exist under enforcing deviation_action %q", m.cfg.DeviationAction)
+		}
+		trustedState, stateErr := m.integrityTrustedStateExists()
+		if stateErr != nil {
+			return nil, fmt.Errorf("checking baseline integrity trusted state under enforcing deviation_action %q: %w", m.cfg.DeviationAction, stateErr)
+		}
+		if trustedState {
+			return nil, fmt.Errorf("baseline integrity manifest missing while trusted integrity state exists under enforcing deviation_action %q", m.cfg.DeviationAction)
+		}
+		return map[string]Profile{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading baseline integrity manifest under enforcing deviation_action %q: %w", m.cfg.DeviationAction, err)
+	}
+	key, err := m.loadIntegrityKey(false)
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := verifyIntegrityManifest(manifestData, key)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.acceptIntegrityManifestGeneration(manifest.Generation); err != nil {
+		return nil, err
+	}
+
+	verified := make(map[string]Profile, len(manifest.Profiles))
+	seen := make(map[string]bool, len(manifest.Profiles))
+	for _, expected := range manifest.Profiles {
+		if err := validateAgentKey(expected.AgentKey); err != nil {
+			return nil, fmt.Errorf("invalid agent in baseline integrity manifest: %w", err)
+		}
+		if seen[expected.AgentKey] {
+			return nil, fmt.Errorf("duplicate agent %q in baseline integrity manifest", expected.AgentKey)
+		}
+		seen[expected.AgentKey] = true
+		if expected.State != StateLocked {
+			return nil, fmt.Errorf("baseline integrity manifest entry for agent %q has state %q, want %q", expected.AgentKey, expected.State, StateLocked)
+		}
+
+		path := filepath.Join(m.cfg.ProfileDir, expected.AgentKey+profileFileExt)
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			return nil, fmt.Errorf("reading locked baseline profile %q required by integrity manifest: %w", expected.AgentKey, err)
+		}
+		if got := profileBytesHash(data); got != expected.SHA256 {
+			return nil, fmt.Errorf("locked baseline profile %q hash mismatch against integrity manifest", expected.AgentKey)
+		}
+		var profile Profile
+		if err := json.Unmarshal(data, &profile); err != nil {
+			return nil, fmt.Errorf("parsing locked baseline profile %q required by integrity manifest: %w", expected.AgentKey, err)
+		}
+		if profile.AgentKey == "" {
+			profile.AgentKey = expected.AgentKey
+		}
+		if profile.AgentKey != expected.AgentKey {
+			return nil, fmt.Errorf("locked baseline profile %q declares agent_key %q", expected.AgentKey, profile.AgentKey)
+		}
+		if profile.State != StateLocked {
+			return nil, fmt.Errorf("locked baseline profile %q state = %q, want %q", expected.AgentKey, profile.State, StateLocked)
+		}
+		verified[expected.AgentKey] = profile
+	}
+	return verified, nil
 }
 
 // loadProfiles reads all persisted profiles from ProfileDir.
@@ -764,45 +1280,80 @@ func (m *Manager) loadProfiles() error {
 		return fmt.Errorf("reading profile directory: %w", err)
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != profileFileExt {
-			continue
-		}
-
-		path := filepath.Join(m.cfg.ProfileDir, entry.Name())
-		data, err := os.ReadFile(filepath.Clean(path))
+	verified := map[string]Profile{}
+	if m.cfg.enforces() {
+		verified, err = m.verifyPersistedIntegrity(entries)
 		if err != nil {
-			// A persisted profile that exists but cannot be read may be a
-			// locked, enforcing profile. Under an enforcing action we cannot
-			// prove it is not, so fail closed rather than silently start with
-			// enforcement erased. Observational (warn) mode has no enforcement
-			// to lose, so it skips.
+			return err
+		}
+	}
+
+	loadedAgents := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != profileFileExt || entry.Name() == integrityManifestFileName {
+			continue
+		}
+		if entry.IsDir() {
 			if m.cfg.enforces() {
-				return fmt.Errorf("reading persisted baseline profile %q under enforcing deviation_action %q (refusing to start without it; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
+				return fmt.Errorf("persisted baseline profile %q is a directory under enforcing deviation_action %q", entry.Name(), m.cfg.DeviationAction)
 			}
-			slog.Warn("skipping unreadable persisted baseline profile",
-				"profile", entry.Name(),
-				"deviation_action", m.cfg.DeviationAction,
-				"error", err)
 			continue
 		}
 
+		fileAgentKey := strings.TrimSuffix(entry.Name(), profileFileExt)
 		var profile Profile
-		if err := json.Unmarshal(data, &profile); err != nil {
-			if m.cfg.enforces() {
-				return fmt.Errorf("parsing persisted baseline profile %q under enforcing deviation_action %q (refusing to start with a corrupt profile; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
+		if verifiedProfile, ok := verified[fileAgentKey]; ok {
+			profile = verifiedProfile
+		} else {
+			path := filepath.Join(m.cfg.ProfileDir, entry.Name())
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				// A persisted profile that exists but cannot be read may be a
+				// locked, enforcing profile. Under an enforcing action we cannot
+				// prove it is not, so fail closed rather than silently start with
+				// enforcement erased. Observational (warn) mode has no enforcement
+				// to lose, so it skips.
+				if m.cfg.enforces() {
+					return fmt.Errorf("reading persisted baseline profile %q under enforcing deviation_action %q (refusing to start without it; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
+				}
+				slog.Warn("skipping unreadable persisted baseline profile",
+					"profile", entry.Name(),
+					"deviation_action", m.cfg.DeviationAction,
+					"error", err)
+				continue
 			}
-			slog.Warn("skipping corrupt persisted baseline profile",
-				"profile", entry.Name(),
-				"deviation_action", m.cfg.DeviationAction,
-				"error", err)
-			continue
+
+			if err := json.Unmarshal(data, &profile); err != nil {
+				if m.cfg.enforces() {
+					return fmt.Errorf("parsing persisted baseline profile %q under enforcing deviation_action %q (refusing to start with a corrupt profile; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
+				}
+				slog.Warn("skipping corrupt persisted baseline profile",
+					"profile", entry.Name(),
+					"deviation_action", m.cfg.DeviationAction,
+					"error", err)
+				continue
+			}
+			if m.cfg.enforces() && profile.State == StateLocked {
+				return fmt.Errorf("locked baseline profile %q is missing from integrity manifest under enforcing deviation_action %q", entry.Name(), m.cfg.DeviationAction)
+			}
 		}
 
 		agentKey := profile.AgentKey
 		if agentKey == "" {
 			// Derive from filename.
-			agentKey = entry.Name()[:len(entry.Name())-len(profileFileExt)]
+			agentKey = fileAgentKey
+		}
+		if m.cfg.enforces() {
+			if err := validateAgentKey(agentKey); err != nil {
+				return fmt.Errorf("invalid persisted baseline profile agent key in %q under enforcing deviation_action %q: %w", entry.Name(), m.cfg.DeviationAction, err)
+			}
+			if profile.AgentKey != "" && profile.AgentKey != fileAgentKey {
+				return fmt.Errorf("persisted baseline profile %q declares agent_key %q under enforcing deviation_action %q", entry.Name(), profile.AgentKey, m.cfg.DeviationAction)
+			}
+			if previous, ok := loadedAgents[agentKey]; ok {
+				return fmt.Errorf("duplicate persisted baseline profiles for agent %q under enforcing deviation_action %q: %s and %s", agentKey, m.cfg.DeviationAction, previous, entry.Name())
+			}
+			loadedAgents[agentKey] = entry.Name()
 		}
 
 		m.agents[agentKey] = &agentState{

@@ -453,12 +453,17 @@ func seedLockedProfile(t *testing.T, dir string) string {
 
 func seedLockedProfileFor(t *testing.T, dir, agentKey string) string {
 	t.Helper()
+	return seedLockedProfileForMetrics(t, dir, agentKey, normalMetrics())
+}
+
+func seedLockedProfileForMetrics(t *testing.T, dir, agentKey string, metrics SessionMetrics) string {
+	t.Helper()
 	seed, err := NewManager(Config{Enabled: true, LearningWindow: 3, ProfileDir: dir})
 	if err != nil {
 		t.Fatalf("seed NewManager: %v", err)
 	}
 	for range 3 {
-		seed.RecordSession(agentKey, normalMetrics())
+		seed.RecordSession(agentKey, metrics)
 	}
 	if err := seed.Ratify(agentKey); err != nil {
 		t.Fatalf("seed Ratify: %v", err)
@@ -492,6 +497,70 @@ func rewriteProfileToolCallsMean(t *testing.T, path string, mean float64) {
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write profile: %v", err)
+	}
+}
+
+func rewriteProfileState(t *testing.T, path string, state ProfileState) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	var profile Profile
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatalf("unmarshal profile: %v", err)
+	}
+	profile.State = state
+	data, err = json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal profile: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+}
+
+func baselineIntegrityManifestPath(dir string) string {
+	return filepath.Join(dir, integrityManifestDirName, integrityManifestFileName)
+}
+
+func baselineIntegrityKeyPath(dir string) string {
+	return filepath.Clean(dir) + ".integrity.key"
+}
+
+func persistIntegrityManifestForExistingProfile(t *testing.T, dir, agentKey string, state ProfileState) {
+	t.Helper()
+	cfg := Config{Enabled: true, ProfileDir: dir}
+	if err := normalizeIntegrityConfig(&cfg); err != nil {
+		t.Fatalf("normalize integrity config: %v", err)
+	}
+	mgr := &Manager{
+		cfg: cfg,
+		agents: map[string]*agentState{
+			agentKey: {
+				profile: &Profile{State: state},
+				state:   state,
+			},
+		},
+	}
+	if err := mgr.persistIntegrityManifest(nil); err != nil {
+		t.Fatalf("persist integrity manifest: %v", err)
+	}
+}
+
+func copyFileBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return data
+}
+
+func writeFileBytes(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Clean(path), data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
@@ -553,6 +622,384 @@ func TestBaseline_LoadProfiles_FailsClosedOnCorruptProfileUnderEnforcement(t *te
 				t.Fatalf("NewManager: want success under deviation_action %q, got %v", tc.action, err)
 			}
 		})
+	}
+}
+
+func TestBaseline_LoadProfiles_VerifiesLockedProfileIntegrityManifest(t *testing.T) {
+	dir := t.TempDir()
+	_ = seedLockedProfile(t, dir)
+
+	restarted, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager with intact locked profile: %v", err)
+	}
+	if state := restarted.GetState(testAgent); state != StateLocked {
+		t.Fatalf("state = %q, want %q", state, StateLocked)
+	}
+	if devs := restarted.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("locked profile loaded through integrity manifest must enforce")
+	}
+}
+
+func TestBaseline_LoadProfiles_FailsClosedOnLockedProfileTamperUnderEnforcement(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper func(t *testing.T, dir, path string)
+	}{
+		{
+			name: "deleted_profile",
+			tamper: func(t *testing.T, _, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("delete profile: %v", err)
+				}
+			},
+		},
+		{
+			name: "dir_swapped_profile",
+			tamper: func(t *testing.T, _, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("remove profile: %v", err)
+				}
+				if err := os.Mkdir(path, 0o750); err != nil {
+					t.Fatalf("mkdir profile path: %v", err)
+				}
+			},
+		},
+		{
+			name: "state_downgrade",
+			tamper: func(t *testing.T, _, path string) {
+				t.Helper()
+				rewriteProfileState(t, path, StateObserve)
+			},
+		},
+		{
+			name: "learned_range_edit",
+			tamper: func(t *testing.T, _, path string) {
+				t.Helper()
+				rewriteProfileToolCallsMean(t, path, 100)
+			},
+		},
+		{
+			name: "manifest_hmac_forged",
+			tamper: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				manifestPath := baselineIntegrityManifestPath(dir)
+				data, err := os.ReadFile(filepath.Clean(manifestPath))
+				if err != nil {
+					t.Fatalf("read manifest: %v", err)
+				}
+				var manifest integrityManifestFile
+				if err := json.Unmarshal(data, &manifest); err != nil {
+					t.Fatalf("unmarshal manifest: %v", err)
+				}
+				prefix := "0"
+				if manifest.HMAC[0] == '0' {
+					prefix = "1"
+				}
+				manifest.HMAC = prefix + manifest.HMAC[1:]
+				data, err = json.MarshalIndent(manifest, "", "  ")
+				if err != nil {
+					t.Fatalf("marshal forged manifest: %v", err)
+				}
+				if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+					t.Fatalf("write forged manifest: %v", err)
+				}
+			},
+		},
+		{
+			name: "wrong_hmac_key",
+			tamper: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				wrongKey := "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n"
+				if err := os.WriteFile(baselineIntegrityKeyPath(dir), []byte(wrongKey), 0o600); err != nil {
+					t.Fatalf("write wrong key: %v", err)
+				}
+			},
+		},
+		{
+			name: "hmac_key_deleted",
+			tamper: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				if err := os.Remove(baselineIntegrityKeyPath(dir)); err != nil {
+					t.Fatalf("delete hmac key: %v", err)
+				}
+			},
+		},
+		{
+			name: "hmac_key_directory",
+			tamper: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				keyPath := baselineIntegrityKeyPath(dir)
+				if err := os.Remove(keyPath); err != nil {
+					t.Fatalf("remove hmac key: %v", err)
+				}
+				if err := os.Mkdir(keyPath, 0o750); err != nil {
+					t.Fatalf("mkdir hmac key path: %v", err)
+				}
+			},
+		},
+		{
+			name: "hmac_key_symlink",
+			tamper: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				keyPath := baselineIntegrityKeyPath(dir)
+				data := copyFileBytes(t, keyPath)
+				target := filepath.Join(t.TempDir(), "copied-key")
+				writeFileBytes(t, target, data)
+				if err := os.Remove(keyPath); err != nil {
+					t.Fatalf("remove hmac key: %v", err)
+				}
+				if err := os.Symlink(target, keyPath); err != nil {
+					t.Fatalf("symlink hmac key path: %v", err)
+				}
+			},
+		},
+		{
+			name: "manifest_deleted",
+			tamper: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				if err := os.Remove(baselineIntegrityManifestPath(dir)); err != nil {
+					t.Fatalf("delete manifest: %v", err)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := seedLockedProfile(t, dir)
+			tc.tamper(t, dir, path)
+
+			_, err := NewManager(Config{
+				Enabled:         true,
+				LearningWindow:  3,
+				DeviationAction: deviationActionBlock,
+				ProfileDir:      dir,
+			})
+			if err == nil {
+				t.Fatal("NewManager: want fail-closed error for locked profile integrity tamper under block")
+			}
+		})
+	}
+}
+
+func TestBaseline_LoadProfiles_WarnModeDoesNotFailClosedOnIntegrityTamper(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper func(t *testing.T, dir, path string)
+	}{
+		{
+			name: "deleted_profile",
+			tamper: func(t *testing.T, _, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("delete profile: %v", err)
+				}
+			},
+		},
+		{
+			name: "dir_swapped_profile",
+			tamper: func(t *testing.T, _, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("remove profile: %v", err)
+				}
+				if err := os.Mkdir(path, 0o750); err != nil {
+					t.Fatalf("mkdir profile path: %v", err)
+				}
+			},
+		},
+		{
+			name: "manifest_deleted",
+			tamper: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				if err := os.Remove(baselineIntegrityManifestPath(dir)); err != nil {
+					t.Fatalf("delete manifest: %v", err)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := seedLockedProfile(t, dir)
+			tc.tamper(t, dir, path)
+
+			if _, err := NewManager(Config{
+				Enabled:         true,
+				LearningWindow:  3,
+				DeviationAction: deviationActionWarn,
+				ProfileDir:      dir,
+			}); err != nil {
+				t.Fatalf("NewManager under warn should stay lenient: %v", err)
+			}
+		})
+	}
+}
+
+func TestBaseline_LoadProfiles_NoManifestStartupBoundaries(t *testing.T) {
+	tests := []struct {
+		name    string
+		action  string
+		seed    func(t *testing.T, dir string)
+		wantErr bool
+	}{
+		{
+			name:   "first_run_empty_enforcing",
+			action: deviationActionBlock,
+		},
+		{
+			name:   "first_run_empty_warn",
+			action: deviationActionWarn,
+		},
+		{
+			name:   "profile_dir_wipe_after_integrity_state_fails_closed",
+			action: deviationActionBlock,
+			seed: func(t *testing.T, dir string) {
+				t.Helper()
+				_ = seedLockedProfile(t, dir)
+				if err := os.RemoveAll(dir); err != nil {
+					t.Fatalf("wipe profile dir: %v", err)
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name:   "profiles_without_manifest_enforcing_fails_closed",
+			action: deviationActionBlock,
+			seed: func(t *testing.T, dir string) {
+				t.Helper()
+				_ = seedLockedProfile(t, dir)
+				if err := os.Remove(baselineIntegrityManifestPath(dir)); err != nil {
+					t.Fatalf("delete manifest: %v", err)
+				}
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.seed != nil {
+				tc.seed(t, dir)
+			}
+
+			_, err := NewManager(Config{
+				Enabled:         true,
+				LearningWindow:  3,
+				DeviationAction: tc.action,
+				ProfileDir:      dir,
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("NewManager: want fail-closed error under block")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewManager: %v", err)
+			}
+		})
+	}
+}
+
+func TestBaseline_LoadProfiles_RejectsManifestRollbackUnderEnforcement(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := seedLockedProfile(t, dir)
+	manifestPath := baselineIntegrityManifestPath(dir)
+	rolledBackProfile := copyFileBytes(t, profilePath)
+	rolledBackManifest := copyFileBytes(t, manifestPath)
+
+	rewriteProfileToolCallsMean(t, profilePath, 100)
+	persistIntegrityManifestForExistingProfile(t, dir, testAgent, StateLocked)
+
+	writeFileBytes(t, profilePath, rolledBackProfile)
+	writeFileBytes(t, manifestPath, rolledBackManifest)
+
+	_, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err == nil {
+		t.Fatal("NewManager: want fail-closed error for replayed older manifest/profile generation")
+	}
+}
+
+func TestBaseline_LoadProfiles_RejectsDuplicateAgentMaskingLockedProfileUnderEnforcement(t *testing.T) {
+	dir := t.TempDir()
+	_ = seedLockedProfile(t, dir)
+
+	mask := Profile{
+		AgentKey: testAgent,
+		State:    StateObserve,
+		Metrics: ProfileMetrics{
+			ToolCallsPerSession: Range{Min: 100, Max: 100, Mean: 100, StdDev: 0},
+		},
+	}
+	data, err := json.Marshal(mask)
+	if err != nil {
+		t.Fatalf("marshal masking profile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "zz-mask.json"), data, 0o600); err != nil {
+		t.Fatalf("write masking profile: %v", err)
+	}
+
+	_, err = NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err == nil {
+		t.Fatal("NewManager: want fail-closed error for duplicate profile that could mask a locked agent")
+	}
+}
+
+func TestBaseline_ResetLastLockedProfilePersistsEmptyIntegrityManifest(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+	if err := mgr.Ratify(testAgent); err != nil {
+		t.Fatalf("Ratify: %v", err)
+	}
+
+	if err := mgr.Reset(testAgent); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if _, err := os.Stat(baselineIntegrityManifestPath(dir)); err != nil {
+		t.Fatalf("empty integrity manifest should remain after reset: %v", err)
+	}
+
+	restarted, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager after reset: %v", err)
+	}
+	if agents := restarted.ListAgents(); len(agents) != 0 {
+		t.Fatalf("agents after reset restart = %v, want none", agents)
 	}
 }
 
@@ -637,8 +1084,9 @@ func TestBaseline_ReconfigureReplacesProfilesWhenProfileDirChanges(t *testing.T)
 	}
 
 	reloadDir := t.TempDir()
-	reloadPath := seedLockedProfile(t, reloadDir)
-	rewriteProfileToolCallsMean(t, reloadPath, 100)
+	replacementMetrics := normalMetrics()
+	replacementMetrics.ToolCalls = 100
+	_ = seedLockedProfileForMetrics(t, reloadDir, testAgent, replacementMetrics)
 
 	if err := mgr.Reconfigure(Config{
 		Enabled:         true,
@@ -648,8 +1096,6 @@ func TestBaseline_ReconfigureReplacesProfilesWhenProfileDirChanges(t *testing.T)
 		t.Fatalf("Reconfigure with replacement profile dir: %v", err)
 	}
 
-	replacementMetrics := normalMetrics()
-	replacementMetrics.ToolCalls = 100
 	if devs := mgr.Check(testAgent, replacementMetrics); len(devs) != 0 {
 		t.Fatalf("reconfigured manager kept stale profile, got deviations: %+v", devs)
 	}
@@ -1229,6 +1675,7 @@ func TestBaseline_LoadProfileWithEmptyAgentKey(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "derived-agent.json"), data, 0o600); err != nil {
 		t.Fatalf("writing profile: %v", err)
 	}
+	persistIntegrityManifestForExistingProfile(t, dir, "derived-agent", StateLocked)
 
 	cfg := Config{Enabled: true, DeviationAction: deviationActionBlock, ProfileDir: dir}
 	mgr, err := NewManager(cfg)
@@ -1405,5 +1852,297 @@ func TestNewManager_CreatesProfileDir(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Fatal("profile path is not a directory")
+	}
+}
+
+// TestBaseline_IntegrityKeyPathInsideProfileDirRejected covers the
+// normalizeIntegrityConfig containment check: the integrity key must live
+// outside the profile directory, or an attacker who can write the profile
+// directory could also forge the key. Exercised on both the NewManager and
+// Reconfigure paths.
+func TestBaseline_IntegrityKeyPathInsideProfileDirRejected(t *testing.T) {
+	dir := t.TempDir()
+	inside := filepath.Join(dir, "integrity.key")
+
+	if _, err := NewManager(Config{
+		Enabled:          true,
+		LearningWindow:   3,
+		DeviationAction:  deviationActionBlock,
+		ProfileDir:       dir,
+		IntegrityKeyPath: inside,
+	}); err == nil {
+		t.Fatal("NewManager: want error for integrity key path inside profile_dir")
+	}
+
+	mgr, err := NewManager(Config{Enabled: true, LearningWindow: 3, ProfileDir: dir})
+	if err != nil {
+		t.Fatalf("baseline NewManager: %v", err)
+	}
+	if err := mgr.Reconfigure(Config{
+		Enabled:          true,
+		LearningWindow:   3,
+		DeviationAction:  deviationActionBlock,
+		ProfileDir:       dir,
+		IntegrityKeyPath: inside,
+	}); err == nil {
+		t.Fatal("Reconfigure: want error for integrity key path inside profile_dir")
+	}
+}
+
+// TestBaseline_CorruptIntegrityKeyRejectedUnderEnforcement covers the
+// integrity-key decode and length branches: a key file that is not valid hex
+// or is the wrong length must fail closed under enforcement rather than be
+// treated as a usable key.
+func TestBaseline_CorruptIntegrityKeyRejectedUnderEnforcement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{name: "non_hex", key: "zzzz-not-hex-key\n"},
+		{name: "short_hex", key: "abcd\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			seedLockedProfile(t, dir)
+			if err := os.WriteFile(baselineIntegrityKeyPath(dir), []byte(tc.key), 0o600); err != nil {
+				t.Fatalf("overwrite integrity key: %v", err)
+			}
+			if _, err := NewManager(Config{
+				Enabled:         true,
+				LearningWindow:  3,
+				DeviationAction: deviationActionBlock,
+				ProfileDir:      dir,
+			}); err == nil {
+				t.Fatal("NewManager: want fail-closed error for corrupt integrity key")
+			}
+		})
+	}
+}
+
+// TestBaseline_HighWaterTamperFailsClosedUnderEnforcement covers the
+// readIntegrityHighWater validation branches: the monotonic generation
+// high-water is a trusted anchor, so a symlinked, non-regular, oversized,
+// corrupt, zero, or context/digest-mismatched high-water file must fail
+// closed under enforcement rather than be trusted.
+func TestBaseline_HighWaterTamperFailsClosedUnderEnforcement(t *testing.T) {
+	highWaterPath := func(dir string) string { return baselineIntegrityKeyPath(dir) + ".generation" }
+
+	tests := []struct {
+		name   string
+		tamper func(t *testing.T, dir string)
+	}{
+		{
+			name: "corrupt_json",
+			tamper: func(t *testing.T, dir string) {
+				if err := os.WriteFile(highWaterPath(dir), []byte("not-json"), 0o600); err != nil {
+					t.Fatalf("write high-water: %v", err)
+				}
+			},
+		},
+		{
+			name: "oversized",
+			tamper: func(t *testing.T, dir string) {
+				big := make([]byte, 8*1024)
+				for i := range big {
+					big[i] = 'a'
+				}
+				if err := os.WriteFile(highWaterPath(dir), big, 0o600); err != nil {
+					t.Fatalf("write high-water: %v", err)
+				}
+			},
+		},
+		{
+			name: "zero_generation",
+			tamper: func(t *testing.T, dir string) {
+				data, _ := json.Marshal(integrityHighWaterState{Generation: 0})
+				if err := os.WriteFile(highWaterPath(dir), data, 0o600); err != nil {
+					t.Fatalf("write high-water: %v", err)
+				}
+			},
+		},
+		{
+			name: "context_mismatch",
+			tamper: func(t *testing.T, dir string) {
+				data, _ := json.Marshal(integrityHighWaterState{Generation: 1, Context: "bogus-context", Digest: "bogus-digest"})
+				if err := os.WriteFile(highWaterPath(dir), data, 0o600); err != nil {
+					t.Fatalf("write high-water: %v", err)
+				}
+			},
+		},
+		{
+			name: "symlink",
+			tamper: func(t *testing.T, dir string) {
+				p := highWaterPath(dir)
+				data := copyFileBytes(t, p)
+				target := filepath.Join(t.TempDir(), "copied-hw")
+				writeFileBytes(t, target, data)
+				if err := os.Remove(p); err != nil {
+					t.Fatalf("remove high-water: %v", err)
+				}
+				if err := os.Symlink(target, p); err != nil {
+					t.Fatalf("symlink high-water: %v", err)
+				}
+			},
+		},
+		{
+			name: "directory",
+			tamper: func(t *testing.T, dir string) {
+				p := highWaterPath(dir)
+				if err := os.Remove(p); err != nil {
+					t.Fatalf("remove high-water: %v", err)
+				}
+				if err := os.Mkdir(p, 0o750); err != nil {
+					t.Fatalf("mkdir high-water: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			seedLockedProfile(t, dir)
+			if _, err := os.Stat(highWaterPath(dir)); err != nil {
+				t.Fatalf("high-water not seeded: %v", err)
+			}
+			tc.tamper(t, dir)
+			if _, err := NewManager(Config{
+				Enabled:         true,
+				LearningWindow:  3,
+				DeviationAction: deviationActionBlock,
+				ProfileDir:      dir,
+			}); err == nil {
+				t.Fatal("NewManager: want fail-closed error for high-water tamper under block")
+			}
+		})
+	}
+}
+
+// TestBaseline_NoProfileDirSkipsIntegrity covers the ProfileDir-unset early
+// return in normalizeIntegrityConfig: an in-memory-only baseline has no
+// persisted state to protect.
+func TestBaseline_NoProfileDirSkipsIntegrity(t *testing.T) {
+	mgr, err := NewManager(Config{Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock})
+	if err != nil {
+		t.Fatalf("NewManager without ProfileDir: %v", err)
+	}
+	if mgr == nil {
+		t.Fatal("expected a manager")
+	}
+}
+
+// TestBaseline_IntegrityIOErrorsFailClosed covers the integrity IO error
+// branches: an unreadable key or high-water file, and write failures when the
+// containing directory is not writable, must fail closed rather than proceed
+// with erased or unverifiable enforcement state.
+func TestBaseline_IntegrityIOErrorsFailClosed(t *testing.T) {
+	highWaterPath := func(dir string) string { return baselineIntegrityKeyPath(dir) + ".generation" }
+
+	t.Run("unreadable_key", func(t *testing.T) {
+		dir := t.TempDir()
+		seedLockedProfile(t, dir)
+		keyPath := baselineIntegrityKeyPath(dir)
+		if err := os.Chmod(keyPath, 0o000); err != nil {
+			t.Fatalf("chmod key: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(keyPath, 0o600) })
+		if _, err := NewManager(Config{
+			Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock, ProfileDir: dir,
+		}); err == nil {
+			t.Fatal("want fail-closed on unreadable integrity key")
+		}
+	})
+
+	t.Run("unreadable_high_water", func(t *testing.T) {
+		dir := t.TempDir()
+		seedLockedProfile(t, dir)
+		hw := highWaterPath(dir)
+		if err := os.Chmod(hw, 0o000); err != nil {
+			t.Fatalf("chmod high-water: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(hw, 0o600) })
+		if _, err := NewManager(Config{
+			Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock, ProfileDir: dir,
+		}); err == nil {
+			t.Fatal("want fail-closed on unreadable integrity high-water")
+		}
+	})
+
+	t.Run("key_generation_dir_conflict", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "profiles")
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir profile dir: %v", err)
+		}
+		// Point the integrity key at a path whose parent directory cannot be
+		// created because a regular file already occupies that name, so
+		// persist-time key generation fails and the lock returns an error.
+		blocker := filepath.Join(parent, "blocker")
+		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write blocker file: %v", err)
+		}
+		mgr, err := NewManager(Config{
+			Enabled: true, LearningWindow: 3, ProfileDir: dir,
+			IntegrityKeyPath: filepath.Join(blocker, "integrity.key"),
+		})
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		for range 3 {
+			mgr.RecordSession(testAgent, normalMetrics())
+		}
+		if err := mgr.Ratify(testAgent); err == nil {
+			t.Fatal("want persist error when integrity key directory cannot be created")
+		}
+	})
+}
+
+// TestBaseline_IntegrityGenerationInvariants directly exercises the
+// generation high-water invariants: a zero generation is rejected, and the
+// monotonic counter refuses to advance past its maximum (overflow).
+func TestBaseline_IntegrityGenerationInvariants(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := NewManager(Config{Enabled: true, LearningWindow: 3, ProfileDir: dir})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := mgr.writeIntegrityHighWater(0); err == nil {
+		t.Fatal("want error writing a zero generation high-water")
+	}
+	if err := mgr.writeIntegrityHighWater(math.MaxUint64); err != nil {
+		t.Fatalf("write max high-water: %v", err)
+	}
+	if _, err := mgr.nextIntegrityManifestGeneration(); err == nil {
+		t.Fatal("want overflow error advancing past the maximum generation")
+	}
+}
+
+// TestBaseline_HighWaterDigestMismatchFailsClosed covers the digest-mismatch
+// branch: a high-water whose context matches but whose digest does not (a
+// forged generation value) must fail closed under enforcement.
+func TestBaseline_HighWaterDigestMismatchFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	seedLockedProfile(t, dir)
+	hw := baselineIntegrityKeyPath(dir) + ".generation"
+	data, err := os.ReadFile(filepath.Clean(hw))
+	if err != nil {
+		t.Fatalf("read high-water: %v", err)
+	}
+	var st integrityHighWaterState
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatalf("unmarshal high-water: %v", err)
+	}
+	st.Digest = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	out, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("marshal high-water: %v", err)
+	}
+	if err := os.WriteFile(hw, out, 0o600); err != nil {
+		t.Fatalf("write high-water: %v", err)
+	}
+	if _, err := NewManager(Config{
+		Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock, ProfileDir: dir,
+	}); err == nil {
+		t.Fatal("want fail-closed on high-water digest mismatch")
 	}
 }

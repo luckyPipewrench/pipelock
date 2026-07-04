@@ -35,6 +35,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,6 +46,22 @@ const (
 	baselineAgent     = "liveproof-baseline"
 	taintAgent        = "liveproof-taint"
 )
+
+var (
+	buildOnce        sync.Once
+	buildBin         string
+	buildBinDir      string
+	buildOutput      []byte
+	errBuildPipelock error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if buildBinDir != "" {
+		_ = os.RemoveAll(buildBinDir)
+	}
+	os.Exit(code)
+}
 
 // TestLiveProofBehavioralBaselineEnforcement proves the profile-then-lock
 // behavioral baseline path as a customer runs it: real proxy learns a profile
@@ -168,25 +185,34 @@ type liveServer struct {
 }
 
 type liveProxy struct {
-	cancel context.CancelFunc
-	errCh  <-chan error
-	stdout *bytes.Buffer
-	stderr *bytes.Buffer
+	cancel   context.CancelFunc
+	errCh    <-chan error
+	stdout   *bytes.Buffer
+	stderr   *bytes.Buffer
+	stopOnce sync.Once
 }
 
 func buildPipelock(t *testing.T) string {
 	t.Helper()
 
-	bin := filepath.Join(t.TempDir(), "pipelock")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/pipelock")
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("building shipped pipelock binary: %v\n%s", err, out)
+	buildOnce.Do(func() {
+		buildBinDir, errBuildPipelock = os.MkdirTemp("", "pipelock-liveproof-bin-*")
+		if errBuildPipelock != nil {
+			return
+		}
+		buildBin = filepath.Join(buildBinDir, "pipelock")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		//nolint:gosec // Liveproof intentionally builds the repo binary under test.
+		cmd := exec.CommandContext(ctx, "go", "build", "-o", buildBin, "./cmd/pipelock")
+		cmd.Dir = repoRoot(t)
+		buildOutput, errBuildPipelock = cmd.CombinedOutput()
+	})
+	if errBuildPipelock != nil {
+		t.Fatalf("building shipped pipelock binary: %v\n%s", errBuildPipelock, buildOutput)
 	}
-	return bin
+	return buildBin
 }
 
 func repoRoot(t *testing.T) string {
@@ -204,37 +230,48 @@ func startPipelock(t *testing.T, bin, cfgPath, proxyAddr string) *liveProxy {
 	ctx, cancel := context.WithCancel(context.Background())
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
+	proxy := &liveProxy{cancel: cancel, stdout: stdout, stderr: stderr}
+	t.Cleanup(func() {
+		proxy.stop(t)
+	})
+
 	home := filepath.Join(t.TempDir(), "home")
 	if err := os.MkdirAll(home, 0o750); err != nil {
-		cancel()
 		t.Fatalf("mkdir pipelock home: %v", err)
 	}
 
+	//nolint:gosec // Liveproof intentionally starts the freshly built pipelock binary.
 	cmd := exec.CommandContext(ctx, bin, "run", "--config", cfgPath)
 	cmd.Env = append(os.Environ(), "PIPELOCK_HOME="+home)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
-		cancel()
 		t.Fatalf("starting pipelock: %v\nstderr:\n%s", err, stderr.String())
 	}
 	errCh := make(chan error, 1)
+	proxy.errCh = errCh
 	go func() {
 		errCh <- cmd.Wait()
+		close(errCh)
 	}()
 
 	waitForHTTP(t, "proxy health", "http://"+proxyAddr+"/health", errCh, stderr)
-	return &liveProxy{cancel: cancel, errCh: errCh, stdout: stdout, stderr: stderr}
+	return proxy
 }
 
 func (p *liveProxy) stop(t *testing.T) {
 	t.Helper()
-	p.cancel()
-	select {
-	case <-p.errCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("pipelock process did not exit after cancellation")
-	}
+	p.stopOnce.Do(func() {
+		p.cancel()
+		if p.errCh == nil {
+			return
+		}
+		select {
+		case <-p.errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("pipelock process did not exit after cancellation")
+		}
+	})
 }
 
 func startLiveHTTPServer(t *testing.T, handler http.Handler) liveServer {
@@ -311,7 +348,11 @@ func waitForHTTP(t *testing.T, label, target string, errCh <-chan error, stderr 
 		case <-deadline.C:
 			t.Fatalf("%s did not become ready\nstderr:\n%s", label, stderr.String())
 		case <-ticker.C:
-			resp, err := client.Get(target)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+			if err != nil {
+				t.Fatalf("%s: build readiness request: %v", label, err)
+			}
+			resp, err := client.Do(req)
 			if err != nil {
 				continue
 			}
@@ -343,6 +384,7 @@ func ratifyBaseline(t *testing.T, bin, cfgPath, apiAddr, agent string) {
 }
 
 func runPipelock(ctx context.Context, bin string, args ...string) (string, error) {
+	//nolint:gosec // Liveproof intentionally runs the freshly built pipelock binary.
 	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -438,24 +480,14 @@ behavioral_baseline:
     - domains
     - requests
   poison_resistance: false
-kill_switch:
-  api_token: %s
-  api_listen: %s
-ssrf:
-  ip_allowlist:
-    - "127.0.0.0/8"
-    - "::1/128"
-trusted_domains:
-  - "*.liveproof.test"
+%s
 dns:
   host_overrides:
     steady.liveproof.test:
       - "127.0.0.1"
     deviant.liveproof.test:
       - "127.0.0.1"
-response_scanning:
-  enabled: false
-`, yq(proxyAddr), yq(logPath), yq(profileDir), yq(liveproofAPIToken), yq(apiAddr))
+`, yq(proxyAddr), yq(logPath), yq(profileDir), commonSecurityYAML(apiAddr))
 }
 
 func taintConfig(proxyAddr, apiAddr, logPath string) string {
@@ -481,15 +513,7 @@ logging:
 session_profiling:
   enabled: true
   max_sessions: 10
-kill_switch:
-  api_token: %s
-  api_listen: %s
-ssrf:
-  ip_allowlist:
-    - "127.0.0.0/8"
-    - "::1/128"
-trusted_domains:
-  - "*.liveproof.test"
+%s
 dns:
   host_overrides:
     source.liveproof.test:
@@ -499,9 +523,22 @@ dns:
 taint:
   enabled: true
   policy: strict
+`, yq(taintAgent), yq(proxyAddr), yq(logPath), commonSecurityYAML(apiAddr))
+}
+
+func commonSecurityYAML(apiAddr string) string {
+	return fmt.Sprintf(`kill_switch:
+  api_token: %s
+  api_listen: %s
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"
+    - "::1/128"
+trusted_domains:
+  - "*.liveproof.test"
 response_scanning:
   enabled: false
-`, yq(taintAgent), yq(proxyAddr), yq(logPath), yq(liveproofAPIToken), yq(apiAddr))
+`, yq(liveproofAPIToken), yq(apiAddr))
 }
 
 func yq(s string) string {

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -38,7 +39,7 @@ func (s *SQLiteAuditStore) ListAuditBatchEvidence(ctx context.Context, q AuditEv
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: context", ErrAuditSinkRequired)
 	}
-	if q.OrgID == "" || q.FleetID == "" {
+	if strings.TrimSpace(q.OrgID) == "" || strings.TrimSpace(q.FleetID) == "" {
 		return nil, fmt.Errorf("%w: org_id and fleet_id required", ErrInvalidStoreRecord)
 	}
 	if q.ReceivedFrom.IsZero() || q.ReceivedTo.IsZero() || !q.ReceivedTo.After(q.ReceivedFrom) {

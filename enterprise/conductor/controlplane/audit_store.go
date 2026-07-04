@@ -357,6 +357,9 @@ func (s *SQLiteAuditStore) ListAuditBatches(ctx context.Context, q AuditBatchQue
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: context", ErrAuditSinkRequired)
 	}
+	if strings.TrimSpace(q.OrgID) == "" {
+		return nil, fmt.Errorf("%w: org_id required", ErrInvalidStoreRecord)
+	}
 	limit := normalizeAuditLimit(q.Limit)
 	query := `
 		SELECT batch_id, org_id, fleet_id, instance_id, audit_schema_version,

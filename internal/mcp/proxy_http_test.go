@@ -5604,6 +5604,26 @@ func TestScanHTTPInput_A2ABlockAction(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_A2AMessageSendFilePartSSRFBlock(t *testing.T) {
+	sc := scanner.New(config.Defaults())
+	t.Cleanup(sc.Close)
+
+	a2aCfg := &config.A2AScanning{
+		Enabled: true,
+		Action:  config.ActionBlock,
+	}
+
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"parts":[{"kind":"file","file":{"uri":"http://169.254.169.254/latest/meta-data/iam/security-credentials/"}}]}}}`)
+	var logBuf bytes.Buffer
+	blocked := scanHTTPInput(msg, &logBuf, "test-session", "audit-key", MCPProxyOpts{Scanner: sc, A2ACfg: a2aCfg})
+	if blocked == nil {
+		t.Fatal("expected modern A2A message/send FilePart SSRF to block")
+	}
+	if !strings.Contains(logBuf.String(), "a2a input") {
+		t.Errorf("expected a2a input log, got: %s", logBuf.String())
+	}
+}
+
 // TestScanHTTPInput_A2AWarnAction exercises the A2A input scanning warn path.
 func TestScanHTTPInput_A2AWarnAction(t *testing.T) {
 	sc := testScannerForHTTP(t)

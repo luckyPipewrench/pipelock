@@ -264,6 +264,17 @@ func TestIsA2AMethod(t *testing.T) {
 		want   bool
 	}{
 		{"SendMessage", true},
+		{"message/send", true},
+		{"message/stream", true},
+		{"tasks/get", true},
+		{"tasks/list", true},
+		{"tasks/cancel", true},
+		{"tasks/resubscribe", true},
+		{"tasks/pushNotificationConfig/set", true},
+		{"tasks/pushNotificationConfig/get", true},
+		{"tasks/pushNotificationConfig/list", true},
+		{"tasks/pushNotificationConfig/delete", true},
+		{"agent/getAuthenticatedExtendedCard", true},
 		{"SendStreamingMessage", true},
 		{"GetTask", true},
 		{"ListTasks", true},

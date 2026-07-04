@@ -533,7 +533,7 @@ func RunHTTPListenerProxy(
 
 		// 202 Accepted: notification acknowledged, no body.
 		if upResp.StatusCode == http.StatusAccepted {
-			commitMCPToolCall(baselineRec, frame.ToolCallName)
+			commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -638,7 +638,7 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if scanErr == nil && !foundInjection {
-				commitMCPToolCall(baselineRec, frame.ToolCallName)
+				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 			}
 			if !streamWriter.Wrote() {
 				w.WriteHeader(http.StatusAccepted)
@@ -663,7 +663,7 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(output)
 			return
 		}
-		commitMCPToolCall(baselineRec, frame.ToolCallName)
+		commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 		w.Header().Set("Content-Type", "application/json")
 		output := bytes.TrimSpace(buf.Bytes())
 		if len(output) == 0 {

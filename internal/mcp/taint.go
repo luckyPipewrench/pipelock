@@ -282,6 +282,7 @@ type mcpToolReceiptOpts struct {
 	ParentActionID    string
 	MCPMethod         string
 	ToolName          string
+	Target            string
 	Verdict           string
 	Layer             string
 	Pattern           string
@@ -311,6 +312,10 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		}
 		return nil
 	}
+	target := opts.Target
+	if target == "" {
+		target = opts.ToolName
+	}
 	emitOpts := receipt.EmitOpts{
 		ActionID:            opts.ActionID,
 		ParentActionID:      opts.ParentActionID,
@@ -321,7 +326,7 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		RedactionProfile:    opts.RedactionProfile,
 		RedactionReport:     opts.Report,
 		Transport:           opts.Transport,
-		Target:              opts.ToolName,
+		Target:              target,
 		MCPMethod:           opts.MCPMethod,
 		ToolName:            opts.ToolName,
 		SessionTaintLevel:   opts.Decision.Risk.Level.String(),

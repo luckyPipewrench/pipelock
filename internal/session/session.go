@@ -87,12 +87,13 @@ type BaselineDecision struct {
 // It intentionally mirrors proxy/baseline.SessionMetrics without importing the
 // proxy package here.
 type BaselineMetrics struct {
-	ToolCalls   int
-	UniqueTools int
-	Domains     int
-	Requests    int
-	BytesTotal  int64
-	DurationSec float64
+	ToolCalls      int
+	UniqueTools    int
+	ToolIdentities []string
+	Domains        int
+	Requests       int
+	BytesTotal     int64
+	DurationSec    float64
 }
 
 // ToolCallBaselineRecorder exposes committed and provisional MCP tool-call

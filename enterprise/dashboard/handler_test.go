@@ -480,7 +480,7 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 
 func TestAuditSessionFieldNormalizesAndBoundsDisplay(t *testing.T) {
 	t.Parallel()
-	weird := strings.Repeat("a", auditSessionMaxBytes+20) + "\n\u202ereversed"
+	weird := "session\n\u202ereversed" + strings.Repeat("a", auditSessionMaxBytes+20)
 
 	display, hash := auditSessionField(weird)
 	if len(display) > auditSessionMaxBytes {
@@ -494,6 +494,14 @@ func TestAuditSessionFieldNormalizesAndBoundsDisplay(t *testing.T) {
 	}
 	if len(hash) != 64 {
 		t.Fatalf("hash length = %d, want 64", len(hash))
+	}
+
+	display, hash = auditSessionField("")
+	if display != "-" {
+		t.Fatalf("empty display = %q, want '-'", display)
+	}
+	if len(hash) != 64 {
+		t.Fatalf("empty hash length = %d, want 64", len(hash))
 	}
 }
 

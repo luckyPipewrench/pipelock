@@ -147,6 +147,23 @@ func TestDashboardServe_RawTokenMustDifferFromAuthToken(t *testing.T) {
 	}
 }
 
+func TestDashboardServe_RejectsUnreadableRawTokenFile(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", writeDashTokenFile(t),
+		"--raw-token-file", filepath.Join(t.TempDir(), "missing.raw-token"),
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--raw-token-file") {
+		t.Fatalf("missing raw token file: want --raw-token-file error, got %v", err)
+	}
+}
+
 func TestDashboardServe_RawTokenElevatesAndAudits(t *testing.T) {
 	pub, priv := newDashKeyPair(t)
 	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))

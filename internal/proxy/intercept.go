@@ -1683,6 +1683,23 @@ func newInterceptHandler(
 					w.WriteHeader(resp.StatusCode)
 					written, _ := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
+					if ic.Proxy != nil {
+						ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+							Subsurface:        "response_intercept",
+							Transport:         "connect",
+							SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+							SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
+							RequestID:         ic.RequestID,
+							ConfigHash:        ic.Config.CanonicalPolicyHash(),
+							Agent:             ic.Agent,
+							Profile:           ic.Profile,
+							ActionClass:       captureHTTPActionClass(r.Method),
+							Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+							TransformKind:     capture.TransformRaw,
+							EffectiveAction:   config.ActionAllow,
+							Outcome:           captureOutcome(config.ActionAllow, true),
+						})
+					}
 					ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
 					if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding {
 						ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -1690,7 +1707,8 @@ func newInterceptHandler(
 					return
 				}
 				var scanFailure *sizeExemptResponseReadError
-				respBody, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes)
+				var releaseSizeExemptScan sizeExemptScanRelease
+				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes)
 				if scanFailure != nil {
 					if scanFailure.Err != nil {
 						ic.Logger.LogError(actx, scanFailure.Err)
@@ -1715,6 +1733,7 @@ func newInterceptHandler(
 					writeBlockedError(w, info, "blocked: "+scanFailure.Reason, http.StatusForbidden)
 					return
 				}
+				defer releaseSizeExemptScan()
 			} else {
 				reason := responseSizeBlockReason(ic.TargetHost, int64(len(respBody)), maxResp, "tls_interception.max_response_bytes")
 				ic.Logger.LogBlocked(actx, "tls_response_blocked", reason)

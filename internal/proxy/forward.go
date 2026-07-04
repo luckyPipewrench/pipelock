@@ -2013,6 +2013,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
 						_ = resolved.Budget.RecordBytes(written)
 						duration := time.Since(start)
+						p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+							Subsurface:        "response_forward",
+							Transport:         "forward",
+							SessionID:         captureSessionKey(agent, clientIP),
+							SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
+							RequestID:         requestID,
+							ConfigHash:        cfg.CanonicalPolicyHash(),
+							Agent:             agent,
+							Profile:           id.Profile,
+							ActionClass:       captureHTTPActionClass(r.Method),
+							Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+							TransformKind:     capture.TransformRaw,
+							EffectiveAction:   config.ActionAllow,
+							Outcome:           captureOutcome(config.ActionAllow, true),
+						})
 						p.metrics.RecordAllowed(duration, agentLabel)
 						p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 						if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
@@ -2021,7 +2036,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					var scanFailure *sizeExemptResponseReadError
-					respBody, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
+					var releaseSizeExemptScan sizeExemptScanRelease
+					respBody, releaseSizeExemptScan, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
 					if scanFailure != nil {
 						if scanFailure.Err != nil {
 							p.logger.LogError(actx, scanFailure.Err)
@@ -2045,6 +2061,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						writeBlockedError(w, info, "blocked: "+scanFailure.Reason, http.StatusForbidden)
 						return
 					}
+					defer releaseSizeExemptScan()
 				} else {
 					reason := responseSizeBlockReason(fwdRespHost, int64(len(respBody)), maxBytes, "fetch_proxy.max_response_mb")
 					p.logger.LogBlocked(actx, "response_scan", reason)

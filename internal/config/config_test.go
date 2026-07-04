@@ -479,6 +479,35 @@ func TestValidate_ResponseScanningSizeExemptInflightBelowPerScan(t *testing.T) {
 	}
 }
 
+func TestValidate_ResponseScanningSizeExemptInflightEqualsPerScan(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptScanMaxBytes = 1024
+	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 1024
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with equal size-exempt scan/inflight limits = %v", err)
+	}
+}
+
+func TestValidate_ResponseScanningUnscannablePassthroughWarnsWhenHostNotSizeExempt(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
+	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
+		Host:         "other.example.com",
+		Paths:        []string{"/artifacts/pkg.bin"},
+		ContentTypes: []string{"application/octet-stream"},
+		Reason:       "opaque signed archive",
+		Expires:      "2099-12-31",
+	}}
+
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatalf("ValidateWithWarnings() error = %v", err)
+	}
+	if !hasConfigWarning(warnings, "response_scanning.unscannable_passthrough[0].host") {
+		t.Fatalf("warnings = %+v, want inert passthrough host warning", warnings)
+	}
+}
+
 func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
 	t.Parallel()
 

@@ -1473,12 +1473,16 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					RequestID: requestID,
 					Agent:     agent,
 				})
-				resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
+				resp.Body = readCloserWithClose{
+					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
+					Closer: resp.Body,
+				}
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 				return nil
 			}
 			var scanFailure *sizeExemptResponseReadError
-			body, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
+			var releaseSizeExemptScan sizeExemptScanRelease
+			body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)
 			if scanFailure != nil {
 				_ = resp.Body.Close()
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
@@ -1502,6 +1506,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				replaceWithBlockResponse(resp, []string{scanFailure.Reason})
 				return nil
 			}
+			defer releaseSizeExemptScan()
 		} else {
 			_ = resp.Body.Close()
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")

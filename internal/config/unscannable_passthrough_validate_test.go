@@ -259,6 +259,14 @@ func TestValidateResponseScanningSizeExemptBoundsRejectInvalidValues(t *testing.
 			},
 			wantErr: "response_scanning.size_exempt_scan_max_inflight_bytes must be > 0",
 		},
+		{
+			name: "inflight below scan max",
+			mutate: func(cfg *Config) {
+				cfg.ResponseScanning.SizeExemptScanMaxBytes = 100
+				cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 50
+			},
+			wantErr: "response_scanning.size_exempt_scan_max_inflight_bytes must be >= response_scanning.size_exempt_scan_max_bytes",
+		},
 	}
 
 	for _, tt := range tests {
@@ -283,6 +291,7 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
 		Host:         "downloads.example.com",
 		Paths:        []string{"/artifacts/pkg.bin"},
+		PathPrefixes: []string{"/legacy"},
 		ContentTypes: []string{"application/octet-stream"},
 		Reason:       "opaque signed archive",
 		Expires:      "2099-01-01",
@@ -291,6 +300,7 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 	clone := cfg.Clone()
 	clone.ResponseScanning.SizeExemptDomains[0] = "mutated.example.com"
 	clone.ResponseScanning.UnscannablePassthrough[0].Paths[0] = "/mutated"
+	clone.ResponseScanning.UnscannablePassthrough[0].PathPrefixes[0] = "/mutated-prefix"
 	clone.ResponseScanning.UnscannablePassthrough[0].ContentTypes[0] = "text/plain"
 
 	if got := cfg.ResponseScanning.SizeExemptDomains[0]; got != "downloads.example.com" {
@@ -298,6 +308,9 @@ func TestCloneResponseScanningSizeExemptSlicesDoNotAlias(t *testing.T) {
 	}
 	if got := cfg.ResponseScanning.UnscannablePassthrough[0].Paths[0]; got != "/artifacts/pkg.bin" {
 		t.Fatalf("source path = %q, want no alias", got)
+	}
+	if got := cfg.ResponseScanning.UnscannablePassthrough[0].PathPrefixes[0]; got != "/legacy" {
+		t.Fatalf("source path prefix = %q, want no alias", got)
 	}
 	if got := cfg.ResponseScanning.UnscannablePassthrough[0].ContentTypes[0]; got != "application/octet-stream" {
 		t.Fatalf("source content type = %q, want no alias", got)

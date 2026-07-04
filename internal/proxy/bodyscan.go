@@ -160,7 +160,16 @@ type sizeExemptScanBudget struct {
 	inflightBytes atomic.Int64
 }
 
-func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int) ([]byte, *sizeExemptResponseReadError) {
+type readCloserWithClose struct {
+	io.Reader
+	io.Closer
+}
+
+type sizeExemptScanRelease func()
+
+func noopSizeExemptScanRelease() {}
+
+func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int) ([]byte, sizeExemptScanRelease, *sizeExemptResponseReadError) {
 	ceiling := int64(scanMaxBytes)
 	if ceiling <= 0 {
 		ceiling = int64(config.DefaultSizeExemptScanMaxBytes)
@@ -170,28 +179,32 @@ func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix
 		inflightLimit = int64(config.DefaultSizeExemptScanMaxInflightBytes)
 	}
 	if !b.reserveSizeExemptScanBytes(ceiling, inflightLimit) {
-		return nil, &sizeExemptResponseReadError{
+		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureInflight,
 			Reason: fmt.Sprintf("size-exempt response scan for %s would reserve %d bytes and exceed this proxy instance's response_scanning.size_exempt_scan_max_inflight_bytes %d bytes", responseSizeHost(host), ceiling, inflightLimit),
 		}
 	}
-	defer b.releaseSizeExemptScanBytes(ceiling)
+	release := func() {
+		b.releaseSizeExemptScanBytes(ceiling)
+	}
 
 	fullBody, err := io.ReadAll(io.LimitReader(io.MultiReader(bytes.NewReader(prefix), body), ceiling+1))
 	if err != nil {
-		return nil, &sizeExemptResponseReadError{
+		release()
+		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureReadError,
 			Reason: "response read error",
 			Err:    err,
 		}
 	}
 	if int64(len(fullBody)) > ceiling {
-		return nil, &sizeExemptResponseReadError{
+		release()
+		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureOversize,
 			Reason: responseSizeExemptScanBlockReason(host, int64(len(fullBody)), ceiling),
 		}
 	}
-	return fullBody, nil
+	return fullBody, release, nil
 }
 
 func (b *sizeExemptScanBudget) reserveSizeExemptScanBytes(bytesToReserve, limit int64) bool {

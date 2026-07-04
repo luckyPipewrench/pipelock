@@ -77,11 +77,12 @@ func TestSizeExemptResponseHelpersCoverBoundaryBranches(t *testing.T) {
 	t.Run("emptyHostReadErrorUsesDefaultsAndReleases", func(t *testing.T) {
 		var budget sizeExemptScanBudget
 
-		_, scanErr := budget.readBoundedSizeExemptResponse("", nil, errReader{}, 0, 0)
+		_, release, scanErr := budget.readBoundedSizeExemptResponse("", nil, errReader{}, 0, 0)
 
 		if scanErr == nil {
 			t.Fatal("expected read error")
 		}
+		release()
 		if scanErr.Kind != sizeExemptReadFailureReadError {
 			t.Fatalf("kind = %q, want %q", scanErr.Kind, sizeExemptReadFailureReadError)
 		}
@@ -93,15 +94,53 @@ func TestSizeExemptResponseHelpersCoverBoundaryBranches(t *testing.T) {
 	t.Run("defaultsAllowCleanRead", func(t *testing.T) {
 		var budget sizeExemptScanBudget
 
-		got, scanErr := budget.readBoundedSizeExemptResponse("", []byte("pre"), strings.NewReader("fix"), 0, 0)
+		got, release, scanErr := budget.readBoundedSizeExemptResponse("", []byte("pre"), strings.NewReader("fix"), 0, 0)
 
 		if scanErr != nil {
 			t.Fatalf("readBoundedSizeExemptResponse() error = %v", scanErr)
 		}
+		if got := budget.inflightBytes.Load(); got == 0 {
+			t.Fatal("inflight bytes released before caller finished scan")
+		}
 		if string(got) != "prefix" {
 			t.Fatalf("body = %q, want prefix", got)
 		}
+		release()
+		if got := budget.inflightBytes.Load(); got != 0 {
+			t.Fatalf("inflight bytes after release = %d, want 0", got)
+		}
 	})
+}
+
+func TestReadCloserWithCloseForwardsClose(t *testing.T) {
+	var closed bool
+	wrapped := readCloserWithClose{
+		Reader: strings.NewReader("body"),
+		Closer: closeFunc(func() error {
+			closed = true
+			return nil
+		}),
+	}
+
+	body, err := io.ReadAll(wrapped)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(body) != "body" {
+		t.Fatalf("body = %q, want body", body)
+	}
+	if err := wrapped.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !closed {
+		t.Fatal("Close() did not forward to underlying closer")
+	}
+}
+
+type closeFunc func() error
+
+func (f closeFunc) Close() error {
+	return f()
 }
 
 func sizeExemptCleanResponsePatterns() []config.ResponseScanPattern {

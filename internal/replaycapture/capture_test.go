@@ -20,6 +20,46 @@ func newTestEngine(t *testing.T) *Engine {
 	return eng
 }
 
+func TestDefaultScenarios_PublicContract(t *testing.T) {
+	t.Parallel()
+
+	want := []struct {
+		id        string
+		transport string
+		verdict   string
+		layer     string
+	}{
+		{"allowed-safe-read", TransportFetch, verdictAllow, ""},
+		{"secret-exfil-url-blocked", TransportFetch, verdictBlock, "core_dlp"},
+		{"prompt-injection-response-blocked", TransportFetch, verdictBlock, "response_scan"},
+		{"ssrf-internal-target-blocked", TransportFetch, verdictBlock, "ssrf_metadata"},
+		{"operation-aware-policy", TransportForward, verdictBlock, "request_policy"},
+		{"poisoned-ticket-webhook-exfil", TransportForward, verdictBlock, "body_dlp"},
+		{"poisoned-readme-key-paste", TransportForward, verdictBlock, "body_dlp"},
+		{"hostile-page-session-keys", TransportForward, verdictBlock, "body_dlp"},
+	}
+
+	got := DefaultScenarios()
+	if len(got) != len(want) {
+		t.Fatalf("DefaultScenarios count = %d, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		s := got[i]
+		if s.ID != w.id {
+			t.Errorf("scenario[%d].ID = %q, want %q", i, s.ID, w.id)
+		}
+		if s.Transport != w.transport {
+			t.Errorf("%s transport = %q, want %q", s.ID, s.Transport, w.transport)
+		}
+		if s.ExpectedVerdict != w.verdict {
+			t.Errorf("%s verdict = %q, want %q", s.ID, s.ExpectedVerdict, w.verdict)
+		}
+		if s.ExpectedLayer != w.layer {
+			t.Errorf("%s layer = %q, want %q", s.ID, s.ExpectedLayer, w.layer)
+		}
+	}
+}
+
 // TestCapture_AllScenarios drives every default scenario through a real proxy
 // and asserts the captured, signed receipt chain matches the declared expected
 // verdict. This is the integration guard: if the real scanner pipeline disagrees

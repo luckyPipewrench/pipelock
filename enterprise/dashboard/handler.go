@@ -6,7 +6,10 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io"
@@ -22,6 +25,7 @@ const (
 	contentSecurityPolicy = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 	contentTypeHTML       = "text/html; charset=utf-8"
 	contentTypeText       = "text/plain; charset=utf-8"
+	auditSessionMaxBytes  = 128
 )
 
 //go:embed evidence.tmpl.html
@@ -70,11 +74,18 @@ type dashboardHandler struct {
 	auditMu      sync.Mutex
 }
 
+type rawAllowedContextKey struct{}
+
 // rawAllowed reports whether this request may see the raw view (destinations
 // and full signed payloads). Fail closed: raw is shown only when an authorizer
 // is configured and accepts the request.
 func (d *dashboardHandler) rawAllowed(r *http.Request) bool {
 	return d.authorizeRaw != nil && d.authorizeRaw(r) == nil
+}
+
+func rawAllowedFromContext(r *http.Request) bool {
+	raw, _ := r.Context().Value(rawAllowedContextKey{}).(bool)
+	return raw
 }
 
 // recordAudit writes one access-log line for an authenticated request. Viewing
@@ -94,10 +105,38 @@ func (d *dashboardHandler) recordAudit(r *http.Request, raw bool) {
 	if session == "" {
 		session = "-"
 	}
+	sessionDisplay, sessionHash := auditSessionField(session)
 	d.auditMu.Lock()
 	defer d.auditMu.Unlock()
-	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s method=%s path=%q session=%q remote=%s\n",
-		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path, session, r.RemoteAddr)
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s method=%s path=%q session=%q session_sha256=%s remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path, sessionDisplay, sessionHash, r.RemoteAddr)
+}
+
+func auditSessionField(session string) (display, hash string) {
+	sum := sha256.Sum256([]byte(session))
+	hash = hex.EncodeToString(sum[:])
+
+	var b strings.Builder
+	truncated := false
+	for _, r := range session {
+		if b.Len() >= auditSessionMaxBytes {
+			truncated = true
+			break
+		}
+		if r >= 0x20 && r <= 0x7e {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('?')
+	}
+	display = b.String()
+	if truncated && len(display) > 3 {
+		display = display[:auditSessionMaxBytes-3] + "..."
+	}
+	if display == "" {
+		display = "-"
+	}
+	return display, hash
 }
 
 func (d *dashboardHandler) gate(next http.Handler) http.Handler {
@@ -122,8 +161,9 @@ func (d *dashboardHandler) gate(next http.Handler) http.Handler {
 				return
 			}
 		}
-		d.recordAudit(r, d.rawAllowed(r))
-		next.ServeHTTP(w, r)
+		raw := d.rawAllowed(r)
+		d.recordAudit(r, raw)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), rawAllowedContextKey{}, raw)))
 	})
 }
 
@@ -146,7 +186,7 @@ func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if selected == "" && len(sessions) > 0 {
 		selected = sessions[0].ID
 	}
-	d.render(w, sessions, selected, d.rawAllowed(r))
+	d.render(w, sessions, selected, rawAllowedFromContext(r))
 }
 
 func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +204,7 @@ func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "could not read evidence sessions", http.StatusInternalServerError)
 		return
 	}
-	d.render(w, sessions, selected, d.rawAllowed(r))
+	d.render(w, sessions, selected, rawAllowedFromContext(r))
 }
 
 func requireGet(w http.ResponseWriter, r *http.Request) bool {

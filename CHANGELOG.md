@@ -9,7 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Enterprise Evidence dashboard now supports a two-tier token model:
+  `--auth-token-file` grants the redacted metadata view, while optional
+  `--raw-token-file` unlocks raw destinations and signed payloads.
+- Enterprise Evidence dashboard access is audited on stderr with role, method,
+  path, session, and remote address for each authenticated request.
+
 ### Changed
+
+- Enterprise Evidence dashboard redacts receipt destinations and signed payloads
+  by default before template rendering.
 
 ### Fixed
 

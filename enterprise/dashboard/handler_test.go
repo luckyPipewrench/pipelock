@@ -380,6 +380,41 @@ func TestHandler_RawAccessShowsDetail(t *testing.T) {
 	}
 }
 
+func TestHandler_RawAccessDecisionIsCachedPerRequest(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	var calls int
+	var audit strings.Builder
+	handler := New(Options{
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
+		AuthorizeRaw: func(*http.Request) error {
+			calls++
+			if calls == 1 {
+				return nil
+			}
+			return errors.New("raw authorizer called more than once")
+		},
+		AuditWriter: &audit,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("AuthorizeRaw calls = %d, want 1", calls)
+	}
+	if !strings.Contains(rec.Body.String(), "Signed JSON payload") {
+		t.Fatalf("cached raw decision should drive render; body=%s", rec.Body.String())
+	}
+	if !strings.Contains(audit.String(), "role=raw") {
+		t.Fatalf("cached raw decision should drive audit role; audit=%q", audit.String())
+	}
+}
+
 func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Parallel()
 	dir, trusted := writeTrustedHandlerSession(t)
@@ -396,6 +431,9 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	}
 	if !strings.Contains(meta.String(), "session=\""+testSessionID+"\"") {
 		t.Errorf("audit log should record the session; got %q", meta.String())
+	}
+	if !strings.Contains(meta.String(), "session_sha256=") {
+		t.Errorf("audit log should record the session hash; got %q", meta.String())
 	}
 
 	// Session carried as a query param (index route) is recorded too.
@@ -431,6 +469,25 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if !strings.Contains(raw.String(), "role=raw") {
 		t.Errorf("audit log should record raw role; got %q", raw.String())
+	}
+}
+
+func TestAuditSessionFieldNormalizesAndBoundsDisplay(t *testing.T) {
+	t.Parallel()
+	weird := strings.Repeat("a", auditSessionMaxBytes+20) + "\n\u202ereversed"
+
+	display, hash := auditSessionField(weird)
+	if len(display) > auditSessionMaxBytes {
+		t.Fatalf("display length = %d, want <= %d", len(display), auditSessionMaxBytes)
+	}
+	if strings.ContainsAny(display, "\n\r\t") || strings.Contains(display, "\u202e") {
+		t.Fatalf("display should not carry control or confusing Unicode: %q", display)
+	}
+	if !strings.HasSuffix(display, "...") {
+		t.Fatalf("long display should be visibly truncated: %q", display)
+	}
+	if len(hash) != 64 {
+		t.Fatalf("hash length = %d, want 64", len(hash))
 	}
 }
 

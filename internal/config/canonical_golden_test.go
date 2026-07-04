@@ -236,7 +236,10 @@ const (
 	// Re-bumped for Markdown Link Credential Exfiltration, which extends the
 	// response-injection defaults from image-only markdown exfil to ordinary
 	// markdown links that solicit credentials.
-	goldenHashDefaults = "604f9e094b8fe6d3713c0db399b662a70da8fb113fbb52e9cea9c5fa84150ed6"
+	// Re-bumped for tightening Markdown Link Credential Exfiltration with an
+	// exfiltration-direction cue, so ordinary credential setup docs with later
+	// links no longer match while credential-to-link exfil prompts still block.
+	goldenHashDefaults = "653bdc24e1e41c3243a246b1e743eb35f152150a37c2f159e1f8b78ffe74c58e"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -351,7 +354,7 @@ const (
 	// Re-bumped for Markdown Link Credential Exfiltration: see goldenHashDefaults
 	// note above; the rich fixture inherits the default response-scanning pattern
 	// set, so the hash shifts in lockstep.
-	goldenHashRichConfig = "edf802b9962e6fe230c45496133ef14bf4c0122ce2da238c38eaa25636794151"
+	goldenHashRichConfig = "6cd2eb6e87a28a694a4bfd2f09a1b9c212f6f06c1a6f700f591b6cd8e98ab13e"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

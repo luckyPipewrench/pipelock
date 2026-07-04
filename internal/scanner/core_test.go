@@ -414,11 +414,43 @@ func TestCore_MarkdownLinkCredentialExfiltrationBenignProseClean(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	content := "The guide explains how API tokens work in [authentication docs](https://docs.example.com/auth)."
-	result := s.ScanResponse(context.Background(), content)
-	for _, match := range result.Matches {
-		if match.PatternName == "Markdown Link Credential Exfiltration" {
-			t.Fatalf("benign prose link matched markdown credential exfiltration: %+v", match)
+	tests := []string{
+		"The guide explains how API tokens work in [authentication docs](https://docs.example.com/auth).",
+		"Please copy your API token, then see [the setup guide](https://docs.example.com/setup) for more details.",
+		"Include your API token in the Authorization header, then see [auth docs](https://docs.example.com/auth).",
+		"Copy your token and keep it safe. Later, refer to [the setup guide](https://docs.example.com/setup).",
+		"Copy your API token, then use [the setup guide](https://docs.example.com/setup) to finish configuration.",
+	}
+	for _, content := range tests {
+		t.Run(content, func(t *testing.T) {
+			result := s.ScanResponse(context.Background(), content)
+			for _, match := range result.Matches {
+				if match.PatternName == "Markdown Link Credential Exfiltration" {
+					t.Fatalf("benign prose link matched markdown credential exfiltration: %+v", match)
+				}
+			}
+		})
+	}
+}
+
+func TestCore_ResponsePatterns_MarkdownLinkCredentialExfiltrationRegexParity(t *testing.T) {
+	t.Parallel()
+
+	surfaces := map[string]string{
+		"config constant":    config.MarkdownLinkCredentialExfilRegex,
+		"default config":     responsePatternRegex(t, config.Defaults().ResponseScanning.Patterns, "Markdown Link Credential Exfiltration"),
+		"core floor":         coreResponsePatternRegex(t, "Markdown Link Credential Exfiltration"),
+		"balanced yaml":      yamlResponsePatternRegex(t, "../../configs/balanced.yaml", "Markdown Link Credential Exfiltration"),
+		"strict yaml":        yamlResponsePatternRegex(t, "../../configs/strict.yaml", "Markdown Link Credential Exfiltration"),
+		"audit yaml":         yamlResponsePatternRegex(t, "../../configs/audit.yaml", "Markdown Link Credential Exfiltration"),
+		"claude-code yaml":   yamlResponsePatternRegex(t, "../../configs/claude-code.yaml", "Markdown Link Credential Exfiltration"),
+		"cursor yaml":        yamlResponsePatternRegex(t, "../../configs/cursor.yaml", "Markdown Link Credential Exfiltration"),
+		"generic-agent yaml": yamlResponsePatternRegex(t, "../../configs/generic-agent.yaml", "Markdown Link Credential Exfiltration"),
+		"hostile-model yaml": yamlResponsePatternRegex(t, "../../configs/hostile-model.yaml", "Markdown Link Credential Exfiltration"),
+	}
+	for surface, got := range surfaces {
+		if got != config.MarkdownLinkCredentialExfilRegex {
+			t.Fatalf("%s regex drifted from config.MarkdownLinkCredentialExfilRegex", surface)
 		}
 	}
 }

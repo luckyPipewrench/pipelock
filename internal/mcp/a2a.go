@@ -288,8 +288,17 @@ var a2aMethods = map[string]bool{
 	"GetExtendedAgentCard":             true,
 	// Current A2A JSON-RPC method names use slash-delimited lowercase
 	// verbs. Keep the legacy CamelCase names above for compatibility.
-	"message/send":   true,
-	"message/stream": true,
+	"message/send":                        true,
+	"message/stream":                      true,
+	"tasks/get":                           true,
+	"tasks/list":                          true,
+	"tasks/cancel":                        true,
+	"tasks/resubscribe":                   true,
+	"tasks/pushNotificationConfig/set":    true,
+	"tasks/pushNotificationConfig/get":    true,
+	"tasks/pushNotificationConfig/list":   true,
+	"tasks/pushNotificationConfig/delete": true,
+	"agent/getAuthenticatedExtendedCard":  true,
 }
 
 // IsA2AMethod returns true if the JSON-RPC method name is an A2A method.

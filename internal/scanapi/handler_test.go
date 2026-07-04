@@ -609,6 +609,14 @@ func TestScanDLP_EmbeddedURLViewsCatchEscapedAndEncodedSSRF(t *testing.T) {
 			name: "percent encoded json escaped slash",
 			text: `{"uri":"http%3A%5C%2F%5C%2F169.254.169.254%5C%2Flatest%5C%2Fmeta-data%5C%2F"}`,
 		},
+		{
+			name: "html entity encoded",
+			text: `{"uri":"http&#x3a;&#x2f;&#x2f;169.254.169.254&#x2f;latest&#x2f;meta-data&#x2f;"}`,
+		},
+		{
+			name: "percent encoded html entity",
+			text: `{"uri":"http%26%23x3a%3b%26%23x2f%3b%26%23x2f%3b169.254.169.254%26%23x2f%3blatest%26%23x2f%3bmeta-data%26%23x2f%3b"}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

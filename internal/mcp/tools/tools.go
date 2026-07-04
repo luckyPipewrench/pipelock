@@ -990,7 +990,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 			// Normalization prevents zero-width char and confusable bypasses.
 			poison := checkToolPoison(normalize.ForToolText(text))
 			if len(poison) > 0 {
-				match.ToolPoison = poison
+				match.ToolPoison = append(match.ToolPoison, poison...)
 				hasFinding = true
 			}
 

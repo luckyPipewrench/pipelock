@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -24,7 +25,9 @@ var embeddedHTTPURLTokenRe = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>\\]+`)
 
 const (
 	maxEmbeddedURLPercentDecodePasses = 3
+	maxEmbeddedURLHTMLDecodePasses    = 3
 	maxEmbeddedURLScans               = 32
+	maxEmbeddedURLTextViews           = 16
 )
 
 type embeddedURLScanResults struct {
@@ -165,12 +168,15 @@ func embeddedURLTextViews(text string) []string {
 	views := make([]string, 0, 4)
 	seen := make(map[string]struct{}, 4)
 	addView := func(view string) {
+		if len(views) >= maxEmbeddedURLTextViews {
+			return
+		}
 		if _, ok := seen[view]; ok {
 			return
 		}
 		seen[view] = struct{}{}
 		views = append(views, view)
-		if strings.Contains(view, `\/`) {
+		if strings.Contains(view, `\/`) && len(views) < maxEmbeddedURLTextViews {
 			slashDecoded := strings.ReplaceAll(view, `\/`, `/`)
 			if _, ok := seen[slashDecoded]; !ok {
 				seen[slashDecoded] = struct{}{}
@@ -179,17 +185,26 @@ func embeddedURLTextViews(text string) []string {
 		}
 	}
 	addView(text)
-	percentDecoded := text
-	for range maxEmbeddedURLPercentDecodePasses {
-		if !strings.Contains(percentDecoded, "%") {
+
+	for range max(maxEmbeddedURLPercentDecodePasses, maxEmbeddedURLHTMLDecodePasses) {
+		startLen := len(views)
+		for _, view := range views[:startLen] {
+			if strings.Contains(view, "%") {
+				decoded, err := url.PathUnescape(view)
+				if err == nil && decoded != view {
+					addView(decoded)
+				}
+			}
+			if strings.Contains(view, "&") {
+				decoded := html.UnescapeString(view)
+				if decoded != view {
+					addView(decoded)
+				}
+			}
+		}
+		if len(views) == startLen {
 			break
 		}
-		decoded, err := url.PathUnescape(percentDecoded)
-		if err != nil || decoded == percentDecoded {
-			break
-		}
-		addView(decoded)
-		percentDecoded = decoded
 	}
 	return views
 }

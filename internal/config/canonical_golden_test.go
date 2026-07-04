@@ -251,7 +251,10 @@ const (
 	// nouns, and link-first submit/paste-there phrasing now still block.
 	// Re-bumped for same-class destination cue coverage: "in [form]" and
 	// "at [portal]" now block like "into [form]" and "to [portal]".
-	goldenHashDefaults = "c4db808239e4a48660e5cd60ab3729433e61e2d118ff59044a65566053f8292d"
+	// Re-bumped for link-first markdown credential exfiltration coverage:
+	// "[link] to send/paste/append/put credential" now blocks when terminal
+	// or pointing here/there, while setup docs that paste into a local app stay clean.
+	goldenHashDefaults = "2241b806bc76eeff1d6e09ab245bb0cf6016464ca7c2f051cd3ccf0ee8df5864"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -374,7 +377,9 @@ const (
 	// goldenHashDefaults note above.
 	// Re-bumped for same-class destination cue coverage: see goldenHashDefaults
 	// note above.
-	goldenHashRichConfig = "67522bdcda97477f860a8211209e6334bdd2ac1fb45750ccbe6005261d6bef9a"
+	// Re-bumped for link-first send/paste/append/put coverage: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "b6f9b9503612b50654d320418932e8570cf0dcbd3a9599ef726afe70e7534db4"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

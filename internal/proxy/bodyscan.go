@@ -18,8 +18,10 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"path"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
@@ -132,6 +134,197 @@ func isResponseScanExempt(hostname string, exemptDomains []string) bool {
 // scan ceiling; request-side scanning and cumulative data budgets still apply.
 func isResponseSizeExempt(hostname string, exemptDomains []string) bool {
 	return isDomainExempt(hostname, exemptDomains)
+}
+
+type sizeExemptResponseReadErrorKind string
+
+const (
+	sizeExemptReadFailureReadError sizeExemptResponseReadErrorKind = "read_error"
+	sizeExemptReadFailureOversize  sizeExemptResponseReadErrorKind = "oversize"
+	sizeExemptReadFailureInflight  sizeExemptResponseReadErrorKind = "inflight_budget"
+)
+
+type sizeExemptResponseReadError struct {
+	Kind   sizeExemptResponseReadErrorKind
+	Reason string
+	Err    error
+}
+
+func (f *sizeExemptResponseReadError) Error() string {
+	if f == nil {
+		return ""
+	}
+	return f.Reason
+}
+
+var sizeExemptScanInflightBytes atomic.Int64
+
+func readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int) ([]byte, *sizeExemptResponseReadError) {
+	ceiling := int64(scanMaxBytes)
+	if ceiling <= 0 {
+		ceiling = int64(config.DefaultSizeExemptScanMaxBytes)
+	}
+	inflightLimit := int64(inflightMaxBytes)
+	if inflightLimit <= 0 {
+		inflightLimit = int64(config.DefaultSizeExemptScanMaxInflightBytes)
+	}
+	if !reserveSizeExemptScanBytes(ceiling, inflightLimit) {
+		return nil, &sizeExemptResponseReadError{
+			Kind:   sizeExemptReadFailureInflight,
+			Reason: fmt.Sprintf("size-exempt response scan for %s would reserve %d bytes and exceed process-wide response_scanning.size_exempt_scan_max_inflight_bytes %d bytes", responseSizeHost(host), ceiling, inflightLimit),
+		}
+	}
+	defer releaseSizeExemptScanBytes(ceiling)
+
+	fullBody, err := io.ReadAll(io.LimitReader(io.MultiReader(bytes.NewReader(prefix), body), ceiling+1))
+	if err != nil {
+		return nil, &sizeExemptResponseReadError{
+			Kind:   sizeExemptReadFailureReadError,
+			Reason: "response read error",
+			Err:    err,
+		}
+	}
+	if int64(len(fullBody)) > ceiling {
+		return nil, &sizeExemptResponseReadError{
+			Kind:   sizeExemptReadFailureOversize,
+			Reason: responseSizeExemptScanBlockReason(host, int64(len(fullBody)), ceiling),
+		}
+	}
+	return fullBody, nil
+}
+
+func reserveSizeExemptScanBytes(bytesToReserve, limit int64) bool {
+	if bytesToReserve <= 0 {
+		return true
+	}
+	for {
+		current := sizeExemptScanInflightBytes.Load()
+		if current > limit-bytesToReserve {
+			return false
+		}
+		if sizeExemptScanInflightBytes.CompareAndSwap(current, current+bytesToReserve) {
+			return true
+		}
+	}
+}
+
+func releaseSizeExemptScanBytes(bytesToRelease int64) {
+	if bytesToRelease <= 0 {
+		return
+	}
+	sizeExemptScanInflightBytes.Add(-bytesToRelease)
+}
+
+func responseSizeHost(host string) string {
+	if host == "" {
+		return "unknown-host"
+	}
+	return host
+}
+
+type unscannablePassthroughMatch struct {
+	Entry       config.UnscannablePassthroughEntry
+	ContentType string
+}
+
+func matchUnscannablePassthrough(host, pathValue, contentType string, entries []config.UnscannablePassthroughEntry, now time.Time) (unscannablePassthroughMatch, bool) {
+	if len(entries) == 0 {
+		return unscannablePassthroughMatch{}, false
+	}
+	mediaType := responseMediaType(contentType)
+	if pathValue == "" {
+		pathValue = "/"
+	}
+	for _, entry := range entries {
+		if !scanner.MatchDomain(host, entry.Host) {
+			continue
+		}
+		if unscannablePassthroughExpired(entry.Expires, now) {
+			continue
+		}
+		if len(entry.PathPrefixes) > 0 && !pathMatchesAnyPrefix(pathValue, entry.PathPrefixes) {
+			continue
+		}
+		if len(entry.ContentTypes) > 0 && !contentTypeMatchesAny(mediaType, entry.ContentTypes) {
+			continue
+		}
+		return unscannablePassthroughMatch{Entry: entry, ContentType: mediaType}, true
+	}
+	return unscannablePassthroughMatch{}, false
+}
+
+func responseMediaType(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(strings.ToLower(strings.TrimSpace(contentType)))
+	if err == nil {
+		return mediaType
+	}
+	return ""
+}
+
+func unscannablePassthroughExpired(expires string, now time.Time) bool {
+	expires = strings.TrimSpace(expires)
+	if expires == "" {
+		return true
+	}
+	expireDate, err := time.Parse("2006-01-02", expires)
+	if err != nil {
+		return true
+	}
+	y, m, d := now.UTC().Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	return expireDate.Before(today)
+}
+
+func pathMatchesAnyPrefix(pathValue string, prefixes []string) bool {
+	canonicalPath, ok := canonicalUnscannablePassthroughPath(pathValue)
+	if !ok {
+		return false
+	}
+	for _, prefix := range prefixes {
+		canonicalPrefix, prefixOK := canonicalUnscannablePassthroughPath(prefix)
+		if prefixOK && pathMatchesPrefixBoundary(canonicalPath, canonicalPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalUnscannablePassthroughPath(raw string) (string, bool) {
+	if raw == "" {
+		raw = "/"
+	}
+	decoded, err := url.PathUnescape(raw)
+	if err != nil || !strings.HasPrefix(decoded, "/") {
+		return "", false
+	}
+	withoutTrailingSlash := strings.TrimRight(decoded, "/")
+	if withoutTrailingSlash == "" {
+		withoutTrailingSlash = "/"
+	}
+	if path.Clean(decoded) != withoutTrailingSlash {
+		return "", false
+	}
+	return decoded, true
+}
+
+func pathMatchesPrefixBoundary(pathValue, prefix string) bool {
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" {
+		prefix = "/"
+	}
+	if prefix == "/" {
+		return true
+	}
+	return pathValue == prefix || strings.HasPrefix(pathValue, prefix+"/")
+}
+
+func contentTypeMatchesAny(mediaType string, allowed []string) bool {
+	for _, ct := range allowed {
+		if strings.EqualFold(mediaType, ct) {
+			return true
+		}
+	}
+	return false
 }
 
 // shouldHardBlockBodyPromptInjection returns true when a prompt-injection

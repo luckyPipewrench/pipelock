@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -61,6 +62,73 @@ func ValidateTrustedDomains(domains []string, label string) error {
 			return fmt.Errorf("%s[%d] %q: only exact hosts and *.example.com wildcards are supported", label, i, raw)
 		}
 		domains[i] = d
+	}
+	return nil
+}
+
+func validateUnscannablePassthrough(entries []UnscannablePassthroughEntry) error {
+	for i := range entries {
+		field := fmt.Sprintf("response_scanning.unscannable_passthrough[%d]", i)
+		host := []string{entries[i].Host}
+		if err := ValidateTrustedDomains(host, field+".host"); err != nil {
+			return err
+		}
+		entries[i].Host = host[0]
+		entries[i].Reason = strings.TrimSpace(entries[i].Reason)
+		if entries[i].Reason == "" {
+			return fmt.Errorf("%s.reason is required", field)
+		}
+		for j, prefix := range entries[i].PathPrefixes {
+			trimmed := strings.TrimSpace(prefix)
+			if trimmed == "" {
+				return fmt.Errorf("%s.path_prefixes[%d] is empty", field, j)
+			}
+			if !strings.HasPrefix(trimmed, "/") {
+				return fmt.Errorf("%s.path_prefixes[%d] %q must start with /", field, j, prefix)
+			}
+			decoded, err := url.PathUnescape(trimmed)
+			if err != nil {
+				return fmt.Errorf("%s.path_prefixes[%d] %q is not a valid escaped path: %w", field, j, prefix, err)
+			}
+			withoutTrailingSlash := strings.TrimRight(decoded, "/")
+			if withoutTrailingSlash == "" {
+				withoutTrailingSlash = "/"
+			}
+			if path.Clean(decoded) != withoutTrailingSlash {
+				return fmt.Errorf("%s.path_prefixes[%d] %q must not contain traversal or non-canonical path segments", field, j, prefix)
+			}
+			entries[i].PathPrefixes[j] = trimmed
+		}
+		for j, raw := range entries[i].ContentTypes {
+			ct := strings.TrimSpace(strings.ToLower(raw))
+			if ct == "" {
+				return fmt.Errorf("%s.content_types[%d] is empty", field, j)
+			}
+			mediaType, _, err := mime.ParseMediaType(ct)
+			if err != nil {
+				return fmt.Errorf("%s.content_types[%d] %q is invalid: %w", field, j, raw, err)
+			}
+			entries[i].ContentTypes[j] = mediaType
+		}
+		for _, dateField := range []struct {
+			name  string
+			value string
+		}{
+			{name: "added", value: entries[i].Added},
+			{name: "expires", value: entries[i].Expires},
+		} {
+			if strings.TrimSpace(dateField.value) == "" {
+				if dateField.name == "expires" {
+					return fmt.Errorf("%s.expires is required", field)
+				}
+				continue
+			}
+			if _, err := time.Parse("2006-01-02", strings.TrimSpace(dateField.value)); err != nil {
+				return fmt.Errorf("%s.%s %q must be YYYY-MM-DD: %w", field, dateField.name, dateField.value, err)
+			}
+		}
+		entries[i].Added = strings.TrimSpace(entries[i].Added)
+		entries[i].Expires = strings.TrimSpace(entries[i].Expires)
 	}
 	return nil
 }
@@ -820,6 +888,18 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 		return err
 	}
 	if err := ValidateTrustedDomains(c.ResponseScanning.SizeExemptDomains, "response_scanning.size_exempt_domains"); err != nil {
+		return err
+	}
+	if c.ResponseScanning.SizeExemptScanMaxBytes <= 0 {
+		return fmt.Errorf("response_scanning.size_exempt_scan_max_bytes must be > 0")
+	}
+	if c.ResponseScanning.SizeExemptScanMaxInflightBytes <= 0 {
+		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be > 0")
+	}
+	if c.ResponseScanning.SizeExemptScanMaxInflightBytes < c.ResponseScanning.SizeExemptScanMaxBytes {
+		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be >= response_scanning.size_exempt_scan_max_bytes")
+	}
+	if err := validateUnscannablePassthrough(c.ResponseScanning.UnscannablePassthrough); err != nil {
 		return err
 	}
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {

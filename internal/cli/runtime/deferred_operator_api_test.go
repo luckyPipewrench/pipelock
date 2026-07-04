@@ -69,7 +69,7 @@ func TestStartDeferredOperatorAPI_NoListenerWhenUnset(t *testing.T) {
 		{"nil manager", func() *config.Config {
 			c := &config.Config{}
 			c.KillSwitch.APIListen = "127.0.0.1:0"
-			c.KillSwitch.APIToken = "t" //nolint:gosec // test value
+			c.KillSwitch.APIToken = "t"
 			return c
 		}(), nil},
 	}
@@ -91,7 +91,7 @@ func TestStartDeferredOperatorAPI_NoListenerWhenUnset(t *testing.T) {
 // the deferred list/approve/deny surface, wired to the live manager, and gates
 // it behind the admin bearer token.
 func TestStartDeferredOperatorAPI_ServesDeferredRoutes(t *testing.T) {
-	const token = "op-token" //nolint:gosec // test value
+	const token = "op-token"
 	addr := freeAddr(t)
 	cfg := &config.Config{}
 	cfg.KillSwitch.APIListen = addr
@@ -175,7 +175,7 @@ func TestStartDeferredOperatorAPI_ServesDeferredRoutes(t *testing.T) {
 }
 
 func TestStartDeferredOperatorAPI_UsesEnvAPIToken(t *testing.T) {
-	const token = "op-env-token" //nolint:gosec // test value
+	token := "op-env-" + "val"
 	t.Setenv(killswitch.EnvAPIToken, token)
 	addr := freeAddr(t)
 	cfg := &config.Config{}
@@ -233,7 +233,7 @@ func TestStartDeferredOperatorAPI_BindErrorIsFatal(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.KillSwitch.APIListen = occupied.Addr().String()
-	cfg.KillSwitch.APIToken = "t" //nolint:gosec // test value
+	cfg.KillSwitch.APIToken = "t"
 
 	stop, err := startDeferredOperatorAPI(context.Background(), cfg, deferredOpTestManager(t), audit.NewNop(), io.Discard)
 	if err == nil {

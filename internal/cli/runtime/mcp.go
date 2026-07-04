@@ -346,7 +346,7 @@ func startDeferredOperatorAPI(
 	stop := func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown
+		_ = srv.Shutdown(shutdownCtx)
 	}
 	return stop, nil
 }

@@ -29,7 +29,7 @@ func TestDeferredRoutesNotOnAgentMux(t *testing.T) {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ApplyDefaults()
-	cfg.KillSwitch.APIToken = "test-token" //nolint:gosec // test value; api_listen empty -> admin shares main port
+	cfg.KillSwitch.APIToken = "test-token"
 
 	logger, _ := audit.New("json", "stdout", "", false, false)
 	defer logger.Close()

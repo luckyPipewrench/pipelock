@@ -110,6 +110,7 @@ var compiledStandardResponseNames = map[string]bool{
 	"Instruction Dismissal":                  true,
 	"Priority Override":                      true,
 	"Auth Material Requirement":              true,
+	"Markdown Link Credential Exfiltration":  true,
 	"Memory Persistence Directive":           true,
 	"Preference Poisoning":                   true,
 	"Silent Credential Handling":             true,

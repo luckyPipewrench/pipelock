@@ -1462,6 +1462,7 @@ const (
 	encodingBase64 = "base64"
 	encodingBase32 = "base32"
 	encodingURL    = "url"
+	encodingHTML   = "html_entity"
 )
 
 const (
@@ -2690,31 +2691,37 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 		}
 	}
 
-	// Check query parameter keys and values (skipped for query-excluded domains).
+	// Check query parameter keys and values. Query entropy exclusions skip
+	// only the entropy heuristic; DB-URI SSRF guards still run because they
+	// protect a separate network-control invariant.
 	// Keys are checked too - secrets can be stuffed into parameter names.
-	if !excludedQuery {
-		for key, values := range parsed.Query() {
-			if len(key) >= s.entropyMinLen {
-				entropy := ShannonEntropy(key)
+	for key, values := range parsed.Query() {
+		if !excludedQuery && len(key) >= s.entropyMinLen {
+			entropy := ShannonEntropy(key)
+			if entropy > s.entropyThreshold {
+				return Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+					Scanner: ScannerEntropy,
+					Score:   math.Min(entropy/8.0, 1.0),
+				}
+			}
+		}
+		for _, v := range values {
+			if result, blocked := unsafeDatabaseURIQueryValueResult(v); blocked {
+				return result
+			}
+			if !excludedQuery && len(v) >= s.entropyMinLen {
+				entropy := ShannonEntropy(v)
+				if shouldSkipQueryValueEntropy(v, entropy, s.entropyThreshold) {
+					continue
+				}
 				if entropy > s.entropyThreshold {
 					return Result{
 						Allowed: false,
-						Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+						Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 						Scanner: ScannerEntropy,
 						Score:   math.Min(entropy/8.0, 1.0),
-					}
-				}
-			}
-			for _, v := range values {
-				if len(v) >= s.entropyMinLen {
-					entropy := ShannonEntropy(v)
-					if entropy > s.entropyThreshold {
-						return Result{
-							Allowed: false,
-							Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-							Scanner: ScannerEntropy,
-							Score:   math.Min(entropy/8.0, 1.0),
-						}
 					}
 				}
 			}
@@ -2722,6 +2729,184 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	}
 
 	return Result{Allowed: true}
+}
+
+func isDatabaseURIScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "postgres", "postgresql", "mysql", "mongodb", "mongodb+srv", "redis", "rediss":
+		return true
+	default:
+		return false
+	}
+}
+
+func unsafeDatabaseURIQueryValueResult(value string) (Result, bool) {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return Result{}, false
+	}
+	if !isDatabaseURIScheme(u.Scheme) {
+		return Result{}, false
+	}
+
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(u.Hostname())), ".")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		ip = parseAlternativeIP(host)
+	}
+	if ip != nil {
+		scannerLabel := ScannerSSRF
+		reason := fmt.Sprintf("database URI query value points to IP literal host %s", host)
+		if isCloudMetadataIP(ip) {
+			scannerLabel = ScannerSSRFMetadata
+			reason = fmt.Sprintf("database URI query value points to cloud metadata endpoint %s", host)
+		}
+		return Result{Allowed: false, Reason: reason, Scanner: scannerLabel, Score: 1.0}, true
+	}
+	if host == "metadata.google.internal" {
+		return Result{
+			Allowed: false,
+			Reason:  "database URI query value points to cloud metadata hostname metadata.google.internal",
+			Scanner: ScannerSSRFMetadata,
+			Score:   1.0,
+		}, true
+	}
+	return Result{}, false
+}
+
+func shouldSkipQueryValueEntropy(value string, entropy, threshold float64) bool {
+	if entropy <= threshold || entropy > threshold+0.35 {
+		return false
+	}
+	if isCredentiallessDatabaseURI(value, threshold) {
+		return true
+	}
+	return isHumanReadableHyphenatedQueryValue(value)
+}
+
+func isCredentiallessDatabaseURI(value string, threshold float64) bool {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	if !isDatabaseURIScheme(u.Scheme) {
+		return false
+	}
+	return isLowRiskDatabaseURIHost(u.Hostname(), threshold) && isLowRiskDatabaseURIPath(u.EscapedPath(), threshold)
+}
+
+func isLowRiskDatabaseURIHost(host string, threshold float64) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil || parseAlternativeIP(host) != nil {
+		return false
+	}
+	switch host {
+	case "metadata.google.internal":
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		if len(label) >= 12 && ShannonEntropy(label) > threshold {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func isLowRiskDatabaseURIPath(path string, threshold float64) bool {
+	if path == "" || path == "/" {
+		return true
+	}
+	for _, segment := range strings.Split(strings.Trim(path, "/"), "/") {
+		if segment == "" || len(segment) > 32 {
+			return false
+		}
+		if len(segment) >= 12 && ShannonEntropy(segment) > threshold {
+			return false
+		}
+		for _, r := range segment {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func isHumanReadableHyphenatedQueryValue(value string) bool {
+	if len(value) > 40 || !strings.Contains(value, "-") || strings.ContainsAny(value, "_+/=") {
+		return false
+	}
+	parts := strings.Split(value, "-")
+	if len(parts) < 3 || len(parts) > 5 {
+		return false
+	}
+	wordParts := 0
+	yearParts := 0
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if isYearLike(part) {
+			yearParts++
+			if yearParts > 1 {
+				return false
+			}
+			continue
+		}
+		if !isReadableLowerWord(part) {
+			return false
+		}
+		wordParts++
+	}
+	return wordParts >= 3 && wordParts <= 4
+}
+
+func isYearLike(part string) bool {
+	if len(part) != 4 {
+		return false
+	}
+	for _, r := range part {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isReadableLowerWord(part string) bool {
+	if len(part) < 3 || len(part) > 12 {
+		return false
+	}
+	hasVowel := false
+	consonantRun := 0
+	for _, r := range part {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+		if strings.ContainsRune("aeiouy", r) {
+			hasVowel = true
+			consonantRun = 0
+			continue
+		}
+		consonantRun++
+		if consonantRun > 4 {
+			return false
+		}
+	}
+	return hasVowel
 }
 
 // ShannonEntropy calculates the Shannon entropy of a string in bits per character.

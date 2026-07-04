@@ -2186,6 +2186,32 @@ func TestWSProxy_CrossMessageDLP_SplitKey(t *testing.T) {
 	}
 }
 
+func TestWSProxy_ValidThreeFrameCleanFragmentAllowed(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+
+	writeMaskedClientFrame(t, conn, false, ws.OpText, []byte("The quarterly "))
+	writeMaskedClientFrame(t, conn, false, ws.OpContinuation, []byte("report is ready "))
+	writeMaskedClientFrame(t, conn, true, ws.OpContinuation, []byte("for your review."))
+
+	reply, op, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read reassembled clean fragment echo: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("upstream echo opcode = %d, want text", op)
+	}
+	if string(reply) != "The quarterly report is ready for your review." {
+		t.Fatalf("reply = %q, want reassembled clean text", reply)
+	}
+}
+
 func TestWSProxy_CrossMessageDLP_LabeledSplitKey(t *testing.T) {
 	joined, ok := joinLabeledWSCrossMessageSuffixes(
 		[]byte("part1: AKIAIOS"),

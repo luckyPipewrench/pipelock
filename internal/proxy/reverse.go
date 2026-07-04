@@ -1451,18 +1451,18 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	if len(body) > maxBytes {
 		if revRespSizeExempt {
 			if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
-				Host:          revHost,
-				Path:          resp.Request.URL.EscapedPath(),
-				ContentType:   resp.Header.Get("Content-Type"),
-				Header:        resp.Header,
-				ContentLength: resp.ContentLength,
-				SizeExempt:    true,
-				Now:           time.Now(),
+				Host:              revHost,
+				Path:              resp.Request.URL.EscapedPath(),
+				ContentType:       resp.Header.Get("Content-Type"),
+				Header:            resp.Header,
+				ContentLength:     resp.ContentLength,
+				SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
+				Now:               time.Now(),
 			}, cfg.ResponseScanning.UnscannablePassthrough); ok {
 				actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 				reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 				rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
-				emitReverseReceipt(receipt.EmitOpts{
+				passthroughReceipt := receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionAllow,
 					Layer:     "unscannable_passthrough",
@@ -1472,7 +1472,19 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					Target:    targetURL,
 					RequestID: requestID,
 					Agent:     agent,
-				})
+				}
+				if cfg.FlightRecorder.RequireReceipts {
+					if err := rp.emitRequiredReceipt(withReceiptPolicyHash(passthroughReceipt, cfg.CanonicalPolicyHash())); err != nil {
+						_ = resp.Body.Close()
+						blockedErr := newReceiptEmissionBlockedRequest(err)
+						rp.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+						rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+						replaceWithBlockResponse(resp, []string{receiptEmissionBlockReason})
+						return nil
+					}
+				} else {
+					emitReverseReceipt(passthroughReceipt)
+				}
 				resp.Body = readCloserWithClose{
 					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
 					Closer: resp.Body,

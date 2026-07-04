@@ -246,20 +246,20 @@ type unscannablePassthroughMatch struct {
 }
 
 type unscannablePassthroughRequest struct {
-	Host          string
-	Path          string
-	ContentType   string
-	Header        http.Header
-	ContentLength int64
-	SizeExempt    bool
-	Now           time.Time
+	Host              string
+	Path              string
+	ContentType       string
+	Header            http.Header
+	ContentLength     int64
+	SizeExemptDomains []string
+	Now               time.Time
 }
 
 func matchUnscannablePassthrough(req unscannablePassthroughRequest, entries []config.UnscannablePassthroughEntry) (unscannablePassthroughMatch, bool) {
 	if len(entries) == 0 {
 		return unscannablePassthroughMatch{}, false
 	}
-	if !req.SizeExempt || req.ContentLength <= 0 || !contentDispositionAttachment(req.Header.Get("Content-Disposition")) {
+	if !isResponseSizeExempt(req.Host, req.SizeExemptDomains) || req.ContentLength <= 0 || !contentDispositionAttachment(req.Header.Get("Content-Disposition")) {
 		return unscannablePassthroughMatch{}, false
 	}
 	mediaType := responseMediaType(req.ContentType)

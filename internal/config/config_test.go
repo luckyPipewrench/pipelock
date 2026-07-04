@@ -488,7 +488,7 @@ func TestValidate_ResponseScanningSizeExemptInflightEqualsPerScan(t *testing.T) 
 	}
 }
 
-func TestValidate_ResponseScanningUnscannablePassthroughWarnsWhenHostNotSizeExempt(t *testing.T) {
+func TestValidate_ResponseScanningUnscannablePassthroughRejectsHostNotSizeExempt(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
 	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
@@ -499,12 +499,9 @@ func TestValidate_ResponseScanningUnscannablePassthroughWarnsWhenHostNotSizeExem
 		Expires:      "2099-12-31",
 	}}
 
-	warnings, err := cfg.ValidateWithWarnings()
-	if err != nil {
-		t.Fatalf("ValidateWithWarnings() error = %v", err)
-	}
-	if !hasConfigWarning(warnings, "response_scanning.unscannable_passthrough[0].host") {
-		t.Fatalf("warnings = %+v, want inert passthrough host warning", warnings)
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "response_scanning.unscannable_passthrough[0].host") {
+		t.Fatalf("Validate() error = %v, want host/size_exempt_domains error", err)
 	}
 }
 
@@ -572,6 +569,7 @@ func TestValidate_ResponseScanningUnscannablePassthrough(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Defaults()
+			cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
 			cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{tt.entry}
 			err := cfg.Validate()
 			if tt.wantErr {

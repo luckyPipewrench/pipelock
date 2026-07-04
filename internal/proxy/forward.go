@@ -1977,17 +1977,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				// scan cap - block fail-closed, matching intercept/reverse.
 				if fwdRespSizeExempt {
 					if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
-						Host:          fwdRespHost,
-						Path:          resp.Request.URL.EscapedPath(),
-						ContentType:   resp.Header.Get("Content-Type"),
-						Header:        resp.Header,
-						ContentLength: resp.ContentLength,
-						SizeExempt:    true,
-						Now:           time.Now(),
+						Host:              fwdRespHost,
+						Path:              resp.Request.URL.EscapedPath(),
+						ContentType:       resp.Header.Get("Content-Type"),
+						Header:            resp.Header,
+						ContentLength:     resp.ContentLength,
+						SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
+						Now:               time.Now(),
 					}, cfg.ResponseScanning.UnscannablePassthrough); ok {
 						reason := unscannablePassthroughReason(fwdRespHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 						p.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
-						emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+						passthroughReceipt := withForwardRedaction(receipt.EmitOpts{
 							ActionID:            actionID,
 							Verdict:             config.ActionAllow,
 							Layer:               "unscannable_passthrough",
@@ -2006,7 +2006,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 							TaintDecision:       forwardTaint.Result.Decision.String(),
 							TaintDecisionReason: forwardTaint.Result.Reason,
 							TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-						}))
+						})
+						if cfg.FlightRecorder.RequireReceipts {
+							if err := p.emitRequiredReceipt(withReceiptPolicyHash(passthroughReceipt, cfg.CanonicalPolicyHash())); err != nil {
+								blockedErr := newReceiptEmissionBlockedRequest(err)
+								p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+								writeBlockedError(w,
+									blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+									receiptEmissionBlockReason, http.StatusForbidden)
+								return
+							}
+						} else {
+							emitForwardReceipt(passthroughReceipt)
+						}
 						copyResponseHeaders(w.Header(), resp.Header)
 						w.WriteHeader(resp.StatusCode)
 						written, _ := io.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))

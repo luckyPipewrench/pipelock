@@ -946,10 +946,7 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	}
 	for i, entry := range c.ResponseScanning.UnscannablePassthrough {
 		if !hostMatchesResponseSizeExemptDomain(entry.Host, c.ResponseScanning.SizeExemptDomains) {
-			*warnings = append(*warnings, Warning{
-				Field:   fmt.Sprintf("response_scanning.unscannable_passthrough[%d].host", i),
-				Message: fmt.Sprintf("configured but host %q is not in response_scanning.size_exempt_domains, so this passthrough entry will not match", entry.Host),
-			})
+			return fmt.Errorf("response_scanning.unscannable_passthrough[%d].host %q must match response_scanning.size_exempt_domains", i, entry.Host)
 		}
 	}
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {

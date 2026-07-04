@@ -208,6 +208,7 @@ func TestValidateUnscannablePassthroughRejectsInvalidEntries(t *testing.T) {
 
 func TestValidateUnscannablePassthroughNormalizesAcceptedValues(t *testing.T) {
 	cfg := Defaults()
+	cfg.ResponseScanning.SizeExemptDomains = []string{"downloads.example.com"}
 	cfg.ResponseScanning.UnscannablePassthrough = []UnscannablePassthroughEntry{{
 		Host:         " Downloads.Example.COM. ",
 		Paths:        []string{" /artifacts/pkg.bin "},

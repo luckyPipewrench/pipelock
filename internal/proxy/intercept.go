@@ -1651,13 +1651,13 @@ func newInterceptHandler(
 		if int64(len(respBody)) > maxResp {
 			if isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains) {
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
-					Host:          ic.TargetHost,
-					Path:          r.URL.EscapedPath(),
-					ContentType:   resp.Header.Get("Content-Type"),
-					Header:        resp.Header,
-					ContentLength: resp.ContentLength,
-					SizeExempt:    true,
-					Now:           time.Now(),
+					Host:              ic.TargetHost,
+					Path:              r.URL.EscapedPath(),
+					ContentType:       resp.Header.Get("Content-Type"),
+					Header:            resp.Header,
+					ContentLength:     resp.ContentLength,
+					SizeExemptDomains: ic.Config.ResponseScanning.SizeExemptDomains,
+					Now:               time.Now(),
 				}, ic.Config.ResponseScanning.UnscannablePassthrough); ok {
 					reason := unscannablePassthroughReason(ic.TargetHost, r.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 					ic.Logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)

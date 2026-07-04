@@ -163,13 +163,13 @@ func TestUnscannablePassthroughPathAndExpiryBoundaries(t *testing.T) {
 	}}
 
 	req := unscannablePassthroughRequest{
-		Host:          "downloads.example.com",
-		Path:          "/pkg.bin",
-		ContentType:   "application/octet-stream",
-		Header:        http.Header{"Content-Disposition": []string{"attachment; filename=\"pkg.bin\""}},
-		ContentLength: 4096,
-		SizeExempt:    true,
-		Now:           now,
+		Host:              "downloads.example.com",
+		Path:              "/pkg.bin",
+		ContentType:       "application/octet-stream",
+		Header:            http.Header{"Content-Disposition": []string{"attachment; filename=\"pkg.bin\""}},
+		ContentLength:     4096,
+		SizeExemptDomains: []string{"downloads.example.com"},
+		Now:               now,
 	}
 	if _, ok := matchUnscannablePassthrough(req, entries); !ok {
 		t.Fatal("same-day expiry should remain valid through the UTC date")
@@ -206,7 +206,7 @@ func TestUnscannablePassthroughPathAndExpiryBoundaries(t *testing.T) {
 		t.Fatal("unknown content length must not match")
 	}
 	req.ContentLength = 4096
-	req.SizeExempt = false
+	req.SizeExemptDomains = []string{"other.example.com"}
 	if _, ok := matchUnscannablePassthrough(req, entries); ok {
 		t.Fatal("non-size-exempt host must not match")
 	}

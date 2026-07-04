@@ -1110,13 +1110,13 @@ func TestUnscannablePassthroughMatchHostPathContentTypeAndExpiry(t *testing.T) {
 	}
 
 	req := unscannablePassthroughRequest{
-		Host:          "downloads.example.com",
-		Path:          "/artifacts/pkg.bin",
-		ContentType:   "application/octet-stream; charset=binary",
-		Header:        http.Header{"Content-Disposition": []string{"attachment; filename=\"pkg.bin\""}},
-		ContentLength: 4096,
-		SizeExempt:    true,
-		Now:           now,
+		Host:              "downloads.example.com",
+		Path:              "/artifacts/pkg.bin",
+		ContentType:       "application/octet-stream; charset=binary",
+		Header:            http.Header{"Content-Disposition": []string{"attachment; filename=\"pkg.bin\""}},
+		ContentLength:     4096,
+		SizeExemptDomains: []string{"*.example.com"},
+		Now:               now,
 	}
 	if _, ok := matchUnscannablePassthrough(req, entries); !ok {
 		t.Fatal("expected passthrough match")
@@ -1157,11 +1157,11 @@ func TestUnscannablePassthroughMatchHostPathContentTypeAndExpiry(t *testing.T) {
 		t.Fatal("missing content length should not match")
 	}
 	req.ContentLength = 4096
-	req.SizeExempt = false
+	req.SizeExemptDomains = []string{"other.example.com"}
 	if _, ok := matchUnscannablePassthrough(req, entries); ok {
 		t.Fatal("non-size-exempt response should not match")
 	}
-	req.SizeExempt = true
+	req.SizeExemptDomains = []string{"*.example.com"}
 	entries[0].Expires = ""
 	if _, ok := matchUnscannablePassthrough(req, entries); ok {
 		t.Fatal("missing expiry should not match")

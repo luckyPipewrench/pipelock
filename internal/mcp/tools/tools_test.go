@@ -185,6 +185,80 @@ func TestHashTool_DiffAnnotation(t *testing.T) {
 	}
 }
 
+func TestHashTool_RawCanonicalIgnoresWhitespaceAndKeyOrder(t *testing.T) {
+	var compact, reordered ToolDef
+	if err := json.Unmarshal([]byte(`{"name":"test","description":"Same","inputSchema":{"properties":{"query":{"type":"string"}},"type":"object"},"annotations":{"readOnlyHint":true}}`), &compact); err != nil {
+		t.Fatalf("unmarshal compact: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{
+		"annotations": { "readOnlyHint": true },
+		"inputSchema": {
+			"type": "object",
+			"properties": {
+				"query": { "type": "string" }
+			}
+		},
+		"description": "Same",
+		"name": "test"
+	}`), &reordered); err != nil {
+		t.Fatalf("unmarshal reordered: %v", err)
+	}
+	if hashTool(compact) != hashTool(reordered) {
+		t.Fatal("different key order or whitespace must not produce tool drift")
+	}
+}
+
+func TestHashTool_RawAndStructCoreDigestMatch(t *testing.T) {
+	var raw ToolDef
+	if err := json.Unmarshal([]byte(`{"name":"test","description":"Same","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}`), &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	structured := ToolDef{
+		Name:        "test",
+		Description: "Same",
+		InputSchema: json.RawMessage(`{"properties":{"query":{"type":"string"}},"type":"object"}`),
+	}
+	if hashTool(raw) != hashTool(structured) {
+		t.Fatal("raw and struct construction must agree for core tool fields")
+	}
+}
+
+func TestScanTools_DriftIgnoresToolKeyOrderAndWhitespace(t *testing.T) {
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{
+		Baseline:    NewToolBaseline(),
+		Action:      config.ActionWarn,
+		DetectDrift: true,
+	}
+	first := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"test","description":"Same","inputSchema":{"properties":{"query":{"type":"string"}},"type":"object"},"annotations":{"readOnlyHint":true}}]}}`)
+	second := []byte(`{
+		"jsonrpc": "2.0",
+		"id": 2,
+		"result": {
+			"tools": [
+				{
+					"annotations": { "readOnlyHint": true },
+					"inputSchema": {
+						"type": "object",
+						"properties": {
+							"query": { "type": "string" }
+						}
+					},
+					"description": "Same",
+					"name": "test"
+				}
+			]
+		}
+	}`)
+
+	if result := ScanTools(first, sc, cfg); !result.Clean {
+		t.Fatalf("first tools/list result = %+v, want clean baseline seed", result)
+	}
+	if result := ScanTools(second, sc, cfg); !result.Clean {
+		t.Fatalf("reordered tools/list result = %+v, want no drift", result)
+	}
+}
+
 func TestHashTool_SchemaPresenceMatters(t *testing.T) {
 	t1 := ToolDef{Name: "test", Description: "Same"}
 	t2 := ToolDef{Name: "test", Description: "Same", InputSchema: json.RawMessage(`{"type":"object"}`)}

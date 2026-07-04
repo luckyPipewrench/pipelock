@@ -325,6 +325,9 @@ func ForwardScannedInput(
 						}),
 					}); emitErr != nil {
 						_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
+						if opts.requireReceipts() {
+							logBlockReceiptAuditGap(logW, emitErr)
+						}
 					}
 				}
 				blockedCh <- BlockedRequest{
@@ -364,6 +367,9 @@ func ForwardScannedInput(
 					}),
 				}); emitErr != nil {
 					_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
+					if opts.requireReceipts() {
+						logBlockReceiptAuditGap(logW, emitErr)
+					}
 				}
 			}
 			blockedCh <- BlockedRequest{

@@ -160,11 +160,70 @@ func TestMCPA2ABehavioralBaselineLearnsLocksAndReloads(t *testing.T) {
 			if !strings.Contains(blockedStderr, "baseline deviation") {
 				t.Fatalf("unlearned A2A method did not log baseline block\nstdout=%s\nstderr=%s", blockedStdout, blockedStderr)
 			}
+
+			notificationStdout, notificationStderr := runMCPStdioBaselineMessages(t, sc, activeSM, identityKey, a2aGetTaskNotification())
+			if strings.Contains(notificationStdout, `"result"`) {
+				t.Fatalf("unlearned A2A notification was forwarded\nstdout=%s\nstderr=%s", notificationStdout, notificationStderr)
+			}
+			if !strings.Contains(notificationStderr, "baseline deviation") {
+				t.Fatalf("unlearned A2A notification did not log baseline block\nstdout=%s\nstderr=%s", notificationStdout, notificationStderr)
+			}
 		})
 	}
 }
 
 func TestMCPBehavioralBaselineToolCallNameBehaviorUnchanged(t *testing.T) {
+	testCases := []struct {
+		name     string
+		toolName string
+	}{
+		{name: "ordinary different tool", toolName: "different_tool"},
+		{name: "a2a-prefixed tool name", toolName: "a2a:GetTask"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			sc := scanner.New(cfg)
+			t.Cleanup(sc.Close)
+
+			sm := proxy.NewSessionManager(&cfg.SessionProfiling, nil, metrics.New())
+			t.Cleanup(sm.Close)
+			baselineCfg := &config.BehavioralBaseline{
+				Enabled:          true,
+				LearningWindow:   2,
+				DeviationAction:  config.ActionBlock,
+				ProfileDir:       t.TempDir(),
+				AutoRatify:       false,
+				SensitivitySigma: 2.0,
+				LockDimensions:   []string{"tool_calls", "unique_tools"},
+				SeasonalityMode:  config.SeasonalityModeNone,
+			}
+			if err := sm.EnableBaseline(baselineCfg); err != nil {
+				t.Fatalf("EnableBaseline: %v", err)
+			}
+
+			const identityKey = "agent-a"
+			for i := 0; i < baselineCfg.LearningWindow; i++ {
+				stdout, stderr := runMCPStdioBaselineInvocation(t, sc, sm, identityKey, "steady_tool")
+				if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
+					t.Fatalf("learning tool invocation %d unexpectedly blocked\nstdout=%s\nstderr=%s", i, stdout, stderr)
+				}
+			}
+			if err := sm.BaselineManager().Ratify(identityKey); err != nil {
+				t.Fatalf("Ratify(%q): %v", identityKey, err)
+			}
+
+			stdout, stderr := runMCPStdioBaselineInvocation(t, sc, sm, identityKey, tc.toolName)
+			if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
+				t.Fatalf("single different tool call %q changed behavior; expected existing count-based allow\nstdout=%s\nstderr=%s", tc.toolName, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestMCPA2ABehavioralBaselineToolNameCannotTeachA2AMethod(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	sc := scanner.New(cfg)
@@ -188,18 +247,21 @@ func TestMCPBehavioralBaselineToolCallNameBehaviorUnchanged(t *testing.T) {
 
 	const identityKey = "agent-a"
 	for i := 0; i < baselineCfg.LearningWindow; i++ {
-		stdout, stderr := runMCPStdioBaselineInvocation(t, sc, sm, identityKey, "steady_tool")
+		stdout, stderr := runMCPStdioBaselineInvocation(t, sc, sm, identityKey, "a2a:SendMessage")
 		if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
-			t.Fatalf("learning tool invocation %d unexpectedly blocked\nstdout=%s\nstderr=%s", i, stdout, stderr)
+			t.Fatalf("learning namespaced tool invocation %d unexpectedly blocked\nstdout=%s\nstderr=%s", i, stdout, stderr)
 		}
 	}
 	if err := sm.BaselineManager().Ratify(identityKey); err != nil {
 		t.Fatalf("Ratify(%q): %v", identityKey, err)
 	}
 
-	stdout, stderr := runMCPStdioBaselineInvocation(t, sc, sm, identityKey, "different_tool")
-	if strings.Contains(stdout, `"error"`) || strings.Contains(stderr, "baseline deviation") {
-		t.Fatalf("single different tool call changed behavior; expected existing count-based allow\nstdout=%s\nstderr=%s", stdout, stderr)
+	stdout, stderr := runMCPStdioBaselineMessages(t, sc, sm, identityKey, a2aSendMessageRequest(10))
+	if !strings.Contains(stdout, `"error"`) {
+		t.Fatalf("A2A method was allowed by profile learned from same-named tool\nstdout=%s\nstderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "baseline deviation") {
+		t.Fatalf("A2A method collision did not log baseline block\nstdout=%s\nstderr=%s", stdout, stderr)
 	}
 }
 
@@ -244,6 +306,10 @@ func a2aSendMessageRequest(id int) string {
 
 func a2aGetTaskRequest(id int) string {
 	return fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"GetTask","params":{"id":"task-a"}}`, id)
+}
+
+func a2aGetTaskNotification() string {
+	return `{"jsonrpc":"2.0","method":"GetTask","params":{"id":"task-a"}}`
 }
 
 func containsString(values []string, want string) bool {

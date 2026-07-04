@@ -40,6 +40,7 @@ type DeferredRequest struct {
 	DeferID             string
 	ForwardMessage      []byte
 	ToolName            string
+	BaselineIdentity    string
 	Method              string
 	Reason              string
 	SessionID           string
@@ -931,6 +932,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			DeferID:             actionID,
 			ForwardMessage:      result.ForwardMessage,
 			ToolName:            toolName,
+			BaselineIdentity:    baselineIdentity,
 			Method:              verdict.Method,
 			Reason:              joinStrings(reasons),
 			SessionID:           sessionKey,

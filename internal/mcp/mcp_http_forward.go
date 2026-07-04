@@ -255,7 +255,11 @@ func RunHTTPProxy(
 						} else if scanErr != nil {
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 						} else if !foundInjection {
-							commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), deferredReq.ToolName)
+							baselineIdentity := deferredReq.BaselineIdentity
+							if baselineIdentity == "" {
+								baselineIdentity = mcpFrameBaselineIdentity(ParseMCPFrame(deferredReq.ForwardMessage))
+							}
+							commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), baselineIdentity)
 						}
 					default:
 						if !deferredReq.IsNotification {

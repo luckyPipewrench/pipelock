@@ -1072,6 +1072,7 @@ func ForwardScannedInput(
 			heldID := append(json.RawMessage(nil), verdict.ID...)
 			heldNotification := isNotification
 			heldToolName := toolCallName
+			heldBaselineIdentity := baselineIdentity
 			_, deferToolArgs := extractToolCallFields(line)
 			argDigest := argsDigest(deferToolArgs)
 			holdErr := manager.Hold(deferred.HeldAction{
@@ -1107,7 +1108,7 @@ func ForwardScannedInput(
 							_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 							return
 						}
-						commitMCPToolCall(baselineMetricsRecorder(opts, rec), heldToolName)
+						commitMCPToolCall(baselineMetricsRecorder(opts, rec), heldBaselineIdentity)
 					default:
 						if !heldNotification {
 							blockedCh <- BlockedRequest{

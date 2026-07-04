@@ -13,7 +13,10 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-const a2aBaselineIdentityPrefix = "a2a:"
+const (
+	a2aBaselineIdentityPrefix  = "a2a:"
+	toolBaselineIdentityPrefix = "tool:"
+)
 
 type mcpRequestBaselineRecorder struct {
 	mu           sync.Mutex
@@ -120,9 +123,17 @@ func commitMCPToolCall(metricsProvider session.ToolCallBaselineRecorder, toolNam
 
 func mcpFrameBaselineIdentity(frame MCPFrame) string {
 	if toolName := strings.TrimSpace(frame.ToolCallName); toolName != "" {
-		return toolName
+		return toolBaselineIdentity(toolName)
 	}
 	return a2aBaselineIdentity(frame.Method)
+}
+
+func toolBaselineIdentity(toolName string) string {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return ""
+	}
+	return toolBaselineIdentityPrefix + toolName
 }
 
 func a2aBaselineIdentity(method string) string {
@@ -133,7 +144,8 @@ func a2aBaselineIdentity(method string) string {
 	// A2A is method-based rather than params.name-based. Reusing the
 	// tool-call baseline machinery with an explicit namespace keeps learning,
 	// ratification, locking, and persistence on one profile while preventing
-	// collisions with an ordinary tool literally named "SendMessage".
+	// collisions with ordinary tools, including one literally named
+	// "a2a:SendMessage".
 	return a2aBaselineIdentityPrefix + method
 }
 

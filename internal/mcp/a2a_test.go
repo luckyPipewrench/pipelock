@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -283,7 +284,10 @@ func TestIsA2AMethod(t *testing.T) {
 		{"CreateTaskPushNotificationConfig", true},
 		{"GetExtendedAgentCard", true},
 		{"DeleteTaskPushNotificationConfig", true},
+		{"MESSAGE/SEND", true},
+		{"sendmessage", true},
 		{"tools/call", false},
+		{"TOOLS/CALL", false},
 		{"tools/list", false},
 		{"initialize", false},
 		{"", false},
@@ -294,6 +298,43 @@ func TestIsA2AMethod(t *testing.T) {
 				t.Errorf("IsA2AMethod(%q) = %v, want %v", tt.method, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsA2AMethod_KnownMethodsDetectAfterCaseFold(t *testing.T) {
+	normalized := make(map[string]string, len(a2aMethods))
+	for method := range a2aMethods {
+		folded := strings.ToLower(method)
+		if previous, ok := normalized[folded]; ok && previous != method {
+			t.Fatalf("A2A methods %q and %q collide after case fold", previous, method)
+		}
+		normalized[folded] = method
+		if got := IsA2AMethod(method); !got {
+			t.Fatalf("known method %q no longer detected", method)
+		}
+		if got := IsA2AMethod(strings.ToUpper(method)); !got {
+			t.Fatalf("case-folded known method %q not detected", method)
+		}
+	}
+	for _, method := range []string{
+		"tools/call",
+		"tools/list",
+		"initialize",
+		"notifications/message",
+		"xmessage/send",
+		"message/send/extra",
+		"message/send ",
+		" message/send",
+		"sendmessage2",
+		"send-message",
+		"tasks/pushNotificationConfigset",
+	} {
+		if got := IsA2AMethod(method); got {
+			t.Fatalf("non-A2A method %q detected as A2A", method)
+		}
+		if got := IsA2AMethod(strings.ToUpper(method)); got {
+			t.Fatalf("case-folded non-A2A method %q detected as A2A", method)
+		}
 	}
 }
 

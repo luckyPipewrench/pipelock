@@ -2283,6 +2283,9 @@ func TestBaseline_IntegrityIOErrorsFailClosed(t *testing.T) {
 		if _, err := os.Stat(highWaterPath(dir)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("high-water should not advance before manifest write succeeds, stat error = %v", err)
 		}
+		if _, err := os.Stat(filepath.Join(dir, testAgent+profileFileExt)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("profile should be removed after manifest persistence failure, stat error = %v", err)
+		}
 	})
 }
 

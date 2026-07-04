@@ -301,9 +301,17 @@ var a2aMethods = map[string]bool{
 	"agent/getAuthenticatedExtendedCard":  true,
 }
 
+var normalizedA2AMethods = func() map[string]bool {
+	methods := make(map[string]bool, len(a2aMethods))
+	for method := range a2aMethods {
+		methods[strings.ToLower(method)] = true
+	}
+	return methods
+}()
+
 // IsA2AMethod returns true if the JSON-RPC method name is an A2A method.
 func IsA2AMethod(method string) bool {
-	return a2aMethods[method]
+	return a2aMethods[method] || normalizedA2AMethods[strings.ToLower(method)]
 }
 
 // a2aPathRe matches A2A REST endpoint paths after version prefix stripping.

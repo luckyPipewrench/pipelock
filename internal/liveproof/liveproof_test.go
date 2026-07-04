@@ -204,7 +204,6 @@ func buildPipelock(t *testing.T) string {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		//nolint:gosec // Liveproof intentionally builds the repo binary under test.
 		cmd := exec.CommandContext(ctx, "go", "build", "-o", buildBin, "./cmd/pipelock")
 		cmd.Dir = repoRoot(t)
 		buildOutput, errBuildPipelock = cmd.CombinedOutput()
@@ -240,7 +239,6 @@ func startPipelock(t *testing.T, bin, cfgPath, proxyAddr string) *liveProxy {
 		t.Fatalf("mkdir pipelock home: %v", err)
 	}
 
-	//nolint:gosec // Liveproof intentionally starts the freshly built pipelock binary.
 	cmd := exec.CommandContext(ctx, bin, "run", "--config", cfgPath)
 	cmd.Env = append(os.Environ(), "PIPELOCK_HOME="+home)
 	cmd.Stdout = stdout
@@ -384,7 +382,6 @@ func ratifyBaseline(t *testing.T, bin, cfgPath, apiAddr, agent string) {
 }
 
 func runPipelock(ctx context.Context, bin string, args ...string) (string, error) {
-	//nolint:gosec // Liveproof intentionally runs the freshly built pipelock binary.
 	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err

@@ -233,8 +233,10 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 //     dispatch, or a tool result flowing back). Gets injection scanning plus DLP
 //     WITHOUT the exfil checks: a value the agent received is not something it
 //     exfiltrated, so running the exfil checks here only false-positives and
-//     gags normal operation. Generic detectors (regex patterns, seed phrases,
-//     canary, hostname-exfil) still run in both directions.
+//     blocks normal operation. Generic detectors (regex patterns, seed phrases,
+//     canary, hostname-exfil) still run in both directions; inbound enforcement
+//     uses scanner.EnforceableInboundTextDLPMatches so narrow precision filters
+//     stay centralized with the scanner evidence model.
 type scanDirection int
 
 const (
@@ -264,9 +266,13 @@ func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string
 		dlp = sc.ScanTextForDLP(ctx, text)
 	}
 	if !dlp.Clean && len(dlp.Matches) > 0 {
-		first := dlp.Matches[0]
-		return blockDecision(fmt.Sprintf("pipelock DLP match on %s: %s (severity=%s)",
-			surface, first.PatternName, first.Severity))
+		enforceable := dlp.Matches
+		if dir == directionInbound {
+			enforceable = scanner.EnforceableInboundTextDLPMatches(text, dlp.Matches)
+		}
+		if len(enforceable) > 0 {
+			return blockDecision(dlpBlockReason(surface, enforceable[0]))
+		}
 	}
 
 	if resp := sc.ScanResponse(ctx, text); !resp.Clean && len(resp.Matches) > 0 {
@@ -276,6 +282,18 @@ func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string
 	}
 
 	return allowDecision()
+}
+
+func dlpBlockReason(surface string, match scanner.TextDLPMatch) string {
+	reason := fmt.Sprintf("pipelock DLP match on %s: %s (severity=%s)",
+		surface, match.PatternName, match.Severity)
+	if match.Encoded != "" {
+		reason += fmt.Sprintf(" encoded=%s", match.Encoded)
+	}
+	if span := match.Span(); span.Valid() && span.ViewLabel != "" {
+		reason += fmt.Sprintf(" view=%s", span.ViewLabel)
+	}
+	return reason
 }
 
 // extractToolInputText collapses the structured tool_input JSON value into a

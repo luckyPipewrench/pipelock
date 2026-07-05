@@ -142,6 +142,9 @@ func TestNormalizeRuntimeStatusValidationEdges(t *testing.T) {
 		{name: "pipelock_version_oversized", mutate: func(s *FollowerRuntimeStatus) {
 			s.PipelockVersion = strings.Repeat("9", maxRuntimeStatusStringBytes+1)
 		}, wantErr: conductor.ErrPayloadTooLarge},
+		{name: "git_commit_oversized", mutate: func(s *FollowerRuntimeStatus) {
+			s.GitCommit = strings.Repeat("a", maxRuntimeStatusStringBytes+1)
+		}, wantErr: conductor.ErrPayloadTooLarge},
 		{name: "build_date_oversized", mutate: func(s *FollowerRuntimeStatus) {
 			s.BuildDate = strings.Repeat("2", maxRuntimeStatusStringBytes+1)
 		}, wantErr: conductor.ErrPayloadTooLarge},
@@ -156,6 +159,9 @@ func TestNormalizeRuntimeStatusValidationEdges(t *testing.T) {
 		}, wantErr: conductor.ErrPayloadTooLarge},
 		{name: "last_apply_error_code_oversized", mutate: func(s *FollowerRuntimeStatus) {
 			s.LastApplyErrorCode = strings.Repeat("e", maxRuntimeStatusStringBytes+1)
+		}, wantErr: conductor.ErrPayloadTooLarge},
+		{name: "last_apply_error_message_rune_oversized", mutate: func(s *FollowerRuntimeStatus) {
+			s.LastApplyErrorMessage = strings.Repeat("界", maxApplyErrorMessageRunes+1)
 		}, wantErr: conductor.ErrPayloadTooLarge},
 		{name: "hash_too_short", mutate: func(s *FollowerRuntimeStatus) {
 			s.ActiveBundleHash = strings.Repeat("a", 63)

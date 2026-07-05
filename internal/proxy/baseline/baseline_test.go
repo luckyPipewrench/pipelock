@@ -1815,7 +1815,10 @@ func TestBaseline_ResetHighWaterFailureDoesNotEraseEnforcementOnRestart(t *testi
 		ProfileDir: dir, IntegrityKeyPath: keyPath,
 	})
 	if err != nil {
-		if !strings.Contains(err.Error(), "high-water") && !strings.Contains(err.Error(), "manifest") {
+		msg := err.Error()
+		if !strings.Contains(msg, "high-water") &&
+			!strings.Contains(msg, "missing from integrity manifest") &&
+			!strings.Contains(msg, "rollback") {
 			t.Fatalf("restart failed for unrelated reason: %v", err)
 		}
 		return

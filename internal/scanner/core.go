@@ -237,9 +237,11 @@ func initCoreScanner() *compiledCoreScanner {
 		if err != nil {
 			panic(fmt.Sprintf("BUG: core response pattern %q failed to compile: %v", p.name, err))
 		}
+		requiredLiteralsAny := responsePatternRequiredLiterals(p.regex)
 		cs.responsePatterns = append(cs.responsePatterns, &compiledPattern{
-			name: p.name,
-			re:   re,
+			name:                p.name,
+			re:                  re,
+			requiredLiteralsAny: requiredLiteralsAny,
 		})
 
 		// Optional-whitespace variant: \s+ → \s*
@@ -248,8 +250,9 @@ func initCoreScanner() *compiledCoreScanner {
 		if optRegex != p.regex {
 			if optRe, optErr := regexp.Compile(optRegex); optErr == nil {
 				cs.responseOptSpacePatterns = append(cs.responseOptSpacePatterns, &compiledPattern{
-					name: p.name,
-					re:   optRe,
+					name:                p.name,
+					re:                  optRe,
+					requiredLiteralsAny: requiredLiteralsAny,
 				})
 			}
 		}
@@ -277,8 +280,9 @@ func initCoreScanner() *compiledCoreScanner {
 		if vfRegex != p.regex {
 			if vfRe, vfErr := regexp.Compile(vfRegex); vfErr == nil {
 				cs.responseVowelFoldPatterns = append(cs.responseVowelFoldPatterns, &compiledPattern{
-					name: p.name,
-					re:   vfRe,
+					name:                p.name,
+					re:                  vfRe,
+					requiredLiteralsAny: requiredLiteralsAny,
 				})
 			}
 		}

@@ -95,12 +95,12 @@ func TestMCPReceiptParityOpts(t *testing.T) {
 }
 
 func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
-	if got := buildDeferManager(nil); got != nil {
+	if got := buildDeferManager(nil, nil); got != nil {
 		t.Fatalf("buildDeferManager(nil) = %+v, want nil", got)
 	}
 	cfg := config.Defaults()
 	cfg.Defer.Enabled = false
-	if got := buildDeferManager(cfg); got != nil {
+	if got := buildDeferManager(cfg, nil); got != nil {
 		t.Fatalf("disabled buildDeferManager = %+v, want nil", got)
 	}
 
@@ -111,7 +111,7 @@ func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
 	cfg.Defer.MaxPendingBytes = 2048
 	cfg.Defer.MaxCascadeDepth = 6
 	cfg.FlightRecorder.Dir = t.TempDir()
-	manager := buildDeferManager(cfg)
+	manager := buildDeferManager(cfg, nil)
 	if manager == nil {
 		t.Fatal("buildDeferManager enabled returned nil")
 	}
@@ -121,6 +121,41 @@ func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
 	policy := manager.Policy()
 	if policy.Timeout != 7*time.Second || policy.MaxPending != 5 || policy.MaxPendingPerSession != 3 || policy.MaxPendingBytes != 2048 || policy.MaxCascadeDepth != 6 {
 		t.Fatalf("manager policy = %+v", policy)
+	}
+
+	var warnings bytes.Buffer
+	cfg.Defer.MaxCascadeDepth = 1
+	manager = buildDeferManager(cfg, &warnings)
+	if err := manager.Hold(deferred.HeldAction{
+		DeferID:   "a",
+		ActionID:  "a",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: deferred.AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(deferred.Resolution) {},
+	}); err != nil {
+		t.Fatalf("Hold(a): %v", err)
+	}
+	journalPath := manager.JournalPath()
+	if err := os.Remove(journalPath); err != nil {
+		t.Fatalf("Remove journal: %v", err)
+	}
+	if err := os.Mkdir(journalPath, 0o700); err != nil {
+		t.Fatalf("Mkdir journal path: %v", err)
+	}
+	err := manager.Hold(deferred.HeldAction{
+		DeferID:   "b",
+		ActionID:  "b",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: deferred.AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(deferred.Resolution) {},
+	})
+	if !errors.Is(err, deferred.ErrCascadeLimit) {
+		t.Fatalf("Hold(b) error = %v, want cascade limit", err)
+	}
+	if got := warnings.String(); !strings.Contains(got, "event=deferred_journal_write_failed") || !strings.Contains(got, "defer_id=b") {
+		t.Fatalf("warning output = %q, want deferred journal warning for b", got)
 	}
 
 	cfg.MCPToolPolicy.Action = config.ActionWarn
@@ -148,7 +183,7 @@ func TestRecoverDeferredActionsBlocksPendingJournal(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Defer.Enabled = true
 	cfg.FlightRecorder.Dir = dir
-	manager := buildDeferManager(cfg)
+	manager := buildDeferManager(cfg, nil)
 	if manager == nil {
 		t.Fatal("buildDeferManager returned nil")
 	}
@@ -221,7 +256,7 @@ func TestRecoverDeferredActionsRunsWithoutLiveManager(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Defer.Enabled = true
 	cfg.FlightRecorder.Dir = dir
-	manager := buildDeferManager(cfg)
+	manager := buildDeferManager(cfg, nil)
 	if manager == nil {
 		t.Fatal("buildDeferManager returned nil")
 	}

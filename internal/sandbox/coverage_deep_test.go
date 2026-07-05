@@ -1214,6 +1214,23 @@ func TestProbeUserNamespace(t *testing.T) {
 	t.Logf("probeUserNamespace: %v", got)
 }
 
+func TestWaitForUserNamespaceProbeChildTimeout(t *testing.T) {
+	if runtime.GOOS != osLinux {
+		t.Skip("linux only")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sleep", "5")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep child: %v", err)
+	}
+	if waitForUserNamespaceProbeChild(cmd.Process.Pid, 20*time.Millisecond) {
+		t.Fatal("expected long-running probe child to time out")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Preflight: complete coverage paths.
 // ---------------------------------------------------------------------------

@@ -9,18 +9,20 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // TestLiveRun_TransformedCanaryCountsAsReceivedNotObserved drives a transformed
-// (reversed) canary through the real lab proxy to the allowlisted collector. A
-// transformed payload evades shape-based content scanning, so the proxy allows it
-// and the collector receives it. The fix requires that this traffic count toward
-// the OPEN run's witness as received-but-not-observed: TotalCount >= 1 (it
-// arrived) while ObservedCount == 0 (the raw planted value was not seen), instead
-// of vanishing into an attacker-chosen empty nonce bucket. This is what keeps the
-// witness honest: "received N, observed the raw secret 0", never "nothing arrived".
+// canary through the real lab proxy to the allowlisted collector. The transform
+// inserts delimiters so the payload remains derived from the canary without
+// randomly re-forming another credential-shaped string. The collector receives
+// the request, but does not observe the raw planted value. That keeps the witness
+// honest: "received N, observed the raw secret 0", never "nothing arrived".
 func TestLiveRun_TransformedCanaryCountsAsReceivedNotObserved(t *testing.T) {
 	const runNonce = "window-run"
 	lr, err := StartLiveRun(context.Background(), LiveRunOpts{
@@ -38,8 +40,12 @@ func TestLiveRun_TransformedCanaryCountsAsReceivedNotObserved(t *testing.T) {
 	}
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 5 * time.Second}
 
-	reversed := reverseString(lr.canaryValue)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, lr.liveExfilURL(), bytes.NewReader([]byte("field="+reversed)))
+	transformed := delimiterSeparatedReverse(lr.canaryValue)
+	if strings.Contains(transformed, lr.canaryValue) {
+		t.Fatalf("test transform must not contain the raw canary")
+	}
+	assertDLPAllowsTransformedCanary(t, transformed)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, lr.liveExfilURL(), bytes.NewReader([]byte("field="+transformed)))
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
@@ -64,5 +70,33 @@ func TestLiveRun_TransformedCanaryCountsAsReceivedNotObserved(t *testing.T) {
 	// No traffic should be hiding in an empty/attacker-chosen nonce bucket.
 	if got := lr.collector.TotalCount(""); got != 0 {
 		t.Fatalf("empty-nonce bucket total = %d, want 0 (traffic must not hide outside the run witness)", got)
+	}
+}
+
+func delimiterSeparatedReverse(s string) string {
+	reversed := reverseString(s)
+	if reversed == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(reversed)*2 - 1)
+	for i, r := range reversed {
+		if i > 0 {
+			b.WriteByte('-')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func assertDLPAllowsTransformedCanary(t *testing.T, transformed string) {
+	t.Helper()
+
+	sc := scanner.New(config.Defaults())
+	defer sc.Close()
+
+	result := sc.ScanTextForDLP(context.Background(), transformed)
+	if !result.Clean {
+		t.Fatalf("transformed canary must stay DLP-clean for this witness-accounting test, got matches=%+v", result.Matches)
 	}
 }

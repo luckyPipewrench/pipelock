@@ -290,11 +290,13 @@ func (m *Manager) Hold(action HeldAction) error {
 	}
 	if action.CascadeDepth > m.cfg.MaxCascadeDepth {
 		m.mu.Unlock()
-		return &CascadeLimitError{
+		limitErr := &CascadeLimitError{
 			Depth:         action.CascadeDepth,
 			Limit:         m.cfg.MaxCascadeDepth,
 			ParentDeferID: action.ParentDeferID,
 		}
+		_ = m.appendJournal(journalEntryFromHeld(action, StateResolvedBlock, SourceCascadeLimit))
+		return limitErr
 	}
 	journalAction := action
 	stored := action
@@ -669,6 +671,7 @@ func PendingJournal(path string) ([]HeldAction, error) {
 	}
 	defer func() { _ = f.Close() }()
 	pending := map[string]journalEntry{}
+	terminal := map[string]struct{}{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -678,9 +681,12 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		}
 		switch entry.State {
 		case StateHeld:
-			pending[entry.DeferID] = entry
+			if _, seen := terminal[entry.DeferID]; !seen {
+				pending[entry.DeferID] = entry
+			}
 		default:
 			delete(pending, entry.DeferID)
+			terminal[entry.DeferID] = struct{}{}
 		}
 	}
 	if err := scanner.Err(); err != nil {

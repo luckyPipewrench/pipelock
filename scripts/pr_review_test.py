@@ -28,5 +28,26 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(payload["temperature"], pr_review.DEFAULT_TEMPERATURE)
 
 
+class StatsSafetyTest(unittest.TestCase):
+    def test_stats_subprocess_env_strips_tokens_and_api_keys(self) -> None:
+        env = pr_review.env_without_runtime_secrets(
+            {
+                "GITHUB_TOKEN": "ghs_secret",
+                "OPENAI_API_KEY": "sk-secret",
+                "CUSTOM_TOKEN": "secret",
+                "CUSTOM_API_KEY": "secret",
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/home",
+            }
+        )
+
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("OPENAI_API_KEY", env)
+        self.assertNotIn("CUSTOM_TOKEN", env)
+        self.assertNotIn("CUSTOM_API_KEY", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+        self.assertEqual(env["HOME"], "/tmp/home")
+
+
 if __name__ == "__main__":
     unittest.main()

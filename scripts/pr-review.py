@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import requests
 
@@ -207,16 +208,49 @@ def post_comment(repo: str, pr_number: str, token: str, body: str) -> None:
 
 # --- Stats checker (no LLM) ---
 
+
+SECRET_ENV_NAMES = {
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "GITHUB_TOKEN",
+    "LITELLM_API_KEY",
+    "OPENAI_API_KEY",
+}
+
+
+def env_without_runtime_secrets(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an environment suitable for running PR-controlled stats code."""
+    source = os.environ if env is None else env
+    return {
+        key: value
+        for key, value in source.items()
+        if key not in SECRET_ENV_NAMES
+        and not key.endswith("_TOKEN")
+        and not key.endswith("_API_KEY")
+    }
+
+
+def stats_repo_path() -> Path:
+    """Return the checkout path whose code/docs should be checked for stats."""
+    raw = os.environ.get("STATS_REPO_PATH", ".")
+    return Path(raw).resolve()
+
 def run_stats_check() -> str:
     """Compare codebase stats against doc references. Returns markdown report."""
     findings = []
+    repo_path = stats_repo_path()
+    if not repo_path.is_dir():
+        return f"**Error:** stats repository path not found: `{repo_path}`"
 
     # Get canonical counts from Go code.
     canonical = {}
     try:
         result = subprocess.run(
             ["go", "test", "-v", "-run", "TestGenerateStats", "./internal/config/"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            cwd=repo_path,
+            env=env_without_runtime_secrets(),
+            text=True,
+            timeout=120,
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
@@ -247,7 +281,7 @@ def run_stats_check() -> str:
     ]
 
     doc_files = []
-    for root, _, files in os.walk("."):
+    for root, _, files in os.walk(repo_path):
         if ".git" in root or "public" in root or "node_modules" in root:
             continue
         for f in files:
@@ -256,6 +290,7 @@ def run_stats_check() -> str:
 
     stat_refs = {}  # {(file, stat_name): claimed_value}
     for filepath in doc_files:
+        relpath = os.path.relpath(filepath, repo_path)
         try:
             with open(filepath, encoding="utf-8", errors="ignore") as fh:
                 for i, line in enumerate(fh, 1):
@@ -266,7 +301,7 @@ def run_stats_check() -> str:
                                 val = int(raw)
                             except ValueError:
                                 continue
-                            key = (filepath, stat_name, i)
+                            key = (relpath, stat_name, i)
                             stat_refs[key] = val
         except OSError:
             continue

@@ -525,6 +525,9 @@ func isASCIIQuotedSpan(content string, start, end int, quote byte) bool {
 func matchPatternsAgainst(patterns []*compiledPattern, content string) []ResponseMatch {
 	var matches []ResponseMatch
 	for _, p := range patterns {
+		if !responsePatternCanMatch(p, content) {
+			continue
+		}
 		locs := p.re.FindAllStringIndex(content, -1)
 		for _, loc := range locs {
 			matchText := content[loc[0]:loc[1]]
@@ -542,6 +545,27 @@ func matchPatternsAgainst(patterns []*compiledPattern, content string) []Respons
 		}
 	}
 	return matches
+}
+
+func responsePatternCanMatch(p *compiledPattern, content string) bool {
+	if len(p.requiredLiteralsAny) == 0 {
+		return true
+	}
+	for _, literal := range p.requiredLiteralsAny {
+		for i := 0; i+len(literal) <= len(content); i++ {
+			if asciiEqualFold(content[i:i+len(literal)], literal) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func responsePatternRequiredLiterals(regex string) []string {
+	if regex == config.MarkdownLinkCredentialExfilRegex {
+		return []string{"http://", "https://"}
+	}
+	return nil
 }
 
 func withResponseSpans(matches []ResponseMatch, viewLabel string) []ResponseMatch {
@@ -583,6 +607,9 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 			continue
 		}
 		p := patterns[idx]
+		if !responsePatternCanMatch(p, content) {
+			continue
+		}
 		locs := p.re.FindAllStringIndex(content, -1)
 		for _, loc := range locs {
 			matchText := content[loc[0]:loc[1]]

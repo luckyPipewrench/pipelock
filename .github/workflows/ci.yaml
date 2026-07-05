@@ -73,13 +73,11 @@ jobs:
             internal/cli/hermes/hermes_e2e_test.go
             sdk/conformance/testdata/aarp-corpus/
 
-  test:
+  test-oss:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    # Bumped 20 -> 30 after the combined replay, OSS race, and enterprise race
-    # suite began landing within ~90s of the 20m wall on clean ubuntu-latest
-    # runners, leaving no retry-safe headroom for normal runner variance.
-    timeout-minutes: 30
+    name: test-oss (${{ matrix.go-version }})
+    timeout-minutes: 20
     strategy:
       matrix:
         go-version: ['1.25', '1.26']
@@ -118,7 +116,32 @@ jobs:
           fi
           exit "$test_status"
 
-      - name: Run tests (enterprise)
+  test-enterprise:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    name: test-enterprise (${{ matrix.go-version }})
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        go-version: ['1.25', '1.26']
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests (enterprise with coverage)
+        if: matrix.go-version == '1.25'
         env:
           TEST_LABEL: enterprise Go ${{ matrix.go-version }}
         run: |
@@ -134,12 +157,46 @@ jobs:
           fi
           exit "$test_status"
 
+      - name: Run tests (enterprise)
+        if: matrix.go-version != '1.25'
+        env:
+          TEST_LABEL: enterprise Go ${{ matrix.go-version }}
+        run: |
+          set -o pipefail
+          set +e
+          go test -tags enterprise -race -count=1 -json ./... \
+            | tee /tmp/go-test-enterprise.json >/dev/null
+          test_status=$?
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
+          summary_status=$?
+          if [ "$summary_status" -ne 0 ]; then
+            exit "$summary_status"
+          fi
+          exit "$test_status"
+
       - name: Upload coverage
         if: matrix.go-version == '1.25'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: ./coverage.out
           fail_ci_if_error: false
+
+  test:
+    needs: [test-oss, test-enterprise]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    name: test (${{ matrix.go-version }})
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        go-version: ['1.25', '1.26']
+    steps:
+      - name: Required check compatibility gate
+        run: |
+          echo "test-oss result: ${{ needs.test-oss.result }}"
+          echo "test-enterprise result: ${{ needs.test-enterprise.result }}"
+          test "${{ needs.test-oss.result }}" = "success"
+          test "${{ needs.test-enterprise.result }}" = "success"
 
   test-macos:
     needs: [security-scan]

@@ -529,49 +529,140 @@ func TestManagerLinkageResetAndCrossSessionIsolation(t *testing.T) {
 	}
 }
 
-func TestManagerCascadeLimitDeniesBeforeStateAndJournal(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
-	m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 8, MaxCascadeDepth: 2, JournalPath: path})
-	for _, id := range []string{"a", "b"} {
-		if err := m.Hold(HeldAction{
-			DeferID:   id,
-			ActionID:  id,
-			Target:    "tool",
-			SizeBytes: 1,
-			Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
-			Resolve:   func(Resolution) {},
-		}); err != nil {
-			t.Fatalf("Hold(%s): %v", id, err)
+func TestManagerCascadeLimitDenialJournal(t *testing.T) {
+	tests := []struct {
+		name             string
+		breakJournalPath bool
+		wantJournalEntry bool
+	}{
+		{
+			name:             "journals terminal denial once",
+			wantJournalEntry: true,
+		},
+		{
+			name:             "journal write failure preserves denial",
+			breakJournalPath: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+			var warnings strings.Builder
+			m := NewManager(Config{
+				Enabled:              true,
+				Timeout:              time.Hour,
+				MaxPending:           8,
+				MaxPendingPerSession: 8,
+				MaxCascadeDepth:      2,
+				JournalPath:          path,
+				Warningf: func(format string, args ...any) {
+					_, _ = fmt.Fprintf(&warnings, format, args...)
+				},
+			})
+			for _, id := range []string{"a", "b"} {
+				if err := m.Hold(HeldAction{
+					DeferID:   id,
+					ActionID:  id,
+					Target:    "tool",
+					Surface:   SurfaceMCPStdio,
+					Method:    "tools/call",
+					Reason:    "defer test",
+					SizeBytes: 1,
+					Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+					Resolve:   func(Resolution) {},
+				}); err != nil {
+					t.Fatalf("Hold(%s): %v", id, err)
+				}
+			}
+			if tc.breakJournalPath {
+				m.cfg.JournalPath = t.TempDir()
+			}
+			err := m.Hold(HeldAction{
+				DeferID:   "c",
+				ActionID:  "c",
+				Target:    "tool",
+				Surface:   SurfaceMCPStdio,
+				Method:    "tools/call",
+				Reason:    "defer test",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+				Resolve:   func(Resolution) {},
+			})
+			var limitErr *CascadeLimitError
+			if !errors.Is(err, ErrCascadeLimit) || !errors.As(err, &limitErr) {
+				t.Fatalf("Hold(c) error = %v, want CascadeLimitError", err)
+			}
+			if limitErr.Depth != 3 || limitErr.Limit != 2 || limitErr.ParentDeferID != "b" {
+				t.Fatalf("limit error = %+v", limitErr)
+			}
+			if HoldFailureSource(err) != SourceCascadeLimit {
+				t.Fatalf("HoldFailureSource = %q, want cascade_limit", HoldFailureSource(err))
+			}
+			if _, ok := m.Held("c"); ok {
+				t.Fatal("limit-denied action was held")
+			}
+			pending, journalErr := PendingJournal(path)
+			if journalErr != nil {
+				t.Fatalf("PendingJournal: %v", journalErr)
+			}
+			if len(pending) != 2 {
+				t.Fatalf("pending journal count = %d, want 2", len(pending))
+			}
+			entries := readJournalEntries(t, path)
+			gotDenials := 0
+			for _, entry := range entries {
+				if entry.DeferID != "c" {
+					continue
+				}
+				if entry.State == StateHeld {
+					t.Fatalf("limit-denied action has held journal entry: %+v", entry)
+				}
+				if entry.State == StateResolvedBlock && entry.Source == SourceCascadeLimit {
+					gotDenials++
+					if entry.ParentDeferID != "b" || entry.CascadeDepth != 3 || entry.Linkage != LinkageSessionPendingAncestor {
+						t.Fatalf("cascade-limit journal entry = %+v", entry)
+					}
+				}
+			}
+			if tc.wantJournalEntry && gotDenials != 1 {
+				t.Fatalf("cascade-limit denial journal entries = %d, want 1; entries=%+v", gotDenials, entries)
+			}
+			if !tc.wantJournalEntry && gotDenials != 0 {
+				t.Fatalf("cascade-limit denial journal entries after write failure = %d, want 0", gotDenials)
+			}
+			if tc.breakJournalPath {
+				gotWarning := warnings.String()
+				for _, want := range []string{"event=deferred_journal_write_failed", "audit_gap=true", "source=cascade_limit", "defer_id=c", "parent_defer_id=b", "cascade_depth=3"} {
+					if !strings.Contains(gotWarning, want) {
+						t.Fatalf("warning %q missing %q", gotWarning, want)
+					}
+				}
+			} else if warnings.String() != "" {
+				t.Fatalf("unexpected warning on successful journal write: %q", warnings.String())
+			}
+		})
+	}
+}
+
+func readJournalEntries(t *testing.T, path string) []journalEntry {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile journal: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	entries := make([]journalEntry, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			continue
 		}
+		var entry journalEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("Unmarshal journal line %q: %v", line, err)
+		}
+		entries = append(entries, entry)
 	}
-	err := m.Hold(HeldAction{
-		DeferID:   "c",
-		ActionID:  "c",
-		Target:    "tool",
-		SizeBytes: 1,
-		Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
-		Resolve:   func(Resolution) {},
-	})
-	var limitErr *CascadeLimitError
-	if !errors.Is(err, ErrCascadeLimit) || !errors.As(err, &limitErr) {
-		t.Fatalf("Hold(c) error = %v, want CascadeLimitError", err)
-	}
-	if limitErr.Depth != 3 || limitErr.Limit != 2 || limitErr.ParentDeferID != "b" {
-		t.Fatalf("limit error = %+v", limitErr)
-	}
-	if HoldFailureSource(err) != SourceCascadeLimit {
-		t.Fatalf("HoldFailureSource = %q, want cascade_limit", HoldFailureSource(err))
-	}
-	if _, ok := m.Held("c"); ok {
-		t.Fatal("limit-denied action was held")
-	}
-	pending, journalErr := PendingJournal(path)
-	if journalErr != nil {
-		t.Fatalf("PendingJournal: %v", journalErr)
-	}
-	if len(pending) != 2 {
-		t.Fatalf("pending journal count = %d, want 2", len(pending))
-	}
+	return entries
 }
 
 func TestManagerSequentialRatchetBoundedByCascadeDepth(t *testing.T) {
@@ -1085,6 +1176,40 @@ func TestPendingJournalRoundTripsCascadeFieldsAndPreUpgradeEntries(t *testing.T)
 	})
 }
 
+func TestPendingJournalTerminalEntryBeforeHeldFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+	entries := []journalEntry{
+		{
+			DeferID:   "denied",
+			ActionID:  "denied",
+			State:     StateResolvedBlock,
+			Source:    SourceCascadeLimit,
+			Timestamp: time.Now().UTC(),
+		},
+		{
+			DeferID:   "denied",
+			ActionID:  "denied",
+			State:     StateHeld,
+			Timestamp: time.Now().UTC(),
+		},
+	}
+	var data []byte
+	for _, entry := range entries {
+		line, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("Marshal journal entry: %v", err)
+		}
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := PendingJournal(path); err == nil || !strings.Contains(err.Error(), "held entry after terminal state") {
+		t.Fatalf("PendingJournal error = %v, want held-after-terminal integrity error", err)
+	}
+}
+
 func TestPendingJournalEmptyMissingMalformedAndLongLine(t *testing.T) {
 	pending, err := PendingJournal("")
 	if err != nil || pending != nil {
@@ -1100,6 +1225,17 @@ func TestPendingJournalEmptyMissingMalformedAndLongLine(t *testing.T) {
 	}
 	if _, err := PendingJournal(malformed); err == nil || !strings.Contains(err.Error(), "parse defer journal") {
 		t.Fatalf("PendingJournal malformed error = %v, want parse error", err)
+	}
+	unknownState := filepath.Join(t.TempDir(), "unknown-state.jsonl")
+	line, err := json.Marshal(journalEntry{DeferID: "future", ActionID: "future", State: "future_state", Timestamp: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("Marshal unknown state entry: %v", err)
+	}
+	if err := os.WriteFile(unknownState, append(line, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile unknown state: %v", err)
+	}
+	if _, err := PendingJournal(unknownState); err == nil || !strings.Contains(err.Error(), "unknown state") {
+		t.Fatalf("PendingJournal unknown state error = %v, want integrity error", err)
 	}
 	longLine := filepath.Join(t.TempDir(), "long.jsonl")
 	if err := os.WriteFile(longLine, []byte(strings.Repeat("x", 1024*1024+1)), 0o600); err != nil {

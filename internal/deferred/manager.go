@@ -51,6 +51,7 @@ type Config struct {
 	MaxPendingBytes      int
 	MaxCascadeDepth      int
 	JournalPath          string
+	Warningf             func(format string, args ...any)
 }
 
 // ResolutionPolicy is persisted into the defer receipt.
@@ -157,7 +158,9 @@ type Resolution struct {
 // Manager tracks per-action holds. It is safe for concurrent use.
 type Manager struct {
 	mu             sync.Mutex
+	journalMu      sync.Mutex
 	cfg            Config
+	warningf       func(format string, args ...any)
 	holds          map[string]*HeldAction
 	sessionHolds   map[string][]string
 	totalBytes     int
@@ -211,9 +214,16 @@ func NewManager(cfg Config) *Manager {
 	}
 	return &Manager{
 		cfg:            cfg,
+		warningf:       cfg.Warningf,
 		holds:          make(map[string]*HeldAction),
 		sessionHolds:   make(map[string][]string),
 		pendingJournal: make(map[string]journalEntry),
+	}
+}
+
+func (m *Manager) warnf(format string, args ...any) {
+	if m != nil && m.warningf != nil {
+		m.warningf(format, args...)
 	}
 }
 
@@ -290,11 +300,16 @@ func (m *Manager) Hold(action HeldAction) error {
 	}
 	if action.CascadeDepth > m.cfg.MaxCascadeDepth {
 		m.mu.Unlock()
-		return &CascadeLimitError{
+		limitErr := &CascadeLimitError{
 			Depth:         action.CascadeDepth,
 			Limit:         m.cfg.MaxCascadeDepth,
 			ParentDeferID: action.ParentDeferID,
 		}
+		if err := m.appendJournal(journalEntryFromHeld(action, StateResolvedBlock, SourceCascadeLimit)); err != nil {
+			m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s parent_defer_id=%s cascade_depth=%d: %v\n",
+				SourceCascadeLimit, action.DeferID, action.ParentDeferID, action.CascadeDepth, err)
+		}
+		return limitErr
 	}
 	journalAction := action
 	stored := action
@@ -635,6 +650,9 @@ func (m *Manager) appendJournal(entry journalEntry) error {
 	if m == nil || m.cfg.JournalPath == "" {
 		return nil
 	}
+	m.journalMu.Lock()
+	defer m.journalMu.Unlock()
+
 	path := filepath.Clean(m.cfg.JournalPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
@@ -669,6 +687,7 @@ func PendingJournal(path string) ([]HeldAction, error) {
 	}
 	defer func() { _ = f.Close() }()
 	pending := map[string]journalEntry{}
+	terminal := map[string]struct{}{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -678,9 +697,15 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		}
 		switch entry.State {
 		case StateHeld:
+			if _, seen := terminal[entry.DeferID]; seen {
+				return nil, fmt.Errorf("defer journal integrity: held entry after terminal state for defer_id %q", entry.DeferID)
+			}
 			pending[entry.DeferID] = entry
-		default:
+		case StateResolvedAllow, StateResolvedBlock, StateResolvedStepUp:
 			delete(pending, entry.DeferID)
+			terminal[entry.DeferID] = struct{}{}
+		default:
+			return nil, fmt.Errorf("defer journal integrity: unknown state %q for defer_id %q", entry.State, entry.DeferID)
 		}
 	}
 	if err := scanner.Err(); err != nil {

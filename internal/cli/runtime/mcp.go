@@ -267,9 +267,15 @@ func mcpReceiptParityOpts(
 	return opts
 }
 
-func buildDeferManager(cfg *config.Config) *deferred.Manager {
+func buildDeferManager(cfg *config.Config, warningWriter io.Writer) *deferred.Manager {
 	if cfg == nil || !cfg.Defer.Enabled {
 		return nil
+	}
+	var warningf func(format string, args ...any)
+	if warningWriter != nil {
+		warningf = func(format string, args ...any) {
+			_, _ = fmt.Fprintf(warningWriter, format, args...)
+		}
 	}
 	return deferred.NewManager(deferred.Config{
 		Enabled:              cfg.Defer.Enabled,
@@ -279,6 +285,7 @@ func buildDeferManager(cfg *config.Config) *deferred.Manager {
 		MaxPendingBytes:      cfg.Defer.MaxPendingBytes,
 		MaxCascadeDepth:      cfg.Defer.MaxCascadeDepth,
 		JournalPath:          deferJournalPath(cfg),
+		Warningf:             warningf,
 	})
 }
 
@@ -1077,7 +1084,7 @@ Key-free evidence capture:
 			if policyCfg != nil {
 				policyAction = policyCfg.Action
 			}
-			deferManager := buildDeferManager(cfg)
+			deferManager := buildDeferManager(cfg, cmd.ErrOrStderr())
 			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), receiptEmitter, v2ReceiptEmitter, captureConfigHash, cmd.ErrOrStderr()); err != nil {
 				return err
 			}

@@ -27,7 +27,7 @@ import (
 
 const (
 	mcpLiveLockAgent  = "agent-a"
-	mcpLiveLockServer = "stripe"
+	mcpLiveLockServer = "payments"
 	mcpAllowedTool    = "create_payment_intent"
 	mcpDeniedTool     = "refund_payment"
 	mcpDefaultEntity  = "_default"
@@ -66,9 +66,13 @@ func mcpLiveLockLoader(t *testing.T, mode contractruntime.Mode, rules ...contrac
 }
 
 func mcpToolRule(ruleID string, args []map[string]any) contract.Rule {
+	return mcpCallableRule(ruleID, mcpAllowedTool, args)
+}
+
+func mcpCallableRule(ruleID, callable string, args []map[string]any) contract.Rule {
 	selector := map[string]any{
 		"server": map[string]any{"value": mcpLiveLockServer},
-		"tool":   map[string]any{"value": mcpAllowedTool},
+		"tool":   map[string]any{"value": callable},
 	}
 	if len(args) > 0 {
 		argList := make([]any, len(args))
@@ -211,7 +215,7 @@ func TestMCPContractGateHelpers(t *testing.T) {
 	if got := mcpContractAgent(MCPProxyOpts{ContractAgent: " agent-a "}); got != "agent-a" {
 		t.Fatalf("trimmed agent = %q", got)
 	}
-	if got := mcpContractServer(MCPProxyOpts{ContractServer: " stripe "}, "fallback"); got != "stripe" {
+	if got := mcpContractServer(MCPProxyOpts{ContractServer: " payments "}, "fallback"); got != "payments" {
 		t.Fatalf("configured server = %q", got)
 	}
 	if got := mcpContractServer(MCPProxyOpts{}, " fallback "); got != " fallback " {
@@ -374,6 +378,30 @@ func TestMCPContractGateFallbacks(t *testing.T) {
 	}
 	if gate.Verdict != config.ActionBlock || gate.WinningSource != contractruntime.WinningSourceScanner {
 		t.Fatalf("tool gate fallback = %+v", gate)
+	}
+}
+
+func TestMCPContractGateA2AUsesNamespacedMethodIdentity(t *testing.T) {
+	opts := mcpLiveLockOpts(t, contractruntime.ModeLive,
+		mcpCallableRule("r-a2a", a2aBaselineIdentity(testA2AMethod), nil))
+	gate, err := evaluateMCPToolGate(ParseMCPFrame(testA2ARequest(1, testA2AMethod)), config.ActionAllow, false, opts)
+	if err != nil {
+		t.Fatalf("A2A contract gate err = %v", err)
+	}
+	if gate.Verdict != config.ActionAllow || gate.WinningSource != contractruntime.WinningSourceContract || gate.RuleID != "r-a2a" {
+		t.Fatalf("A2A contract gate = %+v, want contract allow from r-a2a", gate)
+	}
+}
+
+func TestMCPContractGateA2ARuleDoesNotAllowSameNamedTool(t *testing.T) {
+	opts := mcpLiveLockOpts(t, contractruntime.ModeLive,
+		mcpCallableRule("r-a2a", a2aBaselineIdentity(testA2AMethod), nil))
+	gate, err := evaluateMCPToolGate(ParseMCPFrame([]byte(mcpToolCall(a2aBaselineIdentity(testA2AMethod), ""))), config.ActionAllow, false, opts)
+	if err != nil {
+		t.Fatalf("same-named tool contract gate err = %v", err)
+	}
+	if gate.Verdict != config.ActionBlock || gate.RuleID == "r-a2a" {
+		t.Fatalf("A2A contract rule allowed same-named MCP tool: %+v", gate)
 	}
 }
 
@@ -762,6 +790,22 @@ func TestRunProxyLiveLock_DeniedToolCallNotForwardedToSubprocess(t *testing.T) {
 	}
 }
 
+func TestRunProxyLiveLock_A2ADeniedMethodNotForwardedToSubprocess(t *testing.T) {
+	var stdout, stderr strings.Builder
+	err := RunProxy(context.Background(), strings.NewReader(string(testA2ARequest(1, testA2AMethod))+"\n"), &stdout, &stderr, []string{"cat"},
+		mcpLiveLockOpts(t, contractruntime.ModeLive, mcpToolRule("r-allow", nil)))
+	if err != nil {
+		t.Fatalf("RunProxy: %v", err)
+	}
+	data := decodeRPCError(t, stdout.String())
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
+	}
+	if strings.Contains(stdout.String(), testA2AMethod) {
+		t.Fatalf("blocked A2A method was forwarded to subprocess: %s", stdout.String())
+	}
+}
+
 func TestRunProxyLiveLock_WarnScannerThenContractBlocks(t *testing.T) {
 	var stdout, stderr strings.Builder
 	opts := mcpLiveLockOpts(t, contractruntime.ModeLive, mcpToolRule("r-allow", nil))
@@ -790,6 +834,31 @@ func TestMCPStdioLiveLock_ArgMismatchBlocksAllowedToolName(t *testing.T) {
 	data := decodeRPCError(t, stdout.String())
 	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractEnforceDefault) {
 		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractEnforceDefault)
+	}
+}
+
+func TestMCPA2ALiveLock_HTTPDeniedMethodNotForwarded(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
+	}))
+	defer upstream.Close()
+
+	var stdout, stderr strings.Builder
+	err := RunHTTPProxy(context.Background(), strings.NewReader(string(testA2ARequest(1, testA2AMethod))+"\n"), &stdout, &stderr,
+		upstream.URL, nil,
+		mcpLiveLockOpts(t, contractruntime.ModeLive, mcpToolRule("r-allow", nil)))
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+	data := decodeRPCError(t, stdout.String())
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
+	}
+	if got := upstreamCalls.Load(); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
 	}
 }
 

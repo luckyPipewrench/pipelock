@@ -422,7 +422,7 @@ func ForwardScannedInput(
 			enforcementKind = "mcp method"
 		}
 		baselineIdentity := mcpFrameBaselineIdentity(frame)
-		captureActionClass := captureMCPFrameActionClass(toolCallName, verdict.Method, string(frame.Args))
+		captureActionClass := captureMCPFrameActionClass(enforcementTarget, verdict.Method, mcpFrameCallableArgs(frame))
 
 		// Session binding side effects. Fire the diagnostic log and
 		// capture observe for every binding violation regardless of
@@ -436,9 +436,9 @@ func ForwardScannedInput(
 			case bindingReasonMissingToolName:
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call missing params.name\n", lineNum)
 			case bindingReasonNoBaseline:
-				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q before baseline established\n", lineNum, toolCallName)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s %q before baseline established\n", lineNum, enforcementKind, enforcementTarget)
 			case bindingReasonUnknownTool:
-				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n", lineNum, toolCallName)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s %q not in session baseline\n", lineNum, enforcementKind, enforcementTarget)
 			}
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
 				Subsurface:        "session_binding",
@@ -449,13 +449,13 @@ func ForwardScannedInput(
 				Profile:           opts.captureProfile(),
 				ActionClass:       captureActionClass,
 				Request: capture.CaptureRequest{
-					ToolName:  toolCallName,
-					MCPMethod: methodToolsCall,
+					ToolName:  enforcementTarget,
+					MCPMethod: verdict.Method,
 					RPCID:     captureRPCID(verdict.ID),
 				},
 				RawFindings: []capture.Finding{{
 					Kind:       capture.KindSessionBinding,
-					ToolName:   toolCallName,
+					ToolName:   enforcementTarget,
 					PolicyRule: bindingReason,
 					Action:     bindingAction,
 				}},
@@ -573,7 +573,7 @@ func ForwardScannedInput(
 				decision = eval.TaintAuditDecision
 			}
 			auditLogger.LogTaintDecision(
-				mustMCPAuditContext(auditLogger, "MCP", toolCallName),
+				mustMCPAuditContext(auditLogger, "MCP", enforcementTarget),
 				audit.TaintDecision{
 					TaintLevel:  decision.Risk.Level.String(),
 					ActionClass: decision.ActionClass.String(),
@@ -798,7 +798,7 @@ func ForwardScannedInput(
 				continue
 			}
 			if contractGate.Verdict == config.ActionBlock {
-				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked tools/call %q (%s)\n", lineNum, toolCallName, contractGate.Reason)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked %s %q (%s)\n", lineNum, enforcementKind, enforcementTarget, contractGate.Reason)
 				blockedCh <- mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract")
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				continue
@@ -943,6 +943,9 @@ func ForwardScannedInput(
 			blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
 			if bindingReason != "" && bindingAction == config.ActionBlock {
 				blockReason = blockreason.SessionBinding
+				if errMsg == "" {
+					errMsg = "pipelock: " + bindingReason
+				}
 			}
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
@@ -1262,7 +1265,7 @@ func ForwardScannedInput(
 				continue
 			}
 			if contractGate.Verdict == config.ActionBlock {
-				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked tools/call %q (%s)\n", lineNum, toolCallName, contractGate.Reason)
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked %s %q (%s)\n", lineNum, enforcementKind, enforcementTarget, contractGate.Reason)
 				blockedCh <- mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract")
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
 				continue

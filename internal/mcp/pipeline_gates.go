@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -121,9 +122,9 @@ type MCPInputEvaluation struct {
 	ChainAction      string
 	ChainReason      string
 
-	// TaintDecision is populated when the message is a tools/call.
-	// The taint evaluator reads session state potentially mutated
-	// by earlier gates which is why it runs last.
+	// TaintDecision is populated when the message is a tools/call or
+	// A2A method. The taint evaluator reads session state potentially
+	// mutated by earlier gates which is why it runs last.
 	TaintDecision taintDecision
 
 	// TaintAuditDecision preserves the raw policy result before any
@@ -146,9 +147,9 @@ type MCPInputEvaluation struct {
 	// BindingReason names the binding violation:
 	// "session_binding:batch_request" (batch with binding active),
 	// "session_binding:missing_tool_name" (tools/call without
-	// params.name), "session_binding:no_baseline" (tools/call before
-	// the first tools/list response established a baseline),
-	// "session_binding:unknown_tool" (tools/call for a tool not in
+	// params.name), "session_binding:no_baseline" (tools/call or A2A
+	// method before a baseline was established),
+	// "session_binding:unknown_tool" (tools/call or A2A method not in
 	// the session baseline). Empty when binding did not fire.
 	BindingReason string
 
@@ -173,6 +174,51 @@ func mcpFrameEnforcementIdentity(frame MCPFrame, method string) string {
 		method = frame.Method
 	}
 	return a2aBaselineIdentity(method)
+}
+
+func mcpFrameCollisionSafeCallableIdentity(frame MCPFrame, method string) string {
+	if frame.IsToolsCall() {
+		return collisionSafeToolCallableIdentity(frame.ToolCallName)
+	}
+	if method == "" {
+		method = frame.Method
+	}
+	return a2aBaselineIdentity(method)
+}
+
+func collisionSafeToolCallableIdentity(toolName string) string {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return ""
+	}
+	if strings.HasPrefix(toolName, a2aBaselineIdentityPrefix) || strings.HasPrefix(toolName, toolBaselineIdentityPrefix) {
+		return toolBaselineIdentity(toolName)
+	}
+	return toolName
+}
+
+func mcpFrameCallableArgs(frame MCPFrame) string {
+	if frame.IsToolsCall() {
+		return string(frame.Args)
+	}
+	params := mcpFrameParams(frame)
+	if len(params) == 0 {
+		return ""
+	}
+	return string(params)
+}
+
+func mcpFrameParams(frame MCPFrame) json.RawMessage {
+	var decoded struct {
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(frame.Raw, &decoded); err != nil {
+		return nil
+	}
+	if len(decoded.Params) == 0 || string(decoded.Params) == "null" {
+		return nil
+	}
+	return decoded.Params
 }
 
 func mcpFrameDoWArgs(frame MCPFrame, msg []byte) string {
@@ -204,9 +250,10 @@ func mcpFrameDoWArgs(frame MCPFrame, msg []byte) string {
 //   - parse-error short-circuit from ContentVerdict.Error. Runs after
 //     the stateful gates above so every configured gate contributes
 //     its audit signals before the block verdict is emitted.
-//   - taint evaluation for tools/call. Reads session state the earlier
-//     gates may have updated. PolicyAsk triggers the inline approver
-//     dialog (HITL); approved sets TaintApproved.
+//   - taint evaluation for tools/call and A2A method identities. Reads
+//     session state the earlier gates may have updated. PolicyAsk
+//     triggers the inline approver dialog (HITL); approved sets
+//     TaintApproved.
 //
 // Adaptive signal recording, audit logging, and receipt emission
 // stay in the caller because those side effects happen at the
@@ -311,17 +358,21 @@ func EvaluateMCPInputGates(
 	}
 
 	// session binding. HTTP listener traffic shares a listener-level
-	// tools/list baseline; apply the same tools/call inventory check as
-	// stdio before policy/chain/taint can treat the call as clean.
-	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.Baseline != nil && toolCfg.BindingUnknownAction != "" && frame.IsToolsCall() {
+	// baseline; apply the same callable inventory check as stdio before
+	// policy/chain/taint can treat the call as clean. Tools/call uses the raw
+	// tool name for compatibility with the tools/list baseline. A2A methods
+	// are not members of that MCP tool inventory; with an established baseline
+	// they fail closed as unknown rather than letting a real tool named
+	// "a2a:<method>" satisfy the method binding.
+	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.Baseline != nil && toolCfg.BindingUnknownAction != "" && (enforcementIdentity != "" || frame.IsToolsCall()) {
 		switch {
-		case frame.ToolCallName == "":
+		case frame.IsToolsCall() && frame.ToolCallName == "":
 			eval.BindingAction = toolCfg.BindingUnknownAction
 			eval.BindingReason = bindingReasonMissingToolName
 		case !toolCfg.Baseline.HasBaseline():
 			eval.BindingAction = toolCfg.BindingNoBaselineAction
 			eval.BindingReason = bindingReasonNoBaseline
-		case !toolCfg.Baseline.IsKnownTool(frame.ToolCallName):
+		case !frame.IsToolsCall() || !toolCfg.Baseline.IsKnownTool(enforcementIdentity):
 			eval.BindingAction = toolCfg.BindingUnknownAction
 			eval.BindingReason = bindingReasonUnknownTool
 		}
@@ -359,17 +410,18 @@ func EvaluateMCPInputGates(
 		return eval
 	}
 
-	// taint. Only for tools/call. PolicyAsk triggers the
-	// inline approver dialog so HITL runs in the request-processing
-	// goroutine, matching the pre-refactor call site.
-	if frame.IsToolsCall() {
+	// taint. Applies to tools/call and A2A method identities. PolicyAsk
+	// triggers the inline approver dialog so HITL runs in the
+	// request-processing goroutine, matching the pre-refactor call site.
+	taintIdentity := mcpFrameCollisionSafeCallableIdentity(frame, eval.ContentVerdict.Method)
+	if taintIdentity != "" {
 		// Cross-agent contamination was already observed before the
 		// short-circuiting gates above; the cross_agent source is on the
 		// session, so the taint snapshot below still carries it as evidence.
 		taintOpts := opts
 		taintOpts.TaintCfg = opts.taintCfg()
 		taintOpts.TaintCfgFn = nil
-		eval.TaintDecision = evaluateMCPTaint(taintOpts, frame.ToolCallName, string(frame.Args))
+		eval.TaintDecision = evaluateMCPTaint(taintOpts, taintIdentity, mcpFrameCallableArgs(frame))
 		switch eval.TaintDecision.Result.Decision {
 		case session.PolicyBlock:
 			eval.TaintAuditDecision = eval.TaintDecision
@@ -379,8 +431,8 @@ func EvaluateMCPInputGates(
 		case session.PolicyAsk:
 			eval.TaintAuditDecision = eval.TaintDecision
 			eval.TaintAuditDecisionSet = true
-			preview := frame.ToolCallName + " " + eval.TaintDecision.ActionRef
-			approved, hasApprover := taintDecisionRequiresApproval(opts, frame.ToolCallName, taintApprovalReason(eval.TaintDecision), preview)
+			preview := strings.TrimSpace(fmt.Sprintf("%s %s", taintIdentity, eval.TaintDecision.ActionRef))
+			approved, hasApprover := taintDecisionRequiresApproval(opts, taintIdentity, taintApprovalReason(eval.TaintDecision), preview)
 			if !hasApprover || !approved {
 				eval.BlockingGate = blockingGateTaintAskDenied
 				return eval
@@ -429,10 +481,10 @@ func EvaluateMCPInputGates(
 //   - denial-of-wallet check for tools/call with a non-empty tool name
 //     or A2A method with a baseline identity. Blocks short-circuit;
 //     warns populate DoWAction.
-//   - session binding tool check for tools/call. Overrides the
-//     batch pre-check when it fires (missing tool name, no baseline,
-//     unknown tool). No short-circuit -- the caller folds
-//     BindingAction into the effective action merge.
+//   - session binding callable check for tools/call and A2A method
+//     identities. Overrides the batch pre-check when it fires (missing
+//     tool name, no baseline, unknown callable). No short-circuit --
+//     the caller folds BindingAction into the effective action merge.
 //   - frozen tool enforcement. Short-circuits on a block verdict
 //     when the session has a frozen snapshot and the tool is either
 //     unparseable or not in the snapshot.
@@ -443,9 +495,9 @@ func EvaluateMCPInputGates(
 //   - parse-error short-circuit from ContentVerdict.Error. Runs
 //     after the stateful gates so audit signals are recorded before
 //     the block verdict is emitted.
-//   - taint evaluation for tools/call. Reads session state the
-//     earlier gates may have updated. PolicyAsk triggers the inline
-//     approver dialog; approved sets TaintApproved.
+//   - taint evaluation for tools/call and A2A method identities. Reads
+//     session state the earlier gates may have updated. PolicyAsk
+//     triggers the inline approver dialog; approved sets TaintApproved.
 //
 // The helper populates MCPInputEvaluation without writing to
 // logW, emitting audit logs, recording metrics, or firing
@@ -555,28 +607,32 @@ func EvaluateMCPInputGatesStdio(
 		}
 	}
 
-	// session binding tool check. Overrides the batch
-	// pre-check when it fires. No short-circuit.
-	if bindingCfg != nil && bindingCfg.Baseline != nil && eval.ContentVerdict.Method == methodToolsCall {
+	// session binding callable check. Overrides the batch pre-check when it
+	// fires. Tools/call uses the raw tool name for compatibility with the
+	// tools/list baseline. A2A methods are not members of that MCP tool
+	// inventory; with an established baseline they fail closed as unknown
+	// rather than letting a real tool named "a2a:<method>" satisfy the method
+	// binding. No short-circuit.
+	if bindingCfg != nil && bindingCfg.Baseline != nil && (enforcementIdentity != "" || eval.ContentVerdict.Method == methodToolsCall) {
 		switch {
-		case toolCallName == "":
+		case eval.ContentVerdict.Method == methodToolsCall && toolCallName == "":
 			eval.BindingAction = bindingCfg.UnknownToolAction
 			eval.BindingReason = bindingReasonMissingToolName
 		case !bindingCfg.Baseline.HasBaseline():
 			eval.BindingAction = bindingCfg.NoBaselineAction
 			eval.BindingReason = bindingReasonNoBaseline
-		case !bindingCfg.Baseline.IsKnownTool(toolCallName):
+		case eval.ContentVerdict.Method != methodToolsCall || !bindingCfg.Baseline.IsKnownTool(toolCallName):
 			eval.BindingAction = bindingCfg.UnknownToolAction
 			eval.BindingReason = bindingReasonUnknownTool
 		}
 	}
 
-	// frozen tool. Scoped to tools/call messages; methods like
-	// tools/list, initialize, and notifications/* carry no tool name and
-	// must flow through a frozen session so MCP protocol state
-	// (handshake, discovery, recovery) keeps working. Within tools/call
-	// the gate is fail-closed: block when the tool name is empty or not
-	// in the frozen set. Mirrors the method-scoping on gates 5 and 6.
+	// frozen tool. Scoped to tools/call messages because this gate enforces
+	// the tool inventory snapshot captured for an MCP server. A2A frames are
+	// method-based callables and are not members of that frozen tool set; they
+	// are covered by the method-scoped binding, DoW, chain, taint, and
+	// contract gates instead. Within tools/call the gate is fail-closed: block
+	// when the tool name is empty or not in the frozen set.
 	if opts.ToolFreezer != nil && opts.FrozenToolStableKey != "" &&
 		eval.ContentVerdict.Method == methodToolsCall &&
 		opts.ToolFreezer.IsFrozen(opts.FrozenToolStableKey) {
@@ -610,17 +666,18 @@ func EvaluateMCPInputGatesStdio(
 		return eval
 	}
 
-	// taint. Only for tools/call. PolicyAsk triggers the
-	// inline approver dialog so HITL runs in the request-processing
-	// goroutine, matching the pre-refactor call site.
-	if eval.ContentVerdict.Method == methodToolsCall {
+	// taint. Applies to tools/call and A2A method identities. PolicyAsk
+	// triggers the inline approver dialog so HITL runs in the
+	// request-processing goroutine, matching the pre-refactor call site.
+	taintIdentity := mcpFrameCollisionSafeCallableIdentity(frame, eval.ContentVerdict.Method)
+	if taintIdentity != "" {
 		// Cross-agent contamination was already observed before the
 		// short-circuiting gates above; the cross_agent source is on the
 		// session, so the taint snapshot below still carries it as evidence.
 		taintOpts := opts
 		taintOpts.TaintCfg = opts.taintCfg()
 		taintOpts.TaintCfgFn = nil
-		eval.TaintDecision = evaluateMCPTaint(taintOpts, toolCallName, string(frame.Args))
+		eval.TaintDecision = evaluateMCPTaint(taintOpts, taintIdentity, mcpFrameCallableArgs(frame))
 		switch eval.TaintDecision.Result.Decision {
 		case session.PolicyBlock:
 			eval.TaintAuditDecision = eval.TaintDecision
@@ -630,8 +687,8 @@ func EvaluateMCPInputGatesStdio(
 		case session.PolicyAsk:
 			eval.TaintAuditDecision = eval.TaintDecision
 			eval.TaintAuditDecisionSet = true
-			preview := strings.TrimSpace(fmt.Sprintf("%s %s", toolCallName, eval.TaintDecision.ActionRef))
-			approved, hasApprover := taintDecisionRequiresApproval(opts, toolCallName, taintApprovalReason(eval.TaintDecision), preview)
+			preview := strings.TrimSpace(fmt.Sprintf("%s %s", taintIdentity, eval.TaintDecision.ActionRef))
+			approved, hasApprover := taintDecisionRequiresApproval(opts, taintIdentity, taintApprovalReason(eval.TaintDecision), preview)
 			if !hasApprover || !approved {
 				eval.BlockingGate = blockingGateTaintAskDenied
 				return eval

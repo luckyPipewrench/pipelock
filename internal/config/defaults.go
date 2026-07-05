@@ -46,6 +46,29 @@ const (
 	MarkdownLinkCredentialExfilRegex = `(?is)(?:(?:\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `|\b(?:collect|copy|include)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `)(?:` + markdownLinkCredentialExfilLink + `)|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,80}\bto\s+(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b` + markdownLinkCredentialTerminalCue + `|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:here|there)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
 )
 
+const (
+	credentialPathTerminalCue = `(?:\s*(?:$|[\r\n!?;,|&<>])|\.(?:\s|$)|\s+(?:file|contents?)\b)` // #nosec G101 -- detection regex fragment, not a hardcoded credential
+	credentialPathSSHKey      = `(?:~?[/\\]?\.ssh[/\\](?:id_rsa|id_ed25519)|\b(?:id_rsa|id_ed25519))` + credentialPathTerminalCue
+	credentialPathAWSCreds    = `\.aws[/\\]credentials` + credentialPathTerminalCue
+
+	credentialPathHighSignalWithPasswd = `(?:` + credentialPathSSHKey + `|` + credentialPathAWSCreds + `|/etc/passwd\b|/etc/shadow\b)`
+	credentialPathHighSignalShadowOnly = `(?:` + credentialPathSSHKey + `|` + credentialPathAWSCreds + `|/etc/shadow\b)`
+
+	// CredentialPathDirectiveRegex detects instructions that access sensitive
+	// credential paths. High-signal paths block on strong bare access verbs; the
+	// broader verb/path set still requires a same-clause output or exfiltration
+	// cue so setup docs that only mention doc-prone paths do not match. The
+	// bare read branch intentionally keeps /etc/shadow but omits /etc/passwd so
+	// "read the /etc/passwd format in the docs" stays clean.
+	CredentialPathDirectiveRegex = `(?is)(?:` +
+		`\b(?:cat|less|more|head|tail|base64|xxd|fetch|retrieve|extract)\b(?:[^.!?]|\.\S){0,80}` + credentialPathHighSignalWithPasswd +
+		`|\bread\b(?:[^.!?]|\.\S){0,80}` + credentialPathHighSignalShadowOnly +
+		`|\bdd\b(?:[^.!?]|\.\S){0,40}\bif\s*=\s*(?:file://)?` + credentialPathHighSignalWithPasswd +
+		`|\bcurl\b(?:[^.!?]|\.\S){0,80}\bfile://` + credentialPathHighSignalWithPasswd +
+		`|\bopenssl\b(?:[^.!?]|\.\S){0,80}(?:^|\s)-in\s+(?:file://)?` + credentialPathHighSignalWithPasswd +
+		`|\b(?:read|get|fetch|retrieve|cat|copy|extract|open|include)\b(?:[^.!?]|\.\S){0,80}(?:\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)(?:[^.!?]|\.\S){0,160}(?:\b(?:send|forward|transmit|share|email|exfiltrat\w*|leak)\b(?:[^.!?]|\.\S){0,60}?(?:(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat|request)|(?:to|into|onto|via|using|through)\s+https?://|to\s+\S+@\S+|\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b)|\b(?:paste|return|report|dump|print|output|display|show|upload|post|submit)\b(?:[^.!?]|\.\S){0,60}?(?:\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b|(?:to|into|onto|via|using|through)\s+https?://|to\s+\S+@\S+)|\bcurl\b(?:[^.!?]|\.\S){0,80}?(?:\b(?:it|them|contents?|file|data|key|keys?|values?|secrets?)\b(?:[^.!?]|\.\S){0,40}?\bto\s+\S+\.\S+|https?://|\S+\.\S+)|\|\s*(?:openssl\s+base64|base64|xxd)\b|\bin\s+(?:your|the)\s+(?:reply|response|message|answer|chat|request)\b))` // #nosec G101 -- detection regex: contains credential path names to MATCH path-exfiltration instructions, not a hardcoded credential
+)
+
 type providerKeyDomainDefault struct {
 	rule   string
 	domain string
@@ -500,7 +523,7 @@ func Defaults() *Config {
 				// core floor in internal/scanner/core.go.
 				{Name: "Credential Solicitation", Regex: CredentialSolicitationRegex},
 				{Name: "Markdown Link Credential Exfiltration", Regex: MarkdownLinkCredentialExfilRegex},
-				{Name: "Credential Path Directive", Regex: `(?is)\b(read|get|fetch|retrieve|cat|copy|extract|open|include)\b.{0,80}(\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)`},
+				{Name: "Credential Path Directive", Regex: CredentialPathDirectiveRegex},
 				{Name: "Auth Material Requirement", Regex: `(?is)\bto\s+(complete|continue|finish|proceed|verify)\b.{0,80}\b(authentication|credential|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key)\b.{0,40}\b(required|needed|necessary|must be)\b`},
 				{Name: "Memory Persistence Directive", Regex: `(?is)\b(save|store|remember|retain|persist|record|cache)\b.{0,40}\b(this|these|that|it|the)\b.{0,60}\b(for future|for later|across sessions?|next session|next time|future tasks?|future sessions?|for all future|subsequent|permanently|from now on|going forward|in all future)\b`},
 				{Name: "Preference Poisoning", Regex: `(?is)\b(from now on|always|going forward|in future)\b.{0,80}\b(prefer|prioritize|trust|choose|use|default to)\b.{0,60}\b(this tool|that tool|my tool|the external|the remote)\b`},

@@ -163,9 +163,11 @@ func evaluateMCPHTTPGate(input mcpHTTPGateInput) (mcpContractGateOutput, error) 
 }
 
 func evaluateMCPToolGate(frame MCPFrame, scannerVerdict string, scannerMatched bool, opts MCPProxyOpts) (mcpContractGateOutput, error) {
-	if !frame.IsToolsCall() {
-		// Live-lock contracts scope execution-time tool calls. Other MCP
-		// frames remain under the scanner, policy, taint, and tool-list gates.
+	callableName := mcpFrameCollisionSafeCallableIdentity(frame, frame.Method)
+	if callableName == "" {
+		// Live-lock contracts scope execution-time callables. Non-A2A MCP
+		// protocol frames remain under the scanner, policy, taint, and
+		// tool-list gates.
 		return mcpContractGateOutput{Verdict: scannerVerdict, LiveVerdict: scannerVerdict}, nil
 	}
 	if scannerVerdict == "" {
@@ -193,8 +195,8 @@ func evaluateMCPToolGate(frame MCPFrame, scannerVerdict string, scannerMatched b
 		Resolved: resolved,
 		Request: contractruntime.MCPRequest{
 			Server:   mcpContractServer(opts, ""),
-			ToolName: frame.ToolCallName,
-			ToolArgs: mcpToolArgsMap(frame.Args),
+			ToolName: callableName,
+			ToolArgs: mcpToolArgsMap(json.RawMessage(mcpFrameCallableArgs(frame))),
 		},
 		Mode:             loader.Mode(),
 		KillSwitchActive: opts.KillSwitch != nil && opts.KillSwitch.IsActive(),

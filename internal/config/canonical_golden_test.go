@@ -257,7 +257,17 @@ const (
 	// Re-bumped for bounded size-exempt response scanning: the per-response
 	// and per-proxy-instance scan ceilings plus the explicit unscannable passthrough
 	// allowlist change response-size enforcement.
-	goldenHashDefaults = "bd79729a797c83afa485a3dc15f3212cf535ee6f473ce6d60431efd1909c0474"
+	// Re-bumped for Credential Path Directive partitioning: high-signal
+	// credential paths now block on strong bare access verbs, while doc-prone
+	// paths still require an explicit output/exfiltration cue.
+	// Re-bumped for the Credential Path Directive bare-tier hardening: public
+	// key/template/docs prose stays clean, while command-shaped bare reads of
+	// high-signal credential paths still block.
+	// Re-bumped for Credential Path Directive newline termination: bare
+	// high-signal credential-path commands now terminate at line boundaries,
+	// not only end-of-text, so multiline prompt continuations cannot slip
+	// past the bare-access tier.
+	goldenHashDefaults = "82340f353c1bd70daac4b6587c0cc4fefc9f1c6ac6f39b3851ea6b2a6421e9f9"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -384,7 +394,13 @@ const (
 	// goldenHashDefaults note above.
 	// Re-bumped for bounded size-exempt response scanning: see
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "a0cf6b3984132c0d5b4ba4d9b78a8c0cb55034eef73b78f9d996cc4048067391"
+	// Re-bumped for Credential Path Directive partitioning: see
+	// goldenHashDefaults note above.
+	// Re-bumped for Credential Path Directive bare-tier hardening: see
+	// goldenHashDefaults note above.
+	// Re-bumped for Credential Path Directive newline termination: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "65d20f4ff1270dadc22ac1a29003411277ccb32ca04d4204ddf1522d248f82a3"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

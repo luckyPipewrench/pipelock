@@ -24,7 +24,7 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	if final == "allow" {
 		final = config.ActionAllow
 	}
-	if final == "step_up" {
+	if final == config.ActionStepUp {
 		final = config.ActionAsk
 	}
 	var cascade *deferred.ReceiptCascade

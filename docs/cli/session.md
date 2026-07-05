@@ -21,6 +21,9 @@ you have not set that token, the CLI will refuse to connect. See
 | `pipelock session release <key> [--to none\|soft]` | Move an airlocked session down to a lower tier |
 | `pipelock session terminate <key>` | Destructive: reset enforcement state, cut in-flight connections, clear CEE state |
 | `pipelock session recover <key> [--choice ...]` | Interactive workflow: inspect → explain → pick an action |
+| `pipelock session deferred list [--json]` | Enumerate held (deferred) MCP actions awaiting an operator decision |
+| `pipelock session deferred approve <defer-id>` | Approve a held action (opens it only if its rule permits) |
+| `pipelock session deferred deny <defer-id>` | Deny a held action, resolving it closed (blocked) |
 
 ## What the tiers mean
 
@@ -168,6 +171,42 @@ The four actions map to:
 - `release-soft` — `session release --to soft`
 - `terminate` — `session terminate`
 - `leave` — no-op confirmation that the session is unchanged
+
+## session deferred
+
+```sh
+pipelock session deferred list [--json]
+pipelock session deferred approve <defer-id>
+pipelock session deferred deny <defer-id>
+```
+
+Operate the deferred ("held") action surface. When a tool policy rule uses
+`action: defer`, a matching MCP call is held pending an operator decision
+instead of being allowed or blocked immediately. These commands list the
+pending holds and resolve each one by its defer id.
+
+This surface is only served by a `pipelock mcp proxy` running a defer-capable
+transport (MCP stdio or `--upstream` streamable HTTP) **and** configured with a
+dedicated operator port via `kill_switch.api_listen` + `kill_switch.api_token`.
+Point `--api-url` at that operator port. The deferred routes are never mounted
+on the agent-facing/MCP-data port, so a proxied agent can never approve its own
+held actions.
+
+- **`list`** returns each hold's identifying fields (defer id, surface, method,
+  target, session, cascade depth, reason). It deliberately omits the raw held
+  request payload and argument digest — an operator sees *what* is held, not the
+  request bytes.
+- **`approve`** sends an affirmative decision. It opens the hold **only if the
+  matched rule permits approval** (`resolution_policy.allow_on.approval: true`);
+  otherwise the hold resolves closed (blocked). The command prints the decision
+  actually applied (`approve <id> -> block` when the rule forbids approval), so
+  an approve is never a misleading success.
+- **`deny`** resolves the hold closed (blocked). Denying a parent hold cascades:
+  every held descendant of that action is blocked too.
+
+Resolution is fail-closed: an unknown defer id returns `404` (exit `1`), and a
+hold that a concurrent timeout, cascade, or other operator already resolved
+returns `409` (exit `1`) rather than reporting a false success.
 
 ## Exit codes
 

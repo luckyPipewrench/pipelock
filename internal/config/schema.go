@@ -44,6 +44,9 @@ const (
 	ActionForward  = "forward"
 	ActionAllow    = "allow"
 	ActionDefer    = "defer"
+	// ActionStepUp is the resolver terminal token for approval flows that
+	// escalate a held action back to human approval.
+	ActionStepUp = "step_up"
 	// ActionRedact replaces the matched value with a typed placeholder
 	// (e.g. "<pl:ipv4:1>"). Irreversible: pipelock holds no mapping.
 	// See the redaction-v1 design spec in ops for the semantic model.

@@ -289,6 +289,86 @@ func deferJournalPath(cfg *config.Config) string {
 	return filepath.Join(cfg.FlightRecorder.Dir, "deferred-actions.jsonl")
 }
 
+// startDeferredOperatorAPI starts the operator-only admin listener that exposes
+// the deferred (held-action) control surface for `pipelock mcp proxy`. It binds
+// kill_switch.api_listen on a dedicated port and serves ONLY the deferred
+// routes, wired to the live deferManager that admitted the holds, so an
+// operator can list, approve, and deny held actions out of band.
+//
+// This dedicated listener IS the confused-deputy boundary: the deferred routes
+// are reachable ONLY here, never on the MCP data listener (--listen) nor the
+// child's stdio, so a proxied agent cannot approve its own held actions. When
+// api_listen is unset (or defer is disabled / no live manager) the surface is
+// simply not exposed - deferred control is unavailable, NOT silently mounted on
+// an agent-facing port - and the returned stop is a no-op.
+//
+// A bind failure is fatal to the proxy: an operator who configured api_listen
+// but cannot reach the steering wheel should fail closed, matching the
+// api_listen fail-fast in `pipelock run`.
+func startDeferredOperatorAPI(
+	ctx context.Context,
+	cfg *config.Config,
+	deferManager *deferred.Manager,
+	logger *audit.Logger,
+	stderr io.Writer,
+) (func(), error) {
+	if cfg == nil || cfg.KillSwitch.APIListen == "" || deferManager == nil || !deferManager.Enabled() {
+		return func() {}, nil
+	}
+	apiToken := cfg.KillSwitch.APIToken
+	if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
+		apiToken = envToken
+	}
+	if apiToken == "" {
+		return func() {}, fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token or %s to be set", killswitch.EnvAPIToken)
+	}
+	sessionAPI := proxy.NewSessionAPIHandler(proxy.SessionAPIOptions{
+		Logger:   logger,
+		Deferred: deferManager,
+		APIToken: apiToken,
+	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/deferred", sessionAPI.HandleDeferredList)
+	mux.HandleFunc("/api/v1/deferred/", sessionAPI.HandleDeferredAction)
+
+	ln, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.KillSwitch.APIListen)
+	if lnErr != nil {
+		return func() {}, wrapBindError("kill_switch.api_listen", cfg.KillSwitch.APIListen, lnErr)
+	}
+	srv := newHTTPServer(mux)
+	go func() {
+		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			_, _ = fmt.Fprintf(stderr, "pipelock: deferred operator API stopped: %v\n", serveErr)
+		}
+	}()
+	_, _ = fmt.Fprintf(stderr, "pipelock: deferred operator API on %s (routes: /api/v1/deferred, /api/v1/deferred/{id}/{approve,deny})\n",
+		cfg.KillSwitch.APIListen)
+	stop := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}
+	return stop, nil
+}
+
+func startDeferredOperatorAPIOrReport(
+	ctx context.Context,
+	cfg *config.Config,
+	deferManager *deferred.Manager,
+	logger *audit.Logger,
+	stderr io.Writer,
+	sentryClient *plsentry.Client,
+) (func(), error) {
+	stop, err := startDeferredOperatorAPI(ctx, cfg, deferManager, logger, stderr)
+	if err != nil {
+		if sentryClient != nil {
+			sentryClient.CaptureError(err)
+		}
+		return nil, err
+	}
+	return stop, nil
+}
+
 func recoverDeferredActions(
 	manager *deferred.Manager,
 	journalPath string,
@@ -1128,6 +1208,11 @@ Key-free evidence capture:
 				if err := validateMCPDeferSurface(deferred.SurfaceMCPHTTPUpstream, cfg); err != nil {
 					return err
 				}
+				stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
+				if deferAPIErr != nil {
+					return deferAPIErr
+				}
+				defer stopDeferAPI()
 				httpOpts := mcp.MCPProxyOpts{
 					Scanner: sc, Approver: approver,
 					InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
@@ -1233,6 +1318,12 @@ Key-free evidence capture:
 				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 				defer cancel()
 
+				stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
+				if deferAPIErr != nil {
+					return deferAPIErr
+				}
+				defer stopDeferAPI()
+
 				mcpStrict := sandboxStrict || cfg.Sandbox.Strict
 				mcpBestEffort := sandboxBestEffort || cfg.Sandbox.BestEffort
 
@@ -1334,6 +1425,12 @@ Key-free evidence capture:
 			}
 			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
+
+			stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
+			if deferAPIErr != nil {
+				return deferAPIErr
+			}
+			defer stopDeferAPI()
 
 			// Wrap stderr in a mutex so file sentry goroutines and RunProxy
 			// (which wraps logW in its own syncWriter) don't interleave.

@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -73,6 +74,7 @@ const (
 	apiVersionSegment  = "v1"
 	apiSessionsSegment = "sessions"
 	apiBaselineSegment = "baseline"
+	apiDeferredSegment = "deferred"
 )
 
 // Admin API action names used as rate-limiter keys. Extracted so
@@ -87,6 +89,7 @@ const (
 	sessionAPIActionTerminate = "terminate"
 	sessionAPIActionAdaptive  = "adaptive"
 	sessionAPIActionBaseline  = "baseline"
+	sessionAPIActionDeferred  = "deferred"
 )
 
 // tierNotQuarantinedReason is the explanation returned for sessions that
@@ -125,6 +128,10 @@ type SessionAPIHandler struct {
 	logger      *audit.Logger
 	apiTokenPtr atomic.Pointer[string]
 
+	// deferred is the live held-action manager for the operator deferred
+	// surface, or nil when this process runs no deferrable MCP transport.
+	deferred *deferred.Manager
+
 	// limitMu guards all rate-limiter state. One limiter per admin
 	// action (reset/task/trust/airlock/inspect/explain/terminate) so
 	// /task abuse cannot suppress /reset during incident response, and
@@ -145,17 +152,19 @@ type SessionAPIOptions struct {
 	FragmentPtr   *atomic.Pointer[scanner.FragmentBuffer]
 	Metrics       *metrics.Metrics
 	Logger        *audit.Logger
+	Deferred      *deferred.Manager
 	APIToken      string `json:"-"` //nolint:gosec // options input, never serialized
 }
 
 // NewSessionAPIHandler creates a session API handler from the given options.
 func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
 	h := &SessionAPIHandler{
-		smPtr:   opts.SessionMgrPtr,
-		etPtr:   opts.EntropyPtr,
-		fbPtr:   opts.FragmentPtr,
-		metrics: opts.Metrics,
-		logger:  opts.Logger,
+		smPtr:    opts.SessionMgrPtr,
+		etPtr:    opts.EntropyPtr,
+		fbPtr:    opts.FragmentPtr,
+		metrics:  opts.Metrics,
+		logger:   opts.Logger,
+		deferred: opts.Deferred,
 		limiters: map[string]*rateLimiterState{
 			sessionAPIActionReset:     {windowStart: time.Now()},
 			sessionAPIActionTask:      {windowStart: time.Now()},
@@ -166,6 +175,7 @@ func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
 			sessionAPIActionTerminate: {windowStart: time.Now()},
 			sessionAPIActionAdaptive:  {windowStart: time.Now()},
 			sessionAPIActionBaseline:  {windowStart: time.Now()},
+			sessionAPIActionDeferred:  {windowStart: time.Now()},
 		},
 	}
 	// Seed the atomic token pointer from the constructor input. Stored via

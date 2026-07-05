@@ -681,7 +681,7 @@ func writeFileBytes(t *testing.T, path string, data []byte) {
 	}
 }
 
-func readVerifiedIntegrityManifest(t *testing.T, dir string) integrityManifest {
+func loadVerifiedIntegrityManifestForTest(t *testing.T, dir string) ([]byte, integrityManifest) {
 	t.Helper()
 	cfg := Config{Enabled: true, ProfileDir: dir}
 	if err := normalizeIntegrityConfig(&cfg); err != nil {
@@ -700,28 +700,18 @@ func readVerifiedIntegrityManifest(t *testing.T, dir string) integrityManifest {
 	if err != nil {
 		t.Fatalf("verify integrity manifest: %v", err)
 	}
+	return key, manifest
+}
+
+func readVerifiedIntegrityManifest(t *testing.T, dir string) integrityManifest {
+	t.Helper()
+	_, manifest := loadVerifiedIntegrityManifestForTest(t, dir)
 	return manifest
 }
 
 func rewriteIntegrityManifest(t *testing.T, dir string, edit func(*integrityManifest)) {
 	t.Helper()
-	cfg := Config{Enabled: true, ProfileDir: dir}
-	if err := normalizeIntegrityConfig(&cfg); err != nil {
-		t.Fatalf("normalize integrity config: %v", err)
-	}
-	mgr := &Manager{cfg: cfg}
-	key, err := mgr.loadIntegrityKey(false)
-	if err != nil {
-		t.Fatalf("load integrity key: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Clean(baselineIntegrityManifestPath(dir)))
-	if err != nil {
-		t.Fatalf("read integrity manifest: %v", err)
-	}
-	manifest, err := verifyIntegrityManifest(data, key)
-	if err != nil {
-		t.Fatalf("verify integrity manifest before rewrite: %v", err)
-	}
+	key, manifest := loadVerifiedIntegrityManifestForTest(t, dir)
 	edit(&manifest)
 	mac, err := signIntegrityManifest(manifest, key)
 	if err != nil {
@@ -1825,6 +1815,9 @@ func TestBaseline_ResetHighWaterFailureDoesNotEraseEnforcementOnRestart(t *testi
 		ProfileDir: dir, IntegrityKeyPath: keyPath,
 	})
 	if err != nil {
+		if !strings.Contains(err.Error(), "high-water") && !strings.Contains(err.Error(), "manifest") {
+			t.Fatalf("restart failed for unrelated reason: %v", err)
+		}
 		return
 	}
 	if state := restarted.GetState(testAgent); state != StateLocked {
@@ -2902,6 +2895,16 @@ func TestBaseline_HighWaterLockSerializesAcrossProcesses(t *testing.T) {
 	if err := advance.Start(); err != nil {
 		t.Fatalf("start second manager: %v", err)
 	}
+	advanceDone := false
+	t.Cleanup(func() {
+		if advanceDone {
+			return
+		}
+		if advance.ProcessState == nil {
+			_ = advance.Process.Kill()
+		}
+		_ = advance.Wait()
+	})
 	if !waitForPath(startedPath, 2*time.Second) {
 		t.Fatalf("second manager did not start high-water advance:\n%s", advanceOutput.String())
 	}
@@ -2915,8 +2918,10 @@ func TestBaseline_HighWaterLockSerializesAcrossProcesses(t *testing.T) {
 		t.Fatalf("lock holder exited with error: %v\n%s", err, holdOutput.String())
 	}
 	if err := advance.Wait(); err != nil {
+		advanceDone = true
 		t.Fatalf("second manager exited with error: %v\n%s", err, advanceOutput.String())
 	}
+	advanceDone = true
 	if !waitForPath(acquiredPath, time.Second) {
 		t.Fatal("second manager did not advance after lock release")
 	}

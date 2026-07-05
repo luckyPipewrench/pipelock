@@ -311,6 +311,23 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			wantNextSubstr:   "review whether",
 		},
 		{
+			name: "query entropy param exclusion malformed expires",
+			mutate: func(cfg *config.Config) {
+				cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+					Scheme:  "https",
+					Host:    "api.vendor.example",
+					Path:    "/v1/search/recent",
+					Param:   "query",
+					Reason:  "structured query",
+					Owner:   "platform-security",
+					Expires: "not-a-date",
+				}}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: `invalid expires "not-a-date"`,
+			wantNextSubstr:   "valid YYYY-MM-DD",
+		},
+		{
 			name: "query entropy param exclusion redundant with host-wide exclusion",
 			mutate: func(cfg *config.Config) {
 				cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"*.vendor.example"}

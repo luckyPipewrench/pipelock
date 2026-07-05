@@ -915,7 +915,7 @@ func validateQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) e
 
 		scheme := strings.TrimSpace(strings.ToLower(entry.Scheme))
 		if scheme == "" {
-			scheme = schemeHTTPS
+			scheme = QueryEntropyParamDefaultScheme
 		}
 		if scheme == schemeHTTP {
 			return fmt.Errorf("%s.scheme %q is not supported; query entropy parameter exclusions are https-only", field, entry.Scheme)

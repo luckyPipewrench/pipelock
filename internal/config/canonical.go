@@ -317,7 +317,7 @@ func canonicalQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) 
 	for i, entry := range entries {
 		scheme := entry.Scheme
 		if scheme == "" {
-			scheme = schemeHTTPS
+			scheme = QueryEntropyParamDefaultScheme
 		}
 		out[i] = QueryEntropyParamExclusion{
 			Scheme: strings.ToLower(scheme),

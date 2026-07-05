@@ -2757,7 +2757,7 @@ func buildQueryEntropyParamExclusions(entries []config.QueryEntropyParamExclusio
 	for _, entry := range entries {
 		scheme := entry.Scheme
 		if scheme == "" {
-			scheme = "https"
+			scheme = config.QueryEntropyParamDefaultScheme
 		}
 		out[queryEntropyParamExclusionKey{
 			scheme: strings.ToLower(scheme),

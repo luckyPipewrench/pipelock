@@ -248,24 +248,16 @@ func checkDoctorQueryEntropyParamExclusions(cfg *config.Config) []doctorReportCh
 	for _, entry := range entries {
 		tuple := queryEntropyParamAdvisoryTuple(entry)
 		if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 {
-			checks = append(checks, doctorReportCheck{
-				Name:       doctorCheckExemptionSemantics,
-				Surface:    doctorSurfaceConfig,
-				Status:     doctorStatusWarn,
-				Configured: true,
-				Detail:     fmt.Sprintf("query_entropy_param_exclusions entry %s is configured but fetch_proxy.monitoring.entropy_threshold<=0; this exemption is inert", tuple),
-				Next:       "remove the endpoint-parameter exemption while entropy is disabled, or re-enable entropy before relying on the narrow exemption",
-			})
+			checks = append(checks, newQueryEntropyParamWarn(
+				fmt.Sprintf("query_entropy_param_exclusions entry %s is configured but fetch_proxy.monitoring.entropy_threshold<=0; this exemption is inert", tuple),
+				"remove the endpoint-parameter exemption while entropy is disabled, or re-enable entropy before relying on the narrow exemption",
+			))
 		}
 		if queryEntropyParamCoveredByHostWide(entry, cfg.FetchProxy.Monitoring.QueryEntropyExclusions) {
-			checks = append(checks, doctorReportCheck{
-				Name:       doctorCheckExemptionSemantics,
-				Surface:    doctorSurfaceConfig,
-				Status:     doctorStatusWarn,
-				Configured: true,
-				Detail:     fmt.Sprintf("query_entropy_param_exclusions entry %s is redundant because query_entropy_exclusions already covers host %s", tuple, entry.Host),
-				Next:       "prefer the endpoint-parameter exemption and remove the broader host-wide query_entropy_exclusions entry if the broad bypass is not needed",
-			})
+			checks = append(checks, newQueryEntropyParamWarn(
+				fmt.Sprintf("query_entropy_param_exclusions entry %s is redundant because query_entropy_exclusions already covers host %s", tuple, entry.Host),
+				"prefer the endpoint-parameter exemption and remove the broader host-wide query_entropy_exclusions entry if the broad bypass is not needed",
+			))
 		}
 		if strings.TrimSpace(entry.Reason) == "" {
 			checks = append(checks, queryEntropyParamLifecycleCheck(tuple, "reason", "add a short reason so future operators know why this narrow entropy exemption exists"))
@@ -279,15 +271,18 @@ func checkDoctorQueryEntropyParamExclusions(cfg *config.Config) []doctorReportCh
 			continue
 		}
 		parsed, err := time.Parse("2006-01-02", expires)
-		if err == nil && parsed.Before(todayUTC()) {
-			checks = append(checks, doctorReportCheck{
-				Name:       doctorCheckExemptionSemantics,
-				Surface:    doctorSurfaceConfig,
-				Status:     doctorStatusWarn,
-				Configured: true,
-				Detail:     fmt.Sprintf("query_entropy_param_exclusions entry %s expired on %s", tuple, expires),
-				Next:       "review whether the endpoint still needs the exemption; remove it or renew expires with a future YYYY-MM-DD date",
-			})
+		if err != nil {
+			checks = append(checks, newQueryEntropyParamWarn(
+				fmt.Sprintf("query_entropy_param_exclusions entry %s has invalid expires %q; expected YYYY-MM-DD", tuple, expires),
+				"set expires to a valid YYYY-MM-DD date, or remove the exemption if it is no longer needed",
+			))
+			continue
+		}
+		if parsed.Before(todayUTC()) {
+			checks = append(checks, newQueryEntropyParamWarn(
+				fmt.Sprintf("query_entropy_param_exclusions entry %s expired on %s", tuple, expires),
+				"review whether the endpoint still needs the exemption; remove it or renew expires with a future YYYY-MM-DD date",
+			))
 		}
 	}
 	sortDoctorChecks(checks)
@@ -295,12 +290,19 @@ func checkDoctorQueryEntropyParamExclusions(cfg *config.Config) []doctorReportCh
 }
 
 func queryEntropyParamLifecycleCheck(tuple, field, next string) doctorReportCheck {
+	return newQueryEntropyParamWarn(
+		fmt.Sprintf("query_entropy_param_exclusions entry %s is missing advisory %s", tuple, field),
+		next,
+	)
+}
+
+func newQueryEntropyParamWarn(detail, next string) doctorReportCheck {
 	return doctorReportCheck{
 		Name:       doctorCheckExemptionSemantics,
 		Surface:    doctorSurfaceConfig,
 		Status:     doctorStatusWarn,
 		Configured: true,
-		Detail:     fmt.Sprintf("query_entropy_param_exclusions entry %s is missing advisory %s", tuple, field),
+		Detail:     detail,
 		Next:       next,
 	}
 }
@@ -317,7 +319,7 @@ func queryEntropyParamCoveredByHostWide(entry config.QueryEntropyParamExclusion,
 func queryEntropyParamAdvisoryTuple(entry config.QueryEntropyParamExclusion) string {
 	scheme := entry.Scheme
 	if scheme == "" {
-		scheme = "https"
+		scheme = config.QueryEntropyParamDefaultScheme
 	}
 	return fmt.Sprintf("%s://%s%s?%s", scheme, entry.Host, entry.Path, entry.Param)
 }

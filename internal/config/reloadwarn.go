@@ -822,7 +822,7 @@ func queryEntropyParamExclusionsRemoved(old, updated []QueryEntropyParamExclusio
 func queryEntropyParamTuple(entry QueryEntropyParamExclusion) string {
 	scheme := entry.Scheme
 	if scheme == "" {
-		scheme = schemeHTTPS
+		scheme = QueryEntropyParamDefaultScheme
 	}
 	return fmt.Sprintf("%s://%s%s?%s", scheme, entry.Host, entry.Path, entry.Param)
 }

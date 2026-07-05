@@ -115,6 +115,10 @@ const (
 const (
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
+
+	// QueryEntropyParamDefaultScheme is the effective scheme for endpoint+param
+	// query entropy exclusions when the operator omits scheme.
+	QueryEntropyParamDefaultScheme = schemeHTTPS
 )
 
 // Output/format constants for configuration defaults.

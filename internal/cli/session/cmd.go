@@ -75,6 +75,7 @@ Examples:
 		releaseCmd(flags),
 		terminateCmd(flags),
 		recoverCmd(flags),
+		deferredCmd(flags),
 	)
 	return cmd
 }

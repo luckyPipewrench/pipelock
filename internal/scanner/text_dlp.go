@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
@@ -161,6 +162,111 @@ func ContainsHostnameExfilMatch(matches []TextDLPMatch) bool {
 		}
 	}
 	return false
+}
+
+// strictAWSAccessIDRe compiles the canonical AWS Access ID pattern without the
+// scanner's runtime (?i) prefix: it matches only a genuine uppercase/digit ID,
+// not lowercase prose the core pattern also matches after case-folding.
+var strictAWSAccessIDRe = regexp.MustCompile(config.AWSAccessIDRegex)
+
+// EnforceableInboundTextDLPMatches returns the subset of inbound text-DLP
+// matches that should block an inbound surface. ScanTextForDLPInbound still
+// returns all evidence; this helper owns the narrower enforcement decision so
+// callers do not need local one-off exceptions.
+func EnforceableInboundTextDLPMatches(text string, matches []TextDLPMatch) []TextDLPMatch {
+	if len(matches) == 0 {
+		return nil
+	}
+
+	var awsCtx inboundAWSAccessIDContext
+	haveAWSCtx := false
+	enforceable := make([]TextDLPMatch, 0, len(matches))
+	for _, match := range matches {
+		if isInboundAWSAccessIDWhitespaceMatch(match) {
+			if !haveAWSCtx {
+				awsCtx = newInboundAWSAccessIDContext(text)
+				haveAWSCtx = true
+			}
+			if isLowConfidenceInboundAWSAccessID(awsCtx, match) {
+				continue
+			}
+		}
+		enforceable = append(enforceable, match)
+	}
+	return enforceable
+}
+
+// IsLowConfidenceInboundAWSAccessID reports whether match is an inbound-only
+// AWS Access ID finding produced by the whitespace-collapsed DLP view joining
+// ordinary lowercase prose into a credential-shaped token.
+//
+// This is deliberately narrow. Outbound scans must still block these because an
+// agent can leak a real key by changing case or adding spaces. Inbound Hermes
+// surfaces, however, include OCR/vision prose and operator messages; blocking a
+// result like "AIDA in product name generated..." blocks normal operation even
+// though the candidate cannot be a valid AWS access key ID. Real contiguous
+// tokens, uppercase/digit whitespace-split tokens, decoded tokens, and nearby
+// credential-context text stay high-confidence and must still be blocked by the
+// caller.
+func IsLowConfidenceInboundAWSAccessID(text string, match TextDLPMatch) bool {
+	if !isInboundAWSAccessIDWhitespaceMatch(match) {
+		return false
+	}
+	return isLowConfidenceInboundAWSAccessID(newInboundAWSAccessIDContext(text), match)
+}
+
+type inboundAWSAccessIDContext struct {
+	cleaned          string
+	compacted        string
+	compactedOffsets []int
+}
+
+func newInboundAWSAccessIDContext(text string) inboundAWSAccessIDContext {
+	cleaned := normalize.ForDLP(text)
+	compacted, compactedOffsets := compactTextDLPWhitespaceWithOffsets(cleaned)
+	return inboundAWSAccessIDContext{
+		cleaned:          cleaned,
+		compacted:        compacted,
+		compactedOffsets: compactedOffsets,
+	}
+}
+
+func isInboundAWSAccessIDWhitespaceMatch(match TextDLPMatch) bool {
+	return match.PatternName == patternNameAWSAccessID && match.Encoded == "whitespace"
+}
+
+func isLowConfidenceInboundAWSAccessID(ctx inboundAWSAccessIDContext, match TextDLPMatch) bool {
+	if !isInboundAWSAccessIDWhitespaceMatch(match) {
+		return false
+	}
+	span := match.Span()
+	if !span.Valid() {
+		return false
+	}
+
+	if ctx.compacted == ctx.cleaned || span.ByteStart < 0 || span.ByteEnd > len(ctx.compacted) || span.ByteStart >= span.ByteEnd {
+		return false
+	}
+
+	candidate := ctx.compacted[span.ByteStart:span.ByteEnd]
+	if !containsASCIILower(candidate) {
+		return false
+	}
+
+	// The core AWS pattern is force-prefixed with (?i), so a genuine uppercase
+	// key can greedily extend into a trailing lowercase run, putting a lowercase
+	// byte in the span while a real credential is still present. A real AWS
+	// access key ID is uppercase/digits, so re-check the span with the
+	// case-sensitive pattern: if a real key is embedded, keep blocking.
+	if strictAWSAccessIDRe.MatchString(candidate) {
+		return false
+	}
+
+	rawStart := ctx.compactedOffsets[span.ByteStart]
+	rawEnd := ctx.compactedOffsets[span.ByteEnd-1] + 1
+	windowStart := max(0, rawStart-96)
+	windowEnd := min(len(ctx.cleaned), rawEnd+96)
+	return !containsCredentialContext(ctx.cleaned[windowStart:windowEnd])
 }
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
@@ -557,6 +663,66 @@ func compactTextDLPWhitespace(text string) string {
 		}
 		return r
 	}, text)
+}
+
+func compactTextDLPWhitespaceWithOffsets(text string) (string, []int) {
+	if !strings.ContainsFunc(text, unicode.IsSpace) {
+		offsets := make([]int, len(text))
+		for i := 0; i < len(text); i++ {
+			offsets[i] = i
+		}
+		return text, offsets
+	}
+
+	var out strings.Builder
+	out.Grow(len(text))
+	offsets := make([]int, 0, len(text))
+	for i, r := range text {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		s := string(r)
+		out.WriteString(s)
+		for range len(s) {
+			offsets = append(offsets, i)
+		}
+	}
+	return out.String(), offsets
+}
+
+func containsASCIILower(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] >= 'a' && text[i] <= 'z' {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCredentialContext(text string) bool {
+	lower := strings.ToLower(text)
+	for _, term := range []string{
+		"access key",
+		"access-key",
+		"access_key",
+		"api key",
+		"api-key",
+		"api_key",
+		"aws_access_key_id",
+		"credential",
+		"credentials",
+		"key id",
+		"key-id",
+		"key_id",
+		"secret",
+		"token",
+		"x-amz-credential",
+	} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
 
 func textDLPEncodingSegmentViews(cleaned string) []spanTextView {

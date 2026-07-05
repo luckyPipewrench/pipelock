@@ -32,6 +32,7 @@ const (
 	SourceCascadeLimit            = "cascade_limit"
 	SourcePolicyReload            = "policy_reload"
 	SourceApproval                = "approval"
+	SourceOperator                = "operator"
 	SourceToolInventory           = "tool_inventory"
 	LinkageSessionPendingAncestor = "session_pending_ancestor"
 	DefaultTimeoutSeconds         = 2
@@ -440,28 +441,55 @@ func (m *Manager) ResolveToolInventory(sessionID, finalDecision string) {
 
 // ResolveApproval resolves a hold from an explicit approval decision. A
 // misconfigured positive approval cannot open the action; it resolves closed.
+// The resolution is labeled SourceApproval (the interactive HITL path); the
+// operator admin surface uses ResolveApprovalResult with SourceOperator.
 func (m *Manager) ResolveApproval(deferID, finalDecision string) error {
+	_, err := m.ResolveApprovalResult(deferID, finalDecision, SourceApproval)
+	return err
+}
+
+// ResolveApprovalResult resolves a hold from an explicit approval decision and
+// reports the terminal decision that was actually applied. A positive approval
+// that the held rule does not permit resolves CLOSED (block), and the returned
+// decision reflects that outcome - so an operator surface can report the honest
+// result instead of assuming "approved". source labels the resolution
+// provenance in the receipt/journal (SourceApproval for the interactive HITL
+// path, SourceOperator for the admin API).
+//
+// The returned error mirrors Resolve: ErrNotFound when the hold is unknown or
+// was already resolved (by timeout, cascade, or another resolver) between the
+// snapshot and the resolve. On any non-nil error nothing was resolved and the
+// returned decision is empty.
+func (m *Manager) ResolveApprovalResult(deferID, finalDecision, source string) (string, error) {
 	held, err := m.snapshotOne(deferID)
 	if err != nil {
-		return err
+		return "", err
 	}
+	decision := approvalDecision(held.RulePolicy, finalDecision)
+	if err := m.Resolve(deferID, decision, source); err != nil {
+		return "", err
+	}
+	return decision, nil
+}
+
+// approvalDecision maps an approval input onto the terminal decision, enforcing
+// the held rule's affirmative policy: a positive "allow" only opens the hold
+// when the rule permits approval, and a step-up only escalates when the rule
+// permits it; everything else - including a not-permitted allow - resolves
+// closed with block. Single source of truth for the approval gate, shared by
+// ResolveApproval and ResolveApprovalResult.
+func approvalDecision(rp config.DeferResolutionPolicy, finalDecision string) string {
 	switch finalDecision {
 	case config.ActionAllow:
-		if held.RulePolicy.AllowOn.Approval {
-			return m.Resolve(deferID, config.ActionAllow, SourceApproval)
+		if rp.AllowOn.Approval {
+			return config.ActionAllow
 		}
-	case config.ActionAsk:
-		if held.RulePolicy.StepUpOn.ApprovalRequestsHuman {
-			return m.Resolve(deferID, config.ActionAsk, SourceApproval)
+	case config.ActionAsk, config.ActionStepUp:
+		if rp.StepUpOn.ApprovalRequestsHuman {
+			return config.ActionAsk
 		}
-	case "step_up":
-		if held.RulePolicy.StepUpOn.ApprovalRequestsHuman {
-			return m.Resolve(deferID, config.ActionAsk, SourceApproval)
-		}
-	case config.ActionBlock, "":
-		return m.Resolve(deferID, config.ActionBlock, SourceApproval)
 	}
-	return m.Resolve(deferID, config.ActionBlock, SourceApproval)
+	return config.ActionBlock
 }
 
 type ReloadEvaluator func(HeldAction) (string, error)

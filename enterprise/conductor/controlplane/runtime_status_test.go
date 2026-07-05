@@ -601,7 +601,16 @@ func TestPublishPreflightBlocksUnsupportedAndOverridePublishes(t *testing.T) {
 		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
 	}
 	handler := newRuntimeStatusTestHandler(t, enrollments, identity)
-	handler.authorizeFleetSkewOverride = func(*http.Request, conductor.PolicyBundle, string) error { return nil }
+	adminAuth, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{{
+		Token: followerAdminToken,
+		Role:  RoleAdmin,
+	}})
+	if err != nil {
+		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+	}
+	handler.authorizeFleetSkewOverride = func(r *http.Request, _ conductor.PolicyBundle, _ string) error {
+		return adminAuth(r)
+	}
 	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
 		id:       "bundle-1",
 		version:  1,

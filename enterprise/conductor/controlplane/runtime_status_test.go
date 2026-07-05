@@ -316,6 +316,64 @@ func TestFleetStatusClassifiesRuntimeHealth(t *testing.T) {
 	}
 }
 
+func TestFleetStatusMarksLabelAudienceUnverifiableWithoutLabels(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	store := mustStore(t)
+	signer := newTestSigner(t)
+	bundle := signedControlBundle(t, signer, bundleSpec{
+		id:      "bundle-label-1",
+		version: 1,
+		audience: conductor.Audience{Labels: map[string]string{
+			"ring": "canary",
+		}},
+	})
+	if _, _, err := store.Publish(context.Background(), bundle, PublishOptions{Now: testNow}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, enrollments, "tok-main-1", identity, "audit-key-main-1")
+	if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+	followerAuth, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{{Token: followerAdminToken, Role: RoleAdmin, OrgID: "org-main"}})
+	if err != nil {
+		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
+	}
+	handler, err := NewHandler(HandlerOptions{
+		Store:              store,
+		Capabilities:       DefaultCapabilities("conductor-test"),
+		Now:                func() time.Time { return testNow },
+		FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return identity, nil },
+		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuthorizeFollowers: followerAuth,
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
+		Enrollments:        enrollments,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-main&fleet_id=prod&limit=10", followerAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fleet status code = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp listFollowersResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Followers) != 1 {
+		t.Fatalf("followers = %d, want 1", len(resp.Followers))
+	}
+	got := resp.Followers[0]
+	if got.Health != FleetHealthUnknown || got.Drift != "audience_labels_unavailable" || !got.ExpectedBundle.AudienceLabelsUnavailable {
+		t.Fatalf("label audience health = health=%q drift=%q expected=%+v, want unknown/audience_labels_unavailable", got.Health, got.Drift, got.ExpectedBundle)
+	}
+}
+
 func TestRemovedFollowerRuntimeStatusStopsAppearingHealthy(t *testing.T) {
 	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
 	if err != nil {
@@ -543,6 +601,7 @@ func TestPublishPreflightBlocksUnsupportedAndOverridePublishes(t *testing.T) {
 		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
 	}
 	handler := newRuntimeStatusTestHandler(t, enrollments, identity)
+	handler.authorizeFleetSkewOverride = func(*http.Request, conductor.PolicyBundle, string) error { return nil }
 	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
 		id:       "bundle-1",
 		version:  1,
@@ -569,7 +628,7 @@ func TestPublishPreflightBlocksUnsupportedAndOverridePublishes(t *testing.T) {
 		t.Fatalf("blocked code = %q, want %q", blocked.Code, PublishConflictFleetSkew)
 	}
 
-	body, err = json.Marshal(publishPolicyBundleRequest{Bundle: bundle, AllowFleetSkew: true})
+	body, err = json.Marshal(publishPolicyBundleRequest{Bundle: bundle, AllowFleetSkew: true, FleetSkewReason: "break glass for canary rollout"})
 	if err != nil {
 		t.Fatalf("marshal override publish request: %v", err)
 	}
@@ -584,8 +643,50 @@ func TestPublishPreflightBlocksUnsupportedAndOverridePublishes(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &published); err != nil {
 		t.Fatalf("decode publish response: %v", err)
 	}
-	if !published.Preflight.AllowFleetSkew || published.Preflight.Unsupported != 1 {
+	if !published.Preflight.AllowFleetSkew || published.Preflight.Unsupported != 1 || published.Preflight.FleetSkewReason != "break glass for canary rollout" {
 		t.Fatalf("preflight = %+v, want override with one unsupported", published.Preflight)
+	}
+}
+
+func TestPublishPreflightOverrideRequiresReasonAndAuthorization(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, enrollments, "tok-main-1", identity, "audit-key-main-1")
+	if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(identity, "1.0.0", strings.Repeat("a", 64))); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+	handler := newRuntimeStatusTestHandler(t, enrollments, identity)
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "bundle-override-auth-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+
+	body, err := json.Marshal(publishPolicyBundleRequest{Bundle: bundle, AllowFleetSkew: true})
+	if err != nil {
+		t.Fatalf("marshal missing reason publish request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("override without reason code = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	body, err = json.Marshal(publishPolicyBundleRequest{Bundle: bundle, AllowFleetSkew: true, FleetSkewReason: "operator break glass"})
+	if err != nil {
+		t.Fatalf("marshal unauthorized override publish request: %v", err)
+	}
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("override without override authorizer code = %d body=%s, want 403", w.Code, w.Body.String())
 	}
 }
 
@@ -666,12 +767,39 @@ func TestPublishPreflightBlocksTruncatedRosterEvenWithOverride(t *testing.T) {
 		httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, http.NoBody),
 		bundle,
 		true,
+		"operator accepted stale roster",
 	)
 	if !errors.Is(err, ErrFleetPreflightBlocked) {
 		t.Fatalf("publishPreflight(truncated override) error = %v, want ErrFleetPreflightBlocked", err)
 	}
-	if !summary.AllowFleetSkew || summary.StaleUnseen != 1 {
+	if !summary.AllowFleetSkew || summary.StaleUnseen != 1 || summary.FleetSkewReason != "operator accepted stale roster" {
 		t.Fatalf("truncated preflight summary = %+v, want skew override recorded with one stale/unseen", summary)
+	}
+}
+
+func TestPublishPreflightRequiresRuntimeStatusStore(t *testing.T) {
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "bundle-runtime-store-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, http.NoBody)
+	for _, tc := range []struct {
+		name        string
+		enrollments EnrollmentStore
+	}{
+		{name: "nil_enrollment_store"},
+		{name: "enrollment_store_without_runtime_status", enrollments: enrollmentOnlyStore{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &Handler{
+				enrollments: tc.enrollments,
+				now:         func() time.Time { return testNow },
+			}
+			if _, err := handler.publishPreflight(req, bundle, false, ""); !errors.Is(err, ErrRuntimeStatusStoreRequired) {
+				t.Fatalf("publishPreflight(%s) error = %v, want ErrRuntimeStatusStoreRequired", tc.name, err)
+			}
+		})
 	}
 }
 
@@ -890,6 +1018,36 @@ type truncatedPreflightEnrollmentStore struct {
 type runtimeStatusErrorStore struct {
 	truncatedPreflightEnrollmentStore
 	err error
+}
+
+type enrollmentOnlyStore struct{}
+
+func (enrollmentOnlyStore) CreateEnrollmentToken(context.Context, EnrollmentTokenSpec) (IssuedEnrollmentToken, error) {
+	return IssuedEnrollmentToken{}, errors.New("not implemented")
+}
+
+func (enrollmentOnlyStore) ConsumeEnrollmentToken(context.Context, ConsumeEnrollmentTokenRequest) (EnrolledFollower, error) {
+	return EnrolledFollower{}, errors.New("not implemented")
+}
+
+func (enrollmentOnlyStore) ResolveEnrolledAuditKey(FollowerIdentity, string) (conductor.SignatureKey, error) {
+	return conductor.SignatureKey{}, ErrFollowerNotFound
+}
+
+func (enrollmentOnlyStore) ListEnrolledFollowers(context.Context, FollowerListQuery) ([]FollowerSummary, error) {
+	return []FollowerSummary{}, nil
+}
+
+func (enrollmentOnlyStore) RemoveEnrolledFollower(context.Context, RemoveEnrolledFollowerRequest) (FollowerSummary, error) {
+	return FollowerSummary{}, ErrFollowerNotFound
+}
+
+func (enrollmentOnlyStore) ListEnrollmentTokens(context.Context, EnrollmentTokenListQuery) ([]EnrollmentTokenSummary, error) {
+	return []EnrollmentTokenSummary{}, nil
+}
+
+func (enrollmentOnlyStore) RevokeEnrollmentToken(context.Context, RevokeEnrollmentTokenRequest) (EnrollmentTokenSummary, error) {
+	return EnrollmentTokenSummary{}, ErrEnrollmentTokenNotFound
 }
 
 func (s runtimeStatusErrorStore) UpsertFollowerRuntimeStatus(context.Context, FollowerRuntimeStatus) (FollowerRuntimeStatus, error) {

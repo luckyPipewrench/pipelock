@@ -64,6 +64,20 @@ func (h *Handler) handleFollowerRuntimeStatus(w http.ResponseWriter, r *http.Req
 		writeRuntimeStatusError(w, err)
 		return
 	}
+	if h.logger != nil {
+		h.logger.InfoContext(r.Context(), "conductor_runtime_status_accepted",
+			slog.String("event", "conductor_runtime_status_accepted"),
+			slog.String("org_id", identity.OrgID),
+			slog.String("fleet_id", identity.FleetID),
+			slog.String("instance_id", identity.InstanceID),
+			slog.String("pipelock_version", status.PipelockVersion),
+			slog.String("git_commit", status.GitCommit),
+			slog.String("active_bundle_id", status.ActiveBundleID),
+			slog.Uint64("active_bundle_version", status.ActiveBundleVersion),
+			slog.String("active_bundle_hash", status.ActiveBundleHash),
+			slog.String("last_apply_error_code", status.LastApplyErrorCode),
+		)
+	}
 	writeJSON(w, http.StatusOK, runtimeStatusResponse{Status: status})
 }
 

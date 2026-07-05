@@ -360,11 +360,17 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	}
 	m := metrics.New()
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
-		Store:                 store,
-		Capabilities:          controlplane.DefaultCapabilities(opts.conductorID),
-		FollowerIdentity:      identity,
-		AuthorizePublisher:    authorizer,
-		AuthorizeBundle:       publishAuthorizer,
+		Store:              store,
+		Capabilities:       controlplane.DefaultCapabilities(opts.conductorID),
+		FollowerIdentity:   identity,
+		AuthorizePublisher: authorizer,
+		AuthorizeBundle:    publishAuthorizer,
+		AuthorizeFleetSkewOverride: func(r *http.Request, bundle conductorcore.PolicyBundle, _ string) error {
+			if err := adminAuthorizer(r); err != nil {
+				return err
+			}
+			return publishAuthorizer(r, bundle)
+		},
 		AuthorizeAuditQuery:   auditQueryAuthorizer,
 		AuthorizeFollowers:    followerListAuthorizer,
 		AuthorizeStream:       streamStatusAuthorizer,

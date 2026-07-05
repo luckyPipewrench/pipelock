@@ -120,6 +120,7 @@ type publishOptions struct {
 	switchTTL          time.Duration
 	switchSigningKeys  []string
 	allowFleetSkew     bool
+	fleetSkewReason    string
 	publisherTok       string
 	tlsCert            string
 	tlsKey             string
@@ -208,6 +209,7 @@ Example:
 	cmd.Flags().DurationVar(&opts.switchTTL, "stream-switch-ttl", time.Hour, "validity window for the stream switch authorization")
 	cmd.Flags().StringArrayVar(&opts.switchSigningKeys, "stream-switch-signing-key", nil, "path to a policy-bundle-rollback keypair file; repeat to supply the M-of-N stream-switch signers")
 	cmd.Flags().BoolVar(&opts.allowFleetSkew, "allow-fleet-skew", false, "accept publish preflight skew for stale/unseen or unsupported followers; prefer a narrow --audience canary instead of overriding globally")
+	cmd.Flags().StringVar(&opts.fleetSkewReason, "allow-fleet-skew-reason", "", "operator reason required with --allow-fleet-skew; recorded by the Conductor")
 	cmd.Flags().StringVar(&opts.publisherTok, "publisher-token-file", "", "file containing the publisher bearer token")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "mTLS client certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "mTLS client private key file")
@@ -225,6 +227,12 @@ const previousHashAuto = "auto"
 func runPublish(ctx context.Context, out io.Writer, opts publishOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if opts.allowFleetSkew && strings.TrimSpace(opts.fleetSkewReason) == "" {
+		return errors.New("--allow-fleet-skew-reason is required with --allow-fleet-skew")
+	}
+	if !opts.allowFleetSkew && strings.TrimSpace(opts.fleetSkewReason) != "" {
+		return errors.New("--allow-fleet-skew-reason requires --allow-fleet-skew")
 	}
 	// Resolve "auto" previous-bundle-hash before building the bundle. This
 	// requires a round trip to the Conductor to fetch the current stream head.
@@ -251,7 +259,10 @@ func runPublish(ctx context.Context, out io.Writer, opts publishOptions) error {
 	if err != nil {
 		return err
 	}
-	resp, err := postBundle(ctx, client, opts.conductorURL, token, bundle, opts.allowFleetSkew)
+	resp, err := postBundle(ctx, client, opts.conductorURL, token, bundle, postBundleOptions{
+		allowFleetSkew:  opts.allowFleetSkew,
+		fleetSkewReason: opts.fleetSkewReason,
+	})
 	if err != nil {
 		return err
 	}
@@ -769,11 +780,17 @@ func isLoopbackHost(host string) bool {
 // Conflict is de-conflated via conflictSentinel into one of the distinct publish
 // conflict sentinels (rollback attempt, version-below-stream-max, or
 // previous-hash mismatch) so the operator gets an accurate, actionable message.
-func postBundle(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle, allowFleetSkew bool) (publishResult, error) {
+type postBundleOptions struct {
+	allowFleetSkew  bool
+	fleetSkewReason string
+}
+
+func postBundle(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle, opts postBundleOptions) (publishResult, error) {
 	envelope := struct {
-		Bundle         conductorcore.PolicyBundle `json:"bundle"`
-		AllowFleetSkew bool                       `json:"allow_fleet_skew,omitempty"`
-	}{Bundle: bundle, AllowFleetSkew: allowFleetSkew}
+		Bundle          conductorcore.PolicyBundle `json:"bundle"`
+		AllowFleetSkew  bool                       `json:"allow_fleet_skew,omitempty"`
+		FleetSkewReason string                     `json:"fleet_skew_reason,omitempty"`
+	}{Bundle: bundle, AllowFleetSkew: opts.allowFleetSkew, FleetSkewReason: strings.TrimSpace(opts.fleetSkewReason)}
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		return publishResult{}, fmt.Errorf("marshal publish request: %w", err)

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1073,6 +1074,10 @@ func newTestHandlerWithOptions(t *testing.T, store BundleStore, identity Followe
 		}
 		return nil
 	}
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
 	handler, err := NewHandler(HandlerOptions{
 		Store:              store,
 		Capabilities:       DefaultCapabilities("conductor-test"),
@@ -1082,8 +1087,9 @@ func newTestHandlerWithOptions(t *testing.T, store BundleStore, identity Followe
 		AuthorizeBundle: func(r *http.Request, _ conductor.PolicyBundle) error {
 			return publisher(r)
 		},
-		AuditSink: discardAuditSink{},
-		AuditKeys: rejectingAuditKeyResolver,
+		AuditSink:   discardAuditSink{},
+		AuditKeys:   rejectingAuditKeyResolver,
+		Enrollments: enrollments,
 		AuthorizeAdmin: func(r *http.Request) error {
 			if r.Header.Get("X-Pipelock-Admin") != "ok" {
 				return ErrPublisherForbidden

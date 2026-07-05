@@ -81,10 +81,11 @@ type RuntimePreflightEnrollmentStore interface {
 }
 
 type ExpectedBundle struct {
-	BundleID           string `json:"bundle_id,omitempty"`
-	Version            uint64 `json:"version,omitempty"`
-	BundleHash         string `json:"bundle_hash,omitempty"`
-	MinPipelockVersion string `json:"min_pipelock_version,omitempty"`
+	BundleID                  string `json:"bundle_id,omitempty"`
+	Version                   uint64 `json:"version,omitempty"`
+	BundleHash                string `json:"bundle_hash,omitempty"`
+	MinPipelockVersion        string `json:"min_pipelock_version,omitempty"`
+	AudienceLabelsUnavailable bool   `json:"audience_labels_unavailable,omitempty"`
 }
 
 type FollowerFleetStatus struct {
@@ -96,14 +97,15 @@ type FollowerFleetStatus struct {
 }
 
 type PublishPreflightSummary struct {
-	CanApply          int  `json:"can_apply"`
-	Unsupported       int  `json:"unsupported"`
-	StaleUnseen       int  `json:"stale_unseen"`
-	LastApplyFailed   int  `json:"last_apply_failed"`
-	OutOfAudience     int  `json:"out_of_audience"`
-	ActiveInScope     int  `json:"active_in_scope"`
-	AllowFleetSkew    bool `json:"allow_fleet_skew"`
-	StaleAfterSeconds int  `json:"stale_after_seconds"`
+	CanApply          int    `json:"can_apply"`
+	Unsupported       int    `json:"unsupported"`
+	StaleUnseen       int    `json:"stale_unseen"`
+	LastApplyFailed   int    `json:"last_apply_failed"`
+	OutOfAudience     int    `json:"out_of_audience"`
+	ActiveInScope     int    `json:"active_in_scope"`
+	AllowFleetSkew    bool   `json:"allow_fleet_skew"`
+	FleetSkewReason   string `json:"fleet_skew_reason,omitempty"`
+	StaleAfterSeconds int    `json:"stale_after_seconds"`
 }
 
 func (s FollowerRuntimeStatus) Identity() FollowerIdentity {
@@ -251,15 +253,22 @@ func expectedBundleForFollower(streams []StreamSummary, follower FollowerSummary
 	}
 	var best StreamSummary
 	bestSpecificity := 0
+	labelsUnavailable := false
 	for _, stream := range streams {
 		if stream.OrgID != follower.OrgID || stream.FleetID != follower.FleetID || stream.Environment != follower.Environment {
 			continue
+		}
+		if stream.HeadBundleHash != "" && len(stream.Audience.Labels) > 0 {
+			labelsUnavailable = true
 		}
 		specificity := streamSpecificity(stream, identity, now)
 		if specificity > 0 && (best.HeadBundleHash == "" || specificity > bestSpecificity || (specificity == bestSpecificity && stream.HeadVersion > best.HeadVersion)) {
 			best = stream
 			bestSpecificity = specificity
 		}
+	}
+	if labelsUnavailable && bestSpecificity < 3 {
+		return ExpectedBundle{AudienceLabelsUnavailable: true}
 	}
 	if best.HeadBundleHash == "" {
 		return ExpectedBundle{}
@@ -307,6 +316,9 @@ func classifyFollowerHealth(follower FollowerSummary, status *FollowerRuntimeSta
 	if status.LastApplyErrorCode != "" || status.LastApplyErrorMessage != "" {
 		return FleetHealthApplyFailed, "last_apply_failed"
 	}
+	if expected.AudienceLabelsUnavailable {
+		return FleetHealthUnknown, "audience_labels_unavailable"
+	}
 	minVersion := expected.MinPipelockVersion
 	if minVersion == "" {
 		minVersion = status.ActiveBundleMinPipelockVersion
@@ -333,10 +345,11 @@ func preflightAudienceMatches(audience conductor.Audience, follower FollowerSumm
 	return audience.Matches(follower.InstanceID, nil)
 }
 
-func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRuntimeStatus, bundle conductor.PolicyBundle, now time.Time, staleAfter time.Duration, allowFleetSkew bool) (PublishPreflightSummary, error) {
+func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRuntimeStatus, bundle conductor.PolicyBundle, now time.Time, staleAfter time.Duration, allowFleetSkew bool, fleetSkewReason string) (PublishPreflightSummary, error) {
 	statusByID := runtimeStatusMap(statuses)
 	summary := PublishPreflightSummary{
 		AllowFleetSkew:    allowFleetSkew,
+		FleetSkewReason:   fleetSkewReason,
 		StaleAfterSeconds: int(staleAfter / time.Second),
 	}
 	for _, follower := range followers {

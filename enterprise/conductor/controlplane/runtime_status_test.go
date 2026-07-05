@@ -10,6 +10,8 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -86,6 +88,89 @@ func runtimeStatus(identity FollowerIdentity, version, hash string) FollowerRunt
 		LastPolicyPollAt:               testNow,
 		LastSuccessfulApplyAt:          testNow,
 		LastSeenAt:                     testNow,
+	}
+}
+
+func TestNormalizeRuntimeStatusValidationEdges(t *testing.T) {
+	identity := defaultFollowerIdentity()
+	valid := runtimeStatus(identity, "1.2.3", strings.Repeat("A", 64))
+	valid.SchemaVersion = 0
+	valid.LastSeenAt = time.Time{}
+	valid.LastPolicyPollAt = testNow.In(time.FixedZone("offset", -5*60*60))
+	valid.LastSuccessfulApplyAt = testNow.In(time.FixedZone("offset", 2*60*60))
+	valid.PipelockVersion = " \t1.2.3\n "
+	valid.GitCommit = " abc\x00\n123 "
+	valid.BuildDate = " 2026-05-24T12:00:00Z "
+	valid.ActiveBundleID = " bundle-1 "
+	valid.ActiveBundleMinPipelockVersion = " 1.2.0 "
+	valid.LastApplyErrorCode = " reload\x00failed "
+	valid.LastApplyErrorMessage = " reload\x00\n\tfailed\xff ok "
+
+	normalized, err := normalizeRuntimeStatus(valid, testNow)
+	if err != nil {
+		t.Fatalf("normalizeRuntimeStatus(valid) error = %v", err)
+	}
+	if normalized.SchemaVersion != conductor.SchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", normalized.SchemaVersion, conductor.SchemaVersion)
+	}
+	if normalized.ActiveBundleHash != strings.Repeat("a", 64) {
+		t.Fatalf("ActiveBundleHash = %q, want lowercase hash", normalized.ActiveBundleHash)
+	}
+	if !normalized.LastSeenAt.Equal(testNow.UTC()) {
+		t.Fatalf("LastSeenAt = %s, want %s", normalized.LastSeenAt, testNow.UTC())
+	}
+	if normalized.PipelockVersion != "1.2.3" ||
+		normalized.GitCommit != "abc 123" ||
+		normalized.LastApplyErrorCode != "reload failed" ||
+		normalized.LastApplyErrorMessage != "reload failed ok" {
+		t.Fatalf("normalized strings = version=%q git=%q code=%q message=%q",
+			normalized.PipelockVersion,
+			normalized.GitCommit,
+			normalized.LastApplyErrorCode,
+			normalized.LastApplyErrorMessage,
+		)
+	}
+	if normalized.LastPolicyPollAt.Location() != time.UTC || normalized.LastSuccessfulApplyAt.Location() != time.UTC {
+		t.Fatalf("normalized times are not UTC: poll=%s apply=%s", normalized.LastPolicyPollAt.Location(), normalized.LastSuccessfulApplyAt.Location())
+	}
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*FollowerRuntimeStatus)
+		wantErr error
+	}{
+		{name: "pipelock_version_oversized", mutate: func(s *FollowerRuntimeStatus) {
+			s.PipelockVersion = strings.Repeat("9", maxRuntimeStatusStringBytes+1)
+		}, wantErr: conductor.ErrPayloadTooLarge},
+		{name: "build_date_oversized", mutate: func(s *FollowerRuntimeStatus) {
+			s.BuildDate = strings.Repeat("2", maxRuntimeStatusStringBytes+1)
+		}, wantErr: conductor.ErrPayloadTooLarge},
+		{name: "active_bundle_id_oversized", mutate: func(s *FollowerRuntimeStatus) {
+			s.ActiveBundleID = strings.Repeat("b", maxRuntimeStatusStringBytes+1)
+		}, wantErr: conductor.ErrPayloadTooLarge},
+		{name: "active_bundle_hash_oversized", mutate: func(s *FollowerRuntimeStatus) {
+			s.ActiveBundleHash = strings.Repeat("a", maxRuntimeStatusStringBytes+1)
+		}, wantErr: conductor.ErrPayloadTooLarge},
+		{name: "active_bundle_min_version_oversized", mutate: func(s *FollowerRuntimeStatus) {
+			s.ActiveBundleMinPipelockVersion = strings.Repeat("1", maxRuntimeStatusStringBytes+1)
+		}, wantErr: conductor.ErrPayloadTooLarge},
+		{name: "last_apply_error_code_oversized", mutate: func(s *FollowerRuntimeStatus) {
+			s.LastApplyErrorCode = strings.Repeat("e", maxRuntimeStatusStringBytes+1)
+		}, wantErr: conductor.ErrPayloadTooLarge},
+		{name: "hash_too_short", mutate: func(s *FollowerRuntimeStatus) {
+			s.ActiveBundleHash = strings.Repeat("a", 63)
+		}, wantErr: conductor.ErrInvalidHash},
+		{name: "hash_not_hex", mutate: func(s *FollowerRuntimeStatus) {
+			s.ActiveBundleHash = strings.Repeat("g", 64)
+		}, wantErr: conductor.ErrInvalidHash},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))
+			tc.mutate(&status)
+			if _, err := normalizeRuntimeStatus(status, testNow); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("normalizeRuntimeStatus(%s) error = %v, want %v", tc.name, err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -374,6 +459,70 @@ func TestRuntimeStatusAuthSeparatesFollowerIdentityFromPublisherToken(t *testing
 	w = postRuntimeStatus(t, followerOnly, runtimeStatus(identity, "1.2.3", strings.Repeat("b", 64)))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status with follower identity only = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+}
+
+func TestRuntimeStatusHandlerErrorResponses(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	handler := newRuntimeStatusTestHandler(t, store, identity)
+	handler.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	requestBody := func(status FollowerRuntimeStatus) string {
+		t.Helper()
+		body, err := json.Marshal(runtimeStatusRequest{Status: status})
+		if err != nil {
+			t.Fatalf("marshal runtime status: %v", err)
+		}
+		return string(body)
+	}
+	serve := func(h *Handler, method string, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequestWithContext(context.Background(), method, FollowerRuntimeStatusPath, strings.NewReader(body))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := serve(handler, http.MethodGet, ""); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET runtime status code = %d body=%s, want 405", w.Code, w.Body.String())
+	}
+
+	noStore := *handler
+	noStore.enrollments = nil
+	if w := serve(&noStore, http.MethodPost, `{}`); w.Code != http.StatusNotImplemented {
+		t.Fatalf("runtime status without store code = %d body=%s, want 501", w.Code, w.Body.String())
+	}
+
+	if w := serve(handler, http.MethodPost, `{"status":`); w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed runtime status code = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	tinyBodyLimit := *handler
+	tinyBodyLimit.maxRequestBody = 4
+	if w := serve(&tinyBodyLimit, http.MethodPost, requestBody(runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64)))); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized runtime status body code = %d body=%s, want 413", w.Code, w.Body.String())
+	}
+
+	invalidHash := runtimeStatus(identity, "1.2.3", strings.Repeat("g", 64))
+	if w := serve(handler, http.MethodPost, requestBody(invalidHash)); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid hash runtime status code = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	overLimit := *handler
+	overLimit.enrollments = runtimeStatusErrorStore{err: ErrRuntimeStatusLimitExceeded}
+	if w := serve(&overLimit, http.MethodPost, requestBody(runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64)))); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("runtime status limit code = %d body=%s, want 413", w.Code, w.Body.String())
+	}
+
+	failingStore := *handler
+	failingStore.enrollments = runtimeStatusErrorStore{err: errors.New("disk write failed")}
+	if w := serve(&failingStore, http.MethodPost, requestBody(runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64)))); w.Code != http.StatusInternalServerError {
+		t.Fatalf("runtime status internal store error code = %d body=%s, want 500", w.Code, w.Body.String())
 	}
 }
 
@@ -730,6 +879,15 @@ type truncatedPreflightEnrollmentStore struct {
 	followers []FollowerSummary
 	statuses  []FollowerRuntimeStatus
 	truncated bool
+}
+
+type runtimeStatusErrorStore struct {
+	truncatedPreflightEnrollmentStore
+	err error
+}
+
+func (s runtimeStatusErrorStore) UpsertFollowerRuntimeStatus(context.Context, FollowerRuntimeStatus) (FollowerRuntimeStatus, error) {
+	return FollowerRuntimeStatus{}, s.err
 }
 
 func (s truncatedPreflightEnrollmentStore) CreateEnrollmentToken(context.Context, EnrollmentTokenSpec) (IssuedEnrollmentToken, error) {

@@ -298,9 +298,9 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 		var raw struct {
 			Detail json.RawMessage `json:"detail"`
 		}
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			return nil, false, fmt.Errorf("line %d: parsing entry raw detail: %w", lineNum, err)
-		}
+		// The line already unmarshaled into Entry above, so re-scanning the same
+		// valid JSON for the exact detail bytes cannot fail.
+		_ = json.Unmarshal([]byte(line), &raw)
 		if raw.Detail != nil {
 			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
 		}

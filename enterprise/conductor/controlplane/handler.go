@@ -861,8 +861,6 @@ func (h *Handler) logPublishPreflightDecision(ctx context.Context, event string,
 	}
 	if err != nil {
 		attrs = append(attrs, slog.String("error", err.Error()))
-		h.logger.LogAttrs(ctx, slog.LevelWarn, event, attrs...)
-		return
 	}
 	h.logger.LogAttrs(ctx, slog.LevelWarn, event, attrs...)
 }

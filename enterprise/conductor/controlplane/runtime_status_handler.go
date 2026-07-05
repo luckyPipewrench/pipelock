@@ -65,7 +65,7 @@ func (h *Handler) handleFollowerRuntimeStatus(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if h.logger != nil {
-		h.logger.InfoContext(r.Context(), "conductor_runtime_status_accepted",
+		h.logger.DebugContext(r.Context(), "conductor_runtime_status_accepted",
 			slog.String("event", "conductor_runtime_status_accepted"),
 			slog.String("org_id", identity.OrgID),
 			slog.String("fleet_id", identity.FleetID),

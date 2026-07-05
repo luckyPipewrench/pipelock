@@ -350,11 +350,15 @@ type publishPreflightOptions struct {
 }
 
 func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRuntimeStatus, bundle conductor.PolicyBundle, opts publishPreflightOptions) (PublishPreflightSummary, error) {
+	staleAfter := opts.staleAfter
+	if staleAfter <= 0 {
+		staleAfter = defaultRuntimeStatusStaleAfter
+	}
 	statusByID := runtimeStatusMap(statuses)
 	summary := PublishPreflightSummary{
 		AllowFleetSkew:    opts.allowFleetSkew,
 		FleetSkewReason:   opts.fleetSkewReason,
-		StaleAfterSeconds: int(opts.staleAfter / time.Second),
+		StaleAfterSeconds: int(staleAfter / time.Second),
 	}
 	if len(bundle.Audience.Labels) > 0 {
 		return summary, fmt.Errorf("%w: label-scoped audience cannot be evaluated without follower labels", ErrFleetPreflightBlocked)
@@ -378,7 +382,7 @@ func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRu
 			InstanceID:  follower.InstanceID,
 			Environment: follower.Environment,
 		})]
-		if !ok || status.LastSeenAt.IsZero() || opts.now.Sub(status.LastSeenAt) > opts.staleAfter {
+		if !ok || status.LastSeenAt.IsZero() || opts.now.Sub(status.LastSeenAt) > staleAfter {
 			summary.StaleUnseen++
 			continue
 		}

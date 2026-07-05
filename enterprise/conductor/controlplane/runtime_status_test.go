@@ -749,6 +749,43 @@ func TestPublishPreflightBlocksLabelAudienceWhenLabelsUnavailable(t *testing.T) 
 	}
 }
 
+func TestEvaluatePublishPreflightDefaultsStaleAfter(t *testing.T) {
+	identity := defaultFollowerIdentity()
+	followers := []FollowerSummary{{
+		OrgID:       identity.OrgID,
+		FleetID:     identity.FleetID,
+		InstanceID:  identity.InstanceID,
+		Environment: identity.Environment,
+		Active:      true,
+	}}
+	statuses := []FollowerRuntimeStatus{{
+		OrgID:           identity.OrgID,
+		FleetID:         identity.FleetID,
+		InstanceID:      identity.InstanceID,
+		Environment:     identity.Environment,
+		PipelockVersion: "1.2.3",
+		LastSeenAt:      testNow.Add(-(defaultRuntimeStatusStaleAfter / 2)),
+	}}
+	bundle := conductor.PolicyBundle{
+		OrgID:              identity.OrgID,
+		FleetID:            identity.FleetID,
+		Environment:        identity.Environment,
+		MinPipelockVersion: "1.0.0",
+		Audience:           conductor.Audience{InstanceIDs: []string{"*"}},
+	}
+
+	summary, err := evaluatePublishPreflight(followers, statuses, bundle, publishPreflightOptions{now: testNow})
+	if err != nil {
+		t.Fatalf("evaluatePublishPreflight() error = %v", err)
+	}
+	if summary.StaleAfterSeconds != int(defaultRuntimeStatusStaleAfter/time.Second) {
+		t.Fatalf("StaleAfterSeconds = %d, want default %d", summary.StaleAfterSeconds, int(defaultRuntimeStatusStaleAfter/time.Second))
+	}
+	if summary.CanApply != 1 || summary.StaleUnseen != 0 {
+		t.Fatalf("summary CanApply=%d StaleUnseen=%d, want current follower to use default stale window", summary.CanApply, summary.StaleUnseen)
+	}
+}
+
 func TestPublishPreflightBlocksLastApplyFailureWithoutOverride(t *testing.T) {
 	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
 	if err != nil {

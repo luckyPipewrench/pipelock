@@ -170,6 +170,75 @@ func TestReadEntries_ValidFile(t *testing.T) {
 	}
 }
 
+func TestReadEntries_PreservesRawDetailWithoutSerializationOrHashDisturbance(t *testing.T) {
+	ts := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	detail := map[string]any{"z": float64(2), "a": map[string]any{"b": float64(1)}}
+	for _, version := range []int{1, recorder.EntryVersion} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			e := recorder.Entry{
+				Version:   version,
+				Sequence:  7,
+				Timestamp: ts,
+				SessionID: "s1",
+				Type:      testType,
+				Transport: testTransport,
+				Summary:   "raw detail",
+				Detail:    detail,
+				PrevHash:  recorder.GenesisHash,
+			}
+			beforeHash := recorder.ComputeHash(e)
+			e.Hash = beforeHash
+
+			wire, err := json.Marshal(e)
+			if err != nil {
+				t.Fatalf("Marshal entry: %v", err)
+			}
+			if strings.Contains(string(wire), "RawDetail") || strings.Contains(string(wire), "raw_detail") {
+				t.Fatalf("RawDetail leaked into serialized entry: %s", wire)
+			}
+			var rawWire struct {
+				Detail json.RawMessage `json:"detail"`
+			}
+			if err := json.Unmarshal(wire, &rawWire); err != nil {
+				t.Fatalf("Unmarshal raw wire detail: %v", err)
+			}
+
+			got, err := recorder.ReadEntriesFromReader(strings.NewReader(string(wire) + "\n"))
+			if err != nil {
+				t.Fatalf("ReadEntriesFromReader: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("entry count = %d, want 1", len(got))
+			}
+			if string(got[0].RawDetail) != string(rawWire.Detail) {
+				t.Fatalf("RawDetail = %s, want %s", got[0].RawDetail, rawWire.Detail)
+			}
+			withoutRaw := got[0]
+			withoutRaw.RawDetail = nil
+			if hashWithoutRaw := recorder.ComputeHash(withoutRaw); hashWithoutRaw != beforeHash {
+				t.Fatalf("baseline reread hash = %s, want stored pre-read hash %s", hashWithoutRaw, beforeHash)
+			}
+			got[0].RawDetail = json.RawMessage(`{"different":true}`)
+			if afterHash := recorder.ComputeHash(got[0]); afterHash != beforeHash {
+				t.Fatalf("ComputeHash changed after RawDetail mutation: got %s want %s", afterHash, beforeHash)
+			}
+			if err := recorder.VerifyChain(got); err != nil {
+				t.Fatalf("VerifyChain with populated RawDetail: %v", err)
+			}
+			rewire, err := json.Marshal(got[0])
+			if err != nil {
+				t.Fatalf("Marshal reread entry: %v", err)
+			}
+			if !json.Valid(rewire) {
+				t.Fatalf("reread entry marshaled invalid JSON: %s", rewire)
+			}
+			if strings.Contains(string(rewire), "RawDetail") || strings.Contains(string(rewire), "raw_detail") {
+				t.Fatalf("RawDetail leaked into reread serialized entry: %s", rewire)
+			}
+		})
+	}
+}
+
 func TestReadEntries_RejectsUnknownVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")

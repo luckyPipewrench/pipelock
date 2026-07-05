@@ -52,19 +52,20 @@ func IsAcceptedEntryVersion(version int) bool {
 // classification debt) drive their behavior off this field; the recorder
 // itself only stamps it through and binds it into the v2 chain hash.
 type Entry struct {
-	Version   int       `json:"v"`
-	Sequence  uint64    `json:"seq"`
-	Timestamp time.Time `json:"ts"`
-	SessionID string    `json:"session_id"`
-	TraceID   string    `json:"trace_id,omitempty"`
-	Type      string    `json:"type"`
-	EventKind string    `json:"event_kind,omitempty"`
-	Transport string    `json:"transport"`
-	Summary   string    `json:"summary"`
-	Detail    any       `json:"detail"`
-	RawRef    string    `json:"raw_ref,omitempty"`
-	PrevHash  string    `json:"prev_hash"`
-	Hash      string    `json:"hash"`
+	Version   int             `json:"v"`
+	Sequence  uint64          `json:"seq"`
+	Timestamp time.Time       `json:"ts"`
+	SessionID string          `json:"session_id"`
+	TraceID   string          `json:"trace_id,omitempty"`
+	Type      string          `json:"type"`
+	EventKind string          `json:"event_kind,omitempty"`
+	Transport string          `json:"transport"`
+	Summary   string          `json:"summary"`
+	Detail    any             `json:"detail"`
+	RawDetail json.RawMessage `json:"-"`
+	RawRef    string          `json:"raw_ref,omitempty"`
+	PrevHash  string          `json:"prev_hash"`
+	Hash      string          `json:"hash"`
 }
 
 // CheckpointDetail is the structured payload for checkpoint entries.
@@ -293,6 +294,15 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 		var e Entry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
+		}
+		var raw struct {
+			Detail json.RawMessage `json:"detail"`
+		}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			return nil, false, fmt.Errorf("line %d: parsing entry raw detail: %w", lineNum, err)
+		}
+		if raw.Detail != nil {
+			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
 		}
 		if !acceptedEntryVersions[e.Version] {
 			return nil, false, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)

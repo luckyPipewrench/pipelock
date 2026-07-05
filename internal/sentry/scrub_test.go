@@ -158,8 +158,8 @@ func TestScrubEvent_AllowlistPayloadShape(t *testing.T) {
 						{
 							Function:    "runProxy",
 							Module:      "github.com/luckyPipewrench/pipelock/internal/cli/runtime",
-							Filename:    "/home/josh/dev/pipelock/internal/cli/runtime/mcp.go",
-							AbsPath:     "/home/josh/dev/pipelock/internal/cli/runtime/mcp.go",
+							Filename:    "/home/developer/project/internal/cli/runtime/mcp.go",
+							AbsPath:     "/home/developer/project/internal/cli/runtime/mcp.go",
 							Lineno:      1115,
 							ContextLine: "return upstreamURL.String()",
 							Vars:        map[string]interface{}{"upstream": fakeURLWithUserinfo("user", "secret", "host", "/p")},

@@ -494,8 +494,8 @@ func TestDoctorChecksCoverConfiguredBranches(t *testing.T) {
 		cfg := config.Defaults()
 		disabled := false
 		cfg.Sentry.Enabled = &disabled
-		if check := checkDoctorSentry(cfg); check.Status != doctorStatusWarn || check.Configured {
-			t.Fatalf("disabled sentry check = %+v, want unconfigured warning", check)
+		if check := checkDoctorSentry(cfg); check.Status != doctorStatusInfo || check.Configured {
+			t.Fatalf("disabled sentry check = %+v, want informational disabled-by-default", check)
 		}
 		enabled := true
 		cfg.Sentry.Enabled = &enabled

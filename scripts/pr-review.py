@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import requests
 
@@ -207,16 +208,63 @@ def post_comment(repo: str, pr_number: str, token: str, body: str) -> None:
 
 # --- Stats checker (no LLM) ---
 
-def run_stats_check() -> str:
-    """Compare codebase stats against doc references. Returns markdown report."""
-    findings = []
 
-    # Get canonical counts from Go code.
+SAFE_STATS_ENV_NAMES = {
+    "CGO_ENABLED",
+    "CI",
+    "GOCACHE",
+    "GOFLAGS",
+    "GOMODCACHE",
+    "GOPATH",
+    "GOROOT",
+    "GOTOOLCHAIN",
+    "GOTMPDIR",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "RUNNER_ARCH",
+    "RUNNER_OS",
+    "RUNNER_TEMP",
+    "TMPDIR",
+    "USER",
+}
+
+STAT_PATTERNS = [
+    (r"(\d[\d,]*)\+?\s*(?:DLP|credential)\s*patterns?", "dlp_patterns"),
+    (r"(\d[\d,]*)\+?\s*(?:response|injection)\s*patterns?", "response_patterns"),
+    (r"(\d[\d,]*)\+?\s*Prometheus\s*metric", "prometheus_metrics"),
+    (r"(\d[\d,]*)\+?\s*(?:direct\s*)?(?:Go\s*)?dep", "direct_deps"),
+    (r"~?(\d+)\s*MB\b", "binary_size_mb"),
+    (r"(\d[\d,]*)\+?\s*(?:built-in\s*)?(?:attack\s*)?scenarios?", "simulate_scenarios"),
+    (r"(\d[\d,]*)\+?\s*(?:passing\s*)?tests?\b", "tests"),
+    (r"(\d[\d,]*)\+?\s*(?:tool\s*)?policy\s*rules?", "tool_policy_rules"),
+]
+
+
+def env_without_runtime_secrets(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an environment suitable for running PR-controlled stats code."""
+    source = os.environ if env is None else env
+    return {key: value for key, value in source.items() if key in SAFE_STATS_ENV_NAMES}
+
+
+def stats_repo_path() -> Path:
+    """Return the checkout path whose code/docs should be checked for stats."""
+    raw = os.environ.get("STATS_REPO_PATH", ".")
+    return Path(raw).resolve()
+
+
+def extract_canonical_stats(repo_path: Path) -> dict[str, int]:
+    """Return canonical stats emitted by the Go stats generator test."""
     canonical = {}
     try:
         result = subprocess.run(
             ["go", "test", "-v", "-run", "TestGenerateStats", "./internal/config/"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            cwd=repo_path,
+            env=env_without_runtime_secrets(),
+            text=True,
+            timeout=120,
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
@@ -233,43 +281,48 @@ def run_stats_check() -> str:
     # combined (70) which is not the same as dlp_patterns (47). If
     # TestGenerateStats doesn't exist, we report canonical as unavailable
     # and fall through to the inconsistency-only check.
+    return canonical
 
-    # Scan docs for stat claims.
-    stat_patterns = [
-        (r"(\d[\d,]*)\+?\s*(?:DLP|credential)\s*patterns?", "dlp_patterns"),
-        (r"(\d[\d,]*)\+?\s*(?:response|injection)\s*patterns?", "response_patterns"),
-        (r"(\d[\d,]*)\+?\s*Prometheus\s*metric", "prometheus_metrics"),
-        (r"(\d[\d,]*)\+?\s*(?:direct\s*)?(?:Go\s*)?dep", "direct_deps"),
-        (r"~?(\d+)\s*MB\b", "binary_size_mb"),
-        (r"(\d[\d,]*)\+?\s*(?:built-in\s*)?(?:attack\s*)?scenarios?", "simulate_scenarios"),
-        (r"(\d[\d,]*)\+?\s*(?:passing\s*)?tests?\b", "tests"),
-        (r"(\d[\d,]*)\+?\s*(?:tool\s*)?policy\s*rules?", "tool_policy_rules"),
-    ]
 
+def find_doc_files(repo_path: Path) -> list[str]:
+    """Return doc/config files that may contain stat claims."""
     doc_files = []
-    for root, _, files in os.walk("."):
+    for root, _, files in os.walk(repo_path):
         if ".git" in root or "public" in root or "node_modules" in root:
             continue
         for f in files:
             if f.endswith((".md", ".html", ".yaml", ".yml")) and not f.startswith("."):
                 doc_files.append(os.path.join(root, f))
+    return doc_files
 
+
+def collect_stat_refs(repo_path: Path, doc_files: list[str]) -> dict[tuple[str, str, int], int]:
+    """Return stat claims found in docs, keyed by relative file/stat/line."""
     stat_refs = {}  # {(file, stat_name): claimed_value}
     for filepath in doc_files:
+        relpath = os.path.relpath(filepath, repo_path)
         try:
             with open(filepath, encoding="utf-8", errors="ignore") as fh:
                 for i, line in enumerate(fh, 1):
-                    for pattern, stat_name in stat_patterns:
+                    for pattern, stat_name in STAT_PATTERNS:
                         for match in re.finditer(pattern, line, re.IGNORECASE):
                             raw = match.group(1).replace(",", "")
                             try:
                                 val = int(raw)
                             except ValueError:
                                 continue
-                            key = (filepath, stat_name, i)
+                            key = (relpath, stat_name, i)
                             stat_refs[key] = val
         except OSError:
             continue
+    return stat_refs
+
+
+def build_stat_findings(
+    canonical: dict[str, int], stat_refs: dict[tuple[str, str, int], int]
+) -> list[str]:
+    """Compare canonical stats with doc claims and return markdown findings."""
+    findings = []
 
     # Fail closed: if we couldn't get any canonical stats, say so.
     if not canonical:
@@ -301,6 +354,18 @@ def run_stats_check() -> str:
             findings.append(
                 f"- **{stat_name}** has inconsistent values across docs: {detail}"
             )
+    return findings
+
+
+def run_stats_check() -> str:
+    """Compare codebase stats against doc references. Returns markdown report."""
+    repo_path = stats_repo_path()
+    if not repo_path.is_dir():
+        return f"**Error:** stats repository path not found: `{repo_path}`"
+
+    canonical = extract_canonical_stats(repo_path)
+    stat_refs = collect_stat_refs(repo_path, find_doc_files(repo_path))
+    findings = build_stat_findings(canonical, stat_refs)
 
     if not findings:
         return "All stats are consistent across docs and match codebase values."

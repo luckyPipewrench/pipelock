@@ -103,13 +103,15 @@ jobs:
         run: make test-replay-harness
 
       - name: Run tests (OSS)
+        env:
+          TEST_LABEL: OSS Go ${{ matrix.go-version }}
         run: |
           set -o pipefail
           set +e
           go test -race -count=1 -json ./... \
             | tee /tmp/go-test-oss.json >/dev/null
           test_status=$?
-          python3 scripts/summarize_go_test_json.py --label "OSS Go ${{ matrix.go-version }}" < /tmp/go-test-oss.json
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
           summary_status=$?
           if [ "$summary_status" -ne 0 ]; then
             exit "$summary_status"
@@ -117,13 +119,15 @@ jobs:
           exit "$test_status"
 
       - name: Run tests (enterprise)
+        env:
+          TEST_LABEL: enterprise Go ${{ matrix.go-version }}
         run: |
           set -o pipefail
           set +e
           go test -tags enterprise -race -count=1 -coverprofile=coverage.out -json ./... \
             | tee /tmp/go-test-enterprise.json >/dev/null
           test_status=$?
-          python3 scripts/summarize_go_test_json.py --label "enterprise Go ${{ matrix.go-version }}" < /tmp/go-test-enterprise.json
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
           summary_status=$?
           if [ "$summary_status" -ne 0 ]; then
             exit "$summary_status"

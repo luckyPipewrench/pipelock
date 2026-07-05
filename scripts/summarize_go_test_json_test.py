@@ -2,7 +2,9 @@
 
 import io
 import json
+import sys
 import unittest
+from unittest import mock
 
 import summarize_go_test_json
 
@@ -62,6 +64,22 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         )
 
         self.assertEqual(results["example.com/pkg"].action, "pass")
+
+    def test_format_duration_handles_subsecond_and_minute_rollover(self):
+        self.assertEqual(summarize_go_test_json.format_duration(0.25), "0.2s")
+        self.assertEqual(summarize_go_test_json.format_duration(61.2), "1m01.2s")
+        self.assertEqual(summarize_go_test_json.format_duration(600.0), "10m00.0s")
+
+    def test_main_rejects_non_positive_top(self):
+        with (
+            mock.patch.object(sys, "argv", ["summarize_go_test_json.py", "--top", "0"]),
+            mock.patch.object(sys, "stderr", io.StringIO()) as stderr,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            summarize_go_test_json.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--top must be at least 1", stderr.getvalue())
 
 
 if __name__ == "__main__":

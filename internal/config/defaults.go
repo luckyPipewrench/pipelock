@@ -39,6 +39,10 @@ const (
 	// app. Credential nouns allow whitespace, underscore, and hyphen spacing
 	// between letters so normalized evasions still match; destination terms stay
 	// narrow so ordinary setup docs with benign links do not block.
+	// Scanner response matching depends on the invariant that this regex can only
+	// match content containing a literal http:// or https:// link; broaden URL
+	// schemes only with matching updates to responsePatternRequiredLiterals and
+	// TestMarkdownLinkCredentialExfilRegexRequiresHTTPURL.
 	MarkdownLinkCredentialExfilRegex = `(?is)(?:(?:\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `|\b(?:collect|copy|include)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `)(?:` + markdownLinkCredentialExfilLink + `)|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,80}\bto\s+(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b` + markdownLinkCredentialTerminalCue + `|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:here|there)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
 )
 

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
@@ -83,10 +84,28 @@ func probeUserNamespace() bool {
 		// Child: exit immediately.
 		syscall.Exit(0)
 	}
-	// Parent: reap child.
+	return waitForUserNamespaceProbeChild(int(r), 2*time.Second) //nolint:gosec // G115: clone returns pid which fits in int
+}
+
+func waitForUserNamespaceProbeChild(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
 	var ws syscall.WaitStatus
-	_, _ = syscall.Wait4(int(r), &ws, 0, nil) //nolint:gosec // G115: clone returns pid which fits in int
-	return true
+	for {
+		waited, err := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil)
+		switch {
+		case waited == pid:
+			return true
+		case err != nil && err != syscall.EINTR:
+			return false
+		}
+
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_, _ = syscall.Wait4(pid, &ws, 0, nil)
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // Summary returns a human-readable summary of available capabilities.

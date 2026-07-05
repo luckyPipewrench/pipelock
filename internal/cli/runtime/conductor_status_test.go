@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -141,53 +142,90 @@ func TestNewConductorPolicyStatusReporterAndReport(t *testing.T) {
 }
 
 func TestConductorPolicyStatusReporterErrorPaths(t *testing.T) {
-	if reporter, err := newConductorPolicyStatusReporter(nil, statusReporterDoer{}, nil); err != nil || reporter != nil {
-		t.Fatalf("nil config reporter = (%v, %v), want nil nil", reporter, err)
-	}
-	if _, err := newConductorPolicyStatusReporter(&config.Config{Conductor: config.Conductor{Enabled: true}}, nil, nil); err == nil {
-		t.Fatal("newConductorPolicyStatusReporter(nil client) error = nil, want error")
-	}
-	if reporter, err := newConductorPolicyStatusReporter(&config.Config{Conductor: config.Conductor{
-		Enabled:           true,
-		ConductorURL:      "https://conductor.example",
-		OrgID:             "org-main",
-		FleetID:           "prod",
-		InstanceID:        "pl-prod-1",
-		AuditSigningKeyID: "audit-key-main-1",
-		BundleCacheDir:    t.TempDir(),
-	}}, statusReporterDoer{}, nil); err != nil || reporter != nil {
-		t.Fatalf("missing marker reporter = (%v, %v), want nil nil", reporter, err)
+	baseConfig := func(dir string) *config.Config {
+		return &config.Config{Conductor: config.Conductor{
+			Enabled:           true,
+			ConductorURL:      "https://conductor.example",
+			OrgID:             "org-main",
+			FleetID:           "prod",
+			InstanceID:        "pl-prod-1",
+			AuditSigningKeyID: "audit-key-main-1",
+			BundleCacheDir:    dir,
+		}}
 	}
 
-	if err := (*conductorPolicyStatusReporter)(nil).ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err != nil {
-		t.Fatalf("nil ReportPolicyStatus() error = %v", err)
-	}
-	reporter := &conductorPolicyStatusReporter{endpoint: ":// bad", client: statusReporterDoer{}}
-	if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err == nil || !strings.Contains(err.Error(), "build conductor runtime status request") {
-		t.Fatalf("ReportPolicyStatus(bad endpoint) error = %v, want build request error", err)
-	}
+	t.Run("nil config", func(t *testing.T) {
+		reporter, err := newConductorPolicyStatusReporter(nil, statusReporterDoer{}, nil)
+		if err != nil || reporter != nil {
+			t.Fatalf("reporter = (%v, %v), want nil nil", reporter, err)
+		}
+	})
 
-	wantErr := errors.New("dial failed")
-	reporter = &conductorPolicyStatusReporter{
-		endpoint: "https://conductor.example" + controlplane.FollowerRuntimeStatusPath,
-		client: statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
-			return nil, wantErr
-		}},
-	}
-	if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); !errors.Is(err, wantErr) {
-		t.Fatalf("ReportPolicyStatus(client error) = %v, want %v", err, wantErr)
-	}
+	t.Run("nil client", func(t *testing.T) {
+		if _, err := newConductorPolicyStatusReporter(&config.Config{Conductor: config.Conductor{Enabled: true}}, nil, nil); err == nil {
+			t.Fatal("newConductorPolicyStatusReporter(nil client) error = nil, want error")
+		}
+	})
 
-	reporter.client = statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
-		return responseWithBody(http.StatusConflict, "bad\n"+strings.Repeat("x", 300)), nil
-	}}
-	err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{})
-	if err == nil || !strings.Contains(err.Error(), "HTTP 409") {
-		t.Fatalf("ReportPolicyStatus(non-200) error = %v, want HTTP 409", err)
-	}
-	if strings.Contains(err.Error(), "\n") || strings.Contains(err.Error(), strings.Repeat("x", 300)) {
-		t.Fatalf("non-200 error was not sanitized/truncated: %q", err.Error())
-	}
+	t.Run("missing marker", func(t *testing.T) {
+		reporter, err := newConductorPolicyStatusReporter(baseConfig(t.TempDir()), statusReporterDoer{}, nil)
+		if err != nil || reporter != nil {
+			t.Fatalf("reporter = (%v, %v), want nil nil", reporter, err)
+		}
+	})
+
+	t.Run("malformed marker", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, conductorEnrolledStateFileName), []byte(`{`), 0o600); err != nil {
+			t.Fatalf("write malformed marker: %v", err)
+		}
+		reporter, err := newConductorPolicyStatusReporter(baseConfig(dir), statusReporterDoer{}, nil)
+		if err != nil || reporter != nil {
+			t.Fatalf("reporter = (%v, %v), want nil nil", reporter, err)
+		}
+	})
+
+	t.Run("nil receiver", func(t *testing.T) {
+		if err := (*conductorPolicyStatusReporter)(nil).ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err != nil {
+			t.Fatalf("ReportPolicyStatus() error = %v", err)
+		}
+	})
+
+	t.Run("bad endpoint", func(t *testing.T) {
+		reporter := &conductorPolicyStatusReporter{endpoint: ":// bad", client: statusReporterDoer{}}
+		if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); err == nil || !strings.Contains(err.Error(), "build conductor runtime status request") {
+			t.Fatalf("ReportPolicyStatus() error = %v, want build request error", err)
+		}
+	})
+
+	t.Run("client error", func(t *testing.T) {
+		wantErr := errors.New("dial failed")
+		reporter := &conductorPolicyStatusReporter{
+			endpoint: "https://conductor.example" + controlplane.FollowerRuntimeStatusPath,
+			client: statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
+				return nil, wantErr
+			}},
+		}
+		if err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{}); !errors.Is(err, wantErr) {
+			t.Fatalf("ReportPolicyStatus() = %v, want %v", err, wantErr)
+		}
+	})
+
+	t.Run("non-200 response", func(t *testing.T) {
+		reporter := &conductorPolicyStatusReporter{
+			endpoint: "https://conductor.example" + controlplane.FollowerRuntimeStatusPath,
+			client: statusReporterDoer{fn: func(*http.Request) (*http.Response, error) {
+				return responseWithBody(http.StatusConflict, "bad\n"+strings.Repeat("x", 300)), nil
+			}},
+		}
+		err := reporter.ReportPolicyStatus(context.Background(), policysync.StatusEvent{})
+		if err == nil || !strings.Contains(err.Error(), "HTTP 409") {
+			t.Fatalf("ReportPolicyStatus() error = %v, want HTTP 409", err)
+		}
+		if strings.Contains(err.Error(), "\n") || strings.Contains(err.Error(), strings.Repeat("x", 300)) {
+			t.Fatalf("non-200 error was not sanitized/truncated: %q", err.Error())
+		}
+	})
 }
 
 func TestApplyErrorCodeMapsKnownErrors(t *testing.T) {

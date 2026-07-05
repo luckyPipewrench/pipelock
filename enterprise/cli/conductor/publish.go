@@ -769,14 +769,11 @@ func isLoopbackHost(host string) bool {
 // Conflict is de-conflated via conflictSentinel into one of the distinct publish
 // conflict sentinels (rollback attempt, version-below-stream-max, or
 // previous-hash mismatch) so the operator gets an accurate, actionable message.
-func postBundle(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle, allowFleetSkew ...bool) (publishResult, error) {
+func postBundle(ctx context.Context, client *http.Client, baseURL, token string, bundle conductorcore.PolicyBundle, allowFleetSkew bool) (publishResult, error) {
 	envelope := struct {
 		Bundle         conductorcore.PolicyBundle `json:"bundle"`
 		AllowFleetSkew bool                       `json:"allow_fleet_skew,omitempty"`
-	}{Bundle: bundle}
-	if len(allowFleetSkew) > 0 {
-		envelope.AllowFleetSkew = allowFleetSkew[0]
-	}
+	}{Bundle: bundle, AllowFleetSkew: allowFleetSkew}
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		return publishResult{}, fmt.Errorf("marshal publish request: %w", err)

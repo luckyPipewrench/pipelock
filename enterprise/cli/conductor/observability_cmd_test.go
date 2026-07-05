@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -159,8 +160,19 @@ func TestRunFleetStatusTableAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeFollowerTable(empty runtime fields) error = %v", err)
 	}
-	if !strings.Contains(out, "pl-prod-unknown") || !strings.Contains(out, "unknown") || !strings.Contains(out, "-") {
-		t.Fatalf("table output = %q", out)
+	fields := strings.Fields(out)
+	wantFields := []string{"pl-prod-unknown", "unknown", "-"}
+	for _, want := range wantFields {
+		if !slices.Contains(fields, want) {
+			t.Fatalf("table fields %v missing %q from output %q", fields, want, out)
+		}
+	}
+	rowStart := slices.Index(fields, "pl-prod-unknown")
+	if rowStart < 0 || rowStart+6 >= len(fields) {
+		t.Fatalf("could not find complete pl-prod-unknown row in fields %v from output %q", fields, out)
+	}
+	if got := fields[rowStart+6]; got != "-" {
+		t.Fatalf("drift placeholder = %q, want '-' in output %q", got, out)
 	}
 
 	// JSON passthrough.

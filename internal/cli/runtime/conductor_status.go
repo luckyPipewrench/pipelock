@@ -44,7 +44,9 @@ func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTP
 	}
 	marker, ok, err := readConductorEnrollmentMarker(filepath.Join(cfg.Conductor.BundleCacheDir, conductorEnrolledStateFileName), cfg.Conductor)
 	if err != nil {
-		return nil, err
+		// Runtime status is best-effort telemetry; a bad marker must not block
+		// the core policy bundle poller from starting.
+		return nil, nil
 	}
 	if !ok {
 		return nil, nil

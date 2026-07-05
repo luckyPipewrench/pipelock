@@ -940,7 +940,7 @@ func minimalBundle(t *testing.T) conductorcore.PolicyBundle {
 
 func TestPostBundle_Malformed200Rejected(t *testing.T) {
 	url := newStubStatusServer(t, http.StatusOK, "not json")
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), false)
 	if err == nil || !strings.Contains(err.Error(), "decode publish response") {
 		t.Fatalf("want decode error, got %v", err)
 	}
@@ -948,7 +948,7 @@ func TestPostBundle_Malformed200Rejected(t *testing.T) {
 
 func TestPostBundle_5xxRejected(t *testing.T) {
 	url := newStubStatusServer(t, http.StatusInternalServerError, `{"error":"internal"}`)
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), false)
 	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("want 500 error, got %v", err)
 	}
@@ -956,7 +956,7 @@ func TestPostBundle_5xxRejected(t *testing.T) {
 
 func TestPostBundle_401Rejected(t *testing.T) {
 	url := newStubStatusServer(t, http.StatusUnauthorized, `{"error":"nope"}`)
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), false)
 	if err == nil || !strings.Contains(err.Error(), "not authorized") {
 		t.Fatalf("want auth error, got %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestPostBundle_409ConflictCodesDeConflated(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := `{"error":"server detail here","code":"` + tc.code + `"}`
 			url := newStubStatusServer(t, http.StatusConflict, body)
-			_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+			_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), false)
 			if err == nil {
 				t.Fatalf("want conflict error, got nil")
 			}
@@ -1040,7 +1040,7 @@ func TestPostBundle_409ConflictCodesDeConflated(t *testing.T) {
 func TestPostBundle_409PrevHashNotReportedAsStale(t *testing.T) {
 	body := `{"error":"previous_bundle_hash does not match stream head","code":"` + controlplane.PublishConflictPreviousHashMismatch + `"}`
 	url := newStubStatusServer(t, http.StatusConflict, body)
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), false)
 	if err == nil {
 		t.Fatalf("want conflict error, got nil")
 	}
@@ -1086,7 +1086,7 @@ func TestWritePublishPreflightFormatsEmptySummaryAndOverride(t *testing.T) {
 
 func TestPostBundle_ConnectionRefused(t *testing.T) {
 	// Point at a closed port to drive the client.Do error branch.
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, "http://127.0.0.1:1", "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, "http://127.0.0.1:1", "tok", minimalBundle(t), false)
 	if err == nil || !strings.Contains(err.Error(), "publish request failed") {
 		t.Fatalf("want request-failed error, got %v", err)
 	}

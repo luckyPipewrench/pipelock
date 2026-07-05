@@ -698,6 +698,16 @@ func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Reque
 			writeCodedError(w, http.StatusConflict, PublishConflictFleetSkew, err)
 			return
 		}
+		if h.logger != nil {
+			h.logger.ErrorContext(r.Context(), "conductor_publish_preflight_failed",
+				slog.String("event", "conductor_publish_preflight_failed"),
+				slog.String("org_id", req.Bundle.OrgID),
+				slog.String("fleet_id", req.Bundle.FleetID),
+				slog.String("bundle_id", req.Bundle.BundleID),
+				slog.Uint64("version", req.Bundle.Version),
+				slog.String("error", err.Error()),
+			)
+		}
 		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
 		return
 	}
@@ -756,7 +766,7 @@ func (h *Handler) publishPreflight(r *http.Request, bundle conductor.PolicyBundl
 	if err != nil {
 		return PublishPreflightSummary{}, err
 	}
-	if truncated && !allowFleetSkew {
+	if truncated {
 		return PublishPreflightSummary{
 			StaleUnseen:       1,
 			AllowFleetSkew:    allowFleetSkew,

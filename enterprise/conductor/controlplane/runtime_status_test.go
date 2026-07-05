@@ -496,6 +496,30 @@ func TestPublishPreflightBlocksLastApplyFailureWithoutOverride(t *testing.T) {
 	}
 }
 
+func TestPublishPreflightBlocksTruncatedRosterEvenWithOverride(t *testing.T) {
+	store := truncatedPreflightEnrollmentStore{truncated: true}
+	handler := &Handler{
+		enrollments: store,
+		now:         func() time.Time { return testNow },
+	}
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "bundle-truncated-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	summary, err := handler.publishPreflight(
+		httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, http.NoBody),
+		bundle,
+		true,
+	)
+	if !errors.Is(err, ErrFleetPreflightBlocked) {
+		t.Fatalf("publishPreflight(truncated override) error = %v, want ErrFleetPreflightBlocked", err)
+	}
+	if !summary.AllowFleetSkew || summary.StaleUnseen != 1 {
+		t.Fatalf("truncated preflight summary = %+v, want skew override recorded with one stale/unseen", summary)
+	}
+}
+
 func TestRuntimeStatusPersistsAcrossRestartAndLastWriterWins(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enrollments.json")
 	store, err := OpenFileEnrollmentStore(path)
@@ -541,15 +565,26 @@ func TestRuntimeStatusConcurrentPosts(t *testing.T) {
 		mustEnrollFollower(t, store, "tok-concurrent-"+strconv.Itoa(i), identity, "audit-concurrent-"+strconv.Itoa(i))
 	}
 
+	handlers := make([]*Handler, followers)
+	identities := make([]FollowerIdentity, followers)
+	for i := range followers {
+		identities[i] = FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-" + strconv.Itoa(i), Environment: "prod"}
+		handlers[i] = newRuntimeStatusTestHandler(t, store, identities[i])
+	}
 	var wg sync.WaitGroup
 	for i := range followers {
 		i := i
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			identity := FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-" + strconv.Itoa(i), Environment: "prod"}
-			handler := newRuntimeStatusTestHandler(t, store, identity)
-			w := postRuntimeStatus(t, handler, runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64)))
+			body, err := json.Marshal(runtimeStatusRequest{Status: runtimeStatus(identities[i], "1.2.3", strings.Repeat("a", 64))})
+			if err != nil {
+				t.Errorf("marshal runtime status: %v", err)
+				return
+			}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, FollowerRuntimeStatusPath, bytes.NewReader(body))
+			w := httptest.NewRecorder()
+			handlers[i].ServeHTTP(w, req)
 			if w.Code != http.StatusOK {
 				t.Errorf("concurrent post %d code = %d body=%s, want 200", i, w.Code, w.Body.String())
 			}
@@ -689,4 +724,50 @@ func TestRemoveEnrolledFollowerRestoresRuntimeStatusOnSaveFailure(t *testing.T) 
 	if len(followers) != 1 || !followers[0].Active {
 		t.Fatalf("followers after failed remove = %+v, want active follower restored", followers)
 	}
+}
+
+type truncatedPreflightEnrollmentStore struct {
+	followers []FollowerSummary
+	statuses  []FollowerRuntimeStatus
+	truncated bool
+}
+
+func (s truncatedPreflightEnrollmentStore) CreateEnrollmentToken(context.Context, EnrollmentTokenSpec) (IssuedEnrollmentToken, error) {
+	return IssuedEnrollmentToken{}, errors.New("unexpected CreateEnrollmentToken call")
+}
+
+func (s truncatedPreflightEnrollmentStore) ConsumeEnrollmentToken(context.Context, ConsumeEnrollmentTokenRequest) (EnrolledFollower, error) {
+	return EnrolledFollower{}, errors.New("unexpected ConsumeEnrollmentToken call")
+}
+
+func (s truncatedPreflightEnrollmentStore) ResolveEnrolledAuditKey(FollowerIdentity, string) (conductor.SignatureKey, error) {
+	return conductor.SignatureKey{}, errors.New("unexpected ResolveEnrolledAuditKey call")
+}
+
+func (s truncatedPreflightEnrollmentStore) ListEnrolledFollowers(context.Context, FollowerListQuery) ([]FollowerSummary, error) {
+	return s.followers, nil
+}
+
+func (s truncatedPreflightEnrollmentStore) RemoveEnrolledFollower(context.Context, RemoveEnrolledFollowerRequest) (FollowerSummary, error) {
+	return FollowerSummary{}, errors.New("unexpected RemoveEnrolledFollower call")
+}
+
+func (s truncatedPreflightEnrollmentStore) ListEnrollmentTokens(context.Context, EnrollmentTokenListQuery) ([]EnrollmentTokenSummary, error) {
+	return nil, errors.New("unexpected ListEnrollmentTokens call")
+}
+
+func (s truncatedPreflightEnrollmentStore) RevokeEnrollmentToken(context.Context, RevokeEnrollmentTokenRequest) (EnrollmentTokenSummary, error) {
+	return EnrollmentTokenSummary{}, errors.New("unexpected RevokeEnrollmentToken call")
+}
+
+func (s truncatedPreflightEnrollmentStore) UpsertFollowerRuntimeStatus(context.Context, FollowerRuntimeStatus) (FollowerRuntimeStatus, error) {
+	return FollowerRuntimeStatus{}, errors.New("unexpected UpsertFollowerRuntimeStatus call")
+}
+
+func (s truncatedPreflightEnrollmentStore) ListFollowerRuntimeStatus(context.Context, RuntimeStatusQuery) ([]FollowerRuntimeStatus, error) {
+	return s.statuses, nil
+}
+
+func (s truncatedPreflightEnrollmentStore) ListEnrolledFollowersForPreflight(context.Context, FollowerListQuery) ([]FollowerSummary, bool, error) {
+	return s.followers, s.truncated, nil
 }

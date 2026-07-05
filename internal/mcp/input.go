@@ -573,7 +573,7 @@ func ForwardScannedInput(
 				decision = eval.TaintAuditDecision
 			}
 			auditLogger.LogTaintDecision(
-				mustMCPAuditContext(auditLogger, "MCP", toolCallName),
+				mustMCPAuditContext(auditLogger, "MCP", enforcementTarget),
 				audit.TaintDecision{
 					TaintLevel:  decision.Risk.Level.String(),
 					ActionClass: decision.ActionClass.String(),

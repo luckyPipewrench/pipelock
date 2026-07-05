@@ -498,13 +498,20 @@ func TestForwardScannedInput_A2ASessionBindingDoesNotUseSameNamedTool(t *testing
 		t.Fatalf("same-named MCP tool baseline let A2A request forward: %s", serverIn.String())
 	}
 	var gotBlock bool
+	var gotReason bool
 	for br := range blockedCh {
 		if br.ErrorData != nil || br.ErrorCode != 0 {
 			gotBlock = true
 		}
+		if (br.ErrorData != nil || br.ErrorCode != 0) && strings.Contains(logW.String(), bindingReasonUnknownTool) {
+			gotReason = true
+		}
 	}
 	if !gotBlock {
 		t.Fatalf("expected A2A session binding block; log=%s", logW.String())
+	}
+	if !gotReason {
+		t.Fatalf("expected block reason %q; log=%s", bindingReasonUnknownTool, logW.String())
 	}
 }
 

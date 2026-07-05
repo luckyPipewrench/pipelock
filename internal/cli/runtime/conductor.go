@@ -83,6 +83,14 @@ func buildConductorApplyCache(cfg *config.Config) (*applycache.Cache, error) {
 	return cache, nil
 }
 
+func (s *Server) applyCache() *applycache.Cache {
+	if s == nil {
+		return nil
+	}
+	cache, _ := s.conductorApply.(*applycache.Cache)
+	return cache
+}
+
 func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts ConductorApplyOptions) (applycache.AppliedBundle, error) {
 	if s == nil {
 		return applycache.AppliedBundle{}, errors.New("nil runtime server")
@@ -93,7 +101,7 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	if s.conductorDown.Load() {
 		return applycache.AppliedBundle{}, applycache.ErrCacheRequired
 	}
-	cache, _ := s.conductorApply.(*applycache.Cache)
+	cache := s.applyCache()
 	if cache == nil {
 		return applycache.AppliedBundle{}, applycache.ErrCacheRequired
 	}
@@ -261,6 +269,7 @@ func (s *Server) buildConductorBundlePoller(cfg *config.Config, logWriter io.Wri
 	if cfg == nil || !cfg.Conductor.Enabled {
 		return nil, nil
 	}
+	cache := s.applyCache()
 	client, err := newConductorMTLSClient(cfg.Conductor)
 	if err != nil {
 		return nil, err
@@ -287,10 +296,15 @@ func (s *Server) buildConductorBundlePoller(cfg *config.Config, logWriter io.Wri
 		_, applyErr := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: resolver, Labels: labels})
 		return applyErr
 	})
+	reporter, err := newConductorPolicyStatusReporter(cfg, client, cache)
+	if err != nil {
+		return nil, err
+	}
 	return policysync.NewPoller(policysync.PollerConfig{
 		BaseURL:      cfg.Conductor.ConductorURL,
 		Client:       client,
 		Applier:      applier,
+		Reporter:     reporter,
 		PollInterval: interval,
 		Logger:       logger,
 	})

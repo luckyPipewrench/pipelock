@@ -72,6 +72,9 @@ const (
 	// bundle_id/version already published with a different hash, or an initial
 	// bundle that carries a previous_bundle_hash).
 	PublishConflictOther = "conflict"
+	// PublishConflictFleetSkew: publish preflight found active followers in the
+	// target audience that are stale/unseen or below min_pipelock_version.
+	PublishConflictFleetSkew = "fleet_skew"
 )
 
 // FollowerIdentityResolver returns the [FollowerIdentity] for an incoming
@@ -96,6 +99,12 @@ type PublisherAuthorizer func(*http.Request) error
 // possession as global publish authority.
 type BundleAuthorizer func(*http.Request, conductor.PolicyBundle) error
 
+// FleetSkewOverrideAuthorizer authorizes a publish that explicitly bypasses a
+// fleet-skew preflight block. It is intentionally separate from
+// [BundleAuthorizer]: normal publish authority is not enough to break glass past
+// stale, unsupported, or last-apply-failed followers.
+type FleetSkewOverrideAuthorizer func(*http.Request, conductor.PolicyBundle, string) error
+
 // AuditQueryAuthorizer authorizes a parsed metadata query. It MUST scope
 // callers to the org/fleet they are permitted to inspect.
 type AuditQueryAuthorizer func(*http.Request, AuditBatchQuery) error
@@ -113,25 +122,26 @@ type FollowerListAuthorizer func(*http.Request, FollowerListQuery) error
 type StreamStatusAuthorizer func(*http.Request, StreamStatusQuery) error
 
 type HandlerOptions struct {
-	Store               BundleStore
-	Capabilities        conductor.CapabilitiesResponse
-	Now                 func() time.Time
-	MaxRequestBodyBytes int64
-	MaxAuditBodyBytes   int64
-	FollowerIdentity    FollowerIdentityResolver
-	AuthorizePublisher  PublisherAuthorizer
-	AuthorizeBundle     BundleAuthorizer
-	AuthorizeAuditQuery AuditQueryAuthorizer
-	AuthorizeFollowers  FollowerListAuthorizer
-	AuthorizeStream     StreamStatusAuthorizer
-	AuthorizeAdmin      PublisherAuthorizer
-	AuditSink           AuditBatchSink
-	AuditKeys           AuditKeyResolver
-	Enrollments         EnrollmentStore
-	EmergencyControls   EmergencyStore
-	EmergencyKeys       conductor.SignatureKeyResolver
-	RemoteKillMaxTTL    time.Duration
-	RollbackMaxTTL      time.Duration
+	Store                      BundleStore
+	Capabilities               conductor.CapabilitiesResponse
+	Now                        func() time.Time
+	MaxRequestBodyBytes        int64
+	MaxAuditBodyBytes          int64
+	FollowerIdentity           FollowerIdentityResolver
+	AuthorizePublisher         PublisherAuthorizer
+	AuthorizeBundle            BundleAuthorizer
+	AuthorizeFleetSkewOverride FleetSkewOverrideAuthorizer
+	AuthorizeAuditQuery        AuditQueryAuthorizer
+	AuthorizeFollowers         FollowerListAuthorizer
+	AuthorizeStream            StreamStatusAuthorizer
+	AuthorizeAdmin             PublisherAuthorizer
+	AuditSink                  AuditBatchSink
+	AuditKeys                  AuditKeyResolver
+	Enrollments                EnrollmentStore
+	EmergencyControls          EmergencyStore
+	EmergencyKeys              conductor.SignatureKeyResolver
+	RemoteKillMaxTTL           time.Duration
+	RollbackMaxTTL             time.Duration
 	// EnrollmentTokenMaxTTL caps the validity window of a minted enrollment
 	// token. Zero falls back to DefaultEnrollmentTokenMaxValidity.
 	EnrollmentTokenMaxTTL time.Duration
@@ -140,19 +150,20 @@ type HandlerOptions struct {
 }
 
 type Handler struct {
-	store               BundleStore
-	capabilities        conductor.CapabilitiesResponse
-	now                 func() time.Time
-	maxRequestBody      int64
-	maxAuditBody        int64
-	followerIdentity    FollowerIdentityResolver
-	authorizePublisher  PublisherAuthorizer
-	authorizeBundle     BundleAuthorizer
-	authorizeAuditQuery AuditQueryAuthorizer
-	authorizeFollowers  FollowerListAuthorizer
-	authorizeStream     StreamStatusAuthorizer
-	authorizeAdmin      PublisherAuthorizer
-	auditSink           AuditBatchSink
+	store                      BundleStore
+	capabilities               conductor.CapabilitiesResponse
+	now                        func() time.Time
+	maxRequestBody             int64
+	maxAuditBody               int64
+	followerIdentity           FollowerIdentityResolver
+	authorizePublisher         PublisherAuthorizer
+	authorizeBundle            BundleAuthorizer
+	authorizeFleetSkewOverride FleetSkewOverrideAuthorizer
+	authorizeAuditQuery        AuditQueryAuthorizer
+	authorizeFollowers         FollowerListAuthorizer
+	authorizeStream            StreamStatusAuthorizer
+	authorizeAdmin             PublisherAuthorizer
+	auditSink                  AuditBatchSink
 	// nil auditQuerier means the configured sink does not implement
 	// [AuditBatchQuerier], so GET returns 501 rather than a retryable 500.
 	auditQuerier          AuditBatchQuerier
@@ -176,15 +187,18 @@ type rollbackHeadReconciler interface {
 }
 
 type publishPolicyBundleRequest struct {
-	Bundle conductor.PolicyBundle `json:"bundle"`
+	Bundle          conductor.PolicyBundle `json:"bundle"`
+	AllowFleetSkew  bool                   `json:"allow_fleet_skew,omitempty"`
+	FleetSkewReason string                 `json:"fleet_skew_reason,omitempty"`
 }
 
 type publishPolicyBundleResponse struct {
-	BundleID    string    `json:"bundle_id"`
-	BundleHash  string    `json:"bundle_hash"`
-	Version     uint64    `json:"version"`
-	PublishedAt time.Time `json:"published_at"`
-	Created     bool      `json:"created"`
+	BundleID    string                  `json:"bundle_id"`
+	BundleHash  string                  `json:"bundle_hash"`
+	Version     uint64                  `json:"version"`
+	PublishedAt time.Time               `json:"published_at"`
+	Created     bool                    `json:"created"`
+	Preflight   PublishPreflightSummary `json:"preflight"`
 }
 
 type createEnrollmentTokenRequest struct {
@@ -332,6 +346,12 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 			return ErrPublisherForbidden
 		}
 	}
+	authorizeFleetSkewOverride := opts.AuthorizeFleetSkewOverride
+	if authorizeFleetSkewOverride == nil {
+		authorizeFleetSkewOverride = func(*http.Request, conductor.PolicyBundle, string) error {
+			return ErrPublisherForbidden
+		}
+	}
 	authorizeAdmin := opts.AuthorizeAdmin
 	if authorizeAdmin == nil {
 		authorizeAdmin = func(*http.Request) error {
@@ -351,29 +371,30 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		return nil, err
 	}
 	return &Handler{
-		store:                 opts.Store,
-		capabilities:          capabilities,
-		now:                   now,
-		maxRequestBody:        maxBody,
-		maxAuditBody:          maxAuditBody,
-		followerIdentity:      opts.FollowerIdentity,
-		authorizePublisher:    opts.AuthorizePublisher,
-		authorizeBundle:       authorizeBundle,
-		authorizeAuditQuery:   authorizeAuditQuery,
-		authorizeFollowers:    authorizeFollowers,
-		authorizeStream:       authorizeStream,
-		authorizeAdmin:        authorizeAdmin,
-		auditSink:             opts.AuditSink,
-		auditQuerier:          auditQuerier,
-		auditKeys:             opts.AuditKeys,
-		enrollments:           opts.Enrollments,
-		emergencyControls:     emergencyControls,
-		emergencyKeys:         opts.EmergencyKeys,
-		remoteKillMaxTTL:      remoteKillMaxTTL,
-		rollbackMaxTTL:        rollbackMaxTTL,
-		enrollmentTokenMaxTTL: enrollmentTokenMaxTTL,
-		metrics:               opts.Metrics,
-		logger:                opts.Logger,
+		store:                      opts.Store,
+		capabilities:               capabilities,
+		now:                        now,
+		maxRequestBody:             maxBody,
+		maxAuditBody:               maxAuditBody,
+		followerIdentity:           opts.FollowerIdentity,
+		authorizePublisher:         opts.AuthorizePublisher,
+		authorizeBundle:            authorizeBundle,
+		authorizeFleetSkewOverride: authorizeFleetSkewOverride,
+		authorizeAuditQuery:        authorizeAuditQuery,
+		authorizeFollowers:         authorizeFollowers,
+		authorizeStream:            authorizeStream,
+		authorizeAdmin:             authorizeAdmin,
+		auditSink:                  opts.AuditSink,
+		auditQuerier:               auditQuerier,
+		auditKeys:                  opts.AuditKeys,
+		enrollments:                opts.Enrollments,
+		emergencyControls:          emergencyControls,
+		emergencyKeys:              opts.EmergencyKeys,
+		remoteKillMaxTTL:           remoteKillMaxTTL,
+		rollbackMaxTTL:             rollbackMaxTTL,
+		enrollmentTokenMaxTTL:      enrollmentTokenMaxTTL,
+		metrics:                    opts.Metrics,
+		logger:                     opts.Logger,
 	}, nil
 }
 
@@ -482,6 +503,8 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAuditBatch(w, r)
 	case FollowersPath:
 		h.handleListFollowers(w, r)
+	case FollowerRuntimeStatusPath:
+		h.handleFollowerRuntimeStatus(w, r)
 	case StreamStatusPath:
 		h.handleStreamStatus(w, r)
 	default:
@@ -542,7 +565,7 @@ func conductorRoute(path string) string {
 		return AuditBatchesPath
 	}
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, StreamStatusPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, FollowerRuntimeStatusPath, StreamStatusPath:
 		return path
 	default:
 		return "unknown"
@@ -685,10 +708,53 @@ func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
+	fleetSkewReason, err := normalizeFleetSkewReason(req.AllowFleetSkew, req.FleetSkewReason)
+	if err != nil {
+		if errors.Is(err, conductor.ErrPayloadTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.AllowFleetSkew {
+		if err := h.authorizeFleetSkewOverride(r, req.Bundle, fleetSkewReason); err != nil {
+			writeError(w, http.StatusForbidden, ErrPublisherForbidden)
+			return
+		}
+	}
+	preflight, err := h.publishPreflight(r, req.Bundle, req.AllowFleetSkew, fleetSkewReason)
+	if err != nil {
+		if errors.Is(err, ErrFleetPreflightBlocked) {
+			h.logPublishPreflightDecision(r.Context(), "conductor_publish_preflight_blocked", req.Bundle, preflight, fleetSkewReason, err)
+			writeCodedError(w, http.StatusConflict, PublishConflictFleetSkew, err)
+			return
+		}
+		if errors.Is(err, ErrRuntimeStatusStoreRequired) {
+			h.logPublishPreflightDecision(r.Context(), "conductor_publish_preflight_unavailable", req.Bundle, preflight, fleetSkewReason, err)
+			writeError(w, http.StatusServiceUnavailable, ErrRuntimeStatusStoreRequired)
+			return
+		}
+		if h.logger != nil {
+			h.logger.ErrorContext(r.Context(), "conductor_publish_preflight_failed",
+				slog.String("event", "conductor_publish_preflight_failed"),
+				slog.String("org_id", req.Bundle.OrgID),
+				slog.String("fleet_id", req.Bundle.FleetID),
+				slog.String("bundle_id", req.Bundle.BundleID),
+				slog.Uint64("version", req.Bundle.Version),
+				slog.String("error", err.Error()),
+			)
+		}
+		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
+		return
+	}
 	record, created, err := h.store.Publish(r.Context(), req.Bundle, PublishOptions{Now: h.now()})
 	if err != nil {
 		writePublishStoreError(w, err)
 		return
+	}
+	if req.AllowFleetSkew {
+		h.logPublishPreflightDecision(r.Context(), "conductor_publish_fleet_skew_allowed", req.Bundle, preflight, fleetSkewReason, nil)
 	}
 	status := http.StatusOK
 	if created {
@@ -700,7 +766,103 @@ func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Reque
 		Version:     record.Bundle.Version,
 		PublishedAt: record.PublishedAt,
 		Created:     created,
+		Preflight:   preflight,
 	})
+}
+
+func (h *Handler) publishPreflight(r *http.Request, bundle conductor.PolicyBundle, allowFleetSkew bool, fleetSkewReason string) (PublishPreflightSummary, error) {
+	baseSummary := PublishPreflightSummary{
+		AllowFleetSkew:    allowFleetSkew,
+		FleetSkewReason:   fleetSkewReason,
+		StaleAfterSeconds: int(defaultRuntimeStatusStaleAfter / time.Second),
+	}
+	if h.enrollments == nil {
+		return baseSummary, fmt.Errorf("%w: enrollment store unavailable", ErrRuntimeStatusStoreRequired)
+	}
+	statusStore, ok := h.enrollments.(RuntimeStatusStore)
+	if !ok || statusStore == nil {
+		return baseSummary, fmt.Errorf("%w: runtime status store unavailable", ErrRuntimeStatusStoreRequired)
+	}
+	followerQuery := FollowerListQuery{
+		OrgID:   bundle.OrgID,
+		FleetID: bundle.FleetID,
+		Limit:   maxFollowerRuntimeStatusRecords,
+	}
+	var (
+		followers []FollowerSummary
+		truncated bool
+		err       error
+	)
+	if preflightStore, ok := h.enrollments.(RuntimePreflightEnrollmentStore); ok && preflightStore != nil {
+		followers, truncated, err = preflightStore.ListEnrolledFollowersForPreflight(r.Context(), followerQuery)
+	} else {
+		followers, err = h.enrollments.ListEnrolledFollowers(r.Context(), followerQuery)
+		truncated = len(followers) >= maxFollowerListLimit
+	}
+	if err != nil {
+		return PublishPreflightSummary{}, err
+	}
+	if truncated {
+		baseSummary.StaleUnseen = 1
+		return baseSummary, fmt.Errorf("%w: follower roster exceeds preflight cap %d", ErrFleetPreflightBlocked, maxFollowerRuntimeStatusRecords)
+	}
+	statuses, err := statusStore.ListFollowerRuntimeStatus(r.Context(), RuntimeStatusQuery{
+		OrgID:   bundle.OrgID,
+		FleetID: bundle.FleetID,
+		Limit:   maxFollowerRuntimeStatusRecords,
+	})
+	if err != nil {
+		return PublishPreflightSummary{}, err
+	}
+	return evaluatePublishPreflight(followers, statuses, bundle, publishPreflightOptions{
+		now:             h.now(),
+		staleAfter:      defaultRuntimeStatusStaleAfter,
+		allowFleetSkew:  allowFleetSkew,
+		fleetSkewReason: fleetSkewReason,
+	})
+}
+
+func normalizeFleetSkewReason(allowFleetSkew bool, reason string) (string, error) {
+	reason = strings.TrimSpace(sanitizeControlString(reason))
+	if !allowFleetSkew {
+		return "", nil
+	}
+	if reason == "" {
+		return "", errors.New("fleet skew override reason is required")
+	}
+	if len(reason) > conductor.MaxReasonBytes {
+		return "", fmt.Errorf("%w: fleet_skew_reason (%d bytes > cap %d)", conductor.ErrPayloadTooLarge, len(reason), conductor.MaxReasonBytes)
+	}
+	return reason, nil
+}
+
+func (h *Handler) logPublishPreflightDecision(ctx context.Context, event string, bundle conductor.PolicyBundle, summary PublishPreflightSummary, reason string, err error) {
+	if h.logger == nil {
+		return
+	}
+	bundleHash, hashErr := bundle.CanonicalHash()
+	if hashErr != nil {
+		bundleHash = ""
+	}
+	attrs := []slog.Attr{
+		slog.String("event", event),
+		slog.String("org_id", bundle.OrgID),
+		slog.String("fleet_id", bundle.FleetID),
+		slog.String("bundle_id", bundle.BundleID),
+		slog.String("bundle_hash", bundleHash),
+		slog.Uint64("version", bundle.Version),
+		slog.String("fleet_skew_reason", reason),
+		slog.Int("active_in_scope", summary.ActiveInScope),
+		slog.Int("can_apply", summary.CanApply),
+		slog.Int("unsupported", summary.Unsupported),
+		slog.Int("stale_unseen", summary.StaleUnseen),
+		slog.Int("last_apply_failed", summary.LastApplyFailed),
+		slog.Int("out_of_audience", summary.OutOfAudience),
+	}
+	if err != nil {
+		attrs = append(attrs, slog.String("error", err.Error()))
+	}
+	h.logger.LogAttrs(ctx, slog.LevelWarn, event, attrs...)
 }
 
 func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Request) {

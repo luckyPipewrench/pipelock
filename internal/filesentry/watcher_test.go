@@ -668,6 +668,20 @@ func (m *mockLineage) TrackPID(_ int)            {}
 func (m *mockLineage) IsDescendant(_ int) bool   { return false }
 func (m *mockLineage) HasFileOpen(_ string) bool { return m.hasFileOpen }
 
+type countingDLPScanner struct {
+	calls atomic.Int32
+}
+
+func (s *countingDLPScanner) ScanTextForDLP(context.Context, string) scanner.TextDLPResult {
+	s.calls.Add(1)
+	return scanner.TextDLPResult{
+		Matches: []scanner.TextDLPMatch{{
+			PatternName: "test secret",
+			Severity:    "critical",
+		}},
+	}
+}
+
 func TestWatcher_DebounceTimerRace(t *testing.T) {
 	// Verify that rapid writes to the same file produce exactly one scan,
 	// not multiple. The timer identity check prevents stale callbacks.
@@ -678,12 +692,7 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 		ScanContent: ptrBool(true),
 	}
 
-	defaults := config.Defaults()
-	defaults.Internal = nil
-	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	sc := scanner.New(defaults)
-	defer sc.Close()
-
+	sc := &countingDLPScanner{}
 	w, err := NewWatcher(cfg, sc, nil, nil)
 	if err != nil {
 		t.Fatalf("NewWatcher: %v", err)
@@ -722,6 +731,9 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 		t.Errorf("unexpected extra finding (timer race?): %+v", f)
 	case <-time.After(200 * time.Millisecond):
 		// Good - only one finding.
+	}
+	if got := sc.calls.Load(); got != 1 {
+		t.Fatalf("ScanTextForDLP calls = %d, want 1", got)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -123,6 +124,131 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	probeHandler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "pipelock_conductor_server_requests_total") {
 		t.Fatalf("metrics status = %d body=%s, want conductor metrics", w.Code, w.Body.String())
+	}
+}
+
+func TestBuildServeHandlerFleetSkewOverrideUsesAdminCredential(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	dir := t.TempDir()
+	storageDir := filepath.Join(dir, "store")
+	enrollments, err := controlplane.OpenFileEnrollmentStore(filepath.Join(storageDir, "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore: %v", err)
+	}
+	identity := controlplane.FollowerIdentity{OrgID: testOrg, FleetID: testFleet, InstanceID: "pl-prod-1", Environment: testEnv}
+	issued, err := enrollments.CreateEnrollmentToken(context.Background(), controlplane.EnrollmentTokenSpec{
+		TokenID:  "tok-main-1",
+		Identity: identity,
+		Expires:  time.Now().UTC().Add(time.Hour),
+		Now:      time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken: %v", err)
+	}
+	if _, err := enrollments.ConsumeEnrollmentToken(context.Background(), controlplane.ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-main-1",
+		AuditKey: conductorcore.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken: %v", err)
+	}
+	now := time.Now().UTC()
+	if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), controlplane.FollowerRuntimeStatus{
+		OrgID:               identity.OrgID,
+		FleetID:             identity.FleetID,
+		InstanceID:          identity.InstanceID,
+		Environment:         identity.Environment,
+		SchemaVersion:       conductorcore.SchemaVersion,
+		PipelockVersion:     "1.0.0",
+		GitCommit:           "abc123",
+		ActiveBundleID:      "bundle-old",
+		ActiveBundleVersion: 1,
+		ActiveBundleHash:    strings.Repeat("a", 64),
+		LastSeenAt:          now,
+		LastPolicyPollAt:    now,
+	}); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus: %v", err)
+	}
+
+	publisherTokenPath := writeFile(t, dir, "publisher-token", "publisher-token\n")
+	auditorTokenPath := writeFile(t, dir, "auditor-token", "auditor-token\n")
+	adminTokenPath := writeFile(t, dir, "admin-token", "admin-token\n")
+	caPath := writeFile(t, dir, "client-ca.pem", string(testCAPEM(t)))
+	handler, _, _, err := buildServeHandler(context.Background(), serveOptions{
+		listen:              defaultListen,
+		storageDir:          storageDir,
+		conductorID:         "conductor-test",
+		followerTrustDomain: defaultTrustDomain,
+		publisherTokenFile:  publisherTokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
+		auditorOrgID:        testOrg,
+		adminOrgID:          testOrg,
+		adminFleetID:        testFleet,
+		trustedControlKeys: []string{
+			"id=remote-key-1,purpose=remote-kill-signing,inline=" + signing.EncodePublicKey(pub),
+			"id=rollback-key-1,purpose=policy-bundle-rollback,inline=" + signing.EncodePublicKey(pub),
+		},
+		tlsCert:  filepath.Join(dir, "server.pem"),
+		tlsKey:   filepath.Join(dir, "server.key"),
+		clientCA: caPath,
+	})
+	if err != nil {
+		t.Fatalf("buildServeHandler: %v", err)
+	}
+
+	keyPath, _ := writePolicyKeyFile(t, dir, wantPurposeFlag, "policy-key-override")
+	cfgPath := writeFile(t, dir, "policy.yaml", testConfigYAML)
+	bundle, _, priv, err := buildSignedBundle(publishOptions{
+		configFile:   cfgPath,
+		orgID:        testOrg,
+		fleetID:      testFleet,
+		environment:  testEnv,
+		audience:     []string{"*"},
+		version:      1,
+		validity:     time.Hour,
+		minVersion:   "1.2.3",
+		signingKey:   keyPath,
+		publisherTok: publisherTokenPath,
+	})
+	if err != nil {
+		t.Fatalf("buildSignedBundle: %v", err)
+	}
+	zeroizeKey(priv)
+	body, err := json.Marshal(struct {
+		Bundle          conductorcore.PolicyBundle `json:"bundle"`
+		AllowFleetSkew  bool                       `json:"allow_fleet_skew"`
+		FleetSkewReason string                     `json:"fleet_skew_reason"`
+	}{
+		Bundle:          bundle,
+		AllowFleetSkew:  true,
+		FleetSkewReason: "operator break glass",
+	})
+	if err != nil {
+		t.Fatalf("marshal publish request: %v", err)
+	}
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, controlplane.PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publisher-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("publisher override code = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPut, controlplane.PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("admin override code = %d body=%s, want 201", w.Code, w.Body.String())
 	}
 }
 

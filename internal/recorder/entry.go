@@ -291,18 +291,42 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
 
-		var e Entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
+		var raw struct {
+			Version   int             `json:"v"`
+			Sequence  uint64          `json:"seq"`
+			Timestamp time.Time       `json:"ts"`
+			SessionID string          `json:"session_id"`
+			TraceID   string          `json:"trace_id,omitempty"`
+			Type      string          `json:"type"`
+			EventKind string          `json:"event_kind,omitempty"`
+			Transport string          `json:"transport"`
+			Summary   string          `json:"summary"`
+			Detail    json.RawMessage `json:"detail"`
+			RawRef    string          `json:"raw_ref,omitempty"`
+			PrevHash  string          `json:"prev_hash"`
+			Hash      string          `json:"hash"`
+		}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
 			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
-		var raw struct {
-			Detail json.RawMessage `json:"detail"`
+		e := Entry{
+			Version:   raw.Version,
+			Sequence:  raw.Sequence,
+			Timestamp: raw.Timestamp,
+			SessionID: raw.SessionID,
+			TraceID:   raw.TraceID,
+			Type:      raw.Type,
+			EventKind: raw.EventKind,
+			Transport: raw.Transport,
+			Summary:   raw.Summary,
+			RawRef:    raw.RawRef,
+			PrevHash:  raw.PrevHash,
+			Hash:      raw.Hash,
 		}
-		// The line already unmarshaled into Entry above, so re-scanning the same
-		// valid JSON for the exact detail bytes cannot fail.
-		_ = json.Unmarshal([]byte(line), &raw)
 		if raw.Detail != nil {
 			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
+			detail, _ := decodeEntryDetail(raw.Detail)
+			e.Detail = detail
 		}
 		if !acceptedEntryVersions[e.Version] {
 			return nil, false, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)
@@ -313,4 +337,12 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 		return nil, false, fmt.Errorf("scanning evidence entries: %w", err)
 	}
 	return entries, false, nil
+}
+
+func decodeEntryDetail(raw json.RawMessage) (any, error) {
+	var detail any
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return nil, err
+	}
+	return detail, nil
 }

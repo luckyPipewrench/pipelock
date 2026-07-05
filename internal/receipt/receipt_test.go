@@ -237,7 +237,11 @@ func TestVerifyV1BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
 	))
 	otherPub, _ := generateTestKey(t)
 	malformedSignature := strings.Replace(string(valid), "ed25519:", "ed25519:not-hex", 1)
+	missingSignaturePrefix := strings.Replace(string(valid), env.Signature, strings.TrimPrefix(env.Signature, testSigPrefix), 1)
+	shortSignature := strings.Replace(string(valid), env.Signature, testSigPrefix+hex.EncodeToString(make([]byte, 16)), 1)
 	wrongVersion := strings.Replace(string(valid), `"version":1`, `"version":99`, 1)
+	badSignerKey := strings.Replace(string(valid), env.SignerKey, "not-valid-hex", 1)
+	shortSignerKey := strings.Replace(string(valid), env.SignerKey, hex.EncodeToString(make([]byte, 16)), 1)
 
 	cases := []struct {
 		name       string
@@ -306,6 +310,12 @@ func TestVerifyV1BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
 			wantErrSub: "empty or null payload",
 		},
 		{
+			name:       "null action record",
+			raw:        []byte(strings.Replace(string(valid), string(env.ActionRecord), `null`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "empty or null payload",
+		},
+		{
 			name:       "empty bytes",
 			raw:        nil,
 			keyHex:     expectedKey,
@@ -348,16 +358,58 @@ func TestVerifyV1BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
 			wantErrSub: "signature verification failed",
 		},
 		{
+			name:       "empty expected key",
+			raw:        valid,
+			keyHex:     "",
+			wantErrSub: "requires a trusted public key",
+		},
+		{
+			name:       "invalid action record",
+			raw:        []byte(strings.Replace(string(valid), `"target":"`+testTarget+`"`, `"target":""`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "invalid action record",
+		},
+		{
 			name:       "malformed signature",
 			raw:        []byte(malformedSignature),
 			keyHex:     expectedKey,
 			wantErrSub: "decoding signature",
 		},
 		{
+			name:       "missing signature prefix",
+			raw:        []byte(missingSignaturePrefix),
+			keyHex:     expectedKey,
+			wantErrSub: "missing ed25519:",
+		},
+		{
+			name:       "short signature",
+			raw:        []byte(shortSignature),
+			keyHex:     expectedKey,
+			wantErrSub: "invalid signature length",
+		},
+		{
 			name:       "empty signature",
 			raw:        []byte(strings.Replace(string(valid), env.Signature, "", 1)),
 			keyHex:     expectedKey,
 			wantErrSub: "receipt has no signature",
+		},
+		{
+			name:       "empty signer key",
+			raw:        []byte(strings.Replace(string(valid), env.SignerKey, "", 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "receipt has no signer_key",
+		},
+		{
+			name:       "bad signer key hex",
+			raw:        []byte(badSignerKey),
+			keyHex:     "not-valid-hex",
+			wantErrSub: "decoding signer_key",
+		},
+		{
+			name:       "short signer key",
+			raw:        []byte(shortSignerKey),
+			keyHex:     hex.EncodeToString(make([]byte, 16)),
+			wantErrSub: "invalid signer_key length",
 		},
 		{
 			name:       "wrong key",

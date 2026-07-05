@@ -123,6 +123,41 @@ func TestBuildDeferManagerAndSurfaceValidation(t *testing.T) {
 		t.Fatalf("manager policy = %+v", policy)
 	}
 
+	var warnings bytes.Buffer
+	cfg.Defer.MaxCascadeDepth = 1
+	manager = buildDeferManager(cfg, &warnings)
+	if err := manager.Hold(deferred.HeldAction{
+		DeferID:   "a",
+		ActionID:  "a",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: deferred.AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(deferred.Resolution) {},
+	}); err != nil {
+		t.Fatalf("Hold(a): %v", err)
+	}
+	journalPath := manager.JournalPath()
+	if err := os.Remove(journalPath); err != nil {
+		t.Fatalf("Remove journal: %v", err)
+	}
+	if err := os.Mkdir(journalPath, 0o700); err != nil {
+		t.Fatalf("Mkdir journal path: %v", err)
+	}
+	err := manager.Hold(deferred.HeldAction{
+		DeferID:   "b",
+		ActionID:  "b",
+		Target:    "tool",
+		SizeBytes: 1,
+		Authority: deferred.AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(deferred.Resolution) {},
+	})
+	if !errors.Is(err, deferred.ErrCascadeLimit) {
+		t.Fatalf("Hold(b) error = %v, want cascade limit", err)
+	}
+	if got := warnings.String(); !strings.Contains(got, "event=deferred_journal_write_failed") || !strings.Contains(got, "defer_id=b") {
+		t.Fatalf("warning output = %q, want deferred journal warning for b", got)
+	}
+
 	cfg.MCPToolPolicy.Action = config.ActionWarn
 	cfg.MCPToolPolicy.Rules = nil
 	if err := validateMCPDeferSurface(deferred.SurfaceMCPWS, cfg); err != nil {

@@ -167,11 +167,27 @@ func TestRunFleetStatusTableAndJSON(t *testing.T) {
 			t.Fatalf("table fields %v missing %q from output %q", fields, want, out)
 		}
 	}
-	rowStart := slices.Index(fields, "pl-prod-unknown")
-	if rowStart < 0 || rowStart+6 >= len(fields) {
-		t.Fatalf("could not find complete pl-prod-unknown row in fields %v from output %q", fields, out)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("table output has %d line(s), want header and row: %q", len(lines), out)
 	}
-	if got := fields[rowStart+6]; got != "-" {
+	headerFields := strings.Fields(lines[0])
+	driftColumn := slices.Index(headerFields, "DRIFT")
+	if driftColumn < 0 {
+		t.Fatalf("header fields %v missing DRIFT column in output %q", headerFields, out)
+	}
+	var rowFields []string
+	for _, line := range lines[1:] {
+		cells := strings.Fields(line)
+		if len(cells) > 0 && cells[0] == "pl-prod-unknown" {
+			rowFields = cells
+			break
+		}
+	}
+	if len(rowFields) <= driftColumn {
+		t.Fatalf("could not find complete pl-prod-unknown row for DRIFT column %d in output %q", driftColumn, out)
+	}
+	if got := rowFields[driftColumn]; got != "-" {
 		t.Fatalf("drift placeholder = %q, want '-' in output %q", got, out)
 	}
 

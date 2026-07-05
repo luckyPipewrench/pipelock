@@ -5234,6 +5234,24 @@ func TestScan_QueryEntropyExclusion_DoesNotSkipDatabaseURISSRF(t *testing.T) {
 	}
 }
 
+func TestScan_QueryEntropyExclusion_DoesNotSkipSemicolonDatabaseURISSRF(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
+	s := New(cfg)
+	defer s.Close()
+
+	url := "https://examplebucket.s3.amazonaws.com/files/abc.pdf" +
+		"?a=x;b=postgres://169.254.169.254/latest/meta-data"
+	result := s.Scan(context.Background(), url)
+	if result.Allowed {
+		t.Fatal("expected semicolon-smuggled database URI targeting metadata IP to remain blocked on query-entropy-excluded host")
+	}
+	if result.Scanner != ScannerSSRFMetadata {
+		t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, ScannerSSRFMetadata, result.Reason)
+	}
+}
+
 // TestScan_QueryEntropyExclusion_NonListedHostStillBlocks confirms the
 // exclusion is per-host, not global. A non-listed host with the same
 // high-entropy query value still blocks under the normal entropy gate.

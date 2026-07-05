@@ -2703,8 +2703,8 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	// only the entropy heuristic; DB-URI SSRF guards still run because they
 	// protect a separate network-control invariant.
 	// Keys are checked too - secrets can be stuffed into parameter names.
-	if !excludedQuery && strings.Contains(parsed.RawQuery, ";") {
-		if result, blocked := s.scanAmbiguousRawQueryEntropy(parsed.RawQuery); blocked {
+	if strings.Contains(parsed.RawQuery, ";") {
+		if result, blocked := s.scanAmbiguousRawQuery(parsed.RawQuery, !excludedQuery); blocked {
 			return result
 		}
 	}
@@ -2747,7 +2747,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	return Result{Allowed: true}
 }
 
-func (s *Scanner) scanAmbiguousRawQueryEntropy(rawQuery string) (Result, bool) {
+func (s *Scanner) scanAmbiguousRawQuery(rawQuery string, scanEntropy bool) (Result, bool) {
 	for _, pair := range strings.FieldsFunc(rawQuery, func(r rune) bool {
 		return r == '&' || r == ';'
 	}) {
@@ -2760,7 +2760,7 @@ func (s *Scanner) scanAmbiguousRawQueryEntropy(rawQuery string) (Result, bool) {
 		if !ok {
 			value = rawValue
 		}
-		if len(key) >= s.entropyMinLen {
+		if scanEntropy && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
 			if entropy > s.entropyThreshold {
 				return Result{
@@ -2774,7 +2774,7 @@ func (s *Scanner) scanAmbiguousRawQueryEntropy(rawQuery string) (Result, bool) {
 		if result, blocked := unsafeDatabaseURIQueryValueResult(value); blocked {
 			return result, true
 		}
-		if len(value) < s.entropyMinLen {
+		if !scanEntropy || len(value) < s.entropyMinLen {
 			continue
 		}
 		entropy := ShannonEntropy(value)

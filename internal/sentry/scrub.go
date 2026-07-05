@@ -269,7 +269,7 @@ func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) (safe *s
 		Level:     event.Level,
 		Release:   s.safeScrubString(event.Release),
 		Message:   s.safeScrubString(event.Message),
-		Platform:  "go/" + runtime.GOOS + "/" + runtime.GOARCH,
+		Platform:  "go/" + runtime.GOOS,
 	}
 
 	if len(event.Exception) > 0 {

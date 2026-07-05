@@ -40,6 +40,7 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 		return &Client{enabled: false}, nil
 	}
 	if cfg.Sentry.SampleRate != nil && *cfg.Sentry.SampleRate == 0 {
+		disableGlobalClient()
 		return nil, fmt.Errorf("invalid sentry.sample_rate 0.0: it does not disable Sentry in sentry-go; use sentry.enabled: false or an empty DSN")
 	}
 

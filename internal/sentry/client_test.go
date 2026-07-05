@@ -528,6 +528,34 @@ func TestInit_SampleRateZeroRejectedWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestInit_SampleRateZeroClearsStaleGlobalClient(t *testing.T) {
+	t.Cleanup(func() {
+		sentry.CurrentHub().BindClient(nil)
+	})
+
+	staleTransport := &mockTransport{}
+	enabled := true
+	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
+	cfg.Sentry.DSN = testDSN
+	if _, err := initClient(cfg, "test", staleTransport); err != nil {
+		t.Fatalf("enable stale client: %v", err)
+	}
+
+	zero := 0.0
+	cfg.Sentry.SampleRate = &zero
+	if _, err := initClient(cfg, "test", &mockTransport{}); err == nil || !strings.Contains(err.Error(), "sample_rate 0.0") {
+		t.Fatalf("expected sample_rate 0.0 rejection, got %v", err)
+	}
+
+	if id := sentry.CaptureMessage("must not reach stale transport"); id != nil {
+		t.Fatalf("package-level capture returned event id after rejected init: %s", *id)
+	}
+	if events := staleTransport.Events(); len(events) != 0 {
+		t.Fatalf("stale global client captured %d event(s) after rejected init", len(events))
+	}
+}
+
 func TestEventTypes_DroppedBeforeTransport(t *testing.T) {
 	c, transport := initTestClient(t, nil)
 	defer c.Close()

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "description": "EV-1 exact-byte receipt verification fixtures. raw_base64 values are exact receipt JSON bytes; mutation cases derive rejected inputs from the named valid source.",
+  "valid": [
+    {
+      "id": "v1-action-receipt",
+      "api": "VerifyV1BytesWithKey",
+      "public_key_hex": "963a9d65e67d8fc49f66bc2f43badad5b6472c4ec568dbc9bf1c747af23692db",
+      "raw_base64": "eyJ2ZXJzaW9uIjoxLCJhY3Rpb25fcmVjb3JkIjp7InZlcnNpb24iOjEsImFjdGlvbl9pZCI6IjAxOTAwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwZTEwMSIsImFjdGlvbl90eXBlIjoicmVhZCIsInRpbWVzdGFtcCI6IjIwMjYtMDctMDVUMTI6MDA6MDBaIiwicHJpbmNpcGFsIjoiIiwiYWN0b3IiOiIiLCJkZWxlZ2F0aW9uX2NoYWluIjpudWxsLCJ0YXJnZXQiOiJodHRwczovL2FwaS52ZW5kb3IuZXhhbXBsZS92MS9kYXRhIiwic2lkZV9lZmZlY3RfY2xhc3MiOiIiLCJyZXZlcnNpYmlsaXR5IjoiIiwicG9saWN5X2hhc2giOiJzaGEyNTY6MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInZlcmRpY3QiOiJhbGxvdyIsInRyYW5zcG9ydCI6ImZldGNoIiwiY2hhaW5fcHJldl9oYXNoIjoiZ2VuZXNpcyIsImNoYWluX3NlcSI6MH0sInNpZ25hdHVyZSI6ImVkMjU1MTk6YjQzNDFhNmM2MmFlYTVhODkwMjk0Yjk3MDAzY2M5ZTA0ZTdiMTMxMWQyZjY3YWEwYjVjYTJjYzAzZTM1ODUzYTQ1YjgxZDExNWFjMGMxYzRlOTA3MWY3MzY1MWYzODA3NzhlZTc5ZTFkZjI5YjcxZjdhZjMzMDVmYTBmOGJmMGYiLCJzaWduZXJfa2V5IjoiOTYzYTlkNjVlNjdkOGZjNDlmNjZiYzJmNDNiYWRhZDViNjQ3MmM0ZWM1NjhkYmM5YmYxYzc0N2FmMjM2OTJkYiJ9"
+    },
+    {
+      "id": "v2-evidence-receipt",
+      "api": "VerifyV2BytesWithKey",
+      "public_key_hex": "ded1a4512b86a76bcd0ae91ca99889f0cdb58491a4edc8db1e288e90b868487e",
+      "signer_key_id": "ev1-fixture-v2-key",
+      "raw_base64": "eyJyZWNvcmRfdHlwZSI6ImV2aWRlbmNlX3JlY2VpcHRfdjIiLCJyZWNlaXB0X3ZlcnNpb24iOjIsInBheWxvYWRfa2luZCI6InByb3h5X2RlY2lzaW9uIiwiY2Fub25pY2FsaXphdGlvbiI6eyJqY3NfcHJvZmlsZSI6InBpcGVsb2NrLWpjcy1yZmM4Nzg1LW5mYy12MSIsImpjc192ZXJzaW9uIjoicmZjODc4NSIsImhhc2hfYWxnIjoic2hhMjU2Iiwic2lnX2FsZyI6ImVkMjU1MTkiLCJyZWRhY3Rpb25fcnVsZXNldF9pZCI6InBpcGVsb2NrLXRyYW5zZm9ybS12MSIsInJlZGFjdGlvbl9ydWxlc2V0X3ZlcnNpb24iOiIxIiwicmVkYWN0aW9uX3J1bGVzZXRfaGFzaCI6InNoYTI1Njo1NDE4OTY3ODhiNDI2NTFhMjAyNDQ4ODk0NTgzYTg0N2RiOWQxYWEwODFjMzNhN2UxZjA1MTIzMDNkNzI1MjdlIn0sImNyaXQiOlsiY2Fub25pY2FsaXphdGlvbiJdLCJldmVudF9pZCI6IjAxOTAwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwZTEwMiIsInRpbWVzdGFtcCI6IjIwMjYtMDctMDVUMTI6MDE6MDBaIiwic2lnbmF0dXJlIjp7InNpZ25lcl9rZXlfaWQiOiJldjEtZml4dHVyZS12Mi1rZXkiLCJrZXlfcHVycG9zZSI6InJlY2VpcHQtc2lnbmluZyIsImFsZ29yaXRobSI6ImVkMjU1MTkiLCJzaWduYXR1cmUiOiJlZDI1NTE5OjYzY2UzYjMyZGE4ZDczNTZiNDAwNjZiNzk5YzhjYmQ4MTY4OWQzY2RhYTA3YWM2Y2JjOGY4YjgxYTE2NmEzN2E3ZTI5ZDcxMjdlZWMzZWQ1NGU2NTIyYTliYWMwYzE3MGUwM2ViNDFiOTAzODI2ZmNiNDc1OTMyODVjYjQxMjA4In0sImNoYWluX3NlcSI6MCwiY2hhaW5fcHJldl9oYXNoIjoiZ2VuZXNpcyIsInBvbGljeV9oYXNoIjoic2hhMjU2OjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJwYXlsb2FkIjp7ImFjdGlvbl90eXBlIjoiYmxvY2siLCJ0YXJnZXQiOiJodHRwczovL2FwaS52ZW5kb3IuZXhhbXBsZS92MS9kYXRhIiwidmVyZGljdCI6ImJsb2NrZWQiLCJ0cmFuc3BvcnQiOiJmb3J3YXJkIiwicG9saWN5X3NvdXJjZXMiOlsiZGxwIl0sIndpbm5pbmdfc291cmNlIjoiZGxwIn19"
+    }
+  ],
+  "mutations": [
+    {"id": "flipped-byte", "source": "both", "expect": "reject", "mutation": {"kind": "replace_once", "old": "https://api.vendor.example/v1/data", "new": "https://api.vendor.example/v1/dato"}},
+    {"id": "reordered-top-level-keys", "source": "both", "expect": "reject", "mutation": {"kind": "move_first_top_level_key_after_second"}},
+    {"id": "added-unknown-top-level-field", "source": "both", "expect": "reject", "mutation": {"kind": "insert_after_object_start", "text": "\"unknown\":true,"}},
+    {"id": "added-unknown-nested-signed-field", "source": "v1-action-receipt", "expect": "reject", "mutation": {"kind": "replace_once", "old": "\"action_record\":{\"version\":1", "new": "\"action_record\":{\"version\":1,\"unknown\":true"}},
+    {"id": "added-unknown-nested-signed-field", "source": "v2-evidence-receipt", "expect": "reject", "mutation": {"kind": "replace_once", "old": "\"payload\":{\"action_type\"", "new": "\"payload\":{\"unknown\":true,\"action_type\""}},
+    {"id": "reordered-payload-keys", "source": "v2-evidence-receipt", "expect": "reject", "mutation": {"kind": "replace_once", "old": "\"payload\":{\"action_type\":\"block\",\"target\":\"https://api.vendor.example/v1/data\"", "new": "\"payload\":{\"target\":\"https://api.vendor.example/v1/data\",\"action_type\":\"block\""}},
+    {"id": "duplicate-key", "source": "both", "expect": "reject", "mutation": {"kind": "duplicate_first_top_level_key"}},
+    {"id": "trailing-token", "source": "both", "expect": "reject", "mutation": {"kind": "append", "text": " {}"}},
+    {"id": "truncated", "source": "both", "expect": "reject", "mutation": {"kind": "drop_last_byte"}},
+    {"id": "null-detail", "source": "none", "expect": "reject", "raw_utf8": "null"},
+    {"id": "bad-number", "source": "both", "expect": "reject", "mutation": {"kind": "replace_once", "old": "\"chain_seq\":0", "new": "\"chain_seq\":1.5"}},
+    {"id": "malformed-signature", "source": "both", "expect": "reject", "mutation": {"kind": "replace_once", "old": "ed25519:", "new": "ed25519:not-hex"}}
+  ]
+}

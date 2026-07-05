@@ -4,11 +4,13 @@
 package receipt_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -347,6 +349,332 @@ func TestVerifyWithKey(t *testing.T) {
 	if err := receipt.VerifyWithKey(tampered, pub, "receipt-key"); !errors.Is(err, receipt.ErrSignatureVerification) {
 		t.Fatalf("VerifyWithKey tampered error = %v, want ErrSignatureVerification", err)
 	}
+}
+
+func TestVerifyV2BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
+	t.Parallel()
+
+	r, pub := signedReceiptWithCompactPayload(t)
+	valid, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal valid receipt: %v", err)
+	}
+	if err := receipt.VerifyV2BytesWithKey(valid, pub, "receipt-key"); err != nil {
+		t.Fatalf("VerifyV2BytesWithKey valid bytes: %v", err)
+	}
+
+	var env struct {
+		RecordType       json.RawMessage `json:"record_type"`
+		ReceiptVersion   json.RawMessage `json:"receipt_version"`
+		PayloadKind      json.RawMessage `json:"payload_kind"`
+		Canonicalization json.RawMessage `json:"canonicalization"`
+		Crit             json.RawMessage `json:"crit"`
+		EventID          json.RawMessage `json:"event_id"`
+		Timestamp        json.RawMessage `json:"timestamp"`
+		Signature        json.RawMessage `json:"signature"`
+		ChainSeq         json.RawMessage `json:"chain_seq"`
+		ChainPrevHash    json.RawMessage `json:"chain_prev_hash"`
+		PolicyHash       json.RawMessage `json:"policy_hash"`
+		Payload          json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(valid, &env); err != nil {
+		t.Fatalf("Unmarshal raw envelope: %v", err)
+	}
+	reordered := []byte(fmt.Sprintf(
+		`{"receipt_version":%s,"record_type":%s,"payload_kind":%s,"canonicalization":%s,"crit":%s,"event_id":%s,"timestamp":%s,"signature":%s,"chain_seq":%s,"chain_prev_hash":%s,"policy_hash":%s,"payload":%s}`,
+		env.ReceiptVersion, env.RecordType, env.PayloadKind, env.Canonicalization, env.Crit, env.EventID, env.Timestamp,
+		env.Signature, env.ChainSeq, env.ChainPrevHash, env.PolicyHash, env.Payload,
+	))
+	otherSeed := sha256.Sum256([]byte("receipt verify other key"))
+	otherPub := ed25519.NewKeyFromSeed(otherSeed[:]).Public().(ed25519.PublicKey)
+	malformedSignature := strings.Replace(string(valid), "ed25519:", "ed25519:not-hex", 1)
+	wrongVersion := strings.Replace(string(valid), `"receipt_version":2`, `"receipt_version":3`, 1)
+
+	cases := []struct {
+		name       string
+		raw        []byte
+		pubKey     ed25519.PublicKey
+		signerID   string
+		wantErrSub string
+	}{
+		{
+			name:       "flipped signed byte",
+			raw:        []byte(strings.Replace(string(valid), "https://example.com/", "https://example.net/", 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "signature verification failed",
+		},
+		{
+			name:       "reordered top-level keys",
+			raw:        reordered,
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "emitted JSON",
+		},
+		{
+			name:       "added unknown top-level field",
+			raw:        []byte(strings.Replace(string(valid), `{"record_type":`, `{"unknown":true,"record_type":`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "unknown field",
+		},
+		{
+			name:       "added unknown nested signed field",
+			raw:        []byte(strings.Replace(string(valid), `"payload":{`, `"payload":{"unknown":true,`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "unknown field",
+		},
+		{
+			name:       "reordered payload keys",
+			raw:        []byte(strings.Replace(string(valid), `"payload":{"action_type":"block","target":"https://example.com/"`, `"payload":{"target":"https://example.com/","action_type":"block"`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "payload bytes",
+		},
+		{
+			name:       "duplicate key",
+			raw:        []byte(strings.Replace(string(valid), `{"record_type":`, `{"record_type":"evidence_receipt_v2","record_type":`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "duplicate object key",
+		},
+		{
+			name:       "nested duplicate key",
+			raw:        []byte(strings.Replace(string(valid), `"payload":{"action_type":`, `"payload":{"action_type":"block","action_type":`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "duplicate object key",
+		},
+		{
+			name:       "trailing token",
+			raw:        append(append([]byte(nil), valid...), []byte(` {}`)...),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "trailing tokens",
+		},
+		{
+			name:       "trailing whitespace",
+			raw:        append(append([]byte(nil), valid...), '\n'),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "emitted JSON",
+		},
+		{
+			name:       "truncated",
+			raw:        valid[:len(valid)-1],
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "EOF",
+		},
+		{
+			name:       "null detail",
+			raw:        []byte("null"),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "empty or null payload",
+		},
+		{
+			name:       "empty bytes",
+			raw:        nil,
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "empty or null payload",
+		},
+		{
+			name:       "empty payload",
+			raw:        []byte(strings.Replace(string(valid), string(env.Payload), `{}`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "action_type",
+		},
+		{
+			name:       "null required payload field",
+			raw:        []byte(strings.Replace(string(valid), `"target":"https://example.com/"`, `"target":null`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "payload missing required field: target",
+		},
+		{
+			name:       "bad number",
+			raw:        []byte(strings.Replace(string(valid), `"chain_seq":0`, `"chain_seq":1.5`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "cannot unmarshal number 1.5",
+		},
+		{
+			name:       "exponent number",
+			raw:        []byte(strings.Replace(string(valid), `"chain_seq":0`, `"chain_seq":1e3`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "cannot unmarshal number 1e3",
+		},
+		{
+			name:       "big integer",
+			raw:        []byte(strings.Replace(string(valid), `"chain_seq":0`, `"chain_seq":18446744073709551616`, 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "cannot unmarshal number 18446744073709551616",
+		},
+		{
+			name:       "unicode nfd mutation",
+			raw:        []byte(strings.Replace(string(valid), "https://example.com/", "https://example.com/cafe\u0301", 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "signature verification failed",
+		},
+		{
+			name:       "malformed signature",
+			raw:        []byte(malformedSignature),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "signature.signature hex",
+		},
+		{
+			name:       "empty signature",
+			raw:        []byte(strings.Replace(string(valid), r.Signature.Signature, "", 1)),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "signature.signature prefix",
+		},
+		{
+			name:       "wrong key",
+			raw:        valid,
+			pubKey:     otherPub,
+			signerID:   "receipt-key",
+			wantErrSub: "signature verification failed",
+		},
+		{
+			name:       "wrong signer id",
+			raw:        valid,
+			pubKey:     pub,
+			signerID:   "other-key",
+			wantErrSub: "signer_key_id",
+		},
+		{
+			name:       "wrong version",
+			raw:        []byte(wrongVersion),
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "receipt_version=2",
+		},
+		{
+			name:       "hostile non-json bytes",
+			raw:        []byte{0xff, '{', '"'},
+			pubKey:     pub,
+			signerID:   "receipt-key",
+			wantErrSub: "strict decode",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := receipt.VerifyV2BytesWithKey(tc.raw, tc.pubKey, tc.signerID)
+			if err == nil {
+				t.Fatal("VerifyV2BytesWithKey error = nil, want rejection")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("VerifyV2BytesWithKey error = %q, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+func TestVerifyV2BytesWithKey_SpannedPayloadAdversarialEdgesReject(t *testing.T) {
+	t.Parallel()
+
+	r, pub := signedSpannedReceipt(t)
+	valid, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal valid spanned receipt: %v", err)
+	}
+	if err := receipt.VerifyV2BytesWithKey(valid, pub, "receipt-key"); err != nil {
+		t.Fatalf("VerifyV2BytesWithKey valid spanned bytes: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		raw        []byte
+		wantErrSub string
+	}{
+		{
+			name: "unknown field inside source_spans array object",
+			raw: []byte(strings.Replace(
+				string(valid),
+				`"source_spans":[{"source_id":"request-url"`,
+				`"source_spans":[{"unknown":true,"source_id":"request-url"`,
+				1,
+			)),
+			wantErrSub: "unknown field",
+		},
+		{
+			name: "duplicate key inside source_spans array object",
+			raw: []byte(strings.Replace(
+				string(valid),
+				`"source_spans":[{"source_id":"request-url"`,
+				`"source_spans":[{"source_id":"request-url","source_id":"other"`,
+				1,
+			)),
+			wantErrSub: "duplicate object key",
+		},
+		{
+			name: "payload kind spoofed away from actual source_spans shape",
+			raw: []byte(strings.Replace(
+				string(valid),
+				`"payload_kind":"proxy_decision_with_spans"`,
+				`"payload_kind":"proxy_decision"`,
+				1,
+			)),
+			wantErrSub: "source_spans",
+		},
+		{
+			name: "crit spoofed away from actual payload kind",
+			raw: []byte(strings.Replace(
+				string(valid),
+				`"crit":["canonicalization","source_spans"]`,
+				`"crit":["canonicalization"]`,
+				1,
+			)),
+			wantErrSub: "source_spans",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := receipt.VerifyV2BytesWithKey(tc.raw, pub, "receipt-key")
+			if err == nil {
+				t.Fatal("VerifyV2BytesWithKey error = nil, want rejection")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("VerifyV2BytesWithKey error = %q, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+func signedReceiptWithCompactPayload(t *testing.T) (receipt.EvidenceReceipt, ed25519.PublicKey) {
+	t.Helper()
+	seed := sha256.Sum256([]byte("receipt verify test key"))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	r := validReceipt()
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, r.Payload); err != nil {
+		t.Fatalf("compact payload: %v", err)
+	}
+	r.Payload = compact.Bytes()
+	r.Signature = receipt.SignatureProof{}
+	preimage, err := r.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	r.Signature = receipt.SignatureProof{
+		SignerKeyID: "receipt-key",
+		KeyPurpose:  "receipt-signing",
+		Algorithm:   "ed25519",
+		Signature:   "ed25519:" + fmt.Sprintf("%x", ed25519.Sign(priv, preimage)),
+	}
+	return r, priv.Public().(ed25519.PublicKey)
 }
 
 func TestVerifyWithKey_SpannedReceiptTamperBreaksSignature(t *testing.T) {

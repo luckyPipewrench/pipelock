@@ -7,13 +7,17 @@ package conductor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
@@ -88,7 +92,32 @@ func TestRunAuditQueryValidatesArgs(t *testing.T) {
 }
 
 func TestRunFleetStatusTableAndJSON(t *testing.T) {
-	body := `{"followers":[{"org_id":"org-main","fleet_id":"prod","instance_id":"pl-prod-1","environment":"prod","audit_key_id":"k1","enrolled_at":"2026-05-24T12:00:00Z","active":true}],"count":1}`
+	bodyBytes, err := json.Marshal(followersResponse{
+		Followers: []controlplane.FollowerFleetStatus{{
+			FollowerSummary: controlplane.FollowerSummary{
+				OrgID:       "org-main",
+				FleetID:     "prod",
+				InstanceID:  "pl-prod-1",
+				Environment: "prod",
+				AuditKeyID:  "k1",
+				EnrolledAt:  time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+				Active:      true,
+			},
+			RuntimeStatus: &controlplane.FollowerRuntimeStatus{
+				PipelockVersion:     "1.2.3",
+				ActiveBundleID:      "bundle-1",
+				ActiveBundleVersion: 7,
+				LastSeenAt:          time.Date(2026, 5, 24, 12, 5, 6, 0, time.UTC),
+			},
+			Health: controlplane.FleetHealthApplyFailed,
+			Drift:  "last_apply_failed",
+		}},
+		Count: 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal followers response: %v", err)
+	}
+	body := string(bodyBytes)
 	var gotPath string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.RequestURI()
@@ -99,16 +128,67 @@ func TestRunFleetStatusTableAndJSON(t *testing.T) {
 
 	// Table output.
 	out, err := runCommand(t, func(cmd *cobra.Command) error {
-		return runFleetStatus(cmd, fleetStatusOptions{client: clientOpts, orgID: "org-main"}, false)
+		return runFleetStatus(cmd, fleetStatusOptions{client: clientOpts, orgID: "org-main", fleetID: "prod", instanceID: "pl-prod-1", limit: 25}, false)
 	})
 	if err != nil {
 		t.Fatalf("runFleetStatus(table) error = %v", err)
 	}
-	if !strings.Contains(out, "pl-prod-1") || !strings.Contains(out, "1 follower(s)") || !strings.Contains(out, "INSTANCE") {
-		t.Fatalf("table output = %q", out)
+	for _, want := range []string{"INSTANCE", "pl-prod-1", "1.2.3", "bundle-1@7", "2026-05-24T12:05:06Z", "apply_failed", "last_apply_failed", "1 follower(s)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("table output missing %q: %q", want, out)
+		}
 	}
-	if !strings.Contains(gotPath, "/api/v1/conductor/followers?") || !strings.Contains(gotPath, "org_id=org-main") {
+	for _, want := range []string{"org_id=org-main", "fleet_id=prod", "instance_id=pl-prod-1", "limit=25"} {
+		if !strings.Contains(gotPath, want) {
+			t.Fatalf("path %q missing %q", gotPath, want)
+		}
+	}
+	if !strings.Contains(gotPath, "/api/v1/conductor/followers?") {
 		t.Fatalf("path = %q", gotPath)
+	}
+
+	out, err = runCommand(t, func(cmd *cobra.Command) error {
+		return writeFollowerTable(cmd, followersResponse{
+			Followers: []controlplane.FollowerFleetStatus{{
+				FollowerSummary: controlplane.FollowerSummary{InstanceID: "pl-prod-unknown"},
+				RuntimeStatus:   &controlplane.FollowerRuntimeStatus{},
+				Health:          controlplane.FleetHealthUnknown,
+			}},
+			Count: 1,
+		})
+	})
+	if err != nil {
+		t.Fatalf("writeFollowerTable(empty runtime fields) error = %v", err)
+	}
+	fields := strings.Fields(out)
+	wantFields := []string{"pl-prod-unknown", "unknown", "-"}
+	for _, want := range wantFields {
+		if !slices.Contains(fields, want) {
+			t.Fatalf("table fields %v missing %q from output %q", fields, want, out)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("table output has %d line(s), want header and row: %q", len(lines), out)
+	}
+	headerFields := strings.Fields(lines[0])
+	driftColumn := slices.Index(headerFields, "DRIFT")
+	if driftColumn < 0 {
+		t.Fatalf("header fields %v missing DRIFT column in output %q", headerFields, out)
+	}
+	var rowFields []string
+	for _, line := range lines[1:] {
+		cells := strings.Fields(line)
+		if len(cells) > 0 && cells[0] == "pl-prod-unknown" {
+			rowFields = cells
+			break
+		}
+	}
+	if len(rowFields) <= driftColumn {
+		t.Fatalf("could not find complete pl-prod-unknown row for DRIFT column %d in output %q", driftColumn, out)
+	}
+	if got := rowFields[driftColumn]; got != "-" {
+		t.Fatalf("drift placeholder = %q, want '-' in output %q", got, out)
 	}
 
 	// JSON passthrough.

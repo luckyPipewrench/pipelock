@@ -266,7 +266,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	authorizer, err := controlplane.BearerPublisherAuthorizer(publisherToken)
+	publisherAuthorizer, err := controlplane.BearerPublisherAuthorizer(publisherToken)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -283,13 +283,6 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	}
 	if strings.TrimSpace(opts.adminOrgID) == "" {
 		return nil, nil, nil, errors.New("--admin-org is required")
-	}
-	publishAuthorizer, err := controlplane.ScopedBearerBundleAuthorizer([]controlplane.ScopedBearerCredential{{
-		Token: publisherToken,
-		Role:  controlplane.RolePublisher,
-	}})
-	if err != nil {
-		return nil, nil, nil, err
 	}
 	auditQueryAuthorizer, err := controlplane.ScopedBearerAuditQueryAuthorizer([]controlplane.ScopedBearerCredential{
 		{Token: auditorToken, Role: controlplane.RoleAuditor, OrgID: opts.auditorOrgID, FleetID: opts.auditorFleetID},
@@ -318,6 +311,19 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	}})
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	publishAuthorizer, err := controlplane.ScopedBearerBundleAuthorizer([]controlplane.ScopedBearerCredential{
+		{Token: publisherToken, Role: controlplane.RolePublisher},
+		{Token: adminToken, Role: controlplane.RolePublisher, OrgID: opts.adminOrgID, FleetID: opts.adminFleetID},
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	publishRequestAuthorizer := func(r *http.Request) error {
+		if err := publisherAuthorizer(r); err == nil {
+			return nil
+		}
+		return adminAuthorizer(r)
 	}
 	identity, err := controlplane.MTLSFollowerIdentityResolver(opts.followerTrustDomain)
 	if err != nil {
@@ -360,11 +366,14 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	}
 	m := metrics.New()
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
-		Store:                 store,
-		Capabilities:          controlplane.DefaultCapabilities(opts.conductorID),
-		FollowerIdentity:      identity,
-		AuthorizePublisher:    authorizer,
-		AuthorizeBundle:       publishAuthorizer,
+		Store:              store,
+		Capabilities:       controlplane.DefaultCapabilities(opts.conductorID),
+		FollowerIdentity:   identity,
+		AuthorizePublisher: publishRequestAuthorizer,
+		AuthorizeBundle:    publishAuthorizer,
+		AuthorizeFleetSkewOverride: func(r *http.Request, _ conductorcore.PolicyBundle, _ string) error {
+			return adminAuthorizer(r)
+		},
 		AuthorizeAuditQuery:   auditQueryAuthorizer,
 		AuthorizeFollowers:    followerListAuthorizer,
 		AuthorizeStream:       streamStatusAuthorizer,

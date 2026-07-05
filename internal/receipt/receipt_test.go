@@ -7,10 +7,18 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -203,6 +211,300 @@ func TestVerifyWithKey_WrongKey(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not match expected key") {
 		t.Errorf("VerifyWithKey() error = %q, want substring \"does not match expected key\"", err)
 	}
+}
+
+func TestVerifyV1BytesWithKey_ExactBytesMutationCorpus(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := generateTestKey(t)
+	r := signValidReceipt(t, priv)
+	valid, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal valid receipt: %v", err)
+	}
+	expectedKey := hex.EncodeToString(pub)
+	if err := VerifyV1BytesWithKey(valid, expectedKey); err != nil {
+		t.Fatalf("VerifyV1BytesWithKey valid bytes: %v", err)
+	}
+
+	var env receiptBytesEnvelopeV1
+	if err := json.Unmarshal(valid, &env); err != nil {
+		t.Fatalf("Unmarshal raw envelope: %v", err)
+	}
+	reordered := []byte(fmt.Sprintf(
+		`{"action_record":%s,"version":%d,"signature":%q,"signer_key":%q}`,
+		env.ActionRecord, env.Version, env.Signature, env.SignerKey,
+	))
+	otherPub, _ := generateTestKey(t)
+	malformedSignature := strings.Replace(string(valid), "ed25519:", "ed25519:not-hex", 1)
+	missingSignaturePrefix := strings.Replace(string(valid), env.Signature, strings.TrimPrefix(env.Signature, testSigPrefix), 1)
+	shortSignature := strings.Replace(string(valid), env.Signature, testSigPrefix+hex.EncodeToString(make([]byte, 16)), 1)
+	wrongVersion := strings.Replace(string(valid), `"version":1`, `"version":99`, 1)
+	badSignerKey := strings.Replace(string(valid), env.SignerKey, "not-valid-hex", 1)
+	shortSignerKey := strings.Replace(string(valid), env.SignerKey, hex.EncodeToString(make([]byte, 16)), 1)
+
+	cases := []struct {
+		name       string
+		raw        []byte
+		keyHex     string
+		wantErrSub string
+	}{
+		{
+			name:       "flipped signed byte",
+			raw:        []byte(strings.Replace(string(valid), testTarget, "https://example.net/api", 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "signature verification failed",
+		},
+		{
+			name:       "reordered top-level keys",
+			raw:        reordered,
+			keyHex:     expectedKey,
+			wantErrSub: "emitted JSON",
+		},
+		{
+			name:       "added unknown top-level field",
+			raw:        []byte(strings.Replace(string(valid), `{"version":1`, `{"version":1,"unknown":true`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "unknown field",
+		},
+		{
+			name:       "added unknown nested signed field",
+			raw:        []byte(strings.Replace(string(valid), `"action_record":{"version":1`, `"action_record":{"version":1,"unknown":true`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "unknown field",
+		},
+		{
+			name:       "duplicate key",
+			raw:        []byte(strings.Replace(string(valid), `{"version":1`, `{"version":1,"version":1`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "duplicate object key",
+		},
+		{
+			name:       "nested duplicate key",
+			raw:        []byte(strings.Replace(string(valid), `"action_record":{"version":1`, `"action_record":{"version":1,"version":1`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "duplicate object key",
+		},
+		{
+			name:       "trailing token",
+			raw:        append(append([]byte(nil), valid...), []byte(` {}`)...),
+			keyHex:     expectedKey,
+			wantErrSub: "trailing tokens",
+		},
+		{
+			name:       "trailing whitespace",
+			raw:        append(append([]byte(nil), valid...), '\n'),
+			keyHex:     expectedKey,
+			wantErrSub: "emitted JSON",
+		},
+		{
+			name:       "truncated",
+			raw:        valid[:len(valid)-1],
+			keyHex:     expectedKey,
+			wantErrSub: "EOF",
+		},
+		{
+			name:       "null detail",
+			raw:        []byte("null"),
+			keyHex:     expectedKey,
+			wantErrSub: "empty or null payload",
+		},
+		{
+			name:       "null action record",
+			raw:        []byte(strings.Replace(string(valid), string(env.ActionRecord), `null`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "empty or null payload",
+		},
+		{
+			name:       "empty bytes",
+			raw:        nil,
+			keyHex:     expectedKey,
+			wantErrSub: "empty or null payload",
+		},
+		{
+			name:       "empty action record",
+			raw:        []byte(strings.Replace(string(valid), string(env.ActionRecord), `{}`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "emitted JSON",
+		},
+		{
+			name:       "null required field",
+			raw:        []byte(strings.Replace(string(valid), `"target":"`+testTarget+`"`, `"target":null`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "emitted JSON",
+		},
+		{
+			name:       "bad number",
+			raw:        []byte(strings.Replace(string(valid), `"chain_seq":0`, `"chain_seq":1.5`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "cannot unmarshal number 1.5",
+		},
+		{
+			name:       "exponent number",
+			raw:        []byte(strings.Replace(string(valid), `"chain_seq":0`, `"chain_seq":1e3`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "cannot unmarshal number 1e3",
+		},
+		{
+			name:       "big integer",
+			raw:        []byte(strings.Replace(string(valid), `"chain_seq":0`, `"chain_seq":18446744073709551616`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "cannot unmarshal number 18446744073709551616",
+		},
+		{
+			name:       "unicode nfd mutation",
+			raw:        []byte(strings.Replace(string(valid), testTarget, "https://example.com/cafe\u0301", 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "signature verification failed",
+		},
+		{
+			name:       "empty expected key",
+			raw:        valid,
+			keyHex:     "",
+			wantErrSub: "requires a trusted public key",
+		},
+		{
+			name:       "invalid action record",
+			raw:        []byte(strings.Replace(string(valid), `"target":"`+testTarget+`"`, `"target":""`, 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "invalid action record",
+		},
+		{
+			name:       "malformed signature",
+			raw:        []byte(malformedSignature),
+			keyHex:     expectedKey,
+			wantErrSub: "decoding signature",
+		},
+		{
+			name:       "missing signature prefix",
+			raw:        []byte(missingSignaturePrefix),
+			keyHex:     expectedKey,
+			wantErrSub: "missing ed25519:",
+		},
+		{
+			name:       "short signature",
+			raw:        []byte(shortSignature),
+			keyHex:     expectedKey,
+			wantErrSub: "invalid signature length",
+		},
+		{
+			name:       "empty signature",
+			raw:        []byte(strings.Replace(string(valid), env.Signature, "", 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "receipt has no signature",
+		},
+		{
+			name:       "empty signer key",
+			raw:        []byte(strings.Replace(string(valid), env.SignerKey, "", 1)),
+			keyHex:     expectedKey,
+			wantErrSub: "receipt has no signer_key",
+		},
+		{
+			name:       "bad signer key hex",
+			raw:        []byte(badSignerKey),
+			keyHex:     "not-valid-hex",
+			wantErrSub: "decoding signer_key",
+		},
+		{
+			name:       "short signer key",
+			raw:        []byte(shortSignerKey),
+			keyHex:     hex.EncodeToString(make([]byte, 16)),
+			wantErrSub: "invalid signer_key length",
+		},
+		{
+			name:       "wrong key",
+			raw:        valid,
+			keyHex:     hex.EncodeToString(otherPub),
+			wantErrSub: "does not match expected key",
+		},
+		{
+			name:       "wrong version",
+			raw:        []byte(wrongVersion),
+			keyHex:     expectedKey,
+			wantErrSub: "unsupported receipt version",
+		},
+		{
+			name:       "hostile non-json bytes",
+			raw:        []byte{0xff, '{', '"'},
+			keyHex:     expectedKey,
+			wantErrSub: "strict decode",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := VerifyV1BytesWithKey(tc.raw, tc.keyHex)
+			if err == nil {
+				t.Fatal("VerifyV1BytesWithKey error = nil, want rejection")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("VerifyV1BytesWithKey error = %q, want substring %q", err, tc.wantErrSub)
+			}
+		})
+	}
+}
+
+func TestVerifyV1BytesWithKey_AcceptsRawDetailFromRealEmitter(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+	if e == nil {
+		t.Fatal("NewEmitter returned nil")
+	}
+
+	if err := e.Emit(EmitOpts{
+		ActionID:            NewActionID(),
+		Target:              `https://example.com/api?q=<tag>&n=1`,
+		Verdict:             config.ActionBlock,
+		Transport:           testTransport,
+		Method:              http.MethodPost,
+		SessionTaintLevel:   session.TaintExternalUntrusted.String(),
+		SessionContaminated: true,
+		RecentTaintSources: []session.TaintSourceRef{{
+			URL:       "https://vendor.example/prompt",
+			Kind:      "http_response",
+			Level:     session.TaintExternalUntrusted,
+			Timestamp: time.Date(2026, 7, 5, 12, 30, 0, 0, time.UTC),
+		}},
+		Shield: &ShieldSummary{
+			Pipeline:        "html",
+			TotalRewrites:   2,
+			TrackingBeacons: 1,
+		},
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	entries, err := recorder.ReadEntries(filepath.Join(dir, "evidence-proxy-0.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+	expectedKey := hex.EncodeToString(pub)
+	for _, entry := range entries {
+		if entry.Type != recorderEntryType {
+			continue
+		}
+		if len(entry.RawDetail) == 0 {
+			t.Fatal("receipt entry RawDetail is empty")
+		}
+		if err := VerifyV1BytesWithKey(entry.RawDetail, expectedKey); err != nil {
+			t.Fatalf("VerifyV1BytesWithKey(real RawDetail): %v\nraw=%s", err, entry.RawDetail)
+		}
+		return
+	}
+	t.Fatal("no action_receipt entry found")
 }
 
 func TestVerify_MissingSignature(t *testing.T) {

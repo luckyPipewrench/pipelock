@@ -52,19 +52,20 @@ func IsAcceptedEntryVersion(version int) bool {
 // classification debt) drive their behavior off this field; the recorder
 // itself only stamps it through and binds it into the v2 chain hash.
 type Entry struct {
-	Version   int       `json:"v"`
-	Sequence  uint64    `json:"seq"`
-	Timestamp time.Time `json:"ts"`
-	SessionID string    `json:"session_id"`
-	TraceID   string    `json:"trace_id,omitempty"`
-	Type      string    `json:"type"`
-	EventKind string    `json:"event_kind,omitempty"`
-	Transport string    `json:"transport"`
-	Summary   string    `json:"summary"`
-	Detail    any       `json:"detail"`
-	RawRef    string    `json:"raw_ref,omitempty"`
-	PrevHash  string    `json:"prev_hash"`
-	Hash      string    `json:"hash"`
+	Version   int             `json:"v"`
+	Sequence  uint64          `json:"seq"`
+	Timestamp time.Time       `json:"ts"`
+	SessionID string          `json:"session_id"`
+	TraceID   string          `json:"trace_id,omitempty"`
+	Type      string          `json:"type"`
+	EventKind string          `json:"event_kind,omitempty"`
+	Transport string          `json:"transport"`
+	Summary   string          `json:"summary"`
+	Detail    any             `json:"detail"`
+	RawDetail json.RawMessage `json:"-"`
+	RawRef    string          `json:"raw_ref,omitempty"`
+	PrevHash  string          `json:"prev_hash"`
+	Hash      string          `json:"hash"`
 }
 
 // CheckpointDetail is the structured payload for checkpoint entries.
@@ -134,10 +135,7 @@ func computeHashV1(e Entry) string {
 // same logical entry even when EventKind is empty - this is the v1/v2
 // isolation guarantee.
 func computeHashV2(e Entry) string {
-	detailJSON, err := json.Marshal(e.Detail)
-	if err != nil {
-		detailJSON = []byte("null")
-	}
+	detailJSON := detailJSONForHash(e)
 
 	h := sha256.New()
 	fields := []string{
@@ -161,6 +159,17 @@ func computeHashV2(e Entry) string {
 		_, _ = h.Write([]byte(f))
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func detailJSONForHash(e Entry) []byte {
+	if e.RawDetail != nil {
+		return e.RawDetail
+	}
+	detailJSON, err := json.Marshal(e.Detail)
+	if err != nil {
+		return []byte("null")
+	}
+	return detailJSON
 }
 
 // VerifyChain checks the integrity of a sequence of entries. Returns an error
@@ -290,9 +299,45 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
 
-		var e Entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
+		var raw struct {
+			Version   int             `json:"v"`
+			Sequence  uint64          `json:"seq"`
+			Timestamp time.Time       `json:"ts"`
+			SessionID string          `json:"session_id"`
+			TraceID   string          `json:"trace_id,omitempty"`
+			Type      string          `json:"type"`
+			EventKind string          `json:"event_kind,omitempty"`
+			Transport string          `json:"transport"`
+			Summary   string          `json:"summary"`
+			Detail    json.RawMessage `json:"detail"`
+			RawRef    string          `json:"raw_ref,omitempty"`
+			PrevHash  string          `json:"prev_hash"`
+			Hash      string          `json:"hash"`
+		}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
 			return nil, false, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
+		}
+		e := Entry{
+			Version:   raw.Version,
+			Sequence:  raw.Sequence,
+			Timestamp: raw.Timestamp,
+			SessionID: raw.SessionID,
+			TraceID:   raw.TraceID,
+			Type:      raw.Type,
+			EventKind: raw.EventKind,
+			Transport: raw.Transport,
+			Summary:   raw.Summary,
+			RawRef:    raw.RawRef,
+			PrevHash:  raw.PrevHash,
+			Hash:      raw.Hash,
+		}
+		if raw.Detail != nil {
+			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
+			detail, err := decodeEntryDetail(raw.Detail)
+			if err != nil {
+				return nil, false, fmt.Errorf("line %d: parsing entry detail: %w", lineNum, err)
+			}
+			e.Detail = detail
 		}
 		if !acceptedEntryVersions[e.Version] {
 			return nil, false, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)
@@ -303,4 +348,12 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 		return nil, false, fmt.Errorf("scanning evidence entries: %w", err)
 	}
 	return entries, false, nil
+}
+
+func decodeEntryDetail(raw json.RawMessage) (any, error) {
+	var detail any
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return nil, err
+	}
+	return detail, nil
 }

@@ -144,6 +144,10 @@ func newPublishServer(t *testing.T) string {
 			return conductorcore.SignatureKey{}, errors.New("no audit keys")
 		}
 	}
+	enrollments, err := controlplane.OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore: %v", err)
+	}
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
 		Store:        store,
 		Capabilities: controlplane.DefaultCapabilities("conductor-test"),
@@ -154,6 +158,7 @@ func newPublishServer(t *testing.T) string {
 		AuthorizeBundle:    bundleAuth,
 		AuditSink:          stubAuditSink{},
 		AuditKeys:          auditKeys,
+		Enrollments:        enrollments,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
@@ -208,6 +213,16 @@ func TestPublish_HappyPathAcceptedByRealHandler(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "version 2") {
 		t.Fatalf("v2 output: %q", out.String())
+	}
+}
+
+func TestPublishFleetSkewReasonValidation(t *testing.T) {
+	var out strings.Builder
+	if err := runPublish(context.Background(), &out, publishOptions{allowFleetSkew: true}); err == nil || !strings.Contains(err.Error(), "--allow-fleet-skew-reason is required") {
+		t.Fatalf("runPublish(allow skew without reason) error = %v, want missing reason", err)
+	}
+	if err := runPublish(context.Background(), &out, publishOptions{fleetSkewReason: "operator reason"}); err == nil || !strings.Contains(err.Error(), "--allow-fleet-skew-reason requires --allow-fleet-skew") {
+		t.Fatalf("runPublish(reason without allow skew) error = %v, want requires allow skew", err)
 	}
 }
 
@@ -940,7 +955,7 @@ func minimalBundle(t *testing.T) conductorcore.PolicyBundle {
 
 func TestPostBundle_Malformed200Rejected(t *testing.T) {
 	url := newStubStatusServer(t, http.StatusOK, "not json")
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), postBundleOptions{})
 	if err == nil || !strings.Contains(err.Error(), "decode publish response") {
 		t.Fatalf("want decode error, got %v", err)
 	}
@@ -948,7 +963,7 @@ func TestPostBundle_Malformed200Rejected(t *testing.T) {
 
 func TestPostBundle_5xxRejected(t *testing.T) {
 	url := newStubStatusServer(t, http.StatusInternalServerError, `{"error":"internal"}`)
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), postBundleOptions{})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
 		t.Fatalf("want 500 error, got %v", err)
 	}
@@ -956,7 +971,7 @@ func TestPostBundle_5xxRejected(t *testing.T) {
 
 func TestPostBundle_401Rejected(t *testing.T) {
 	url := newStubStatusServer(t, http.StatusUnauthorized, `{"error":"nope"}`)
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), postBundleOptions{})
 	if err == nil || !strings.Contains(err.Error(), "not authorized") {
 		t.Fatalf("want auth error, got %v", err)
 	}
@@ -993,21 +1008,28 @@ func TestPostBundle_409ConflictCodesDeConflated(t *testing.T) {
 			name:        "previous-hash-mismatch",
 			code:        controlplane.PublishConflictPreviousHashMismatch,
 			want:        ErrPolicyPreviousHashMismatch,
-			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax},
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyFleetSkew},
 			wantMessage: "previous-bundle-hash",
+		},
+		{
+			name:        "fleet-skew",
+			code:        controlplane.PublishConflictFleetSkew,
+			want:        ErrPolicyFleetSkew,
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyPreviousHashMismatch},
+			wantMessage: "fleet runtime skew",
 		},
 		{
 			name:        "unknown-code-falls-back",
 			code:        "some_future_code",
 			want:        ErrPolicyPublishConflict,
-			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyPreviousHashMismatch},
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyPreviousHashMismatch, ErrPolicyFleetSkew},
 			wantMessage: "conflicts with the active stream",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := `{"error":"server detail here","code":"` + tc.code + `"}`
 			url := newStubStatusServer(t, http.StatusConflict, body)
-			_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+			_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), postBundleOptions{})
 			if err == nil {
 				t.Fatalf("want conflict error, got nil")
 			}
@@ -1033,7 +1055,7 @@ func TestPostBundle_409ConflictCodesDeConflated(t *testing.T) {
 func TestPostBundle_409PrevHashNotReportedAsStale(t *testing.T) {
 	body := `{"error":"previous_bundle_hash does not match stream head","code":"` + controlplane.PublishConflictPreviousHashMismatch + `"}`
 	url := newStubStatusServer(t, http.StatusConflict, body)
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, url, "tok", minimalBundle(t), postBundleOptions{})
 	if err == nil {
 		t.Fatalf("want conflict error, got nil")
 	}
@@ -1049,9 +1071,37 @@ func TestPostBundle_409PrevHashNotReportedAsStale(t *testing.T) {
 	}
 }
 
+func TestWritePublishPreflightFormatsEmptySummaryAndOverride(t *testing.T) {
+	var out strings.Builder
+	writePublishPreflight(&out, controlplane.PublishPreflightSummary{})
+	if out.String() != "" {
+		t.Fatalf("empty preflight output = %q, want empty", out.String())
+	}
+
+	writePublishPreflight(&out, controlplane.PublishPreflightSummary{
+		CanApply:          2,
+		Unsupported:       1,
+		StaleUnseen:       3,
+		LastApplyFailed:   4,
+		OutOfAudience:     5,
+		ActiveInScope:     10,
+		AllowFleetSkew:    true,
+		StaleAfterSeconds: 300,
+	})
+	got := out.String()
+	for _, want := range []string{
+		"fleet preflight: can-apply=2 unsupported=1 stale/unseen=3 last-apply-failed=4 out-of-audience=5",
+		"accepted fleet skew with --allow-fleet-skew: unsupported=1 stale/unseen=3 last-apply-failed=4",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("preflight output missing %q: %q", want, got)
+		}
+	}
+}
+
 func TestPostBundle_ConnectionRefused(t *testing.T) {
 	// Point at a closed port to drive the client.Do error branch.
-	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, "http://127.0.0.1:1", "tok", minimalBundle(t))
+	_, err := postBundle(context.Background(), &http.Client{Timeout: time.Second}, "http://127.0.0.1:1", "tok", minimalBundle(t), postBundleOptions{})
 	if err == nil || !strings.Contains(err.Error(), "publish request failed") {
 		t.Fatalf("want request-failed error, got %v", err)
 	}

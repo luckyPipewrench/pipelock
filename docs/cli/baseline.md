@@ -65,6 +65,20 @@ pipelock baseline forget agent-a
 
 Removes the learned profile, deletes its persisted profile JSON, and returns the agent to `observe` so it can relearn. Use this when a profile was ratified by mistake, grew stale, or was learned from suspect traffic.
 
+## Full profile wipe
+
+Use `pipelock baseline forget <agent>` for normal relearning. For an intentional full wipe outside the API, remove the profile directory only if you also clear the trusted integrity key and generation high-water beside it. With the default paths, that means deleting `profile_dir`, `profile_dir.integrity.key`, and `profile_dir.integrity.key.generation` together.
+
+The generation high-water is bound to the accepted manifest identity. Replaying a different signed manifest at the same generation, or restoring a manifest below the accepted generation, fails closed.
+
+If the profile directory is wiped but the trusted integrity state remains, startup fails closed because the signed manifest/high-water still proves Pipelock used to have integrity-bound profiles. That failure is expected; either restore the profiles or complete the wipe by clearing the key-side integrity state.
+
+## Upgrade note: pending ratification profiles
+
+`ratify` profiles are integrity-bound the same way `locked` profiles are. After upgrading from a version that only manifested locked profiles, an old unmanifested pending `ratify` profile under an enforcing `deviation_action` fails startup closed instead of being trusted silently.
+
+Recover by restoring the matching integrity manifest/key/high-water set, or by performing a deliberate full wipe of the profile directory plus the key-side integrity state and letting the agent relearn. Do not copy or hand-edit a pending profile into place without signing it through the normal manager path.
+
 ## Exit Codes
 
 The baseline commands use the standard Pipelock admin CLI exit codes:

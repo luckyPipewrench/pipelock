@@ -126,27 +126,32 @@ func conductorEnrollmentRequired(cfg *config.Config) bool {
 }
 
 func conductorEnrollmentMarked(path string, cfg config.Conductor) (bool, error) {
+	_, marked, err := readConductorEnrollmentMarker(path, cfg)
+	return marked, err
+}
+
+func readConductorEnrollmentMarker(path string, cfg config.Conductor) (conductorEnrollmentMarker, bool, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if os.IsNotExist(err) {
-		return false, nil
+		return conductorEnrollmentMarker{}, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read conductor enrollment marker: %w", err)
+		return conductorEnrollmentMarker{}, false, fmt.Errorf("read conductor enrollment marker: %w", err)
 	}
 	var marker conductorEnrollmentMarker
 	if err := json.Unmarshal(data, &marker); err != nil {
-		return false, fmt.Errorf("parse conductor enrollment marker: %w", err)
+		return conductorEnrollmentMarker{}, false, fmt.Errorf("parse conductor enrollment marker: %w", err)
 	}
 	if marker.Version != 1 {
-		return false, fmt.Errorf("conductor enrollment marker has unsupported version %d", marker.Version)
+		return conductorEnrollmentMarker{}, false, fmt.Errorf("conductor enrollment marker has unsupported version %d", marker.Version)
 	}
 	if marker.OrgID == cfg.OrgID &&
 		marker.FleetID == cfg.FleetID &&
 		marker.InstanceID == cfg.InstanceID &&
 		marker.AuditKeyID == cfg.AuditSigningKeyID {
-		return true, nil
+		return marker, true, nil
 	}
-	return false, nil
+	return conductorEnrollmentMarker{}, false, nil
 }
 
 func readConductorEnrollmentToken(path string) (string, error) {

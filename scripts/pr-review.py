@@ -42,6 +42,16 @@ MAX_DIFF_CHARS = 100_000
 DEFAULT_MODEL_FAST = "gpt-5.4-mini"
 DEFAULT_MODEL_DEEP = "gpt-5.5"
 DEFAULT_TEMPERATURE = 0.2
+DEFAULT_MAX_COMPLETION_TOKENS = 4096
+DEEP_MAX_COMPLETION_TOKENS = 25000
+DEFAULT_LLM_TIMEOUT_SECONDS = 120
+DEEP_LLM_TIMEOUT_SECONDS = 300
+FAST_REASONING_EFFORT = "low"
+DEEP_REASONING_EFFORT = "medium"
+
+
+class LLMReviewError(RuntimeError):
+    """Raised when the LLM call completed but did not produce a usable review."""
 
 PROMPT_SECURITY = """You are reviewing a pull request for Pipelock, an AI agent firewall and security boundary product. Pipelock is a network proxy that sits between AI agents and the internet, scanning HTTP/WebSocket/MCP traffic for secret exfiltration, prompt injection, SSRF, and tool poisoning.
 
@@ -136,7 +146,21 @@ def model_supports_custom_temperature(model: str) -> bool:
     return not model_name.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
-def build_llm_payload(model: str, system_prompt: str, diff: str) -> dict:
+def model_supports_reasoning_effort(model: str) -> bool:
+    """Return whether chat completions should pin reasoning effort."""
+    normalized = model.strip().lower()
+    model_name = normalized.rsplit("/", 1)[-1]
+    return model_name.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def build_llm_payload(
+    model: str,
+    system_prompt: str,
+    diff: str,
+    *,
+    max_completion_tokens: int = DEFAULT_MAX_COMPLETION_TOKENS,
+    reasoning_effort: str = FAST_REASONING_EFFORT,
+) -> dict:
     """Build the chat completions payload for the selected review model."""
     payload = {
         "model": model,
@@ -147,11 +171,60 @@ def build_llm_payload(model: str, system_prompt: str, diff: str) -> dict:
                 "content": f"Review this pull request diff:\n\n```diff\n{diff}\n```",
             },
         ],
-        "max_completion_tokens": 4096,
+        "max_completion_tokens": max_completion_tokens,
     }
     if model_supports_custom_temperature(model):
         payload["temperature"] = DEFAULT_TEMPERATURE
+    if model_supports_reasoning_effort(model):
+        payload["reasoning_effort"] = reasoning_effort
     return payload
+
+
+def summarize_usage(data: dict) -> str:
+    """Return compact token usage details for operator-visible errors."""
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return "usage unavailable"
+    details = usage.get("completion_tokens_details") or {}
+    parts = [
+        f"prompt={usage.get('prompt_tokens', 'unknown')}",
+        f"completion={usage.get('completion_tokens', 'unknown')}",
+        f"total={usage.get('total_tokens', 'unknown')}",
+    ]
+    if isinstance(details, dict) and "reasoning_tokens" in details:
+        parts.append(f"reasoning={details['reasoning_tokens']}")
+    return ", ".join(parts)
+
+
+def extract_chat_content(data: dict) -> str:
+    """Extract visible text from a chat-completions response."""
+    choices = data.get("choices", [])
+    if not choices:
+        raise LLMReviewError(
+            "LLM returned no choices. Raw response: " + json.dumps(data)[:500]
+        )
+
+    choice = choices[0]
+    message = choice.get("message", {})
+    content = message.get("content", "")
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
+    if isinstance(content, str) and content.strip():
+        if choice.get("finish_reason") == "length":
+            content += (
+                "\n\n> **Warning:** Review output was truncated by the model "
+                f"completion limit ({summarize_usage(data)}). Treat this as an "
+                "incomplete review and rerun with a narrower diff if needed."
+            )
+        return content
+
+    finish_reason = choice.get("finish_reason", "unknown")
+    raise LLMReviewError(
+        "LLM returned empty content "
+        f"(finish_reason={finish_reason}; {summarize_usage(data)})."
+    )
 
 
 def call_llm(diff: str, mode: str, system_prompt: str) -> str:
@@ -172,27 +245,39 @@ def call_llm(diff: str, mode: str, system_prompt: str) -> str:
         api_url = "https://api.openai.com/v1/chat/completions"
         api_key = openai_key
     else:
-        return "**Error:** No LLM API configured. Set LITELLM_BASE_URL + LITELLM_API_KEY or OPENAI_API_KEY in repo secrets."
+        raise LLMReviewError(
+            "No LLM API configured. Set LITELLM_BASE_URL + LITELLM_API_KEY "
+            "or OPENAI_API_KEY in repo secrets."
+        )
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = build_llm_payload(model, system_prompt, diff)
+    is_deep = mode == "deep"
+    max_completion_tokens = (
+        DEEP_MAX_COMPLETION_TOKENS if is_deep else DEFAULT_MAX_COMPLETION_TOKENS
+    )
+    reasoning_effort = DEEP_REASONING_EFFORT if is_deep else FAST_REASONING_EFFORT
+    payload = build_llm_payload(
+        model,
+        system_prompt,
+        diff,
+        max_completion_tokens=max_completion_tokens,
+        reasoning_effort=reasoning_effort,
+    )
 
-    resp = requests.post(api_url, headers=headers, json=payload, timeout=120)
+    timeout = DEEP_LLM_TIMEOUT_SECONDS if is_deep else DEFAULT_LLM_TIMEOUT_SECONDS
+    resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout)
     if resp.status_code != 200:
         body = resp.text[:500]
-        return f"**Error:** LLM API returned {resp.status_code}.\n\n**Model:** `{model}`\n\n**Response:**\n```\n{body}\n```"
+        raise LLMReviewError(
+            f"LLM API returned {resp.status_code}.\n\n"
+            f"**Model:** `{model}`\n\n"
+            f"**Response:**\n```\n{body}\n```"
+        )
     data = resp.json()
-    choices = data.get("choices", [])
-    if not choices:
-        return "**Error:** LLM returned no choices. Raw response: " + json.dumps(data)[:500]
-    message = choices[0].get("message", {})
-    content = message.get("content", "")
-    if not content:
-        return "**Error:** LLM returned empty content."
-    return content
+    return extract_chat_content(data)
 
 
 def post_comment(repo: str, pr_number: str, token: str, body: str) -> None:
@@ -418,8 +503,8 @@ def main() -> None:
 
     try:
         review = call_llm(diff, mode, system_prompt)
-    except requests.RequestException as e:
-        post_comment(repo, pr_number, token, f"**AI Review Error:** LLM API call failed: {e}")
+    except (requests.RequestException, LLMReviewError) as e:
+        post_comment(repo, pr_number, token, f"**AI Review Error:** {e}")
         sys.exit(1)
 
     model_name = (

@@ -243,6 +243,34 @@ func TestInit_InvalidDSNReturnsError(t *testing.T) {
 	}
 }
 
+func TestInit_InvalidDSNClearsStaleGlobalClient(t *testing.T) {
+	t.Cleanup(func() {
+		sentry.CurrentHub().BindClient(nil)
+	})
+	t.Setenv("SENTRY_DSN", "")
+
+	staleTransport := &mockTransport{}
+	enabled := true
+	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
+	cfg.Sentry.DSN = testDSN
+	if _, err := initClient(cfg, "test", staleTransport); err != nil {
+		t.Fatalf("enable stale client: %v", err)
+	}
+
+	cfg.Sentry.DSN = "not-a-valid-dsn"
+	if c, err := Init(cfg, "test"); err == nil || c != nil {
+		t.Fatalf("invalid dsn init = (%+v, %v), want nil client and error", c, err)
+	}
+
+	if id := sentry.CaptureMessage("must not reach stale transport"); id != nil {
+		t.Fatalf("package-level capture returned event id after failed init: %s", *id)
+	}
+	if events := staleTransport.Events(); len(events) != 0 {
+		t.Fatalf("stale global client captured %d event(s) after failed init", len(events))
+	}
+}
+
 func TestInit_ScrubberPopulated(t *testing.T) {
 	enabled := true
 	cfg := config.Defaults()

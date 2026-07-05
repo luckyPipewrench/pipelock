@@ -114,6 +114,7 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 
 	err := sentry.Init(opts)
 	if err != nil {
+		disableGlobalClient()
 		return nil, err
 	}
 

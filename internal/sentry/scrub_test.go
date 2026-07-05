@@ -128,6 +128,42 @@ func TestScrubString_URLAuthorityAndPathDropped(t *testing.T) {
 	}
 }
 
+func TestScrubString_DeploymentLocatorsDropped(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	input := strings.Join([]string{
+		"open /home/agent/.config/pipelock/private.yaml: permission denied",
+		`open C:\Users\agent\AppData\Roaming\pipelock\private.yaml: access denied`,
+		`open \\fileserver\share\private.yaml: access denied`,
+		"dial tcp 10.0.0.12:8443: connect: connection refused",
+		"lookup internal-host.example on 10.0.0.2:53: no such host",
+		"x509: certificate is valid for private.service.internal, not public.vendor.example",
+		"dial tcp [fd00::10]:443: connect: network unreachable",
+		"proxy auth failed for deployer:novel-secret@private.service.internal:443",
+	}, "\n")
+
+	result := s.ScrubString(input)
+	for _, forbidden := range []string{
+		"/home/agent",
+		`C:\Users\agent`,
+		`\\fileserver\share`,
+		"10.0.0.12",
+		"10.0.0.2",
+		"internal-host.example",
+		"private.service.internal",
+		"public.vendor.example",
+		"fd00::10",
+		"deployer",
+		"novel-secret",
+	} {
+		if strings.Contains(result, forbidden) {
+			t.Fatalf("deployment locator %q leaked in %q", forbidden, result)
+		}
+	}
+	if !containsRedacted(result) {
+		t.Fatalf("expected redaction marker in %q", result)
+	}
+}
+
 func TestScrubEvent_AllowlistPayloadShape(t *testing.T) {
 	eventTime := time.Unix(1700000000, 0).UTC()
 	s := NewScrubber(testDLPPatterns(), nil)
@@ -156,7 +192,7 @@ func TestScrubEvent_AllowlistPayloadShape(t *testing.T) {
 				Stacktrace: &sentry.Stacktrace{
 					Frames: []sentry.Frame{
 						{
-							Function:    "runProxy",
+							Function:    "github.com/luckyPipewrench/pipelock/internal/cli/runtime.runProxy",
 							Module:      "github.com/luckyPipewrench/pipelock/internal/cli/runtime",
 							Filename:    "/home/developer/project/internal/cli/runtime/mcp.go",
 							AbsPath:     "/home/developer/project/internal/cli/runtime/mcp.go",
@@ -186,7 +222,7 @@ func TestScrubEvent_AllowlistPayloadShape(t *testing.T) {
 	}
 
 	frame := result.Exception[0].Stacktrace.Frames[0]
-	if frame.Filename != "mcp.go" || frame.Lineno != 1115 || frame.Function != "runProxy" {
+	if frame.Filename != "mcp.go" || frame.Lineno != 1115 || frame.Function != "runtime.runProxy" || frame.Module != "runtime" {
 		t.Fatalf("safe frame fields not preserved: %+v", frame)
 	}
 	if frame.AbsPath != "" || frame.ContextLine != "" || len(frame.PreContext) != 0 || len(frame.PostContext) != 0 || len(frame.Vars) != 0 {
@@ -228,6 +264,45 @@ func TestScrubEvent_UpstreamURLUserinfoHostPathDropped(t *testing.T) {
 		if strings.Contains(payload, forbidden) {
 			t.Fatalf("forbidden URL component %q survived in payload: %s", forbidden, payload)
 		}
+	}
+}
+
+func TestScrubEvent_ExceptionValueDropsPathsAndBareEndpoints(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	event := &sentry.Event{
+		Exception: []sentry.Exception{{
+			Type:  "PathError",
+			Value: "open /home/agent/work/private.yaml: dial tcp 10.0.0.8:443: lookup private.internal.example on 10.0.0.2:53: no such host",
+		}},
+	}
+
+	result := s.ScrubEvent(event, nil)
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal sanitized event: %v", err)
+	}
+	payload := string(raw)
+	for _, forbidden := range []string{"/home/agent", "10.0.0.8", "private.internal.example", "10.0.0.2"} {
+		if strings.Contains(payload, forbidden) {
+			t.Fatalf("deployment locator %q survived in payload: %s", forbidden, payload)
+		}
+	}
+}
+
+func TestScrubEvent_FrameFilenameWindowsBasenameOnly(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	event := &sentry.Event{
+		Exception: []sentry.Exception{{
+			Stacktrace: &sentry.Stacktrace{
+				Frames: []sentry.Frame{{Filename: `C:\Users\agent\src\private.go`}},
+			},
+		}},
+	}
+
+	result := s.ScrubEvent(event, nil)
+	frame := result.Exception[0].Stacktrace.Frames[0]
+	if frame.Filename != "private.go" {
+		t.Fatalf("filename = %q, want basename only", frame.Filename)
 	}
 }
 

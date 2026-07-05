@@ -20,6 +20,11 @@ data:
     {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
     {{- $_ := set $cfg "license_crl_file" (printf "%s/%s" .Values.license.crlSecretRef.mountPath .Values.license.crlSecretRef.key) }}
     {{- end }}
+    {{- if .Values.sentry.enabled }}
+    {{- $sentry := deepCopy (default dict $cfg.sentry) }}
+    {{- $_ := set $sentry "enabled" true }}
+    {{- $_ := set $cfg "sentry" $sentry }}
+    {{- end }}
     {{- if .Values.conductorFollower.enabled }}
     {{- $conductor := merge (dict
       "enabled" true

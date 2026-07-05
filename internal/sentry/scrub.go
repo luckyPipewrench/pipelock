@@ -35,6 +35,19 @@ var urlParamValueRe = regexp.MustCompile(`([?&][^=&]+)=([^&\s]+)`)
 // userinfo, paths, or query values; keep only the coarse scheme.
 var urlLikeRe = regexp.MustCompile(`\b([a-zA-Z][a-zA-Z0-9+.-]*)://[^\s"'<>]+`)
 
+// Filesystem paths and bare network identifiers commonly appear in Go error
+// strings. They are deployment/agent-local data, so surviving diagnostic
+// strings keep only coarse redaction markers.
+var (
+	unixAbsPathRe      = regexp.MustCompile(`(^|[\s"'(=:])(/(?:[^/\s"'<>:]+/)+[^/\s"'<>:]*)`)
+	windowsAbsPathRe   = regexp.MustCompile(`(?i)\b[A-Z]:\\[^\s"'<>]+`)
+	uncPathRe          = regexp.MustCompile(`\\\\[^\s"'<>\\]+\\[^\s"'<>]+`)
+	userinfoEndpointRe = regexp.MustCompile(`[A-Za-z0-9._~-]+:[^\s"'<>/@]+@(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?`)
+	ipv4EndpointRe     = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b`)
+	ipv6EndpointRe     = regexp.MustCompile(`\[[0-9A-Fa-f:.]+\](?::\d{1,5})?`)
+	fqdnEndpointRe     = regexp.MustCompile(`(?i)\b((?:lookup|host|server|upstream|endpoint|address|addr|for|not|on|to|from|tcp|udp|connect(?:ing)?(?:\s+to)?|dial(?:ing)?(?:\s+tcp|\s+udp)?)\s+)(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d{1,5})?\b`)
+)
+
 // Scrubber redacts secrets from strings and Sentry events using
 // DLP patterns from config plus hardcoded safety-net patterns.
 type Scrubber struct {
@@ -73,6 +86,12 @@ func (s *Scrubber) ScrubString(input string) string {
 
 	result := input
 
+	// Drop locators before generic matching so composite forms like
+	// user:pass@host are removed as one unit instead of leaving the username
+	// behind after email/FQDN matching.
+	result = urlLikeRe.ReplaceAllString(result, "${1}://"+redacted)
+	result = scrubDeploymentLocators(result)
+
 	// Shared matcher surface: typed secret classes from internal/redact.
 	if s.matcher != nil {
 		result = replaceMatchedSpans(result, s.matcher.Scan(result), func(redact.Match) string { return redacted })
@@ -91,13 +110,20 @@ func (s *Scrubber) ScrubString(input string) string {
 		}
 	}
 
-	// Drop URL authority/path/query by construction. Query redaction below is
-	// retained as defense in depth for URL-ish fragments this regex misses.
-	result = urlLikeRe.ReplaceAllString(result, "${1}://"+redacted)
-
 	// Redact URL query parameter values.
 	result = urlParamValueRe.ReplaceAllString(result, "${1}="+redacted)
 
+	return result
+}
+
+func scrubDeploymentLocators(input string) string {
+	result := unixAbsPathRe.ReplaceAllString(input, "${1}"+redacted)
+	result = windowsAbsPathRe.ReplaceAllString(result, redacted)
+	result = uncPathRe.ReplaceAllString(result, redacted)
+	result = userinfoEndpointRe.ReplaceAllString(result, redacted)
+	result = ipv6EndpointRe.ReplaceAllString(result, redacted)
+	result = ipv4EndpointRe.ReplaceAllString(result, redacted)
+	result = fqdnEndpointRe.ReplaceAllString(result, "${1}"+redacted)
 	return result
 }
 
@@ -129,11 +155,13 @@ func (s *Scrubber) safeScrubString(input string) string {
 	return s.ScrubString(input)
 }
 
-func (s *Scrubber) safeScrubFilename(input string) string {
+func (s *Scrubber) safeScrubCodeString(input string) string {
 	if s == nil {
 		return ""
 	}
-	result := filepath.Base(input)
+	result := urlLikeRe.ReplaceAllString(input, "${1}://"+redacted)
+	result = scrubDeploymentLocators(result)
+	result = replaceMatchedSpans(result, s.sensitiveCodeMatches(result), func(redact.Match) string { return redacted })
 	for _, re := range s.patterns {
 		result = re.ReplaceAllString(result, redacted)
 	}
@@ -141,6 +169,46 @@ func (s *Scrubber) safeScrubFilename(input string) string {
 		if secret != "" && strings.Contains(result, secret) {
 			result = strings.ReplaceAll(result, secret, redacted)
 		}
+	}
+	return result
+}
+
+func (s *Scrubber) sensitiveCodeMatches(input string) []redact.Match {
+	if s.matcher == nil {
+		return nil
+	}
+	matches := s.matcher.Scan(input)
+	filtered := matches[:0]
+	for _, match := range matches {
+		switch match.Class {
+		case redact.ClassIPv4, redact.ClassIPv6, redact.ClassCIDR, redact.ClassFQDN, redact.ClassEmail, redact.ClassMAC, redact.ClassADUser:
+			continue
+		default:
+			filtered = append(filtered, match)
+		}
+	}
+	return filtered
+}
+
+func (s *Scrubber) safeScrubFilename(input string) string {
+	if s == nil {
+		return ""
+	}
+	result := codePathLeaf(filepath.Base(input))
+	return s.safeScrubCodeString(result)
+}
+
+func (s *Scrubber) safeScrubCodePath(input string) string {
+	if s == nil {
+		return ""
+	}
+	return s.safeScrubCodeString(codePathLeaf(input))
+}
+
+func codePathLeaf(input string) string {
+	result := input
+	if idx := strings.LastIndexAny(result, `/\`); idx >= 0 && idx+1 < len(result) {
+		result = result[idx+1:]
 	}
 	return result
 }
@@ -157,8 +225,8 @@ func (s *Scrubber) scrubStacktrace(st *sentry.Stacktrace) *sentry.Stacktrace {
 	for i := range st.Frames {
 		frame := st.Frames[i]
 		safeFrame := sentry.Frame{
-			Function: s.safeScrubString(frame.Function),
-			Module:   s.safeScrubString(frame.Module),
+			Function: s.safeScrubCodePath(frame.Function),
+			Module:   s.safeScrubCodePath(frame.Module),
 			Filename: s.safeScrubFilename(frame.Filename),
 			Lineno:   frame.Lineno,
 		}

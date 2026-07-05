@@ -1,0 +1,692 @@
+//go:build enterprise
+
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
+package controlplane
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
+)
+
+func newRuntimeStatusTestHandler(t *testing.T, store *FileEnrollmentStore, identity FollowerIdentity) *Handler {
+	t.Helper()
+	followerAuth, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{
+		{Token: followerAdminToken, Role: RoleAdmin, OrgID: "org-main"},
+	})
+	if err != nil {
+		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
+	}
+	bundleAuth, err := ScopedBearerBundleAuthorizer([]ScopedBearerCredential{
+		{Token: followerAdminToken, Role: RolePublisher, OrgID: "org-main", FleetID: "prod"},
+	})
+	if err != nil {
+		t.Fatalf("ScopedBearerBundleAuthorizer() error = %v", err)
+	}
+	handler, err := NewHandler(HandlerOptions{
+		Store:        mustStore(t),
+		Capabilities: DefaultCapabilities("conductor-test"),
+		Now:          func() time.Time { return testNow },
+		FollowerIdentity: func(*http.Request) (FollowerIdentity, error) {
+			return identity, nil
+		},
+		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuthorizeBundle:    bundleAuth,
+		AuthorizeFollowers: followerAuth,
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
+		Enrollments:        store,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	return handler
+}
+
+func postRuntimeStatus(t *testing.T, handler *Handler, status FollowerRuntimeStatus) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(runtimeStatusRequest{Status: status})
+	if err != nil {
+		t.Fatalf("marshal runtime status: %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, FollowerRuntimeStatusPath, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
+}
+
+func runtimeStatus(identity FollowerIdentity, version, hash string) FollowerRuntimeStatus {
+	return FollowerRuntimeStatus{
+		OrgID:                          identity.OrgID,
+		FleetID:                        identity.FleetID,
+		InstanceID:                     identity.InstanceID,
+		Environment:                    identity.Environment,
+		PipelockVersion:                version,
+		GitCommit:                      "abc123",
+		BuildDate:                      "2026-05-24T12:00:00Z",
+		SchemaVersion:                  conductor.SchemaVersion,
+		ActiveBundleID:                 "bundle-1",
+		ActiveBundleVersion:            1,
+		ActiveBundleHash:               hash,
+		ActiveBundleMinPipelockVersion: "1.2.3",
+		LastPolicyPollAt:               testNow,
+		LastSuccessfulApplyAt:          testNow,
+		LastSeenAt:                     testNow,
+	}
+}
+
+func TestFollowerRuntimeStatusRejectsSpoofedIdentity(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	handler := newRuntimeStatusTestHandler(t, store, identity)
+
+	spoofed := runtimeStatus(FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-2", Environment: "prod"}, "1.2.3", strings.Repeat("a", 64))
+	w := postRuntimeStatus(t, handler, spoofed)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("spoofed status code = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: "org-main"})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 0 {
+		t.Fatalf("spoofed status persisted: %+v", statuses)
+	}
+}
+
+func TestFollowerRuntimeStatusRejectsSpoofOfExistingFollowerBeforeWrite(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	followerA := defaultFollowerIdentity()
+	followerB := FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-2", Environment: "prod"}
+	mustEnrollFollower(t, store, "tok-main-1", followerA, "audit-key-main-1")
+	mustEnrollFollower(t, store, "tok-main-2", followerB, "audit-key-main-2")
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(followerB, "1.2.3", strings.Repeat("b", 64))); err != nil {
+		t.Fatalf("seed follower B status: %v", err)
+	}
+	handler := newRuntimeStatusTestHandler(t, store, followerA)
+
+	w := postRuntimeStatus(t, handler, runtimeStatus(followerB, "9.9.9", strings.Repeat("c", 64)))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("spoofed existing-follower status code = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{
+		OrgID:      followerB.OrgID,
+		FleetID:    followerB.FleetID,
+		InstanceID: followerB.InstanceID,
+	})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("follower B statuses = %d, want 1", len(statuses))
+	}
+	if statuses[0].PipelockVersion != "1.2.3" || statuses[0].ActiveBundleHash != strings.Repeat("b", 64) {
+		t.Fatalf("follower A overwrote follower B status: %+v", statuses[0])
+	}
+}
+
+func TestFleetStatusClassifiesRuntimeHealth(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	store := mustStore(t)
+	signer := newTestSigner(t)
+	bundle := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	published, _, err := store.Publish(context.Background(), bundle, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	ids := []string{"ok", "unsupported", "apply-failed", "stale", "unknown"}
+	for _, id := range ids {
+		mustEnrollFollower(t, enrollments, "tok-"+id, FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: id, Environment: "prod"}, "audit-"+id)
+	}
+	statuses := []FollowerRuntimeStatus{
+		runtimeStatus(FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "ok", Environment: "prod"}, "1.2.3", published.BundleHash),
+		runtimeStatus(FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "unsupported", Environment: "prod"}, "1.0.0", published.BundleHash),
+		runtimeStatus(FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "apply-failed", Environment: "prod"}, "1.2.3", published.BundleHash),
+		runtimeStatus(FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "stale", Environment: "prod"}, "1.2.3", published.BundleHash),
+	}
+	statuses[2].LastApplyErrorCode = "reload_failed"
+	statuses[2].LastApplyErrorMessage = "reload failed"
+	statuses[3].LastSeenAt = testNow.Add(-10 * time.Minute)
+	for _, status := range statuses {
+		if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), status); err != nil {
+			t.Fatalf("UpsertFollowerRuntimeStatus(%s) error = %v", status.InstanceID, err)
+		}
+	}
+
+	followerAuth, err := ScopedBearerFollowerListAuthorizer([]ScopedBearerCredential{{Token: followerAdminToken, Role: RoleAdmin, OrgID: "org-main"}})
+	if err != nil {
+		t.Fatalf("ScopedBearerFollowerListAuthorizer() error = %v", err)
+	}
+	handler, err := NewHandler(HandlerOptions{
+		Store:              store,
+		Capabilities:       DefaultCapabilities("conductor-test"),
+		Now:                func() time.Time { return testNow },
+		FollowerIdentity:   func(*http.Request) (FollowerIdentity, error) { return defaultFollowerIdentity(), nil },
+		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuthorizeFollowers: followerAuth,
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
+		Enrollments:        enrollments,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-main&fleet_id=prod&limit=10", followerAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fleet status code = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp listFollowersResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	got := map[string]FleetHealth{}
+	for _, follower := range resp.Followers {
+		got[follower.InstanceID] = follower.Health
+	}
+	want := map[string]FleetHealth{
+		"ok":           FleetHealthOK,
+		"unsupported":  FleetHealthUnsupported,
+		"apply-failed": FleetHealthApplyFailed,
+		"stale":        FleetHealthStale,
+		"unknown":      FleetHealthUnknown,
+	}
+	for instance, health := range want {
+		if got[instance] != health {
+			t.Fatalf("health[%s] = %q, want %q (all=%v)", instance, got[instance], health, got)
+		}
+	}
+}
+
+func TestRemovedFollowerRuntimeStatusStopsAppearingHealthy(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+	if _, err := store.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{Identity: identity, Now: testNow}); err != nil {
+		t.Fatalf("RemoveEnrolledFollower() error = %v", err)
+	}
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: "org-main"})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 0 {
+		t.Fatalf("removed follower status still listed: %+v", statuses)
+	}
+}
+
+func TestRemovedFollowerRuntimeStatusPostRejectedAfterRemoval(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	handler := newRuntimeStatusTestHandler(t, store, identity)
+	if _, err := store.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{Identity: identity, Now: testNow}); err != nil {
+		t.Fatalf("RemoveEnrolledFollower() error = %v", err)
+	}
+
+	w := postRuntimeStatus(t, handler, runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64)))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("removed follower status code = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: "org-main"})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 0 {
+		t.Fatalf("late removed-follower status persisted: %+v", statuses)
+	}
+}
+
+func TestRuntimeStatusBoundsStringsAndRecordCount(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	status := runtimeStatus(identity, strings.Repeat("9", maxRuntimeStatusStringBytes), strings.Repeat("a", 64))
+	status.LastApplyErrorMessage = strings.Repeat("x", maxApplyErrorMessageRunes)
+	stored, err := store.UpsertFollowerRuntimeStatus(context.Background(), status)
+	if err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus(capped strings) error = %v", err)
+	}
+	if len(stored.PipelockVersion) != maxRuntimeStatusStringBytes {
+		t.Fatalf("PipelockVersion len = %d, want cap %d", len(stored.PipelockVersion), maxRuntimeStatusStringBytes)
+	}
+	if len([]rune(stored.LastApplyErrorMessage)) != maxApplyErrorMessageRunes {
+		t.Fatalf("LastApplyErrorMessage runes = %d, want cap %d", len([]rune(stored.LastApplyErrorMessage)), maxApplyErrorMessageRunes)
+	}
+
+	full := make(map[string]FollowerRuntimeStatus, maxFollowerRuntimeStatusRecords)
+	for i := range maxFollowerRuntimeStatusRecords {
+		id := FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "filler-" + strconv.Itoa(i), Environment: "prod"}
+		full[followerEnrollmentKey(id)] = runtimeStatus(id, "1.2.3", strings.Repeat("b", 64))
+	}
+	store.mu.Lock()
+	store.data.RuntimeStatus = full
+	store.mu.Unlock()
+	other := FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "other", Environment: "prod"}
+	mustEnrollFollower(t, store, "tok-other", other, "audit-other")
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(other, "1.2.3", strings.Repeat("c", 64))); !errors.Is(err, ErrRuntimeStatusLimitExceeded) {
+		t.Fatalf("UpsertFollowerRuntimeStatus(over limit) error = %v, want ErrRuntimeStatusLimitExceeded", err)
+	}
+}
+
+func TestRuntimeStatusRejectsOversizedStringsWithoutPersisting(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*FollowerRuntimeStatus)
+	}{
+		{name: "pipelock_version", mutate: func(s *FollowerRuntimeStatus) { s.PipelockVersion = strings.Repeat("9", maxRuntimeStatusStringBytes+1) }},
+		{name: "git_commit", mutate: func(s *FollowerRuntimeStatus) { s.GitCommit = strings.Repeat("a", maxRuntimeStatusStringBytes+1) }},
+		{name: "apply_error_message", mutate: func(s *FollowerRuntimeStatus) {
+			s.LastApplyErrorMessage = strings.Repeat("x", maxApplyErrorMessageRunes+1)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))
+			tc.mutate(&status)
+			if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), status); !errors.Is(err, conductor.ErrPayloadTooLarge) {
+				t.Fatalf("UpsertFollowerRuntimeStatus(%s) error = %v, want ErrPayloadTooLarge", tc.name, err)
+			}
+			statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: "org-main"})
+			if err != nil {
+				t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+			}
+			if len(statuses) != 0 {
+				t.Fatalf("oversized status persisted after %s: %+v", tc.name, statuses)
+			}
+		})
+	}
+}
+
+func TestRuntimeStatusAuthSeparatesFollowerIdentityFromPublisherToken(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+
+	missingIdentity := newRuntimeStatusTestHandler(t, store, identity)
+	missingIdentity.followerIdentity = func(*http.Request) (FollowerIdentity, error) {
+		return FollowerIdentity{}, ErrFollowerRequired
+	}
+	body, err := json.Marshal(runtimeStatusRequest{Status: runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))})
+	if err != nil {
+		t.Fatalf("marshal runtime status: %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, FollowerRuntimeStatusPath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w := httptest.NewRecorder()
+	missingIdentity.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status with publisher/admin token but no follower identity = %d body=%s, want 401", w.Code, w.Body.String())
+	}
+
+	followerOnly := newRuntimeStatusTestHandler(t, store, identity)
+	followerOnly.authorizePublisher = func(*http.Request) error {
+		t.Fatal("runtime status must not require publisher authorization")
+		return ErrPublisherForbidden
+	}
+	w = postRuntimeStatus(t, followerOnly, runtimeStatus(identity, "1.2.3", strings.Repeat("b", 64)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status with follower identity only = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+}
+
+func TestPublishPreflightBlocksUnsupportedAndOverridePublishes(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, enrollments, "tok-main-1", identity, "audit-key-main-1")
+	if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(identity, "1.0.0", strings.Repeat("a", 64))); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+	handler := newRuntimeStatusTestHandler(t, enrollments, identity)
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "bundle-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	body, err := json.Marshal(publishPolicyBundleRequest{Bundle: bundle})
+	if err != nil {
+		t.Fatalf("marshal publish request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("publish unsupported code = %d body=%s, want 409", w.Code, w.Body.String())
+	}
+	var blocked struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &blocked); err != nil {
+		t.Fatalf("decode blocked response: %v", err)
+	}
+	if blocked.Code != PublishConflictFleetSkew {
+		t.Fatalf("blocked code = %q, want %q", blocked.Code, PublishConflictFleetSkew)
+	}
+
+	body, err = json.Marshal(publishPolicyBundleRequest{Bundle: bundle, AllowFleetSkew: true})
+	if err != nil {
+		t.Fatalf("marshal override publish request: %v", err)
+	}
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("override publish code = %d body=%s, want 201", w.Code, w.Body.String())
+	}
+	var published publishPolicyBundleResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &published); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	if !published.Preflight.AllowFleetSkew || published.Preflight.Unsupported != 1 {
+		t.Fatalf("preflight = %+v, want override with one unsupported", published.Preflight)
+	}
+}
+
+func TestPublishPreflightBlocksLabelAudienceWhenLabelsUnavailable(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, enrollments, "tok-main-1", identity, "audit-key-main-1")
+	if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), runtimeStatus(identity, "1.0.0", strings.Repeat("a", 64))); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+	handler := newRuntimeStatusTestHandler(t, enrollments, identity)
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id:      "bundle-label-1",
+		version: 1,
+		audience: conductor.Audience{Labels: map[string]string{
+			"ring": "canary",
+		}},
+	})
+	body, err := json.Marshal(publishPolicyBundleRequest{Bundle: bundle})
+	if err != nil {
+		t.Fatalf("marshal publish request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("label-audience publish code = %d body=%s, want 409", w.Code, w.Body.String())
+	}
+}
+
+func TestPublishPreflightBlocksLastApplyFailureWithoutOverride(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, enrollments, "tok-main-1", identity, "audit-key-main-1")
+	status := runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))
+	status.LastApplyErrorCode = "reload_failed"
+	if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), status); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+	handler := newRuntimeStatusTestHandler(t, enrollments, identity)
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "bundle-apply-failed-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	body, err := json.Marshal(publishPolicyBundleRequest{Bundle: bundle})
+	if err != nil {
+		t.Fatalf("marshal publish request: %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("last-apply-failed publish code = %d body=%s, want 409", w.Code, w.Body.String())
+	}
+}
+
+func TestRuntimeStatusPersistsAcrossRestartAndLastWriterWins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	first := runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), first); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus(first) error = %v", err)
+	}
+	second := runtimeStatus(identity, "1.2.4", strings.Repeat("b", 64))
+	second.LastSeenAt = testNow.Add(time.Second)
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), second); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus(second) error = %v", err)
+	}
+
+	reopened, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("reopen enrollment store: %v", err)
+	}
+	statuses, err := reopened.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: "org-main"})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses after restart = %d, want 1", len(statuses))
+	}
+	if statuses[0].PipelockVersion != "1.2.4" || statuses[0].ActiveBundleHash != strings.Repeat("b", 64) {
+		t.Fatalf("restart status = %+v, want last writer", statuses[0])
+	}
+}
+
+func TestRuntimeStatusConcurrentPosts(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	const followers = 16
+	for i := range followers {
+		identity := FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-" + strconv.Itoa(i), Environment: "prod"}
+		mustEnrollFollower(t, store, "tok-concurrent-"+strconv.Itoa(i), identity, "audit-concurrent-"+strconv.Itoa(i))
+	}
+
+	var wg sync.WaitGroup
+	for i := range followers {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			identity := FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-" + strconv.Itoa(i), Environment: "prod"}
+			handler := newRuntimeStatusTestHandler(t, store, identity)
+			w := postRuntimeStatus(t, handler, runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64)))
+			if w.Code != http.StatusOK {
+				t.Errorf("concurrent post %d code = %d body=%s, want 200", i, w.Code, w.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: "org-main", Limit: followers})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != followers {
+		t.Fatalf("statuses after concurrent posts = %d, want %d", len(statuses), followers)
+	}
+}
+
+func TestConsumeEnrollmentTokenInitializesNilRuntimeStatusMap(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	issued, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "tok-main-1",
+		Identity: identity,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken() error = %v", err)
+	}
+	store.mu.Lock()
+	store.data.RuntimeStatus = nil
+	store.mu.Unlock()
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), ConsumeEnrollmentTokenRequest{
+		Token:      issued.Token,
+		AuditKeyID: "audit-key-main-1",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken() error = %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.data.RuntimeStatus == nil {
+		t.Fatal("RuntimeStatus map = nil after consume, want initialized")
+	}
+}
+
+func TestRuntimeStatusStoreNilReceiverErrors(t *testing.T) {
+	var store *FileEnrollmentStore
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), FollowerRuntimeStatus{}); !errors.Is(err, ErrRuntimeStatusStoreRequired) {
+		t.Fatalf("UpsertFollowerRuntimeStatus(nil) error = %v, want ErrRuntimeStatusStoreRequired", err)
+	}
+	if _, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{}); !errors.Is(err, ErrRuntimeStatusStoreRequired) {
+		t.Fatalf("ListFollowerRuntimeStatus(nil) error = %v, want ErrRuntimeStatusStoreRequired", err)
+	}
+}
+
+func TestRuntimeStatusUpsertPreservesLastSuccessfulApplyAndRollsBackOnSaveFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	first := runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))
+	first.LastSuccessfulApplyAt = testNow.Add(-time.Minute)
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), first); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus(first) error = %v", err)
+	}
+	second := runtimeStatus(identity, "1.2.4", strings.Repeat("b", 64))
+	second.LastSuccessfulApplyAt = time.Time{}
+	stored, err := store.UpsertFollowerRuntimeStatus(context.Background(), second)
+	if err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus(second) error = %v", err)
+	}
+	if !stored.LastSuccessfulApplyAt.Equal(first.LastSuccessfulApplyAt) {
+		t.Fatalf("LastSuccessfulApplyAt = %s, want preserved %s", stored.LastSuccessfulApplyAt, first.LastSuccessfulApplyAt)
+	}
+
+	store.path = filepath.Dir(path)
+	third := runtimeStatus(identity, "1.2.5", strings.Repeat("c", 64))
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), third); err == nil || !strings.Contains(err.Error(), "write enrollment store") {
+		t.Fatalf("UpsertFollowerRuntimeStatus(save failure) error = %v, want write error", err)
+	}
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses after rollback = %d, want 1", len(statuses))
+	}
+	if statuses[0].PipelockVersion != "1.2.4" || statuses[0].ActiveBundleHash != strings.Repeat("b", 64) {
+		t.Fatalf("status after failed save = %+v, want previous status", statuses[0])
+	}
+}
+
+func TestRemoveEnrolledFollowerRestoresRuntimeStatusOnSaveFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollments.json")
+	store, err := OpenFileEnrollmentStore(path)
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, store, "tok-main-1", identity, "audit-key-main-1")
+	wantStatus := runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))
+	if _, err := store.UpsertFollowerRuntimeStatus(context.Background(), wantStatus); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+
+	store.path = filepath.Dir(path)
+	if _, err := store.RemoveEnrolledFollower(context.Background(), RemoveEnrolledFollowerRequest{Identity: identity, Now: testNow}); err == nil || !strings.Contains(err.Error(), "write enrollment store") {
+		t.Fatalf("RemoveEnrolledFollower(save failure) error = %v, want write error", err)
+	}
+	statuses, err := store.ListFollowerRuntimeStatus(context.Background(), RuntimeStatusQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListFollowerRuntimeStatus() error = %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses after failed remove = %d, want 1", len(statuses))
+	}
+	if statuses[0].PipelockVersion != wantStatus.PipelockVersion {
+		t.Fatalf("status after failed remove = %+v, want restored %+v", statuses[0], wantStatus)
+	}
+	followers, err := store.ListEnrolledFollowers(context.Background(), FollowerListQuery{OrgID: identity.OrgID})
+	if err != nil {
+		t.Fatalf("ListEnrolledFollowers() error = %v", err)
+	}
+	if len(followers) != 1 || !followers[0].Active {
+		t.Fatalf("followers after failed remove = %+v, want active follower restored", followers)
+	}
+}

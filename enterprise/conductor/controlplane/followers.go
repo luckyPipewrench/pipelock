@@ -16,8 +16,8 @@ import (
 )
 
 type listFollowersResponse struct {
-	Followers []FollowerSummary `json:"followers"`
-	Count     int               `json:"count"`
+	Followers []FollowerFleetStatus `json:"followers"`
+	Count     int                   `json:"count"`
 }
 
 // handleListFollowers serves the admin/auditor follower-roster read. It mirrors
@@ -64,13 +64,80 @@ func (h *Handler) handleGetFollowers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
 		return
 	}
+	enriched, err := h.enrichFollowerStatus(r, query, followers)
+	if err != nil {
+		if h.logger != nil {
+			h.logger.ErrorContext(r.Context(), "conductor_followers_runtime_status_failed",
+				slog.String("event", "conductor_followers_runtime_status_failed"),
+				slog.String("error", err.Error()),
+				slog.String("org_id", query.OrgID),
+				slog.String("fleet_id", query.FleetID),
+				slog.String("instance_id", query.InstanceID),
+			)
+		}
+		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
+		return
+	}
+	if enriched == nil {
+		enriched = []FollowerFleetStatus{}
+	}
+	writeJSON(w, http.StatusOK, listFollowersResponse{
+		Followers: enriched,
+		Count:     len(enriched),
+	})
+}
+
+func (h *Handler) enrichFollowerStatus(r *http.Request, query FollowerListQuery, followers []FollowerSummary) ([]FollowerFleetStatus, error) {
 	if followers == nil {
 		followers = []FollowerSummary{}
 	}
-	writeJSON(w, http.StatusOK, listFollowersResponse{
-		Followers: followers,
-		Count:     len(followers),
-	})
+	now := h.now()
+	var streams []StreamSummary
+	if query.OrgID != "" {
+		var err error
+		streams, err = h.store.StreamOverview(r.Context(), StreamStatusQuery{OrgID: query.OrgID, FleetID: query.FleetID})
+		if err != nil {
+			return nil, err
+		}
+	}
+	var statusByID map[string]FollowerRuntimeStatus
+	if statusStore, ok := h.enrollments.(RuntimeStatusStore); ok && statusStore != nil {
+		statuses, err := statusStore.ListFollowerRuntimeStatus(r.Context(), RuntimeStatusQuery{
+			OrgID:      query.OrgID,
+			FleetID:    query.FleetID,
+			InstanceID: query.InstanceID,
+			Limit:      maxFollowerListLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		statusByID = runtimeStatusMap(statuses)
+	}
+	out := make([]FollowerFleetStatus, 0, len(followers))
+	for _, follower := range followers {
+		var statusPtr *FollowerRuntimeStatus
+		if statusByID != nil {
+			if status, ok := statusByID[followerEnrollmentKey(FollowerIdentity{
+				OrgID:       follower.OrgID,
+				FleetID:     follower.FleetID,
+				InstanceID:  follower.InstanceID,
+				Environment: follower.Environment,
+			})]; ok {
+				statusCopy := status
+				statusPtr = &statusCopy
+			}
+		}
+		expected := expectedBundleForFollower(streams, follower, now)
+		health, drift := classifyFollowerHealth(follower, statusPtr, expected, now, defaultRuntimeStatusStaleAfter)
+		out = append(out, FollowerFleetStatus{
+			FollowerSummary: follower,
+			RuntimeStatus:   statusPtr,
+			Health:          health,
+			Drift:           drift,
+			ExpectedBundle:  expected,
+		})
+	}
+	return out, nil
 }
 
 type removeFollowerRequest struct {

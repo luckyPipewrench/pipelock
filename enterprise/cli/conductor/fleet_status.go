@@ -29,8 +29,8 @@ type fleetStatusOptions struct {
 }
 
 type followersResponse struct {
-	Followers []controlplane.FollowerSummary `json:"followers"`
-	Count     int                            `json:"count"`
+	Followers []controlplane.FollowerFleetStatus `json:"followers"`
+	Count     int                                `json:"count"`
 }
 
 func fleetCmd() *cobra.Command {
@@ -47,13 +47,14 @@ func fleetStatusCmd() *cobra.Command {
 	opts := fleetStatusOptions{}
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show enrolled followers and their enrollment state",
+		Short: "Show enrolled followers and their runtime policy state",
 		Long: `Show the followers enrolled with a Conductor for an org/fleet.
 
 Authorized for an auditor or admin bearer token scoped to the requested
-org/fleet. The roster is enrollment metadata only: identity, audit key id,
-enrollment time, and active state. Applied bundle version and last-contact time
-are NOT tracked by the Conductor enrollment store today and are not reported.`,
+org/fleet. The roster joins enrollment metadata with the latest follower
+runtime status report. Missing or stale status is shown as unknown/stale; this
+reports fleet runtime policy truth, not proof that host egress cannot bypass
+Pipelock mediation.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.client.licenseCRLFile}); err != nil {
@@ -139,11 +140,28 @@ func writeFollowerTable(cmd *cobra.Command, resp followersResponse) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ORG\tFLEET\tINSTANCE\tENVIRONMENT\tAUDIT_KEY_ID\tACTIVE\tENROLLED_AT")
+	_, _ = fmt.Fprintln(tw, "INSTANCE\tACTIVE\tRUNTIME\tACTIVE_BUNDLE\tLAST_SEEN\tHEALTH\tDRIFT")
 	for _, f := range resp.Followers {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%t\t%s\n",
-			f.OrgID, f.FleetID, f.InstanceID, f.Environment, f.AuditKeyID, f.Active,
-			f.EnrolledAt.UTC().Format("2006-01-02T15:04:05Z"))
+		runtimeVersion := "unknown"
+		activeBundle := "unknown"
+		lastSeen := "unknown"
+		if f.RuntimeStatus != nil {
+			if f.RuntimeStatus.PipelockVersion != "" {
+				runtimeVersion = f.RuntimeStatus.PipelockVersion
+			}
+			if f.RuntimeStatus.ActiveBundleID != "" {
+				activeBundle = fmt.Sprintf("%s@%d", f.RuntimeStatus.ActiveBundleID, f.RuntimeStatus.ActiveBundleVersion)
+			}
+			if !f.RuntimeStatus.LastSeenAt.IsZero() {
+				lastSeen = f.RuntimeStatus.LastSeenAt.UTC().Format("2006-01-02T15:04:05Z")
+			}
+		}
+		drift := f.Drift
+		if drift == "" {
+			drift = "-"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%t\t%s\t%s\t%s\t%s\t%s\n",
+			f.InstanceID, f.Active, runtimeVersion, activeBundle, lastSeen, f.Health, drift)
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("write follower table: %w", err)

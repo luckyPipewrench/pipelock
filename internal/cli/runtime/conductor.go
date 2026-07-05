@@ -261,6 +261,7 @@ func (s *Server) buildConductorBundlePoller(cfg *config.Config, logWriter io.Wri
 	if cfg == nil || !cfg.Conductor.Enabled {
 		return nil, nil
 	}
+	cache, _ := s.conductorApply.(*applycache.Cache)
 	client, err := newConductorMTLSClient(cfg.Conductor)
 	if err != nil {
 		return nil, err
@@ -287,10 +288,15 @@ func (s *Server) buildConductorBundlePoller(cfg *config.Config, logWriter io.Wri
 		_, applyErr := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: resolver, Labels: labels})
 		return applyErr
 	})
+	reporter, err := newConductorPolicyStatusReporter(cfg, client, cache)
+	if err != nil {
+		return nil, err
+	}
 	return policysync.NewPoller(policysync.PollerConfig{
 		BaseURL:      cfg.Conductor.ConductorURL,
 		Client:       client,
 		Applier:      applier,
+		Reporter:     reporter,
 		PollInterval: interval,
 		Logger:       logger,
 	})

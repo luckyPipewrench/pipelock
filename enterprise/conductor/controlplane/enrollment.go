@@ -199,8 +199,9 @@ type FileEnrollmentStore struct {
 }
 
 type enrollmentDiskState struct {
-	Tokens    map[string]enrollmentTokenRecord  `json:"tokens"`
-	Followers map[string]enrolledFollowerRecord `json:"followers"`
+	Tokens        map[string]enrollmentTokenRecord  `json:"tokens"`
+	Followers     map[string]enrolledFollowerRecord `json:"followers"`
+	RuntimeStatus map[string]FollowerRuntimeStatus  `json:"runtime_status,omitempty"`
 }
 
 type enrollmentTokenRecord struct {
@@ -266,8 +267,9 @@ func OpenFileEnrollmentStore(path string) (*FileEnrollmentStore, error) {
 	store := &FileEnrollmentStore{
 		path: filepath.Join(dir, filepath.Base(clean)),
 		data: enrollmentDiskState{
-			Tokens:    make(map[string]enrollmentTokenRecord),
-			Followers: make(map[string]enrolledFollowerRecord),
+			Tokens:        make(map[string]enrollmentTokenRecord),
+			Followers:     make(map[string]enrolledFollowerRecord),
+			RuntimeStatus: make(map[string]FollowerRuntimeStatus),
 		},
 	}
 	if err := store.load(); err != nil {
@@ -378,6 +380,9 @@ func (s *FileEnrollmentStore) ConsumeEnrollmentToken(_ context.Context, req Cons
 	token.ConsumedByID = token.Identity.InstanceID
 	s.data.Tokens[tokenID] = token
 	s.data.Followers[followerKey] = enrolled
+	if s.data.RuntimeStatus == nil {
+		s.data.RuntimeStatus = make(map[string]FollowerRuntimeStatus)
+	}
 	if err := s.saveLocked(); err != nil {
 		token.ConsumedAt = nil
 		token.ConsumedByID = ""
@@ -482,8 +487,13 @@ func (s *FileEnrollmentStore) RemoveEnrolledFollower(_ context.Context, req Remo
 		return FollowerSummary{}, ErrFollowerNotFound
 	}
 	delete(s.data.Followers, key)
+	previousStatus, hadStatus := s.data.RuntimeStatus[key]
+	delete(s.data.RuntimeStatus, key)
 	if err := s.saveLocked(); err != nil {
 		s.data.Followers[key] = follower
+		if hadStatus {
+			s.data.RuntimeStatus[key] = previousStatus
+		}
 		return FollowerSummary{}, err
 	}
 	return FollowerSummary{
@@ -545,6 +555,119 @@ func (s *FileEnrollmentStore) ListEnrollmentTokens(_ context.Context, q Enrollme
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s *FileEnrollmentStore) UpsertFollowerRuntimeStatus(_ context.Context, status FollowerRuntimeStatus) (FollowerRuntimeStatus, error) {
+	if s == nil {
+		return FollowerRuntimeStatus{}, ErrRuntimeStatusStoreRequired
+	}
+	normalized, err := normalizeRuntimeStatus(status, status.LastSeenAt)
+	if err != nil {
+		return FollowerRuntimeStatus{}, err
+	}
+	key := followerEnrollmentKey(normalized.Identity())
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	follower, ok := s.data.Followers[key]
+	if !ok || !follower.Active {
+		return FollowerRuntimeStatus{}, ErrFollowerNotFound
+	}
+	if s.data.RuntimeStatus == nil {
+		s.data.RuntimeStatus = make(map[string]FollowerRuntimeStatus)
+	}
+	if _, exists := s.data.RuntimeStatus[key]; !exists && len(s.data.RuntimeStatus) >= maxFollowerRuntimeStatusRecords {
+		return FollowerRuntimeStatus{}, ErrRuntimeStatusLimitExceeded
+	}
+	previous, hadPrevious := s.data.RuntimeStatus[key]
+	if normalized.LastSuccessfulApplyAt.IsZero() && hadPrevious {
+		normalized.LastSuccessfulApplyAt = previous.LastSuccessfulApplyAt
+	}
+	s.data.RuntimeStatus[key] = normalized
+	if err := s.saveLocked(); err != nil {
+		if hadPrevious {
+			s.data.RuntimeStatus[key] = previous
+		} else {
+			delete(s.data.RuntimeStatus, key)
+		}
+		return FollowerRuntimeStatus{}, err
+	}
+	return normalized, nil
+}
+
+func (s *FileEnrollmentStore) ListFollowerRuntimeStatus(_ context.Context, q RuntimeStatusQuery) ([]FollowerRuntimeStatus, error) {
+	if s == nil {
+		return nil, ErrRuntimeStatusStoreRequired
+	}
+	limit := normalizeRuntimeStatusLimit(q.Limit)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]FollowerRuntimeStatus, 0)
+	for key, status := range s.data.RuntimeStatus {
+		follower, ok := s.data.Followers[key]
+		if !ok || !follower.Active {
+			continue
+		}
+		if q.OrgID != "" && status.OrgID != q.OrgID {
+			continue
+		}
+		if q.FleetID != "" && status.FleetID != q.FleetID {
+			continue
+		}
+		if q.InstanceID != "" && status.InstanceID != q.InstanceID {
+			continue
+		}
+		out = append(out, status)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return followerSummaryLess(FollowerSummary{
+			OrgID: out[i].OrgID, FleetID: out[i].FleetID, InstanceID: out[i].InstanceID, Environment: out[i].Environment,
+		}, FollowerSummary{
+			OrgID: out[j].OrgID, FleetID: out[j].FleetID, InstanceID: out[j].InstanceID, Environment: out[j].Environment,
+		})
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *FileEnrollmentStore) ListEnrolledFollowersForPreflight(_ context.Context, q FollowerListQuery) ([]FollowerSummary, bool, error) {
+	if s == nil {
+		return nil, false, ErrEnrollmentStoreRequired
+	}
+	limit := normalizeRuntimeStatusLimit(q.Limit)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]FollowerSummary, 0)
+	for _, follower := range s.data.Followers {
+		if q.OrgID != "" && follower.Identity.OrgID != q.OrgID {
+			continue
+		}
+		if q.FleetID != "" && follower.Identity.FleetID != q.FleetID {
+			continue
+		}
+		if q.InstanceID != "" && follower.Identity.InstanceID != q.InstanceID {
+			continue
+		}
+		out = append(out, FollowerSummary{
+			OrgID:       follower.Identity.OrgID,
+			FleetID:     follower.Identity.FleetID,
+			InstanceID:  follower.Identity.InstanceID,
+			Environment: follower.Identity.Environment,
+			AuditKeyID:  follower.AuditKeyID,
+			EnrolledAt:  follower.EnrolledAt,
+			Active:      follower.Active,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return followerSummaryLess(out[i], out[j])
+	})
+	truncated := len(out) > limit
+	if truncated {
+		out = out[:limit]
+	}
+	return out, truncated, nil
 }
 
 // RevokeEnrollmentToken marks a single pending token revoked so it can no longer
@@ -641,6 +764,16 @@ func normalizeFollowerListLimit(limit int) int {
 	return limit
 }
 
+func normalizeRuntimeStatusLimit(limit int) int {
+	if limit <= 0 {
+		return defaultFollowerListLimit
+	}
+	if limit > maxFollowerRuntimeStatusRecords {
+		return maxFollowerRuntimeStatusRecords
+	}
+	return limit
+}
+
 func (s *FileEnrollmentStore) load() error {
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -658,6 +791,9 @@ func (s *FileEnrollmentStore) load() error {
 	}
 	if state.Followers == nil {
 		state.Followers = make(map[string]enrolledFollowerRecord)
+	}
+	if state.RuntimeStatus == nil {
+		state.RuntimeStatus = make(map[string]FollowerRuntimeStatus)
 	}
 	s.data = state
 	return nil

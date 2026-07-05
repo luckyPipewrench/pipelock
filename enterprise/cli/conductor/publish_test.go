@@ -993,14 +993,21 @@ func TestPostBundle_409ConflictCodesDeConflated(t *testing.T) {
 			name:        "previous-hash-mismatch",
 			code:        controlplane.PublishConflictPreviousHashMismatch,
 			want:        ErrPolicyPreviousHashMismatch,
-			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax},
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyFleetSkew},
 			wantMessage: "previous-bundle-hash",
+		},
+		{
+			name:        "fleet-skew",
+			code:        controlplane.PublishConflictFleetSkew,
+			want:        ErrPolicyFleetSkew,
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyPreviousHashMismatch},
+			wantMessage: "fleet runtime skew",
 		},
 		{
 			name:        "unknown-code-falls-back",
 			code:        "some_future_code",
 			want:        ErrPolicyPublishConflict,
-			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyPreviousHashMismatch},
+			notWant:     []error{ErrPolicyRollbackViaPublish, ErrPolicyVersionBelowStreamMax, ErrPolicyPreviousHashMismatch, ErrPolicyFleetSkew},
 			wantMessage: "conflicts with the active stream",
 		},
 	} {
@@ -1046,6 +1053,34 @@ func TestPostBundle_409PrevHashNotReportedAsStale(t *testing.T) {
 	}
 	if strings.Contains(msg, "stale") {
 		t.Fatalf("message still says 'stale' for a prev-hash mismatch: %q", msg)
+	}
+}
+
+func TestWritePublishPreflightFormatsEmptySummaryAndOverride(t *testing.T) {
+	var out strings.Builder
+	writePublishPreflight(&out, controlplane.PublishPreflightSummary{})
+	if out.String() != "" {
+		t.Fatalf("empty preflight output = %q, want empty", out.String())
+	}
+
+	writePublishPreflight(&out, controlplane.PublishPreflightSummary{
+		CanApply:          2,
+		Unsupported:       1,
+		StaleUnseen:       3,
+		LastApplyFailed:   4,
+		OutOfAudience:     5,
+		ActiveInScope:     10,
+		AllowFleetSkew:    true,
+		StaleAfterSeconds: 300,
+	})
+	got := out.String()
+	for _, want := range []string{
+		"fleet preflight: can-apply=2 unsupported=1 stale/unseen=3 last-apply-failed=4 out-of-audience=5",
+		"accepted fleet skew with --allow-fleet-skew: unsupported=1 stale/unseen=3 last-apply-failed=4",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("preflight output missing %q: %q", want, got)
+		}
 	}
 }
 

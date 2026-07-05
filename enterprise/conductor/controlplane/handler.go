@@ -72,6 +72,9 @@ const (
 	// bundle_id/version already published with a different hash, or an initial
 	// bundle that carries a previous_bundle_hash).
 	PublishConflictOther = "conflict"
+	// PublishConflictFleetSkew: publish preflight found active followers in the
+	// target audience that are stale/unseen or below min_pipelock_version.
+	PublishConflictFleetSkew = "fleet_skew"
 )
 
 // FollowerIdentityResolver returns the [FollowerIdentity] for an incoming
@@ -176,15 +179,17 @@ type rollbackHeadReconciler interface {
 }
 
 type publishPolicyBundleRequest struct {
-	Bundle conductor.PolicyBundle `json:"bundle"`
+	Bundle         conductor.PolicyBundle `json:"bundle"`
+	AllowFleetSkew bool                   `json:"allow_fleet_skew,omitempty"`
 }
 
 type publishPolicyBundleResponse struct {
-	BundleID    string    `json:"bundle_id"`
-	BundleHash  string    `json:"bundle_hash"`
-	Version     uint64    `json:"version"`
-	PublishedAt time.Time `json:"published_at"`
-	Created     bool      `json:"created"`
+	BundleID    string                  `json:"bundle_id"`
+	BundleHash  string                  `json:"bundle_hash"`
+	Version     uint64                  `json:"version"`
+	PublishedAt time.Time               `json:"published_at"`
+	Created     bool                    `json:"created"`
+	Preflight   PublishPreflightSummary `json:"preflight"`
 }
 
 type createEnrollmentTokenRequest struct {
@@ -482,6 +487,8 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAuditBatch(w, r)
 	case FollowersPath:
 		h.handleListFollowers(w, r)
+	case FollowerRuntimeStatusPath:
+		h.handleFollowerRuntimeStatus(w, r)
 	case StreamStatusPath:
 		h.handleStreamStatus(w, r)
 	default:
@@ -542,7 +549,7 @@ func conductorRoute(path string) string {
 		return AuditBatchesPath
 	}
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, StreamStatusPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, FollowerRuntimeStatusPath, StreamStatusPath:
 		return path
 	default:
 		return "unknown"
@@ -685,10 +692,31 @@ func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
+	preflight, err := h.publishPreflight(r, req.Bundle, req.AllowFleetSkew)
+	if err != nil {
+		if errors.Is(err, ErrFleetPreflightBlocked) {
+			writeCodedError(w, http.StatusConflict, PublishConflictFleetSkew, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
+		return
+	}
 	record, created, err := h.store.Publish(r.Context(), req.Bundle, PublishOptions{Now: h.now()})
 	if err != nil {
 		writePublishStoreError(w, err)
 		return
+	}
+	if req.AllowFleetSkew && h.logger != nil && (preflight.Unsupported > 0 || preflight.StaleUnseen > 0 || preflight.LastApplyFailed > 0) {
+		h.logger.WarnContext(r.Context(), "conductor_publish_fleet_skew_allowed",
+			slog.String("event", "conductor_publish_fleet_skew_allowed"),
+			slog.String("org_id", req.Bundle.OrgID),
+			slog.String("fleet_id", req.Bundle.FleetID),
+			slog.String("bundle_id", req.Bundle.BundleID),
+			slog.Uint64("version", req.Bundle.Version),
+			slog.Int("unsupported", preflight.Unsupported),
+			slog.Int("stale_unseen", preflight.StaleUnseen),
+			slog.Int("last_apply_failed", preflight.LastApplyFailed),
+		)
 	}
 	status := http.StatusOK
 	if created {
@@ -700,7 +728,50 @@ func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Reque
 		Version:     record.Bundle.Version,
 		PublishedAt: record.PublishedAt,
 		Created:     created,
+		Preflight:   preflight,
 	})
+}
+
+func (h *Handler) publishPreflight(r *http.Request, bundle conductor.PolicyBundle, allowFleetSkew bool) (PublishPreflightSummary, error) {
+	statusStore, ok := h.enrollments.(RuntimeStatusStore)
+	if h.enrollments == nil || !ok || statusStore == nil {
+		return PublishPreflightSummary{AllowFleetSkew: allowFleetSkew, StaleAfterSeconds: int(defaultRuntimeStatusStaleAfter / time.Second)}, nil
+	}
+	followerQuery := FollowerListQuery{
+		OrgID:   bundle.OrgID,
+		FleetID: bundle.FleetID,
+		Limit:   maxFollowerRuntimeStatusRecords,
+	}
+	var (
+		followers []FollowerSummary
+		truncated bool
+		err       error
+	)
+	if preflightStore, ok := h.enrollments.(RuntimePreflightEnrollmentStore); ok && preflightStore != nil {
+		followers, truncated, err = preflightStore.ListEnrolledFollowersForPreflight(r.Context(), followerQuery)
+	} else {
+		followers, err = h.enrollments.ListEnrolledFollowers(r.Context(), followerQuery)
+		truncated = len(followers) >= maxFollowerListLimit
+	}
+	if err != nil {
+		return PublishPreflightSummary{}, err
+	}
+	if truncated && !allowFleetSkew {
+		return PublishPreflightSummary{
+			StaleUnseen:       1,
+			AllowFleetSkew:    allowFleetSkew,
+			StaleAfterSeconds: int(defaultRuntimeStatusStaleAfter / time.Second),
+		}, fmt.Errorf("%w: follower roster exceeds preflight cap %d", ErrFleetPreflightBlocked, maxFollowerRuntimeStatusRecords)
+	}
+	statuses, err := statusStore.ListFollowerRuntimeStatus(r.Context(), RuntimeStatusQuery{
+		OrgID:   bundle.OrgID,
+		FleetID: bundle.FleetID,
+		Limit:   maxFollowerRuntimeStatusRecords,
+	})
+	if err != nil {
+		return PublishPreflightSummary{}, err
+	}
+	return evaluatePublishPreflight(followers, statuses, bundle, h.now(), defaultRuntimeStatusStaleAfter, allowFleetSkew)
 }
 
 func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Request) {

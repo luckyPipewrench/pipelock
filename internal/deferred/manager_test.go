@@ -1176,7 +1176,7 @@ func TestPendingJournalRoundTripsCascadeFieldsAndPreUpgradeEntries(t *testing.T)
 	})
 }
 
-func TestPendingJournalTerminalEntryPreventsDeferIDResurrection(t *testing.T) {
+func TestPendingJournalTerminalEntryBeforeHeldFailsClosed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
 	entries := []journalEntry{
 		{
@@ -1205,12 +1205,8 @@ func TestPendingJournalTerminalEntryPreventsDeferIDResurrection(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	pending, err := PendingJournal(path)
-	if err != nil {
-		t.Fatalf("PendingJournal: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("terminal defer_id resurrected as pending: %+v", pending)
+	if _, err := PendingJournal(path); err == nil || !strings.Contains(err.Error(), "held entry after terminal state") {
+		t.Fatalf("PendingJournal error = %v, want held-after-terminal integrity error", err)
 	}
 }
 
@@ -1229,6 +1225,17 @@ func TestPendingJournalEmptyMissingMalformedAndLongLine(t *testing.T) {
 	}
 	if _, err := PendingJournal(malformed); err == nil || !strings.Contains(err.Error(), "parse defer journal") {
 		t.Fatalf("PendingJournal malformed error = %v, want parse error", err)
+	}
+	unknownState := filepath.Join(t.TempDir(), "unknown-state.jsonl")
+	line, err := json.Marshal(journalEntry{DeferID: "future", ActionID: "future", State: "future_state", Timestamp: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("Marshal unknown state entry: %v", err)
+	}
+	if err := os.WriteFile(unknownState, append(line, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile unknown state: %v", err)
+	}
+	if _, err := PendingJournal(unknownState); err == nil || !strings.Contains(err.Error(), "unknown state") {
+		t.Fatalf("PendingJournal unknown state error = %v, want integrity error", err)
 	}
 	longLine := filepath.Join(t.TempDir(), "long.jsonl")
 	if err := os.WriteFile(longLine, []byte(strings.Repeat("x", 1024*1024+1)), 0o600); err != nil {

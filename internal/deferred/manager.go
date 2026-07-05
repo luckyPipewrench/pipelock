@@ -158,6 +158,7 @@ type Resolution struct {
 // Manager tracks per-action holds. It is safe for concurrent use.
 type Manager struct {
 	mu             sync.Mutex
+	journalMu      sync.Mutex
 	cfg            Config
 	warningf       func(format string, args ...any)
 	holds          map[string]*HeldAction
@@ -649,6 +650,9 @@ func (m *Manager) appendJournal(entry journalEntry) error {
 	if m == nil || m.cfg.JournalPath == "" {
 		return nil
 	}
+	m.journalMu.Lock()
+	defer m.journalMu.Unlock()
+
 	path := filepath.Clean(m.cfg.JournalPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
@@ -693,12 +697,15 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		}
 		switch entry.State {
 		case StateHeld:
-			if _, seen := terminal[entry.DeferID]; !seen {
-				pending[entry.DeferID] = entry
+			if _, seen := terminal[entry.DeferID]; seen {
+				return nil, fmt.Errorf("defer journal integrity: held entry after terminal state for defer_id %q", entry.DeferID)
 			}
-		default:
+			pending[entry.DeferID] = entry
+		case StateResolvedAllow, StateResolvedBlock, StateResolvedStepUp:
 			delete(pending, entry.DeferID)
 			terminal[entry.DeferID] = struct{}{}
+		default:
+			return nil, fmt.Errorf("defer journal integrity: unknown state %q for defer_id %q", entry.State, entry.DeferID)
 		}
 	}
 	if err := scanner.Err(); err != nil {

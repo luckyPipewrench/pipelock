@@ -101,11 +101,12 @@ func TestEvaluateMCPInputGatesStdio_FrozenToolBlocksUnknownTool(t *testing.T) {
 }
 
 // TestEvaluateMCPInputGatesStdio_FrozenSessionAllowsNonToolCallMethods
-// pins the Gate 7 scoping fix: when a session is frozen, MCP protocol
-// messages that carry no tool name (tools/list, initialize,
-// notifications/*) must continue to flow. Without the method filter
-// they would hit the fail-closed branch (toolCallName == "") and
-// block, breaking handshake, discovery, and session recovery.
+// pins the frozen-inventory scoping fix: when a session is frozen, MCP
+// protocol messages and A2A method callables that carry no MCP tool name must
+// continue to flow through this specific gate. A2A is method-based and is not
+// a member of the frozen MCP tool-name inventory; method-scoped gates cover it
+// separately. Without the method filter these frames would hit the fail-closed
+// branch (toolCallName == "") and block.
 func TestEvaluateMCPInputGatesStdio_FrozenSessionAllowsNonToolCallMethods(t *testing.T) {
 	t.Parallel()
 
@@ -116,6 +117,7 @@ func TestEvaluateMCPInputGatesStdio_FrozenSessionAllowsNonToolCallMethods(t *tes
 		{"tools/list", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)},
 		{"initialize", []byte(`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`)},
 		{"notification", []byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}`)},
+		{"a2a method", testA2ARequest(3, testA2AMethod)},
 	}
 
 	for _, tc := range cases {
@@ -143,7 +145,7 @@ func TestEvaluateMCPInputGatesStdio_FrozenSessionAllowsNonToolCallMethods(t *tes
 
 			if eval.BlockingGate == blockingGateFrozenTool {
 				t.Errorf("frozen session must not block non-tools/call method %q; "+
-					"Gate 7 should scope to methodToolsCall (breaks MCP handshake/discovery/recovery otherwise)", tc.name)
+					"frozen inventory should scope to methodToolsCall (breaks MCP handshake/discovery/recovery otherwise)", tc.name)
 			}
 		})
 	}

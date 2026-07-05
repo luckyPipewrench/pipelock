@@ -19,7 +19,7 @@ func TestActiveManifest_SignablePreimage_Stable(t *testing.T) {
 		SelectorSetHash:   "sha256:5a",
 		Environment:       Environment{ID: "production", Tenant: "acme", DeploymentID: "ed25519:70b9"},
 		Selectors: []ManifestSelector{
-			{SelectorID: "sha256:s1", Agent: "buster", ContractHash: "sha256:abc"},
+			{SelectorID: "sha256:s1", Agent: "agent-a", ContractHash: "sha256:abc"},
 		},
 		HistoryRoot:    "contracts/history/",
 		RollbackTarget: "sha256:prev",
@@ -40,7 +40,7 @@ func TestActiveManifest_SignablePreimage_Stable(t *testing.T) {
 
 func TestActiveManifest_RecomputeSelectorID(t *testing.T) {
 	t.Parallel()
-	s := ManifestSelector{Agent: "buster", ContractHash: "sha256:abc"}
+	s := ManifestSelector{Agent: "agent-a", ContractHash: "sha256:abc"}
 	id, err := s.ComputeSelectorID()
 	if err != nil {
 		t.Fatalf("ComputeSelectorID: %v", err)
@@ -48,7 +48,7 @@ func TestActiveManifest_RecomputeSelectorID(t *testing.T) {
 	if id == "" {
 		t.Error("empty selector_id")
 	}
-	other := ManifestSelector{Agent: "buster", ContractHash: "sha256:def"}
+	other := ManifestSelector{Agent: "agent-a", ContractHash: "sha256:def"}
 	id2, err := other.ComputeSelectorID()
 	if err != nil {
 		t.Fatalf("ComputeSelectorID: %v", err)
@@ -106,7 +106,7 @@ func TestActiveManifest_Validate_RejectsSelectorIDMismatch(t *testing.T) {
 
 func TestActiveManifest_Validate_AcceptsRecomputedSelectorID(t *testing.T) {
 	t.Parallel()
-	sel := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	sel := ManifestSelector{Agent: "agent-a", ContractHash: "sha256:c1"}
 	id, err := sel.ComputeSelectorID()
 	if err != nil {
 		t.Fatalf("compute id: %v", err)
@@ -125,7 +125,7 @@ func TestActiveManifest_Validate_AcceptsRecomputedSelectorID(t *testing.T) {
 
 func TestActiveManifest_Validate_RejectsMissingSelectorSetHash(t *testing.T) {
 	t.Parallel()
-	sel := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	sel := ManifestSelector{Agent: "agent-a", ContractHash: "sha256:c1"}
 	id, err := sel.ComputeSelectorID()
 	if err != nil {
 		t.Fatalf("compute id: %v", err)
@@ -143,7 +143,7 @@ func TestActiveManifest_Validate_RejectsMissingSelectorSetHash(t *testing.T) {
 
 func TestActiveManifest_Validate_RejectsSelectorSetHashMismatch(t *testing.T) {
 	t.Parallel()
-	sel := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	sel := ManifestSelector{Agent: "agent-a", ContractHash: "sha256:c1"}
 	id, err := sel.ComputeSelectorID()
 	if err != nil {
 		t.Fatalf("compute id: %v", err)
@@ -163,7 +163,7 @@ func TestActiveManifest_Validate_RejectsSelectorSetHashMismatch(t *testing.T) {
 func TestActiveManifest_Validate_AcceptsValidManifest(t *testing.T) {
 	t.Parallel()
 	// Compute correct selector_ids so Validate passes identity checks.
-	s1 := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	s1 := ManifestSelector{Agent: "agent-a", ContractHash: "sha256:c1"}
 	id1, err := s1.ComputeSelectorID()
 	if err != nil {
 		t.Fatalf("compute id1: %v", err)

@@ -1353,7 +1353,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// SSE streaming: hijack the response body so per-event scanning runs
 	// inline. Without this the buffered path below caps SSE at the proxy
 	// max-body limit and breaks per-event flushing, killing token-by-token
-	// UX for any LLM SSE response (OpenAI, Anthropic, Kilo Gateway).
+	// UX for any LLM SSE response (OpenAI, Anthropic, OpenAI-compatible gateways).
 	// httputil.ReverseProxy auto-flushes text/event-stream per write, so
 	// the pipe writer's per-event Write reaches the client immediately.
 	if IsSSEContentType(resp.Header.Get("Content-Type")) {

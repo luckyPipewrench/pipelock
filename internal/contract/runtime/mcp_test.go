@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	mcpTestServer = "stripe"
+	mcpTestServer = "payments"
 	mcpTestTool   = "create_payment_intent"
 )
 
@@ -164,7 +164,7 @@ func TestEvaluateMCP_AllowRuleAnnotatesScannerVerdict(t *testing.T) {
 func TestEvaluateMCP_ArgsMismatchBlocksWithReason(t *testing.T) {
 	t.Parallel()
 	args := []map[string]any{{testJSONKey: testFieldCurrency, testJSONKeyValue: testCurrencyUSD}}
-	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+	resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
@@ -187,8 +187,8 @@ func TestEvaluateMCP_ArgsMismatchBlocksWithReason(t *testing.T) {
 	if decision.Reason != decisionReasonMCPArgsMismatch {
 		t.Fatalf("reason = %q, want %q", decision.Reason, decisionReasonMCPArgsMismatch)
 	}
-	if decision.RuleID != "r-stripe" {
-		t.Fatalf("rule_id = %q, want r-stripe", decision.RuleID)
+	if decision.RuleID != "r-payments" {
+		t.Fatalf("rule_id = %q, want r-payments", decision.RuleID)
 	}
 	if decision.Drift == nil || decision.Drift.Kind != DriftKindPositive {
 		t.Fatalf("drift = %+v, want positive drift event", decision.Drift)
@@ -201,7 +201,7 @@ func TestEvaluateMCP_ArgsMissingKeyIsNonMatch(t *testing.T) {
 	// Otherwise a tool call that omits the constrained arg would slip
 	// through default-deny by accident.
 	args := []map[string]any{{testJSONKey: testFieldCurrency, testJSONKeyValue: testCurrencyUSD}}
-	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+	resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
@@ -504,7 +504,7 @@ func TestEvaluateMCP_RuleWithMissingServerSelectorIgnored(t *testing.T) {
 func TestEvaluateMCP_ArgMatcherWithEmptyKeyIsNonMatch(t *testing.T) {
 	t.Parallel()
 	args := []map[string]any{{testJSONKey: "   ", testJSONKeyValue: testCurrencyUSD}}
-	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+	resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
@@ -534,7 +534,7 @@ func TestEvaluateMCP_NilMatcherValueIsNonMatch(t *testing.T) {
 	t.Run("matcher value is nil", func(t *testing.T) {
 		t.Parallel()
 		args := []map[string]any{{testJSONKey: testFieldCurrency, testJSONKeyValue: nil}}
-		resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+		resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 		decision, err := EvaluateMCP(EvaluateMCPOptions{
 			Resolved: &resolved,
 			Request: MCPRequest{
@@ -555,7 +555,7 @@ func TestEvaluateMCP_NilMatcherValueIsNonMatch(t *testing.T) {
 	t.Run("request value is nil", func(t *testing.T) {
 		t.Parallel()
 		args := []map[string]any{{testJSONKey: testFieldCurrency, testJSONKeyValue: "<nil>"}}
-		resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+		resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 		decision, err := EvaluateMCP(EvaluateMCPOptions{
 			Resolved: &resolved,
 			Request: MCPRequest{
@@ -581,7 +581,7 @@ func TestEvaluateMCP_ArgMatcherStringDoesNotMatchNumber(t *testing.T) {
 	// reality, a contract that allowed the string "100" would also allow
 	// numeric 100, which can mean a different thing to typed MCP tools.
 	args := []map[string]any{{testJSONKey: testFieldAmount, testJSONKeyValue: "100"}}
-	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+	resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
@@ -606,7 +606,7 @@ func TestEvaluateMCP_ArgMatcherLargeIntegerExact(t *testing.T) {
 	// These two integers are distinct, but both round to the same IEEE-754
 	// value if compared as float64.
 	args := []map[string]any{{testJSONKey: "nonce", testJSONKeyValue: uint64(9007199254740993)}}
-	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+	resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
@@ -628,7 +628,7 @@ func TestEvaluateMCP_ArgMatcherLargeIntegerExact(t *testing.T) {
 func TestEvaluateMCP_ArgMatcherJSONNumberMatchesNumericArg(t *testing.T) {
 	t.Parallel()
 	args := []map[string]any{{testJSONKey: testFieldAmount, testJSONKeyValue: json.Number("100")}}
-	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+	resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
@@ -653,7 +653,7 @@ func TestEvaluateMCP_V2MatcherSilentlyMisses(t *testing.T) {
 	// runtime sees these as non-match so operators get default-deny
 	// rather than a spurious allow on an unrecognized matcher.
 	args := []map[string]any{{testJSONKey: testFieldAmount, "op": "lt", "threshold": "1000"}}
-	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
+	resolved := mcpResolved(mcpEnforceRule("r-payments", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
@@ -705,7 +705,7 @@ func TestEvaluateMCP_MalformedSelectorArgsNonMatch(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			rule := mcpEnforceRule("r-stripe", nil)
+			rule := mcpEnforceRule("r-payments", nil)
 			rule.Selector["args"] = tc.args
 			resolved := mcpResolved(rule)
 			decision, err := EvaluateMCP(EvaluateMCPOptions{

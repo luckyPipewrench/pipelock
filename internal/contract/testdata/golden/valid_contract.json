@@ -10,7 +10,7 @@
       "selector.agent": "internal"
     },
     "selector": {
-      "agent": "buster",
+      "agent": "agent-a",
       "selector_id": "sha256:sel-test"
     },
     "observation_window": {
@@ -42,5 +42,5 @@
     },
     "rules": []
   },
-  "signature": "ed25519:8f3ec59490a0fe5b7a14694f6afac615243c240e46f0a59c9724b5224d3dace65434482f7ba6a3fe41f2b24e6cfd7bf48aa6cb7226a8c42d090081eb6887ba00"
+  "signature": "ed25519:5cab56a2ab082aa1ab3dfe075bf9b210f057462f62c0730fa8a69e6881617a02bd6da301b57482170abd384189aa334213999cc42caadfc2043be2ce1aecc302"
 }

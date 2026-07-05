@@ -1,6 +1,6 @@
 # Health Endpoint and Wedge-Detection Watchdog
 
-The `/health` endpoint reports whether pipelock's main HTTP server is responsive AND whether its internal subsystems are healthy. External supervisors — Kubernetes liveness/readiness probes, KiloClaw's controller, generic process supervisors — poll `/health` to decide when to restart pipelock or route traffic away from it.
+The `/health` endpoint reports whether pipelock's main HTTP server is responsive AND whether its internal subsystems are healthy. External supervisors — Kubernetes liveness/readiness probes, external controllers, generic process supervisors — poll `/health` to decide when to restart pipelock or route traffic away from it.
 
 Before v2.4, `/health` returned 200 as long as the HTTP handler itself responded. A scanner deadlock, config-reload race, or dead session-manager goroutine would not surface here: the process looked healthy from outside while customer traffic failed inside. v2.4 introduces an internal wedge-detection watchdog that flips `/health` to **503 Service Unavailable** when any tracked subsystem is unhealthy.
 
@@ -120,7 +120,7 @@ livenessProbe:
 
 The `failureThreshold` × `periodSeconds` budget should be larger than the staleness threshold (3 × `interval_seconds`) so transient probe blips don't trigger restarts.
 
-Supervisors that are not Kubernetes (KiloClaw controller, systemd, custom watchdogs) should follow the same pattern: poll every N seconds, restart after K consecutive failures, where N ≥ `interval_seconds` and N × K > 3 × `interval_seconds`.
+Supervisors that are not Kubernetes (external controllers, systemd, custom watchdogs) should follow the same pattern: poll every N seconds, restart after K consecutive failures, where N ≥ `interval_seconds` and N × K > 3 × `interval_seconds`.
 
 ## Disabling the Watchdog
 

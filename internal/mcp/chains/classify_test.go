@@ -278,10 +278,10 @@ func TestClassifySensitivity_Override_Exact(t *testing.T) {
 func TestClassifySensitivity_Override_Glob(t *testing.T) {
 	cfg := &config.ToolChainDetection{
 		SensitivityLabels: map[string][]string{
-			"sensitive_source": {"acme_internal_*"},
+			"sensitive_source": {"vendor_internal_*"},
 		},
 	}
-	got := ClassifySensitivity("acme_internal_payroll", "", cfg)
+	got := ClassifySensitivity("vendor_internal_payroll", "", cfg)
 	if got != "sensitive_source" {
 		t.Errorf("glob override should win, got %q", got)
 	}

@@ -18,7 +18,7 @@ import (
 // MCPRequest is the normalized input needed to evaluate mcp_tool_call rules.
 //
 // Server is the upstream MCP server identifier the proxy resolved (for
-// example "stripe" or "lakera-guard"). ToolName is the tool the agent
+// example "payments" or "guardrails"). ToolName is the tool the agent
 // is invoking. ToolArgs is the parsed arg map; matchers operate against
 // typed scalar values, so callers do not need to pre-stringify numbers
 // or booleans.

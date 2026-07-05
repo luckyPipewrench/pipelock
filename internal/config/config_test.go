@@ -6842,7 +6842,7 @@ api_allowlist:
   - "*.anthropic.com"
 suppress:
   - rule: Credential in URL
-    path: app/models/assistant/external/client.rb
+    path: src/integrations/provider_client.rb
     reason: "Instance variable storing constructor param"
   - rule: Anthropic API Key
     path: "config/initializers/*.rb"
@@ -6858,7 +6858,7 @@ suppress:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !IsSuppressed("Credential in URL", "app/models/assistant/external/client.rb", cfg.Suppress) {
+	if !IsSuppressed("Credential in URL", "src/integrations/provider_client.rb", cfg.Suppress) {
 		t.Fatal("expected loaded Credential in URL suppress entry to survive defaults")
 	}
 	reason, ok := SuppressedReason("Anthropic API Key", "config/initializers/provider.rb", cfg.Suppress)

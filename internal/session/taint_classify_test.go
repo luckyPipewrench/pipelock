@@ -85,10 +85,10 @@ func TestClassifyMCPToolCall(t *testing.T) {
 		{
 			name:       "secret path is secret use",
 			toolName:   "read_file",
-			argsJSON:   `{"path":"/home/josh/.ssh/id_rsa"}`,
+			argsJSON:   `{"path":"/home/developer/.ssh/id_rsa"}`,
 			wantClass:  session.ActionClassSecret,
 			wantLevel:  session.SensitivityProtected,
-			wantAction: "/home/josh/.ssh/id_rsa",
+			wantAction: "/home/developer/.ssh/id_rsa",
 		},
 		{
 			name:       "browse tool stays browse",

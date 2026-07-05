@@ -47,7 +47,7 @@ func TestDataClassCoverage_RegulatedRejects(t *testing.T) {
 			"observation_window.event_count": "public",
 			"rationale.summary":              string(DataClassRegulated),
 		},
-		"selector": map[string]any{"agent": "buster"},
+		"selector": map[string]any{"agent": "agent-a"},
 	}
 	err := ValidateDataClassCoverage(body, body["field_data_classes"].(map[string]any))
 	if !errors.Is(err, ErrRegulatedField) {
@@ -62,7 +62,7 @@ func TestDataClassCoverage_MissingClassRejectsWhenNoRoot(t *testing.T) {
 		"field_data_classes": map[string]any{
 			// selector.agent is unclassified, no root to fall back to
 		},
-		"selector": map[string]any{"agent": "buster"},
+		"selector": map[string]any{"agent": "agent-a"},
 	}
 	err := ValidateDataClassCoverage(body, body["field_data_classes"].(map[string]any))
 	if !errors.Is(err, ErrMissingDataClass) {
@@ -78,7 +78,7 @@ func TestDataClassCoverage_LenientWithRoot(t *testing.T) {
 		"field_data_classes": map[string]any{
 			// selector.agent intentionally absent; lenient inherits root
 		},
-		"selector": map[string]any{"agent": "buster"},
+		"selector": map[string]any{"agent": "agent-a"},
 	}
 	err := ValidateDataClassCoverage(body, body["field_data_classes"].(map[string]any))
 	if err != nil {
@@ -91,7 +91,7 @@ func TestDataClassCoverage_RejectsInvalidRoot(t *testing.T) {
 	body := map[string]any{
 		"data_class_root":    invalidDataClassName,
 		"field_data_classes": map[string]any{},
-		"selector":           map[string]any{"agent": "buster"},
+		"selector":           map[string]any{"agent": "agent-a"},
 	}
 	err := ValidateDataClassCoverage(body, body["field_data_classes"].(map[string]any))
 	if !errors.Is(err, ErrInvalidDataClass) {
@@ -104,7 +104,7 @@ func TestDataClassCoverage_RejectsRegulatedRoot(t *testing.T) {
 	body := map[string]any{
 		"data_class_root":    string(DataClassRegulated),
 		"field_data_classes": map[string]any{},
-		"selector":           map[string]any{"agent": "buster"},
+		"selector":           map[string]any{"agent": "agent-a"},
 	}
 	err := ValidateDataClassCoverage(body, body["field_data_classes"].(map[string]any))
 	if !errors.Is(err, ErrRegulatedField) {
@@ -119,7 +119,7 @@ func TestDataClassCoverage_InvalidClassValueRejects(t *testing.T) {
 		"field_data_classes": map[string]any{
 			"selector.agent": invalidDataClassName, // not in enum
 		},
-		"selector": map[string]any{"agent": "buster"},
+		"selector": map[string]any{"agent": "agent-a"},
 	}
 	err := ValidateDataClassCoverage(body, body["field_data_classes"].(map[string]any))
 	if !errors.Is(err, ErrInvalidDataClass) {
@@ -132,7 +132,7 @@ func TestDataClassCoverage_NonStringClassValueRejects(t *testing.T) {
 	// fieldClasses entry is an int rather than a string; must reject with ErrInvalidDataClass.
 	body := map[string]any{
 		"data_class_root": "internal",
-		"selector":        map[string]any{"agent": "buster"},
+		"selector":        map[string]any{"agent": "agent-a"},
 	}
 	fieldClasses := map[string]any{
 		"selector.agent": 42, // non-string class value

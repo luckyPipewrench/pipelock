@@ -74,7 +74,7 @@ type GenericSSEScanOptions struct {
 
 // ScanGenericSSEStream handles non-A2A text/event-stream responses with
 // per-event DLP and injection scanning, plus a rolling-tail scan across
-// adjacent events. Used for OpenAI, Anthropic, Kilo Gateway, and any
+// adjacent events. Used for OpenAI, Anthropic, OpenAI-compatible gateways, and any
 // other LLM SSE traffic the proxy intercepts.
 //
 // Contract:

@@ -178,7 +178,7 @@ func TestVerificationMetadata_ComputeSelectorID_DefaultSelector(t *testing.T) {
 	}
 	// Verify it differs from a non-default selector with same contract hash.
 	s2 := ManifestSelector{
-		Agent:        "buster",
+		Agent:        "agent-a",
 		ContractHash: "sha256:abc",
 	}
 	id2, err := s2.ComputeSelectorID()

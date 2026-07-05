@@ -113,7 +113,7 @@ rules:
   min_confidence: medium                    # skip experimental rules (low confidence)
   include_experimental: false               # default: only stable rules are active
   # trusted_keys:                           # additional trusted public keys (beyond embedded keyring)
-  #   - name: "acme-security"
+  #   - name: "vendor-security"
   #     public_key: "64-char-hex-encoded-ed25519-public-key"
 ```
 
@@ -165,8 +165,8 @@ A bundle is a single YAML file with a header and a list of rules:
 format_version: 2
 name: my-company-rules
 version: "2026.04.1"
-author: acme-security
-description: "Internal detection patterns for Acme Corp"
+author: vendor-security
+description: "Internal detection patterns for Vendor Corp"
 min_pipelock: "2.2.0"
 tier: community
 monotonic_version: 1
@@ -179,12 +179,12 @@ rules:
   - id: dlp-internal-api-key
     type: dlp
     status: stable
-    name: "Acme Internal API Key"
-    description: "Detects Acme Corp internal API keys"
+    name: "Vendor Internal API Key"
+    description: "Detects Vendor Corp internal API keys"
     severity: critical
     confidence: high
     pattern:
-      regex: 'acme_[a-zA-Z0-9]{32}'
+      regex: 'vendor_[a-zA-Z0-9]{32}'
 ```
 
 `format_version: 1` bundles still load for backwards compatibility, but new bundles should use `format_version: 2` so they can declare `tier`, `required_features`, and freshness metadata. The v2 validation also requires `monotonic_version`, `published_at`, and `expires_at`.

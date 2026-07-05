@@ -32,7 +32,7 @@ const (
 
 	liveLockAgent       = "agent-a"
 	liveLockHTTPHost    = "api.example.com"
-	liveLockMCPServer   = "stripe"
+	liveLockMCPServer   = "payments"
 	liveLockAllowedTool = "create_payment_intent"
 	liveLockDeniedTool  = "refund_payment"
 

@@ -116,7 +116,7 @@ func TestGolden_Contract(t *testing.T) {
 		DataClassRoot:    "internal",
 		FieldDataClasses: map[string]string{"selector.agent": "internal"},
 		Selector: Selector{
-			Agent:      "buster",
+			Agent:      "agent-a",
 			SelectorID: "sha256:sel-test",
 		},
 		ObservationWindow: ObservationWindow{
@@ -192,7 +192,7 @@ func TestGolden_ActiveManifest(t *testing.T) {
 	priv := goldenSignKey(t)
 
 	// Compute a correct selector_id from the selector body (no SelectorID field).
-	sel := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	sel := ManifestSelector{Agent: "agent-a", ContractHash: "sha256:c1"}
 	selID, err := sel.ComputeSelectorID()
 	if err != nil {
 		t.Fatalf("compute selector_id: %v", err)

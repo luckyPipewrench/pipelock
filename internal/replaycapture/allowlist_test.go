@@ -42,7 +42,7 @@ func TestValidateReceiptPublicSafe_Rejections(t *testing.T) {
 		mutate func(*receipt.ActionRecord)
 	}{
 		{"foreign principal", func(ar *receipt.ActionRecord) { ar.Principal = "org:acme-corp" }},
-		{"foreign actor", func(ar *receipt.ActionRecord) { ar.Actor = "agent:prod-vox" }},
+		{"foreign actor", func(ar *receipt.ActionRecord) { ar.Actor = "agent:prod-agent-b" }},
 		{"empty target", func(ar *receipt.ActionRecord) { ar.Target = "" }},
 		{"real host target", func(ar *receipt.ActionRecord) { ar.Target = "https://api.realvendor.io/x" }},
 		{"private ip target", func(ar *receipt.ActionRecord) { ar.Target = "http://10.0.0.5/admin" }},

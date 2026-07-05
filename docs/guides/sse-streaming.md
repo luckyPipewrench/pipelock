@@ -8,7 +8,7 @@ terminates the stream fail-closed.
 
 Before v2.3.0, only A2A streams received inline scanning. Generic
 `text/event-stream` responses (OpenAI chat completions, Anthropic
-messages, Kilo Gateway, any MCP HTTP/SSE server) were buffered before
+messages, OpenAI-compatible gateways, any MCP HTTP/SSE server) were buffered before
 scanning, which broke streaming UX and capped response size at 1 MB in
 the reverse proxy. v2.3.0 generalizes the streaming scan path to every
 `text/event-stream` response across the forward proxy, TLS interception,

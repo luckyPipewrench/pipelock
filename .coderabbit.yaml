@@ -7,7 +7,7 @@
 language: "en-US"
 
 reviews:
-  profile: "assertive"             # broader coverage (Kilo reviewer removed); path_instructions below temper speculative nits
+  profile: "assertive"             # broader coverage; path_instructions below temper speculative nits
   request_changes_workflow: false  # advisory only — must NEVER block a merge
   high_level_summary: true         # one automated summary; maintainers own decisions
   poem: false

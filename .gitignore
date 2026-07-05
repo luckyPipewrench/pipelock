@@ -49,8 +49,6 @@ pipelock-audit.log
 .claude/
 .claude
 
-# ClawHub
-.clawdhub/
 
 # Temp build dir for generate.sh
 .gen-shadow-*

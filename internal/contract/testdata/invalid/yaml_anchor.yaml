@@ -1,4 +1,4 @@
 defaults: &d
   fidelity: medium
 selector:
-  agent: buster
+  agent: agent-a

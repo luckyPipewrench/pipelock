@@ -24,7 +24,7 @@ func TestContract_SignablePreimage_Stable(t *testing.T) {
 		KeyPurpose:        "contract-compile-signing",
 		DataClassRoot:     "internal",
 		FieldDataClasses:  map[string]string{"selector.agent": "internal"},
-		Selector:          Selector{Agent: "buster", SelectorID: "sha256:sel"},
+		Selector:          Selector{Agent: "agent-a", SelectorID: "sha256:sel"},
 	}
 	got, err := c.SignablePreimage()
 	if err != nil {
@@ -382,7 +382,7 @@ func TestContract_Validate_AcceptsMCPToolCallEnforce(t *testing.T) {
 			WilsonLower:          "0.99",
 			Observation:          map[string]any{},
 			Selector: map[string]any{
-				"server": map[string]any{"value": "stripe"},
+				"server": map[string]any{"value": "payments"},
 				"tool":   map[string]any{"value": "create_payment_intent"},
 			},
 			Rationale:         map[string]any{},

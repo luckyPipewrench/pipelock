@@ -41,8 +41,8 @@ redaction:
     customer-hosts:
       class: customer-host
       entries:
-        - acme.internal
-        - billing.acme.internal
+        - app.vendor.example
+        - billing.vendor.example
       word_boundary: true
       priority: 80
   allowlist_unparseable:
@@ -54,9 +54,9 @@ redaction:
       path_suffixes: [/oauth2/v2.0/token]
       content_types: [application/x-www-form-urlencoded]
   providers:
-    acme_llm:
+    custom_provider:
       host_patterns:
-        - api.acme-llm.example
+        - api.provider.example
       path_prefixes:
         - /v1/messages
       parser: json

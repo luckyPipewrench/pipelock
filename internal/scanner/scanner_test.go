@@ -3469,8 +3469,8 @@ func TestCheckSubdomainEntropy_BlocksEncodedExfilLabels(t *testing.T) {
 // TestCheckSubdomainEntropy_AllowsEncodedLookalikes guards the encoded-exfil
 // signals against false positives on legitimate hostnames: short hex-ish
 // labels, a few dictionary subdomain labels, and base32-charset words without
-// digits. These mirror the benign baseline (api.github.com, cdnjs.cloudflare.com,
-// security.googleblog.com) plus deeper-but-benign shapes.
+// digits. These mirror a benign baseline (API, CDN, and security blog
+// hosts) plus deeper-but-benign shapes.
 func TestCheckSubdomainEntropy_AllowsEncodedLookalikes(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
@@ -3483,14 +3483,14 @@ func TestCheckSubdomainEntropy_AllowsEncodedLookalikes(t *testing.T) {
 		name string
 		url  string
 	}{
-		{"benign cdn host", "https://cdnjs.cloudflare.com/ajax/libs/x.js"},
-		{"benign api host", "https://api.github.com/v2/status"},
-		{"benign blog host", "https://security.googleblog.com/post"},
+		{"benign cdn host", "https://cdn.vendor.example/ajax/libs/x.js"},
+		{"benign api host", "https://api.vendor.example/v2/status"},
+		{"benign blog host", "https://security.provider.example/post"},
 		{"short hex label below min", "https://a1b2c3d4.cdn.example.com/"},
 		{"base32 word without digit", "https://ABCDEFGHIJKLMNOP.example.com/"},
 		{"long word with single digit", "https://myservice2instance.example.com/"},
 		{"three short dictionary labels", "https://prod.api.cdn.example.com/"},
-		{"regional endpoint", "https://s3.dualstack.us-east-1.example.com/"},
+		{"regional endpoint", "https://storage.dualstack.us-east-1.vendor.example/"},
 		{"trailing-dot fqdn", "https://api.production.longservice.example.com./"},
 		{"deep dictionary host over 30 chars", "https://customer-production.us-east-1.api.example.com/"},
 		{"four dictionary labels", "https://web.production.team-alpha.region.example.com/"},

@@ -183,12 +183,12 @@ Set `action: warn` on the individual pattern (not the top-level `dlp.action`, wh
 ```yaml
 dlp:
   patterns:
-    - name: "AcmeInternalToken"
-      regex: "acme_[A-Za-z0-9]{32}"
+    - name: "VendorInternalToken"
+      regex: "vendor_[A-Za-z0-9]{32}"
       severity: high
       action: warn        # audit-only for rollout
       exempt_domains:
-        - "billing.acme.internal"
+        - "billing.vendor.example"
 ```
 
 Warn matches from that pattern appear in your audit sink (webhook, syslog, OTLP) with the pattern name, severity, transport, and request context, but the request is not blocked. Tune the regex and `exempt_domains` until the signal is clean, then remove the `action` line to return the pattern to default blocking behavior.

@@ -4763,7 +4763,7 @@ const (
 // handleHealth returns proxy health status including uptime, feature flags,
 // and (when the watchdog is enabled) a per-subsystem liveness map. Returns
 // HTTP 503 Service Unavailable when any subsystem is unhealthy so external
-// supervisors (k8s readiness probes, KiloClaw controller, etc.) get a clean
+// supervisors (k8s readiness probes, external controllers, etc.) get a clean
 // signal even if the HTTP handler itself is fine.
 func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 	cfg := p.cfgPtr.Load()

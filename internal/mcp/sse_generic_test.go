@@ -151,8 +151,8 @@ func TestScanGenericSSEStream_Anthropic_HappyPath(t *testing.T) {
 	}
 }
 
-func TestScanGenericSSEStream_KiloGateway_HappyPath(t *testing.T) {
-	// Kilo Gateway is OpenAI-compatible; this exercise asserts the same
+func TestScanGenericSSEStream_OpenAICompatibleGateway_HappyPath(t *testing.T) {
+	// OpenAI-compatible gateways exercise the same
 	// shape works via a different provider banner.
 	body := strings.Join([]string{
 		`data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"Token"}}]}`,

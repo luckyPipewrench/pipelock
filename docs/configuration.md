@@ -84,7 +84,9 @@ api_allowlist:
   - "*.anthropic.com"
   - "*.openai.com"
   - "github.com"
+  - "*.github.com"
   - "*.githubusercontent.com"
+  - "registry.npmjs.org"
 ```
 
 Supports wildcards (`*.example.com` matches `api.example.com` **and** the apex `example.com` itself). Case-insensitive.
@@ -113,9 +115,10 @@ fetch_proxy:
     blocklist:
       - "*.pastebin.com"
       - "*.hastebin.com"
+      - "*.paste.ee"
       - "*.transfer.sh"
-      - "file.io"
-      - "requestbin.net"
+      - "*.file.io"
+      - "*.requestbin.com"
     subdomain_entropy_exclusions:
       - "files.pythonhosted.org"
       - "pypi.org"
@@ -384,9 +387,9 @@ redaction:
       path_suffixes: [/oauth2/v2.0/token]
       content_types: [application/x-www-form-urlencoded]
   providers:
-    acme_llm:
+    custom_provider:
       host_patterns:
-        - api.acme-llm.example
+        - api.provider.example
       path_prefixes:
         - /v1/messages
       parser: json
@@ -810,8 +813,8 @@ Individual DLP patterns can carry an explicit `action: warn` to run in audit-onl
 ```yaml
 dlp:
   patterns:
-    - name: "AcmeInternalToken"
-      regex: "acme_[A-Za-z0-9]{32}"
+    - name: "VendorInternalToken"
+      regex: "vendor_[A-Za-z0-9]{32}"
       severity: high
       action: warn          # audit-only; does not block
 ```
@@ -911,7 +914,7 @@ Use `unscannable_passthrough` only for opaque-by-construction artifact downloads
 
 ### Generic SSE streaming (`response_scanning.sse_streaming`)
 
-Inline body scanning of `text/event-stream` responses for non-A2A LLM traffic (OpenAI chat completions, Anthropic messages, Kilo Gateway, generic LLM SSE). Without this, streaming responses fall back to the buffered scan path, which caps the body at the proxy's max-body limit and breaks per-event flushing — the agent waits for the whole response before seeing any tokens.
+Inline body scanning of `text/event-stream` responses for non-A2A LLM traffic (OpenAI chat completions, Anthropic messages, OpenAI-compatible gateways, generic LLM SSE). Without this, streaming responses fall back to the buffered scan path, which caps the body at the proxy's max-body limit and breaks per-event flushing — the agent waits for the whole response before seeing any tokens.
 
 ```yaml
 response_scanning:
@@ -2142,7 +2145,7 @@ rules:
   min_confidence: medium          # skip low-confidence (experimental) rules
   include_experimental: false     # only load stable rules by default
   trusted_keys:                   # additional signing keys (beyond embedded keyring)
-    - name: "acme-security"
+    - name: "vendor-security"
       public_key: "64-char-hex-encoded-ed25519-public-key"
 ```
 
@@ -2624,7 +2627,7 @@ taint:
       granted_by: "platform-team"
       reason: "migration runbook"
     - scope: "source"
-      source_match: "developer.mozilla.org"
+      source_match: "developer.vendor.example"
       expires_at: "2026-06-01T00:00:00Z"
       granted_by: "platform-team"
       reason: "allowlisted reference workflow"
@@ -2896,8 +2899,8 @@ Follower-side configuration for joining a [Conductor](guides/conductor.md)-manag
 ```yaml
 conductor:
   enabled: true
-  conductor_url: https://conductor.internal:8895
-  org_id: org-acme
+  conductor_url: https://conductor.example.internal:8895
+  org_id: org-vendor
   fleet_id: prod
   instance_id: edge-01
   labels:
@@ -3042,7 +3045,7 @@ learn_lock:
   roster_path: /etc/pipelock/roster.json
   environment:
     id: production
-    tenant: acme
+    tenant: vendor
     deployment_id: prod-us-1
   pinned_root_fingerprint: sha256:<64 lowercase hex>
   minimum_signatures: 1

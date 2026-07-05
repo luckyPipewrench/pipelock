@@ -219,8 +219,8 @@ unless it is an enterprise build with the `fleet` entitlement**.
 ```yaml
 conductor:
   enabled: true
-  conductor_url: https://conductor.internal:8895
-  org_id: org-acme
+  conductor_url: https://conductor.example.internal:8895
+  org_id: org-vendor
   fleet_id: prod
   instance_id: edge-01
   labels:

@@ -47,8 +47,8 @@ func TestRewriteRequestJSON_CustomProviderParserRedactsWithoutCodeChange(t *test
 	t.Parallel()
 
 	registry, err := NewProviderRegistry(map[string]ProviderSpec{
-		"acme_llm": {
-			HostPatterns: []string{"api.acme-llm.example"},
+		"custom_provider": {
+			HostPatterns: []string{"api.provider.example"},
 			PathPrefixes: []string{"/v1/messages"},
 			Parser:       ParserJSON,
 		},
@@ -59,14 +59,14 @@ func TestRewriteRequestJSON_CustomProviderParserRedactsWithoutCodeChange(t *test
 
 	body := []byte(`{"input":[{"text":"customer host dc01.corp.local"}]}`)
 	out, report, err := RewriteRequestJSON(body, NewDefaultMatcher(), NewRedactor(), Limits{}, RequestMetadata{
-		Host: "api.acme-llm.example",
+		Host: "api.provider.example",
 		Path: "/v1/messages",
 	}, registry)
 	if err != nil {
 		t.Fatalf("RewriteRequestJSON: %v", err)
 	}
-	if report.Provider != "acme_llm" {
-		t.Fatalf("provider = %q, want acme_llm", report.Provider)
+	if report.Provider != "custom_provider" {
+		t.Fatalf("provider = %q, want custom_provider", report.Provider)
 	}
 	if strings.Contains(string(out), "dc01.corp.local") {
 		t.Fatalf("custom provider parser leaked FQDN: %s", out)

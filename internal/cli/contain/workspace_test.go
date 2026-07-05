@@ -16,11 +16,11 @@ import (
 const testSetfaclCmd = "setfacl"
 
 func TestWorkspaceACLCommands(t *testing.T) {
-	commands := workspaceACLCommands("/home/josh/dev/pipelock", "pipelock-agent", workspaceModeReadWrite)
+	commands := workspaceACLCommands("/home/developer/dev/pipelock", "pipelock-agent", workspaceModeReadWrite)
 	if len(commands) != 5 {
 		t.Fatalf("commands len = %d, want 5", len(commands))
 	}
-	if commands[0].name != testSetfaclCmd || !containsArg(commands[0].args, "/home/josh/dev") {
+	if commands[0].name != testSetfaclCmd || !containsArg(commands[0].args, "/home/developer/dev") {
 		t.Fatalf("ancestor command = %+v", commands[0])
 	}
 	if got := strings.Join(commands[1].args, " "); !strings.Contains(got, "u:pipelock-agent:rwX") {
@@ -339,8 +339,8 @@ func TestResolveWorkspaceDirRejectsEmptyAndMissing(t *testing.T) {
 func TestWorkspaceRevokeAllCommandsDeduplicatesAncestors(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	commands, err := workspaceRevokeAllCommands(env, []workspaceGrant{
-		{Path: "/home/josh/dev/a", Mode: workspaceModeReadOnly},
-		{Path: "/home/josh/dev/b", Mode: workspaceModeReadOnly},
+		{Path: "/home/developer/dev/a", Mode: workspaceModeReadOnly},
+		{Path: "/home/developer/dev/b", Mode: workspaceModeReadOnly},
 	}, "pipelock-agent")
 	if err != nil {
 		t.Fatalf("commands: %v", err)
@@ -352,7 +352,7 @@ func TestWorkspaceRevokeAllCommandsDeduplicatesAncestors(t *testing.T) {
 	if last.name != testSetfaclCmd {
 		t.Fatalf("last command = %+v", last)
 	}
-	if strings.Count(strings.Join(last.args, " "), "/home/josh/dev") != 1 {
+	if strings.Count(strings.Join(last.args, " "), "/home/developer/dev") != 1 {
 		t.Fatalf("ancestors not deduplicated: %+v", last)
 	}
 }

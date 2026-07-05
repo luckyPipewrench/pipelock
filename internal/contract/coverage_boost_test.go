@@ -76,7 +76,7 @@ func TestContract_Validate_CoverageHappyPathWithSelector(t *testing.T) {
 		ContractKind:     ContractKind,
 		DataClassRoot:    "internal",
 		FieldDataClasses: map[string]string{"selector.agent": "internal"},
-		Selector:         Selector{Agent: "buster", SelectorID: "sha256:any"},
+		Selector:         Selector{Agent: "agent-a", SelectorID: "sha256:any"},
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("happy path failed: %v", err)
@@ -103,7 +103,7 @@ func TestParseYAMLStrict_AcceptsSequenceOfMaps(t *testing.T) {
 
 func TestComputeSelectorID_WithAgentGlob(t *testing.T) {
 	t.Parallel()
-	s := ManifestSelector{AgentGlob: "buster-*", ContractHash: "sha256:abc"}
+	s := ManifestSelector{AgentGlob: "agent-a-*", ContractHash: "sha256:abc"}
 	id, err := s.ComputeSelectorID()
 	if err != nil {
 		t.Fatalf("ComputeSelectorID: %v", err)

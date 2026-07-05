@@ -759,7 +759,7 @@ func MCPResponseActionForTrust(trust string) string {
 
 // GenericSSEScanning configures inline body scanning of non-A2A
 // text/event-stream responses (OpenAI chat completions, Anthropic
-// messages, Kilo Gateway, generic LLM SSE). When disabled the proxy
+// messages, OpenAI-compatible gateways, generic LLM SSE). When disabled the proxy
 // still streams events with per-read flushing so streaming UX is never
 // silently downgraded to a buffered path.
 type GenericSSEScanning struct {

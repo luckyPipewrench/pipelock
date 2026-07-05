@@ -32,7 +32,7 @@ import (
 )
 
 // Subsystem name keys returned in Snapshot.Subsystems. Stable for probes and
-// dashboards; do not rename without coordinating with KiloClaw integration.
+// dashboards; do not rename without coordinating with external controller integrations.
 const (
 	SubsystemScanner    = "scanner"
 	SubsystemConfig     = "config"

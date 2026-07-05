@@ -29,24 +29,37 @@ class PayloadTest(unittest.TestCase):
 
 
 class StatsSafetyTest(unittest.TestCase):
-    def test_stats_subprocess_env_strips_tokens_and_api_keys(self) -> None:
+    def test_stats_subprocess_env_allowlists_safe_runtime_variables(self) -> None:
         env = pr_review.env_without_runtime_secrets(
             {
-                "GITHUB_TOKEN": "ghs_secret",
-                "OPENAI_API_KEY": "sk-secret",
-                "CUSTOM_TOKEN": "secret",
+                "AWS_SECRET_ACCESS_KEY": "secret",
                 "CUSTOM_API_KEY": "secret",
+                "CUSTOM_TOKEN": "secret",
+                "DATABASE_URL": "postgres://secret",
+                "GITHUB_TOKEN": "ghs_secret",
+                "GOCACHE": "/tmp/go-cache",
+                "OPENAI_API_KEY": "sk-secret",
+                "PASSWORD": "secret",
                 "PATH": "/usr/bin",
                 "HOME": "/tmp/home",
             }
         )
 
+        self.assertEqual(
+            env,
+            {
+                "GOCACHE": "/tmp/go-cache",
+                "PATH": "/usr/bin",
+                "HOME": "/tmp/home",
+            },
+        )
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
+        self.assertNotIn("CUSTOM_API_KEY", env)
+        self.assertNotIn("CUSTOM_TOKEN", env)
+        self.assertNotIn("DATABASE_URL", env)
         self.assertNotIn("GITHUB_TOKEN", env)
         self.assertNotIn("OPENAI_API_KEY", env)
-        self.assertNotIn("CUSTOM_TOKEN", env)
-        self.assertNotIn("CUSTOM_API_KEY", env)
-        self.assertEqual(env["PATH"], "/usr/bin")
-        self.assertEqual(env["HOME"], "/tmp/home")
+        self.assertNotIn("PASSWORD", env)
 
 
 if __name__ == "__main__":

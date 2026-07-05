@@ -209,24 +209,32 @@ def post_comment(repo: str, pr_number: str, token: str, body: str) -> None:
 # --- Stats checker (no LLM) ---
 
 
-SECRET_ENV_NAMES = {
-    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-    "GITHUB_TOKEN",
-    "LITELLM_API_KEY",
-    "OPENAI_API_KEY",
+SAFE_STATS_ENV_NAMES = {
+    "CGO_ENABLED",
+    "CI",
+    "GOCACHE",
+    "GOFLAGS",
+    "GOMODCACHE",
+    "GOPATH",
+    "GOROOT",
+    "GOTOOLCHAIN",
+    "GOTMPDIR",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "RUNNER_ARCH",
+    "RUNNER_OS",
+    "RUNNER_TEMP",
+    "TMPDIR",
+    "USER",
 }
 
 
 def env_without_runtime_secrets(env: dict[str, str] | None = None) -> dict[str, str]:
     """Return an environment suitable for running PR-controlled stats code."""
     source = os.environ if env is None else env
-    return {
-        key: value
-        for key, value in source.items()
-        if key not in SECRET_ENV_NAMES
-        and not key.endswith("_TOKEN")
-        and not key.endswith("_API_KEY")
-    }
+    return {key: value for key, value in source.items() if key in SAFE_STATS_ENV_NAMES}
 
 
 def stats_repo_path() -> Path:

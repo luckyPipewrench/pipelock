@@ -36,6 +36,7 @@ func Init(cfg *config.Config, version string) (*Client, error) {
 // injected into the Sentry SDK options (used by tests to capture events).
 func initClient(cfg *config.Config, version string, transport sentry.Transport) (*Client, error) {
 	if !cfg.Sentry.IsEnabled() {
+		disableGlobalClient()
 		return &Client{enabled: false}, nil
 	}
 	if cfg.Sentry.SampleRate != nil && *cfg.Sentry.SampleRate == 0 {
@@ -49,6 +50,7 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 		dsn = cfg.Sentry.DSN
 	}
 	if dsn == "" {
+		disableGlobalClient()
 		return &Client{enabled: false}, nil
 	}
 
@@ -117,6 +119,10 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 	_, _ = fmt.Fprintln(os.Stderr, "pipelock: Sentry crash reporting enabled; crash reports go to the configured Sentry DSN and payloads are minimized without request bodies, headers, user, hostname, breadcrumbs, or local variables.")
 
 	return &Client{scrubber: scrubber, enabled: true}, nil
+}
+
+func disableGlobalClient() {
+	sentry.CurrentHub().BindClient(nil)
 }
 
 // CaptureError sends an error event to Sentry (scrubbed by BeforeSend and the

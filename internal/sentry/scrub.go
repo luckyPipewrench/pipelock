@@ -31,6 +31,10 @@ const redacted = "[REDACTED]"
 // urlParamValueRe matches query parameter values in URL-like strings.
 var urlParamValueRe = regexp.MustCompile(`([?&][^=&]+)=([^&\s]+)`)
 
+// secretAssignmentValueRe catches key/value payloads that can appear in
+// basename-like frame strings without URL delimiters.
+var secretAssignmentValueRe = regexp.MustCompile(`(?i)\b((?:[A-Za-z0-9_-]*-)?(?:api[_-]?key|token|secret|password|passwd|pwd|credential|session)[A-Za-z0-9_-]*=)[^\s"'<>/\\?&]+`)
+
 // urlLikeRe matches URL-bearing text. Sentry crash payloads do not need hosts,
 // userinfo, paths, or query values; keep only the coarse scheme.
 var urlLikeRe = regexp.MustCompile(`\b([a-zA-Z][a-zA-Z0-9+.-]*)://[^\s"'<>]+`)
@@ -118,6 +122,7 @@ func (s *Scrubber) ScrubString(input string) string {
 
 	// Redact URL query parameter values.
 	result = urlParamValueRe.ReplaceAllString(result, "${1}="+redacted)
+	result = secretAssignmentValueRe.ReplaceAllString(result, "${1}"+redacted)
 
 	return result
 }
@@ -178,6 +183,8 @@ func (s *Scrubber) safeScrubCodeString(input string) string {
 			result = strings.ReplaceAll(result, secret, redacted)
 		}
 	}
+	result = urlParamValueRe.ReplaceAllString(result, "${1}="+redacted)
+	result = secretAssignmentValueRe.ReplaceAllString(result, "${1}"+redacted)
 	return result
 }
 

@@ -326,6 +326,37 @@ func TestScrubEvent_FrameFilenameWindowsBasenameOnly(t *testing.T) {
 	}
 }
 
+func TestScrubEvent_FrameIdentifiersScrubQueryPayloads(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	event := &sentry.Event{
+		Exception: []sentry.Exception{{
+			Stacktrace: &sentry.Stacktrace{
+				Frames: []sentry.Frame{{
+					Function: "handler?" + "token=novel-secret",
+					Module:   "runtime&" + "api_key=novel-secret",
+					Filename: "/tmp/private-token=novel-secret.go?session=novel-secret",
+				}},
+			},
+		}},
+	}
+
+	result := s.ScrubEvent(event, nil)
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal sanitized event: %v", err)
+	}
+	payload := string(raw)
+	if strings.Contains(payload, "novel-secret") {
+		t.Fatalf("frame identifier query payload leaked in %s", payload)
+	}
+	frame := result.Exception[0].Stacktrace.Frames[0]
+	for _, field := range []string{frame.Function, frame.Module, frame.Filename} {
+		if !containsRedacted(field) {
+			t.Fatalf("frame field %q did not include redaction marker", field)
+		}
+	}
+}
+
 func TestScrubEvent_SanitizerPanicDropsEvent(t *testing.T) {
 	s := &Scrubber{patterns: []*regexp.Regexp{nil}}
 	result := s.ScrubEvent(&sentry.Event{Message: "panic path"}, nil)

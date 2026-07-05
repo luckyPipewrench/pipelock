@@ -82,6 +82,38 @@ func TestInit_DisabledReturnsNoOp(t *testing.T) {
 	}
 }
 
+func TestInit_DisabledClearsStaleGlobalClient(t *testing.T) {
+	t.Cleanup(func() {
+		sentry.CurrentHub().BindClient(nil)
+	})
+
+	staleTransport := &mockTransport{}
+	enabled := true
+	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
+	cfg.Sentry.DSN = testDSN
+	if _, err := initClient(cfg, "test", staleTransport); err != nil {
+		t.Fatalf("enable stale client: %v", err)
+	}
+
+	disabled := false
+	cfg.Sentry.Enabled = &disabled
+	c, err := Init(cfg, "test")
+	if err != nil {
+		t.Fatalf("disabled init: %v", err)
+	}
+	if c.enabled {
+		t.Fatal("expected disabled client")
+	}
+
+	if id := sentry.CaptureMessage("must not reach stale transport"); id != nil {
+		t.Fatalf("package-level capture returned event id after disabled init: %s", *id)
+	}
+	if events := staleTransport.Events(); len(events) != 0 {
+		t.Fatalf("stale global client captured %d event(s) after disabled init", len(events))
+	}
+}
+
 func TestInit_EmptyDSNReturnsNoOp(t *testing.T) {
 	enabled := true
 	cfg := config.Defaults()

@@ -17,6 +17,10 @@ import (
 // value; preset YAML files are guarded by a parity test.
 const CredentialSolicitationRegex = `(?i)(\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^.!?]|\.\S){0,40}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b(?:[^\n.!?]|\.\S){0,40}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)|\b(?:send|provide|paste|return|supply|submit|share|hand|give|forward|transmit|reveal|disclose|include|leak|expose|dump|email|upload|post)\b(?:[^\n.!?]|\.\S){0,30}?(?:to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+)(?:[^\n.!?]|\.\S){0,30}?\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH solicitation text, not a hardcoded credential
 
+// AWSAccessIDRegex is the canonical AWS access-key/user/role/policy ID shape
+// used by both default config DLP and the immutable core scanner floor.
+const AWSAccessIDRegex = `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`
+
 const (
 	markdownLinkCredentialExfilVerbAlt = `send|upload|post|submit|paste|append|put|exfiltrat\w*|leak`
 	markdownLinkCredentialExfilNounAlt = `a[\s_-]*p[\s_-]*i[\s_-]*keys?|t[\s_-]*o[\s_-]*k[\s_-]*e[\s_-]*n[\s_-]*s?|s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?|c[\s_-]*r[\s_-]*e[\s_-]*d[\s_-]*e[\s_-]*n[\s_-]*t[\s_-]*i[\s_-]*a[\s_-]*l[\s_-]*s?|p[\s_-]*a[\s_-]*s[\s_-]*s[\s_-]*w[\s_-]*o[\s_-]*r[\s_-]*d[\s_-]*s?|s[\s_-]*e[\s_-]*s[\s_-]*s[\s_-]*i[\s_-]*o[\s_-]*n[\s_-]*s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?` // #nosec G101 -- detection regex fragment: credential nouns to MATCH exfiltration instructions, not a hardcoded credential
@@ -210,7 +214,7 @@ func Defaults() *Config {
 				// All AWS credential prefixes: AKIA (access key), ASIA (STS temp), AROA (role),
 				// AIDA (user ID), AIPA (instance profile), AGPA (group), ANPA/ANVA (policy), A3T (legacy).
 				// {16,}: real AWS IDs have 16+ chars after prefix. Avoids FPs like ASIA2025REPORT1234.
-				{Name: "AWS Access ID", Regex: `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`, Severity: SeverityCritical},
+				{Name: "AWS Access ID", Regex: AWSAccessIDRegex, Severity: SeverityCritical},
 				// AWS secret access keys: 40-char base64 near AWS context words.
 				// Anchored to common config key names to reduce FPs on arbitrary base64.
 				// Separator class handles YAML (: ), env (=), JSON (":"), and quoted formats.

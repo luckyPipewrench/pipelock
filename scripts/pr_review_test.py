@@ -169,6 +169,29 @@ class CallLLMTest(unittest.TestCase):
             pr_review.DEEP_REASONING_EFFORT,
         )
 
+    def test_call_llm_raises_on_non_200_response(self) -> None:
+        response = FakeResponse({}, status_code=500, text="boom")
+        with mock.patch.dict(
+            pr_review.os.environ,
+            {"OPENAI_API_KEY": "test-key", "PR_REVIEW_MODEL_FAST": "gpt-5.4-mini"},
+            clear=True,
+        ), mock.patch.object(pr_review.requests, "post", return_value=response):
+            with self.assertRaises(pr_review.LLMReviewError) as ctx:
+                pr_review.call_llm("diff", "default", "system")
+
+        message = str(ctx.exception)
+        self.assertIn("LLM API returned 500", message)
+        self.assertIn("gpt-5.4-mini", message)
+        self.assertIn("boom", message)
+
+    def test_call_llm_raises_when_no_api_is_configured(self) -> None:
+        with mock.patch.dict(pr_review.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(
+                pr_review.LLMReviewError,
+                "No LLM API configured",
+            ):
+                pr_review.call_llm("diff", "default", "system")
+
 
 class StatsSafetyTest(unittest.TestCase):
     def test_stats_subprocess_env_allowlists_safe_runtime_variables(self) -> None:

@@ -6,6 +6,7 @@
 package baseline
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,7 +40,7 @@ func acquireIntegrityHighWaterLock(integrityKeyPath string) (func(), error) {
 				_ = syscall.Flock(fd, syscall.LOCK_UN)
 				_ = f.Close()
 			}, nil
-		} else if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+		} else if !retryableIntegrityHighWaterLockError(err) {
 			_ = f.Close()
 			return nil, fmt.Errorf("acquire baseline integrity generation high-water lock: %w", err)
 		}
@@ -49,4 +50,10 @@ func acquireIntegrityHighWaterLock(integrityKeyPath string) (func(), error) {
 		}
 		time.Sleep(integrityHighWaterLockPoll)
 	}
+}
+
+func retryableIntegrityHighWaterLockError(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK) ||
+		errors.Is(err, syscall.EAGAIN) ||
+		errors.Is(err, syscall.EINTR)
 }

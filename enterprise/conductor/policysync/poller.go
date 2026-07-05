@@ -71,10 +71,21 @@ type ApplierFunc func(conductor.PolicyBundle) error
 
 func (f ApplierFunc) ApplyPolicyBundle(b conductor.PolicyBundle) error { return f(b) }
 
+type StatusEvent struct {
+	PollAt        time.Time
+	AppliedBundle *conductor.PolicyBundle
+	ApplyError    error
+}
+
+type StatusReporter interface {
+	ReportPolicyStatus(context.Context, StatusEvent) error
+}
+
 type PollerConfig struct {
 	BaseURL          string
 	Client           HTTPDoer
 	Applier          Applier
+	Reporter         StatusReporter
 	PollInterval     time.Duration
 	MaxResponseBytes int64
 	Logger           *slog.Logger
@@ -87,6 +98,7 @@ type Poller struct {
 	pollInterval     time.Duration
 	maxResponseBytes int64
 	logger           *slog.Logger
+	reporter         StatusReporter
 
 	// mu guards lastETag. Run drives PollOnce from a single goroutine, but
 	// PollOnce is exported and may be called concurrently by tests, so the
@@ -127,6 +139,7 @@ func NewPoller(cfg PollerConfig) (*Poller, error) {
 		pollInterval:     interval,
 		maxResponseBytes: maxBytes,
 		logger:           cfg.Logger,
+		reporter:         cfg.Reporter,
 	}, nil
 }
 
@@ -181,6 +194,7 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 	case http.StatusNotModified, http.StatusNoContent:
 		// 304: follower already holds the latest. 204: no bundle published for
 		// this follower's scope. Either way there is nothing to apply.
+		p.reportStatus(ctx, StatusEvent{PollAt: time.Now().UTC()})
 		return nil
 	case http.StatusOK:
 	default:
@@ -203,8 +217,11 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 		return fmt.Errorf("%w: trailing JSON document", ErrPollResponse)
 	}
 	if err := p.applier.ApplyPolicyBundle(bundle); err != nil {
-		return fmt.Errorf("apply conductor policy bundle: %w", err)
+		wrapped := fmt.Errorf("apply conductor policy bundle: %w", err)
+		p.reportStatus(ctx, StatusEvent{PollAt: time.Now().UTC(), ApplyError: wrapped})
+		return wrapped
 	}
+	p.reportStatus(ctx, StatusEvent{PollAt: time.Now().UTC(), AppliedBundle: &bundle})
 	// Advance the cached validator only after a successful apply, so a transient
 	// apply failure is retried on the next poll rather than being masked by a
 	// 304 (the leader would otherwise short-circuit the follower's recovery).
@@ -212,6 +229,18 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 	p.lastETag = resp.Header.Get("ETag")
 	p.mu.Unlock()
 	return nil
+}
+
+func (p *Poller) reportStatus(ctx context.Context, ev StatusEvent) {
+	if p.reporter == nil {
+		return
+	}
+	if err := p.reporter.ReportPolicyStatus(ctx, ev); err != nil && p.logger != nil {
+		p.logger.Warn("conductor_policy_status_report_error",
+			slog.String("event", "conductor_policy_status_report_error"),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 func (p *Poller) logPollError(err error) {

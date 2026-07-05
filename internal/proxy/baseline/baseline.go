@@ -1403,7 +1403,7 @@ func (m *Manager) verifyPendingProfileIntegrityForRatify(agentKey string) error 
 	if m.cfg.ProfileDir == "" {
 		return nil
 	}
-	err := m.verifyPersistedProfileIntegrity(agentKey, StateRatify)
+	err := m.verifyPersistedProfileIntegrity(agentKey)
 	if err == nil {
 		return nil
 	}
@@ -1419,7 +1419,9 @@ func (m *Manager) verifyPendingProfileIntegrityForRatify(agentKey string) error 
 	return nil
 }
 
-func (m *Manager) verifyPersistedProfileIntegrity(agentKey string, wantState ProfileState) error {
+func (m *Manager) verifyPersistedProfileIntegrity(agentKey string) error {
+	const wantState = StateRatify
+
 	manifestData, err := readRegularFileNoSymlink(m.integrityManifestPath(), "baseline integrity manifest", baselineProfileMaxSize)
 	if err != nil {
 		return fmt.Errorf("reading baseline integrity manifest: %w", err)

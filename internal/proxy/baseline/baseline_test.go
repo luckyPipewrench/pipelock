@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -702,6 +703,37 @@ func readVerifiedIntegrityManifest(t *testing.T, dir string) integrityManifest {
 	return manifest
 }
 
+func rewriteIntegrityManifest(t *testing.T, dir string, edit func(*integrityManifest)) {
+	t.Helper()
+	cfg := Config{Enabled: true, ProfileDir: dir}
+	if err := normalizeIntegrityConfig(&cfg); err != nil {
+		t.Fatalf("normalize integrity config: %v", err)
+	}
+	mgr := &Manager{cfg: cfg}
+	key, err := mgr.loadIntegrityKey(false)
+	if err != nil {
+		t.Fatalf("load integrity key: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Clean(baselineIntegrityManifestPath(dir)))
+	if err != nil {
+		t.Fatalf("read integrity manifest: %v", err)
+	}
+	manifest, err := verifyIntegrityManifest(data, key)
+	if err != nil {
+		t.Fatalf("verify integrity manifest before rewrite: %v", err)
+	}
+	edit(&manifest)
+	mac, err := signIntegrityManifest(manifest, key)
+	if err != nil {
+		t.Fatalf("sign rewritten integrity manifest: %v", err)
+	}
+	out, err := json.MarshalIndent(integrityManifestFile{Manifest: manifest, HMAC: mac}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal rewritten integrity manifest: %v", err)
+	}
+	writeFileBytes(t, baselineIntegrityManifestPath(dir), out)
+}
+
 // TestBaseline_LoadProfiles_FailsClosedOnCorruptProfileUnderEnforcement proves
 // that a persisted profile which exists but cannot be read or parsed fails the
 // manager's startup when the deviation action is enforcing (ask/block).
@@ -1118,6 +1150,275 @@ func TestBaseline_PendingProfileIntegrityTamper(t *testing.T) {
 			}
 			if state := mgr.GetState(testAgent); state != StateRatify {
 				t.Fatalf("loaded state = %q, want %q", state, StateRatify)
+			}
+		})
+	}
+}
+
+func TestBaseline_VerifyPendingProfileIntegrityEdges(t *testing.T) {
+	t.Run("in_memory_profile_dir_skips_integrity_check", func(t *testing.T) {
+		mgr := &Manager{cfg: Config{DeviationAction: deviationActionBlock}}
+		if err := mgr.verifyPendingProfileIntegrityForRatify(testAgent); err != nil {
+			t.Fatalf("verifyPendingProfileIntegrityForRatify without ProfileDir: %v", err)
+		}
+	})
+
+	t.Run("missing_integrity_key", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, _ := seedPendingProfile(t, dir, deviationActionBlock)
+		if err := os.Remove(baselineIntegrityKeyPath(dir)); err != nil {
+			t.Fatalf("remove integrity key: %v", err)
+		}
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want missing key error")
+		}
+	})
+
+	t.Run("invalid_manifest_hmac", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, _ := seedPendingProfile(t, dir, deviationActionBlock)
+		var file integrityManifestFile
+		data := copyFileBytes(t, baselineIntegrityManifestPath(dir))
+		if err := json.Unmarshal(data, &file); err != nil {
+			t.Fatalf("parse manifest file: %v", err)
+		}
+		file.HMAC = strings.Repeat("0", sha256.Size*2)
+		out, err := json.Marshal(file)
+		if err != nil {
+			t.Fatalf("marshal manifest file: %v", err)
+		}
+		writeFileBytes(t, baselineIntegrityManifestPath(dir), out)
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want invalid manifest error")
+		}
+	})
+
+	t.Run("rollback_generation_rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, _ := seedPendingProfile(t, dir, deviationActionBlock)
+		key, err := mgr.loadIntegrityKey(false)
+		if err != nil {
+			t.Fatalf("load integrity key: %v", err)
+		}
+		if err := mgr.writeIntegrityHighWater(2, key); err != nil {
+			t.Fatalf("write advanced high-water: %v", err)
+		}
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want rollback rejection")
+		}
+	})
+
+	t.Run("missing_target_entry_after_other_manifest_entry", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, _ := seedPendingProfile(t, dir, deviationActionBlock)
+		rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+			manifest.Profiles = []integrityManifestEntry{{
+				AgentKey: "other-agent",
+				SHA256:   strings.Repeat("0", sha256.Size*2),
+				State:    StateRatify,
+			}}
+		})
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want missing target entry error")
+		}
+	})
+
+	t.Run("manifest_state_mismatch", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, _ := seedPendingProfile(t, dir, deviationActionBlock)
+		rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+			manifest.Profiles[0].State = StateLocked
+		})
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want manifest state mismatch error")
+		}
+	})
+
+	t.Run("profile_missing", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, path := seedPendingProfile(t, dir, deviationActionBlock)
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove pending profile: %v", err)
+		}
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want missing profile error")
+		}
+	})
+
+	t.Run("profile_parse_failure_after_matching_hash", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, path := seedPendingProfile(t, dir, deviationActionBlock)
+		data := []byte("{ not json")
+		writeFileBytes(t, path, data)
+		rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+			manifest.Profiles[0].SHA256 = profileBytesHash(data)
+		})
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want profile parse error")
+		}
+	})
+
+	t.Run("empty_profile_agent_key_uses_filename", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, path := seedPendingProfile(t, dir, deviationActionBlock)
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("read pending profile: %v", err)
+		}
+		var profile Profile
+		if err := json.Unmarshal(data, &profile); err != nil {
+			t.Fatalf("parse pending profile: %v", err)
+		}
+		profile.AgentKey = ""
+		data, err = json.Marshal(profile)
+		if err != nil {
+			t.Fatalf("marshal pending profile: %v", err)
+		}
+		writeFileBytes(t, path, data)
+		rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+			manifest.Profiles[0].SHA256 = profileBytesHash(data)
+		})
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err != nil {
+			t.Fatalf("verifyPersistedProfileIntegrity with filename-derived agent key: %v", err)
+		}
+	})
+
+	t.Run("profile_agent_key_mismatch", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, path := seedPendingProfile(t, dir, deviationActionBlock)
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("read pending profile: %v", err)
+		}
+		var profile Profile
+		if err := json.Unmarshal(data, &profile); err != nil {
+			t.Fatalf("parse pending profile: %v", err)
+		}
+		profile.AgentKey = "other-agent"
+		data, err = json.Marshal(profile)
+		if err != nil {
+			t.Fatalf("marshal pending profile: %v", err)
+		}
+		writeFileBytes(t, path, data)
+		rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+			manifest.Profiles[0].SHA256 = profileBytesHash(data)
+		})
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want declared agent mismatch error")
+		}
+	})
+
+	t.Run("profile_state_mismatch_after_matching_hash", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, path := seedPendingProfile(t, dir, deviationActionBlock)
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatalf("read pending profile: %v", err)
+		}
+		var profile Profile
+		if err := json.Unmarshal(data, &profile); err != nil {
+			t.Fatalf("parse pending profile: %v", err)
+		}
+		profile.State = StateObserve
+		data, err = json.Marshal(profile)
+		if err != nil {
+			t.Fatalf("marshal pending profile: %v", err)
+		}
+		writeFileBytes(t, path, data)
+		rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+			manifest.Profiles[0].SHA256 = profileBytesHash(data)
+		})
+
+		if err := mgr.verifyPersistedProfileIntegrity(testAgent); err == nil {
+			t.Fatal("verifyPersistedProfileIntegrity: want profile state mismatch error")
+		}
+	})
+}
+
+func TestBaseline_VerifyPersistedIntegrityManifestEntryFaults(t *testing.T) {
+	tests := []struct {
+		name   string
+		tamper func(t *testing.T, dir, path string)
+	}{
+		{
+			name: "unsupported_manifest_state",
+			tamper: func(t *testing.T, dir, _ string) {
+				rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+					manifest.Profiles[0].State = StateObserve
+				})
+			},
+		},
+		{
+			name: "profile_parse_failure_after_matching_hash",
+			tamper: func(t *testing.T, dir, path string) {
+				data := []byte("{ not json")
+				writeFileBytes(t, path, data)
+				rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+					manifest.Profiles[0].SHA256 = profileBytesHash(data)
+				})
+			},
+		},
+		{
+			name: "profile_agent_key_mismatch",
+			tamper: func(t *testing.T, dir, path string) {
+				data := copyFileBytes(t, path)
+				var profile Profile
+				if err := json.Unmarshal(data, &profile); err != nil {
+					t.Fatalf("parse profile: %v", err)
+				}
+				profile.AgentKey = "other-agent"
+				data, err := json.Marshal(profile)
+				if err != nil {
+					t.Fatalf("marshal profile: %v", err)
+				}
+				writeFileBytes(t, path, data)
+				rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+					manifest.Profiles[0].SHA256 = profileBytesHash(data)
+				})
+			},
+		},
+		{
+			name: "profile_state_mismatch",
+			tamper: func(t *testing.T, dir, path string) {
+				data := copyFileBytes(t, path)
+				var profile Profile
+				if err := json.Unmarshal(data, &profile); err != nil {
+					t.Fatalf("parse profile: %v", err)
+				}
+				profile.State = StateRatify
+				data, err := json.Marshal(profile)
+				if err != nil {
+					t.Fatalf("marshal profile: %v", err)
+				}
+				writeFileBytes(t, path, data)
+				rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+					manifest.Profiles[0].SHA256 = profileBytesHash(data)
+				})
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := seedLockedProfile(t, dir)
+			tc.tamper(t, dir, path)
+
+			if _, err := NewManager(Config{
+				Enabled:         true,
+				LearningWindow:  3,
+				DeviationAction: deviationActionBlock,
+				ProfileDir:      dir,
+			}); err == nil {
+				t.Fatal("NewManager: want fail-closed integrity error")
 			}
 		})
 	}
@@ -3184,6 +3485,29 @@ func TestBaseline_CleanupNewIntegrityTrustedStateErrors(t *testing.T) {
 		}
 		if !errors.Is(err, originalErr) {
 			t.Fatalf("cleanup error = %v, want original error in chain", err)
+		}
+	})
+
+	t.Run("successful_cleanup_returns_original_error", func(t *testing.T) {
+		dir := t.TempDir()
+		keyPath := filepath.Join(dir, "integrity-key")
+		highWaterPath := keyPath + ".generation"
+		if err := os.WriteFile(keyPath, []byte("key"), 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		if err := os.WriteFile(highWaterPath, []byte("high-water"), 0o600); err != nil {
+			t.Fatalf("write high-water: %v", err)
+		}
+		mgr := &Manager{cfg: Config{IntegrityKeyPath: keyPath}}
+
+		err := mgr.cleanupNewIntegrityTrustedState(true, originalErr)
+		if !errors.Is(err, originalErr) {
+			t.Fatalf("cleanupNewIntegrityTrustedState = %v, want original error", err)
+		}
+		for _, path := range []string{keyPath, highWaterPath} {
+			if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%s should have been removed, stat error = %v", path, statErr)
+			}
 		}
 	})
 }

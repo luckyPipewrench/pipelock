@@ -230,12 +230,7 @@ func (t dropUnsafeEventTransport) FlushWithContext(ctx context.Context) bool {
 	if t.delegate == nil {
 		return true
 	}
-	if flusher, ok := t.delegate.(interface {
-		FlushWithContext(context.Context) bool
-	}); ok {
-		return flusher.FlushWithContext(ctx)
-	}
-	return t.delegate.Flush(0)
+	return t.delegate.FlushWithContext(ctx)
 }
 
 func (t dropUnsafeEventTransport) Close() {

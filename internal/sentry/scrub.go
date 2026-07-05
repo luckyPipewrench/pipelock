@@ -3,7 +3,6 @@
 package plsentry
 
 import (
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -93,38 +92,11 @@ func (s *Scrubber) ScrubString(input string) string {
 		return input
 	}
 
-	result := input
-
-	// Drop locators before generic matching so composite forms like
-	// user:pass@host are removed as one unit instead of leaving the username
-	// behind after email/FQDN matching.
-	result = urlLikeRe.ReplaceAllString(result, "${1}://"+redacted)
-	result = protocolRelativeURLRe.ReplaceAllString(result, "${1}//"+redacted)
-	result = scrubDeploymentLocators(result)
-
-	// Shared matcher surface: typed secret classes from internal/redact.
+	var matchFn func(string) []redact.Match
 	if s.matcher != nil {
-		result = replaceMatchedSpans(result, s.matcher.Scan(result), func(redact.Match) string { return redacted })
+		matchFn = s.matcher.Scan
 	}
-
-	// Safety-net patterns stay separate: they intentionally cover cases not
-	// yet modelled in the redact class registry (Bearer headers, URL auth).
-	for _, re := range s.patterns {
-		result = re.ReplaceAllString(result, redacted)
-	}
-
-	// Redact known env secret values.
-	for _, secret := range s.secrets {
-		if secret != "" && strings.Contains(result, secret) {
-			result = strings.ReplaceAll(result, secret, redacted)
-		}
-	}
-
-	// Redact URL query parameter values.
-	result = urlParamValueRe.ReplaceAllString(result, "${1}="+redacted)
-	result = secretAssignmentValueRe.ReplaceAllString(result, "${1}"+redacted)
-
-	return result
+	return s.applyRedactionPipeline(input, matchFn)
 }
 
 func scrubDeploymentLocators(input string) string {
@@ -171,18 +143,40 @@ func (s *Scrubber) safeScrubCodeString(input string) string {
 	if s == nil {
 		return ""
 	}
-	result := urlLikeRe.ReplaceAllString(input, "${1}://"+redacted)
+	return s.applyRedactionPipeline(input, s.sensitiveCodeMatches)
+}
+
+func (s *Scrubber) applyRedactionPipeline(input string, matchFn func(string) []redact.Match) string {
+	result := input
+
+	// Drop locators before generic matching so composite forms like
+	// user:pass@host are removed as one unit instead of leaving the username
+	// behind after email/FQDN matching.
+	result = urlLikeRe.ReplaceAllString(result, "${1}://"+redacted)
 	result = protocolRelativeURLRe.ReplaceAllString(result, "${1}//"+redacted)
 	result = scrubDeploymentLocators(result)
-	result = replaceMatchedSpans(result, s.sensitiveCodeMatches(result), func(redact.Match) string { return redacted })
+
+	// Shared matcher surface: typed secret classes from internal/redact. The
+	// caller chooses the full string scanner or the narrower code-identifier
+	// scanner, but the rest of the redaction order stays shared.
+	if matchFn != nil {
+		result = replaceMatchedSpans(result, matchFn(result), func(redact.Match) string { return redacted })
+	}
+
+	// Safety-net patterns stay separate: they intentionally cover cases not
+	// yet modelled in the redact class registry (Bearer headers, URL auth).
 	for _, re := range s.patterns {
 		result = re.ReplaceAllString(result, redacted)
 	}
+
+	// Redact known env secret values.
 	for _, secret := range s.secrets {
 		if secret != "" && strings.Contains(result, secret) {
 			result = strings.ReplaceAll(result, secret, redacted)
 		}
 	}
+
+	// Redact URL query parameter values and key/value-style secret payloads.
 	result = urlParamValueRe.ReplaceAllString(result, "${1}="+redacted)
 	result = secretAssignmentValueRe.ReplaceAllString(result, "${1}"+redacted)
 	return result
@@ -209,7 +203,7 @@ func (s *Scrubber) safeScrubFilename(input string) string {
 	if s == nil {
 		return ""
 	}
-	result := codePathLeaf(filepath.Base(input))
+	result := codePathLeaf(input)
 	return s.safeScrubCodeString(result)
 }
 

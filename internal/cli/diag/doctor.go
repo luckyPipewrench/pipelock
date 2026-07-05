@@ -674,7 +674,7 @@ func checkDoctorSentry(cfg *config.Config) doctorReportCheck {
 			Surface: doctorSurfaceHost,
 			Status:  doctorStatusInfo,
 			Detail:  "disabled (default)",
-			Next:    "optional: set your own SENTRY_DSN to receive minimized crash reports, or use equivalent alerting",
+			Next:    "optional: set sentry.enabled: true and provide your own DSN via YAML or SENTRY_DSN to receive minimized crash reports, or use equivalent alerting",
 		}
 	}
 	if !dsnConfigured {

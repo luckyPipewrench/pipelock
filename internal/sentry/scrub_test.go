@@ -184,6 +184,29 @@ func TestScrubString_DeploymentLocatorsDropped(t *testing.T) {
 	}
 }
 
+func TestRedactionPipeline_SharedStringAndCodeSurfaces(t *testing.T) {
+	s := NewScrubber(nil, []string{testEnvSecret})
+	input := "failed at " + fakeURLWithUserinfo("user", testEnvSecret, "internal-host.example", "/private") +
+		" api_key=novel-secret"
+
+	for name, scrub := range map[string]func(string) string{
+		"string": s.ScrubString,
+		"code":   s.safeScrubCodeString,
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := scrub(input)
+			for _, forbidden := range []string{"user", testEnvSecret, "internal-host.example", "/private", "novel-secret"} {
+				if strings.Contains(result, forbidden) {
+					t.Fatalf("%s surface leaked %q in %q", name, forbidden, result)
+				}
+			}
+			if !containsRedacted(result) {
+				t.Fatalf("%s surface result did not include redaction marker: %q", name, result)
+			}
+		})
+	}
+}
+
 func TestScrubEvent_AllowlistPayloadShape(t *testing.T) {
 	eventTime := time.Unix(1700000000, 0).UTC()
 	s := NewScrubber(testDLPPatterns(), nil)
@@ -323,6 +346,18 @@ func TestScrubEvent_FrameFilenameWindowsBasenameOnly(t *testing.T) {
 	frame := result.Exception[0].Stacktrace.Frames[0]
 	if frame.Filename != "private.go" {
 		t.Fatalf("filename = %q, want basename only", frame.Filename)
+	}
+}
+
+func TestSafeScrubFilename_UsesCrossPlatformLeaf(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	key := "tok" + "en"
+	result := s.safeScrubFilename(`/home/agent/src/private.go?` + key + `=novel-secret`)
+	if strings.Contains(result, "/home/agent") || strings.Contains(result, "novel-secret") {
+		t.Fatalf("filename scrub leaked path or token payload in %q", result)
+	}
+	if !strings.Contains(result, "private.go?"+key+"="+redacted) {
+		t.Fatalf("filename scrub = %q, want basename with redacted token value", result)
 	}
 }
 

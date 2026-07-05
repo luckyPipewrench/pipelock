@@ -719,6 +719,25 @@ func TestPublishPreflightBlocksLabelAudienceWhenLabelsUnavailable(t *testing.T) 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("label-audience publish code = %d body=%s, want 409", w.Code, w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), "label-scoped audience") {
+		t.Fatalf("label-audience publish body = %s, want label-scoped preflight error", w.Body.String())
+	}
+
+	handler.authorizeFleetSkewOverride = func(*http.Request, conductor.PolicyBundle, string) error { return nil }
+	body, err = json.Marshal(publishPolicyBundleRequest{Bundle: bundle, AllowFleetSkew: true, FleetSkewReason: "operator accepts skew"})
+	if err != nil {
+		t.Fatalf("marshal override publish request: %v", err)
+	}
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+followerAdminToken)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("label-audience override publish code = %d body=%s, want 409", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "label-scoped audience") {
+		t.Fatalf("label-audience override body = %s, want label-scoped preflight error", w.Body.String())
+	}
 }
 
 func TestPublishPreflightBlocksLastApplyFailureWithoutOverride(t *testing.T) {

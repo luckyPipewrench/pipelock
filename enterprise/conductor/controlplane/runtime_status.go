@@ -337,20 +337,27 @@ func classifyFollowerHealth(follower FollowerSummary, status *FollowerRuntimeSta
 
 func preflightAudienceMatches(audience conductor.Audience, follower FollowerSummary) bool {
 	if len(audience.Labels) > 0 {
-		if slices.Contains(audience.InstanceIDs, "*") || slices.Contains(audience.InstanceIDs, follower.InstanceID) {
-			return true
-		}
-		return follower.OrgID != "" && follower.FleetID != "" && follower.InstanceID != "" && follower.Environment != ""
+		return false
 	}
 	return audience.Matches(follower.InstanceID, nil)
 }
 
-func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRuntimeStatus, bundle conductor.PolicyBundle, now time.Time, staleAfter time.Duration, allowFleetSkew bool, fleetSkewReason string) (PublishPreflightSummary, error) {
+type publishPreflightOptions struct {
+	now             time.Time
+	staleAfter      time.Duration
+	allowFleetSkew  bool
+	fleetSkewReason string
+}
+
+func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRuntimeStatus, bundle conductor.PolicyBundle, opts publishPreflightOptions) (PublishPreflightSummary, error) {
 	statusByID := runtimeStatusMap(statuses)
 	summary := PublishPreflightSummary{
-		AllowFleetSkew:    allowFleetSkew,
-		FleetSkewReason:   fleetSkewReason,
-		StaleAfterSeconds: int(staleAfter / time.Second),
+		AllowFleetSkew:    opts.allowFleetSkew,
+		FleetSkewReason:   opts.fleetSkewReason,
+		StaleAfterSeconds: int(opts.staleAfter / time.Second),
+	}
+	if len(bundle.Audience.Labels) > 0 {
+		return summary, fmt.Errorf("%w: label-scoped audience cannot be evaluated without follower labels", ErrFleetPreflightBlocked)
 	}
 	for _, follower := range followers {
 		if !follower.Active {
@@ -371,7 +378,7 @@ func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRu
 			InstanceID:  follower.InstanceID,
 			Environment: follower.Environment,
 		})]
-		if !ok || status.LastSeenAt.IsZero() || now.Sub(status.LastSeenAt) > staleAfter {
+		if !ok || status.LastSeenAt.IsZero() || opts.now.Sub(status.LastSeenAt) > opts.staleAfter {
 			summary.StaleUnseen++
 			continue
 		}
@@ -385,7 +392,7 @@ func evaluatePublishPreflight(followers []FollowerSummary, statuses []FollowerRu
 		}
 		summary.CanApply++
 	}
-	if !allowFleetSkew && (summary.Unsupported > 0 || summary.StaleUnseen > 0 || summary.LastApplyFailed > 0) {
+	if !opts.allowFleetSkew && (summary.Unsupported > 0 || summary.StaleUnseen > 0 || summary.LastApplyFailed > 0) {
 		return summary, fmt.Errorf("%w: unsupported=%d stale_unseen=%d last_apply_failed=%d", ErrFleetPreflightBlocked, summary.Unsupported, summary.StaleUnseen, summary.LastApplyFailed)
 	}
 	return summary, nil

@@ -814,7 +814,12 @@ func (h *Handler) publishPreflight(r *http.Request, bundle conductor.PolicyBundl
 	if err != nil {
 		return PublishPreflightSummary{}, err
 	}
-	return evaluatePublishPreflight(followers, statuses, bundle, h.now(), defaultRuntimeStatusStaleAfter, allowFleetSkew, fleetSkewReason)
+	return evaluatePublishPreflight(followers, statuses, bundle, publishPreflightOptions{
+		now:             h.now(),
+		staleAfter:      defaultRuntimeStatusStaleAfter,
+		allowFleetSkew:  allowFleetSkew,
+		fleetSkewReason: fleetSkewReason,
+	})
 }
 
 func normalizeFleetSkewReason(allowFleetSkew bool, reason string) (string, error) {

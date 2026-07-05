@@ -318,14 +318,15 @@ func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severi
 }
 
 type compiledPattern struct {
-	name          string
-	re            *regexp.Regexp
-	severity      string
-	validate      func(string) bool // post-match checksum (nil = regex-only)
-	exemptDomains []string          // domains where this pattern is skipped (wildcard supported)
-	bundle        string            // empty for built-in/config patterns
-	bundleVersion string
-	warn          bool // true when pattern action is "warn" - matches are informational only
+	name                string
+	re                  *regexp.Regexp
+	severity            string
+	validate            func(string) bool // post-match checksum (nil = regex-only)
+	exemptDomains       []string          // domains where this pattern is skipped (wildcard supported)
+	bundle              string            // empty for built-in/config patterns
+	bundleVersion       string
+	warn                bool // true when pattern action is "warn" - matches are informational only
+	requiredLiteralsAny []string
 }
 
 // matches returns true if text matches the regex AND passes the post-match
@@ -489,11 +490,13 @@ func New(cfg *config.Config) *Scanner {
 			if err != nil {
 				panic(fmt.Sprintf("BUG: response pattern %q failed after validation: %v", p.Name, err))
 			}
+			requiredLiteralsAny := responsePatternRequiredLiterals(p.Regex)
 			s.responsePatterns = append(s.responsePatterns, &compiledPattern{
-				name:          p.Name,
-				re:            re,
-				bundle:        p.Bundle,
-				bundleVersion: p.BundleVersion,
+				name:                p.Name,
+				re:                  re,
+				bundle:              p.Bundle,
+				bundleVersion:       p.BundleVersion,
+				requiredLiteralsAny: requiredLiteralsAny,
 			})
 
 			// Compile optional-whitespace variant: \s+ → \s* so that
@@ -506,10 +509,11 @@ func New(cfg *config.Config) *Scanner {
 				optRe, optErr := regexp.Compile(optRegex)
 				if optErr == nil {
 					s.responseOptSpacePatterns = append(s.responseOptSpacePatterns, &compiledPattern{
-						name:          p.Name,
-						re:            optRe,
-						bundle:        p.Bundle,
-						bundleVersion: p.BundleVersion,
+						name:                p.Name,
+						re:                  optRe,
+						bundle:              p.Bundle,
+						bundleVersion:       p.BundleVersion,
+						requiredLiteralsAny: requiredLiteralsAny,
 					})
 				}
 			}
@@ -544,10 +548,11 @@ func New(cfg *config.Config) *Scanner {
 				vfRe, vfErr := regexp.Compile(vfRegex)
 				if vfErr == nil {
 					s.responseVowelFoldPatterns = append(s.responseVowelFoldPatterns, &compiledPattern{
-						name:          p.Name,
-						re:            vfRe,
-						bundle:        p.Bundle,
-						bundleVersion: p.BundleVersion,
+						name:                p.Name,
+						re:                  vfRe,
+						bundle:              p.Bundle,
+						bundleVersion:       p.BundleVersion,
+						requiredLiteralsAny: requiredLiteralsAny,
 					})
 				}
 			}

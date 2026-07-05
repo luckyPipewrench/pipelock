@@ -242,10 +242,22 @@ const (
 	// Re-bumped for removing generic navigation verbs from the markdown-link
 	// credential-exfil branch, so docs that say to visit/click setup links stay
 	// clean unless an actual exfiltration verb is present.
+	// Re-bumped for markdown-link credential-exfil intent anchoring: the
+	// destination cue now has to bind directly to the markdown/angle link, so
+	// credential setup docs that later open guide links stay clean while
+	// credential-to-link transfer prompts still block.
+	// Re-bumped for markdown-link credential-exfil bypass coverage: short
+	// destination nouns between the cue and link, whitespace-split credential
+	// nouns, and link-first submit/paste-there phrasing now still block.
+	// Re-bumped for same-class destination cue coverage: "in [form]" and
+	// "at [portal]" now block like "into [form]" and "to [portal]".
+	// Re-bumped for link-first markdown credential exfiltration coverage:
+	// "[link] to send/paste/append/put credential" now blocks when terminal
+	// or pointing here/there, while setup docs that paste into a local app stay clean.
 	// Re-bumped for bounded size-exempt response scanning: the per-response
 	// and per-proxy-instance scan ceilings plus the explicit unscannable passthrough
 	// allowlist change response-size enforcement.
-	goldenHashDefaults = "0faa8878fbaf9513f8bbc070539e890e2a18dfd0ad707554aa91f1c4b80da8c8"
+	goldenHashDefaults = "bd79729a797c83afa485a3dc15f3212cf535ee6f473ce6d60431efd1909c0474"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -362,9 +374,17 @@ const (
 	// set, so the hash shifts in lockstep.
 	// Re-bumped for the generic-navigation false-positive tightening: see
 	// goldenHashDefaults note above.
+	// Re-bumped for markdown-link credential-exfil intent anchoring: see
+	// goldenHashDefaults note above.
+	// Re-bumped for markdown-link credential-exfil bypass coverage: see
+	// goldenHashDefaults note above.
+	// Re-bumped for same-class destination cue coverage: see goldenHashDefaults
+	// note above.
+	// Re-bumped for link-first send/paste/append/put coverage: see
+	// goldenHashDefaults note above.
 	// Re-bumped for bounded size-exempt response scanning: see
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "2577be7a5dd02af11d0fa731063f37235518dc9df968a1c5286afff1d36410a7"
+	goldenHashRichConfig = "a0cf6b3984132c0d5b4ba4d9b78a8c0cb55034eef73b78f9d996cc4048067391"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -21,7 +21,10 @@ import (
 	"time"
 )
 
-const testAgent = "agent-1"
+const (
+	testAgent        = "agent-1"
+	testManifestHMAC = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+)
 
 func skipIfRoot(t *testing.T) {
 	t.Helper()
@@ -645,7 +648,7 @@ func baselineIntegrityKeyPath(dir string) string {
 	return filepath.Clean(dir) + ".integrity.key"
 }
 
-func persistIntegrityManifestForExistingProfile(t *testing.T, dir, agentKey string, state ProfileState) {
+func persistIntegrityManifestForExistingProfile(t *testing.T, dir, agentKey string) {
 	t.Helper()
 	cfg := Config{Enabled: true, ProfileDir: dir}
 	if err := normalizeIntegrityConfig(&cfg); err != nil {
@@ -655,8 +658,8 @@ func persistIntegrityManifestForExistingProfile(t *testing.T, dir, agentKey stri
 		cfg: cfg,
 		agents: map[string]*agentState{
 			agentKey: {
-				profile: &Profile{State: state},
-				state:   state,
+				profile: &Profile{State: StateLocked},
+				state:   StateLocked,
 			},
 		},
 	}
@@ -713,6 +716,26 @@ func rewriteIntegrityManifest(t *testing.T, dir string, edit func(*integrityMani
 	t.Helper()
 	key, manifest := loadVerifiedIntegrityManifestForTest(t, dir)
 	edit(&manifest)
+	writeSignedIntegrityManifest(t, dir, key, manifest)
+}
+
+func rewriteAcceptedIntegrityManifest(t *testing.T, dir string, edit func(*integrityManifest)) {
+	t.Helper()
+	key, manifest := loadVerifiedIntegrityManifestForTest(t, dir)
+	edit(&manifest)
+	mac := writeSignedIntegrityManifest(t, dir, key, manifest)
+	cfg := Config{Enabled: true, ProfileDir: dir}
+	if err := normalizeIntegrityConfig(&cfg); err != nil {
+		t.Fatalf("normalize integrity config: %v", err)
+	}
+	mgr := &Manager{cfg: cfg}
+	if err := mgr.writeIntegrityHighWater(manifest.Generation, key, mac); err != nil {
+		t.Fatalf("accept rewritten integrity manifest: %v", err)
+	}
+}
+
+func writeSignedIntegrityManifest(t *testing.T, dir string, key []byte, manifest integrityManifest) string {
+	t.Helper()
 	mac, err := signIntegrityManifest(manifest, key)
 	if err != nil {
 		t.Fatalf("sign rewritten integrity manifest: %v", err)
@@ -722,6 +745,7 @@ func rewriteIntegrityManifest(t *testing.T, dir string, edit func(*integrityMani
 		t.Fatalf("marshal rewritten integrity manifest: %v", err)
 	}
 	writeFileBytes(t, baselineIntegrityManifestPath(dir), out)
+	return mac
 }
 
 // TestBaseline_LoadProfiles_FailsClosedOnCorruptProfileUnderEnforcement proves
@@ -1192,7 +1216,7 @@ func TestBaseline_VerifyPendingProfileIntegrityEdges(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load integrity key: %v", err)
 		}
-		if err := mgr.writeIntegrityHighWater(2, key); err != nil {
+		if err := mgr.writeIntegrityHighWater(2, key, testManifestHMAC); err != nil {
 			t.Fatalf("write advanced high-water: %v", err)
 		}
 
@@ -1272,7 +1296,7 @@ func TestBaseline_VerifyPendingProfileIntegrityEdges(t *testing.T) {
 			t.Fatalf("marshal pending profile: %v", err)
 		}
 		writeFileBytes(t, path, data)
-		rewriteIntegrityManifest(t, dir, func(manifest *integrityManifest) {
+		rewriteAcceptedIntegrityManifest(t, dir, func(manifest *integrityManifest) {
 			manifest.Profiles[0].SHA256 = profileBytesHash(data)
 		})
 
@@ -1603,7 +1627,7 @@ func TestBaseline_LoadProfiles_RejectsManifestRollbackUnderEnforcement(t *testin
 	rolledBackManifest := copyFileBytes(t, manifestPath)
 
 	rewriteProfileToolCallsMean(t, profilePath)
-	persistIntegrityManifestForExistingProfile(t, dir, testAgent, StateLocked)
+	persistIntegrityManifestForExistingProfile(t, dir, testAgent)
 
 	writeFileBytes(t, profilePath, rolledBackProfile)
 	writeFileBytes(t, manifestPath, rolledBackManifest)
@@ -1628,7 +1652,7 @@ func TestBaseline_LoadProfiles_RejectsRollbackWithForgedPublicHighWaterDigest(t 
 	rolledBackGeneration := readVerifiedIntegrityManifest(t, dir).Generation
 
 	rewriteProfileToolCallsMean(t, profilePath)
-	persistIntegrityManifestForExistingProfile(t, dir, testAgent, StateLocked)
+	persistIntegrityManifestForExistingProfile(t, dir, testAgent)
 
 	writeFileBytes(t, profilePath, rolledBackProfile)
 	writeFileBytes(t, manifestPath, rolledBackManifest)
@@ -1638,9 +1662,10 @@ func TestBaseline_LoadProfiles_RejectsRollbackWithForgedPublicHighWaterDigest(t 
 	}
 	mgr := &Manager{cfg: cfg}
 	forged, err := json.Marshal(integrityHighWaterState{
-		Generation: rolledBackGeneration,
-		Context:    mgr.integrityStateContextID(),
-		Digest:     legacyPublicIntegrityGenerationDigest(mgr.integrityStateContextID(), rolledBackGeneration),
+		Generation:   rolledBackGeneration,
+		Context:      mgr.integrityStateContextID(),
+		ManifestHMAC: testManifestHMAC,
+		Digest:       legacyPublicIntegrityGenerationDigest(mgr.integrityStateContextID(), rolledBackGeneration),
 	})
 	if err != nil {
 		t.Fatalf("marshal forged high-water: %v", err)
@@ -1661,6 +1686,69 @@ func TestBaseline_LoadProfiles_RejectsRollbackWithForgedPublicHighWaterDigest(t 
 func legacyPublicIntegrityGenerationDigest(contextID string, generation uint64) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("baseline-integrity-generation-v1\n%s\n%d", contextID, generation)))
 	return hex.EncodeToString(sum[:])
+}
+
+func TestBaseline_LoadProfiles_RejectsSameGenerationManifestSwap(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := seedLockedProfile(t, dir)
+	originalProfile := copyFileBytes(t, profilePath)
+
+	rewriteProfileToolCallsMean(t, profilePath)
+	persistIntegrityManifestForExistingProfile(t, dir, testAgent)
+	key, acceptedManifest := loadVerifiedIntegrityManifestForTest(t, dir)
+	if acceptedManifest.Generation < 2 {
+		t.Fatalf("accepted manifest generation = %d, want at least 2", acceptedManifest.Generation)
+	}
+	if len(acceptedManifest.Profiles) != 1 {
+		t.Fatalf("accepted manifest profiles = %d, want 1", len(acceptedManifest.Profiles))
+	}
+
+	swapped := acceptedManifest
+	swapped.Profiles[0].SHA256 = profileBytesHash(originalProfile)
+	writeFileBytes(t, profilePath, originalProfile)
+	writeSignedIntegrityManifest(t, dir, key, swapped)
+
+	_, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err == nil {
+		t.Fatal("NewManager: want fail-closed error for same-generation manifest swap")
+	}
+}
+
+func TestBaseline_LoadProfiles_InvalidNewerManifestDoesNotAdvanceHighWater(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := seedLockedProfile(t, dir)
+	originalProfile := copyFileBytes(t, profilePath)
+	originalManifest := copyFileBytes(t, baselineIntegrityManifestPath(dir))
+	key, manifest := loadVerifiedIntegrityManifestForTest(t, dir)
+	manifest.Generation++
+	writeSignedIntegrityManifest(t, dir, key, manifest)
+	rewriteProfileToolCallsMean(t, profilePath)
+
+	_, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err == nil {
+		t.Fatal("NewManager: want fail-closed error for invalid newer manifest/profile pair")
+	}
+
+	writeFileBytes(t, profilePath, originalProfile)
+	writeFileBytes(t, baselineIntegrityManifestPath(dir), originalManifest)
+	if _, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	}); err != nil {
+		t.Fatalf("restored last known-good manifest/profile should still pass because high-water was not advanced: %v", err)
+	}
 }
 
 func TestBaseline_LoadProfiles_RejectsMissingHighWaterWithSignedManifest(t *testing.T) {
@@ -2530,7 +2618,7 @@ func TestBaseline_LoadProfileWithEmptyAgentKey(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "derived-agent.json"), data, 0o600); err != nil {
 		t.Fatalf("writing profile: %v", err)
 	}
-	persistIntegrityManifestForExistingProfile(t, dir, "derived-agent", StateLocked)
+	persistIntegrityManifestForExistingProfile(t, dir, "derived-agent")
 
 	cfg := Config{Enabled: true, DeviationAction: deviationActionBlock, ProfileDir: dir}
 	mgr, err := NewManager(cfg)
@@ -2819,7 +2907,7 @@ func TestBaseline_HighWaterLockHelperProcess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load key: %v", err)
 		}
-		if err := mgr.acceptIntegrityManifestGeneration(2, key); err != nil {
+		if err := mgr.acceptIntegrityManifestGeneration(2, testManifestHMAC, key); err != nil {
 			t.Fatalf("accept generation: %v", err)
 		}
 		if err := os.WriteFile(filepath.Clean(acquiredPath), []byte("acquired"), 0o600); err != nil {
@@ -2847,7 +2935,7 @@ func TestBaseline_HighWaterLockSerializesAcrossProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed key: %v", err)
 	}
-	if err := mgr.writeIntegrityHighWater(1, key); err != nil {
+	if err := mgr.writeIntegrityHighWater(1, key, testManifestHMAC); err != nil {
 		t.Fatalf("seed high-water: %v", err)
 	}
 
@@ -2989,9 +3077,10 @@ func TestBaseline_HighWaterTamperFailsClosedUnderEnforcement(t *testing.T) {
 				}
 				mgr := &Manager{cfg: cfg}
 				data, _ := json.Marshal(integrityHighWaterState{
-					Generation: 1,
-					Context:    mgr.integrityStateContextID(),
-					Digest:     "not-hex",
+					Generation:   1,
+					Context:      mgr.integrityStateContextID(),
+					ManifestHMAC: testManifestHMAC,
+					Digest:       "not-hex",
 				})
 				if err := os.WriteFile(highWaterPath(dir), data, 0o600); err != nil {
 					t.Fatalf("write high-water: %v", err)
@@ -3007,9 +3096,10 @@ func TestBaseline_HighWaterTamperFailsClosedUnderEnforcement(t *testing.T) {
 				}
 				mgr := &Manager{cfg: cfg}
 				data, _ := json.Marshal(integrityHighWaterState{
-					Generation: 1,
-					Context:    mgr.integrityStateContextID(),
-					Digest:     "abcd",
+					Generation:   1,
+					Context:      mgr.integrityStateContextID(),
+					ManifestHMAC: testManifestHMAC,
+					Digest:       "abcd",
 				})
 				if err := os.WriteFile(highWaterPath(dir), data, 0o600); err != nil {
 					t.Fatalf("write high-water: %v", err)
@@ -3230,13 +3320,13 @@ func TestBaseline_IntegrityGenerationInvariants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load key: %v", err)
 	}
-	if err := mgr.writeIntegrityHighWater(0, key); err == nil {
+	if err := mgr.writeIntegrityHighWater(0, key, testManifestHMAC); err == nil {
 		t.Fatal("want error writing a zero generation high-water")
 	}
-	if err := mgr.acceptIntegrityManifestGeneration(0, key); err == nil {
+	if err := mgr.acceptIntegrityManifestGeneration(0, testManifestHMAC, key); err == nil {
 		t.Fatal("want error accepting a zero generation manifest")
 	}
-	if err := mgr.writeIntegrityHighWater(math.MaxUint64, key); err != nil {
+	if err := mgr.writeIntegrityHighWater(math.MaxUint64, key, testManifestHMAC); err != nil {
 		t.Fatalf("write max high-water: %v", err)
 	}
 	if _, err := mgr.nextIntegrityManifestGeneration(); err == nil {
@@ -3451,7 +3541,7 @@ func TestBaseline_IntegrityGenerationErrorBranches(t *testing.T) {
 			DeviationAction:  deviationActionBlock,
 		}}
 
-		if err := mgr.acceptIntegrityManifestGeneration(1, []byte("0123456789abcdef0123456789abcdef")); err == nil {
+		if err := mgr.acceptIntegrityManifestGeneration(1, testManifestHMAC, []byte("0123456789abcdef0123456789abcdef")); err == nil {
 			t.Fatal("acceptIntegrityManifestGeneration: want lock open error")
 		}
 		if err := os.Remove(lockPath); err != nil {

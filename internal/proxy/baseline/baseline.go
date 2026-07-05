@@ -186,9 +186,10 @@ type integrityManifestEntry struct {
 }
 
 type integrityHighWaterState struct {
-	Generation uint64 `json:"generation"`
-	Context    string `json:"context"`
-	Digest     string `json:"digest"`
+	Generation   uint64 `json:"generation"`
+	Context      string `json:"context"`
+	ManifestHMAC string `json:"manifest_hmac"`
+	Digest       string `json:"digest"`
 }
 
 // seasonalityNone is the only supported seasonality mode.
@@ -925,9 +926,9 @@ func (m *Manager) integrityStateContextID() string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (m *Manager) integrityGenerationDigest(generation uint64, key []byte) string {
+func (m *Manager) integrityGenerationDigest(generation uint64, manifestHMAC string, key []byte) string {
 	mac := hmac.New(sha256.New, key)
-	_, _ = fmt.Fprintf(mac, "baseline-integrity-generation-v2\n%s\n%d", m.integrityStateContextID(), generation)
+	_, _ = fmt.Fprintf(mac, "baseline-integrity-generation-v3\n%s\n%d\n%s", m.integrityStateContextID(), generation, manifestHMAC)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -961,55 +962,65 @@ func (m *Manager) loadIntegrityKey(create bool) ([]byte, error) {
 	return key, nil
 }
 
-func (m *Manager) readIntegrityHighWater(key []byte) (uint64, bool, error) {
+func (m *Manager) readIntegrityHighWater(key []byte) (uint64, string, bool, error) {
 	path := m.integrityHighWaterPath()
 	data, err := readRegularFileNoSymlink(path, "baseline integrity generation high-water", integrityStateMaxSize)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return 0, false, nil
+			return 0, "", false, nil
 		}
-		return 0, false, err
+		return 0, "", false, err
 	}
 	var state integrityHighWaterState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return 0, false, fmt.Errorf("parse baseline integrity generation high-water: %w", err)
+		return 0, "", false, fmt.Errorf("parse baseline integrity generation high-water: %w", err)
 	}
 	if state.Generation == 0 {
-		return 0, false, errors.New("baseline integrity generation high-water must be greater than zero")
+		return 0, "", false, errors.New("baseline integrity generation high-water must be greater than zero")
 	}
 	if state.Context != m.integrityStateContextID() {
-		return 0, false, errors.New("baseline integrity generation high-water context mismatch")
+		return 0, "", false, errors.New("baseline integrity generation high-water context mismatch")
 	}
-	wantDigest := m.integrityGenerationDigest(state.Generation, key)
+	storedManifestHMAC, err := decodeSHA256Hex(state.ManifestHMAC, "baseline integrity generation high-water manifest hmac")
+	if err != nil {
+		return 0, "", false, err
+	}
+	wantDigest := m.integrityGenerationDigest(state.Generation, state.ManifestHMAC, key)
 	gotDigest, err := hex.DecodeString(state.Digest)
 	if err != nil {
-		return 0, false, fmt.Errorf("decode baseline integrity generation high-water digest: %w", err)
+		return 0, "", false, fmt.Errorf("decode baseline integrity generation high-water digest: %w", err)
 	}
 	want, err := hex.DecodeString(wantDigest)
 	if err != nil {
-		return 0, false, err
+		return 0, "", false, err
 	}
 	if len(gotDigest) != sha256.Size {
-		return 0, false, fmt.Errorf("baseline integrity generation high-water digest length = %d, want %d", len(gotDigest), sha256.Size)
+		return 0, "", false, fmt.Errorf("baseline integrity generation high-water digest length = %d, want %d", len(gotDigest), sha256.Size)
 	}
 	if !hmac.Equal(gotDigest, want) {
-		return 0, false, errors.New("baseline integrity generation high-water digest mismatch")
+		return 0, "", false, errors.New("baseline integrity generation high-water digest mismatch")
 	}
-	return state.Generation, true, nil
+	return state.Generation, hex.EncodeToString(storedManifestHMAC), true, nil
 }
 
-func (m *Manager) writeIntegrityHighWater(generation uint64, key []byte) error {
+func (m *Manager) writeIntegrityHighWater(generation uint64, key []byte, manifestHMAC string) error {
 	if generation == 0 {
 		return errors.New("baseline integrity generation must be greater than zero")
 	}
+	normalizedManifestHMAC, err := decodeSHA256Hex(manifestHMAC, "baseline integrity manifest hmac")
+	if err != nil {
+		return err
+	}
+	manifestHMAC = hex.EncodeToString(normalizedManifestHMAC)
 	path := m.integrityHighWaterPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("creating baseline integrity generation directory: %w", err)
 	}
 	data, err := json.Marshal(integrityHighWaterState{
-		Generation: generation,
-		Context:    m.integrityStateContextID(),
-		Digest:     m.integrityGenerationDigest(generation, key),
+		Generation:   generation,
+		Context:      m.integrityStateContextID(),
+		ManifestHMAC: manifestHMAC,
+		Digest:       m.integrityGenerationDigest(generation, manifestHMAC, key),
 	})
 	if err != nil {
 		return fmt.Errorf("marshaling baseline integrity generation high-water: %w", err)
@@ -1021,7 +1032,7 @@ func (m *Manager) writeIntegrityHighWater(generation uint64, key []byte) error {
 }
 
 func (m *Manager) nextIntegrityManifestGenerationLocked(key []byte, allowMissingHighWater bool) (uint64, error) {
-	highWater, found, err := m.readIntegrityHighWater(key)
+	highWater, _, found, err := m.readIntegrityHighWater(key)
 	if err != nil {
 		return 0, fmt.Errorf("baseline integrity generation unreadable, cannot sign manifest: %w", err)
 	}
@@ -1059,9 +1070,13 @@ func (m *Manager) nextIntegrityManifestGeneration() (uint64, error) {
 	return m.nextIntegrityManifestGenerationLocked(key, !trustedState)
 }
 
-func (m *Manager) acceptIntegrityManifestGeneration(generation uint64, key []byte) error {
+func (m *Manager) acceptIntegrityManifestGeneration(generation uint64, manifestHMAC string, key []byte) error {
 	if generation == 0 {
 		return errors.New("baseline integrity manifest generation must be greater than zero")
+	}
+	manifestHMACBytes, err := decodeSHA256Hex(manifestHMAC, "baseline integrity manifest hmac")
+	if err != nil {
+		return err
 	}
 
 	integrityHighWaterMu.Lock()
@@ -1073,7 +1088,7 @@ func (m *Manager) acceptIntegrityManifestGeneration(generation uint64, key []byt
 	}
 	defer unlock()
 
-	highWater, found, err := m.readIntegrityHighWater(key)
+	highWater, acceptedManifestHMAC, found, err := m.readIntegrityHighWater(key)
 	if err != nil {
 		return fmt.Errorf("baseline integrity generation unreadable, cannot verify rollback: %w", err)
 	}
@@ -1083,8 +1098,17 @@ func (m *Manager) acceptIntegrityManifestGeneration(generation uint64, key []byt
 	if found && generation < highWater {
 		return fmt.Errorf("baseline integrity manifest rollback rejected: generation %d below accepted %d", generation, highWater)
 	}
+	if generation == highWater {
+		acceptedManifestHMACBytes, err := decodeSHA256Hex(acceptedManifestHMAC, "accepted baseline integrity manifest hmac")
+		if err != nil {
+			return err
+		}
+		if !hmac.Equal(manifestHMACBytes, acceptedManifestHMACBytes) {
+			return fmt.Errorf("baseline integrity manifest replay rejected: generation %d has a different accepted manifest", generation)
+		}
+	}
 	if generation > highWater {
-		if err := m.writeIntegrityHighWater(generation, key); err != nil {
+		if err := m.writeIntegrityHighWater(generation, key, hex.EncodeToString(manifestHMACBytes)); err != nil {
 			return fmt.Errorf("persist baseline integrity generation high-water: %w", err)
 		}
 	}
@@ -1214,45 +1238,58 @@ func signIntegrityManifest(manifest integrityManifest, key []byte) (string, erro
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
+func decodeSHA256Hex(value, label string) ([]byte, error) {
+	decoded, err := hex.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decoding %s: %w", label, err)
+	}
+	if len(decoded) != sha256.Size {
+		return nil, fmt.Errorf("%s length = %d, want %d", label, len(decoded), sha256.Size)
+	}
+	return decoded, nil
+}
+
 func verifyIntegrityManifest(data, key []byte) (integrityManifest, error) {
+	manifest, _, err := verifyIntegrityManifestWithHMAC(data, key)
+	return manifest, err
+}
+
+func verifyIntegrityManifestWithHMAC(data, key []byte) (integrityManifest, string, error) {
 	var file integrityManifestFile
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&file); err != nil {
-		return integrityManifest{}, fmt.Errorf("decoding integrity manifest: %w", err)
+		return integrityManifest{}, "", fmt.Errorf("decoding integrity manifest: %w", err)
 	}
 	var extra json.RawMessage
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return integrityManifest{}, errors.New("decoding integrity manifest: trailing data after manifest")
+			return integrityManifest{}, "", errors.New("decoding integrity manifest: trailing data after manifest")
 		}
-		return integrityManifest{}, fmt.Errorf("decoding integrity manifest: %w", err)
+		return integrityManifest{}, "", fmt.Errorf("decoding integrity manifest: %w", err)
 	}
 	if file.Manifest.SchemaVersion != integrityManifestVersion {
-		return integrityManifest{}, fmt.Errorf("integrity manifest schema_version = %d, want %d", file.Manifest.SchemaVersion, integrityManifestVersion)
+		return integrityManifest{}, "", fmt.Errorf("integrity manifest schema_version = %d, want %d", file.Manifest.SchemaVersion, integrityManifestVersion)
 	}
 	if file.Manifest.Algorithm != integrityManifestAlg {
-		return integrityManifest{}, fmt.Errorf("integrity manifest algorithm = %q, want %q", file.Manifest.Algorithm, integrityManifestAlg)
+		return integrityManifest{}, "", fmt.Errorf("integrity manifest algorithm = %q, want %q", file.Manifest.Algorithm, integrityManifestAlg)
 	}
-	want, err := hex.DecodeString(file.HMAC)
+	want, err := decodeSHA256Hex(file.HMAC, "integrity manifest hmac")
 	if err != nil {
-		return integrityManifest{}, fmt.Errorf("decoding integrity manifest hmac: %w", err)
-	}
-	if len(want) != sha256.Size {
-		return integrityManifest{}, fmt.Errorf("integrity manifest hmac length = %d, want %d", len(want), sha256.Size)
+		return integrityManifest{}, "", err
 	}
 	gotHex, err := signIntegrityManifest(file.Manifest, key)
 	if err != nil {
-		return integrityManifest{}, err
+		return integrityManifest{}, "", err
 	}
 	got, err := hex.DecodeString(gotHex)
 	if err != nil {
-		return integrityManifest{}, err
+		return integrityManifest{}, "", err
 	}
 	if !hmac.Equal(got, want) {
-		return integrityManifest{}, errors.New("integrity manifest hmac verification failed")
+		return integrityManifest{}, "", errors.New("integrity manifest hmac verification failed")
 	}
-	return file.Manifest, nil
+	return file.Manifest, hex.EncodeToString(want), nil
 }
 
 func profileBytesHash(data []byte) string {
@@ -1392,7 +1429,7 @@ func (m *Manager) persistIntegrityManifestLocked(exclude map[string]bool) error 
 		err = m.cleanupNewIntegrityTrustedState(cleanupNewTrustedState, err)
 		return m.logIntegrityPersistenceFailure("manifest_write_failed", err, "generation", generation)
 	}
-	if err := m.writeIntegrityHighWater(generation, key); err != nil {
+	if err := m.writeIntegrityHighWater(generation, key, mac); err != nil {
 		err = m.logIntegrityPersistenceFailure("generation_advance_failed", err, "generation", generation)
 		return integrityManifestCommittedError{err: err}
 	}
@@ -1430,11 +1467,8 @@ func (m *Manager) verifyPersistedProfileIntegrity(agentKey string) error {
 	if err != nil {
 		return err
 	}
-	manifest, err := verifyIntegrityManifest(manifestData, key)
+	manifest, manifestHMAC, err := verifyIntegrityManifestWithHMAC(manifestData, key)
 	if err != nil {
-		return err
-	}
-	if err := m.acceptIntegrityManifestGeneration(manifest.Generation, key); err != nil {
 		return err
 	}
 	for _, expected := range manifest.Profiles {
@@ -1464,6 +1498,9 @@ func (m *Manager) verifyPersistedProfileIntegrity(agentKey string) error {
 		}
 		if profile.State != wantState {
 			return fmt.Errorf("pending baseline profile %q state = %q, want %q", agentKey, profile.State, wantState)
+		}
+		if err := m.acceptIntegrityManifestGeneration(manifest.Generation, manifestHMAC, key); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -1508,12 +1545,9 @@ func (m *Manager) verifyPersistedIntegrity(entries []os.DirEntry) (map[string]Pr
 	if err != nil {
 		return nil, m.logIntegrityVerificationFailure("key_load_failed", err)
 	}
-	manifest, err := verifyIntegrityManifest(manifestData, key)
+	manifest, manifestHMAC, err := verifyIntegrityManifestWithHMAC(manifestData, key)
 	if err != nil {
 		return nil, m.logIntegrityVerificationFailure("manifest_invalid", err)
-	}
-	if err := m.acceptIntegrityManifestGeneration(manifest.Generation, key); err != nil {
-		return nil, m.logIntegrityVerificationFailure("rollback_rejected", err, "generation", manifest.Generation)
 	}
 
 	verified := make(map[string]Profile, len(manifest.Profiles))
@@ -1560,6 +1594,9 @@ func (m *Manager) verifyPersistedIntegrity(entries []os.DirEntry) (map[string]Pr
 			return nil, m.logIntegrityVerificationFailure("profile_state_mismatch", err, "agent_key", expected.AgentKey, "generation", manifest.Generation)
 		}
 		verified[expected.AgentKey] = profile
+	}
+	if err := m.acceptIntegrityManifestGeneration(manifest.Generation, manifestHMAC, key); err != nil {
+		return nil, m.logIntegrityVerificationFailure("rollback_rejected", err, "generation", manifest.Generation)
 	}
 	return verified, nil
 }

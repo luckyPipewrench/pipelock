@@ -10,6 +10,16 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
+)
+
+const (
+	// integrityHighWaterLockTimeout bounds how long we wait for another
+	// process to release the lock. The critical section is a tiny atomic write,
+	// so real contention clears in milliseconds; the timeout only guards
+	// against a wedged holder rather than failing instantly on a benign race.
+	integrityHighWaterLockTimeout = 2 * time.Second
+	integrityHighWaterLockPoll    = 20 * time.Millisecond
 )
 
 func acquireIntegrityHighWaterLock(integrityKeyPath string) (func(), error) {
@@ -22,17 +32,21 @@ func acquireIntegrityHighWaterLock(integrityKeyPath string) (func(), error) {
 		return nil, fmt.Errorf("open baseline integrity generation high-water lock: %w", err)
 	}
 	fd := int(f.Fd()) // #nosec G115 -- file descriptors fit in int
-	// Blocking exclusive lock. The critical section is a tiny
-	// read-compare-atomic-write already serialized in-process by
-	// integrityHighWaterMu, so a brief cross-process wait is safe. A
-	// non-blocking lock would surface benign concurrent verification as a
-	// fail-closed baseline startup or ratification error.
-	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("acquire baseline integrity generation high-water lock: %w", err)
+	deadline := time.Now().Add(integrityHighWaterLockTimeout)
+	for {
+		if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return func() {
+				_ = syscall.Flock(fd, syscall.LOCK_UN)
+				_ = f.Close()
+			}, nil
+		} else if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+			_ = f.Close()
+			return nil, fmt.Errorf("acquire baseline integrity generation high-water lock: %w", err)
+		}
+		if time.Now().After(deadline) {
+			_ = f.Close()
+			return nil, fmt.Errorf("baseline integrity generation high-water locked by another process: %s", lockPath)
+		}
+		time.Sleep(integrityHighWaterLockPoll)
 	}
-	return func() {
-		_ = syscall.Flock(fd, syscall.LOCK_UN)
-		_ = f.Close()
-	}, nil
 }

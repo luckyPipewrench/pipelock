@@ -3172,6 +3172,197 @@ func TestScanTextForDLPInbound_StillCatchesGenericDLP(t *testing.T) {
 	}
 }
 
+func TestIsLowConfidenceInboundAWSAccessID(t *testing.T) {
+	t.Parallel()
+
+	s := New(testConfig())
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{
+			name: "ocr prose",
+			text: strings.Join([]string{
+				"AIDA", "in", "product", "name", "generated", "by", "random",
+				"OCR", "context", "for", "assistant", "safety", "review",
+			}, " "),
+			want: true,
+		},
+		{
+			name: "uppercase split access id",
+			text: strings.Join([]string{"AKIA", "IOSFODNN7", "EXAMPLE"}, " "),
+			want: false,
+		},
+		{
+			// Real uppercase key split by whitespace with a lowercase tail: the
+			// (?i) core match greedily extends into the tail, but a genuine key is
+			// still embedded, so it must stay enforceable (block).
+			name: "split real AKIA key with lowercase tail",
+			text: strings.Join([]string{"AKIA", "IOSFODNN7", "EXAMPLE", "abcdefghijklmnop"}, " "),
+			want: false,
+		},
+		{
+			name: "split real A3T key with lowercase tail",
+			text: strings.Join([]string{"A3T", "ABCDEFGHIJKLMNOP", "abcdefghijklmnop"}, " "),
+			want: false,
+		},
+		{
+			name: "credential context",
+			text: strings.Join([]string{
+				"aws", "access", "key", "id", "akia", "iosfodnn7", "example",
+			}, " "),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := s.ScanTextForDLPInbound(ctx, tt.text)
+			if result.Clean {
+				t.Fatalf("test case must produce an AWS DLP match")
+			}
+			var awsMatch TextDLPMatch
+			for _, match := range result.Matches {
+				if match.PatternName == "AWS Access ID" {
+					awsMatch = match
+					break
+				}
+			}
+			if awsMatch.PatternName == "" {
+				t.Fatalf("expected AWS Access ID match, got %+v", result.Matches)
+			}
+			if got := IsLowConfidenceInboundAWSAccessID(tt.text, awsMatch); got != tt.want {
+				t.Fatalf("IsLowConfidenceInboundAWSAccessID = %v, want %v (match=%+v span=%+v)", got, tt.want, awsMatch, awsMatch.Span())
+			}
+		})
+	}
+
+	guardText := strings.Join([]string{
+		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"OCR", "context", "for", "assistant", "safety", "review",
+	}, " ")
+	validWhitespaceSpan := MatchSpan{
+		ByteStart: 0,
+		ByteEnd:   12,
+		ViewLabel: dlpViewLabel("whitespace"),
+		RuleID:    patternNameAWSAccessID,
+	}
+	guardTests := []struct {
+		name  string
+		match TextDLPMatch
+	}{
+		{
+			name: "wrong pattern name",
+			match: TextDLPMatch{
+				PatternName: "Other Pattern",
+				Encoded:     "whitespace",
+				span:        validWhitespaceSpan,
+			},
+		},
+		{
+			name: "non whitespace encoded view",
+			match: TextDLPMatch{
+				PatternName: patternNameAWSAccessID,
+				Encoded:     "",
+				span:        validWhitespaceSpan,
+			},
+		},
+		{
+			name: "invalid span metadata",
+			match: TextDLPMatch{
+				PatternName: patternNameAWSAccessID,
+				Encoded:     "whitespace",
+				span:        MatchSpan{},
+			},
+		},
+		{
+			name: "negative span",
+			match: TextDLPMatch{
+				PatternName: patternNameAWSAccessID,
+				Encoded:     "whitespace",
+				span: MatchSpan{
+					ByteStart: -1,
+					ByteEnd:   4,
+					ViewLabel: dlpViewLabel("whitespace"),
+					RuleID:    patternNameAWSAccessID,
+				},
+			},
+		},
+		{
+			name: "out of range span",
+			match: TextDLPMatch{
+				PatternName: patternNameAWSAccessID,
+				Encoded:     "whitespace",
+				span: MatchSpan{
+					ByteStart: 0,
+					ByteEnd:   len(guardText) + 100,
+					ViewLabel: dlpViewLabel("whitespace"),
+					RuleID:    patternNameAWSAccessID,
+				},
+			},
+		},
+	}
+
+	for _, tt := range guardTests {
+		tt := tt
+		t.Run("guard "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := IsLowConfidenceInboundAWSAccessID(guardText, tt.match); got {
+				t.Fatalf("IsLowConfidenceInboundAWSAccessID = true for guard case %q, want false", tt.name)
+			}
+		})
+	}
+}
+
+func TestEnforceableInboundTextDLPMatches(t *testing.T) {
+	t.Parallel()
+
+	s := New(testConfig())
+	ctx := context.Background()
+	lowConfidenceAWS := strings.Join([]string{
+		"AIDA", "in", "product", "name", "generated", "by", "random",
+		"OCR", "context", "for", "assistant", "safety", "review",
+	}, " ")
+
+	t.Run("drops low confidence AWS only", func(t *testing.T) {
+		t.Parallel()
+
+		result := s.ScanTextForDLPInbound(ctx, lowConfidenceAWS)
+		if result.Clean {
+			t.Fatalf("baseline must produce a low-confidence AWS match")
+		}
+		if got := EnforceableInboundTextDLPMatches(lowConfidenceAWS, result.Matches); len(got) != 0 {
+			t.Fatalf("EnforceableInboundTextDLPMatches returned %d matches, want 0: %+v", len(got), got)
+		}
+	})
+
+	t.Run("keeps mixed generic DLP", func(t *testing.T) {
+		t.Parallel()
+
+		text := lowConfidenceAWS + " observed marker " + testAnthropicPrefix + strings.Repeat("A", 20)
+		result := s.ScanTextForDLPInbound(ctx, text)
+		if result.Clean {
+			t.Fatalf("baseline must produce mixed DLP matches")
+		}
+		enforceable := EnforceableInboundTextDLPMatches(text, result.Matches)
+		if len(enforceable) == 0 {
+			t.Fatalf("EnforceableInboundTextDLPMatches dropped all mixed matches")
+		}
+		for _, match := range enforceable {
+			if match.PatternName == patternNameAWSAccessID {
+				t.Fatalf("low-confidence AWS match should not be enforceable in mixed payload: %+v", enforceable)
+			}
+		}
+	})
+}
+
 // TestTextDLP_DottedTokenPatterns is the regression suite for the dotted-token
 // DLP false positive. The "Discord Bot Token", "SendGrid API Key", and "JWT
 // Token" default patterns matched ordinary prose: the scanner force-prefixes

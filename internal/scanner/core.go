@@ -63,7 +63,7 @@ func coreDLPPatternDefs() []coreDLPPattern {
 		// Cloud provider credentials - names match config.Defaults() exactly.
 		{
 			name:     patternNameAWSAccessID,
-			regex:    `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`,
+			regex:    config.AWSAccessIDRegex,
 			severity: "critical",
 		},
 		{

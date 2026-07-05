@@ -338,7 +338,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	if toolName == "" && enforcementTarget != "" {
 		enforcementKind = "mcp method"
 	}
-	captureActionClass := captureMCPFrameActionClass(toolName, verdict.Method, string(frame.Args))
+	captureActionClass := captureMCPFrameActionClass(enforcementTarget, verdict.Method, mcpFrameCallableArgs(frame))
 	logTaintDecision := func() {
 		if auditLogger == nil {
 			return
@@ -348,7 +348,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			decision = eval.TaintAuditDecision
 		}
 		auditLogger.LogTaintDecision(
-			mustMCPAuditContext(auditLogger, "MCP", toolName),
+			mustMCPAuditContext(auditLogger, "MCP", enforcementTarget),
 			audit.TaintDecision{
 				TaintLevel:  decision.Risk.Level.String(),
 				ActionClass: decision.ActionClass.String(),
@@ -483,11 +483,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		case bindingReasonMissingToolName:
 			_, _ = fmt.Fprintf(logW, "pipelock: tools/call missing params.name\n")
 		case bindingReasonNoBaseline:
-			_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q before baseline established\n", toolName)
+			_, _ = fmt.Fprintf(logW, "pipelock: %s %q before baseline established\n", enforcementKind, enforcementTarget)
 		case bindingReasonUnknownTool:
-			_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q not in session baseline\n", toolName)
+			_, _ = fmt.Fprintf(logW, "pipelock: %s %q not in session baseline\n", enforcementKind, enforcementTarget)
 		default:
-			_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q session binding violation: %s\n", toolName, bindingReason)
+			_, _ = fmt.Fprintf(logW, "pipelock: %s %q session binding violation: %s\n", enforcementKind, enforcementTarget, bindingReason)
 		}
 		obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
 			Subsurface:        "session_binding",
@@ -498,13 +498,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			Profile:           opts.captureProfile(),
 			ActionClass:       captureActionClass,
 			Request: capture.CaptureRequest{
-				ToolName:  toolName,
-				MCPMethod: methodToolsCall,
+				ToolName:  enforcementTarget,
+				MCPMethod: verdict.Method,
 				RPCID:     captureRPCID(verdict.ID),
 			},
 			RawFindings: []capture.Finding{{
 				Kind:       capture.KindSessionBinding,
-				ToolName:   toolName,
+				ToolName:   enforcementTarget,
 				PolicyRule: bindingReason,
 				Action:     bindingAction,
 			}},
@@ -600,7 +600,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		if contractGate.Verdict == config.ActionBlock {
-			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked tools/call %q (%s)\n", toolName, contractGate.Reason)
+			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked %s %q (%s)\n", enforcementKind, enforcementTarget, contractGate.Reason)
 			receiptVerdict = config.ActionBlock
 			receiptContractGate = &contractGate
 			result.Blocked = ptrMCPBlockedRequest(mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"))
@@ -1015,7 +1015,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		if contractGate.Verdict == config.ActionBlock {
-			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked tools/call %q (%s)\n", toolName, contractGate.Reason)
+			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked %s %q (%s)\n", enforcementKind, enforcementTarget, contractGate.Reason)
 			receiptVerdict = config.ActionBlock
 			receiptContractGate = &contractGate
 			result.Blocked = ptrMCPBlockedRequest(mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"))

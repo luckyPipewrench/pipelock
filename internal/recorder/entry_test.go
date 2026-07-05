@@ -170,7 +170,7 @@ func TestReadEntries_ValidFile(t *testing.T) {
 	}
 }
 
-func TestReadEntries_PreservesRawDetailWithoutSerializationOrHashDisturbance(t *testing.T) {
+func TestReadEntries_PreservesRawDetailAndBindsV2Hash(t *testing.T) {
 	ts := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	detail := map[string]any{"z": float64(2), "a": map[string]any{"b": float64(1)}}
 	for _, version := range []int{1, recorder.EntryVersion} {
@@ -213,14 +213,28 @@ func TestReadEntries_PreservesRawDetailWithoutSerializationOrHashDisturbance(t *
 			if string(got[0].RawDetail) != string(rawWire.Detail) {
 				t.Fatalf("RawDetail = %s, want %s", got[0].RawDetail, rawWire.Detail)
 			}
-			withoutRaw := got[0]
-			withoutRaw.RawDetail = nil
-			if hashWithoutRaw := recorder.ComputeHash(withoutRaw); hashWithoutRaw != beforeHash {
-				t.Fatalf("baseline reread hash = %s, want stored pre-read hash %s", hashWithoutRaw, beforeHash)
+			if hashWithRaw := recorder.ComputeHash(got[0]); hashWithRaw != beforeHash {
+				t.Fatalf("reread hash = %s, want stored pre-read hash %s", hashWithRaw, beforeHash)
 			}
+
 			got[0].RawDetail = json.RawMessage(`{"different":true}`)
-			if afterHash := recorder.ComputeHash(got[0]); afterHash != beforeHash {
-				t.Fatalf("ComputeHash changed after RawDetail mutation: got %s want %s", afterHash, beforeHash)
+			afterHash := recorder.ComputeHash(got[0])
+			if version == 1 {
+				if afterHash != beforeHash {
+					t.Fatalf("v1 ComputeHash changed after RawDetail mutation: got %s want %s", afterHash, beforeHash)
+				}
+			} else if afterHash == beforeHash {
+				t.Fatalf("v2 ComputeHash did not bind RawDetail mutation: got %s", afterHash)
+			}
+			if version != 1 {
+				got[0].RawDetail = json.RawMessage(`{"z":2,"a":{"b":1}}`)
+				if err := recorder.VerifyChain(got); err == nil {
+					t.Fatal("v2 VerifyChain accepted semantically equivalent but byte-different RawDetail")
+				}
+			}
+			got[0].RawDetail = rawWire.Detail
+			if hashRestored := recorder.ComputeHash(got[0]); hashRestored != beforeHash {
+				t.Fatalf("restored RawDetail hash = %s, want %s", hashRestored, beforeHash)
 			}
 			if err := recorder.VerifyChain(got); err != nil {
 				t.Fatalf("VerifyChain with populated RawDetail: %v", err)

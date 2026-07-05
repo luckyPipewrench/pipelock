@@ -135,10 +135,7 @@ func computeHashV1(e Entry) string {
 // same logical entry even when EventKind is empty - this is the v1/v2
 // isolation guarantee.
 func computeHashV2(e Entry) string {
-	detailJSON, err := json.Marshal(e.Detail)
-	if err != nil {
-		detailJSON = []byte("null")
-	}
+	detailJSON := detailJSONForHash(e)
 
 	h := sha256.New()
 	fields := []string{
@@ -162,6 +159,17 @@ func computeHashV2(e Entry) string {
 		_, _ = h.Write([]byte(f))
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func detailJSONForHash(e Entry) []byte {
+	if e.RawDetail != nil {
+		return e.RawDetail
+	}
+	detailJSON, err := json.Marshal(e.Detail)
+	if err != nil {
+		return []byte("null")
+	}
+	return detailJSON
 }
 
 // VerifyChain checks the integrity of a sequence of entries. Returns an error
@@ -325,7 +333,10 @@ func readEntriesFromReader(r io.Reader, maxEntries int) ([]Entry, bool, error) {
 		}
 		if raw.Detail != nil {
 			e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
-			detail, _ := decodeEntryDetail(raw.Detail)
+			detail, err := decodeEntryDetail(raw.Detail)
+			if err != nil {
+				return nil, false, fmt.Errorf("line %d: parsing entry detail: %w", lineNum, err)
+			}
 			e.Detail = detail
 		}
 		if !acceptedEntryVersions[e.Version] {

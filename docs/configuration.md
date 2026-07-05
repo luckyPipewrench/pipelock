@@ -21,7 +21,7 @@ On reload, the scanner and session manager are atomically swapped. Kill switch s
 
 If a reload fails validation (invalid regex, security downgrade), the old config is retained and a warning is logged.
 
-**Reload exceptions:** the Sentry crash-report scrubber captures the DLP pattern list at startup and does **not** update on reload. If you add DLP patterns used to scrub Sentry events, restart pipelock to propagate them. A warning is logged on any reload that changes `dlp.patterns` while Sentry is enabled: `DLP patterns changed; Sentry scrubber uses init-time patterns until restart`.
+**Reload exceptions:** the Sentry crash-report sanitizer captures the DLP pattern list at startup and does **not** update on reload. If you add DLP patterns used to scrub Sentry events, restart pipelock to propagate them. A warning is logged on any reload that changes `dlp.patterns` while Sentry is enabled: `DLP patterns changed; Sentry scrubber uses init-time patterns until restart`.
 
 **Strict parsing:** Pipelock rejects unknown top-level and nested YAML fields at startup, and it only accepts a single YAML document per config file. Trailing `---` documents are a hard error. This prevents typos from silently disabling controls and blocks shadow-config bypasses.
 
@@ -40,6 +40,22 @@ explain_blocks: false         # true = include fix hints in block responses
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
 | `enforce` | bool | `true` | When false, all blocks become warnings |
 | `explain_blocks` | bool | `false` | Include actionable hints in block responses |
+
+### Sentry Crash Reporting
+
+Sentry crash reporting is disabled by default. It is enabled only when `sentry.enabled: true` is set and either `sentry.dsn` or the `SENTRY_DSN` environment variable is non-empty.
+
+```yaml
+sentry:
+  enabled: false
+  dsn: ""
+  environment: production
+  sample_rate: 1.0
+```
+
+When enabled, Pipelock prints a startup disclosure. Crash payloads are rebuilt through an allowlist sanitizer before leaving the process: request bodies, headers, user identity, hostnames, breadcrumbs, module inventory, local variables, absolute paths, and source context lines are dropped. Transactions, SDK logs, metrics, and check-ins are not sent by this integration.
+
+`sample_rate: 0.0` does **not** disable Sentry in the Go SDK; it is treated as `1.0`. To disable crash reporting, set `sentry.enabled: false` or leave the DSN empty. Pipelock rejects `sample_rate: 0.0` when Sentry is enabled.
 
 ### Block Hints (`explain_blocks`)
 

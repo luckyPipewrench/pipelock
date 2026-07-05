@@ -270,12 +270,14 @@ func (c *Config) ExplainBlocksEnabled() bool {
 	return c.ExplainBlocks != nil && *c.ExplainBlocks
 }
 
-// IsEnabled returns true if Sentry is enabled (nil defaults to true).
+// IsEnabled returns true if Sentry is explicitly enabled.
 func (s *SentryConfig) IsEnabled() bool {
-	return s.Enabled == nil || *s.Enabled
+	return s.Enabled != nil && *s.Enabled
 }
 
 // EffectiveSampleRate returns the configured sample rate (nil defaults to 1.0).
+// A value of 0.0 does not disable events in sentry-go; Validate rejects it when
+// Sentry is enabled.
 func (s *SentryConfig) EffectiveSampleRate() float64 {
 	if s.SampleRate == nil {
 		return 1.0

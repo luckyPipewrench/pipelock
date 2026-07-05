@@ -16,7 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// Client wraps the Sentry SDK with secret scrubbing. When disabled (enabled=false),
+// Client wraps the Sentry SDK with event minimization. When disabled (enabled=false),
 // all methods are safe no-ops. Nil-safe: (*Client)(nil).CaptureError(err) is a no-op.
 //
 // Uses the global Sentry hub - only one Client should be active per process.
@@ -38,9 +38,12 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 	if !cfg.Sentry.IsEnabled() {
 		return &Client{enabled: false}, nil
 	}
+	if cfg.Sentry.SampleRate != nil && *cfg.Sentry.SampleRate == 0 {
+		return nil, fmt.Errorf("invalid sentry.sample_rate 0.0: it does not disable Sentry in sentry-go; use sentry.enabled: false or an empty DSN")
+	}
 
 	// SENTRY_DSN env overrides config so users can redirect crash reports
-	// away from the maintainer DSN shipped in preset configs.
+	// without editing checked-in configs.
 	dsn := os.Getenv("SENTRY_DSN")
 	if dsn == "" {
 		dsn = cfg.Sentry.DSN
@@ -83,19 +86,35 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 		Environment:      cfg.Sentry.Environment,
 		SampleRate:       cfg.Sentry.EffectiveSampleRate(),
 		Debug:            cfg.Sentry.Debug,
-		AttachStacktrace: true,
+		AttachStacktrace: false,
 		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+			if isUnsafeEventType(event) {
+				return nil
+			}
 			return scrubber.ScrubEvent(event, hint)
+		},
+		BeforeSendTransaction: func(_ *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+			return nil
+		},
+		BeforeSendLog: func(_ *sentry.Log) *sentry.Log {
+			return nil
+		},
+		BeforeSendMetric: func(_ *sentry.Metric) *sentry.Metric {
+			return nil
 		},
 	}
 	if transport != nil {
-		opts.Transport = transport
+		opts.Transport = dropUnsafeEventTransport{delegate: transport}
+	} else {
+		opts.Transport = dropUnsafeEventTransport{delegate: sentry.NewHTTPTransport()}
 	}
 
 	err := sentry.Init(opts)
 	if err != nil {
 		return nil, err
 	}
+
+	_, _ = fmt.Fprintln(os.Stderr, "pipelock: Sentry crash reporting enabled; crash reports go to the configured Sentry DSN and payloads are minimized without request bodies, headers, user, hostname, breadcrumbs, or local variables.")
 
 	return &Client{scrubber: scrubber, enabled: true}, nil
 }
@@ -165,6 +184,60 @@ func (c *Client) Close() {
 		return
 	}
 	sentry.Flush(2 * time.Second)
+}
+
+// dropUnsafeEventTransport blocks SDK event classes that do not flow through
+// the allowlist sanitizer. Check-ins intentionally skip BeforeSend in
+// sentry-go, so the transport is the last in-process choke point.
+type dropUnsafeEventTransport struct {
+	delegate sentry.Transport
+}
+
+func (t dropUnsafeEventTransport) Configure(options sentry.ClientOptions) {
+	if t.delegate != nil {
+		t.delegate.Configure(options)
+	}
+}
+
+func (t dropUnsafeEventTransport) SendEvent(event *sentry.Event) {
+	if event == nil || isUnsafeEventType(event) || t.delegate == nil {
+		return
+	}
+	t.delegate.SendEvent(event)
+}
+
+func (t dropUnsafeEventTransport) Flush(timeout time.Duration) bool {
+	if t.delegate == nil {
+		return true
+	}
+	return t.delegate.Flush(timeout)
+}
+
+func (t dropUnsafeEventTransport) FlushWithContext(ctx context.Context) bool {
+	if t.delegate == nil {
+		return true
+	}
+	if flusher, ok := t.delegate.(interface {
+		FlushWithContext(context.Context) bool
+	}); ok {
+		return flusher.FlushWithContext(ctx)
+	}
+	return t.delegate.Flush(0)
+}
+
+func (t dropUnsafeEventTransport) Close() {
+	if t.delegate != nil {
+		t.delegate.Close()
+	}
+}
+
+func isUnsafeEventType(event *sentry.Event) bool {
+	return event.Type == "check_in" ||
+		event.Type == "transaction" ||
+		event.CheckIn != nil ||
+		event.MonitorConfig != nil ||
+		len(event.Logs) > 0 ||
+		len(event.Metrics) > 0
 }
 
 // loadFileSecrets reads literal secret values from a file, one per line.

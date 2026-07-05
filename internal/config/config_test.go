@@ -11218,10 +11218,10 @@ func TestLoad_AddressProtectionChainDefaults(t *testing.T) {
 
 // --- Sentry tests ---
 
-func TestEnabled_NilDefaultsTrue(t *testing.T) {
+func TestEnabled_NilDefaultsFalse(t *testing.T) {
 	cfg := SentryConfig{}
-	if !cfg.IsEnabled() {
-		t.Error("expected Enabled() to return true when Enabled is nil")
+	if cfg.IsEnabled() {
+		t.Error("expected IsEnabled() to return false when Enabled is nil")
 	}
 }
 
@@ -11238,6 +11238,14 @@ func TestEnabled_ExplicitlyTrue(t *testing.T) {
 	cfg := SentryConfig{Enabled: &tr}
 	if !cfg.IsEnabled() {
 		t.Error("expected Enabled() to return true when Enabled is explicitly true")
+	}
+}
+
+func TestEnabled_ExplicitTrueWithDSN(t *testing.T) {
+	tr := true
+	cfg := SentryConfig{Enabled: &tr, DSN: "https://examplePublicKey@o0.ingest.sentry.io/0"}
+	if !cfg.IsEnabled() {
+		t.Error("expected IsEnabled() to return true when Enabled is explicitly true")
 	}
 }
 
@@ -11317,11 +11325,50 @@ func TestValidate_SampleRateValid(t *testing.T) {
 	}
 }
 
-func TestValidate_SampleRateZeroIsValid(t *testing.T) {
+func TestValidate_SampleRateZeroAllowedWhenDisabled(t *testing.T) {
 	cfg := Defaults()
 	cfg.Sentry.SampleRate = floatPtr(0.0)
 	if err := cfg.Validate(); err != nil {
-		t.Errorf("expected sample_rate 0.0 to be valid (disables sampling), got: %v", err)
+		t.Errorf("expected sample_rate 0.0 to be harmless when Sentry is disabled, got: %v", err)
+	}
+}
+
+func TestValidate_SampleRateZeroRejectedWhenEnabled(t *testing.T) {
+	enabled := true
+	cfg := Defaults()
+	cfg.Sentry.Enabled = &enabled
+	cfg.Sentry.SampleRate = floatPtr(0.0)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "treats 0.0 as 1.0") {
+		t.Errorf("expected sample_rate 0.0 enabled rejection, got: %v", err)
+	}
+}
+
+func TestPresetSentryDefaultOffNoMaintainerDSN(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", "..", "configs"))
+	if err != nil {
+		t.Fatalf("read configs dir: %v", err)
+	}
+
+	checked := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		checked++
+		path := filepath.Join("..", "..", "configs", entry.Name())
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", path, err)
+		}
+		if cfg.Sentry.IsEnabled() {
+			t.Fatalf("%s has Sentry enabled by default", path)
+		}
+		if cfg.Sentry.DSN != "" {
+			t.Fatalf("%s has non-empty Sentry DSN", path)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no config presets checked")
 	}
 }
 

@@ -1289,13 +1289,14 @@ type MCPWSListener struct {
 	MaxConnections int      `yaml:"max_connections"` // max concurrent inbound WS connections (default 100)
 }
 
-// SentryConfig configures Sentry error reporting with secret redaction.
-// All error data is scrubbed through DLP patterns before leaving the process.
+// SentryConfig configures opt-in Sentry error reporting with event minimization.
+// Crash reporting is enabled only when enabled is explicitly true and a DSN is
+// configured here or through SENTRY_DSN.
 type SentryConfig struct {
-	Enabled     *bool    `yaml:"enabled"`     // nil = true (default enabled)
+	Enabled     *bool    `yaml:"enabled"`     // nil = false (default disabled)
 	DSN         string   `yaml:"dsn"`         // Sentry DSN; also reads SENTRY_DSN env
 	Environment string   `yaml:"environment"` // e.g. "production" (default)
-	SampleRate  *float64 `yaml:"sample_rate"` // nil = 1.0; 0.0-1.0
+	SampleRate  *float64 `yaml:"sample_rate"` // nil = 1.0; >0.0-1.0 when enabled
 	Debug       bool     `yaml:"debug"`       // SDK debug mode
 }
 

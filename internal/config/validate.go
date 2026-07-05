@@ -2516,6 +2516,9 @@ func (c *Config) validateSentry() error {
 	if sr < 0 || sr > 1 {
 		return fmt.Errorf("invalid sentry.sample_rate %f: must be between 0.0 and 1.0", sr)
 	}
+	if c.Sentry.IsEnabled() && c.Sentry.SampleRate != nil && sr == 0 {
+		return fmt.Errorf("invalid sentry.sample_rate 0.0: sentry-go treats 0.0 as 1.0; disable crash reporting with sentry.enabled: false or an empty DSN")
+	}
 	return nil
 }
 

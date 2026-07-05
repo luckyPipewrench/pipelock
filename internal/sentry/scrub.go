@@ -3,7 +3,9 @@
 package plsentry
 
 import (
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/getsentry/sentry-go"
@@ -28,6 +30,10 @@ const redacted = "[REDACTED]"
 
 // urlParamValueRe matches query parameter values in URL-like strings.
 var urlParamValueRe = regexp.MustCompile(`([?&][^=&]+)=([^&\s]+)`)
+
+// urlLikeRe matches URL-bearing text. Sentry crash payloads do not need hosts,
+// userinfo, paths, or query values; keep only the coarse scheme.
+var urlLikeRe = regexp.MustCompile(`\b([a-zA-Z][a-zA-Z0-9+.-]*)://[^\s"'<>]+`)
 
 // Scrubber redacts secrets from strings and Sentry events using
 // DLP patterns from config plus hardcoded safety-net patterns.
@@ -85,6 +91,10 @@ func (s *Scrubber) ScrubString(input string) string {
 		}
 	}
 
+	// Drop URL authority/path/query by construction. Query redaction below is
+	// retained as defense in depth for URL-ish fragments this regex misses.
+	result = urlLikeRe.ReplaceAllString(result, "${1}://"+redacted)
+
 	// Redact URL query parameter values.
 	result = urlParamValueRe.ReplaceAllString(result, "${1}="+redacted)
 
@@ -112,96 +122,104 @@ func replaceMatchedSpans(input string, matches []redact.Match, replacement func(
 	return b.String()
 }
 
-// scrubStacktrace redacts secrets in stacktrace frame variables.
-// Shared by exception and thread scrubbing paths.
-func (s *Scrubber) scrubStacktrace(st *sentry.Stacktrace) {
-	if st == nil {
-		return
+func (s *Scrubber) safeScrubString(input string) string {
+	if s == nil {
+		return ""
 	}
-	for i := range st.Frames {
-		for k, v := range st.Frames[i].Vars {
-			if sv, ok := v.(string); ok {
-				st.Frames[i].Vars[k] = s.ScrubString(sv)
-			} else {
-				// Fail-closed: delete non-string vars rather than
-				// risk leaking secrets in serialized form.
-				delete(st.Frames[i].Vars, k)
-			}
-		}
-	}
+	return s.ScrubString(input)
 }
 
-// ScrubEvent scrubs all string fields in a Sentry event before transmission.
+func (s *Scrubber) safeScrubFilename(input string) string {
+	if s == nil {
+		return ""
+	}
+	result := filepath.Base(input)
+	for _, re := range s.patterns {
+		result = re.ReplaceAllString(result, redacted)
+	}
+	for _, secret := range s.secrets {
+		if secret != "" && strings.Contains(result, secret) {
+			result = strings.ReplaceAll(result, secret, redacted)
+		}
+	}
+	return result
+}
+
+// scrubStacktrace returns a minimized copy of a stacktrace. It keeps only
+// package/function/file-basename/line and drops vars, abs_path, context lines,
+// addresses, package images, and frame-local data.
+func (s *Scrubber) scrubStacktrace(st *sentry.Stacktrace) *sentry.Stacktrace {
+	if st == nil {
+		return nil
+	}
+
+	frames := make([]sentry.Frame, 0, len(st.Frames))
+	for i := range st.Frames {
+		frame := st.Frames[i]
+		safeFrame := sentry.Frame{
+			Function: s.safeScrubString(frame.Function),
+			Module:   s.safeScrubString(frame.Module),
+			Filename: s.safeScrubFilename(frame.Filename),
+			Lineno:   frame.Lineno,
+		}
+		frames = append(frames, safeFrame)
+	}
+	return &sentry.Stacktrace{Frames: frames}
+}
+
+// ScrubEvent returns a minimized allowlisted Sentry event before transmission.
 // This is used as the BeforeSend hook in sentry.ClientOptions.
 //
-// Fail-closed: non-string interface{} values in Breadcrumbs.Data, Contexts,
-// and Stacktrace.Vars are deleted rather than passed through unscrubbed.
-func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+// Fail-closed: any sanitizer panic drops the event rather than risking a raw
+// event. This is deliberately structural: request, user, server_name,
+// breadcrumbs, tags, contexts, modules, debug meta, attachments, spans, logs,
+// metrics, frame vars, abs_path, and source context lines are omitted by
+// construction.
+func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) (safe *sentry.Event) {
+	defer func() {
+		if recover() != nil {
+			safe = nil
+		}
+	}()
+
 	if event == nil {
 		return nil
 	}
 
-	// Scrub message.
-	event.Message = s.ScrubString(event.Message)
-
-	// Scrub transaction name (can contain URL paths with tokens).
-	event.Transaction = s.ScrubString(event.Transaction)
-
-	// Scrub fingerprint strings.
-	for i, fp := range event.Fingerprint {
-		event.Fingerprint[i] = s.ScrubString(fp)
+	safe = &sentry.Event{
+		EventID:   event.EventID,
+		Timestamp: event.Timestamp,
+		Level:     event.Level,
+		Release:   s.safeScrubString(event.Release),
+		Message:   s.safeScrubString(event.Message),
+		Platform:  "go/" + runtime.GOOS + "/" + runtime.GOARCH,
 	}
 
-	// Scrub exceptions - both Type and Value can contain secrets.
-	for i := range event.Exception {
-		event.Exception[i].Type = s.ScrubString(event.Exception[i].Type)
-		event.Exception[i].Value = s.ScrubString(event.Exception[i].Value)
-		s.scrubStacktrace(event.Exception[i].Stacktrace)
-	}
-
-	// Scrub threads - same Stacktrace structure as exceptions.
-	for i := range event.Threads {
-		s.scrubStacktrace(event.Threads[i].Stacktrace)
-	}
-
-	// Scrub breadcrumbs.
-	for i := range event.Breadcrumbs {
-		event.Breadcrumbs[i].Message = s.ScrubString(event.Breadcrumbs[i].Message)
-		for k, v := range event.Breadcrumbs[i].Data {
-			if sv, ok := v.(string); ok {
-				event.Breadcrumbs[i].Data[k] = s.ScrubString(sv)
-			} else {
-				delete(event.Breadcrumbs[i].Data, k)
-			}
+	if len(event.Exception) > 0 {
+		safe.Exception = make([]sentry.Exception, 0, len(event.Exception))
+		for i := range event.Exception {
+			exception := event.Exception[i]
+			safe.Exception = append(safe.Exception, sentry.Exception{
+				Type:       s.safeScrubString(exception.Type),
+				Value:      s.safeScrubString(exception.Value),
+				Stacktrace: s.scrubStacktrace(exception.Stacktrace),
+			})
 		}
 	}
 
-	// Scrub tags.
-	for k, v := range event.Tags {
-		event.Tags[k] = s.ScrubString(v)
-	}
-
-	// Scrub contexts - auto-populated with device/os/runtime info (ints,
-	// bools for OS/device/runtime) but custom contexts could contain secrets.
-	// Fail-closed: delete non-string values to prevent serialization leaks.
-	for ctxName, ctx := range event.Contexts {
-		for k, v := range ctx {
-			if sv, ok := v.(string); ok {
-				event.Contexts[ctxName][k] = s.ScrubString(sv)
-			} else {
-				delete(event.Contexts[ctxName], k)
+	if len(safe.Exception) == 0 && safe.Message == "" {
+		for i := range event.Threads {
+			if event.Threads[i].Stacktrace == nil {
+				continue
 			}
+			safe.Exception = append(safe.Exception, sentry.Exception{
+				Type:       "thread",
+				Value:      "stacktrace",
+				Stacktrace: s.scrubStacktrace(event.Threads[i].Stacktrace),
+			})
 		}
 	}
 
-	// Wipe request entirely - URLs, headers, body all dangerous.
-	event.Request = nil
-
-	// Wipe user - IP could identify targets.
-	event.User = sentry.User{}
-
-	// Wipe server name - reveals internal infrastructure hostname.
-	event.ServerName = ""
-
-	return event
+	safe.MakeSerializationSafe()
+	return safe
 }

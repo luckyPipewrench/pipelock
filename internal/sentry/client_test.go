@@ -54,6 +54,8 @@ func initTestClient(t *testing.T, dlpPatterns []config.DLPPattern) (*Client, *mo
 	t.Helper()
 	transport := &mockTransport{}
 	cfg := config.Defaults()
+	enabled := true
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = testDSN
 	cfg.DLP.Patterns = dlpPatterns
 	c, err := initClient(cfg, "test-version", transport)
@@ -80,7 +82,9 @@ func TestInit_DisabledReturnsNoOp(t *testing.T) {
 }
 
 func TestInit_EmptyDSNReturnsNoOp(t *testing.T) {
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = ""
 	// Ensure SENTRY_DSN env is not set for this test.
 	t.Setenv("SENTRY_DSN", "")
@@ -94,7 +98,9 @@ func TestInit_EmptyDSNReturnsNoOp(t *testing.T) {
 }
 
 func TestInit_EnvDSNUsedWhenConfigEmpty(t *testing.T) {
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = ""
 	// Set a valid-looking DSN via env. The Sentry SDK will accept it
 	// but won't actually connect in tests.
@@ -110,7 +116,9 @@ func TestInit_EnvDSNUsedWhenConfigEmpty(t *testing.T) {
 
 func TestInit_EnvDSNOverridesConfig(t *testing.T) {
 	envDSN := "https://envKey@o0.ingest.sentry.io/0"
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = "https://configKey@o0.ingest.sentry.io/0"
 	t.Setenv("SENTRY_DSN", envDSN)
 
@@ -169,20 +177,15 @@ func TestAddBreadcrumbEnabledClient(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
-	if len(events[0].Breadcrumbs) != 1 {
-		t.Fatalf("breadcrumbs = %d, want 1", len(events[0].Breadcrumbs))
-	}
-	crumb := events[0].Breadcrumbs[0]
-	if crumb.Category != "license" || crumb.Message != "expiry warning" || crumb.Level != sentry.Level("warn") {
-		t.Fatalf("breadcrumb = %+v, want license warning", crumb)
-	}
-	if crumb.Data["threshold_days"] != "7" || crumb.Data["days_remaining"] != "6" {
-		t.Fatalf("breadcrumb data = %+v, want warning band data", crumb.Data)
+	if len(events[0].Breadcrumbs) != 0 {
+		t.Fatalf("breadcrumbs = %d, want 0", len(events[0].Breadcrumbs))
 	}
 }
 
 func TestInit_InvalidDSNReturnsError(t *testing.T) {
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = "not-a-valid-dsn"
 	c, err := Init(cfg, "test")
 	if err == nil {
@@ -194,7 +197,9 @@ func TestInit_InvalidDSNReturnsError(t *testing.T) {
 }
 
 func TestInit_ScrubberPopulated(t *testing.T) {
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = testDSN
 	cfg.DLP.Patterns = testDLPPatterns()
 	c, err := Init(cfg, "test")
@@ -211,7 +216,9 @@ func TestInit_ScrubberPopulated(t *testing.T) {
 }
 
 func TestInit_EnvSecretsCollected(t *testing.T) {
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = testDSN
 	cfg.DLP.ScanEnv = true
 	t.Setenv("PIPELOCK_TEST_SECRET", "this-is-a-long-enough-secret")
@@ -225,7 +232,9 @@ func TestInit_EnvSecretsCollected(t *testing.T) {
 }
 
 func TestInit_EnvSecretsSkippedWhenScanEnvFalse(t *testing.T) {
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = testDSN
 	cfg.DLP.ScanEnv = false
 	c, err := Init(cfg, "test")
@@ -349,7 +358,9 @@ func TestInit_FileSecretsLoaded(t *testing.T) {
 	}
 
 	transport := &mockTransport{}
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = testDSN
 	cfg.DLP.ScanEnv = false
 	cfg.DLP.SecretsFile = secretsFile
@@ -387,7 +398,9 @@ func TestInit_FileSecretsLoaded(t *testing.T) {
 
 func TestInit_FileSecretsFileNotFound_WarnsAndContinues(t *testing.T) {
 	transport := &mockTransport{}
+	enabled := true
 	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
 	cfg.Sentry.DSN = testDSN
 	cfg.DLP.SecretsFile = "/nonexistent/secrets.txt"
 	c, err := initClient(cfg, "test", transport)
@@ -422,5 +435,72 @@ func TestBeforeSend_ScrubEventCalled(t *testing.T) {
 	}
 	if e.Request != nil {
 		t.Error("BeforeSend did not wipe Request")
+	}
+}
+
+func TestInit_DefaultOmittedDisabledEvenWithDSN(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Sentry.DSN = testDSN
+
+	c, err := Init(cfg, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if c.enabled {
+		t.Error("expected disabled client when sentry.enabled is omitted")
+	}
+}
+
+func TestInit_ExplicitTrueWithDSNEnabled(t *testing.T) {
+	enabled := true
+	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
+	cfg.Sentry.DSN = testDSN
+
+	transport := &mockTransport{}
+	c, err := initClient(cfg, "test", transport)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !c.enabled {
+		t.Fatal("expected enabled client")
+	}
+}
+
+func TestInit_SampleRateZeroRejectedWhenEnabled(t *testing.T) {
+	enabled := true
+	zero := 0.0
+	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
+	cfg.Sentry.DSN = testDSN
+	cfg.Sentry.SampleRate = &zero
+
+	_, err := initClient(cfg, "test", &mockTransport{})
+	if err == nil || !strings.Contains(err.Error(), "sample_rate 0.0") {
+		t.Fatalf("expected sample_rate 0.0 rejection, got %v", err)
+	}
+}
+
+func TestEventTypes_DroppedBeforeTransport(t *testing.T) {
+	c, transport := initTestClient(t, nil)
+	defer c.Close()
+
+	sentry.CaptureEvent(&sentry.Event{
+		Type:        "transaction",
+		Transaction: "GET /private",
+		Spans:       []*sentry.Span{{Description: "https://api.vendor.example/private"}},
+	})
+	sentry.CaptureEvent(&sentry.Event{
+		Type: "log",
+		Logs: []sentry.Log{{Body: "log body that must not ship"}},
+	})
+	sentry.CaptureCheckIn(&sentry.CheckIn{
+		MonitorSlug: "private-monitor",
+		Status:      sentry.CheckInStatusOK,
+	}, nil)
+	_ = c.Flush(2 * time.Second)
+
+	if events := transport.Events(); len(events) != 0 {
+		t.Fatalf("expected transaction/log/check-in events to be dropped, got %d", len(events))
 	}
 }

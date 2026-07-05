@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
@@ -228,6 +229,7 @@ type Scanner struct {
 	responseEnabled            bool
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
 	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
+	queryParamExclusions       map[queryEntropyParamExclusionKey]struct{}
 	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
 	// already governs with a request_policy route (explicit host + path
 	// constraints). A nil or disabled matcher keeps path entropy fully active.
@@ -369,6 +371,7 @@ func New(cfg *config.Config) *Scanner {
 		maxURLLength:              cfg.FetchProxy.Monitoring.MaxURLLength,
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
 		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
+		queryParamExclusions:      buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
 		pathEntropyExempt:         buildPathEntropyExempt(cfg),
 	}
 
@@ -2717,6 +2720,9 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 					continue
 				}
 				if entropy > s.entropyThreshold {
+					if s.isQueryEntropyParamExcluded(parsed, key) {
+						continue
+					}
 					return Result{
 						Allowed: false,
 						Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
@@ -2729,6 +2735,124 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	}
 
 	return Result{Allowed: true}
+}
+
+type queryEntropyParamExclusionKey struct {
+	scheme string
+	host   string
+	path   string
+	param  string
+}
+
+func buildQueryEntropyParamExclusions(entries []config.QueryEntropyParamExclusion) map[queryEntropyParamExclusionKey]struct{} {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make(map[queryEntropyParamExclusionKey]struct{}, len(entries))
+	for _, entry := range entries {
+		scheme := entry.Scheme
+		if scheme == "" {
+			scheme = "https"
+		}
+		out[queryEntropyParamExclusionKey{
+			scheme: strings.ToLower(scheme),
+			host:   strings.TrimSuffix(strings.ToLower(entry.Host), "."),
+			path:   entry.Path,
+			param:  entry.Param,
+		}] = struct{}{}
+	}
+	return out
+}
+
+func (s *Scanner) isQueryEntropyParamExcluded(parsed *url.URL, param string) bool {
+	if len(s.queryParamExclusions) == 0 || parsed.User != nil {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if !isDefaultEndpointPort(parsed, scheme) {
+		return false
+	}
+	host, ok := canonicalQueryEntropyRuntimeHost(parsed.Hostname())
+	if !ok {
+		return false
+	}
+	key := queryEntropyParamExclusionKey{
+		scheme: scheme,
+		host:   host,
+		path:   parsed.EscapedPath(),
+		param:  param,
+	}
+	if _, ok := s.queryParamExclusions[key]; !ok {
+		return false
+	}
+	return rawQueryHasSingleExactDecodedKey(parsed.RawQuery, param)
+}
+
+func canonicalQueryEntropyRuntimeHost(raw string) (string, bool) {
+	host := strings.TrimSuffix(raw, ".")
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return "", false
+	}
+	normalized := strings.TrimSuffix(strings.ToLower(ascii), ".")
+	if !wellFormedQueryEntropyDNSHost(normalized) {
+		return "", false
+	}
+	return normalized, true
+}
+
+func wellFormedQueryEntropyDNSHost(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+	}
+	return true
+}
+
+func isDefaultEndpointPort(parsed *url.URL, scheme string) bool {
+	port := parsed.Port()
+	if port == "" {
+		return true
+	}
+	switch scheme {
+	case "https":
+		return port == "443"
+	case "http":
+		return port == "80"
+	default:
+		return false
+	}
+}
+
+func rawQueryHasSingleExactDecodedKey(rawQuery, param string) bool {
+	count := 0
+	for rawQuery != "" {
+		pair := rawQuery
+		if i := strings.IndexByte(rawQuery, '&'); i >= 0 {
+			pair = rawQuery[:i]
+			rawQuery = rawQuery[i+1:]
+		} else {
+			rawQuery = ""
+		}
+		rawKey, _, _ := strings.Cut(pair, "=")
+		decodedKey, err := url.QueryUnescape(rawKey)
+		if err != nil {
+			return false
+		}
+		if decodedKey != param {
+			continue
+		}
+		if rawKey != param {
+			return false
+		}
+		count++
+	}
+	return count == 1
 }
 
 func isDatabaseURIScheme(scheme string) bool {

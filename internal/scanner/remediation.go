@@ -36,9 +36,9 @@ const (
 	// but is a distinct gate with a distinct knob. The table is keyed by label
 	// alone, so this variant is selected by GuidanceForResult from the scan
 	// Reason. The path-entropy default lives in the table's ScannerEntropy entry.
-	queryEntropyOperatorKnob = "Add the host to `fetch_proxy.monitoring.query_entropy_exclusions` (exact or `*.example.com` wildcard). " +
-		"This is the query-entropy gate, which is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa."
-	queryEntropyOperatorBroader = "Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity globally for every destination — broader blast radius; prefer the per-host exclusion."
+	queryEntropyOperatorKnob = "If the blocked URL is a known exact endpoint and parameter, add that tuple to `fetch_proxy.monitoring.query_entropy_param_exclusions`; this skips only query-value entropy for that exact scheme+host+path+param. " +
+		"If the whole host legitimately carries opaque query values across many endpoints, use `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback. Query entropy is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa."
+	queryEntropyOperatorBroader = "Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity globally for every destination — broader blast radius; prefer the endpoint-parameter exemption first, then the host-wide exclusion only when the broad host contract needs it."
 
 	secretAgentReason             = "Request blocked: the destination or content matched a secret/credential pattern."
 	highEntropyAgentReason        = "Request blocked: high-entropy content resembling exfiltration was detected."
@@ -75,7 +75,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 	ScannerDLP: {
 		OperatorKnob: "Add the destination host to that pattern's `dlp.patterns[].exempt_domains`. " +
 			"URL DLP does NOT consult the top-level `suppress:` list (that is body-DLP and response-scanning only) — a `suppress:` entry here is inert. " +
-			"If the value is a long token in the query string, you may ALSO need `fetch_proxy.monitoring.query_entropy_exclusions` (a separate gate).",
+			"If the value is a long token in the query string, you may ALSO need `fetch_proxy.monitoring.query_entropy_param_exclusions` for an exact endpoint+parameter, or `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback (a separate gate).",
 		OperatorBroader: "`tls_interception.passthrough_domains` exempts the host in one line but blinds Pipelock to ALL inner TLS (method, path, body, response) for that host — only acceptable for can't-scan-by-construction hosts, never as the fix for a single-pattern false positive.",
 		AgentReason:     secretAgentReason,
 	},

@@ -155,6 +155,93 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 	}
 }
 
+func TestCanonicalPolicyHash_QueryEntropyParamExclusions(t *testing.T) {
+	base := canonicalHashOf(t, nil)
+	withEntry := canonicalHashOf(t, func(c *Config) {
+		c.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+			Scheme:  "https",
+			Host:    "api.vendor.example",
+			Path:    "/v1/search/recent",
+			Param:   "query",
+			Reason:  "structured query",
+			Owner:   "platform-security",
+			Expires: "2026-12-31",
+		}}
+	})
+	if withEntry == base {
+		t.Fatal("query entropy param exclusion did not affect canonical policy hash")
+	}
+
+	metadataChanged := canonicalHashOf(t, func(c *Config) {
+		c.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+			Scheme:  "https",
+			Host:    "api.vendor.example",
+			Path:    "/v1/search/recent",
+			Param:   "query",
+			Reason:  "renewed reason",
+			Owner:   "security-operations",
+			Expires: "2027-12-31",
+		}}
+	})
+	if metadataChanged != withEntry {
+		t.Fatalf("metadata changed canonical policy hash:\n  withEntry       = %s\n  metadataChanged = %s", withEntry, metadataChanged)
+	}
+
+	otherParam := canonicalHashOf(t, func(c *Config) {
+		c.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+			Scheme: "https",
+			Host:   "api.vendor.example",
+			Path:   "/v1/search/recent",
+			Param:  "filter",
+		}}
+	})
+	if otherParam == withEntry {
+		t.Fatal("changing query entropy param tuple did not affect canonical policy hash")
+	}
+
+	otherHost := canonicalHashOf(t, func(c *Config) {
+		c.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+			Scheme: "https",
+			Host:   "search.vendor.example",
+			Path:   "/v1/search/recent",
+			Param:  "query",
+		}}
+	})
+	if otherHost == withEntry {
+		t.Fatal("changing query entropy host tuple did not affect canonical policy hash")
+	}
+
+	otherPath := canonicalHashOf(t, func(c *Config) {
+		c.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+			Scheme: "https",
+			Host:   "api.vendor.example",
+			Path:   "/v1/search/archive",
+			Param:  "query",
+		}}
+	})
+	if otherPath == withEntry {
+		t.Fatal("changing query entropy path tuple did not affect canonical policy hash")
+	}
+}
+
+func TestCanonicalPolicyHash_QueryEntropyParamExclusionsOrderIndependent(t *testing.T) {
+	first := canonicalHashOf(t, func(c *Config) {
+		c.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{
+			{Scheme: "https", Host: "provider.example", Path: "/v1/items", Param: "filter"},
+			{Scheme: "https", Host: "api.vendor.example", Path: "/v1/search/recent", Param: "query"},
+		}
+	})
+	second := canonicalHashOf(t, func(c *Config) {
+		c.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{
+			{Scheme: "https", Host: "api.vendor.example", Path: "/v1/search/recent", Param: "query"},
+			{Scheme: "https", Host: "provider.example", Path: "/v1/items", Param: "filter"},
+		}
+	})
+	if first != second {
+		t.Fatalf("query entropy param exclusion order changed canonical policy hash:\n  first  = %s\n  second = %s", first, second)
+	}
+}
+
 // TestCanonicalPolicyHash_DefaultQuarantineDirTMPDIRInvariant proves the
 // canonical hash does not move when the default mcp_tool_policy.quarantine_dir
 // changes solely because TMPDIR differs. The default is filepath.Join(

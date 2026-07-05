@@ -2019,6 +2019,114 @@ func TestValidate_QueryEntropyExclusions_TrailingDotOverBroad(t *testing.T) {
 	}
 }
 
+func TestValidate_QueryEntropyParamExclusions_ValidAndNormalizes(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+		Host:    "API.VENDOR.EXAMPLE.",
+		Path:    "/v1/search/recent",
+		Param:   "query",
+		Reason:  " structured query ",
+		Owner:   " platform-security ",
+		Expires: "2026-12-31",
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	got := cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions[0]
+	if got.Scheme != schemeHTTPS || got.Host != "api.vendor.example" || got.Reason != "structured query" || got.Owner != "platform-security" {
+		t.Fatalf("normalized entry = %+v", got)
+	}
+}
+
+func TestValidate_QueryEntropyParamExclusions_RejectsBadEntries(t *testing.T) {
+	valid := QueryEntropyParamExclusion{
+		Host:    "api.vendor.example",
+		Path:    "/v1/search/recent",
+		Param:   "query",
+		Reason:  "structured query",
+		Owner:   "platform-security",
+		Expires: "2026-12-31",
+	}
+	tests := []struct {
+		name string
+		mut  func(*QueryEntropyParamExclusion)
+		want string
+	}{
+		{name: "empty host", mut: func(e *QueryEntropyParamExclusion) { e.Host = "" }, want: "host is required"},
+		{name: "url host", mut: func(e *QueryEntropyParamExclusion) { e.Host = "https://api.vendor.example" }, want: "URL syntax"},
+		{name: "host path", mut: func(e *QueryEntropyParamExclusion) { e.Host = "api.vendor.example/path" }, want: "URL syntax"},
+		{name: "host port", mut: func(e *QueryEntropyParamExclusion) { e.Host = "api.vendor.example:443" }, want: "port"},
+		{name: "host wildcard", mut: func(e *QueryEntropyParamExclusion) { e.Host = "*.vendor.example" }, want: "wildcard"},
+		{name: "host space", mut: func(e *QueryEntropyParamExclusion) { e.Host = "api vendor.example" }, want: "spaces"},
+		{name: "host control", mut: func(e *QueryEntropyParamExclusion) { e.Host = "api.\nexample" }, want: "control"},
+		{name: "host ip literal", mut: func(e *QueryEntropyParamExclusion) { e.Host = "192.0.2.10" }, want: "IP literal"},
+		{name: "host ipv6 literal", mut: func(e *QueryEntropyParamExclusion) { e.Host = "[2001:db8::1]" }, want: "port"},
+		{name: "host non-ascii idn", mut: func(e *QueryEntropyParamExclusion) { e.Host = "b\u00fccher.example" }, want: "ASCII"},
+		{name: "host invalid punycode", mut: func(e *QueryEntropyParamExclusion) { e.Host = "xn--a.example" }, want: "IDNA"},
+		{name: "host overlong label", mut: func(e *QueryEntropyParamExclusion) { e.Host = strings.Repeat("a", 64) + ".example" }, want: "DNS labels"},
+		{name: "host overlong name", mut: func(e *QueryEntropyParamExclusion) { e.Host = strings.Repeat("a.", 127) + "example" }, want: "253 bytes"},
+		{name: "host bare public suffix", mut: func(e *QueryEntropyParamExclusion) { e.Host = "com" }, want: "bare public suffix"},
+		{name: "host multi-label public suffix", mut: func(e *QueryEntropyParamExclusion) { e.Host = "co.uk" }, want: "bare public suffix"},
+		{name: "empty path", mut: func(e *QueryEntropyParamExclusion) { e.Path = "" }, want: "path is required"},
+		{name: "path no slash", mut: func(e *QueryEntropyParamExclusion) { e.Path = "v1/search" }, want: "start with /"},
+		{name: "path root", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/" }, want: "more specific"},
+		{name: "path query", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/search?x=1" }, want: "query"},
+		{name: "path fragment", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/search#top" }, want: "fragment"},
+		{name: "path wildcard", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/*" }, want: "wildcard"},
+		{name: "path control", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/\nsearch" }, want: "control"},
+		{name: "path semicolon", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/search;recent" }, want: "path-parameter"},
+		{name: "path encoded semicolon", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/search%3Brecent" }, want: "path-parameter"},
+		{name: "path encoded slash", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1%2fsearch" }, want: "encoded slash"},
+		{name: "path backslash", mut: func(e *QueryEntropyParamExclusion) { e.Path = `/v1\search` }, want: "backslash"},
+		{name: "path traversal", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/../search" }, want: "traversal"},
+		{name: "path encoded traversal", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/%2e%2e/search" }, want: "traversal"},
+		{name: "path double slash", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1//search" }, want: "traversal"},
+		{name: "path noncanonical escape", mut: func(e *QueryEntropyParamExclusion) { e.Path = "/v1/%7euser" }, want: "canonical escaped"},
+		{name: "empty param", mut: func(e *QueryEntropyParamExclusion) { e.Param = "" }, want: "param is required"},
+		{name: "param percent", mut: func(e *QueryEntropyParamExclusion) { e.Param = "q%75ery" }, want: "reserved query"},
+		{name: "param ampersand", mut: func(e *QueryEntropyParamExclusion) { e.Param = "q&x" }, want: "reserved query"},
+		{name: "param equals", mut: func(e *QueryEntropyParamExclusion) { e.Param = "q=x" }, want: "reserved query"},
+		{name: "param wildcard", mut: func(e *QueryEntropyParamExclusion) { e.Param = "q*" }, want: "reserved query"},
+		{name: "param question", mut: func(e *QueryEntropyParamExclusion) { e.Param = "q?" }, want: "reserved query"},
+		{name: "param brackets", mut: func(e *QueryEntropyParamExclusion) { e.Param = "query[]" }, want: "reserved query"},
+		{name: "param space", mut: func(e *QueryEntropyParamExclusion) { e.Param = "query value" }, want: "visible ASCII"},
+		{name: "param control", mut: func(e *QueryEntropyParamExclusion) { e.Param = "query\n" }, want: "visible ASCII"},
+		{name: "scheme http", mut: func(e *QueryEntropyParamExclusion) { e.Scheme = "http" }, want: "https-only"},
+		{name: "scheme other", mut: func(e *QueryEntropyParamExclusion) { e.Scheme = "ftp" }, want: "must be https"},
+		{name: "bad expires", mut: func(e *QueryEntropyParamExclusion) { e.Expires = "12/31/2026" }, want: "YYYY-MM-DD"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := valid
+			tt.mut(&entry)
+			cfg := Defaults()
+			cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{entry}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidate_QueryEntropyParamExclusions_RejectsDuplicateNormalizedTuple(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{
+		{Scheme: "", Host: "API.VENDOR.EXAMPLE.", Path: "/v1/search/recent", Param: "query"},
+		{Scheme: "https", Host: "api.vendor.example", Path: "/v1/search/recent", Param: "query"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil")
+	}
+	if !strings.Contains(err.Error(), "duplicates normalized") {
+		t.Fatalf("Validate() error = %v, want duplicate tuple", err)
+	}
+}
+
 func TestValidateReload_SubdomainExclusionsExpanded(t *testing.T) {
 	old := Defaults()
 	old.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net"}

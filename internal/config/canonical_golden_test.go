@@ -257,7 +257,11 @@ const (
 	// Re-bumped for bounded size-exempt response scanning: the per-response
 	// and per-proxy-instance scan ceilings plus the explicit unscannable passthrough
 	// allowlist change response-size enforcement.
-	goldenHashDefaults = "bd79729a797c83afa485a3dc15f3212cf535ee6f473ce6d60431efd1909c0474"
+	// Bumped for fetch_proxy.monitoring.query_entropy_param_exclusions:
+	// exact endpoint+parameter query-value entropy exemptions are policy-
+	// semantic. Advisory metadata is excluded, but the effective tuple is
+	// included in sorted order.
+	goldenHashDefaults = "7a3744a27e31a60be974c6014626defa3d6caf3e521011ef873b6e673c7a9ea0"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -384,7 +388,9 @@ const (
 	// goldenHashDefaults note above.
 	// Re-bumped for bounded size-exempt response scanning: see
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "a0cf6b3984132c0d5b4ba4d9b78a8c0cb55034eef73b78f9d996cc4048067391"
+	// Bumped for fetch_proxy.monitoring.query_entropy_param_exclusions: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "ab98900ee1dfb887a7d9ea0b1e57da9ceaa86502b57a0b17ff1717a011816d30"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

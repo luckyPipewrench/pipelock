@@ -167,7 +167,10 @@ func TestGuidanceForResultDisambiguatesEntropy(t *testing.T) {
 			t.Fatal("GuidanceForResult(entropy, query reason) not ok")
 		}
 		if !strings.Contains(g.OperatorKnob, "query_entropy_exclusions") {
-			t.Fatalf("query-entropy knob = %q, want query_entropy_exclusions", g.OperatorKnob)
+			t.Fatalf("query-entropy knob = %q, want query_entropy_exclusions fallback", g.OperatorKnob)
+		}
+		if !strings.Contains(g.OperatorKnob, "query_entropy_param_exclusions") {
+			t.Fatalf("query-entropy knob = %q, want query_entropy_param_exclusions first", g.OperatorKnob)
 		}
 		if OperatorHintForResult(ScannerEntropy, "query x") != queryEntropyOperatorKnob {
 			t.Fatal("OperatorHintForResult should return the query knob for a query reason")

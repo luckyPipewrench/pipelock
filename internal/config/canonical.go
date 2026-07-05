@@ -218,6 +218,7 @@ func (c *Config) policySemanticView() Config {
 	view.ResponseScanning.SizeExemptDomains = sortedCopy(view.ResponseScanning.SizeExemptDomains)
 	view.ResponseScanning.UnscannablePassthrough = canonicalUnscannablePassthrough(view.ResponseScanning.UnscannablePassthrough)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)
+	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	if view.Redaction.Enabled {
 		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
 	} else {
@@ -304,6 +305,39 @@ func canonicalMCPResponseServers(entries []MCPResponseServerTrust) []MCPResponse
 			return out[i].Trust < out[j].Trust
 		}
 		return out[i].Server < out[j].Server
+	})
+	return out
+}
+
+func canonicalQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) []QueryEntropyParamExclusion {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]QueryEntropyParamExclusion, len(entries))
+	for i, entry := range entries {
+		scheme := entry.Scheme
+		if scheme == "" {
+			scheme = schemeHTTPS
+		}
+		out[i] = QueryEntropyParamExclusion{
+			Scheme: strings.ToLower(scheme),
+			Host:   strings.TrimSuffix(strings.ToLower(entry.Host), "."),
+			Path:   entry.Path,
+			Param:  entry.Param,
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Scheme != b.Scheme {
+			return a.Scheme < b.Scheme
+		}
+		if a.Host != b.Host {
+			return a.Host < b.Host
+		}
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		return a.Param < b.Param
 	})
 	return out
 }

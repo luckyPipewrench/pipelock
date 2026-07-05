@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -249,6 +250,103 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			wantWarn: 0,
 		},
 		{
+			name: "query entropy param exclusion with complete metadata is NOT flagged",
+			mutate: func(cfg *config.Config) {
+				cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+					Scheme:  "https",
+					Host:    "api.vendor.example",
+					Path:    "/v1/search/recent",
+					Param:   "query",
+					Reason:  "structured query",
+					Owner:   "platform-security",
+					Expires: "2099-12-31",
+				}}
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "query entropy param exclusion expiring today is NOT flagged",
+			mutate: func(cfg *config.Config) {
+				cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+					Scheme:  "https",
+					Host:    "api.vendor.example",
+					Path:    "/v1/search/recent",
+					Param:   "query",
+					Reason:  "structured query",
+					Owner:   "platform-security",
+					Expires: time.Now().UTC().Format("2006-01-02"),
+				}}
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "query entropy param exclusion missing advisory fields",
+			mutate: func(cfg *config.Config) {
+				cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+					Scheme: "https",
+					Host:   "api.vendor.example",
+					Path:   "/v1/search/recent",
+					Param:  "query",
+				}}
+			},
+			wantWarn:         3,
+			wantDetailSubstr: "missing advisory",
+			wantNextSubstr:   "YYYY-MM-DD",
+		},
+		{
+			name: "query entropy param exclusion expired",
+			mutate: func(cfg *config.Config) {
+				cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+					Scheme:  "https",
+					Host:    "api.vendor.example",
+					Path:    "/v1/search/recent",
+					Param:   "query",
+					Reason:  "structured query",
+					Owner:   "platform-security",
+					Expires: "2000-01-01",
+				}}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "expired on 2000-01-01",
+			wantNextSubstr:   "review whether",
+		},
+		{
+			name: "query entropy param exclusion redundant with host-wide exclusion",
+			mutate: func(cfg *config.Config) {
+				cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"*.vendor.example"}
+				cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+					Scheme:  "https",
+					Host:    "api.vendor.example",
+					Path:    "/v1/search/recent",
+					Param:   "query",
+					Reason:  "structured query",
+					Owner:   "platform-security",
+					Expires: "2099-12-31",
+				}}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "redundant because query_entropy_exclusions already covers host api.vendor.example",
+			wantNextSubstr:   "prefer the endpoint-parameter exemption",
+		},
+		{
+			name: "query entropy param exclusion inert when entropy disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+				cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+					Scheme:  "https",
+					Host:    "api.vendor.example",
+					Path:    "/v1/search/recent",
+					Param:   "query",
+					Reason:  "structured query",
+					Owner:   "platform-security",
+					Expires: "2099-12-31",
+				}}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "entropy_threshold<=0",
+			wantNextSubstr:   "re-enable entropy",
+		},
+		{
 			name:   "empty suppress and no exemptions yields a single ok check",
 			mutate: func(_ *config.Config) {},
 			// no warns; the validator returns a single ok check.
@@ -334,6 +432,27 @@ func TestDoctorSuppressSemanticsSortAndEmptyRule(t *testing.T) {
 			t.Fatalf("checks not sorted at index %d: %q/%q then %q/%q",
 				i, prev.Name, prev.Detail, cur.Name, cur.Detail)
 		}
+	}
+}
+
+func TestCheckConfigAdvisoriesIncludesQueryEntropyParamExclusions(t *testing.T) {
+	cfg := baseSemanticsConfig()
+	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+		Scheme: "https",
+		Host:   "api.vendor.example",
+		Path:   "/v1/search/recent",
+		Param:  "query",
+	}}
+	advisories := checkConfigAdvisories(cfg)
+	var found bool
+	for _, advisory := range advisories {
+		if strings.Contains(advisory, "query_entropy_param_exclusions") && strings.Contains(advisory, "missing advisory") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("checkConfigAdvisories() missing query entropy param advisory; got %v", advisories)
 	}
 }
 

@@ -5286,6 +5286,298 @@ func TestScan_QueryEntropyExclusion_DoesNotSkipPathEntropy(t *testing.T) {
 	}
 }
 
+func queryEntropyParamExclusionTestConfig() *config.Config {
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.FetchProxy.Monitoring.Blocklist = nil
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
+	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+		Scheme: "https",
+		Host:   "api.vendor.example",
+		Path:   "/v1/search/recent",
+		Param:  "query",
+	}}
+	return cfg
+}
+
+func TestScan_QueryEntropyParamExclusion_AllowsExactEndpointParam(t *testing.T) {
+	cfg := queryEntropyParamExclusionTestConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	highEntropy := "Zx9KqWvB3nMpLrT7yFhJ2dGsQ8aEcVbN4uXoIzPwRmKtYgD5fHl"
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "exact endpoint param",
+			url:  "https://api.vendor.example/v1/search/recent?query=" + highEntropy,
+		},
+		{
+			name: "default https port is still exact endpoint",
+			url:  "https://api.vendor.example:443/v1/search/recent?query=" + highEntropy,
+		},
+		{
+			name: "adjacent low-entropy param does not prevent exact param carveout",
+			url:  "https://api.vendor.example/v1/search/recent?mode=recent&query=" + highEntropy,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if !result.Allowed {
+				t.Fatalf("Scan() blocked exact query entropy param exclusion: scanner=%s reason=%s", result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+func TestScan_QueryEntropyParamExclusion_MatchesIDNAHostAndEscapedPath(t *testing.T) {
+	cfg := queryEntropyParamExclusionTestConfig()
+	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Host = "xn--bcher-kva.example"
+	cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Path = "/v1/caf%C3%A9"
+	s := New(cfg)
+	defer s.Close()
+
+	highEntropy := "Zx9KqWvB3nMpLrT7yFhJ2dGsQ8aEcVbN4uXoIzPwRmKtYgD5fHl"
+	result := s.Scan(context.Background(), "https://Bücher.example/v1/café?query="+highEntropy)
+	if !result.Allowed {
+		t.Fatalf("Scan() blocked IDNA/canonical-path query entropy param exclusion: scanner=%s reason=%s", result.Scanner, result.Reason)
+	}
+}
+
+func TestCanonicalQueryEntropyRuntimeHost_Edges(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{
+			name: "ascii host round trips unchanged",
+			raw:  "api.vendor.example",
+			want: "api.vendor.example",
+			ok:   true,
+		},
+		{
+			name: "ascii trailing dot is stripped",
+			raw:  "api.vendor.example.",
+			want: "api.vendor.example",
+			ok:   true,
+		},
+		{
+			name: "uppercase unicode normalizes to same punycode identity",
+			raw:  "BÜCHER.example",
+			want: "xn--bcher-kva.example",
+			ok:   true,
+		},
+		{
+			name: "mixed script unicode normalizes to punycode without overmatching ascii",
+			raw:  "раураl.example",
+			want: "xn--l-7sba6dbr.example",
+			ok:   true,
+		},
+		{
+			name: "empty runtime host does not match",
+			raw:  "",
+			ok:   false,
+		},
+		{
+			name: "empty label does not match",
+			raw:  "api..vendor.example",
+			ok:   false,
+		},
+		{
+			name: "overlong label does not match",
+			raw:  strings.Repeat("a", 64) + ".example",
+			ok:   false,
+		},
+		{
+			name: "invalid punycode does not match",
+			raw:  "xn--a.example",
+			ok:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := canonicalQueryEntropyRuntimeHost(tt.raw)
+			if ok != tt.ok {
+				t.Fatalf("canonicalQueryEntropyRuntimeHost(%q) ok = %v, want %v; got host %q", tt.raw, ok, tt.ok, got)
+			}
+			if got != tt.want {
+				t.Fatalf("canonicalQueryEntropyRuntimeHost(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScan_QueryEntropyParamExclusion_MismatchesBlock(t *testing.T) {
+	highEntropy := "Zx9KqWvB3nMpLrT7yFhJ2dGsQ8aEcVbN4uXoIzPwRmKtYgD5fHl"
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "wrong host",
+			url:  "https://provider.example/v1/search/recent?query=" + highEntropy,
+		},
+		{
+			name: "wrong path",
+			url:  "https://api.vendor.example/v1/search/archive?query=" + highEntropy,
+		},
+		{
+			name: "double slash path",
+			url:  "https://api.vendor.example/v1/search//recent?query=" + highEntropy,
+		},
+		{
+			name: "noncanonical encoded path",
+			url:  "https://api.vendor.example/v1/search/%72ecent?query=" + highEntropy,
+		},
+		{
+			name: "lowercase percent-escaped path",
+			url:  "https://api.vendor.example/v1/search/recent%c3%a9?query=" + highEntropy,
+		},
+		{
+			name: "encoded matrix delimiter path",
+			url:  "https://api.vendor.example/v1/search%3brecent?query=" + highEntropy,
+		},
+		{
+			name: "wrong param",
+			url:  "https://api.vendor.example/v1/search/recent?q=" + highEntropy,
+		},
+		{
+			name: "wrong scheme",
+			url:  "http://api.vendor.example/v1/search/recent?query=" + highEntropy,
+		},
+		{
+			name: "non-default port",
+			url:  "https://api.vendor.example:8443/v1/search/recent?query=" + highEntropy,
+		},
+		{
+			name: "userinfo",
+			url:  "https://agent@api.vendor.example/v1/search/recent?query=" + highEntropy,
+		},
+		{
+			name: "duplicate raw key",
+			url:  "https://api.vendor.example/v1/search/recent?query=" + highEntropy + "&query=small",
+		},
+		{
+			name: "percent-encoded key spelling",
+			url:  "https://api.vendor.example/v1/search/recent?qu%65ry=" + highEntropy,
+		},
+		{
+			name: "percent-encoded duplicate key spelling",
+			url:  "https://api.vendor.example/v1/search/recent?query=" + highEntropy + "&qu%65ry=small",
+		},
+		{
+			name: "plus-mutated key spelling",
+			url:  "https://api.vendor.example/v1/search/recent?query+=" + highEntropy,
+		},
+		{
+			name: "array-style key",
+			url:  "https://api.vendor.example/v1/search/recent?query[]=" + highEntropy,
+		},
+		{
+			name: "containing key",
+			url:  "https://api.vendor.example/v1/search/recent?query_extra=" + highEntropy,
+		},
+		{
+			name: "adjacent high-entropy param",
+			url:  "https://api.vendor.example/v1/search/recent?query=normal&trace=" + highEntropy,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := queryEntropyParamExclusionTestConfig()
+			s := New(cfg)
+			defer s.Close()
+
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed {
+				t.Fatal("Scan() allowed mismatched query entropy param exclusion")
+			}
+			if result.Scanner != ScannerEntropy {
+				t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, ScannerEntropy, result.Reason)
+			}
+		})
+	}
+}
+
+func TestScan_QueryEntropyParamExclusion_DoesNotSkipDLP(t *testing.T) {
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "secret in exempted param",
+			url:  "https://api.vendor.example/v1/search/recent?query=" + secret,
+		},
+		{
+			name: "secret in adjacent param",
+			url:  "https://api.vendor.example/v1/search/recent?query=normal&token=" + secret,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.FetchProxy.Monitoring.Blocklist = nil
+			cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []config.QueryEntropyParamExclusion{{
+				Scheme: "https",
+				Host:   "api.vendor.example",
+				Path:   "/v1/search/recent",
+				Param:  "query",
+			}}
+			s := New(cfg)
+			defer s.Close()
+
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed {
+				t.Fatal("Scan() allowed DLP secret through query entropy param exclusion")
+			}
+			if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+				t.Fatalf("scanner = %s, want URL DLP/core DLP; reason=%s", result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+func TestScan_QueryEntropyParamExclusion_DoesNotSkipDatabaseURISSRF(t *testing.T) {
+	cfg := queryEntropyParamExclusionTestConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	url := "https://api.vendor.example/v1/search/recent?query=postgres://169.254.169.254/latest/meta-data"
+	result := s.Scan(context.Background(), url)
+	if result.Allowed {
+		t.Fatal("Scan() allowed database URI targeting metadata IP through query entropy param exclusion")
+	}
+	if result.Scanner != ScannerSSRFMetadata {
+		t.Fatalf("scanner = %s, want %s; reason=%s", result.Scanner, ScannerSSRFMetadata, result.Reason)
+	}
+}
+
+func TestScan_QueryEntropyParamExclusion_RebuildsFromConfig(t *testing.T) {
+	highEntropy := "Zx9KqWvB3nMpLrT7yFhJ2dGsQ8aEcVbN4uXoIzPwRmKtYgD5fHl"
+	targetURL := "https://api.vendor.example/v1/search/recent?query=" + highEntropy
+
+	without := queryEntropyParamExclusionTestConfig()
+	without.FetchProxy.Monitoring.QueryEntropyParamExclusions = nil
+	sWithout := New(without)
+	defer sWithout.Close()
+	if result := sWithout.Scan(context.Background(), targetURL); result.Allowed || result.Scanner != ScannerEntropy {
+		t.Fatalf("scanner without exemption = allowed %v scanner %s reason %s, want entropy block", result.Allowed, result.Scanner, result.Reason)
+	}
+
+	with := queryEntropyParamExclusionTestConfig()
+	sWith := New(with)
+	defer sWith.Close()
+	if result := sWith.Scan(context.Background(), targetURL); !result.Allowed {
+		t.Fatalf("scanner with exemption blocked: scanner=%s reason=%s", result.Scanner, result.Reason)
+	}
+}
+
 func TestScan_AllowsCleanURLsNoCRLF(t *testing.T) {
 	s := New(testConfig())
 

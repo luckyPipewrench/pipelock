@@ -367,6 +367,24 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: fmt.Sprintf("query entropy exclusions added: %s — entropy detection coverage reduced on query parameters", strings.Join(added, ", ")),
 		})
 	}
+	if added := queryEntropyParamExclusionsAdded(
+		old.FetchProxy.Monitoring.QueryEntropyParamExclusions,
+		updated.FetchProxy.Monitoring.QueryEntropyParamExclusions,
+	); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "fetch_proxy.monitoring.query_entropy_param_exclusions",
+			Message: fmt.Sprintf("query entropy parameter exclusions added: %s — only query-value entropy coverage is reduced for these exact endpoint parameters", strings.Join(added, ", ")),
+		})
+	}
+	if removed := queryEntropyParamExclusionsRemoved(
+		old.FetchProxy.Monitoring.QueryEntropyParamExclusions,
+		updated.FetchProxy.Monitoring.QueryEntropyParamExclusions,
+	); len(removed) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "fetch_proxy.monitoring.query_entropy_param_exclusions",
+			Message: fmt.Sprintf("query entropy parameter exclusions removed: %s — matching requests will again be subject to query-value entropy blocks", strings.Join(removed, ", ")),
+		})
+	}
 
 	// Trusted domains expanded (SSRF protection scope reduced)
 	if added := passthroughDomainsAdded(old.TrustedDomains, updated.TrustedDomains); len(added) > 0 {
@@ -767,6 +785,46 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	}
 
 	return warnings
+}
+
+func queryEntropyParamExclusionsAdded(old, updated []QueryEntropyParamExclusion) []string {
+	oldSet := make(map[string]struct{}, len(old))
+	for _, entry := range canonicalQueryEntropyParamExclusions(old) {
+		oldSet[queryEntropyParamTuple(entry)] = struct{}{}
+	}
+	var added []string
+	for _, entry := range canonicalQueryEntropyParamExclusions(updated) {
+		tuple := queryEntropyParamTuple(entry)
+		if _, ok := oldSet[tuple]; !ok {
+			added = append(added, tuple)
+		}
+	}
+	sort.Strings(added)
+	return added
+}
+
+func queryEntropyParamExclusionsRemoved(old, updated []QueryEntropyParamExclusion) []string {
+	updatedSet := make(map[string]struct{}, len(updated))
+	for _, entry := range canonicalQueryEntropyParamExclusions(updated) {
+		updatedSet[queryEntropyParamTuple(entry)] = struct{}{}
+	}
+	var removed []string
+	for _, entry := range canonicalQueryEntropyParamExclusions(old) {
+		tuple := queryEntropyParamTuple(entry)
+		if _, ok := updatedSet[tuple]; !ok {
+			removed = append(removed, tuple)
+		}
+	}
+	sort.Strings(removed)
+	return removed
+}
+
+func queryEntropyParamTuple(entry QueryEntropyParamExclusion) string {
+	scheme := entry.Scheme
+	if scheme == "" {
+		scheme = schemeHTTPS
+	}
+	return fmt.Sprintf("%s://%s%s?%s", scheme, entry.Host, entry.Path, entry.Param)
 }
 
 func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Config) {

@@ -923,6 +923,24 @@ type Monitoring struct {
 	// "*.example.com". An empty list (default) preserves the prior
 	// always-on query entropy behavior.
 	QueryEntropyExclusions []string `yaml:"query_entropy_exclusions"`
+
+	// QueryEntropyParamExclusions lists exact HTTPS endpoint+parameter tuples
+	// whose query value may bypass only the raw Shannon query-value entropy
+	// heuristic. DLP, SSRF, path/subdomain entropy, query-key entropy, adjacent
+	// parameters, rate limits, data budgets, and every other scanner still run.
+	QueryEntropyParamExclusions []QueryEntropyParamExclusion `yaml:"query_entropy_param_exclusions,omitempty"`
+}
+
+// QueryEntropyParamExclusion is a narrow query-value entropy exemption for one
+// exact HTTPS endpoint path and one exact query parameter key.
+type QueryEntropyParamExclusion struct {
+	Scheme  string `yaml:"scheme,omitempty"`
+	Host    string `yaml:"host"`
+	Path    string `yaml:"path"`
+	Param   string `yaml:"param"`
+	Reason  string `yaml:"reason,omitempty"`
+	Owner   string `yaml:"owner,omitempty"`
+	Expires string `yaml:"expires,omitempty"`
 }
 
 // DLP configures data loss prevention scanning.

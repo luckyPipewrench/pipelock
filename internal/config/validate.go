@@ -24,6 +24,8 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -891,6 +893,9 @@ func (c *Config) validateFetchProxy() error {
 		}
 		c.FetchProxy.Monitoring.QueryEntropyExclusions[i] = d
 	}
+	if err := validateQueryEntropyParamExclusions(c.FetchProxy.Monitoring.QueryEntropyParamExclusions); err != nil {
+		return err
+	}
 
 	// Validate global rate limits are non-negative
 	if c.FetchProxy.Monitoring.MaxReqPerMinute < 0 {
@@ -900,6 +905,189 @@ func (c *Config) validateFetchProxy() error {
 		return fmt.Errorf("fetch_proxy.monitoring.max_data_per_minute must be >= 0")
 	}
 	return nil
+}
+
+func validateQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) error {
+	seen := make(map[string]struct{}, len(entries))
+	for i := range entries {
+		field := fmt.Sprintf("fetch_proxy.monitoring.query_entropy_param_exclusions[%d]", i)
+		entry := &entries[i]
+
+		scheme := strings.TrimSpace(strings.ToLower(entry.Scheme))
+		if scheme == "" {
+			scheme = schemeHTTPS
+		}
+		if scheme == schemeHTTP {
+			return fmt.Errorf("%s.scheme %q is not supported; query entropy parameter exclusions are https-only", field, entry.Scheme)
+		}
+		if scheme != schemeHTTPS {
+			return fmt.Errorf("%s.scheme %q must be https", field, entry.Scheme)
+		}
+
+		host, err := normalizeQueryEntropyParamHost(entry.Host)
+		if err != nil {
+			return fmt.Errorf("%s.host %q is invalid: %w", field, entry.Host, err)
+		}
+		pathValue, err := normalizeQueryEntropyParamPath(entry.Path)
+		if err != nil {
+			return fmt.Errorf("%s.path %q is invalid: %w", field, entry.Path, err)
+		}
+		param, err := normalizeQueryEntropyParamName(entry.Param)
+		if err != nil {
+			return fmt.Errorf("%s.param %q is invalid: %w", field, entry.Param, err)
+		}
+		expires := strings.TrimSpace(entry.Expires)
+		if expires != "" {
+			if _, err := time.Parse("2006-01-02", expires); err != nil {
+				return fmt.Errorf("%s.expires %q must be YYYY-MM-DD: %w", field, entry.Expires, err)
+			}
+		}
+
+		entry.Scheme = scheme
+		entry.Host = host
+		entry.Path = pathValue
+		entry.Param = param
+		entry.Reason = strings.TrimSpace(entry.Reason)
+		entry.Owner = strings.TrimSpace(entry.Owner)
+		entry.Expires = expires
+
+		tuple := strings.Join([]string{scheme, host, pathValue, param}, "\x00")
+		if _, ok := seen[tuple]; ok {
+			return fmt.Errorf("%s duplicates normalized query entropy parameter exclusion tuple %s://%s%s?%s", field, scheme, host, pathValue, param)
+		}
+		seen[tuple] = struct{}{}
+	}
+	return nil
+}
+
+func normalizeQueryEntropyParamHost(raw string) (string, error) {
+	if strings.IndexFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
+		return "", errors.New("host must not contain spaces or control characters")
+	}
+	host := strings.TrimSuffix(strings.ToLower(raw), ".")
+	if host == "" {
+		return "", errors.New("host is required")
+	}
+	if strings.Contains(host, "://") || strings.ContainsAny(host, "/:*?[]") {
+		return "", errors.New("use an exact DNS hostname without URL syntax, port, or wildcard")
+	}
+	if strings.IndexFunc(host, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || r > unicode.MaxASCII
+	}) >= 0 {
+		return "", errors.New("host must contain only ASCII DNS label characters")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return "", errors.New("IP literal hosts are not supported")
+	}
+	if len(host) > 253 {
+		return "", errors.New("host must be 253 bytes or shorter")
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return "", errors.New("host must be a concrete DNS hostname, not a bare public suffix")
+	}
+	for _, label := range labels {
+		if label == "" {
+			return "", errors.New("host contains an empty DNS label")
+		}
+		if len(label) > 63 {
+			return "", errors.New("host DNS labels must be 63 bytes or shorter")
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return "", errors.New("host labels must not start or end with '-'")
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return "", errors.New("host must contain only DNS label characters")
+		}
+	}
+	ascii, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return "", fmt.Errorf("host must be valid under IDNA lookup processing: %w", err)
+	}
+	if strings.TrimSuffix(strings.ToLower(ascii), ".") != host {
+		return "", errors.New("host must use canonical ASCII IDNA spelling")
+	}
+	suffix, icann := publicsuffix.PublicSuffix(host)
+	if suffix == host || (!icann && !strings.Contains(host, ".")) {
+		return "", errors.New("host must be a concrete DNS hostname, not a bare public suffix")
+	}
+	if _, err := publicsuffix.EffectiveTLDPlusOne(host); err != nil && suffix == host {
+		return "", fmt.Errorf("host must be registrable: %w", err)
+	}
+	return host, nil
+}
+
+func normalizeQueryEntropyParamPath(raw string) (string, error) {
+	if strings.IndexFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
+		return "", errors.New("path must not contain spaces or control characters")
+	}
+	p := raw
+	if p == "" {
+		return "", errors.New("path is required")
+	}
+	if !strings.HasPrefix(p, "/") {
+		return "", errors.New("path must start with /")
+	}
+	if p == "/" {
+		return "", errors.New("path must be more specific than /")
+	}
+	if strings.ContainsAny(p, "?#*\\;") {
+		return "", errors.New("path must not contain query, fragment, wildcard, backslash, or path-parameter characters")
+	}
+	if strings.IndexFunc(p, unicode.IsControl) >= 0 {
+		return "", errors.New("path must not contain control characters")
+	}
+	lower := strings.ToLower(p)
+	if strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
+		return "", errors.New("path must not contain encoded slash or backslash")
+	}
+	decoded, err := url.PathUnescape(p)
+	if err != nil {
+		return "", fmt.Errorf("path escapes must be valid: %w", err)
+	}
+	if strings.ContainsAny(decoded, "*\\;") || strings.IndexFunc(decoded, unicode.IsControl) >= 0 {
+		return "", errors.New("decoded path must not contain wildcard, backslash, path-parameter, or control characters")
+	}
+	if decoded == "/" || path.Clean(decoded) != decoded {
+		return "", errors.New("path must be canonical and must not contain traversal")
+	}
+	canonical := (&url.URL{Path: decoded}).EscapedPath()
+	if canonical != p {
+		return "", fmt.Errorf("path must use canonical escaped spelling %q", canonical)
+	}
+	return p, nil
+}
+
+func normalizeQueryEntropyParamName(raw string) (string, error) {
+	if strings.IndexFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
+		return "", errors.New("param must contain only visible ASCII characters without spaces")
+	}
+	param := raw
+	if param == "" {
+		return "", errors.New("param is required")
+	}
+	if strings.ContainsAny(param, "%&=*?[]+;") {
+		return "", errors.New("param must be an exact raw query key without reserved query characters")
+	}
+	if strings.IndexFunc(param, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+		return "", errors.New("param must contain only visible ASCII characters without spaces")
+	}
+	if decoded, err := url.QueryUnescape(param); err != nil || decoded != param {
+		if err != nil {
+			return "", fmt.Errorf("param must be representable as its exact raw query key: %w", err)
+		}
+		return "", errors.New("param must be representable as its exact raw query key")
+	}
+	return param, nil
 }
 
 func (c *Config) validateResponseScanning(warnings *[]Warning) error {

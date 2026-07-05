@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // Semantic config-validation checks for the doctor command.
@@ -216,6 +218,8 @@ func checkDoctorInertExemptions(cfg *config.Config) []doctorReportCheck {
 		})
 	}
 
+	checks = append(checks, checkDoctorQueryEntropyParamExclusions(cfg)...)
+
 	for _, entry := range cfg.ResponseScanning.MCPServers {
 		if entry.Trust != config.ResponseTrustReasoning || cfg.TaintTrustsMCPServer(entry.Server) {
 			continue
@@ -233,6 +237,94 @@ func checkDoctorInertExemptions(cfg *config.Config) []doctorReportCheck {
 	}
 
 	return checks
+}
+
+func checkDoctorQueryEntropyParamExclusions(cfg *config.Config) []doctorReportCheck {
+	entries := cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions
+	if len(entries) == 0 {
+		return nil
+	}
+	var checks []doctorReportCheck
+	for _, entry := range entries {
+		tuple := queryEntropyParamAdvisoryTuple(entry)
+		if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 {
+			checks = append(checks, doctorReportCheck{
+				Name:       doctorCheckExemptionSemantics,
+				Surface:    doctorSurfaceConfig,
+				Status:     doctorStatusWarn,
+				Configured: true,
+				Detail:     fmt.Sprintf("query_entropy_param_exclusions entry %s is configured but fetch_proxy.monitoring.entropy_threshold<=0; this exemption is inert", tuple),
+				Next:       "remove the endpoint-parameter exemption while entropy is disabled, or re-enable entropy before relying on the narrow exemption",
+			})
+		}
+		if queryEntropyParamCoveredByHostWide(entry, cfg.FetchProxy.Monitoring.QueryEntropyExclusions) {
+			checks = append(checks, doctorReportCheck{
+				Name:       doctorCheckExemptionSemantics,
+				Surface:    doctorSurfaceConfig,
+				Status:     doctorStatusWarn,
+				Configured: true,
+				Detail:     fmt.Sprintf("query_entropy_param_exclusions entry %s is redundant because query_entropy_exclusions already covers host %s", tuple, entry.Host),
+				Next:       "prefer the endpoint-parameter exemption and remove the broader host-wide query_entropy_exclusions entry if the broad bypass is not needed",
+			})
+		}
+		if strings.TrimSpace(entry.Reason) == "" {
+			checks = append(checks, queryEntropyParamLifecycleCheck(tuple, "reason", "add a short reason so future operators know why this narrow entropy exemption exists"))
+		}
+		if strings.TrimSpace(entry.Owner) == "" {
+			checks = append(checks, queryEntropyParamLifecycleCheck(tuple, "owner", "add an owner so future operators know who can revalidate this exemption"))
+		}
+		expires := strings.TrimSpace(entry.Expires)
+		if expires == "" {
+			checks = append(checks, queryEntropyParamLifecycleCheck(tuple, "expires", "add an expires date in YYYY-MM-DD format so this exemption gets periodically reviewed"))
+			continue
+		}
+		parsed, err := time.Parse("2006-01-02", expires)
+		if err == nil && parsed.Before(todayUTC()) {
+			checks = append(checks, doctorReportCheck{
+				Name:       doctorCheckExemptionSemantics,
+				Surface:    doctorSurfaceConfig,
+				Status:     doctorStatusWarn,
+				Configured: true,
+				Detail:     fmt.Sprintf("query_entropy_param_exclusions entry %s expired on %s", tuple, expires),
+				Next:       "review whether the endpoint still needs the exemption; remove it or renew expires with a future YYYY-MM-DD date",
+			})
+		}
+	}
+	sortDoctorChecks(checks)
+	return checks
+}
+
+func queryEntropyParamLifecycleCheck(tuple, field, next string) doctorReportCheck {
+	return doctorReportCheck{
+		Name:       doctorCheckExemptionSemantics,
+		Surface:    doctorSurfaceConfig,
+		Status:     doctorStatusWarn,
+		Configured: true,
+		Detail:     fmt.Sprintf("query_entropy_param_exclusions entry %s is missing advisory %s", tuple, field),
+		Next:       next,
+	}
+}
+
+func queryEntropyParamCoveredByHostWide(entry config.QueryEntropyParamExclusion, hostWide []string) bool {
+	for _, pattern := range hostWide {
+		if scanner.MatchDomain(entry.Host, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryEntropyParamAdvisoryTuple(entry config.QueryEntropyParamExclusion) string {
+	scheme := entry.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s%s?%s", scheme, entry.Host, entry.Path, entry.Param)
+}
+
+func todayUTC() time.Time {
+	y, m, d := time.Now().UTC().Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
 // sortDoctorChecks orders checks by name then detail for deterministic output.

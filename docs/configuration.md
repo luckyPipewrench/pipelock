@@ -118,6 +118,8 @@ fetch_proxy:
 | `monitoring.max_data_per_minute` | `0` | Per-domain byte budget (0 = disabled) |
 | `monitoring.blocklist` | 5 domains | Blocked exfiltration targets |
 | `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
+| `monitoring.query_entropy_exclusions` | `[]` | Host-wide query-string entropy exclusions for hosts whose query values are broadly opaque by contract |
+| `monitoring.query_entropy_param_exclusions` | `[]` | Exact HTTPS endpoint+parameter query-value entropy exclusions; DLP, SSRF, query-key entropy, adjacent parameters, path/subdomain entropy, rate limits, and data budgets still apply |
 
 **Entropy guidance:**
 - English text: 3.5-4.0 bits/char
@@ -136,13 +138,37 @@ fetch_proxy:
       - "api.telegram.org"
 ```
 
-**Query entropy exclusions** skip only the query-string entropy gate for specific domains. Subdomain entropy, path entropy, DLP, SSRF, rate limits, and data budgets still apply. This is intended for endpoints whose query parameters legitimately carry high-entropy opaque values, such as S3 pre-signed URLs. Supports the same exact-host and `*.example.com` wildcard matching rules.
+**Query entropy parameter exclusions** skip only the raw query-value entropy gate for one exact HTTPS endpoint and one exact parameter key. Subdomain entropy, path entropy, query-key entropy, adjacent parameters, DLP, SSRF, rate limits, and data budgets still apply. Use this first when a structured query language or endpoint contract creates a false positive in one parameter.
+
+```yaml
+fetch_proxy:
+  monitoring:
+    query_entropy_param_exclusions:
+      - scheme: https
+        host: api.vendor.example
+        path: /v1/search/recent
+        param: query
+        reason: structured search grammar can contain dense operators
+        owner: platform-security
+        expires: 2026-12-31
+```
+
+The endpoint-parameter matcher is intentionally strict: empty `scheme` defaults
+to `https`, `host` is an exact DNS hostname without a port or wildcard, `path`
+must match the URL's canonical escaped path exactly, and the raw query string
+must contain exactly one key with the same unescaped spelling as `param`.
+
+**Query entropy exclusions** skip only the query-string entropy gate for specific
+hosts. They are broader than endpoint-parameter exclusions and should be reserved
+for hosts whose query strings legitimately carry high-entropy opaque values
+across many paths or parameters. Supports exact-host and `*.example.com`
+wildcard matching rules.
 
 ```yaml
 fetch_proxy:
   monitoring:
     query_entropy_exclusions:
-      - "examplebucket.s3.amazonaws.com"
+      - "provider.example"
 ```
 
 **Path entropy and governed API routes.** Path entropy is *also* skipped

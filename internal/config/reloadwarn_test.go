@@ -158,3 +158,111 @@ func TestValidateReload_ReverseProxyProfileUnchanged_NoWarning(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateReload_QueryEntropyParamExclusionsAdded(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+		Scheme: "https",
+		Host:   "api.vendor.example",
+		Path:   "/v1/search/recent",
+		Param:  "query",
+	}}
+
+	warnings := ValidateReload(old, updated)
+	var found bool
+	for _, w := range warnings {
+		if w.Field != "fetch_proxy.monitoring.query_entropy_param_exclusions" {
+			continue
+		}
+		found = true
+		if !strings.Contains(w.Message, "https://api.vendor.example/v1/search/recent?query") {
+			t.Fatalf("reload warning message = %q, want normalized tuple", w.Message)
+		}
+		if !strings.Contains(w.Message, "only query-value entropy coverage is reduced") {
+			t.Fatalf("reload warning message = %q, want query-value-only warning", w.Message)
+		}
+	}
+	if !found {
+		t.Fatal("expected query entropy param exclusion reload warning")
+	}
+}
+
+func TestValidateReload_QueryEntropyParamExclusionsMetadataOnlyNoWarning(t *testing.T) {
+	old := Defaults()
+	old.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+		Scheme:  "https",
+		Host:    "api.vendor.example",
+		Path:    "/v1/search/recent",
+		Param:   "query",
+		Reason:  "initial reason",
+		Owner:   "platform-security",
+		Expires: "2026-12-31",
+	}}
+	updated := Defaults()
+	updated.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+		Scheme:  "https",
+		Host:    "api.vendor.example",
+		Path:    "/v1/search/recent",
+		Param:   "query",
+		Reason:  "updated reason",
+		Owner:   "platform-security",
+		Expires: "2027-12-31",
+	}}
+
+	for _, w := range ValidateReload(old, updated) {
+		if w.Field == "fetch_proxy.monitoring.query_entropy_param_exclusions" {
+			t.Fatalf("metadata-only query entropy param change should not warn, got %+v", w)
+		}
+	}
+}
+
+func TestValidateReload_QueryEntropyParamExclusionsRemoved(t *testing.T) {
+	old := Defaults()
+	old.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{
+		Scheme: "https",
+		Host:   "api.vendor.example",
+		Path:   "/v1/search/recent",
+		Param:  "query",
+	}}
+	updated := Defaults()
+
+	warnings := ValidateReload(old, updated)
+	var found bool
+	for _, w := range warnings {
+		if w.Field != "fetch_proxy.monitoring.query_entropy_param_exclusions" {
+			continue
+		}
+		found = true
+		if !strings.Contains(w.Message, "removed: https://api.vendor.example/v1/search/recent?query") {
+			t.Fatalf("reload warning message = %q, want removed tuple", w.Message)
+		}
+		if !strings.Contains(w.Message, "again be subject to query-value entropy blocks") {
+			t.Fatalf("reload warning message = %q, want restored entropy-block warning", w.Message)
+		}
+	}
+	if !found {
+		t.Fatal("expected query entropy param exclusion removal reload warning")
+	}
+}
+
+func TestValidateReload_QueryEntropyParamExclusionsMalformedOrDuplicateNoPanic(t *testing.T) {
+	old := Defaults()
+	old.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{
+		{Scheme: "https", Host: "API.VENDOR.EXAMPLE.", Path: "/v1/search/recent", Param: "query"},
+		{Scheme: "https", Host: "api.vendor.example", Path: "/v1/search/recent", Param: "query"},
+		{Scheme: "https", Host: "", Path: "", Param: ""},
+	}
+	updated := Defaults()
+	updated.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{
+		{Scheme: "https", Host: "api.vendor.example", Path: "/v1/search/recent", Param: "query"},
+		{Scheme: "https", Host: "", Path: "", Param: ""},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("ValidateReload panicked on malformed or duplicate query entropy param exclusions: %v", r)
+		}
+	}()
+	_ = ValidateReload(old, updated)
+}

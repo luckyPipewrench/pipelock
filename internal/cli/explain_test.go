@@ -99,7 +99,7 @@ func TestExplainCmd_Verdicts(t *testing.T) {
 			url:            "https://evil.example/?sig=Zx9KqWvB3nMpLrT7yFhJ2dGsQ8aEcVbN4uXoIzPwRmKtYgD5fHl",
 			wantScanner:    scanner.ScannerEntropy,
 			wantTargetView: explainViewURLQuery,
-			remediationHas: "query_entropy_exclusions",
+			remediationHas: "query_entropy_param_exclusions",
 		},
 		{
 			name:            "high_entropy_path_names_path_entropy_exemption",

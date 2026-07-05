@@ -25,10 +25,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Check out trusted review runner
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Check out PR for stats mode
+        if: github.event.comment.body == '/review stats'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 1
           ref: refs/pull/${{ github.event.issue.number }}/merge
+          path: pr
           persist-credentials: false
 
       - name: Set up Go
@@ -65,6 +75,7 @@ jobs:
           REVIEW_MODE: ${{ steps.mode.outputs.mode }}
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
+          STATS_REPO_PATH: pr
           PR_REVIEW_MODEL_FAST: gpt-5.4-mini
           PR_REVIEW_MODEL_DEEP: gpt-5.5
         run: python scripts/pr-review.py

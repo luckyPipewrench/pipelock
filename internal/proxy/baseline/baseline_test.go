@@ -4,11 +4,18 @@
 package baseline
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -28,6 +35,12 @@ func makeReadOnly(dir string) error { return os.Chmod(dir, 0o000) }
 
 // restoreWritable restores permissions so t.TempDir cleanup succeeds.
 func restoreWritable(dir string) error { return os.Chmod(dir, 0o750) } //nolint:gosec // G302: directory needs execute bit for traversal
+
+// keyDirReadExecMode is r-x: traverse+read but deny writes, to force a
+// persistence WRITE failure while keeping the dir traversable. Declared as a
+// var so os.Chmod call sites take an identifier, not an octal literal that
+// gosec G302 flags.
+var keyDirReadExecMode os.FileMode = 0o500
 
 func normalMetrics() SessionMetrics {
 	return SessionMetrics{
@@ -536,7 +549,34 @@ func seedLockedProfileForMetrics(t *testing.T, dir, agentKey string, metrics Ses
 	return path
 }
 
-func rewriteProfileToolCallsMean(t *testing.T, path string, mean float64) {
+func seedPendingProfile(t *testing.T, dir, action string) (*Manager, string) {
+	t.Helper()
+	mgr, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: action,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+	if state := mgr.GetState(testAgent); state != StateRatify {
+		t.Fatalf("seeded state = %q, want %q", state, StateRatify)
+	}
+	path := filepath.Join(dir, testAgent+profileFileExt)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("seed pending profile not persisted: %v", err)
+	}
+	if _, err := os.Stat(baselineIntegrityManifestPath(dir)); err != nil {
+		t.Fatalf("seed pending manifest not persisted: %v", err)
+	}
+	return mgr, path
+}
+
+func rewriteProfileToolCallsMean(t *testing.T, path string) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
@@ -547,9 +587,9 @@ func rewriteProfileToolCallsMean(t *testing.T, path string, mean float64) {
 		t.Fatalf("unmarshal profile: %v", err)
 	}
 	profile.Metrics.ToolCallsPerSession = Range{
-		Min:    mean,
-		Max:    mean,
-		Mean:   mean,
+		Min:    100,
+		Max:    100,
+		Mean:   100,
 		StdDev: 0,
 	}
 	data, err = json.MarshalIndent(profile, "", "  ")
@@ -558,6 +598,21 @@ func rewriteProfileToolCallsMean(t *testing.T, path string, mean float64) {
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write profile: %v", err)
+	}
+}
+
+func waitForPath(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(filepath.Clean(path)); err == nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		<-ticker.C
 	}
 }
 
@@ -623,6 +678,28 @@ func writeFileBytes(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(filepath.Clean(path), data, 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func readVerifiedIntegrityManifest(t *testing.T, dir string) integrityManifest {
+	t.Helper()
+	cfg := Config{Enabled: true, ProfileDir: dir}
+	if err := normalizeIntegrityConfig(&cfg); err != nil {
+		t.Fatalf("normalize integrity config: %v", err)
+	}
+	mgr := &Manager{cfg: cfg}
+	key, err := mgr.loadIntegrityKey(false)
+	if err != nil {
+		t.Fatalf("load integrity key: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Clean(baselineIntegrityManifestPath(dir)))
+	if err != nil {
+		t.Fatalf("read integrity manifest: %v", err)
+	}
+	manifest, err := verifyIntegrityManifest(data, key)
+	if err != nil {
+		t.Fatalf("verify integrity manifest: %v", err)
+	}
+	return manifest
 }
 
 // TestBaseline_LoadProfiles_FailsClosedOnCorruptProfileUnderEnforcement proves
@@ -794,7 +871,7 @@ func TestBaseline_LoadProfiles_FailsClosedOnLockedProfileTamperUnderEnforcement(
 			name: "learned_range_edit",
 			tamper: func(t *testing.T, _, path string) {
 				t.Helper()
-				rewriteProfileToolCallsMean(t, path, 100)
+				rewriteProfileToolCallsMean(t, path)
 			},
 		},
 		{
@@ -971,6 +1048,81 @@ func TestBaseline_LoadProfiles_WarnModeDoesNotFailClosedOnIntegrityTamper(t *tes
 	}
 }
 
+func TestBaseline_PendingProfileIntegrityTamper(t *testing.T) {
+	tests := []struct {
+		name            string
+		action          string
+		wantRatifyError bool
+		wantLoadError   bool
+	}{
+		{
+			name:            "block_fails_closed",
+			action:          deviationActionBlock,
+			wantRatifyError: true,
+			wantLoadError:   true,
+		},
+		{
+			name:            "ask_fails_closed",
+			action:          deviationActionAsk,
+			wantRatifyError: true,
+			wantLoadError:   true,
+		},
+		{
+			name:   "warn_is_lenient",
+			action: deviationActionWarn,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name+"_ratify", func(t *testing.T) {
+			dir := t.TempDir()
+			mgr, path := seedPendingProfile(t, dir, tc.action)
+			rewriteProfileToolCallsMean(t, path)
+
+			err := mgr.Ratify(testAgent)
+			if tc.wantRatifyError {
+				if err == nil {
+					t.Fatal("Ratify: want pending-profile integrity error")
+				}
+				if state := mgr.GetState(testAgent); state != StateRatify {
+					t.Fatalf("state after failed ratify = %q, want %q", state, StateRatify)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Ratify under %q should be lenient: %v", tc.action, err)
+			}
+			if state := mgr.GetState(testAgent); state != StateLocked {
+				t.Fatalf("state after lenient ratify = %q, want %q", state, StateLocked)
+			}
+		})
+
+		t.Run(tc.name+"_load", func(t *testing.T) {
+			dir := t.TempDir()
+			_, path := seedPendingProfile(t, dir, tc.action)
+			rewriteProfileToolCallsMean(t, path)
+
+			mgr, err := NewManager(Config{
+				Enabled:         true,
+				LearningWindow:  3,
+				DeviationAction: tc.action,
+				ProfileDir:      dir,
+			})
+			if tc.wantLoadError {
+				if err == nil {
+					t.Fatal("NewManager: want pending-profile integrity error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewManager under %q should be lenient: %v", tc.action, err)
+			}
+			if state := mgr.GetState(testAgent); state != StateRatify {
+				t.Fatalf("loaded state = %q, want %q", state, StateRatify)
+			}
+		})
+	}
+}
+
 func TestBaseline_LoadProfiles_NoManifestStartupBoundaries(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1037,6 +1189,121 @@ func TestBaseline_LoadProfiles_NoManifestStartupBoundaries(t *testing.T) {
 	}
 }
 
+func TestBaseline_PendingProfileIntegrityCleanResetAndWipe(t *testing.T) {
+	t.Run("pending_reset_leaves_clean_integrity_state", func(t *testing.T) {
+		dir := t.TempDir()
+		mgr, _ := seedPendingProfile(t, dir, deviationActionBlock)
+		if err := mgr.Reset(testAgent); err != nil {
+			t.Fatalf("Reset pending profile: %v", err)
+		}
+		restarted, err := NewManager(Config{
+			Enabled:         true,
+			LearningWindow:  3,
+			DeviationAction: deviationActionBlock,
+			ProfileDir:      dir,
+		})
+		if err != nil {
+			t.Fatalf("NewManager after pending reset: %v", err)
+		}
+		if agents := restarted.ListAgents(); len(agents) != 0 {
+			t.Fatalf("agents after pending reset restart = %v, want none", agents)
+		}
+	})
+
+	t.Run("full_wipe_clears_trusted_integrity_state", func(t *testing.T) {
+		dir := t.TempDir()
+		seedPendingProfile(t, dir, deviationActionBlock)
+		for _, path := range []string{
+			dir,
+			baselineIntegrityKeyPath(dir),
+			baselineIntegrityKeyPath(dir) + ".generation",
+			baselineIntegrityKeyPath(dir) + ".generation.lock",
+		} {
+			if err := os.RemoveAll(filepath.Clean(path)); err != nil {
+				t.Fatalf("remove %s: %v", path, err)
+			}
+		}
+		restarted, err := NewManager(Config{
+			Enabled:         true,
+			LearningWindow:  3,
+			DeviationAction: deviationActionBlock,
+			ProfileDir:      dir,
+		})
+		if err != nil {
+			t.Fatalf("NewManager after full trusted-state wipe: %v", err)
+		}
+		if agents := restarted.ListAgents(); len(agents) != 0 {
+			t.Fatalf("agents after full trusted-state wipe = %v, want none", agents)
+		}
+	})
+}
+
+func TestBaseline_IntegrityManifestCoversLockedAndRatifyProfiles(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	for range 3 {
+		mgr.RecordSession("agent-a", normalMetrics())
+	}
+	for range 3 {
+		mgr.RecordSession("agent-b", normalMetrics())
+	}
+	if err := mgr.Ratify("agent-a"); err != nil {
+		t.Fatalf("Ratify agent-a: %v", err)
+	}
+
+	manifest := readVerifiedIntegrityManifest(t, dir)
+	if len(manifest.Profiles) != 2 {
+		t.Fatalf("manifest profile count = %d, want 2", len(manifest.Profiles))
+	}
+	if manifest.Profiles[0].AgentKey != "agent-a" || manifest.Profiles[0].State != StateLocked {
+		t.Fatalf("first manifest entry = %+v, want locked agent-a", manifest.Profiles[0])
+	}
+	if manifest.Profiles[1].AgentKey != "agent-b" || manifest.Profiles[1].State != StateRatify {
+		t.Fatalf("second manifest entry = %+v, want ratify agent-b", manifest.Profiles[1])
+	}
+
+	restarted, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager restart: %v", err)
+	}
+	if state := restarted.GetState("agent-a"); state != StateLocked {
+		t.Fatalf("agent-a state = %q, want %q", state, StateLocked)
+	}
+	if state := restarted.GetState("agent-b"); state != StateRatify {
+		t.Fatalf("agent-b state = %q, want %q", state, StateRatify)
+	}
+}
+
+func TestBaseline_RatifyReplacesPendingManifestEntry(t *testing.T) {
+	dir := t.TempDir()
+	mgr, _ := seedPendingProfile(t, dir, deviationActionBlock)
+
+	if err := mgr.Ratify(testAgent); err != nil {
+		t.Fatalf("Ratify: %v", err)
+	}
+
+	manifest := readVerifiedIntegrityManifest(t, dir)
+	if len(manifest.Profiles) != 1 {
+		t.Fatalf("manifest profile count = %d, want 1", len(manifest.Profiles))
+	}
+	if manifest.Profiles[0].AgentKey != testAgent || manifest.Profiles[0].State != StateLocked {
+		t.Fatalf("manifest entry = %+v, want locked test agent", manifest.Profiles[0])
+	}
+}
+
 func TestBaseline_LoadProfiles_RejectsManifestRollbackUnderEnforcement(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := seedLockedProfile(t, dir)
@@ -1044,7 +1311,7 @@ func TestBaseline_LoadProfiles_RejectsManifestRollbackUnderEnforcement(t *testin
 	rolledBackProfile := copyFileBytes(t, profilePath)
 	rolledBackManifest := copyFileBytes(t, manifestPath)
 
-	rewriteProfileToolCallsMean(t, profilePath, 100)
+	rewriteProfileToolCallsMean(t, profilePath)
 	persistIntegrityManifestForExistingProfile(t, dir, testAgent, StateLocked)
 
 	writeFileBytes(t, profilePath, rolledBackProfile)
@@ -1058,6 +1325,68 @@ func TestBaseline_LoadProfiles_RejectsManifestRollbackUnderEnforcement(t *testin
 	})
 	if err == nil {
 		t.Fatal("NewManager: want fail-closed error for replayed older manifest/profile generation")
+	}
+}
+
+func TestBaseline_LoadProfiles_RejectsRollbackWithForgedPublicHighWaterDigest(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := seedLockedProfile(t, dir)
+	manifestPath := baselineIntegrityManifestPath(dir)
+	rolledBackProfile := copyFileBytes(t, profilePath)
+	rolledBackManifest := copyFileBytes(t, manifestPath)
+	rolledBackGeneration := readVerifiedIntegrityManifest(t, dir).Generation
+
+	rewriteProfileToolCallsMean(t, profilePath)
+	persistIntegrityManifestForExistingProfile(t, dir, testAgent, StateLocked)
+
+	writeFileBytes(t, profilePath, rolledBackProfile)
+	writeFileBytes(t, manifestPath, rolledBackManifest)
+	cfg := Config{Enabled: true, ProfileDir: dir}
+	if err := normalizeIntegrityConfig(&cfg); err != nil {
+		t.Fatalf("normalize integrity config: %v", err)
+	}
+	mgr := &Manager{cfg: cfg}
+	forged, err := json.Marshal(integrityHighWaterState{
+		Generation: rolledBackGeneration,
+		Context:    mgr.integrityStateContextID(),
+		Digest:     legacyPublicIntegrityGenerationDigest(mgr.integrityStateContextID(), rolledBackGeneration),
+	})
+	if err != nil {
+		t.Fatalf("marshal forged high-water: %v", err)
+	}
+	writeFileBytes(t, baselineIntegrityKeyPath(dir)+".generation", forged)
+
+	_, err = NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err == nil {
+		t.Fatal("NewManager: want fail-closed error for replayed profile with forged public high-water digest")
+	}
+}
+
+func legacyPublicIntegrityGenerationDigest(contextID string, generation uint64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("baseline-integrity-generation-v1\n%s\n%d", contextID, generation)))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestBaseline_LoadProfiles_RejectsMissingHighWaterWithSignedManifest(t *testing.T) {
+	dir := t.TempDir()
+	seedLockedProfile(t, dir)
+	if err := os.Remove(baselineIntegrityKeyPath(dir) + ".generation"); err != nil {
+		t.Fatalf("delete high-water: %v", err)
+	}
+
+	_, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err == nil {
+		t.Fatal("NewManager: want fail-closed error when manifest exists but generation high-water is missing")
 	}
 }
 
@@ -1151,6 +1480,81 @@ func TestBaseline_ResetManifestFailureRestoresPersistedProfile(t *testing.T) {
 	}
 	if _, err := os.Stat(profilePath); err != nil {
 		t.Fatalf("profile should be restored after manifest update failure: %v", err)
+	}
+	if devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("in-memory enforcement must remain active after failed reset")
+	}
+}
+
+func TestBaseline_ResetHighWaterFailureDoesNotEraseEnforcementOnRestart(t *testing.T) {
+	skipIfRoot(t)
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "profiles")
+	keyDir := filepath.Join(parent, "keys")
+	keyPath := filepath.Join(keyDir, "baseline.key")
+	mgr, err := NewManager(Config{
+		Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock,
+		ProfileDir: dir, IntegrityKeyPath: keyPath,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	for range 3 {
+		mgr.RecordSession(testAgent, normalMetrics())
+	}
+	if err := mgr.Ratify(testAgent); err != nil {
+		t.Fatalf("Ratify: %v", err)
+	}
+	if err := os.Chmod(keyDir, keyDirReadExecMode); err != nil {
+		t.Fatalf("make key dir read-only: %v", err)
+	}
+	err = mgr.Reset(testAgent)
+	if err == nil {
+		t.Fatal("Reset: want high-water persistence error")
+	}
+	if devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("in-memory enforcement must remain active after failed reset")
+	}
+	if err := restoreWritable(keyDir); err != nil {
+		t.Fatalf("restore key dir writable: %v", err)
+	}
+
+	restarted, err := NewManager(Config{
+		Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock,
+		ProfileDir: dir, IntegrityKeyPath: keyPath,
+	})
+	if err != nil {
+		return
+	}
+	if state := restarted.GetState(testAgent); state != StateLocked {
+		t.Fatalf("failed Reset must not erase persisted enforcement on restart; state = %q", state)
+	}
+	if devs := restarted.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
+		t.Fatal("failed Reset must leave restarted manager enforcing or fail closed")
+	}
+}
+
+func TestBaseline_ResetMissingIntegrityKeyRestoresPersistedProfile(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := seedLockedProfile(t, dir)
+	mgr, err := NewManager(Config{
+		Enabled:         true,
+		LearningWindow:  3,
+		DeviationAction: deviationActionBlock,
+		ProfileDir:      dir,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := os.Remove(baselineIntegrityKeyPath(dir)); err != nil {
+		t.Fatalf("delete integrity key: %v", err)
+	}
+
+	if err := mgr.Reset(testAgent); err == nil {
+		t.Fatal("Reset: want manifest update error after integrity key deletion")
+	}
+	if _, err := os.Stat(profilePath); err != nil {
+		t.Fatalf("profile should be restored after missing-key manifest failure: %v", err)
 	}
 	if devs := mgr.Check(testAgent, SessionMetrics{ToolCalls: 9999}); len(devs) == 0 {
 		t.Fatal("in-memory enforcement must remain active after failed reset")
@@ -2078,6 +2482,145 @@ func TestBaseline_CorruptIntegrityKeyRejectedUnderEnforcement(t *testing.T) {
 	}
 }
 
+func TestBaseline_HighWaterLockHelperProcess(t *testing.T) {
+	mode := os.Getenv("PIPELOCK_BASELINE_LOCK_HELPER")
+	if mode == "" {
+		return
+	}
+	keyPath := os.Getenv("PIPELOCK_BASELINE_LOCK_KEY")
+	profileDir := os.Getenv("PIPELOCK_BASELINE_LOCK_PROFILE_DIR")
+	readyPath := os.Getenv("PIPELOCK_BASELINE_LOCK_READY")
+	releasePath := os.Getenv("PIPELOCK_BASELINE_LOCK_RELEASE")
+	startedPath := os.Getenv("PIPELOCK_BASELINE_LOCK_STARTED")
+	acquiredPath := os.Getenv("PIPELOCK_BASELINE_LOCK_ACQUIRED")
+
+	switch mode {
+	case "hold":
+		unlock, err := acquireIntegrityHighWaterLock(keyPath)
+		if err != nil {
+			t.Fatalf("acquire lock: %v", err)
+		}
+		if err := os.WriteFile(filepath.Clean(readyPath), []byte("ready"), 0o600); err != nil {
+			unlock()
+			t.Fatalf("write ready marker: %v", err)
+		}
+		if !waitForPath(releasePath, 5*time.Second) {
+			unlock()
+			t.Fatal("timed out waiting for release marker")
+		}
+		unlock()
+	case "advance":
+		if err := os.WriteFile(filepath.Clean(startedPath), []byte("started"), 0o600); err != nil {
+			t.Fatalf("write started marker: %v", err)
+		}
+		mgr := &Manager{cfg: Config{
+			ProfileDir:       profileDir,
+			IntegrityKeyPath: keyPath,
+			DeviationAction:  deviationActionBlock,
+		}}
+		key, err := mgr.loadIntegrityKey(false)
+		if err != nil {
+			t.Fatalf("load key: %v", err)
+		}
+		if err := mgr.acceptIntegrityManifestGeneration(2, key); err != nil {
+			t.Fatalf("accept generation: %v", err)
+		}
+		if err := os.WriteFile(filepath.Clean(acquiredPath), []byte("acquired"), 0o600); err != nil {
+			t.Fatalf("write acquired marker: %v", err)
+		}
+	default:
+		t.Fatalf("unknown helper mode %q", mode)
+	}
+	os.Exit(0)
+}
+
+func TestBaseline_HighWaterLockSerializesAcrossProcesses(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses /proc/self/exe to re-exec the test binary without a variable subprocess path")
+	}
+
+	dir := t.TempDir()
+	keyPath := baselineIntegrityKeyPath(dir)
+	mgr := &Manager{cfg: Config{
+		ProfileDir:       dir,
+		IntegrityKeyPath: keyPath,
+		DeviationAction:  deviationActionBlock,
+	}}
+	key, err := mgr.loadIntegrityKey(true)
+	if err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	if err := mgr.writeIntegrityHighWater(1, key); err != nil {
+		t.Fatalf("seed high-water: %v", err)
+	}
+
+	markers := t.TempDir()
+	readyPath := filepath.Join(markers, "ready")
+	releasePath := filepath.Join(markers, "release")
+	startedPath := filepath.Join(markers, "started")
+	acquiredPath := filepath.Join(markers, "acquired")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	holdOutput := &bytes.Buffer{}
+	hold := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^TestBaseline_HighWaterLockHelperProcess$")
+	hold.Env = append(os.Environ(),
+		"PIPELOCK_BASELINE_LOCK_HELPER=hold",
+		"PIPELOCK_BASELINE_LOCK_KEY="+keyPath,
+		"PIPELOCK_BASELINE_LOCK_PROFILE_DIR="+dir,
+		"PIPELOCK_BASELINE_LOCK_READY="+readyPath,
+		"PIPELOCK_BASELINE_LOCK_RELEASE="+releasePath,
+	)
+	hold.Stdout = holdOutput
+	hold.Stderr = holdOutput
+	if err := hold.Start(); err != nil {
+		t.Fatalf("start lock holder: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Clean(releasePath), []byte("release"), 0o600)
+		if hold.ProcessState == nil {
+			_ = hold.Process.Kill()
+		}
+	})
+	if !waitForPath(readyPath, 2*time.Second) {
+		t.Fatalf("lock holder did not become ready:\n%s", holdOutput.String())
+	}
+
+	advanceOutput := &bytes.Buffer{}
+	advance := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^TestBaseline_HighWaterLockHelperProcess$")
+	advance.Env = append(os.Environ(),
+		"PIPELOCK_BASELINE_LOCK_HELPER=advance",
+		"PIPELOCK_BASELINE_LOCK_KEY="+keyPath,
+		"PIPELOCK_BASELINE_LOCK_PROFILE_DIR="+dir,
+		"PIPELOCK_BASELINE_LOCK_STARTED="+startedPath,
+		"PIPELOCK_BASELINE_LOCK_ACQUIRED="+acquiredPath,
+	)
+	advance.Stdout = advanceOutput
+	advance.Stderr = advanceOutput
+	if err := advance.Start(); err != nil {
+		t.Fatalf("start second manager: %v", err)
+	}
+	if !waitForPath(startedPath, 2*time.Second) {
+		t.Fatalf("second manager did not start high-water advance:\n%s", advanceOutput.String())
+	}
+	if waitForPath(acquiredPath, 150*time.Millisecond) {
+		t.Fatal("second manager advanced high-water while another process held the lock")
+	}
+	if err := os.WriteFile(filepath.Clean(releasePath), []byte("release"), 0o600); err != nil {
+		t.Fatalf("release lock holder: %v", err)
+	}
+	if err := hold.Wait(); err != nil {
+		t.Fatalf("lock holder exited with error: %v\n%s", err, holdOutput.String())
+	}
+	if err := advance.Wait(); err != nil {
+		t.Fatalf("second manager exited with error: %v\n%s", err, advanceOutput.String())
+	}
+	if !waitForPath(acquiredPath, time.Second) {
+		t.Fatal("second manager did not advance after lock release")
+	}
+}
+
 // TestBaseline_HighWaterTamperFailsClosedUnderEnforcement covers the
 // readIntegrityHighWater validation branches: the monotonic generation
 // high-water is a trusted anchor, so a symlinked, non-regular, oversized,
@@ -2123,6 +2666,42 @@ func TestBaseline_HighWaterTamperFailsClosedUnderEnforcement(t *testing.T) {
 			name: "context_mismatch",
 			tamper: func(t *testing.T, dir string) {
 				data, _ := json.Marshal(integrityHighWaterState{Generation: 1, Context: "bogus-context", Digest: "bogus-digest"})
+				if err := os.WriteFile(highWaterPath(dir), data, 0o600); err != nil {
+					t.Fatalf("write high-water: %v", err)
+				}
+			},
+		},
+		{
+			name: "bad_digest_hex",
+			tamper: func(t *testing.T, dir string) {
+				cfg := Config{Enabled: true, ProfileDir: dir}
+				if err := normalizeIntegrityConfig(&cfg); err != nil {
+					t.Fatalf("normalize integrity config: %v", err)
+				}
+				mgr := &Manager{cfg: cfg}
+				data, _ := json.Marshal(integrityHighWaterState{
+					Generation: 1,
+					Context:    mgr.integrityStateContextID(),
+					Digest:     "not-hex",
+				})
+				if err := os.WriteFile(highWaterPath(dir), data, 0o600); err != nil {
+					t.Fatalf("write high-water: %v", err)
+				}
+			},
+		},
+		{
+			name: "short_digest",
+			tamper: func(t *testing.T, dir string) {
+				cfg := Config{Enabled: true, ProfileDir: dir}
+				if err := normalizeIntegrityConfig(&cfg); err != nil {
+					t.Fatalf("normalize integrity config: %v", err)
+				}
+				mgr := &Manager{cfg: cfg}
+				data, _ := json.Marshal(integrityHighWaterState{
+					Generation: 1,
+					Context:    mgr.integrityStateContextID(),
+					Digest:     "abcd",
+				})
 				if err := os.WriteFile(highWaterPath(dir), data, 0o600); err != nil {
 					t.Fatalf("write high-water: %v", err)
 				}
@@ -2286,6 +2865,46 @@ func TestBaseline_IntegrityIOErrorsFailClosed(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, testAgent+profileFileExt)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("profile should be removed after manifest persistence failure, stat error = %v", err)
 		}
+		if err := os.Remove(filepath.Join(dir, integrityManifestDirName)); err != nil {
+			t.Fatalf("remove manifest dir blocker: %v", err)
+		}
+		if _, err := NewManager(Config{
+			Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock, ProfileDir: dir,
+		}); err != nil {
+			t.Fatalf("NewManager after clearing failed first persist manifest conflict: %v", err)
+		}
+	})
+
+	t.Run("lock_conflict_does_not_seed_trusted_state", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "profiles")
+		lockPath := baselineIntegrityKeyPath(dir) + ".generation.lock"
+		if err := os.MkdirAll(lockPath, 0o750); err != nil {
+			t.Fatalf("create lock path directory: %v", err)
+		}
+		mgr, err := NewManager(Config{
+			Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock, ProfileDir: dir,
+		})
+		if err != nil {
+			t.Fatalf("NewManager: %v", err)
+		}
+		for range 3 {
+			mgr.RecordSession(testAgent, normalMetrics())
+		}
+		if _, err := os.Stat(filepath.Join(dir, testAgent+profileFileExt)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("profile should be removed after lock failure, stat error = %v", err)
+		}
+		if _, err := os.Stat(baselineIntegrityKeyPath(dir)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("integrity key should not be created before acquiring high-water lock, stat error = %v", err)
+		}
+		if err := os.Remove(lockPath); err != nil {
+			t.Fatalf("remove lock path directory: %v", err)
+		}
+		if _, err := NewManager(Config{
+			Enabled: true, LearningWindow: 3, DeviationAction: deviationActionBlock, ProfileDir: dir,
+		}); err != nil {
+			t.Fatalf("NewManager after clearing failed first persist lock conflict: %v", err)
+		}
 	})
 }
 
@@ -2298,13 +2917,17 @@ func TestBaseline_IntegrityGenerationInvariants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	if err := mgr.writeIntegrityHighWater(0); err == nil {
+	key, err := mgr.loadIntegrityKey(true)
+	if err != nil {
+		t.Fatalf("load key: %v", err)
+	}
+	if err := mgr.writeIntegrityHighWater(0, key); err == nil {
 		t.Fatal("want error writing a zero generation high-water")
 	}
-	if err := mgr.acceptIntegrityManifestGeneration(0); err == nil {
+	if err := mgr.acceptIntegrityManifestGeneration(0, key); err == nil {
 		t.Fatal("want error accepting a zero generation manifest")
 	}
-	if err := mgr.writeIntegrityHighWater(math.MaxUint64); err != nil {
+	if err := mgr.writeIntegrityHighWater(math.MaxUint64, key); err != nil {
 		t.Fatalf("write max high-water: %v", err)
 	}
 	if _, err := mgr.nextIntegrityManifestGeneration(); err == nil {
@@ -2399,7 +3022,7 @@ func TestBaseline_PersistedProfileFilesExistEdges(t *testing.T) {
 
 func TestBaseline_PersistIntegrityManifestSkipsWithoutProfileDir(t *testing.T) {
 	mgr := &Manager{}
-	if err := mgr.persistIntegrityManifest(nil); err != nil {
+	if err := mgr.persistIntegrityManifest(map[string]bool{testAgent: true}); err != nil {
 		t.Fatalf("persistIntegrityManifest without ProfileDir: %v", err)
 	}
 }
@@ -2432,4 +3055,198 @@ func TestBaseline_HighWaterDigestMismatchFailsClosed(t *testing.T) {
 	}); err == nil {
 		t.Fatal("want fail-closed on high-water digest mismatch")
 	}
+}
+
+func TestBaseline_IntegrityGenerationErrorBranches(t *testing.T) {
+	t.Run("next_generation_returns_initial_generation", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: dir}
+		if err := normalizeIntegrityConfig(&cfg); err != nil {
+			t.Fatalf("normalize integrity config: %v", err)
+		}
+		mgr := &Manager{cfg: cfg}
+
+		generation, err := mgr.nextIntegrityManifestGeneration()
+		if err != nil {
+			t.Fatalf("nextIntegrityManifestGeneration: %v", err)
+		}
+		if generation != 1 {
+			t.Fatalf("generation = %d, want 1", generation)
+		}
+	})
+
+	t.Run("missing_high_water_refuses_next_generation_when_trusted_state_exists", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: dir}
+		if err := normalizeIntegrityConfig(&cfg); err != nil {
+			t.Fatalf("normalize integrity config: %v", err)
+		}
+		mgr := &Manager{cfg: cfg}
+		key, err := mgr.loadIntegrityKey(true)
+		if err != nil {
+			t.Fatalf("load integrity key: %v", err)
+		}
+
+		if _, err := mgr.nextIntegrityManifestGenerationLocked(key, false); err == nil {
+			t.Fatal("nextIntegrityManifestGenerationLocked: want missing high-water error")
+		}
+	})
+
+	t.Run("next_generation_lock_open_failure", func(t *testing.T) {
+		dir := t.TempDir()
+		keyPath := baselineIntegrityKeyPath(dir)
+		lockPath := keyPath + ".generation.lock"
+		if err := os.MkdirAll(lockPath, 0o750); err != nil {
+			t.Fatalf("mkdir lock path: %v", err)
+		}
+		mgr := &Manager{cfg: Config{
+			ProfileDir:       dir,
+			IntegrityKeyPath: keyPath,
+			DeviationAction:  deviationActionBlock,
+		}}
+
+		if _, err := mgr.nextIntegrityManifestGeneration(); err == nil {
+			t.Fatal("nextIntegrityManifestGeneration: want lock open error")
+		}
+		if err := os.Remove(lockPath); err != nil {
+			t.Fatalf("remove lock path: %v", err)
+		}
+	})
+
+	t.Run("next_generation_load_key_failure", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: dir}
+		if err := normalizeIntegrityConfig(&cfg); err != nil {
+			t.Fatalf("normalize integrity config: %v", err)
+		}
+		if err := os.WriteFile(cfg.IntegrityKeyPath, []byte("not-hex\n"), 0o600); err != nil {
+			t.Fatalf("write corrupt integrity key: %v", err)
+		}
+		mgr := &Manager{cfg: cfg}
+
+		if _, err := mgr.nextIntegrityManifestGeneration(); err == nil {
+			t.Fatal("nextIntegrityManifestGeneration: want key load error")
+		}
+	})
+
+	t.Run("accept_generation_lock_open_failure", func(t *testing.T) {
+		dir := t.TempDir()
+		keyPath := baselineIntegrityKeyPath(dir)
+		lockPath := keyPath + ".generation.lock"
+		if err := os.MkdirAll(lockPath, 0o750); err != nil {
+			t.Fatalf("mkdir lock path: %v", err)
+		}
+		mgr := &Manager{cfg: Config{
+			ProfileDir:       dir,
+			IntegrityKeyPath: keyPath,
+			DeviationAction:  deviationActionBlock,
+		}}
+
+		if err := mgr.acceptIntegrityManifestGeneration(1, []byte("0123456789abcdef0123456789abcdef")); err == nil {
+			t.Fatal("acceptIntegrityManifestGeneration: want lock open error")
+		}
+		if err := os.Remove(lockPath); err != nil {
+			t.Fatalf("remove lock path: %v", err)
+		}
+	})
+}
+
+func TestBaseline_CleanupNewIntegrityTrustedStateErrors(t *testing.T) {
+	originalErr := errors.New("manifest commit failed")
+
+	t.Run("disabled_returns_original_error", func(t *testing.T) {
+		mgr := &Manager{}
+		err := mgr.cleanupNewIntegrityTrustedState(false, originalErr)
+		if !errors.Is(err, originalErr) {
+			t.Fatalf("cleanupNewIntegrityTrustedState = %v, want original error", err)
+		}
+	})
+
+	t.Run("remove_failure_is_joined", func(t *testing.T) {
+		dir := t.TempDir()
+		keyPath := filepath.Join(dir, "integrity-key")
+		if err := os.Mkdir(keyPath, 0o750); err != nil {
+			t.Fatalf("mkdir key path: %v", err)
+		}
+		childPath := filepath.Join(keyPath, "child")
+		if err := os.WriteFile(childPath, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write key child: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = os.Remove(childPath)
+			_ = os.Remove(keyPath)
+		})
+		mgr := &Manager{cfg: Config{IntegrityKeyPath: keyPath}}
+
+		err := mgr.cleanupNewIntegrityTrustedState(true, originalErr)
+		if err == nil {
+			t.Fatal("cleanupNewIntegrityTrustedState: want cleanup error")
+		}
+		if !errors.Is(err, originalErr) {
+			t.Fatalf("cleanup error = %v, want original error in chain", err)
+		}
+	})
+}
+
+func TestBaseline_PersistIntegrityManifestProfileFaults(t *testing.T) {
+	t.Run("invalid_agent_key_refused", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: dir}
+		if err := normalizeIntegrityConfig(&cfg); err != nil {
+			t.Fatalf("normalize integrity config: %v", err)
+		}
+		mgr := &Manager{
+			cfg: cfg,
+			agents: map[string]*agentState{
+				"../bad": {profile: &Profile{State: StateLocked}, state: StateLocked},
+			},
+		}
+
+		if err := mgr.persistIntegrityManifest(nil); err == nil {
+			t.Fatal("persistIntegrityManifest: want invalid agent key error")
+		}
+	})
+
+	t.Run("manifest_profile_read_failure", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: dir}
+		if err := normalizeIntegrityConfig(&cfg); err != nil {
+			t.Fatalf("normalize integrity config: %v", err)
+		}
+		mgr := &Manager{
+			cfg: cfg,
+			agents: map[string]*agentState{
+				testAgent: {profile: &Profile{State: StateLocked}, state: StateLocked},
+			},
+		}
+
+		if err := mgr.persistIntegrityManifest(nil); err == nil {
+			t.Fatal("persistIntegrityManifest: want missing profile read error")
+		}
+	})
+
+	t.Run("trusted_state_without_high_water_fails_generation_advance", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := Config{Enabled: true, LearningWindow: 3, ProfileDir: dir}
+		if err := normalizeIntegrityConfig(&cfg); err != nil {
+			t.Fatalf("normalize integrity config: %v", err)
+		}
+		mgr := &Manager{
+			cfg: cfg,
+			agents: map[string]*agentState{
+				testAgent: {profile: &Profile{State: StateLocked}, state: StateLocked},
+			},
+		}
+		if _, err := mgr.loadIntegrityKey(true); err != nil {
+			t.Fatalf("load integrity key: %v", err)
+		}
+		profilePath := filepath.Join(dir, testAgent+profileFileExt)
+		if err := os.WriteFile(profilePath, []byte(`{"state":"locked"}`), 0o600); err != nil {
+			t.Fatalf("write profile: %v", err)
+		}
+
+		if err := mgr.persistIntegrityManifest(nil); err == nil {
+			t.Fatal("persistIntegrityManifest: want missing high-water generation error")
+		}
+	})
 }

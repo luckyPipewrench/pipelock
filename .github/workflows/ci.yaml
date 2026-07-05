@@ -103,10 +103,36 @@ jobs:
         run: make test-replay-harness
 
       - name: Run tests (OSS)
-        run: go test -race -count=1 ./...
+        env:
+          TEST_LABEL: OSS Go ${{ matrix.go-version }}
+        run: |
+          set -o pipefail
+          set +e
+          go test -race -count=1 -json ./... \
+            | tee /tmp/go-test-oss.json >/dev/null
+          test_status=$?
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-oss.json
+          summary_status=$?
+          if [ "$summary_status" -ne 0 ]; then
+            exit "$summary_status"
+          fi
+          exit "$test_status"
 
       - name: Run tests (enterprise)
-        run: go test -tags enterprise -race -count=1 -coverprofile=coverage.out ./...
+        env:
+          TEST_LABEL: enterprise Go ${{ matrix.go-version }}
+        run: |
+          set -o pipefail
+          set +e
+          go test -tags enterprise -race -count=1 -coverprofile=coverage.out -json ./... \
+            | tee /tmp/go-test-enterprise.json >/dev/null
+          test_status=$?
+          python3 scripts/summarize_go_test_json.py --label "$TEST_LABEL" < /tmp/go-test-enterprise.json
+          summary_status=$?
+          if [ "$summary_status" -ne 0 ]; then
+            exit "$summary_status"
+          fi
+          exit "$test_status"
 
       - name: Upload coverage
         if: matrix.go-version == '1.25'

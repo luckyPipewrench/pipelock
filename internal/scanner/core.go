@@ -162,7 +162,7 @@ func coreResponsePatternDefs() []coreResponsePattern {
 		},
 		{
 			name:  "Credential Path Directive",
-			regex: `(?is)\b(read|get|fetch|retrieve|cat|copy|extract|open|include)\b.{0,80}(\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)`,
+			regex: config.CredentialPathDirectiveRegex,
 		},
 		{
 			name:  "Covert Action Directive",

@@ -1231,6 +1231,40 @@ func TestWaitForUserNamespaceProbeChildTimeout(t *testing.T) {
 	}
 }
 
+func TestWaitForUserNamespaceProbeChildSuccess(t *testing.T) {
+	if runtime.GOOS != osLinux {
+		t.Skip("linux only")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "true")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start true child: %v", err)
+	}
+	if !waitForUserNamespaceProbeChild(cmd.Process.Pid, time.Second) {
+		t.Fatal("expected fast-exiting probe child to be reaped successfully")
+	}
+}
+
+func TestWaitForUserNamespaceProbeChildAlreadyReaped(t *testing.T) {
+	if runtime.GOOS != osLinux {
+		t.Skip("linux only")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "true")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run true child: %v", err)
+	}
+	if waitForUserNamespaceProbeChild(cmd.Process.Pid, time.Second) {
+		t.Fatal("expected already-reaped probe child to report false")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Preflight: complete coverage paths.
 // ---------------------------------------------------------------------------

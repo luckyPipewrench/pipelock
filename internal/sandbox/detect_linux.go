@@ -95,9 +95,7 @@ func waitForUserNamespaceProbeChild(pid int, timeout time.Duration) bool {
 		switch {
 		case waited == pid:
 			return true
-		case err == syscall.EINTR:
-			continue
-		case err != nil:
+		case err != nil && err != syscall.EINTR:
 			return false
 		}
 

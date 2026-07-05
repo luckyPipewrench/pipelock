@@ -503,7 +503,7 @@ func TestForwardScannedInput_A2ASessionBindingDoesNotUseSameNamedTool(t *testing
 		if br.ErrorData != nil || br.ErrorCode != 0 {
 			gotBlock = true
 		}
-		if (br.ErrorData != nil || br.ErrorCode != 0) && strings.Contains(logW.String(), bindingReasonUnknownTool) {
+		if strings.Contains(br.ErrorMessage, bindingReasonUnknownTool) {
 			gotReason = true
 		}
 	}

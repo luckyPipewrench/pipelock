@@ -943,6 +943,9 @@ func ForwardScannedInput(
 			blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
 			if bindingReason != "" && bindingAction == config.ActionBlock {
 				blockReason = blockreason.SessionBinding
+				if errMsg == "" {
+					errMsg = "pipelock: " + bindingReason
+				}
 			}
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,

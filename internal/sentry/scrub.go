@@ -1,5 +1,5 @@
-// Package plsentry provides Sentry error reporting with secret redaction.
-// All error data is scrubbed through DLP patterns before leaving the process.
+// Package plsentry provides opt-in Sentry error reporting with event minimization.
+// Events are structurally allowlisted and scrubbed before leaving the process.
 package plsentry
 
 import (
@@ -35,6 +35,10 @@ var urlParamValueRe = regexp.MustCompile(`([?&][^=&]+)=([^&\s]+)`)
 // userinfo, paths, or query values; keep only the coarse scheme.
 var urlLikeRe = regexp.MustCompile(`\b([a-zA-Z][a-zA-Z0-9+.-]*)://[^\s"'<>]+`)
 
+// protocolRelativeURLRe catches parse-error strings such as
+// "//host/private/path" that do not have a scheme for urlLikeRe to anchor on.
+var protocolRelativeURLRe = regexp.MustCompile(`(^|[^:])//[^\s"'<>]+`)
+
 // Filesystem paths and bare network identifiers commonly appear in Go error
 // strings. They are deployment/agent-local data, so surviving diagnostic
 // strings keep only coarse redaction markers.
@@ -42,10 +46,11 @@ var (
 	unixAbsPathRe      = regexp.MustCompile(`(^|[\s"'(=:])(/(?:[^/\s"'<>:]+/)+[^/\s"'<>:]*)`)
 	windowsAbsPathRe   = regexp.MustCompile(`(?i)\b[A-Z]:\\[^\s"'<>]+`)
 	uncPathRe          = regexp.MustCompile(`\\\\[^\s"'<>\\]+\\[^\s"'<>]+`)
-	userinfoEndpointRe = regexp.MustCompile(`[A-Za-z0-9._~-]+:[^\s"'<>/@]+@(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?`)
-	ipv4EndpointRe     = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b`)
-	ipv6EndpointRe     = regexp.MustCompile(`\[[0-9A-Fa-f:.]+\](?::\d{1,5})?`)
-	fqdnEndpointRe     = regexp.MustCompile(`(?i)\b((?:lookup|host|server|upstream|endpoint|address|addr|for|not|on|to|from|tcp|udp|connect(?:ing)?(?:\s+to)?|dial(?:ing)?(?:\s+tcp|\s+udp)?)\s+)(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d{1,5})?\b`)
+	userinfoEndpointRe = regexp.MustCompile(`[A-Za-z0-9._~-]+:[^\s"'<>/@]+@(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:/[^\s"'<>]*)?`)
+	ipv4EndpointRe     = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:/[^\s"'<>]*)?\b`)
+	ipv6EndpointRe     = regexp.MustCompile(`\[[0-9A-Fa-f:.]+\](?::\d{1,5})?(?:/[^\s"'<>]*)?`)
+	bareFQDNPathRe     = regexp.MustCompile(`(?i)\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d{1,5})?/[^/\s"'<>][^\s"'<>]*`)
+	fqdnEndpointRe     = regexp.MustCompile(`(?i)\b((?:lookup|host|server|upstream|endpoint|address|addr|for|not|on|to|from|tcp|udp|connect(?:ing)?(?:\s+to)?|dial(?:ing)?(?:\s+tcp|\s+udp)?)\s+)(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d{1,5})?(?:/[^\s"'<>]*)?\b`)
 )
 
 // Scrubber redacts secrets from strings and Sentry events using
@@ -90,6 +95,7 @@ func (s *Scrubber) ScrubString(input string) string {
 	// user:pass@host are removed as one unit instead of leaving the username
 	// behind after email/FQDN matching.
 	result = urlLikeRe.ReplaceAllString(result, "${1}://"+redacted)
+	result = protocolRelativeURLRe.ReplaceAllString(result, "${1}//"+redacted)
 	result = scrubDeploymentLocators(result)
 
 	// Shared matcher surface: typed secret classes from internal/redact.
@@ -123,6 +129,7 @@ func scrubDeploymentLocators(input string) string {
 	result = userinfoEndpointRe.ReplaceAllString(result, redacted)
 	result = ipv6EndpointRe.ReplaceAllString(result, redacted)
 	result = ipv4EndpointRe.ReplaceAllString(result, redacted)
+	result = bareFQDNPathRe.ReplaceAllString(result, redacted)
 	result = fqdnEndpointRe.ReplaceAllString(result, "${1}"+redacted)
 	return result
 }
@@ -160,6 +167,7 @@ func (s *Scrubber) safeScrubCodeString(input string) string {
 		return ""
 	}
 	result := urlLikeRe.ReplaceAllString(input, "${1}://"+redacted)
+	result = protocolRelativeURLRe.ReplaceAllString(result, "${1}//"+redacted)
 	result = scrubDeploymentLocators(result)
 	result = replaceMatchedSpans(result, s.sensitiveCodeMatches(result), func(redact.Match) string { return redacted })
 	for _, re := range s.patterns {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -502,5 +503,57 @@ func TestEventTypes_DroppedBeforeTransport(t *testing.T) {
 
 	if events := transport.Events(); len(events) != 0 {
 		t.Fatalf("expected transaction/log/check-in events to be dropped, got %d", len(events))
+	}
+}
+
+func TestTransportGuard_SanitizesNormalEvents(t *testing.T) {
+	transport := &mockTransport{}
+	guard := dropUnsafeEventTransport{
+		delegate: transport,
+		scrubber: NewScrubber(testDLPPatterns(), []string{
+			testEnvSecret,
+		}),
+	}
+
+	guard.SendEvent(&sentry.Event{
+		Message:    "failed for " + fakeURLWithUserinfo("user", testEnvSecret, "internal-host.example", "/private"),
+		ServerName: "agent-prod-01.internal",
+		User:       sentry.User{ID: "agent-user"},
+		Request:    &sentry.Request{URL: "https://internal-host.example/private"},
+		Breadcrumbs: []*sentry.Breadcrumb{
+			{Message: "visited /private"},
+		},
+		Exception: []sentry.Exception{{
+			Type:  "PathError",
+			Value: "open /home/agent/private.yaml: " + testAWSKeyID,
+		}},
+	})
+
+	events := transport.Events()
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1 sanitized event", len(events))
+	}
+	event := events[0]
+	if event.ServerName != "" || event.User.ID != "" || event.Request != nil || len(event.Breadcrumbs) != 0 {
+		t.Fatalf("unsafe fields survived transport guard: %+v", event)
+	}
+	raw := fmt.Sprintf("%+v", event)
+	for _, forbidden := range []string{"user", testEnvSecret, "internal-host.example", "/private", "/home/agent", testAWSKeyID} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("transport guard leaked %q in %+v", forbidden, event)
+		}
+	}
+}
+
+func TestTransportGuard_DropsSanitizerPanic(t *testing.T) {
+	transport := &mockTransport{}
+	guard := dropUnsafeEventTransport{
+		delegate: transport,
+		scrubber: &Scrubber{patterns: []*regexp.Regexp{nil}},
+	}
+
+	guard.SendEvent(&sentry.Event{Message: "panic path"})
+	if events := transport.Events(); len(events) != 0 {
+		t.Fatalf("expected sanitizer panic to drop event, got %d", len(events))
 	}
 }

@@ -104,9 +104,9 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 		},
 	}
 	if transport != nil {
-		opts.Transport = dropUnsafeEventTransport{delegate: transport}
+		opts.Transport = dropUnsafeEventTransport{delegate: transport, scrubber: scrubber}
 	} else {
-		opts.Transport = dropUnsafeEventTransport{delegate: sentry.NewHTTPTransport()}
+		opts.Transport = dropUnsafeEventTransport{delegate: sentry.NewHTTPTransport(), scrubber: scrubber}
 	}
 
 	err := sentry.Init(opts)
@@ -119,7 +119,8 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 	return &Client{scrubber: scrubber, enabled: true}, nil
 }
 
-// CaptureError sends an error event to Sentry (scrubbed by BeforeSend).
+// CaptureError sends an error event to Sentry (scrubbed by BeforeSend and the
+// transport guard).
 // context.Canceled is dropped because it signals normal shutdown propagation
 // (SIGINT, parent exit, session end), not a failure worth paging on.
 // Expected operational errors (e.g. a listener bind hitting EADDRINUSE on a
@@ -149,7 +150,8 @@ func isExpectedOperationalError(err error) bool {
 	return errors.Is(err, syscall.EADDRINUSE)
 }
 
-// CaptureMessage sends a message event to Sentry (scrubbed by BeforeSend).
+// CaptureMessage sends a message event to Sentry (scrubbed by BeforeSend and
+// the transport guard).
 func (c *Client) CaptureMessage(msg string) {
 	if c == nil || !c.enabled {
 		return
@@ -191,6 +193,7 @@ func (c *Client) Close() {
 // sentry-go, so the transport is the last in-process choke point.
 type dropUnsafeEventTransport struct {
 	delegate sentry.Transport
+	scrubber *Scrubber
 }
 
 func (t dropUnsafeEventTransport) Configure(options sentry.ClientOptions) {
@@ -203,7 +206,11 @@ func (t dropUnsafeEventTransport) SendEvent(event *sentry.Event) {
 	if event == nil || isUnsafeEventType(event) || t.delegate == nil {
 		return
 	}
-	t.delegate.SendEvent(event)
+	safe := t.scrubber.ScrubEvent(event, nil)
+	if safe == nil || isUnsafeEventType(safe) {
+		return
+	}
+	t.delegate.SendEvent(safe)
 }
 
 func (t dropUnsafeEventTransport) Flush(timeout time.Duration) bool {

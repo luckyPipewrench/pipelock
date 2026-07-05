@@ -128,6 +128,21 @@ func TestScrubString_URLAuthorityAndPathDropped(t *testing.T) {
 	}
 }
 
+func TestScrubString_ProtocolRelativeURLPathDropped(t *testing.T) {
+	s := NewScrubber(nil, nil)
+	input := `parse "//internal-host.example/private-agent/token?key=secret": missing protocol scheme`
+	result := s.ScrubString(input)
+
+	for _, forbidden := range []string{"internal-host.example", "/private-agent", "token", "key=secret"} {
+		if strings.Contains(result, forbidden) {
+			t.Fatalf("protocol-relative URL component %q leaked in %q", forbidden, result)
+		}
+	}
+	if !strings.Contains(result, "//"+redacted) {
+		t.Fatalf("expected coarse protocol-relative URL redaction, got %q", result)
+	}
+}
+
 func TestScrubString_DeploymentLocatorsDropped(t *testing.T) {
 	s := NewScrubber(nil, nil)
 	input := strings.Join([]string{
@@ -135,10 +150,13 @@ func TestScrubString_DeploymentLocatorsDropped(t *testing.T) {
 		`open C:\Users\agent\AppData\Roaming\pipelock\private.yaml: access denied`,
 		`open \\fileserver\share\private.yaml: access denied`,
 		"dial tcp 10.0.0.12:8443: connect: connection refused",
+		"dial tcp 10.0.0.12:8443/private-token: connect: connection refused",
 		"lookup internal-host.example on 10.0.0.2:53: no such host",
 		"x509: certificate is valid for private.service.internal, not public.vendor.example",
+		"upstream private.service.internal/v1/secret refused",
 		"dial tcp [fd00::10]:443: connect: network unreachable",
-		"proxy auth failed for deployer:novel-secret@private.service.internal:443",
+		"dial tcp [fd00::10]:443/private-token: network unreachable",
+		"proxy auth failed for deployer:novel-secret@private.service.internal:443/private-token",
 	}, "\n")
 
 	result := s.ScrubString(input)
@@ -152,6 +170,8 @@ func TestScrubString_DeploymentLocatorsDropped(t *testing.T) {
 		"private.service.internal",
 		"public.vendor.example",
 		"fd00::10",
+		"private-token",
+		"/v1/secret",
 		"deployer",
 		"novel-secret",
 	} {

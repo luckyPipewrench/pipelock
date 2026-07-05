@@ -547,7 +547,18 @@ func TestManagerCascadeLimitDenialJournal(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
-			m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 8, MaxPendingPerSession: 8, MaxCascadeDepth: 2, JournalPath: path})
+			var warnings strings.Builder
+			m := NewManager(Config{
+				Enabled:              true,
+				Timeout:              time.Hour,
+				MaxPending:           8,
+				MaxPendingPerSession: 8,
+				MaxCascadeDepth:      2,
+				JournalPath:          path,
+				Warningf: func(format string, args ...any) {
+					_, _ = fmt.Fprintf(&warnings, format, args...)
+				},
+			})
 			for _, id := range []string{"a", "b"} {
 				if err := m.Hold(HeldAction{
 					DeferID:   id,
@@ -618,6 +629,16 @@ func TestManagerCascadeLimitDenialJournal(t *testing.T) {
 			}
 			if !tc.wantJournalEntry && gotDenials != 0 {
 				t.Fatalf("cascade-limit denial journal entries after write failure = %d, want 0", gotDenials)
+			}
+			if tc.breakJournalPath {
+				gotWarning := warnings.String()
+				for _, want := range []string{"event=deferred_journal_write_failed", "audit_gap=true", "source=cascade_limit", "defer_id=c", "parent_defer_id=b", "cascade_depth=3"} {
+					if !strings.Contains(gotWarning, want) {
+						t.Fatalf("warning %q missing %q", gotWarning, want)
+					}
+				}
+			} else if warnings.String() != "" {
+				t.Fatalf("unexpected warning on successful journal write: %q", warnings.String())
 			}
 		})
 	}

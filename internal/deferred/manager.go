@@ -51,6 +51,7 @@ type Config struct {
 	MaxPendingBytes      int
 	MaxCascadeDepth      int
 	JournalPath          string
+	Warningf             func(format string, args ...any)
 }
 
 // ResolutionPolicy is persisted into the defer receipt.
@@ -158,6 +159,7 @@ type Resolution struct {
 type Manager struct {
 	mu             sync.Mutex
 	cfg            Config
+	warningf       func(format string, args ...any)
 	holds          map[string]*HeldAction
 	sessionHolds   map[string][]string
 	totalBytes     int
@@ -211,9 +213,16 @@ func NewManager(cfg Config) *Manager {
 	}
 	return &Manager{
 		cfg:            cfg,
+		warningf:       cfg.Warningf,
 		holds:          make(map[string]*HeldAction),
 		sessionHolds:   make(map[string][]string),
 		pendingJournal: make(map[string]journalEntry),
+	}
+}
+
+func (m *Manager) warnf(format string, args ...any) {
+	if m != nil && m.warningf != nil {
+		m.warningf(format, args...)
 	}
 }
 
@@ -295,7 +304,10 @@ func (m *Manager) Hold(action HeldAction) error {
 			Limit:         m.cfg.MaxCascadeDepth,
 			ParentDeferID: action.ParentDeferID,
 		}
-		_ = m.appendJournal(journalEntryFromHeld(action, StateResolvedBlock, SourceCascadeLimit))
+		if err := m.appendJournal(journalEntryFromHeld(action, StateResolvedBlock, SourceCascadeLimit)); err != nil {
+			m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s parent_defer_id=%s cascade_depth=%d: %v\n",
+				SourceCascadeLimit, action.DeferID, action.ParentDeferID, action.CascadeDepth, err)
+		}
 		return limitErr
 	}
 	journalAction := action

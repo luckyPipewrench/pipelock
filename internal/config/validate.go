@@ -1012,11 +1012,11 @@ func normalizeQueryEntropyParamHost(raw string) (string, error) {
 	if strings.TrimSuffix(strings.ToLower(ascii), ".") != host {
 		return "", errors.New("host must use canonical ASCII IDNA spelling")
 	}
-	suffix, icann := publicsuffix.PublicSuffix(host)
-	if suffix == host || (!icann && !strings.Contains(host, ".")) {
+	suffix, _ := publicsuffix.PublicSuffix(host)
+	if suffix == host {
 		return "", errors.New("host must be a concrete DNS hostname, not a bare public suffix")
 	}
-	if _, err := publicsuffix.EffectiveTLDPlusOne(host); err != nil && suffix == host {
+	if _, err := publicsuffix.EffectiveTLDPlusOne(host); err != nil {
 		return "", fmt.Errorf("host must be registrable: %w", err)
 	}
 	return host, nil

@@ -2703,6 +2703,11 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	// only the entropy heuristic; DB-URI SSRF guards still run because they
 	// protect a separate network-control invariant.
 	// Keys are checked too - secrets can be stuffed into parameter names.
+	if !excludedQuery && strings.Contains(parsed.RawQuery, ";") {
+		if result, blocked := s.scanAmbiguousRawQueryEntropy(parsed.RawQuery); blocked {
+			return result
+		}
+	}
 	for key, values := range parsed.Query() {
 		if !excludedQuery && len(key) >= s.entropyMinLen {
 			entropy := ShannonEntropy(key)
@@ -2740,6 +2745,60 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	}
 
 	return Result{Allowed: true}
+}
+
+func (s *Scanner) scanAmbiguousRawQueryEntropy(rawQuery string) (Result, bool) {
+	for _, pair := range strings.FieldsFunc(rawQuery, func(r rune) bool {
+		return r == '&' || r == ';'
+	}) {
+		rawKey, rawValue, _ := strings.Cut(pair, "=")
+		key, ok := strictQueryEntropyComponent(rawKey)
+		if !ok {
+			key = rawKey
+		}
+		value, ok := strictQueryEntropyComponent(rawValue)
+		if !ok {
+			value = rawValue
+		}
+		if len(key) >= s.entropyMinLen {
+			entropy := ShannonEntropy(key)
+			if entropy > s.entropyThreshold {
+				return Result{
+					Allowed: false,
+					Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+					Scanner: ScannerEntropy,
+					Score:   math.Min(entropy/8.0, 1.0),
+				}, true
+			}
+		}
+		if result, blocked := unsafeDatabaseURIQueryValueResult(value); blocked {
+			return result, true
+		}
+		if len(value) < s.entropyMinLen {
+			continue
+		}
+		entropy := ShannonEntropy(value)
+		if shouldSkipQueryValueEntropy(value, entropy, s.entropyThreshold) {
+			continue
+		}
+		if entropy > s.entropyThreshold {
+			return Result{
+				Allowed: false,
+				Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+				Scanner: ScannerEntropy,
+				Score:   math.Min(entropy/8.0, 1.0),
+			}, true
+		}
+	}
+	return Result{}, false
+}
+
+func strictQueryEntropyComponent(raw string) (string, bool) {
+	decoded, err := url.QueryUnescape(raw)
+	if err != nil {
+		return "", false
+	}
+	return decoded, true
 }
 
 type queryEntropyParamExclusionKey struct {
@@ -2835,6 +2894,9 @@ func isDefaultEndpointPort(parsed *url.URL, scheme string) bool {
 }
 
 func rawQueryHasSingleExactDecodedKey(rawQuery, param string) bool {
+	if strings.Contains(rawQuery, ";") {
+		return false
+	}
 	count := 0
 	for rawQuery != "" {
 		pair := rawQuery

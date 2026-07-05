@@ -5486,6 +5486,14 @@ func TestScan_QueryEntropyParamExclusion_MismatchesBlock(t *testing.T) {
 			name: "adjacent high-entropy param",
 			url:  "https://api.vendor.example/v1/search/recent?query=normal&trace=" + highEntropy,
 		},
+		{
+			name: "semicolon-smuggled adjacent high-entropy param",
+			url:  "https://api.vendor.example/v1/search/recent?query=normal;token=" + highEntropy,
+		},
+		{
+			name: "semicolon after exempt high-entropy param",
+			url:  "https://api.vendor.example/v1/search/recent?query=" + highEntropy + ";token=normal",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

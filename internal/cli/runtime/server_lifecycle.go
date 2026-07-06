@@ -138,7 +138,10 @@ func (s *Server) startupListeners(cfg *config.Config) []string {
 }
 
 func startupEnabledCheckCount(cfg *config.Config) int {
-	count := 5 // scheme, CRLF, path traversal, core SSRF, core DLP
+	count := 7 // parser, scheme, CRLF, path traversal, core SSRF, core DLP, context
+	if cfg.FetchProxy.Monitoring.MaxURLLength > 0 {
+		count++
+	}
 	if cfg.Mode == config.ModeStrict && len(cfg.APIAllowlist) > 0 {
 		count++
 	}

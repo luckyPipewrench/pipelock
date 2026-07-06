@@ -158,6 +158,21 @@ func TestStartupEntropyStateOff(t *testing.T) {
 	}
 }
 
+func TestStartupEnabledCheckCountIncludesURLScannerFloor(t *testing.T) {
+	seedDisabled := false
+	cfg := &config.Config{
+		Mode: config.ModeBalanced,
+		FetchProxy: config.FetchProxy{
+			Monitoring: config.Monitoring{MaxURLLength: 2048},
+		},
+		SeedPhraseDetection: config.SeedPhraseDetection{Enabled: &seedDisabled},
+	}
+
+	if got := startupEnabledCheckCount(cfg); got != 8 {
+		t.Fatalf("startupEnabledCheckCount = %d, want parser/length/scheme/CRLF/path/core-SSRF/core-DLP/context floor", got)
+	}
+}
+
 func TestNewServer_ValidatesListenerFlagPairs(t *testing.T) {
 	for _, tt := range []struct {
 		name string

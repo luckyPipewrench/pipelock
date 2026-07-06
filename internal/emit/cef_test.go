@@ -139,6 +139,38 @@ func TestFormatCEFEventRawFieldsCannotOverwriteCanonicalKeys(t *testing.T) {
 	}
 }
 
+func TestFormatCEFEventRawFieldCollisionsAreDeterministic(t *testing.T) {
+	event := Event{
+		Severity:  SeverityInfo,
+		Type:      "custom_event",
+		Timestamp: time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
+		Fields: map[string]any{
+			"resource":  "sorted-first-resource",
+			"target":    "sorted-second-target",
+			"team-name": "sorted-first-custom",
+			"team_name": "sorted-second-custom",
+		},
+	}
+
+	got := FormatCEFEvent(event, "dev")
+	for _, want := range []string{
+		`destinationServiceName=sorted-first-resource`,
+		`pipelockTeamName=sorted-first-custom`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CEF line missing deterministic collision winner %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{
+		`destinationServiceName=sorted-second-target`,
+		`pipelockTeamName=sorted-second-custom`,
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("CEF line used nondeterministic collision value %q:\n%s", forbidden, got)
+		}
+	}
+}
+
 func TestFormatCEFEventEscapesControlCharacters(t *testing.T) {
 	event := Event{
 		Severity:   SeverityWarn,

@@ -83,7 +83,14 @@ func cefExtension(event Event) string {
 		values["suser"] = agent
 	}
 
-	for key, value := range event.Fields {
+	fieldKeys := make([]string, 0, len(event.Fields))
+	for key := range event.Fields {
+		fieldKeys = append(fieldKeys, key)
+	}
+	sort.Strings(fieldKeys)
+
+	for _, key := range fieldKeys {
+		value := event.Fields[key]
 		cefKey, ok := cefFieldKey(key)
 		if !ok {
 			continue

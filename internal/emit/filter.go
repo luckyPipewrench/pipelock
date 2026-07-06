@@ -228,6 +228,9 @@ func eventTypeAction(eventType string) string {
 	}
 }
 
+// eventDecisionType derives the decision type for filtering. For events that
+// eventTypeAction recognizes, the event type itself wins so spoofed
+// decision_type/type/event_type field values cannot evade filters.
 func eventDecisionType(event Event) string {
 	if eventTypeAction(event.Type) != "" {
 		return event.Type

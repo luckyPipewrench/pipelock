@@ -83,13 +83,7 @@ func cefExtension(event Event) string {
 		values["suser"] = agent
 	}
 
-	fieldKeys := make([]string, 0, len(event.Fields))
-	for key := range event.Fields {
-		fieldKeys = append(fieldKeys, key)
-	}
-	sort.Strings(fieldKeys)
-
-	for _, key := range fieldKeys {
+	for _, key := range sortedKeys(event.Fields) {
 		value := event.Fields[key]
 		cefKey, ok := cefFieldKey(key)
 		if !ok {
@@ -105,17 +99,21 @@ func cefExtension(event Event) string {
 		values[cefKey] = rendered
 	}
 
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
+	keys := sortedKeys(values)
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
 		parts = append(parts, key+"="+cefEscapeExtension(values[key]))
 	}
 	return strings.Join(parts, " ")
+}
+
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func cefFieldKey(key string) (string, bool) {

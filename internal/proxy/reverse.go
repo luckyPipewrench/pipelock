@@ -259,7 +259,7 @@ func (rp *ReverseProxyHandler) emitRequiredReceipt(opts receipt.EmitOpts) error 
 		rp.recordRequiredReceiptBlock(err, opts.Transport)
 		return err
 	}
-	if err := rp.emitReceiptWithEmitter(opts, e); err != nil {
+	if err := rp.emitRequiredReceiptWithEmitter(opts, e); err != nil {
 		rp.recordRequiredReceiptBlock(err, opts.Transport)
 		return err
 	}
@@ -271,6 +271,32 @@ func (rp *ReverseProxyHandler) receiptEmitter() *receipt.Emitter {
 		return nil
 	}
 	return rp.receiptEmitterPtr.Load()
+}
+
+func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
+	if e == nil {
+		return nil
+	}
+	if rp.cfgPtr != nil {
+		if cfg := rp.cfgPtr.Load(); cfg != nil {
+			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		}
+	}
+	opts.DecisionPhase = receipt.DecisionPhaseIntent
+	if err := e.EmitDurable(opts); err != nil {
+		rp.logReceiptEmissionFailure(opts, err)
+		// v1 stays authoritative: skip v2 when v1 failed to record.
+		return err
+	}
+	emitV2(rp.v2EmitterPtr, opts, func(err error) {
+		if rp.logger == nil {
+			return
+		}
+		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
+			fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s transport=%s: %w",
+				opts.ActionID, opts.Verdict, opts.Transport, err))
+	})
+	return nil
 }
 
 func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
@@ -840,8 +866,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	reverseActionID := receipt.NewActionID()
 	reverseAllowReceipt := withReverseContractReceipt(receipt.EmitOpts{
-		ActionID:  receipt.NewActionID(),
+		ActionID:  reverseActionID,
 		Verdict:   config.ActionAllow,
 		Transport: TransportReverse,
 		Method:    r.Method,
@@ -868,6 +895,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReverseActionID, reverseActionID))
 
 	// Stash envelope build metadata on the request context so the
 	// signing RoundTripper (installed on rp.proxy.Transport) can
@@ -1171,6 +1199,10 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// but the ID is also referenced from the SSE onComplete closure
 	// which runs asynchronously.
 	actionID := receipt.NewActionID()
+	requestActionID, _ := resp.Request.Context().Value(ctxKeyReverseActionID).(string)
+	if requestActionID == "" {
+		requestActionID = actionID
+	}
 	targetURL := resp.Request.URL.String()
 
 	// Record the final client-visible status at each exit point, not here.
@@ -1181,6 +1213,29 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	revHost := resp.Request.URL.Hostname()
 	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
 	revRespSizeExempt := isResponseSizeExempt(revHost, cfg.ResponseScanning.SizeExemptDomains)
+	emitUnscannablePassthrough := func(actx audit.LogContext, reason string) error {
+		passthroughReceipt := receipt.EmitOpts{
+			ActionID:  requestActionID,
+			Verdict:   config.ActionAllow,
+			Layer:     "unscannable_passthrough",
+			Pattern:   reason,
+			Transport: TransportReverse,
+			Method:    resp.Request.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		}
+		if cfg.FlightRecorder.RequireReceipts {
+			if err := rp.emitRequiredReceipt(withReceiptPolicyHash(passthroughReceipt, cfg.CanonicalPolicyHash())); err != nil {
+				blockedErr := newReceiptEmissionBlockedRequest(err)
+				rp.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+				return err
+			}
+			return nil
+		}
+		emitReverseReceipt(passthroughReceipt)
+		return nil
+	}
 
 	// Media policy runs regardless of response-scanning state so an
 	// operator who disables response scanning for performance cannot
@@ -1290,6 +1345,25 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				resp.Header.Del("Digest")
 				resp.Header.Del("Content-MD5")
 			}
+			if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt && len(body) > reverseProxyMaxBodyBytes {
+				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
+					Host:              revHost,
+					Path:              resp.Request.URL.EscapedPath(),
+					ContentType:       resp.Header.Get("Content-Type"),
+					Header:            resp.Header,
+					ContentLength:     resp.ContentLength,
+					SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
+					Now:               time.Now(),
+				}, cfg.ResponseScanning.UnscannablePassthrough); ok {
+					reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
+					rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
+					if err := emitUnscannablePassthrough(actx, reason); err != nil {
+						rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+						replaceWithBlockResponse(resp, []string{receiptEmissionBlockReason})
+						return nil
+					}
+				}
+			}
 			// Media responses do not go through text injection
 			// scanning - rewrap the body and return.
 			resp.Body = io.NopCloser(bytes.NewReader(body))
@@ -1302,6 +1376,59 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 
 	// Skip remaining binary content types (non-media application/*, etc.).
 	if isBinaryMIME(mediaCT) {
+		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
+			limited := io.LimitReader(resp.Body, int64(reverseProxyMaxBodyBytes)+1)
+			body, err := io.ReadAll(limited)
+			if err != nil {
+				_ = resp.Body.Close()
+				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "read_error")
+				actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+				rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"response_read_error"}, nil)
+				emitReverseReceipt(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     LayerReverseResponseBlocked,
+					Pattern:   "response read error",
+					Transport: TransportReverse,
+					Method:    resp.Request.Method,
+					Target:    targetURL,
+					RequestID: requestID,
+					Agent:     agent,
+				})
+				replaceWithBlockResponse(resp, []string{"response read error"})
+				return nil
+			}
+			if len(body) > reverseProxyMaxBodyBytes {
+				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
+					Host:              revHost,
+					Path:              resp.Request.URL.EscapedPath(),
+					ContentType:       resp.Header.Get("Content-Type"),
+					Header:            resp.Header,
+					ContentLength:     resp.ContentLength,
+					SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
+					Now:               time.Now(),
+				}, cfg.ResponseScanning.UnscannablePassthrough); ok {
+					actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+					reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
+					rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
+					if err := emitUnscannablePassthrough(actx, reason); err != nil {
+						_ = resp.Body.Close()
+						rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+						replaceWithBlockResponse(resp, []string{receiptEmissionBlockReason})
+						return nil
+					}
+				}
+				resp.Body = readCloserWithClose{
+					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
+					Closer: resp.Body,
+				}
+			} else {
+				_ = resp.Body.Close()
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+				resp.ContentLength = int64(len(body))
+			}
+		}
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
 		return nil
@@ -1462,28 +1589,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 				reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 				rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
-				passthroughReceipt := receipt.EmitOpts{
-					ActionID:  actionID,
-					Verdict:   config.ActionAllow,
-					Layer:     "unscannable_passthrough",
-					Pattern:   reason,
-					Transport: "reverse",
-					Method:    resp.Request.Method,
-					Target:    targetURL,
-					RequestID: requestID,
-					Agent:     agent,
-				}
-				if cfg.FlightRecorder.RequireReceipts {
-					if err := rp.emitRequiredReceipt(withReceiptPolicyHash(passthroughReceipt, cfg.CanonicalPolicyHash())); err != nil {
-						_ = resp.Body.Close()
-						blockedErr := newReceiptEmissionBlockedRequest(err)
-						rp.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-						rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
-						replaceWithBlockResponse(resp, []string{receiptEmissionBlockReason})
-						return nil
-					}
-				} else {
-					emitReverseReceipt(passthroughReceipt)
+				if err := emitUnscannablePassthrough(actx, reason); err != nil {
+					_ = resp.Body.Close()
+					rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+					replaceWithBlockResponse(resp, []string{receiptEmissionBlockReason})
+					return nil
 				}
 				resp.Body = readCloserWithClose{
 					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),

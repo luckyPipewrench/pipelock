@@ -4,9 +4,11 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,10 +26,10 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
-	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -242,6 +244,33 @@ func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 		t.Fatalf("ws dial: %v", err)
 	}
 	return conn
+}
+
+func assertWSHandshakeStatus(t *testing.T, proxyAddr, backendAddr string, want int) {
+	t.Helper()
+
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp4", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("proxy connection close: %v", closeErr)
+		}
+	}()
+	_, _ = fmt.Fprintf(conn, "GET /ws?url=ws://%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", backendAddr, proxyAddr)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read websocket handshake response: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != want {
+		t.Fatalf("websocket handshake status = %d, want %d", resp.StatusCode, want)
+	}
 }
 
 func TestWebSocket_ScopedAirlockDoesNotBlockUnrelatedHost(t *testing.T) {
@@ -599,6 +628,9 @@ func TestWSProxyRequireReceipts_RedactedSuccessEmitsCloseSummary(t *testing.T) {
 	for _, rcpt := range receipts {
 		if rcpt.ActionRecord.Verdict == config.ActionAllow && rcpt.ActionRecord.Layer == "" {
 			allowCount++
+			if rcpt.ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+				t.Fatalf("admission decision_phase = %q, want %q", rcpt.ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+			}
 		}
 		if rcpt.ActionRecord.Layer == "session_close" && rcpt.ActionRecord.Redaction != nil {
 			redactionCloseCount++
@@ -640,20 +672,7 @@ func TestWSProxyRequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *test
 	})
 	defer proxyCleanup()
 
-	conn := dialWS(t, proxyAddr, backendLn.Addr().String())
-	defer func() {
-		if closeErr := conn.Close(); closeErr != nil {
-			t.Errorf("websocket connection close: %v", closeErr)
-		}
-	}()
-	_, _, err = wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected websocket close error for required receipt failure")
-	}
-	if errText := err.Error(); errText != "EOF" &&
-		(!strings.Contains(errText, "1008") || !strings.Contains(errText, string(blockreason.ReceiptEmissionFailed))) {
-		t.Fatalf("close error = %q, want EOF or policy violation receipt emission failure", errText)
-	}
+	assertWSHandshakeStatus(t, proxyAddr, backendLn.Addr().String(), http.StatusForbidden)
 	if got := upstreamHits.Load(); got != 0 {
 		t.Fatalf("upstream hits = %d, want 0", got)
 	}
@@ -694,25 +713,54 @@ func TestWSProxyRequireReceiptsEmissionFailureBlocksAndRecordsMetrics(t *testing
 	}
 	p.receiptEmitterPtr.Store(rph.emitter)
 
-	conn := dialWS(t, proxyAddr, backendLn.Addr().String())
-	defer func() {
-		if closeErr := conn.Close(); closeErr != nil {
-			t.Errorf("websocket connection close: %v", closeErr)
-		}
-	}()
-	_, _, err = wsutil.ReadServerData(conn)
-	if err == nil {
-		t.Fatal("expected websocket close error for required receipt failure")
-	}
-	if errText := err.Error(); errText != "EOF" &&
-		(!strings.Contains(errText, "1008") || !strings.Contains(errText, string(blockreason.ReceiptEmissionFailed))) {
-		t.Fatalf("close error = %q, want EOF or policy violation receipt emission failure", errText)
-	}
+	assertWSHandshakeStatus(t, proxyAddr, backendLn.Addr().String(), http.StatusForbidden)
 	if got := upstreamHits.Load(); got != 0 {
 		t.Fatalf("upstream hits = %d, want 0", got)
 	}
 	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="websocket"} 1`)
+}
+
+func TestWSProxyRequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T) {
+	var upstreamHits atomic.Int32
+	lc := net.ListenConfig{}
+	backendLn, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen backend: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := backendLn.Close(); closeErr != nil {
+			t.Errorf("backend listener close: %v", closeErr)
+		}
+	})
+	go func() {
+		for {
+			conn, acceptErr := backendLn.Accept()
+			if acceptErr != nil {
+				return
+			}
+			upstreamHits.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer proxyCleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	syncErr := errors.New("injected durable sync failure")
+	rph.rec.SetSyncForTest(func(*os.File) error {
+		return syncErr
+	})
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	assertWSHandshakeStatus(t, proxyAddr, backendLn.Addr().String(), http.StatusForbidden)
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (durable intent sync failure must block before dial)", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="sync"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="websocket"} 1`)
 }
 
 func TestWSProxyRedaction_BinaryNonJSONBlocked(t *testing.T) {

@@ -595,17 +595,26 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		admissionReceipt = withContractReceipt(wsGate, admissionReceipt)
 	}
 
-	// Upgrade the client connection.
-	upgrader := ws.HTTPUpgrader{
-		Timeout: 10 * time.Second,
+	var clientConn net.Conn
+	upgradeClient := func() bool {
+		upgrader := ws.HTTPUpgrader{
+			Timeout: 10 * time.Second,
+		}
+		var upgradeErr error
+		clientConn, _, _, upgradeErr = upgrader.Upgrade(r, w)
+		if upgradeErr != nil {
+			log.LogError(actx, fmt.Errorf("client upgrade: %w", upgradeErr))
+			// If Upgrade fails, it already wrote the HTTP error response.
+			return false
+		}
+		return true
 	}
-	clientConn, _, _, upgradeErr := upgrader.Upgrade(r, w)
-	if upgradeErr != nil {
-		log.LogError(actx, fmt.Errorf("client upgrade: %w", upgradeErr))
-		// If Upgrade fails, it already wrote the HTTP error response.
-		return
+	if !cfg.FlightRecorder.RequireReceipts {
+		if !upgradeClient() {
+			return
+		}
+		defer safeClose(clientConn, "ws.clientConn", log)
 	}
-	defer safeClose(clientConn, "ws.clientConn", log)
 
 	// Obtain a live session recorder for the relay. This provides live
 	// escalation level lookups instead of a stale snapshot, so that
@@ -637,16 +646,22 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.AirlockActive, "").CloseFramePayload())
+			if clientConn != nil {
+				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
+					blockInfoFor(blockreason.AirlockActive, "").CloseFramePayload())
+			} else {
+				writeBlockedError(w,
+					blockInfoFor(blockreason.AirlockActive, ""),
+					"WebSocket blocked: airlock: WebSocket blocked during quarantine", http.StatusForbidden)
+			}
 			return
 		}
 	}
 
 	// Inject mediation envelope after all admission checks but before the
-	// upstream handshake so the forwarded headers on the accepted connection
-	// carry the final verdict. WebSocket handshakes are body-less GETs, so
-	// content-digest is always dropped from the declared component list;
+	// upstream handshake so the forwarded headers carry the final verdict.
+	// WebSocket handshakes are body-less GETs, so content-digest is always
+	// dropped from the declared component list;
 	// signing covers @method, @target-uri, and pipelock-mediation.
 	//
 	// gobwas/ws does not expose the *http.Request it synthesizes before
@@ -686,8 +701,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).CloseFramePayload())
+			if clientConn != nil {
+				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).CloseFramePayload())
+			} else {
+				writeBlockedError(w,
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer),
+					"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
+			}
 			return
 		}
 		synthReq := &http.Request{
@@ -719,8 +740,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).CloseFramePayload())
+			if clientConn != nil {
+				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).CloseFramePayload())
+			} else {
+				writeBlockedError(w,
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer),
+					"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
+			}
 			return
 		}
 	}
@@ -730,10 +757,25 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
-			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).CloseFramePayload())
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
+	}
+
+	if cfg.FlightRecorder.RequireReceipts {
+		// Upgrade the client connection only after the required intent receipt is
+		// durable. A 101 response is client egress; under require_receipts it must
+		// not be written before fsync succeeds.
+		if !upgradeClient() {
+			return
+		}
+		defer safeClose(clientConn, "ws.clientConn", log)
+	}
+	if clientConn == nil {
+		log.LogError(actx, fmt.Errorf("websocket client connection unavailable after admission"))
+		return
 	}
 
 	// Dial upstream via SSRF-safe dialer.

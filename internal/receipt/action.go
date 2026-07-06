@@ -18,6 +18,8 @@ import (
 )
 
 const (
+	DecisionPhaseIntent     = "intent"
+	DecisionPhaseOutcome    = "outcome"
 	DecisionPhaseDefer      = "defer"
 	DecisionPhaseResolution = "resolution"
 )

@@ -10,12 +10,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -577,6 +580,38 @@ func TestForwardProxy_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
 }
 
+func TestForwardProxy_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	syncErr := errors.New("injected durable sync failure")
+	rph.rec.SetSyncForTest(func(*os.File) error {
+		return syncErr
+	})
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (durable intent sync failure must block before egress)", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="sync"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="forward"} 1`)
+}
+
 func TestForwardProxy_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -667,6 +702,67 @@ func TestConnect_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	}
 	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="connect"} 1`)
+}
+
+func TestConnect_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T) {
+	var hits atomic.Int32
+	lc := net.ListenConfig{}
+	targetLn, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("target listen: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := targetLn.Close(); closeErr != nil {
+			t.Errorf("target listener close: %v", closeErr)
+		}
+	})
+	go func() {
+		for {
+			conn, acceptErr := targetLn.Accept()
+			if acceptErr != nil {
+				return
+			}
+			hits.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	syncErr := errors.New("injected durable sync failure")
+	rph.rec.SetSyncForTest(func(*os.File) error {
+		return syncErr
+	})
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("proxy connection close: %v", closeErr)
+		}
+	}()
+	target := targetLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("CONNECT response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT status = %d, want 403", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("target hits = %d, want 0 (durable intent sync failure must block before dial)", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="sync"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="connect"} 1`)
 }
 
 func TestConnect_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
@@ -789,6 +885,9 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	}
 	if receipts[0].ActionRecord.Verdict != config.ActionAllow {
 		t.Fatalf("receipt verdict = %q, want allow", receipts[0].ActionRecord.Verdict)
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("receipt decision_phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
 	}
 }
 

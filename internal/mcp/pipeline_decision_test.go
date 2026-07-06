@@ -333,6 +333,88 @@ func TestEmitMCPDecision_ReceiptAndEnvelope(t *testing.T) {
 	}
 }
 
+func TestEmitMCPDecision_RequiredAllowEmitsDurableIntentBeforeEnvelope(t *testing.T) {
+	recEmitter, _, dir, _ := newReceiptTestHarness(t)
+	envEmitter := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "policy-h"})
+
+	inbound := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch","arguments":{}}}`)
+	out, err := EmitMCPDecision(recEmitter, nil, envEmitter, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:  "required-allow-1",
+			Verdict:   config.ActionAllow,
+			Transport: transportMCPStdio,
+			Target:    "fetch",
+			MCPMethod: methodToolsCall,
+			ToolName:  "fetch",
+		},
+		Envelope: &envelope.BuildOpts{
+			ActionID: "required-allow-1",
+			Action:   "tool_call",
+			Verdict:  config.ActionAllow,
+		},
+		InboundMsg:     inbound,
+		RequireReceipt: true,
+	})
+	if err != nil {
+		t.Fatalf("EmitMCPDecision: %v", err)
+	}
+	if bytes.Equal(out, inbound) {
+		t.Fatal("envelope injection did not rewrite the message")
+	}
+
+	receipts := decisionReceiptLogFor(t, dir)
+	if len(receipts) != 1 {
+		t.Fatalf("expected 1 receipt, got %d", len(receipts))
+	}
+	record := receipts[0].ActionRecord
+	if record.ActionID != "required-allow-1" {
+		t.Fatalf("action_id = %q, want required-allow-1", record.ActionID)
+	}
+	if record.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("decision_phase = %q, want %q", record.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+}
+
+func TestEmitMCPDecision_RequiredAllowSyncFailureBlocksBeforeEnvelope(t *testing.T) {
+	recEmitter, rec, _, _ := newReceiptTestHarness(t)
+	envEmitter := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "policy-h"})
+	syncErr := errors.New("injected durable sync failure")
+	rec.SetSyncForTest(func(*os.File) error {
+		return syncErr
+	})
+
+	inbound := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch","arguments":{}}}`)
+	out, err := EmitMCPDecision(recEmitter, nil, envEmitter, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:  "required-allow-sync-fail",
+			Verdict:   config.ActionAllow,
+			Transport: transportMCPStdio,
+			Target:    "fetch",
+			MCPMethod: methodToolsCall,
+			ToolName:  "fetch",
+		},
+		Envelope: &envelope.BuildOpts{
+			ActionID: "required-allow-sync-fail",
+			Action:   "tool_call",
+			Verdict:  config.ActionAllow,
+		},
+		InboundMsg:     inbound,
+		RequireReceipt: true,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("err = %v, want ErrReceiptRequired", err)
+	}
+	if !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("err = %v, want recorder.ErrDurability", err)
+	}
+	if !bytes.Equal(out, inbound) {
+		t.Fatalf("outbound was rewritten despite durable intent failure: %s", out)
+	}
+	if strings.Contains(string(out), "com.pipelock/mediation") {
+		t.Fatalf("outbound leaked mediation envelope after durable intent failure: %s", out)
+	}
+}
+
 func TestEmitMCPDecision_ReceiptErrorDoesNotBlockEnvelope(t *testing.T) {
 	// A nil receipt emitter is the closest to a "fails/skips" signal
 	// we can induce without a bespoke error-injecting fake. The helper

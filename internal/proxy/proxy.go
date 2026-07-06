@@ -92,6 +92,10 @@ const (
 	// reload between ServeHTTP and RoundTrip could flip signing on/off
 	// mid-request - a TOCTOU race flagged by CodeRabbit on PR #403.
 	ctxKeyReverseEnvelopeEmitter
+	// ctxKeyReverseActionID carries the reverse-proxy admission action_id
+	// into ModifyResponse so required response passthrough allow receipts can
+	// reuse the same action identity before client egress.
+	ctxKeyReverseActionID
 
 	// ctxKeyEnvelopeEmitter snapshots the fetch/forward envelope emitter
 	// decision, including an explicit nil when signing was off at
@@ -997,6 +1001,9 @@ func requiredReceiptBlockMetricReason(err error) string {
 	if errors.Is(err, errReceiptEmitterUnavailable) {
 		return receipt.FailReasonUnavailable
 	}
+	if errors.Is(err, recorder.ErrDurability) {
+		return "durability"
+	}
 	return "emit_error"
 }
 
@@ -1010,10 +1017,26 @@ func (p *Proxy) emitRequiredReceipt(opts receipt.EmitOpts) error {
 		p.recordRequiredReceiptBlock(err, opts.Transport)
 		return err
 	}
-	if err := p.emitReceiptWithEmitter(opts, e); err != nil {
+	if err := p.emitRequiredReceiptWithEmitter(opts, e); err != nil {
 		p.recordRequiredReceiptBlock(err, opts.Transport)
 		return err
 	}
+	return nil
+}
+
+func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
+	if e == nil {
+		return nil
+	}
+	opts.DecisionPhase = receipt.DecisionPhaseIntent
+	if err := e.EmitDurable(opts); err != nil {
+		p.logReceiptEmissionFailure(opts, err)
+		// v1 stays authoritative: skip v2 when v1 failed to record, so a
+		// proxy_decision never outlives its action_receipt sibling.
+		return err
+	}
+	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
+	p.emitV2Receipt(opts)
 	return nil
 }
 

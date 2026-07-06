@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -95,16 +96,22 @@ func EmitMCPDecision(
 
 	v1Emitted := false
 	receiptRequired := d.RequireReceipt
+	durableIntent := receiptRequired && receipt.NormalizeVerdict(d.Receipt.Verdict) == config.ActionAllow
 	if receiptRequired && d.Receipt.ActionID == "" {
 		err = fmt.Errorf("empty action id: %w", ErrReceiptRequired)
 	} else if receiptRequired && receiptEmitter == nil {
 		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
 	} else if receiptEmitter != nil && d.Receipt.ActionID != "" {
-		err = receiptEmitter.Emit(d.Receipt)
+		if durableIntent {
+			d.Receipt.DecisionPhase = receipt.DecisionPhaseIntent
+			err = receiptEmitter.EmitDurable(d.Receipt)
+		} else {
+			err = receiptEmitter.Emit(d.Receipt)
+		}
 		v1Emitted = err == nil
-		// Intentional: continue to envelope injection even on receipt
-		// error. The two stages are independent at today's callsites
-		// and coupling them here would break parity.
+		// Optional receipt errors continue to envelope injection; the
+		// RequireReceipt gate below upgrades errors to fail-closed before
+		// envelope mutation.
 	}
 	if receiptRequired && err != nil && !errors.Is(err, ErrReceiptRequired) {
 		err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)

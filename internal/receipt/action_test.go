@@ -82,6 +82,12 @@ func TestNewActionID_UUIDv7(t *testing.T) {
 
 func TestDecisionPhaseConstants(t *testing.T) {
 	t.Parallel()
+	if DecisionPhaseIntent != "intent" {
+		t.Fatalf("DecisionPhaseIntent = %q", DecisionPhaseIntent)
+	}
+	if DecisionPhaseOutcome != "outcome" {
+		t.Fatalf("DecisionPhaseOutcome = %q", DecisionPhaseOutcome)
+	}
 	if DecisionPhaseDefer != "defer" {
 		t.Fatalf("DecisionPhaseDefer = %q", DecisionPhaseDefer)
 	}

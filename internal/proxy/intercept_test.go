@@ -9,11 +9,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,6 +113,104 @@ func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
 	}
 	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="intercept"} 1`)
+}
+
+func TestInterceptEmitReceiptOrBlockRequireReceiptsEmitsIntent(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ApplyDefaults()
+	cfg.Internal = nil
+
+	m := metrics.New()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	ic := &InterceptContext{
+		Proxy:     p,
+		Config:    cfg,
+		Logger:    audit.NewNop(),
+		RequestID: "req-intercept-intent",
+		Agent:     "agent",
+	}
+	rr := httptest.NewRecorder()
+	blocked := interceptEmitReceiptOrBlock(ic, rr, audit.NewRequestLogContext(ic.RequestID), receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: TransportConnect,
+		Method:    http.MethodGet,
+		Target:    "https://example.test/",
+		RequestID: ic.RequestID,
+		Agent:     ic.Agent,
+	})
+	if blocked {
+		t.Fatal("clean required receipt blocked")
+	}
+	waitForReceiptOrTimeout(t, rph.dir)
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, rph.dir)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("decision_phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+}
+
+func TestInterceptEmitReceiptOrBlockRequireReceiptsSyncFailureBlocks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ApplyDefaults()
+	cfg.Internal = nil
+
+	m := metrics.New()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	syncErr := errors.New("injected durable sync failure")
+	rph.rec.SetSyncForTest(func(*os.File) error {
+		return syncErr
+	})
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	ic := &InterceptContext{
+		Proxy:     p,
+		Config:    cfg,
+		Logger:    audit.NewNop(),
+		RequestID: "req-intercept-durable-fail",
+		Agent:     "agent",
+	}
+	rr := httptest.NewRecorder()
+	blocked := interceptEmitReceiptOrBlock(ic, rr, audit.NewRequestLogContext(ic.RequestID), receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: TransportConnect,
+		Method:    http.MethodGet,
+		Target:    "https://example.test/",
+		RequestID: ic.RequestID,
+		Agent:     ic.Agent,
+	})
+	if !blocked {
+		t.Fatal("durability failure did not fail closed")
+	}
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="durability",transport="connect"} 1`)
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
 }
 
 func TestInterceptEmitReceiptOrBlockUnavailableEmitterRecordsMetric(t *testing.T) {

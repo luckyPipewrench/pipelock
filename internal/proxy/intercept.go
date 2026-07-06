@@ -214,7 +214,13 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 }
 
 func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, actx audit.LogContext, opts receipt.EmitOpts) bool {
-	if err := interceptEmitReceipt(ic, opts); err != nil && ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+	var err error
+	if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
+		err = interceptEmitRequiredReceipt(ic, opts)
+	} else {
+		err = interceptEmitReceipt(ic, opts)
+	}
+	if err != nil && ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
 		if m := interceptReceiptMetrics(ic); m != nil {
 			if errors.Is(err, errReceiptEmitterUnavailable) {
 				m.RecordEmitFailure(receipt.FailReasonUnavailable)
@@ -229,6 +235,36 @@ func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, ac
 		return true
 	}
 	return false
+}
+
+func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
+	if ic.Proxy == nil {
+		if ic.Logger != nil {
+			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), receiptEmissionError(opts, errReceiptEmitterUnavailable))
+		}
+		return errReceiptEmitterUnavailable
+	}
+	if ic.Config != nil {
+		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
+	}
+	ic.Proxy.reloadMu.RLock()
+	e := ic.Proxy.receiptEmitterPtr.Load()
+	ic.Proxy.reloadMu.RUnlock()
+	if e == nil {
+		return errReceiptEmitterUnavailable
+	}
+	opts.DecisionPhase = receipt.DecisionPhaseIntent
+	if err := e.EmitDurable(opts); err != nil {
+		ic.Proxy.logReceiptEmissionFailure(opts, err)
+		// v1 stays authoritative: skip v2 when v1 failed to record.
+		return err
+	}
+	emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
+		if ic.Logger != nil {
+			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+		}
+	})
+	return nil
 }
 
 func interceptReceiptMetrics(ic *InterceptContext) *metrics.Metrics {

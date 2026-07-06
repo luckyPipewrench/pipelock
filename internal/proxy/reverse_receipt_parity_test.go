@@ -10,11 +10,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -480,10 +482,145 @@ func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 			rcpt.ActionRecord.Transport == TransportReverse &&
 			rcpt.ActionRecord.Layer == "" {
 			allowCount++
+			if rcpt.ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+				t.Fatalf("reverse allow decision_phase = %q, want %q", rcpt.ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+			}
 		}
 	}
 	if allowCount != 1 {
 		t.Fatalf("reverse allow receipt count = %d, want 1 (receipts: %d)", allowCount, len(receipts))
+	}
+}
+
+func TestReverseProxy_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	m := metrics.New()
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), m, killswitch.New(cfg), nil, nil)
+	dir := t.TempDir()
+	emitter, rec, _ := newCoverageEmitter(t, dir)
+	syncErr := errors.New("injected durable sync failure")
+	rec.SetSyncForTest(func(*os.File) error {
+		return syncErr
+	})
+	var emPtr atomic.Pointer[receipt.Emitter]
+	emPtr.Store(emitter)
+	handler.SetReceiptEmitter(&emPtr)
+
+	proxySrv := newIPv4Server(t, handler)
+	t.Cleanup(proxySrv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clean", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (durable intent sync failure must block before egress)", got)
+	}
+	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="durability",transport="reverse"} 1`)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+}
+
+func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsIntent(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
+	cfg.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+		Host:         "127.0.0.1",
+		Paths:        []string{"/artifact.bin"},
+		ContentTypes: []string{"application/octet-stream"},
+		Reason:       "opaque test artifact",
+		Expires:      "2099-01-01",
+	}}
+	cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
+	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes
+
+	body := bytes.Repeat([]byte{0x42}, reverseProxyMaxBodyBytes+1)
+	proxySrv, dir, closeRec := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", "attachment; filename=artifact.bin")
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/artifact.bin", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("body length = %d, want %d", len(got), len(body))
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	passthrough := findReceiptByLayer(t, receipts, "unscannable_passthrough")
+	admission := findReverseAdmissionAllowReceipt(t, receipts)
+	if passthrough.ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("passthrough decision_phase = %q, want %q",
+			passthrough.ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	if passthrough.ActionRecord.ActionID == "" {
+		t.Fatal("passthrough receipt action_id is empty")
+	}
+	if passthrough.ActionRecord.ActionID != admission.ActionRecord.ActionID {
+		t.Fatalf("passthrough action_id = %q, want admission action_id %q",
+			passthrough.ActionRecord.ActionID, admission.ActionRecord.ActionID)
 	}
 }
 
@@ -500,6 +637,18 @@ func findReceiptByLayer(t *testing.T, receipts []receipt.Receipt, wantLayer stri
 		}
 	}
 	t.Fatalf("no receipt with Layer=%q in %d emitted receipts", wantLayer, len(receipts))
+	return receipt.Receipt{} // unreachable
+}
+
+func findReverseAdmissionAllowReceipt(t *testing.T, receipts []receipt.Receipt) receipt.Receipt {
+	t.Helper()
+	for _, r := range receipts {
+		ar := r.ActionRecord
+		if ar.Transport == TransportReverse && ar.Verdict == config.ActionAllow && ar.Layer == "" {
+			return r
+		}
+	}
+	t.Fatalf("no reverse admission allow receipt in %d emitted receipts", len(receipts))
 	return receipt.Receipt{} // unreachable
 }
 

@@ -5,8 +5,10 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 
@@ -57,7 +59,7 @@ func fetchRequireReceiptsLiveProxy(t *testing.T, cfgMod func(*config.Config)) (*
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
-	rph := newReceiptProxyHelper(t)
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	p.receiptEmitterPtr.Store(rph.emitter)
 	return p, rph
 }
@@ -97,6 +99,36 @@ func TestHandleFetch_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
 	}
 	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="fetch"} 1`)
+}
+
+func TestHandleFetch_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	p, rph := fetchRequireReceiptsLiveProxy(t, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = false
+	})
+	syncErr := errors.New("injected durable sync failure")
+	rph.rec.SetSyncForTest(func(*os.File) error {
+		return syncErr
+	})
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	rec := httptest.NewRecorder()
+	p.handleFetch(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (durable intent sync failure must block before egress)", got)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="sync"} 1`)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="fetch"} 1`)
 }
 
 func TestHandleFetch_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
@@ -206,6 +238,9 @@ func TestHandleFetch_RequireReceiptsResponseBlockReusesActionID(t *testing.T) {
 	}
 	if actionReceipts[0].ActionRecord.Verdict != config.ActionAllow {
 		t.Fatalf("first verdict = %q, want allow", actionReceipts[0].ActionRecord.Verdict)
+	}
+	if actionReceipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("allow decision_phase = %q, want %q", actionReceipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
 	}
 	if actionReceipts[1].ActionRecord.Verdict != config.ActionBlock {
 		t.Fatalf("second verdict = %q, want block", actionReceipts[1].ActionRecord.Verdict)

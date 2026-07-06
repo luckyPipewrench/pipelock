@@ -380,6 +380,11 @@ func TestRequiredReceiptBlockMetricReason(t *testing.T) {
 			want: "emit_error",
 		},
 		{
+			name: "durability failure",
+			err:  fmt.Errorf("recording receipt: %w", recorder.ErrDurability),
+			want: "durability",
+		},
+		{
 			name: "nil",
 			err:  nil,
 			want: "emit_error",

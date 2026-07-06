@@ -23,8 +23,13 @@ func (f Filter) Enabled() bool {
 
 // Allows reports whether event matches every configured criterion.
 func (f Filter) Allows(event Event) bool {
-	if len(f.Actions) > 0 && !containsFold(f.Actions, eventAction(event)) {
-		return false
+	if len(f.Actions) > 0 {
+		action := eventAction(event)
+		if !containsFold(f.Actions, action) {
+			if action != "" || !containsFold(f.Actions, conventionActionBlock) {
+				return false
+			}
+		}
 	}
 	if len(f.DecisionTypes) > 0 && !containsFold(f.DecisionTypes, eventDecisionType(event)) {
 		return false
@@ -113,6 +118,18 @@ func normalizeEventAction(value string) string {
 		return conventionActionAllow
 	case EventBlocked, EventWSBlocked, conventionActionBlock, "deny", "denied":
 		return conventionActionBlock
+	case conventionActionWarn:
+		return conventionActionWarn
+	case conventionActionAsk:
+		return conventionActionAsk
+	case EventRedirect, "redirected":
+		return EventRedirect
+	case EventForwardHTTP, "forward", "forwarded":
+		return "forward"
+	case "strip", "stripped":
+		return "strip"
+	case "defer", "deferred":
+		return "defer"
 	default:
 		return trimmed
 	}
@@ -124,6 +141,42 @@ func eventTypeAction(eventType string) string {
 		return conventionActionAllow
 	case EventBlocked, EventWSBlocked, EventKillSwitchDeny, EventAirlockDeny, EventSNIMismatch:
 		return conventionActionBlock
+	case EventDLPWarn,
+		EventAddressProtection,
+		EventBodyDLP,
+		EventBodyPromptInjection,
+		EventHeaderDLP,
+		EventTaintDecision,
+		EventAirlockEnter,
+		EventSessionAnomaly,
+		EventMCPUnknownTool,
+		EventResponseScan,
+		EventError,
+		EventResponseScanExempt,
+		EventWSScan,
+		EventAdaptiveEscalation,
+		EventAdaptiveUpgrade,
+		EventAnomaly,
+		EventTextStego,
+		EventLicenseExpiry:
+		return conventionActionWarn
+	case EventRedirect, EventToolRedirect:
+		return EventRedirect
+	case EventForwardHTTP:
+		return "forward"
+	case EventStartup,
+		EventShutdown,
+		EventAgentListener,
+		EventTunnelClose,
+		EventTunnelOpen,
+		EventWSOpen,
+		EventWSClose,
+		EventAirlockDeescalate,
+		EventSessionAdmin,
+		EventShieldRewrite,
+		EventConfigReload,
+		EventMediaExposure:
+		return conventionActionAllow
 	default:
 		return ""
 	}

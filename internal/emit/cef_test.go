@@ -123,7 +123,7 @@ func TestFormatCEFEventEmptyFields(t *testing.T) {
 	}
 
 	got := FormatCEFEvent(event, "")
-	want := "CEF:0|Pipelock|Pipelock|unknown|startup|startup|3|cat=startup pipelockEvent=startup pipelockSeverity=info rt=2026-07-05T00:00:00Z"
+	want := "CEF:0|Pipelock|Pipelock|unknown|startup|startup|3|act=allow cat=startup pipelockEvent=startup pipelockSeverity=info rt=2026-07-05T00:00:00Z"
 	if got != want {
 		t.Fatalf("FormatCEFEvent() =\n%s\nwant\n%s", got, want)
 	}

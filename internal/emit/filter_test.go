@@ -5,6 +5,10 @@ package emit
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +39,9 @@ func TestFilterAllows(t *testing.T) {
 		{name: "action mismatch drops", filter: Filter{Actions: []string{"warn"}}, event: event, want: false},
 		{name: "decision type mismatch drops", filter: Filter{DecisionTypes: []string{EventHeaderDLP}}, event: event, want: false},
 		{name: "agent mismatch drops", filter: Filter{Agents: []string{"agent-b"}}, event: event, want: false},
-		{name: "missing action drops when action filter configured", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventStartup, Fields: map[string]any{}}, want: false},
+		{name: "known allow event drops from block filter", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventStartup, Fields: map[string]any{}}, want: false},
+		{name: "unknown action passes block-inclusive filter", filter: Filter{Actions: []string{"block"}}, event: Event{Type: "future_event", Fields: map[string]any{}}, want: true},
+		{name: "unknown action drops from non-block filter", filter: Filter{Actions: []string{"warn"}}, event: Event{Type: "future_event", Fields: map[string]any{}}, want: false},
 		{name: "legacy blocked event infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventBlocked, Fields: map[string]any{"scanner": "ssrf"}}, want: true},
 		{name: "kill switch deny infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventKillSwitchDeny, Fields: map[string]any{"source": "config"}}, want: true},
 		{name: "airlock deny infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventAirlockDeny, Fields: map[string]any{"tier": "hard"}}, want: true},
@@ -44,6 +50,7 @@ func TestFilterAllows(t *testing.T) {
 		{name: "deny decision normalizes to block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventTaintDecision, Fields: map[string]any{"decision": "deny"}}, want: true},
 		{name: "adaptive escalation to block infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventAdaptiveEscalation, Fields: map[string]any{"to": "block"}}, want: true},
 		{name: "blocked redirect result infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventToolRedirect, Fields: map[string]any{"result": "blocked"}}, want: true},
+		{name: "redirected result normalizes to redirect", filter: Filter{Actions: []string{"redirect"}}, event: Event{Type: EventToolRedirect, Fields: map[string]any{"result": "redirected"}}, want: true},
 		{name: "identity alias matches agent filter", filter: Filter{Agents: []string{"identity-a"}}, event: Event{Type: EventBodyDLP, Fields: map[string]any{"identity": "identity-a"}}, want: true},
 	}
 
@@ -51,6 +58,40 @@ func TestFilterAllows(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.filter.Allows(tt.event); got != tt.want {
 				t.Fatalf("Allows() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEventActionCoversEveryEventConstant(t *testing.T) {
+	knownActions := map[string]bool{
+		conventionActionAllow: true,
+		conventionActionBlock: true,
+		conventionActionWarn:  true,
+		conventionActionAsk:   true,
+		EventRedirect:         true,
+		"defer":               true,
+		"forward":             true,
+		"strip":               true,
+	}
+
+	constants := eventConstantsFromSource(t)
+	for constName, eventType := range constants {
+		t.Run(constName, func(t *testing.T) {
+			typeAction := eventTypeAction(eventType)
+			if typeAction == "" {
+				t.Fatalf("eventTypeAction(%q) returned empty action", eventType)
+			}
+			if !knownActions[typeAction] {
+				t.Fatalf("eventTypeAction(%q) = %q, want known action", eventType, typeAction)
+			}
+
+			action := eventAction(Event{Type: eventType, Fields: map[string]any{}})
+			if action == "" {
+				t.Fatalf("eventAction(%q) returned empty action", eventType)
+			}
+			if !knownActions[action] {
+				t.Fatalf("eventAction(%q) = %q, want known action", eventType, action)
 			}
 		})
 	}
@@ -83,6 +124,50 @@ func TestFilteringSink(t *testing.T) {
 	if events[0].Fields["action"] != conventionActionBlock {
 		t.Fatalf("forwarded action = %v, want block", events[0].Fields["action"])
 	}
+}
+
+func eventConstantsFromSource(t *testing.T) map[string]string {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), "event.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse event.go: %v", err)
+	}
+
+	constants := make(map[string]string)
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range valueSpec.Names {
+				if !strings.HasPrefix(name.Name, "Event") {
+					continue
+				}
+				if i >= len(valueSpec.Values) {
+					t.Fatalf("%s must use an explicit string value", name.Name)
+				}
+				lit, ok := valueSpec.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Fatalf("%s must be a string literal event type", name.Name)
+				}
+				value, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("unquote %s: %v", name.Name, err)
+				}
+				constants[name.Name] = value
+			}
+		}
+	}
+	if len(constants) == 0 {
+		t.Fatal("no Event* constants found in event.go")
+	}
+	return constants
 }
 
 func TestValidateFilterValues(t *testing.T) {

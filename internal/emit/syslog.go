@@ -68,15 +68,17 @@ type SyslogStats struct {
 // SyslogSink sends audit events to a syslog server.
 // It maps emit.Severity to syslog priority levels.
 type SyslogSink struct {
-	writer    syslogWriter
-	minSev    Severity
-	queue     chan syslogMessage
-	done      chan struct{}
-	closed    bool // guarded by closeMu
-	closeMu   sync.Mutex
-	closeWG   sync.WaitGroup
-	closeOnce sync.Once
-	closeErr  error
+	writer        syslogWriter
+	minSev        Severity
+	format        string
+	deviceVersion string
+	queue         chan syslogMessage
+	done          chan struct{}
+	closed        bool // guarded by closeMu
+	closeMu       sync.Mutex
+	closeWG       sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
 
 	delivered atomic.Uint64
 	failed    atomic.Uint64
@@ -91,10 +93,12 @@ type SyslogSink struct {
 type SyslogOption func(*syslogConfig)
 
 type syslogConfig struct {
-	facility syslog.Priority
-	tag      string
-	minSev   Severity
-	queueLen int
+	facility      syslog.Priority
+	tag           string
+	minSev        Severity
+	queueLen      int
+	format        string
+	deviceVersion string
 }
 
 // WithSyslogFacility sets the syslog facility (default LOG_LOCAL0).
@@ -125,6 +129,14 @@ func WithSyslogQueueSize(n int) SyslogOption {
 	}
 }
 
+// WithSyslogFormat sets the wire format for syslog messages.
+func WithSyslogFormat(format, deviceVersion string) SyslogOption {
+	return func(c *syslogConfig) {
+		c.format = format
+		c.deviceVersion = deviceVersion
+	}
+}
+
 // parseSyslogAddress parses "udp://host:port" or "tcp://host:port" into
 // (network, address) suitable for syslog.Dial.
 func parseSyslogAddress(addr string) (string, string, error) {
@@ -152,9 +164,13 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 		facility: syslog.LOG_LOCAL0,
 		tag:      "pipelock",
 		queueLen: DefaultSyslogQueueSize,
+		format:   FormatJSON,
 	}
 	for _, opt := range opts {
 		opt(cfg)
+	}
+	if err := validateSyslogFormat(cfg.format); err != nil {
+		return nil, err
 	}
 
 	network, addr, err := parseSyslogAddress(address)
@@ -170,13 +186,25 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 	return newSyslogSink(writer, cfg), nil
 }
 
+func validateSyslogFormat(format string) error {
+	if format == "" || format == FormatJSON || format == FormatCEF {
+		return nil
+	}
+	return fmt.Errorf("emit: unsupported syslog format %q", format)
+}
+
 func newSyslogSink(writer syslogWriter, cfg *syslogConfig) *SyslogSink {
 	cfg.queueLen = normalizeSyslogQueueSize(cfg.queueLen)
+	if cfg.format == "" {
+		cfg.format = FormatJSON
+	}
 	s := &SyslogSink{
-		writer: writer,
-		minSev: cfg.minSev,
-		queue:  make(chan syslogMessage, cfg.queueLen),
-		done:   make(chan struct{}),
+		writer:        writer,
+		minSev:        cfg.minSev,
+		format:        cfg.format,
+		deviceVersion: cfg.deviceVersion,
+		queue:         make(chan syslogMessage, cfg.queueLen),
+		done:          make(chan struct{}),
 	}
 	s.closeWG.Add(1)
 	go s.run()
@@ -242,7 +270,7 @@ func parseFacility(name string) syslog.Priority {
 // NewSyslogSinkFromConfig creates a SyslogSink from string config values.
 // This is a cross-platform entry point used by cli/run.go; on Windows it returns
 // ErrSyslogUnavailable (defined in syslog_windows.go).
-func NewSyslogSinkFromConfig(address, facility, tag, minSeverity string) (*SyslogSink, error) {
+func NewSyslogSinkFromConfig(address, facility, tag, minSeverity string, extraOpts ...SyslogOption) (*SyslogSink, error) {
 	var opts []SyslogOption
 	opts = append(opts, WithSyslogMinSeverity(ParseSeverity(minSeverity)))
 	if facility != "" {
@@ -251,6 +279,7 @@ func NewSyslogSinkFromConfig(address, facility, tag, minSeverity string) (*Syslo
 	if tag != "" {
 		opts = append(opts, WithSyslogTag(tag))
 	}
+	opts = append(opts, extraOpts...)
 	return NewSyslogSink(address, opts...)
 }
 
@@ -265,7 +294,7 @@ func (s *SyslogSink) Emit(_ context.Context, event Event) error {
 	if event.Severity < s.minSev {
 		return nil
 	}
-	msg, err := makeSyslogMessage(event)
+	msg, err := makeSyslogMessage(event, s.format, s.deviceVersion)
 	if err != nil {
 		return err
 	}
@@ -329,7 +358,22 @@ func (s *SyslogSink) safeSend(msg syslogMessage) {
 	s.send(msg)
 }
 
-func makeSyslogMessage(event Event) (syslogMessage, error) {
+func makeSyslogMessage(event Event, format, deviceVersion string) (syslogMessage, error) {
+	if format == "" {
+		format = FormatJSON
+	}
+	if format == FormatCEF {
+		msg := FormatCEFEvent(event, deviceVersion)
+		return syslogMessage{
+			severity:  event.Severity,
+			eventType: event.Type,
+			message:   msg,
+		}, nil
+	}
+	if format != FormatJSON {
+		return syslogMessage{}, fmt.Errorf("emit: unsupported syslog format %q", format)
+	}
+
 	payload := webhookPayload{
 		Severity:  event.Severity.String(),
 		Type:      event.Type,

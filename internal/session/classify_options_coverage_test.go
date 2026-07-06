@@ -11,7 +11,7 @@ import (
 
 // TestClassifyWithOptions_BranchCoverage exercises the WithOptions classifier
 // and policy-evaluation branches under both fail-safe settings, so the fail-safe
-// and per-class paths added for AARM-1 are covered.
+// and per-class fail-safe classification paths are covered.
 func TestClassifyWithOptions_BranchCoverage(t *testing.T) {
 	t.Parallel()
 

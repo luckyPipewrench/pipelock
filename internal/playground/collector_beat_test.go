@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// TestLiveRun_CollectorBeat_AllowlistDoesNotBypassContentScanning is the AARM
-// "independent attestation" centerpiece: it proves that being an APPROVED
+// TestLiveRun_CollectorBeat_AllowlistDoesNotBypassContentScanning is the
+// independent-attestation centerpiece: it proves that being an APPROVED
 // (allowlisted) destination does NOT exempt content from scanning. The lab
 // collector host is on the proxy's trusted/allowlist set, yet a RAW planted
 // canary POSTed to it must be content-blocked before egress -- the

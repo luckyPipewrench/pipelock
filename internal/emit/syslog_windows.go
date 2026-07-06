@@ -13,6 +13,11 @@ import (
 // ErrSyslogUnavailable is returned on platforms where log/syslog is not available.
 var ErrSyslogUnavailable = errors.New("emit: syslog is not available on Windows")
 
+type syslogConfig struct{}
+
+// SyslogOption configures a SyslogSink on platforms that support syslog.
+type SyslogOption func(*syslogConfig)
+
 // SyslogSink is a stub on Windows where log/syslog is not available.
 type SyslogSink struct{}
 
@@ -28,13 +33,18 @@ type SyslogStats struct {
 	QueueCap  int
 }
 
+// WithSyslogFormat is a no-op option on Windows.
+func WithSyslogFormat(_, _ string) SyslogOption {
+	return func(*syslogConfig) {}
+}
+
 // NewSyslogSink returns an error on Windows.
-func NewSyslogSink(_ string, _ ...any) (*SyslogSink, error) {
+func NewSyslogSink(_ string, _ ...SyslogOption) (*SyslogSink, error) {
 	return nil, ErrSyslogUnavailable
 }
 
 // NewSyslogSinkFromConfig returns an error on Windows.
-func NewSyslogSinkFromConfig(_, _, _, _ string) (*SyslogSink, error) {
+func NewSyslogSinkFromConfig(_, _, _, _ string, _ ...SyslogOption) (*SyslogSink, error) {
 	return nil, ErrSyslogUnavailable
 }
 

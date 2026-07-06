@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -550,6 +551,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	outcomeStatus := "unknown"
+	outcomeBytes := int64(-1)
+	outcomeReason := "incomplete"
+	defer func() {
+		p.emitOutcomeReceipt(cfg, allowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+	}()
 
 	// Bound the outbound dial, then let the established tunnel live until it
 	// goes idle. Long-poll, SSE, and WebSocket control-plane streams must not
@@ -562,6 +569,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		p.logger.LogError(targetCtx, err)
 		http.Error(w, "tunnel dial failed", http.StatusBadGateway)
+		outcomeStatus = strconv.Itoa(http.StatusBadGateway)
+		outcomeReason = "dial_failed"
 		return
 	}
 	defer func() {
@@ -576,12 +585,16 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogError(targetCtx,
 			fmt.Errorf("response writer does not support hijacking"))
 		http.Error(w, "hijack not supported", http.StatusInternalServerError)
+		outcomeStatus = strconv.Itoa(http.StatusInternalServerError)
+		outcomeReason = "hijack_unsupported"
 		return
 	}
 
 	clientConn, buf, err := hijacker.Hijack()
 	if err != nil {
 		p.logger.LogError(targetCtx, err)
+		outcomeStatus = strconv.Itoa(http.StatusInternalServerError)
+		outcomeReason = "hijack_failed"
 		return
 	}
 	defer safeClose(clientConn, "clientConn", p.logger)
@@ -600,6 +613,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordSNI(category, agentLabel)
 		if sniErr != nil {
 			p.logger.LogSNIMismatch(host, sniHost, clientIP, requestID, agent, category)
+			outcomeStatus = strconv.Itoa(http.StatusOK)
+			outcomeBytes = 0
+			outcomeReason = "sni_mismatch"
 			return // close both connections via deferred Close()
 		}
 	}
@@ -616,6 +632,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			// Connection is already hijacked, so close both sides (deferred).
 			p.logger.LogError(targetCtx, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
 			p.metrics.RecordTLSIntercept("failed")
+			outcomeStatus = strconv.Itoa(http.StatusOK)
+			outcomeBytes = 0
+			outcomeReason = "tls_intercept_cert_cache_unavailable"
 			return
 		}
 		// Close the pre-established upstream TCP connection since interceptTunnel
@@ -666,7 +685,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			KillSwitch:         p.ks,
 		}); err != nil {
 			p.logger.LogError(targetCtx, err)
+			outcomeReason = "intercept_error"
+		} else {
+			outcomeReason = "intercept_complete"
 		}
+		outcomeStatus = strconv.Itoa(http.StatusOK)
 		return
 	}
 
@@ -692,6 +715,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
 	totalBytes := bidirectionalCopy(clientConn, targetConn, idleTimeout, time.Time{}, p.ks)
+	outcomeStatus = strconv.Itoa(http.StatusOK)
+	outcomeBytes = totalBytes
+	outcomeReason = "complete"
 
 	p.metrics.DecrActiveTunnels()
 	duration := time.Since(start)
@@ -1660,6 +1686,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	outcomeStatus := "unknown"
+	outcomeBytes := int64(-1)
+	outcomeReason := "incomplete"
+	defer func() {
+		p.emitOutcomeReceipt(cfg, forwardAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+	}()
 	emitForwardAllowReceipt := func() {
 		if !cfg.FlightRecorder.RequireReceipts {
 			emitForwardReceipt(forwardAllowReceipt)
@@ -1701,10 +1733,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeBlockedError(w,
 				redirectBlockedInfo(blockedErr),
 				"blocked: "+blockedErr.reason, http.StatusForbidden)
+			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeReason = blockedErr.layer
 			return
 		}
 		p.logger.LogError(actx, err)
 		http.Error(w, "forward proxy fetch failed", http.StatusBadGateway)
+		outcomeStatus = strconv.Itoa(http.StatusBadGateway)
+		outcomeReason = "fetch_failed"
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
@@ -1809,6 +1845,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeBlockedError(w,
 				blockInfoFor(blockreason.CompressedResponse, sseLayer),
 				"blocked: "+msg, http.StatusForbidden)
+			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeReason = "compressed_sse"
 			return
 		}
 		copyResponseHeaders(w.Header(), resp.Header)
@@ -1830,6 +1868,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// GenericSSEScanOptions.OnFinding and return nil.
 			if IsSSEStreamFinding(err) && sseAction == config.ActionWarn {
 				p.logger.LogAnomaly(actx, sseLayer, err.Error(), 0)
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = sseLayer
 			} else {
 				p.logger.LogBlocked(actx, sseLayer, err.Error())
 				p.metrics.RecordBlocked(r.URL.Hostname(), sseLayer, time.Since(start), agentLabel)
@@ -1853,12 +1893,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaintDecisionReason: forwardTaint.Result.Reason,
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
+				outcomeStatus = strconv.Itoa(resp.StatusCode)
+				outcomeReason = sseLayer
 			}
 		} else {
 			duration := time.Since(start)
 			p.metrics.RecordAllowed(duration, agentLabel)
 			emitForwardAllowReceipt()
 			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
+			outcomeStatus = strconv.Itoa(resp.StatusCode)
+			outcomeBytes = 0
+			outcomeReason = "complete"
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 				recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 			}
@@ -1916,6 +1961,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			emitForwardReceipt(forwardAllowReceipt)
 		}
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
+		outcomeStatus = strconv.Itoa(resp.StatusCode)
+		outcomeBytes = written
+		outcomeReason = "complete"
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
@@ -1949,6 +1997,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeBlockedError(w,
 				blockInfoFor(blockreason.CompressedResponse, "response_scan"),
 				"blocked: compressed response cannot be scanned", http.StatusForbidden)
+			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeReason = "compressed_response"
 			return
 		}
 
@@ -1964,6 +2014,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeBlockedError(w,
 				blockInfoFor(blockreason.ParseError, "response_scan"),
 				"blocked: response read error", http.StatusForbidden)
+			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeReason = "response_read_error"
 			return
 		}
 		if int64(len(respBody)) > maxBytes {
@@ -2007,16 +2059,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 							TaintDecisionReason: forwardTaint.Result.Reason,
 							TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 						})
-						if cfg.FlightRecorder.RequireReceipts {
-							if err := p.emitRequiredReceipt(withReceiptPolicyHash(passthroughReceipt, cfg.CanonicalPolicyHash())); err != nil {
-								blockedErr := newReceiptEmissionBlockedRequest(err)
-								p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-								writeBlockedError(w,
-									blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
-									receiptEmissionBlockReason, http.StatusForbidden)
-								return
-							}
-						} else {
+						if !cfg.FlightRecorder.RequireReceipts {
 							emitForwardReceipt(passthroughReceipt)
 						}
 						copyResponseHeaders(w.Header(), resp.Header)
@@ -2042,6 +2085,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						})
 						p.metrics.RecordAllowed(duration, agentLabel)
 						p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
+						outcomeStatus = strconv.Itoa(resp.StatusCode)
+						outcomeBytes = written
+						outcomeReason = "unscannable_passthrough"
 						if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 							recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 						}
@@ -2071,6 +2117,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 							info = blockInfoFor(blockreason.ParseError, "response_scan")
 						}
 						writeBlockedError(w, info, "blocked: "+scanFailure.Reason, http.StatusForbidden)
+						outcomeStatus = strconv.Itoa(http.StatusForbidden)
+						outcomeBytes = int64(len(respBody))
+						outcomeReason = string(scanFailure.Kind)
 						return
 					}
 					defer releaseSizeExemptScan()
@@ -2091,6 +2140,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					writeBlockedError(w,
 						blockInfoFor(blockreason.ResponseSize, "response_scan"),
 						"blocked: "+reason, http.StatusForbidden)
+					outcomeStatus = strconv.Itoa(http.StatusForbidden)
+					outcomeBytes = int64(len(respBody))
+					outcomeReason = "oversized"
 					return
 				}
 			}
@@ -2106,6 +2158,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeBlockedError(w,
 				blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
 				"blocked: response body exceeds browser shield size limit", http.StatusForbidden)
+			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeBytes = int64(len(respBody))
+			outcomeReason = "shield_oversize"
 			return
 		}
 		if shieldSummary != nil {
@@ -2127,6 +2182,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeBlockedError(w,
 				blockInfoFor(blockreason.MediaPolicy, "media_policy"),
 				"blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
+			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeBytes = int64(len(respBody))
+			outcomeReason = "media_policy"
 			return
 		}
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
@@ -2218,6 +2276,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					writeBlockedError(w,
 						blockInfoFor(blockreason.PromptInjection, "a2a_response"),
 						"blocked: "+a2aReason, http.StatusForbidden)
+					outcomeStatus = strconv.Itoa(http.StatusForbidden)
+					outcomeBytes = int64(len(respBody))
+					outcomeReason = "a2a_response"
 					return
 				}
 			}
@@ -2304,6 +2365,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					writeBlockedError(w,
 						blockInfoFor(blockreason.PromptInjection, "response_scan"),
 						"blocked: response contains injection", http.StatusForbidden)
+					outcomeStatus = strconv.Itoa(http.StatusForbidden)
+					outcomeBytes = int64(len(respBody))
+					outcomeReason = "response_scan"
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.
@@ -2345,6 +2409,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						writeBlockedError(w,
 							blockInfoFor(blockreason.PromptInjection, "response_scan"),
 							"blocked: response contains injection", http.StatusForbidden)
+						outcomeStatus = strconv.Itoa(http.StatusForbidden)
+						outcomeBytes = int64(len(respBody))
+						outcomeReason = "response_scan"
 						return
 					}
 					p.logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
@@ -2366,6 +2433,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if budgetRemaining >= 0 && written >= budgetRemaining {
 			reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
 			p.logger.LogAnomaly(actx, "budget_truncated", reason, 0)
+			outcomeStatus = strconv.Itoa(resp.StatusCode)
+			outcomeBytes = written
+			outcomeReason = "budget_truncated"
 			return
 		}
 
@@ -2373,6 +2443,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordAllowed(duration, agentLabel)
 		emitForwardAllowReceipt()
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
+		outcomeStatus = strconv.Itoa(resp.StatusCode)
+		outcomeBytes = written
+		outcomeReason = "complete"
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
@@ -2400,6 +2473,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if budgetRemaining >= 0 && written >= budgetRemaining {
 		reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
 		p.logger.LogAnomaly(actx, "budget_truncated", reason, 0)
+		outcomeStatus = strconv.Itoa(resp.StatusCode)
+		outcomeBytes = written
+		outcomeReason = "budget_truncated"
 		return
 	}
 
@@ -2407,6 +2483,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	p.metrics.RecordAllowed(duration, agentLabel)
 	emitForwardAllowReceipt()
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
+	outcomeStatus = strconv.Itoa(resp.StatusCode)
+	outcomeBytes = written
+	outcomeReason = "complete"
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}

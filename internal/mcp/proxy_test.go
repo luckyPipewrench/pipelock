@@ -3949,7 +3949,7 @@ func TestEmitPendingTimeoutResponses_DrainsTracker(t *testing.T) {
 	tracker.Track(json.RawMessage(`2`))
 
 	var out, logBuf bytes.Buffer
-	emitPendingTimeoutResponses(transport.NewStdioWriter(&out), &logBuf, tracker)
+	emitPendingTimeoutResponses(transport.NewStdioWriter(&out), &logBuf, tracker, MCPProxyOpts{})
 
 	outStr := out.String()
 	for _, want := range []string{`"id":1`, `"id":2`, `"code":-32000`, "upstream response timeout"} {
@@ -3989,6 +3989,7 @@ func TestEmitRequestScopedTimeout(t *testing.T) {
 				tracker,
 				tt.id,
 				"pipelock: upstream response timeout; failed request closed, session continues",
+				MCPProxyOpts{},
 			)
 
 			if !reader.closed {

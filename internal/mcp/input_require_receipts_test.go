@@ -11,6 +11,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // runStdioToolCall drives ForwardScannedInput for a single clean tools/call
@@ -152,6 +153,168 @@ func TestForwardScannedInput_A2ARequireReceiptsEmitsAllowReceipt(t *testing.T) {
 	}
 	if record.Target != "SendMessage" {
 		t.Fatalf("A2A allow receipt target = %q, want SendMessage", record.Target)
+	}
+}
+
+func TestForwardScanned_MCPRequireReceiptsEmitsIntentOutcomePair(t *testing.T) {
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	intent := receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: transportMCPStdio,
+		Target:    "read_file",
+		MCPMethod: methodToolsCall,
+		ToolName:  "read_file",
+	}
+	if _, err := EmitMCPDecision(emitter, nil, nil, MCPDecision{
+		Receipt:        intent,
+		RequireReceipt: true,
+	}); err != nil {
+		t.Fatalf("EmitMCPDecision intent: %v", err)
+	}
+	tracker := NewRequestTracker()
+	tracker.TrackOutcome([]byte(`1`), TrackedRequestOutcome{Receipt: intent})
+	response := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}` + "\n"
+	var out, logBuf bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(response)),
+		transport.NewStdioWriter(&out),
+		&logBuf,
+		tracker,
+		MCPProxyOpts{
+			Scanner:        testInputScanner(t),
+			Transport:      transportMCPStdio,
+			ReceiptEmitter: emitter,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("ForwardScanned found injection on clean response")
+	}
+	if !strings.Contains(out.String(), `"result"`) {
+		t.Fatalf("forwarded response = %q, want result", out.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("intent phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	if receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("outcome phase = %q, want %q", receipts[1].ActionRecord.DecisionPhase, receipt.DecisionPhaseOutcome)
+	}
+	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=result") {
+		t.Fatalf("outcome pattern = %q, want status=result", receipts[1].ActionRecord.Pattern)
+	}
+}
+
+func TestEmitPendingTimeoutResponses_MCPRequireReceiptsEmitsOutcome(t *testing.T) {
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	intent := receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: transportMCPStdio,
+		Target:    "read_file",
+		MCPMethod: methodToolsCall,
+		ToolName:  "read_file",
+	}
+	if _, err := EmitMCPDecision(emitter, nil, nil, MCPDecision{
+		Receipt:        intent,
+		RequireReceipt: true,
+	}); err != nil {
+		t.Fatalf("EmitMCPDecision intent: %v", err)
+	}
+	tracker := NewRequestTracker()
+	tracker.TrackOutcome([]byte(`1`), TrackedRequestOutcome{Receipt: intent})
+	var out, logBuf bytes.Buffer
+	emitPendingTimeoutResponses(transport.NewStdioWriter(&out), &logBuf, tracker, MCPProxyOpts{
+		ReceiptEmitter: emitter,
+		Transport:      transportMCPStdio,
+	})
+	if !strings.Contains(out.String(), `"code":-32000`) {
+		t.Fatalf("timeout response = %q, want JSON-RPC timeout error", out.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
+	}
+	if receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("outcome phase = %q, want %q", receipts[1].ActionRecord.DecisionPhase, receipt.DecisionPhaseOutcome)
+	}
+	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+	for _, want := range []string{"status=error", "reason=response_timeout"} {
+		if !strings.Contains(receipts[1].ActionRecord.Pattern, want) {
+			t.Fatalf("outcome pattern = %q, want %s", receipts[1].ActionRecord.Pattern, want)
+		}
+	}
+}
+
+func TestForwardScanned_MCPRequireReceiptsOutcomeEmitFailureDoesNotFailResponse(t *testing.T) {
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	intent := receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: transportMCPStdio,
+		Target:    "read_file",
+		MCPMethod: methodToolsCall,
+		ToolName:  "read_file",
+	}
+	if _, err := EmitMCPDecision(emitter, nil, nil, MCPDecision{
+		Receipt:        intent,
+		RequireReceipt: true,
+	}); err != nil {
+		t.Fatalf("EmitMCPDecision intent: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	tracker := NewRequestTracker()
+	tracker.TrackOutcome([]byte(`1`), TrackedRequestOutcome{Receipt: intent})
+	response := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}` + "\n"
+	var out, logBuf bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(response)),
+		transport.NewStdioWriter(&out),
+		&logBuf,
+		tracker,
+		MCPProxyOpts{
+			Scanner:        testInputScanner(t),
+			Transport:      transportMCPStdio,
+			ReceiptEmitter: emitter,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("ForwardScanned found injection on clean response")
+	}
+	if !strings.Contains(out.String(), `"result"`) {
+		t.Fatalf("forwarded response = %q, want result", out.String())
+	}
+	receipts := readActionReceipts(t, dir)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count after outcome failure = %d, want durable intent only", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("receipt phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	if !strings.Contains(logBuf.String(), "receipt emission failed") {
+		t.Fatalf("log = %q, want outcome emit failure", logBuf.String())
 	}
 }
 

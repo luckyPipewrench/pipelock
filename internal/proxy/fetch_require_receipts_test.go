@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -131,6 +132,75 @@ func TestHandleFetch_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T) 
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="fetch"} 1`)
 }
 
+func TestHandleFetch_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	p, rph := fetchRequireReceiptsLiveProxy(t, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = false
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	p.handleFetch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch status = %d, want 200", rec.Code)
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("intent phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	if receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("outcome phase = %q, want %q", receipts[1].ActionRecord.DecisionPhase, receipt.DecisionPhaseOutcome)
+	}
+	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=202") {
+		t.Fatalf("outcome pattern = %q, want status=202", receipts[1].ActionRecord.Pattern)
+	}
+}
+
+func TestHandleFetch_RequireReceiptsOutcomeEmitFailureDoesNotFailRequest(t *testing.T) {
+	var rph *receiptProxyHelper
+	var closed atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if closed.CompareAndSwap(false, true) {
+			if err := rph.rec.Close(); err != nil {
+				t.Errorf("recorder.Close: %v", err)
+			}
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	var p *Proxy
+	p, rph = fetchRequireReceiptsLiveProxy(t, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = false
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	p.handleFetch(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch status = %d, want 200", rec.Code)
+	}
+	receipts := extractReceiptsFromDir(t, rph.dir)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count after outcome failure = %d, want durable intent only", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("receipt phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+}
+
 func TestHandleFetch_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -233,8 +303,8 @@ func TestHandleFetch_RequireReceiptsResponseBlockReusesActionID(t *testing.T) {
 		}
 		actionReceipts = append(actionReceipts, rcpt)
 	}
-	if len(actionReceipts) != 2 {
-		t.Fatalf("action receipt count = %d, want 2", len(actionReceipts))
+	if len(actionReceipts) != 3 {
+		t.Fatalf("action receipt count = %d, want 3", len(actionReceipts))
 	}
 	if actionReceipts[0].ActionRecord.Verdict != config.ActionAllow {
 		t.Fatalf("first verdict = %q, want allow", actionReceipts[0].ActionRecord.Verdict)
@@ -245,8 +315,16 @@ func TestHandleFetch_RequireReceiptsResponseBlockReusesActionID(t *testing.T) {
 	if actionReceipts[1].ActionRecord.Verdict != config.ActionBlock {
 		t.Fatalf("second verdict = %q, want block", actionReceipts[1].ActionRecord.Verdict)
 	}
-	if actionReceipts[0].ActionRecord.ActionID != actionReceipts[1].ActionRecord.ActionID {
-		t.Fatalf("action IDs differ: allow=%s block=%s",
-			actionReceipts[0].ActionRecord.ActionID, actionReceipts[1].ActionRecord.ActionID)
+	if actionReceipts[2].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("outcome decision_phase = %q, want %q", actionReceipts[2].ActionRecord.DecisionPhase, receipt.DecisionPhaseOutcome)
+	}
+	if !strings.Contains(actionReceipts[2].ActionRecord.Pattern, "status=403") {
+		t.Fatalf("outcome pattern = %q, want status=403", actionReceipts[2].ActionRecord.Pattern)
+	}
+	for i, rcpt := range actionReceipts[1:] {
+		if actionReceipts[0].ActionRecord.ActionID != rcpt.ActionRecord.ActionID {
+			t.Fatalf("action receipt %d action_id = %s, want %s",
+				i+1, rcpt.ActionRecord.ActionID, actionReceipts[0].ActionRecord.ActionID)
+		}
 	}
 }

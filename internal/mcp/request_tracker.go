@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // maxTrackedRequests caps the number of pending request IDs to prevent
@@ -23,7 +24,7 @@ const maxTrackedRequests = 10000
 // A nil tracker passes all IDs through (feature disabled).
 type RequestTracker struct {
 	mu      sync.Mutex
-	pending map[string]struct{}
+	pending map[string]TrackedRequestOutcome
 	// order preserves insertion order for FIFO eviction when cap is reached.
 	order []string
 	// seeded is true once at least one request ID has been tracked.
@@ -33,10 +34,23 @@ type RequestTracker struct {
 	seeded bool
 }
 
+// TrackedRequestOutcome carries the receipt metadata needed to emit a
+// post-response outcome for a previously admitted MCP request.
+type TrackedRequestOutcome struct {
+	Receipt receipt.EmitOpts
+}
+
+// PendingRequestOutcome is a drained pending JSON-RPC request ID plus its
+// outcome receipt metadata.
+type PendingRequestOutcome struct {
+	ID      json.RawMessage
+	Outcome TrackedRequestOutcome
+}
+
 // NewRequestTracker creates a tracker with an empty pending set.
 func NewRequestTracker() *RequestTracker {
 	return &RequestTracker{
-		pending: make(map[string]struct{}),
+		pending: make(map[string]TrackedRequestOutcome),
 	}
 }
 
@@ -44,6 +58,14 @@ func NewRequestTracker() *RequestTracker {
 // (notifications don't expect responses). If the pending set exceeds
 // maxTrackedRequests, the oldest entry is evicted.
 func (t *RequestTracker) Track(id json.RawMessage) {
+	t.TrackOutcome(id, TrackedRequestOutcome{})
+}
+
+// TrackOutcome records a request ID as pending and associates it with outcome
+// receipt metadata. Nil/null IDs are ignored (notifications don't expect
+// responses). If the pending set exceeds maxTrackedRequests, the oldest entry
+// is evicted.
+func (t *RequestTracker) TrackOutcome(id json.RawMessage, outcome TrackedRequestOutcome) {
 	if t == nil {
 		return
 	}
@@ -66,7 +88,7 @@ func (t *RequestTracker) Track(id json.RawMessage) {
 		t.order = t.order[1:]
 	}
 
-	t.pending[key] = struct{}{}
+	t.pending[key] = outcome
 	t.order = append(t.order, key)
 	t.seeded = true
 }
@@ -75,20 +97,28 @@ func (t *RequestTracker) Track(id json.RawMessage) {
 // match (one-shot). Returns true if the ID is valid (was tracked or is
 // nil/null). A nil tracker always returns true (feature disabled).
 func (t *RequestTracker) Validate(id json.RawMessage) bool {
+	_, ok := t.Consume(id)
+	return ok
+}
+
+// Consume checks whether id was previously tracked and returns the associated
+// outcome metadata. It consumes matching IDs exactly once.
+func (t *RequestTracker) Consume(id json.RawMessage) (TrackedRequestOutcome, bool) {
 	if t == nil {
-		return true
+		return TrackedRequestOutcome{}, true
 	}
 	key := canonicalID(id)
 	if key == "" {
 		// Nil/null IDs: notifications and server-initiated requests.
-		return true
+		return TrackedRequestOutcome{}, true
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if _, ok := t.pending[key]; !ok {
-		return false
+	outcome, ok := t.pending[key]
+	if !ok {
+		return TrackedRequestOutcome{}, false
 	}
 	delete(t.pending, key)
 	// Remove from order slice. Linear scan is acceptable because n
@@ -99,7 +129,7 @@ func (t *RequestTracker) Validate(id json.RawMessage) bool {
 			break
 		}
 	}
-	return true
+	return outcome, true
 }
 
 // Seeded reports whether at least one request ID has been tracked.
@@ -118,18 +148,35 @@ func (t *RequestTracker) Seeded() bool {
 // response timeout fires and the proxy needs to emit error responses for
 // every unanswered request before shutting down.
 func (t *RequestTracker) DrainPending() []json.RawMessage {
+	pending := t.DrainPendingOutcomes()
+	if pending == nil {
+		return nil
+	}
+	ids := make([]json.RawMessage, 0, len(pending))
+	for _, item := range pending {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+// DrainPendingOutcomes returns and removes all pending request IDs with their
+// associated outcome metadata.
+func (t *RequestTracker) DrainPendingOutcomes() []PendingRequestOutcome {
 	if t == nil {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ids := make([]json.RawMessage, 0, len(t.order))
+	pending := make([]PendingRequestOutcome, 0, len(t.order))
 	for _, key := range t.order {
-		ids = append(ids, json.RawMessage(key))
+		pending = append(pending, PendingRequestOutcome{
+			ID:      json.RawMessage(key),
+			Outcome: t.pending[key],
+		})
 	}
-	t.pending = make(map[string]struct{})
+	t.pending = make(map[string]TrackedRequestOutcome)
 	t.order = nil
-	return ids
+	return pending
 }
 
 // canonicalID normalizes a JSON-RPC ID to a canonical string for map

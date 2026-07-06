@@ -3170,6 +3170,99 @@ func TestInterceptTunnel_A2ASSEStreamScanning(t *testing.T) {
 	// generic response-body path (which would mean A2A SSE was NOT detected).
 }
 
+func TestInterceptTunnel_SSERequireReceiptsEmitsIntentOutcomePair(t *testing.T) {
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.FlightRecorder.RequireReceipts = true
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	host := testLoopbackIP
+	port := "9999"
+	rt := roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"text/event-stream"},
+			},
+			Body: io.NopCloser(strings.NewReader("data: ok\n\n")),
+		}, nil
+	})
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"https://"+net.JoinHostPort(host, port)+"/events", nil)
+
+	resp := interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
+		&InterceptContext{Proxy: p, TargetHost: host, TargetPort: port}, req)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "data: ok") {
+		t.Fatalf("body = %q, want SSE payload", body)
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("intent decision_phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	if receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("outcome decision_phase = %q, want %q", receipts[1].ActionRecord.DecisionPhase, receipt.DecisionPhaseOutcome)
+	}
+	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=200") {
+		t.Fatalf("outcome pattern = %q, want status=200", receipts[1].ActionRecord.Pattern)
+	}
+}
+
+func TestInterceptTunnel_SSERequireReceiptsFailureBlocksBeforeClientDelivery(t *testing.T) {
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.FlightRecorder.RequireReceipts = true
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	if err := rph.rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	host := testLoopbackIP
+	port := "9999"
+	rt := roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"text/event-stream"},
+			},
+			Body: io.NopCloser(strings.NewReader("data: must-not-deliver\n\n")),
+		}, nil
+	})
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"https://"+net.JoinHostPort(host, port)+"/events", nil)
+
+	resp := interceptWithRT(t, cache, pool, cfg, sc, logger, m, rt,
+		&InterceptContext{Proxy: p, TargetHost: host, TargetPort: port}, req)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "must-not-deliver") {
+		t.Fatalf("body = %q, SSE bytes reached client after required receipt failure", body)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="intercept"} 1`)
+}
+
 // TestInterceptTunnel_A2ACompressedSSEStreamBlocked verifies that a compressed
 // A2A SSE stream is explicitly blocked (defense-in-depth guard at ~line 751).
 func TestInterceptTunnel_A2ACompressedSSEStreamBlocked(t *testing.T) {

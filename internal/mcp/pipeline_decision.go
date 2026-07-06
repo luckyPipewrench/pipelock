@@ -6,6 +6,7 @@ package mcp
 import (
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -136,6 +137,37 @@ func EmitMCPDecision(
 	}
 
 	return outbound, err
+}
+
+func emitMCPOutcomeReceipt(
+	receiptEmitter *receipt.Emitter,
+	v2Emitter *proxydecision.Emitter,
+	logW io.Writer,
+	opts receipt.EmitOpts,
+	status string,
+	bytesTransferred int64,
+	reason string,
+) {
+	if receiptEmitter == nil || opts.ActionID == "" {
+		return
+	}
+	if status == "" {
+		status = "unknown"
+	}
+	if reason == "" {
+		reason = "complete"
+	}
+	bytesValue := "unknown"
+	if bytesTransferred >= 0 {
+		bytesValue = fmt.Sprintf("%d", bytesTransferred)
+	}
+	opts.DecisionPhase = receipt.DecisionPhaseOutcome
+	opts.Verdict = config.ActionAllow
+	opts.Layer = "outcome"
+	opts.Pattern = fmt.Sprintf("status=%s bytes=%s reason=%s", status, bytesValue, reason)
+	if _, err := EmitMCPDecision(receiptEmitter, v2Emitter, nil, MCPDecision{Receipt: opts}); err != nil {
+		logReceiptEmitFailure(logW, err, false, config.ActionAllow)
+	}
 }
 
 // mcpV2DecisionFromReceipt derives the v2 proxy_decision input from the v1

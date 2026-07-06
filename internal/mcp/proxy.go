@@ -73,15 +73,25 @@ func (sw *syncWriter) WriteMessage(msg []byte) error {
 	return nil
 }
 
-func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker) {
+func emitPendingTimeoutResponses(writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) {
 	if tracker == nil {
 		return
 	}
-	for _, id := range tracker.DrainPending() {
-		resp := timeoutErrorResponse(id)
+	for _, pending := range tracker.DrainPendingOutcomes() {
+		resp := timeoutErrorResponse(pending.ID)
 		if wErr := writer.WriteMessage(resp); wErr != nil {
 			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
 		}
+		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, pending.Outcome.Receipt, "error", int64(len(resp)), "response_timeout")
+	}
+}
+
+func emitPendingIncompleteOutcomes(logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts, reason string) {
+	if tracker == nil {
+		return
+	}
+	for _, pending := range tracker.DrainPendingOutcomes() {
+		emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, pending.Outcome.Receipt, "incomplete", -1, reason)
 	}
 }
 
@@ -274,17 +284,31 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// arrives before ForwardScannedInput tracks the outbound request ID
 		// (concurrent goroutines). The window is not exploitable: before any
 		// client request, no valid request ID exists to hijack.
+		var trackedOutcome TrackedRequestOutcome
+		var hasTrackedOutcome bool
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
 			rpcID := frame.ID
-			if rpcID != nil && !tracker.Validate(rpcID) {
-				_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
-					lineNum, string(rpcID))
-				resp := blockResponseReason(rpcID, "unsolicited response ID (confused deputy)")
-				if err := writer.WriteMessage(resp); err != nil {
-					return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
+			if rpcID != nil {
+				var valid bool
+				trackedOutcome, valid = tracker.Consume(rpcID)
+				if !valid {
+					_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
+						lineNum, string(rpcID))
+					resp := blockResponseReason(rpcID, "unsolicited response ID (confused deputy)")
+					if err := writer.WriteMessage(resp); err != nil {
+						return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
+					}
+					continue
 				}
-				continue
+				hasTrackedOutcome = trackedOutcome.Receipt.ActionID != ""
 			}
+		}
+
+		emitTrackedOutcome := func(status, reason string, outbound []byte) {
+			if !hasTrackedOutcome {
+				return
+			}
+			emitMCPOutcomeReceipt(receiptEmitter, v2ReceiptEmitter, logW, trackedOutcome.Receipt, status, int64(len(outbound)), reason)
 		}
 
 		mediaResult := applyMCPResponseMediaPolicy(line, mediaPolicy, opts.Transport)
@@ -341,6 +365,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if err := writer.WriteMessage(resp); err != nil {
 				return foundInjection, fmt.Errorf("writing media policy block: %w", err)
 			}
+			emitTrackedOutcome("error", "media_policy", resp)
 			continue
 		}
 		line = mediaResult.Line
@@ -378,6 +403,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing provenance block: %w", err)
 					}
+					emitTrackedOutcome("error", "provenance", resp)
 					continue
 				}
 				if pv.Error != "" {
@@ -477,6 +503,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
 					}
+					emitTrackedOutcome("error", "tool_poisoning", resp)
 					continue
 				}
 				// warn: logged above, record near-miss and fall through to general handling.
@@ -510,6 +537,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
+			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)
 			observeMCPResponseTaint(taintOpts, toolPoisonDetected)
 			continue
 		}
@@ -531,6 +559,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if err := writer.WriteMessage(resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
 			}
+			emitTrackedOutcome("error", "parse_error", resp)
 			continue
 		}
 
@@ -657,6 +686,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if err := writer.WriteMessage(outbound); err != nil {
 			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
 		}
+		emitTrackedOutcome(mcpResponseStatus(outbound), "mcp_response_scan", outbound)
 
 		// Signal recording: record after action is taken.
 		if adaptiveCfg != nil && adaptiveCfg.Enabled {
@@ -775,6 +805,23 @@ func firstNonEmptyPattern(names []string) string {
 		}
 	}
 	return "unknown"
+}
+
+func mcpResponseStatus(line []byte) string {
+	var response struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(line, &response); err != nil {
+		return "response"
+	}
+	if len(response.Error) > 0 {
+		return "error"
+	}
+	if len(response.Result) > 0 {
+		return "result"
+	}
+	return "response"
 }
 
 // blockResponseReason is like blockResponse but lets the caller supply a
@@ -1324,13 +1371,14 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		case <-drainCtx.Done():
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: timed out waiting for MCP input drain after upstream response timeout\n")
 		}
-		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker)
+		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
 	} else {
 		// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 		wg.Wait()
 
 		// Wait for blocked channel drain to complete.
 		wgBlocked.Wait()
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}
 
 	if scanErr != nil {

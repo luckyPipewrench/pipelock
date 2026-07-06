@@ -844,7 +844,30 @@ func ForwardScannedInput(
 			// Track request ID immediately before forwarding so response-side
 			// can validate without leaving stale state when a required
 			// receipt fails before the request is written.
-			tracker.Track(verdict.ID)
+			if opts.requireReceipts() && actionID != "" {
+				outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
+					ActionID:            actionID,
+					Verdict:             config.ActionAllow,
+					Transport:           opts.Transport,
+					Target:              receiptTarget,
+					MCPMethod:           verdict.Method,
+					ToolName:            toolCallName,
+					SessionTaintLevel:   taintDecision.Risk.Level.String(),
+					SessionContaminated: taintDecision.Risk.Contaminated,
+					RecentTaintSources:  taintDecision.Risk.Sources,
+					SessionTaskID:       taintDecision.Task.CurrentTaskID,
+					SessionTaskLabel:    taintDecision.Task.CurrentTaskLabel,
+					AuthorityKind:       taintDecision.Authority.String(),
+					TaintDecision:       taintDecision.Result.Decision.String(),
+					TaintDecisionReason: taintDecision.Result.Reason,
+					TaskOverrideApplied: taintDecision.TaskOverrideApplied,
+					PolicyHash:          policyHash,
+				})
+				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, contractGate)
+				tracker.TrackOutcome(verdict.ID, TrackedRequestOutcome{Receipt: outcomeReceipt})
+			} else {
+				tracker.Track(verdict.ID)
+			}
 			if err := forwardMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return

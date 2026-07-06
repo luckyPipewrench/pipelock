@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -764,6 +765,18 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	outcomeStatus := "unknown"
+	outcomeBytes := int64(-1)
+	outcomeReason := "incomplete"
+	outcomeEmitted := false
+	if cfg.FlightRecorder.RequireReceipts {
+		defer func() {
+			if !outcomeEmitted {
+				p.emitOutcomeReceipt(cfg, admissionReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+			}
+		}()
+	}
+
 	if cfg.FlightRecorder.RequireReceipts {
 		// Upgrade the client connection only after the required intent receipt is
 		// durable. A 101 response is client egress; under require_receipts it must
@@ -783,6 +796,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if dialErr != nil {
 		log.LogError(actx, fmt.Errorf("upstream dial: %w", dialErr))
 		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
+		outcomeStatus = strconv.Itoa(int(ws.StatusInternalServerError))
+		outcomeBytes = 0
+		outcomeReason = "upstream_dial_failed"
 		return
 	}
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
@@ -859,6 +875,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		BinaryFrames:   stats.binaryFrames,
 		Duration:       duration,
 	})
+	outcomeCloseCode := ws.StatusNormalClosure
+	outcomeReason = "complete"
+	if stats.blocked {
+		outcomeCloseCode = ws.StatusPolicyViolation
+		outcomeReason = "policy_blocked"
+	}
+	p.emitOutcomeReceipt(cfg, admissionReceipt, strconv.Itoa(int(outcomeCloseCode)), stats.clientToServer+stats.serverToClient, outcomeReason)
+	outcomeEmitted = true
 
 	closeVerdict := config.ActionAllow
 	if stats.blocked {

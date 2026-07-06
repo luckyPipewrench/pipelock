@@ -28,6 +28,7 @@ type httpInputDecision struct {
 	Blocked        *BlockedRequest
 	Deferred       *DeferredRequest
 	ForwardMessage []byte
+	Outcome        TrackedRequestOutcome
 }
 
 const redirectResultRedirected = "redirected"
@@ -189,6 +190,36 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ErrorMessage:   "pipelock: receipt emission failed",
 				ErrorData:      mcpBlockReasonData(blockreason.ReceiptEmissionFailed),
 			}
+			return
+		}
+		if requiredReceipt && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
+			outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
+				ActionID:            emitActionID,
+				Verdict:             emitVerdict,
+				Layer:               receiptLayer,
+				Pattern:             receiptPattern,
+				Severity:            receiptSeverity,
+				RedactionProfile:    redactionCfg.Profile,
+				RedactionReport:     redactionReport,
+				Transport:           opts.Transport,
+				Target:              emitTarget,
+				MCPMethod:           mcpMethod,
+				ToolName:            emitTarget,
+				SessionTaintLevel:   taintEval.Risk.Level.String(),
+				SessionContaminated: taintEval.Risk.Contaminated,
+				RecentTaintSources:  taintEval.Risk.Sources,
+				SessionTaskID:       taintEval.Task.CurrentTaskID,
+				SessionTaskLabel:    taintEval.Task.CurrentTaskLabel,
+				AuthorityKind:       taintEval.Authority.String(),
+				TaintDecision:       taintEval.Result.Decision.String(),
+				TaintDecisionReason: taintEval.Result.Reason,
+				TaskOverrideApplied: taintEval.TaskOverrideApplied,
+				PolicyHash:          opts.receiptPolicyHash(),
+			})
+			if receiptContractGate != nil {
+				outcomeReceipt = mcpWithContractReceipt(outcomeReceipt, *receiptContractGate)
+			}
+			result.Outcome = TrackedRequestOutcome{Receipt: outcomeReceipt}
 		}
 	}()
 

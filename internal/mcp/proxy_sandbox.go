@@ -185,7 +185,9 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	case <-drainCtx.Done():
 	}
 	if timedOut {
-		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker)
+		emitPendingTimeoutResponses(safeClientOut, safeLogW, tracker, fwdOpts)
+	} else {
+		emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 	}
 
 	if scanErr != nil {

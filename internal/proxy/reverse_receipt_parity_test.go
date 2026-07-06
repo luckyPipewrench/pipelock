@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -477,6 +478,7 @@ func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	var allowCount int
+	var outcome receipt.Receipt
 	for _, rcpt := range receipts {
 		if rcpt.ActionRecord.Verdict == config.ActionAllow &&
 			rcpt.ActionRecord.Transport == TransportReverse &&
@@ -486,9 +488,305 @@ func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 				t.Fatalf("reverse allow decision_phase = %q, want %q", rcpt.ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
 			}
 		}
+		if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome &&
+			rcpt.ActionRecord.Transport == TransportReverse {
+			outcome = rcpt
+		}
 	}
 	if allowCount != 1 {
 		t.Fatalf("reverse allow receipt count = %d, want 1 (receipts: %d)", allowCount, len(receipts))
+	}
+	if outcome.ActionRecord.ActionID == "" {
+		t.Fatal("missing reverse outcome receipt")
+	}
+	if !strings.Contains(outcome.ActionRecord.Pattern, "status=200") {
+		t.Fatalf("reverse outcome pattern = %q, want status=200", outcome.ActionRecord.Pattern)
+	}
+}
+
+func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	upstreamURL, err := url.Parse("http://" + ln.Addr().String())
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+	dir := t.TempDir()
+	emitter, rec, _ := newCoverageEmitter(t, dir)
+	var emPtr atomic.Pointer[receipt.Emitter]
+	emPtr.Store(emitter)
+	handler.SetReceiptEmitter(&emPtr)
+
+	proxySrv := newIPv4Server(t, handler)
+	t.Cleanup(proxySrv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/unreachable", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("response body close: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder close: %v", err)
+	}
+	receipts := extractReceiptsFromDir(t, dir)
+	admission := findReverseAdmissionAllowReceipt(t, receipts)
+	var outcome receipt.Receipt
+	var outcomeCount int
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome &&
+			rcpt.ActionRecord.Transport == TransportReverse {
+			outcome = rcpt
+			outcomeCount++
+		}
+	}
+	if outcomeCount != 1 {
+		t.Fatalf("reverse outcome receipt count = %d, want 1", outcomeCount)
+	}
+	if outcome.ActionRecord.ActionID != admission.ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %q, want admission action_id %q",
+			outcome.ActionRecord.ActionID, admission.ActionRecord.ActionID)
+	}
+	for _, want := range []string{"status=502", "reason=upstream_error"} {
+		if !strings.Contains(outcome.ActionRecord.Pattern, want) {
+			t.Fatalf("reverse outcome pattern = %q, want %s", outcome.ActionRecord.Pattern, want)
+		}
+	}
+}
+
+func TestReverseProxy_RequireReceiptsMediaBlockEmitsOutcome(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	cfg.FlightRecorder.RequireReceipts = true
+
+	proxySrv, dir, closeRec := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("audio bytes"))
+	})
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clip.mp3", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	admission := findReverseAdmissionAllowReceipt(t, receipts)
+	var outcome receipt.Receipt
+	var outcomeCount int
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome &&
+			rcpt.ActionRecord.Transport == TransportReverse {
+			outcome = rcpt
+			outcomeCount++
+		}
+	}
+	if outcomeCount != 1 {
+		t.Fatalf("reverse outcome receipt count = %d, want 1", outcomeCount)
+	}
+	if outcome.ActionRecord.ActionID != admission.ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %q, want admission action_id %q",
+			outcome.ActionRecord.ActionID, admission.ActionRecord.ActionID)
+	}
+	if !strings.Contains(outcome.ActionRecord.Pattern, "status=403") {
+		t.Fatalf("reverse outcome pattern = %q, want status=403", outcome.ActionRecord.Pattern)
+	}
+	if !strings.Contains(outcome.ActionRecord.Pattern, "reason=media_policy") {
+		t.Fatalf("reverse outcome pattern = %q, want reason=media_policy", outcome.ActionRecord.Pattern)
+	}
+	if strings.Contains(outcome.ActionRecord.Pattern, "status=unknown") {
+		t.Fatalf("reverse outcome pattern = %q, must not contain status=unknown", outcome.ActionRecord.Pattern)
+	}
+}
+
+func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
+	type reverseOutcomeCase struct {
+		name        string
+		path        string
+		wantStatus  int
+		wantPattern []string
+		setup       func(t *testing.T, cfg *config.Config) (*httptest.Server, string, func())
+	}
+
+	largeBody := bytes.Repeat([]byte{0x42}, reverseProxyMaxBodyBytes+1)
+	cases := []reverseOutcomeCase{
+		{
+			name:        "normal response",
+			path:        "/clean",
+			wantStatus:  http.StatusOK,
+			wantPattern: []string{"status=200", "reason=complete"},
+			setup: func(t *testing.T, cfg *config.Config) (*httptest.Server, string, func()) {
+				t.Helper()
+				cfg.ResponseScanning.Enabled = false
+				return reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+					_, _ = w.Write([]byte("ok"))
+				})
+			},
+		},
+		{
+			name:        "media block",
+			path:        "/clip.mp3",
+			wantStatus:  http.StatusForbidden,
+			wantPattern: []string{"status=403", "reason=media_policy"},
+			setup: func(t *testing.T, cfg *config.Config) (*httptest.Server, string, func()) {
+				t.Helper()
+				return reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "audio/mpeg")
+					_, _ = w.Write([]byte("audio bytes"))
+				})
+			},
+		},
+		{
+			name:        "error handler 502",
+			path:        "/unreachable",
+			wantStatus:  http.StatusBadGateway,
+			wantPattern: []string{"status=502", "reason=upstream_error"},
+			setup: func(t *testing.T, cfg *config.Config) (*httptest.Server, string, func()) {
+				t.Helper()
+				cfg.ResponseScanning.Enabled = false
+				var lc net.ListenConfig
+				ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatalf("listen: %v", err)
+				}
+				upstreamURL, err := url.Parse("http://" + ln.Addr().String())
+				if err != nil {
+					t.Fatalf("parse upstream URL: %v", err)
+				}
+				if err := ln.Close(); err != nil {
+					t.Fatalf("close listener: %v", err)
+				}
+
+				sc := scanner.New(cfg)
+				t.Cleanup(sc.Close)
+
+				var cfgPtr atomic.Pointer[config.Config]
+				var scPtr atomic.Pointer[scanner.Scanner]
+				cfgPtr.Store(cfg)
+				scPtr.Store(sc)
+
+				handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+				dir := t.TempDir()
+				emitter, rec, _ := newCoverageEmitter(t, dir)
+				var emPtr atomic.Pointer[receipt.Emitter]
+				emPtr.Store(emitter)
+				handler.SetReceiptEmitter(&emPtr)
+
+				proxySrv := newIPv4Server(t, handler)
+				t.Cleanup(proxySrv.Close)
+				return proxySrv, dir, func() {
+					if err := rec.Close(); err != nil {
+						t.Fatalf("recorder close: %v", err)
+					}
+				}
+			},
+		},
+		{
+			name:        "size-exempt passthrough",
+			path:        "/artifact.bin",
+			wantStatus:  http.StatusOK,
+			wantPattern: []string{"status=200", "reason=unscannable_passthrough"},
+			setup: func(t *testing.T, cfg *config.Config) (*httptest.Server, string, func()) {
+				t.Helper()
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Action = config.ActionBlock
+				cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
+				cfg.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+					Host:         "127.0.0.1",
+					Paths:        []string{"/artifact.bin"},
+					ContentTypes: []string{"application/octet-stream"},
+					Reason:       "opaque test artifact",
+					Expires:      "2099-01-01",
+				}}
+				cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
+				cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes
+				return reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/octet-stream")
+					w.Header().Set("Content-Disposition", "attachment; filename=artifact.bin")
+					w.Header().Set("Content-Length", fmt.Sprint(len(largeBody)))
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(largeBody)
+				})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reverseTestConfig()
+			cfg.FlightRecorder.RequireReceipts = true
+			proxySrv, dir, closeRec := tc.setup(t, cfg)
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+tc.path, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET reverse proxy: %v", err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			if err := resp.Body.Close(); err != nil {
+				t.Fatalf("response body close: %v", err)
+			}
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+
+			waitForReceiptOrTimeout(t, dir)
+			closeRec()
+			receipts := extractReceiptsFromDir(t, dir)
+			assertReverseIntentOutcomePair(t, receipts, tc.wantPattern...)
+		})
 	}
 }
 
@@ -557,7 +855,7 @@ func TestReverseProxy_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T)
 	}
 }
 
-func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsIntent(t *testing.T) {
+func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsSingleIntentOutcomePair(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.FlightRecorder.RequireReceipts = true
 	cfg.ResponseScanning.Enabled = true
@@ -609,19 +907,7 @@ func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsIntent(t *testin
 	waitForReceiptOrTimeout(t, dir)
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
-	passthrough := findReceiptByLayer(t, receipts, "unscannable_passthrough")
-	admission := findReverseAdmissionAllowReceipt(t, receipts)
-	if passthrough.ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
-		t.Fatalf("passthrough decision_phase = %q, want %q",
-			passthrough.ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
-	}
-	if passthrough.ActionRecord.ActionID == "" {
-		t.Fatal("passthrough receipt action_id is empty")
-	}
-	if passthrough.ActionRecord.ActionID != admission.ActionRecord.ActionID {
-		t.Fatalf("passthrough action_id = %q, want admission action_id %q",
-			passthrough.ActionRecord.ActionID, admission.ActionRecord.ActionID)
-	}
+	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=unscannable_passthrough")
 }
 
 // findReceiptByLayer returns the first receipt whose ActionRecord.Layer
@@ -650,6 +936,44 @@ func findReverseAdmissionAllowReceipt(t *testing.T, receipts []receipt.Receipt) 
 	}
 	t.Fatalf("no reverse admission allow receipt in %d emitted receipts", len(receipts))
 	return receipt.Receipt{} // unreachable
+}
+
+func assertReverseIntentOutcomePair(t *testing.T, receipts []receipt.Receipt, wantPattern ...string) {
+	t.Helper()
+	var intent, outcome receipt.Receipt
+	var intentCount, outcomeCount int
+	for _, rcpt := range receipts {
+		ar := rcpt.ActionRecord
+		if ar.Transport != TransportReverse {
+			continue
+		}
+		switch ar.DecisionPhase {
+		case receipt.DecisionPhaseIntent:
+			intent = rcpt
+			intentCount++
+		case receipt.DecisionPhaseOutcome:
+			outcome = rcpt
+			outcomeCount++
+		}
+	}
+	if intentCount != 1 {
+		t.Fatalf("reverse intent receipt count = %d, want 1", intentCount)
+	}
+	if outcomeCount != 1 {
+		t.Fatalf("reverse outcome receipt count = %d, want 1", outcomeCount)
+	}
+	if outcome.ActionRecord.ActionID != intent.ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %q, want intent action_id %q",
+			outcome.ActionRecord.ActionID, intent.ActionRecord.ActionID)
+	}
+	for _, want := range wantPattern {
+		if !strings.Contains(outcome.ActionRecord.Pattern, want) {
+			t.Fatalf("reverse outcome pattern = %q, want %s", outcome.ActionRecord.Pattern, want)
+		}
+	}
+	if strings.Contains(outcome.ActionRecord.Pattern, "status=unknown") {
+		t.Fatalf("reverse outcome pattern = %q, must not contain status=unknown", outcome.ActionRecord.Pattern)
+	}
 }
 
 func gzipBody(t *testing.T, raw []byte) []byte {

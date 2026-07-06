@@ -765,6 +765,71 @@ func TestConnect_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T) {
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="connect"} 1`)
 }
 
+func TestConnect_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T) {
+	lc := net.ListenConfig{}
+	targetLn, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("target listen: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := targetLn.Close(); closeErr != nil {
+			t.Errorf("target listener close: %v", closeErr)
+		}
+	})
+	go func() {
+		conn, acceptErr := targetLn.Accept()
+		if acceptErr != nil {
+			return
+		}
+		_ = conn.Close()
+	}()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	conn := dialProxy(t, proxyAddr)
+	target := targetLn.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	_ = conn.Close()
+
+	testwait.For(t, 2*time.Second, func() bool {
+		for _, rcpt := range extractReceiptsFromDir(t, rph.dir) {
+			if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+				return true
+			}
+		}
+		return false
+	}, "connect outcome receipt")
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("intent phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	if receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("outcome phase = %q, want %q", receipts[1].ActionRecord.DecisionPhase, receipt.DecisionPhaseOutcome)
+	}
+	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=200") {
+		t.Fatalf("outcome pattern = %q, want status=200", receipts[1].ActionRecord.Pattern)
+	}
+}
+
 func TestConnect_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
 	var hits atomic.Int32
 	lc := net.ListenConfig{}
@@ -854,7 +919,7 @@ func TestForwardProxy_ReceiptFailureWithoutRequireStillForwards(t *testing.T) {
 	assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
 }
 
-func TestForwardProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
+func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -880,8 +945,8 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	}
 
 	receipts := rph.findReceipts(t)
-	if len(receipts) != 1 {
-		t.Fatalf("receipt count = %d, want exactly one pre-egress allow receipt", len(receipts))
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
 	}
 	if receipts[0].ActionRecord.Verdict != config.ActionAllow {
 		t.Fatalf("receipt verdict = %q, want allow", receipts[0].ActionRecord.Verdict)
@@ -889,6 +954,155 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
 		t.Fatalf("receipt decision_phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
 	}
+	if receipts[1].ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+		t.Fatalf("outcome decision_phase = %q, want %q", receipts[1].ActionRecord.DecisionPhase, receipt.DecisionPhaseOutcome)
+	}
+	if receipts[1].ActionRecord.ActionID != receipts[0].ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %s, want %s", receipts[1].ActionRecord.ActionID, receipts[0].ActionRecord.ActionID)
+	}
+	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=200") {
+		t.Fatalf("outcome pattern = %q, want status=200", receipts[1].ActionRecord.Pattern)
+	}
+}
+
+func TestForwardProxy_RequireReceiptsCompressedBlockOutcomeStatus(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write([]byte("compressed bytes"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = true
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+
+	receipts := rph.findReceipts(t)
+	var intent, outcome receipt.Receipt
+	for _, rcpt := range receipts {
+		switch rcpt.ActionRecord.DecisionPhase {
+		case receipt.DecisionPhaseIntent:
+			intent = rcpt
+		case receipt.DecisionPhaseOutcome:
+			outcome = rcpt
+		}
+	}
+	if intent.ActionRecord.ActionID == "" {
+		t.Fatal("missing durable intent receipt")
+	}
+	if outcome.ActionRecord.ActionID != intent.ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %s, want %s", outcome.ActionRecord.ActionID, intent.ActionRecord.ActionID)
+	}
+	if !strings.Contains(outcome.ActionRecord.Pattern, "status=403") {
+		t.Fatalf("outcome pattern = %q, want status=403", outcome.ActionRecord.Pattern)
+	}
+	if strings.Contains(outcome.ActionRecord.Pattern, "status=unknown") {
+		t.Fatalf("outcome pattern = %q, must not contain status=unknown", outcome.ActionRecord.Pattern)
+	}
+}
+
+func TestForwardProxy_RequireReceiptsA2ASSEWarnOutcomeStatus(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "event: message\ndata: {\"result\":{\"parts\":[{\"text\":\"%s\"}]}}\n\n", testInjectionPayload)
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.A2AScanning.Enabled = true
+		cfg.A2AScanning.Action = config.ActionWarn
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+"/message:send", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/a2a+json")
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	receipts := rph.findReceipts(t)
+	var intent, outcome receipt.Receipt
+	for _, rcpt := range receipts {
+		switch rcpt.ActionRecord.DecisionPhase {
+		case receipt.DecisionPhaseIntent:
+			intent = rcpt
+		case receipt.DecisionPhaseOutcome:
+			outcome = rcpt
+		}
+	}
+	if intent.ActionRecord.ActionID == "" {
+		t.Fatal("missing durable intent receipt")
+	}
+	if outcome.ActionRecord.ActionID != intent.ActionRecord.ActionID {
+		t.Fatalf("outcome action_id = %s, want %s", outcome.ActionRecord.ActionID, intent.ActionRecord.ActionID)
+	}
+	if !strings.Contains(outcome.ActionRecord.Pattern, "status=200") {
+		t.Fatalf("outcome pattern = %q, want status=200", outcome.ActionRecord.Pattern)
+	}
+	if strings.Contains(outcome.ActionRecord.Pattern, "status=unknown") {
+		t.Fatalf("outcome pattern = %q, must not contain status=unknown", outcome.ActionRecord.Pattern)
+	}
+}
+
+func TestForwardProxy_RequireReceiptsOutcomeEmitFailureDoesNotFailRequest(t *testing.T) {
+	var rph *receiptProxyHelper
+	var closed atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if closed.CompareAndSwap(false, true) {
+			if err := rph.rec.Close(); err != nil {
+				t.Errorf("recorder.Close: %v", err)
+			}
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph = newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", body)
+	}
+	receipts := extractReceiptsFromDir(t, rph.dir)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count after outcome failure = %d, want durable intent only", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("receipt phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 }
 
 // TestForwardProxy_ResponseScanCapOverrunBlocks proves the forward proxy blocks
@@ -1286,6 +1500,7 @@ func TestForwardProxy_UnscannablePassthroughStreamsUnscanned(t *testing.T) {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 	_, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
 		cfg.ResponseScanning.Enabled = true
 		cfg.ResponseScanning.Action = config.ActionBlock
 		cfg.ResponseScanning.SizeExemptDomains = []string{u.Hostname()}
@@ -1300,6 +1515,8 @@ func TestForwardProxy_UnscannablePassthroughStreamsUnscanned(t *testing.T) {
 		cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0
 	})
 	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/opaque/pkg.bin", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -1311,6 +1528,35 @@ func TestForwardProxy_UnscannablePassthroughStreamsUnscanned(t *testing.T) {
 	}
 	if w.Body.String() != body {
 		t.Fatalf("body mismatch: got %d bytes want %d", w.Body.Len(), len(body))
+	}
+
+	receipts := rph.findReceipts(t)
+	var intentCount, outcomeCount int
+	var intentID, outcomeID string
+	for _, rcpt := range receipts {
+		switch rcpt.ActionRecord.DecisionPhase {
+		case receipt.DecisionPhaseIntent:
+			intentCount++
+			intentID = rcpt.ActionRecord.ActionID
+		case receipt.DecisionPhaseOutcome:
+			outcomeCount++
+			outcomeID = rcpt.ActionRecord.ActionID
+			if !strings.Contains(rcpt.ActionRecord.Pattern, "status=200") {
+				t.Fatalf("outcome pattern = %q, want status=200", rcpt.ActionRecord.Pattern)
+			}
+			if !strings.Contains(rcpt.ActionRecord.Pattern, "reason=unscannable_passthrough") {
+				t.Fatalf("outcome pattern = %q, want unscannable passthrough reason", rcpt.ActionRecord.Pattern)
+			}
+		}
+	}
+	if intentCount != 1 {
+		t.Fatalf("intent receipt count = %d, want exactly one", intentCount)
+	}
+	if outcomeCount != 1 {
+		t.Fatalf("outcome receipt count = %d, want exactly one", outcomeCount)
+	}
+	if outcomeID != intentID {
+		t.Fatalf("outcome action_id = %s, want %s", outcomeID, intentID)
 	}
 }
 

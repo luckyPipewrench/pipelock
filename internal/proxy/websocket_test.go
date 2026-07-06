@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -624,12 +625,23 @@ func TestWSProxyRequireReceipts_RedactedSuccessEmitsCloseSummary(t *testing.T) {
 	}, "websocket redaction close receipt")
 
 	receipts := rph.findReceipts(t)
-	var allowCount, redactionCloseCount int
+	var allowID string
+	var allowCount, outcomeCount, redactionCloseCount int
 	for _, rcpt := range receipts {
 		if rcpt.ActionRecord.Verdict == config.ActionAllow && rcpt.ActionRecord.Layer == "" {
 			allowCount++
+			allowID = rcpt.ActionRecord.ActionID
 			if rcpt.ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
 				t.Fatalf("admission decision_phase = %q, want %q", rcpt.ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+			}
+		}
+		if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+			outcomeCount++
+			if rcpt.ActionRecord.ActionID != allowID {
+				t.Fatalf("outcome action_id = %s, want %s", rcpt.ActionRecord.ActionID, allowID)
+			}
+			if !strings.Contains(rcpt.ActionRecord.Pattern, "status=1000") {
+				t.Fatalf("outcome pattern = %q, want status=1000", rcpt.ActionRecord.Pattern)
 			}
 		}
 		if rcpt.ActionRecord.Layer == "session_close" && rcpt.ActionRecord.Redaction != nil {
@@ -639,8 +651,97 @@ func TestWSProxyRequireReceipts_RedactedSuccessEmitsCloseSummary(t *testing.T) {
 	if allowCount != 1 {
 		t.Fatalf("allow receipt count = %d, want one admission receipt", allowCount)
 	}
+	if outcomeCount != 1 {
+		t.Fatalf("outcome receipt count = %d, want one outcome receipt", outcomeCount)
+	}
 	if redactionCloseCount != 1 {
 		t.Fatalf("redaction close receipt count = %d, want one signed close summary", redactionCloseCount)
+	}
+}
+
+func TestWSProxyRequireReceipts_UpstreamDialFailureEmitsOutcome(t *testing.T) {
+	lc := net.ListenConfig{}
+	backendLn, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen backend: %v", err)
+	}
+	backendAddr := backendLn.Addr().String()
+	if closeErr := backendLn.Close(); closeErr != nil {
+		t.Fatalf("close backend listener: %v", closeErr)
+	}
+
+	rph := newReceiptProxyHelper(t)
+	proxyAddr, p, proxyCleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+	})
+	defer proxyCleanup()
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Errorf("conn.Close: %v", closeErr)
+		}
+	}()
+	if deadlineErr := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); deadlineErr != nil {
+		t.Fatalf("set read deadline: %v", deadlineErr)
+	}
+	hdr, err := ws.ReadHeader(conn)
+	if err != nil {
+		t.Fatalf("read close frame header: %v", err)
+	}
+	if hdr.OpCode != ws.OpClose {
+		t.Fatalf("opcode = %v, want OpClose", hdr.OpCode)
+	}
+	payload := make([]byte, hdr.Length)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		t.Fatalf("read close frame payload: %v", err)
+	}
+	if len(payload) < 2 {
+		t.Fatalf("close frame payload length = %d, want status code", len(payload))
+	}
+	if got := ws.StatusCode(binary.BigEndian.Uint16(payload[:2])); got != ws.StatusInternalServerError {
+		t.Fatalf("close code = %v, want %v", got, ws.StatusInternalServerError)
+	}
+
+	testwait.For(t, 2*time.Second, func() bool {
+		for _, rcpt := range extractReceiptsFromDir(t, rph.dir) {
+			if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome {
+				return true
+			}
+		}
+		return false
+	}, "websocket upstream dial failure outcome receipt")
+
+	receipts := rph.findReceipts(t)
+	var intentID string
+	var intentCount, outcomeCount int
+	var outcome receipt.Receipt
+	for _, rcpt := range receipts {
+		switch {
+		case rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseIntent &&
+			rcpt.ActionRecord.Verdict == config.ActionAllow &&
+			rcpt.ActionRecord.Layer == "":
+			intentCount++
+			intentID = rcpt.ActionRecord.ActionID
+		case rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome:
+			outcomeCount++
+			outcome = rcpt
+		}
+	}
+	if intentCount != 1 {
+		t.Fatalf("intent receipt count = %d, want 1", intentCount)
+	}
+	if outcomeCount != 1 {
+		t.Fatalf("outcome receipt count = %d, want 1", outcomeCount)
+	}
+	if outcome.ActionRecord.ActionID != intentID {
+		t.Fatalf("outcome action_id = %s, want %s", outcome.ActionRecord.ActionID, intentID)
+	}
+	for _, want := range []string{"status=1011", "bytes=0", "reason=upstream_dial_failed"} {
+		if !strings.Contains(outcome.ActionRecord.Pattern, want) {
+			t.Fatalf("outcome pattern = %q, want %s", outcome.ActionRecord.Pattern, want)
+		}
 	}
 }
 

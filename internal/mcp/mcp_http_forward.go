@@ -28,16 +28,45 @@ func emitRequestScopedTimeout(
 	tracker *RequestTracker,
 	id json.RawMessage,
 	logMessage string,
+	opts MCPProxyOpts,
 ) {
 	if c, ok := respReader.(io.Closer); ok {
 		_ = c.Close()
 	}
-	if len(id) != 0 && (tracker == nil || tracker.Validate(id)) {
-		if wErr := writer.WriteMessage(timeoutErrorResponse(id)); wErr != nil {
-			_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
+	if len(id) != 0 {
+		outcome, ok := consumeTrackedRequestOutcome(tracker, id)
+		if ok {
+			resp := timeoutErrorResponse(id)
+			if wErr := writer.WriteMessage(resp); wErr != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: failed to send timeout response: %v\n", wErr)
+			}
+			emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, outcome.Receipt, "error", int64(len(resp)), "response_timeout")
 		}
 	}
 	_, _ = fmt.Fprintln(logW, logMessage)
+}
+
+func emitTrackedTerminalOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, resp []byte, reason string, opts MCPProxyOpts) {
+	outcome, ok := consumeTrackedRequestOutcome(tracker, id)
+	if !ok {
+		return
+	}
+	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, outcome.Receipt, mcpResponseStatus(resp), int64(len(resp)), reason)
+}
+
+func emitTrackedIncompleteOutcome(logW io.Writer, tracker *RequestTracker, id json.RawMessage, reason string, opts MCPProxyOpts) {
+	outcome, ok := consumeTrackedRequestOutcome(tracker, id)
+	if !ok {
+		return
+	}
+	emitMCPOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), logW, outcome.Receipt, "incomplete", -1, reason)
+}
+
+func consumeTrackedRequestOutcome(tracker *RequestTracker, id json.RawMessage) (TrackedRequestOutcome, bool) {
+	if tracker == nil {
+		return TrackedRequestOutcome{}, true
+	}
+	return tracker.Consume(id)
 }
 
 // RunHTTPProxy bridges stdio (client) to an upstream HTTP MCP server with
@@ -251,6 +280,7 @@ func RunHTTPProxy(
 								tracker,
 								deferredReq.ID,
 								"pipelock: upstream response timeout on deferred request; failed request closed",
+								fwdOpts,
 							)
 						} else if scanErr != nil {
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
@@ -301,7 +331,11 @@ func RunHTTPProxy(
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
 		if isRequest(msg) {
-			tracker.Track(frame.ID)
+			if decision.Outcome.Receipt.ActionID != "" {
+				tracker.TrackOutcome(frame.ID, decision.Outcome)
+			} else {
+				tracker.Track(frame.ID)
+			}
 		}
 
 		if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
@@ -315,6 +349,7 @@ func RunHTTPProxy(
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
 			}
+			emitTrackedTerminalOutcome(safeLogW, tracker, frame.ID, errResp, "upstream_contract", fwdOpts)
 			continue
 		} else if gate.Verdict == config.ActionBlock {
 			if gate.WinningSource == contractruntime.WinningSourceScanner {
@@ -329,6 +364,7 @@ func RunHTTPProxy(
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
 			}
+			emitTrackedTerminalOutcome(safeLogW, tracker, frame.ID, errResp, "upstream_contract", fwdOpts)
 			continue
 		}
 
@@ -348,6 +384,7 @@ func RunHTTPProxy(
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", wErr)
 			}
+			emitTrackedTerminalOutcome(safeLogW, tracker, frame.ID, errResp, "upstream_error", fwdOpts)
 			continue
 		}
 
@@ -363,12 +400,14 @@ func RunHTTPProxy(
 				tracker,
 				frame.ID,
 				"pipelock: upstream response timeout; failed request closed, session continues",
+				fwdOpts,
 			)
 			lastScanErr = scanErr
 			continue
 		}
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+			emitTrackedIncompleteOutcome(safeLogW, tracker, frame.ID, "scan_error", fwdOpts)
 			lastScanErr = scanErr
 		} else if !foundInjection {
 			commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), mcpFrameBaselineIdentity(frame))
@@ -393,6 +432,7 @@ func RunHTTPProxy(
 	// Stop GET stream and wait for it to finish.
 	cancel()
 	wg.Wait()
+	emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 
 	return lastScanErr
 }

@@ -90,6 +90,16 @@ func eventAction(event Event) string {
 			return normalizeEventAction(value)
 		}
 	}
+	if event.Type == EventAdaptiveEscalation {
+		if value, ok := event.Fields["to"].(string); ok && value != "" {
+			return normalizeEventAction(value)
+		}
+	}
+	if event.Type == EventToolRedirect {
+		if value, ok := event.Fields["result"].(string); ok && value != "" {
+			return normalizeEventAction(value)
+		}
+	}
 	if blocked, ok := event.Fields["blocked"].(bool); ok && blocked {
 		return conventionActionBlock
 	}
@@ -112,7 +122,7 @@ func eventTypeAction(eventType string) string {
 	switch eventType {
 	case EventAllowed:
 		return conventionActionAllow
-	case EventBlocked, EventWSBlocked, EventKillSwitchDeny, EventAirlockDeny:
+	case EventBlocked, EventWSBlocked, EventKillSwitchDeny, EventAirlockDeny, EventSNIMismatch:
 		return conventionActionBlock
 	default:
 		return ""

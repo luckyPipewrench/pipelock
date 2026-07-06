@@ -39,8 +39,11 @@ func TestFilterAllows(t *testing.T) {
 		{name: "legacy blocked event infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventBlocked, Fields: map[string]any{"scanner": "ssrf"}}, want: true},
 		{name: "kill switch deny infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventKillSwitchDeny, Fields: map[string]any{"source": "config"}}, want: true},
 		{name: "airlock deny infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventAirlockDeny, Fields: map[string]any{"tier": "hard"}}, want: true},
+		{name: "SNI mismatch infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventSNIMismatch, Fields: map[string]any{"category": "mismatch"}}, want: true},
 		{name: "blocked boolean infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventMediaExposure, Fields: map[string]any{"blocked": true}}, want: true},
 		{name: "deny decision normalizes to block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventTaintDecision, Fields: map[string]any{"decision": "deny"}}, want: true},
+		{name: "adaptive escalation to block infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventAdaptiveEscalation, Fields: map[string]any{"to": "block"}}, want: true},
+		{name: "blocked redirect result infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventToolRedirect, Fields: map[string]any{"result": "blocked"}}, want: true},
 		{name: "identity alias matches agent filter", filter: Filter{Agents: []string{"identity-a"}}, event: Event{Type: EventBodyDLP, Fields: map[string]any{"identity": "identity-a"}}, want: true},
 	}
 

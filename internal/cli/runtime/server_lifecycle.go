@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -118,7 +119,7 @@ func (s *Server) startupListeners(cfg *config.Config) []string {
 	if cfg.ScanAPI.Listen != "" {
 		listeners = append(listeners, "scan_api="+cfg.ScanAPI.Listen)
 	}
-	if cfg.KillSwitch.APIToken != "" {
+	if killSwitchAPITokenConfigured(cfg) {
 		if s.apiOnSeparatePort {
 			listeners = append(listeners, "kill_api="+cfg.KillSwitch.APIListen)
 		} else {
@@ -216,6 +217,10 @@ func startupEntropyState(cfg *config.Config) string {
 		return "off"
 	}
 	return "on"
+}
+
+func killSwitchAPITokenConfigured(cfg *config.Config) bool {
+	return cfg.KillSwitch.APIToken != "" || os.Getenv(killswitch.EnvAPIToken) != ""
 }
 
 // Start binds all configured listeners, launches the reload/signal/
@@ -353,7 +358,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if cfg.Emit.Syslog.Address != "" {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Emit:   syslog -> %s (min_severity: %s)\n", RedactEndpoint(cfg.Emit.Syslog.Address), cfg.Emit.Syslog.MinSeverity)
 	}
-	if cfg.KillSwitch.APIToken != "" {
+	if killSwitchAPITokenConfigured(cfg) {
 		if s.apiOnSeparatePort {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "  API:    http://%s/api/v1/killswitch (kill switch remote control, separate port)\n", cfg.KillSwitch.APIListen)
 		} else {

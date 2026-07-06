@@ -4,6 +4,7 @@
 package diag
 
 import (
+	"os"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -64,7 +65,7 @@ func killSwitchConfigured(cfg *config.Config) bool {
 	return cfg.KillSwitch.Enabled ||
 		cfg.KillSwitch.SentinelFile != "" ||
 		cfg.KillSwitch.APIToken != "" ||
-		cfg.KillSwitch.APIListen != ""
+		os.Getenv(config.EnvKillSwitchAPIToken) != ""
 }
 
 func emitConfigured(cfg *config.Config) bool {

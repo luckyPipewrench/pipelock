@@ -148,6 +148,22 @@ func TestStartupSummaryLine(t *testing.T) {
 	}
 }
 
+func TestStartupSummaryLineIncludesKillAPIWhenTokenComesFromEnv(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, strings.Repeat("x", 16))
+	cfgPath := writeServerTestConfig(t, `
+kill_switch:
+  api_listen: "127.0.0.1:19091"
+`)
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+	})
+
+	line := s.startupSummaryLine(s.cfg)
+	if !strings.Contains(line, "kill_api=127.0.0.1:19091") {
+		t.Fatalf("summary missing env-token kill API listener:\n%s", line)
+	}
+}
+
 func TestStartupEntropyStateOff(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 0

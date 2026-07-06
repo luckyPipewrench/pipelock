@@ -55,10 +55,21 @@ func TestAvailableUnconfiguredKnobsKeepsKillSwitchWhenOnlyPresentationOrExemptio
 	cfg := config.Defaults()
 	cfg.KillSwitch.Message = "deny all"
 	cfg.KillSwitch.AllowlistIPs = []string{"192.0.2.0/24"}
+	cfg.KillSwitch.APIListen = "127.0.0.1:19091"
 
 	got := availableUnconfiguredKnobs(cfg)
 	if !containsString(got, "kill_switch") {
 		t.Fatalf("availableUnconfiguredKnobs = %v, want kill_switch without an activation source", got)
+	}
+}
+
+func TestAvailableUnconfiguredKnobsOmitsKillSwitchWhenAPITokenComesFromEnv(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, strings.Repeat("x", 16))
+
+	cfg := config.Defaults()
+	got := availableUnconfiguredKnobs(cfg)
+	if containsString(got, "kill_switch") {
+		t.Fatalf("availableUnconfiguredKnobs = %v, want kill_switch omitted when API token is supplied by env", got)
 	}
 }
 

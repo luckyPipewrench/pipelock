@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -288,6 +289,36 @@ func TestRewriteDLPPatternBlockPreservesDLPSiblingsAfterPatterns(t *testing.T) {
 	}
 }
 
+func TestRewriteDLPPatternBlockUsesDetectedIndent(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte("version: 1\ndlp:\n    scan_env: true\n    patterns:\n      - name: old\n        regex: old\n        severity: low\n    min_env_secret_length: 32\n")
+	patterns := []DLPPattern{{Name: "Token", Regex: `tok_[a-z]+`, Severity: SeverityHigh}}
+	rewritten, err := rewriteDLPPatternBlock(raw, patterns)
+	if err != nil {
+		t.Fatalf("rewriteDLPPatternBlock: %v", err)
+	}
+	got := string(rewritten)
+	for _, want := range []string{
+		`      - name: "Token"`,
+		`        regex: 'tok_[a-z]+'`,
+		`        severity: high`,
+		`    min_env_secret_length: 32`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rewritten block missing %q:\n%s", want, got)
+		}
+	}
+
+	again, err := rewriteDLPPatternBlock(rewritten, patterns)
+	if err != nil {
+		t.Fatalf("rewriteDLPPatternBlock second pass: %v", err)
+	}
+	if !bytes.Equal(again, rewritten) {
+		t.Fatalf("rewrite should be idempotent with nonstandard indent:\n%s", again)
+	}
+}
+
 func TestGenerateDLPPresetFilesDetectsFileDrift(t *testing.T) {
 	t.Parallel()
 
@@ -318,6 +349,41 @@ func TestGenerateDLPPresetFilesDetectsFileDrift(t *testing.T) {
 
 	if _, err := GenerateDLPPresetFiles(root, false); err == nil || !strings.Contains(err.Error(), "severity drifted") {
 		t.Fatalf("GenerateDLPPresetFiles error = %v, want severity drift", err)
+	}
+
+	out, err := GenerateDLPPresetFiles(root, true)
+	if err != nil {
+		t.Fatalf("GenerateDLPPresetFiles write=true: %v", err)
+	}
+	for _, want := range []string{
+		"updated configs/balanced.yaml (full): 66 patterns",
+		"DLP preset generation complete: 8 files checked, 1 updated",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("GenerateDLPPresetFiles output missing %q:\n%s", want, out)
+		}
+	}
+	rewritten, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read rewritten preset: %v", err)
+	}
+	got, err := parseYAMLDLPPatterns(rewritten)
+	if err != nil {
+		t.Fatalf("parse rewritten preset: %v", err)
+	}
+	want, err := PresetDLPPatterns(DLPPresetProfileFull)
+	if err != nil {
+		t.Fatalf("PresetDLPPatterns: %v", err)
+	}
+	if diff := compareDLPPatternSets(got, want); diff != "" {
+		t.Fatalf("rewritten preset drifted: %s", diff)
+	}
+	out, err = GenerateDLPPresetFiles(root, false)
+	if err != nil {
+		t.Fatalf("GenerateDLPPresetFiles follow-up dry run: %v", err)
+	}
+	if !strings.Contains(out, "DLP preset generation complete: 8 files checked, 0 updated") {
+		t.Fatalf("GenerateDLPPresetFiles follow-up output unexpected:\n%s", out)
 	}
 }
 

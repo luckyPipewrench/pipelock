@@ -37,7 +37,7 @@ func GenerateDLPPresetFiles(root string, write bool) (string, error) {
 	for _, target := range dlpPresetTargets {
 		expected, err := PresetDLPPatterns(target.Profile)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%s: %w", target.Path, err)
 		}
 		path := filepath.Join(root, target.Path)
 		raw, err := os.ReadFile(filepath.Clean(path))
@@ -142,7 +142,7 @@ func rewriteDLPPatternBlock(raw []byte, patterns []DLPPattern) ([]byte, error) {
 	for _, line := range lines[:patternsLine+1] {
 		out.WriteString(line)
 	}
-	out.WriteString(renderDLPPatternBlock(patterns))
+	out.WriteString(renderDLPPatternBlock(patterns, patternsIndent))
 	for _, line := range lines[blockEnd:] {
 		out.WriteString(line)
 	}
@@ -175,19 +175,23 @@ func findDLPPatternsLine(lines []string) (int, error) {
 	return -1, fmt.Errorf("dlp.patterns block not found")
 }
 
-func renderDLPPatternBlock(patterns []DLPPattern) string {
+func renderDLPPatternBlock(patterns []DLPPattern, patternsIndent int) string {
+	itemIndent := strings.Repeat(" ", patternsIndent+2)
+	fieldIndent := strings.Repeat(" ", patternsIndent+4)
+	exemptDomainIndent := strings.Repeat(" ", patternsIndent+6)
+
 	var out strings.Builder
 	for _, pattern := range patterns {
-		fmt.Fprintf(&out, "    - name: %q\n", pattern.Name)
-		fmt.Fprintf(&out, "      regex: '%s'\n", strings.ReplaceAll(pattern.Regex, "'", "''"))
-		fmt.Fprintf(&out, "      severity: %s\n", pattern.Severity)
+		fmt.Fprintf(&out, "%s- name: %q\n", itemIndent, pattern.Name)
+		fmt.Fprintf(&out, "%sregex: '%s'\n", fieldIndent, strings.ReplaceAll(pattern.Regex, "'", "''"))
+		fmt.Fprintf(&out, "%sseverity: %s\n", fieldIndent, pattern.Severity)
 		if pattern.Validator != "" {
-			fmt.Fprintf(&out, "      validator: %s\n", pattern.Validator)
+			fmt.Fprintf(&out, "%svalidator: %s\n", fieldIndent, pattern.Validator)
 		}
 		if len(pattern.ExemptDomains) > 0 {
-			out.WriteString("      exempt_domains:\n")
+			fmt.Fprintf(&out, "%sexempt_domains:\n", fieldIndent)
 			for _, domain := range pattern.ExemptDomains {
-				fmt.Fprintf(&out, "        - %q\n", domain)
+				fmt.Fprintf(&out, "%s- %q\n", exemptDomainIndent, domain)
 			}
 		}
 	}

@@ -68,6 +68,7 @@ const (
 	SeverityCritical = "critical"
 	SeverityHigh     = "high"
 	SeverityMedium   = "medium"
+	SeverityLow      = "low"
 )
 
 // DLP validator names for post-match checksum verification.

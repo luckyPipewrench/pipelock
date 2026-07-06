@@ -117,7 +117,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// (task/disk/risk...), and reject longer opaque hex blobs that
 	// happen to start with SK. (?i) is retained for evasion coverage.
 	// Source: https://www.twilio.com/docs/glossary/what-is-a-sid
-	{Name: "Twilio API Key", Regex: `\bSK[a-f0-9]{32}\b`, Severity: "high"},
+	{Name: "Twilio API Key", Regex: `\bSK[a-f0-9]{32}\b`, Severity: SeverityHigh},
 	// SendGrid keys are a literal uppercase "SG." prefix + two
 	// base64url segments. The prefix must stay case-sensitive: under the
 	// forced (?i) prefix a bare "SG." matches lowercase "sg." in prose,
@@ -133,7 +133,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// alphanumeric because real keys are lowercase base36-ish
 	// (e.g. key-3ax6xnjp...), not hex - narrowing to hex would be a
 	// false-negative.
-	{Name: "Mailgun API Key", Regex: `\bkey-[a-zA-Z0-9]{32}\b`, Severity: "high"},
+	{Name: "Mailgun API Key", Regex: `\bkey-[a-zA-Z0-9]{32}\b`, Severity: SeverityHigh},
 
 	// Observability / monitoring
 	// New Relic user API keys: "NRAK-" prefix, 27+ uppercase alphanumeric.
@@ -188,12 +188,12 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Linear documents lin_api_ as the personal API key prefix; keep the
 	// existing length floor but require a token boundary.
 	// Source: https://linear.app/changelog/2021-08-19-github-secret-scanning
-	{Name: "Linear API Key", Regex: `lin_api_[A-Za-z0-9]{40,}\b`, Severity: "high"},
-	{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}\b`, Severity: "high"},
+	{Name: "Linear API Key", Regex: `lin_api_[A-Za-z0-9]{40,}\b`, Severity: SeverityHigh},
+	{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}\b`, Severity: SeverityHigh},
 	// Sentry CLI documents sntrys_ auth tokens; keep the existing
 	// length floor but require a token boundary.
 	// Source: https://docs.sentry.dev/cli/configuration/
-	{Name: "Sentry Auth Token", Regex: `sntrys_[A-Za-z0-9]{40,}\b`, Severity: "high"},
+	{Name: "Sentry Auth Token", Regex: `sntrys_[A-Za-z0-9]{40,}\b`, Severity: SeverityHigh},
 
 	// Cryptographic material
 	// PGP + optional trailing BLOCK keep DLP detection aligned with
@@ -207,7 +207,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// "ey..."-ish fragments tripped it. Keep only narrow, case-sensitive
 	// JSON-object prefixes so the precision fix does not drop compact
 	// JWTs serialized with whitespace.
-	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},
+	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh},
 
 	// Cryptocurrency private keys
 	// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or
@@ -226,8 +226,8 @@ var defaultDLPPatternSet = []DLPPattern{
 	// should add the pattern to their config or use a preset.
 
 	// Identity / PII
-	{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
-	{Name: "Google OAuth Client ID", Regex: `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, Severity: "medium"},
+	{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: SeverityLow},
+	{Name: "Google OAuth Client ID", Regex: `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, Severity: SeverityMedium},
 
 	// Generic credential patterns
 	// Accepts either a URL query delimiter ([?&;]) OR line-start
@@ -255,7 +255,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// otherwise turn into a spurious match by deleting the value's
 	// natural delimiter: command substitution (token=$(...)),
 	// backticks, and quoted variable refs (password="$VAR").
-	{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,}`, Severity: "high"},
+	{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,}`, Severity: SeverityHigh},
 	// Environment variable credential patterns: catches env var dumps
 	// where the secret-bearing keyword is the terminal segment of an
 	// UPPER_CASE name (e.g., AWS_SECRET_ACCESS_KEY=..., STRIPE_SECRET_KEY=...,
@@ -279,7 +279,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Authorization templates while still matching common real
 	// assignments and space-split evasions (PROVIDER _ TOKEN =
 	// realsecret).
-	{Name: "Environment Variable Secret", Regex: `(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*[A-Za-z0-9_+/=~.-]\S{7,}`, Severity: "high"},
+	{Name: "Environment Variable Secret", Regex: `(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*[A-Za-z0-9_+/=~.-]\S{7,}`, Severity: SeverityHigh},
 
 	// Financial identifiers - validated with post-match checksums to minimize
 	// false positives. Credit card regex is intentionally broad (any 15-19
@@ -288,8 +288,8 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Luhn + issuer check drops ~95% of random matches. mod-97 drops ~99%
 	// of random IBAN-format matches. ABA is not in defaults due to high FP
 	// rate; users can add it via config with validator: "aba".
-	{Name: "Credit Card Number", Regex: `\b\d{4}(?:[- ]?\d){11,15}\b`, Severity: "medium", Validator: ValidatorLuhn},
-	{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: "medium", Validator: ValidatorMod97},
+	{Name: "Credit Card Number", Regex: `\b\d{4}(?:[- ]?\d){11,15}\b`, Severity: SeverityMedium, Validator: ValidatorLuhn},
+	{Name: "IBAN", Regex: `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`, Severity: SeverityMedium, Validator: ValidatorMod97},
 }
 
 // DefaultDLPPatterns returns a copy of the canonical shipped DLP pattern list.
@@ -339,7 +339,7 @@ var quickstartDLPPatterns = []DLPPattern{
 	{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: SeverityHigh},
 	{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: SeverityCritical},
 	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh},
-	{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: "low"},
+	{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: SeverityLow},
 	{Name: "Google OAuth Client ID", Regex: `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, Severity: SeverityMedium},
 	{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,}`, Severity: SeverityHigh},
 }

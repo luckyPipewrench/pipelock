@@ -21,18 +21,26 @@ const testDSN = "https://examplePublicKey@o0.ingest.sentry.io/0"
 
 // mockTransport captures events sent through the Sentry SDK.
 type mockTransport struct {
-	mu     sync.Mutex
-	events []*sentry.Event
+	mu                    sync.Mutex
+	events                []*sentry.Event
+	flushCalls            int
+	flushWithContextCalls int
 }
 
 func (t *mockTransport) Configure(_ sentry.ClientOptions) {}
 func (t *mockTransport) Close()                           {}
 
 func (t *mockTransport) Flush(_ time.Duration) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.flushCalls++
 	return true
 }
 
 func (t *mockTransport) FlushWithContext(_ context.Context) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.flushWithContextCalls++
 	return true
 }
 
@@ -48,6 +56,12 @@ func (t *mockTransport) Events() []*sentry.Event {
 	cp := make([]*sentry.Event, len(t.events))
 	copy(cp, t.events)
 	return cp
+}
+
+func (t *mockTransport) FlushCalls() (int, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.flushCalls, t.flushWithContextCalls
 }
 
 // initTestClient creates an enabled client with a mock transport.
@@ -226,6 +240,34 @@ func TestInit_InvalidDSNReturnsError(t *testing.T) {
 	}
 	if c != nil {
 		t.Error("expected nil client on error")
+	}
+}
+
+func TestInit_InvalidDSNClearsStaleGlobalClient(t *testing.T) {
+	t.Cleanup(func() {
+		sentry.CurrentHub().BindClient(nil)
+	})
+	t.Setenv("SENTRY_DSN", "")
+
+	staleTransport := &mockTransport{}
+	enabled := true
+	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
+	cfg.Sentry.DSN = testDSN
+	if _, err := initClient(cfg, "test", staleTransport); err != nil {
+		t.Fatalf("enable stale client: %v", err)
+	}
+
+	cfg.Sentry.DSN = "not-a-valid-dsn"
+	if c, err := Init(cfg, "test"); err == nil || c != nil {
+		t.Fatalf("invalid dsn init = (%+v, %v), want nil client and error", c, err)
+	}
+
+	if id := sentry.CaptureMessage("must not reach stale transport"); id != nil {
+		t.Fatalf("package-level capture returned event id after failed init: %s", *id)
+	}
+	if events := staleTransport.Events(); len(events) != 0 {
+		t.Fatalf("stale global client captured %d event(s) after failed init", len(events))
 	}
 }
 
@@ -514,6 +556,34 @@ func TestInit_SampleRateZeroRejectedWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestInit_SampleRateZeroClearsStaleGlobalClient(t *testing.T) {
+	t.Cleanup(func() {
+		sentry.CurrentHub().BindClient(nil)
+	})
+
+	staleTransport := &mockTransport{}
+	enabled := true
+	cfg := config.Defaults()
+	cfg.Sentry.Enabled = &enabled
+	cfg.Sentry.DSN = testDSN
+	if _, err := initClient(cfg, "test", staleTransport); err != nil {
+		t.Fatalf("enable stale client: %v", err)
+	}
+
+	zero := 0.0
+	cfg.Sentry.SampleRate = &zero
+	if _, err := initClient(cfg, "test", &mockTransport{}); err == nil || !strings.Contains(err.Error(), "sample_rate 0.0") {
+		t.Fatalf("expected sample_rate 0.0 rejection, got %v", err)
+	}
+
+	if id := sentry.CaptureMessage("must not reach stale transport"); id != nil {
+		t.Fatalf("package-level capture returned event id after rejected init: %s", *id)
+	}
+	if events := staleTransport.Events(); len(events) != 0 {
+		t.Fatalf("stale global client captured %d event(s) after rejected init", len(events))
+	}
+}
+
 func TestEventTypes_DroppedBeforeTransport(t *testing.T) {
 	c, transport := initTestClient(t, nil)
 	defer c.Close()
@@ -574,6 +644,23 @@ func TestTransportGuard_SanitizesNormalEvents(t *testing.T) {
 		if strings.Contains(raw, forbidden) {
 			t.Fatalf("transport guard leaked %q in %+v", forbidden, event)
 		}
+	}
+}
+
+func TestTransportGuard_FlushWithContextDelegates(t *testing.T) {
+	if !(dropUnsafeEventTransport{}).FlushWithContext(context.Background()) {
+		t.Fatal("nil delegate FlushWithContext should be a successful no-op")
+	}
+
+	transport := &mockTransport{}
+	guard := dropUnsafeEventTransport{delegate: transport}
+	if !guard.FlushWithContext(context.Background()) {
+		t.Fatal("expected delegated FlushWithContext to succeed")
+	}
+
+	flushCalls, flushWithContextCalls := transport.FlushCalls()
+	if flushCalls != 0 || flushWithContextCalls != 1 {
+		t.Fatalf("flush calls = %d, flush-with-context calls = %d; want 0 and 1", flushCalls, flushWithContextCalls)
 	}
 }
 

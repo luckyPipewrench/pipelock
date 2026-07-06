@@ -40,6 +40,7 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 		return &Client{enabled: false}, nil
 	}
 	if cfg.Sentry.SampleRate != nil && *cfg.Sentry.SampleRate == 0 {
+		disableGlobalClient()
 		return nil, fmt.Errorf("invalid sentry.sample_rate 0.0: it does not disable Sentry in sentry-go; use sentry.enabled: false or an empty DSN")
 	}
 
@@ -113,6 +114,7 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 
 	err := sentry.Init(opts)
 	if err != nil {
+		disableGlobalClient()
 		return nil, err
 	}
 
@@ -230,12 +232,7 @@ func (t dropUnsafeEventTransport) FlushWithContext(ctx context.Context) bool {
 	if t.delegate == nil {
 		return true
 	}
-	if flusher, ok := t.delegate.(interface {
-		FlushWithContext(context.Context) bool
-	}); ok {
-		return flusher.FlushWithContext(ctx)
-	}
-	return t.delegate.Flush(0)
+	return t.delegate.FlushWithContext(ctx)
 }
 
 func (t dropUnsafeEventTransport) Close() {

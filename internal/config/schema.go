@@ -70,6 +70,12 @@ const (
 	SeverityMedium   = "medium"
 )
 
+// Event export format constants.
+const (
+	EmitFormatJSON = "json"
+	EmitFormatCEF  = "cef"
+)
+
 // DLP validator names for post-match checksum verification.
 const (
 	ValidatorLuhn  = "luhn"
@@ -1236,9 +1242,17 @@ func (h HealthWatchdog) IntervalDuration() time.Duration {
 // EmitConfig configures external event emission (webhook, syslog, and OTLP).
 type EmitConfig struct {
 	InstanceID string        `yaml:"instance_id"` // defaults to hostname
+	Filter     EmitFilter    `yaml:"filter" json:"-"`
 	Webhook    WebhookConfig `yaml:"webhook"`
 	Syslog     SyslogConfig  `yaml:"syslog"`
 	OTLP       OTLPConfig    `yaml:"otlp"`
+}
+
+// EmitFilter configures additive export filtering across all emit sinks.
+type EmitFilter struct {
+	Actions       []string `yaml:"actions"`
+	DecisionTypes []string `yaml:"decision_types"`
+	Agents        []string `yaml:"agents"`
 }
 
 // OTLPConfig configures the OpenTelemetry log export sink (HTTP/protobuf).
@@ -1275,10 +1289,11 @@ type WebhookConfig struct {
 
 // SyslogConfig configures the syslog emission sink (RFC 5424).
 type SyslogConfig struct {
-	Address     string `yaml:"address"`      // e.g. "udp://syslog.example.com:514"
-	MinSeverity string `yaml:"min_severity"` // info, warn, critical
-	Facility    string `yaml:"facility"`     // e.g. "local0" (default)
-	Tag         string `yaml:"tag"`          // e.g. "pipelock" (default)
+	Address     string `yaml:"address"`         // e.g. "udp://syslog.example.com:514"
+	MinSeverity string `yaml:"min_severity"`    // info, warn, critical
+	Facility    string `yaml:"facility"`        // e.g. "local0" (default)
+	Tag         string `yaml:"tag"`             // e.g. "pipelock" (default)
+	Format      string `yaml:"format" json:"-"` // json (default) or cef
 }
 
 // MCPWSListener configures the MCP WebSocket listener for inbound connections.

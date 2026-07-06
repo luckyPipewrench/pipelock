@@ -1,0 +1,133 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package emit
+
+import (
+	"context"
+	"fmt"
+	"strings"
+)
+
+// Filter controls which events are exported to configured sinks.
+type Filter struct {
+	Actions       []string
+	DecisionTypes []string
+	Agents        []string
+}
+
+// Enabled reports whether the filter has any active criteria.
+func (f Filter) Enabled() bool {
+	return len(f.Actions) > 0 || len(f.DecisionTypes) > 0 || len(f.Agents) > 0
+}
+
+// Allows reports whether event matches every configured criterion.
+func (f Filter) Allows(event Event) bool {
+	if len(f.Actions) > 0 && !containsFold(f.Actions, eventAction(event)) {
+		return false
+	}
+	if len(f.DecisionTypes) > 0 && !containsFold(f.DecisionTypes, eventDecisionType(event)) {
+		return false
+	}
+	if len(f.Agents) > 0 && !containsFold(f.Agents, eventAgent(event)) {
+		return false
+	}
+	return true
+}
+
+// ValidateFilterValues rejects empty configured values before a filter can
+// silently narrow exports in a way the operator did not intend.
+func ValidateFilterValues(name string, values []string) error {
+	for i, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s[%d] is empty", name, i)
+		}
+	}
+	return nil
+}
+
+// FilteringSink applies a Filter before forwarding matching events to a sink.
+type FilteringSink struct {
+	filter Filter
+	sink   Sink
+}
+
+// NewFilteringSink wraps sink with filter. A disabled filter returns sink as-is.
+func NewFilteringSink(sink Sink, filter Filter) Sink {
+	if sink == nil || !filter.Enabled() {
+		return sink
+	}
+	return &FilteringSink{filter: filter, sink: sink}
+}
+
+func (s *FilteringSink) Emit(ctx context.Context, event Event) error {
+	if !s.filter.Allows(event) {
+		return nil
+	}
+	return s.sink.Emit(ctx, event)
+}
+
+func (s *FilteringSink) Close() error {
+	return s.sink.Close()
+}
+
+func containsFold(values []string, candidate string) bool {
+	if candidate == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(value, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func eventAction(event Event) string {
+	for _, key := range []string{"action", "effective_action", "to_action", "verdict", "decision"} {
+		if value, ok := event.Fields[key].(string); ok && value != "" {
+			return normalizeEventAction(value)
+		}
+	}
+	return eventTypeAction(event.Type)
+}
+
+func normalizeEventAction(value string) string {
+	switch value {
+	case EventAllowed:
+		return conventionActionAllow
+	case EventBlocked, EventWSBlocked:
+		return conventionActionBlock
+	default:
+		return value
+	}
+}
+
+func eventTypeAction(eventType string) string {
+	switch eventType {
+	case EventAllowed:
+		return conventionActionAllow
+	case EventBlocked, EventWSBlocked:
+		return conventionActionBlock
+	default:
+		return ""
+	}
+}
+
+func eventDecisionType(event Event) string {
+	for _, key := range []string{"decision_type", "type", "event_type"} {
+		if value, ok := event.Fields[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return event.Type
+}
+
+func eventAgent(event Event) string {
+	for _, key := range []string{"agent", "identity", "actor", "principal"} {
+		if value, ok := event.Fields[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
+}

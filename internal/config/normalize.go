@@ -474,6 +474,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Emit.Syslog.MinSeverity == "" {
 		c.Emit.Syslog.MinSeverity = SeverityWarn
 	}
+	if c.Emit.Syslog.Format == "" {
+		c.Emit.Syslog.Format = EmitFormatJSON
+	}
 	if c.Emit.OTLP.MinSeverity == "" {
 		c.Emit.OTLP.MinSeverity = SeverityWarn
 	}

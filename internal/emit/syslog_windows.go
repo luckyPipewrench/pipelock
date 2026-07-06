@@ -34,7 +34,7 @@ func NewSyslogSink(_ string, _ ...any) (*SyslogSink, error) {
 }
 
 // NewSyslogSinkFromConfig returns an error on Windows.
-func NewSyslogSinkFromConfig(_, _, _, _ string) (*SyslogSink, error) {
+func NewSyslogSinkFromConfig(_, _, _, _, _, _ string) (*SyslogSink, error) {
 	return nil, ErrSyslogUnavailable
 }
 

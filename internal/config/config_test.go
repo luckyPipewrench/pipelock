@@ -7751,6 +7751,9 @@ func TestDefaults_EmitFields(t *testing.T) {
 	if cfg.Emit.Syslog.Tag != DefaultSyslogTag {
 		t.Errorf("expected default syslog tag %s, got %s", DefaultSyslogTag, cfg.Emit.Syslog.Tag)
 	}
+	if cfg.Emit.Syslog.Format != EmitFormatJSON {
+		t.Errorf("expected default syslog format json, got %s", cfg.Emit.Syslog.Format)
+	}
 }
 
 func TestDefaults_KillSwitchAPIExempt(t *testing.T) {
@@ -7799,12 +7802,69 @@ func TestValidate_EmitWebhookValidConfig(t *testing.T) {
 
 func TestValidate_EmitSyslogValidConfig(t *testing.T) {
 	for _, sev := range []string{SeverityInfo, SeverityWarn, SeverityCritical} {
-		t.Run(sev, func(t *testing.T) {
+		for _, format := range []string{EmitFormatJSON, EmitFormatCEF} {
+			name := sev + "/" + format
+			t.Run(name, func(t *testing.T) {
+				cfg := Defaults()
+				cfg.ApplyDefaults()
+				cfg.Emit.Syslog.Address = testSyslogAddr
+				cfg.Emit.Syslog.MinSeverity = sev
+				cfg.Emit.Syslog.Format = format
+				if err := cfg.Validate(); err != nil {
+					t.Errorf("valid syslog config severity=%q format=%q should validate, got: %v", sev, format, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidate_EmitSyslogInvalidFormat(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Syslog.Address = testSyslogAddr
+	cfg.Emit.Syslog.Format = "xml"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid syslog format")
+	}
+}
+
+func TestValidate_EmitFilter(t *testing.T) {
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.Emit.Filter.Actions = []string{ActionBlock, ActionWarn}
+	cfg.Emit.Filter.DecisionTypes = []string{"body_dlp"}
+	cfg.Emit.Filter.Agents = []string{"agent-a"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid emit filter should validate: %v", err)
+	}
+}
+
+func TestValidate_EmitFilterRejectsBlankValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{
+			name:   "actions",
+			mutate: func(cfg *Config) { cfg.Emit.Filter.Actions = []string{ActionBlock, ""} },
+		},
+		{
+			name:   "decision types",
+			mutate: func(cfg *Config) { cfg.Emit.Filter.DecisionTypes = []string{"body_dlp", " "} },
+		},
+		{
+			name:   "agents",
+			mutate: func(cfg *Config) { cfg.Emit.Filter.Agents = []string{"agent-a", "\t"} },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			cfg := Defaults()
-			cfg.Emit.Syslog.Address = testSyslogAddr
-			cfg.Emit.Syslog.MinSeverity = sev
-			if err := cfg.Validate(); err != nil {
-				t.Errorf("valid syslog config with severity %q should validate, got: %v", sev, err)
+			cfg.ApplyDefaults()
+			tt.mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected error for blank emit filter value")
 			}
 		})
 	}

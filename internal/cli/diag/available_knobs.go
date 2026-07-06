@@ -12,6 +12,10 @@ import (
 
 const doctorCheckAvailableKnobs = "available_unconfigured_knobs"
 
+func formatAvailableUnconfiguredDetail(knobs []string) string {
+	return "available but not configured: " + strings.Join(knobs, ", ")
+}
+
 func checkDoctorAvailableKnobs(cfg *config.Config) []doctorReportCheck {
 	knobs := availableUnconfiguredKnobs(cfg)
 	if len(knobs) == 0 {
@@ -27,7 +31,7 @@ func checkDoctorAvailableKnobs(cfg *config.Config) []doctorReportCheck {
 		Name:    doctorCheckAvailableKnobs,
 		Surface: doctorSurfaceConfig,
 		Status:  doctorStatusInfo,
-		Detail:  "available but not configured: " + strings.Join(knobs, ", "),
+		Detail:  formatAvailableUnconfiguredDetail(knobs),
 		Next:    "configure only the knobs that match this deployment's threat model; rerun `pipelock doctor` to verify reachability",
 	}}
 }
@@ -37,7 +41,7 @@ func availableUnconfiguredAdvisory(cfg *config.Config) string {
 	if len(knobs) == 0 {
 		return ""
 	}
-	return "available but not configured: " + strings.Join(knobs, ", ")
+	return formatAvailableUnconfiguredDetail(knobs)
 }
 
 func availableUnconfiguredKnobs(cfg *config.Config) []string {

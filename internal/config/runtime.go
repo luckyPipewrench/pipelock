@@ -141,11 +141,15 @@ func (c *Config) ResolveRuntime(opts RuntimeResolveOpts) (*Config, ResolveRuntim
 	return clone, info
 }
 
-func (c *Config) resolveKillSwitchAPIToken() {
-	c.resolvedKillSwitchAPIToken = c.KillSwitch.APIToken
+func resolvedKillSwitchAPITokenValue(yamlToken string) string {
 	if envToken := os.Getenv(EnvKillSwitchAPIToken); envToken != "" {
-		c.resolvedKillSwitchAPIToken = envToken
+		return envToken
 	}
+	return yamlToken
+}
+
+func (c *Config) resolveKillSwitchAPIToken() {
+	c.resolvedKillSwitchAPIToken = resolvedKillSwitchAPITokenValue(c.KillSwitch.APIToken)
 	c.killSwitchAPITokenWasResolved = true
 }
 
@@ -159,11 +163,7 @@ func (c *Config) EffectiveKillSwitchAPIToken() string {
 	if c.killSwitchAPITokenWasResolved {
 		return c.resolvedKillSwitchAPIToken
 	}
-	resolved := c.KillSwitch.APIToken
-	if envToken := os.Getenv(EnvKillSwitchAPIToken); envToken != "" {
-		resolved = envToken
-	}
-	return resolved
+	return resolvedKillSwitchAPITokenValue(c.KillSwitch.APIToken)
 }
 
 // EffectiveKillSwitchAPITokenConfigured reports whether the resolved runtime

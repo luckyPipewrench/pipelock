@@ -106,6 +106,37 @@ func TestPresetDLPPatternsRejectsUnknownProfile(t *testing.T) {
 	}
 }
 
+func TestQuickstartDLPPatternsReuseDefaultDefinitions(t *testing.T) {
+	t.Parallel()
+
+	defaultsByName := make(map[string]DLPPattern, len(defaultDLPPatternSet))
+	for _, pattern := range DefaultDLPPatterns() {
+		defaultsByName[pattern.Name] = pattern
+	}
+	quickstart, err := PresetDLPPatterns(DLPPresetProfileQuickstart)
+	if err != nil {
+		t.Fatalf("PresetDLPPatterns(%q): %v", DLPPresetProfileQuickstart, err)
+	}
+	for _, got := range quickstart {
+		want, ok := defaultsByName[got.Name]
+		if !ok {
+			t.Fatalf("quickstart pattern %q not found in defaults", got.Name)
+		}
+		if got.Regex != want.Regex {
+			t.Fatalf("%s quickstart regex = %q, want default %q", got.Name, got.Regex, want.Regex)
+		}
+		if got.Severity != want.Severity {
+			t.Fatalf("%s quickstart severity = %q, want default %q", got.Name, got.Severity, want.Severity)
+		}
+		if got.Validator != want.Validator {
+			t.Fatalf("%s quickstart validator = %q, want default %q", got.Name, got.Validator, want.Validator)
+		}
+		if !sameStrings(got.ExemptDomains, want.ExemptDomains) {
+			t.Fatalf("%s quickstart exempt_domains = %q, want default %q", got.Name, got.ExemptDomains, want.ExemptDomains)
+		}
+	}
+}
+
 func TestGenerateDLPPresetFilesCurrentFilesInSync(t *testing.T) {
 	t.Parallel()
 

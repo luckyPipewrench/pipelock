@@ -319,29 +319,29 @@ var hostileDLPSeverityOverrides = map[string]string{
 	"Twilio API Key":         SeverityCritical,
 }
 
-var quickstartDLPPatterns = []DLPPattern{
-	{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{10,}`, Severity: SeverityCritical},
-	{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{10,}`, Severity: SeverityCritical},
-	{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{10,}`, Severity: SeverityCritical},
-	{Name: "Fireworks API Key", Regex: `fw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical},
-	{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}`, Severity: SeverityHigh},
-	{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: SeverityCritical},
-	{Name: "Stripe Key", Regex: `[sr]k_(live|test)_[a-zA-Z0-9]{20,}`, Severity: SeverityCritical},
-	{Name: "GitHub Token", Regex: `gh[pousr]_[A-Za-z0-9_]{36,}`, Severity: SeverityCritical},
-	{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical},
-	{Name: "AWS Access ID", Regex: AWSAccessIDRegex, Severity: SeverityCritical},
-	{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical},
-	{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical},
-	{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical},
-	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical},
-	{Name: "Twilio API Key", Regex: `SK[a-f0-9]{32}`, Severity: SeverityHigh},
-	{Name: "SendGrid API Key", Regex: `(?-i:SG\.)[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: SeverityCritical},
-	{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: SeverityHigh},
-	{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: SeverityCritical},
-	{Name: "JWT Token", Regex: `(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}`, Severity: SeverityHigh},
-	{Name: "Social Security Number", Regex: `\b\d{3}-\d{2}-\d{4}\b`, Severity: SeverityLow},
-	{Name: "Google OAuth Client ID", Regex: `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, Severity: SeverityMedium},
-	{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,}`, Severity: SeverityHigh},
+var quickstartDLPPatternNames = []string{
+	"Anthropic API Key",
+	"OpenAI API Key",
+	"OpenAI Service Key",
+	"Fireworks API Key",
+	"Google API Key",
+	"Google OAuth Client Secret",
+	"Stripe Key",
+	"GitHub Token",
+	"GitHub Fine-Grained PAT",
+	"AWS Access ID",
+	"Google OAuth Token",
+	"Slack Token",
+	"Slack App Token",
+	"Discord Bot Token",
+	"Twilio API Key",
+	"SendGrid API Key",
+	"Mailgun API Key",
+	"Private Key Header",
+	"JWT Token",
+	"Social Security Number",
+	"Google OAuth Client ID",
+	"Credential in URL",
 }
 
 var coreDLPPatternNames = []string{
@@ -367,7 +367,7 @@ func PresetDLPPatterns(profile string) ([]DLPPattern, error) {
 	case DLPPresetProfileHostile:
 		return fullPresetDLPPatterns(hostileDLPSeverityOverrides), nil
 	case DLPPresetProfileQuickstart:
-		return cloneDLPPatterns(quickstartDLPPatterns), nil
+		return quickstartPresetDLPPatterns(), nil
 	default:
 		return nil, fmt.Errorf("unknown DLP preset profile %q", profile)
 	}
@@ -375,10 +375,7 @@ func PresetDLPPatterns(profile string) ([]DLPPattern, error) {
 
 // CoreDLPPatterns returns the immutable DLP safety floor used by the scanner.
 func CoreDLPPatterns() []DLPPattern {
-	defaultsByName := make(map[string]DLPPattern, len(defaultDLPPatternSet))
-	for _, pattern := range defaultDLPPatternSet {
-		defaultsByName[pattern.Name] = pattern
-	}
+	defaultsByName := defaultDLPPatternsByName()
 	out := make([]DLPPattern, 0, len(coreDLPPatternNames)+len(coreOnlyDLPPatterns))
 	for _, name := range coreDLPPatternNames {
 		pattern, ok := defaultsByName[name]
@@ -391,6 +388,31 @@ func CoreDLPPatterns() []DLPPattern {
 		}
 	}
 	return cloneDLPPatterns(out)
+}
+
+func quickstartPresetDLPPatterns() []DLPPattern {
+	return selectDefaultDLPPatterns(quickstartDLPPatternNames)
+}
+
+func selectDefaultDLPPatterns(names []string) []DLPPattern {
+	defaultsByName := defaultDLPPatternsByName()
+	out := make([]DLPPattern, 0, len(names))
+	for _, name := range names {
+		pattern, ok := defaultsByName[name]
+		if !ok {
+			panic(fmt.Sprintf("BUG: DLP pattern %q missing from default registry", name))
+		}
+		out = append(out, pattern)
+	}
+	return cloneDLPPatterns(out)
+}
+
+func defaultDLPPatternsByName() map[string]DLPPattern {
+	defaultsByName := make(map[string]DLPPattern, len(defaultDLPPatternSet))
+	for _, pattern := range defaultDLPPatternSet {
+		defaultsByName[pattern.Name] = pattern
+	}
+	return defaultsByName
 }
 
 func fullPresetDLPPatterns(severityOverrides map[string]string) []DLPPattern {

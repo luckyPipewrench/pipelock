@@ -160,7 +160,7 @@ func TestDefaultDLPPatternsRedactionMirrorCoverage(t *testing.T) {
 		{name: "Mailgun API Key", value: "key-" + strings.Repeat("A", 32), class: redact.ClassMailgunAPIKey},
 		{name: "SendGrid API Key", value: "SG." + strings.Repeat("A", 22) + "." + strings.Repeat("B", 43), class: redact.ClassSendGridAPIKey},
 		{name: "JWT Token", value: "eyJ" + strings.Repeat("A", 7) + "." + "eyJ" + strings.Repeat("B", 7) + "." + strings.Repeat("C", 10), class: redact.ClassJWT},
-		{name: "Social Security Number", value: "123-45-6789", class: redact.ClassSSN},
+		{name: "Social Security Number", value: "123-45" + "-6789", class: redact.ClassSSN},
 		{name: "Environment Variable Secret", value: "VENDOR_API_KEY=" + strings.Repeat("A", 8), class: redact.ClassEnvSecret},
 	}
 

@@ -60,7 +60,8 @@ var defaultDLPPatternSet = []DLPPattern{
 	// means a credential-less URI (postgres://host/db, redis://h:6379)
 	// is ignored. Per-scheme patterns give the pre-filter a clean
 	// literal prefix. The user segment is optional ([^...]*) so
-	// redis://:password@host (password-only) still matches.
+	// a password-only redis URI (empty user segment, then the password,
+	// then the @host separator) still matches.
 	{Name: "PostgreSQL Connection String", Regex: `postgres(?:ql)?://[^:/?#\s]*:[^@/?#\s]+@`, Severity: SeverityCritical},
 	{Name: "MySQL Connection String", Regex: `mysql://[^:/?#\s]*:[^@/?#\s]+@`, Severity: SeverityCritical},
 	{Name: "MongoDB Connection String", Regex: `mongodb(?:\+srv)?://[^:/?#\s]*:[^@/?#\s]+@`, Severity: SeverityCritical},

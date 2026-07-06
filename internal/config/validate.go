@@ -2404,6 +2404,16 @@ func (c *Config) validateMetricsListen() error {
 
 func (c *Config) validateEmit() error {
 	// Validate emit config
+	if err := validateEmitFilterValues("emit.filter.actions", c.Emit.Filter.Actions); err != nil {
+		return err
+	}
+	if err := validateEmitFilterValues("emit.filter.decision_types", c.Emit.Filter.DecisionTypes); err != nil {
+		return err
+	}
+	if err := validateEmitFilterValues("emit.filter.agents", c.Emit.Filter.Agents); err != nil {
+		return err
+	}
+
 	if c.Emit.Webhook.URL != "" {
 		u, urlErr := url.Parse(c.Emit.Webhook.URL)
 		if urlErr != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
@@ -2448,6 +2458,12 @@ func (c *Config) validateEmit() error {
 				return fmt.Errorf("invalid emit.syslog.facility %q", c.Emit.Syslog.Facility)
 			}
 		}
+		switch c.Emit.Syslog.Format {
+		case EmitFormatJSON, EmitFormatCEF:
+			// valid
+		default:
+			return fmt.Errorf("invalid emit.syslog.format %q: must be json or cef", c.Emit.Syslog.Format)
+		}
 	}
 
 	// Validate OTLP config
@@ -2467,6 +2483,15 @@ func (c *Config) validateEmit() error {
 		}
 		if c.Emit.OTLP.QueueSize <= 0 {
 			return fmt.Errorf("emit.otlp.queue_size must be positive")
+		}
+	}
+	return nil
+}
+
+func validateEmitFilterValues(name string, values []string) error {
+	for i, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s[%d] is empty", name, i)
 		}
 	}
 	return nil

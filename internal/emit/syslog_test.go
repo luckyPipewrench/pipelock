@@ -357,7 +357,7 @@ func TestSyslogSink_DrainTimeoutBoundsQueuedSend(t *testing.T) {
 		Type:      testEventBlocked,
 		Timestamp: time.Now(),
 		Fields:    map[string]any{},
-	})
+	}, FormatJSON, "")
 	if err != nil {
 		t.Fatalf("makeSyslogMessage: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestNewSyslogSink_DialFailure(t *testing.T) {
 func TestNewSyslogSinkFromConfig(t *testing.T) {
 	addr, _ := startUDPSyslog(t)
 
-	sink, err := NewSyslogSinkFromConfig("udp://"+addr, "local3", "myapp", testSeverityWarn)
+	sink, err := NewSyslogSinkFromConfig("udp://"+addr, "local3", "myapp", testSeverityWarn, WithSyslogFormat(FormatJSON, ""))
 	if err != nil {
 		t.Fatalf("NewSyslogSinkFromConfig: %v", err)
 	}
@@ -675,6 +675,53 @@ func TestNewSyslogSinkFromConfig_InvalidAddress(t *testing.T) {
 	_, err := NewSyslogSinkFromConfig("not-valid", "", "", "")
 	if err == nil {
 		t.Error("expected error for invalid address")
+	}
+}
+
+func TestNewSyslogSinkFromConfig_InvalidFormat(t *testing.T) {
+	addr, _ := startUDPSyslog(t)
+
+	_, err := NewSyslogSinkFromConfig("udp://"+addr, "", "", "", WithSyslogFormat("xml", ""))
+	if err == nil {
+		t.Fatal("expected invalid format error")
+	}
+	if !contains(err.Error(), `unsupported syslog format "xml"`) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestMakeSyslogMessage_CEF(t *testing.T) {
+	msg, err := makeSyslogMessage(Event{
+		Severity:   SeverityWarn,
+		Type:       EventHeaderDLP,
+		Timestamp:  time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		InstanceID: testInstanceName,
+		Fields: map[string]any{
+			"action":    conventionActionBlock,
+			"agent":     "agent-a",
+			fieldReason: "header token",
+		},
+	}, FormatCEF, "1.2.3")
+	if err != nil {
+		t.Fatalf("makeSyslogMessage CEF: %v", err)
+	}
+	want := "CEF:0|Pipelock|Pipelock|1.2.3|header_dlp|header_dlp: header token|6|act=block cat=header_dlp msg=header token pipelockEvent=header_dlp pipelockInstance=test-instance pipelockSeverity=warn rt=2026-07-05T12:00:00Z suser=agent-a"
+	if msg.message != want {
+		t.Fatalf("message =\n%s\nwant\n%s", msg.message, want)
+	}
+}
+
+func TestMakeSyslogMessage_InvalidFormat(t *testing.T) {
+	_, err := makeSyslogMessage(Event{
+		Severity:  SeverityWarn,
+		Type:      EventHeaderDLP,
+		Timestamp: time.Now(),
+	}, "xml", "")
+	if err == nil {
+		t.Fatal("expected invalid format error")
+	}
+	if !contains(err.Error(), `unsupported syslog format "xml"`) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

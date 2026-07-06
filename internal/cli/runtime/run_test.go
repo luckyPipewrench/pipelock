@@ -329,6 +329,69 @@ func TestBuildEmitSinks_BothSinks(t *testing.T) {
 	}
 }
 
+func TestBuildEmitSinks_FilteredWebhookProof(t *testing.T) {
+	run := func(t *testing.T, filter config.EmitFilter) int64 {
+		t.Helper()
+		var count atomic.Int64
+		done := make(chan struct{}, 2)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			count.Add(1)
+			w.WriteHeader(http.StatusOK)
+			done <- struct{}{}
+		}))
+		defer srv.Close()
+
+		cfg := testConfig()
+		cfg.Emit.Webhook.URL = srv.URL
+		cfg.Emit.Webhook.MinSeverity = config.SeverityInfo
+		cfg.Emit.Webhook.QueueSize = 8
+		cfg.Emit.Filter = filter
+
+		sinks, err := BuildEmitSinks(cfg)
+		if err != nil {
+			t.Fatalf("BuildEmitSinks: %v", err)
+		}
+		em := emit.NewEmitter("test-host", sinks...)
+		em.Emit(context.Background(), emit.EventAllowed, map[string]any{
+			"action": "allow",
+			"agent":  "agent-a",
+		})
+		em.Emit(context.Background(), emit.EventBodyDLP, map[string]any{
+			"action": "block",
+			"agent":  "agent-a",
+		})
+		if err := em.Close(); err != nil {
+			t.Fatalf("emitter Close: %v", err)
+		}
+
+		deadline := time.After(2 * time.Second)
+		for count.Load() < 2 {
+			if filter.Actions != nil {
+				break
+			}
+			select {
+			case <-done:
+			case <-deadline:
+				return count.Load()
+			}
+		}
+		return count.Load()
+	}
+
+	unfiltered := run(t, config.EmitFilter{})
+	filtered := run(t, config.EmitFilter{Actions: []string{"block"}, Agents: []string{"agent-a"}})
+
+	t.Logf("unfiltered exports: %d", unfiltered)
+	t.Logf("filtered exports: %d", filtered)
+
+	if unfiltered != 2 {
+		t.Fatalf("unfiltered exports = %d, want 2", unfiltered)
+	}
+	if filtered != 1 {
+		t.Fatalf("filtered exports = %d, want 1", filtered)
+	}
+}
+
 func TestBuildEmitSinks_SyslogError_CleansUpWebhook(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -231,6 +231,7 @@ func BuildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
 			cfg.Emit.Syslog.Facility,
 			cfg.Emit.Syslog.Tag,
 			cfg.Emit.Syslog.MinSeverity,
+			emit.WithSyslogFormat(cfg.Emit.Syslog.Format, cliutil.Version),
 		)
 		if err != nil {
 			// Close already-created sinks to prevent goroutine leaks.
@@ -264,7 +265,23 @@ func BuildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
 		sinks = append(sinks, otlpSink)
 	}
 
-	return sinks, nil
+	return applyEmitFilter(sinks, cfg.Emit.Filter), nil
+}
+
+func applyEmitFilter(sinks []emit.Sink, cfg config.EmitFilter) []emit.Sink {
+	filter := emit.Filter{
+		Actions:       cfg.Actions,
+		DecisionTypes: cfg.DecisionTypes,
+		Agents:        cfg.Agents,
+	}
+	if !filter.Enabled() {
+		return sinks
+	}
+	wrapped := make([]emit.Sink, 0, len(sinks))
+	for _, sink := range sinks {
+		wrapped = append(wrapped, emit.NewFilteringSink(sink, filter))
+	}
+	return wrapped
 }
 
 // RedactEndpoint strips userinfo, query, and fragment from an endpoint URL

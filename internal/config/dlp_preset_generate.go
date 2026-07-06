@@ -128,10 +128,11 @@ func rewriteDLPPatternBlock(raw []byte, patterns []DLPPattern) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	patternsIndent := leadingSpaceCount(lines[patternsLine])
 	blockEnd := len(lines)
 	for i := patternsLine + 1; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
-		if trimmed != "" && !strings.HasPrefix(lines[i], " ") && !strings.HasPrefix(lines[i], "#") {
+		if trimmed != "" && leadingSpaceCount(lines[i]) <= patternsIndent {
 			blockEnd = i
 			break
 		}
@@ -146,6 +147,15 @@ func rewriteDLPPatternBlock(raw []byte, patterns []DLPPattern) ([]byte, error) {
 		out.WriteString(line)
 	}
 	return []byte(out.String()), nil
+}
+
+func leadingSpaceCount(line string) int {
+	for i := range line {
+		if line[i] != ' ' {
+			return i
+		}
+	}
+	return len(line)
 }
 
 func findDLPPatternsLine(lines []string) (int, error) {

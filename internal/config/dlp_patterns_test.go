@@ -267,6 +267,27 @@ func TestRewriteDLPPatternBlockRendersPatternScalars(t *testing.T) {
 	}
 }
 
+func TestRewriteDLPPatternBlockPreservesDLPSiblingsAfterPatterns(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte("version: 1\ndlp:\n  scan_env: true\n  patterns:\n    - name: old\n      regex: old\n      severity: low\n  min_env_secret_length: 32\nresponse_scanning:\n  enabled: true\n")
+	patterns := []DLPPattern{{Name: "Token", Regex: `tok_[a-z]+`, Severity: SeverityHigh}}
+	rewritten, err := rewriteDLPPatternBlock(raw, patterns)
+	if err != nil {
+		t.Fatalf("rewriteDLPPatternBlock: %v", err)
+	}
+	got := string(rewritten)
+	for _, want := range []string{
+		`    - name: "Token"`,
+		`  min_env_secret_length: 32`,
+		`response_scanning:`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rewritten block missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestGenerateDLPPresetFilesDetectsFileDrift(t *testing.T) {
 	t.Parallel()
 

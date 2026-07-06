@@ -109,6 +109,53 @@ func TestExplainEventCmd_RedactsSecretBearingAuditFields(t *testing.T) {
 	}
 }
 
+func TestExplainEventCmd_RedactsTokenFamilyQueryParams(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	refreshValue := "short-refresh-" + "value"
+	idValue := "short-id-" + "value"
+	line := map[string]any{
+		"event":      "blocked",
+		"request_id": "req-token-family",
+		"url":        "https://api.vendor.example/oauth/callback?refresh_token=" + refreshValue + "&id_token=" + idValue + "&state=public",
+		"scanner":    "allowlist",
+		"reason":     "domain blocked",
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("marshal audit line: %v", err)
+	}
+	if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	out, err := runExplainCmd(t, "event", "req-token-family", "--log", logPath)
+	if err != nil {
+		t.Fatalf("explain event failed: %v\n%s", err, out)
+	}
+	for _, leaked := range []string{refreshValue, idValue} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("text output leaked token-family query value %q:\n%s", leaked, out)
+		}
+	}
+	if !strings.Contains(out, "state=public") {
+		t.Fatalf("text output should preserve non-sensitive query context:\n%s", out)
+	}
+
+	out, err = runExplainCmd(t, "event", "req-token-family", "--log", logPath, "--json")
+	if err != nil {
+		t.Fatalf("explain event JSON failed: %v\n%s", err, out)
+	}
+	for _, leaked := range []string{refreshValue, idValue} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("JSON output leaked token-family query value %q:\n%s", leaked, out)
+		}
+	}
+	if !strings.Contains(out, "state=public") {
+		t.Fatalf("JSON output should preserve non-sensitive query context:\n%s", out)
+	}
+}
+
 func TestExplainEventCmd_TextEscapesControlCharacters(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.log")
@@ -137,6 +184,35 @@ func TestExplainEventCmd_TextEscapesControlCharacters(t *testing.T) {
 	}
 	if !strings.Contains(out, `\nFAKE: allowed`) || !strings.Contains(out, `\x1b`) {
 		t.Fatalf("text output did not render controls as escaped text:\n%q", out)
+	}
+}
+
+func TestExplainEventCmd_JSONEscapesUnicodeFormatControls(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	line := map[string]any{
+		"event":      "blocked",
+		"request_id": "req-bidi",
+		"scanner":    "dlp",
+		"reason":     "blocked \u202Eallowed",
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("marshal audit line: %v", err)
+	}
+	if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	out, err := runExplainCmd(t, "event", "req-bidi", "--log", logPath, "--json")
+	if err != nil {
+		t.Fatalf("explain event JSON failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "\u202E") {
+		t.Fatalf("JSON output contained raw Unicode format control:\n%q", out)
+	}
+	if !strings.Contains(out, `\u202e`) {
+		t.Fatalf("JSON output did not render Unicode format control as escaped text:\n%q", out)
 	}
 }
 

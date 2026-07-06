@@ -355,10 +355,10 @@ func (s explainEventSanitizer) clean(value string) bool {
 
 func (s explainEventSanitizer) field(value string) string {
 	value = redactExplainEventSecretAssignments(value)
-	if s.clean(value) {
-		return value
+	if !s.clean(value) {
+		return explainEventRedacted
 	}
-	return explainEventRedacted
+	return escapeExplainEventTerminalControls(value)
 }
 
 func (s explainEventSanitizer) target(value string) string {
@@ -395,13 +395,35 @@ func redactExplainEventSecretAssignments(value string) string {
 }
 
 func explainEventSecretQueryParam(key string) bool {
-	switch strings.ToLower(key) {
+	normalized := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(key))
+	if strings.Contains(normalized, "token") || strings.Contains(normalized, "credential") {
+		return true
+	}
+	switch normalized {
 	case "token", "access_token", "api_key", "apikey", "secret", "password", "passwd", "key",
-		"auth", "authorization", "client_secret", "client_id", "sig", "signature":
+		"auth", "authorization", "client_secret", "client_id", "sig", "signature", "code":
 		return true
 	default:
 		return false
 	}
+}
+
+func escapeExplainEventTerminalControls(value string) string {
+	var b strings.Builder
+	changed := false
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			changed = true
+			quoted := strconv.QuoteToASCII(string(r))
+			b.WriteString(strings.Trim(quoted, `"`))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	if !changed {
+		return value
+	}
+	return b.String()
 }
 
 func printExplainEventReport(w io.Writer, report explainEventReport) {

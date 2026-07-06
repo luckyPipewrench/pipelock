@@ -88,6 +88,9 @@ func cefExtension(event Event) string {
 		if !ok {
 			continue
 		}
+		if _, exists := values[cefKey]; exists {
+			continue
+		}
 		rendered := cefFieldValue(value)
 		if rendered == "" {
 			continue
@@ -185,14 +188,14 @@ func cefFieldValue(value any) string {
 }
 
 func cefEscapeHeader(s string) string {
-	return cefEscape(s, true)
+	return cefEscape(s)
 }
 
 func cefEscapeExtension(s string) string {
-	return cefEscape(s, false)
+	return cefEscape(s)
 }
 
-func cefEscape(s string, header bool) string {
+func cefEscape(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		switch r {
@@ -207,7 +210,8 @@ func cefEscape(s string, header bool) string {
 		case '\r':
 			b.WriteString(`\r`)
 		default:
-			if header && unicode.IsControl(r) {
+			if unicode.IsControl(r) {
+				_, _ = fmt.Fprintf(&b, `\u%04X`, r)
 				continue
 			}
 			b.WriteRune(r)

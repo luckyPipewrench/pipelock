@@ -99,25 +99,62 @@ func containsFold(values []string, candidate string) bool {
 }
 
 func eventAction(event Event) string {
+	typeAction := eventTypeAction(event.Type)
+	fieldAction := eventFieldAction(event)
+	return strongestEventAction(typeAction, fieldAction)
+}
+
+func eventFieldAction(event Event) string {
+	action := ""
+	if blocked, ok := event.Fields["blocked"].(bool); ok && blocked {
+		action = strongestEventAction(action, conventionActionBlock)
+	}
 	for _, key := range []string{"action", "effective_action", "to_action", "verdict", "decision"} {
 		if value, ok := event.Fields[key].(string); ok && value != "" {
-			return normalizeEventAction(value)
+			action = strongestEventAction(action, normalizeEventAction(value))
 		}
 	}
 	if event.Type == EventAdaptiveEscalation {
 		if value, ok := event.Fields["to"].(string); ok && value != "" {
-			return normalizeEventAction(value)
+			action = strongestEventAction(action, normalizeEventAction(value))
 		}
 	}
 	if event.Type == EventToolRedirect {
 		if value, ok := event.Fields["result"].(string); ok && value != "" {
-			return normalizeEventAction(value)
+			action = strongestEventAction(action, normalizeEventAction(value))
 		}
 	}
-	if blocked, ok := event.Fields["blocked"].(bool); ok && blocked {
-		return conventionActionBlock
+	return action
+}
+
+func strongestEventAction(typeAction, fieldAction string) string {
+	if fieldAction == "" {
+		return typeAction
 	}
-	return eventTypeAction(event.Type)
+	if typeAction == "" {
+		return fieldAction
+	}
+	if actionRank(fieldAction) > actionRank(typeAction) {
+		return fieldAction
+	}
+	return typeAction
+}
+
+func actionRank(action string) int {
+	switch action {
+	case conventionActionBlock:
+		return 5
+	case conventionActionWarn:
+		return 4
+	case conventionActionAsk:
+		return 3
+	case EventRedirect, eventActionStrip, eventActionDefer:
+		return 2
+	case eventActionForward:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func normalizeEventAction(value string) string {
@@ -192,6 +229,9 @@ func eventTypeAction(eventType string) string {
 }
 
 func eventDecisionType(event Event) string {
+	if eventTypeAction(event.Type) != "" {
+		return event.Type
+	}
 	for _, key := range []string{"decision_type", "type", "event_type"} {
 		if value, ok := event.Fields[key].(string); ok && value != "" {
 			return value

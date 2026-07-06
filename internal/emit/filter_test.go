@@ -52,6 +52,13 @@ func TestFilterAllows(t *testing.T) {
 		{name: "blocked redirect result infers block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventToolRedirect, Fields: map[string]any{"result": "blocked"}}, want: true},
 		{name: "redirected result normalizes to redirect", filter: Filter{Actions: []string{"redirect"}}, event: Event{Type: EventToolRedirect, Fields: map[string]any{"result": "redirected"}}, want: true},
 		{name: "identity alias matches agent filter", filter: Filter{Agents: []string{"identity-a"}}, event: Event{Type: EventBodyDLP, Fields: map[string]any{"identity": "identity-a"}}, want: true},
+		{name: "blocked event ignores downgraded field action", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventBlocked, Fields: map[string]any{"action": "allow"}}, want: true},
+		{name: "deny decision overrides downgraded field action", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventTaintDecision, Fields: map[string]any{"action": "allow", "decision": "deny"}}, want: true},
+		{name: "blocked boolean overrides downgraded field action", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventMediaExposure, Fields: map[string]any{"action": "allow", "blocked": true}}, want: true},
+		{name: "warn event ignores downgraded field action", filter: Filter{Actions: []string{"warn"}}, event: Event{Type: EventBodyDLP, Fields: map[string]any{"action": "allow"}}, want: true},
+		{name: "field action can upgrade warn event to block", filter: Filter{Actions: []string{"block"}}, event: Event{Type: EventBodyDLP, Fields: map[string]any{"action": "block"}}, want: true},
+		{name: "known event ignores spoofed decision type", filter: Filter{DecisionTypes: []string{"spoofed"}}, event: Event{Type: EventBodyDLP, Fields: map[string]any{"decision_type": "spoofed"}}, want: false},
+		{name: "unknown event can use field decision type", filter: Filter{DecisionTypes: []string{"custom_decision"}}, event: Event{Type: "future_event", Fields: map[string]any{"decision_type": "custom_decision"}}, want: true},
 	}
 
 	for _, tt := range tests {
@@ -172,6 +179,32 @@ func TestNormalizeEventActionAliases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := normalizeEventAction(tt.value); got != tt.want {
 				t.Fatalf("normalizeEventAction(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStrongestEventAction(t *testing.T) {
+	tests := []struct {
+		name        string
+		typeAction  string
+		fieldAction string
+		want        string
+	}{
+		{name: "empty field keeps type", typeAction: conventionActionWarn, want: conventionActionWarn},
+		{name: "empty type uses field", fieldAction: eventActionForward, want: eventActionForward},
+		{name: "block beats warn", typeAction: conventionActionWarn, fieldAction: conventionActionBlock, want: conventionActionBlock},
+		{name: "warn beats allow", typeAction: conventionActionWarn, fieldAction: conventionActionAllow, want: conventionActionWarn},
+		{name: "ask beats redirect", typeAction: EventRedirect, fieldAction: conventionActionAsk, want: conventionActionAsk},
+		{name: "strip beats forward", typeAction: eventActionForward, fieldAction: eventActionStrip, want: eventActionStrip},
+		{name: "defer beats forward", typeAction: eventActionForward, fieldAction: eventActionDefer, want: eventActionDefer},
+		{name: "custom loses to known action", typeAction: conventionActionWarn, fieldAction: "custom", want: conventionActionWarn},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strongestEventAction(tt.typeAction, tt.fieldAction); got != tt.want {
+				t.Fatalf("strongestEventAction(%q, %q) = %q, want %q", tt.typeAction, tt.fieldAction, got, tt.want)
 			}
 		})
 	}

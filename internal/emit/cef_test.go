@@ -97,6 +97,77 @@ func TestFormatCEFEventEscapesLineForgeryPayloads(t *testing.T) {
 	}
 }
 
+func TestFormatCEFEventRawFieldsCannotOverwriteCanonicalKeys(t *testing.T) {
+	event := Event{
+		Severity:   SeverityWarn,
+		Type:       EventBlocked,
+		Timestamp:  time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
+		InstanceID: testInstanceName,
+		Fields: map[string]any{
+			"action":        "allow",
+			"agent":         "agent-a",
+			"decision":      "allow",
+			"decision_type": "spoofed",
+			"event":         "spoofed-event",
+			"identity":      "spoofed-agent",
+			fieldReason:     "blocked by scanner",
+			"type":          "spoofed-type",
+		},
+	}
+
+	got := FormatCEFEvent(event, "dev")
+	for _, want := range []string{
+		`act=block`,
+		`cat=blocked`,
+		`pipelockEvent=blocked`,
+		`pipelockInstance=test-instance`,
+		`suser=agent-a`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CEF line missing canonical field %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{
+		`act=allow`,
+		`cat=spoofed`,
+		`pipelockEvent=spoofed-event`,
+		`suser=spoofed-agent`,
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("CEF line allowed raw field overwrite %q:\n%s", forbidden, got)
+		}
+	}
+}
+
+func TestFormatCEFEventEscapesControlCharacters(t *testing.T) {
+	event := Event{
+		Severity:   SeverityWarn,
+		Type:       "blocked\x00event",
+		Timestamp:  time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
+		InstanceID: "node\x07one",
+		Fields: map[string]any{
+			fieldReason: "bad\x1b[31mvalue\tend",
+		},
+	}
+
+	got := FormatCEFEvent(event, "dev\x00")
+	for _, raw := range []string{"\x00", "\x07", "\x1b", "\t"} {
+		if strings.Contains(got, raw) {
+			t.Fatalf("CEF line contains raw control %q:\n%q", raw, got)
+		}
+	}
+	for _, want := range []string{
+		`dev\u0000`,
+		`blocked\u0000event`,
+		`bad\u001B[31mvalue\u0009end`,
+		`pipelockInstance=node\u0007one`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CEF line missing escaped control %q:\n%s", want, got)
+		}
+	}
+}
+
 type cefStringer string
 
 func (s cefStringer) String() string {

@@ -48,6 +48,19 @@ func TestAvailableUnconfiguredKnobsOmitsConfigured(t *testing.T) {
 	}
 }
 
+func TestAvailableUnconfiguredKnobsKeepsKillSwitchWhenOnlyPresentationOrExemptionsSet(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.KillSwitch.Message = "deny all"
+	cfg.KillSwitch.AllowlistIPs = []string{"192.0.2.0/24"}
+
+	got := availableUnconfiguredKnobs(cfg)
+	if !containsString(got, "kill_switch") {
+		t.Fatalf("availableUnconfiguredKnobs = %v, want kill_switch without an activation source", got)
+	}
+}
+
 func TestDoctorReportsAvailableUnconfiguredKnobsAsInfo(t *testing.T) {
 	t.Parallel()
 

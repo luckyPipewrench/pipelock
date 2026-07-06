@@ -64,9 +64,7 @@ func killSwitchConfigured(cfg *config.Config) bool {
 	return cfg.KillSwitch.Enabled ||
 		cfg.KillSwitch.SentinelFile != "" ||
 		cfg.KillSwitch.APIToken != "" ||
-		cfg.KillSwitch.APIListen != "" ||
-		cfg.KillSwitch.Message != "" ||
-		len(cfg.KillSwitch.AllowlistIPs) > 0
+		cfg.KillSwitch.APIListen != ""
 }
 
 func emitConfigured(cfg *config.Config) bool {

@@ -39,6 +39,7 @@ func TestAvailableUnconfiguredKnobsOmitsConfigured(t *testing.T) {
 	cfg.KillSwitch.Enabled = true
 	cfg.Emit.Webhook.URL = "https://logs.vendor.example/events"
 	cfg.AddressProtection.Enabled = true
+	cfg.MCPToolPolicy.Enabled = true
 	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
 		"fetch_proxy": {Exec: []string{"/proc/self/exe", "internal-redirect", "fetch-proxy"}},
 	}
@@ -58,6 +59,32 @@ func TestAvailableUnconfiguredKnobsKeepsKillSwitchWhenOnlyPresentationOrExemptio
 	got := availableUnconfiguredKnobs(cfg)
 	if !containsString(got, "kill_switch") {
 		t.Fatalf("availableUnconfiguredKnobs = %v, want kill_switch without an activation source", got)
+	}
+}
+
+func TestAvailableUnconfiguredKnobsKeepsAddressProtectionWhenOnlyAllowlistSet(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.AddressProtection.AllowedAddresses = []string{"0x1111111111111111111111111111111111111111"}
+
+	got := availableUnconfiguredKnobs(cfg)
+	if !containsString(got, "address_protection") {
+		t.Fatalf("availableUnconfiguredKnobs = %v, want address_protection when detector is disabled", got)
+	}
+}
+
+func TestAvailableUnconfiguredKnobsKeepsRedirectProfilesWhenPolicyDisabled(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+		"fetch_proxy": {Exec: []string{"/proc/self/exe", "internal-redirect", "fetch-proxy"}},
+	}
+
+	got := availableUnconfiguredKnobs(cfg)
+	if !containsString(got, "mcp_tool_policy.redirect_profiles") {
+		t.Fatalf("availableUnconfiguredKnobs = %v, want redirect_profiles when tool policy is disabled", got)
 	}
 }
 

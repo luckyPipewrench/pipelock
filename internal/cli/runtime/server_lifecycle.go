@@ -94,12 +94,12 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 
 func (s *Server) startupSummaryLine(cfg *config.Config) string {
 	return fmt.Sprintf(
-		"  Check:  mode=%s listeners=%s allowlist=%d dlp_patterns=%d scanners=%d entropy=%s; run `pipelock explain` to see why a request was blocked",
+		"  Check:  mode=%s listeners=%s allowlist=%d dlp_patterns=%d checks=%d entropy=%s; run `pipelock explain` to see why a request was blocked",
 		cfg.Mode,
 		strings.Join(s.startupListeners(cfg), ","),
 		len(cfg.APIAllowlist),
 		len(cfg.DLP.Patterns),
-		startupEnabledScannerCount(cfg),
+		startupEnabledCheckCount(cfg),
 		startupEntropyState(cfg),
 	)
 }
@@ -137,7 +137,7 @@ func (s *Server) startupListeners(cfg *config.Config) []string {
 	return listeners
 }
 
-func startupEnabledScannerCount(cfg *config.Config) int {
+func startupEnabledCheckCount(cfg *config.Config) int {
 	count := 5 // scheme, CRLF, path traversal, core SSRF, core DLP
 	if cfg.Mode == config.ModeStrict && len(cfg.APIAllowlist) > 0 {
 		count++

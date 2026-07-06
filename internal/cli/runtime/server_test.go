@@ -135,13 +135,16 @@ func TestStartupSummaryLine(t *testing.T) {
 		"listeners=fetch=127.0.0.1:0",
 		"allowlist=6",
 		"dlp_patterns=",
-		"scanners=",
+		"checks=",
 		"entropy=on",
 		"pipelock explain",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("summary missing %q:\n%s", want, line)
 		}
+	}
+	if strings.Contains(line, "scanners=") {
+		t.Fatalf("summary should describe aggregate checks, not scanner count:\n%s", line)
 	}
 }
 

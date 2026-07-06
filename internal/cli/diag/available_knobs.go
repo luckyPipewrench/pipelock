@@ -74,11 +74,13 @@ func emitConfigured(cfg *config.Config) bool {
 }
 
 func addressProtectionConfigured(cfg *config.Config) bool {
-	return cfg.AddressProtection.Enabled ||
-		len(cfg.AddressProtection.AllowedAddresses) > 0
+	return cfg.AddressProtection.Enabled
 }
 
 func redirectConfigured(cfg *config.Config) bool {
+	if !cfg.MCPToolPolicy.Enabled {
+		return false
+	}
 	if len(cfg.MCPToolPolicy.RedirectProfiles) > 0 {
 		return true
 	}

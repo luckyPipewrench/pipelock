@@ -93,10 +93,7 @@ func buildRuntime(cfg *config.Config) *runtime {
 	} else {
 		rt.apiExempt = true
 	}
-	rt.apiToken = cfg.KillSwitch.APIToken
-	if envToken := os.Getenv(EnvAPIToken); envToken != "" {
-		rt.apiToken = envToken
-	}
+	rt.apiToken = cfg.EffectiveKillSwitchAPIToken()
 
 	for _, cidr := range cfg.KillSwitch.AllowlistIPs {
 		_, ipNet, err := net.ParseCIDR(cidr)

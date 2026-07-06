@@ -514,6 +514,13 @@ type Config struct {
 	// semantics as canonicalHashCache - a fresh holder is installed on
 	// Defaults(), Load(), and Clone().
 	canonicalRedactionKeyCache *canonicalHashCacheHolder `yaml:"-"`
+
+	// resolvedKillSwitchAPIToken stores the effective admin API token after
+	// runtime env/YAML resolution. It is deliberately unexported so env-sourced
+	// secret material is available to runtime wiring without entering YAML,
+	// JSON support output, or canonical policy hashes.
+	resolvedKillSwitchAPIToken    string `yaml:"-"`
+	killSwitchAPITokenWasResolved bool   `yaml:"-"`
 }
 
 const (

@@ -569,13 +569,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		return nil, err
 	}
 
-	// Create session admin API handler when an API token is configured.
-	// Mirrors the kill switch env-var override: PIPELOCK_KILLSWITCH_API_TOKEN
-	// takes precedence over the YAML value.
-	apiToken := cfg.KillSwitch.APIToken
-	if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
-		apiToken = envToken
-	}
+	// Create session admin API handler when the resolved runtime config has an
+	// API token. ResolveRuntime applies env-over-YAML precedence before this
+	// point, so this path does not repeat token resolution.
+	apiToken := cfg.EffectiveKillSwitchAPIToken()
 	if apiToken != "" {
 		p.sessionAPI = NewSessionAPIHandler(SessionAPIOptions{
 			SessionMgrPtr: &p.sessionMgrPtr,
@@ -1602,14 +1599,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 
 	// Hot-reload the admin API bearer token so operators can rotate
 	// kill_switch.api_token (or the env override) without restarting.
-	// Env var continues to take precedence over the YAML value, mirroring
-	// the bootstrap resolution in New().
 	if p.sessionAPI != nil {
-		newToken := cfg.KillSwitch.APIToken
-		if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
-			newToken = envToken
-		}
-		p.sessionAPI.SetAPIToken(newToken)
+		p.sessionAPI.SetAPIToken(cfg.EffectiveKillSwitchAPIToken())
 	}
 
 	old := p.scannerPtr.Swap(sc)

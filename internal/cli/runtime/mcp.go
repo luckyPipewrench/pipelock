@@ -322,10 +322,7 @@ func startDeferredOperatorAPI(
 	if cfg == nil || cfg.KillSwitch.APIListen == "" || deferManager == nil || !deferManager.Enabled() {
 		return func() {}, nil
 	}
-	apiToken := cfg.KillSwitch.APIToken
-	if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
-		apiToken = envToken
-	}
+	apiToken := cfg.EffectiveKillSwitchAPIToken()
 	if apiToken == "" {
 		return func() {}, fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token or %s to be set", killswitch.EnvAPIToken)
 	}

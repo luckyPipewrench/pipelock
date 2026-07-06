@@ -56,6 +56,46 @@ func TestResolveRuntime_LoadedConfigNotMutated(t *testing.T) {
 	}
 }
 
+func TestResolveRuntime_KillSwitchAPITokenEffectiveState(t *testing.T) {
+	const (
+		yamlToken = "yaml-token"
+		envToken  = "env-token"
+	)
+
+	for _, tt := range []struct {
+		name      string
+		yamlToken string
+		envToken  string
+		wantToken string
+	}{
+		{name: "unset"},
+		{name: "yaml", yamlToken: yamlToken, wantToken: yamlToken},
+		{name: "env", envToken: envToken, wantToken: envToken},
+		{name: "env overrides yaml", yamlToken: yamlToken, envToken: envToken, wantToken: envToken},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(EnvKillSwitchAPIToken, tt.envToken)
+
+			cfg := Defaults()
+			cfg.KillSwitch.APIToken = tt.yamlToken
+			resolved, _ := cfg.ResolveRuntime(RuntimeResolveOpts{Mode: RuntimeForward})
+
+			if got := resolved.EffectiveKillSwitchAPIToken(); got != tt.wantToken {
+				t.Fatalf("EffectiveKillSwitchAPIToken() = %q, want %q", got, tt.wantToken)
+			}
+			if got, want := resolved.EffectiveKillSwitchAPITokenConfigured(), tt.wantToken != ""; got != want {
+				t.Fatalf("EffectiveKillSwitchAPITokenConfigured() = %v, want %v", got, want)
+			}
+			if cfg.KillSwitch.APIToken != tt.yamlToken {
+				t.Fatalf("ResolveRuntime mutated YAML api_token: got %q want %q", cfg.KillSwitch.APIToken, tt.yamlToken)
+			}
+			if tt.envToken != "" && resolved.KillSwitch.APIToken == tt.envToken {
+				t.Fatal("env api token was copied into exported KillSwitch.APIToken")
+			}
+		})
+	}
+}
+
 // TestResolveRuntime_HashReflectsAutoEnable verifies that when a runtime
 // mode triggers auto-enable, the clone's CanonicalPolicyHash differs from
 // the loaded config's - receipts and envelopes stamped with the clone's

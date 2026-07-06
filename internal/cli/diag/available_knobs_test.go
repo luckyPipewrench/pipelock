@@ -49,6 +49,109 @@ func TestAvailableUnconfiguredKnobsOmitsConfigured(t *testing.T) {
 	}
 }
 
+func TestAvailableUnconfiguredKnobsResolvedMatrix(t *testing.T) {
+	envSecret := strings.Repeat("s", 16)
+	tests := []struct {
+		name     string
+		yaml     func(*config.Config)
+		env      func(*testing.T)
+		disabled func(*config.Config)
+	}{
+		{
+			name: "trusted_domains",
+			yaml: func(cfg *config.Config) {
+				cfg.TrustedDomains = []string{"api.vendor.example"}
+			},
+			disabled: func(cfg *config.Config) {
+				cfg.TrustedDomains = []string{}
+			},
+		},
+		{
+			name: "agents",
+			yaml: func(cfg *config.Config) {
+				cfg.Agents = map[string]config.AgentProfile{"agent": {Mode: config.ModeBalanced}}
+			},
+			disabled: func(cfg *config.Config) {
+				cfg.Agents = map[string]config.AgentProfile{}
+			},
+		},
+		{
+			name: "kill_switch",
+			yaml: func(cfg *config.Config) {
+				cfg.KillSwitch.SentinelFile = "/tmp/pipelock-kill"
+			},
+			env: func(t *testing.T) {
+				t.Setenv(config.EnvKillSwitchAPIToken, envSecret)
+			},
+			disabled: func(cfg *config.Config) {
+				cfg.KillSwitch.Message = "deny all"
+				cfg.KillSwitch.AllowlistIPs = []string{"192.0.2.0/24"}
+				cfg.KillSwitch.APIListen = "127.0.0.1:19091"
+			},
+		},
+		{
+			name: "emit",
+			yaml: func(cfg *config.Config) {
+				cfg.Emit.Webhook.URL = "https://logs.vendor.example/events"
+			},
+			disabled: func(cfg *config.Config) {
+				cfg.Emit.Webhook.URL = ""
+			},
+		},
+		{
+			name: "address_protection",
+			yaml: func(cfg *config.Config) {
+				cfg.AddressProtection.Enabled = true
+			},
+			disabled: func(cfg *config.Config) {
+				cfg.AddressProtection.AllowedAddresses = []string{"0x1111111111111111111111111111111111111111"}
+			},
+		},
+		{
+			name: "mcp_tool_policy.redirect_profiles",
+			yaml: func(cfg *config.Config) {
+				cfg.MCPToolPolicy.Enabled = true
+				cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+					"fetch_proxy": {Exec: []string{"/proc/self/exe", "internal-redirect", "fetch-proxy"}},
+				}
+			},
+			disabled: func(cfg *config.Config) {
+				cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+					"fetch_proxy": {Exec: []string{"/proc/self/exe", "internal-redirect", "fetch-proxy"}},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"/unset", func(t *testing.T) {
+			assertAvailableKnob(t, config.Defaults(), tt.name, true)
+		})
+		t.Run(tt.name+"/yaml", func(t *testing.T) {
+			cfg := config.Defaults()
+			tt.yaml(cfg)
+			assertAvailableKnob(t, cfg, tt.name, false)
+		})
+		t.Run(tt.name+"/env", func(t *testing.T) {
+			cfg := config.Defaults()
+			if tt.env != nil {
+				tt.env(t)
+				assertAvailableKnob(t, cfg, tt.name, false)
+				if advisory := availableUnconfiguredAdvisory(cfg); strings.Contains(advisory, envSecret) {
+					t.Fatalf("advisory leaked env token value: %q", advisory)
+				}
+				return
+			}
+			assertAvailableKnob(t, cfg, tt.name, true)
+		})
+		t.Run(tt.name+"/present_but_disabled", func(t *testing.T) {
+			cfg := config.Defaults()
+			tt.disabled(cfg)
+			assertAvailableKnob(t, cfg, tt.name, true)
+		})
+	}
+}
+
 func TestAvailableUnconfiguredKnobsKeepsKillSwitchWhenOnlyPresentationOrExemptionsSet(t *testing.T) {
 	t.Parallel()
 
@@ -135,4 +238,14 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func assertAvailableKnob(t *testing.T, cfg *config.Config, knob string, wantAvailable bool) {
+	t.Helper()
+
+	got := availableUnconfiguredKnobs(cfg)
+	hasKnob := containsString(got, knob)
+	if hasKnob != wantAvailable {
+		t.Fatalf("availableUnconfiguredKnobs contains %q = %v, want %v; knobs=%v", knob, hasKnob, wantAvailable, got)
+	}
 }

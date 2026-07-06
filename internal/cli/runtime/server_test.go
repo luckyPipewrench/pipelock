@@ -149,7 +149,8 @@ func TestStartupSummaryLine(t *testing.T) {
 }
 
 func TestStartupSummaryLineIncludesKillAPIWhenTokenComesFromEnv(t *testing.T) {
-	t.Setenv(config.EnvKillSwitchAPIToken, strings.Repeat("x", 16))
+	envToken := strings.Repeat("x", 16)
+	t.Setenv(config.EnvKillSwitchAPIToken, envToken)
 	cfgPath := writeServerTestConfig(t, `
 kill_switch:
   api_listen: "127.0.0.1:19091"
@@ -161,6 +162,151 @@ kill_switch:
 	line := s.startupSummaryLine(s.cfg)
 	if !strings.Contains(line, "kill_api=127.0.0.1:19091") {
 		t.Fatalf("summary missing env-token kill API listener:\n%s", line)
+	}
+	if strings.Contains(line, envToken) {
+		t.Fatalf("summary leaked env token value:\n%s", line)
+	}
+}
+
+func TestStartupSummaryLineKillAPIResolvedMatrix(t *testing.T) {
+	envToken := strings.Repeat("e", 16)
+	tests := []struct {
+		name       string
+		yaml       string
+		envToken   string
+		want       string
+		wantAbsent string
+	}{
+		{
+			name:       "unset",
+			wantAbsent: "kill_api=",
+		},
+		{
+			name: "yaml token main listener",
+			yaml: `
+kill_switch:
+  api_token: "yaml-token"
+`,
+			want: "kill_api=127.0.0.1:0",
+		},
+		{
+			name: "yaml token separate listener",
+			yaml: `
+kill_switch:
+  api_token: "yaml-token"
+  api_listen: "127.0.0.1:19091"
+`,
+			want: "kill_api=127.0.0.1:19091",
+		},
+		{
+			name:     "env token separate listener",
+			envToken: envToken,
+			yaml: `
+kill_switch:
+  api_listen: "127.0.0.1:19091"
+`,
+			want: "kill_api=127.0.0.1:19091",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(config.EnvKillSwitchAPIToken, tt.envToken)
+			cfgPath := ""
+			if tt.yaml != "" {
+				cfgPath = writeServerTestConfig(t, tt.yaml)
+			}
+			s, _ := newTestServer(t, func(o *ServerOpts) {
+				o.Listen = serverTestEphemeralListen
+				o.ListenChanged = true
+				o.ConfigFile = cfgPath
+			})
+
+			line := s.startupSummaryLine(s.cfg)
+			if tt.want != "" && !strings.Contains(line, tt.want) {
+				t.Fatalf("summary missing %q:\n%s", tt.want, line)
+			}
+			if tt.wantAbsent != "" && strings.Contains(line, tt.wantAbsent) {
+				t.Fatalf("summary contained %q:\n%s", tt.wantAbsent, line)
+			}
+			if tt.envToken != "" && strings.Contains(line, tt.envToken) {
+				t.Fatalf("summary leaked env token value:\n%s", line)
+			}
+		})
+	}
+
+	t.Run("present api_listen without resolved token is inactive", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.KillSwitch.APIListen = "127.0.0.1:19091"
+		resolved, _ := cfg.ResolveRuntime(config.RuntimeResolveOpts{Mode: config.RuntimeForward})
+		if killSwitchAPITokenConfigured(resolved) {
+			t.Fatal("killSwitchAPITokenConfigured = true with api_listen present but no resolved token")
+		}
+	})
+}
+
+func TestStartupEnabledCheckCountResolvedMatrix(t *testing.T) {
+	base := startupEnabledCheckCount(config.Defaults())
+
+	tests := []struct {
+		name string
+		mut  func(*config.Config)
+		mode config.RuntimeMode
+		want int
+	}{
+		{
+			name: "address protection enabled",
+			mut: func(cfg *config.Config) {
+				cfg.AddressProtection.Enabled = true
+			},
+			mode: config.RuntimeForward,
+			want: base + 1,
+		},
+		{
+			name: "address protection present but disabled",
+			mut: func(cfg *config.Config) {
+				cfg.AddressProtection.AllowedAddresses = []string{"0x1111111111111111111111111111111111111111"}
+			},
+			mode: config.RuntimeForward,
+			want: base,
+		},
+		{
+			name: "mcp tool policy enabled",
+			mut: func(cfg *config.Config) {
+				cfg.MCPToolPolicy.Enabled = true
+				cfg.MCPToolPolicy.Action = config.ActionWarn
+			},
+			mode: config.RuntimeForward,
+			want: base + 1,
+		},
+		{
+			name: "mcp redirect profile present but policy disabled",
+			mut: func(cfg *config.Config) {
+				cfg.MCPToolPolicy.RedirectProfiles = map[string]config.RedirectProfile{
+					"fetch_proxy": {Exec: []string{"/proc/self/exe", "internal-redirect", "fetch-proxy"}},
+				}
+			},
+			mode: config.RuntimeForward,
+			want: base,
+		},
+		{
+			name: "mcp listener auto enable",
+			mode: config.RuntimeForwardWithMCPListener,
+			want: base + 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			if tt.mut != nil {
+				tt.mut(cfg)
+			}
+			resolved, _ := cfg.ResolveRuntime(config.RuntimeResolveOpts{Mode: tt.mode})
+			if got := startupEnabledCheckCount(resolved); got != tt.want {
+				t.Fatalf("startupEnabledCheckCount = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -641,6 +787,8 @@ func TestServer_RefreshRuntimeStateClearsBundleDerivedState(t *testing.T) {
 }
 
 func TestServer_StartAuxiliaryListeners(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, "test-token")
+
 	s, buf := newTestServer(t, func(o *ServerOpts) {
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -660,7 +808,6 @@ func TestServer_StartAuxiliaryListeners(t *testing.T) {
 		Read:  "50ms",
 		Write: "50ms",
 	}
-	s.cfg.KillSwitch.APIToken = "test-token"
 	s.cfg.KillSwitch.APIListen = serverTestEphemeralListen
 	s.apiOnSeparatePort = true
 	s.cfg.WebSocketProxy.Enabled = true

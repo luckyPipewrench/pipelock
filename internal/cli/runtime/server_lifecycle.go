@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -220,7 +219,7 @@ func startupEntropyState(cfg *config.Config) string {
 }
 
 func killSwitchAPITokenConfigured(cfg *config.Config) bool {
-	return cfg.KillSwitch.APIToken != "" || os.Getenv(killswitch.EnvAPIToken) != ""
+	return cfg.EffectiveKillSwitchAPITokenConfigured()
 }
 
 // Start binds all configured listeners, launches the reload/signal/

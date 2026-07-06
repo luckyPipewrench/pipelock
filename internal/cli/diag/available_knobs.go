@@ -4,9 +4,9 @@
 package diag
 
 import (
-	"os"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -41,6 +41,7 @@ func availableUnconfiguredAdvisory(cfg *config.Config) string {
 }
 
 func availableUnconfiguredKnobs(cfg *config.Config) []string {
+	cfg = resolvedAvailableKnobsConfig(cfg)
 	candidates := []struct {
 		name       string
 		configured bool
@@ -64,8 +65,7 @@ func availableUnconfiguredKnobs(cfg *config.Config) []string {
 func killSwitchConfigured(cfg *config.Config) bool {
 	return cfg.KillSwitch.Enabled ||
 		cfg.KillSwitch.SentinelFile != "" ||
-		cfg.KillSwitch.APIToken != "" ||
-		os.Getenv(config.EnvKillSwitchAPIToken) != ""
+		cfg.EffectiveKillSwitchAPITokenConfigured()
 }
 
 func emitConfigured(cfg *config.Config) bool {
@@ -91,4 +91,12 @@ func redirectConfigured(cfg *config.Config) bool {
 		}
 	}
 	return cfg.MCPToolPolicy.Action == config.ActionRedirect
+}
+
+func resolvedAvailableKnobsConfig(cfg *config.Config) *config.Config {
+	if cfg == nil {
+		return config.Defaults()
+	}
+	resolved, _ := runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{Mode: config.RuntimeForward}, nil, "check")
+	return resolved
 }

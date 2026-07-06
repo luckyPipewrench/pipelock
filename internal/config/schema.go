@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
@@ -72,8 +73,8 @@ const (
 
 // Event export format constants.
 const (
-	EmitFormatJSON = "json"
-	EmitFormatCEF  = "cef"
+	EmitFormatJSON = emitformat.JSON
+	EmitFormatCEF  = emitformat.CEF
 )
 
 // DLP validator names for post-match checksum verification.

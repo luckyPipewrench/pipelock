@@ -169,6 +169,9 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	if err := validateSyslogFormat(cfg.format); err != nil {
+		return nil, err
+	}
 
 	network, addr, err := parseSyslogAddress(address)
 	if err != nil {
@@ -181,6 +184,13 @@ func NewSyslogSink(address string, opts ...SyslogOption) (*SyslogSink, error) {
 	}
 
 	return newSyslogSink(writer, cfg), nil
+}
+
+func validateSyslogFormat(format string) error {
+	if format == "" || format == FormatJSON || format == FormatCEF {
+		return nil
+	}
+	return fmt.Errorf("emit: unsupported syslog format %q", format)
 }
 
 func newSyslogSink(writer syslogWriter, cfg *syslogConfig) *SyslogSink {
@@ -260,18 +270,16 @@ func parseFacility(name string) syslog.Priority {
 // NewSyslogSinkFromConfig creates a SyslogSink from string config values.
 // This is a cross-platform entry point used by cli/run.go; on Windows it returns
 // ErrSyslogUnavailable (defined in syslog_windows.go).
-func NewSyslogSinkFromConfig(address, facility, tag, minSeverity, format, deviceVersion string) (*SyslogSink, error) {
+func NewSyslogSinkFromConfig(address, facility, tag, minSeverity string, extraOpts ...SyslogOption) (*SyslogSink, error) {
 	var opts []SyslogOption
 	opts = append(opts, WithSyslogMinSeverity(ParseSeverity(minSeverity)))
-	if format != "" {
-		opts = append(opts, WithSyslogFormat(format, deviceVersion))
-	}
 	if facility != "" {
 		opts = append(opts, WithSyslogFacility(parseFacility(facility)))
 	}
 	if tag != "" {
 		opts = append(opts, WithSyslogTag(tag))
 	}
+	opts = append(opts, extraOpts...)
 	return NewSyslogSink(address, opts...)
 }
 

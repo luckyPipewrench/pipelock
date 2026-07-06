@@ -70,9 +70,9 @@ func TestEventActionCoversEveryEventConstant(t *testing.T) {
 		conventionActionWarn:  true,
 		conventionActionAsk:   true,
 		EventRedirect:         true,
-		"defer":               true,
-		"forward":             true,
-		"strip":               true,
+		eventActionDefer:      true,
+		eventActionForward:    true,
+		eventActionStrip:      true,
 	}
 
 	constants := eventConstantsFromSource(t)
@@ -123,6 +123,57 @@ func TestFilteringSink(t *testing.T) {
 	}
 	if events[0].Fields["action"] != conventionActionBlock {
 		t.Fatalf("forwarded action = %v, want block", events[0].Fields["action"])
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !inner.isClosed() {
+		t.Fatal("inner sink was not closed")
+	}
+}
+
+func TestNewFilteringSinkDisabledOrNil(t *testing.T) {
+	inner := &mockSink{}
+	if got := NewFilteringSink(inner, Filter{}); got != inner {
+		t.Fatal("disabled filter should return original sink")
+	}
+	if got := NewFilteringSink(nil, Filter{Actions: []string{conventionActionBlock}}); got != nil {
+		t.Fatal("nil sink should remain nil")
+	}
+}
+
+func TestNormalizeEventActionAliases(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "allowed event", value: EventAllowed, want: conventionActionAllow},
+		{name: "allow convention", value: conventionActionAllow, want: conventionActionAllow},
+		{name: "blocked event", value: EventBlocked, want: conventionActionBlock},
+		{name: "websocket blocked event", value: EventWSBlocked, want: conventionActionBlock},
+		{name: "deny", value: "deny", want: conventionActionBlock},
+		{name: "denied", value: "denied", want: conventionActionBlock},
+		{name: "warn", value: conventionActionWarn, want: conventionActionWarn},
+		{name: "ask", value: conventionActionAsk, want: conventionActionAsk},
+		{name: "redirect event", value: EventRedirect, want: EventRedirect},
+		{name: "redirected", value: "redirected", want: EventRedirect},
+		{name: "forward event", value: EventForwardHTTP, want: eventActionForward},
+		{name: "forward", value: eventActionForward, want: eventActionForward},
+		{name: "forwarded", value: "forwarded", want: eventActionForward},
+		{name: "strip", value: eventActionStrip, want: eventActionStrip},
+		{name: "stripped", value: "stripped", want: eventActionStrip},
+		{name: "defer", value: eventActionDefer, want: eventActionDefer},
+		{name: "deferred", value: "deferred", want: eventActionDefer},
+		{name: "custom preserves trim", value: " custom ", want: "custom"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeEventAction(tt.value); got != tt.want {
+				t.Fatalf("normalizeEventAction(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
 	}
 }
 

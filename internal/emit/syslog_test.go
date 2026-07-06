@@ -650,7 +650,7 @@ func TestNewSyslogSink_DialFailure(t *testing.T) {
 func TestNewSyslogSinkFromConfig(t *testing.T) {
 	addr, _ := startUDPSyslog(t)
 
-	sink, err := NewSyslogSinkFromConfig("udp://"+addr, "local3", "myapp", testSeverityWarn, FormatJSON, "")
+	sink, err := NewSyslogSinkFromConfig("udp://"+addr, "local3", "myapp", testSeverityWarn, WithSyslogFormat(FormatJSON, ""))
 	if err != nil {
 		t.Fatalf("NewSyslogSinkFromConfig: %v", err)
 	}
@@ -664,7 +664,7 @@ func TestNewSyslogSinkFromConfig(t *testing.T) {
 func TestNewSyslogSinkFromConfig_Defaults(t *testing.T) {
 	addr, _ := startUDPSyslog(t)
 
-	sink, err := NewSyslogSinkFromConfig("udp://"+addr, "", "", "", "", "")
+	sink, err := NewSyslogSinkFromConfig("udp://"+addr, "", "", "")
 	if err != nil {
 		t.Fatalf("NewSyslogSinkFromConfig: %v", err)
 	}
@@ -672,9 +672,21 @@ func TestNewSyslogSinkFromConfig_Defaults(t *testing.T) {
 }
 
 func TestNewSyslogSinkFromConfig_InvalidAddress(t *testing.T) {
-	_, err := NewSyslogSinkFromConfig("not-valid", "", "", "", "", "")
+	_, err := NewSyslogSinkFromConfig("not-valid", "", "", "")
 	if err == nil {
 		t.Error("expected error for invalid address")
+	}
+}
+
+func TestNewSyslogSinkFromConfig_InvalidFormat(t *testing.T) {
+	addr, _ := startUDPSyslog(t)
+
+	_, err := NewSyslogSinkFromConfig("udp://"+addr, "", "", "", WithSyslogFormat("xml", ""))
+	if err == nil {
+		t.Fatal("expected invalid format error")
+	}
+	if !contains(err.Error(), `unsupported syslog format "xml"`) {
+		t.Fatalf("error = %v", err)
 	}
 }
 

@@ -231,8 +231,7 @@ func BuildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
 			cfg.Emit.Syslog.Facility,
 			cfg.Emit.Syslog.Tag,
 			cfg.Emit.Syslog.MinSeverity,
-			cfg.Emit.Syslog.Format,
-			cliutil.Version,
+			emit.WithSyslogFormat(cfg.Emit.Syslog.Format, cliutil.Version),
 		)
 		if err != nil {
 			// Close already-created sinks to prevent goroutine leaks.

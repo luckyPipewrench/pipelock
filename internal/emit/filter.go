@@ -9,6 +9,12 @@ import (
 	"strings"
 )
 
+const (
+	eventActionDefer   = "defer"
+	eventActionForward = "forward"
+	eventActionStrip   = "strip"
+)
+
 // Filter controls which events are exported to configured sinks.
 type Filter struct {
 	Actions       []string
@@ -21,7 +27,10 @@ func (f Filter) Enabled() bool {
 	return len(f.Actions) > 0 || len(f.DecisionTypes) > 0 || len(f.Agents) > 0
 }
 
-// Allows reports whether event matches every configured criterion.
+// Allows reports whether event matches every configured criterion. As a
+// fail-safe, when an Actions filter includes "block" and an event's action
+// cannot be classified, the event is still allowed through rather than
+// silently dropped.
 func (f Filter) Allows(event Event) bool {
 	if len(f.Actions) > 0 {
 		action := eventAction(event)
@@ -124,12 +133,12 @@ func normalizeEventAction(value string) string {
 		return conventionActionAsk
 	case EventRedirect, "redirected":
 		return EventRedirect
-	case EventForwardHTTP, "forward", "forwarded":
-		return "forward"
-	case "strip", "stripped":
-		return "strip"
-	case "defer", "deferred":
-		return "defer"
+	case EventForwardHTTP, eventActionForward, "forwarded":
+		return eventActionForward
+	case eventActionStrip, "stripped":
+		return eventActionStrip
+	case eventActionDefer, "deferred":
+		return eventActionDefer
 	default:
 		return trimmed
 	}
@@ -163,7 +172,7 @@ func eventTypeAction(eventType string) string {
 	case EventRedirect, EventToolRedirect:
 		return EventRedirect
 	case EventForwardHTTP:
-		return "forward"
+		return eventActionForward
 	case EventStartup,
 		EventShutdown,
 		EventAgentListener,

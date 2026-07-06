@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 )
 
 const (
-	FormatJSON = "json"
-	FormatCEF  = "cef"
+	FormatJSON = emitformat.JSON
+	FormatCEF  = emitformat.CEF
 
 	cefVersion       = "0"
 	cefDeviceVendor  = "Pipelock"

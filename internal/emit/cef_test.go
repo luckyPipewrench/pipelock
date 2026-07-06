@@ -4,6 +4,7 @@
 package emit
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,52 @@ func TestFormatCEFEventEscapesLineForgeryPayloads(t *testing.T) {
 	}
 }
 
+type cefStringer string
+
+func (s cefStringer) String() string {
+	return fmt.Sprintf("stringer:%s", string(s))
+}
+
+func TestFormatCEFEventRendersCustomFieldValues(t *testing.T) {
+	event := Event{
+		Severity:  SeverityInfo,
+		Type:      EventResponseScan,
+		Timestamp: time.Date(2026, 7, 5, 2, 3, 4, 0, time.UTC),
+		Fields: map[string]any{
+			"enabled":      true,
+			"empty":        "",
+			"items":        []any{"x", 2, true},
+			"nil_value":    nil,
+			"scanner":      "prompt",
+			"stringer":     cefStringer("value"),
+			"target.zone":  "prod",
+			"tag-list":     []string{"alpha", "beta"},
+			"unsafe@field": "sanitized",
+		},
+	}
+
+	got := FormatCEFEvent(event, "dev")
+	for _, want := range []string{
+		`CEF:0|Pipelock|Pipelock|dev|response_scan|response_scan: prompt|3|`,
+		`cs1=prompt`,
+		`pipelockEnabled=true`,
+		`pipelockItems=x,2,true`,
+		`pipelockStringer=stringer:value`,
+		`pipelockTagList=alpha,beta`,
+		`pipelockTargetZone=prod`,
+		`pipelockUnsafefield=sanitized`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CEF line missing %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"pipelockEmpty=", "pipelockNilValue="} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("CEF line contains skipped field %q:\n%s", forbidden, got)
+		}
+	}
+}
+
 func countUnescapedPipes(s string) int {
 	count := 0
 	backslashes := 0
@@ -147,5 +194,9 @@ func TestFormatCEFEventSampleProof(t *testing.T) {
 		},
 	}
 
-	t.Log(FormatCEFEvent(event, "dev"))
+	got := FormatCEFEvent(event, "dev")
+	want := "CEF:0|Pipelock|Pipelock|dev|body_dlp|body_dlp: secret detected|6|act=block cat=body_dlp cs1=dlp externalId=req-123 msg=secret detected pipelockEvent=body_dlp pipelockInstance=fedora-demo pipelockSeverity=warn request=https://api.vendor.example/v1/chat requestMethod=POST rt=2026-07-05T12:34:56Z src=203.0.113.10 suser=agent-a"
+	if got != want {
+		t.Fatalf("FormatCEFEvent() =\n%s\nwant\n%s", got, want)
+	}
 }

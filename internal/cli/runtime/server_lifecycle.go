@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +90,129 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		_ = watcher.Close()
 		waitConsumer()
 	}, nil
+}
+
+func (s *Server) startupSummaryLine(cfg *config.Config) string {
+	return fmt.Sprintf(
+		"  Check:  mode=%s listeners=%s allowlist=%d dlp_patterns=%d scanners=%d entropy=%s; run `pipelock explain` to see why a request was blocked",
+		cfg.Mode,
+		strings.Join(s.startupListeners(cfg), ","),
+		len(cfg.APIAllowlist),
+		len(cfg.DLP.Patterns),
+		startupEnabledScannerCount(cfg),
+		startupEntropyState(cfg),
+	)
+}
+
+func (s *Server) startupListeners(cfg *config.Config) []string {
+	listeners := []string{"fetch=" + cfg.FetchProxy.Listen}
+	if cfg.MetricsListen != "" && cfg.MetricsListen != cfg.FetchProxy.Listen {
+		listeners = append(listeners, "stats="+cfg.MetricsListen)
+	}
+	if cfg.ForwardProxy.Enabled {
+		listeners = append(listeners, "forward=enabled")
+	}
+	if cfg.WebSocketProxy.Enabled {
+		listeners = append(listeners, "ws="+cfg.FetchProxy.Listen)
+	}
+	if cfg.ScanAPI.Listen != "" {
+		listeners = append(listeners, "scan_api="+cfg.ScanAPI.Listen)
+	}
+	if cfg.KillSwitch.APIToken != "" {
+		if s.apiOnSeparatePort {
+			listeners = append(listeners, "kill_api="+cfg.KillSwitch.APIListen)
+		} else {
+			listeners = append(listeners, "kill_api="+cfg.FetchProxy.Listen)
+		}
+	}
+	if s.hasMCPListen {
+		listeners = append(listeners, "mcp="+s.opts.MCPListen)
+	}
+	if cfg.ReverseProxy.Enabled {
+		listeners = append(listeners, "reverse="+cfg.ReverseProxy.Listen)
+	}
+	if ports := s.proxy.Ports(); len(ports) > 0 {
+		listeners = append(listeners, fmt.Sprintf("agents=%d", len(ports)))
+	}
+	return listeners
+}
+
+func startupEnabledScannerCount(cfg *config.Config) int {
+	count := 5 // scheme, CRLF, path traversal, core SSRF, core DLP
+	if cfg.Mode == config.ModeStrict && len(cfg.APIAllowlist) > 0 {
+		count++
+	}
+	if len(cfg.FetchProxy.Monitoring.Blocklist) > 0 {
+		count++
+	}
+	if len(cfg.DLP.Patterns) > 0 {
+		count++
+	}
+	if cfg.FetchProxy.Monitoring.EntropyThreshold > 0 {
+		count++
+	}
+	if cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold > 0 {
+		count++
+	}
+	if cfg.Internal != nil {
+		count++
+	}
+	if cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0 {
+		count++
+	}
+	if cfg.FetchProxy.Monitoring.MaxDataPerMinute > 0 {
+		count++
+	}
+	if cfg.SeedPhraseDetection.Enabled == nil || *cfg.SeedPhraseDetection.Enabled {
+		count++
+	}
+	if cfg.RequestBodyScanning.Enabled {
+		count++
+	}
+	if cfg.ResponseScanning.Enabled {
+		count++
+	}
+	if cfg.ResponseScanning.SSEStreaming.Enabled {
+		count++
+	}
+	if cfg.MCPInputScanning.Enabled {
+		count++
+	}
+	if cfg.MCPToolScanning.Enabled {
+		count++
+	}
+	if cfg.MCPToolPolicy.Enabled {
+		count++
+	}
+	if cfg.MCPSessionBinding.Enabled {
+		count++
+	}
+	if cfg.ToolChainDetection.Enabled {
+		count++
+	}
+	if cfg.CrossRequestDetection.Enabled {
+		count++
+	}
+	if cfg.AddressProtection.Enabled {
+		count++
+	}
+	if cfg.BrowserShield.Enabled {
+		count++
+	}
+	if cfg.A2AScanning.Enabled {
+		count++
+	}
+	if cfg.FileSentry.Enabled {
+		count++
+	}
+	return count
+}
+
+func startupEntropyState(cfg *config.Config) string {
+	if cfg.FetchProxy.Monitoring.EntropyThreshold <= 0 && cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold <= 0 {
+		return "off"
+	}
+	return "on"
 }
 
 // Start binds all configured listeners, launches the reload/signal/
@@ -204,6 +328,7 @@ func (s *Server) Start(ctx context.Context) error {
 	defer stopFileSentry()
 
 	_, _ = fmt.Fprintf(s.opts.Stderr, "Pipelock %s starting\n", cliutil.DisplayVersion())
+	_, _ = fmt.Fprintln(s.opts.Stderr, s.startupSummaryLine(cfg))
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Mode:   %s\n", cfg.Mode)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Listen: %s\n", cfg.FetchProxy.Listen)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)

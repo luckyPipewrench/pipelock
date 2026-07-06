@@ -330,6 +330,8 @@ What each mode prevents, detects, or logs:
 Generate a config from any built-in preset, or let `pipelock audit` tailor one to your project:
 
 ```bash
+pipelock presets
+pipelock generate config --list
 pipelock generate config --preset balanced > pipelock.yaml
 pipelock audit ./my-project -o pipelock.yaml
 ```
@@ -552,7 +554,7 @@ internal/
 enterprise/            Multi-agent features (ELv2)
 sdk/conformance/       Cross-implementation receipt verification test vectors
 charts/                Helm chart for Kubernetes deployment
-configs/               7 preset config files
+configs/               7 built-in preset config files
 docs/                  Guides, references, compliance mappings
 ```
 

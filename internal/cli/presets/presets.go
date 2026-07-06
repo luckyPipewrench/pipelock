@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"text/tabwriter"
 
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/configs"
@@ -37,6 +39,107 @@ var (
 	ValidNames = strings.Join(All, ", ")
 	FlagHelp   = "config preset: " + ValidNames
 )
+
+type Info struct {
+	Name          string
+	Mode          string
+	DefaultAction string
+	Reachability  string
+	Description   string
+}
+
+// Cmd returns the top-level "presets" command.
+func Cmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "presets",
+		Short: "List built-in config presets",
+		Long:  "List every built-in config preset accepted by `pipelock generate config --preset <name>`.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return PrintList(cmd.OutOrStdout())
+		},
+	}
+}
+
+// PrintList writes all built-in presets in a stable table.
+func PrintList(w io.Writer) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "NAME\tMODE\tDEFAULT ACTION\tREACHABILITY"); err != nil {
+		return fmt.Errorf("writing presets header: %w", err)
+	}
+	for _, info := range List() {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", info.Name, info.Mode, info.DefaultAction, info.Reachability); err != nil {
+			return fmt.Errorf("writing preset %q: %w", info.Name, err)
+		}
+	}
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("flushing presets table: %w", err)
+	}
+	return nil
+}
+
+// List returns metadata for every built-in preset in CLI selection order.
+func List() []Info {
+	out := make([]Info, 0, len(All))
+	for _, name := range All {
+		cfg, err := Config(name)
+		if err != nil {
+			out = append(out, Info{Name: name, Mode: "invalid", DefaultAction: "invalid", Reachability: err.Error()})
+			continue
+		}
+		out = append(out, Info{
+			Name:          name,
+			Mode:          cfg.Mode,
+			DefaultAction: defaultAction(cfg),
+			Reachability:  reachability(cfg),
+			Description:   description(name),
+		})
+	}
+	return out
+}
+
+func defaultAction(cfg *config.Config) string {
+	if cfg.Enforce != nil && !*cfg.Enforce {
+		return "warn (log-only)"
+	}
+	if cfg.Mode == config.ModeStrict {
+		return config.ActionBlock
+	}
+	if cfg.ResponseScanning.Action != "" {
+		return cfg.ResponseScanning.Action
+	}
+	return config.ActionWarn
+}
+
+func reachability(cfg *config.Config) string {
+	if cfg.Mode == config.ModeStrict {
+		return fmt.Sprintf("allowlist-only (%d allowlist, %d blocklist)", len(cfg.APIAllowlist), len(cfg.FetchProxy.Monitoring.Blocklist))
+	}
+	if cfg.Enforce != nil && !*cfg.Enforce {
+		return fmt.Sprintf("audit/blocklist (%d blocklist, allowlist not enforced)", len(cfg.FetchProxy.Monitoring.Blocklist))
+	}
+	return fmt.Sprintf("blocklist posture (%d blocklist, %d allowlist available)", len(cfg.FetchProxy.Monitoring.Blocklist), len(cfg.APIAllowlist))
+}
+
+func description(name string) string {
+	switch name {
+	case config.ModeStrict:
+		return "Agent can only reach allowlisted API domains."
+	case config.ModeBalanced:
+		return "General-purpose monitored browsing posture."
+	case config.ModeAudit:
+		return "Evaluation mode; detects and logs without enforcing."
+	case PresetClaudeCode:
+		return "Coding-agent preset with stricter response handling."
+	case PresetCursor:
+		return "IDE preset with coding and Cursor domains."
+	case PresetGenericAgent:
+		return "Broad tuning preset for new agents."
+	case PresetHostileModel:
+		return "Strict posture for agents that cannot be trusted to refuse."
+	default:
+		return ""
+	}
+}
 
 // YAML returns the config YAML bytes for a built-in preset.
 func YAML(name string) ([]byte, error) {

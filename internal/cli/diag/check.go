@@ -64,6 +64,9 @@ Examples:
 			for _, advisory := range checkConfigAdvisories(cfg) {
 				cmd.Printf("\n  [ADVISORY] %s\n", advisory)
 			}
+			if advisory := availableUnconfiguredAdvisory(cfg); advisory != "" {
+				cmd.Printf("\n  [INFO] %s\n", advisory)
+			}
 
 			// Optionally scan a URL
 			if scanURL != "" {

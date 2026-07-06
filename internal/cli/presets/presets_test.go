@@ -63,6 +63,65 @@ func TestConfigAcceptsEveryPreset(t *testing.T) {
 	}
 }
 
+func TestListDescribesEveryPreset(t *testing.T) {
+	t.Parallel()
+
+	infos := List()
+	if len(infos) != len(All) {
+		t.Fatalf("List returned %d presets, want %d", len(infos), len(All))
+	}
+	for i, info := range infos {
+		if info.Name != All[i] {
+			t.Errorf("preset[%d] name = %q, want %q", i, info.Name, All[i])
+		}
+		if info.Mode == "" {
+			t.Errorf("%s mode is empty", info.Name)
+		}
+		if info.DefaultAction == "" {
+			t.Errorf("%s default action is empty", info.Name)
+		}
+		if !strings.Contains(info.Reachability, "allowlist") && !strings.Contains(info.Reachability, "blocklist") {
+			t.Errorf("%s reachability = %q, want allowlist/blocklist posture", info.Name, info.Reachability)
+		}
+	}
+}
+
+func TestPrintListIncludesEveryPreset(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := PrintList(&buf); err != nil {
+		t.Fatalf("PrintList: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"NAME", "MODE", "DEFAULT ACTION", "REACHABILITY"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing header %q:\n%s", want, out)
+		}
+	}
+	for _, name := range All {
+		if !strings.Contains(out, name) {
+			t.Fatalf("output missing preset %q:\n%s", name, out)
+		}
+	}
+}
+
+func TestCmdListsEveryPreset(t *testing.T) {
+	t.Parallel()
+
+	cmd := Cmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, name := range All {
+		if !strings.Contains(buf.String(), name) {
+			t.Fatalf("output missing preset %q:\n%s", name, buf.String())
+		}
+	}
+}
+
 func TestFilePresetYAMLMatchesEmbeddedBytes(t *testing.T) {
 	t.Parallel()
 

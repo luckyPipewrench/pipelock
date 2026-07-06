@@ -3,6 +3,8 @@
 Pipelock uses a single YAML config file. Generate a starter config:
 
 ```bash
+pipelock presets
+pipelock generate config --list
 pipelock generate config --preset balanced > pipelock.yaml
 pipelock run --config pipelock.yaml
 ```
@@ -1665,7 +1667,8 @@ ssrf:
 
 ## Presets
 
-Seven starter configs are selectable with `pipelock generate config --preset <name>`:
+Seven starter configs are selectable with `pipelock generate config --preset <name>`.
+Run `pipelock presets` or `pipelock generate config --list` to list the current built-in names with mode, default action, and reachability posture:
 
 | Preset | Mode | Response Action | MCP Policy | Best For |
 |--------|------|----------------|------------|----------|

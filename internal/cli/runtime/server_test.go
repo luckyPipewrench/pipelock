@@ -122,6 +122,39 @@ func TestNewServer_SurfacesValidateWarnings(t *testing.T) {
 	}
 }
 
+func TestStartupSummaryLine(t *testing.T) {
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+
+	line := s.startupSummaryLine(s.cfg)
+	for _, want := range []string{
+		"Check:",
+		"mode=balanced",
+		"listeners=fetch=127.0.0.1:0",
+		"allowlist=6",
+		"dlp_patterns=",
+		"scanners=",
+		"entropy=on",
+		"pipelock explain",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("summary missing %q:\n%s", want, line)
+		}
+	}
+}
+
+func TestStartupEntropyStateOff(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 0
+
+	if got := startupEntropyState(cfg); got != "off" {
+		t.Fatalf("entropy state = %q, want off", got)
+	}
+}
+
 func TestNewServer_ValidatesListenerFlagPairs(t *testing.T) {
 	for _, tt := range []struct {
 		name string

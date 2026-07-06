@@ -55,3 +55,18 @@ func TestEnvelopeHelpRegistered(t *testing.T) {
 		t.Fatalf("help output = %q, want trust subcommand", got)
 	}
 }
+
+func TestPresetsCommandRegistered(t *testing.T) {
+	cmd := rootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"presets"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("presets command: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "hostile-model") {
+		t.Fatalf("presets output = %q, want hostile-model preset", got)
+	}
+}

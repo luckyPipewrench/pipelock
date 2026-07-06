@@ -35,6 +35,7 @@ Examples:
 func generateConfigCmd() *cobra.Command {
 	var preset string
 	var output string
+	var list bool
 
 	cmd := &cobra.Command{
 		Use:   "config",
@@ -42,18 +43,16 @@ func generateConfigCmd() *cobra.Command {
 		Long: `Generate a YAML config file from one of the built-in presets.
 
 Available presets:
-  strict        - Agent can only reach allowlisted API domains (airtight)
-  balanced      - Capability separation with monitored web browsing (default)
-  audit         - Log everything, restrict nothing (evaluation)
-  claude-code   - Balanced coding-agent preset with stricter response scanning
-  cursor        - Balanced IDE preset with coding domains
-  generic-agent - Broad starting point for new agents during tuning
-  hostile-model - Strict preset with every defense layer enabled
+  run 'pipelock presets' or 'pipelock generate config --list' to list every built-in preset
 
 Examples:
+  pipelock generate config --list
   pipelock generate config --preset balanced
   pipelock generate config --preset strict --output pipelock.yaml`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if list {
+				return presets.PrintList(cmd.OutOrStdout())
+			}
 			data, err := presets.YAML(preset)
 			if err != nil {
 				return err
@@ -77,6 +76,7 @@ Examples:
 
 	cmd.Flags().StringVar(&preset, "preset", config.ModeBalanced, presets.FlagHelp)
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output file path (default: stdout)")
+	cmd.Flags().BoolVar(&list, "list", false, "list built-in config presets")
 
 	return cmd
 }

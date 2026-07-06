@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/keys"
 	"github.com/luckyPipewrench/pipelock/internal/cli/learn"
 	"github.com/luckyPipewrench/pipelock/internal/cli/policy"
+	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/cli/rules"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/cli/scan"
@@ -106,6 +107,7 @@ Quick start:
 		support.Cmd(),
 		// Generate
 		generate.Cmd(),
+		presets.Cmd(),
 		// Git
 		git.Cmd(),
 		// Hermes Agent (Nous Research) integration

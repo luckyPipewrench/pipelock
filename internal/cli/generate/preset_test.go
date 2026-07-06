@@ -99,6 +99,27 @@ func TestCmd_AllPresetsProduceLoadableConfig(t *testing.T) {
 	}
 }
 
+func TestCmd_ListPresets(t *testing.T) {
+	cmd := Cmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"config", "--list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"NAME", "MODE", "DEFAULT ACTION", "REACHABILITY"} {
+		if !bytes.Contains([]byte(out), []byte(want)) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	for _, name := range presets.All {
+		if !bytes.Contains([]byte(out), []byte(name)) {
+			t.Fatalf("output missing preset %q:\n%s", name, out)
+		}
+	}
+}
+
 func TestCmd_InvalidPreset(t *testing.T) {
 	cmd := Cmd()
 	var buf bytes.Buffer

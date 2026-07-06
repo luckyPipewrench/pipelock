@@ -109,6 +109,52 @@ func TestExplainEventCmd_RedactsSecretBearingAuditFields(t *testing.T) {
 	}
 }
 
+func TestExplainEventCmd_RedactsUsingActiveConfigDLPPatterns(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	cfgPath := writeConfig(t, `
+mode: balanced
+dlp:
+  patterns:
+    - name: Custom Audit Token
+      regex: "custom-leak-[a-z]{8}"
+      severity: critical
+`)
+	secret := "custom-leak-abcdefgh"
+	line := map[string]any{
+		"event":            "blocked",
+		"request_id":       "req-custom-dlp",
+		"url":              "https://api.vendor.example/callback?note=" + secret + "&state=public",
+		"scanner":          "dlp",
+		"reason":           "DLP match leaked " + secret,
+		"display_label":    secret,
+		"remediation_hint": "rotate " + secret,
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("marshal audit line: %v", err)
+	}
+	if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"event", "req-custom-dlp", "--config", cfgPath, "--log", logPath},
+		{"event", "req-custom-dlp", "--config", cfgPath, "--log", logPath, "--json"},
+	} {
+		out, err := runExplainCmd(t, args...)
+		if err != nil {
+			t.Fatalf("explain event failed for args %v: %v\n%s", args, err, out)
+		}
+		if strings.Contains(out, secret) {
+			t.Fatalf("output leaked active-config DLP value for args %v:\n%s", args, out)
+		}
+		if !strings.Contains(out, "state=public") {
+			t.Fatalf("output should preserve non-sensitive query context for args %v:\n%s", args, out)
+		}
+	}
+}
+
 func TestExplainEventCmd_RedactsTokenFamilyQueryParams(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.log")

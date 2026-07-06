@@ -96,7 +96,7 @@ remediation table used by pipelock explain.`,
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
 
-			lookup, err := lookupExplainEvent(logPath, args[0])
+			lookup, err := lookupExplainEvent(logPath, args[0], newExplainEventSanitizer(cfg))
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
@@ -139,7 +139,7 @@ func resolveExplainEventLogPath(cfg *config.Config, auditLog string) (string, er
 	return "", errors.New("audit log path required: pass --log or set logging.output to file/both with logging.file")
 }
 
-func lookupExplainEvent(path, id string) (explainEventLookup, error) {
+func lookupExplainEvent(path, id string, sanitizer explainEventSanitizer) (explainEventLookup, error) {
 	cleanPath := filepath.Clean(path)
 	f, err := os.Open(cleanPath)
 	if err != nil {
@@ -148,10 +148,14 @@ func lookupExplainEvent(path, id string) (explainEventLookup, error) {
 	defer func() {
 		_ = f.Close()
 	}()
-	return scanExplainEvent(f, strings.TrimSpace(id))
+	return scanExplainEventWithSanitizer(f, strings.TrimSpace(id), sanitizer)
 }
 
 func scanExplainEvent(r io.Reader, id string) (explainEventLookup, error) {
+	return scanExplainEventWithSanitizer(r, id, newExplainEventSanitizer(nil))
+}
+
+func scanExplainEventWithSanitizer(r io.Reader, id string, sanitizer explainEventSanitizer) (explainEventLookup, error) {
 	var out explainEventLookup
 	if id == "" {
 		return out, errors.New("event id cannot be empty")
@@ -187,7 +191,7 @@ func scanExplainEvent(r io.Reader, id string) (explainEventLookup, error) {
 		if matchedField == "" {
 			continue
 		}
-		out.report = buildExplainEventReport(raw, id, matchedField)
+		out.report = buildExplainEventReport(raw, id, matchedField, sanitizer)
 		out.found = true
 		return out, nil
 	}
@@ -251,8 +255,7 @@ func matchedExplainEventID(raw map[string]any, id string) string {
 	return ""
 }
 
-func buildExplainEventReport(raw map[string]any, id, matchedField string) explainEventReport {
-	sanitizer := newExplainEventSanitizer()
+func buildExplainEventReport(raw map[string]any, id, matchedField string, sanitizer explainEventSanitizer) explainEventReport {
 	eventName := eventFieldString(raw, "event")
 	reason := eventFieldString(raw, "reason")
 	scannerName := eventFieldString(raw, "scanner")
@@ -346,8 +349,11 @@ type explainEventSanitizer struct {
 	scanner *scanner.Scanner
 }
 
-func newExplainEventSanitizer() explainEventSanitizer {
-	return explainEventSanitizer{scanner: scanner.New(config.Defaults())}
+func newExplainEventSanitizer(cfg *config.Config) explainEventSanitizer {
+	if cfg == nil {
+		cfg = config.Defaults()
+	}
+	return explainEventSanitizer{scanner: scanner.New(cfg)}
 }
 
 func (s explainEventSanitizer) clean(value string) bool {
@@ -358,7 +364,9 @@ func (s explainEventSanitizer) clean(value string) bool {
 }
 
 func (s explainEventSanitizer) field(value string) string {
-	value = redactExplainEventSecretAssignments(value)
+	if explainEventAmbiguousCredentialText(value) {
+		return explainEventRedacted
+	}
 	if !s.clean(value) {
 		return explainEventRedacted
 	}
@@ -387,29 +395,16 @@ func (s explainEventSanitizer) target(value string) string {
 		}
 	}
 	value = receipt.SanitizeTarget(value, s.clean)
-	return s.field(value)
-}
-
-func redactExplainEventSecretAssignments(value string) string {
-	value = explainEventAuthorizationAssignmentRe.ReplaceAllStringFunc(value, redactExplainEventSecretAssignmentMatch)
-	value = explainEventBearerValueRe.ReplaceAllStringFunc(value, func(match string) string {
-		fields := strings.Fields(match)
-		if len(fields) == 0 {
-			return explainEventRedacted
-		}
-		return fields[0] + " " + explainEventRedactedValue
-	})
-	return explainEventSecretAssignmentRe.ReplaceAllStringFunc(value, func(match string) string {
-		return redactExplainEventSecretAssignmentMatch(match)
-	})
-}
-
-func redactExplainEventSecretAssignmentMatch(match string) string {
-	idx := strings.IndexAny(match, ":=")
-	if idx < 0 {
+	if !s.clean(value) {
 		return explainEventRedacted
 	}
-	return strings.TrimRight(match[:idx+1], " \t") + explainEventRedactedValue
+	return escapeExplainEventTerminalControls(value)
+}
+
+func explainEventAmbiguousCredentialText(value string) bool {
+	return explainEventAuthorizationAssignmentRe.MatchString(value) ||
+		explainEventBearerValueRe.MatchString(value) ||
+		explainEventSecretAssignmentRe.MatchString(value)
 }
 
 func explainEventSecretQueryParam(key string) bool {

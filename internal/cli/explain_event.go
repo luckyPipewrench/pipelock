@@ -37,7 +37,11 @@ const (
 	explainEventRedactedValue  = "[redacted-value]"
 )
 
-var explainEventSecretAssignmentRe = regexp.MustCompile(`(?i)\b(?:token|access_token|api_key|apikey|secret|password|passwd|authorization|client_secret|bearer)\b\s*[:=]\s*[^,\s;&]+`)
+var (
+	explainEventAuthorizationAssignmentRe = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[^,\s;&]+`)
+	explainEventBearerValueRe             = regexp.MustCompile(`(?i)\bbearer\s+[^,\s;&]+`)
+	explainEventSecretAssignmentRe        = regexp.MustCompile(`(?i)\b(?:token|access_token|api_key|apikey|secret|password|passwd|client_secret)\b\s*[:=]\s*[^,\s;&]+`)
+)
 
 type explainEventReport struct {
 	ID              string   `json:"id"`
@@ -365,18 +369,20 @@ func (s explainEventSanitizer) target(value string) string {
 	if value == "" {
 		return ""
 	}
-	if strings.Contains(value, "://") {
+	if strings.Contains(value, "://") || strings.ContainsAny(value, "?#") {
 		if parsed, err := url.Parse(value); err == nil {
 			parsed.User = nil
 			parsed.Fragment = ""
 			parsed.RawFragment = ""
-			query := parsed.Query()
-			for key := range query {
-				if explainEventSecretQueryParam(key) {
-					query.Set(key, explainEventRedactedValue)
+			if parsed.RawQuery != "" {
+				query := parsed.Query()
+				for key := range query {
+					if explainEventSecretQueryParam(key) {
+						query.Set(key, explainEventRedactedValue)
+					}
 				}
+				parsed.RawQuery = query.Encode()
 			}
-			parsed.RawQuery = query.Encode()
 			value = parsed.String()
 		}
 	}
@@ -385,13 +391,25 @@ func (s explainEventSanitizer) target(value string) string {
 }
 
 func redactExplainEventSecretAssignments(value string) string {
-	return explainEventSecretAssignmentRe.ReplaceAllStringFunc(value, func(match string) string {
-		idx := strings.IndexAny(match, ":=")
-		if idx < 0 {
+	value = explainEventAuthorizationAssignmentRe.ReplaceAllStringFunc(value, redactExplainEventSecretAssignmentMatch)
+	value = explainEventBearerValueRe.ReplaceAllStringFunc(value, func(match string) string {
+		fields := strings.Fields(match)
+		if len(fields) == 0 {
 			return explainEventRedacted
 		}
-		return strings.TrimRight(match[:idx+1], " \t") + explainEventRedactedValue
+		return fields[0] + " " + explainEventRedactedValue
 	})
+	return explainEventSecretAssignmentRe.ReplaceAllStringFunc(value, func(match string) string {
+		return redactExplainEventSecretAssignmentMatch(match)
+	})
+}
+
+func redactExplainEventSecretAssignmentMatch(match string) string {
+	idx := strings.IndexAny(match, ":=")
+	if idx < 0 {
+		return explainEventRedacted
+	}
+	return strings.TrimRight(match[:idx+1], " \t") + explainEventRedactedValue
 }
 
 func explainEventSecretQueryParam(key string) bool {

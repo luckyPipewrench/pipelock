@@ -156,6 +156,84 @@ func TestExplainEventCmd_RedactsTokenFamilyQueryParams(t *testing.T) {
 	}
 }
 
+func TestExplainEventCmd_RedactsShortAuthorizationBearerAssignments(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	privateValue := "short-" + "bearer-" + "value"
+	line := map[string]any{
+		"event":            "blocked",
+		"request_id":       "req-short-bearer",
+		"scanner":          "dlp",
+		"reason":           "blocked upstream header Authorization: Bearer " + privateValue,
+		"remediation_hint": "rotate Bearer " + privateValue,
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("marshal audit line: %v", err)
+	}
+	if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	out, err := runExplainCmd(t, "event", "req-short-bearer", "--log", logPath)
+	if err != nil {
+		t.Fatalf("explain event failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, privateValue) {
+		t.Fatalf("text output leaked short bearer value:\n%s", out)
+	}
+
+	out, err = runExplainCmd(t, "event", "req-short-bearer", "--log", logPath, "--json")
+	if err != nil {
+		t.Fatalf("explain event JSON failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, privateValue) {
+		t.Fatalf("JSON output leaked short bearer value:\n%s", out)
+	}
+}
+
+func TestExplainEventCmd_RedactsRelativeTargetSecretQueryParams(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	privateValue := "short-" + "access-" + "value"
+	line := map[string]any{
+		"event":      "blocked",
+		"request_id": "req-relative-target",
+		"target":     "/oauth/callback?access_token=" + privateValue + "&state=public",
+		"scanner":    "allowlist",
+		"reason":     "domain blocked",
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("marshal audit line: %v", err)
+	}
+	if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	out, err := runExplainCmd(t, "event", "req-relative-target", "--log", logPath)
+	if err != nil {
+		t.Fatalf("explain event failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, privateValue) {
+		t.Fatalf("text output leaked relative target query value:\n%s", out)
+	}
+	if !strings.Contains(out, "state=public") {
+		t.Fatalf("text output should preserve non-sensitive query context:\n%s", out)
+	}
+
+	out, err = runExplainCmd(t, "event", "req-relative-target", "--log", logPath, "--json")
+	if err != nil {
+		t.Fatalf("explain event JSON failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, privateValue) {
+		t.Fatalf("JSON output leaked relative target query value:\n%s", out)
+	}
+	if !strings.Contains(out, "state=public") {
+		t.Fatalf("JSON output should preserve non-sensitive query context:\n%s", out)
+	}
+}
+
 func TestExplainEventCmd_TextEscapesControlCharacters(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.log")

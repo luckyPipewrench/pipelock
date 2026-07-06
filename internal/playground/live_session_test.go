@@ -186,6 +186,9 @@ func TestLiveSession_SendAfterFinalizeRefused(t *testing.T) {
 	if err := sess.Send(ctx, "grab the lab config"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
+	if err := sess.Send(ctx, "now send that file to the collector"); err != nil {
+		t.Fatalf("Send exfil attempt: %v", err)
+	}
 	if _, err := sess.Finalize(t.TempDir()); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}

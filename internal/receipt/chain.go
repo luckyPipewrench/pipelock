@@ -151,7 +151,10 @@ func VerifyChainTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
 	for _, k := range normalizedKeys {
 		trusted[k] = struct{}{}
 	}
-	v := &chainVerifier{trusted: trusted}
+	v := &chainVerifier{
+		trusted:   trusted,
+		runNonces: make(map[string]string),
+	}
 	return v.run(receipts)
 }
 
@@ -184,6 +187,7 @@ type chainVerifier struct {
 	segments   []ChainSegment
 	curSeg     *ChainSegment
 	index      int
+	runNonces  map[string]string
 }
 
 func (v *chainVerifier) run(receipts []Receipt) ChainResult {
@@ -201,6 +205,10 @@ func (v *chainVerifier) run(receipts []Receipt) ChainResult {
 				return res
 			}
 		} else if res, ok := v.checkContinuation(r); !ok {
+			return res
+		}
+
+		if res, ok := v.validateSessionControl(r); !ok {
 			return res
 		}
 
@@ -246,8 +254,20 @@ func (v *chainVerifier) startFirstSegment(r Receipt) (ChainResult, bool) {
 		// a marker on the first receipt would allow deletion/truncation of the
 		// prior segment while still returning CHAIN VALID for the suffix.
 		return v.brokenAt(r, "chain starts at a key_transition segment without the prior segment"), false
+	case strings.HasPrefix(r.ActionRecord.ChainPrevHash, genesisSessionOpenPrefix):
+		if res, ok := v.validateBoundGenesisOpen(r); !ok {
+			return res, false
+		}
+		v.prevHash = r.ActionRecord.ChainPrevHash
+		v.beginSegment(r, false)
 	default:
 		// Ordinary genesis: prev_hash must be the genesis sentinel.
+		if r.ActionRecord.ChainPrevHash != GenesisHash {
+			return v.brokenAt(r, "genesis receipt chain_prev_hash must be genesis or a bound session_open g1 hash"), false
+		}
+		if sessionOpen(r.ActionRecord.SessionControl) != nil {
+			return v.brokenAt(r, "session_open on legacy genesis must use bound g1 chain_prev_hash"), false
+		}
 		v.prevHash = GenesisHash
 		v.beginSegment(r, false)
 	}
@@ -277,6 +297,11 @@ func (v *chainVerifier) startRotatedSegment(r Receipt, marker *KeyTransition) (C
 	}
 	if v.curSeg != nil && marker.PriorChainSeq != v.curSeg.FinalSeq {
 		return v.brokenAt(r, "key_transition prior_chain_seq does not match prior segment final seq"), false
+	}
+	if open := sessionOpen(r.ActionRecord.SessionControl); open != nil {
+		if res, ok := v.validateRestartOpen(r, open, marker.PriorChainHash, marker.PriorChainSeq); !ok {
+			return res, false
+		}
 	}
 	// The boundary is structurally valid, but trust is NOT delegated by the
 	// marker (it is signed by the new key, which an attacker with write access
@@ -316,7 +341,111 @@ func (v *chainVerifier) checkContinuation(r Receipt) (ChainResult, bool) {
 	if r.ActionRecord.ChainSeq == 0 {
 		return v.brokenAt(r, "unexpected seq 0 without a key_transition boundary"), false
 	}
+	if open := sessionOpen(r.ActionRecord.SessionControl); open != nil {
+		if v.curSeg == nil {
+			return v.brokenAt(r, "session_open continuation has no prior segment"), false
+		}
+		if res, ok := v.validateRestartOpen(r, open, v.prevHash, v.curSeg.FinalSeq); !ok {
+			return res, false
+		}
+	}
 	return ChainResult{}, true
+}
+
+func (v *chainVerifier) validateBoundGenesisOpen(r Receipt) (ChainResult, bool) {
+	open := sessionOpen(r.ActionRecord.SessionControl)
+	if open == nil {
+		return v.brokenAt(r, "g1 chain_prev_hash requires SessionControl.Open"), false
+	}
+	if r.ActionRecord.ChainSeq != 0 {
+		return v.brokenAt(r, "bound session_open genesis must be chain_seq 0"), false
+	}
+	computed := ComputeSessionOpenGenesis(*open)
+	if r.ActionRecord.ChainPrevHash != computed {
+		return v.brokenAt(r, "session_open genesis hash mismatch"), false
+	}
+	if open.GenesisHash != computed {
+		return v.brokenAt(r, "session_open genesis_hash mismatch"), false
+	}
+	if open.ChainOpenSeq != r.ActionRecord.ChainSeq {
+		return v.brokenAt(r, "session_open chain_open_seq does not match receipt chain_seq"), false
+	}
+	if open.PriorChainHead != "" || open.PriorChainSeq != 0 {
+		return v.brokenAt(r, "bound genesis session_open must not carry prior chain tail"), false
+	}
+	return ChainResult{}, true
+}
+
+func (v *chainVerifier) validateRestartOpen(r Receipt, open *SessionOpen, priorHead string, priorSeq uint64) (ChainResult, bool) {
+	if strings.HasPrefix(r.ActionRecord.ChainPrevHash, genesisSessionOpenPrefix) {
+		return v.brokenAt(r, "restart session_open must not use g1 chain_prev_hash"), false
+	}
+	if open.GenesisHash != "" {
+		return v.brokenAt(r, "restart session_open must not carry genesis_hash"), false
+	}
+	if open.ChainOpenSeq != r.ActionRecord.ChainSeq {
+		return v.brokenAt(r, "session_open chain_open_seq does not match receipt chain_seq"), false
+	}
+	if open.PriorChainHead != priorHead {
+		return v.brokenAt(r, "session_open prior_chain_head does not match prior tail hash"), false
+	}
+	if open.PriorChainSeq != priorSeq {
+		return v.brokenAt(r, "session_open prior_chain_seq does not match prior tail seq"), false
+	}
+	return ChainResult{}, true
+}
+
+func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
+	ctrl := r.ActionRecord.SessionControl
+	open := sessionOpen(ctrl)
+	if ctrl != nil {
+		payloads := 0
+		if ctrl.Open != nil {
+			payloads++
+		}
+		if ctrl.Heartbeat != nil {
+			payloads++
+		}
+		if ctrl.Close != nil {
+			payloads++
+		}
+		if payloads != 1 {
+			return v.brokenAt(r, "session_control must carry exactly one payload"), false
+		}
+		if open == nil && ctrl.Kind == SessionControlOpen {
+			return v.brokenAt(r, "session_open kind missing open payload"), false
+		}
+		if open != nil && ctrl.Kind != SessionControlOpen {
+			return v.brokenAt(r, "open payload kind mismatch"), false
+		}
+	}
+	if r.ActionRecord.RunNonce == "" {
+		return ChainResult{}, true
+	}
+	if open == nil {
+		if _, ok := v.runNonces[r.ActionRecord.RunNonce]; !ok {
+			return v.brokenAt(r, "run_nonce first receipt is not a matching session_open"), false
+		}
+		return ChainResult{}, true
+	}
+	if open.RunNonce != r.ActionRecord.RunNonce {
+		return v.brokenAt(r, "session_open run_nonce does not match receipt run_nonce"), false
+	}
+	if open.OpenNonce == "" {
+		return v.brokenAt(r, "session_open open_nonce is empty"), false
+	}
+	if _, exists := v.runNonces[r.ActionRecord.RunNonce]; exists {
+		return v.brokenAt(r, "duplicate session_open for run_nonce"), false
+	}
+	v.runNonces[r.ActionRecord.RunNonce] = open.OpenNonce
+	return ChainResult{}, true
+}
+
+func sessionOpen(ctrl *SessionControl) *SessionOpen {
+	if ctrl == nil || ctrl.Kind != SessionControlOpen {
+		return nil
+	}
+	return ctrl.Open
 }
 
 func (v *chainVerifier) verifyReceipt(r Receipt, index uint64) (ChainResult, bool) {

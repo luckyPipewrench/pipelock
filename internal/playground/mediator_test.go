@@ -5,9 +5,17 @@ package playground
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/replaycapture"
 )
 
@@ -229,4 +237,119 @@ func TestMediator_FromEvidenceFile(t *testing.T) {
 	if !strings.Contains(out, "pipelock_decision") {
 		t.Fatalf("rendered output from evidence must contain pipelock_decision label; output:\n%s", out)
 	}
+}
+
+func TestMediator_FromEvidenceFileSkipsSessionControlReceipts(t *testing.T) {
+	evidenceFile := writeMediatorReceiptEvidence(t)
+
+	events, err := MediatorEventsFromEvidence(evidenceFile)
+	if err != nil {
+		t.Fatalf("MediatorEventsFromEvidence: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want only the decision receipt", len(events))
+	}
+	if events[0].Class != ClassPipelockDecision {
+		t.Fatalf("event class = %q, want pipelock_decision", events[0].Class)
+	}
+	if strings.Contains(events[0].Summary, "receipt_session") {
+		t.Fatalf("session-control receipt rendered as decision summary: %q", events[0].Summary)
+	}
+
+	var buf bytes.Buffer
+	RenderMediator(&buf, events, false)
+	out := buf.String()
+	if strings.Contains(out, "receipt_session") || strings.Contains(out, "session_open") {
+		t.Fatalf("session control receipt leaked into mediator decision output:\n%s", out)
+	}
+	if !strings.Contains(out, "pipelock_decision") || !strings.Contains(out, "transport=fetch") {
+		t.Fatalf("decision receipt missing from mediator output:\n%s", out)
+	}
+}
+
+func writeMediatorReceiptEvidence(t *testing.T) string {
+	t.Helper()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	runNonce := "0123456789abcdef0123456789abcdef"
+	policyHash := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	open := receipt.SessionOpen{
+		RunNonce:        runNonce,
+		OpenNonce:       "11111111111111111111111111111111",
+		RecorderSession: "proxy",
+		PolicyHash:      policyHash,
+		SignerKeyEpoch:  "test-epoch",
+		ChainOpenSeq:    0,
+	}
+	genesis := receipt.ComputeSessionOpenGenesis(open)
+	open.GenesisHash = genesis
+	openReceipt := signMediatorReceipt(t, priv, receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      receipt.NewActionID(),
+		ActionType:    receipt.ActionUnclassified,
+		Timestamp:     base,
+		Target:        "pipelock://session/open",
+		PolicyHash:    policyHash,
+		Verdict:       config.ActionAllow,
+		Transport:     "receipt_session",
+		ChainPrevHash: genesis,
+		ChainSeq:      0,
+		RunNonce:      runNonce,
+		SessionControl: &receipt.SessionControl{
+			Kind: receipt.SessionControlOpen,
+			Open: &open,
+		},
+	})
+	openHash, err := receipt.ReceiptHash(openReceipt)
+	if err != nil {
+		t.Fatalf("ReceiptHash(open): %v", err)
+	}
+	decision := signMediatorReceipt(t, priv, receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      receipt.NewActionID(),
+		ActionType:    receipt.ActionRead,
+		Timestamp:     base.Add(time.Second),
+		Target:        "https://api.vendor.example/data",
+		PolicyHash:    policyHash,
+		Verdict:       config.ActionAllow,
+		Transport:     "fetch",
+		Method:        http.MethodGet,
+		Layer:         "scanner",
+		ChainPrevHash: openHash,
+		ChainSeq:      1,
+		RunNonce:      runNonce,
+	})
+
+	path := filepath.Join(t.TempDir(), "evidence.jsonl")
+	if err := os.WriteFile(path, marshalMediatorReceipts(t, openReceipt, decision), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+func signMediatorReceipt(t *testing.T, priv ed25519.PrivateKey, ar receipt.ActionRecord) receipt.Receipt {
+	t.Helper()
+	rec, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	return rec
+}
+
+func marshalMediatorReceipts(t *testing.T, receipts ...receipt.Receipt) []byte {
+	t.Helper()
+	var out []byte
+	for _, rec := range receipts {
+		data, err := receipt.Marshal(rec)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		out = append(out, data...)
+		out = append(out, '\n')
+	}
+	return out
 }

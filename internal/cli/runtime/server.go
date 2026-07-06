@@ -494,10 +494,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			Metrics:    m,
 		})
 		if s.receiptEmitter != nil {
-			proxyOpts = append(proxyOpts, proxy.WithReceiptEmitter(s.receiptEmitter))
-			if cfg.FlightRecorder.SigningKeyPath != "" {
-				proxyOpts = append(proxyOpts, proxy.WithReceiptKeyPath(cfg.FlightRecorder.SigningKeyPath))
-			}
 			// Loud, one-time startup signal when the chain could not be
 			// resumed. Without this an init failure was only an error log on
 			// each Emit (to a formerly root-only file), silent to operators.
@@ -512,6 +508,20 @@ func NewServer(opts ServerOpts) (*Server, error) {
 						"            directory and the configured signing_key_path.\n",
 					initErr)
 			} else {
+				if openErr := emitStartupSessionOpen(s.receiptEmitter); openErr != nil {
+					if cfg.FlightRecorder.RequireReceipts {
+						s.cleanup()
+						return nil, fmt.Errorf("flight_recorder.require_receipts is enabled but session_open receipt could not be emitted: %w", openErr)
+					}
+					_, _ = fmt.Fprintf(opts.Stderr,
+						"  Receipts: ERROR - session_open could not be emitted: %v\n"+
+							"            Receipt emission for this run is UNVERIFIED until resolved.\n",
+						openErr)
+				}
+				proxyOpts = append(proxyOpts, proxy.WithReceiptEmitter(s.receiptEmitter))
+				if cfg.FlightRecorder.SigningKeyPath != "" {
+					proxyOpts = append(proxyOpts, proxy.WithReceiptKeyPath(cfg.FlightRecorder.SigningKeyPath))
+				}
 				_, _ = fmt.Fprintf(opts.Stderr, "  Receipts: enabled (action receipts signed)\n")
 			}
 

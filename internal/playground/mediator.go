@@ -109,7 +109,9 @@ func renderNarration(w io.Writer, ev MediatorEvent) {
 const verdictBlock = "block"
 
 // MediatorEventsFromEvidence reads a flight-recorder JSONL evidence file,
-// extracts all receipts, and maps each to a ClassPipelockDecision MediatorEvent.
+// extracts decision receipts, and maps each to a ClassPipelockDecision
+// MediatorEvent. Session-control receipts prove coverage windows; they are not
+// agent allow/deny decisions and must not be rendered as one.
 //
 // The summary for each event is built from the normalized verdict and the
 // transport layer field — raw target values are NOT included because they may
@@ -124,6 +126,9 @@ func MediatorEventsFromEvidence(evidenceFile string) ([]MediatorEvent, error) {
 	events := make([]MediatorEvent, 0, len(receipts))
 	for _, r := range receipts {
 		ar := r.ActionRecord
+		if ar.SessionControl != nil {
+			continue
+		}
 		verdict := receipt.NormalizeVerdict(ar.Verdict)
 
 		// Build a secret-free summary. We include:

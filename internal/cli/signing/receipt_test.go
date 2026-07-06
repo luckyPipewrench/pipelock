@@ -560,6 +560,9 @@ func buildChainJSONL(t *testing.T, count int) (string, ed25519.PublicKey) {
 		Principal:  "test",
 		Actor:      "test",
 	})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
 
 	for i := range count {
 		err := emitter.Emit(receipt.EmitOpts{
@@ -617,6 +620,9 @@ func buildDeferredCleanChainJSONL(t *testing.T) (string, ed25519.PublicKey) {
 		Principal:  "operator",
 		Actor:      "agent",
 	})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
 
 	deferID := receipt.NewActionID()
 	if err := emitter.Emit(receipt.EmitOpts{
@@ -699,6 +705,9 @@ func buildRestartChainDir(t *testing.T, counts ...int) (string, ed25519.PublicKe
 			Principal:  "test",
 			Actor:      "test",
 		})
+		if err := emitter.EmitSessionOpen(); err != nil {
+			t.Fatalf("EmitSessionOpen[%d]: %v", i, err)
+		}
 
 		for j := range count {
 			err := emitter.Emit(receipt.EmitOpts{
@@ -740,8 +749,8 @@ func TestVerifyReceiptCmd_ChainValid(t *testing.T) {
 	if !strings.Contains(output, unpinnedReceiptBanner) {
 		t.Errorf("expected unpinned banner, got: %s", output)
 	}
-	if !strings.Contains(output, "Receipts:  5") {
-		t.Errorf("expected 5 receipts, got: %s", output)
+	if !strings.Contains(output, "Receipts:  6") {
+		t.Errorf("expected 6 receipts, got: %s", output)
 	}
 }
 
@@ -762,8 +771,8 @@ func TestVerifyReceiptCmd_ChainAllowUnpinned(t *testing.T) {
 	if !strings.Contains(output, "CHAIN UNPINNED") {
 		t.Errorf("expected CHAIN UNPINNED, got: %s", output)
 	}
-	if !strings.Contains(output, "Receipts:  5") {
-		t.Errorf("expected 5 receipts, got: %s", output)
+	if !strings.Contains(output, "Receipts:  6") {
+		t.Errorf("expected 6 receipts, got: %s", output)
 	}
 }
 
@@ -809,14 +818,14 @@ func TestVerifyReceiptCmd_CleanReportJSONLWithDeferPair(t *testing.T) {
 	if err := json.Unmarshal(raw, &report); err != nil {
 		t.Fatalf("Unmarshal(report): %v", err)
 	}
-	if report.Chain.ReceiptCount != 3 || report.Chain.FinalSeq != 2 {
-		t.Fatalf("chain summary = %+v, want 3 receipts seq 2", report.Chain)
+	if report.Chain.ReceiptCount != 4 || report.Chain.FinalSeq != 3 {
+		t.Fatalf("chain summary = %+v, want 4 receipts seq 3", report.Chain)
 	}
-	if len(report.Actions) != 3 {
-		t.Fatalf("actions = %d, want 3", len(report.Actions))
+	if len(report.Actions) != 4 {
+		t.Fatalf("actions = %d, want 4", len(report.Actions))
 	}
-	if report.Actions[0].DecisionPhase != receipt.DecisionPhaseDefer || report.Actions[1].DecisionPhase != receipt.DecisionPhaseResolution {
-		t.Fatalf("defer pair phases = (%q,%q)", report.Actions[0].DecisionPhase, report.Actions[1].DecisionPhase)
+	if report.Actions[1].DecisionPhase != receipt.DecisionPhaseDefer || report.Actions[2].DecisionPhase != receipt.DecisionPhaseResolution {
+		t.Fatalf("defer pair phases = (%q,%q)", report.Actions[1].DecisionPhase, report.Actions[2].DecisionPhase)
 	}
 }
 
@@ -1042,8 +1051,8 @@ func TestVerifyReceiptCmd_ChainDirAcrossRestart(t *testing.T) {
 	if !strings.Contains(output, "CHAIN VALID") {
 		t.Errorf("expected CHAIN VALID, got: %s", output)
 	}
-	if !strings.Contains(output, "Receipts:  4") {
-		t.Errorf("expected 4 receipts, got: %s", output)
+	if !strings.Contains(output, "Receipts:  6") {
+		t.Errorf("expected 6 receipts, got: %s", output)
 	}
 }
 
@@ -1105,8 +1114,8 @@ func TestTranscriptRootCmd_Valid(t *testing.T) {
 	if !strings.Contains(output, "Transcript Root") {
 		t.Errorf("expected Transcript Root header, got: %s", output)
 	}
-	if !strings.Contains(output, "Receipt count: 4") {
-		t.Errorf("expected 4 receipts, got: %s", output)
+	if !strings.Contains(output, "Receipt count: 5") {
+		t.Errorf("expected 5 receipts, got: %s", output)
 	}
 	if !strings.Contains(output, "Root hash:") {
 		t.Errorf("expected root hash, got: %s", output)
@@ -1130,8 +1139,8 @@ func TestTranscriptRootCmd_ChainDirAcrossRestart(t *testing.T) {
 	if !strings.Contains(output, "Transcript Root") {
 		t.Errorf("expected Transcript Root header, got: %s", output)
 	}
-	if !strings.Contains(output, "Receipt count: 3") {
-		t.Errorf("expected 3 receipts, got: %s", output)
+	if !strings.Contains(output, "Receipt count: 5") {
+		t.Errorf("expected 5 receipts, got: %s", output)
 	}
 }
 
@@ -1195,8 +1204,8 @@ func TestVerifyChainFromFile_ValidChain(t *testing.T) {
 	if !strings.Contains(buf.String(), "CHAIN VALID") {
 		t.Errorf("expected CHAIN VALID, got: %s", buf.String())
 	}
-	if !strings.Contains(buf.String(), "Receipts:  3") {
-		t.Errorf("expected 3 receipts, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "Receipts:  4") {
+		t.Errorf("expected 4 receipts, got: %s", buf.String())
 	}
 }
 
@@ -1258,8 +1267,8 @@ func TestVerifyChain_ValidReceiptsNoKey(t *testing.T) {
 	if !strings.Contains(buf.String(), "CHAIN UNPINNED") {
 		t.Errorf("expected CHAIN UNPINNED, got: %s", buf.String())
 	}
-	if !strings.Contains(buf.String(), "Receipts:  4") {
-		t.Errorf("expected 4 receipts, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "Receipts:  5") {
+		t.Errorf("expected 5 receipts, got: %s", buf.String())
 	}
 
 	buf.Reset()

@@ -195,6 +195,12 @@ type ActionRecord struct {
 	// tamper-evidence layer.
 	KeyTransition *KeyTransition `json:"key_transition,omitempty"`
 
+	// SessionControl carries an inline session-lifecycle record (open,
+	// heartbeat, or close) when this receipt IS a session-control record.
+	// Absent on ordinary action receipts; verifiers canonicalize absence the
+	// same as the Go omitempty zero value.
+	SessionControl *SessionControl `json:"session_control,omitempty"`
+
 	// Jurisdictional fields - present in schema for forward compatibility.
 	// Empty in v1; populated when jurisdiction engine ships.
 	Venue              string   `json:"venue,omitempty"`

@@ -41,6 +41,13 @@ func newTestRecorder(t *testing.T, dir string, priv ed25519.PrivateKey) *recorde
 	return rec
 }
 
+func emitSessionOpenForTest(t *testing.T, e *Emitter) {
+	t.Helper()
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+}
+
 func TestNewEmitter_NilRecorder(t *testing.T) {
 	t.Parallel()
 
@@ -198,6 +205,7 @@ func TestEmitter_RunNoncePerProcessRun(t *testing.T) {
 	if eA == nil {
 		t.Fatal("NewEmitter A returned nil")
 	}
+	emitSessionOpenForTest(t, eA)
 
 	for i := 0; i < 2; i++ {
 		if err := eA.Emit(EmitOpts{
@@ -215,15 +223,19 @@ func TestEmitter_RunNoncePerProcessRun(t *testing.T) {
 	}
 
 	receiptsA := readAllReceiptsFromDir(t, dirA, pubA)
-	if len(receiptsA) != 2 {
-		t.Fatalf("receipts A = %d, want 2", len(receiptsA))
+	if len(receiptsA) != 3 {
+		t.Fatalf("receipts A = %d, want 3", len(receiptsA))
 	}
-	if receiptsA[0].ActionRecord.RunNonce == "" {
-		t.Fatal("first run_nonce is empty")
+	if receiptsA[0].ActionRecord.SessionControl == nil ||
+		receiptsA[0].ActionRecord.SessionControl.Kind != SessionControlOpen {
+		t.Fatalf("first receipt A session_control = %+v, want session_open", receiptsA[0].ActionRecord.SessionControl)
 	}
-	if receiptsA[0].ActionRecord.RunNonce != receiptsA[1].ActionRecord.RunNonce {
+	if receiptsA[1].ActionRecord.RunNonce == "" {
+		t.Fatal("first action run_nonce is empty")
+	}
+	if receiptsA[1].ActionRecord.RunNonce != receiptsA[2].ActionRecord.RunNonce {
 		t.Fatalf("same emitter produced different run_nonce values: %q != %q",
-			receiptsA[0].ActionRecord.RunNonce, receiptsA[1].ActionRecord.RunNonce)
+			receiptsA[1].ActionRecord.RunNonce, receiptsA[2].ActionRecord.RunNonce)
 	}
 
 	dirB := t.TempDir()
@@ -239,6 +251,7 @@ func TestEmitter_RunNoncePerProcessRun(t *testing.T) {
 	if eB == nil {
 		t.Fatal("NewEmitter B returned nil")
 	}
+	emitSessionOpenForTest(t, eB)
 	if err := eB.Emit(EmitOpts{
 		ActionID:  NewActionID(),
 		Target:    testTarget,
@@ -253,11 +266,117 @@ func TestEmitter_RunNoncePerProcessRun(t *testing.T) {
 	}
 
 	receiptsB := readAllReceiptsFromDir(t, dirB, pubB)
-	if len(receiptsB) != 1 {
-		t.Fatalf("receipts B = %d, want 1", len(receiptsB))
+	if len(receiptsB) != 2 {
+		t.Fatalf("receipts B = %d, want 2", len(receiptsB))
 	}
-	if receiptsA[0].ActionRecord.RunNonce == receiptsB[0].ActionRecord.RunNonce {
-		t.Fatalf("different emitters reused run_nonce %q", receiptsA[0].ActionRecord.RunNonce)
+	if receiptsB[0].ActionRecord.SessionControl == nil ||
+		receiptsB[0].ActionRecord.SessionControl.Kind != SessionControlOpen {
+		t.Fatalf("first receipt B session_control = %+v, want session_open", receiptsB[0].ActionRecord.SessionControl)
+	}
+	if receiptsA[1].ActionRecord.RunNonce == receiptsB[1].ActionRecord.RunNonce {
+		t.Fatalf("different emitters reused run_nonce %q", receiptsA[1].ActionRecord.RunNonce)
+	}
+}
+
+func TestEmitter_EmitSessionOpenFirstChainBoundGenesis(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+	if e == nil {
+		t.Fatal("NewEmitter returned nil")
+	}
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	ar := receipts[0].ActionRecord
+	open := ar.SessionControl.Open
+	if ar.SessionControl == nil || ar.SessionControl.Kind != SessionControlOpen || open == nil {
+		t.Fatalf("first receipt is not session_open: %+v", ar.SessionControl)
+	}
+	if ar.ChainSeq != 0 {
+		t.Fatalf("chain_seq = %d, want 0", ar.ChainSeq)
+	}
+	if ar.ChainPrevHash != ComputeSessionOpenGenesis(*open) {
+		t.Fatalf("chain_prev_hash = %q, want computed genesis %q", ar.ChainPrevHash, ComputeSessionOpenGenesis(*open))
+	}
+	if open.GenesisHash != ar.ChainPrevHash {
+		t.Fatalf("open genesis_hash = %q, want %q", open.GenesisHash, ar.ChainPrevHash)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+}
+
+func TestEmitter_EmitSessionOpenRestartLinksPriorTail(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec1 := newTestRecorder(t, dir, priv)
+	e1 := NewEmitter(EmitterConfig{Recorder: rec1, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+	if err := e1.EmitSessionOpen(); err != nil {
+		t.Fatalf("run1 open: %v", err)
+	}
+	if err := e1.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Target:    testTarget,
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+	}); err != nil {
+		t.Fatalf("run1 Emit: %v", err)
+	}
+	if err := rec1.Close(); err != nil {
+		t.Fatalf("Close run1: %v", err)
+	}
+
+	before := readAllReceiptsFromDir(t, dir, pub)
+	priorTail := before[len(before)-1]
+	priorHash := mustHash(t, priorTail)
+
+	rec2 := newTestRecorder(t, dir, priv)
+	e2 := NewEmitter(EmitterConfig{Recorder: rec2, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+	if err := e2.EmitSessionOpen(); err != nil {
+		t.Fatalf("run2 open: %v", err)
+	}
+	if err := rec2.Close(); err != nil {
+		t.Fatalf("Close run2: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	restart := receipts[len(receipts)-1].ActionRecord
+	open := restart.SessionControl.Open
+	if restart.ChainPrevHash != priorHash {
+		t.Fatalf("restart chain_prev_hash = %q, want prior tail %q", restart.ChainPrevHash, priorHash)
+	}
+	if open.PriorChainHead != priorHash {
+		t.Fatalf("prior_chain_head = %q, want %q", open.PriorChainHead, priorHash)
+	}
+	if open.PriorChainSeq != priorTail.ActionRecord.ChainSeq {
+		t.Fatalf("prior_chain_seq = %d, want %d", open.PriorChainSeq, priorTail.ActionRecord.ChainSeq)
+	}
+	if open.GenesisHash != "" {
+		t.Fatalf("restart genesis_hash = %q, want empty", open.GenesisHash)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
 	}
 }
 

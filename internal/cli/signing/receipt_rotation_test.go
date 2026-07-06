@@ -57,6 +57,9 @@ func emitInto(t *testing.T, dir string, priv ed25519.PrivateKey, count, startIdx
 	if err := emitter.InitError(); err != nil {
 		t.Fatalf("emitter init error: %v", err)
 	}
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
 	for i := range count {
 		if err := emitter.Emit(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
@@ -161,8 +164,8 @@ func TestTranscriptRootCmd_RotatedChainNeedsBothKeys(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("transcript root over rotated chain must succeed with both keys: %v\n%s", err, buf.String())
 	}
-	if !strings.Contains(buf.String(), "Receipt count: 5") {
-		t.Errorf("expected 5 receipts in transcript root, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "Receipt count: 7") {
+		t.Errorf("expected 7 receipts in transcript root, got: %s", buf.String())
 	}
 
 	// Only key A: must fail (rotation key untrusted).

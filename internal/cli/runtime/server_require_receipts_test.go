@@ -6,6 +6,7 @@ package runtime
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -131,6 +132,46 @@ func TestNewServer_RequireReceiptsWithBrickedEmitterFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "require_receipts") || !strings.Contains(err.Error(), "resume") {
 		t.Fatalf("error = %q, want require_receipts and resume context", err)
+	}
+}
+
+func TestNewServer_RequireReceiptsSessionOpenEmitFailureFailsClosed(t *testing.T) {
+	recorderDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("save signing key: %v", err)
+	}
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"flight_recorder:",
+		"  enabled: true",
+		"  require_receipts: true",
+		"  dir: " + strconv.Quote(recorderDir),
+		"  signing_key_path: " + strconv.Quote(keyPath),
+		"",
+	}, "\n"))
+
+	forcedErr := errors.New("forced session_open emit failure")
+	beforeStartupSessionOpenForTest = func(*receipt.Emitter) error {
+		return forcedErr
+	}
+	t.Cleanup(func() {
+		beforeStartupSessionOpenForTest = nil
+	})
+
+	s, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	if err == nil {
+		s.cleanup()
+		t.Fatal("expected NewServer to fail when required session_open emission fails")
+	}
+	if !strings.Contains(err.Error(), "require_receipts") ||
+		!strings.Contains(err.Error(), "session_open") ||
+		!errors.Is(err, forcedErr) {
+		t.Fatalf("error = %q, want require_receipts session_open context wrapping forced error", err)
 	}
 }
 

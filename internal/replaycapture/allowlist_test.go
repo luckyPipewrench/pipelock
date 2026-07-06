@@ -168,6 +168,7 @@ func TestValidateReceiptPublicSafe_ActionRecordFieldCoverage(t *testing.T) {
 		"ChainSeq":              {},
 		"RunNonce":              {},
 		"KeyTransition":         {},
+		"SessionControl":        {},
 		"Venue":                 {},
 		"Jurisdiction":          {},
 		"RulebookID":            {},

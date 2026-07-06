@@ -76,6 +76,7 @@ func canonicalActionRecordV1(ar ActionRecord) ([]byte, error) {
 		ChainSeq:              ar.ChainSeq,
 		RunNonce:              ar.RunNonce,
 		KeyTransition:         canonicalKeyTransitionV1(ar.KeyTransition),
+		SessionControl:        canonicalSessionControlV1(ar.SessionControl),
 		Venue:                 ar.Venue,
 		Jurisdiction:          ar.Jurisdiction,
 		RulebookID:            ar.RulebookID,
@@ -146,8 +147,9 @@ type actionRecordCanonicalV1 struct {
 	ChainPrevHash string `json:"chain_prev_hash"`
 	ChainSeq      uint64 `json:"chain_seq"`
 
-	RunNonce      string                    `json:"run_nonce,omitempty"`
-	KeyTransition *keyTransitionCanonicalV1 `json:"key_transition,omitempty"`
+	RunNonce       string                     `json:"run_nonce,omitempty"`
+	KeyTransition  *keyTransitionCanonicalV1  `json:"key_transition,omitempty"`
+	SessionControl *sessionControlCanonicalV1 `json:"session_control,omitempty"`
 
 	Venue              string   `json:"venue,omitempty"`
 	Jurisdiction       string   `json:"jurisdiction,omitempty"`
@@ -198,6 +200,127 @@ func canonicalKeyTransitionV1(in *KeyTransition) *keyTransitionCanonicalV1 {
 		PriorSignerKey: in.PriorSignerKey,
 		PriorChainSeq:  in.PriorChainSeq,
 		PriorChainHash: in.PriorChainHash,
+	}
+}
+
+type sessionControlCanonicalV1 struct {
+	Kind      SessionControlKind           `json:"kind"`
+	Open      *sessionOpenCanonicalV1      `json:"open,omitempty"`
+	Heartbeat *sessionHeartbeatCanonicalV1 `json:"heartbeat,omitempty"`
+	Close     *sessionCloseCanonicalV1     `json:"close,omitempty"`
+}
+
+type sessionOpenCanonicalV1 struct {
+	RunNonce         string `json:"run_nonce"`
+	OpenNonce        string `json:"open_nonce"`
+	RecorderSession  string `json:"recorder_session"`
+	PolicyHash       string `json:"policy_hash"`
+	SignerKeyEpoch   string `json:"signer_key_epoch"`
+	HeartbeatSeconds int    `json:"heartbeat_seconds"`
+
+	ChainOpenSeq   uint64 `json:"chain_open_seq"`
+	PriorChainHead string `json:"prior_chain_head,omitempty"`
+	PriorChainSeq  uint64 `json:"prior_chain_seq,omitempty"`
+
+	GenesisHash       string `json:"genesis_hash,omitempty"`
+	GenesisAnchorHead string `json:"genesis_anchor_head,omitempty"`
+	GenesisAnchorLog  string `json:"genesis_anchor_log,omitempty"`
+
+	PostureCapsuleSHA256 string `json:"posture_capsule_sha256,omitempty"`
+	PostureSignerKeyID   string `json:"posture_signer_key_id,omitempty"`
+	ContainmentNonce     string `json:"containment_nonce,omitempty"`
+	ContainedUID         string `json:"contained_uid,omitempty"`
+}
+
+type sessionHeartbeatCanonicalV1 struct {
+	RunNonce      string `json:"run_nonce"`
+	OpenNonce     string `json:"open_nonce"`
+	Beat          uint64 `json:"beat"`
+	ChainHead     string `json:"chain_head"`
+	ChainSeqHead  uint64 `json:"chain_seq_head"`
+	HeartbeatTime string `json:"heartbeat_time"`
+
+	FsyncErrorsGated uint64 `json:"fsync_errors_gated"`
+	DurabilityBlocks uint64 `json:"durability_blocks"`
+}
+
+type sessionCloseCanonicalV1 struct {
+	RunNonce     string `json:"run_nonce"`
+	OpenNonce    string `json:"open_nonce"`
+	FinalSeq     uint64 `json:"final_seq"`
+	RootHash     string `json:"root_hash"`
+	ReceiptCount uint64 `json:"receipt_count"`
+	CloseReason  string `json:"close_reason"`
+
+	FsyncErrorsGated uint64 `json:"fsync_errors_gated"`
+	DurabilityBlocks uint64 `json:"durability_blocks"`
+}
+
+func canonicalSessionControlV1(in *SessionControl) *sessionControlCanonicalV1 {
+	if in == nil {
+		return nil
+	}
+	return &sessionControlCanonicalV1{
+		Kind:      in.Kind,
+		Open:      canonicalSessionOpenV1(in.Open),
+		Heartbeat: canonicalSessionHeartbeatV1(in.Heartbeat),
+		Close:     canonicalSessionCloseV1(in.Close),
+	}
+}
+
+func canonicalSessionOpenV1(in *SessionOpen) *sessionOpenCanonicalV1 {
+	if in == nil {
+		return nil
+	}
+	return &sessionOpenCanonicalV1{
+		RunNonce:             in.RunNonce,
+		OpenNonce:            in.OpenNonce,
+		RecorderSession:      in.RecorderSession,
+		PolicyHash:           in.PolicyHash,
+		SignerKeyEpoch:       in.SignerKeyEpoch,
+		HeartbeatSeconds:     in.HeartbeatSeconds,
+		ChainOpenSeq:         in.ChainOpenSeq,
+		PriorChainHead:       in.PriorChainHead,
+		PriorChainSeq:        in.PriorChainSeq,
+		GenesisHash:          in.GenesisHash,
+		GenesisAnchorHead:    in.GenesisAnchorHead,
+		GenesisAnchorLog:     in.GenesisAnchorLog,
+		PostureCapsuleSHA256: in.PostureCapsuleSHA256,
+		PostureSignerKeyID:   in.PostureSignerKeyID,
+		ContainmentNonce:     in.ContainmentNonce,
+		ContainedUID:         in.ContainedUID,
+	}
+}
+
+func canonicalSessionHeartbeatV1(in *SessionHeartbeat) *sessionHeartbeatCanonicalV1 {
+	if in == nil {
+		return nil
+	}
+	return &sessionHeartbeatCanonicalV1{
+		RunNonce:         in.RunNonce,
+		OpenNonce:        in.OpenNonce,
+		Beat:             in.Beat,
+		ChainHead:        in.ChainHead,
+		ChainSeqHead:     in.ChainSeqHead,
+		HeartbeatTime:    in.HeartbeatTime,
+		FsyncErrorsGated: in.FsyncErrorsGated,
+		DurabilityBlocks: in.DurabilityBlocks,
+	}
+}
+
+func canonicalSessionCloseV1(in *SessionClose) *sessionCloseCanonicalV1 {
+	if in == nil {
+		return nil
+	}
+	return &sessionCloseCanonicalV1{
+		RunNonce:         in.RunNonce,
+		OpenNonce:        in.OpenNonce,
+		FinalSeq:         in.FinalSeq,
+		RootHash:         in.RootHash,
+		ReceiptCount:     in.ReceiptCount,
+		CloseReason:      in.CloseReason,
+		FsyncErrorsGated: in.FsyncErrorsGated,
+		DurabilityBlocks: in.DurabilityBlocks,
 	}
 }
 

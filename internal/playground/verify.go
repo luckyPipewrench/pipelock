@@ -657,6 +657,7 @@ func verifyLiveDemoManifest(replayManifest replaycapture.Manifest, lm LaunchMani
 }
 
 func verifyLiveDemoReceipts(receipts []receipt.Receipt, lm LaunchManifest, witness Witness) error {
+	decisionReceipts := liveDemoDecisionReceipts(receipts)
 	// A real model-backed run does not reproduce the scripted safe-GET + body_dlp
 	// beats, so it verifies under the honest model-mode predicate instead of the
 	// strict deterministic one. AgentKind is covered by the manifest signature, so
@@ -665,17 +666,28 @@ func verifyLiveDemoReceipts(receipts []receipt.Receipt, lm LaunchManifest, witne
 		if lm.ScenarioID != LiveDemoScenarioID {
 			return fmt.Errorf("unsupported model-mode scenario %q", lm.ScenarioID)
 		}
-		return verifyModelLiveContained(receipts, witness)
+		return verifyModelLiveContained(decisionReceipts, witness)
 	}
 
 	switch lm.ScenarioID {
 	case LiveDemoScenarioID:
-		return verifyBodyExfilLiveDemo(receipts, witness)
+		return verifyBodyExfilLiveDemo(decisionReceipts, witness)
 	case "secret-exfil-url-blocked":
-		return verifyURLExfilReplayCompatible(receipts, witness)
+		return verifyURLExfilReplayCompatible(decisionReceipts, witness)
 	default:
 		return fmt.Errorf("unsupported playground verify scenario %q", lm.ScenarioID)
 	}
+}
+
+func liveDemoDecisionReceipts(receipts []receipt.Receipt) []receipt.Receipt {
+	out := make([]receipt.Receipt, 0, len(receipts))
+	for _, r := range receipts {
+		if r.ActionRecord.SessionControl != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // verifyModelLiveContained is the honest predicate for a real model-backed run.

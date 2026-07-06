@@ -1556,6 +1556,21 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.v2EmitterPtr.Store(nil)
 		p.receiptKeyPath = ""
 	} else if p.recorder != nil {
+		// A rebuilt emitter has a fresh run_nonce and may represent a signer
+		// rotation segment. Emit the signed open synchronously before publishing
+		// the pointer so no request can be attested under the new emitter before
+		// its run window is recorded.
+		if receiptStage.emitter != nil {
+			if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
+				p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+					fmt.Errorf("session_open receipt emit failed, keeping old config: %w", err))
+				sc.Close()
+				if newEd != nil {
+					newEd.Close()
+				}
+				return false
+			}
+		}
 		p.receiptEmitterPtr.Store(receiptStage.emitter)
 		p.v2EmitterPtr.Store(receiptStage.v2)
 		p.receiptKeyPath = receiptStage.keyPath

@@ -321,10 +321,11 @@ func realBundleForMemoryVerify(t *testing.T) ([]byte, string) {
 	const (
 		runNonce   = "0123456789abcdef0123456789abcdef"
 		canaryID   = "aws_canary"
-		policyHash = "policy-real-bundle-hash"
+		policyHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		scenarioID = "secret-exfil-url-blocked"
 	)
 	now := time.Unix(1_700_000_123, 0).UTC()
+	openRec := signMemorySessionOpen(t, pipePriv, pipePub, runNonce, "11111111111111111111111111111111", policyHash, now)
 	rec := signReceipt(t, pipePriv, receipt.ActionRecord{
 		Version:         receipt.ActionRecordVersion,
 		ActionID:        "act-real-bundle-core-dlp",
@@ -341,8 +342,8 @@ func realBundleForMemoryVerify(t *testing.T) ([]byte, string) {
 		Method:          "POST",
 		Layer:           "core_dlp",
 		Pattern:         "request body contains secret",
-		ChainPrevHash:   receipt.GenesisHash,
-		ChainSeq:        0,
+		ChainPrevHash:   receiptHashForMemoryTest(t, openRec),
+		ChainSeq:        1,
 		RunNonce:        runNonce,
 	})
 
@@ -351,7 +352,7 @@ func realBundleForMemoryVerify(t *testing.T) ([]byte, string) {
 		t.Fatalf("mkdir evidence dir: %v", err)
 	}
 	evidenceFile := filepath.Join(evidenceDir, "evidence.jsonl")
-	if err := os.WriteFile(evidenceFile, mustMarshalReceiptLine(t, rec), 0o600); err != nil {
+	if err := os.WriteFile(evidenceFile, mustMarshalReceiptLines(t, openRec, rec), 0o600); err != nil {
 		t.Fatalf("write evidence: %v", err)
 	}
 
@@ -463,12 +464,13 @@ func newVerifyMemoryFixture(t *testing.T) verifyMemoryFixture {
 	colPub, colPriv := testKeyPair(t)
 
 	const (
-		runNonce   = "verify-memory-run"
+		runNonce   = "22222222222222222222222222222222"
 		canaryID   = "aws_canary"
-		policyHash = "policy-test-hash"
+		policyHash = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 		scenarioID = "secret-exfil-url-blocked"
 	)
 	now := time.Unix(1_700_000_000, 0).UTC()
+	openRec := signMemorySessionOpen(t, pipePriv, pipePub, runNonce, "33333333333333333333333333333333", policyHash, now)
 	rec := signReceipt(t, pipePriv, receipt.ActionRecord{
 		Version:         receipt.ActionRecordVersion,
 		ActionID:        "act-block-core-dlp",
@@ -483,15 +485,15 @@ func newVerifyMemoryFixture(t *testing.T) verifyMemoryFixture {
 		Method:          "POST",
 		Layer:           "core_dlp",
 		Pattern:         "request body contains secret",
-		ChainPrevHash:   receipt.GenesisHash,
-		ChainSeq:        0,
+		ChainPrevHash:   receiptHashForMemoryTest(t, openRec),
+		ChainSeq:        1,
 		RunNonce:        runNonce,
 	})
-	chain := receipt.VerifyChain([]receipt.Receipt{rec}, hex.EncodeToString(pipePub))
+	chain := receipt.VerifyChain([]receipt.Receipt{openRec, rec}, hex.EncodeToString(pipePub))
 	if !chain.Valid {
 		t.Fatalf("test receipt chain invalid: %s", chain.Error)
 	}
-	evidenceJSONL := mustMarshalReceiptLine(t, rec)
+	evidenceJSONL := mustMarshalReceiptLines(t, openRec, rec)
 	packetJSON := mustJSON(t, auditpacket.Packet{
 		SchemaVersion: auditpacket.SchemaVersion,
 		PacketID:      "ap-verify-memory",
@@ -504,18 +506,18 @@ func newVerifyMemoryFixture(t *testing.T) verifyMemoryFixture {
 		},
 		Policy: auditpacket.Policy{PolicyHashes: []string{policyHash}},
 		Summary: auditpacket.Summary{
-			ReceiptCount:   1,
-			Totals:         auditpacket.Totals{Block: 1},
-			Transports:     map[string]int{"http": 1},
+			ReceiptCount:   2,
+			Totals:         auditpacket.Totals{Allow: 1, Block: 1},
+			Transports:     map[string]int{"receipt_session": 1, "http": 1},
 			Layers:         map[string]int{"core_dlp": 1},
 			DomainsTouched: []string{"intake.lab.test"},
 		},
 		Verifier: auditpacket.Verifier{
 			Verdict:      auditpacket.VerdictValid,
 			Trusted:      true,
-			ReceiptCount: 1,
+			ReceiptCount: 2,
 			RootHash:     chain.RootHash,
-			FinalSeq:     0,
+			FinalSeq:     1,
 			SignerKey:    hex.EncodeToString(pipePub),
 			OutputFile:   "verifier.txt",
 		},
@@ -543,8 +545,8 @@ func newVerifyMemoryFixture(t *testing.T) verifyMemoryFixture {
 		Packet: replaycapture.PacketBinding{
 			Path:         "packet.json",
 			RootHash:     chain.RootHash,
-			ReceiptCount: 1,
-			FinalSeq:     0,
+			ReceiptCount: 2,
+			FinalSeq:     1,
 		},
 	})
 
@@ -702,6 +704,56 @@ func signReceipt(t *testing.T, priv ed25519.PrivateKey, ar receipt.ActionRecord)
 	return rec
 }
 
+func signMemorySessionOpen(
+	t *testing.T,
+	priv ed25519.PrivateKey,
+	pub ed25519.PublicKey,
+	runNonce string,
+	openNonce string,
+	policyHash string,
+	ts time.Time,
+) receipt.Receipt {
+	t.Helper()
+	open := receipt.SessionOpen{
+		RunNonce:        runNonce,
+		OpenNonce:       openNonce,
+		RecorderSession: "proxy",
+		PolicyHash:      policyHash,
+		SignerKeyEpoch:  hex.EncodeToString(pub),
+		ChainOpenSeq:    0,
+	}
+	genesis := receipt.ComputeSessionOpenGenesis(open)
+	open.GenesisHash = genesis
+	return signReceipt(t, priv, receipt.ActionRecord{
+		Version:       receipt.ActionRecordVersion,
+		ActionID:      "act-session-open",
+		ActionType:    receipt.ActionUnclassified,
+		Timestamp:     ts,
+		Principal:     "pipelock-lab",
+		Actor:         "lab-agent",
+		Target:        "pipelock://session/open",
+		PolicyHash:    policyHash,
+		Verdict:       "allow",
+		Transport:     "receipt_session",
+		ChainPrevHash: genesis,
+		ChainSeq:      0,
+		RunNonce:      runNonce,
+		SessionControl: &receipt.SessionControl{
+			Kind: receipt.SessionControlOpen,
+			Open: &open,
+		},
+	})
+}
+
+func receiptHashForMemoryTest(t *testing.T, rec receipt.Receipt) string {
+	t.Helper()
+	h, err := receipt.ReceiptHash(rec)
+	if err != nil {
+		t.Fatalf("ReceiptHash: %v", err)
+	}
+	return h
+}
+
 func signWitness(t *testing.T, priv ed25519.PrivateKey, w playground.Witness) playground.Witness {
 	t.Helper()
 	w.Signature = hex.EncodeToString(ed25519.Sign(priv, w.SignedBytes()))
@@ -715,6 +767,15 @@ func mustMarshalReceiptLine(t *testing.T, rec receipt.Receipt) []byte {
 		t.Fatalf("receipt.Marshal: %v", err)
 	}
 	return append(data, '\n')
+}
+
+func mustMarshalReceiptLines(t *testing.T, receipts ...receipt.Receipt) []byte {
+	t.Helper()
+	var out []byte
+	for _, rec := range receipts {
+		out = append(out, mustMarshalReceiptLine(t, rec)...)
+	}
+	return out
 }
 
 func mustJSON(t *testing.T, v any) []byte {

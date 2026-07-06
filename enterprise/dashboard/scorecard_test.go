@@ -256,6 +256,30 @@ func TestComputeScorecard_CompletenessAndAnchoredNeverGreen(t *testing.T) {
 	}
 }
 
+func TestComputeScorecard_BoundSessionOpenGenesis(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := generateDashboardKey(t)
+	keyHex := hex.EncodeToString(pub)
+	chain := buildBoundDashboardChain(t, priv, keyHex)
+
+	evidence := sessionEvidence(testSessionID, chain, map[string]TrustedKey{
+		keyHex: {Source: trustedKeySource},
+	}, false, dashboardReceiptReadLimit, dashboardTimelineLimit)
+	if !evidence.Chain.Valid {
+		t.Fatalf("bound g1 session_open chain should verify in dashboard scorecard: %s", evidence.Chain.Error)
+	}
+	if evidence.Scorecard.Authentic.State != StateVerify {
+		t.Fatalf("Authentic.State = %q, want %q", evidence.Scorecard.Authentic.State, StateVerify)
+	}
+	if evidence.Scorecard.Untampered.State != StateVerify {
+		t.Fatalf("Untampered.State = %q, want %q", evidence.Scorecard.Untampered.State, StateVerify)
+	}
+	if evidence.Timeline[0].Seq != 0 || evidence.Timeline[0].Unverifiable {
+		t.Fatalf("first bound-g1 timeline item = %+v, want verifiable seq 0", evidence.Timeline[0])
+	}
+}
+
 func generateDashboardKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -281,6 +305,45 @@ func buildDashboardChain(t *testing.T, priv ed25519.PrivateKey, count int) []rec
 		prevHash = hash
 	}
 	return chain
+}
+
+func buildBoundDashboardChain(t *testing.T, priv ed25519.PrivateKey, signerKey string) []receipt.Receipt {
+	t.Helper()
+	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	open := receipt.SessionOpen{
+		RunNonce:        "dashboard-run",
+		OpenNonce:       "dashboard-open",
+		RecorderSession: "proxy",
+		PolicyHash:      testPolicyHash,
+		SignerKeyEpoch:  signerKey,
+		ChainOpenSeq:    0,
+	}
+	genesis := receipt.ComputeSessionOpenGenesis(open)
+	open.GenesisHash = genesis
+
+	ar := validDashboardAction(0, genesis, base)
+	ar.RunNonce = open.RunNonce
+	ar.Transport = "receipt_session"
+	ar.Target = "pipelock://session/open"
+	ar.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlOpen,
+		Open: &open,
+	}
+	first, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign bound session_open: %v", err)
+	}
+	firstHash, err := receipt.ReceiptHash(first)
+	if err != nil {
+		t.Fatalf("ReceiptHash bound session_open: %v", err)
+	}
+	second := signDashboardReceipt(t, priv, 1, firstHash, base.Add(time.Second))
+	second.ActionRecord.RunNonce = open.RunNonce
+	second, err = receipt.Sign(second.ActionRecord, priv)
+	if err != nil {
+		t.Fatalf("Sign bound follow-up: %v", err)
+	}
+	return []receipt.Receipt{first, second}
 }
 
 func buildRotatedDashboardChain(t *testing.T, privA, privB ed25519.PrivateKey) []receipt.Receipt {

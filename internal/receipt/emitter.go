@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -89,6 +90,15 @@ type Emitter struct {
 	// segment by the next Emit, then cleared. nil when there is no pending
 	// segment boundary.
 	pendingTransition *KeyTransition
+
+	// hasPriorTail carries the on-disk tail observed by resumeChain for this
+	// process run. SessionOpen uses it to distinguish restart-open receipts
+	// from a first-chain bound genesis.
+	hasPriorTail  bool
+	priorTailSeq  uint64
+	priorTailHash string
+
+	sessionOpenEmitted bool
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
@@ -201,6 +211,49 @@ type EmitOpts struct {
 	// MCP-specific fields
 	ToolName  string
 	MCPMethod string
+
+	// SessionControl is set only for signed lifecycle control records such as
+	// session_open. Ordinary action receipts leave it nil.
+	SessionControl *SessionControl
+}
+
+// ErrSessionOpenAlreadyEmitted is returned when a process run tries to emit a
+// second session_open. A restart gets a fresh Emitter and fresh run_nonce.
+var ErrSessionOpenAlreadyEmitted = fmt.Errorf("session_open already emitted for this run")
+
+const (
+	sessionControlTransport = "receipt_session"
+	sessionOpenTarget       = "pipelock://session/open"
+)
+
+// EmitSessionOpen emits the signed session_open control receipt for this
+// emitter process run through the normal Emit/Record path. It is intentionally
+// non-durable in this build unit; the durable receipt gate lands later.
+func (e *Emitter) EmitSessionOpen() error {
+	if e == nil {
+		return nil
+	}
+	openNonce, err := newOpenNonce()
+	if err != nil {
+		e.recordFailure(FailReasonSign)
+		return fmt.Errorf("generate open nonce: %w", err)
+	}
+	return e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: sessionControlTransport,
+		Target:    sessionOpenTarget,
+		SessionControl: &SessionControl{
+			Kind: SessionControlOpen,
+			Open: &SessionOpen{
+				RunNonce:        e.runNonce,
+				OpenNonce:       openNonce,
+				RecorderSession: recorderSessionID,
+				PolicyHash:      configHashString(e.configHash.Load()),
+				SignerKeyEpoch:  fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey)),
+			},
+		},
+	})
 }
 
 // Emit creates, signs, and records an action receipt for a proxy decision.
@@ -237,6 +290,10 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	if e.rootEmitted {
 		e.recordFailure(FailReasonSealed)
 		return ErrChainSealed
+	}
+	sessionControl, chainPrevHash, err := e.prepareSessionControlLocked(opts.SessionControl)
+	if err != nil {
+		return err
 	}
 
 	// Sanitize secret-bearing fields BEFORE signing. When redaction is enabled
@@ -301,14 +358,15 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Redaction:             redactionSummaryFromReport(opts.RedactionProfile, opts.RedactionReport),
 		Shield:                cloneShieldSummary(opts.Shield),
 		RequestID:             opts.RequestID,
-		ChainPrevHash:         e.chainPrevHash,
+		ChainPrevHash:         chainPrevHash,
 		ChainSeq:              e.chainSeq,
 		RunNonce:              e.runNonce,
 		// pendingTransition is non-nil only on the first receipt of a new
 		// segment opened by resumeChain after a legitimate key rotation. It
 		// is bound into the signed record so the segment boundary is provable
 		// from this receipt alone, then cleared after a successful write.
-		KeyTransition: e.pendingTransition,
+		KeyTransition:  e.pendingTransition,
+		SessionControl: sessionControl,
 	}
 
 	rcpt, err := Sign(ar, e.privKey)
@@ -346,6 +404,9 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	// claim a second segment boundary). Cleared with the rest of the
 	// advance-before-persist state for the same fork-avoidance reason.
 	e.pendingTransition = nil
+	if isSessionOpenControl(sessionControl) {
+		e.sessionOpenEmitted = true
+	}
 
 	if err := e.recorder.Record(recorder.Entry{
 		SessionID: recorderSessionID,
@@ -370,6 +431,67 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	}
 
 	return nil
+}
+
+func (e *Emitter) prepareSessionControlLocked(in *SessionControl) (*SessionControl, string, error) {
+	chainPrevHash := e.chainPrevHash
+	if in == nil {
+		return nil, chainPrevHash, nil
+	}
+	if !isSessionOpenControl(in) {
+		return cloneSessionControl(in), chainPrevHash, nil
+	}
+	if e.sessionOpenEmitted {
+		e.recordFailure(FailReasonRecord)
+		return nil, "", ErrSessionOpenAlreadyEmitted
+	}
+
+	out := cloneSessionControl(in)
+	open := out.Open
+	open.RunNonce = e.runNonce
+	open.RecorderSession = recorderSessionID
+	open.PolicyHash = configHashString(e.configHash.Load())
+	open.SignerKeyEpoch = fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey))
+	open.ChainOpenSeq = e.chainSeq
+
+	if e.hasPriorTail {
+		open.PriorChainHead = e.priorTailHash
+		open.PriorChainSeq = e.priorTailSeq
+		open.GenesisHash = ""
+		return out, chainPrevHash, nil
+	}
+
+	if e.chainSeq == 0 && e.chainPrevHash == GenesisHash {
+		open.GenesisHash = ""
+		genesis := ComputeSessionOpenGenesis(*open)
+		open.GenesisHash = genesis
+		chainPrevHash = genesis
+	}
+	return out, chainPrevHash, nil
+}
+
+func isSessionOpenControl(in *SessionControl) bool {
+	return in != nil && in.Kind == SessionControlOpen && in.Open != nil
+}
+
+func cloneSessionControl(in *SessionControl) *SessionControl {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Open != nil {
+		open := *in.Open
+		out.Open = &open
+	}
+	if in.Heartbeat != nil {
+		heartbeat := *in.Heartbeat
+		out.Heartbeat = &heartbeat
+	}
+	if in.Close != nil {
+		closeRecord := *in.Close
+		out.Close = &closeRecord
+	}
+	return &out
 }
 
 // recordFailure increments the emit-failure metric for reason when a sink is
@@ -493,6 +615,14 @@ func configHashString(v any) string {
 }
 
 func newRunNonce() (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(nonce[:]), nil
+}
+
+func newOpenNonce() (string, error) {
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", err
@@ -640,6 +770,9 @@ func (e *Emitter) resumeChain() error {
 			}
 			e.chainSeq = 0
 			e.chainPrevHash = hash
+			e.hasPriorTail = true
+			e.priorTailSeq = lastReceipt.ActionRecord.ChainSeq
+			e.priorTailHash = hash
 			e.pendingTransition = &KeyTransition{
 				PriorSignerKey: lastReceipt.SignerKey,
 				PriorChainSeq:  lastReceipt.ActionRecord.ChainSeq,
@@ -660,6 +793,9 @@ func (e *Emitter) resumeChain() error {
 	e.chainPrevHash = hash
 	e.chainSeq = lastReceipt.ActionRecord.ChainSeq + 1
 	e.chainEnd = lastReceipt.ActionRecord.Timestamp
+	e.hasPriorTail = true
+	e.priorTailSeq = lastReceipt.ActionRecord.ChainSeq
+	e.priorTailHash = hash
 	if firstReceipt != nil {
 		e.chainStart = firstReceipt.ActionRecord.Timestamp
 	}

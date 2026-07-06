@@ -987,6 +987,13 @@ Key-free evidence capture:
 						"            Receipt emission is DISABLED until resolved. Inspect the evidence\n"+
 						"            directory and flight_recorder.signing_key_path.\n", initErr)
 				} else if len(recPrivKey) > 0 {
+					if openErr := emitStartupSessionOpen(receiptEmitter); openErr != nil {
+						if cfg.FlightRecorder.RequireReceipts {
+							return fmt.Errorf("flight_recorder.require_receipts is enabled but session_open receipt could not be emitted: %w", openErr)
+						}
+						cmd.PrintErrf("  Receipts: ERROR - session_open could not be emitted: %v\n"+
+							"            Receipt emission for this run is UNVERIFIED until resolved.\n", openErr)
+					}
 					cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
 					v2ReceiptEmitter = proxydecision.NewEmitter(proxydecision.EmitterConfig{
 						Recorder:  rec,

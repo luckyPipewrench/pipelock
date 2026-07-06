@@ -150,6 +150,9 @@ func (e *Engine) Capture(s Scenario) (*CapturedScenario, error) {
 	if emitter == nil {
 		return nil, fmt.Errorf("scenario %s: emitter construction failed", s.ID)
 	}
+	if err := emitter.EmitSessionOpen(); err != nil {
+		return nil, fmt.Errorf("scenario %s: session_open receipt: %w", s.ID, err)
+	}
 
 	p, err := proxy.New(cfg, audit.NewNop(), sc, metrics.New(),
 		proxy.WithRecorder(rec),

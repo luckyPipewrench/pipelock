@@ -394,6 +394,9 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		err = fmt.Errorf("emitter construction failed")
 		return nil, err
 	}
+	if err := emitter.EmitSessionOpen(); err != nil {
+		return nil, fmt.Errorf("session_open receipt: %w", err)
+	}
 
 	// --- Proxy ---
 	lr.proxyObj, err = proxy.New(cfg, audit.NewNop(), lr.sc, metrics.New(),
@@ -824,6 +827,9 @@ func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
 	rep, err := VerifyRun(runDir, hex.EncodeToString(lr.orchestratorPub))
 	if err != nil {
 		return VerifyReport{}, fmt.Errorf("verify run: %w", err)
+	}
+	if !rep.OK {
+		return rep, fmt.Errorf("verify run: failed checks")
 	}
 
 	return rep, nil

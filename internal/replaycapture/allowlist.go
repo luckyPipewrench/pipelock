@@ -65,6 +65,10 @@ var safeRequestIDRE = regexp.MustCompile(`^req-[0-9]+$`)
 // packet gate still constrains the shape so arbitrary strings cannot publish.
 var safeRunNonceRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+var safeSessionOpenGenesisRE = regexp.MustCompile(`^g1:[0-9a-f]{64}$`)
+
+var safeSignerEpochRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 // secretShapeRE is a backstop: if any of these shapes survive into a target or
 // pattern, redaction-before-sign failed and the artifact must not publish. This
 // is defense-in-depth behind the emitter's pre-sign sanitizer.
@@ -85,6 +89,9 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	}
 	if _, ok := allowedActors[ar.Actor]; !ok {
 		return fmt.Errorf("%w: actor %q not in lab allowlist", errAllowlist, ar.Actor)
+	}
+	if ar.SessionControl != nil {
+		return validatePublicSessionOpen(ar)
 	}
 
 	// Target host must be synthetic / reserved / documentation-space.
@@ -124,6 +131,48 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	// contract/manifest identity, jurisdiction, intent, or data-class labels.
 	// None of these are populated in the synthetic lab; a non-empty value means
 	// an unexpected code path leaked context.
+	return validateDisallowedEmpty(ar)
+}
+
+func validatePublicSessionOpen(ar receipt.ActionRecord) error {
+	if ar.Target != "pipelock://session/open" {
+		return fmt.Errorf("%w: session_open target %q is not the expected control target", errAllowlist, ar.Target)
+	}
+	if ar.SessionControl.Kind != receipt.SessionControlOpen || ar.SessionControl.Open == nil ||
+		ar.SessionControl.Heartbeat != nil || ar.SessionControl.Close != nil {
+		return fmt.Errorf("%w: only session_open control receipts are public-safe", errAllowlist)
+	}
+	open := ar.SessionControl.Open
+	if ar.RunNonce == "" || open.RunNonce != ar.RunNonce || !safeRunNonceRE.MatchString(ar.RunNonce) {
+		return fmt.Errorf("%w: session_open run_nonce is not the expected nonce shape", errAllowlist)
+	}
+	if !safeRunNonceRE.MatchString(open.OpenNonce) {
+		return fmt.Errorf("%w: session_open open_nonce is not the expected nonce shape", errAllowlist)
+	}
+	if open.RecorderSession != "proxy" {
+		return fmt.Errorf("%w: session_open recorder_session %q is not public-safe", errAllowlist, open.RecorderSession)
+	}
+	if !strings.HasPrefix(open.PolicyHash, policyHashLabelPrefix) {
+		return fmt.Errorf("%w: session_open policy_hash %q is not labeled", errAllowlist, open.PolicyHash)
+	}
+	if !safeSignerEpochRE.MatchString(open.SignerKeyEpoch) {
+		return fmt.Errorf("%w: session_open signer_key_epoch is not a hex public key", errAllowlist)
+	}
+	if open.HeartbeatSeconds != 0 {
+		return fmt.Errorf("%w: session_open heartbeat_seconds = %d, want 0 for this build", errAllowlist, open.HeartbeatSeconds)
+	}
+	if open.ChainOpenSeq != ar.ChainSeq {
+		return fmt.Errorf("%w: session_open chain_open_seq does not match chain_seq", errAllowlist)
+	}
+	if open.GenesisHash != ar.ChainPrevHash || !safeSessionOpenGenesisRE.MatchString(open.GenesisHash) {
+		return fmt.Errorf("%w: session_open genesis hash is not the expected g1 shape", errAllowlist)
+	}
+	if open.PriorChainHead != "" || open.PriorChainSeq != 0 ||
+		open.GenesisAnchorHead != "" || open.GenesisAnchorLog != "" ||
+		open.PostureCapsuleSHA256 != "" || open.PostureSignerKeyID != "" ||
+		open.ContainmentNonce != "" || open.ContainedUID != "" {
+		return fmt.Errorf("%w: session_open carries unsupported public-gallery binding fields", errAllowlist)
+	}
 	return validateDisallowedEmpty(ar)
 }
 

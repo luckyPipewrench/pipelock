@@ -358,6 +358,7 @@ func TestExtractReceipts_HappyPath(t *testing.T) {
 		ConfigHash: "testhash",
 		Principal:  "test-principal",
 	})
+	emitSessionOpenForTest(t, e)
 
 	for i := 0; i < 3; i++ {
 		if err := e.Emit(EmitOpts{
@@ -388,8 +389,8 @@ func TestExtractReceipts_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtractReceipts: %v", err)
 	}
-	if len(receipts) != 3 {
-		t.Fatalf("expected 3 receipts, got %d", len(receipts))
+	if len(receipts) != 4 {
+		t.Fatalf("expected 4 receipts, got %d", len(receipts))
 	}
 
 	// Verify the extracted chain
@@ -711,6 +712,7 @@ func TestResume_AfterTranscriptRoot_DoesNotBrick(t *testing.T) {
 	// Run 1: emit 2 receipts, seal with a transcript root, shut down.
 	rec1 := newTestRecorder(t, dir, priv)
 	e1 := NewEmitter(EmitterConfig{Recorder: rec1, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+	emitSessionOpenForTest(t, e1)
 	for range 2 {
 		if err := emit(e1); err != nil {
 			t.Fatalf("run1 Emit: %v", err)
@@ -732,6 +734,7 @@ func TestResume_AfterTranscriptRoot_DoesNotBrick(t *testing.T) {
 	if err := e2.InitError(); err != nil {
 		t.Fatalf("resume after sealed shutdown errored (should resume cleanly): %v", err)
 	}
+	emitSessionOpenForTest(t, e2)
 	// The post-seal restart MUST emit (not be bricked by ErrChainSealed).
 	for range 2 {
 		if err := emit(e2); err != nil {
@@ -742,7 +745,8 @@ func TestResume_AfterTranscriptRoot_DoesNotBrick(t *testing.T) {
 		t.Fatalf("close rec2: %v", err)
 	}
 
-	// All 4 action receipts (2 per run) form one continuous, verifiable chain.
+	// All 6 action receipts (session_open + 2 decisions per run) form one
+	// continuous, verifiable chain.
 	entries := readAllEntriesFromDir(t, dir)
 	var receipts []Receipt
 	for i := range entries {
@@ -755,15 +759,15 @@ func TestResume_AfterTranscriptRoot_DoesNotBrick(t *testing.T) {
 		}
 		receipts = append(receipts, *r)
 	}
-	if len(receipts) != 4 {
-		t.Fatalf("expected 4 action receipts across both runs, got %d", len(receipts))
+	if len(receipts) != 6 {
+		t.Fatalf("expected 6 action receipts across both runs, got %d", len(receipts))
 	}
 	res := VerifyChain(receipts, "")
 	if !res.Valid {
 		t.Fatalf("post-seal chain failed to verify: %s", res.Error)
 	}
-	if res.ReceiptCount != 4 {
-		t.Errorf("ReceiptCount = %d, want 4 (seq must continue across the seal, not reset)", res.ReceiptCount)
+	if res.ReceiptCount != 6 {
+		t.Errorf("ReceiptCount = %d, want 6 (seq must continue across the seal, not reset)", res.ReceiptCount)
 	}
 }
 
@@ -857,6 +861,7 @@ func TestEmitter_ChainState(t *testing.T) {
 		Principal:  testPrincipal,
 		Actor:      testActor,
 	})
+	emitSessionOpenForTest(t, e)
 
 	const chainLen = 5
 	for range chainLen {
@@ -878,14 +883,14 @@ func TestEmitter_ChainState(t *testing.T) {
 
 	// Read all receipts and verify chain integrity.
 	receipts := readAllReceiptsFromDir(t, dir, pub)
-	if len(receipts) != chainLen {
-		t.Fatalf("expected %d receipts, got %d", chainLen, len(receipts))
+	if len(receipts) != chainLen+1 {
+		t.Fatalf("expected %d receipts, got %d", chainLen+1, len(receipts))
 	}
 
-	// First receipt should have genesis prev_hash.
-	if receipts[0].ActionRecord.ChainPrevHash != GenesisHash {
-		t.Errorf("first receipt chain_prev_hash = %q, want %q",
-			receipts[0].ActionRecord.ChainPrevHash, GenesisHash)
+	// First receipt should have a bound session-open genesis prev_hash.
+	if !strings.HasPrefix(receipts[0].ActionRecord.ChainPrevHash, genesisSessionOpenPrefix) {
+		t.Errorf("first receipt chain_prev_hash = %q, want %q prefix",
+			receipts[0].ActionRecord.ChainPrevHash, genesisSessionOpenPrefix)
 	}
 
 	// Each receipt's seq should increment by 1.
@@ -914,8 +919,8 @@ func TestEmitter_ChainState(t *testing.T) {
 	if !result.Valid {
 		t.Fatalf("VerifyChain failed: %s", result.Error)
 	}
-	if result.ReceiptCount != chainLen {
-		t.Errorf("VerifyChain receipt_count = %d, want %d", result.ReceiptCount, chainLen)
+	if result.ReceiptCount != chainLen+1 {
+		t.Errorf("VerifyChain receipt_count = %d, want %d", result.ReceiptCount, chainLen+1)
 	}
 }
 
@@ -1030,6 +1035,7 @@ func TestEmitter_ResumesChainAfterRestart(t *testing.T) {
 		if e == nil {
 			t.Fatal("NewEmitter() returned nil")
 		}
+		emitSessionOpenForTest(t, e)
 		return rec, e
 	}
 
@@ -1067,8 +1073,8 @@ func TestEmitter_ResumesChainAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QuerySession(): %v", err)
 	}
-	if len(result.Entries) != 3 {
-		t.Fatalf("receipt entry count = %d, want 3", len(result.Entries))
+	if len(result.Entries) != 5 {
+		t.Fatalf("receipt entry count = %d, want 5", len(result.Entries))
 	}
 
 	receipts := make([]Receipt, 0, len(result.Entries))
@@ -1116,6 +1122,7 @@ func TestExtractReceiptsWithSessionID_HappyPath(t *testing.T) {
 		ConfigHash: testConfigHash,
 		Principal:  testPrincipal,
 	})
+	emitSessionOpenForTest(t, e)
 
 	for i := 0; i < 3; i++ {
 		if err := e.Emit(EmitOpts{
@@ -1147,8 +1154,8 @@ func TestExtractReceiptsWithSessionID_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtractReceiptsWithSessionID: %v", err)
 	}
-	if len(receipts) != 3 {
-		t.Fatalf("expected 3 receipts, got %d", len(receipts))
+	if len(receipts) != 4 {
+		t.Fatalf("expected 4 receipts, got %d", len(receipts))
 	}
 	if sessionID == "" {
 		t.Fatal("expected non-empty session ID")

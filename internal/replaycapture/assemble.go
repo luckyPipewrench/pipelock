@@ -159,6 +159,9 @@ func summarize(receipts []receipt.Receipt) auditpacket.Summary {
 		if ar.Layer != "" {
 			layers[ar.Layer]++
 		}
+		if ar.SessionControl != nil {
+			continue
+		}
 		if h := hostOf(ar.Target); h != "" {
 			hosts = append(hosts, h)
 		}

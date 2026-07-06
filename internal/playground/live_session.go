@@ -774,6 +774,9 @@ func (s *LiveSession) onReceipt(rcpt *receipt.Receipt) {
 	if rcpt == nil {
 		return
 	}
+	if rcpt.ActionRecord.SessionControl != nil {
+		return
+	}
 	// Record the method+target key for the model-driver receipt invariant, if a
 	// turn is open, and signal any settle-wait that the tally advanced.
 	s.recMu.Lock()

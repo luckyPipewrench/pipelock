@@ -36,6 +36,9 @@ func TestReadModel_IntegrationRealReadPathAndZeroReceiptSession(t *testing.T) {
 		Principal:  testPrincipal,
 		Actor:      testActor,
 	})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
 	for i := 0; i < 2; i++ {
 		if err := emitter.Emit(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),

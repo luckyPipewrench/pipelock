@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -138,6 +139,9 @@ func TestReceiptCoverage_ChainIntegrity_CrossTransport(t *testing.T) {
 
 	dir := t.TempDir()
 	emitter, rec, pubKey := newCoverageEmitter(t, dir)
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
 
 	// Emit receipts across three different transports.
 	transports := []struct {
@@ -173,8 +177,8 @@ func TestReceiptCoverage_ChainIntegrity_CrossTransport(t *testing.T) {
 	}
 
 	receipts := extractReceiptsFromDir(t, dir)
-	if len(receipts) != 3 {
-		t.Fatalf("expected 3 receipts, got %d", len(receipts))
+	if len(receipts) != 4 {
+		t.Fatalf("expected 4 receipts, got %d", len(receipts))
 	}
 
 	// Verify chain via receipt.VerifyChain.
@@ -183,14 +187,14 @@ func TestReceiptCoverage_ChainIntegrity_CrossTransport(t *testing.T) {
 	if !result.Valid {
 		t.Fatalf("VerifyChain failed: %s (broken at seq %d)", result.Error, result.BrokenAtSeq)
 	}
-	if result.ReceiptCount != 3 {
-		t.Errorf("receipt_count = %d, want 3", result.ReceiptCount)
+	if result.ReceiptCount != 4 {
+		t.Errorf("receipt_count = %d, want 4", result.ReceiptCount)
 	}
 
-	// Assert first receipt has genesis prev_hash.
-	if receipts[0].ActionRecord.ChainPrevHash != receipt.GenesisHash {
-		t.Errorf("first receipt chain_prev_hash = %q, want %q",
-			receipts[0].ActionRecord.ChainPrevHash, receipt.GenesisHash)
+	// Assert first receipt has bound session-open genesis.
+	if receipts[0].ActionRecord.SessionControl == nil ||
+		receipts[0].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
+		t.Fatalf("first receipt session_control = %+v, want session_open", receipts[0].ActionRecord.SessionControl)
 	}
 
 	// Assert chain_seq increments monotonically.
@@ -214,9 +218,10 @@ func TestReceiptCoverage_ChainIntegrity_CrossTransport(t *testing.T) {
 
 	// Assert each receipt has the correct transport.
 	for i, tc := range transports {
-		if receipts[i].ActionRecord.Transport != tc.transport {
+		idx := i + 1
+		if receipts[idx].ActionRecord.Transport != tc.transport {
 			t.Errorf("receipt[%d] transport = %q, want %q",
-				i, receipts[i].ActionRecord.Transport, tc.transport)
+				idx, receipts[idx].ActionRecord.Transport, tc.transport)
 		}
 	}
 }
@@ -769,6 +774,9 @@ func TestReceiptCoverage_ChainIntegrity_FiveTransports(t *testing.T) {
 
 	dir := t.TempDir()
 	emitter, rec, pubKey := newCoverageEmitter(t, dir)
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
 
 	allTransports := []struct {
 		transport string
@@ -806,8 +814,8 @@ func TestReceiptCoverage_ChainIntegrity_FiveTransports(t *testing.T) {
 	}
 
 	receipts := extractReceiptsFromDir(t, dir)
-	if len(receipts) != 5 {
-		t.Fatalf("expected 5 receipts, got %d", len(receipts))
+	if len(receipts) != 6 {
+		t.Fatalf("expected 6 receipts, got %d", len(receipts))
 	}
 
 	keyHex := hex.EncodeToString(pubKey)
@@ -815,11 +823,11 @@ func TestReceiptCoverage_ChainIntegrity_FiveTransports(t *testing.T) {
 	if !result.Valid {
 		t.Fatalf("VerifyChain failed across 5 transports: %s", result.Error)
 	}
-	if result.ReceiptCount != 5 {
-		t.Errorf("receipt_count = %d, want 5", result.ReceiptCount)
+	if result.ReceiptCount != 6 {
+		t.Errorf("receipt_count = %d, want 6", result.ReceiptCount)
 	}
-	if result.FinalSeq != 4 {
-		t.Errorf("final_seq = %d, want 4", result.FinalSeq)
+	if result.FinalSeq != 5 {
+		t.Errorf("final_seq = %d, want 5", result.FinalSeq)
 	}
 
 	// Verify timestamps are ordered.
@@ -1042,6 +1050,38 @@ func (rph *receiptProxyHelper) requireReceipt(t *testing.T, layer string) receip
 	return receipt.Receipt{} // unreachable
 }
 
+func (rph *receiptProxyHelper) emitSessionOpen(t *testing.T) {
+	t.Helper()
+	if err := rph.emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+}
+
+func assertSessionOpenPrecedesTransport(t *testing.T, receipts []receipt.Receipt, transport string) {
+	t.Helper()
+	if len(receipts) < 2 {
+		t.Fatalf("receipt count = %d, want session_open plus %s receipt", len(receipts), transport)
+	}
+	if receipts[0].ActionRecord.SessionControl == nil ||
+		receipts[0].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
+		t.Fatalf("first receipt session_control = %+v, want session_open before %s egress",
+			receipts[0].ActionRecord.SessionControl, transport)
+	}
+	for i, r := range receipts[1:] {
+		if r.ActionRecord.Transport == transport {
+			if r.ActionRecord.SessionControl != nil {
+				t.Fatalf("transport receipt %d carried session_control: %+v", i+1, r.ActionRecord.SessionControl)
+			}
+			return
+		}
+	}
+	var transports []string
+	for _, r := range receipts {
+		transports = append(transports, r.ActionRecord.Transport)
+	}
+	t.Fatalf("no %s receipt found after session_open; transports=%v", transport, transports)
+}
+
 // setupFetchProxyWithReceipts creates a proxy handler (httptest style) with
 // receipt emission enabled.
 func setupFetchProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod func(*config.Config)) http.Handler {
@@ -1206,6 +1246,103 @@ func setupForwardProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod
 		cancel()
 		_ = ln.Close()
 		p.Close()
+	}
+}
+
+func TestReceiptCoverage_SessionOpenPrecedesFirstEgressPerHTTPTransport(t *testing.T) {
+	tests := map[string]struct {
+		wantTransport string
+		run           func(t *testing.T, rph *receiptProxyHelper)
+	}{
+		"fetch": {
+			wantTransport: TransportFetch,
+			run: func(t *testing.T, rph *receiptProxyHelper) {
+				handler := setupFetchProxyWithReceipts(t, rph, func(cfg *config.Config) {
+					cfg.Enforce = ptrBool(true)
+					cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
+				})
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, req)
+				if w.Code != http.StatusForbidden {
+					t.Fatalf("fetch status = %d, want 403; body=%s", w.Code, w.Body.String())
+				}
+			},
+		},
+		"forward": {
+			wantTransport: TransportForward,
+			run: func(t *testing.T, rph *receiptProxyHelper) {
+				proxyAddr, cleanup := setupForwardProxyWithReceipts(t, rph, func(cfg *config.Config) {
+					cfg.Enforce = ptrBool(true)
+					cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
+				})
+				defer cleanup()
+				conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(t.Context(), "tcp", proxyAddr)
+				if err != nil {
+					t.Fatalf("dial forward proxy: %v", err)
+				}
+				defer func() { _ = conn.Close() }()
+				_, _ = fmt.Fprintf(conn, "GET http://evil.example.com/exfil HTTP/1.1\r\nHost: evil.example.com\r\n\r\n")
+				resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+				if err != nil {
+					t.Fatalf("read forward response: %v", err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode != http.StatusForbidden {
+					t.Fatalf("forward status = %d, want 403", resp.StatusCode)
+				}
+			},
+		},
+		"connect": {
+			wantTransport: TransportConnect,
+			run: func(t *testing.T, rph *receiptProxyHelper) {
+				proxyAddr, cleanup := setupForwardProxyWithReceipts(t, rph, func(cfg *config.Config) {
+					cfg.Enforce = ptrBool(true)
+					cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
+				})
+				defer cleanup()
+				conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(t.Context(), "tcp", proxyAddr)
+				if err != nil {
+					t.Fatalf("dial forward proxy: %v", err)
+				}
+				defer func() { _ = conn.Close() }()
+				_, _ = fmt.Fprintf(conn, "CONNECT evil.example.com:443 HTTP/1.1\r\nHost: evil.example.com:443\r\n\r\n")
+				resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+				if err != nil {
+					t.Fatalf("read CONNECT response: %v", err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode != http.StatusForbidden {
+					t.Fatalf("CONNECT status = %d, want 403", resp.StatusCode)
+				}
+			},
+		},
+		"websocket": {
+			wantTransport: TransportWS,
+			run: func(t *testing.T, rph *receiptProxyHelper) {
+				proxyAddr, cleanup := setupWSProxyWithReceipts(t, rph, func(cfg *config.Config) {
+					cfg.Enforce = ptrBool(true)
+					cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
+				})
+				defer cleanup()
+				wsURL := fmt.Sprintf("ws://%s/ws?url=ws://evil.example.com/ws", proxyAddr)
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, _, _, err := ws.Dialer{}.Dial(ctx, wsURL)
+				if err == nil {
+					t.Fatal("expected websocket dial to fail for blocklisted domain")
+				}
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			rph := newReceiptProxyHelper(t)
+			rph.emitSessionOpen(t)
+			tc.run(t, rph)
+			assertSessionOpenPrecedesTransport(t, rph.findReceipts(t), tc.wantTransport)
+		})
 	}
 }
 

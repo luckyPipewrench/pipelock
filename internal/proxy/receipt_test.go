@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/crypto/nacl/box"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -780,6 +782,184 @@ fetch_proxy:
 	t.Fatal("no receipt found after aborted reload")
 }
 
+func TestProxy_ReloadSessionOpenEmitFailurePreservesLiveEmitter(t *testing.T) {
+	t.Parallel()
+
+	recDir := t.TempDir()
+	keyDir := t.TempDir()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	recipientPub, _, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("box.GenerateKey: %v", err)
+	}
+
+	keyPath := filepath.Join(keyDir, "receipt.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                recDir,
+		CheckpointInterval: 1000,
+		RawEscrow:          true,
+		EscrowPublicKey:    hex.EncodeToString(recipientPub[:]),
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	startCfgPath := filepath.Join(keyDir, "start.yaml")
+	startYAML := fmt.Sprintf(`mode: balanced
+flight_recorder:
+  signing_key_path: %s
+fetch_proxy:
+  monitoring:
+    blocklist:
+      - evil.example.com
+`, keyPath)
+	if err := os.WriteFile(startCfgPath, []byte(startYAML), 0o600); err != nil {
+		t.Fatalf("WriteFile start config: %v", err)
+	}
+	cfg, err := config.Load(startCfgPath)
+	if err != nil {
+		t.Fatalf("config.Load start: %v", err)
+	}
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: cfg.Hash(),
+		Principal:  "local",
+		Actor:      "pipelock",
+	})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen startup: %v", err)
+	}
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+
+	p, pErr := New(cfg, logger, sc, m,
+		WithRecorder(rec),
+		WithReceiptEmitter(emitter),
+		WithReceiptKeyPath(keyPath),
+	)
+	if pErr != nil {
+		t.Fatalf("proxy.New: %v", pErr)
+	}
+	defer func() { _ = rec.Close() }()
+
+	beforeEmitter := p.receiptEmitterPtr.Load()
+	if beforeEmitter == nil {
+		t.Fatal("expected non-nil emitter before reload")
+	}
+
+	reloadCfgPath := filepath.Join(keyDir, "reload.yaml")
+	reloadYAML := fmt.Sprintf(`mode: balanced
+flight_recorder:
+  signing_key_path: %s
+fetch_proxy:
+  monitoring:
+    blocklist:
+      - other.example.com
+`, keyPath)
+	if err := os.WriteFile(reloadCfgPath, []byte(reloadYAML), 0o600); err != nil {
+		t.Fatalf("WriteFile reload config: %v", err)
+	}
+	reloadCfg, err := config.Load(reloadCfgPath)
+	if err != nil {
+		t.Fatalf("config.Load reload: %v", err)
+	}
+	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	if cfg.Hash() == reloadCfg.Hash() {
+		t.Fatal("expected distinct config hashes for failed reload")
+	}
+
+	if err := os.Chmod(recDir, 0o500); err != nil { // #nosec G302 -- deliberately read-only dir to force raw-escrow write failure
+		t.Fatalf("Chmod recDir read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(recDir, 0o750) // #nosec G302 -- restore traversable dir perms for TempDir cleanup
+	})
+
+	reloadSc := scanner.New(reloadCfg)
+	if p.Reload(reloadCfg, reloadSc) {
+		t.Fatal("reload unexpectedly succeeded after session_open emit failure")
+	}
+
+	if err := os.Chmod(recDir, 0o750); err != nil { // #nosec G302 -- restore recorder dir after forced failure
+		t.Fatalf("Chmod recDir writable: %v", err)
+	}
+	if p.CurrentConfig() != cfg {
+		t.Fatal("session_open emit failure should preserve the old config")
+	}
+	if afterEmitter := p.receiptEmitterPtr.Load(); afterEmitter != beforeEmitter {
+		t.Fatal("receipt emitter changed even though reload session_open emission failed")
+	}
+
+	handler := p.buildHandler(p.buildMux())
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for old blocklist after aborted reload, got %d", w.Code)
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	entries := readAllEntries(t, recDir)
+	var receipts []receipt.Receipt
+	for _, e := range entries {
+		if e.Type != receiptEntryType {
+			continue
+		}
+		detailJSON, mErr := json.Marshal(e.Detail)
+		if mErr != nil {
+			t.Fatalf("marshal detail: %v", mErr)
+		}
+		r, uErr := receipt.Unmarshal(detailJSON)
+		if uErr != nil {
+			t.Fatalf("unmarshal receipt: %v", uErr)
+		}
+		receipts = append(receipts, r)
+	}
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want old session_open and old-policy block receipt", len(receipts))
+	}
+	if receipts[0].ActionRecord.SessionControl == nil ||
+		receipts[0].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
+		t.Fatalf("first receipt session_control = %+v, want old session_open",
+			receipts[0].ActionRecord.SessionControl)
+	}
+	if receipts[1].ActionRecord.SessionControl != nil {
+		t.Fatalf("post-failure request unexpectedly carried session_control: %+v",
+			receipts[1].ActionRecord.SessionControl)
+	}
+	if receipts[1].ActionRecord.PolicyHash != cfg.Hash() {
+		t.Fatalf("post-failure receipt policy hash = %q, want old hash %q",
+			receipts[1].ActionRecord.PolicyHash, cfg.Hash())
+	}
+	if receipts[1].ActionRecord.PolicyHash == reloadCfg.Hash() {
+		t.Fatal("post-failure receipt unexpectedly attested failed reload config")
+	}
+	result := receipt.VerifyChainTrusted(receipts, []string{hex.EncodeToString(pub)})
+	if !result.Valid {
+		t.Fatalf("old emitter chain did not verify after failed reload: %s", result.Error)
+	}
+}
+
 // TestProxy_ReloadReceiptEmitter_NoRecorder verifies that when there is no
 // flight recorder, reload with a signing key is a no-op.
 func TestProxy_ReloadReceiptEmitter_NoRecorder(t *testing.T) {
@@ -935,7 +1115,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 	keyDir := t.TempDir()
 
 	// Generate two distinct Ed25519 key pairs.
-	_, privA, err := ed25519.GenerateKey(rand.Reader)
+	pubA, privA, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey A: %v", err)
 	}
@@ -970,6 +1150,9 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 		Principal:  "local",
 		Actor:      "pipelock",
 	})
+	if err := emitterA.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen A: %v", err)
+	}
 
 	// Start proxy with key A.
 	cfg := config.Defaults()
@@ -1033,7 +1216,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 
 	expectedKeyHex := hex.EncodeToString(pubB)
 
-	var found bool
+	var receipts []receipt.Receipt
 	for _, e := range entries {
 		if e.Type == receiptEntryType {
 			detailJSON, mErr := json.Marshal(e.Detail)
@@ -1048,16 +1231,38 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 			if err := receipt.VerifyInternalConsistencyOnly(r); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)
 			}
-			// Verify it was signed with key B, not key A.
-			if r.SignerKey != expectedKeyHex {
-				t.Errorf("receipt signed with wrong key: got %s, want %s", r.SignerKey, expectedKeyHex)
-			}
-			found = true
-			break
+			receipts = append(receipts, r)
 		}
 	}
-	if !found {
+	if len(receipts) == 0 {
 		t.Fatal("no receipt found after key rotation reload")
+	}
+	if len(receipts) != 3 {
+		t.Fatalf("receipt count = %d, want startup open, rotated open, and blocked fetch receipt", len(receipts))
+	}
+	if receipts[0].ActionRecord.SessionControl == nil ||
+		receipts[0].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
+		t.Fatalf("first receipt session_control = %+v, want session_open", receipts[0].ActionRecord.SessionControl)
+	}
+	if receipts[1].ActionRecord.SessionControl == nil ||
+		receipts[1].ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
+		t.Fatalf("rotated first receipt session_control = %+v, want session_open", receipts[1].ActionRecord.SessionControl)
+	}
+	if receipts[1].ActionRecord.KeyTransition == nil {
+		t.Fatal("rotated session_open missing key_transition")
+	}
+	if receipts[2].ActionRecord.SessionControl != nil {
+		t.Fatalf("post-reload egress receipt unexpectedly carried session_control: %+v", receipts[2].ActionRecord.SessionControl)
+	}
+	if receipts[2].SignerKey != expectedKeyHex {
+		t.Errorf("post-reload egress receipt signed with wrong key: got %s, want %s", receipts[2].SignerKey, expectedKeyHex)
+	}
+	result := receipt.VerifyChainTrusted(receipts, []string{
+		hex.EncodeToString(pubA),
+		expectedKeyHex,
+	})
+	if !result.Valid {
+		t.Fatalf("rotated session_open chain did not verify: %s", result.Error)
 	}
 }
 

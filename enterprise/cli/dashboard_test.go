@@ -361,13 +361,18 @@ func TestDashboardServe_RejectsMalformedConfig(t *testing.T) {
 
 func TestDashboardServe_InspectionConfigIgnoresUnreadableReferencedFile(t *testing.T) {
 	// A read-only inventory must not resolve unrelated runtime-side files it does
-	// not need. An unreadable license_file (a file the exemptions view never uses)
-	// must NOT prevent the config from loading for inspection. runDashboardServe
-	// loads the config via config.LoadForInspection, so proving that succeeds
-	// proves the serve path no longer fails to start on such files.
+	// not need. An unreadable license_file referenced by --config (a file the
+	// exemptions view never uses) must NOT prevent the dashboard from starting.
+	// This exercises the real serve path: runDashboardServe loads --config via
+	// config.LoadForInspection, so a regression back to config.Load (which reads
+	// license_file) would fail before the listening banner and fail this test.
+	// Empty env license so config.Load, if it were used, would resolve the
+	// config's license_file (env takes priority over license_file). The
+	// dashboard's own license is supplied via the lic argument, independent of
+	// --config, so config's unreadable license_file only bites the config load.
 	t.Setenv(license.EnvLicenseKey, "")
 	dir := t.TempDir()
-	licensePath := filepath.Join(dir, "license.token")
+	licensePath := filepath.Join(dir, "unrelated-license.token")
 	if err := os.WriteFile(licensePath, []byte("unused"), 0o600); err != nil {
 		t.Fatalf("WriteFile(license): %v", err)
 	}
@@ -376,23 +381,47 @@ func TestDashboardServe_InspectionConfigIgnoresUnreadableReferencedFile(t *testi
 	}
 	t.Cleanup(func() { _ = os.Chmod(licensePath, 0o600) })
 	configPath := filepath.Join(dir, "pipelock.yaml")
-	body := "mode: balanced\nlicense_file: license.token\nbrowser_shield:\n  enabled: false\n  exempt_domains:\n    - my.internal.example\n"
+	body := "mode: balanced\nlicense_file: unrelated-license.token\nbrowser_shield:\n  enabled: false\n  exempt_domains:\n    - my.internal.example\n"
 	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile(config): %v", err)
 	}
 
-	cfg, err := config.LoadForInspection(configPath)
-	if err != nil {
-		t.Fatalf("LoadForInspection with unreadable license_file: %v", err)
-	}
-	inv := dashboard.NewReadModel(dashboard.Options{Config: cfg}).Exemptions()
-	if !inv.ConfigLoaded {
-		t.Fatal("ConfigLoaded = false, want true")
-	}
-	// The operator-added exemption on the disabled feature must still be surfaced,
-	// so the inventory is genuinely usable without the unrelated file.
-	if inv.InertCount == 0 {
-		t.Fatalf("expected the operator-added disabled-feature exemption to be inert; inventory=%+v", inv)
+	out := &dashSyncBuffer{}
+	errOut := &dashSyncBuffer{}
+	cmd := dashboardServeCmd()
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd.SetContext(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runDashboardServe(cmd, dashboardServeOptions{
+			listen:        "127.0.0.1:0",
+			receiptDir:    t.TempDir(),
+			authTokenFile: writeDashTokenFile(t),
+			configFile:    configPath,
+		}, license.License{Features: []string{license.FeatureAgents}})
+	}()
+
+	// LoadForInspection reaches the listening banner. A regression to config.Load
+	// returns the unreadable-license_file error before the banner and fails here.
+	testwait.For(t, 10*time.Second, func() bool {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned before the listening banner (config load read the unrelated license_file?): %v", err)
+			return false
+		default:
+			return out.contains("dashboard listening on")
+		}
+	}, "serve never printed the listening banner; stderr: %s", errOut.String())
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not shut down after context cancel")
 	}
 }
 

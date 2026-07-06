@@ -43,7 +43,7 @@ func TestExplainEventCmd_LooksUpBlockedRequestID(t *testing.T) {
 func TestExplainEventCmd_JSONFallbackRemediation(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.log")
-	line := `{"event":"blocked","request_id":"req-456","url":"https://api.vendor.example/?token=redacted","scanner":"dlp","reason":"DLP match: test (critical)"}` + "\n"
+	line := `{"event":"blocked","request_id":"req-456","url":"https://api.vendor.example/?ref=example","scanner":"dlp","reason":"DLP match: test (critical)"}` + "\n"
 	if err := os.WriteFile(logPath, []byte(line), 0o600); err != nil {
 		t.Fatalf("write audit log: %v", err)
 	}

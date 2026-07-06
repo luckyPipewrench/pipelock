@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -93,6 +94,20 @@ func TestStatusCmd_TextIncludesLicenseAndSources(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestStatusCmd_InvalidConfigReturnsExitConfig(t *testing.T) {
+	missingConfig := filepath.Join(t.TempDir(), "missing.yaml")
+	out, err := runStatusCmd(t, "--config", missingConfig)
+	if err == nil {
+		t.Fatalf("expected error for missing config, got output:\n%s", out)
+	}
+	if got := cliutil.ExitCodeOf(err); got != cliutil.ExitConfig {
+		t.Fatalf("exit code = %d, want %d: %v", got, cliutil.ExitConfig, err)
+	}
+	if !strings.Contains(err.Error(), "load config") && !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("error = %v, want config load failure", err)
 	}
 }
 

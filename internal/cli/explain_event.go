@@ -187,13 +187,20 @@ func scanExplainEventWithSanitizer(r io.Reader, id string, sanitizer explainEven
 			out.skippedLines++
 			continue
 		}
-		matchedField := matchedExplainEventID(raw, id)
+		if eventFieldString(raw, explainEventIDRequest) == id {
+			out.report = buildExplainEventReport(raw, id, explainEventIDRequest, sanitizer)
+			out.found = true
+			return out, nil
+		}
+		matchedField := matchedExplainEventFallbackID(raw, id)
 		if matchedField == "" {
+			continue
+		}
+		if out.found {
 			continue
 		}
 		out.report = buildExplainEventReport(raw, id, matchedField, sanitizer)
 		out.found = true
-		return out, nil
 	}
 }
 
@@ -246,8 +253,8 @@ func discardExplainEventAuditLineRemainder(r *bufio.Reader) error {
 	}
 }
 
-func matchedExplainEventID(raw map[string]any, id string) string {
-	for _, field := range []string{explainEventIDRequest, explainEventIDEvent, explainEventIDGeneric, "action_id", "defer_id"} {
+func matchedExplainEventFallbackID(raw map[string]any, id string) string {
+	for _, field := range []string{explainEventIDEvent, explainEventIDGeneric, "action_id", "defer_id"} {
 		if eventFieldString(raw, field) == id {
 			return field
 		}
@@ -277,7 +284,7 @@ func buildExplainEventReport(raw map[string]any, id, matchedField string, saniti
 		RemediationHint: sanitizer.field(eventFieldString(raw, "remediation_hint")),
 	}
 	if report.RemediationHint == "" && scannerName != "" {
-		report.RemediationHint = scanner.OperatorHintForResult(scannerName, reason)
+		report.RemediationHint = sanitizer.field(scanner.OperatorHintForResult(scannerName, reason))
 	}
 	if report.Outcome == "" {
 		report.Notes = append(report.Notes, "event type is not a standard allowed/blocked decision; fields shown are the available audit evidence")

@@ -64,6 +64,38 @@ func TestExplainEventCmd_JSONFallbackRemediation(t *testing.T) {
 	}
 }
 
+func TestExplainEventCmd_JSONFallbackRemediationUsesSanitizer(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	line := `{"event":"blocked","request_id":"req-sanitize-hint","url":"https://api.vendor.example/?ref=example","scanner":"dlp","reason":"DLP match: test (critical)"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(line), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+	cfgPath := writeConfig(t, `
+mode: balanced
+dlp:
+  patterns:
+    - name: Fallback Hint Redaction Guard
+      regex: "Add the destination host"
+      severity: critical
+`)
+
+	out, err := runExplainCmd(t, "event", "req-sanitize-hint", "--config", cfgPath, "--log", logPath, "--json")
+	if err != nil {
+		t.Fatalf("explain event JSON failed: %v\n%s", err, out)
+	}
+	var report explainEventReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode JSON: %v\n%s", err, out)
+	}
+	if report.RemediationHint != explainEventRedacted {
+		t.Fatalf("fallback remediation hint = %q, want %q", report.RemediationHint, explainEventRedacted)
+	}
+	if strings.Contains(out, "Add the destination host") {
+		t.Fatalf("JSON output leaked unsanitized fallback hint:\n%s", out)
+	}
+}
+
 func TestExplainEventCmd_RedactsSecretBearingAuditFields(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.log")
@@ -365,6 +397,11 @@ func TestExplainEventCmd_ErrorPaths(t *testing.T) {
 			wantErr: "event id cannot be empty",
 		},
 		{
+			name:    "unreadable log path",
+			args:    []string{"event", "req-1", "--log", filepath.Join(t.TempDir(), "does-not-exist.log")},
+			wantErr: "open audit log",
+		},
+		{
 			name:    "malformed skipped then found",
 			args:    []string{"event", "req-ok"},
 			logBody: "{not-json}\n" + `{"event":"allowed","request_id":"req-ok","status_code":200}` + "\n",
@@ -421,6 +458,27 @@ func TestScanExplainEvent_OversizedLineSkippedThenFound(t *testing.T) {
 	}
 	if lookup.skippedLines != 1 {
 		t.Fatalf("skippedLines = %d, want 1", lookup.skippedLines)
+	}
+}
+
+func TestScanExplainEvent_PrefersRequestIDAcrossWholeLog(t *testing.T) {
+	body := strings.Join([]string{
+		`{"event":"blocked","event_id":"collision","scanner":"allowlist","reason":"wrong lower-priority event"}`,
+		`{"event":"blocked","request_id":"collision","scanner":"dlp","reason":"right request event"}`,
+		"",
+	}, "\n")
+	lookup, err := scanExplainEvent(strings.NewReader(body), "collision")
+	if err != nil {
+		t.Fatalf("scanExplainEvent returned error: %v", err)
+	}
+	if !lookup.found {
+		t.Fatal("expected event match")
+	}
+	if lookup.report.MatchedField != explainEventIDRequest {
+		t.Fatalf("matched field = %q, want %q", lookup.report.MatchedField, explainEventIDRequest)
+	}
+	if lookup.report.Reason != "right request event" {
+		t.Fatalf("reason = %q, want request_id event", lookup.report.Reason)
 	}
 }
 

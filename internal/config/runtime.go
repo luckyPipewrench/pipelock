@@ -159,11 +159,11 @@ func (c *Config) EffectiveKillSwitchAPIToken() string {
 	if c.killSwitchAPITokenWasResolved {
 		return c.resolvedKillSwitchAPIToken
 	}
-	token := c.KillSwitch.APIToken
+	resolved := c.KillSwitch.APIToken
 	if envToken := os.Getenv(EnvKillSwitchAPIToken); envToken != "" {
-		token = envToken
+		resolved = envToken
 	}
-	return token
+	return resolved
 }
 
 // EffectiveKillSwitchAPITokenConfigured reports whether the resolved runtime

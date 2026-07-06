@@ -19,6 +19,7 @@ func TestRecordEmitFailure_CanonicalReasons(t *testing.T) {
 	m.RecordEmitFailure("chain_init")
 	m.RecordEmitFailure("chain_init")
 	m.RecordEmitFailure("record")
+	m.RecordEmitFailure("sync")
 	m.RecordEmitFailure("unavailable")
 
 	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("chain_init")); got != 2 {
@@ -26,6 +27,9 @@ func TestRecordEmitFailure_CanonicalReasons(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("record")); got != 1 {
 		t.Errorf("record = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("sync")); got != 1 {
+		t.Errorf("sync = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(m.receiptEmitFailures.WithLabelValues("unavailable")); got != 1 {
 		t.Errorf("unavailable = %v, want 1", got)
@@ -56,6 +60,7 @@ func TestRecordRequiredReceiptBlock_BoundedLabels(t *testing.T) {
 	m := New()
 	m.RecordRequiredReceiptBlock("unavailable", "fetch")
 	m.RecordRequiredReceiptBlock("emit_error", "websocket")
+	m.RecordRequiredReceiptBlock("durability", "connect")
 	m.RecordRequiredReceiptBlock("attacker-controlled", "CONNECT /evil")
 
 	if got := testutil.ToFloat64(m.requiredReceiptBlockings.WithLabelValues("unavailable", "fetch")); got != 1 {
@@ -63,6 +68,9 @@ func TestRecordRequiredReceiptBlock_BoundedLabels(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.requiredReceiptBlockings.WithLabelValues("emit_error", "websocket")); got != 1 {
 		t.Errorf("emit_error/websocket = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.requiredReceiptBlockings.WithLabelValues("durability", "connect")); got != 1 {
+		t.Errorf("durability/connect = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(m.requiredReceiptBlockings.WithLabelValues("unknown", "other")); got != 1 {
 		t.Errorf("unknown/other = %v, want 1 (unbounded labels collapsed)", got)

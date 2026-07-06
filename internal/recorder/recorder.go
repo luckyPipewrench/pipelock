@@ -104,6 +104,30 @@ type EntryObserver interface {
 	ObserveRecorderEntry(Entry)
 }
 
+// ErrDurability means a durable recorder write reached the userspace flush
+// stage but could not be confirmed with File.Sync.
+var ErrDurability = errors.New("recorder durability confirmation failed")
+
+type durableBatch struct {
+	file           *os.File
+	generation     uint64
+	leaderAssigned bool
+	syncing        bool
+	done           chan struct{}
+	err            error
+	entries        []durableBatchEntry
+}
+
+type durableBatchEntry struct {
+	seq    uint64
+	offset int64
+}
+
+type durableReservation struct {
+	batch  *durableBatch
+	leader bool
+}
+
 // Recorder writes hash-chained evidence entries to JSONL files.
 type Recorder struct {
 	cfg       Config
@@ -119,6 +143,7 @@ type Recorder struct {
 	file           *os.File
 	fileEntryCount int
 	fileSeqStart   uint64
+	fileGeneration uint64
 	sessionID      string
 
 	// Checkpoint tracking
@@ -127,6 +152,12 @@ type Recorder struct {
 	firstSeqInSpan      uint64
 	closed              bool
 	nop                 bool
+
+	fileSync       func(*os.File) error
+	durableCond    *sync.Cond
+	durableBatch   *durableBatch
+	durableSyncing bool
+	durablePending map[uint64]int
 }
 
 // New creates a Recorder. The redactFn is used for DLP redaction (can be nil to skip).
@@ -174,7 +205,10 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 		privKey:             privKey,
 		prevHash:            GenesisHash,
 		checkpointThreshold: safeUint64(cfg.CheckpointInterval, 1),
+		fileSync:            func(f *os.File) error { return f.Sync() },
+		durablePending:      make(map[uint64]int),
 	}
+	r.durableCond = sync.NewCond(&r.mu)
 
 	if cfg.RawEscrow && cfg.EscrowPublicKey != "" {
 		keyBytes, err := hex.DecodeString(cfg.EscrowPublicKey)
@@ -190,6 +224,24 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	}
 
 	return r, nil
+}
+
+// SetSyncForTest replaces the File.Sync implementation used by RecordDurable.
+// Passing nil restores the production implementation. This hook is exported
+// because receipt package tests need to inject recorder durability failures
+// across the internal package boundary; it is not wired to config or agent
+// input, and production recorders default to real File.Sync.
+func (r *Recorder) SetSyncForTest(syncFn func(*os.File) error) {
+	if r == nil || r.nop {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if syncFn == nil {
+		r.fileSync = func(f *os.File) error { return f.Sync() }
+		return
+	}
+	r.fileSync = syncFn
 }
 
 // Dir returns the recorder evidence directory. Empty for nil or no-op recorders.
@@ -223,91 +275,66 @@ func (r *Recorder) Record(e Entry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.closed {
-		return fmt.Errorf("recorder is closed")
-	}
-
-	// Session ID validation: require non-empty, reject path separators
-	// (defense against path traversal in filenames), and reject mismatches.
-	if e.SessionID == "" {
-		return errors.New("recorder: session_id required")
-	}
-	if strings.ContainsAny(e.SessionID, `/\`) {
-		return fmt.Errorf("recorder: session_id contains path separator")
-	}
-	if r.sessionID == "" {
-		if err := r.resumeSessionLocked(e.SessionID); err != nil {
-			return fmt.Errorf("recorder: resume chain state: %w", err)
-		}
-	}
-	if e.SessionID != r.sessionID {
-		return fmt.Errorf("recorder: session_id mismatch (expected %q, got %q)", r.sessionID, e.SessionID)
-	}
-
-	e.Version = EntryVersion
-	e.Sequence = r.seq
-	e.Timestamp = time.Now().UTC()
-	e.PrevHash = r.prevHash
-
-	// Raw escrow: encrypt detail before redaction. Escrow must succeed
-	// when enabled -- silent drops would lose raw evidence.
-	if r.cfg.RawEscrow && r.escrowPub != nil {
-		rawJSON, err := json.Marshal(e.Detail)
-		if err != nil {
-			return fmt.Errorf("marshal raw escrow: %w", err)
-		}
-		escrowPath, err := r.writeEscrow(rawJSON)
-		if err != nil {
-			return fmt.Errorf("write raw escrow: %w", err)
-		}
-		e.RawRef = filepath.Base(escrowPath)
-	}
-
-	// DLP redaction: receipt emitters sanitize target/pattern before signing
-	// when recorder redaction is enabled, so receipt redaction is normally a
-	// no-op and on-disk receipts still verify. This pass remains fail-closed
-	// for malformed or legacy receipt details that still contain DLP hits.
-	// Raw escrow preserves the exact detail passed to the recorder for
-	// forensic replay.
-	if r.cfg.Redact && r.redactFn != nil {
-		if e.Type == recorderTypeReceipt {
-			e.Detail = r.redactReceiptDetail(e.Detail)
-		} else {
-			e.Detail = r.redactDetail(e.Detail)
-		}
-	}
-
-	e.Hash = ComputeHash(e)
-
-	if err := r.ensureFile(e.SessionID, e.Sequence); err != nil {
-		return fmt.Errorf("opening evidence file: %w", err)
-	}
-
-	if err := r.writeEntry(e); err != nil {
-		return fmt.Errorf("writing entry: %w", err)
+	written, err := r.prepareAndWriteEntryLocked(e, true)
+	if err != nil {
+		return err
 	}
 
 	// Advance chain state AFTER successful write. If ensureFile or
 	// writeEntry fails, the next entry must re-link to the same prevHash
 	// so the chain stays consistent with what reached disk.
-	r.prevHash = e.Hash
+	r.prevHash = written.Hash
 	r.seq++
 
 	r.sinceCheckpoint++
-	if r.sinceCheckpoint >= r.checkpointThreshold {
-		if err := r.checkpointLocked(); err != nil {
-			return fmt.Errorf("writing checkpoint: %w", err)
-		}
-	}
-
-	// File rotation
 	r.fileEntryCount++
-	if r.fileEntryCount >= r.cfg.MaxEntriesPerFile {
-		if err := r.rotateFile(); err != nil {
-			return fmt.Errorf("rotating file: %w", err)
-		}
+	if err := r.runPostRecordMaintenanceLocked(); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+// RecordDurable writes an entry and returns success only after File.Sync has
+// confirmed the file generation that contains the entry.
+func (r *Recorder) RecordDurable(e Entry) error {
+	if r.nop {
+		return nil
+	}
+
+	r.mu.Lock()
+	written, err := r.prepareAndWriteEntryLocked(e, false)
+	if err != nil {
+		r.mu.Unlock()
+		return err
+	}
+
+	r.prevHash = written.Hash
+	r.seq++
+	r.sinceCheckpoint++
+	r.fileEntryCount++
+
+	generation := r.fileGeneration
+	reservation := r.enqueueDurabilityLocked(generation, written.Sequence, r.lastEntryOffsetLocked(written))
+	r.mu.Unlock()
+
+	if reservation.leader {
+		r.runDurabilitySync(reservation.batch)
+	}
+	if err := r.waitDurability(reservation.batch, generation, written.Sequence); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	err = r.runPostRecordMaintenanceLocked()
+	r.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.notifyObserver(written)
+	r.mu.Unlock()
 	return nil
 }
 
@@ -371,6 +398,178 @@ func (r *Recorder) RecordDecision(dr DecisionRecord) error {
 	})
 }
 
+// prepareAndWriteEntryLocked validates, stamps, redacts, hashes, opens the
+// target file, and writes one JSONL entry. The recorder mutex must be held.
+func (r *Recorder) prepareAndWriteEntryLocked(e Entry, notify bool) (Entry, error) {
+	if r.closed {
+		return Entry{}, fmt.Errorf("recorder is closed")
+	}
+
+	// Session ID validation: require non-empty, reject path separators
+	// (defense against path traversal in filenames), and reject mismatches.
+	if e.SessionID == "" {
+		return Entry{}, errors.New("recorder: session_id required")
+	}
+	if strings.ContainsAny(e.SessionID, `/\`) {
+		return Entry{}, fmt.Errorf("recorder: session_id contains path separator")
+	}
+	if r.sessionID == "" {
+		if err := r.resumeSessionLocked(e.SessionID); err != nil {
+			return Entry{}, fmt.Errorf("recorder: resume chain state: %w", err)
+		}
+	}
+	if e.SessionID != r.sessionID {
+		return Entry{}, fmt.Errorf("recorder: session_id mismatch (expected %q, got %q)", r.sessionID, e.SessionID)
+	}
+
+	e.Version = EntryVersion
+	e.Sequence = r.seq
+	e.Timestamp = time.Now().UTC()
+	e.PrevHash = r.prevHash
+
+	// Raw escrow: encrypt detail before redaction. Escrow must succeed
+	// when enabled -- silent drops would lose raw evidence.
+	if r.cfg.RawEscrow && r.escrowPub != nil {
+		rawJSON, err := json.Marshal(e.Detail)
+		if err != nil {
+			return Entry{}, fmt.Errorf("marshal raw escrow: %w", err)
+		}
+		escrowPath, err := r.writeEscrow(rawJSON)
+		if err != nil {
+			return Entry{}, fmt.Errorf("write raw escrow: %w", err)
+		}
+		e.RawRef = filepath.Base(escrowPath)
+	}
+
+	// DLP redaction: receipt emitters sanitize target/pattern before signing
+	// when recorder redaction is enabled, so receipt redaction is normally a
+	// no-op and on-disk receipts still verify. This pass remains fail-closed
+	// for malformed or legacy receipt details that still contain DLP hits.
+	// Raw escrow preserves the exact detail passed to the recorder for
+	// forensic replay.
+	if r.cfg.Redact && r.redactFn != nil {
+		if e.Type == recorderTypeReceipt {
+			e.Detail = r.redactReceiptDetail(e.Detail)
+		} else {
+			e.Detail = r.redactDetail(e.Detail)
+		}
+	}
+
+	e.Hash = ComputeHash(e)
+
+	if err := r.ensureFile(e.SessionID, e.Sequence); err != nil {
+		return Entry{}, fmt.Errorf("opening evidence file: %w", err)
+	}
+
+	if err := r.writeEntry(e, notify); err != nil {
+		return Entry{}, fmt.Errorf("writing entry: %w", err)
+	}
+	return e, nil
+}
+
+// runPostRecordMaintenanceLocked applies checkpoint and rotation thresholds
+// after an entry has already advanced the chain state. The recorder mutex must
+// be held.
+func (r *Recorder) runPostRecordMaintenanceLocked() error {
+	needsCheckpoint := r.sinceCheckpoint >= r.checkpointThreshold
+	needsRotation := r.fileEntryCount >= r.cfg.MaxEntriesPerFile
+	if needsCheckpoint || needsRotation {
+		r.waitDurableForCurrentFileLocked()
+	}
+	if needsCheckpoint {
+		if err := r.checkpointLocked(); err != nil {
+			return fmt.Errorf("writing checkpoint: %w", err)
+		}
+	}
+	if needsRotation {
+		if err := r.rotateFile(); err != nil {
+			return fmt.Errorf("rotating file: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *Recorder) enqueueDurabilityLocked(generation, seq uint64, offset int64) durableReservation {
+	batch := r.durableBatch
+	if batch == nil || batch.syncing || batch.generation != generation {
+		batch = &durableBatch{
+			file:       r.file,
+			generation: generation,
+			done:       make(chan struct{}),
+		}
+		r.durableBatch = batch
+	}
+	// A caller joins a batch only after writeEntry has flushed its JSONL bytes
+	// under r.mu. The leader also marks batch.syncing under r.mu before
+	// File.Sync, so a follower in this batch necessarily wrote before the
+	// leader could start syncing; once syncing is true, later entries must use
+	// a new batch.
+	batch.entries = append(batch.entries, durableBatchEntry{seq: seq, offset: offset})
+	r.durablePending[generation]++
+	if !batch.leaderAssigned {
+		batch.leaderAssigned = true
+		return durableReservation{batch: batch, leader: true}
+	}
+	return durableReservation{batch: batch}
+}
+
+func (r *Recorder) runDurabilitySync(batch *durableBatch) {
+	var err error
+	syncStarted := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if recoveredErr, ok := recovered.(error); ok {
+				err = fmt.Errorf("panic during recorder durability sync: %w", recoveredErr)
+			} else {
+				err = fmt.Errorf("panic during recorder durability sync: %v", recovered)
+			}
+		}
+
+		r.mu.Lock()
+		batch.err = err
+		if syncStarted {
+			r.durableSyncing = false
+		}
+		if r.durableBatch == batch {
+			r.durableBatch = nil
+		}
+		close(batch.done)
+		r.durableCond.Broadcast()
+		r.mu.Unlock()
+	}()
+
+	r.mu.Lock()
+	for r.durableSyncing {
+		r.durableCond.Wait()
+	}
+	batch.syncing = true
+	// Keep syncStarted adjacent to durableSyncing. There must be no panicking
+	// operation between these two assignments, or panic recovery could leave
+	// later durable syncs waiting forever on durableSyncing.
+	r.durableSyncing = true
+	syncStarted = true
+	r.mu.Unlock()
+
+	err = r.fileSync(batch.file)
+}
+
+func (r *Recorder) waitDurability(batch *durableBatch, generation, seq uint64) error {
+	<-batch.done
+
+	r.mu.Lock()
+	r.durablePending[generation]--
+	if r.durablePending[generation] <= 0 {
+		delete(r.durablePending, generation)
+	}
+	r.durableCond.Broadcast()
+	r.mu.Unlock()
+
+	if batch.err != nil {
+		return fmt.Errorf("%w: file generation %d seq %d: %w", ErrDurability, generation, seq, batch.err)
+	}
+	return nil
+}
+
 // Close flushes and closes the recorder, writing a final checkpoint.
 func (r *Recorder) Close() error {
 	if r.nop {
@@ -386,6 +585,7 @@ func (r *Recorder) Close() error {
 	r.closed = true
 
 	if r.sinceCheckpoint > 0 {
+		r.waitDurableForCurrentFileLocked()
 		if err := r.checkpointLocked(); err != nil {
 			// Close the file even if checkpoint failed, but return
 			// the checkpoint error since it means chain state is incomplete.
@@ -429,7 +629,7 @@ func (r *Recorder) checkpointLocked() error {
 	e.Hash = ComputeHash(e)
 
 	if r.file != nil {
-		if err := r.writeEntry(e); err != nil {
+		if err := r.writeEntry(e, true); err != nil {
 			return err
 		}
 		r.fileEntryCount++
@@ -698,6 +898,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 		// recreated directory. Ignore close errors - the fd was
 		// already pointing at an unlinked inode.
 		if r.file != nil {
+			r.waitDurableForCurrentFileLocked()
 			_ = r.file.Close()
 			r.file = nil
 			r.writer = nil
@@ -727,6 +928,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	r.writer = bufio.NewWriter(f)
 	r.fileEntryCount = 0
 	r.fileSeqStart = seqStart
+	r.fileGeneration++
 	if r.sinceCheckpoint == 0 {
 		r.firstSeqInSpan = seqStart
 	}
@@ -734,22 +936,47 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 }
 
 // writeEntry serializes and writes a single entry as a JSONL line.
-func (r *Recorder) writeEntry(e Entry) error {
+func (r *Recorder) writeEntry(e Entry, notify bool) error {
 	data, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("marshaling entry: %w", err)
 	}
-	if _, err := r.writer.Write(data); err != nil {
+	if n, err := r.writer.Write(data); err != nil {
 		return err
+	} else if n != len(data) {
+		return io.ErrShortWrite
 	}
-	if _, err := r.writer.Write([]byte("\n")); err != nil {
+	if n, err := r.writer.Write([]byte("\n")); err != nil {
 		return err
+	} else if n != 1 {
+		return io.ErrShortWrite
 	}
 	if err := r.writer.Flush(); err != nil {
 		return err
 	}
-	r.notifyObserver(e)
+	if notify {
+		r.notifyObserver(e)
+	}
 	return nil
+}
+
+func (r *Recorder) lastEntryOffsetLocked(e Entry) int64 {
+	if r.file == nil {
+		return 0
+	}
+	info, err := r.file.Stat()
+	if err != nil {
+		return 0
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		return 0
+	}
+	offset := info.Size() - int64(len(data)+1)
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 func (r *Recorder) notifyObserver(e Entry) {
@@ -767,6 +994,7 @@ func (r *Recorder) closeFile() error {
 	if r.file == nil {
 		return nil
 	}
+	r.waitDurableForCurrentFileLocked()
 	if err := r.writer.Flush(); err != nil {
 		_ = r.file.Close()
 		r.file = nil
@@ -782,6 +1010,15 @@ func (r *Recorder) closeFile() error {
 // rotateFile closes the current file so the next write opens a new one.
 func (r *Recorder) rotateFile() error {
 	return r.closeFile()
+}
+
+func (r *Recorder) waitDurableForCurrentFileLocked() {
+	if r.durableCond == nil || r.file == nil {
+		return
+	}
+	for r.durablePending[r.fileGeneration] > 0 {
+		r.durableCond.Wait()
+	}
 }
 
 // ExpireOldFiles removes evidence files older than RetentionDays.

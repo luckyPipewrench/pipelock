@@ -18,11 +18,13 @@ var receiptEmitFailureReasons = map[string]bool{
 	"hash":        true,
 	"marshal":     true,
 	"record":      true,
+	"sync":        true,
 	"sealed":      true,
 	"unavailable": true,
 }
 
 var requiredReceiptBlockReasons = map[string]bool{
+	"durability":  true,
 	"emit_error":  true,
 	"unavailable": true,
 }

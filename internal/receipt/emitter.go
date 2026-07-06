@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,6 +55,8 @@ const (
 	FailReasonMarshal = "marshal"
 	// FailReasonRecord is a recorder-write failure.
 	FailReasonRecord = "record"
+	// FailReasonSync is a recorder durability-sync failure.
+	FailReasonSync = "sync"
 	// FailReasonSealed is an emit attempt after the transcript root was emitted.
 	FailReasonSealed = "sealed"
 	// FailReasonUnavailable is a required-receipt emission attempt when no
@@ -261,6 +264,16 @@ func (e *Emitter) EmitSessionOpen() error {
 // Errors are returned but should be logged, not propagated to callers.
 // Safe to call on a nil Emitter (no-op).
 func (e *Emitter) Emit(opts EmitOpts) error {
+	return e.emit(opts, false)
+}
+
+// EmitDurable creates, signs, records, and fsync-confirms an action receipt for
+// a proxy decision. Safe to call on a nil Emitter (no-op).
+func (e *Emitter) EmitDurable(opts EmitOpts) error {
+	return e.emit(opts, true)
+}
+
+func (e *Emitter) emit(opts EmitOpts, durable bool) error {
 	if e == nil {
 		return nil
 	}
@@ -281,9 +294,9 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 
 	// Chain integrity: lock covers stamp → sign → hash → persist → advance.
 	// The mutex must span from timestamp through persist so concurrent Emit
-	// calls produce monotonic timestamps in chain order. State is only
-	// advanced after successful write; a failed Record leaves the chain at
-	// the previous position.
+	// calls produce monotonic timestamps in chain order. State advances before
+	// recorder persistence so a failed Record leaves a detectable gap instead
+	// of reusing the same prev_hash/seq and forking the chain.
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
 
@@ -408,16 +421,27 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		e.sessionOpenEmitted = true
 	}
 
-	if err := e.recorder.Record(recorder.Entry{
+	entry := recorder.Entry{
 		SessionID: recorderSessionID,
 		Type:      recorderEntryType,
 		EventKind: string(ar.ActionType),
 		Transport: opts.Transport,
 		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Transport),
 		Detail:    json.RawMessage(receiptJSON),
-	}); err != nil {
-		e.recordFailure(FailReasonRecord)
-		return fmt.Errorf("recording receipt: %w", err)
+	}
+	var recordErr error
+	if durable {
+		recordErr = e.recorder.RecordDurable(entry)
+	} else {
+		recordErr = e.recorder.Record(entry)
+	}
+	if recordErr != nil {
+		if durable && errors.Is(recordErr, recorder.ErrDurability) {
+			e.recordFailure(FailReasonSync)
+		} else {
+			e.recordFailure(FailReasonRecord)
+		}
+		return fmt.Errorf("recording receipt: %w", recordErr)
 	}
 
 	// Notify the observer (if any) AFTER the receipt is durably recorded, so a

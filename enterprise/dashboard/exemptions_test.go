@@ -451,11 +451,15 @@ func TestHandler_ExemptionsHostileConfigEscapes(t *testing.T) {
 		}},
 	}
 	handler := New(Options{
-		ReceiptDir:  t.TempDir(),
-		Config:      cfg,
-		HasFeature:  allowAgentsFeature,
-		Authorize:   func(*http.Request) error { return nil },
-		AuditWriter: &strings.Builder{},
+		ReceiptDir: t.TempDir(),
+		Config:     cfg,
+		HasFeature: allowAgentsFeature,
+		Authorize:  func(*http.Request) error { return nil },
+		// Raw access so the hostile config values are actually rendered (and
+		// therefore html/template-escaped); the metadata-only path redacts them
+		// instead and is covered by TestHandler_ExemptionsMetadataViewRedactsRawValues.
+		AuthorizeRaw: allowRawAccess,
+		AuditWriter:  &strings.Builder{},
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
@@ -490,4 +494,64 @@ func assertEntryState(t *testing.T, inventory ExemptionInventory, knob, scope, s
 		}
 	}
 	t.Fatalf("missing entry knob=%q scope=%q; entries=%+v", knob, scope, inventory.Entries)
+}
+
+func TestHandler_ExemptionsMetadataViewRedactsRawValues(t *testing.T) {
+	t.Parallel()
+
+	const (
+		shieldDomain = "secret-shield.internal.example"
+		ssrfDomain   = "secret-ssrf.internal.example"
+		ssrfIP       = "10.9.8.7/32"
+		agentDomain  = "secret-agent.internal.example"
+	)
+	cfg := &config.Config{
+		BrowserShield:  config.BrowserShield{Enabled: false, ExemptDomains: []string{shieldDomain}},
+		TrustedDomains: []string{ssrfDomain},
+		SSRF:           config.SSRF{IPAllowlist: []string{ssrfIP}},
+		Agents:         map[string]config.AgentProfile{"agent-a": {TrustedDomains: []string{agentDomain}}},
+	}
+	sensitive := []string{shieldDomain, ssrfDomain, ssrfIP, agentDomain}
+
+	// Metadata-only view (no raw authorizer): raw infra values must be redacted.
+	metaBody := serveExemptionsBody(t, cfg, false)
+	for _, s := range sensitive {
+		if strings.Contains(metaBody, s) {
+			t.Fatalf("metadata view leaked raw value %q; body=%s", s, metaBody)
+		}
+	}
+	// The view stays useful: knob names, states, counts, and the redaction note.
+	for _, want := range []string{diag.ConfigScopeBrowserShieldExemptDomains, "raw access is required", "inert"} {
+		if !strings.Contains(metaBody, want) {
+			t.Fatalf("metadata view missing %q; body=%s", want, metaBody)
+		}
+	}
+
+	// Raw-authorized view shows the actual values.
+	rawBody := serveExemptionsBody(t, cfg, true)
+	for _, s := range sensitive {
+		if !strings.Contains(rawBody, s) {
+			t.Fatalf("raw view missing value %q", s)
+		}
+	}
+}
+
+func serveExemptionsBody(t *testing.T, cfg *config.Config, raw bool) string {
+	t.Helper()
+	opts := Options{
+		ReceiptDir: t.TempDir(),
+		Config:     cfg,
+		HasFeature: allowAgentsFeature,
+		Authorize:  func(*http.Request) error { return nil },
+	}
+	if raw {
+		opts.AuthorizeRaw = allowRawAccess
+	}
+	handler := New(opts)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	return rec.Body.String()
 }

@@ -157,7 +157,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	}
 	var loadedConfig *config.Config
 	if strings.TrimSpace(opts.configFile) != "" {
-		loadedConfig, err = config.Load(opts.configFile)
+		loadedConfig, err = config.LoadForInspection(opts.configFile)
 		if err != nil {
 			return fmt.Errorf("--config: %w", err)
 		}

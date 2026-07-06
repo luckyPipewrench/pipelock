@@ -8,11 +8,31 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+var (
+	cachedConfigDefaultsOnce sync.Once
+	cachedConfigDefaults     *config.Config
+)
+
+// configDefaults returns a lazily-computed, shared, defaults-applied Config.
+// Defaults do not change at runtime, so this avoids rebuilding every default
+// pattern literal on each AnalyzeConfigSemantics call, which runs on every
+// dashboard GET /exemptions request. Callers must treat the returned config
+// and its slices as read-only.
+func configDefaults() *config.Config {
+	cachedConfigDefaultsOnce.Do(func() {
+		cfg := config.Defaults()
+		cfg.ApplyDefaults()
+		cachedConfigDefaults = cfg
+	})
+	return cachedConfigDefaults
+}
 
 // Semantic config-validation checks for the doctor command.
 //
@@ -141,7 +161,7 @@ func newConfigSemanticFinding(kind, scope, subject, detail, next string) ConfigS
 func normalizeConfigSemanticSubject(scope, subject string) string {
 	subject = strings.TrimSpace(subject)
 	switch scope {
-	case "suppress", "request_body_scanning.ignore_headers":
+	case ConfigScopeSuppress, ConfigScopeRequestBodyIgnoreHeaders:
 		return strings.ToLower(subject)
 	default:
 		return subject
@@ -152,7 +172,7 @@ func semanticFindingsToDoctorChecks(findings []ConfigSemanticFinding) []doctorRe
 	checks := make([]doctorReportCheck, 0, len(findings))
 	for _, finding := range findings {
 		name := doctorCheckExemptionSemantics
-		if finding.Scope == "suppress" {
+		if finding.Scope == ConfigScopeSuppress {
 			name = doctorCheckSuppressSemantics
 		}
 		status := doctorStatusWarn
@@ -206,7 +226,7 @@ func analyzeDoctorSuppressEntries(cfg *config.Config) []ConfigSemanticFinding {
 			// names, so keep the warning explicitly scoped.
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindInert,
-				"suppress",
+				ConfigScopeSuppress,
 				ruleKey,
 				fmt.Sprintf(
 					"suppress entry names pattern %q, which matches no active DLP or response-scanning pattern; this exemption is inert for the proxy enforcement path",
@@ -219,7 +239,7 @@ func analyzeDoctorSuppressEntries(cfg *config.Config) []ConfigSemanticFinding {
 			// path) are disabled, so the suppress is inert.
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindInert,
-				"suppress",
+				ConfigScopeSuppress,
 				ruleKey,
 				fmt.Sprintf(
 					"suppress entry names response-scanning pattern %q, but response_scanning.enabled=false; no enabled scanner matches this pattern, so the suppress is inert",
@@ -235,7 +255,7 @@ func analyzeDoctorSuppressEntries(cfg *config.Config) []ConfigSemanticFinding {
 			// the proxy enforcement path the doctor reports on.
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindMisdirected,
-				"suppress",
+				ConfigScopeSuppress,
 				ruleKey,
 				fmt.Sprintf(
 					"suppress entry names DLP pattern %q, but no suppress-consulting DLP proxy scanner is enabled (request_body_scanning=false, sse_streaming=false; response_scanning uses a separate pattern namespace); URL-query DLP would match this pattern but does not consult suppress, so the suppress has no effect on the proxy path",
@@ -247,7 +267,7 @@ func analyzeDoctorSuppressEntries(cfg *config.Config) []ConfigSemanticFinding {
 			// that could honor either namespace is off.
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindMisdirected,
-				"suppress",
+				ConfigScopeSuppress,
 				ruleKey,
 				fmt.Sprintf(
 					"suppress entry names pattern %q in both DLP and response-scanning namespaces, but response_scanning=false and no suppress-consulting DLP proxy scanner is enabled; URL-query DLP would match this pattern but does not consult suppress, so the suppress has no effect on the proxy path",
@@ -275,7 +295,7 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 		for _, domain := range cfg.ResponseScanning.ExemptDomains {
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindInert,
-				"response_scanning.exempt_domains",
+				ConfigScopeResponseExemptDomains,
 				domain,
 				"response_scanning.exempt_domains is set but response_scanning.enabled=false; this exemption is inert",
 				"enable response_scanning to make the exemption effective, or remove the exempt_domains list",
@@ -284,7 +304,7 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 		for _, entry := range cfg.ResponseScanning.MCPServers {
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindInert,
-				"response_scanning.mcp_servers",
+				ConfigScopeResponseMCPServers,
 				entry.Server,
 				fmt.Sprintf("response_scanning.mcp_servers marks %q but response_scanning.enabled=false; this MCP response trust exemption is inert", entry.Server),
 				"enable response_scanning to make the MCP response trust effective, or remove the mcp_servers entry",
@@ -296,7 +316,7 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 		for _, domain := range cfg.AdaptiveEnforcement.ExemptDomains {
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindInert,
-				"adaptive_enforcement.exempt_domains",
+				ConfigScopeAdaptiveExemptDomains,
 				domain,
 				"adaptive_enforcement.exempt_domains is set but adaptive_enforcement.enabled=false; the escalation exemption is inert",
 				"enable adaptive_enforcement to make the exemption effective, or remove the exempt_domains list",
@@ -313,7 +333,7 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 			}
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindInert,
-				"cross_request_detection.entropy_budget.exempt_domains",
+				ConfigScopeCrossRequestEntropyExempt,
 				domain,
 				detail,
 				next,
@@ -321,28 +341,28 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 		}
 	}
 
-	browserShieldDefaultExemptDomains := config.Defaults().BrowserShield.ExemptDomains
+	browserShieldDefaultExemptDomains := configDefaults().BrowserShield.ExemptDomains
 	for _, domain := range operatorAddedStrings(cfg.BrowserShield.ExemptDomains, browserShieldDefaultExemptDomains) {
 		if cfg.BrowserShield.Enabled {
 			continue
 		}
 		findings = append(findings, newConfigSemanticFinding(
 			ConfigSemanticKindInert,
-			"browser_shield.exempt_domains",
+			ConfigScopeBrowserShieldExemptDomains,
 			domain,
 			"browser_shield.exempt_domains is set but browser_shield.enabled=false; this shield exemption is inert",
 			"enable browser_shield to make the exemption effective, or remove the exempt_domains entry",
 		))
 	}
 
-	tlsInterceptionDefaultPassthroughDomains := config.Defaults().TLSInterception.PassthroughDomains
+	tlsInterceptionDefaultPassthroughDomains := configDefaults().TLSInterception.PassthroughDomains
 	for _, domain := range operatorAddedStrings(cfg.TLSInterception.PassthroughDomains, tlsInterceptionDefaultPassthroughDomains) {
 		if cfg.TLSInterception.Enabled {
 			continue
 		}
 		findings = append(findings, newConfigSemanticFinding(
 			ConfigSemanticKindInert,
-			"tls_interception.passthrough_domains",
+			ConfigScopeTLSPassthroughDomains,
 			domain,
 			"tls_interception.passthrough_domains is set but tls_interception.enabled=false; this CONNECT passthrough exemption is inert",
 			"enable tls_interception to make the passthrough effective, or remove the passthrough_domains entry",
@@ -359,7 +379,7 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 		for _, header := range operatorAddedHeaderNames(cfg.RequestBodyScanning.IgnoreHeaders, defaultRequestBodyIgnoreHeaders()) {
 			findings = append(findings, newConfigSemanticFinding(
 				ConfigSemanticKindInert,
-				"request_body_scanning.ignore_headers",
+				ConfigScopeRequestBodyIgnoreHeaders,
 				header,
 				requestHeaderIgnoreListInertDetail(cfg.RequestBodyScanning),
 				"enable request_body_scanning with scan_headers=true and header_mode=all to make ignore_headers effective, or remove the unused header exemption",
@@ -378,7 +398,7 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 		}
 		findings = append(findings, newConfigSemanticFinding(
 			ConfigSemanticKindMisdirected,
-			"response_scanning.mcp_servers",
+			ConfigScopeResponseMCPServers,
 			entry.Server,
 			fmt.Sprintf(
 				"response_scanning.mcp_servers marks %q as reasoning-trusted, but taint.allowlisted_domains does not apply to MCP response taint and taint.trusted_mcp_servers does not include this server",
@@ -453,9 +473,7 @@ func operatorAddedValues(entries, defaults []string, normalize func(string) stri
 }
 
 func defaultRequestBodyIgnoreHeaders() []string {
-	defaults := config.Defaults()
-	defaults.ApplyDefaults()
-	return defaults.RequestBodyScanning.IgnoreHeaders
+	return configDefaults().RequestBodyScanning.IgnoreHeaders
 }
 
 func analyzeDoctorQueryEntropyParamExclusions(cfg *config.Config) []ConfigSemanticFinding {

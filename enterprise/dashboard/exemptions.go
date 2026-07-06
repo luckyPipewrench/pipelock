@@ -31,6 +31,52 @@ type ExemptionInventory struct {
 	InertCount       int
 	MisdirectedCount int
 	TrackingNote     string
+	// RawRedacted is true when this view was rendered without raw access, so
+	// the sensitive configured values (destinations, IPs, addresses, paths,
+	// rules, reasons) have been stripped and the template shows a "raw access
+	// required" note. Knob names, states, and counts are preserved.
+	RawRedacted bool
+}
+
+// redactExemptions strips the raw-sensitive surface from an inventory view: the
+// configured Scope value, every Attribute value, and the remediation Detail/Next
+// text (which can embed a configured value). It keeps the non-sensitive
+// structure — knob names, State, and the counts — so a metadata-only operator
+// still sees which knobs have inert/misdirected exemptions and how many, without
+// a map of internal destinations and enforcement exceptions. Mirrors the
+// evidence view's redactRaw boundary. Operates on the freshly built value so raw
+// bytes never reach a metadata response.
+func redactExemptions(inv ExemptionInventory) ExemptionInventory {
+	inv.RawRedacted = true
+	inv.Entries = redactExemptionEntries(inv.Entries)
+	inv.Attention = redactExemptionEntries(inv.Attention)
+	return inv
+}
+
+func redactExemptionEntries(entries []ExemptionEntry) []ExemptionEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+	out := make([]ExemptionEntry, len(entries))
+	for i, e := range entries {
+		e.Scope = redactedDestination
+		e.semanticSubject = ""
+		if e.Detail != "" {
+			e.Detail = redactedDestination
+		}
+		if e.Next != "" {
+			e.Next = redactedDestination
+		}
+		if len(e.Attributes) > 0 {
+			redactedAttrs := make([]ExemptionAttribute, len(e.Attributes))
+			for j, a := range e.Attributes {
+				redactedAttrs[j] = ExemptionAttribute{Name: a.Name, Value: redactedDestination}
+			}
+			e.Attributes = redactedAttrs
+		}
+		out[i] = e
+	}
+	return out
 }
 
 // ExemptionEntry is one configured exemption-like knob value.
@@ -104,7 +150,7 @@ func enumerateExemptionEntries(cfg *config.Config) []ExemptionEntry {
 	}
 
 	for _, entry := range cfg.Suppress {
-		entries = append(entries, newExemptionEntry("Proxy scanners", "suppress", entry.Path, strings.ToLower(entry.Rule),
+		entries = append(entries, newExemptionEntry("Proxy scanners", diag.ConfigScopeSuppress, entry.Path, strings.ToLower(entry.Rule),
 			attr("rule", entry.Rule),
 			attrIfSet("reason", entry.Reason),
 		))
@@ -120,7 +166,7 @@ func enumerateExemptionEntries(cfg *config.Config) []ExemptionEntry {
 			))
 		}
 	}
-	addDomainList("Response scanning", "response_scanning.exempt_domains", cfg.ResponseScanning.ExemptDomains)
+	addDomainList("Response scanning", diag.ConfigScopeResponseExemptDomains, cfg.ResponseScanning.ExemptDomains)
 	addDomainList("Response scanning size limit", "response_scanning.size_exempt_domains", cfg.ResponseScanning.SizeExemptDomains)
 	for _, entry := range cfg.ResponseScanning.UnscannablePassthrough {
 		entries = append(entries, newExemptionEntry("Response scanning passthrough", "response_scanning.unscannable_passthrough", entry.Host, entry.Host,
@@ -130,7 +176,7 @@ func enumerateExemptionEntries(cfg *config.Config) []ExemptionEntry {
 		))
 	}
 	for _, entry := range cfg.ResponseScanning.MCPServers {
-		entries = append(entries, newExemptionEntry("MCP response trust", "response_scanning.mcp_servers", entry.Server, entry.Server,
+		entries = append(entries, newExemptionEntry("MCP response trust", diag.ConfigScopeResponseMCPServers, entry.Server, entry.Server,
 			attr("trust", entry.Trust),
 		))
 	}
@@ -148,7 +194,7 @@ func enumerateExemptionEntries(cfg *config.Config) []ExemptionEntry {
 		))
 	}
 
-	addDomainList("TLS interception", "tls_interception.passthrough_domains", cfg.TLSInterception.PassthroughDomains)
+	addDomainList("TLS interception", diag.ConfigScopeTLSPassthroughDomains, cfg.TLSInterception.PassthroughDomains)
 	addDomainList("SSRF", "trusted_domains", cfg.TrustedDomains)
 	addDomainList("SSRF", "ssrf.ip_allowlist", cfg.SSRF.IPAllowlist)
 	for _, cidr := range cfg.KillSwitch.AllowlistIPs {
@@ -163,11 +209,11 @@ func enumerateExemptionEntries(cfg *config.Config) []ExemptionEntry {
 	addBooleanExemption("kill_switch.health_exempt", "health endpoints", cfg.KillSwitch.HealthExempt)
 	addBooleanExemption("kill_switch.metrics_exempt", "metrics endpoints", cfg.KillSwitch.MetricsExempt)
 	addBooleanExemption("kill_switch.api_exempt", "kill-switch API endpoints", cfg.KillSwitch.APIExempt)
-	addDomainList("Adaptive enforcement", "adaptive_enforcement.exempt_domains", cfg.AdaptiveEnforcement.ExemptDomains)
-	addDomainList("Cross-request entropy", "cross_request_detection.entropy_budget.exempt_domains", cfg.CrossRequestDetection.EntropyBudget.ExemptDomains)
-	addDomainList("Browser shield", "browser_shield.exempt_domains", cfg.BrowserShield.ExemptDomains)
+	addDomainList("Adaptive enforcement", diag.ConfigScopeAdaptiveExemptDomains, cfg.AdaptiveEnforcement.ExemptDomains)
+	addDomainList("Cross-request entropy", diag.ConfigScopeCrossRequestEntropyExempt, cfg.CrossRequestDetection.EntropyBudget.ExemptDomains)
+	addDomainList("Browser shield", diag.ConfigScopeBrowserShieldExemptDomains, cfg.BrowserShield.ExemptDomains)
 	for _, header := range cfg.RequestBodyScanning.IgnoreHeaders {
-		entries = append(entries, newExemptionEntry("Request header DLP", "request_body_scanning.ignore_headers", header, strings.ToLower(header)))
+		entries = append(entries, newExemptionEntry("Request header DLP", diag.ConfigScopeRequestBodyIgnoreHeaders, header, strings.ToLower(header)))
 	}
 	addDomainList("Taint trust", "taint.allowlisted_domains", cfg.Taint.AllowlistedDomains)
 	addDomainList("Taint trust", "taint.trusted_mcp_servers", cfg.Taint.TrustedMCPServers)
@@ -235,7 +281,7 @@ func newExemptionEntry(scanner, knob, scope, matchValue string, attributes ...Ex
 func normalizeExemptionSemanticSubject(knob, subject string) string {
 	subject = strings.TrimSpace(subject)
 	switch knob {
-	case "suppress", "request_body_scanning.ignore_headers":
+	case diag.ConfigScopeSuppress, diag.ConfigScopeRequestBodyIgnoreHeaders:
 		return strings.ToLower(subject)
 	default:
 		return subject

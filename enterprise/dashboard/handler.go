@@ -223,7 +223,16 @@ func (d *dashboardHandler) handleExemptions(w http.ResponseWriter, r *http.Reque
 	if !requireGet(w, r) {
 		return
 	}
-	data := exemptionsPageData{Inventory: d.model.Exemptions()}
+	inventory := d.model.Exemptions()
+	// Exemption scopes/attributes are a map of internal destinations, IP
+	// allowlists, addresses, and enforcement exceptions — as sensitive as the
+	// evidence view's raw destinations. Fail closed: strip them in Go unless
+	// this request is authorized for raw, so raw values never reach a
+	// metadata-only response.
+	if !rawAllowedFromContext(r) {
+		inventory = redactExemptions(inventory)
+	}
+	data := exemptionsPageData{Inventory: inventory}
 	var buf bytes.Buffer
 	if err := exemptionsTemplate.Execute(&buf, data); err != nil {
 		http.Error(w, "could not render exemptions", http.StatusInternalServerError)

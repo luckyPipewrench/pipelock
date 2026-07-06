@@ -188,6 +188,10 @@
         {{end}}
       </div>
 
+      {{if .Inventory.RawRedacted}}
+        <div class="callout muted" style="margin-bottom:18px;">Configured values (destinations, IP allowlists, addresses, paths, rules) are hidden. Knob names, states, and counts are shown; raw access is required to view the values.</div>
+      {{end}}
+
       {{if not .Inventory.ConfigLoaded}}
         <section class="absence">
           <h2>No config loaded</h2>

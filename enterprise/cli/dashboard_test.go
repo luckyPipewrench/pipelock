@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -358,7 +359,12 @@ func TestDashboardServe_RejectsMalformedConfig(t *testing.T) {
 	}
 }
 
-func TestDashboardServe_RejectsUnreadableConfigReferencedFile(t *testing.T) {
+func TestDashboardServe_InspectionConfigIgnoresUnreadableReferencedFile(t *testing.T) {
+	// A read-only inventory must not resolve unrelated runtime-side files it does
+	// not need. An unreadable license_file (a file the exemptions view never uses)
+	// must NOT prevent the config from loading for inspection. runDashboardServe
+	// loads the config via config.LoadForInspection, so proving that succeeds
+	// proves the serve path no longer fails to start on such files.
 	t.Setenv(license.EnvLicenseKey, "")
 	dir := t.TempDir()
 	licensePath := filepath.Join(dir, "license.token")
@@ -370,20 +376,35 @@ func TestDashboardServe_RejectsUnreadableConfigReferencedFile(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(licensePath, 0o600) })
 	configPath := filepath.Join(dir, "pipelock.yaml")
-	if err := os.WriteFile(configPath, []byte("mode: balanced\nlicense_file: license.token\n"), 0o600); err != nil {
+	body := "mode: balanced\nlicense_file: license.token\nbrowser_shield:\n  enabled: false\n  exempt_domains:\n    - my.internal.example\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile(config): %v", err)
 	}
-	cmd := dashboardServeCmd()
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	err := runDashboardServe(cmd, dashboardServeOptions{
-		listen:        "127.0.0.1:0",
-		receiptDir:    t.TempDir(),
-		authTokenFile: writeDashTokenFile(t),
-		configFile:    configPath,
-	}, license.License{Features: []string{license.FeatureAgents}})
-	if err == nil || !strings.Contains(err.Error(), "--config") {
-		t.Fatalf("unreadable referenced file: want --config error, got %v", err)
+
+	cfg, err := config.LoadForInspection(configPath)
+	if err != nil {
+		t.Fatalf("LoadForInspection with unreadable license_file: %v", err)
+	}
+	inv := dashboard.NewReadModel(dashboard.Options{Config: cfg}).Exemptions()
+	if !inv.ConfigLoaded {
+		t.Fatal("ConfigLoaded = false, want true")
+	}
+	// The operator-added exemption on the disabled feature must still be surfaced,
+	// so the inventory is genuinely usable without the unrelated file.
+	if inv.InertCount == 0 {
+		t.Fatalf("expected the operator-added disabled-feature exemption to be inert; inventory=%+v", inv)
+	}
+}
+
+func TestDashboardServe_InspectionConfigRejectsMalformedYAML(t *testing.T) {
+	t.Setenv(license.EnvLicenseKey, "")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: balanced\n\tbroken: [::\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	if _, err := config.LoadForInspection(configPath); err == nil {
+		t.Fatal("LoadForInspection(malformed yaml) = nil error, want parse failure (fail closed)")
 	}
 }
 
@@ -487,10 +508,16 @@ func TestDashboardServe_EndToEnd(t *testing.T) {
 			t.Fatalf("ReadAll: %v", err)
 		}
 		text := string(body)
-		for _, want := range []string{"Exemptions inventory", "api.vendor.example", "inert"} {
+		// The metadata operator token does not carry raw access, so configured
+		// values are redacted; the view still shows the inventory, states, and
+		// the redaction note.
+		for _, want := range []string{"Exemptions inventory", "raw access is required", "inert"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("body missing %q: %s", want, text)
 			}
+		}
+		if strings.Contains(text, "api.vendor.example") {
+			t.Fatalf("metadata view leaked a configured domain: %s", text)
 		}
 	})
 

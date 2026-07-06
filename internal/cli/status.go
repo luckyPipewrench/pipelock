@@ -200,46 +200,46 @@ func killSwitchDetail(cfg *config.Config) string {
 func printStatusReport(w io.Writer, report statusReport) {
 	_, _ = fmt.Fprintln(w, "Pipelock Status")
 	_, _ = fmt.Fprintln(w, "===============")
-	_, _ = fmt.Fprintf(w, "Config:  %s\n", report.ConfigFile)
-	_, _ = fmt.Fprintf(w, "Mode:    %s\n", report.Mode)
+	_, _ = fmt.Fprintf(w, "Config:  %s\n", terminalDisplay(report.ConfigFile))
+	_, _ = fmt.Fprintf(w, "Mode:    %s\n", terminalDisplay(report.Mode))
 	_, _ = fmt.Fprintf(w, "Enforce: %t\n", report.Enforce)
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Listeners:")
 	for _, l := range report.Listeners {
-		_, _ = fmt.Fprintf(w, "  %-18s %-8s %s", l.Name, onOff(l.Enabled), l.Listen)
+		_, _ = fmt.Fprintf(w, "  %-18s %-8s %s", terminalDisplay(l.Name), onOff(l.Enabled), terminalDisplay(l.Listen))
 		if l.Detail != "" {
-			_, _ = fmt.Fprintf(w, " (%s)", l.Detail)
+			_, _ = fmt.Fprintf(w, " (%s)", terminalDisplay(l.Detail))
 		}
 		_, _ = fmt.Fprintln(w)
 	}
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Scanners:")
 	for _, s := range report.Scanners {
-		_, _ = fmt.Fprintf(w, "  %-22s %-8s", s.Name, onOff(s.Enabled))
+		_, _ = fmt.Fprintf(w, "  %-22s %-8s", terminalDisplay(s.Name), onOff(s.Enabled))
 		if s.Action != "" {
-			_, _ = fmt.Fprintf(w, " action=%s", s.Action)
+			_, _ = fmt.Fprintf(w, " action=%s", terminalDisplay(s.Action))
 		}
 		if s.Detail != "" {
-			_, _ = fmt.Fprintf(w, " (%s)", s.Detail)
+			_, _ = fmt.Fprintf(w, " (%s)", terminalDisplay(s.Detail))
 		}
 		_, _ = fmt.Fprintln(w)
 	}
 	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "License: %s", report.License.State)
+	_, _ = fmt.Fprintf(w, "License: %s", terminalDisplay(report.License.State))
 	if report.License.ID != "" {
-		_, _ = fmt.Fprintf(w, " (%s)", report.License.ID)
+		_, _ = fmt.Fprintf(w, " (%s)", terminalDisplay(report.License.ID))
 	}
 	if report.License.Detail != "" {
-		_, _ = fmt.Fprintf(w, " - %s", report.License.Detail)
+		_, _ = fmt.Fprintf(w, " - %s", terminalDisplay(report.License.Detail))
 	}
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintf(w, "Kill switch: active=%t", report.KillSwitch.Active)
 	if report.KillSwitch.Detail != "" {
-		_, _ = fmt.Fprintf(w, " (%s)", report.KillSwitch.Detail)
+		_, _ = fmt.Fprintf(w, " (%s)", terminalDisplay(report.KillSwitch.Detail))
 	}
 	_, _ = fmt.Fprintln(w)
 	for _, name := range sortedSourceNames(report.KillSwitch.Sources) {
-		_, _ = fmt.Fprintf(w, "  %-18s %t\n", name, report.KillSwitch.Sources[name])
+		_, _ = fmt.Fprintf(w, "  %-18s %t\n", terminalDisplay(name), report.KillSwitch.Sources[name])
 	}
 }
 

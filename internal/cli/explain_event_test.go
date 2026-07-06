@@ -64,6 +64,82 @@ func TestExplainEventCmd_JSONFallbackRemediation(t *testing.T) {
 	}
 }
 
+func TestExplainEventCmd_RedactsSecretBearingAuditFields(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	secret := fakeExplainEventGitHubToken()
+	line := map[string]any{
+		"event":            "blocked",
+		"request_id":       "req-secret",
+		"url":              "https://user:pass@api.vendor.example/v1/keys?model=ok&token=" + secret + "#fragment",
+		"scanner":          "dlp",
+		"reason":           "DLP match leaked " + secret,
+		"pattern_name":     secret,
+		"remediation_hint": "rotate " + secret,
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("marshal audit line: %v", err)
+	}
+	if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	out, err := runExplainCmd(t, "event", "req-secret", "--log", logPath)
+	if err != nil {
+		t.Fatalf("explain event failed: %v\n%s", err, out)
+	}
+	for _, leaked := range []string{secret, "user:pass", "#fragment"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("text output leaked %q:\n%s", leaked, out)
+		}
+	}
+	if !strings.Contains(out, "[redacted") {
+		t.Fatalf("text output did not show redaction marker:\n%s", out)
+	}
+
+	out, err = runExplainCmd(t, "event", "req-secret", "--log", logPath, "--json")
+	if err != nil {
+		t.Fatalf("explain event JSON failed: %v\n%s", err, out)
+	}
+	for _, leaked := range []string{secret, "user:pass", "#fragment"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("JSON output leaked %q:\n%s", leaked, out)
+		}
+	}
+}
+
+func TestExplainEventCmd_TextEscapesControlCharacters(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.log")
+	line := map[string]any{
+		"event":      "blocked",
+		"request_id": "req-control",
+		"scanner":    "dlp",
+		"reason":     "real reason\nFAKE: allowed\r\x1b[31mred",
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		t.Fatalf("marshal audit line: %v", err)
+	}
+	if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	out, err := runExplainCmd(t, "event", "req-control", "--log", logPath)
+	if err != nil {
+		t.Fatalf("explain event failed: %v\n%s", err, out)
+	}
+	for _, raw := range []string{"\nFAKE: allowed", "\r", "\x1b"} {
+		if strings.Contains(out, raw) {
+			t.Fatalf("text output contained raw control sequence %q:\n%q", raw, out)
+		}
+	}
+	if !strings.Contains(out, `\nFAKE: allowed`) || !strings.Contains(out, `\x1b`) {
+		t.Fatalf("text output did not render controls as escaped text:\n%q", out)
+	}
+}
+
 func TestExplainEventCmd_ErrorPaths(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -133,6 +209,21 @@ func TestScanExplainEvent_BoundaryLongLineFailsClosedAsSkipped(t *testing.T) {
 	}
 }
 
+func TestScanExplainEvent_OversizedLineSkippedThenFound(t *testing.T) {
+	longLine := strings.Repeat("x", 1<<20+1)
+	body := longLine + "\n" + `{"event":"allowed","request_id":"req-after","status_code":200}` + "\n"
+	lookup, err := scanExplainEvent(strings.NewReader(body), "req-after")
+	if err != nil {
+		t.Fatalf("scanExplainEvent returned error: %v", err)
+	}
+	if !lookup.found {
+		t.Fatal("oversized malformed line must not hide later valid events")
+	}
+	if lookup.skippedLines != 1 {
+		t.Fatalf("skippedLines = %d, want 1", lookup.skippedLines)
+	}
+}
+
 func TestQuickstartCmd_PrintsConcreteCommands(t *testing.T) {
 	cmd := quickstartCmd()
 	var out bytes.Buffer
@@ -155,4 +246,8 @@ func TestQuickstartCmd_PrintsConcreteCommands(t *testing.T) {
 	if strings.Contains(got, "<") || strings.Contains(got, ">") {
 		t.Fatalf("quickstart must not contain angle-bracket placeholders:\n%s", got)
 	}
+}
+
+func fakeExplainEventGitHubToken() string {
+	return "ghp_" + strings.Repeat("A", 36)
 }

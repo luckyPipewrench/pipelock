@@ -5,19 +5,24 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -28,7 +33,11 @@ const (
 
 	explainEventOutcomeAllowed = "allowed"
 	explainEventOutcomeBlocked = "blocked"
+	explainEventRedacted       = "[redacted]"
+	explainEventRedactedValue  = "[redacted-value]"
 )
+
+var explainEventSecretAssignmentRe = regexp.MustCompile(`(?i)\b(?:token|access_token|api_key|apikey|secret|password|passwd|authorization|client_secret|bearer)\b\s*[:=]\s*[^,\s;&]+`)
 
 type explainEventReport struct {
 	ID              string   `json:"id"`
@@ -144,11 +153,24 @@ func scanExplainEvent(r io.Reader, id string) (explainEventLookup, error) {
 		return out, errors.New("event id cannot be empty")
 	}
 
-	sc := bufio.NewScanner(r)
 	const maxAuditLineBytes = 1 << 20
-	sc.Buffer(make([]byte, 0, 64*1024), maxAuditLineBytes)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		lineBytes, tooLong, err := readExplainEventAuditLine(br, maxAuditLineBytes)
+		if tooLong {
+			out.skippedLines++
+			if err != nil {
+				return out, err
+			}
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return out, nil
+			}
+			return out, fmt.Errorf("scan audit log: %w", err)
+		}
+		line := strings.TrimSpace(string(lineBytes))
 		if line == "" {
 			continue
 		}
@@ -165,14 +187,55 @@ func scanExplainEvent(r io.Reader, id string) (explainEventLookup, error) {
 		out.found = true
 		return out, nil
 	}
-	if err := sc.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			out.skippedLines++
-			return out, nil
+}
+
+func readExplainEventAuditLine(r *bufio.Reader, maxBytes int) ([]byte, bool, error) {
+	line := make([]byte, 0, 4096)
+	for {
+		frag, err := r.ReadSlice('\n')
+		if len(line)+len(frag) > maxBytes {
+			if err != nil && !errors.Is(err, bufio.ErrBufferFull) && !errors.Is(err, io.EOF) {
+				return nil, true, fmt.Errorf("scan audit log: %w", err)
+			}
+			if err == nil || errors.Is(err, io.EOF) {
+				return nil, true, nil
+			}
+			if discardErr := discardExplainEventAuditLineRemainder(r); discardErr != nil {
+				return nil, true, discardErr
+			}
+			return nil, true, nil
 		}
-		return out, fmt.Errorf("scan audit log: %w", err)
+		line = append(line, frag...)
+		switch {
+		case err == nil:
+			return line, false, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			if len(line) == 0 {
+				return nil, false, io.EOF
+			}
+			return line, false, nil
+		default:
+			return nil, false, err
+		}
 	}
-	return out, nil
+}
+
+func discardExplainEventAuditLineRemainder(r *bufio.Reader) error {
+	for {
+		_, err := r.ReadSlice('\n')
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			return nil
+		default:
+			return fmt.Errorf("scan audit log: %w", err)
+		}
+	}
 }
 
 func matchedExplainEventID(raw map[string]any, id string) string {
@@ -185,6 +248,7 @@ func matchedExplainEventID(raw map[string]any, id string) string {
 }
 
 func buildExplainEventReport(raw map[string]any, id, matchedField string) explainEventReport {
+	sanitizer := newExplainEventSanitizer()
 	eventName := eventFieldString(raw, "event")
 	reason := eventFieldString(raw, "reason")
 	scannerName := eventFieldString(raw, "scanner")
@@ -192,18 +256,18 @@ func buildExplainEventReport(raw map[string]any, id, matchedField string) explai
 	report := explainEventReport{
 		ID:              id,
 		MatchedField:    matchedField,
-		Time:            eventFieldString(raw, "time"),
-		Event:           eventName,
+		Time:            sanitizer.field(eventFieldString(raw, "time")),
+		Event:           sanitizer.field(eventName),
 		Outcome:         explainEventOutcome(eventName, eventFieldString(raw, "action")),
-		Method:          eventFieldString(raw, "method"),
-		Target:          target,
+		Method:          sanitizer.field(eventFieldString(raw, "method")),
+		Target:          sanitizer.target(target),
 		TargetView:      explainEventTargetView(scannerName, reason, target, raw),
-		Scanner:         scannerName,
-		Layer:           scannerName,
-		PatternName:     firstEventField(raw, "pattern_name", "pattern", "display_label"),
-		Reason:          reason,
-		StatusCode:      eventFieldString(raw, "status_code"),
-		RemediationHint: eventFieldString(raw, "remediation_hint"),
+		Scanner:         sanitizer.field(scannerName),
+		Layer:           sanitizer.field(scannerName),
+		PatternName:     sanitizer.field(firstEventField(raw, "pattern_name", "pattern", "display_label")),
+		Reason:          sanitizer.field(reason),
+		StatusCode:      sanitizer.field(eventFieldString(raw, "status_code")),
+		RemediationHint: sanitizer.field(eventFieldString(raw, "remediation_hint")),
 	}
 	if report.RemediationHint == "" && scannerName != "" {
 		report.RemediationHint = scanner.OperatorHintForResult(scannerName, reason)
@@ -270,55 +334,137 @@ func eventFieldString(raw map[string]any, field string) string {
 	case bool:
 		return strconv.FormatBool(x)
 	default:
-		return fmt.Sprint(x)
+		return ""
+	}
+}
+
+type explainEventSanitizer struct {
+	scanner *scanner.Scanner
+}
+
+func newExplainEventSanitizer() explainEventSanitizer {
+	return explainEventSanitizer{scanner: scanner.New(config.Defaults())}
+}
+
+func (s explainEventSanitizer) clean(value string) bool {
+	if value == "" {
+		return true
+	}
+	return s.scanner.ScanTextForDLPQuiet(context.Background(), value).Clean
+}
+
+func (s explainEventSanitizer) field(value string) string {
+	value = redactExplainEventSecretAssignments(value)
+	if s.clean(value) {
+		return value
+	}
+	return explainEventRedacted
+}
+
+func (s explainEventSanitizer) target(value string) string {
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "://") {
+		if parsed, err := url.Parse(value); err == nil {
+			parsed.User = nil
+			parsed.Fragment = ""
+			parsed.RawFragment = ""
+			query := parsed.Query()
+			for key := range query {
+				if explainEventSecretQueryParam(key) {
+					query.Set(key, explainEventRedactedValue)
+				}
+			}
+			parsed.RawQuery = query.Encode()
+			value = parsed.String()
+		}
+	}
+	value = receipt.SanitizeTarget(value, s.clean)
+	return s.field(value)
+}
+
+func redactExplainEventSecretAssignments(value string) string {
+	return explainEventSecretAssignmentRe.ReplaceAllStringFunc(value, func(match string) string {
+		idx := strings.IndexAny(match, ":=")
+		if idx < 0 {
+			return explainEventRedacted
+		}
+		return strings.TrimRight(match[:idx+1], " \t") + explainEventRedactedValue
+	})
+}
+
+func explainEventSecretQueryParam(key string) bool {
+	switch strings.ToLower(key) {
+	case "token", "access_token", "api_key", "apikey", "secret", "password", "passwd", "key",
+		"auth", "authorization", "client_secret", "client_id", "sig", "signature":
+		return true
+	default:
+		return false
 	}
 }
 
 func printExplainEventReport(w io.Writer, report explainEventReport) {
 	_, _ = fmt.Fprintln(w, "Pipelock Explain Event")
 	_, _ = fmt.Fprintln(w, "======================")
-	_, _ = fmt.Fprintf(w, "ID:      %s (%s)\n", report.ID, report.MatchedField)
-	_, _ = fmt.Fprintf(w, "Config:  %s\n", report.ConfigFile)
-	_, _ = fmt.Fprintf(w, "Log:     %s\n", report.AuditLog)
+	_, _ = fmt.Fprintf(w, "ID:      %s (%s)\n", terminalDisplay(report.ID), terminalDisplay(report.MatchedField))
+	_, _ = fmt.Fprintf(w, "Config:  %s\n", terminalDisplay(report.ConfigFile))
+	_, _ = fmt.Fprintf(w, "Log:     %s\n", terminalDisplay(report.AuditLog))
 	if report.Time != "" {
-		_, _ = fmt.Fprintf(w, "Time:    %s\n", report.Time)
+		_, _ = fmt.Fprintf(w, "Time:    %s\n", terminalDisplay(report.Time))
 	}
 	if report.Event != "" {
-		_, _ = fmt.Fprintf(w, "Event:   %s\n", report.Event)
+		_, _ = fmt.Fprintf(w, "Event:   %s\n", terminalDisplay(report.Event))
 	}
 	if report.Outcome != "" {
-		_, _ = fmt.Fprintf(w, "Verdict: %s\n", strings.ToUpper(report.Outcome))
+		_, _ = fmt.Fprintf(w, "Verdict: %s\n", terminalDisplay(strings.ToUpper(report.Outcome)))
 	}
 	if report.Method != "" {
-		_, _ = fmt.Fprintf(w, "Method:  %s\n", report.Method)
+		_, _ = fmt.Fprintf(w, "Method:  %s\n", terminalDisplay(report.Method))
 	}
 	if report.Target != "" {
-		_, _ = fmt.Fprintf(w, "Target:  %s\n", report.Target)
+		_, _ = fmt.Fprintf(w, "Target:  %s\n", terminalDisplay(report.Target))
 	}
 	if report.TargetView != "" {
-		_, _ = fmt.Fprintf(w, "View:    %s\n", report.TargetView)
+		_, _ = fmt.Fprintf(w, "View:    %s\n", terminalDisplay(report.TargetView))
 	}
 	if report.Scanner != "" {
-		_, _ = fmt.Fprintf(w, "Scanner: %s\n", report.Scanner)
-		_, _ = fmt.Fprintf(w, "Layer:   %s\n", report.Layer)
+		_, _ = fmt.Fprintf(w, "Scanner: %s\n", terminalDisplay(report.Scanner))
+		_, _ = fmt.Fprintf(w, "Layer:   %s\n", terminalDisplay(report.Layer))
 	}
 	if report.PatternName != "" {
-		_, _ = fmt.Fprintf(w, "Pattern: %s\n", report.PatternName)
+		_, _ = fmt.Fprintf(w, "Pattern: %s\n", terminalDisplay(report.PatternName))
 	}
 	if report.Reason != "" {
-		_, _ = fmt.Fprintf(w, "Why:     %s\n", report.Reason)
+		_, _ = fmt.Fprintf(w, "Why:     %s\n", terminalDisplay(report.Reason))
 	} else if report.Outcome == explainEventOutcomeAllowed {
 		_, _ = fmt.Fprintln(w, "Why:     request completed without a blocking scanner verdict")
 	}
 	if report.StatusCode != "" {
-		_, _ = fmt.Fprintf(w, "Status:  %s\n", report.StatusCode)
+		_, _ = fmt.Fprintf(w, "Status:  %s\n", terminalDisplay(report.StatusCode))
 	}
 	if report.RemediationHint != "" {
 		_, _ = fmt.Fprintln(w)
 		_, _ = fmt.Fprintln(w, "Remediation:")
-		_, _ = fmt.Fprintf(w, "  %s\n", report.RemediationHint)
+		_, _ = fmt.Fprintf(w, "  %s\n", terminalDisplay(report.RemediationHint))
 	}
 	for _, note := range report.Notes {
-		_, _ = fmt.Fprintf(w, "note: %s\n", note)
+		_, _ = fmt.Fprintf(w, "note: %s\n", terminalDisplay(note))
 	}
+}
+
+func terminalDisplay(value string) string {
+	if value == "" || !needsTerminalQuoting(value) {
+		return value
+	}
+	return strconv.QuoteToASCII(value)
+}
+
+func needsTerminalQuoting(value string) bool {
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return true
+		}
+	}
+	return false
 }

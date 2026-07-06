@@ -96,6 +96,33 @@ func TestStatusCmd_TextIncludesLicenseAndSources(t *testing.T) {
 	}
 }
 
+func TestStatusReportDoesNotExposeConfiguredTokens(t *testing.T) {
+	cfg := config.Defaults()
+	apiToken := "ghp_" + strings.Repeat("B", 36)
+	bearerToken := "ghp_" + strings.Repeat("C", 36)
+	licenseToken := "ghp_" + strings.Repeat("D", 36)
+	cfg.KillSwitch.APIToken = apiToken
+	cfg.KillSwitch.APIListen = "127.0.0.1:9090"
+	cfg.KillSwitch.AllowlistIPs = []string{"192.0.2.10/32"}
+	cfg.ScanAPI.Auth.BearerTokens = []string{bearerToken}
+	cfg.LicenseKey = licenseToken
+	cfg.LicenseID = "lic-public-id"
+
+	report := buildStatusReport(cfg, "test-config.yaml")
+	jsonBytes, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal status report: %v", err)
+	}
+	var text bytes.Buffer
+	printStatusReport(&text, report)
+	all := string(jsonBytes) + text.String()
+	for _, secret := range []string{apiToken, bearerToken, licenseToken, "192.0.2.10"} {
+		if strings.Contains(all, secret) {
+			t.Fatalf("status output leaked configured secret/detail %q:\n%s", secret, all)
+		}
+	}
+}
+
 func TestStatusLicenseStateBoundaries(t *testing.T) {
 	now := time.Unix(200, 0)
 	tests := []struct {

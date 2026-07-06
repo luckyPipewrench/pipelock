@@ -47,6 +47,54 @@ func TestCore_RunsWithIncludeDefaultsFalse(t *testing.T) {
 	}
 }
 
+func TestCore_DLPPatternDefsMatchConfigCoreRegistry(t *testing.T) {
+	t.Parallel()
+
+	got := coreDLPPatternDefs()
+	want := config.CoreDLPPatterns()
+	if len(got) != len(want) {
+		t.Fatalf("core DLP pattern count = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].name != want[i].Name {
+			t.Fatalf("pattern[%d].name = %q, want %q", i, got[i].name, want[i].Name)
+		}
+		if got[i].regex != want[i].Regex {
+			t.Fatalf("%s regex drifted: got %q, want %q", got[i].name, got[i].regex, want[i].Regex)
+		}
+		if got[i].severity != want[i].Severity {
+			t.Fatalf("%s severity drifted: got %q, want %q", got[i].name, got[i].severity, want[i].Severity)
+		}
+	}
+}
+
+func TestCore_DLPPatternDefsImmutableFloor(t *testing.T) {
+	t.Parallel()
+
+	want := []coreDLPPattern{
+		{name: "AWS Access ID", severity: config.SeverityCritical},
+		{name: "AWS Secret Key", severity: config.SeverityCritical},
+		{name: "GCP Service Account Key", severity: config.SeverityCritical},
+		{name: "GitHub Token", severity: config.SeverityCritical},
+		{name: "GitHub Fine-Grained PAT", severity: config.SeverityCritical},
+		{name: "GitLab PAT", severity: config.SeverityCritical},
+		{name: "Slack Token", severity: config.SeverityCritical},
+		{name: "Private Key Header", severity: config.SeverityCritical},
+	}
+	got := coreDLPPatternDefs()
+	if len(got) != len(want) {
+		t.Fatalf("core DLP pattern count = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].name != want[i].name {
+			t.Fatalf("pattern[%d].name = %q, want %q", i, got[i].name, want[i].name)
+		}
+		if got[i].severity != want[i].severity {
+			t.Fatalf("%s severity = %q, want %q", got[i].name, got[i].severity, want[i].severity)
+		}
+	}
+}
+
 func TestCore_DLPHTMLEntityDecode(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()
@@ -330,8 +378,10 @@ func TestCore_DLPPatterns_Regression(t *testing.T) {
 		{"OPENSSH Private Key", "-----BEGIN OPENSSH" + " PRIVATE KEY-----", "Private Key Header"},
 		{"Generic Private Key", "-----BEGIN" + " PRIVATE KEY-----", "Private Key Header"},
 	}
+	coveredPatterns := make(map[string]bool)
 
 	for _, tt := range tests {
+		coveredPatterns[tt.pattern] = true
 		t.Run(tt.name, func(t *testing.T) {
 			result := s.ScanTextForDLP(context.Background(), tt.payload)
 			if result.Clean {
@@ -349,6 +399,11 @@ func TestCore_DLPPatterns_Regression(t *testing.T) {
 				t.Errorf("expected pattern %q, got: %v", tt.pattern, result.Matches)
 			}
 		})
+	}
+	for _, pattern := range coreDLPPatternDefs() {
+		if !coveredPatterns[pattern.name] {
+			t.Fatalf("core DLP pattern %q has no regression sample", pattern.name)
+		}
 	}
 }
 

@@ -69,6 +69,7 @@ const (
 	SeverityCritical = "critical"
 	SeverityHigh     = "high"
 	SeverityMedium   = "medium"
+	SeverityLow      = "low"
 )
 
 // Event export format constants.

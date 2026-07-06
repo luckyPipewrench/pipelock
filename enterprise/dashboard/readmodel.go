@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -29,6 +30,7 @@ const (
 type Options struct {
 	ReceiptDir  string
 	TrustedKeys map[string]TrustedKey
+	Config      *config.Config
 	HasFeature  func(string) bool
 	// Authorize, when non-nil, runs per request after the license-feature check
 	// and fails the request closed (403) on a non-nil error. It is the handler's
@@ -54,6 +56,7 @@ type Options struct {
 type ReadModel struct {
 	receiptDir       string
 	trustedKeys      map[string]TrustedKey
+	cfg              *config.Config
 	receiptReadLimit int
 	timelineLimit    int
 }
@@ -123,6 +126,7 @@ func NewReadModel(opts Options) *ReadModel {
 	return &ReadModel{
 		receiptDir:       opts.ReceiptDir,
 		trustedKeys:      cloneTrustedKeys(opts.TrustedKeys),
+		cfg:              opts.Config,
 		receiptReadLimit: receiptReadLimit,
 		timelineLimit:    timelineLimit,
 	}

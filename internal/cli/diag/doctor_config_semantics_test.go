@@ -41,7 +41,14 @@ func baseSemanticsConfig() *config.Config {
 	cfg.AdaptiveEnforcement.Enabled = false
 	cfg.Suppress = nil
 	cfg.ResponseScanning.ExemptDomains = nil
+	cfg.ResponseScanning.MCPServers = nil
 	cfg.AdaptiveEnforcement.ExemptDomains = nil
+	cfg.CrossRequestDetection.Enabled = false
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+	cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = nil
+	cfg.BrowserShield.ExemptDomains = nil
+	cfg.TLSInterception.PassthroughDomains = nil
+	cfg.RequestBodyScanning.IgnoreHeaders = nil
 	return cfg
 }
 
@@ -203,8 +210,22 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			wantWarn: 0,
 		},
 		{
+			name: "response MCP trust inert when response scanning disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.ResponseScanning.Enabled = false
+				cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{{
+					Server: "docs-cache",
+					Trust:  config.ResponseTrustReasoning,
+				}}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "response_scanning.mcp_servers marks \"docs-cache\" but response_scanning.enabled=false",
+			wantNextSubstr:   "enable response_scanning",
+		},
+		{
 			name: "MCP response reasoning trust is not taint trust",
 			mutate: func(cfg *config.Config) {
+				cfg.ResponseScanning.Enabled = true
 				cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{{
 					Server: "docs-cache",
 					Trust:  config.ResponseTrustReasoning,
@@ -217,6 +238,7 @@ func TestDoctorConfigSemantics(t *testing.T) {
 		{
 			name: "MCP response reasoning trust with taint trust is NOT flagged",
 			mutate: func(cfg *config.Config) {
+				cfg.ResponseScanning.Enabled = true
 				cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{{
 					Server: "docs-cache",
 					Trust:  config.ResponseTrustReasoning,
@@ -246,6 +268,182 @@ func TestDoctorConfigSemantics(t *testing.T) {
 					// lowercased name must still match the active DLP pattern.
 					{Rule: strings.ToLower(testDLPPatternName), Path: "*" + testExemptHost + "*"},
 				}
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "cross request entropy exemption inert when parent disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.CrossRequestDetection.Enabled = false
+				cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{testExemptHost}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "cross_request_detection.enabled=false",
+			wantNextSubstr:   "enable cross_request_detection",
+		},
+		{
+			name: "cross request entropy exemption inert when entropy budget disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.CrossRequestDetection.Enabled = true
+				cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+				cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{testExemptHost}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "cross_request_detection.entropy_budget.enabled=false",
+			wantNextSubstr:   "enable cross_request_detection",
+		},
+		{
+			name: "cross request entropy exemption NOT flagged when entropy budget enabled",
+			mutate: func(cfg *config.Config) {
+				cfg.CrossRequestDetection.Enabled = true
+				cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{testExemptHost}
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "browser shield exemption inert when shield disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.BrowserShield.Enabled = false
+				cfg.BrowserShield.ExemptDomains = []string{"browser.vendor.example"}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "browser_shield.exempt_domains is set but browser_shield.enabled=false",
+			wantNextSubstr:   "enable browser_shield",
+		},
+		{
+			name: "browser shield pristine default baseline NOT flagged when shield disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.BrowserShield.Enabled = false
+				cfg.BrowserShield.ExemptDomains = append([]string(nil), config.Defaults().BrowserShield.ExemptDomains...)
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "browser shield exemption NOT flagged when shield enabled",
+			mutate: func(cfg *config.Config) {
+				cfg.BrowserShield.Enabled = true
+				cfg.BrowserShield.ExemptDomains = []string{"browser.vendor.example"}
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "browser shield pristine default baseline NOT flagged when shield enabled",
+			mutate: func(cfg *config.Config) {
+				cfg.BrowserShield.Enabled = true
+				cfg.BrowserShield.ExemptDomains = append([]string(nil), config.Defaults().BrowserShield.ExemptDomains...)
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "TLS passthrough exemption inert when TLS interception disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.TLSInterception.Enabled = false
+				cfg.TLSInterception.PassthroughDomains = []string{"tls.vendor.example"}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "tls_interception.passthrough_domains is set but tls_interception.enabled=false",
+			wantNextSubstr:   "enable tls_interception",
+		},
+		{
+			name: "TLS pristine default passthrough baseline NOT flagged when TLS interception disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.TLSInterception.Enabled = false
+				cfg.TLSInterception.PassthroughDomains = append([]string(nil), config.Defaults().TLSInterception.PassthroughDomains...)
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "TLS passthrough exemption NOT flagged when TLS interception enabled",
+			mutate: func(cfg *config.Config) {
+				cfg.TLSInterception.Enabled = true
+				cfg.TLSInterception.PassthroughDomains = []string{"tls.vendor.example"}
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "TLS pristine default passthrough baseline NOT flagged when TLS interception enabled",
+			mutate: func(cfg *config.Config) {
+				cfg.TLSInterception.Enabled = true
+				cfg.TLSInterception.PassthroughDomains = append([]string(nil), config.Defaults().TLSInterception.PassthroughDomains...)
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "request header ignore entry inert when request scanning disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
+				cfg.RequestBodyScanning.IgnoreHeaders = []string{"X-Provider-Trace"}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "request_body_scanning.enabled=false",
+			wantNextSubstr:   "header_mode=all",
+		},
+		{
+			name: "request header ignore entry inert when header scanning disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ScanHeaders = false
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
+				cfg.RequestBodyScanning.IgnoreHeaders = []string{"X-Provider-Trace"}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "request_body_scanning.scan_headers=false",
+			wantNextSubstr:   "header_mode=all",
+		},
+		{
+			name: "request header ignore entry inert outside all header mode",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+				cfg.RequestBodyScanning.IgnoreHeaders = []string{"X-Provider-Trace"}
+			},
+			wantWarn:         1,
+			wantDetailSubstr: "request_body_scanning.header_mode is not all",
+			wantNextSubstr:   "header_mode=all",
+		},
+		{
+			name: "request header complete default ignore baseline NOT flagged when request scanning disabled",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = false
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
+				cfg.RequestBodyScanning.IgnoreHeaders = append([]string(nil), defaultRequestBodyIgnoreHeaders()...)
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "request header default ignore baseline is not warned outside all header mode",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+				cfg.RequestBodyScanning.IgnoreHeaders = append([]string(nil), defaultRequestBodyIgnoreHeaders()...)
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "request header pristine default ignore baseline NOT flagged when all-header scanning enabled",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
+				cfg.RequestBodyScanning.IgnoreHeaders = append([]string(nil), defaultRequestBodyIgnoreHeaders()...)
+			},
+			wantWarn: 0,
+		},
+		{
+			name: "request header ignore entry NOT flagged in all header mode",
+			mutate: func(cfg *config.Config) {
+				cfg.RequestBodyScanning.Enabled = true
+				cfg.RequestBodyScanning.ScanHeaders = true
+				cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
+				cfg.RequestBodyScanning.IgnoreHeaders = []string{"X-Provider-Trace"}
 			},
 			wantWarn: 0,
 		},
@@ -486,6 +684,96 @@ func TestDoctorConfigSemanticsCleanReturnsOK(t *testing.T) {
 	}
 }
 
+func TestAnalyzeConfigSemanticsNilConfig(t *testing.T) {
+	if findings := AnalyzeConfigSemantics(nil); findings != nil {
+		t.Fatalf("AnalyzeConfigSemantics(nil) = %+v, want nil", findings)
+	}
+}
+
+func TestAnalyzeConfigSemanticsPristineDefaultsHaveNoFindings(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ApplyDefaults()
+
+	findings := AnalyzeConfigSemantics(cfg)
+	t.Logf("findings count = %d", len(findings))
+	if len(findings) != 0 {
+		t.Fatalf("AnalyzeConfigSemantics(defaults) findings count = %d, want 0: %+v", len(findings), findings)
+	}
+}
+
+func TestDoctorConfigSemanticsPristineDefaultsReturnOK(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.ApplyDefaults()
+
+	checks := checkDoctorConfigSemantics(cfg)
+	if len(checks) != 1 {
+		t.Fatalf("checkDoctorConfigSemantics(defaults) checks = %d, want 1 OK placeholder: %+v", len(checks), checks)
+	}
+	if checks[0].Status != doctorStatusOK {
+		t.Fatalf("checkDoctorConfigSemantics(defaults) status = %q, want %q: %+v", checks[0].Status, doctorStatusOK, checks)
+	}
+}
+
+func TestConfigSemanticHelperBranches(t *testing.T) {
+	if got := normalizeConfigSemanticSubject("request_body_scanning.ignore_headers", " X-Provider-Trace "); got != "x-provider-trace" {
+		t.Fatalf("normalized header subject = %q, want x-provider-trace", got)
+	}
+	if got := normalizeConfigSemanticSubject("response_scanning.mcp_servers", " docs-cache "); got != "docs-cache" {
+		t.Fatalf("normalized MCP subject = %q, want docs-cache", got)
+	}
+
+	added := operatorAddedStrings([]string{"", "  *.googlevideo.com  ", "tls.vendor.example"}, config.Defaults().TLSInterception.PassthroughDomains)
+	if len(added) != 1 || added[0] != "tls.vendor.example" {
+		t.Fatalf("operatorAddedStrings = %v, want [tls.vendor.example]", added)
+	}
+
+	headers := operatorAddedHeaderNames([]string{"", "accept", "X-Provider-Trace"}, defaultRequestBodyIgnoreHeaders())
+	if len(headers) != 1 || headers[0] != "X-Provider-Trace" {
+		t.Fatalf("operatorAddedHeaderNames = %v, want [X-Provider-Trace]", headers)
+	}
+	headers = operatorAddedHeaderNames(defaultRequestBodyIgnoreHeaders(), defaultRequestBodyIgnoreHeaders())
+	if len(headers) != 0 {
+		t.Fatalf("operatorAddedHeaderNames(defaults) = %v, want none", headers)
+	}
+
+	if !requestHeaderIgnoreListConsumed(config.RequestBodyScanning{
+		Enabled:     true,
+		ScanHeaders: true,
+		HeaderMode:  config.HeaderModeAll,
+	}) {
+		t.Fatal("requestHeaderIgnoreListConsumed() = false, want true")
+	}
+	detail := requestHeaderIgnoreListInertDetail(config.RequestBodyScanning{
+		Enabled:     true,
+		ScanHeaders: true,
+		HeaderMode:  config.HeaderModeAll,
+	})
+	if !strings.Contains(detail, "header ignore-list scanning is disabled") {
+		t.Fatalf("fallback inert detail = %q", detail)
+	}
+
+	findings := []ConfigSemanticFinding{
+		{Scope: "z", Detail: "b"},
+		{Scope: "a", Detail: "c"},
+		{Scope: "a", Detail: "b"},
+	}
+	sortConfigSemanticFindings(findings)
+	if findings[0].Scope != "a" || findings[0].Detail != "b" ||
+		findings[1].Scope != "a" || findings[1].Detail != "c" ||
+		findings[2].Scope != "z" {
+		t.Fatalf("sortConfigSemanticFindings = %+v", findings)
+	}
+
+	tuple := queryEntropyParamAdvisoryTuple(config.QueryEntropyParamExclusion{
+		Host:  "api.vendor.example",
+		Path:  "/v1/search",
+		Param: "query",
+	})
+	if tuple != "https://api.vendor.example/v1/search?query" {
+		t.Fatalf("default scheme tuple = %q", tuple)
+	}
+}
+
 // TestDoctorSemanticsCountedInSummary proves the new checks flow through the
 // full report build and into the JSON summary tallies and exit code.
 func TestDoctorSemanticsCountedInSummary(t *testing.T) {
@@ -538,5 +826,148 @@ response_scanning:
 	}
 	if report.Summary.Warnings < 2 {
 		t.Errorf("summary warnings = %d, want >= 2 (semantic checks must be tallied)", report.Summary.Warnings)
+	}
+}
+
+func TestAnalyzeConfigSemanticsPublicKinds(t *testing.T) {
+	cfg := baseSemanticsConfig()
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.ResponseScanning.Enabled = false
+	cfg.ResponseScanning.SSEStreaming.Enabled = false
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: testDLPPatternName, Path: "*" + testExemptHost + "*", Reason: "url token FP"},
+	}
+	cfg.ResponseScanning.MCPServers = []config.MCPResponseServerTrust{{
+		Server: "reasoning-cache",
+		Trust:  config.ResponseTrustReasoning,
+	}}
+
+	findings := AnalyzeConfigSemantics(cfg)
+	var sawMisdirectedSuppress, sawInertTrust bool
+	for _, finding := range findings {
+		if finding.Scope == "suppress" && finding.Kind == ConfigSemanticKindMisdirected {
+			sawMisdirectedSuppress = true
+		}
+		if finding.Scope == "response_scanning.mcp_servers" && finding.Kind == ConfigSemanticKindInert {
+			sawInertTrust = true
+		}
+		if finding.Severity != ConfigSemanticSeverityWarn {
+			t.Fatalf("Severity = %q, want %q", finding.Severity, ConfigSemanticSeverityWarn)
+		}
+	}
+	if !sawMisdirectedSuppress {
+		t.Fatalf("AnalyzeConfigSemantics() missing misdirected suppress finding: %+v", findings)
+	}
+	if !sawInertTrust {
+		t.Fatalf("AnalyzeConfigSemantics() missing inert MCP trust finding: %+v", findings)
+	}
+}
+
+func TestDoctorConfigSemanticsSuppressesDefaultHeaderSubsetWhenInert(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := dir + "/pipelock.yaml"
+	const body = `mode: balanced
+request_body_scanning:
+  enabled: false
+  scan_headers: true
+  header_mode: all
+  ignore_headers:
+    - Accept
+`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load(config): %v", err)
+	}
+
+	findings := AnalyzeConfigSemantics(cfg)
+	for _, finding := range findings {
+		if finding.Scope == "request_body_scanning.ignore_headers" &&
+			finding.Subject == "accept" &&
+			finding.Kind == ConfigSemanticKindInert {
+			t.Fatalf("default header was flagged inert: %+v", finding)
+		}
+	}
+}
+
+func TestDoctorConfigSemanticsSuppressesDefaultDomainSubsetWhenInert(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := dir + "/pipelock.yaml"
+	const body = `mode: balanced
+browser_shield:
+  enabled: false
+  exempt_domains:
+    - docs.github.com
+`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load(config): %v", err)
+	}
+
+	findings := AnalyzeConfigSemantics(cfg)
+	for _, finding := range findings {
+		if finding.Scope == "browser_shield.exempt_domains" &&
+			finding.Subject == "docs.github.com" &&
+			finding.Kind == ConfigSemanticKindInert {
+			t.Fatalf("default browser shield domain was flagged inert: %+v", finding)
+		}
+	}
+}
+
+func TestDoctorConfigSemanticsAnalyzerRefactorGolden(t *testing.T) {
+	cfg := baseSemanticsConfig()
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.ResponseScanning.Enabled = false
+	cfg.ResponseScanning.SSEStreaming.Enabled = false
+	cfg.Suppress = []config.SuppressEntry{
+		{Rule: "Totally Made Up Pattern", Path: "*provider.example*"},
+		{Rule: testDLPPatternName, Path: "*" + testExemptHost + "*"},
+	}
+	cfg.ResponseScanning.ExemptDomains = []string{testExemptHost}
+
+	checks := semanticFindingsToDoctorChecks(AnalyzeConfigSemantics(cfg))
+	got, err := json.MarshalIndent(checks, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent: %v", err)
+	}
+	want := strings.ReplaceAll(strings.TrimSpace(`[
+  {
+    "name": "config_suppress_semantics",
+    "surface": "config",
+    "status": "warn",
+    "configured": true,
+    "reachable": false,
+    "enforcing": false,
+    "detail": "suppress entry names DLP pattern \"Vendor Token\", but no suppress-consulting DLP proxy scanner is enabled (request_body_scanning=false, sse_streaming=false; response_scanning uses a separate pattern namespace); URL-query DLP would match this pattern but does not consult suppress, so the suppress has no effect on the proxy path",
+    "next": "to exempt a URL-query match, set dlp.patterns[].exempt_domains for this pattern; suppress: only reaches body/header DLP, generic SSE DLP, response scanning, and the audit/git scanners"
+  },
+  {
+    "name": "config_suppress_semantics",
+    "surface": "config",
+    "status": "warn",
+    "configured": true,
+    "reachable": false,
+    "enforcing": false,
+    "detail": "suppress entry names pattern \"Totally Made Up Pattern\", which matches no active DLP or response-scanning pattern; this exemption is inert for the proxy enforcement path",
+    "next": "fix the rule name to match a pattern in dlp.patterns or response_scanning.patterns, move audit/git-only suppressions to the config used for those commands, or remove the entry; run PIPELOCK_DOCTOR again to confirm"
+  },
+  {
+    "name": "config_exemption_semantics",
+    "surface": "config",
+    "status": "warn",
+    "configured": true,
+    "reachable": false,
+    "enforcing": false,
+    "detail": "response_scanning.exempt_domains is set but response_scanning.enabled=false; this exemption is inert",
+    "next": "enable response_scanning to make the exemption effective, or remove the exempt_domains list"
+  }
+]`), "PIPELOCK_DOCTOR", "`pipelock doctor`")
+	if string(got) != want {
+		t.Fatalf("semantic doctor checks changed:\n got:\n%s\nwant:\n%s", got, want)
 	}
 }

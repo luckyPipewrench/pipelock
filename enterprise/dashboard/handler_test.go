@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -59,6 +60,12 @@ func TestHandler_Gating(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("false HasFeature /session status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("false HasFeature /exemptions status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
 }
 
 func TestHandler_AllowedRendersScorecard(t *testing.T) {
@@ -90,6 +97,43 @@ func TestHandler_AllowedRendersScorecard(t *testing.T) {
 		if got := rec.Header().Get(header); got != want {
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
+	}
+}
+
+func TestHandler_ExemptionsAllowedRendersInventory(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		ResponseScanning: config.ResponseScanning{
+			Enabled:       false,
+			ExemptDomains: []string{"api.vendor.example"},
+		},
+	}
+	var audit strings.Builder
+	handler := New(Options{
+		ReceiptDir:   t.TempDir(),
+		Config:       cfg,
+		HasFeature:   allowAgentsFeature,
+		Authorize:    func(*http.Request) error { return nil },
+		AuditWriter:  &audit,
+		AuthorizeRaw: allowRawAccess,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Exemptions inventory", "api.vendor.example", "inert", "not tracked"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q: %s", want, body)
+		}
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
+		t.Fatalf("CSP = %q, want %q", got, contentSecurityPolicy)
+	}
+	if !strings.Contains(audit.String(), "path=\"/exemptions\"") {
+		t.Fatalf("audit should record exemptions path; got %q", audit.String())
 	}
 }
 
@@ -180,7 +224,9 @@ func TestHandler_MethodAndPathRejection(t *testing.T) {
 		want   int
 	}{
 		{name: "post index", method: http.MethodPost, path: "/", want: http.StatusMethodNotAllowed},
+		{name: "post exemptions", method: http.MethodPost, path: "/exemptions", want: http.StatusMethodNotAllowed},
 		{name: "nested session path", method: http.MethodGet, path: "/session/foo/bar", want: http.StatusNotFound},
+		{name: "nested exemptions path", method: http.MethodGet, path: "/exemptions/extra", want: http.StatusNotFound},
 		{name: "unknown path", method: http.MethodGet, path: "/nope", want: http.StatusNotFound},
 	}
 
@@ -285,6 +331,12 @@ func TestHandler_AuthorizeFailsClosed(t *testing.T) {
 	allowed.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("accepting Authorize status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	rec = httptest.NewRecorder()
+	denied.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("rejecting Authorize /exemptions status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 

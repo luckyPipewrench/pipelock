@@ -5,14 +5,21 @@ SPDX-License-Identifier: Apache-2.0
 
 # `pipelock dashboard`
 
-Serve the read-only Evidence dashboard: a web view over the signed action
-receipts in a flight-recorder evidence directory. It renders each recorder
-session with a four-line scorecard — **Authentic**, **Untampered**,
+Serve the read-only operator dashboard. The Evidence view is a web view over
+the signed action receipts in a flight-recorder evidence directory. It renders
+each recorder session with a four-line scorecard — **Authentic**, **Untampered**,
 **Anchored**, **Completeness** — where every line is an independent fact.
 There is deliberately no aggregate "all clear": Completeness is always limited
 to mediated traffic, Anchored is never green without an external inclusion
 proof, and signers are only shown as trusted when the operator configured
 their keys (never trust-on-first-use).
+
+The Exemptions view is a read-only inventory over the loaded Pipelock config.
+It lists configured exemption-like knobs and flags only the inert or
+wrong-knob findings produced by the same config semantic analyzer used by
+`pipelock doctor`. It does not create, renew, apply, remove, or hot-reload
+exemptions, and it does not invent lifecycle telemetry: owner, expiry,
+last-matched, and suppressed-count columns are shown as `not tracked`.
 
 The command ships in official release builds (enterprise-tagged) and requires
 a license that grants the `agents` feature (Pro or Enterprise); without one it
@@ -24,6 +31,7 @@ mutates policy, receipts, or runtime state.
 ```bash
 pipelock dashboard serve \
   --receipt-dir /var/lib/pipelock/evidence \
+  --config /etc/pipelock/pipelock.yaml \
   --auth-token-file /etc/pipelock/dashboard.token \
   --trusted-signer 'file=/etc/pipelock/receipt-signing.pub,source=ops runbook'
 ```
@@ -49,6 +57,7 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 | Flag | Default | Purpose |
 |---|---|---|
 | `--receipt-dir` | (required) | Flight-recorder evidence directory holding action receipts (the runtime's `flight_recorder.dir`). |
+| `--config` | none | Optional Pipelock config file for the read-only Exemptions inventory. When omitted, `/exemptions` renders an explicit "no config loaded" state and the Evidence view still works. |
 | `--auth-token-file` | (required) | File containing the operator token required on every request. Grants the redacted metadata view. |
 | `--raw-token-file` | none | Optional second, higher-privilege token that unlocks raw destinations and signed payloads. Must differ from `--auth-token-file`. |
 | `--listen` | `127.0.0.1:8896` | Dashboard listener address. Non-loopback addresses require `--tls-cert`/`--tls-key`. |
@@ -58,9 +67,15 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 
 ### License resolution
 
-`dashboard serve` takes no config file. Like the other server commands, it
-resolves the license token from `PIPELOCK_LICENSE_KEY` and verifies it against
-the build-embedded public key (or `PIPELOCK_LICENSE_PUBLIC_KEY` on unofficial
+`dashboard serve` loads `--config` only when the flag is provided, using the
+normal Pipelock config loader. The loaded config feeds the `/exemptions` view;
+it does not grant the dashboard authority to mutate policy or reload runtime
+state. If `--config` is omitted, the Exemptions view reports that no config was
+loaded.
+
+License resolution still follows the paid-surface gate: the command resolves
+the license token from `PIPELOCK_LICENSE_KEY` and verifies it against the
+build-embedded public key (or `PIPELOCK_LICENSE_PUBLIC_KEY` on unofficial
 builds). Verification fails closed before any listener binds, and the feature
 entitlement is re-checked on every request, so a license that expires while
 the server is running stops serving.
@@ -95,6 +110,9 @@ the server is running stops serving.
 - **Access is audited.** Every authenticated request is written to an access log
   on stderr (role `metadata` or `raw`, method, path, session, remote address).
   Viewing evidence is itself a recorded action.
+- **Exemptions is inventory only.** `/exemptions` is GET-only and reads the
+  already-loaded config snapshot. It has no POST route, no apply/remove/renew
+  controls, no config write path, and no hot-reload hook.
 - **Sensitive by design.** Even the metadata view exposes reasons, signer
   fingerprints, and session IDs. Treat the listener like an admin API: keep it
   loopback or behind TLS on a network only operators reach.

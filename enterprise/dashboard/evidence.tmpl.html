@@ -38,6 +38,8 @@
     .brand { font-weight: 650; }
     .brand span { color: var(--text-muted); font-weight: 500; }
     .mode { color: var(--text-dim); font-size: 13px; }
+    .mode a { color: var(--text-muted); text-decoration: none; margin-right: 14px; }
+    .mode a:hover { color: var(--text); }
     .shell {
       display: grid;
       grid-template-columns: 320px minmax(0, 1fr);
@@ -222,7 +224,7 @@
 <body>
   <header class="topbar">
     <div class="brand">Pipelock <span>· Operator Console / Evidence</span></div>
-    <div class="mode">air-gapped · self-hosted</div>
+    <div class="mode"><a href="/exemptions">Exemptions</a>air-gapped · self-hosted</div>
   </header>
   <div class="shell">
     <aside>

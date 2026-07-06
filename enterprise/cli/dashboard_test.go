@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -110,7 +111,7 @@ func TestDashboardCmd_Tree(t *testing.T) {
 	if err != nil || serve.Use != "serve" {
 		t.Fatalf("dashboard serve subcommand not found: %v", err)
 	}
-	for _, flag := range []string{"listen", "receipt-dir", "auth-token-file", "raw-token-file", "trusted-signer", "license-crl-file", "tls-cert", "tls-key"} {
+	for _, flag := range []string{"listen", "receipt-dir", "config", "auth-token-file", "raw-token-file", "trusted-signer", "license-crl-file", "tls-cert", "tls-key"} {
 		if serve.Flags().Lookup(flag) == nil {
 			t.Errorf("serve is missing --%s", flag)
 		}
@@ -125,6 +126,21 @@ func writeDashRawTokenFile(t *testing.T) (path, token string) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	return path, token
+}
+
+func writeDashConfigFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	body := []byte(`mode: balanced
+response_scanning:
+  enabled: false
+  exempt_domains:
+    - api.vendor.example
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	return path
 }
 
 func TestDashboardServe_RawTokenMustDifferFromAuthToken(t *testing.T) {
@@ -287,6 +303,90 @@ func TestDashboardServe_RejectsMissingReceiptDir(t *testing.T) {
 	}
 }
 
+func TestDashboardServe_RejectsBadConfigPath(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", writeDashTokenFile(t),
+		"--config", filepath.Join(t.TempDir(), "missing.yaml"),
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("missing config: want --config error, got %v", err)
+	}
+}
+
+func TestDashboardServe_RejectsConfigDirectory(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", writeDashTokenFile(t),
+		"--config", t.TempDir(),
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("config directory: want --config error, got %v", err)
+	}
+}
+
+func TestDashboardServe_RejectsMalformedConfig(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: balanced\nresponse_scanning: ["), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", writeDashTokenFile(t),
+		"--config", configPath,
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("malformed config: want --config error, got %v", err)
+	}
+}
+
+func TestDashboardServe_RejectsUnreadableConfigReferencedFile(t *testing.T) {
+	t.Setenv(license.EnvLicenseKey, "")
+	dir := t.TempDir()
+	licensePath := filepath.Join(dir, "license.token")
+	if err := os.WriteFile(licensePath, []byte("unused"), 0o600); err != nil {
+		t.Fatalf("WriteFile(license): %v", err)
+	}
+	if err := os.Chmod(licensePath, 0); err != nil {
+		t.Fatalf("Chmod(license): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(licensePath, 0o600) })
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: balanced\nlicense_file: license.token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	cmd := dashboardServeCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := runDashboardServe(cmd, dashboardServeOptions{
+		listen:        "127.0.0.1:0",
+		receiptDir:    t.TempDir(),
+		authTokenFile: writeDashTokenFile(t),
+		configFile:    configPath,
+	}, license.License{Features: []string{license.FeatureAgents}})
+	if err == nil || !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("unreadable referenced file: want --config error, got %v", err)
+	}
+}
+
 func TestDashboardServe_EndToEnd(t *testing.T) {
 	pub, priv := newDashKeyPair(t)
 	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
@@ -297,6 +397,7 @@ func TestDashboardServe_EndToEnd(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--receipt-dir", t.TempDir(),
 		"--auth-token-file", writeDashTokenFile(t),
+		"--config", writeDashConfigFile(t),
 		"--listen", "127.0.0.1:0",
 	})
 	cmd.SetOut(out)
@@ -364,6 +465,32 @@ func TestDashboardServe_EndToEnd(t *testing.T) {
 		}
 		if resp.Header.Get("Content-Security-Policy") == "" {
 			t.Errorf("missing Content-Security-Policy header")
+		}
+	})
+
+	t.Run("exemptions uses loaded config", func(t *testing.T) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/exemptions", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+dashTestToken)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("GET /exemptions: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		text := string(body)
+		for _, want := range []string{"Exemptions inventory", "api.vendor.example", "inert"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("body missing %q: %s", want, text)
+			}
 		}
 	})
 

@@ -61,6 +61,60 @@ func TestFormatCEFEventEscapesDelimiters(t *testing.T) {
 	}
 }
 
+func TestFormatCEFEventEscapesLineForgeryPayloads(t *testing.T) {
+	payload := "https://api.vendor.example/path|name=value\\trail\r\nCEF:0|Forged|Device|1|sig|name|10|act=allow"
+	event := Event{
+		Severity:   SeverityCritical,
+		Type:       "body|dlp\r\nCEF:0|forged",
+		Timestamp:  time.Date(2026, 7, 5, 1, 2, 3, 0, time.UTC),
+		InstanceID: "node\r\nforged",
+		Fields: map[string]any{
+			"action":            conventionActionBlock,
+			"agent":             "agent|id=value\\x\r\nforged",
+			"url":               payload,
+			fieldReason:         "matched snippet | key=value\\x\r\nforged",
+			"bad|key=\r\nforge": "value",
+		},
+	}
+
+	got := FormatCEFEvent(event, "2|x\r\n3")
+	if strings.ContainsAny(got, "\r\n") {
+		t.Fatalf("CEF line contains raw CR/LF:\n%q", got)
+	}
+	if pipes := countUnescapedPipes(got); pipes != 7 {
+		t.Fatalf("CEF line has %d unescaped pipes, want 7:\n%s", pipes, got)
+	}
+	for _, want := range []string{
+		`request=https://api.vendor.example/path\|name\=value\\trail\r\nCEF:0\|Forged\|Device\|1\|sig\|name\|10\|act\=allow`,
+		`suser=agent\|id\=value\\x\r\nforged`,
+		`msg=matched snippet \| key\=value\\x\r\nforged`,
+		`pipelockBadkeyForge=value`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("CEF line missing escaped payload %q:\n%s", want, got)
+		}
+	}
+}
+
+func countUnescapedPipes(s string) int {
+	count := 0
+	backslashes := 0
+	for _, r := range s {
+		switch r {
+		case '\\':
+			backslashes++
+		case '|':
+			if backslashes%2 == 0 {
+				count++
+			}
+			backslashes = 0
+		default:
+			backslashes = 0
+		}
+	}
+	return count
+}
+
 func TestFormatCEFEventEmptyFields(t *testing.T) {
 	event := Event{
 		Severity:  SeverityInfo,

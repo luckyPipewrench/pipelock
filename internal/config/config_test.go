@@ -7756,6 +7756,42 @@ func TestDefaults_EmitFields(t *testing.T) {
 	}
 }
 
+func TestLoad_EmitSyslogFormatDefaultsToJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "omitted",
+			yaml: "version: 1\nemit:\n  syslog:\n    address: " + testSyslogAddr + "\n",
+		},
+		{
+			name: "blank",
+			yaml: "version: 1\nemit:\n  syslog:\n    address: " + testSyslogAddr + "\n    format:\n",
+		},
+		{
+			name: "null",
+			yaml: "version: 1\nemit:\n  syslog:\n    address: " + testSyslogAddr + "\n    format: null\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := LoadForRules(path)
+			if err != nil {
+				t.Fatalf("LoadForRules: %v", err)
+			}
+			if cfg.Emit.Syslog.Format != EmitFormatJSON {
+				t.Fatalf("emit.syslog.format = %q, want %q", cfg.Emit.Syslog.Format, EmitFormatJSON)
+			}
+		})
+	}
+}
+
 func TestDefaults_KillSwitchAPIExempt(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()

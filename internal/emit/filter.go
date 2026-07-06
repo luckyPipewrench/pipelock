@@ -72,11 +72,12 @@ func (s *FilteringSink) Close() error {
 }
 
 func containsFold(values []string, candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
 	if candidate == "" {
 		return false
 	}
 	for _, value := range values {
-		if strings.EqualFold(value, candidate) {
+		if strings.EqualFold(strings.TrimSpace(value), candidate) {
 			return true
 		}
 	}
@@ -89,17 +90,21 @@ func eventAction(event Event) string {
 			return normalizeEventAction(value)
 		}
 	}
+	if blocked, ok := event.Fields["blocked"].(bool); ok && blocked {
+		return conventionActionBlock
+	}
 	return eventTypeAction(event.Type)
 }
 
 func normalizeEventAction(value string) string {
-	switch value {
-	case EventAllowed:
+	trimmed := strings.TrimSpace(value)
+	switch strings.ToLower(trimmed) {
+	case EventAllowed, conventionActionAllow:
 		return conventionActionAllow
-	case EventBlocked, EventWSBlocked:
+	case EventBlocked, EventWSBlocked, conventionActionBlock, "deny", "denied":
 		return conventionActionBlock
 	default:
-		return value
+		return trimmed
 	}
 }
 
@@ -107,7 +112,7 @@ func eventTypeAction(eventType string) string {
 	switch eventType {
 	case EventAllowed:
 		return conventionActionAllow
-	case EventBlocked, EventWSBlocked:
+	case EventBlocked, EventWSBlocked, EventKillSwitchDeny, EventAirlockDeny:
 		return conventionActionBlock
 	default:
 		return ""

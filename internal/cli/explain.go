@@ -179,6 +179,7 @@ Examples:
 
 	// `explain mcp-response` explains an MCP response block and names the
 	// per-server suppress knob (the stdio MCP equivalent of a URL verdict).
+	cmd.AddCommand(explainEventCmd())
 	cmd.AddCommand(explainMCPResponseCmd())
 
 	return cmd

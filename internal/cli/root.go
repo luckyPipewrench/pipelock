@@ -103,6 +103,7 @@ Quick start:
 		diag.TestCmd(),
 		diag.DemoCmd(),
 		diag.LogsCmd(),
+		statusCmd(),
 		support.Cmd(),
 		// Generate
 		generate.Cmd(),
@@ -151,6 +152,7 @@ Quick start:
 		clisigning.SigningSubtreeCmd(),
 		// Explain a URL verdict with per-scanner remediation.
 		explainCmd(),
+		quickstartCmd(),
 		// Binary install helper for sidecar init containers.
 		installCmd(),
 		// Self-update (verified release install)

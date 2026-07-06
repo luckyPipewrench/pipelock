@@ -47,6 +47,27 @@ func TestCore_RunsWithIncludeDefaultsFalse(t *testing.T) {
 	}
 }
 
+func TestCore_DLPPatternDefsMatchConfigCoreRegistry(t *testing.T) {
+	t.Parallel()
+
+	got := coreDLPPatternDefs()
+	want := config.CoreDLPPatterns()
+	if len(got) != len(want) {
+		t.Fatalf("core DLP pattern count = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].name != want[i].Name {
+			t.Fatalf("pattern[%d].name = %q, want %q", i, got[i].name, want[i].Name)
+		}
+		if got[i].regex != want[i].Regex {
+			t.Fatalf("%s regex drifted: got %q, want %q", got[i].name, got[i].regex, want[i].Regex)
+		}
+		if got[i].severity != want[i].Severity {
+			t.Fatalf("%s severity drifted: got %q, want %q", got[i].name, got[i].severity, want[i].Severity)
+		}
+	}
+}
+
 func TestCore_DLPHTMLEntityDecode(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()

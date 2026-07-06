@@ -59,58 +59,16 @@ type coreResponsePattern struct {
 // credential types where a false negative is catastrophic - leaked
 // cloud keys, source control tokens, and cryptographic material.
 func coreDLPPatternDefs() []coreDLPPattern {
-	return []coreDLPPattern{
-		// Cloud provider credentials - names match config.Defaults() exactly.
-		{
-			name:     patternNameAWSAccessID,
-			regex:    config.AWSAccessIDRegex,
-			severity: "critical",
-		},
-		{
-			name:     "AWS Secret Key",
-			regex:    `(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}`,
-			severity: "critical",
-		},
-		{
-			name:     "GCP Service Account Key",
-			regex:    `"type"\s*:\s*"service_account"`,
-			severity: "critical",
-		},
-
-		// Source control tokens
-		{
-			name:     "GitHub Token",
-			regex:    `gh[pousr]_[A-Za-z0-9_]{36,}`,
-			severity: "critical",
-		},
-		{
-			name:     "GitHub Fine-Grained PAT",
-			regex:    `github_pat_[a-zA-Z0-9_]{36,}`,
-			severity: "critical",
-		},
-		{
-			name:     "GitLab PAT",
-			regex:    `glpat-[a-zA-Z0-9\-_]{20,}`,
-			severity: "critical",
-		},
-
-		// Messaging platform tokens
-		{
-			name:     "Slack Token",
-			regex:    `xox[bpras]-[0-9a-zA-Z-]{15,}`,
-			severity: "critical",
-		},
-
-		// Cryptographic material
-		{
-			name: "Private Key Header",
-			// PGP and the trailing BLOCK keyword are included so PGP private
-			// key armor is blocked, keeping DLP detection aligned with the
-			// ssh-private-key redaction class (which already covers PGP/BLOCK).
-			regex:    `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----`,
-			severity: "critical",
-		},
+	patterns := config.CoreDLPPatterns()
+	out := make([]coreDLPPattern, 0, len(patterns))
+	for _, pattern := range patterns {
+		out = append(out, coreDLPPattern{
+			name:     pattern.Name,
+			regex:    pattern.Regex,
+			severity: pattern.Severity,
+		})
 	}
+	return out
 }
 
 // coreResponsePatternDefs returns the immutable core response scanning patterns.

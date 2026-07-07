@@ -80,11 +80,10 @@ fn g1_restart_chain_verifies_with_prior_tail_fields() {
         json!(1)
     );
     assert!(
-        receipts[2]["action_record"]["session_control"]["open"]["prior_chain_head"]
+        !receipts[2]["action_record"]["session_control"]["open"]["prior_chain_head"]
             .as_str()
             .unwrap_or("")
-            .len()
-            > 0
+            .is_empty()
     );
 }
 
@@ -139,7 +138,8 @@ fn g1_legacy_session_open_on_genesis_is_rejected() {
 fn g1_signed_field_tampering_is_rejected() {
     let root = common::repo_root();
     let key = conformance_key();
-    let cases: &[(&str, fn(&mut Vec<Value>))] = &[
+    type TamperCase = (&'static str, fn(&mut Vec<Value>));
+    let cases: &[TamperCase] = &[
         ("session_open_posture_signer_key_id", |receipts| {
             receipts[0]["action_record"]["session_control"]["open"]["posture_signer_key_id"] =
                 json!("posture-key-tampered");

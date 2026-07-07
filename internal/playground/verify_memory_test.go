@@ -316,20 +316,7 @@ func TestVerifierBackingPath_AcceptsG1AnchoredReceiptBundle(t *testing.T) {
 	t.Parallel()
 
 	fixture := newVerifyMemoryFixture(t)
-	receipts, err := receipt.ExtractReceiptsBytes(fixture.artifacts.PacketEvidenceJSONL)
-	if err != nil {
-		t.Fatalf("ExtractReceiptsBytes: %v", err)
-	}
-	if len(receipts) == 0 {
-		t.Fatal("fixture has no receipts")
-	}
-	first := receipts[0].ActionRecord
-	if !strings.HasPrefix(first.ChainPrevHash, "g1:") {
-		t.Fatalf("first chain_prev_hash = %q, want g1 prefix", first.ChainPrevHash)
-	}
-	if first.SessionControl == nil || first.SessionControl.Open == nil {
-		t.Fatalf("first receipt missing session_control.open: %+v", first.SessionControl)
-	}
+	assertG1AnchoredFirstReceipt(t, fixture.artifacts.PacketEvidenceJSONL)
 
 	rep, err := playground.VerifyRunArtifacts(fixture.artifacts, fixture.orchestratorPubHex)
 	if err != nil {
@@ -360,12 +347,26 @@ func TestVerifyPublishedBundleBytes_AcceptsG1AnchoredBundleWithLocalPublishedKey
 	if err != nil {
 		t.Fatalf("ExtractRunArtifactsFromBundle: %v", err)
 	}
-	receipts, err := receipt.ExtractReceiptsBytes(artifacts.PacketEvidenceJSONL)
+	assertG1AnchoredFirstReceipt(t, artifacts.PacketEvidenceJSONL)
+
+	rep, err := playground.VerifyPublishedBundleBytes(bundle)
+	if err != nil {
+		t.Fatalf("VerifyPublishedBundleBytes: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("VerifyPublishedBundleBytes rejected g1-anchored published-key bundle: %+v", rep)
+	}
+}
+
+func assertG1AnchoredFirstReceipt(t *testing.T, evidenceJSONL []byte) {
+	t.Helper()
+
+	receipts, err := receipt.ExtractReceiptsBytes(evidenceJSONL)
 	if err != nil {
 		t.Fatalf("ExtractReceiptsBytes: %v", err)
 	}
 	if len(receipts) == 0 {
-		t.Fatal("published-key bundle has no receipts")
+		t.Fatal("bundle has no receipts")
 	}
 	first := receipts[0].ActionRecord
 	if !strings.HasPrefix(first.ChainPrevHash, "g1:") {
@@ -373,13 +374,6 @@ func TestVerifyPublishedBundleBytes_AcceptsG1AnchoredBundleWithLocalPublishedKey
 	}
 	if first.SessionControl == nil || first.SessionControl.Open == nil {
 		t.Fatalf("first receipt missing session_control.open: %+v", first.SessionControl)
-	}
-	rep, err := playground.VerifyPublishedBundleBytes(bundle)
-	if err != nil {
-		t.Fatalf("VerifyPublishedBundleBytes: %v", err)
-	}
-	if !rep.OK {
-		t.Fatalf("VerifyPublishedBundleBytes rejected g1-anchored published-key bundle: %+v", rep)
 	}
 }
 

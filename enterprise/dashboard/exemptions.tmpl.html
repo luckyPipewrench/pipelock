@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Exemptions</title>
+  <style>
+    :root {
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .topbar {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border-strong);
+      background: #08080a;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .brand { font-weight: 650; }
+    .brand span { color: var(--text-muted); font-weight: 500; }
+    .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; }
+    .nav a { color: var(--text-muted); text-decoration: none; }
+    .nav a:hover { color: var(--text); }
+    main {
+      min-width: 0;
+      padding: 24px;
+    }
+    .panel {
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    .heading {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 20px;
+      margin-bottom: 18px;
+    }
+    h1, h2, h3 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 16px; margin-bottom: 12px; }
+    .muted { color: var(--text-muted); }
+    .dim { color: var(--text-dim); }
+    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .metric {
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .metric-value { font-size: 22px; font-weight: 750; }
+    .metric-label { color: var(--text-muted); margin-top: 2px; }
+    .section {
+      border-top: 1px solid var(--border-strong);
+      padding-top: 18px;
+      margin-top: 18px;
+    }
+    .callout {
+      border: 1px solid var(--border-strong);
+      background: #0b0f0e;
+      padding: 14px;
+      border-radius: 8px;
+    }
+    .absence {
+      border: 1px solid rgba(245,158,11,0.7);
+      background: rgba(245,158,11,0.10);
+      padding: 18px;
+      border-radius: 8px;
+    }
+    .absence h2 { color: #fde68a; font-size: 20px; }
+    .attention {
+      display: grid;
+      gap: 10px;
+    }
+    .finding {
+      border: 1px solid rgba(245,158,11,0.35);
+      background: var(--bg-elevated);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .finding-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 8px;
+    }
+    .chip {
+      display: inline-flex;
+      justify-content: center;
+      min-width: 96px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      color: #050507;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .chip.active { background: var(--accent); }
+    .chip.inert { background: var(--danger); color: white; }
+    .chip.misdirected { background: var(--warn); }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+    table {
+      width: 100%;
+      min-width: 1120px;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 11px 12px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--text-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: #0b0b0e;
+    }
+    tr:last-child td { border-bottom: 0; }
+    .scope, .detail { overflow-wrap: anywhere; }
+    .attrs { display: grid; gap: 4px; }
+    .attr-name { color: var(--text-dim); }
+    .empty {
+      color: var(--text-muted);
+      padding: 26px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+    @media (max-width: 900px) {
+      main { padding: 16px; }
+      .heading, .summary { grid-template-columns: 1fr; }
+      .summary { display: grid; }
+      .topbar { align-items: flex-start; height: auto; min-height: 56px; padding: 14px 16px; gap: 10px; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Pipelock <span>- Operator Console / Exemptions</span></div>
+    <div class="nav"><a href="/">Evidence</a><span class="mono">air-gapped - self-hosted</span></div>
+  </header>
+  <main>
+    <div class="panel">
+      <div class="heading">
+        <div>
+          <h1>Exemptions inventory</h1>
+          <div class="muted">{{.Inventory.TrackingNote}}</div>
+        </div>
+        {{if .Inventory.ConfigLoaded}}
+          <div class="dim mono">{{.Inventory.ConfiguredCount}} configured</div>
+        {{else}}
+          <div class="dim mono">no config loaded</div>
+        {{end}}
+      </div>
+
+      {{if .Inventory.RawRedacted}}
+        <div class="callout muted" style="margin-bottom:18px;">Configured values (destinations, IP allowlists, addresses, paths, rules) are hidden. Knob names, states, and counts are shown; raw access is required to view the values.</div>
+      {{end}}
+
+      {{if not .Inventory.ConfigLoaded}}
+        <section class="absence">
+          <h2>No config loaded</h2>
+          <p class="muted">Start the dashboard with <span class="mono">--config</span> to show configured exemptions. The evidence view still works without a config.</p>
+        </section>
+      {{else}}
+        <section class="summary" aria-label="Exemption counts">
+          <div class="metric">
+            <div class="metric-value mono">{{.Inventory.ConfiguredCount}}</div>
+            <div class="metric-label">exemptions configured</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value mono">{{.Inventory.InertCount}}</div>
+            <div class="metric-label">inert (does nothing)</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value mono">{{.Inventory.MisdirectedCount}}</div>
+            <div class="metric-label">wrong knob</div>
+          </div>
+          <div class="metric">
+            <div class="metric-value mono">not tracked</div>
+            <div class="metric-label">owner / expiry / matches</div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Attention</h2>
+          {{if .Inventory.Attention}}
+            <div class="attention">
+              {{range .Inventory.Attention}}
+                <article class="finding">
+                  <div class="finding-head">
+                    <div>
+                      <strong>{{.Knob}}</strong>
+                      <div class="dim mono">{{.Scope}}</div>
+                    </div>
+                    <span class="chip {{.State}}">{{.State}}</span>
+                  </div>
+                  <div class="detail">{{.Detail}}</div>
+                  {{if .Next}}<div class="muted">Next: {{.Next}}</div>{{end}}
+                </article>
+              {{end}}
+            </div>
+          {{else}}
+            <div class="callout muted">No inert or wrong-knob findings from the config semantic analyzer.</div>
+          {{end}}
+        </section>
+
+        <section class="section">
+          <h2>Inventory</h2>
+          {{if .Inventory.Entries}}
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Scanner</th>
+                    <th>Knob</th>
+                    <th>Scope</th>
+                    <th>Attributes</th>
+                    <th>State</th>
+                    <th>Owner</th>
+                    <th>Expiry</th>
+                    <th>Last matched</th>
+                    <th>Suppressed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {{range .Inventory.Entries}}
+                    <tr>
+                      <td>{{.Scanner}}</td>
+                      <td class="mono">{{.Knob}}</td>
+                      <td class="scope mono">{{.Scope}}</td>
+                      <td>
+                        {{if .Attributes}}
+                          <div class="attrs">
+                            {{range .Attributes}}
+                              <div><span class="attr-name">{{.Name}}:</span> <span class="mono">{{.Value}}</span></div>
+                            {{end}}
+                          </div>
+                        {{else}}
+                          <span class="dim">none</span>
+                        {{end}}
+                      </td>
+                      <td><span class="chip {{.State}}">{{.State}}</span></td>
+                      <td>{{.Owner}}</td>
+                      <td>{{.Expiry}}</td>
+                      <td>{{.LastMatched}}</td>
+                      <td>{{.Suppressed}}</td>
+                    </tr>
+                  {{end}}
+                </tbody>
+              </table>
+            </div>
+          {{else}}
+            <div class="empty">No exemption entries are configured in the loaded config.</div>
+          {{end}}
+        </section>
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>

@@ -28,10 +28,13 @@ const (
 	auditSessionMaxBytes  = 128
 )
 
-//go:embed evidence.tmpl.html
+//go:embed evidence.tmpl.html exemptions.tmpl.html
 var templateFS embed.FS
 
-var evidenceTemplate = template.Must(template.ParseFS(templateFS, "evidence.tmpl.html"))
+var (
+	evidenceTemplate   = template.Must(template.ParseFS(templateFS, "evidence.tmpl.html"))
+	exemptionsTemplate = template.Must(template.ParseFS(templateFS, "exemptions.tmpl.html"))
+)
 
 type pageData struct {
 	Sessions        []SessionSummary
@@ -39,6 +42,10 @@ type pageData struct {
 	Evidence        SessionEvidence
 	HasEvidence     bool
 	RawAllowed      bool
+}
+
+type exemptionsPageData struct {
+	Inventory ExemptionInventory
 }
 
 // New returns a read-only HTTP handler for the Enterprise Evidence dashboard.
@@ -61,6 +68,7 @@ func New(opts Options) http.Handler {
 		auditWriter:  opts.AuditWriter,
 	}
 	mux.Handle("/", d.gate(http.HandlerFunc(d.handleIndex)))
+	mux.Handle("/exemptions", d.gate(http.HandlerFunc(d.handleExemptions)))
 	mux.Handle("/session/", d.gate(http.HandlerFunc(d.handleSession)))
 	return mux
 }
@@ -205,6 +213,33 @@ func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	d.render(w, sessions, selected, rawAllowedFromContext(r))
+}
+
+func (d *dashboardHandler) handleExemptions(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/exemptions" {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	inventory := d.model.Exemptions()
+	// Exemption scopes/attributes are a map of internal destinations, IP
+	// allowlists, addresses, and enforcement exceptions — as sensitive as the
+	// evidence view's raw destinations. Fail closed: strip them in Go unless
+	// this request is authorized for raw, so raw values never reach a
+	// metadata-only response.
+	if !rawAllowedFromContext(r) {
+		inventory = redactExemptions(inventory)
+	}
+	data := exemptionsPageData{Inventory: inventory}
+	var buf bytes.Buffer
+	if err := exemptionsTemplate.Execute(&buf, data); err != nil {
+		http.Error(w, "could not render exemptions", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func requireGet(w http.ResponseWriter, r *http.Request) bool {

@@ -23,6 +23,7 @@ import (
 
 type loadOptions struct {
 	resolveLicense bool
+	skipValidate   bool
 }
 
 // Load reads, parses, defaults, and validates a Pipelock config file.
@@ -38,6 +39,18 @@ func Load(path string) (*Config, error) {
 // is service-owned.
 func LoadForRules(path string) (*Config, error) {
 	return load(path, loadOptions{resolveLicense: false})
+}
+
+// LoadForInspection reads config for read-only inspection surfaces (e.g. the
+// dashboard's exemptions inventory). It keeps strict YAML parsing and defaults
+// so the parsed config model is accurate, but intentionally does NOT resolve
+// runtime-side external files (license/key/cert/token) and does NOT run full
+// validation. A read-only inventory must not depend on, read, or fail to start
+// because of unrelated referenced files it does not need — that would expand the
+// inspection surface's privilege and operational dependencies. Malformed YAML
+// still fails closed at the strict parse step.
+func LoadForInspection(path string) (*Config, error) {
+	return load(path, loadOptions{resolveLicense: false, skipValidate: true})
 }
 
 func load(path string, opts loadOptions) (*Config, error) {
@@ -159,13 +172,15 @@ func load(path string, opts loadOptions) (*Config, error) {
 		}
 	}
 
-	if opts.resolveLicense {
-		if err := cfg.Validate(); err != nil {
-			return nil, fmt.Errorf("invalid config: %w", err)
-		}
-	} else {
-		if err := cfg.validateForRules(); err != nil {
-			return nil, fmt.Errorf("invalid rules config: %w", err)
+	if !opts.skipValidate {
+		if opts.resolveLicense {
+			if err := cfg.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid config: %w", err)
+			}
+		} else {
+			if err := cfg.validateForRules(); err != nil {
+				return nil, fmt.Errorf("invalid rules config: %w", err)
+			}
 		}
 	}
 	cfg.canonicalHashCache = &canonicalHashCacheHolder{}

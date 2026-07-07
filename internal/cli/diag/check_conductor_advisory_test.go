@@ -42,7 +42,7 @@ func TestCheckConductorAdvisories(t *testing.T) {
 				// Disable flight recorder to suppress the unrelated advisory.
 				cfg.FlightRecorder.Enabled = false
 			},
-			wantNoAdvisories: true,
+			forbidSubstr: "conductor.enabled is true but no license",
 		},
 		{
 			name: "conductor enabled with missing signing key path emits advisory",
@@ -125,15 +125,17 @@ func TestCheckConductorAdvisories(t *testing.T) {
 				return
 			}
 
-			found := false
-			for _, a := range advisories {
-				if strings.Contains(a, tt.wantSubstr) {
-					found = true
-					break
+			if tt.wantSubstr != "" {
+				found := false
+				for _, a := range advisories {
+					if strings.Contains(a, tt.wantSubstr) {
+						found = true
+						break
+					}
 				}
-			}
-			if !found {
-				t.Errorf("expected advisory containing %q, got %v", tt.wantSubstr, advisories)
+				if !found {
+					t.Errorf("expected advisory containing %q, got %v", tt.wantSubstr, advisories)
+				}
 			}
 			if tt.forbidSubstr != "" {
 				for _, a := range advisories {

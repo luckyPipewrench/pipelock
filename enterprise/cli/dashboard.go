@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -52,6 +53,7 @@ func DashboardCmd() *cobra.Command {
 type dashboardServeOptions struct {
 	listen         string
 	receiptDir     string
+	configFile     string
 	authTokenFile  string
 	rawTokenFile   string
 	trustedSigners []string
@@ -95,6 +97,8 @@ because the operator token would transit in cleartext.`,
 		"address for the dashboard listener; non-loopback addresses require --tls-cert/--tls-key")
 	cmd.Flags().StringVar(&opts.receiptDir, "receipt-dir", "",
 		"flight-recorder evidence directory holding action receipts (flight_recorder.dir)")
+	cmd.Flags().StringVar(&opts.configFile, "config", "",
+		"optional Pipelock config file for the read-only exemptions inventory")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
 		"file containing the operator token required on every dashboard request (redacted metadata view)")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
@@ -151,6 +155,13 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
 			"pipelock: warning: no --trusted-signer configured; the Authentic line will render every signer as Unverified")
 	}
+	var loadedConfig *config.Config
+	if strings.TrimSpace(opts.configFile) != "" {
+		loadedConfig, err = config.LoadForInspection(opts.configFile)
+		if err != nil {
+			return fmt.Errorf("--config: %w", err)
+		}
+	}
 
 	// metaAuthorized gates all access: the metadata token OR the raw token (a
 	// raw holder is also a valid operator). rawAuthorized gates only the
@@ -168,6 +179,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:   opts.receiptDir,
 		TrustedKeys:  trusted,
+		Config:       loadedConfig,
 		HasFeature:   dashboardRuntimeHasFeature(lic),
 		Authorize:    dashboardAuthorizeFunc(metaAuthorized),
 		AuthorizeRaw: dashboardAuthorizeFunc(rawAuthorized),

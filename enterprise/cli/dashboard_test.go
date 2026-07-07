@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -29,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
@@ -110,7 +112,7 @@ func TestDashboardCmd_Tree(t *testing.T) {
 	if err != nil || serve.Use != "serve" {
 		t.Fatalf("dashboard serve subcommand not found: %v", err)
 	}
-	for _, flag := range []string{"listen", "receipt-dir", "auth-token-file", "raw-token-file", "trusted-signer", "license-crl-file", "tls-cert", "tls-key"} {
+	for _, flag := range []string{"listen", "receipt-dir", "config", "auth-token-file", "raw-token-file", "trusted-signer", "license-crl-file", "tls-cert", "tls-key"} {
 		if serve.Flags().Lookup(flag) == nil {
 			t.Errorf("serve is missing --%s", flag)
 		}
@@ -125,6 +127,21 @@ func writeDashRawTokenFile(t *testing.T) (path, token string) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	return path, token
+}
+
+func writeDashConfigFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	body := []byte(`mode: balanced
+response_scanning:
+  enabled: false
+  exempt_domains:
+    - api.vendor.example
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	return path
 }
 
 func TestDashboardServe_RawTokenMustDifferFromAuthToken(t *testing.T) {
@@ -287,6 +304,139 @@ func TestDashboardServe_RejectsMissingReceiptDir(t *testing.T) {
 	}
 }
 
+func TestDashboardServe_RejectsBadConfigPath(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", writeDashTokenFile(t),
+		"--config", filepath.Join(t.TempDir(), "missing.yaml"),
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("missing config: want --config error, got %v", err)
+	}
+}
+
+func TestDashboardServe_RejectsConfigDirectory(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", writeDashTokenFile(t),
+		"--config", t.TempDir(),
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("config directory: want --config error, got %v", err)
+	}
+}
+
+func TestDashboardServe_RejectsMalformedConfig(t *testing.T) {
+	pub, priv := newDashKeyPair(t)
+	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: balanced\nresponse_scanning: ["), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	cmd := dashboardServeCmd()
+	cmd.SetArgs([]string{
+		"--receipt-dir", t.TempDir(),
+		"--auth-token-file", writeDashTokenFile(t),
+		"--config", configPath,
+	})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--config") {
+		t.Fatalf("malformed config: want --config error, got %v", err)
+	}
+}
+
+func TestDashboardServe_InspectionConfigIgnoresUnreadableReferencedFile(t *testing.T) {
+	// A read-only inventory must not resolve unrelated runtime-side files it does
+	// not need. An unreadable license_file referenced by --config (a file the
+	// exemptions view never uses) must NOT prevent the dashboard from starting.
+	// This exercises the real serve path: runDashboardServe loads --config via
+	// config.LoadForInspection, so a regression back to config.Load (which reads
+	// license_file) would fail before the listening banner and fail this test.
+	// Empty env license so config.Load, if it were used, would resolve the
+	// config's license_file (env takes priority over license_file). The
+	// dashboard's own license is supplied via the lic argument, independent of
+	// --config, so config's unreadable license_file only bites the config load.
+	t.Setenv(license.EnvLicenseKey, "")
+	dir := t.TempDir()
+	licensePath := filepath.Join(dir, "unrelated-license.token")
+	if err := os.WriteFile(licensePath, []byte("unused"), 0o600); err != nil {
+		t.Fatalf("WriteFile(license): %v", err)
+	}
+	if err := os.Chmod(licensePath, 0); err != nil {
+		t.Fatalf("Chmod(license): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(licensePath, 0o600) })
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	body := "mode: balanced\nlicense_file: unrelated-license.token\nbrowser_shield:\n  enabled: false\n  exempt_domains:\n    - my.internal.example\n"
+	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+
+	out := &dashSyncBuffer{}
+	errOut := &dashSyncBuffer{}
+	cmd := dashboardServeCmd()
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd.SetContext(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runDashboardServe(cmd, dashboardServeOptions{
+			listen:        "127.0.0.1:0",
+			receiptDir:    t.TempDir(),
+			authTokenFile: writeDashTokenFile(t),
+			configFile:    configPath,
+		}, license.License{Features: []string{license.FeatureAgents}})
+	}()
+
+	// LoadForInspection reaches the listening banner. A regression to config.Load
+	// returns the unreadable-license_file error before the banner and fails here.
+	testwait.For(t, 10*time.Second, func() bool {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned before the listening banner (config load read the unrelated license_file?): %v", err)
+			return false
+		default:
+			return out.contains("dashboard listening on")
+		}
+	}, "serve never printed the listening banner; stderr: %s", errOut.String())
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not shut down after context cancel")
+	}
+}
+
+func TestDashboardServe_InspectionConfigRejectsMalformedYAML(t *testing.T) {
+	t.Setenv(license.EnvLicenseKey, "")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: balanced\n\tbroken: [::\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	if _, err := config.LoadForInspection(configPath); err == nil {
+		t.Fatal("LoadForInspection(malformed yaml) = nil error, want parse failure (fail closed)")
+	}
+}
+
 func TestDashboardServe_EndToEnd(t *testing.T) {
 	pub, priv := newDashKeyPair(t)
 	setDashLicenseEnv(t, issueDashLicense(t, priv, []string{license.FeatureAgents}), hex.EncodeToString(pub))
@@ -297,6 +447,7 @@ func TestDashboardServe_EndToEnd(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--receipt-dir", t.TempDir(),
 		"--auth-token-file", writeDashTokenFile(t),
+		"--config", writeDashConfigFile(t),
 		"--listen", "127.0.0.1:0",
 	})
 	cmd.SetOut(out)
@@ -364,6 +515,38 @@ func TestDashboardServe_EndToEnd(t *testing.T) {
 		}
 		if resp.Header.Get("Content-Security-Policy") == "" {
 			t.Errorf("missing Content-Security-Policy header")
+		}
+	})
+
+	t.Run("exemptions uses loaded config", func(t *testing.T) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/exemptions", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+dashTestToken)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("GET /exemptions: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		text := string(body)
+		// The metadata operator token does not carry raw access, so configured
+		// values are redacted; the view still shows the inventory, states, and
+		// the redaction note.
+		for _, want := range []string{"Exemptions inventory", "raw access is required", "inert"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("body missing %q: %s", want, text)
+			}
+		}
+		if strings.Contains(text, "api.vendor.example") {
+			t.Fatalf("metadata view leaked a configured domain: %s", text)
 		}
 	})
 

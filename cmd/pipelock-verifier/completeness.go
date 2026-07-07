@@ -72,7 +72,15 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 	report.SignaturesVerified = chainResult.IntegrityVerified && keyHex != ""
 	report.Unpinned = len(receipts) > 0 && chainResult.IntegrityVerified && keyHex == ""
 	if report.Unpinned && !opts.allowUnpinned {
-		report.Error = unpinnedReceiptBanner
+		// Append rather than overwrite: a report can be both Unpinned and
+		// StatusBroken (integrity-valid chain with a completeness structural
+		// violation), and the broken reason must survive so the exit-1 detail
+		// below reports the real cause, not just the unpinned banner.
+		if report.Error == "" {
+			report.Error = unpinnedReceiptBanner
+		} else {
+			report.Error = report.Error + "; " + unpinnedReceiptBanner
+		}
 	}
 
 	emitCompletenessReport(stdout, stderr, report, opts.jsonOutput)

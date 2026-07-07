@@ -14022,7 +14022,18 @@ func TestValidate_FlightRecorder(t *testing.T) {
 				c.FlightRecorder.Completeness.HeartbeatInterval = "-1s"
 				return c
 			},
-			wantErr: "heartbeat_interval must be non-negative",
+			wantErr: "heartbeat_interval must be positive",
+		},
+		{
+			name: "zero_heartbeat_interval_rejected",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.Completeness.HeartbeatInterval = "0s"
+				return c
+			},
+			wantErr: "heartbeat_interval must be positive",
 		},
 		{
 			name: "absurd_heartbeat_interval",

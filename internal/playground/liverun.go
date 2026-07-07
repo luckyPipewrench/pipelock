@@ -394,7 +394,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		err = fmt.Errorf("emitter construction failed")
 		return nil, err
 	}
-	if err := emitter.EmitSessionOpen(); err != nil {
+	if err = emitter.EmitSessionOpen(); err != nil {
 		return nil, fmt.Errorf("session_open receipt: %w", err)
 	}
 

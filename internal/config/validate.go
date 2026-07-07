@@ -2999,8 +2999,8 @@ func (c *Config) validateFlightRecorder() error {
 		if err != nil {
 			return fmt.Errorf("flight_recorder.completeness.heartbeat_interval must parse as a duration: %w", err)
 		}
-		if interval < 0 {
-			return fmt.Errorf("flight_recorder.completeness.heartbeat_interval must be non-negative")
+		if interval <= 0 {
+			return fmt.Errorf("flight_recorder.completeness.heartbeat_interval must be positive; omit the field to use the 60s default")
 		}
 		if interval > 24*time.Hour {
 			return fmt.Errorf("flight_recorder.completeness.heartbeat_interval must be <= 24h")

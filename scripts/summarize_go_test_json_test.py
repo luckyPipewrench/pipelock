@@ -104,6 +104,33 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         self.assertIn("--- example.com/proxy TestFlaky (0.8s) ---", summary)
         self.assertIn("lost early failure", summary)
 
+    def test_omits_failed_tests_header_for_package_only_failure(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "output",
+                    "Package": "example.com/broken",
+                    "Output": "compile failed\n",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/broken",
+                    "Elapsed": 0.1,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=1, out=out)
+
+        summary = out.getvalue()
+        self.assertNotIn("failed tests:", summary)
+        self.assertIn("failed package output tails:", summary)
+        self.assertIn("compile failed", summary)
+
     def test_ignores_non_json_lines(self):
         results = summarize_go_test_json.parse_events(
             [

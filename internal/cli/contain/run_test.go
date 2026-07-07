@@ -435,6 +435,12 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	if capsule.Evidence.ContainLaunch == nil {
 		t.Fatalf("proof missing signed contain launch evidence: %s", data)
 	}
+	if capsule.Evidence.Containment == nil {
+		t.Fatalf("proof missing signed containment evidence: %s", data)
+	}
+	if capsule.Evidence.Containment.KernelRuleHash == "" {
+		t.Fatalf("proof containment evidence missing kernel rule hash: %+v", capsule.Evidence.Containment)
+	}
 	launch := capsule.Evidence.ContainLaunch
 	if launch.Tool != "claude" || launch.CWD != "/home/"+testAgentUser || launch.Argc != 2 {
 		t.Fatalf("launch evidence = %+v, want claude argc=2 cwd=/home/%s", launch, testAgentUser)
@@ -444,6 +450,19 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	}
 	if launch.ArgvSHA256 == "" || launch.EnvSHA256 == "" {
 		t.Fatalf("launch evidence missing privacy-preserving hashes: %+v", launch)
+	}
+}
+
+func TestContainRunContainmentEvidence_RejectsMissingRuleHash(t *testing.T) {
+	env := allPassEnv(t)
+	env.nftRulesPath = ""
+
+	_, err := containRunContainmentEvidence(env, "987")
+	if err == nil {
+		t.Fatal("expected containment evidence error")
+	}
+	if !strings.Contains(err.Error(), "nftables rules path is required") {
+		t.Fatalf("error = %v, want missing rules path", err)
 	}
 }
 

@@ -42,6 +42,7 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 | `forward` | Response scan | `response_scan` | Prompt injection in response |
 | `forward` | Allow | (empty) | Successful forward |
 | `intercept` | Request / response / A2A scanning | various | TLS-intercepted traffic inside CONNECT tunnels, including request-body redaction, response-scan, DLP, media policy, and A2A coverage |
+| `intercept` | Allow | (empty) | Successful inner HTTP request; under `require_receipts`, the durable intent is emitted before the upstream request |
 | `mcp_stdio` | Input scan | `mcp_input_scanning` | DLP, injection, or tools/call redaction block |
 | `mcp_stdio` | Tool scan | `mcp_response_scan` | Poisoned `tools/list` response or schema drift (rug-pull) |
 | `mcp_stdio` | Tool policy | `mcp_tool_policy` | Pre-execution allow/deny/redirect decision |
@@ -104,6 +105,6 @@ Verify a single file with `pipelock verify-receipt evidence-proxy-0.jsonl --key 
 
 ## Emit Failure Behavior
 
-Receipt emission failures are logged and do not fail requests by default. Set `flight_recorder.require_receipts: true` to require allow-path receipts before forwarding traffic; if signing fails or the recorder is unavailable, Pipelock blocks the action with `receipt_emission_failed` instead of sending it upstream. Block-path receipts remain best-effort because the underlying action has already been denied.
+Receipt emission failures are logged and do not fail requests by default. Set `flight_recorder.require_receipts: true` to require allow-path receipts before forwarding traffic; if signing fails or the recorder is unavailable, Pipelock blocks the action with `receipt_emission_failed` instead of sending it upstream. This includes TLS-intercepted CONNECT inner HTTP requests: their durable `intent` receipt is emitted before the upstream request is attempted. Block-path receipts remain best-effort because the underlying action has already been denied.
 
 `require_receipts` covers the per-request, configured receipt-covered enforcement points — `allow`/`block` decisions on `tools/call` and on A2A methods, plus the request-path proxy decisions — not "every byte that flows." It does not mint a separate receipt for each clean frame of a streamed exchange: per-frame allow receipts on a long-lived stream (for example each clean WebSocket frame, or each clean SSE chunk) would be O(n) in stream length, so clean streaming frames are intentionally summarized rather than emitted individually. A blocked frame still emits its block receipt. Treat the guarantee as "every configured enforcement event is provable," not "every frame produces a receipt."

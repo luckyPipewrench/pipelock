@@ -45,7 +45,12 @@ const policyHashLabelPrefix = "sha256:"
 // the synthetic AWS example key is detected. Public-rule-id-by-construction.
 const awsKeyPatternName = "AWS Access Key ID"
 
-var afterEarlyRecorderCloseForTest func()
+var (
+	afterEarlyRecorderCloseForTest  func()
+	afterRecorderConstructedForTest func(*recorder.Recorder)
+	beforeProxyConstructedForTest   func(*config.Config)
+	beforeDriveScenarioForTest      func(*Scenario)
+)
 
 // CapturedScenario is the genuine result of driving one scenario through a real
 // Pipelock proxy: the signed receipt chain plus the metadata needed to assemble
@@ -152,6 +157,9 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 			}
 		}
 	}()
+	if afterRecorderConstructedForTest != nil {
+		afterRecorderConstructedForTest(rec)
+	}
 
 	policyHash := configHash(cfg)
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
@@ -168,6 +176,9 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 		return nil, fmt.Errorf("scenario %s: session_open receipt: %w", s.ID, err)
 	}
 
+	if beforeProxyConstructedForTest != nil {
+		beforeProxyConstructedForTest(cfg)
+	}
 	p, err := proxy.New(cfg, audit.NewNop(), sc, metrics.New(),
 		proxy.WithRecorder(rec),
 		proxy.WithReceiptEmitter(emitter),
@@ -180,6 +191,9 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
 
+	if beforeDriveScenarioForTest != nil {
+		beforeDriveScenarioForTest(&s)
+	}
 	if err := driveScenario(ctx, s, p.Handler()); err != nil {
 		return nil, fmt.Errorf("scenario %s: drive: %w", s.ID, err)
 	}

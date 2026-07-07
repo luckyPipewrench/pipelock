@@ -418,7 +418,7 @@ func TestAnalyzeReasons(t *testing.T) {
 	}
 }
 
-func TestAnalyzeNoOpenIsUnverified(t *testing.T) {
+func TestAnalyzeNoOpenIsBroken(t *testing.T) {
 	t.Parallel()
 	b := newChainBuilder(t)
 	chain := []receipt.Receipt{

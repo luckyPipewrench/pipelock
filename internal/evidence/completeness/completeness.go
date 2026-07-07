@@ -197,7 +197,7 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 				continue
 			}
 		}
-		if runNonce != "" || ar.DecisionPhase != "" || ar.SessionControl != nil {
+		if runNonce != "" || ar.SessionControl != nil {
 			st := getRun(runNonce)
 			if violation := applyRecord(st, ar, ctx); violation != "" {
 				markStructuralViolation(st, violation)

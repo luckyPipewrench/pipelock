@@ -19,6 +19,28 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+type heartbeatFailureLog struct {
+	mu      sync.Mutex
+	entries []string
+	seen    chan string
+}
+
+func newHeartbeatFailureLog() *heartbeatFailureLog {
+	return &heartbeatFailureLog{seen: make(chan string, 4)}
+}
+
+func (l *heartbeatFailureLog) Write(p []byte) (int, error) {
+	msg := string(p)
+	l.mu.Lock()
+	l.entries = append(l.entries, msg)
+	l.mu.Unlock()
+	select {
+	case l.seen <- msg:
+	default:
+	}
+	return len(p), nil
+}
+
 func TestReceiptHeartbeatTickerStopsBeforeSeal(t *testing.T) {
 	dir := t.TempDir()
 	pub, priv, err := signing.GenerateKeyPair()
@@ -142,6 +164,59 @@ func TestRequiredReceiptHeartbeatFailureMarksEmitterUnhealthy(t *testing.T) {
 	}
 }
 
+func TestOptionalReceiptHeartbeatFailureKeepsEmitterHealthy(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	e := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rec,
+		PrivKey:  priv,
+	})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	log := newHeartbeatFailureLog()
+	requiredFailure := make(chan error, 1)
+	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return e }, log, false, func(err error) {
+		requiredFailure <- err
+	})
+	defer wg.Wait()
+	defer cancel()
+
+	first := waitForHeartbeatFailureLog(t, log.seen)
+	second := waitForHeartbeatFailureLog(t, log.seen)
+	cancel()
+
+	if !strings.Contains(first, "receipt heartbeat emit failed") || !strings.Contains(second, "receipt heartbeat emit failed") {
+		t.Fatalf("heartbeat logs = %q, %q; want repeated failure logs", first, second)
+	}
+	if err := e.HealthError(); err != nil {
+		t.Fatalf("HealthError() = %v, want nil for optional heartbeat failure", err)
+	}
+	select {
+	case err := <-requiredFailure:
+		t.Fatalf("required failure callback called for optional heartbeat failure: %v", err)
+	default:
+	}
+}
+
 func waitForHeartbeatReceipt(t *testing.T, seen <-chan receipt.Receipt) {
 	t.Helper()
 	for {
@@ -154,6 +229,17 @@ func waitForHeartbeatReceipt(t *testing.T, seen <-chan receipt.Receipt) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for heartbeat receipt")
 		}
+	}
+}
+
+func waitForHeartbeatFailureLog(t *testing.T, seen <-chan string) string {
+	t.Helper()
+	select {
+	case msg := <-seen:
+		return msg
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for heartbeat failure log")
+		return ""
 	}
 }
 

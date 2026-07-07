@@ -113,7 +113,7 @@ func (e *Engine) PublicKeyHex() string { return e.pubKeyHex }
 // Capture drives one scenario's synthetic request(s) through a real proxy and
 // returns the captured, signed receipt chain. The verdict comes entirely from
 // the real scanner pipeline; nothing here simulates a decision.
-func (e *Engine) Capture(s Scenario) (*CapturedScenario, error) {
+func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 	evidenceDir := filepath.Join(e.workDir, s.ID)
 	if err := os.MkdirAll(evidenceDir, 0o750); err != nil {
 		return nil, fmt.Errorf("scenario %s: evidence dir: %w", s.ID, err)
@@ -138,6 +138,15 @@ func (e *Engine) Capture(s Scenario) (*CapturedScenario, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scenario %s: recorder: %w", s.ID, err)
 	}
+	// Close the recorder on any early-error return before it is closed on the
+	// success path below; without this, a failure after construction (emitter,
+	// session_open, proxy, or drive) leaks the recorder's open file handle.
+	recClosed := false
+	defer func() {
+		if err != nil && !recClosed {
+			_ = rec.Close()
+		}
+	}()
 
 	policyHash := configHash(cfg)
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
@@ -170,7 +179,8 @@ func (e *Engine) Capture(s Scenario) (*CapturedScenario, error) {
 		return nil, fmt.Errorf("scenario %s: drive: %w", s.ID, err)
 	}
 
-	if err := rec.Close(); err != nil {
+	recClosed = true
+	if err = rec.Close(); err != nil {
 		return nil, fmt.Errorf("scenario %s: recorder close: %w", s.ID, err)
 	}
 

@@ -43,6 +43,11 @@ const (
 
 	goldenValidSingle      = "valid-single.json"
 	goldenValidChain       = "valid-chain.jsonl"
+	goldenG1ValidChain     = "g1-valid-chain.jsonl"
+	goldenG1RestartChain   = "g1-restart-chain.jsonl"
+	goldenG1BrokenGenesis  = "g1-broken-genesis.jsonl"
+	goldenG1LegacyOpen     = "g1-legacy-open-genesis.jsonl"
+	goldenG1Vectors        = "g1-genesis-vectors.json"
 	goldenInvalidSignature = "invalid-signature.json"
 	goldenBrokenChain      = "broken-chain.jsonl"
 	goldenTestKey          = "test-key.json"
@@ -50,6 +55,11 @@ const (
 	chainLen      = 5
 	brokenAtIndex = 3
 	brokenPrev    = "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+	g1RunNonce         = "0123456789abcdef0123456789abcdef"
+	g1OpenNonce        = "open-nonce-g1"
+	g1RestartRunNonce  = "abcdef0123456789abcdef0123456789"
+	g1RestartOpenNonce = "open-nonce-g1-restart"
 )
 
 // baseTime fixes the timestamp floor for golden receipts. Each successive
@@ -121,6 +131,336 @@ func buildValidChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
 	return chain
 }
 
+func buildG1ValidChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	policyHash := "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	open := receipt.SessionOpen{
+		RunNonce:             g1RunNonce,
+		OpenNonce:            g1OpenNonce,
+		RecorderSession:      recorderSessionID,
+		PolicyHash:           policyHash,
+		SignerKeyEpoch:       "epoch-2026-04",
+		HeartbeatSeconds:     30,
+		ChainOpenSeq:         0,
+		GenesisAnchorHead:    "anchor-head-0001",
+		GenesisAnchorLog:     "anchor-log-0001",
+		PostureCapsuleSHA256: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		PostureSignerKeyID:   "posture-key-1",
+		ContainmentNonce:     "containment-nonce-0001",
+		ContainedUID:         "966",
+	}
+	genesis := receipt.ComputeSessionOpenGenesis(open)
+	open.GenesisHash = genesis
+
+	chain := make([]receipt.Receipt, 0, chainLen)
+	openAR := fixedActionRecord(0, genesis)
+	openAR.ActionID = "g1-session-open"
+	openAR.ActionType = receipt.ActionUnclassified
+	openAR.Target = "receipt-session:open"
+	openAR.PolicyHash = policyHash
+	openAR.Transport = "receipt_session"
+	openAR.Method = ""
+	openAR.Layer = "session_control"
+	openAR.RunNonce = g1RunNonce
+	openAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlOpen,
+		Open: &open,
+	}
+	openReceipt, err := receipt.Sign(openAR, priv)
+	if err != nil {
+		t.Fatalf("Sign g1 open: %v", err)
+	}
+	chain = append(chain, openReceipt)
+	prevHash := mustReceiptHash(t, openReceipt)
+
+	intentAR := fixedActionRecord(1, prevHash)
+	intentAR.ActionID = "g1-decision-intent"
+	intentAR.Intent = "write_customer_record"
+	intentAR.DecisionPhase = receipt.DecisionPhaseIntent
+	intentAR.RunNonce = g1RunNonce
+	intentReceipt, err := receipt.Sign(intentAR, priv)
+	if err != nil {
+		t.Fatalf("Sign g1 intent: %v", err)
+	}
+	chain = append(chain, intentReceipt)
+	prevHash = mustReceiptHash(t, intentReceipt)
+
+	outcomeAR := fixedActionRecord(2, prevHash)
+	outcomeAR.ActionID = "g1-decision-outcome"
+	outcomeAR.Intent = "write_customer_record"
+	outcomeAR.DecisionPhase = receipt.DecisionPhaseOutcome
+	outcomeAR.RunNonce = g1RunNonce
+	outcomeReceipt, err := receipt.Sign(outcomeAR, priv)
+	if err != nil {
+		t.Fatalf("Sign g1 outcome: %v", err)
+	}
+	chain = append(chain, outcomeReceipt)
+	prevHash = mustReceiptHash(t, outcomeReceipt)
+
+	heartbeatAR := fixedActionRecord(3, prevHash)
+	heartbeatAR.ActionID = "g1-session-heartbeat"
+	heartbeatAR.ActionType = receipt.ActionUnclassified
+	heartbeatAR.Target = "receipt-session:heartbeat"
+	heartbeatAR.Transport = "receipt_session"
+	heartbeatAR.Method = ""
+	heartbeatAR.Layer = "session_control"
+	heartbeatAR.RunNonce = g1RunNonce
+	heartbeatAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlHeartbeat,
+		Heartbeat: &receipt.SessionHeartbeat{
+			RunNonce:         g1RunNonce,
+			OpenNonce:        g1OpenNonce,
+			Beat:             1,
+			ChainHead:        prevHash,
+			ChainSeqHead:     2,
+			HeartbeatTime:    baseTime.Add(3 * time.Second).Format(time.RFC3339),
+			FsyncErrorsGated: 2,
+			DurabilityBlocks: 3,
+		},
+	}
+	heartbeatReceipt, err := receipt.Sign(heartbeatAR, priv)
+	if err != nil {
+		t.Fatalf("Sign g1 heartbeat: %v", err)
+	}
+	chain = append(chain, heartbeatReceipt)
+	prevHash = mustReceiptHash(t, heartbeatReceipt)
+
+	closeAR := fixedActionRecord(4, prevHash)
+	closeAR.ActionID = "g1-session-close"
+	closeAR.ActionType = receipt.ActionUnclassified
+	closeAR.Target = "receipt-session:close"
+	closeAR.Transport = "receipt_session"
+	closeAR.Method = ""
+	closeAR.Layer = "session_control"
+	closeAR.RunNonce = g1RunNonce
+	closeAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlClose,
+		Close: &receipt.SessionClose{
+			RunNonce:         g1RunNonce,
+			OpenNonce:        g1OpenNonce,
+			FinalSeq:         4,
+			RootHash:         prevHash,
+			ReceiptCount:     5,
+			CloseReason:      "normal",
+			FsyncErrorsGated: 3,
+			DurabilityBlocks: 4,
+		},
+	}
+	closeReceipt, err := receipt.Sign(closeAR, priv)
+	if err != nil {
+		t.Fatalf("Sign g1 close: %v", err)
+	}
+	chain = append(chain, closeReceipt)
+	return chain
+}
+
+func buildG1RestartChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	policyHash := "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	chain := buildG1ValidChain(t, priv)[:2]
+	prevHash := mustReceiptHash(t, chain[len(chain)-1])
+	priorSeq := chain[len(chain)-1].ActionRecord.ChainSeq
+
+	restartOpen := receipt.SessionOpen{
+		RunNonce:             g1RestartRunNonce,
+		OpenNonce:            g1RestartOpenNonce,
+		RecorderSession:      recorderSessionID,
+		PolicyHash:           policyHash,
+		SignerKeyEpoch:       "epoch-2026-04-restart",
+		HeartbeatSeconds:     45,
+		ChainOpenSeq:         2,
+		PriorChainHead:       prevHash,
+		PriorChainSeq:        priorSeq,
+		GenesisAnchorHead:    "restart-anchor-head-0002",
+		GenesisAnchorLog:     "restart-anchor-log-0002",
+		PostureCapsuleSHA256: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		PostureSignerKeyID:   "posture-key-restart",
+		ContainmentNonce:     "containment-nonce-0002",
+		ContainedUID:         "967",
+	}
+	restartAR := fixedActionRecord(2, prevHash)
+	restartAR.ActionID = "g1-session-open-restart"
+	restartAR.ActionType = receipt.ActionUnclassified
+	restartAR.Target = "receipt-session:open"
+	restartAR.PolicyHash = policyHash
+	restartAR.Transport = "receipt_session"
+	restartAR.Method = ""
+	restartAR.Layer = "session_control"
+	restartAR.RunNonce = g1RestartRunNonce
+	restartAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlOpen,
+		Open: &restartOpen,
+	}
+	restartReceipt, err := receipt.Sign(restartAR, priv)
+	if err != nil {
+		t.Fatalf("Sign g1 restart open: %v", err)
+	}
+	chain = append(chain, restartReceipt)
+	prevHash = mustReceiptHash(t, restartReceipt)
+
+	heartbeatAR := fixedActionRecord(3, prevHash)
+	heartbeatAR.ActionID = "g1-session-heartbeat-restart"
+	heartbeatAR.ActionType = receipt.ActionUnclassified
+	heartbeatAR.Target = "receipt-session:heartbeat"
+	heartbeatAR.Transport = "receipt_session"
+	heartbeatAR.Method = ""
+	heartbeatAR.Layer = "session_control"
+	heartbeatAR.RunNonce = g1RestartRunNonce
+	heartbeatAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlHeartbeat,
+		Heartbeat: &receipt.SessionHeartbeat{
+			RunNonce:         g1RestartRunNonce,
+			OpenNonce:        g1RestartOpenNonce,
+			Beat:             7,
+			ChainHead:        prevHash,
+			ChainSeqHead:     2,
+			HeartbeatTime:    baseTime.Add(3 * time.Second).Format(time.RFC3339),
+			FsyncErrorsGated: 4,
+			DurabilityBlocks: 8,
+		},
+	}
+	heartbeatReceipt, err := receipt.Sign(heartbeatAR, priv)
+	if err != nil {
+		t.Fatalf("Sign g1 restart heartbeat: %v", err)
+	}
+	chain = append(chain, heartbeatReceipt)
+	prevHash = mustReceiptHash(t, heartbeatReceipt)
+
+	closeAR := fixedActionRecord(4, prevHash)
+	closeAR.ActionID = "g1-session-close-restart"
+	closeAR.ActionType = receipt.ActionUnclassified
+	closeAR.Target = "receipt-session:close"
+	closeAR.Transport = "receipt_session"
+	closeAR.Method = ""
+	closeAR.Layer = "session_control"
+	closeAR.RunNonce = g1RestartRunNonce
+	closeAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlClose,
+		Close: &receipt.SessionClose{
+			RunNonce:         g1RestartRunNonce,
+			OpenNonce:        g1RestartOpenNonce,
+			FinalSeq:         4,
+			RootHash:         prevHash,
+			ReceiptCount:     5,
+			CloseReason:      "restart-normal",
+			FsyncErrorsGated: 5,
+			DurabilityBlocks: 9,
+		},
+	}
+	closeReceipt, err := receipt.Sign(closeAR, priv)
+	if err != nil {
+		t.Fatalf("Sign g1 restart close: %v", err)
+	}
+	chain = append(chain, closeReceipt)
+	return chain
+}
+
+func buildG1BrokenGenesisChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	open := *chain[0].ActionRecord.SessionControl.Open
+	open.OpenNonce += "-tampered"
+	chain[0].ActionRecord.SessionControl.Open = &open
+	brokenOpen, err := receipt.Sign(chain[0].ActionRecord, priv)
+	if err != nil {
+		t.Fatalf("Sign tampered g1 open: %v", err)
+	}
+	chain[0] = brokenOpen
+	return chain
+}
+
+func buildG1LegacyOpenOnGenesisChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	ar := chain[0].ActionRecord
+	ar.ChainPrevHash = receipt.GenesisHash
+	if ar.SessionControl != nil && ar.SessionControl.Open != nil {
+		open := *ar.SessionControl.Open
+		open.GenesisHash = ""
+		ar.SessionControl.Open = &open
+	}
+	legacyOpen, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign legacy genesis session_open: %v", err)
+	}
+	chain[0] = legacyOpen
+	return chain[:1]
+}
+
+type g1Vector struct {
+	Name     string              `json:"name"`
+	Open     receipt.SessionOpen `json:"open"`
+	Expected string              `json:"expected"`
+}
+
+func g1GenesisVectors() []g1Vector {
+	fixtureOpen := receipt.SessionOpen{
+		RunNonce:             g1RunNonce,
+		OpenNonce:            g1OpenNonce,
+		RecorderSession:      recorderSessionID,
+		PolicyHash:           "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		SignerKeyEpoch:       "epoch-2026-04",
+		HeartbeatSeconds:     30,
+		ChainOpenSeq:         0,
+		GenesisAnchorHead:    "anchor-head-0001",
+		GenesisAnchorLog:     "anchor-log-0001",
+		PostureCapsuleSHA256: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		PostureSignerKeyID:   "posture-key-1",
+		ContainmentNonce:     "containment-nonce-0001",
+		ContainedUID:         "966",
+	}
+	negativeHeartbeat := receipt.SessionOpen{
+		RunNonce:         "rn",
+		OpenNonce:        "on",
+		RecorderSession:  "rs",
+		PolicyHash:       "ph",
+		SignerKeyEpoch:   "sk",
+		HeartbeatSeconds: -7,
+	}
+	allOptionals := receipt.SessionOpen{
+		RunNonce:             "feedface01234567cafebeef89abcdef",
+		OpenNonce:            "open-nonce-all-optionals",
+		RecorderSession:      "session-all-optionals",
+		PolicyHash:           "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		SignerKeyEpoch:       "epoch-all-optionals",
+		HeartbeatSeconds:     60,
+		ChainOpenSeq:         11,
+		PriorChainHead:       "prior-tail-hash",
+		PriorChainSeq:        10,
+		GenesisHash:          "g1:ignored-by-genesis-vector",
+		GenesisAnchorHead:    "anchor-head-all",
+		GenesisAnchorLog:     "anchor-log-all",
+		PostureCapsuleSHA256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PostureSignerKeyID:   "posture-key-ignored-by-genesis",
+		ContainmentNonce:     "containment-nonce-all",
+		ContainedUID:         "967",
+	}
+	utf8Framing := receipt.SessionOpen{
+		RunNonce:             "00112233445566778899aabbccddeeff",
+		OpenNonce:            "a",
+		RecorderSession:      "bc",
+		PolicyHash:           "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+		SignerKeyEpoch:       "epoch-\u00e9-\U0001f512",
+		HeartbeatSeconds:     1,
+		GenesisAnchorHead:    "anchor-\u03c0",
+		GenesisAnchorLog:     "log-\u65e5",
+		PostureCapsuleSHA256: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ContainmentNonce:     "nonce-\u00e9",
+		ContainedUID:         "uid-\u2603",
+	}
+	inputs := []g1Vector{
+		{Name: "empty", Open: receipt.SessionOpen{}},
+		{Name: "fixture", Open: fixtureOpen},
+		{Name: "negative-heartbeat-clamped", Open: negativeHeartbeat},
+		{Name: "all-optionals", Open: allOptionals},
+		{Name: "utf8-framing", Open: utf8Framing},
+	}
+	for i := range inputs {
+		inputs[i].Expected = receipt.ComputeSessionOpenGenesis(inputs[i].Open)
+	}
+	return inputs
+}
+
 // TestGenerateGoldenFiles regenerates the golden files in testdata/ when
 // run with -update. Normal test runs skip this.
 func TestGenerateGoldenFiles(t *testing.T) {
@@ -160,6 +500,16 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	chain := buildValidChain(t, priv)
 	chainEntries := wrapInFlightRecorderEntries(t, chain)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenValidChain), chainEntries)
+
+	g1Chain := buildG1ValidChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1ValidChain), wrapInFlightRecorderEntries(t, g1Chain))
+	g1Restart := buildG1RestartChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RestartChain), wrapInFlightRecorderEntries(t, g1Restart))
+	writeJSONPretty(t, filepath.Join(testdataDir, goldenG1Vectors), g1GenesisVectors())
+	g1Broken := buildG1BrokenGenesisChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1BrokenGenesis), wrapInFlightRecorderEntries(t, g1Broken))
+	g1LegacyOpen := buildG1LegacyOpenOnGenesisChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1LegacyOpen), wrapInFlightRecorderEntries(t, g1LegacyOpen))
 
 	// 4. invalid-signature.json - tamper a signature byte. Individual verify
 	// MUST fail. Chain verification also fails on this receipt.
@@ -228,6 +578,172 @@ func TestConformance_ValidChain(t *testing.T) {
 	}
 	if result.RootHash == "" {
 		t.Error("root_hash should not be empty")
+	}
+}
+
+func TestConformance_G1ValidChain(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1ValidChain))
+	if len(receipts) != chainLen {
+		t.Fatalf("receipt count = %d, want %d", len(receipts), chainLen)
+	}
+
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if !result.Valid {
+		t.Fatalf("VerifyChain: %s", result.Error)
+	}
+	if got := receipts[0].ActionRecord.ChainPrevHash; !strings.HasPrefix(got, "g1:") {
+		t.Fatalf("genesis prev hash = %q, want g1 prefix", got)
+	}
+	if got := receipts[1].ActionRecord.DecisionPhase; got != receipt.DecisionPhaseIntent {
+		t.Fatalf("receipt[1] decision_phase = %q, want %q", got, receipt.DecisionPhaseIntent)
+	}
+	if got := receipts[2].ActionRecord.DecisionPhase; got != receipt.DecisionPhaseOutcome {
+		t.Fatalf("receipt[2] decision_phase = %q, want %q", got, receipt.DecisionPhaseOutcome)
+	}
+}
+
+func TestConformance_G1GenesisVectors(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(testdataDir, goldenG1Vectors)))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var vectors []g1Vector
+	if err := json.Unmarshal(data, &vectors); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(vectors) < 5 {
+		t.Fatalf("vector count = %d, want at least 5", len(vectors))
+	}
+	for _, vector := range vectors {
+		if got := receipt.ComputeSessionOpenGenesis(vector.Open); got != vector.Expected {
+			t.Fatalf("%s: ComputeSessionOpenGenesis = %q, want %q", vector.Name, got, vector.Expected)
+		}
+	}
+}
+
+func TestConformance_G1RestartChain(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1RestartChain))
+	if len(receipts) != chainLen {
+		t.Fatalf("receipt count = %d, want %d", len(receipts), chainLen)
+	}
+
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if !result.Valid {
+		t.Fatalf("VerifyChain: %s", result.Error)
+	}
+	open := receipts[2].ActionRecord.SessionControl.Open
+	if open == nil {
+		t.Fatal("restart receipt missing session_control.open")
+	}
+	if open.PriorChainHead == "" {
+		t.Fatal("restart open prior_chain_head should be populated")
+	}
+	if open.PriorChainSeq != receipts[1].ActionRecord.ChainSeq {
+		t.Fatalf("prior_chain_seq = %d, want %d", open.PriorChainSeq, receipts[1].ActionRecord.ChainSeq)
+	}
+}
+
+func TestConformance_G1BrokenGenesisRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1BrokenGenesis))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if result.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted broken g1 genesis")
+	}
+	if result.BrokenAtSeq != 0 {
+		t.Errorf("broken_at_seq = %d, want 0", result.BrokenAtSeq)
+	}
+	if !strings.Contains(result.Error, "session_open genesis hash mismatch") {
+		t.Errorf("error = %q, want substring 'session_open genesis hash mismatch'", result.Error)
+	}
+}
+
+func TestConformance_G1LegacyOpenOnGenesisRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1LegacyOpen))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if result.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted session_open on legacy genesis")
+	}
+	if result.BrokenAtSeq != 0 {
+		t.Errorf("broken_at_seq = %d, want 0", result.BrokenAtSeq)
+	}
+	if !strings.Contains(result.Error, "session_open on legacy genesis") {
+		t.Errorf("error = %q, want substring 'session_open on legacy genesis'", result.Error)
+	}
+}
+
+func TestConformance_G1SignedFieldTamperingRejected(t *testing.T) {
+	t.Parallel()
+
+	pub, _ := testKeyPair(t)
+	keyHex := hex.EncodeToString(pub)
+	tests := []struct {
+		name   string
+		mutate func([]receipt.Receipt)
+	}{
+		{
+			name: "session_open_posture_signer_key_id",
+			mutate: func(receipts []receipt.Receipt) {
+				receipts[0].ActionRecord.SessionControl.Open.PostureSignerKeyID = "posture-key-tampered"
+			},
+		},
+		{
+			name: "decision_phase",
+			mutate: func(receipts []receipt.Receipt) {
+				receipts[1].ActionRecord.DecisionPhase = receipt.DecisionPhaseOutcome
+			},
+		},
+		{
+			name: "heartbeat_beat",
+			mutate: func(receipts []receipt.Receipt) {
+				receipts[3].ActionRecord.SessionControl.Heartbeat.Beat++
+			},
+		},
+		{
+			name: "heartbeat_fsync_errors_gated",
+			mutate: func(receipts []receipt.Receipt) {
+				receipts[3].ActionRecord.SessionControl.Heartbeat.FsyncErrorsGated++
+			},
+		},
+		{
+			name: "close_root_hash",
+			mutate: func(receipts []receipt.Receipt) {
+				receipts[4].ActionRecord.SessionControl.Close.RootHash = "tampered-root"
+			},
+		},
+		{
+			name: "close_durability_blocks",
+			mutate: func(receipts []receipt.Receipt) {
+				receipts[4].ActionRecord.SessionControl.Close.DurabilityBlocks++
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1ValidChain))
+			tt.mutate(receipts)
+			result := receipt.VerifyChain(receipts, keyHex)
+			if result.Valid {
+				t.Fatal("VerifyChain unexpectedly accepted tampered signed field")
+			}
+			if !strings.Contains(result.Error, "signature") {
+				t.Fatalf("error = %q, want signature failure", result.Error)
+			}
+		})
 	}
 }
 
@@ -423,6 +939,15 @@ func writeEntryJSONL(t *testing.T, path string, entries []recorder.Entry) {
 	if err := os.WriteFile(path, []byte(buf.String()), 0o600); err != nil {
 		t.Fatalf("WriteFile %s: %v", path, err)
 	}
+}
+
+func mustReceiptHash(t *testing.T, r receipt.Receipt) string {
+	t.Helper()
+	h, err := receipt.ReceiptHash(r)
+	if err != nil {
+		t.Fatalf("ReceiptHash: %v", err)
+	}
+	return h
 }
 
 // flipFirstHexNibble flips the first hex character to produce a different

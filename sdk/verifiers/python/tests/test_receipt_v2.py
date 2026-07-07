@@ -10,6 +10,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from pipelock_aarp_verify.cli import main
 from pipelock_aarp_verify.receipt import (
+    compute_session_open_genesis,
+    load_evidence_chain,
     receipt_hash,
     verify_evidence_chain,
     verify_receipt_file,
@@ -18,6 +20,8 @@ from pipelock_aarp_verify.receipt import (
 ROOT = Path(__file__).resolve().parents[4]
 CORPUS = ROOT / "sdk/conformance/testdata/corpus"
 CORPUS_KEY = json.loads((CORPUS / "test-key.json").read_text())["public_key_hex"]
+TESTDATA = ROOT / "sdk/conformance/testdata"
+TESTDATA_KEY = json.loads((TESTDATA / "test-key.json").read_text())["public_key_hex"]
 VALID_SPANNED_V2 = (
     ROOT
     / "internal/contract/testdata/golden/"
@@ -28,8 +32,12 @@ VALID_PLAIN_V2 = (
     / "internal/contract/testdata/golden/"
     / "valid_evidence_receipt_proxy_decision.json"
 )
-V2_GOLDEN_PUBLIC_KEY = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
-V2_GOLDEN_POLICY_HASH = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+V2_GOLDEN_PUBLIC_KEY = (
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+)
+V2_GOLDEN_POLICY_HASH = (
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
 V2_PRIVATE_SEED_HEX = (
     "9d61b19d"
     "effd5a60"
@@ -105,7 +113,9 @@ def test_v1_receipt_with_unsigned_action_field_rejects(tmp_path: Path) -> None:
     assert "action_record: unknown field unsigned_sidecar" in report["error"]
 
 
-def test_v1_receipt_with_malformed_run_nonce_rejects_before_signature(tmp_path: Path) -> None:
+def test_v1_receipt_with_malformed_run_nonce_rejects_before_signature(
+    tmp_path: Path,
+) -> None:
     receipt = json.loads((CORPUS / "golden/11-run-nonce-bound.json").read_text())
     receipt["action_record"]["run_nonce"] = "0123456789ABCDEF0123456789ABCDEF"
     path = tmp_path / "malformed-run-nonce.json"
@@ -240,7 +250,9 @@ def test_spanned_v2_receipt_does_not_expose_oracle_key() -> None:
 
 
 def test_receipt_cli_json(capsys) -> None:  # type: ignore[no-untyped-def]
-    code = main(["receipt", str(VALID_SPANNED_V2), "--key", V2_GOLDEN_PUBLIC_KEY, "--json"])
+    code = main(
+        ["receipt", str(VALID_SPANNED_V2), "--key", V2_GOLDEN_PUBLIC_KEY, "--json"]
+    )
     captured = capsys.readouterr()
     assert code == 0
     body = json.loads(captured.out)
@@ -270,6 +282,99 @@ def test_v2_multi_receipt_chain_verifies() -> None:
     assert report["valid"] is True, report.get("error")
     assert report["receipt_count"] == 2
     assert report["final_seq"] == 1
+
+
+def test_v1_legacy_go_generated_chain_verifies() -> None:
+    receipts = load_evidence_chain(TESTDATA / "valid-chain.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is True, report.get("error")
+    assert report["receipt_count"] == 5
+    assert report["final_seq"] == 4
+
+
+def test_v1_g1_go_generated_chain_verifies() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is True, report.get("error")
+    assert report["receipt_count"] == 5
+    assert report["final_seq"] == 4
+
+
+def test_v1_g1_restart_chain_verifies_with_prior_tail_fields() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-restart-chain.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is True, report.get("error")
+    assert report["receipt_count"] == 5
+    assert report["final_seq"] == 4
+    restart_open = receipts[2]["action_record"]["session_control"]["open"]
+    assert restart_open["prior_chain_seq"] == 1
+    assert restart_open["prior_chain_head"] != ""
+
+
+def test_v1_g1_genesis_vectors_match_go() -> None:
+    vectors = json.loads((TESTDATA / "g1-genesis-vectors.json").read_text())
+    assert len(vectors) >= 5
+    for vector in vectors:
+        assert compute_session_open_genesis(vector["open"]) == vector["expected"]
+
+
+def test_v1_g1_broken_genesis_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-broken-genesis.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert report["broken_at_seq"] == 0
+    assert "session_open genesis hash mismatch" in report["error"]
+
+
+def test_v1_g1_legacy_session_open_on_genesis_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-legacy-open-genesis.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert report["broken_at_seq"] == 0
+    assert "session_open on legacy genesis" in report["error"]
+
+
+def test_v1_g1_signed_field_tampering_is_rejected() -> None:
+    def tamper_open_posture_signer(receipts: list[dict[str, object]]) -> None:
+        receipts[0]["action_record"]["session_control"]["open"][
+            "posture_signer_key_id"
+        ] = "posture-key-tampered"
+
+    def tamper_decision_phase(receipts: list[dict[str, object]]) -> None:
+        receipts[1]["action_record"]["decision_phase"] = "outcome"
+
+    def tamper_heartbeat_beat(receipts: list[dict[str, object]]) -> None:
+        receipts[3]["action_record"]["session_control"]["heartbeat"]["beat"] = 2
+
+    def tamper_heartbeat_fsync(receipts: list[dict[str, object]]) -> None:
+        receipts[3]["action_record"]["session_control"]["heartbeat"][
+            "fsync_errors_gated"
+        ] = 99
+
+    def tamper_close_root_hash(receipts: list[dict[str, object]]) -> None:
+        receipts[4]["action_record"]["session_control"]["close"][
+            "root_hash"
+        ] = "tampered-root"
+
+    def tamper_close_durability(receipts: list[dict[str, object]]) -> None:
+        receipts[4]["action_record"]["session_control"]["close"][
+            "durability_blocks"
+        ] = 99
+
+    cases = {
+        "session_open_posture_signer_key_id": tamper_open_posture_signer,
+        "decision_phase": tamper_decision_phase,
+        "heartbeat_beat": tamper_heartbeat_beat,
+        "heartbeat_fsync_errors_gated": tamper_heartbeat_fsync,
+        "close_root_hash": tamper_close_root_hash,
+        "close_durability_blocks": tamper_close_durability,
+    }
+    for name, mutate in cases.items():
+        receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+        mutate(receipts)
+        report = verify_evidence_chain(receipts, TESTDATA_KEY)
+        assert report["valid"] is False, name
+        assert "signature" in report["error"], name
 
 
 def test_v2_tampered_chain_fails_closed() -> None:

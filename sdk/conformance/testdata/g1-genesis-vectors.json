@@ -1,0 +1,87 @@
+[
+  {
+    "name": "empty",
+    "open": {
+      "run_nonce": "",
+      "open_nonce": "",
+      "recorder_session": "",
+      "policy_hash": "",
+      "signer_key_epoch": "",
+      "heartbeat_seconds": 0,
+      "chain_open_seq": 0
+    },
+    "expected": "g1:401517ba5ac1bff45abe6f77d5c9dcd30a3586f82fa7ff39a9a2cb9a84611215"
+  },
+  {
+    "name": "fixture",
+    "open": {
+      "run_nonce": "0123456789abcdef0123456789abcdef",
+      "open_nonce": "open-nonce-g1",
+      "recorder_session": "conformance-session",
+      "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signer_key_epoch": "epoch-2026-04",
+      "heartbeat_seconds": 30,
+      "chain_open_seq": 0,
+      "genesis_anchor_head": "anchor-head-0001",
+      "genesis_anchor_log": "anchor-log-0001",
+      "posture_capsule_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "posture_signer_key_id": "posture-key-1",
+      "containment_nonce": "containment-nonce-0001",
+      "contained_uid": "966"
+    },
+    "expected": "g1:819d66c67d157d04575db8660d145e19f9b8572f9f0a1ae0514d1dc4a2140ac8"
+  },
+  {
+    "name": "negative-heartbeat-clamped",
+    "open": {
+      "run_nonce": "rn",
+      "open_nonce": "on",
+      "recorder_session": "rs",
+      "policy_hash": "ph",
+      "signer_key_epoch": "sk",
+      "heartbeat_seconds": -7,
+      "chain_open_seq": 0
+    },
+    "expected": "g1:6395ccc3d7db5d1056d2f6d422bc4719edb58e37c8ec5eee5f7c5f6367982f0c"
+  },
+  {
+    "name": "all-optionals",
+    "open": {
+      "run_nonce": "feedface01234567cafebeef89abcdef",
+      "open_nonce": "open-nonce-all-optionals",
+      "recorder_session": "session-all-optionals",
+      "policy_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "signer_key_epoch": "epoch-all-optionals",
+      "heartbeat_seconds": 60,
+      "chain_open_seq": 11,
+      "prior_chain_head": "prior-tail-hash",
+      "prior_chain_seq": 10,
+      "genesis_hash": "g1:ignored-by-genesis-vector",
+      "genesis_anchor_head": "anchor-head-all",
+      "genesis_anchor_log": "anchor-log-all",
+      "posture_capsule_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "posture_signer_key_id": "posture-key-ignored-by-genesis",
+      "containment_nonce": "containment-nonce-all",
+      "contained_uid": "967"
+    },
+    "expected": "g1:89509a3d2ea98d16c1c21ff0575834c4702e508dd649ea4f46726906c7859db5"
+  },
+  {
+    "name": "utf8-framing",
+    "open": {
+      "run_nonce": "00112233445566778899aabbccddeeff",
+      "open_nonce": "a",
+      "recorder_session": "bc",
+      "policy_hash": "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "signer_key_epoch": "epoch-é-🔒",
+      "heartbeat_seconds": 1,
+      "chain_open_seq": 0,
+      "genesis_anchor_head": "anchor-π",
+      "genesis_anchor_log": "log-日",
+      "posture_capsule_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "containment_nonce": "nonce-é",
+      "contained_uid": "uid-☃"
+    },
+    "expected": "g1:154b9dbab2133083d92abab8a67b46cb4d3bcdb4621b38bfe7bbbe2e75e02a7a"
+  }
+]

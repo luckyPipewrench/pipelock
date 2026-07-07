@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from pipelock_aarp_verify.cli import main
 from pipelock_aarp_verify.receipt import (
+    _canonicalize_action_record,
+    ReceiptError,
     compute_session_open_genesis,
     load_evidence_chain,
     receipt_hash,
@@ -48,6 +51,9 @@ V2_PRIVATE_SEED_HEX = (
     "703bac03"
     "1cae7f60"
 )
+TESTDATA_PRIVATE_SEED_HEX = json.loads((TESTDATA / "test-key.json").read_text())[
+    "seed_hex"
+]
 
 
 def test_valid_spanned_v2_receipt_verifies() -> None:
@@ -377,6 +383,80 @@ def test_v1_g1_signed_field_tampering_is_rejected() -> None:
         assert "signature" in report["error"], name
 
 
+def test_v1_g1_missing_session_open_required_field_rejects() -> None:
+    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    del receipts[0]["action_record"]["session_control"]["open"]["open_nonce"]
+
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "session_control.open.open_nonce is required" in report["error"]
+
+
+def test_v1_g1_oversized_heartbeat_seconds_rejects_controlled() -> None:
+    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    receipts[0]["action_record"]["session_control"]["open"]["heartbeat_seconds"] = 2**64
+    _sign_v1_action_receipt(receipts[0])
+
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "session_control.open.heartbeat_seconds must be a uint64" in report["error"]
+
+
+def test_v1_g1_restart_prior_tail_mismatch_rejects_valid_signature() -> None:
+    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-restart-chain.jsonl")))
+    receipts[2]["action_record"]["session_control"]["open"]["prior_chain_head"] = (
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
+    _sign_v1_action_receipt(receipts[2])
+
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "session_open prior_chain_head does not match chain tail" in report["error"]
+
+
+def test_v1_g1_heartbeat_chain_head_mismatch_rejects_valid_signature() -> None:
+    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    receipts[3]["action_record"]["session_control"]["heartbeat"]["chain_head"] = (
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
+    _sign_v1_action_receipt(receipts[3])
+
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "heartbeat chain_head mismatch" in report["error"]
+
+
+def test_v1_g1_close_root_hash_mismatch_rejects_valid_signature() -> None:
+    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    receipts[4]["action_record"]["session_control"]["close"]["root_hash"] = (
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    )
+    _sign_v1_action_receipt(receipts[4])
+
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "session_close root_hash mismatch" in report["error"]
+
+
+def test_mixed_action_and_evidence_chain_rejects_controlled(tmp_path: Path) -> None:
+    action_line = (TESTDATA / "g1-valid-chain.jsonl").read_text().splitlines()[0]
+    evidence = json.loads(VALID_PLAIN_V2.read_text())
+    mixed = tmp_path / "mixed.jsonl"
+    mixed.write_text(
+        action_line
+        + "\n"
+        + json.dumps({"type": "evidence_receipt", "detail": evidence})
+        + "\n"
+    )
+
+    try:
+        load_evidence_chain(mixed)
+    except ReceiptError as exc:
+        assert "mixed action/evidence receipt chains are not supported" in str(exc)
+    else:
+        raise AssertionError("mixed chain unexpectedly loaded")
+
+
 def test_v2_tampered_chain_fails_closed() -> None:
     receipts = _build_v2_chain(2)
     receipts[1]["chain_prev_hash"] = "sha256:0"
@@ -427,3 +507,13 @@ def _sign_v2_receipt(receipt: dict[str, object]) -> None:
         "algorithm": "ed25519",
         "signature": f"ed25519:{sig.hex()}",
     }
+
+
+def _sign_v1_action_receipt(receipt: dict[str, object]) -> None:
+    action_record = receipt["action_record"]
+    assert isinstance(action_record, dict)
+    digest = hashlib.sha256(_canonicalize_action_record(action_record)).digest()
+    key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(TESTDATA_PRIVATE_SEED_HEX))
+    sig = key.sign(digest)
+    receipt["signature"] = f"ed25519:{sig.hex()}"
+    receipt["signer_key"] = TESTDATA_KEY

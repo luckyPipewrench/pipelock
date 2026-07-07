@@ -131,6 +131,43 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         self.assertIn("failed package output tails:", summary)
         self.assertIn("compile failed", summary)
 
+    def test_does_not_duplicate_test_output_as_package_tail(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "output",
+                    "Package": "example.com/proxy",
+                    "Test": "TestProxy",
+                    "Output": "    proxy_test.go:42: failed once\n",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/proxy",
+                    "Test": "TestProxy",
+                    "Elapsed": 0.5,
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/proxy",
+                    "Elapsed": 0.5,
+                }
+            ),
+        ]
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=1, out=out)
+
+        summary = out.getvalue()
+        self.assertIn("failed tests:", summary)
+        self.assertIn("--- example.com/proxy TestProxy (0.5s) ---", summary)
+        self.assertEqual(summary.count("failed once"), 1)
+        self.assertNotIn("failed package output tails:", summary)
+
     def test_ignores_non_json_lines(self):
         results = summarize_go_test_json.parse_events(
             [

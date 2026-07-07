@@ -56,9 +56,10 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
             output = event.get("Output")
             if isinstance(output, str):
                 output_line = output.rstrip("\n")
-                result.output.append(output_line)
                 if test_result is not None:
                     test_result.output.append(output_line)
+                else:
+                    result.output.append(output_line)
             continue
 
         if action in {"pass", "fail", "skip"}:
@@ -123,11 +124,15 @@ def print_summary(
             for line in test_result.output:
                 print(line, file=out)
 
-    print("failed package output tails:", file=out)
-    for package, result in failures:
-        print(f"--- {package} ---", file=out)
-        for line in result.output:
-            print(line, file=out)
+    package_output_failures = [
+        (package, result) for package, result in failures if result.output
+    ]
+    if package_output_failures:
+        print("failed package output tails:", file=out)
+        for package, result in package_output_failures:
+            print(f"--- {package} ---", file=out)
+            for line in result.output:
+                print(line, file=out)
 
 
 def main() -> int:

@@ -49,6 +49,61 @@ class SummarizeGoTestJSONTest(unittest.TestCase):
         self.assertIn("failed package output tails:", summary)
         self.assertIn("useful failure line", summary)
 
+    def test_preserves_failed_test_output_when_package_tail_evicted(self):
+        lines = [
+            json.dumps(
+                {
+                    "Action": "run",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFlaky",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "output",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFlaky",
+                    "Output": "    proxy_test.go:42: lost early failure\n",
+                }
+            ),
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/proxy",
+                    "Test": "TestFlaky",
+                    "Elapsed": 0.75,
+                }
+            ),
+        ]
+        for i in range(summarize_go_test_json.FAILED_OUTPUT_LIMIT + 5):
+            lines.append(
+                json.dumps(
+                    {
+                        "Action": "output",
+                        "Package": "example.com/proxy",
+                        "Output": f"later parallel output {i}\n",
+                    }
+                )
+            )
+        lines.append(
+            json.dumps(
+                {
+                    "Action": "fail",
+                    "Package": "example.com/proxy",
+                    "Elapsed": 10.0,
+                }
+            )
+        )
+
+        results = summarize_go_test_json.parse_events(lines)
+        out = io.StringIO()
+        summarize_go_test_json.print_summary(results, label="unit", top=1, out=out)
+
+        summary = out.getvalue()
+        self.assertIn("failed tests:", summary)
+        self.assertIn("--- example.com/proxy TestFlaky (0.8s) ---", summary)
+        self.assertIn("lost early failure", summary)
+
     def test_ignores_non_json_lines(self):
         results = summarize_go_test_json.parse_events(
             [

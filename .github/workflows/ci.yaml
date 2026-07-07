@@ -79,6 +79,7 @@ jobs:
     name: test-oss (${{ matrix.go-version }})
     timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         go-version: ['1.25', '1.26']
     steps:
@@ -122,6 +123,7 @@ jobs:
     name: test-enterprise (${{ matrix.go-version }})
     timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         go-version: ['1.25', '1.26']
     steps:

@@ -20,6 +20,16 @@ class PackageResult:
     output: collections.deque[str] = field(
         default_factory=lambda: collections.deque(maxlen=FAILED_OUTPUT_LIMIT)
     )
+    tests: dict[str, "TestResult"] = field(default_factory=dict)
+
+
+@dataclass
+class TestResult:
+    action: str = ""
+    elapsed: float = 0.0
+    output: collections.deque[str] = field(
+        default_factory=lambda: collections.deque(maxlen=FAILED_OUTPUT_LIMIT)
+    )
 
 
 def parse_events(lines: list[str]) -> dict[str, PackageResult]:
@@ -37,15 +47,29 @@ def parse_events(lines: list[str]) -> dict[str, PackageResult]:
 
         result = results.setdefault(package, PackageResult())
         action = event.get("Action")
+        test = event.get("Test")
+        test_result = None
+        if isinstance(test, str) and test != "":
+            test_result = result.tests.setdefault(test, TestResult())
+
         if action == "output":
             output = event.get("Output")
             if isinstance(output, str):
-                result.output.append(output.rstrip("\n"))
+                line = output.rstrip("\n")
+                result.output.append(line)
+                if test_result is not None:
+                    test_result.output.append(line)
             continue
 
-        if action in {"pass", "fail", "skip"} and "Test" not in event:
-            result.action = action
+        if action in {"pass", "fail", "skip"}:
             elapsed = event.get("Elapsed", 0.0)
+            if test_result is not None:
+                test_result.action = action
+                if isinstance(elapsed, (int, float)):
+                    test_result.elapsed = float(elapsed)
+                continue
+
+            result.action = action
             if isinstance(elapsed, (int, float)):
                 result.elapsed = float(elapsed)
 
@@ -82,6 +106,22 @@ def print_summary(
     failures = [(package, result) for package, result in packages if result.action == "fail"]
     if not failures:
         return
+
+    print("failed tests:", file=out)
+    for package, result in failures:
+        failed_tests = [
+            (test, test_result)
+            for test, test_result in result.tests.items()
+            if test_result.action == "fail"
+        ]
+        failed_tests.sort(key=lambda item: item[0])
+        for test, test_result in failed_tests:
+            print(
+                f"--- {package} {test} ({format_duration(test_result.elapsed)}) ---",
+                file=out,
+            )
+            for line in test_result.output:
+                print(line, file=out)
 
     print("failed package output tails:", file=out)
     for package, result in failures:

@@ -12,8 +12,12 @@ set -euo pipefail
 EXAMPLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$EXAMPLE_DIR/../.." && pwd)"
 PIPELOCK="${PIPELOCK_BIN:-$REPO_ROOT/pipelock}"
-CONFIG="$EXAMPLE_DIR/pipelock.yaml"
+SOURCE_CONFIG="$EXAMPLE_DIR/pipelock.yaml"
 FIXTURES="$EXAMPLE_DIR/fixtures"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+CONFIG="$WORK/pipelock.yaml"
+install -m 600 "$SOURCE_CONFIG" "$CONFIG"
 
 PASS=0
 FAIL=0
@@ -81,8 +85,6 @@ fi
 
 # -- Test 2: Project install into temp dir ------------------------------------
 step "Test 2: cursor install --project writes hooks.json"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 (
   cd "$WORK"
   if ! "$PIPELOCK" cursor install --project --config "$CONFIG" >/dev/null 2>&1; then

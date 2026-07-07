@@ -22,7 +22,7 @@ Install writes three entries into `.cursor/hooks.json` (user-level:
 
 - `pipelock` on `PATH`, or set `PIPELOCK_BIN` to your built binary
 - Bash 3.2+ (macOS default is fine)
-- Optional: [Cursor](https://cursor.com/) to use the hooks in a real session
+- Optional: Cursor IDE to use the hooks in a real session
 
 Build from the repo root if needed:
 
@@ -151,8 +151,8 @@ are complementary:
 - **Hooks** scan actions before they execute inside Cursor
 - **Proxy** scans outbound/inbound network and MCP transport traffic
 
-See also `configs/cursor.yaml` and the
-[Cursor integration walkthrough](https://pipelab.org/learn/cursor-integration/).
+See also `configs/cursor.yaml` and the main project README Cursor section
+for additional integration notes.
 
 ## Troubleshooting
 

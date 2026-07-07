@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -172,6 +174,60 @@ func TestNewServer_RequireReceiptsSessionOpenEmitFailureFailsClosed(t *testing.T
 		!strings.Contains(err.Error(), "session_open") ||
 		!errors.Is(err, forcedErr) {
 		t.Fatalf("error = %q, want require_receipts session_open context wrapping forced error", err)
+	}
+}
+
+func TestServer_StartReturnsRequiredReceiptHeartbeatFailure(t *testing.T) {
+	recorderDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("save signing key: %v", err)
+	}
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"flight_recorder:",
+		"  enabled: true",
+		"  require_receipts: true",
+		"  dir: " + strconv.Quote(recorderDir),
+		"  signing_key_path: " + strconv.Quote(keyPath),
+		"  completeness:",
+		"    heartbeat_interval: 1ms",
+		"",
+	}, "\n"))
+
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+	if err := s.recorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Start returned nil, want required heartbeat failure")
+		}
+		if !strings.Contains(err.Error(), "require_receipts") ||
+			!strings.Contains(err.Error(), "receipt heartbeat emission failed") ||
+			!strings.Contains(err.Error(), "recorder is closed") {
+			t.Fatalf("Start error = %q, want required heartbeat recorder-closed failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("timed out waiting for Start to return required heartbeat failure")
 	}
 }
 

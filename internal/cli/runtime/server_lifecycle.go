@@ -328,10 +328,29 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	cfg := s.currentConfig()
+	var requiredHeartbeatErrMu sync.Mutex
+	var requiredHeartbeatErr error
+	setRequiredHeartbeatErr := func(err error) {
+		if err == nil {
+			return
+		}
+		requiredHeartbeatErrMu.Lock()
+		if requiredHeartbeatErr == nil {
+			requiredHeartbeatErr = err
+		}
+		requiredHeartbeatErrMu.Unlock()
+		cancel()
+	}
+	getRequiredHeartbeatErr := func() error {
+		requiredHeartbeatErrMu.Lock()
+		defer requiredHeartbeatErrMu.Unlock()
+		if requiredHeartbeatErr == nil {
+			return nil
+		}
+		return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", requiredHeartbeatErr)
+	}
 	if receiptEmitterReady(s.liveReceiptEmitter()) {
-		startReceiptHeartbeat(ctx, &lifecycleWG, cfg.FlightRecorder.HeartbeatIntervalDuration(), s.liveReceiptEmitter, s.opts.Stderr, cfg.FlightRecorder.RequireReceipts, func(error) {
-			cancel()
-		})
+		startReceiptHeartbeat(ctx, &lifecycleWG, cfg.FlightRecorder.HeartbeatIntervalDuration(), s.liveReceiptEmitter, s.opts.Stderr, cfg.FlightRecorder.RequireReceipts, setRequiredHeartbeatErr)
 	}
 	stopFileSentry, fsErr := s.startFileSentry(ctx, cfg, cancel)
 	if fsErr != nil {
@@ -1060,6 +1079,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Start the fetch proxy (blocks until context cancelled or error).
 	if err := s.proxy.Start(ctx); err != nil {
+		if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
+			return heartbeatErr
+		}
 		err = wrapBindError("fetch_proxy.listen", cfg.FetchProxy.Listen, err)
 		if s.sentry != nil {
 			s.sentry.CaptureError(err)
@@ -1101,6 +1123,10 @@ func (s *Server) Start(ctx context.Context) error {
 		if rpErr := <-reverseProxyErr; rpErr != nil {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: reverse proxy listener error: %v\n", rpErr)
 		}
+	}
+
+	if heartbeatErr := getRequiredHeartbeatErr(); heartbeatErr != nil {
+		return heartbeatErr
 	}
 
 	s.logger.LogShutdown("signal received")

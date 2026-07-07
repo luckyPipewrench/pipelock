@@ -399,7 +399,7 @@ func applyHeartbeat(st *runState, ar receipt.ActionRecord, heartbeat *receipt.Se
 	if !st.hasOpen {
 		return "heartbeat observed before session_open"
 	}
-	if st.hasOpen && heartbeat.OpenNonce != st.report.OpenNonce {
+	if heartbeat.OpenNonce != st.report.OpenNonce {
 		st.report.ContradictOpenNonce = true
 		return "heartbeat open_nonce does not match session_open"
 	}
@@ -438,7 +438,7 @@ func applyClose(st *runState, ar receipt.ActionRecord, closeRecord *receipt.Sess
 	if !st.hasOpen {
 		return "session_close observed before session_open"
 	}
-	if st.hasOpen && closeRecord.OpenNonce != st.report.OpenNonce {
+	if closeRecord.OpenNonce != st.report.OpenNonce {
 		st.report.ContradictOpenNonce = true
 		return "session_close open_nonce does not match session_open"
 	}

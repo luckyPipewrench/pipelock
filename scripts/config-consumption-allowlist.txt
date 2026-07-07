@@ -26,6 +26,7 @@ MaxImageBytes  # (A) MediaPolicy.EffectiveMaxImageBytes() schema_receiver_method
 SaltSource  # (A) Learn normalizer (normalize.go:16) resolves it; contract/privacy/salt.go:58 + cli/contain/config_migrate.go consume the resolved value
 MinimumSignatures  # (A) LearnLock.EffectiveMinimumSignatures() schema.go:1806 -> mcp/contractgate.go:58, proxy/contractgate.go:151
 TrustedMCPServers  # (A) Config.TaintTrustsMCPServer() schema.go:1501 -> runtime/server_lifecycle.go:718, runtime/mcp.go:233, diag/doctor_config_semantics.go:220
+HeartbeatInterval  # (A) FlightRecorder.HeartbeatIntervalDuration() schema.go:1440 -> runtime/server_lifecycle.go:332, runtime/mcp.go:1032
 
 # --- (B) validation-only by design ---
 MatchAbsPath  # (B) enforces absolute-path constraint on RedirectProfile.Exec[0] at validate.go:816; nothing to read after validation passes

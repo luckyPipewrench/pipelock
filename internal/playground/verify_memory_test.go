@@ -356,6 +356,24 @@ func TestVerifyPublishedBundleBytes_AcceptsG1AnchoredBundleWithLocalPublishedKey
 	}
 	orchPub := orchPriv.Public().(ed25519.PublicKey)
 	bundle, _ := realBundleForMemoryVerifyWithOrchestrator(t, orchPub, orchPriv)
+	artifacts, err := playground.ExtractRunArtifactsFromBundle(bundle)
+	if err != nil {
+		t.Fatalf("ExtractRunArtifactsFromBundle: %v", err)
+	}
+	receipts, err := receipt.ExtractReceiptsBytes(artifacts.PacketEvidenceJSONL)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsBytes: %v", err)
+	}
+	if len(receipts) == 0 {
+		t.Fatal("published-key bundle has no receipts")
+	}
+	first := receipts[0].ActionRecord
+	if !strings.HasPrefix(first.ChainPrevHash, "g1:") {
+		t.Fatalf("first chain_prev_hash = %q, want g1 prefix", first.ChainPrevHash)
+	}
+	if first.SessionControl == nil || first.SessionControl.Open == nil {
+		t.Fatalf("first receipt missing session_control.open: %+v", first.SessionControl)
+	}
 	rep, err := playground.VerifyPublishedBundleBytes(bundle)
 	if err != nil {
 		t.Fatalf("VerifyPublishedBundleBytes: %v", err)

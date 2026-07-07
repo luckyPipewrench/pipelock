@@ -1,12 +1,13 @@
 mod common;
 
 use ed25519_dalek::{Signer, SigningKey};
-use pipelock_verifier_rs::canonical::canonicalize_jcs_value;
+use pipelock_verifier_rs::canonical::{canonicalize_action_record, canonicalize_jcs_value};
 use pipelock_verifier_rs::chain::{
     compute_session_open_genesis, receipt_hash, verify_chain, verify_chain_with_options,
 };
 use pipelock_verifier_rs::recorder::extract_receipts;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -132,6 +133,44 @@ fn g1_legacy_session_open_on_genesis_is_rejected() {
         .error
         .unwrap_or_default()
         .contains("session_open on legacy genesis"));
+}
+
+#[test]
+fn g1_genesis_chain_open_seq_mismatch_is_rejected_before_signature_check() {
+    let root = common::repo_root();
+    let key = conformance_key();
+    let mut receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+    receipts[0]["action_record"]["session_control"]["open"]["chain_open_seq"] = json!(1);
+    sign_action_receipt_with_conformance_key(&mut receipts[0]);
+
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(0));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_open chain_open_seq does not match receipt chain_seq"));
+}
+
+#[test]
+fn g1_genesis_prior_chain_tail_is_rejected_before_signature_check() {
+    let root = common::repo_root();
+    let key = conformance_key();
+    let mut receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+    receipts[0]["action_record"]["session_control"]["open"]["prior_chain_head"] =
+        json!("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    receipts[0]["action_record"]["session_control"]["open"]["prior_chain_seq"] = json!(9);
+    sign_action_receipt_with_conformance_key(&mut receipts[0]);
+
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(0));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("bound genesis session_open must not carry prior chain tail"));
 }
 
 #[test]
@@ -312,4 +351,20 @@ fn sign_evidence_receipt(receipt: &mut Value) {
         "algorithm": "ed25519",
         "signature": format!("ed25519:{}", hex::encode(signature.to_bytes()))
     });
+}
+
+fn sign_action_receipt_with_conformance_key(receipt: &mut Value) {
+    let root = common::repo_root();
+    let data =
+        fs::read_to_string(root.join("sdk/conformance/testdata/test-key.json")).expect("read key");
+    let value: Value = serde_json::from_str(&data).expect("parse key");
+    let seed: [u8; 32] = hex::decode(value["seed_hex"].as_str().expect("seed_hex"))
+        .expect("decode seed")
+        .try_into()
+        .expect("seed length");
+    let key = SigningKey::from_bytes(&seed);
+    let digest = Sha256::digest(canonicalize_action_record(&receipt["action_record"]));
+    let signature = key.sign(&digest);
+    receipt["signature"] = json!(format!("ed25519:{}", hex::encode(signature.to_bytes())));
+    receipt["signer_key"] = value["public_key_hex"].clone();
 }

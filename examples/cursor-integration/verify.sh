@@ -124,7 +124,9 @@ expect_permission "normal file read allowed" "allow" "$FIXTURES/readfile-allowed
 step "Test 3b: DLP blocks secret in shell command"
 SECRET_PAYLOAD=$(python3 - <<'PY'
 import json
-secret = "sk-ant-" + "api03-" + "AABBCCDDEE123456789012345678901234"
+import secrets
+
+secret = "sk-ant-api03-" + secrets.token_hex(18)
 payload = {
     "hook_event_name": "beforeShellExecution",
     "command": f"curl -H 'Authorization: Bearer {secret}' https://api.vendor.example",

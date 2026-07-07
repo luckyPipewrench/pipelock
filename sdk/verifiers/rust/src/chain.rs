@@ -70,6 +70,8 @@ pub fn verify_chain_with_options(
     }
 
     let mut prev_hash = String::new();
+    let mut active_run_nonce: Option<String> = None;
+    let mut active_open_nonce: Option<String> = None;
     for (index, receipt) in receipts.iter().enumerate() {
         let Some(seq) = receipt
             .get("action_record")
@@ -97,6 +99,27 @@ pub fn verify_chain_with_options(
             }
         } else if chain_prev_hash != Some(prev_hash.as_str()) {
             return broken(seq, format!("seq {seq}: chain_prev_hash mismatch"));
+        }
+        if let Some(result) = validate_session_control_state(
+            receipt,
+            seq,
+            index as u64,
+            prev_hash.as_str(),
+            active_run_nonce.as_deref(),
+            active_open_nonce.as_deref(),
+            receipts.len() as u64,
+        ) {
+            return result;
+        }
+        if let Some(open) = session_open(receipt) {
+            active_run_nonce = open
+                .get("run_nonce")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            active_open_nonce = open
+                .get("open_nonce")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
         }
         prev_hash = receipt_hash(receipt);
     }
@@ -237,6 +260,205 @@ fn session_open(receipt: &Receipt) -> Option<&serde_json::Value> {
         return None;
     }
     ctrl.get("open").filter(|open| open.is_object())
+}
+
+fn validate_session_control_state(
+    receipt: &Receipt,
+    seq: u64,
+    index: u64,
+    prev_hash: &str,
+    active_run_nonce: Option<&str>,
+    active_open_nonce: Option<&str>,
+    receipt_count: u64,
+) -> Option<ChainResult> {
+    let ctrl = receipt.get("action_record")?.get("session_control")?;
+    let kind = ctrl.get("kind").and_then(serde_json::Value::as_str);
+    let action_run_nonce = receipt
+        .get("action_record")
+        .and_then(|record| record.get("run_nonce"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if action_run_nonce.is_empty() {
+        return Some(broken(
+            seq,
+            format!("seq {seq}: session_control receipt missing run_nonce"),
+        ));
+    }
+    let control_run_nonce = match kind {
+        Some("session_open") => ctrl
+            .get("open")
+            .and_then(|payload| payload.get("run_nonce"))
+            .and_then(serde_json::Value::as_str),
+        Some("heartbeat") => ctrl
+            .get("heartbeat")
+            .and_then(|payload| payload.get("run_nonce"))
+            .and_then(serde_json::Value::as_str),
+        Some("session_close") => ctrl
+            .get("close")
+            .and_then(|payload| payload.get("run_nonce"))
+            .and_then(serde_json::Value::as_str),
+        _ => None,
+    };
+    if control_run_nonce != Some(action_run_nonce) {
+        return Some(broken(
+            seq,
+            format!("seq {seq}: session_control run_nonce mismatch"),
+        ));
+    }
+    match kind {
+        Some("session_open") if index > 0 => {
+            let open = ctrl.get("open")?;
+            if open
+                .get("chain_open_seq")
+                .and_then(serde_json::Value::as_u64)
+                != Some(seq)
+            {
+                return Some(broken(
+                    seq,
+                    format!(
+                        "seq {seq}: session_open chain_open_seq does not match receipt chain_seq"
+                    ),
+                ));
+            }
+            if open
+                .get("prior_chain_head")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                != prev_hash
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_open prior_chain_head does not match chain tail"),
+                ));
+            }
+            if open
+                .get("prior_chain_seq")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                != seq - 1
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_open prior_chain_seq does not match previous seq"),
+                ));
+            }
+        }
+        Some("heartbeat") => {
+            let heartbeat = ctrl.get("heartbeat")?;
+            let Some(active_run_nonce) = active_run_nonce else {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: heartbeat has no active session_open"),
+                ));
+            };
+            let Some(active_open_nonce) = active_open_nonce else {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: heartbeat has no active session_open"),
+                ));
+            };
+            if heartbeat
+                .get("run_nonce")
+                .and_then(serde_json::Value::as_str)
+                != Some(active_run_nonce)
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: heartbeat run_nonce mismatch"),
+                ));
+            }
+            if heartbeat
+                .get("open_nonce")
+                .and_then(serde_json::Value::as_str)
+                != Some(active_open_nonce)
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: heartbeat open_nonce mismatch"),
+                ));
+            }
+            if heartbeat
+                .get("chain_head")
+                .and_then(serde_json::Value::as_str)
+                != Some(prev_hash)
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: heartbeat chain_head mismatch"),
+                ));
+            }
+            if heartbeat
+                .get("chain_seq_head")
+                .and_then(serde_json::Value::as_u64)
+                != Some(seq - 1)
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: heartbeat chain_seq_head mismatch"),
+                ));
+            }
+        }
+        Some("session_close") => {
+            let close = ctrl.get("close")?;
+            let Some(active_run_nonce) = active_run_nonce else {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_close has no active session_open"),
+                ));
+            };
+            let Some(active_open_nonce) = active_open_nonce else {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_close has no active session_open"),
+                ));
+            };
+            if close.get("run_nonce").and_then(serde_json::Value::as_str) != Some(active_run_nonce)
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_close run_nonce mismatch"),
+                ));
+            }
+            if close.get("open_nonce").and_then(serde_json::Value::as_str)
+                != Some(active_open_nonce)
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_close open_nonce mismatch"),
+                ));
+            }
+            if close.get("root_hash").and_then(serde_json::Value::as_str) != Some(prev_hash) {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_close root_hash mismatch"),
+                ));
+            }
+            if seq != receipt_count - 1 {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_close must be final receipt"),
+                ));
+            }
+            if close.get("final_seq").and_then(serde_json::Value::as_u64) != Some(seq) {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_close final_seq mismatch"),
+                ));
+            }
+            if close
+                .get("receipt_count")
+                .and_then(serde_json::Value::as_u64)
+                != Some(receipt_count)
+            {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: session_close receipt_count mismatch"),
+                ));
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 fn verify_evidence_chain(

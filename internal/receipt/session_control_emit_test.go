@@ -48,7 +48,7 @@ func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 
 	receiptsBeforeHeartbeat := readAllReceiptsFromDir(t, dir, pub)
 	preHeartbeatTail := mustHash(t, receiptsBeforeHeartbeat[len(receiptsBeforeHeartbeat)-1])
-	preHeartbeatSeqHead := uint64(len(receiptsBeforeHeartbeat))
+	preHeartbeatSeqHead := uint64(len(receiptsBeforeHeartbeat)) - 1
 
 	if err := e.EmitHeartbeat(); err != nil {
 		t.Fatalf("EmitHeartbeat #1: %v", err)
@@ -134,8 +134,8 @@ func TestEmitter_EmitSessionCloseFinalReceiptAndRoot(t *testing.T) {
 	if closeRecord == nil {
 		t.Fatalf("last receipt is not session_close: %#v", receipts[len(receipts)-1].ActionRecord.SessionControl)
 	}
-	if closeRecord.FinalSeq != 1 || closeRecord.ReceiptCount != 2 || closeRecord.RootHash != preCloseTail {
-		t.Fatalf("close sealed final_seq=%d count=%d root=%s; want 1/2/%s",
+	if closeRecord.FinalSeq != 2 || closeRecord.ReceiptCount != 3 || closeRecord.RootHash != preCloseTail {
+		t.Fatalf("close sealed final_seq=%d count=%d root=%s; want 2/3/%s",
 			closeRecord.FinalSeq, closeRecord.ReceiptCount, closeRecord.RootHash, preCloseTail)
 	}
 	if closeRecord.OpenNonce != receipts[0].ActionRecord.SessionControl.Open.OpenNonce {
@@ -147,6 +147,75 @@ func TestEmitter_EmitSessionCloseFinalReceiptAndRoot(t *testing.T) {
 	if root.ReceiptCount != uint64(len(receipts)) || root.RootHash != closeHash {
 		t.Fatalf("transcript root count/hash = %d/%s, want %d/%s",
 			root.ReceiptCount, root.RootHash, len(receipts), closeHash)
+	}
+}
+
+func TestEmitter_KeyRotationSessionCloseUsesSegmentLocalCount(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pubA, privA := generateTestKey(t)
+	pubB, privB := generateTestKey(t)
+
+	recA := newTestRecorder(t, dir, privA)
+	eA := NewEmitter(EmitterConfig{Recorder: recA, PrivKey: privA, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+	if err := eA.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen A: %v", err)
+	}
+	if err := eA.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+		Target:    "https://api.vendor.example/before-rotation",
+	}); err != nil {
+		t.Fatalf("Emit A: %v", err)
+	}
+	if err := recA.Close(); err != nil {
+		t.Fatalf("Close A: %v", err)
+	}
+
+	recB := newTestRecorder(t, dir, privB)
+	eB := NewEmitter(EmitterConfig{Recorder: recB, PrivKey: privB, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+	if err := eB.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen B: %v", err)
+	}
+	if err := eB.EmitHeartbeat(); err != nil {
+		t.Fatalf("EmitHeartbeat B: %v", err)
+	}
+	if err := eB.EmitSessionClose("graceful_shutdown"); err != nil {
+		t.Fatalf("EmitSessionClose B: %v", err)
+	}
+	if err := recB.Close(); err != nil {
+		t.Fatalf("Close B: %v", err)
+	}
+
+	receipts, err := ExtractReceiptsFromSessionDir(dir, recorderSessionID)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	if len(receipts) != 5 {
+		t.Fatalf("receipts = %d, want 5", len(receipts))
+	}
+	rotatedOpen := receipts[2].ActionRecord
+	if rotatedOpen.KeyTransition == nil {
+		t.Fatal("rotated session_open missing key_transition")
+	}
+	if rotatedOpen.ChainSeq != 0 {
+		t.Fatalf("rotated session_open chain_seq = %d, want reset to 0", rotatedOpen.ChainSeq)
+	}
+
+	closeRecord := receipts[len(receipts)-1].ActionRecord.SessionControl.Close
+	if closeRecord == nil {
+		t.Fatalf("last receipt is not session_close: %#v", receipts[len(receipts)-1].ActionRecord.SessionControl)
+	}
+	if closeRecord.FinalSeq != 2 || closeRecord.ReceiptCount != 3 {
+		t.Fatalf("rotated close claims final_seq=%d receipt_count=%d, want segment-local 2/3",
+			closeRecord.FinalSeq, closeRecord.ReceiptCount)
+	}
+	result := VerifyChainTrusted(receipts, []string{hex.EncodeToString(pubA), hex.EncodeToString(pubB)})
+	if !result.Valid {
+		t.Fatalf("VerifyChainTrusted rotated session_control chain: %s", result.Error)
 	}
 }
 

@@ -602,6 +602,18 @@ def _validate_session_control_state(
     if not isinstance(session_control, dict):
         return None
     kind = session_control.get("kind")
+    action_run_nonce = action_record.get("run_nonce")
+    if not isinstance(action_run_nonce, str) or action_run_nonce == "":
+        return _broken_chain(seq, f"seq {seq}: session_control receipt missing run_nonce")
+    control_run_nonce = None
+    if kind == "session_open" and isinstance(session_control.get("open"), dict):
+        control_run_nonce = session_control["open"].get("run_nonce")
+    elif kind == "heartbeat" and isinstance(session_control.get("heartbeat"), dict):
+        control_run_nonce = session_control["heartbeat"].get("run_nonce")
+    elif kind == "session_close" and isinstance(session_control.get("close"), dict):
+        control_run_nonce = session_control["close"].get("run_nonce")
+    if control_run_nonce != action_run_nonce:
+        return _broken_chain(seq, f"seq {seq}: session_control run_nonce mismatch")
     if kind == "session_open" and index > 0:
         open_record = _require_object(
             session_control.get("open"), "session_control.open"

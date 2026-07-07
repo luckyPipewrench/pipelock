@@ -1,0 +1,34 @@
+# Minimal valid config for pipelock cursor hook demos in this example.
+# Installed hooks embed this path via: pipelock cursor install --config pipelock.yaml
+
+version: 1
+mode: balanced
+
+dlp:
+  include_defaults: true
+
+mcp_input_scanning:
+  enabled: true
+  action: block
+
+response_scanning:
+  enabled: true
+  action: block
+  include_defaults: true
+
+mcp_tool_policy:
+  enabled: true
+  action: block
+  rules:
+    - name: "Destructive File Delete"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)'
+      action: block
+    - name: "Credential File Access"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read)$'
+      arg_pattern: '(?i)(\.ssh/(id_|authorized)|\.aws/credentials|\.env\b|\.netrc|/etc/shadow)'
+      action: block
+    - name: "Reverse Shell"
+      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)'
+      action: block

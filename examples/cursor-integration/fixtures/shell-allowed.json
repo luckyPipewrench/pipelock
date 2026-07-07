@@ -1,0 +1,1 @@
+{"hook_event_name":"beforeShellExecution","command":"ls -la","cwd":"/tmp","conversation_id":"verify-1","generation_id":"gen-1"}

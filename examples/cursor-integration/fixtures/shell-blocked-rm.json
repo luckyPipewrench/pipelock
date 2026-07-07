@@ -1,0 +1,1 @@
+{"hook_event_name":"beforeShellExecution","command":"rm -rf /","cwd":"/tmp","conversation_id":"verify-2","generation_id":"gen-2"}

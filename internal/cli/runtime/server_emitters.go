@@ -51,11 +51,12 @@ func (s *Server) liveReceiptEmitterReady() bool {
 	return receiptEmitterReady(s.liveReceiptEmitter())
 }
 
-// sealTranscriptRoot writes the transcript root for the live receipt chain at
-// graceful shutdown, anchoring the receipts emitted this run so a chain truncated
-// by a CLEAN exit becomes detectable: verify can see the sealed root instead of
-// reporting a silently-shortened chain as VALID. EmitTranscriptRoot has no other
-// production caller, so without this the completeness anchor never fires.
+// sealTranscriptRoot writes the signed session_close and compat transcript root
+// for the live receipt chain at graceful shutdown, anchoring the receipts
+// emitted this run so a chain truncated by a CLEAN exit becomes detectable:
+// verify can see the sealed root instead of reporting a silently-shortened
+// chain as VALID. EmitTranscriptRoot has no other production caller, so without
+// this the completeness anchor never fires.
 //
 // Drain-then-seal contract: call this ONLY after every receipt-emitting listener
 // has drained. Once the root is written the chain is sealed and a racing Emit
@@ -73,7 +74,7 @@ func (s *Server) sealTranscriptRoot() {
 	if e == nil {
 		return
 	}
-	if err := e.EmitTranscriptRoot(transcriptRootSessionID); err != nil {
+	if err := emitSessionCloseAndTranscriptRoot(e, transcriptRootSessionID, sessionCloseReasonGracefulShutdown); err != nil {
 		if s.logger != nil {
 			s.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", "transcript_root"), err)
 		}

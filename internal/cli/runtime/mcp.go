@@ -1022,6 +1022,18 @@ Key-free evidence capture:
 			if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(receiptEmitter) {
 				return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
 			}
+			// Standalone MCP does not have the proxy server's drain-then-seal
+			// WaitGroup. Tie heartbeat to the command lifetime instead: the
+			// deferred stop cancels and joins heartbeats before writing
+			// session_close + transcript_root, so no heartbeat appends after
+			// the close even though each transport has its own run loop.
+			stopReceiptLifecycle := startStandaloneReceiptLifecycle(
+				cmd.Context(),
+				cfg.FlightRecorder.HeartbeatIntervalDuration(),
+				receiptEmitter,
+				cmd.ErrOrStderr(),
+			)
+			defer stopReceiptLifecycle()
 			sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 				emitDLPWarn(auditLogger, nil, receiptEmitter, ctx, patternName, severity)
 			})

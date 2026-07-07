@@ -10646,6 +10646,9 @@ func TestLoad_FlightRecorderDefaults(t *testing.T) {
 	if cfg.FlightRecorder.MaxEntriesPerFile != 10000 {
 		t.Errorf("MaxEntriesPerFile = %d, want 10000", cfg.FlightRecorder.MaxEntriesPerFile)
 	}
+	if got := cfg.FlightRecorder.HeartbeatIntervalDuration(); got != DefaultFlightRecorderHeartbeatInterval {
+		t.Errorf("HeartbeatIntervalDuration = %s, want %s", got, DefaultFlightRecorderHeartbeatInterval)
+	}
 	if !cfg.FlightRecorder.Redact {
 		t.Error("Redact = false, want true (secrets would leak into forensic evidence)")
 	}
@@ -14009,6 +14012,39 @@ func TestValidate_FlightRecorder(t *testing.T) {
 				return c
 			},
 			wantErr: "max_entries_per_file must be non-negative",
+		},
+		{
+			name: "negative_heartbeat_interval",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.Completeness.HeartbeatInterval = "-1s"
+				return c
+			},
+			wantErr: "heartbeat_interval must be non-negative",
+		},
+		{
+			name: "absurd_heartbeat_interval",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.Completeness.HeartbeatInterval = "25h"
+				return c
+			},
+			wantErr: "heartbeat_interval must be <= 24h",
+		},
+		{
+			name: "malformed_heartbeat_interval",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.Completeness.HeartbeatInterval = "soon"
+				return c
+			},
+			wantErr: "heartbeat_interval must parse as a duration",
 		},
 		{
 			name: "raw_escrow_without_key",

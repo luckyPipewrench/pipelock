@@ -276,6 +276,88 @@ func TestVerifyChain_SessionOpenAdversarialRejections(t *testing.T) {
 			},
 			wantErr: "duplicate session_open",
 		},
+		"heartbeat_kind_with_close_payload": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				open := signBoundOpen(t, priv, base)
+				return []Receipt{
+					open,
+					signSessionReceipt(t, priv, 1, mustHash(t, open), base.Add(time.Second), sessionOpenTestRunA, &SessionControl{
+						Kind: SessionControlHeartbeat,
+						Close: &SessionClose{
+							RunNonce:     sessionOpenTestRunA,
+							OpenNonce:    "open-a",
+							FinalSeq:     0,
+							RootHash:     mustHash(t, open),
+							ReceiptCount: 1,
+							CloseReason:  "forged",
+						},
+					}, nil),
+				}
+			},
+			wantErr: "heartbeat kind missing heartbeat payload",
+		},
+		"close_kind_with_heartbeat_payload": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				open := signBoundOpen(t, priv, base)
+				return []Receipt{
+					open,
+					signSessionReceipt(t, priv, 1, mustHash(t, open), base.Add(time.Second), sessionOpenTestRunA, &SessionControl{
+						Kind: SessionControlClose,
+						Heartbeat: &SessionHeartbeat{
+							RunNonce:     sessionOpenTestRunA,
+							OpenNonce:    "open-a",
+							Beat:         1,
+							ChainHead:    mustHash(t, open),
+							ChainSeqHead: 1,
+						},
+					}, nil),
+				}
+			},
+			wantErr: "session_close kind missing close payload",
+		},
+		"heartbeat_open_nonce_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				open := signBoundOpen(t, priv, base)
+				return []Receipt{
+					open,
+					signSessionReceipt(t, priv, 1, mustHash(t, open), base.Add(time.Second), sessionOpenTestRunA, &SessionControl{
+						Kind: SessionControlHeartbeat,
+						Heartbeat: &SessionHeartbeat{
+							RunNonce:     sessionOpenTestRunA,
+							OpenNonce:    "wrong-open",
+							Beat:         1,
+							ChainHead:    mustHash(t, open),
+							ChainSeqHead: 1,
+						},
+					}, nil),
+				}
+			},
+			wantErr: "heartbeat open_nonce does not match session_open",
+		},
+		"close_run_nonce_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				open := signBoundOpen(t, priv, base)
+				return []Receipt{
+					open,
+					signSessionReceipt(t, priv, 1, mustHash(t, open), base.Add(time.Second), sessionOpenTestRunA, &SessionControl{
+						Kind: SessionControlClose,
+						Close: &SessionClose{
+							RunNonce:     sessionOpenTestRunB,
+							OpenNonce:    "open-a",
+							FinalSeq:     0,
+							RootHash:     mustHash(t, open),
+							ReceiptCount: 1,
+							CloseReason:  "forged",
+						},
+					}, nil),
+				}
+			},
+			wantErr: "session_close run_nonce does not match receipt run_nonce",
+		},
 	}
 
 	for name, tc := range tests {

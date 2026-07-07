@@ -398,6 +398,8 @@ func (v *chainVerifier) validateRestartOpen(r Receipt, open *SessionOpen, priorH
 func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 	ctrl := r.ActionRecord.SessionControl
 	open := sessionOpen(ctrl)
+	heartbeat := sessionHeartbeat(ctrl)
+	closeRecord := sessionClose(ctrl)
 	if ctrl != nil {
 		payloads := 0
 		if ctrl.Open != nil {
@@ -412,19 +414,46 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 		if payloads != 1 {
 			return v.brokenAt(r, "session_control must carry exactly one payload"), false
 		}
-		if open == nil && ctrl.Kind == SessionControlOpen {
-			return v.brokenAt(r, "session_open kind missing open payload"), false
-		}
-		if open != nil && ctrl.Kind != SessionControlOpen {
-			return v.brokenAt(r, "open payload kind mismatch"), false
+		switch ctrl.Kind {
+		case SessionControlOpen:
+			if open == nil {
+				return v.brokenAt(r, "session_open kind missing open payload"), false
+			}
+		case SessionControlHeartbeat:
+			if heartbeat == nil {
+				return v.brokenAt(r, "heartbeat kind missing heartbeat payload"), false
+			}
+		case SessionControlClose:
+			if closeRecord == nil {
+				return v.brokenAt(r, "session_close kind missing close payload"), false
+			}
+		default:
+			return v.brokenAt(r, "unknown session_control kind"), false
 		}
 	}
 	if r.ActionRecord.RunNonce == "" {
 		return ChainResult{}, true
 	}
 	if open == nil {
-		if _, ok := v.runNonces[r.ActionRecord.RunNonce]; !ok {
+		openNonce, ok := v.runNonces[r.ActionRecord.RunNonce]
+		if !ok {
 			return v.brokenAt(r, "run_nonce first receipt is not a matching session_open"), false
+		}
+		if heartbeat != nil {
+			if heartbeat.RunNonce != r.ActionRecord.RunNonce {
+				return v.brokenAt(r, "heartbeat run_nonce does not match receipt run_nonce"), false
+			}
+			if heartbeat.OpenNonce != openNonce {
+				return v.brokenAt(r, "heartbeat open_nonce does not match session_open"), false
+			}
+		}
+		if closeRecord != nil {
+			if closeRecord.RunNonce != r.ActionRecord.RunNonce {
+				return v.brokenAt(r, "session_close run_nonce does not match receipt run_nonce"), false
+			}
+			if closeRecord.OpenNonce != openNonce {
+				return v.brokenAt(r, "session_close open_nonce does not match session_open"), false
+			}
 		}
 		return ChainResult{}, true
 	}
@@ -446,6 +475,20 @@ func sessionOpen(ctrl *SessionControl) *SessionOpen {
 		return nil
 	}
 	return ctrl.Open
+}
+
+func sessionHeartbeat(ctrl *SessionControl) *SessionHeartbeat {
+	if ctrl == nil || ctrl.Kind != SessionControlHeartbeat {
+		return nil
+	}
+	return ctrl.Heartbeat
+}
+
+func sessionClose(ctrl *SessionControl) *SessionClose {
+	if ctrl == nil || ctrl.Kind != SessionControlClose {
+		return nil
+	}
+	return ctrl.Close
 }
 
 func (v *chainVerifier) verifyReceipt(r Receipt, index uint64) (ChainResult, bool) {

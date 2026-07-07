@@ -1,0 +1,416 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package receipt
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"golang.org/x/crypto/nacl/box"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
+)
+
+func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	syncErr := errors.New("injected sync failure")
+	rec.SetSyncForTest(func(*os.File) error { return syncErr })
+	err := e.EmitDurable(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodPost,
+		Target:    "https://api.vendor.example/durable",
+	})
+	if !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("EmitDurable error = %v, want ErrDurability", err)
+	}
+	rec.SetSyncForTest(nil)
+
+	receiptsBeforeHeartbeat := readAllReceiptsFromDir(t, dir, pub)
+	preHeartbeatTail := mustHash(t, receiptsBeforeHeartbeat[len(receiptsBeforeHeartbeat)-1])
+	preHeartbeatSeqHead := uint64(len(receiptsBeforeHeartbeat))
+
+	if err := e.EmitHeartbeat(); err != nil {
+		t.Fatalf("EmitHeartbeat #1: %v", err)
+	}
+	if err := e.EmitHeartbeat(); err != nil {
+		t.Fatalf("EmitHeartbeat #2: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+	open := receipts[0].ActionRecord.SessionControl.Open
+	hb1 := receipts[len(receipts)-2].ActionRecord.SessionControl.Heartbeat
+	hb2 := receipts[len(receipts)-1].ActionRecord.SessionControl.Heartbeat
+	if hb1 == nil || hb2 == nil {
+		t.Fatalf("tail receipts are not heartbeats: %#v %#v",
+			receipts[len(receipts)-2].ActionRecord.SessionControl,
+			receipts[len(receipts)-1].ActionRecord.SessionControl)
+	}
+	if hb1.Beat != 1 || hb2.Beat != 2 {
+		t.Fatalf("heartbeat beats = %d,%d; want 1,2", hb1.Beat, hb2.Beat)
+	}
+	if hb1.ChainHead != preHeartbeatTail || hb1.ChainSeqHead != preHeartbeatSeqHead {
+		t.Fatalf("heartbeat snapshot = (%s,%d), want (%s,%d)",
+			hb1.ChainHead, hb1.ChainSeqHead, preHeartbeatTail, preHeartbeatSeqHead)
+	}
+	if hb1.FsyncErrorsGated != 1 || hb1.DurabilityBlocks != 1 {
+		t.Fatalf("heartbeat counters fsync=%d blocks=%d, want 1/1", hb1.FsyncErrorsGated, hb1.DurabilityBlocks)
+	}
+	if hb1.OpenNonce != open.OpenNonce || hb2.OpenNonce != open.OpenNonce {
+		t.Fatalf("heartbeat open_nonce did not bind to session_open nonce")
+	}
+}
+
+func TestEmitter_EmitSessionCloseFinalReceiptAndRoot(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+		Target:    "https://api.vendor.example/close",
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	preCloseReceipts := readAllReceiptsFromDir(t, dir, pub)
+	preCloseTail := mustHash(t, preCloseReceipts[len(preCloseReceipts)-1])
+	if err := e.EmitSessionClose("graceful_shutdown"); err != nil {
+		t.Fatalf("EmitSessionClose: %v", err)
+	}
+	if err := e.EmitSessionClose("duplicate"); err != nil {
+		t.Fatalf("duplicate EmitSessionClose should no-op before root: %v", err)
+	}
+	if err := e.EmitTranscriptRoot("session"); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if len(receipts) != len(preCloseReceipts)+1 {
+		t.Fatalf("receipt count after duplicate close = %d, want %d", len(receipts), len(preCloseReceipts)+1)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+	closeRecord := receipts[len(receipts)-1].ActionRecord.SessionControl.Close
+	if closeRecord == nil {
+		t.Fatalf("last receipt is not session_close: %#v", receipts[len(receipts)-1].ActionRecord.SessionControl)
+	}
+	if closeRecord.FinalSeq != 1 || closeRecord.ReceiptCount != 2 || closeRecord.RootHash != preCloseTail {
+		t.Fatalf("close sealed final_seq=%d count=%d root=%s; want 1/2/%s",
+			closeRecord.FinalSeq, closeRecord.ReceiptCount, closeRecord.RootHash, preCloseTail)
+	}
+	if closeRecord.OpenNonce != receipts[0].ActionRecord.SessionControl.Open.OpenNonce {
+		t.Fatal("close open_nonce did not bind to session_open nonce")
+	}
+
+	root := readTranscriptRootFromDir(t, dir)
+	closeHash := mustHash(t, receipts[len(receipts)-1])
+	if root.ReceiptCount != uint64(len(receipts)) || root.RootHash != closeHash {
+		t.Fatalf("transcript root count/hash = %d/%s, want %d/%s",
+			root.ReceiptCount, root.RootHash, len(receipts), closeHash)
+	}
+}
+
+func TestEmitter_EmitSessionClosePersistFailureCanRetryToDetectableGap(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	recipientPub, _, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("box.GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+		RawEscrow:          true,
+		EscrowPublicKey:    hex.EncodeToString(recipientPub[:]),
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+		Target:    "https://api.vendor.example/pre-close",
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	closeEscrowPath := filepath.Join(dir, "evidence-proxy-2.raw.enc")
+	if err := os.Mkdir(closeEscrowPath, 0o750); err != nil {
+		t.Fatalf("mkdir close escrow collision: %v", err)
+	}
+	closeErr := e.EmitSessionClose("probe")
+	if err := os.Remove(closeEscrowPath); err != nil {
+		t.Fatalf("remove close escrow collision: %v", err)
+	}
+	if closeErr == nil {
+		t.Fatal("EmitSessionClose unexpectedly succeeded")
+	}
+
+	if err := e.EmitSessionClose("retry"); err != nil {
+		t.Fatalf("retry EmitSessionClose: %v", err)
+	}
+	if err := e.EmitTranscriptRoot("session"); err != nil {
+		t.Fatalf("EmitTranscriptRoot: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	closeCount := 0
+	for _, r := range receipts {
+		if isSessionCloseControl(r.ActionRecord.SessionControl) {
+			closeCount++
+		}
+	}
+	if closeCount != 1 {
+		t.Fatalf("session_close receipts = %d, want 1 retry close", closeCount)
+	}
+	root := readTranscriptRootFromDir(t, dir)
+	if root.ReceiptCount != 4 {
+		t.Fatalf("root receipt_count = %d, want 4 including the failed close seq gap", root.ReceiptCount)
+	}
+	res := VerifyChain(receipts, hex.EncodeToString(pub))
+	if res.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted chain with missing failed close seq")
+	}
+	if !strings.Contains(res.Error, "seq gap") {
+		t.Fatalf("VerifyChain error = %q, want seq gap", res.Error)
+	}
+}
+
+func TestEmitter_EmitSessionOpenPersistFailureCanRetryToDetectableGap(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	recipientPub, _, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("box.GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+		RawEscrow:          true,
+		EscrowPublicKey:    hex.EncodeToString(recipientPub[:]),
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	openEscrowPath := filepath.Join(dir, "evidence-proxy-0.raw.enc")
+	if err := os.Mkdir(openEscrowPath, 0o750); err != nil {
+		t.Fatalf("mkdir open escrow collision: %v", err)
+	}
+	openErr := e.EmitSessionOpen()
+	if err := os.Remove(openEscrowPath); err != nil {
+		t.Fatalf("remove open escrow collision: %v", err)
+	}
+	if openErr == nil {
+		t.Fatal("EmitSessionOpen unexpectedly succeeded")
+	}
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("retry EmitSessionOpen: %v", err)
+	}
+	if err := e.EmitHeartbeat(); err != nil {
+		t.Fatalf("EmitHeartbeat: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	openCount := 0
+	for _, r := range receipts {
+		if isSessionOpenControl(r.ActionRecord.SessionControl) {
+			openCount++
+		}
+	}
+	if openCount != 1 {
+		t.Fatalf("session_open receipts = %d, want 1 retry open", openCount)
+	}
+	res := VerifyChain(receipts, hex.EncodeToString(pub))
+	if res.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted chain with missing failed open seq")
+	}
+	if !strings.Contains(res.Error, "genesis receipt chain_prev_hash") {
+		t.Fatalf("VerifyChain error = %q, want genesis chain_prev_hash gap", res.Error)
+	}
+}
+
+func TestEmitter_ReceiptHashRecordedUsesRawStoredReceiptBytes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := e.EmitSessionClose("raw_confirm"); err != nil {
+		t.Fatalf("EmitSessionClose: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries, err := recorder.ReadEntries(filepath.Join(dir, "evidence-proxy-0.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadEntries: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Type != recorderEntryType {
+			continue
+		}
+		rcpt, receiptErr := receiptFromEntry(entry)
+		if receiptErr != nil {
+			t.Fatalf("receiptFromEntry: %v", receiptErr)
+		}
+		if !isSessionCloseControl(rcpt.ActionRecord.SessionControl) {
+			continue
+		}
+		rawHash := sha256.Sum256(entry.RawDetail)
+		rawHashHex := hex.EncodeToString(rawHash[:])
+		if !e.receiptHashRecorded(rawHashHex) {
+			t.Fatalf("receiptHashRecorded(%s) = false for stored close receipt", rawHashHex)
+		}
+		structHash, hashErr := ReceiptHash(*rcpt)
+		if hashErr != nil {
+			t.Fatalf("ReceiptHash: %v", hashErr)
+		}
+		if structHash != rawHashHex {
+			t.Fatalf("close receipt raw hash = %s, structured hash = %s", rawHashHex, structHash)
+		}
+		if err := VerifyWithKey(*rcpt, hex.EncodeToString(pub)); err != nil {
+			t.Fatalf("VerifyWithKey: %v", err)
+		}
+		return
+	}
+	t.Fatal("no session_close receipt found")
+}
+
+func TestEmitter_EmitSessionCloseEmptyChainNoOp(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash})
+	if err := e.EmitSessionClose("empty"); err != nil {
+		t.Fatalf("EmitSessionClose empty: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if receipts := readAllReceiptsFromDir(t, dir, pub); len(receipts) != 0 {
+		t.Fatalf("empty close emitted %d receipts, want 0", len(receipts))
+	}
+}
+
+func TestEmitter_HeartbeatAndCloseWithoutSessionOpenUseEmptyOpenNonce(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash})
+	if err := e.EmitHeartbeat(); err != nil {
+		t.Fatalf("EmitHeartbeat: %v", err)
+	}
+	if err := e.EmitSessionClose("no_open"); err != nil {
+		t.Fatalf("EmitSessionClose: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if len(receipts) != 2 {
+		t.Fatalf("receipts = %d, want heartbeat+close", len(receipts))
+	}
+	if receipts[0].ActionRecord.SessionControl.Heartbeat.OpenNonce != "" {
+		t.Fatalf("heartbeat open_nonce = %q, want empty", receipts[0].ActionRecord.SessionControl.Heartbeat.OpenNonce)
+	}
+	if receipts[1].ActionRecord.SessionControl.Close.OpenNonce != "" {
+		t.Fatalf("close open_nonce = %q, want empty", receipts[1].ActionRecord.SessionControl.Close.OpenNonce)
+	}
+	for _, r := range receipts {
+		if err := VerifyWithKey(r, hex.EncodeToString(pub)); err != nil {
+			t.Fatalf("VerifyWithKey without open: %v", err)
+		}
+	}
+}
+
+func readTranscriptRootFromDir(t *testing.T, dir string) TranscriptRoot {
+	t.Helper()
+	entries := readAllEntriesFromDir(t, dir)
+	for _, entry := range entries {
+		if entry.Type != transcriptRootEntryType {
+			continue
+		}
+		detailJSON, err := json.Marshal(entry.Detail)
+		if err != nil {
+			t.Fatalf("json.Marshal(root): %v", err)
+		}
+		var root TranscriptRoot
+		if err := json.Unmarshal(detailJSON, &root); err != nil {
+			t.Fatalf("json.Unmarshal(root): %v", err)
+		}
+		return root
+	}
+	t.Fatal("transcript root not found")
+	return TranscriptRoot{}
+}

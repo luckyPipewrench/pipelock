@@ -454,6 +454,191 @@ func TestDualEmit_HotReloadPreservesV2Chain(t *testing.T) {
 	}
 }
 
+func TestDualEmit_SameKeyReloadReusesV2EmitterSoStalePointerCannotFork(t *testing.T) {
+	recDir := t.TempDir()
+	keyDir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyPath := filepath.Join(keyDir, "receipt.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled: true, Dir: recDir, CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.FlightRecorder.SigningKeyPath = keyPath
+	v1 := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, Principal: "local", Actor: "pipelock"})
+	signer := proxydecision.NewKeyedSigner(priv)
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
+	})
+	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New(),
+		WithRecorder(rec), WithReceiptEmitter(v1), WithV2ReceiptEmitter(v2),
+		WithReceiptKeyPath(keyPath))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	opts := receipt.EmitOpts{
+		ActionID: "a1", Transport: TransportForward, Method: "GET",
+		Target: "https://x.example/a", Verdict: "allow", RequestID: "r1",
+	}
+	mustEmitReceipt(t, p, opts) // v2 seq 0
+	origV2 := p.v2EmitterPtr.Load()
+	if origV2 == nil {
+		t.Fatal("v2 emitter nil before reload")
+	}
+
+	reloadCfg := config.Defaults()
+	reloadCfg.Internal = nil
+	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
+	if !p.Reload(reloadCfg, scanner.New(reloadCfg)) {
+		t.Fatal("Reload returned false")
+	}
+	if got := p.v2EmitterPtr.Load(); got != origV2 {
+		t.Fatal("same-key reload replaced the v2 receipt emitter")
+	}
+
+	mustEmitReceipt(t, p, opts) // v2 seq 1 on the live emitter
+	staleDecision, ok := v2DecisionFromOpts(withReceiptPolicyHash(opts, reloadCfg.CanonicalPolicyHash()))
+	if !ok {
+		t.Fatal("v2DecisionFromOpts returned false")
+	}
+	// Simulate an in-flight request that captured the pre-reload v2 pointer.
+	// Replacing v2 on same-key reload would make this stale emit reuse seq 1.
+	if err := origV2.Emit(staleDecision); err != nil {
+		t.Fatalf("stale v2 Emit: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	v2s, err := contractreceipt.ExtractEvidenceReceiptsFromSessionDir(recDir, "proxy")
+	if err != nil {
+		t.Fatalf("ExtractEvidenceReceiptsFromSessionDir: %v", err)
+	}
+	if len(v2s) != 3 {
+		t.Fatalf("got %d v2 receipts, want 3", len(v2s))
+	}
+	result := contractreceipt.VerifyChain(v2s, contractreceipt.ChainVerifyOptions{
+		PinnedKey: pub, ExpectSignerKeyID: signer.KeyID(),
+		ExpectPayloadKind: contractreceipt.PayloadProxyDecision,
+	})
+	if !result.Valid {
+		t.Fatalf("VerifyChain: %s", result.Error)
+	}
+}
+
+func TestDualEmit_SameKeyReloadUsesUpdatedPolicyHash(t *testing.T) {
+	recDir := t.TempDir()
+	keyDir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyPath := filepath.Join(keyDir, "receipt.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled: true, Dir: recDir, CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.FlightRecorder.SigningKeyPath = keyPath
+	v1 := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rec, PrivKey: priv, ConfigHash: cfg.Hash(),
+		Principal: "local", Actor: "pipelock",
+	})
+	signer := proxydecision.NewKeyedSigner(priv)
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: rec, Signer: signer, Principal: "local", Actor: "pipelock",
+	})
+	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New(),
+		WithRecorder(rec), WithReceiptEmitter(v1), WithV2ReceiptEmitter(v2),
+		WithReceiptKeyPath(keyPath))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	reloadCfg := config.Defaults()
+	reloadCfg.Internal = nil
+	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
+	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
+	if reloadCfg.CanonicalPolicyHash() == cfg.CanonicalPolicyHash() {
+		t.Fatal("reload fixture did not change canonical policy hash")
+	}
+	if !p.Reload(reloadCfg, scanner.New(reloadCfg)) {
+		t.Fatal("Reload returned false")
+	}
+	if got := p.v2EmitterPtr.Load(); got != v2 {
+		t.Fatal("same-key reload replaced the v2 receipt emitter")
+	}
+
+	mustEmitReceipt(t, p, receipt.EmitOpts{
+		ActionID: "a1", Transport: TransportForward, Method: "GET",
+		Target: "https://blocked.vendor.example/a", Verdict: "block",
+		Layer: "domain_block", Pattern: "blocked.vendor.example", RequestID: "r1",
+	})
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	var (
+		v1Policy string
+		v2Policy string
+	)
+	for _, e := range readRecorderEntries(t, recDir) {
+		switch e.Type {
+		case "action_receipt":
+			var r receipt.Receipt
+			if err := json.Unmarshal(e.Detail, &r); err != nil {
+				t.Fatalf("unmarshal v1 receipt: %v", err)
+			}
+			if r.ActionRecord.ActionID == "a1" {
+				v1Policy = r.ActionRecord.PolicyHash
+			}
+		case "evidence_receipt":
+			if e.EventKind != string(contractreceipt.PayloadProxyDecision) {
+				continue
+			}
+			var r contractreceipt.EvidenceReceipt
+			if err := json.Unmarshal(e.Detail, &r); err != nil {
+				t.Fatalf("unmarshal v2 receipt: %v", err)
+			}
+			if err := contractreceipt.VerifyWithKey(r, pub, signer.KeyID()); err != nil {
+				t.Fatalf("v2 receipt verify: %v", err)
+			}
+			v2Policy = r.PolicyHash
+		}
+	}
+	if v1Policy != reloadCfg.Hash() {
+		t.Fatalf("v1 policy_hash = %q, want reload cfg.Hash %q", v1Policy, reloadCfg.Hash())
+	}
+	wantV2Policy := contractreceipt.NormalizePolicyHash(reloadCfg.CanonicalPolicyHash())
+	if v2Policy != wantV2Policy {
+		t.Fatalf("v2 policy_hash = %q, want reload canonical policy hash %q", v2Policy, wantV2Policy)
+	}
+}
+
 // TestDualEmit_V1FailureSkipsV2 proves v1 stays authoritative: when the v1
 // emitter rejects (here, a sealed chain), no v2 proxy_decision is written, so a
 // v2 receipt never outlives its v1 action_receipt sibling.

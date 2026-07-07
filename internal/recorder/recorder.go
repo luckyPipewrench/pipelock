@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/nacl/box"
@@ -158,6 +159,8 @@ type Recorder struct {
 	durableBatch   *durableBatch
 	durableSyncing bool
 	durablePending map[uint64]int
+
+	fsyncErrorsGated atomic.Uint64
 }
 
 // New creates a Recorder. The redactFn is used for DLP redaction (can be nil to skip).
@@ -242,6 +245,16 @@ func (r *Recorder) SetSyncForTest(syncFn func(*os.File) error) {
 		return
 	}
 	r.fileSync = syncFn
+}
+
+// FsyncErrorsGated returns the cumulative count of failed durable sync batches.
+// It counts File.Sync failures, not the number of callers blocked by one batch.
+// Nil and no-op recorders report zero.
+func (r *Recorder) FsyncErrorsGated() uint64 {
+	if r == nil || r.nop {
+		return 0
+	}
+	return r.fsyncErrorsGated.Load()
 }
 
 // Dir returns the recorder evidence directory. Empty for nil or no-op recorders.
@@ -527,6 +540,9 @@ func (r *Recorder) runDurabilitySync(batch *durableBatch) {
 
 		r.mu.Lock()
 		batch.err = err
+		if err != nil {
+			r.fsyncErrorsGated.Add(1)
+		}
 		if syncStarted {
 			r.durableSyncing = false
 		}

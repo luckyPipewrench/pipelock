@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -86,6 +87,9 @@ type Emitter struct {
 	chainStart    time.Time // timestamp of first receipt
 	chainEnd      time.Time // timestamp of most recent receipt
 	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
+	closeEmitted  bool      // true after session_close; prevents duplicate closes
+	openNonce     string
+	heartbeatBeat uint64
 
 	// pendingTransition is set by resumeChain when the on-disk tail was
 	// signed by a DIFFERENT (but self-valid) key, meaning a legitimate key
@@ -102,6 +106,7 @@ type Emitter struct {
 	priorTailHash string
 
 	sessionOpenEmitted bool
+	durabilityBlocks   atomic.Uint64
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
@@ -166,6 +171,16 @@ func (e *Emitter) InitError() error {
 	return e.initErr
 }
 
+// SignerKeyHex returns the Ed25519 public key hex for receipts this emitter
+// signs. It is used by reload code to distinguish a policy-only reload from a
+// signer rotation without replacing a live emitter unnecessarily.
+func (e *Emitter) SignerKeyHex() string {
+	if e == nil || len(e.privKey) != ed25519.PrivateKeySize {
+		return ""
+	}
+	return fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey))
+}
+
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
 	ActionID              string
@@ -227,6 +242,8 @@ var ErrSessionOpenAlreadyEmitted = fmt.Errorf("session_open already emitted for 
 const (
 	sessionControlTransport = "receipt_session"
 	sessionOpenTarget       = "pipelock://session/open"
+	sessionHeartbeatTarget  = "pipelock://session/heartbeat"
+	sessionCloseTarget      = "pipelock://session/close"
 )
 
 // EmitSessionOpen emits the signed session_open control receipt for this
@@ -259,21 +276,100 @@ func (e *Emitter) EmitSessionOpen() error {
 	})
 }
 
+// DurabilityBlocks returns the cumulative number of durable emits whose
+// fsync confirmation failed and therefore blocked egress. Nil emitters report
+// zero.
+func (e *Emitter) DurabilityBlocks() uint64 {
+	if e == nil {
+		return 0
+	}
+	return e.durabilityBlocks.Load()
+}
+
+// EmitHeartbeat emits a best-effort signed heartbeat control receipt. The
+// heartbeat snapshots the current chain head under chainMu via emitWithControl,
+// before the heartbeat receipt itself advances the chain, so ChainHead and
+// ChainSeqHead are a race-free pair.
+func (e *Emitter) EmitHeartbeat() error {
+	if e == nil {
+		return nil
+	}
+	return e.emitWithControl(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: sessionControlTransport,
+		Target:    sessionHeartbeatTarget,
+	}, false, func() (*SessionControl, error) {
+		e.heartbeatBeat++
+		return &SessionControl{
+			Kind: SessionControlHeartbeat,
+			Heartbeat: &SessionHeartbeat{
+				RunNonce:         e.runNonce,
+				OpenNonce:        e.openNonce,
+				Beat:             e.heartbeatBeat,
+				ChainHead:        e.chainPrevHash,
+				ChainSeqHead:     e.chainSeq,
+				HeartbeatTime:    time.Now().UTC().Format(time.RFC3339Nano),
+				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
+				DurabilityBlocks: e.DurabilityBlocks(),
+			},
+		}, nil
+	})
+}
+
+// EmitSessionClose emits a signed session_close control receipt that seals the
+// current pre-close chain tail. The compat transcript_root remains separate and
+// should be emitted after this method so it anchors the chain including close.
+func (e *Emitter) EmitSessionClose(closeReason string) error {
+	if e == nil {
+		return nil
+	}
+	return e.emitWithControl(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: sessionControlTransport,
+		Target:    sessionCloseTarget,
+	}, false, func() (*SessionControl, error) {
+		if e.rootEmitted || e.closeEmitted || e.chainSeq == 0 {
+			return nil, nil
+		}
+		finalSeq := uint64(0)
+		if e.chainSeq > 0 {
+			finalSeq = e.chainSeq - 1
+		}
+		return &SessionControl{
+			Kind: SessionControlClose,
+			Close: &SessionClose{
+				RunNonce:         e.runNonce,
+				OpenNonce:        e.openNonce,
+				FinalSeq:         finalSeq,
+				RootHash:         e.chainPrevHash,
+				ReceiptCount:     e.chainSeq,
+				CloseReason:      closeReason,
+				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
+				DurabilityBlocks: e.DurabilityBlocks(),
+			},
+		}, nil
+	})
+}
+
 // Emit creates, signs, and records an action receipt for a proxy decision.
 // The call is synchronous through the recorder mutex - same as recordDecision.
 // Errors are returned but should be logged, not propagated to callers.
 // Safe to call on a nil Emitter (no-op).
 func (e *Emitter) Emit(opts EmitOpts) error {
-	return e.emit(opts, false)
+	return e.emitWithControl(opts, false, nil)
 }
 
 // EmitDurable creates, signs, records, and fsync-confirms an action receipt for
 // a proxy decision. Safe to call on a nil Emitter (no-op).
 func (e *Emitter) EmitDurable(opts EmitOpts) error {
-	return e.emit(opts, true)
+	return e.emitWithControl(opts, true, nil)
 }
 
-func (e *Emitter) emit(opts EmitOpts, durable bool) error {
+type lockedSessionControlBuilder func() (*SessionControl, error)
+
+func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lockedSessionControlBuilder) error {
 	if e == nil {
 		return nil
 	}
@@ -303,6 +399,16 @@ func (e *Emitter) emit(opts EmitOpts, durable bool) error {
 	if e.rootEmitted {
 		e.recordFailure(FailReasonSealed)
 		return ErrChainSealed
+	}
+	if buildControl != nil {
+		sessionControl, buildErr := buildControl()
+		if buildErr != nil {
+			return buildErr
+		}
+		if sessionControl == nil {
+			return nil
+		}
+		opts.SessionControl = sessionControl
 	}
 	sessionControl, chainPrevHash, err := e.prepareSessionControlLocked(opts.SessionControl)
 	if err != nil {
@@ -417,9 +523,8 @@ func (e *Emitter) emit(opts EmitOpts, durable bool) error {
 	// claim a second segment boundary). Cleared with the rest of the
 	// advance-before-persist state for the same fork-avoidance reason.
 	e.pendingTransition = nil
-	if isSessionOpenControl(sessionControl) {
-		e.sessionOpenEmitted = true
-	}
+	openControl := isSessionOpenControl(sessionControl)
+	closeControl := isSessionCloseControl(sessionControl)
 
 	entry := recorder.Entry{
 		SessionID: recorderSessionID,
@@ -436,12 +541,37 @@ func (e *Emitter) emit(opts EmitOpts, durable bool) error {
 		recordErr = e.recorder.Record(entry)
 	}
 	if recordErr != nil {
+		// Persist failed AFTER the chain state advanced (advance-before-persist,
+		// above). For the single-shot control receipts (open/close) mark the guard
+		// "emitted" only when the receipt bytes actually reached disk — i.e. the
+		// write succeeded but a later checkpoint/rotation/sync-confirm step failed
+		// (receiptHashRecorded reads the evidence back to confirm). Then the record
+		// exists and a retry must NOT duplicate it. If the bytes did NOT reach disk
+		// (the write itself failed), leave the guard unset so a retry can re-emit;
+		// the failed attempt left a detectable gap, and suppressing the retry would
+		// instead let a transcript root seal a MISSING open/close as if present
+		// (fail-open). Confirming on disk keeps this path fail-closed.
+		if openControl && e.receiptHashRecorded(receiptHash) {
+			e.sessionOpenEmitted = true
+			e.openNonce = sessionControl.Open.OpenNonce
+		}
+		if closeControl && e.receiptHashRecorded(receiptHash) {
+			e.closeEmitted = true
+		}
 		if durable && errors.Is(recordErr, recorder.ErrDurability) {
+			e.durabilityBlocks.Add(1)
 			e.recordFailure(FailReasonSync)
 		} else {
 			e.recordFailure(FailReasonRecord)
 		}
 		return fmt.Errorf("recording receipt: %w", recordErr)
+	}
+	if openControl {
+		e.sessionOpenEmitted = true
+		e.openNonce = sessionControl.Open.OpenNonce
+	}
+	if closeControl {
+		e.closeEmitted = true
 	}
 
 	// Notify the observer (if any) AFTER the receipt is durably recorded, so a
@@ -498,6 +628,10 @@ func isSessionOpenControl(in *SessionControl) bool {
 	return in != nil && in.Kind == SessionControlOpen && in.Open != nil
 }
 
+func isSessionCloseControl(in *SessionControl) bool {
+	return in != nil && in.Kind == SessionControlClose && in.Close != nil
+}
+
 func cloneSessionControl(in *SessionControl) *SessionControl {
 	if in == nil {
 		return nil
@@ -516,6 +650,36 @@ func cloneSessionControl(in *SessionControl) *SessionControl {
 		out.Close = &closeRecord
 	}
 	return &out
+}
+
+func (e *Emitter) receiptHashRecorded(wantHash string) bool {
+	if e == nil || e.recorder == nil || wantHash == "" {
+		return false
+	}
+	files, err := recorderFiles(e.recorder.Dir())
+	if err != nil {
+		return false
+	}
+	for _, file := range files {
+		entries, readErr := recorder.ReadEntries(file)
+		if readErr != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.Type != recorderEntryType {
+				continue
+			}
+			raw, rawErr := receiptBytesFromEntry(entry)
+			if rawErr != nil {
+				continue
+			}
+			hash := sha256.Sum256(raw)
+			if hex.EncodeToString(hash[:]) == wantHash {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // recordFailure increments the emit-failure metric for reason when a sink is
@@ -827,15 +991,26 @@ func (e *Emitter) resumeChain() error {
 }
 
 func receiptFromEntry(entry recorder.Entry) (*Receipt, error) {
-	detailJSON, err := json.Marshal(entry.Detail)
+	detailJSON, err := receiptBytesFromEntry(entry)
 	if err != nil {
-		return nil, fmt.Errorf("marshal existing receipt detail at seq %d: %w", entry.Sequence, err)
+		return nil, err
 	}
 	rcpt, err := Unmarshal(detailJSON)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal existing receipt at seq %d: %w", entry.Sequence, err)
 	}
 	return &rcpt, nil
+}
+
+func receiptBytesFromEntry(entry recorder.Entry) ([]byte, error) {
+	if len(entry.RawDetail) > 0 {
+		return entry.RawDetail, nil
+	}
+	detailJSON, err := json.Marshal(entry.Detail)
+	if err != nil {
+		return nil, fmt.Errorf("marshal existing receipt detail at seq %d: %w", entry.Sequence, err)
+	}
+	return detailJSON, nil
 }
 
 func recorderFiles(dir string) ([]string, error) {

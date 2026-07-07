@@ -2994,6 +2994,18 @@ func (c *Config) validateFlightRecorder() error {
 	if c.FlightRecorder.MaxEntriesPerFile < 0 {
 		return fmt.Errorf("flight_recorder.max_entries_per_file must be non-negative")
 	}
+	if c.FlightRecorder.Completeness.HeartbeatInterval != "" {
+		interval, err := time.ParseDuration(c.FlightRecorder.Completeness.HeartbeatInterval)
+		if err != nil {
+			return fmt.Errorf("flight_recorder.completeness.heartbeat_interval must parse as a duration: %w", err)
+		}
+		if interval < 0 {
+			return fmt.Errorf("flight_recorder.completeness.heartbeat_interval must be non-negative")
+		}
+		if interval > 24*time.Hour {
+			return fmt.Errorf("flight_recorder.completeness.heartbeat_interval must be <= 24h")
+		}
+	}
 	switch c.FlightRecorder.FileMode {
 	case 0, 0o600, 0o640, 0o660:
 	default:

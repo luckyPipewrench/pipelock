@@ -1416,18 +1416,37 @@ type BudgetConfig struct {
 
 // FlightRecorder configures the tamper-evident evidence recording system.
 type FlightRecorder struct {
-	Enabled            bool        `yaml:"enabled"`
-	Dir                string      `yaml:"dir"`
-	CheckpointInterval int         `yaml:"checkpoint_interval"`  // entries between signed checkpoints (default 1000)
-	RetentionDays      int         `yaml:"retention_days"`       // auto-expire after N days (0=forever)
-	Redact             bool        `yaml:"redact"`               // DLP on evidence before commit (default true)
-	SignCheckpoints    bool        `yaml:"sign_checkpoints"`     // Ed25519 sign checkpoints (default true)
-	MaxEntriesPerFile  int         `yaml:"max_entries_per_file"` // rotate files (default 10000)
-	FileMode           os.FileMode `yaml:"file_mode" json:"-"`   // evidence file permissions: 0600, 0640, or 0660 (default 0600)
-	RawEscrow          bool        `yaml:"raw_escrow"`           // encrypted raw detail sidecar (default false)
-	EscrowPublicKey    string      `yaml:"escrow_public_key"`    // X25519 public key for raw escrow encryption
-	SigningKeyPath     string      `yaml:"signing_key_path"`     // Ed25519 private key for checkpoint signing and action receipts
-	RequireReceipts    bool        `yaml:"require_receipts"`     // fail closed when a required receipt cannot be emitted (default false)
+	Enabled            bool                       `yaml:"enabled"`
+	Dir                string                     `yaml:"dir"`
+	CheckpointInterval int                        `yaml:"checkpoint_interval"`   // entries between signed checkpoints (default 1000)
+	RetentionDays      int                        `yaml:"retention_days"`        // auto-expire after N days (0=forever)
+	Redact             bool                       `yaml:"redact"`                // DLP on evidence before commit (default true)
+	SignCheckpoints    bool                       `yaml:"sign_checkpoints"`      // Ed25519 sign checkpoints (default true)
+	MaxEntriesPerFile  int                        `yaml:"max_entries_per_file"`  // rotate files (default 10000)
+	FileMode           os.FileMode                `yaml:"file_mode" json:"-"`    // evidence file permissions: 0600, 0640, or 0660 (default 0600)
+	RawEscrow          bool                       `yaml:"raw_escrow"`            // encrypted raw detail sidecar (default false)
+	EscrowPublicKey    string                     `yaml:"escrow_public_key"`     // X25519 public key for raw escrow encryption
+	SigningKeyPath     string                     `yaml:"signing_key_path"`      // Ed25519 private key for checkpoint signing and action receipts
+	RequireReceipts    bool                       `yaml:"require_receipts"`      // fail closed when a required receipt cannot be emitted (default false)
+	Completeness       FlightRecorderCompleteness `yaml:"completeness" json:"-"` // restart-only evidence completeness knobs
+}
+
+type FlightRecorderCompleteness struct {
+	HeartbeatInterval string `yaml:"heartbeat_interval"` // time.ParseDuration string, default 60s; startup-only
+}
+
+const DefaultFlightRecorderHeartbeatInterval = 60 * time.Second
+
+func (f FlightRecorder) HeartbeatIntervalDuration() time.Duration {
+	raw := strings.TrimSpace(f.Completeness.HeartbeatInterval)
+	if raw == "" {
+		return DefaultFlightRecorderHeartbeatInterval
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		return DefaultFlightRecorderHeartbeatInterval
+	}
+	return interval
 }
 
 // MediationEnvelope configures sideband metadata on proxied requests.

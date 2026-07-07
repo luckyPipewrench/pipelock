@@ -328,6 +328,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	cfg := s.currentConfig()
+	if receiptEmitterReady(s.liveReceiptEmitter()) {
+		startReceiptHeartbeat(ctx, &lifecycleWG, cfg.FlightRecorder.HeartbeatIntervalDuration(), s.liveReceiptEmitter, s.opts.Stderr)
+	}
 	stopFileSentry, fsErr := s.startFileSentry(ctx, cfg, cancel)
 	if fsErr != nil {
 		return fsErr

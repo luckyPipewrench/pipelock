@@ -602,9 +602,6 @@ func TestMcpProxyCmd_EmitsSignedReceipts_StdioSubprocess(t *testing.T) {
 			t.Fatalf("VerifyWithKey(receipt): %v", err)
 		}
 		if rcpt.ActionRecord.SessionControl != nil {
-			if rcpt.ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
-				t.Fatalf("session control kind = %q, want session_open", rcpt.ActionRecord.SessionControl.Kind)
-			}
 			continue
 		}
 		if rcpt.ActionRecord.Transport != "mcp_stdio" {
@@ -751,9 +748,6 @@ func TestMcpProxyCmd_EmitsSignedReceipts_HTTPUpstream(t *testing.T) {
 			t.Fatalf("VerifyWithKey(receipt): %v", err)
 		}
 		if rcpt.ActionRecord.SessionControl != nil {
-			if rcpt.ActionRecord.SessionControl.Kind != receipt.SessionControlOpen {
-				t.Fatalf("session control kind = %q, want session_open", rcpt.ActionRecord.SessionControl.Kind)
-			}
 			continue
 		}
 		if rcpt.ActionRecord.Transport != "mcp_http_upstream" {

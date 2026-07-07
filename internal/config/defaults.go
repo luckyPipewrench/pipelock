@@ -394,6 +394,9 @@ func Defaults() *Config {
 			Redact:             true,  // DLP-scrub evidence before commit
 			SignCheckpoints:    true,  // Ed25519 sign checkpoints
 			MaxEntriesPerFile:  10000, // rotate files at this count
+			Completeness: FlightRecorderCompleteness{
+				HeartbeatInterval: "60s",
+			},
 		},
 		MCPToolProvenance: MCPToolProvenance{
 			Action:      ActionWarn,

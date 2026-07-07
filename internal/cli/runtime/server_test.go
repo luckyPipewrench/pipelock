@@ -1307,6 +1307,26 @@ func TestServer_Reload_RequireReceiptsAllowsRestartOnlyWarning(t *testing.T) {
 	}
 }
 
+func TestServer_Reload_IgnoresFlightRecorderHeartbeatIntervalChange(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldLive := s.proxy.CurrentConfig()
+	oldLive.FlightRecorder.Completeness.HeartbeatInterval = "60s"
+
+	updated := oldLive.Clone()
+	updated.FlightRecorder.Completeness.HeartbeatInterval = "5s"
+
+	if err := s.Reload(updated); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	live := s.proxy.CurrentConfig()
+	if got := live.FlightRecorder.Completeness.HeartbeatInterval; got != "60s" {
+		t.Fatalf("heartbeat_interval = %q, want startup value 60s", got)
+	}
+	if !buf.contains("flight_recorder settings changed") {
+		t.Fatalf("stderr missing flight_recorder restart-only warning:\n%s", buf.String())
+	}
+}
+
 func TestServer_Reload_MCPBinaryRequireSignatureRejectsDowngrade(t *testing.T) {
 	s, buf := newTestServer(t, nil)
 	oldLive := s.proxy.CurrentConfig()

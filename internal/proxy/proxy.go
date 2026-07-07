@@ -10,6 +10,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -1132,6 +1133,10 @@ type receiptEmitterStage struct {
 	// key as emitter and dual-emitted with it. nil when receipts are
 	// disabled. Published to p.v2EmitterPtr alongside emitter.
 	v2 *proxydecision.Emitter
+	// reuseExisting is true when the staged v1 emitter is the already-live
+	// emitter for the same signing key. Publish must update its config hash but
+	// must not emit a second session_open.
+	reuseExisting bool
 	// keyPath is the signing key path that was actually loaded, or ""
 	// when receipts are disabled. The caller assigns this to
 	// p.receiptKeyPath at publish time.
@@ -1179,6 +1184,28 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	// (e.g. key rotation). Cross-restart the chain restarts at genesis; the
 	// recorder's outer hash chain provides tamper-evidence across restarts.
 	resumeSeq, resumePrev := p.v2EmitterPtr.Load().ChainState()
+	currentKeyHex := fmt.Sprintf("%x", privKey.Public().(ed25519.PublicKey))
+	if current := p.receiptEmitterPtr.Load(); current != nil && current.InitError() == nil && current.SignerKeyHex() == currentKeyHex {
+		v2 := p.v2EmitterPtr.Load()
+		if v2 == nil {
+			v2 = proxydecision.NewEmitter(proxydecision.EmitterConfig{
+				Recorder:       p.recorder,
+				Signer:         proxydecision.NewKeyedSigner(privKey),
+				Sanitize:       proxydecision.SanitizeFromRedactor(p.recorder.ReceiptRedactor()),
+				Principal:      "local",
+				Actor:          "pipelock",
+				ResumeSeq:      resumeSeq,
+				ResumePrevHash: resumePrev,
+			})
+		}
+		return receiptEmitterStage{
+			emitter:       current,
+			v2:            v2,
+			reuseExisting: true,
+			keyPath:       keyPath,
+		}, nil
+	}
+
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:   p.recorder,
 		PrivKey:    privKey,
@@ -1615,7 +1642,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		// rotation segment. Emit the signed open synchronously before publishing
 		// the pointer so no request can be attested under the new emitter before
 		// its run window is recorded.
-		if receiptStage.emitter != nil {
+		if receiptStage.reuseExisting {
+			receiptStage.emitter.UpdateConfigHash(cfg.Hash())
+		} else if receiptStage.emitter != nil {
 			if err := receiptStage.emitter.EmitSessionOpen(); err != nil {
 				p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 					fmt.Errorf("session_open receipt emit failed, keeping old config: %w", err))
@@ -1716,9 +1745,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 	p.updateCEEStats()
 
-	// Receipt emitter hash is updated by the receipt emitter build above.
-	// No separate UpdateConfigHash needed - emitter is always (re)created
-	// with the current cfg.Hash() when a signing key is configured.
+	// Receipt emitter hash is updated by the receipt emitter publish above.
+	// Same-key reloads reuse the live v1/v2 emitters to avoid stale-pointer
+	// chain forks; signer rotations still create a new segment.
 	return true
 }
 

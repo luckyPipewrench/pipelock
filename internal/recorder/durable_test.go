@@ -247,6 +247,9 @@ func TestRecordDurable_BatchSyncFailurePropagatesToFollowersAndKeepsGap(t *testi
 	}
 
 	rec.runDurabilitySync(leader.batch)
+	if got := rec.FsyncErrorsGated(); got != 1 {
+		t.Fatalf("FsyncErrorsGated after one failed batch = %d, want 1", got)
+	}
 	for _, tt := range []struct {
 		name       string
 		batch      *durableBatch
@@ -286,6 +289,25 @@ func TestRecordDurable_BatchSyncFailurePropagatesToFollowersAndKeepsGap(t *testi
 	}
 	if entries[2].PrevHash != entries[1].Hash {
 		t.Fatalf("later PrevHash = %q, want failed follower hash %q", entries[2].PrevHash, entries[1].Hash)
+	}
+	if got := rec.FsyncErrorsGated(); got != 1 {
+		t.Fatalf("FsyncErrorsGated after later success = %d, want 1", got)
+	}
+}
+
+func TestRecorder_FsyncErrorsGatedNilAndNop(t *testing.T) {
+	t.Parallel()
+
+	var nilRecorder *Recorder
+	if got := nilRecorder.FsyncErrorsGated(); got != 0 {
+		t.Fatalf("nil FsyncErrorsGated = %d, want 0", got)
+	}
+	nop, err := New(Config{Enabled: false}, nil, nil)
+	if err != nil {
+		t.Fatalf("New nop: %v", err)
+	}
+	if got := nop.FsyncErrorsGated(); got != 0 {
+		t.Fatalf("nop FsyncErrorsGated = %d, want 0", got)
 	}
 }
 

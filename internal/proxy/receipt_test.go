@@ -797,6 +797,10 @@ func TestProxy_ReloadSessionOpenEmitFailurePreservesLiveEmitter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
+	_, reloadPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey reload: %v", err)
+	}
 	recipientPub, _, err := box.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("box.GenerateKey: %v", err)
@@ -805,6 +809,10 @@ func TestProxy_ReloadSessionOpenEmitFailurePreservesLiveEmitter(t *testing.T) {
 	keyPath := filepath.Join(keyDir, "receipt.key")
 	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
 		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	reloadKeyPath := filepath.Join(keyDir, "receipt-reload.key")
+	if err := signing.SavePrivateKey(reloadPriv, reloadKeyPath); err != nil {
+		t.Fatalf("SavePrivateKey reload: %v", err)
 	}
 
 	rec, err := recorder.New(recorder.Config{
@@ -875,7 +883,7 @@ fetch_proxy:
   monitoring:
     blocklist:
       - other.example.com
-`, keyPath)
+`, reloadKeyPath)
 	if err := os.WriteFile(reloadCfgPath, []byte(reloadYAML), 0o600); err != nil {
 		t.Fatalf("WriteFile reload config: %v", err)
 	}
@@ -1065,8 +1073,11 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 	}
 	defer func() { _ = rec.Close() }()
 
-	// Reload with a different config (same key path) - emitter is recreated
-	// (always re-reads key file to detect in-place rotation) but uses updated hash.
+	origEmitter := p.receiptEmitterPtr.Load()
+
+	// Reload with a different config and the same signing key. The v1 emitter
+	// must be reused so in-flight heartbeats/actions cannot race a replacement
+	// emitter that snapshotted an older chain tail.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -1078,6 +1089,9 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 
 	if p.receiptEmitterPtr.Load() == nil {
 		t.Fatal("expected non-nil emitter after reload with same key")
+	}
+	if got := p.receiptEmitterPtr.Load(); got != origEmitter {
+		t.Fatal("same-key reload replaced the v1 receipt emitter")
 	}
 
 	// Verify the updated hash is used in emitted receipts.
@@ -1108,6 +1122,101 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 		}
 	}
 	t.Fatal("no receipt found after reload")
+}
+
+func TestProxy_ReloadSameSigningKeyReusesEmitterSoStaleHeartbeatCannotFork(t *testing.T) {
+	t.Parallel()
+
+	recDir := t.TempDir()
+	keyDir := t.TempDir()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyPath := filepath.Join(keyDir, "receipt.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                recDir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "hash-v1",
+		Principal:  "local",
+		Actor:      "pipelock",
+	})
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.FlightRecorder.SigningKeyPath = keyPath
+
+	p, pErr := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New(),
+		WithRecorder(rec),
+		WithReceiptEmitter(emitter),
+		WithReceiptKeyPath(keyPath),
+	)
+	if pErr != nil {
+		t.Fatalf("proxy.New: %v", pErr)
+	}
+	origEmitter := p.receiptEmitterPtr.Load()
+
+	reloadCfg := config.Defaults()
+	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	reloadCfg.FlightRecorder.SigningKeyPath = keyPath
+	reloadCfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
+	if !p.Reload(reloadCfg, scanner.New(reloadCfg)) {
+		t.Fatal("Reload returned false")
+	}
+	if got := p.receiptEmitterPtr.Load(); got != origEmitter {
+		t.Fatal("same-key reload replaced the v1 receipt emitter")
+	}
+
+	// Simulate a heartbeat tick that captured the pre-reload pointer. If reload
+	// had created a replacement emitter, that stale tick would append from the
+	// old chain head after the replacement's session_open and fork the v1 chain.
+	if err := origEmitter.EmitHeartbeat(); err != nil {
+		t.Fatalf("stale-pointer EmitHeartbeat: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	var receipts []receipt.Receipt
+	for _, e := range readAllEntries(t, recDir) {
+		if e.Type != receiptEntryType {
+			continue
+		}
+		detailJSON, mErr := json.Marshal(e.Detail)
+		if mErr != nil {
+			t.Fatalf("marshal receipt detail: %v", mErr)
+		}
+		rcpt, uErr := receipt.Unmarshal(detailJSON)
+		if uErr != nil {
+			t.Fatalf("unmarshal receipt: %v", uErr)
+		}
+		receipts = append(receipts, rcpt)
+	}
+	if len(receipts) != 2 {
+		t.Fatalf("receipts = %d, want session_open + heartbeat", len(receipts))
+	}
+	if res := receipt.VerifyChainTrusted(receipts, []string{hex.EncodeToString(pub)}); !res.Valid {
+		t.Fatalf("VerifyChainTrusted: %s", res.Error)
+	}
 }
 
 // TestProxy_ReloadRotatesSigningKey verifies that changing the signing key

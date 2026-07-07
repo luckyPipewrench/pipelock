@@ -727,6 +727,9 @@ func (c *Config) ApplyDefaults() {
 	if c.FlightRecorder.MaxEntriesPerFile <= 0 {
 		c.FlightRecorder.MaxEntriesPerFile = 10000 // rotate files at this count
 	}
+	if c.FlightRecorder.Completeness.HeartbeatInterval == "" {
+		c.FlightRecorder.Completeness.HeartbeatInterval = "60s"
+	}
 
 	// MCP tool provenance defaults
 	if c.MCPToolProvenance.Enabled {

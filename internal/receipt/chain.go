@@ -42,15 +42,20 @@ func ReceiptHash(r Receipt) (string, error) {
 
 // ChainResult describes the outcome of chain verification.
 type ChainResult struct {
-	Valid         bool
-	ReceiptCount  uint64
-	FinalSeq      uint64
-	RootHash      string
-	StartTime     time.Time
-	EndTime       time.Time
-	Error         string // empty if valid
-	BrokenAtSeq   uint64 // set when chain breaks
-	BrokenAtIndex int    // zero-based receipt index where chain verification failed
+	Valid bool
+	// IntegrityVerified means receipt signatures, trusted signer keys, sequence
+	// numbers, and hash links verified without applying session lifecycle
+	// rules. It can be true when Valid is false for a lifecycle-only failure.
+	IntegrityVerified bool
+	ReceiptCount      uint64
+	FinalSeq          uint64
+	RootHash          string
+	StartTime         time.Time
+	EndTime           time.Time
+	Error             string // empty if valid
+	FailureKind       ChainFailureKind
+	BrokenAtSeq       uint64 // set when chain breaks
+	BrokenAtIndex     int    // zero-based receipt index where chain verification failed
 
 	// SignerKeys is the ordered, de-duplicated set of signer public keys
 	// (hex) observed across the chain's segments, in segment order. A
@@ -67,6 +72,16 @@ type ChainResult struct {
 	// trusted set or an attacker-introduced key to investigate.
 	UntrustedSignerKey string
 }
+
+// ChainFailureKind classifies why chain verification failed.
+type ChainFailureKind string
+
+const (
+	ChainFailureIntegrity     ChainFailureKind = "integrity"
+	ChainFailureTrust         ChainFailureKind = "trust"
+	ChainFailureLifecycle     ChainFailureKind = "lifecycle"
+	ChainFailureLifecycleOpen ChainFailureKind = "lifecycle_missing_open"
+)
 
 // ChainSegment summarizes one single-key run within a (possibly rotated) chain.
 type ChainSegment struct {
@@ -89,6 +104,15 @@ func VerifyChain(receipts []Receipt, expectedKeyHex string) ChainResult {
 		return VerifyChainTrusted(receipts, nil)
 	}
 	return VerifyChainTrusted(receipts, []string{expectedKeyHex})
+}
+
+// VerifyChainIntegrity verifies signatures, trusted signer keys, sequence
+// numbers, and hash links while ignoring session-control lifecycle rules.
+func VerifyChainIntegrity(receipts []Receipt, expectedKeyHex string) ChainResult {
+	if expectedKeyHex == "" {
+		return VerifyChainIntegrityTrusted(receipts, nil)
+	}
+	return VerifyChainIntegrityTrusted(receipts, []string{expectedKeyHex})
 }
 
 // VerifyChainTrusted verifies hash-chain integrity across signing-key rotation
@@ -133,8 +157,34 @@ func VerifyChain(receipts []Receipt, expectedKeyHex string) ChainResult {
 //     receipt mid-chain (no marker, prev_hash != genesis), is rejected. This
 //     preserves the genesis check for ordinary receipts (no weakening).
 func VerifyChainTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
+	res := verifyChainTrusted(receipts, trustedKeys, false)
+	if res.FailureKind != ChainFailureLifecycleOpen {
+		return res
+	}
+	integrity := verifyChainTrusted(receipts, trustedKeys, true)
+	if !integrity.Valid {
+		return integrity
+	}
+	res.IntegrityVerified = true
+	res.ReceiptCount = integrity.ReceiptCount
+	res.FinalSeq = integrity.FinalSeq
+	res.RootHash = integrity.RootHash
+	res.StartTime = integrity.StartTime
+	res.EndTime = integrity.EndTime
+	res.SignerKeys = integrity.SignerKeys
+	res.Segments = integrity.Segments
+	return res
+}
+
+// VerifyChainIntegrityTrusted is VerifyChainIntegrity with an explicit trusted
+// signer key set.
+func VerifyChainIntegrityTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
+	return verifyChainTrusted(receipts, trustedKeys, true)
+}
+
+func verifyChainTrusted(receipts []Receipt, trustedKeys []string, integrityOnly bool) ChainResult {
 	if len(receipts) == 0 {
-		return ChainResult{Valid: true}
+		return ChainResult{Valid: true, IntegrityVerified: true}
 	}
 
 	normalizedKeys, err := normalizeTrustedKeys(trustedKeys)
@@ -144,6 +194,7 @@ func VerifyChainTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
 			BrokenAtSeq:   receipts[0].ActionRecord.ChainSeq,
 			BrokenAtIndex: 0,
 			Error:         fmt.Sprintf("seq %d: trusted key set: %v", receipts[0].ActionRecord.ChainSeq, err),
+			FailureKind:   ChainFailureTrust,
 		}
 	}
 
@@ -152,8 +203,9 @@ func VerifyChainTrusted(receipts []Receipt, trustedKeys []string) ChainResult {
 		trusted[k] = struct{}{}
 	}
 	v := &chainVerifier{
-		trusted:   trusted,
-		runNonces: make(map[string]string),
+		trusted:       trusted,
+		runNonces:     make(map[string]string),
+		integrityOnly: integrityOnly,
 	}
 	return v.run(receipts)
 }
@@ -188,6 +240,8 @@ type chainVerifier struct {
 	curSeg     *ChainSegment
 	index      int
 	runNonces  map[string]string
+
+	integrityOnly bool
 }
 
 func (v *chainVerifier) run(receipts []Receipt) ChainResult {
@@ -208,8 +262,10 @@ func (v *chainVerifier) run(receipts []Receipt) ChainResult {
 			return res
 		}
 
-		if res, ok := v.validateSessionControl(r); !ok {
-			return res
+		if !v.integrityOnly {
+			if res, ok := v.validateSessionControl(r); !ok {
+				return res
+			}
 		}
 
 		if res, ok := v.verifyReceipt(r, uint64(i)); !ok {
@@ -221,14 +277,15 @@ func (v *chainVerifier) run(receipts []Receipt) ChainResult {
 	first := receipts[0].ActionRecord
 	last := receipts[len(receipts)-1].ActionRecord
 	return ChainResult{
-		Valid:        true,
-		ReceiptCount: uint64(len(receipts)),
-		FinalSeq:     last.ChainSeq,
-		RootHash:     v.prevHash,
-		StartTime:    first.Timestamp,
-		EndTime:      last.Timestamp,
-		SignerKeys:   v.signerKeys,
-		Segments:     v.segments,
+		Valid:             true,
+		IntegrityVerified: true,
+		ReceiptCount:      uint64(len(receipts)),
+		FinalSeq:          last.ChainSeq,
+		RootHash:          v.prevHash,
+		StartTime:         first.Timestamp,
+		EndTime:           last.Timestamp,
+		SignerKeys:        v.signerKeys,
+		Segments:          v.segments,
 	}
 }
 
@@ -265,7 +322,7 @@ func (v *chainVerifier) startFirstSegment(r Receipt) (ChainResult, bool) {
 		if r.ActionRecord.ChainPrevHash != GenesisHash {
 			return v.brokenAt(r, "genesis receipt chain_prev_hash must be genesis or a bound session_open g1 hash"), false
 		}
-		if sessionOpen(r.ActionRecord.SessionControl) != nil {
+		if !v.integrityOnly && sessionOpen(r.ActionRecord.SessionControl) != nil {
 			return v.brokenAt(r, "session_open on legacy genesis must use bound g1 chain_prev_hash"), false
 		}
 		v.prevHash = GenesisHash
@@ -298,7 +355,7 @@ func (v *chainVerifier) startRotatedSegment(r Receipt, marker *KeyTransition) (C
 	if v.curSeg != nil && marker.PriorChainSeq != v.curSeg.FinalSeq {
 		return v.brokenAt(r, "key_transition prior_chain_seq does not match prior segment final seq"), false
 	}
-	if open := sessionOpen(r.ActionRecord.SessionControl); open != nil {
+	if open := sessionOpen(r.ActionRecord.SessionControl); !v.integrityOnly && open != nil {
 		if res, ok := v.validateRestartOpen(r, open, marker.PriorChainHash, marker.PriorChainSeq); !ok {
 			return res, false
 		}
@@ -326,7 +383,7 @@ func (v *chainVerifier) keyTrusted(key string) bool {
 // it, so the operator can decide whether it is a legitimate rotation (re-run
 // with the key added to the trusted set) or an attacker key.
 func (v *chainVerifier) untrusted(r Receipt) ChainResult {
-	res := v.brokenAt(r, fmt.Sprintf("signer key %s is not in the trusted set", r.SignerKey))
+	res := v.brokenAtKind(r, fmt.Sprintf("signer key %s is not in the trusted set", r.SignerKey), ChainFailureTrust)
 	res.UntrustedSignerKey = r.SignerKey
 	res.SignerKeys = v.signerKeys
 	return res
@@ -341,7 +398,7 @@ func (v *chainVerifier) checkContinuation(r Receipt) (ChainResult, bool) {
 	if r.ActionRecord.ChainSeq == 0 {
 		return v.brokenAt(r, "unexpected seq 0 without a key_transition boundary"), false
 	}
-	if open := sessionOpen(r.ActionRecord.SessionControl); open != nil {
+	if open := sessionOpen(r.ActionRecord.SessionControl); !v.integrityOnly && open != nil {
 		if v.curSeg == nil {
 			return v.brokenAt(r, "session_open continuation has no prior segment"), false
 		}
@@ -412,23 +469,23 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 			payloads++
 		}
 		if payloads != 1 {
-			return v.brokenAt(r, "session_control must carry exactly one payload"), false
+			return v.brokenAtKind(r, "session_control must carry exactly one payload", ChainFailureLifecycle), false
 		}
 		switch ctrl.Kind {
 		case SessionControlOpen:
 			if open == nil {
-				return v.brokenAt(r, "session_open kind missing open payload"), false
+				return v.brokenAtKind(r, "session_open kind missing open payload", ChainFailureLifecycle), false
 			}
 		case SessionControlHeartbeat:
 			if heartbeat == nil {
-				return v.brokenAt(r, "heartbeat kind missing heartbeat payload"), false
+				return v.brokenAtKind(r, "heartbeat kind missing heartbeat payload", ChainFailureLifecycle), false
 			}
 		case SessionControlClose:
 			if closeRecord == nil {
-				return v.brokenAt(r, "session_close kind missing close payload"), false
+				return v.brokenAtKind(r, "session_close kind missing close payload", ChainFailureLifecycle), false
 			}
 		default:
-			return v.brokenAt(r, "unknown session_control kind"), false
+			return v.brokenAtKind(r, "unknown session_control kind", ChainFailureLifecycle), false
 		}
 	}
 	if r.ActionRecord.RunNonce == "" {
@@ -437,34 +494,34 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 	if open == nil {
 		openNonce, ok := v.runNonces[r.ActionRecord.RunNonce]
 		if !ok {
-			return v.brokenAt(r, "run_nonce first receipt is not a matching session_open"), false
+			return v.brokenAtKind(r, "run_nonce first receipt is not a matching session_open", ChainFailureLifecycleOpen), false
 		}
 		if heartbeat != nil {
 			if heartbeat.RunNonce != r.ActionRecord.RunNonce {
-				return v.brokenAt(r, "heartbeat run_nonce does not match receipt run_nonce"), false
+				return v.brokenAtKind(r, "heartbeat run_nonce does not match receipt run_nonce", ChainFailureLifecycle), false
 			}
 			if heartbeat.OpenNonce != openNonce {
-				return v.brokenAt(r, "heartbeat open_nonce does not match session_open"), false
+				return v.brokenAtKind(r, "heartbeat open_nonce does not match session_open", ChainFailureLifecycle), false
 			}
 		}
 		if closeRecord != nil {
 			if closeRecord.RunNonce != r.ActionRecord.RunNonce {
-				return v.brokenAt(r, "session_close run_nonce does not match receipt run_nonce"), false
+				return v.brokenAtKind(r, "session_close run_nonce does not match receipt run_nonce", ChainFailureLifecycle), false
 			}
 			if closeRecord.OpenNonce != openNonce {
-				return v.brokenAt(r, "session_close open_nonce does not match session_open"), false
+				return v.brokenAtKind(r, "session_close open_nonce does not match session_open", ChainFailureLifecycle), false
 			}
 		}
 		return ChainResult{}, true
 	}
 	if open.RunNonce != r.ActionRecord.RunNonce {
-		return v.brokenAt(r, "session_open run_nonce does not match receipt run_nonce"), false
+		return v.brokenAtKind(r, "session_open run_nonce does not match receipt run_nonce", ChainFailureLifecycle), false
 	}
 	if open.OpenNonce == "" {
-		return v.brokenAt(r, "session_open open_nonce is empty"), false
+		return v.brokenAtKind(r, "session_open open_nonce is empty", ChainFailureLifecycle), false
 	}
 	if _, exists := v.runNonces[r.ActionRecord.RunNonce]; exists {
-		return v.brokenAt(r, "duplicate session_open for run_nonce"), false
+		return v.brokenAtKind(r, "duplicate session_open for run_nonce", ChainFailureLifecycle), false
 	}
 	v.runNonces[r.ActionRecord.RunNonce] = open.OpenNonce
 	return ChainResult{}, true
@@ -554,11 +611,16 @@ func (v *chainVerifier) appendSignerKey(key string) {
 }
 
 func (v *chainVerifier) brokenAt(r Receipt, msg string) ChainResult {
+	return v.brokenAtKind(r, msg, ChainFailureIntegrity)
+}
+
+func (v *chainVerifier) brokenAtKind(r Receipt, msg string, kind ChainFailureKind) ChainResult {
 	return ChainResult{
 		Valid:         false,
 		BrokenAtSeq:   r.ActionRecord.ChainSeq,
 		BrokenAtIndex: v.index,
 		Error:         fmt.Sprintf("seq %d: %s", r.ActionRecord.ChainSeq, msg),
+		FailureKind:   kind,
 		SignerKeys:    v.signerKeys,
 	}
 }

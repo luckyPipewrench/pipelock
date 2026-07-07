@@ -239,6 +239,187 @@ func TestVerifyChain_InvalidSignature(t *testing.T) {
 	}
 }
 
+func TestVerifyChainIntegrityOnlyNoOpen(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := generateTestKey(t)
+	keyHex := hex.EncodeToString(pub)
+	ar := ActionRecord{
+		Version:       ActionRecordVersion,
+		ActionID:      NewActionID(),
+		ActionType:    ActionUnclassified,
+		Timestamp:     time.Date(2026, 7, 6, 14, 0, 0, 0, time.UTC),
+		Target:        "pipelock://session/heartbeat",
+		Verdict:       testVerdict,
+		Transport:     "session_control",
+		ChainPrevHash: GenesisHash,
+		ChainSeq:      0,
+		RunNonce:      "run-no-open-integrity",
+		SessionControl: &SessionControl{
+			Kind: SessionControlHeartbeat,
+			Heartbeat: &SessionHeartbeat{
+				RunNonce:         "run-no-open-integrity",
+				OpenNonce:        "open-no-open-integrity",
+				Beat:             1,
+				HeartbeatTime:    time.Date(2026, 7, 6, 14, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+				DurabilityBlocks: 1,
+			},
+		},
+	}
+	r, err := Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	chain := []Receipt{r}
+
+	result := VerifyChain(chain, keyHex)
+	if result.Valid {
+		t.Fatal("chain with run_nonce and no session_open should be invalid")
+	}
+	if result.FailureKind != ChainFailureLifecycleOpen || !result.IntegrityVerified {
+		t.Fatalf("result kind/integrity = %q/%t, want %q/true: %#v",
+			result.FailureKind, result.IntegrityVerified, ChainFailureLifecycleOpen, result)
+	}
+	if integrity := VerifyChainIntegrity(chain, keyHex); !integrity.Valid {
+		t.Fatalf("integrity-only verification failed: %s", integrity.Error)
+	}
+
+	chain[0].ActionRecord.Target = "https://api.vendor.example/forged-no-open"
+	result = VerifyChain(chain, keyHex)
+	if result.Valid || result.FailureKind != ChainFailureIntegrity || result.IntegrityVerified {
+		t.Fatalf("forged no-open result = valid %t kind %q integrity %t, want integrity failure: %#v",
+			result.Valid, result.FailureKind, result.IntegrityVerified, result)
+	}
+}
+
+func TestVerifyChainFailureKindsDoNotOverDowngrade(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 6, 15, 0, 0, 0, time.UTC)
+
+	t.Run("forged_first_receipt", func(t *testing.T) {
+		t.Parallel()
+		pub, priv := generateTestKey(t)
+		chain := []Receipt{signBoundOpen(t, priv, base)}
+		chain[0].ActionRecord.Target = "https://api.vendor.example/forged-first"
+
+		requireChainFailure(t, VerifyChain(chain, hex.EncodeToString(pub)), ChainFailureIntegrity)
+	})
+
+	t.Run("forged_mid_chain_receipt", func(t *testing.T) {
+		t.Parallel()
+		pub, priv := generateTestKey(t)
+		open := signBoundOpen(t, priv, base)
+		action := signRunReceipt(t, priv, 1, mustHash(t, open), sessionOpenTestRunA, base.Add(time.Second))
+		action.ActionRecord.Target = "https://api.vendor.example/forged-mid"
+
+		requireChainFailure(t, VerifyChain([]Receipt{open, action}, hex.EncodeToString(pub)), ChainFailureIntegrity)
+	})
+
+	t.Run("forged_heartbeat_in_open_chain", func(t *testing.T) {
+		t.Parallel()
+		pub, priv := generateTestKey(t)
+		open := signBoundOpen(t, priv, base)
+		heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), sessionOpenTestRunA, "open-a", base.Add(time.Second))
+		heartbeat.ActionRecord.Target = "https://api.vendor.example/forged-heartbeat"
+
+		requireChainFailure(t, VerifyChain([]Receipt{open, heartbeat}, hex.EncodeToString(pub)), ChainFailureIntegrity)
+	})
+
+	t.Run("forged_close_in_open_chain", func(t *testing.T) {
+		t.Parallel()
+		pub, priv := generateTestKey(t)
+		open := signBoundOpen(t, priv, base)
+		closeReceipt := signCloseReceipt(t, priv, 1, mustHash(t, open), sessionOpenTestRunA, "open-a", base.Add(time.Second))
+		closeReceipt.ActionRecord.Target = "https://api.vendor.example/forged-close"
+
+		requireChainFailure(t, VerifyChain([]Receipt{open, closeReceipt}, hex.EncodeToString(pub)), ChainFailureIntegrity)
+	})
+
+	t.Run("untrusted_signer_key", func(t *testing.T) {
+		t.Parallel()
+		pubA, privA := generateTestKey(t)
+		pubB, privB := generateTestKey(t)
+		open := signBoundOpen(t, privA, base)
+		priorHash := mustHash(t, open)
+		marker := &KeyTransition{
+			PriorSignerKey: hex.EncodeToString(pubA),
+			PriorChainSeq:  open.ActionRecord.ChainSeq,
+			PriorChainHash: priorHash,
+		}
+		rotated := signRestartOpen(t, privB, 0, priorHash, open.ActionRecord.ChainSeq, sessionOpenTestRunB, base.Add(time.Second), marker)
+
+		requireChainFailure(t, VerifyChainTrusted([]Receipt{open, rotated}, []string{hex.EncodeToString(pubA)}), ChainFailureTrust)
+		requireChainFailure(t, VerifyChainIntegrityTrusted([]Receipt{open, rotated}, []string{hex.EncodeToString(pubA)}), ChainFailureTrust)
+		if res := VerifyChainTrusted([]Receipt{open, rotated}, []string{hex.EncodeToString(pubA), hex.EncodeToString(pubB)}); !res.Valid {
+			t.Fatalf("trusted rotation should verify: %s", res.Error)
+		}
+	})
+
+	t.Run("duplicate_open_lifecycle_failure", func(t *testing.T) {
+		t.Parallel()
+		pub, priv := generateTestKey(t)
+		open := signBoundOpen(t, priv, base)
+		priorHash := mustHash(t, open)
+		duplicate := signRestartOpen(t, priv, 1, priorHash, open.ActionRecord.ChainSeq, sessionOpenTestRunA, base.Add(time.Second), nil)
+
+		requireChainFailure(t, VerifyChain([]Receipt{open, duplicate}, hex.EncodeToString(pub)), ChainFailureLifecycle)
+		if integrity := VerifyChainIntegrity([]Receipt{open, duplicate}, hex.EncodeToString(pub)); !integrity.Valid {
+			t.Fatalf("integrity-only duplicate-open chain should verify structurally: %s", integrity.Error)
+		}
+	})
+
+	t.Run("wrong_open_nonce_lifecycle_failure", func(t *testing.T) {
+		t.Parallel()
+		pub, priv := generateTestKey(t)
+		open := signBoundOpen(t, priv, base)
+		heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), sessionOpenTestRunA, "wrong-open", base.Add(time.Second))
+
+		requireChainFailure(t, VerifyChain([]Receipt{open, heartbeat}, hex.EncodeToString(pub)), ChainFailureLifecycle)
+		if integrity := VerifyChainIntegrity([]Receipt{open, heartbeat}, hex.EncodeToString(pub)); !integrity.Valid {
+			t.Fatalf("integrity-only wrong-open-nonce chain should verify structurally: %s", integrity.Error)
+		}
+	})
+}
+
+func signHeartbeatReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, prevHash, runNonce, openNonce string, ts time.Time) Receipt {
+	t.Helper()
+	return signSessionReceipt(t, priv, seq, prevHash, ts, runNonce, &SessionControl{
+		Kind: SessionControlHeartbeat,
+		Heartbeat: &SessionHeartbeat{
+			RunNonce:         runNonce,
+			OpenNonce:        openNonce,
+			Beat:             1,
+			HeartbeatTime:    ts.Format(time.RFC3339Nano),
+			DurabilityBlocks: 1,
+		},
+	}, nil)
+}
+
+func signCloseReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, prevHash, runNonce, openNonce string, ts time.Time) Receipt {
+	t.Helper()
+	return signSessionReceipt(t, priv, seq, prevHash, ts, runNonce, &SessionControl{
+		Kind: SessionControlClose,
+		Close: &SessionClose{
+			RunNonce:         runNonce,
+			OpenNonce:        openNonce,
+			FinalSeq:         seq - 1,
+			RootHash:         prevHash,
+			ReceiptCount:     seq,
+			CloseReason:      "normal",
+			DurabilityBlocks: 1,
+		},
+	}, nil)
+}
+
+func requireChainFailure(t *testing.T, res ChainResult, want ChainFailureKind) {
+	t.Helper()
+	if res.Valid || res.FailureKind != want || res.IntegrityVerified {
+		t.Fatalf("result = valid %t kind %q integrity %t, want invalid %q integrity false: %#v",
+			res.Valid, res.FailureKind, res.IntegrityVerified, want, res)
+	}
+}
+
 func TestVerifyChain_NoKeyPinning(t *testing.T) {
 	t.Parallel()
 

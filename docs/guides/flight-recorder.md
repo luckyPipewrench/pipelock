@@ -72,9 +72,10 @@ the decision is logged and traffic still flows (evidence, not enforcement). Set
 forwarding. When it is on, pipelock emits the allow receipt **before** the
 request leaves the proxy; if that emission fails it blocks with
 `receipt_emission_failed` instead of egressing. This is enforced on every
-egress transport — forward proxy, CONNECT, WebSocket, `/fetch`, MCP stdio, and
-MCP HTTP. Block-path receipts stay best-effort because the action is already
-denied.
+egress transport — `/fetch`, forward proxy, CONNECT tunnel admission,
+TLS-intercepted CONNECT inner HTTP requests, WebSocket, reverse proxy, MCP
+stdio, and MCP HTTP. Block-path receipts stay best-effort because the action is
+already denied.
 
 Two operational notes:
 

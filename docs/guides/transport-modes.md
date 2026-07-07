@@ -223,14 +223,14 @@ Every configured enforcement event produces a signed action receipt: every block
 |-----------|-------------------|---------------------|---------------------------|--------------|
 | Fetch (`/fetch`) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, cross-request exfiltration | — | Direct emit to flight recorder |
 | CONNECT (no TLS intercept) | URL scan, DLP, SSRF, blocklist | — | Redirect inside tunnel (not visible) | Hostname-only receipts |
-| CONNECT + TLS interception | URL scan + full hostname DLP | Body DLP, header DLP, response injection | Authority mismatch | Full content receipts |
+| CONNECT + TLS interception | URL scan + full hostname DLP | Body DLP, header DLP, response injection | Authority mismatch | Full content receipts; required inner-request allows are durable before upstream |
 | Absolute-URI (forward proxy) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, CEE | A2A header scan, A2A stream scan, A2A response body scan | Full content receipts |
 | WebSocket (`/ws`) | Handshake-time URL scan, DLP | Frame-level DLP, injection, address poisoning, CEE | Session close reason | Per-frame **block** receipts + session close (clean frames summarized, not individually receipted) |
 | MCP stdio | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts |
 | MCP HTTP / SSE | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts, stream-aware |
 | MCP HTTP reverse proxy | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts |
 
-Receipt emission is best-effort by default on the async flight-recorder channel and survives config reload across all transports. Set `flight_recorder.require_receipts: true` to fail closed before allow-path proxy/MCP traffic is forwarded when the required receipt cannot be emitted; block-path receipts stay best-effort because the action is already denied. Receipts chain via `chain_prev_hash` / `chain_seq` for tamper-evidence. See [`docs/guides/receipt-verification.md`](receipt-verification.md) for the verify CLI and the cross-implementation conformance suite.
+Receipt emission is best-effort by default on the async flight-recorder channel and survives config reload across all transports. Set `flight_recorder.require_receipts: true` to fail closed before allow-path proxy/MCP traffic is forwarded when the required receipt cannot be emitted; for TLS-intercepted CONNECT, the inner HTTP request's durable `intent` receipt is emitted before the upstream request. Block-path receipts stay best-effort because the action is already denied. Receipts chain via `chain_prev_hash` / `chain_seq` for tamper-evidence. See [`docs/guides/receipt-verification.md`](receipt-verification.md) for the verify CLI and the cross-implementation conformance suite.
 
 ### Intentional no-receipt and summarized cases
 

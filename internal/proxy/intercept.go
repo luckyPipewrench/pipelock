@@ -1477,9 +1477,9 @@ func newInterceptHandler(
 			}
 			requiredIntentEmitted = true
 		}
-		emitPostRoundTripOutcome := func(verdict string, status int, reason string) {
+		emitBlockedPostRoundTripOutcome := func(status int, reason string) {
 			if requiredIntentEmitted {
-				interceptEmitOutcomeReceipt(ic, allowReceipt, verdict, status, -1, reason)
+				interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionBlock, status, -1, reason)
 			}
 		}
 
@@ -1488,7 +1488,7 @@ func newInterceptHandler(
 		if err != nil {
 			ic.Logger.LogError(actx, err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			emitPostRoundTripOutcome(config.ActionAllow, http.StatusBadGateway, "upstream_error")
+			emitBlockedPostRoundTripOutcome(http.StatusBadGateway, "upstream_error")
 			return
 		}
 		defer resp.Body.Close() //nolint:errcheck // response body
@@ -1512,7 +1512,7 @@ func newInterceptHandler(
 			writeBlockedError(w,
 				blockInfoFor(blockreason.CompressedResponse, "tls_response_blocked"),
 				"blocked: compressed response cannot be scanned", http.StatusForbidden)
-			emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, "compressed_response")
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "compressed_response")
 			return
 		}
 
@@ -1575,7 +1575,7 @@ func newInterceptHandler(
 				writeBlockedError(w,
 					blockInfoFor(blockreason.CompressedResponse, sseLayer),
 					"blocked: "+msg, http.StatusForbidden)
-				emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, "compressed_"+sseLayer)
+				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "compressed_"+sseLayer)
 				return
 			}
 
@@ -1716,7 +1716,7 @@ func newInterceptHandler(
 			writeBlockedError(w,
 				blockInfoFor(blockreason.ParseError, "tls_response_blocked"),
 				"blocked: response read error", http.StatusForbidden)
-			emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, "response_read_error")
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "response_read_error")
 			return
 		}
 		if int64(len(respBody)) > maxResp {
@@ -1804,7 +1804,7 @@ func newInterceptHandler(
 						info = blockInfoFor(blockreason.ParseError, "tls_response_blocked")
 					}
 					writeBlockedError(w, info, "blocked: "+scanFailure.Reason, http.StatusForbidden)
-					emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, string(scanFailure.Kind))
+					emitBlockedPostRoundTripOutcome(http.StatusForbidden, string(scanFailure.Kind))
 					return
 				}
 				defer releaseSizeExemptScan()
@@ -1826,7 +1826,7 @@ func newInterceptHandler(
 				writeBlockedError(w,
 					blockInfoFor(blockreason.ResponseSize, "tls_response_blocked"),
 					"blocked: "+reason, http.StatusForbidden)
-				emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, "response_size")
+				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "response_size")
 				return
 			}
 		}
@@ -1841,7 +1841,7 @@ func newInterceptHandler(
 				writeBlockedError(w,
 					blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
 					"blocked: response body exceeds browser shield size limit", http.StatusForbidden)
-				emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, "shield_oversize")
+				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "shield_oversize")
 				return
 			}
 			// If shield modified the body, update Content-Length to prevent
@@ -1882,7 +1882,7 @@ func newInterceptHandler(
 			writeBlockedError(w,
 				blockInfoFor(blockreason.MediaPolicy, "media_policy"),
 				"blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
-			emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, "media_policy")
+			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "media_policy")
 			return
 		}
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
@@ -1980,7 +1980,7 @@ func newInterceptHandler(
 					writeBlockedError(w,
 						blockInfoFor(blockreason.PromptInjection, scannerLabelA2A),
 						"blocked: "+reason, http.StatusForbidden)
-					emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, scannerLabelA2A)
+					emitBlockedPostRoundTripOutcome(http.StatusForbidden, scannerLabelA2A)
 					return
 				}
 				// Audit/warn mode: log finding but forward response.
@@ -2078,7 +2078,7 @@ func newInterceptHandler(
 					writeBlockedError(w,
 						blockInfoFor(blockreason.PromptInjection, "response_scan"),
 						"blocked: response contains injection", http.StatusForbidden)
-					emitPostRoundTripOutcome(config.ActionBlock, http.StatusForbidden, "response_scan")
+					emitBlockedPostRoundTripOutcome(http.StatusForbidden, "response_scan")
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.

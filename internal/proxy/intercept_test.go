@@ -3316,6 +3316,9 @@ func TestInterceptTunnel_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) 
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
 	}
 	outcome := requireSingleInterceptIntentOutcome(t, rph.findReceipts(t))
+	if outcome.ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("outcome verdict = %q, want %q", outcome.ActionRecord.Verdict, config.ActionBlock)
+	}
 	if !strings.Contains(outcome.ActionRecord.Pattern, "status=502") ||
 		!strings.Contains(outcome.ActionRecord.Pattern, "reason=upstream_error") {
 		t.Fatalf("outcome pattern = %q, want status=502 reason=upstream_error", outcome.ActionRecord.Pattern)
@@ -3418,7 +3421,7 @@ func TestInterceptTunnel_RequireReceiptsPostRoundTripOutcomeBranches(t *testing.
 				return nil, errors.New("forced upstream error")
 			},
 			wantStatus:  http.StatusBadGateway,
-			wantVerdict: config.ActionAllow,
+			wantVerdict: config.ActionBlock,
 			wantReason:  "upstream_error",
 		},
 		{

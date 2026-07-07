@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestReceiptHeartbeatTickerStopsBeforeSeal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	var log bytes.Buffer
-	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return e }, &log)
+	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return e }, &log, false, nil)
 	waitForHeartbeatReceipt(t, seen)
 	cancel()
 	wg.Wait()
@@ -79,6 +80,65 @@ func TestReceiptHeartbeatTickerStopsBeforeSeal(t *testing.T) {
 	}
 	if root.RootHash != closeHash {
 		t.Fatalf("root hash = %s, want close hash %s", root.RootHash, closeHash)
+	}
+}
+
+func TestRequiredReceiptHeartbeatFailureMarksEmitterUnhealthy(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	e := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rec,
+		PrivKey:  priv,
+	})
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	var log bytes.Buffer
+	requiredFailure := make(chan error, 1)
+	startReceiptHeartbeat(ctx, &wg, time.Millisecond, func() *receipt.Emitter { return e }, &log, true, func(err error) {
+		requiredFailure <- err
+		cancel()
+	})
+	defer wg.Wait()
+
+	select {
+	case err := <-requiredFailure:
+		if err == nil {
+			t.Fatal("required heartbeat failure callback received nil error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for required heartbeat failure")
+	}
+	if e.HealthError() == nil {
+		t.Fatal("emitter health error was not marked after required heartbeat failure")
+	}
+	err = e.Emit(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   "allow",
+		Transport: "fetch",
+		Target:    "https://api.vendor.example/after-heartbeat-failure",
+	})
+	if err == nil || !strings.Contains(err.Error(), "receipt emitter unhealthy") {
+		t.Fatalf("Emit after required heartbeat failure error = %v, want unhealthy", err)
 	}
 }
 

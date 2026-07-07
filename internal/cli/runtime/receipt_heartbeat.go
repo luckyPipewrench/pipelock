@@ -24,6 +24,8 @@ func startReceiptHeartbeat(
 	interval time.Duration,
 	emitterFn receiptHeartbeatEmitter,
 	logW io.Writer,
+	requireReceipts bool,
+	onRequiredFailure func(error),
 ) {
 	if wg == nil || emitterFn == nil {
 		return
@@ -47,6 +49,13 @@ func startReceiptHeartbeat(
 					if logW != nil {
 						_, _ = fmt.Fprintf(logW, "pipelock: receipt heartbeat emit failed: %v\n", err)
 					}
+					if requireReceipts {
+						e.MarkUnhealthy(err)
+						if onRequiredFailure != nil {
+							onRequiredFailure(err)
+						}
+						return
+					}
 				}
 			case <-ctx.Done():
 				return
@@ -60,13 +69,15 @@ func startStandaloneReceiptLifecycle(
 	interval time.Duration,
 	e *receipt.Emitter,
 	logW io.Writer,
+	requireReceipts bool,
+	onRequiredFailure func(error),
 ) func() {
 	if !receiptEmitterReady(e) {
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(parent)
 	var wg sync.WaitGroup
-	startReceiptHeartbeat(ctx, &wg, interval, func() *receipt.Emitter { return e }, logW)
+	startReceiptHeartbeat(ctx, &wg, interval, func() *receipt.Emitter { return e }, logW, requireReceipts, onRequiredFailure)
 	return func() {
 		cancel()
 		wg.Wait()

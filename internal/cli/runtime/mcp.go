@@ -1022,16 +1022,41 @@ Key-free evidence capture:
 			if cfg.FlightRecorder.RequireReceipts && !receiptEmitterReady(receiptEmitter) {
 				return fmt.Errorf("flight_recorder.require_receipts is enabled but no healthy signed receipt emitter is active: set flight_recorder.enabled, flight_recorder.dir, and flight_recorder.signing_key_path (run 'pipelock init'), fix any receipt-chain resume error, or disable require_receipts")
 			}
+			heartbeatCtx, heartbeatCancel := context.WithCancel(cmd.Context())
+			defer heartbeatCancel()
+			var heartbeatErrMu sync.Mutex
+			var heartbeatErr error
+			setRequiredHeartbeatErr := func(err error) {
+				if err == nil {
+					return
+				}
+				heartbeatErrMu.Lock()
+				if heartbeatErr == nil {
+					heartbeatErr = err
+				}
+				heartbeatErrMu.Unlock()
+				heartbeatCancel()
+			}
+			requiredHeartbeatErr := func() error {
+				heartbeatErrMu.Lock()
+				defer heartbeatErrMu.Unlock()
+				if heartbeatErr == nil {
+					return nil
+				}
+				return fmt.Errorf("flight_recorder.require_receipts is enabled but receipt heartbeat emission failed: %w", heartbeatErr)
+			}
 			// Standalone MCP does not have the proxy server's drain-then-seal
 			// WaitGroup. Tie heartbeat to the command lifetime instead: the
 			// deferred stop cancels and joins heartbeats before writing
 			// session_close + transcript_root, so no heartbeat appends after
 			// the close even though each transport has its own run loop.
 			stopReceiptLifecycle := startStandaloneReceiptLifecycle(
-				cmd.Context(),
+				heartbeatCtx,
 				cfg.FlightRecorder.HeartbeatIntervalDuration(),
 				receiptEmitter,
 				cmd.ErrOrStderr(),
+				cfg.FlightRecorder.RequireReceipts,
+				setRequiredHeartbeatErr,
 			)
 			defer stopReceiptLifecycle()
 			sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
@@ -1123,7 +1148,7 @@ Key-free evidence capture:
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --header is only honored in stdio-to-HTTP --upstream mode; ignored for --listen and ws/wss upstreams")
 				}
 
-				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+				ctx, cancel := signal.NotifyContext(heartbeatCtx, syscall.SIGINT, syscall.SIGTERM)
 				defer cancel()
 
 				// HTTP reverse proxy mode: --listen + --upstream.
@@ -1178,10 +1203,16 @@ Key-free evidence capture:
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), listenerOpts); err != nil {
+						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+							return heartbeatErr
+						}
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
 						return err
+					}
+					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+						return heartbeatErr
 					}
 					return nil
 				}
@@ -1219,10 +1250,16 @@ Key-free evidence capture:
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
+						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+							return heartbeatErr
+						}
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
 						return err
+					}
+					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+						return heartbeatErr
 					}
 					return nil
 				}
@@ -1265,10 +1302,16 @@ Key-free evidence capture:
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 					upstreamURL, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, extraHeaders, httpOpts); err != nil {
+					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+						return heartbeatErr
+					}
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}
 					return err
+				}
+				if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+					return heartbeatErr
 				}
 				return nil
 			}
@@ -1338,7 +1381,7 @@ Key-free evidence capture:
 				}
 				workspace, _ = filepath.Abs(workspace)
 
-				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+				ctx, cancel := signal.NotifyContext(heartbeatCtx, syscall.SIGINT, syscall.SIGTERM)
 				defer cancel()
 
 				stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
@@ -1437,7 +1480,13 @@ Key-free evidence capture:
 					"pipelock: proxying MCP server %v [SANDBOXED] (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s, workspace=%s)\n",
 					serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction, workspace)
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
+					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+						return heartbeatErr
+					}
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
+				}
+				if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+					return heartbeatErr
 				}
 				return nil
 			}
@@ -1446,7 +1495,7 @@ Key-free evidence capture:
 			if err := validateMCPDeferSurface(deferred.SurfaceMCPStdio, cfg); err != nil {
 				return err
 			}
-			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, cancel := signal.NotifyContext(heartbeatCtx, syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
 			stopDeferAPI, deferAPIErr := startDeferredOperatorAPIOrReport(ctx, cfg, deferManager, auditLogger, cmd.ErrOrStderr(), sentryClient)
@@ -1561,7 +1610,13 @@ Key-free evidence capture:
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 				serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
+				if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+					return heartbeatErr
+				}
 				return handleProxyError(err, logW, sentryClient)
+			}
+			if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
+				return heartbeatErr
 			}
 			return nil
 		},

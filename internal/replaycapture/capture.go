@@ -45,6 +45,8 @@ const policyHashLabelPrefix = "sha256:"
 // the synthetic AWS example key is detected. Public-rule-id-by-construction.
 const awsKeyPatternName = "AWS Access Key ID"
 
+var afterEarlyRecorderCloseForTest func()
+
 // CapturedScenario is the genuine result of driving one scenario through a real
 // Pipelock proxy: the signed receipt chain plus the metadata needed to assemble
 // an Audit Packet and a replay manifest.
@@ -145,6 +147,9 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 	defer func() {
 		if err != nil && !recClosed {
 			_ = rec.Close()
+			if afterEarlyRecorderCloseForTest != nil {
+				afterEarlyRecorderCloseForTest()
+			}
 		}
 	}()
 

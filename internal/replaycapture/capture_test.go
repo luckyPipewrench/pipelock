@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -115,6 +116,33 @@ func TestCapture_AllScenarios(t *testing.T) {
 				s.ID, got.ReceiptCount, decisive.ActionRecord.Verdict,
 				decisive.ActionRecord.Layer, decisive.ActionRecord.Pattern, decisive.ActionRecord.Target)
 		})
+	}
+}
+
+func TestCapture_EarlyErrorAfterRecorderConstructionClosesRecorder(t *testing.T) {
+	eng := newTestEngine(t)
+	eng.privKey = nil
+
+	closed := make(chan struct{}, 1)
+	afterEarlyRecorderCloseForTest = func() {
+		closed <- struct{}{}
+	}
+	t.Cleanup(func() {
+		afterEarlyRecorderCloseForTest = nil
+	})
+
+	_, err := eng.Capture(DefaultScenarios()[0])
+	if err == nil {
+		t.Fatal("Capture unexpectedly succeeded with missing private key")
+	}
+	if !strings.Contains(err.Error(), "emitter construction failed") {
+		t.Fatalf("Capture error = %q, want emitter construction failure", err)
+	}
+
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recorder close hook was not invoked on early Capture error")
 	}
 }
 

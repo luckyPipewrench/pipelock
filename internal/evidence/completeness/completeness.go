@@ -104,6 +104,11 @@ type recordContext struct {
 	preCloseRootHash string
 }
 
+type lifecycleState struct {
+	opened map[string]bool
+	closed map[string]bool
+}
+
 // Analyze inspects a receipt chain and its integrity result, returning a
 // bounded completeness report. A cryptographically or structurally broken chain
 // is BROKEN. A chain with no lifecycle evidence is UNVERIFIED. A clean lifecycle
@@ -132,6 +137,10 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 	}
 
 	states := make(map[string]*runState)
+	lifecycle := lifecycleState{
+		opened: make(map[string]bool),
+		closed: make(map[string]bool),
+	}
 	var order []string
 	getRun := func(runNonce string) *runState {
 		if runNonce == "" {
@@ -180,17 +189,29 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 		hasPrevious = true
 
 		runNonce := effectiveRunNonce(ar)
+		if ar.SessionControl == nil {
+			if violation := validateLifecycleAction(lifecycle, ar); violation != "" {
+				st := getRun(runNonce)
+				markStructuralViolation(st, violation)
+				segmentPrefixCount++
+				continue
+			}
+		}
 		if runNonce != "" || ar.DecisionPhase != "" || ar.SessionControl != nil {
 			st := getRun(runNonce)
 			if violation := applyRecord(st, ar, ctx); violation != "" {
-				if st.report.StructuralViolation == "" {
-					st.report.StructuralViolation = violation
-				}
-				st.report.Status = StatusBroken
-				st.report.Reason = ReasonChainBroken
+				markStructuralViolation(st, violation)
 			}
+			updateLifecycleState(lifecycle, ar)
 		}
 		segmentPrefixCount++
+	}
+
+	for _, runNonce := range order {
+		if runNonce == "(missing)" || lifecycle.opened[runNonce] {
+			continue
+		}
+		markStructuralViolation(states[runNonce], "receipt run_nonce has no matching session_open")
 	}
 
 	for _, runNonce := range order {
@@ -263,6 +284,44 @@ func effectiveRunNonce(ar receipt.ActionRecord) string {
 	return ""
 }
 
+func validateLifecycleAction(lifecycle lifecycleState, ar receipt.ActionRecord) string {
+	if ar.RunNonce == "" {
+		return "action receipt missing run_nonce in lifecycle chain"
+	}
+	if !lifecycle.opened[ar.RunNonce] {
+		return "action observed before matching session_open"
+	}
+	if lifecycle.closed[ar.RunNonce] {
+		return "action observed after session_close"
+	}
+	return ""
+}
+
+func updateLifecycleState(lifecycle lifecycleState, ar receipt.ActionRecord) {
+	if ar.SessionControl == nil {
+		return
+	}
+	runNonce := effectiveRunNonce(ar)
+	if runNonce == "" {
+		return
+	}
+	switch ar.SessionControl.Kind {
+	case receipt.SessionControlOpen:
+		lifecycle.opened[runNonce] = true
+		lifecycle.closed[runNonce] = false
+	case receipt.SessionControlClose:
+		lifecycle.closed[runNonce] = true
+	}
+}
+
+func markStructuralViolation(st *runState, violation string) {
+	if st.report.StructuralViolation == "" {
+		st.report.StructuralViolation = violation
+	}
+	st.report.Status = StatusBroken
+	st.report.Reason = ReasonChainBroken
+}
+
 func applyRecord(st *runState, ar receipt.ActionRecord, ctx recordContext) string {
 	if st.report.Closed {
 		return "record observed after session_close"
@@ -317,6 +376,9 @@ func applyOpen(st *runState, ar receipt.ActionRecord, open *receipt.SessionOpen)
 	if open.OpenNonce == "" {
 		return "session_open open_nonce is empty"
 	}
+	if open.ChainOpenSeq != ar.ChainSeq {
+		return "session_open chain_open_seq does not match receipt chain_seq"
+	}
 	if st.hasOpen {
 		st.report.DuplicateSessionOpen = true
 		return "duplicate session_open for run_nonce"
@@ -334,9 +396,18 @@ func applyHeartbeat(st *runState, ar receipt.ActionRecord, heartbeat *receipt.Se
 	if ar.RunNonce == "" || heartbeat.RunNonce != ar.RunNonce {
 		return "heartbeat run_nonce does not match receipt run_nonce"
 	}
+	if !st.hasOpen {
+		return "heartbeat observed before session_open"
+	}
 	if st.hasOpen && heartbeat.OpenNonce != st.report.OpenNonce {
 		st.report.ContradictOpenNonce = true
 		return "heartbeat open_nonce does not match session_open"
+	}
+	if heartbeat.ChainHead != ar.ChainPrevHash {
+		return "heartbeat chain_head does not match observed pre-heartbeat chain hash"
+	}
+	if heartbeat.ChainSeqHead != ar.ChainSeq {
+		return "heartbeat chain_seq_head does not match observed pre-heartbeat chain seq"
 	}
 	st.report.Heartbeats++
 	if st.sawBeat {
@@ -363,6 +434,9 @@ func applyClose(st *runState, ar receipt.ActionRecord, closeRecord *receipt.Sess
 	}
 	if ar.RunNonce == "" || closeRecord.RunNonce != ar.RunNonce {
 		return "session_close run_nonce does not match receipt run_nonce"
+	}
+	if !st.hasOpen {
+		return "session_close observed before session_open"
 	}
 	if st.hasOpen && closeRecord.OpenNonce != st.report.OpenNonce {
 		st.report.ContradictOpenNonce = true

@@ -184,23 +184,32 @@ func (b *chainBuilder) heartbeat(beat, fsync, blocks uint64) receipt.Receipt {
 
 func (b *chainBuilder) heartbeatFor(runNonce, openNonce string, beat, fsync, blocks uint64) receipt.Receipt {
 	b.t.Helper()
+	return b.heartbeatForWithMutation(runNonce, openNonce, beat, fsync, blocks, nil)
+}
+
+func (b *chainBuilder) heartbeatForWithMutation(runNonce, openNonce string, beat, fsync, blocks uint64, mutate func(*receipt.SessionHeartbeat)) receipt.Receipt {
+	b.t.Helper()
+	heartbeat := &receipt.SessionHeartbeat{
+		RunNonce:         runNonce,
+		OpenNonce:        openNonce,
+		Beat:             beat,
+		ChainHead:        b.prev,
+		ChainSeqHead:     b.seq,
+		HeartbeatTime:    b.base.Add(b.offset).Format(time.RFC3339Nano),
+		FsyncErrorsGated: fsync,
+		DurabilityBlocks: blocks,
+	}
+	if mutate != nil {
+		mutate(heartbeat)
+	}
 	return b.sign(receipt.ActionRecord{
 		ActionType: receipt.ActionUnclassified,
 		Target:     "pipelock://session/heartbeat",
 		Transport:  "session_control",
 		RunNonce:   runNonce,
 		SessionControl: &receipt.SessionControl{
-			Kind: receipt.SessionControlHeartbeat,
-			Heartbeat: &receipt.SessionHeartbeat{
-				RunNonce:         runNonce,
-				OpenNonce:        openNonce,
-				Beat:             beat,
-				ChainHead:        b.prev,
-				ChainSeqHead:     b.seq,
-				HeartbeatTime:    b.base.Add(b.offset).Format(time.RFC3339Nano),
-				FsyncErrorsGated: fsync,
-				DurabilityBlocks: blocks,
-			},
+			Kind:      receipt.SessionControlHeartbeat,
+			Heartbeat: heartbeat,
 		},
 	})
 }
@@ -421,9 +430,9 @@ func TestAnalyzeNoOpenIsUnverified(t *testing.T) {
 		t.Fatal("fixture should trigger the existing chain verifier no-open rejection")
 	}
 	report := Analyze(chain, res)
-	run := requireOneRun(t, report, StatusUnverified, ReasonNoOpen)
-	if run.Closed != true {
-		t.Fatalf("close evidence should still be surfaced: %#v", run)
+	run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
+	if run.StructuralViolation != "heartbeat observed before session_open" {
+		t.Fatalf("structural_violation = %q, want heartbeat before open: %#v", run.StructuralViolation, run)
 	}
 }
 
@@ -553,8 +562,8 @@ func TestAnalyzeRecordAfterCloseIsBroken(t *testing.T) {
 
 	report := analyzeBuilt(chain, b.keyHex)
 	run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
-	if run.StructuralViolation != "record observed after session_close" {
-		t.Fatalf("structural_violation = %q, want record observed after session_close: %#v", run.StructuralViolation, run)
+	if run.StructuralViolation != "action observed after session_close" {
+		t.Fatalf("structural_violation = %q, want action observed after session_close: %#v", run.StructuralViolation, run)
 	}
 }
 
@@ -611,6 +620,95 @@ func TestAnalyzePostCloseGuardIsScopedToRun(t *testing.T) {
 			t.Fatalf("structural_violation = %q, want post-close guard: %#v", run.StructuralViolation, run)
 		}
 	})
+}
+
+func TestAnalyzeLifecycleChainRejectsActionsOutsideOpenedRun(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		build         func(*chainBuilder) []receipt.Receipt
+		wantRun       string
+		wantViolation string
+	}{
+		"pre_open_action": {
+			build: func(b *chainBuilder) []receipt.Receipt {
+				actionID := "action-pre-open"
+				return []receipt.Receipt{
+					b.intent(actionID),
+					b.open(),
+					b.outcome(actionID),
+					b.close(0, 1),
+				}
+			},
+			wantRun:       testRunNonce,
+			wantViolation: "action observed before matching session_open",
+		},
+		"post_close_action_missing_run_nonce": {
+			build: func(b *chainBuilder) []receipt.Receipt {
+				return []receipt.Receipt{
+					b.open(),
+					b.close(0, 1),
+					b.legacyAction(),
+				}
+			},
+			wantRun:       "(missing)",
+			wantViolation: "action receipt missing run_nonce in lifecycle chain",
+		},
+		"post_close_action_unopened_run_nonce": {
+			build: func(b *chainBuilder) []receipt.Receipt {
+				return []receipt.Receipt{
+					b.open(),
+					b.close(0, 1),
+					b.actionFor("run-unopened", "action-unopened", receipt.DecisionPhaseIntent),
+				}
+			},
+			wantRun:       "run-unopened",
+			wantViolation: "action observed before matching session_open",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := newChainBuilder(t)
+			report := analyzeBuilt(tc.build(b), b.keyHex)
+			run := requireRun(t, report, tc.wantRun, StatusBroken, ReasonChainBroken)
+			if run.StructuralViolation != tc.wantViolation {
+				t.Fatalf("structural_violation = %q, want %q: %#v", run.StructuralViolation, tc.wantViolation, run)
+			}
+		})
+	}
+}
+
+func TestAnalyzeHeartbeatClaimsMustMatchObservedPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func(*receipt.SessionHeartbeat){
+		"chain_head": func(heartbeat *receipt.SessionHeartbeat) {
+			heartbeat.ChainHead = "forged-heartbeat-chain-head"
+		},
+		"chain_seq_head": func(heartbeat *receipt.SessionHeartbeat) {
+			heartbeat.ChainSeqHead++
+		},
+	}
+
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b := newChainBuilder(t)
+			chain := []receipt.Receipt{
+				b.open(),
+				b.heartbeatForWithMutation(testRunNonce, testOpenNonce, 1, 0, 1, mutate),
+				b.close(0, 2),
+			}
+
+			report := analyzeBuilt(chain, b.keyHex)
+			run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
+			if run.StructuralViolation == "" {
+				t.Fatalf("heartbeat prefix mutation did not surface a structural violation for %s: %#v", name, run)
+			}
+		})
+	}
 }
 
 func TestAnalyzeDurabilityCountersArePerRun(t *testing.T) {
@@ -767,8 +865,8 @@ func TestAnalyzeOnlyMissingOpenIntegrityFailureDowngrades(t *testing.T) {
 		},
 		"missing_open_with_integrity": {
 			chainResult: receipt.ChainResult{FailureKind: receipt.ChainFailureLifecycleOpen, IntegrityVerified: true, Error: "missing open"},
-			wantStatus:  StatusUnverified,
-			wantReason:  ReasonNoOpen,
+			wantStatus:  StatusBroken,
+			wantReason:  ReasonChainBroken,
 		},
 	}
 

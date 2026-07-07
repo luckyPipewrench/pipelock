@@ -78,6 +78,8 @@ type Emitter struct {
 	metrics    MetricsSink
 	onReceipt  func(rcpt *Receipt)
 	initErr    error
+	healthMu   sync.RWMutex
+	healthErr  error
 	runNonce   string
 
 	// Chain state - mutex-protected, updated on each Emit.
@@ -169,6 +171,30 @@ func (e *Emitter) InitError() error {
 		return nil
 	}
 	return e.initErr
+}
+
+// MarkUnhealthy bricks future emissions after a runtime receipt failure that
+// makes the chain untrustworthy for required-receipt policy. Safe on nil.
+func (e *Emitter) MarkUnhealthy(err error) {
+	if e == nil || err == nil {
+		return
+	}
+	e.healthMu.Lock()
+	defer e.healthMu.Unlock()
+	if e.healthErr == nil {
+		e.healthErr = err
+	}
+}
+
+// HealthError returns the first runtime health failure recorded by
+// MarkUnhealthy. Safe on nil.
+func (e *Emitter) HealthError() error {
+	if e == nil {
+		return nil
+	}
+	e.healthMu.RLock()
+	defer e.healthMu.RUnlock()
+	return e.healthErr
 }
 
 // SignerKeyHex returns the Ed25519 public key hex for receipts this emitter
@@ -376,6 +402,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	if e.initErr != nil {
 		e.recordFailure(FailReasonChainInit)
 		return fmt.Errorf("resume receipt chain: %w", e.initErr)
+	}
+	if healthErr := e.HealthError(); healthErr != nil {
+		e.recordFailure(FailReasonUnavailable)
+		return fmt.Errorf("receipt emitter unhealthy: %w", healthErr)
 	}
 
 	actionType := e.classifyAction(opts)

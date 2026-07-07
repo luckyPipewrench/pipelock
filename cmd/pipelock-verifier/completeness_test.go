@@ -242,7 +242,7 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 	})
 
-	t.Run("unverified_no_open_exits_zero", func(t *testing.T) {
+	t.Run("lifecycle_no_open_exits_nonzero", func(t *testing.T) {
 		t.Parallel()
 		f := newCompletenessFixture(t)
 		path := writeCompletenessJSONL(t, []receipt.Receipt{
@@ -250,15 +250,15 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 			f.close(runNonce, openNonce),
 		})
 		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", f.keyHex, path)
-		if code != cliutil.ExitOK {
-			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		if code != cliutil.ExitGeneral {
+			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 		}
 		report := parseCompletenessReport(t, stdout)
-		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoOpen {
-			t.Fatalf("report=%s/%s, want UNVERIFIED/no_open", report.Status, report.Reason)
+		if report.Status != completeness.StatusBroken || report.Reason != completeness.ReasonChainBroken {
+			t.Fatalf("report=%s/%s, want BROKEN/chain_broken", report.Status, report.Reason)
 		}
 		if !report.SignaturesVerified {
-			t.Fatalf("signatures_verified=false, want true for integrity-valid no-open: %#v", report)
+			t.Fatalf("signatures_verified=false, want true for signed malformed lifecycle: %#v", report)
 		}
 	})
 
@@ -284,7 +284,7 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 	})
 
-	t.Run("unverified_no_open_without_key_requires_unpinned_flag", func(t *testing.T) {
+	t.Run("broken_no_open_without_key_stays_nonzero_with_unpinned_flag", func(t *testing.T) {
 		t.Parallel()
 		f := newCompletenessFixture(t)
 		path := writeCompletenessJSONL(t, []receipt.Receipt{
@@ -301,12 +301,12 @@ func TestCompletenessCLIJSONVerdictsAndExitCodes(t *testing.T) {
 		}
 
 		stdout, stderr, code = runRoot(t, "completeness", "--json", "--allow-unpinned", path)
-		if code != cliutil.ExitOK {
-			t.Fatalf("allow-unpinned code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		if code != cliutil.ExitGeneral {
+			t.Fatalf("allow-unpinned code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 		}
 		report = parseCompletenessReport(t, stdout)
-		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoOpen || !report.Unpinned {
-			t.Fatalf("allow-unpinned report=%s/%s unpinned=%t, want UNVERIFIED/no_open unpinned", report.Status, report.Reason, report.Unpinned)
+		if report.Status != completeness.StatusBroken || report.Reason != completeness.ReasonChainBroken || !report.Unpinned {
+			t.Fatalf("allow-unpinned report=%s/%s unpinned=%t, want BROKEN/chain_broken unpinned", report.Status, report.Reason, report.Unpinned)
 		}
 	})
 

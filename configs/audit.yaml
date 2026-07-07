@@ -603,5 +603,9 @@ flight_recorder:
   enabled: true
   require_receipts: false
   redact: true
+  evidence_health:
+    enabled: true
+    self_audit_interval: 30s
+    max_anchor_lag: 24h
   # dir: /var/lib/pipelock/recorder
   # signing_key_path: /etc/pipelock/keys/flight-recorder-signing.key

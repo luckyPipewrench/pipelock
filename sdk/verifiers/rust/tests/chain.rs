@@ -1,10 +1,13 @@
 mod common;
 
 use ed25519_dalek::{Signer, SigningKey};
-use pipelock_verifier_rs::canonical::canonicalize_jcs_value;
-use pipelock_verifier_rs::chain::{receipt_hash, verify_chain, verify_chain_with_options};
+use pipelock_verifier_rs::canonical::{canonicalize_action_record, canonicalize_jcs_value};
+use pipelock_verifier_rs::chain::{
+    compute_session_open_genesis, receipt_hash, verify_chain, verify_chain_with_options,
+};
 use pipelock_verifier_rs::recorder::extract_receipts;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,6 +43,179 @@ fn valid_go_generated_chain_allows_explicit_unpinned_structural_verification() {
 }
 
 #[test]
+fn legacy_go_generated_chain_verifies_with_pinned_key() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/valid-chain.jsonl")).unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(result.valid, "{:?}", result.error);
+    assert_eq!(result.receipt_count, 5);
+    assert_eq!(result.final_seq, 4);
+}
+
+#[test]
+fn g1_go_generated_chain_verifies_with_pinned_key() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(result.valid, "{:?}", result.error);
+    assert_eq!(result.receipt_count, 5);
+    assert_eq!(result.final_seq, 4);
+}
+
+#[test]
+fn g1_restart_chain_verifies_with_prior_tail_fields() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-restart-chain.jsonl")).unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(result.valid, "{:?}", result.error);
+    assert_eq!(result.receipt_count, 5);
+    assert_eq!(result.final_seq, 4);
+    assert_eq!(
+        receipts[2]["action_record"]["session_control"]["open"]["prior_chain_seq"],
+        json!(1)
+    );
+    assert!(
+        !receipts[2]["action_record"]["session_control"]["open"]["prior_chain_head"]
+            .as_str()
+            .unwrap_or("")
+            .is_empty()
+    );
+}
+
+#[test]
+fn g1_genesis_vectors_match_go() {
+    let root = common::repo_root();
+    let vectors: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("sdk/conformance/testdata/g1-genesis-vectors.json"))
+            .expect("read g1 vectors"),
+    )
+    .expect("parse g1 vectors");
+    let vectors = vectors.as_array().expect("vector array");
+    assert!(vectors.len() >= 5);
+    for vector in vectors {
+        let got = compute_session_open_genesis(&vector["open"]);
+        assert_eq!(got, vector["expected"].as_str().expect("expected"));
+    }
+}
+
+#[test]
+fn g1_broken_genesis_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-broken-genesis.jsonl")).unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(0));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_open genesis hash mismatch"));
+}
+
+#[test]
+fn g1_legacy_session_open_on_genesis_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-legacy-open-genesis.jsonl"))
+            .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(0));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_open on legacy genesis"));
+}
+
+#[test]
+fn g1_genesis_chain_open_seq_mismatch_is_rejected_before_signature_check() {
+    let root = common::repo_root();
+    let key = conformance_key();
+    let mut receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+    receipts[0]["action_record"]["session_control"]["open"]["chain_open_seq"] = json!(1);
+    sign_action_receipt_with_conformance_key(&mut receipts[0]);
+
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(0));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_open chain_open_seq does not match receipt chain_seq"));
+}
+
+#[test]
+fn g1_genesis_prior_chain_tail_is_rejected_before_signature_check() {
+    let root = common::repo_root();
+    let key = conformance_key();
+    let mut receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+    receipts[0]["action_record"]["session_control"]["open"]["prior_chain_head"] =
+        json!("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    receipts[0]["action_record"]["session_control"]["open"]["prior_chain_seq"] = json!(9);
+    sign_action_receipt_with_conformance_key(&mut receipts[0]);
+
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(0));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("bound genesis session_open must not carry prior chain tail"));
+}
+
+#[test]
+fn g1_signed_field_tampering_is_rejected() {
+    let root = common::repo_root();
+    let key = conformance_key();
+    type TamperCase = (&'static str, fn(&mut Vec<Value>));
+    let cases: &[TamperCase] = &[
+        ("session_open_posture_signer_key_id", |receipts| {
+            receipts[0]["action_record"]["session_control"]["open"]["posture_signer_key_id"] =
+                json!("posture-key-tampered");
+        }),
+        ("decision_phase", |receipts| {
+            receipts[1]["action_record"]["decision_phase"] = json!("outcome");
+        }),
+        ("heartbeat_beat", |receipts| {
+            receipts[3]["action_record"]["session_control"]["heartbeat"]["beat"] = json!(2);
+        }),
+        ("heartbeat_fsync_errors_gated", |receipts| {
+            receipts[3]["action_record"]["session_control"]["heartbeat"]["fsync_errors_gated"] =
+                json!(99);
+        }),
+        ("close_root_hash", |receipts| {
+            receipts[4]["action_record"]["session_control"]["close"]["root_hash"] =
+                json!("tampered-root");
+        }),
+        ("close_durability_blocks", |receipts| {
+            receipts[4]["action_record"]["session_control"]["close"]["durability_blocks"] =
+                json!(99);
+        }),
+    ];
+    for (name, mutate) in cases {
+        let mut receipts =
+            extract_receipts(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+        mutate(&mut receipts);
+        let result = verify_chain(&receipts, &key);
+        assert!(!result.valid, "{name} unexpectedly verified");
+        assert!(
+            result.error.unwrap_or_default().contains("signature"),
+            "{name} should fail closed on signature mismatch"
+        );
+    }
+}
+
+#[test]
 fn broken_chain_prev_hash_is_rejected() {
     let root = common::repo_root();
     let receipts =
@@ -51,6 +227,17 @@ fn broken_chain_prev_hash_is_rejected() {
         .error
         .unwrap_or_default()
         .contains("chain_prev_hash mismatch"));
+}
+
+fn conformance_key() -> String {
+    let root = common::repo_root();
+    let data =
+        fs::read_to_string(root.join("sdk/conformance/testdata/test-key.json")).expect("read key");
+    let value: Value = serde_json::from_str(&data).expect("parse key");
+    value["public_key_hex"]
+        .as_str()
+        .expect("public_key_hex")
+        .to_string()
 }
 
 #[test]
@@ -164,4 +351,20 @@ fn sign_evidence_receipt(receipt: &mut Value) {
         "algorithm": "ed25519",
         "signature": format!("ed25519:{}", hex::encode(signature.to_bytes()))
     });
+}
+
+fn sign_action_receipt_with_conformance_key(receipt: &mut Value) {
+    let root = common::repo_root();
+    let data =
+        fs::read_to_string(root.join("sdk/conformance/testdata/test-key.json")).expect("read key");
+    let value: Value = serde_json::from_str(&data).expect("parse key");
+    let seed: [u8; 32] = hex::decode(value["seed_hex"].as_str().expect("seed_hex"))
+        .expect("decode seed")
+        .try_into()
+        .expect("seed length");
+    let key = SigningKey::from_bytes(&seed);
+    let digest = Sha256::digest(canonicalize_action_record(&receipt["action_record"]));
+    let signature = key.sign(&digest);
+    receipt["signature"] = json!(format!("ed25519:{}", hex::encode(signature.to_bytes())));
+    receipt["signer_key"] = value["public_key_hex"].clone();
 }

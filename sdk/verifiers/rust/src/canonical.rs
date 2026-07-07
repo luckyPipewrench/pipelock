@@ -8,6 +8,10 @@ enum NestedKind {
     Shield,
     TaintSource,
     KeyTransition,
+    SessionControl,
+    SessionOpen,
+    SessionHeartbeat,
+    SessionClose,
 }
 
 #[derive(Clone, Copy)]
@@ -34,6 +38,12 @@ const ACTION_RECORD_FIELDS: &[FieldSpec] = &[
     field("reversibility", false),
     field("policy_hash", false),
     field("verdict", false),
+    field("decision_phase", true),
+    field("defer_id", true),
+    field("resolution_policy", true),
+    field("resolution_source", true),
+    field("session_id", true),
+    field("session_id_original", true),
     field("session_taint_level", true),
     field("session_contaminated", true),
     nested_field("recent_taint_sources", true, NestedKind::TaintSource),
@@ -63,6 +73,7 @@ const ACTION_RECORD_FIELDS: &[FieldSpec] = &[
     field("chain_seq", false),
     field("run_nonce", true),
     nested_field("key_transition", true, NestedKind::KeyTransition),
+    nested_field("session_control", true, NestedKind::SessionControl),
     field("venue", true),
     field("jurisdiction", true),
     field("rulebook_id", true),
@@ -126,6 +137,54 @@ const KEY_TRANSITION_FIELDS: &[FieldSpec] = &[
     field("prior_signer_key", false),
     field("prior_chain_seq", false),
     field("prior_chain_hash", false),
+];
+
+const SESSION_CONTROL_FIELDS: &[FieldSpec] = &[
+    field("kind", false),
+    nested_field("open", true, NestedKind::SessionOpen),
+    nested_field("heartbeat", true, NestedKind::SessionHeartbeat),
+    nested_field("close", true, NestedKind::SessionClose),
+];
+
+const SESSION_OPEN_FIELDS: &[FieldSpec] = &[
+    field("run_nonce", false),
+    field("open_nonce", false),
+    field("recorder_session", false),
+    field("policy_hash", false),
+    field("signer_key_epoch", false),
+    field("heartbeat_seconds", false),
+    field("chain_open_seq", false),
+    field("prior_chain_head", true),
+    field("prior_chain_seq", true),
+    field("genesis_hash", true),
+    field("genesis_anchor_head", true),
+    field("genesis_anchor_log", true),
+    field("posture_capsule_sha256", true),
+    field("posture_signer_key_id", true),
+    field("containment_nonce", true),
+    field("contained_uid", true),
+];
+
+const SESSION_HEARTBEAT_FIELDS: &[FieldSpec] = &[
+    field("run_nonce", false),
+    field("open_nonce", false),
+    field("beat", false),
+    field("chain_head", false),
+    field("chain_seq_head", false),
+    field("heartbeat_time", false),
+    field("fsync_errors_gated", false),
+    field("durability_blocks", false),
+];
+
+const SESSION_CLOSE_FIELDS: &[FieldSpec] = &[
+    field("run_nonce", false),
+    field("open_nonce", false),
+    field("final_seq", false),
+    field("root_hash", false),
+    field("receipt_count", false),
+    field("close_reason", false),
+    field("fsync_errors_gated", false),
+    field("durability_blocks", false),
 ];
 
 const fn field(name: &'static str, omitempty: bool) -> FieldSpec {
@@ -205,6 +264,18 @@ fn order_struct(value: &Value, fields: &[FieldSpec]) -> Value {
             Some(NestedKind::KeyTransition) if field_value.is_object() => {
                 order_struct(&field_value, KEY_TRANSITION_FIELDS)
             }
+            Some(NestedKind::SessionControl) if field_value.is_object() => {
+                order_struct(&field_value, SESSION_CONTROL_FIELDS)
+            }
+            Some(NestedKind::SessionOpen) if field_value.is_object() => {
+                order_struct(&field_value, SESSION_OPEN_FIELDS)
+            }
+            Some(NestedKind::SessionHeartbeat) if field_value.is_object() => {
+                order_struct(&field_value, SESSION_HEARTBEAT_FIELDS)
+            }
+            Some(NestedKind::SessionClose) if field_value.is_object() => {
+                order_struct(&field_value, SESSION_CLOSE_FIELDS)
+            }
             _ => normalize_maps(&field_value),
         };
         if spec.omitempty && is_go_zero(&field_value) {
@@ -220,7 +291,9 @@ fn zero_value(name: &str, nested: Option<NestedKind>) -> Value {
         return Value::Object(Map::new());
     }
     match name {
-        "version" | "chain_seq" | "level" | "prior_chain_seq" => Value::Number(Number::from(0)),
+        "version" | "chain_seq" | "level" | "prior_chain_seq" | "heartbeat_seconds"
+        | "chain_open_seq" | "beat" | "chain_seq_head" | "fsync_errors_gated"
+        | "durability_blocks" | "final_seq" | "receipt_count" => Value::Number(Number::from(0)),
         "delegation_chain" => Value::Null,
         "timestamp" => Value::String("0001-01-01T00:00:00Z".to_string()),
         _ => Value::String(String::new()),

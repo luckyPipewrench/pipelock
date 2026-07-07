@@ -6,11 +6,17 @@ import assert from "node:assert/strict";
 import * as ed25519 from "@noble/ed25519";
 import { canonicalizeBytes } from "../src/aarp/canonical.js";
 import { extractReceipts } from "../src/recorder.js";
-import { receiptHash, verifyChain } from "../src/chain.js";
+import { computeSessionOpenGenesis, receiptHash, verifyChain } from "../src/chain.js";
 import type { JSONObject, Receipt } from "../src/types.js";
 
 const validChain = "../../conformance/testdata/valid-chain.jsonl";
 const brokenChain = "../../conformance/testdata/broken-chain.jsonl";
+const g1ValidChain = "../../conformance/testdata/g1-valid-chain.jsonl";
+const g1RestartChain = "../../conformance/testdata/g1-restart-chain.jsonl";
+const g1BrokenGenesis = "../../conformance/testdata/g1-broken-genesis.jsonl";
+const g1LegacyOpenGenesis = "../../conformance/testdata/g1-legacy-open-genesis.jsonl";
+const g1GenesisVectors = "../../conformance/testdata/g1-genesis-vectors.json";
+const testKey = "../../conformance/testdata/test-key.json";
 const validPlainV2 =
   "../../../internal/contract/testdata/golden/valid_evidence_receipt_proxy_decision.json";
 const v2GoldenPublicKey = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
@@ -39,6 +45,133 @@ test("valid Go-generated chain allows explicit unpinned structural verification"
     result.root_hash,
     "be904bd5ca82adc26c2969872c23925f22ff24e33faf44a1185b9ffc0e2c2b5a",
   );
+});
+
+test("legacy Go-generated chain verifies with pinned key", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(validChain), key);
+  assert.equal(result.valid, true, result.error);
+  assert.equal(result.receipt_count, 5);
+  assert.equal(result.final_seq, 4);
+});
+
+test("g1 Go-generated chain verifies with pinned key", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1ValidChain), key);
+  assert.equal(result.valid, true, result.error);
+  assert.equal(result.receipt_count, 5);
+  assert.equal(result.final_seq, 4);
+});
+
+test("g1 restart chain verifies with prior tail fields", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const receipts = extractReceipts(g1RestartChain);
+  const result = await verifyChain(receipts, key);
+  assert.equal(result.valid, true, result.error);
+  assert.equal(result.receipt_count, 5);
+  assert.equal(result.final_seq, 4);
+  const restartOpen = receipts[2]!.action_record!.session_control as Record<string, unknown>;
+  const open = restartOpen["open"] as Record<string, unknown>;
+  assert.equal(open["prior_chain_seq"], 1);
+  assert.equal(typeof open["prior_chain_head"], "string");
+  assert.notEqual(open["prior_chain_head"], "");
+});
+
+test("g1 genesis vectors match Go", () => {
+  const vectors = JSON.parse(readFileSync(g1GenesisVectors, "utf8")) as Array<{
+    open: Record<string, unknown>;
+    expected: string;
+  }>;
+  assert.ok(vectors.length >= 5);
+  for (const vector of vectors) {
+    assert.equal(computeSessionOpenGenesis(vector.open), vector.expected);
+  }
+});
+
+test("g1 broken genesis is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1BrokenGenesis), key);
+  assert.equal(result.valid, false);
+  assert.equal(result.broken_at_seq, 0);
+  assert.match(result.error ?? "", /session_open genesis hash mismatch/u);
+});
+
+test("g1 legacy session_open on genesis is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1LegacyOpenGenesis), key);
+  assert.equal(result.valid, false);
+  assert.equal(result.broken_at_seq, 0);
+  assert.match(result.error ?? "", /session_open on legacy genesis/u);
+});
+
+test("g1 signed field tampering is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const cases: Array<[string, (receipts: Receipt[]) => void]> = [
+    [
+      "session_open_posture_signer_key_id",
+      (receipts) => {
+        const open = (receipts[0]!.action_record!.session_control as Record<string, unknown>)[
+          "open"
+        ] as Record<string, unknown>;
+        open["posture_signer_key_id"] = "posture-key-tampered";
+      },
+    ],
+    [
+      "decision_phase",
+      (receipts) => {
+        receipts[1]!.action_record!.decision_phase = "outcome";
+      },
+    ],
+    [
+      "heartbeat_beat",
+      (receipts) => {
+        const heartbeat = (receipts[3]!.action_record!.session_control as Record<string, unknown>)[
+          "heartbeat"
+        ] as Record<string, unknown>;
+        heartbeat["beat"] = 2;
+      },
+    ],
+    [
+      "heartbeat_fsync_errors_gated",
+      (receipts) => {
+        const heartbeat = (receipts[3]!.action_record!.session_control as Record<string, unknown>)[
+          "heartbeat"
+        ] as Record<string, unknown>;
+        heartbeat["fsync_errors_gated"] = 99;
+      },
+    ],
+    [
+      "close_root_hash",
+      (receipts) => {
+        const close = (receipts[4]!.action_record!.session_control as Record<string, unknown>)[
+          "close"
+        ] as Record<string, unknown>;
+        close["root_hash"] = "tampered-root";
+      },
+    ],
+    [
+      "close_durability_blocks",
+      (receipts) => {
+        const close = (receipts[4]!.action_record!.session_control as Record<string, unknown>)[
+          "close"
+        ] as Record<string, unknown>;
+        close["durability_blocks"] = 99;
+      },
+    ],
+  ];
+  for (const [name, mutate] of cases) {
+    const receipts = JSON.parse(JSON.stringify(extractReceipts(g1ValidChain))) as Receipt[];
+    mutate(receipts);
+    const result = await verifyChain(receipts, key);
+    assert.equal(result.valid, false, `${name} unexpectedly verified`);
+    assert.match(result.error ?? "", /signature/u, name);
+  }
 });
 
 test("broken chain_prev_hash is rejected", async () => {

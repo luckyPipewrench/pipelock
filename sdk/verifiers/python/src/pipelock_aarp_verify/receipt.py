@@ -8,6 +8,7 @@ from __future__ import annotations
 import binascii
 import hashlib
 import json
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,11 @@ V2_REDACTION_RULESET_HASH = (
 CRIT_CANONICALIZATION = "canonicalization"
 CRIT_SOURCE_SPANS = "source_spans"
 GENESIS_HASH = "genesis"
+GENESIS_SESSION_OPEN_PREFIX = "g1:"
+SESSION_OPEN_GENESIS_LABEL = "pipelock.receipt.session_open.v1"
 EVIDENCE_ENTRY_TYPE = "evidence_receipt"
+ACTION_ENTRY_TYPE = "action_receipt"
+MAX_UINT64 = (1 << 64) - 1
 UNPINNED_RECEIPT_BANNER = (
     "UNPINNED — signature is self-consistent but the signer was NOT checked "
     "against a trusted key"
@@ -148,6 +153,12 @@ _ACTION_RECORD_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
     ("reversibility", False, None),
     ("policy_hash", False, None),
     ("verdict", False, None),
+    ("decision_phase", True, None),
+    ("defer_id", True, None),
+    ("resolution_policy", True, None),
+    ("resolution_source", True, None),
+    ("session_id", True, None),
+    ("session_id_original", True, None),
     ("session_taint_level", True, None),
     ("session_contaminated", True, None),
     ("recent_taint_sources", True, "taint_source"),
@@ -177,6 +188,7 @@ _ACTION_RECORD_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
     ("chain_seq", False, None),
     ("run_nonce", True, None),
     ("key_transition", True, "key_transition"),
+    ("session_control", True, "session_control"),
     ("venue", True, None),
     ("jurisdiction", True, None),
     ("rulebook_id", True, None),
@@ -233,6 +245,54 @@ _KEY_TRANSITION_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
     ("prior_signer_key", False, None),
     ("prior_chain_seq", False, None),
     ("prior_chain_hash", False, None),
+)
+
+_SESSION_CONTROL_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("kind", False, None),
+    ("open", True, "session_open"),
+    ("heartbeat", True, "session_heartbeat"),
+    ("close", True, "session_close"),
+)
+
+_SESSION_OPEN_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("run_nonce", False, None),
+    ("open_nonce", False, None),
+    ("recorder_session", False, None),
+    ("policy_hash", False, None),
+    ("signer_key_epoch", False, None),
+    ("heartbeat_seconds", False, None),
+    ("chain_open_seq", False, None),
+    ("prior_chain_head", True, None),
+    ("prior_chain_seq", True, None),
+    ("genesis_hash", True, None),
+    ("genesis_anchor_head", True, None),
+    ("genesis_anchor_log", True, None),
+    ("posture_capsule_sha256", True, None),
+    ("posture_signer_key_id", True, None),
+    ("containment_nonce", True, None),
+    ("contained_uid", True, None),
+)
+
+_SESSION_HEARTBEAT_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("run_nonce", False, None),
+    ("open_nonce", False, None),
+    ("beat", False, None),
+    ("chain_head", False, None),
+    ("chain_seq_head", False, None),
+    ("heartbeat_time", False, None),
+    ("fsync_errors_gated", False, None),
+    ("durability_blocks", False, None),
+)
+
+_SESSION_CLOSE_FIELDS: tuple[tuple[str, bool, str | None], ...] = (
+    ("run_nonce", False, None),
+    ("open_nonce", False, None),
+    ("final_seq", False, None),
+    ("root_hash", False, None),
+    ("receipt_count", False, None),
+    ("close_reason", False, None),
+    ("fsync_errors_gated", False, None),
+    ("durability_blocks", False, None),
 )
 
 _VALID_ACTION_TYPES = {
@@ -344,7 +404,10 @@ def verify_evidence_chain_file(
 
 def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
     receipts: list[dict[str, Any]] = []
-    for index, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
+    chain_type: str | None = None
+    for index, line in enumerate(
+        Path(path).read_text(encoding="utf-8").splitlines(), start=1
+    ):
         raw = line.strip()
         if raw == "":
             continue
@@ -356,8 +419,13 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
             raise ReceiptError(f"line {index}: malformed JSON: {exc}") from exc
         if not isinstance(entry, dict):
             raise ReceiptError(f"line {index}: recorder entry must be an object")
-        if entry.get("type") != EVIDENCE_ENTRY_TYPE:
+        entry_type = entry.get("type")
+        if entry_type not in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}:
             continue
+        if chain_type is None:
+            chain_type = entry_type
+        elif entry_type != chain_type:
+            raise ReceiptError("mixed action/evidence receipt chains are not supported")
         detail = entry.get("detail")
         if not isinstance(detail, dict):
             raise ReceiptError(f"line {index}: evidence entry has empty detail")
@@ -379,6 +447,14 @@ def verify_evidence_chain(
             "error": UNPINNED_RECEIPT_BANNER,
             "broken_at_seq": 0,
         }
+    if receipts[0].get("record_type") == V2_RECORD_TYPE:
+        return _verify_v2_chain(receipts, key_hex, allow_unpinned)
+    return _verify_action_chain(receipts, key_hex, allow_unpinned)
+
+
+def _verify_v2_chain(
+    receipts: list[dict[str, Any]], key_hex: str, allow_unpinned: bool
+) -> dict[str, Any]:
     signer_id = _signature_signer_key_id(receipts[0])
     prev_hash = GENESIS_HASH
     for index, receipt in enumerate(receipts):
@@ -403,11 +479,180 @@ def verify_evidence_chain(
         prev_hash = receipt_hash(receipt)
     return {
         "valid": True,
-        "unpinned": (not key_hex) or None,
+        "unpinned": (not key_hex and allow_unpinned) or None,
         "receipt_count": len(receipts),
         "final_seq": receipts[-1].get("chain_seq", 0),
         "root_hash": prev_hash,
     }
+
+
+def _verify_action_chain(
+    receipts: list[dict[str, Any]], key_hex: str, allow_unpinned: bool
+) -> dict[str, Any]:
+    signer_key = key_hex or _require_string(receipts[0].get("signer_key"), "signer_key")
+    prev_hash = ""
+    active_run_nonce: str | None = None
+    active_open_nonce: str | None = None
+    for index, receipt in enumerate(receipts):
+        action_record = _require_object(receipt.get("action_record"), "action_record")
+        seq = action_record.get("chain_seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            raise ReceiptError(f"seq {index}: missing or invalid chain_seq")
+        try:
+            verify_action_receipt(receipt, signer_key)
+        except ReceiptError as exc:
+            return _broken_chain(seq, f"seq {seq}: signature: {exc}")
+        if seq != index:
+            return _broken_chain(seq, f"seq gap: expected {index}, got {seq}")
+        chain_prev_hash = _require_string(
+            action_record.get("chain_prev_hash"), "chain_prev_hash"
+        )
+        if index == 0:
+            result = _validate_action_genesis(action_record, chain_prev_hash, seq)
+            if result is not None:
+                return result
+        elif chain_prev_hash != prev_hash:
+            return _broken_chain(seq, f"seq {seq}: chain_prev_hash mismatch")
+        result = _validate_session_control_state(
+            action_record,
+            chain_prev_hash,
+            seq,
+            index,
+            prev_hash,
+            active_run_nonce,
+            active_open_nonce,
+            len(receipts),
+        )
+        if result is not None:
+            return result
+        open_record = _session_open(action_record.get("session_control"))
+        if open_record is not None:
+            active_run_nonce = _require_string(
+                open_record.get("run_nonce"), "session_control.open.run_nonce"
+            )
+            active_open_nonce = _require_string(
+                open_record.get("open_nonce"), "session_control.open.open_nonce"
+            )
+        prev_hash = receipt_hash(receipt)
+    return {
+        "valid": True,
+        "unpinned": (not key_hex and allow_unpinned) or None,
+        "receipt_count": len(receipts),
+        "final_seq": receipts[-1].get("action_record", {}).get("chain_seq", 0),
+        "root_hash": prev_hash,
+    }
+
+
+def _validate_action_genesis(
+    action_record: dict[str, Any], chain_prev_hash: str, seq: int
+) -> dict[str, Any] | None:
+    open_record = _session_open(action_record.get("session_control"))
+    if chain_prev_hash.startswith(GENESIS_SESSION_OPEN_PREFIX):
+        if open_record is None:
+            return _broken_chain(
+                seq, "seq 0: g1 chain_prev_hash requires session_control.open"
+            )
+        if seq != 0:
+            return _broken_chain(
+                seq, "seq 0: bound session_open genesis must be chain_seq 0"
+            )
+        computed = compute_session_open_genesis(open_record)
+        if chain_prev_hash != computed:
+            return _broken_chain(seq, "seq 0: session_open genesis hash mismatch")
+        if open_record.get("genesis_hash") != computed:
+            return _broken_chain(seq, "seq 0: session_open genesis_hash mismatch")
+        if open_record.get("chain_open_seq") != seq:
+            return _broken_chain(
+                seq,
+                "seq 0: session_open chain_open_seq does not match receipt chain_seq",
+            )
+        if (
+            open_record.get("prior_chain_head", "") != ""
+            or open_record.get("prior_chain_seq", 0) != 0
+        ):
+            return _broken_chain(
+                seq, "seq 0: bound genesis session_open must not carry prior chain tail"
+            )
+        return None
+    if chain_prev_hash != GENESIS_HASH:
+        return _broken_chain(
+            seq,
+            "seq 0: genesis receipt chain_prev_hash must be genesis or a bound "
+            "session_open g1 hash",
+        )
+    if open_record is not None:
+        return _broken_chain(
+            seq,
+            "seq 0: session_open on legacy genesis must use bound g1 chain_prev_hash",
+        )
+    return None
+
+
+def _validate_session_control_state(
+    action_record: dict[str, Any],
+    chain_prev_hash: str,
+    seq: int,
+    index: int,
+    prev_hash: str,
+    active_run_nonce: str | None,
+    active_open_nonce: str | None,
+    receipt_count: int,
+) -> dict[str, Any] | None:
+    session_control = action_record.get("session_control")
+    if not isinstance(session_control, dict):
+        return None
+    kind = session_control.get("kind")
+    if kind == "session_open" and index > 0:
+        open_record = _require_object(
+            session_control.get("open"), "session_control.open"
+        )
+        if open_record.get("chain_open_seq") != seq:
+            return _broken_chain(
+                seq,
+                f"seq {seq}: session_open chain_open_seq does not match receipt chain_seq",
+            )
+        if open_record.get("prior_chain_head", "") != prev_hash:
+            return _broken_chain(
+                seq,
+                f"seq {seq}: session_open prior_chain_head does not match chain tail",
+            )
+        if open_record.get("prior_chain_seq", 0) != seq - 1:
+            return _broken_chain(
+                seq,
+                f"seq {seq}: session_open prior_chain_seq does not match previous seq",
+            )
+        return None
+    if kind == "heartbeat":
+        heartbeat = _require_object(
+            session_control.get("heartbeat"), "session_control.heartbeat"
+        )
+        if active_run_nonce is None or active_open_nonce is None:
+            return _broken_chain(seq, f"seq {seq}: heartbeat has no active session_open")
+        if heartbeat.get("run_nonce") != active_run_nonce:
+            return _broken_chain(seq, f"seq {seq}: heartbeat run_nonce mismatch")
+        if heartbeat.get("open_nonce") != active_open_nonce:
+            return _broken_chain(seq, f"seq {seq}: heartbeat open_nonce mismatch")
+        if heartbeat.get("chain_head") != chain_prev_hash:
+            return _broken_chain(seq, f"seq {seq}: heartbeat chain_head mismatch")
+        if heartbeat.get("chain_seq_head") != seq - 1:
+            return _broken_chain(seq, f"seq {seq}: heartbeat chain_seq_head mismatch")
+    elif kind == "session_close":
+        close = _require_object(session_control.get("close"), "session_control.close")
+        if active_run_nonce is None or active_open_nonce is None:
+            return _broken_chain(seq, f"seq {seq}: session_close has no active session_open")
+        if close.get("run_nonce") != active_run_nonce:
+            return _broken_chain(seq, f"seq {seq}: session_close run_nonce mismatch")
+        if close.get("open_nonce") != active_open_nonce:
+            return _broken_chain(seq, f"seq {seq}: session_close open_nonce mismatch")
+        if close.get("root_hash") != chain_prev_hash:
+            return _broken_chain(seq, f"seq {seq}: session_close root_hash mismatch")
+        if seq != receipt_count - 1:
+            return _broken_chain(seq, f"seq {seq}: session_close must be final receipt")
+        if close.get("final_seq") != seq:
+            return _broken_chain(seq, f"seq {seq}: session_close final_seq mismatch")
+        if close.get("receipt_count") != receipt_count:
+            return _broken_chain(seq, f"seq {seq}: session_close receipt_count mismatch")
+    return None
 
 
 def receipt_hash(receipt: dict[str, Any]) -> str:
@@ -433,6 +678,39 @@ def _signature_signer_key_id(receipt: dict[str, Any]) -> str:
 
 def _canonicalize_action_record(action_record: dict[str, Any]) -> bytes:
     return _canonical_json(_order_struct(action_record, _ACTION_RECORD_FIELDS))
+
+
+def compute_session_open_genesis(open_record: dict[str, Any]) -> str:
+    h = hashlib.sha256()
+
+    def frame(data: bytes) -> None:
+        h.update(struct.pack(">Q", len(data)))
+        h.update(data)
+
+    def text_field(name: str) -> bytes:
+        value = open_record.get(name, "")
+        return value.encode("utf-8") if isinstance(value, str) else b""
+
+    frame(SESSION_OPEN_GENESIS_LABEL.encode("utf-8"))
+    frame(text_field("run_nonce"))
+    frame(text_field("open_nonce"))
+    frame(text_field("recorder_session"))
+    frame(text_field("policy_hash"))
+    frame(text_field("signer_key_epoch"))
+    hb_secs_raw = open_record.get("heartbeat_seconds", 0)
+    if not isinstance(hb_secs_raw, int) or isinstance(hb_secs_raw, bool) or hb_secs_raw < 0:
+        hb_secs = 0
+    elif hb_secs_raw > MAX_UINT64:
+        raise ReceiptError("session_control.open.heartbeat_seconds must be a uint64")
+    else:
+        hb_secs = hb_secs_raw
+    frame(struct.pack(">Q", hb_secs))
+    frame(text_field("genesis_anchor_head"))
+    frame(text_field("genesis_anchor_log"))
+    frame(text_field("posture_capsule_sha256"))
+    frame(text_field("containment_nonce"))
+    frame(text_field("contained_uid"))
+    return GENESIS_SESSION_OPEN_PREFIX + h.hexdigest()
 
 
 def _canonicalize_receipt(receipt: dict[str, Any]) -> bytes:
@@ -471,11 +749,21 @@ def _order_struct(
             field_value = _order_struct(field_value, _SHIELD_FIELDS)
         elif nested == "taint_source" and isinstance(field_value, list):
             field_value = [
-                _order_struct(item, _TAINT_SOURCE_FIELDS) if isinstance(item, dict) else item
+                _order_struct(item, _TAINT_SOURCE_FIELDS)
+                if isinstance(item, dict)
+                else item
                 for item in field_value
             ]
         elif nested == "key_transition" and isinstance(field_value, dict):
             field_value = _order_struct(field_value, _KEY_TRANSITION_FIELDS)
+        elif nested == "session_control" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _SESSION_CONTROL_FIELDS)
+        elif nested == "session_open" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _SESSION_OPEN_FIELDS)
+        elif nested == "session_heartbeat" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _SESSION_HEARTBEAT_FIELDS)
+        elif nested == "session_close" and isinstance(field_value, dict):
+            field_value = _order_struct(field_value, _SESSION_CLOSE_FIELDS)
         else:
             field_value = _normalize_maps(field_value)
         if omitempty and _is_go_zero(field_value):
@@ -491,7 +779,20 @@ def _field_names(fields: tuple[tuple[str, bool, str | None], ...]) -> set[str]:
 def _zero_value(name: str, nested: str | None) -> Any:
     if nested == "action_record":
         return {}
-    if name in {"version", "chain_seq", "level", "prior_chain_seq"}:
+    if name in {
+        "version",
+        "chain_seq",
+        "level",
+        "prior_chain_seq",
+        "heartbeat_seconds",
+        "chain_open_seq",
+        "beat",
+        "chain_seq_head",
+        "fsync_errors_gated",
+        "durability_blocks",
+        "final_seq",
+        "receipt_count",
+    }:
         return 0
     if name == "delegation_chain":
         return None
@@ -505,11 +806,11 @@ def _is_go_zero(value: Any) -> bool:
         return True
     if isinstance(value, bool):
         return not value
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return value == 0
     if isinstance(value, str):
         return value == ""
-    if isinstance(value, (list, tuple, dict)):
+    if isinstance(value, list | tuple | dict):
         return len(value) == 0
     return False
 
@@ -522,7 +823,9 @@ def _normalize_maps(value: Any) -> Any:
     return value
 
 
-def verify_evidence_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -> None:
+def verify_evidence_receipt(
+    receipt: dict[str, Any], expected_key_hex: str = ""
+) -> None:
     normalize_evidence_receipt(receipt)
     signature = _require_object(receipt.get("signature"), "signature")
     _require_string(signature.get("signer_key_id"), "signature.signer_key_id")
@@ -550,7 +853,9 @@ def verify_action_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -
     expected = expected_key_hex.lower()
     key_hex = expected or signer_key
     if expected and signer_key != expected:
-        raise ReceiptError(f"signer_key {signer_key} does not match expected key {expected}")
+        raise ReceiptError(
+            f"signer_key {signer_key} does not match expected key {expected}"
+        )
     try:
         public_key = Ed25519PublicKey.from_public_bytes(binascii.unhexlify(key_hex))
         sig = binascii.unhexlify(
@@ -561,7 +866,9 @@ def verify_action_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -
     except (binascii.Error, ValueError) as exc:
         raise ReceiptError(f"invalid signature key or bytes: {exc}") from exc
     digest = hashlib.sha256(
-        _canonicalize_action_record(_require_object(receipt.get("action_record"), "action_record"))
+        _canonicalize_action_record(
+            _require_object(receipt.get("action_record"), "action_record")
+        )
     ).digest()
     try:
         public_key.verify(sig, digest)
@@ -572,11 +879,17 @@ def verify_action_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -
 def normalize_action_receipt(receipt: dict[str, Any]) -> None:
     _reject_unknown(receipt, _field_names(_RECEIPT_FIELDS), "receipt")
     if receipt.get("version") != 1:
-        raise ReceiptError(f"unsupported receipt version {receipt.get('version')} (expected 1)")
-    validate_action_record(_require_object(receipt.get("action_record"), "action_record"))
+        raise ReceiptError(
+            f"unsupported receipt version {receipt.get('version')} (expected 1)"
+        )
+    validate_action_record(
+        _require_object(receipt.get("action_record"), "action_record")
+    )
     signature = _require_string(receipt.get("signature"), "signature")
     if not signature.startswith(SIGNATURE_PREFIX):
-        raise ReceiptError(f"invalid signature format: missing {SIGNATURE_PREFIX} prefix")
+        raise ReceiptError(
+            f"invalid signature format: missing {SIGNATURE_PREFIX} prefix"
+        )
     _require_hex(signature[len(SIGNATURE_PREFIX) :], 64, "signature")
     _require_string(receipt.get("signer_key"), "signer_key")
 
@@ -585,7 +898,8 @@ def validate_action_record(action_record: dict[str, Any]) -> None:
     _reject_unknown(action_record, _field_names(_ACTION_RECORD_FIELDS), "action_record")
     if action_record.get("version") != 1:
         raise ReceiptError(
-            f"unsupported action record version {action_record.get('version')} (expected 1)"
+            f"unsupported action record version {action_record.get('version')} "
+            "(expected 1)"
         )
     _require_string(action_record.get("action_id"), "action_id")
     action_type = _require_string(action_record.get("action_type"), "action_type")
@@ -599,12 +913,7 @@ def validate_action_record(action_record: dict[str, Any]) -> None:
     _require_non_negative_int(action_record.get("chain_seq"), "chain_seq")
     run_nonce = action_record.get("run_nonce")
     if run_nonce is not None:
-        if (
-            not isinstance(run_nonce, str)
-            or len(run_nonce) != 32
-            or any(ch not in "0123456789abcdef" for ch in run_nonce)
-        ):
-            raise ReceiptError("run_nonce must be 32 lowercase hex chars when provided")
+        _require_run_nonce(run_nonce, "run_nonce")
     _validate_optional_action_structs(action_record)
 
 
@@ -633,6 +942,10 @@ def _validate_optional_action_structs(action_record: dict[str, Any]) -> None:
             "key_transition",
         )
 
+    session_control = action_record.get("session_control")
+    if session_control is not None:
+        _validate_session_control(_require_object(session_control, "session_control"))
+
     taint_sources = action_record.get("recent_taint_sources")
     if taint_sources is not None:
         if not isinstance(taint_sources, list):
@@ -643,6 +956,142 @@ def _validate_optional_action_structs(action_record: dict[str, Any]) -> None:
                 _field_names(_TAINT_SOURCE_FIELDS),
                 f"recent_taint_sources[{index}]",
             )
+
+
+def _validate_session_control(session_control: dict[str, Any]) -> None:
+    _reject_unknown(
+        session_control,
+        _field_names(_SESSION_CONTROL_FIELDS),
+        "session_control",
+    )
+    kind = _require_string(session_control.get("kind"), "session_control.kind")
+    payloads = 0
+    for name in ("open", "heartbeat", "close"):
+        if session_control.get(name) is not None:
+            payloads += 1
+    if payloads != 1:
+        raise ReceiptError("session_control must carry exactly one payload")
+    if kind == "session_open":
+        _validate_session_open(session_control.get("open"))
+    elif kind == "heartbeat":
+        _validate_session_heartbeat(session_control.get("heartbeat"))
+    elif kind == "session_close":
+        _validate_session_close(session_control.get("close"))
+    else:
+        raise ReceiptError("unknown session_control kind")
+
+
+def _validate_session_open(value: Any) -> None:
+    open_record = _require_object(value, "session_control.open")
+    _reject_unknown(
+        open_record, _field_names(_SESSION_OPEN_FIELDS), "session_control.open"
+    )
+    _require_run_nonce(open_record.get("run_nonce"), "session_control.open.run_nonce")
+    _require_string(open_record.get("open_nonce"), "session_control.open.open_nonce")
+    _require_string(
+        open_record.get("recorder_session"), "session_control.open.recorder_session"
+    )
+    _require_policy_hash(
+        open_record.get("policy_hash"), "session_control.open.policy_hash"
+    )
+    _require_string(
+        open_record.get("signer_key_epoch"), "session_control.open.signer_key_epoch"
+    )
+    _require_uint64(
+        open_record.get("heartbeat_seconds"),
+        "session_control.open.heartbeat_seconds",
+    )
+    _require_uint64(
+        open_record.get("chain_open_seq"), "session_control.open.chain_open_seq"
+    )
+    _require_optional_string(
+        open_record.get("prior_chain_head"), "session_control.open.prior_chain_head"
+    )
+    if "prior_chain_seq" in open_record:
+        _require_uint64(
+            open_record.get("prior_chain_seq"), "session_control.open.prior_chain_seq"
+        )
+    if "genesis_hash" in open_record:
+        genesis_hash = _require_string(
+            open_record.get("genesis_hash"), "session_control.open.genesis_hash"
+        )
+        if not genesis_hash.startswith(GENESIS_SESSION_OPEN_PREFIX):
+            raise ReceiptError("session_control.open.genesis_hash must start with g1:")
+    _require_optional_string(
+        open_record.get("genesis_anchor_head"),
+        "session_control.open.genesis_anchor_head",
+    )
+    _require_optional_string(
+        open_record.get("genesis_anchor_log"),
+        "session_control.open.genesis_anchor_log",
+    )
+    if "posture_capsule_sha256" in open_record:
+        _require_sha256(
+            open_record.get("posture_capsule_sha256"),
+            "session_control.open.posture_capsule_sha256",
+        )
+    _require_optional_string(
+        open_record.get("posture_signer_key_id"),
+        "session_control.open.posture_signer_key_id",
+    )
+    _require_optional_string(
+        open_record.get("containment_nonce"),
+        "session_control.open.containment_nonce",
+    )
+    _require_optional_string(
+        open_record.get("contained_uid"), "session_control.open.contained_uid"
+    )
+
+
+def _validate_session_heartbeat(value: Any) -> None:
+    heartbeat = _require_object(value, "session_control.heartbeat")
+    _reject_unknown(
+        heartbeat, _field_names(_SESSION_HEARTBEAT_FIELDS), "session_control.heartbeat"
+    )
+    _require_run_nonce(heartbeat.get("run_nonce"), "session_control.heartbeat.run_nonce")
+    _require_string(heartbeat.get("open_nonce"), "session_control.heartbeat.open_nonce")
+    _require_uint64(heartbeat.get("beat"), "session_control.heartbeat.beat")
+    _require_string(heartbeat.get("chain_head"), "session_control.heartbeat.chain_head")
+    _require_uint64(
+        heartbeat.get("chain_seq_head"), "session_control.heartbeat.chain_seq_head"
+    )
+    _require_string(
+        heartbeat.get("heartbeat_time"), "session_control.heartbeat.heartbeat_time"
+    )
+    _require_uint64(
+        heartbeat.get("fsync_errors_gated"),
+        "session_control.heartbeat.fsync_errors_gated",
+    )
+    _require_uint64(
+        heartbeat.get("durability_blocks"),
+        "session_control.heartbeat.durability_blocks",
+    )
+
+
+def _validate_session_close(value: Any) -> None:
+    close = _require_object(value, "session_control.close")
+    _reject_unknown(close, _field_names(_SESSION_CLOSE_FIELDS), "session_control.close")
+    _require_run_nonce(close.get("run_nonce"), "session_control.close.run_nonce")
+    _require_string(close.get("open_nonce"), "session_control.close.open_nonce")
+    _require_uint64(close.get("final_seq"), "session_control.close.final_seq")
+    _require_string(close.get("root_hash"), "session_control.close.root_hash")
+    _require_uint64(close.get("receipt_count"), "session_control.close.receipt_count")
+    _require_string(close.get("close_reason"), "session_control.close.close_reason")
+    _require_uint64(
+        close.get("fsync_errors_gated"), "session_control.close.fsync_errors_gated"
+    )
+    _require_uint64(
+        close.get("durability_blocks"), "session_control.close.durability_blocks"
+    )
+
+
+def _session_open(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    if value.get("kind") != "session_open":
+        return None
+    open_record = value.get("open")
+    return open_record if isinstance(open_record, dict) else None
 
 
 def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
@@ -675,16 +1124,35 @@ def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:
 def _validate_canonicalization(value: Any) -> None:
     canonicalization = _require_object(value, "canonicalization")
     _reject_unknown(canonicalization, _CANONICALIZATION_FIELDS, "canonicalization")
-    if _require_string(canonicalization.get("jcs_profile"), "canonicalization.jcs_profile") != V2_JCS_PROFILE:
+    if (
+        _require_string(
+            canonicalization.get("jcs_profile"), "canonicalization.jcs_profile"
+        )
+        != V2_JCS_PROFILE
+    ):
         raise ReceiptError("canonicalization.jcs_profile is invalid")
-    if _require_string(canonicalization.get("jcs_version"), "canonicalization.jcs_version") != V2_JCS_VERSION:
+    if (
+        _require_string(
+            canonicalization.get("jcs_version"), "canonicalization.jcs_version"
+        )
+        != V2_JCS_VERSION
+    ):
         raise ReceiptError("canonicalization.jcs_version is invalid")
-    if _require_string(canonicalization.get("hash_alg"), "canonicalization.hash_alg") != V2_HASH_ALG:
+    if (
+        _require_string(canonicalization.get("hash_alg"), "canonicalization.hash_alg")
+        != V2_HASH_ALG
+    ):
         raise ReceiptError("canonicalization.hash_alg is invalid")
-    if _require_string(canonicalization.get("sig_alg"), "canonicalization.sig_alg") != V2_SIGNATURE_ALGORITHM:
+    if (
+        _require_string(canonicalization.get("sig_alg"), "canonicalization.sig_alg")
+        != V2_SIGNATURE_ALGORITHM
+    ):
         raise ReceiptError("canonicalization.sig_alg is invalid")
     if (
-        _require_string(canonicalization.get("redaction_ruleset_id"), "canonicalization.redaction_ruleset_id")
+        _require_string(
+            canonicalization.get("redaction_ruleset_id"),
+            "canonicalization.redaction_ruleset_id",
+        )
         != V2_REDACTION_RULESET_ID
     ):
         raise ReceiptError("canonicalization.redaction_ruleset_id is invalid")
@@ -697,7 +1165,10 @@ def _validate_canonicalization(value: Any) -> None:
     ):
         raise ReceiptError("canonicalization.redaction_ruleset_version is invalid")
     if (
-        _require_string(canonicalization.get("redaction_ruleset_hash"), "canonicalization.redaction_ruleset_hash")
+        _require_string(
+            canonicalization.get("redaction_ruleset_hash"),
+            "canonicalization.redaction_ruleset_hash",
+        )
         != V2_REDACTION_RULESET_HASH
     ):
         raise ReceiptError("canonicalization.redaction_ruleset_hash is invalid")
@@ -732,13 +1203,23 @@ def _validate_signature(receipt: dict[str, Any], payload_kind: str) -> None:
     signature = _require_object(receipt.get("signature"), "signature")
     _reject_unknown(signature, _SIGNATURE_FIELDS, "signature")
     _require_string(signature.get("signer_key_id"), "signature.signer_key_id")
-    if _require_string(signature.get("key_purpose"), "signature.key_purpose") != "receipt-signing":
-        raise ReceiptError(f"signature.key_purpose is not authorized for {payload_kind}")
-    if _require_string(signature.get("algorithm"), "signature.algorithm") != V2_SIGNATURE_ALGORITHM:
+    if (
+        _require_string(signature.get("key_purpose"), "signature.key_purpose")
+        != "receipt-signing"
+    ):
+        raise ReceiptError(
+            f"signature.key_purpose is not authorized for {payload_kind}"
+        )
+    if (
+        _require_string(signature.get("algorithm"), "signature.algorithm")
+        != V2_SIGNATURE_ALGORITHM
+    ):
         raise ReceiptError("signature.algorithm is invalid")
     sig = _require_string(signature.get("signature"), "signature.signature")
     if not sig.startswith(SIGNATURE_PREFIX):
-        raise ReceiptError(f"invalid signature format: missing {SIGNATURE_PREFIX} prefix")
+        raise ReceiptError(
+            f"invalid signature format: missing {SIGNATURE_PREFIX} prefix"
+        )
     _require_hex(sig[len(SIGNATURE_PREFIX) :], 64, "signature.signature")
 
 
@@ -770,14 +1251,23 @@ def _validate_source_span(value: Any, index: int) -> None:
     span = _require_object(value, f"source_spans[{index}]")
     _reject_unknown(span, _SOURCE_SPAN_FIELDS, f"source_spans[{index}]")
     _require_string(span.get("source_id"), f"source_spans[{index}].source_id")
-    source_kind = _require_string(span.get("source_kind"), f"source_spans[{index}].source_kind")
+    source_kind = _require_string(
+        span.get("source_kind"), f"source_spans[{index}].source_kind"
+    )
     if source_kind not in _SOURCE_KINDS:
         raise ReceiptError(f"source_spans[{index}].source_kind is invalid")
-    view = _require_string(span.get("normalized_view"), f"source_spans[{index}].normalized_view")
+    view = _require_string(
+        span.get("normalized_view"), f"source_spans[{index}].normalized_view"
+    )
     if view not in _NORMALIZED_VIEWS and not _has_dlp_normalized_suffix(view):
         raise ReceiptError(f"source_spans[{index}].normalized_view is invalid")
-    _require_sha256(span.get("pipelock_binary_digest"), f"source_spans[{index}].pipelock_binary_digest")
-    _require_sha256(span.get("rules_bundle_digest"), f"source_spans[{index}].rules_bundle_digest")
+    _require_sha256(
+        span.get("pipelock_binary_digest"),
+        f"source_spans[{index}].pipelock_binary_digest",
+    )
+    _require_sha256(
+        span.get("rules_bundle_digest"), f"source_spans[{index}].rules_bundle_digest"
+    )
     _require_transform_profile(
         span.get("transform_profile"),
         f"source_spans[{index}].transform_profile",
@@ -785,23 +1275,44 @@ def _validate_source_span(value: Any, index: int) -> None:
     _require_policy_hash(span.get("policy_hash"), f"source_spans[{index}].policy_hash")
     _require_string(span.get("rule_id"), f"source_spans[{index}].rule_id")
     _require_optional_string(span.get("bundle"), f"source_spans[{index}].bundle")
-    _require_optional_string(span.get("bundle_version"), f"source_spans[{index}].bundle_version")
-    _require_optional_string(span.get("redacted_sample"), f"source_spans[{index}].redacted_sample")
+    _require_optional_string(
+        span.get("bundle_version"), f"source_spans[{index}].bundle_version"
+    )
+    _require_optional_string(
+        span.get("redacted_sample"), f"source_spans[{index}].redacted_sample"
+    )
     _require_hmac_hash(span.get("match_hash"), f"source_spans[{index}].match_hash")
-    if _require_string(span.get("match_hash_alg"), f"source_spans[{index}].match_hash_alg") != "hmac-sha256":
+    if (
+        _require_string(
+            span.get("match_hash_alg"), f"source_spans[{index}].match_hash_alg"
+        )
+        != "hmac-sha256"
+    ):
         raise ReceiptError(f"source_spans[{index}].match_hash_alg is invalid")
     _require_string(span.get("match_class"), f"source_spans[{index}].match_class")
     has_offset = "char_offset" in span
     has_length = "char_length" in span
     if has_offset != has_length:
-        raise ReceiptError(f"source_spans[{index}] must pair char_offset and char_length")
+        raise ReceiptError(
+            f"source_spans[{index}] must pair char_offset and char_length"
+        )
     if has_offset:
-        _require_non_negative_int(span.get("char_offset"), f"source_spans[{index}].char_offset")
-        length = _require_non_negative_int(span.get("char_length"), f"source_spans[{index}].char_length")
+        _require_non_negative_int(
+            span.get("char_offset"), f"source_spans[{index}].char_offset"
+        )
+        length = _require_non_negative_int(
+            span.get("char_length"), f"source_spans[{index}].char_length"
+        )
         if length <= 0:
             raise ReceiptError(f"source_spans[{index}].char_length must be positive")
-        if view != "sanitized_target" and view != "dlp_normalized" and not view.startswith("dlp_normalized:"):
-            raise ReceiptError(f"source_spans[{index}].char_offset not allowed for normalized_view")
+        if (
+            view != "sanitized_target"
+            and view != "dlp_normalized"
+            and not view.startswith("dlp_normalized:")
+        ):
+            raise ReceiptError(
+                f"source_spans[{index}].char_offset not allowed for normalized_view"
+            )
 
 
 def _evidence_preimage(receipt: dict[str, Any]) -> bytes:
@@ -844,8 +1355,30 @@ def _require_non_negative_int(value: Any, name: str) -> int:
     return value
 
 
+def _require_uint64(value: Any, name: str) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+        or value > MAX_UINT64
+    ):
+        raise ReceiptError(f"{name} must be a uint64")
+    return value
+
+
+def _require_run_nonce(value: Any, name: str) -> str:
+    run_nonce = _require_string(value, name)
+    if len(run_nonce) != 32 or any(ch not in "0123456789abcdef" for ch in run_nonce):
+        raise ReceiptError(f"{name} must be 32 lowercase hex chars")
+    return run_nonce
+
+
 def _require_string_list(value: Any, name: str) -> list[str]:
-    if not isinstance(value, list) or not value or any(not isinstance(v, str) for v in value):
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(v, str) for v in value)
+    ):
         raise ReceiptError(f"{name} is required")
     return value
 

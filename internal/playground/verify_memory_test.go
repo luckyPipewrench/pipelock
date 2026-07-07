@@ -312,9 +312,79 @@ func TestVerifyRunArtifacts_RealBundleValidAndTamperInvalid(t *testing.T) {
 	}
 }
 
+func TestVerifierBackingPath_AcceptsG1AnchoredReceiptBundle(t *testing.T) {
+	t.Parallel()
+
+	fixture := newVerifyMemoryFixture(t)
+	assertG1AnchoredFirstReceipt(t, fixture.artifacts.PacketEvidenceJSONL)
+
+	rep, err := playground.VerifyRunArtifacts(fixture.artifacts, fixture.orchestratorPubHex)
+	if err != nil {
+		t.Fatalf("VerifyRunArtifacts: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("VerifyRunArtifacts rejected g1-anchored bundle: %+v", rep)
+	}
+}
+
+func TestVerifyPublishedBundleBytes_AcceptsG1AnchoredBundleWithLocalPublishedKey(t *testing.T) {
+	t.Parallel()
+
+	path := playground.DefaultOrchestratorKeyPath()
+	if path == "" {
+		t.Skip("no default published orchestrator key path")
+	}
+	orchPriv, err := playground.LoadOrchestratorSigningKey(path)
+	if err != nil {
+		t.Skipf("local published orchestrator signing key unavailable: %v", err)
+	}
+	if !playground.OrchestratorKeyMatchesPublished(orchPriv) {
+		t.Skip("local orchestrator signing key does not match published key")
+	}
+	orchPub := orchPriv.Public().(ed25519.PublicKey)
+	bundle, _ := realBundleForMemoryVerifyWithOrchestrator(t, orchPub, orchPriv)
+	artifacts, err := playground.ExtractRunArtifactsFromBundle(bundle)
+	if err != nil {
+		t.Fatalf("ExtractRunArtifactsFromBundle: %v", err)
+	}
+	assertG1AnchoredFirstReceipt(t, artifacts.PacketEvidenceJSONL)
+
+	rep, err := playground.VerifyPublishedBundleBytes(bundle)
+	if err != nil {
+		t.Fatalf("VerifyPublishedBundleBytes: %v", err)
+	}
+	if !rep.OK {
+		t.Fatalf("VerifyPublishedBundleBytes rejected g1-anchored published-key bundle: %+v", rep)
+	}
+}
+
+func assertG1AnchoredFirstReceipt(t *testing.T, evidenceJSONL []byte) {
+	t.Helper()
+
+	receipts, err := receipt.ExtractReceiptsBytes(evidenceJSONL)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsBytes: %v", err)
+	}
+	if len(receipts) == 0 {
+		t.Fatal("bundle has no receipts")
+	}
+	first := receipts[0].ActionRecord
+	if !strings.HasPrefix(first.ChainPrevHash, "g1:") {
+		t.Fatalf("first chain_prev_hash = %q, want g1 prefix", first.ChainPrevHash)
+	}
+	if first.SessionControl == nil || first.SessionControl.Open == nil {
+		t.Fatalf("first receipt missing session_control.open: %+v", first.SessionControl)
+	}
+}
+
 func realBundleForMemoryVerify(t *testing.T) ([]byte, string) {
 	t.Helper()
 	orchPub, orchPriv := testKeyPair(t)
+	return realBundleForMemoryVerifyWithOrchestrator(t, orchPub, orchPriv)
+}
+
+func realBundleForMemoryVerifyWithOrchestrator(t *testing.T, orchPub ed25519.PublicKey, orchPriv ed25519.PrivateKey) ([]byte, string) {
+	t.Helper()
 	pipePub, pipePriv := testKeyPair(t)
 	colPub, colPriv := testKeyPair(t)
 

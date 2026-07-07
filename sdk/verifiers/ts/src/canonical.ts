@@ -1,7 +1,16 @@
 import type { ActionRecord, Receipt, JSONValue } from "./types.js";
 
 type FieldSpec = readonly [name: string, omitempty: boolean, nested?: NestedKind];
-type NestedKind = "action_record" | "redaction" | "shield" | "taint_source" | "key_transition";
+type NestedKind =
+  | "action_record"
+  | "redaction"
+  | "shield"
+  | "taint_source"
+  | "key_transition"
+  | "session_control"
+  | "session_open"
+  | "session_heartbeat"
+  | "session_close";
 
 const actionRecordFields: readonly FieldSpec[] = [
   ["version", false],
@@ -20,6 +29,12 @@ const actionRecordFields: readonly FieldSpec[] = [
   ["reversibility", false],
   ["policy_hash", false],
   ["verdict", false],
+  ["decision_phase", true],
+  ["defer_id", true],
+  ["resolution_policy", true],
+  ["resolution_source", true],
+  ["session_id", true],
+  ["session_id_original", true],
   ["session_taint_level", true],
   ["session_contaminated", true],
   ["recent_taint_sources", true, "taint_source"],
@@ -49,6 +64,7 @@ const actionRecordFields: readonly FieldSpec[] = [
   ["chain_seq", false],
   ["run_nonce", true],
   ["key_transition", true, "key_transition"],
+  ["session_control", true, "session_control"],
   ["venue", true],
   ["jurisdiction", true],
   ["rulebook_id", true],
@@ -117,6 +133,54 @@ const keyTransitionFields: readonly FieldSpec[] = [
   ["prior_chain_hash", false],
 ];
 
+const sessionControlFields: readonly FieldSpec[] = [
+  ["kind", false],
+  ["open", true, "session_open"],
+  ["heartbeat", true, "session_heartbeat"],
+  ["close", true, "session_close"],
+];
+
+const sessionOpenFields: readonly FieldSpec[] = [
+  ["run_nonce", false],
+  ["open_nonce", false],
+  ["recorder_session", false],
+  ["policy_hash", false],
+  ["signer_key_epoch", false],
+  ["heartbeat_seconds", false],
+  ["chain_open_seq", false],
+  ["prior_chain_head", true],
+  ["prior_chain_seq", true],
+  ["genesis_hash", true],
+  ["genesis_anchor_head", true],
+  ["genesis_anchor_log", true],
+  ["posture_capsule_sha256", true],
+  ["posture_signer_key_id", true],
+  ["containment_nonce", true],
+  ["contained_uid", true],
+];
+
+const sessionHeartbeatFields: readonly FieldSpec[] = [
+  ["run_nonce", false],
+  ["open_nonce", false],
+  ["beat", false],
+  ["chain_head", false],
+  ["chain_seq_head", false],
+  ["heartbeat_time", false],
+  ["fsync_errors_gated", false],
+  ["durability_blocks", false],
+];
+
+const sessionCloseFields: readonly FieldSpec[] = [
+  ["run_nonce", false],
+  ["open_nonce", false],
+  ["final_seq", false],
+  ["root_hash", false],
+  ["receipt_count", false],
+  ["close_reason", false],
+  ["fsync_errors_gated", false],
+  ["durability_blocks", false],
+];
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -154,6 +218,14 @@ function orderStruct(
       );
     } else if (nested === "key_transition" && isPlainObject(fieldValue)) {
       fieldValue = orderStruct(fieldValue, keyTransitionFields);
+    } else if (nested === "session_control" && isPlainObject(fieldValue)) {
+      fieldValue = orderStruct(fieldValue, sessionControlFields);
+    } else if (nested === "session_open" && isPlainObject(fieldValue)) {
+      fieldValue = orderStruct(fieldValue, sessionOpenFields);
+    } else if (nested === "session_heartbeat" && isPlainObject(fieldValue)) {
+      fieldValue = orderStruct(fieldValue, sessionHeartbeatFields);
+    } else if (nested === "session_close" && isPlainObject(fieldValue)) {
+      fieldValue = orderStruct(fieldValue, sessionCloseFields);
     } else {
       fieldValue = normalizeMaps(fieldValue);
     }
@@ -165,7 +237,20 @@ function orderStruct(
 
 function zeroValue(name: string, nested?: NestedKind): unknown {
   if (nested === "action_record") return {};
-  if (name === "version" || name === "chain_seq" || name === "level" || name === "prior_chain_seq")
+  if (
+    name === "version" ||
+    name === "chain_seq" ||
+    name === "level" ||
+    name === "prior_chain_seq" ||
+    name === "heartbeat_seconds" ||
+    name === "chain_open_seq" ||
+    name === "beat" ||
+    name === "chain_seq_head" ||
+    name === "fsync_errors_gated" ||
+    name === "durability_blocks" ||
+    name === "final_seq" ||
+    name === "receipt_count"
+  )
     return 0;
   if (name === "delegation_chain") return null;
   if (name === "timestamp") return "0001-01-01T00:00:00Z";

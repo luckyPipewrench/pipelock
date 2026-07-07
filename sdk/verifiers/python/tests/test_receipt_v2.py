@@ -438,6 +438,34 @@ def test_v1_g1_close_root_hash_mismatch_rejects_valid_signature() -> None:
     assert "session_close root_hash mismatch" in report["error"]
 
 
+def test_v1_g1_non_terminal_close_rejects_valid_signature() -> None:
+    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+
+    heartbeat = receipts[3]["action_record"]["session_control"]["heartbeat"]
+    close = receipts[4]["action_record"]["session_control"]["close"]
+    close["root_hash"] = receipts[3]["action_record"]["chain_prev_hash"]
+    close["final_seq"] = 3
+    close["receipt_count"] = len(receipts)
+    receipts[3]["action_record"]["session_control"] = {
+        "kind": "session_close",
+        "close": close,
+    }
+    _sign_v1_action_receipt(receipts[3])
+
+    receipts[4]["action_record"]["chain_prev_hash"] = receipt_hash(receipts[3])
+    heartbeat["chain_head"] = receipts[4]["action_record"]["chain_prev_hash"]
+    heartbeat["chain_seq_head"] = 3
+    receipts[4]["action_record"]["session_control"] = {
+        "kind": "heartbeat",
+        "heartbeat": heartbeat,
+    }
+    _sign_v1_action_receipt(receipts[4])
+
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "session_close must be final receipt" in report["error"]
+
+
 def test_mixed_action_and_evidence_chain_rejects_controlled(tmp_path: Path) -> None:
     action_line = (TESTDATA / "g1-valid-chain.jsonl").read_text().splitlines()[0]
     evidence = json.loads(VALID_PLAIN_V2.read_text())

@@ -646,6 +646,8 @@ def _validate_session_control_state(
             return _broken_chain(seq, f"seq {seq}: session_close open_nonce mismatch")
         if close.get("root_hash") != chain_prev_hash:
             return _broken_chain(seq, f"seq {seq}: session_close root_hash mismatch")
+        if seq != receipt_count - 1:
+            return _broken_chain(seq, f"seq {seq}: session_close must be final receipt")
         if close.get("final_seq") != seq:
             return _broken_chain(seq, f"seq {seq}: session_close final_seq mismatch")
         if close.get("receipt_count") != receipt_count:

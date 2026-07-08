@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -196,6 +197,30 @@ func assertResponseScanExemptOverCapMetric(t *testing.T, m *metrics.Metrics, tra
 	if gotPresent != wantPresent {
 		t.Fatalf("metric presence for %q = %v, want %v; metrics:\n%s", wantPrefix, gotPresent, wantPresent, body)
 	}
+}
+
+// TestRecordResponseScanExemptOverCapUnscanned_HelperBranches covers the
+// recorder helper's branches directly: the empty-host "_unknown" fallback, the
+// nil-logger path (metric still records, log skipped), and the under-cap
+// short-circuit (no record).
+func TestRecordResponseScanExemptOverCapUnscanned_HelperBranches(t *testing.T) {
+	m := metrics.New()
+	logger, err := audit.New("json", "file", t.TempDir()+"/exempt.log", true, true)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer logger.Close()
+
+	// Empty host, over cap: metric records and the audit log uses the
+	// "_unknown" host fallback.
+	recordResponseScanExemptOverCapUnscanned(m, logger, audit.LogContext{}, "", TransportForward, 2048, 1024)
+	// Nil logger, over cap: metric still records, the logger block is skipped.
+	recordResponseScanExemptOverCapUnscanned(m, nil, audit.LogContext{}, "host", TransportConnect, 2048, 1024)
+	// Under cap: short-circuits before recording anything.
+	recordResponseScanExemptOverCapUnscanned(m, logger, audit.LogContext{}, "host", TransportForward, 512, 1024)
+
+	assertResponseScanExemptOverCapMetric(t, m, TransportForward, true)
+	assertResponseScanExemptOverCapMetric(t, m, TransportConnect, true)
 }
 
 func mustURLHostname(t *testing.T, rawURL string) string {

@@ -97,13 +97,14 @@ type Metrics struct {
 	killSwitchDenials *prometheus.CounterVec
 
 	// Browser shield + response scan exemption (shield.go).
-	shieldRewrites          *prometheus.CounterVec
-	shieldBytesStripped     *prometheus.CounterVec
-	shieldShimsInjected     *prometheus.CounterVec
-	shieldSkipped           *prometheus.CounterVec
-	shieldOversizeScanHead  *prometheus.CounterVec
-	shieldLatency           *prometheus.HistogramVec
-	responseScanExemptTotal *prometheus.CounterVec
+	shieldRewrites                          *prometheus.CounterVec
+	shieldBytesStripped                     *prometheus.CounterVec
+	shieldShimsInjected                     *prometheus.CounterVec
+	shieldSkipped                           *prometheus.CounterVec
+	shieldOversizeScanHead                  *prometheus.CounterVec
+	shieldLatency                           *prometheus.HistogramVec
+	responseScanExemptTotal                 *prometheus.CounterVec
+	responseScanExemptOverCapUnscannedTotal *prometheus.CounterVec
 
 	// Capture (capture.go).
 	CaptureDropped              prometheus.Counter

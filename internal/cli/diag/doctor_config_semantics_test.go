@@ -174,22 +174,24 @@ func TestDoctorConfigSemantics(t *testing.T) {
 			wantWarn: 0,
 		},
 		{
-			name: "response_scanning exempt_domains inert when scanner disabled",
+			name: "response_scanning exempt_domains notes core caveat when scanner disabled",
 			mutate: func(cfg *config.Config) {
 				cfg.ResponseScanning.Enabled = false
 				cfg.ResponseScanning.ExemptDomains = []string{testExemptHost}
 			},
 			wantWarn:         1,
-			wantDetailSubstr: "response_scanning.exempt_domains is set but response_scanning.enabled=false",
-			wantNextSubstr:   "enable response_scanning",
+			wantDetailSubstr: "full-trust streaming bypass is inactive",
+			wantNextSubstr:   "broad full-trust streaming bypass",
 		},
 		{
-			name: "response_scanning exempt_domains NOT flagged when scanner enabled",
+			name: "response_scanning exempt_domains warns with narrowest knob first when scanner enabled",
 			mutate: func(cfg *config.Config) {
 				cfg.ResponseScanning.Enabled = true
 				cfg.ResponseScanning.ExemptDomains = []string{testExemptHost}
 			},
-			wantWarn: 0,
+			wantWarn:         1,
+			wantDetailSubstr: "responses are fully unscanned for injection",
+			wantNextSubstr:   "response_scanning.size_exempt_domains",
 		},
 		{
 			name: "adaptive_enforcement exempt_domains inert when scanner disabled",
@@ -829,6 +831,41 @@ response_scanning:
 	}
 }
 
+func TestDoctorResponseScanExemptDomainsAdvisoryNarrowestFirst(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := dir + "/response-exempt.yaml"
+	const body = `mode: balanced
+response_scanning:
+  enabled: true
+  exempt_domains:
+    - "provider.example"
+`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	cmd := DoctorCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--config", cfgPath, "--no-color"})
+	_ = cmd.Execute()
+	out := buf.String()
+
+	sizeIdx := strings.Index(out, "response_scanning.size_exempt_domains")
+	patternIdx := strings.Index(out, "dlp.patterns[].exempt_domains")
+	broadIdx := strings.Index(out, "keep response_scanning.exempt_domains")
+	if sizeIdx < 0 || patternIdx < 0 || broadIdx < 0 {
+		t.Fatalf("doctor output missing expected advisory knobs:\n%s", out)
+	}
+	if sizeIdx >= broadIdx || patternIdx >= broadIdx {
+		t.Fatalf("doctor must recommend narrow knobs before broad exempt_domains warning:\n%s", out)
+	}
+	if !strings.Contains(out, "responses are fully unscanned for injection") ||
+		!strings.Contains(out, "oversized over-cap responses") {
+		t.Fatalf("doctor output missing full-unscanned over-cap warning:\n%s", out)
+	}
+}
+
 func TestAnalyzeConfigSemanticsPublicKinds(t *testing.T) {
 	cfg := baseSemanticsConfig()
 	cfg.RequestBodyScanning.Enabled = false
@@ -963,8 +1000,8 @@ func TestDoctorConfigSemanticsAnalyzerRefactorGolden(t *testing.T) {
     "configured": true,
     "reachable": false,
     "enforcing": false,
-    "detail": "response_scanning.exempt_domains is set but response_scanning.enabled=false; this exemption is inert",
-    "next": "enable response_scanning to make the exemption effective, or remove the exempt_domains list"
+    "detail": "response_scanning.exempt_domains is set while response_scanning.enabled=false; the full-trust streaming bypass is inactive, but immutable core response findings may still be treated as trusted/warn-only for matching hosts",
+    "next": "prefer narrower knobs first: use response_scanning.size_exempt_domains for large-response false positives, or dlp.patterns[].exempt_domains for one noisy DLP pattern; enable response_scanning only when the whole host should get the broad full-trust streaming bypass, or remove the broad list"
   }
 ]`), "PIPELOCK_DOCTOR", "`pipelock doctor`")
 	if string(got) != want {

@@ -334,6 +334,8 @@ const (
 	EventLicenseExpiry     EventType = "license_expiry"
 )
 
+const responseScanExemptFullTrustEffect = "response_scanning.exempt_domains is a full-trust valve: injection scanning is disabled for ALL responses from this host, including oversized over-cap responses that stream unscanned"
+
 // WebSocket frame direction constants used in audit log entries.
 const (
 	DirectionClientToServer = "client_to_server"
@@ -738,6 +740,16 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 // event type (not "anomaly") so SIEM consumers can filter exemption events separately
 // from actual security anomalies.
 func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
+	l.logResponseScanExempt(ctx, hostname, "")
+}
+
+// LogResponseScanExemptFullTrust logs when response_scanning.exempt_domains
+// causes a response body to stream without injection scanning.
+func (l *Logger) LogResponseScanExemptFullTrust(ctx LogContext, hostname string) {
+	l.logResponseScanExempt(ctx, hostname, responseScanExemptFullTrustEffect)
+}
+
+func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) {
 	event := l.zl.Info().
 		Str("event", string(EventResponseScanExempt)).
 		Str("method", ctx.method)
@@ -754,6 +766,9 @@ func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 		Str("hostname", hostname).
 		Str("enforcement_type", "response_scanning").
 		Str("reason", "exempt_domains match")
+	if effect != "" {
+		event = event.Str("effect", effect)
+	}
 	if ctx.clientIP != "" {
 		event = event.Str("client_ip", ctx.clientIP)
 	}
@@ -771,6 +786,78 @@ func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 			"hostname":         hostname,
 			"enforcement_type": "response_scanning",
 			"reason":           "exempt_domains match",
+		}
+		if effect != "" {
+			fields["effect"] = effect
+		}
+		if ctx.url != "" {
+			fields["url"] = sanitizeString(ctx.url)
+		}
+		if ctx.target != "" {
+			fields["target"] = sanitizeString(ctx.target)
+		}
+		if ctx.resource != "" {
+			fields["resource"] = sanitizeString(ctx.resource)
+		}
+		if ctx.clientIP != "" {
+			fields["client_ip"] = ctx.clientIP
+		}
+		if ctx.requestID != "" {
+			fields["request_id"] = ctx.requestID
+		}
+		if ctx.agent != "" {
+			fields["agent"] = sanitizeString(ctx.agent)
+		}
+		l.emitter.Emit(context.Background(), string(EventResponseScanExempt), fields)
+	}
+}
+
+// LogResponseScanExemptOverCapUnscanned logs when a response_scanning.exempt_domains
+// host streams a body larger than the scan cap without injection scanning.
+// This is observability only; enforcement remains controlled by the existing
+// broad exemption behavior.
+func (l *Logger) LogResponseScanExemptOverCapUnscanned(ctx LogContext, hostname, transport string, bytesWritten, scanCapBytes int64) {
+	event := l.zl.Warn().
+		Str("event", string(EventResponseScanExempt)).
+		Str("method", ctx.method)
+	if ctx.url != "" {
+		event = event.Str("url", sanitizeString(ctx.url))
+	}
+	if ctx.target != "" {
+		event = event.Str("target", sanitizeString(ctx.target))
+	}
+	if ctx.resource != "" {
+		event = event.Str("resource", sanitizeString(ctx.resource))
+	}
+	event = event.
+		Str("hostname", hostname).
+		Str("transport", transport).
+		Int64("bytes_written", bytesWritten).
+		Int64("scan_cap_bytes", scanCapBytes).
+		Str("enforcement_type", "response_scanning").
+		Str("reason", "exempt_domains over-cap response streamed unscanned").
+		Str("effect", responseScanExemptFullTrustEffect)
+	if ctx.clientIP != "" {
+		event = event.Str("client_ip", ctx.clientIP)
+	}
+	if ctx.requestID != "" {
+		event = event.Str("request_id", ctx.requestID)
+	}
+	if ctx.agent != "" {
+		event = event.Str("agent", sanitizeString(ctx.agent))
+	}
+	event.Msg("response scan exempt over-cap response streamed unscanned")
+
+	if l.emitter != nil {
+		fields := map[string]any{
+			"method":           ctx.method,
+			"hostname":         hostname,
+			"transport":        transport,
+			"bytes_written":    bytesWritten,
+			"scan_cap_bytes":   scanCapBytes,
+			"enforcement_type": "response_scanning",
+			"reason":           "exempt_domains over-cap response streamed unscanned",
+			"effect":           responseScanExemptFullTrustEffect,
 		}
 		if ctx.url != "" {
 			fields["url"] = sanitizeString(ctx.url)

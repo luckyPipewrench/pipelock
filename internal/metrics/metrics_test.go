@@ -1834,6 +1834,25 @@ func TestRecordResponseScanExempt_NilSafe(t *testing.T) {
 	m.RecordResponseScanExempt("exempt_domain", "fetch") // must not panic
 }
 
+func TestRecordResponseScanExemptOverCapUnscanned(t *testing.T) {
+	m := New()
+	m.RecordResponseScanExemptOverCapUnscanned("forward")
+	m.RecordResponseScanExemptOverCapUnscanned("connect")
+
+	body := scrapeMetrics(t, m)
+	if !strings.Contains(body, `pipelock_response_scan_exempt_overcap_unscanned_total{transport="forward"} 1`) {
+		t.Error("expected forward over-cap unscanned counter = 1")
+	}
+	if !strings.Contains(body, `pipelock_response_scan_exempt_overcap_unscanned_total{transport="connect"} 1`) {
+		t.Error("expected connect over-cap unscanned counter = 1")
+	}
+}
+
+func TestRecordResponseScanExemptOverCapUnscanned_NilSafe(t *testing.T) {
+	var m *Metrics
+	m.RecordResponseScanExemptOverCapUnscanned("forward") // must not panic
+}
+
 func TestRecordDLPWarnMatch(t *testing.T) {
 	m := New()
 	m.RecordDLPWarnMatch("warn-url", "fetch")

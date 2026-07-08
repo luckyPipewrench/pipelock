@@ -1647,8 +1647,12 @@ func newInterceptHandler(
 		// falls through to the buffered path below, which still runs media
 		// policy. Preserves the "media policy runs even when response scanning
 		// is disabled" invariant and matches the exempt_domains validator warning.
+		maxResp := ic.Config.TLSInterception.MaxResponseBytes
+		if maxResp <= 0 {
+			maxResp = interceptDefaultMaxResp
+		}
 		if interceptRespExempt && ic.Config.ResponseScanning.Enabled {
-			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
+			ic.Logger.LogResponseScanExemptFullTrust(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 			if !requiredIntentEmitted && interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
 				return
@@ -1661,6 +1665,7 @@ func newInterceptHandler(
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
 			written, _ := io.Copy(w, resp.Body)
+			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
 			interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, "complete")
 			// Account streamed bytes against the per-domain data budget so a
 			// trusted download still decrements it (no scan-size cap: the host
@@ -1694,10 +1699,6 @@ func newInterceptHandler(
 		}
 
 		// Buffer response for scanning (scan-then-send, fail-closed).
-		maxResp := ic.Config.TLSInterception.MaxResponseBytes
-		if maxResp <= 0 {
-			maxResp = interceptDefaultMaxResp
-		}
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResp+1))
 		if readErr != nil {
 			ic.Logger.LogError(actx, readErr)

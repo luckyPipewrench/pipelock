@@ -1769,10 +1769,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	fwdRespHost := resp.Request.URL.Hostname()
 	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
 	fwdRespSizeExempt := isResponseSizeExempt(fwdRespHost, cfg.ResponseScanning.SizeExemptDomains)
-	if sc.ResponseScanningEnabled() && fwdRespExempt {
-		p.logger.LogResponseScanExempt(actx, fwdRespHost)
-		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
-	}
 
 	// SSE streaming: activate on Content-Type alone. The dispatcher's
 	// passthrough branches honor each child Enabled flag and keep
@@ -1788,6 +1784,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// pipelock must never forward inspection-resistant bytes through a
 	// security boundary.
 	if IsSSEContentType(resp.Header.Get("Content-Type")) {
+		if sc.ResponseScanningEnabled() && fwdRespExempt {
+			p.logger.LogResponseScanExempt(actx, fwdRespHost)
+			p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
+		}
 		sseOpts := SSEDispatchOptions{
 			IsA2A:      isA2A,
 			A2A:        &cfg.A2AScanning,
@@ -1928,9 +1928,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// is disabled" invariant and matches the validator warning that
 	// exempt_domains only takes effect when response scanning is enabled.
 	if fwdRespExempt && cfg.ResponseScanning.Enabled {
+		p.logger.LogResponseScanExemptFullTrust(actx, fwdRespHost)
+		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		written, _ := io.Copy(w, resp.Body)
+		recordResponseScanExemptOverCapUnscanned(p.metrics, p.logger, actx, fwdRespHost, TransportForward, written, configMaxBytes)
 		// Account streamed bytes against both budgets so a trusted download
 		// still decrements the per-domain data budget and the per-agent byte
 		// budget. No scan-size cap is applied (the host is trusted to carry

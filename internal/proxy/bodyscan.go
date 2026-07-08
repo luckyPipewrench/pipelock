@@ -373,6 +373,8 @@ func contentTypeMatchesAny(mediaType string, allowed []string) bool {
 // Prompts sent to the configured response-scan exemption set can naturally
 // discuss injection attempts; non-exempt publish/API destinations should not
 // receive those instructions in warn/balanced mode.
+// This path has no response body stream, so the over-cap response exemption
+// observability signal is not applicable here.
 func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if len(result.InjectionMatches) == 0 {
 		return false

@@ -60,6 +60,23 @@ func writeConfig(t *testing.T, yaml string) string {
 	return path
 }
 
+func assertResponseScanExemptAdvisory(t *testing.T, text string) {
+	t.Helper()
+	sizeIdx := strings.Index(text, "response_scanning.size_exempt_domains")
+	patternIdx := strings.Index(text, "dlp.patterns[].exempt_domains")
+	broadIdx := strings.Index(text, "Use `response_scanning.exempt_domains`")
+	if sizeIdx < 0 || patternIdx < 0 || broadIdx < 0 {
+		t.Fatalf("advisory missing expected knobs: %q", text)
+	}
+	if sizeIdx >= broadIdx || patternIdx >= broadIdx {
+		t.Fatalf("narrow knobs must appear before broad exempt_domains warning: %q", text)
+	}
+	if !strings.Contains(text, "responses are fully unscanned for injection") ||
+		!strings.Contains(text, "oversized over-cap responses") {
+		t.Fatalf("advisory missing full-unscanned over-cap warning: %q", text)
+	}
+}
+
 func TestExplainCmd_CleanURLAllowed(t *testing.T) {
 	report, err := decodeExplainJSON(t, "https://example.com/path")
 	if err != nil {
@@ -73,6 +90,52 @@ func TestExplainCmd_CleanURLAllowed(t *testing.T) {
 	}
 	if report.Host != "example.com" {
 		t.Errorf("host = %q, want example.com", report.Host)
+	}
+}
+
+func TestExplainCmd_ResponseScanExemptDomainsAdvisoryNarrowestFirst(t *testing.T) {
+	cfg := writeConfig(t, `
+mode: balanced
+response_scanning:
+  enabled: true
+  exempt_domains:
+    - provider.example
+`)
+	report, err := decodeExplainJSON(t, "--config", cfg, "https://provider.example/download")
+	if err != nil {
+		t.Fatalf("exempt host explain should allow URL, got: %v", err)
+	}
+	notes := strings.Join(report.Notes, "\n")
+	assertResponseScanExemptAdvisory(t, notes)
+	if !strings.Contains(notes, "this host matches `response_scanning.exempt_domains`") {
+		t.Fatalf("notes missing host-match full-trust statement: %q", notes)
+	}
+
+	out, err := runExplainCmd(t, "--config", cfg, "https://provider.example/download")
+	if err != nil {
+		t.Fatalf("text explain should allow URL, got: %v\n%s", err, out)
+	}
+	assertResponseScanExemptAdvisory(t, out)
+}
+
+func TestExplainCmd_ResponseScanExemptDomainsDisabledDoesNotClaimFullTrust(t *testing.T) {
+	cfg := writeConfig(t, `
+mode: balanced
+response_scanning:
+  enabled: false
+  exempt_domains:
+    - provider.example
+`)
+	report, err := decodeExplainJSON(t, "--config", cfg, "https://provider.example/download")
+	if err != nil {
+		t.Fatalf("disabled response-scanning explain should allow URL, got: %v", err)
+	}
+	notes := strings.Join(report.Notes, "\n")
+	if !strings.Contains(notes, "full-trust streaming bypass is inactive") {
+		t.Fatalf("notes missing disabled-mode caveat: %q", notes)
+	}
+	if strings.Contains(notes, "responses are fully unscanned for injection") {
+		t.Fatalf("disabled response-scanning notes must not claim active full-trust streaming bypass: %q", notes)
 	}
 }
 

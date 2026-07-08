@@ -44,6 +44,12 @@ const (
 	explainSummaryMaxBytes    = 240
 )
 
+const (
+	explainResponseScanExemptNarrowAdvice = "response_scanning.exempt_domains configured: prefer narrower knobs first - use `response_scanning.size_exempt_domains` for large-response false positives, or `dlp.patterns[].exempt_domains` for one noisy DLP pattern."
+	explainResponseScanExemptDisabled     = "With `response_scanning.enabled=false`, the full-trust streaming bypass is inactive; immutable core response findings may still be treated as trusted/warn-only for matching hosts."
+	explainResponseScanExemptBlastRadius  = "Use `response_scanning.exempt_domains` only when the whole host is trusted: responses are fully unscanned for injection, including oversized over-cap responses that stream unscanned."
+)
+
 // explainReport is the structured form of an `explain` verdict. It mirrors the
 // doctorReport JSON-report pattern: a stable, machine-readable shape that the
 // human renderer also consumes. The remediation block is the load-bearing part
@@ -422,6 +428,7 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 		})
 	}
 	report.PatternName = explainPatternName(result)
+	report.Notes = append(report.Notes, explainResponseScanExemptNotes(cfg, report.Host)...)
 
 	if result.Allowed {
 		// Even an allowed verdict can depend on DNS: if the hostname-based
@@ -437,6 +444,26 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 
 	report.Remediation = explainRemediationFor(result)
 	return report, nil
+}
+
+func explainResponseScanExemptNotes(cfg *config.Config, host string) []string {
+	if cfg == nil || len(cfg.ResponseScanning.ExemptDomains) == 0 {
+		return nil
+	}
+	if !cfg.ResponseScanning.Enabled {
+		return []string{explainResponseScanExemptNarrowAdvice + " " + explainResponseScanExemptDisabled}
+	}
+	notes := []string{explainResponseScanExemptNarrowAdvice + " " + explainResponseScanExemptBlastRadius}
+	if host == "" {
+		return notes
+	}
+	for _, domain := range cfg.ResponseScanning.ExemptDomains {
+		if scanner.MatchDomain(host, domain) {
+			notes = append(notes, fmt.Sprintf("this host matches `response_scanning.exempt_domains` (%s): responses are fully unscanned for injection, including oversized over-cap responses that stream unscanned", domain))
+			return notes
+		}
+	}
+	return notes
 }
 
 func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, surface, blockedAction string, action decide.Action) explainReport {

@@ -57,10 +57,19 @@ func (m *Metrics) registerShieldMetrics(reg *prometheus.Registry) {
 		Help:      "Total response scan exemption skips by reason and transport.",
 	}, []string{"reason", "transport"})
 
+	// Labeled by transport only (not host): exempt_domains wildcards can match
+	// unbounded subdomains, so a host label would be a Prometheus cardinality
+	// footgun. Per-host detail lives in the audit log (LogResponseScanExemptOverCapUnscanned).
+	m.responseScanExemptOverCapUnscannedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "response_scan_exempt_overcap_unscanned_total",
+		Help:      "Total over-cap responses from response_scanning.exempt_domains hosts streamed without injection scanning, by transport.",
+	}, []string{"transport"})
+
 	reg.MustRegister(
 		m.shieldRewrites, m.shieldBytesStripped, m.shieldShimsInjected,
 		m.shieldSkipped, m.shieldOversizeScanHead, m.shieldLatency,
-		m.responseScanExemptTotal,
+		m.responseScanExemptTotal, m.responseScanExemptOverCapUnscannedTotal,
 	)
 }
 
@@ -120,4 +129,13 @@ func (m *Metrics) RecordResponseScanExempt(reason, transport string) {
 		return
 	}
 	m.responseScanExemptTotal.WithLabelValues(reason, transport).Inc()
+}
+
+// RecordResponseScanExemptOverCapUnscanned increments the counter for broad
+// response-scan exemptions that streamed a body larger than the scan cap.
+func (m *Metrics) RecordResponseScanExemptOverCapUnscanned(transport string) {
+	if m == nil {
+		return
+	}
+	m.responseScanExemptOverCapUnscannedTotal.WithLabelValues(transport).Inc()
 }

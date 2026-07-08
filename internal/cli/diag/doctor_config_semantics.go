@@ -70,7 +70,10 @@ const (
 
 	// nextSuppressURLDLP is the correct knob for a URL-query DLP false
 	// positive (suppress does not reach URL DLP).
-	nextSuppressURLDLP = "to exempt a URL-query match, set dlp.patterns[].exempt_domains for this pattern; suppress: only reaches body/header DLP, generic SSE DLP, response scanning, and the audit/git scanners"
+	nextSuppressURLDLP                  = "to exempt a URL-query match, set dlp.patterns[].exempt_domains for this pattern; suppress: only reaches body/header DLP, generic SSE DLP, response scanning, and the audit/git scanners"
+	nextResponseScanExemptNarrowFirst   = "prefer narrower knobs first: use response_scanning.size_exempt_domains for large-response false positives, or dlp.patterns[].exempt_domains for one noisy DLP pattern"
+	responseScanExemptDisabledDoctor    = "response_scanning.exempt_domains is set while response_scanning.enabled=false; the full-trust streaming bypass is inactive, but immutable core response findings may still be treated as trusted/warn-only for matching hosts"
+	responseScanExemptBlastRadiusDoctor = "response_scanning.exempt_domains is a full-trust host valve: responses are fully unscanned for injection, including oversized over-cap responses that stream unscanned"
 )
 
 // ConfigSemanticFinding is a reusable semantic finding for syntactically valid
@@ -297,8 +300,8 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 				ConfigSemanticKindInert,
 				ConfigScopeResponseExemptDomains,
 				domain,
-				"response_scanning.exempt_domains is set but response_scanning.enabled=false; this exemption is inert",
-				"enable response_scanning to make the exemption effective, or remove the exempt_domains list",
+				responseScanExemptDisabledDoctor,
+				nextResponseScanExemptNarrowFirst+"; enable response_scanning only when the whole host should get the broad full-trust streaming bypass, or remove the broad list",
 			))
 		}
 		for _, entry := range cfg.ResponseScanning.MCPServers {
@@ -308,6 +311,16 @@ func analyzeDoctorInertExemptions(cfg *config.Config) []ConfigSemanticFinding {
 				entry.Server,
 				fmt.Sprintf("response_scanning.mcp_servers marks %q but response_scanning.enabled=false; this MCP response trust exemption is inert", entry.Server),
 				"enable response_scanning to make the MCP response trust effective, or remove the mcp_servers entry",
+			))
+		}
+	} else {
+		for _, domain := range cfg.ResponseScanning.ExemptDomains {
+			findings = append(findings, newConfigSemanticFinding(
+				ConfigSemanticKindAdvisory,
+				ConfigScopeResponseExemptDomains,
+				domain,
+				responseScanExemptBlastRadiusDoctor,
+				nextResponseScanExemptNarrowFirst+"; keep response_scanning.exempt_domains only when the whole host is trusted because it disables injection scanning for ALL responses from the host, including oversized ones",
 			))
 		}
 	}

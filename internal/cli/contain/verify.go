@@ -119,6 +119,11 @@ type probeEnv struct {
 	wrapperInvPath     string
 	toolsListPath      string
 	workspacePaths     []string
+	// postureProofPath is the resolved path the current `contain run` writes its
+	// signed posture capsule to. It is exported into the contained launch env as
+	// PIPELOCK_POSTURE_PROOF so an in-child emitter binds the exact capsule this
+	// run produced, even when --posture-output points off the default path.
+	postureProofPath string
 
 	runCmd     runCommand
 	dialCtx    dialFunc

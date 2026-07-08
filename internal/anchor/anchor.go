@@ -97,6 +97,18 @@ type Bundle struct {
 	Limits     []string   `json:"limits"`
 }
 
+type StateMarker struct {
+	Schema       string    `json:"schema"`
+	SessionID    string    `json:"session_id"`
+	FinalSeq     uint64    `json:"final_seq"`
+	RootHash     string    `json:"root_hash"`
+	Backend      string    `json:"backend"`
+	LogIndex     uint64    `json:"log_index"`
+	AnchoredAt   time.Time `json:"anchored_at"`
+	BundleSHA256 string    `json:"bundle_sha256"`
+	BundlePath   string    `json:"bundle_path"`
+}
+
 type VerifyReport struct {
 	Valid        bool       `json:"valid"`
 	Backend      string     `json:"backend,omitempty"`
@@ -220,6 +232,43 @@ func WriteBundle(path string, b Bundle) error {
 	}
 	if err := os.WriteFile(clean, append(data, '\n'), filePermissions); err != nil {
 		return fmt.Errorf("write anchor bundle: %w", err)
+	}
+	return nil
+}
+
+func WriteStateMarker(dir string, marker StateMarker) error {
+	marker.Schema = "pipelock.anchorstate.v1"
+	data, err := json.Marshal(marker)
+	if err != nil {
+		return fmt.Errorf("marshal anchor-state marker: %w", err)
+	}
+	cleanDir := filepath.Clean(dir)
+	if err := os.MkdirAll(cleanDir, dirPermissions); err != nil {
+		return fmt.Errorf("create anchor-state directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(cleanDir, ".anchor-state-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create anchor-state temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write anchor-state temp file: %w", err)
+	}
+	if err := tmp.Chmod(filePermissions); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod anchor-state temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync anchor-state temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close anchor-state temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, filepath.Join(cleanDir, "anchor-state.json")); err != nil {
+		return fmt.Errorf("rename anchor-state marker: %w", err)
 	}
 	return nil
 }

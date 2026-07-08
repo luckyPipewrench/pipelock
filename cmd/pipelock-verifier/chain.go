@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -69,17 +70,18 @@ key.`,
 // chainReport is the structured form emitted by --json on the chain
 // subcommand.
 type chainReport struct {
-	Path               string `json:"path"`
-	RecordType         string `json:"record_type,omitempty"`
-	Valid              bool   `json:"valid"`
-	ReceiptCount       uint64 `json:"receipt_count"`
-	FinalSeq           uint64 `json:"final_seq"`
-	RootHash           string `json:"root_hash,omitempty"`
-	SignaturesVerified bool   `json:"signatures_verified"`
-	Unpinned           bool   `json:"unpinned,omitempty"`
-	SignerKeyID        string `json:"signer_key_id,omitempty"`
-	Error              string `json:"error,omitempty"`
-	BrokenAtSeq        uint64 `json:"broken_at_seq,omitempty"`
+	Path               string     `json:"path"`
+	RecordType         string     `json:"record_type,omitempty"`
+	Valid              bool       `json:"valid"`
+	ReceiptCount       uint64     `json:"receipt_count"`
+	FinalSeq           uint64     `json:"final_seq"`
+	RootHash           string     `json:"root_hash,omitempty"`
+	SignaturesVerified bool       `json:"signatures_verified"`
+	Unpinned           bool       `json:"unpinned,omitempty"`
+	SignerKeyID        string     `json:"signer_key_id,omitempty"`
+	Error              string     `json:"error,omitempty"`
+	BrokenAtSeq        uint64     `json:"broken_at_seq,omitempty"`
+	Scorecard          *scorecard `json:"scorecard,omitempty"`
 }
 
 func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error {
@@ -132,6 +134,7 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 	}
 
 	res := actionreceipt.VerifyChain(receipts, keyHex)
+	completenessReport := completeness.Analyze(receipts, res)
 	report := chainReport{
 		Path:         label,
 		RecordType:   recordTypeActionV1,
@@ -146,6 +149,8 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 		Error:              res.Error,
 		BrokenAtSeq:        res.BrokenAtSeq,
 	}
+	sc := newActionScorecard(res, keyHex != "", completenessReport)
+	report.Scorecard = &sc
 	if res.Valid && keyHex == "" {
 		report.Error = unpinnedReceiptBanner
 		report.Valid = opts.allowUnpinned

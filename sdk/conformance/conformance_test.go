@@ -37,31 +37,48 @@ const (
 	// testSeedPhrase seeds the deterministic test keypair. It is obviously
 	// a test key; it MUST NEVER be used for production signing. The seed
 	// itself is sha256(testSeedPhrase).
-	testSeedPhrase = "pipelock-conformance-test-key-v1"
+	testSeedPhrase        = "pipelock-conformance-test-key-v1"
+	testRotatedSeedPhrase = "pipelock-conformance-rotated-test-key-v1"
 
 	testdataDir = "testdata"
 
-	goldenValidSingle      = "valid-single.json"
-	goldenValidChain       = "valid-chain.jsonl"
-	goldenG1ValidChain     = "g1-valid-chain.jsonl"
-	goldenG1RestartChain   = "g1-restart-chain.jsonl"
-	goldenG1BrokenGenesis  = "g1-broken-genesis.jsonl"
-	goldenG1LegacyOpen     = "g1-legacy-open-genesis.jsonl"
-	goldenG1BadHeartbeat   = "g1-inconsistent-heartbeat.jsonl"
-	goldenG1BadClose       = "g1-inconsistent-close.jsonl"
-	goldenG1Vectors        = "g1-genesis-vectors.json"
-	goldenInvalidSignature = "invalid-signature.json"
-	goldenBrokenChain      = "broken-chain.jsonl"
-	goldenTestKey          = "test-key.json"
+	goldenValidSingle       = "valid-single.json"
+	goldenValidChain        = "valid-chain.jsonl"
+	goldenG1ValidChain      = "g1-valid-chain.jsonl"
+	goldenG1RestartChain    = "g1-restart-chain.jsonl"
+	goldenG1BrokenGenesis   = "g1-broken-genesis.jsonl"
+	goldenG1LegacyOpen      = "g1-legacy-open-genesis.jsonl"
+	goldenG1BadHeartbeat    = "g1-inconsistent-heartbeat.jsonl"
+	goldenG1BadClose        = "g1-inconsistent-close.jsonl"
+	goldenG1AmbiguousCtrl   = "g1-ambiguous-session-control.jsonl"
+	goldenG1AmbiguousOC     = "g1-ambiguous-open-close.jsonl"
+	goldenG1AmbiguousHC     = "g1-ambiguous-heartbeat-close.jsonl"
+	goldenG1RotatedValid    = "g1-rotated-close-count-valid.jsonl"
+	goldenG1RotatedBad      = "g1-rotated-close-count-invalid.jsonl"
+	goldenG1PlainAfterClose = "g1-plain-after-close.jsonl"
+	goldenG1EmptyAfterClose = "g1-empty-run-nonce-after-close.jsonl"
+	goldenG1HeartbeatAfter  = "g1-heartbeat-after-close.jsonl"
+	goldenG1CloseNoOpen     = "g1-close-without-open.jsonl"
+	goldenG1NewAfterClose   = "g1-new-session-after-close.jsonl"
+	goldenG1ReopenClosed    = "g1-reopen-closed-run.jsonl"
+	goldenG1Vectors         = "g1-genesis-vectors.json"
+	goldenInvalidSignature  = "invalid-signature.json"
+	goldenBrokenChain       = "broken-chain.jsonl"
+	goldenTestKey           = "test-key.json"
 
 	chainLen      = 5
 	brokenAtIndex = 3
 	brokenPrev    = "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
-	g1RunNonce         = "0123456789abcdef0123456789abcdef"
-	g1OpenNonce        = "open-nonce-g1"
-	g1RestartRunNonce  = "abcdef0123456789abcdef0123456789"
-	g1RestartOpenNonce = "open-nonce-g1-restart"
+	g1RunNonce            = "0123456789abcdef0123456789abcdef"
+	g1OpenNonce           = "open-nonce-g1"
+	g1RestartRunNonce     = "abcdef0123456789abcdef0123456789"
+	g1RestartOpenNonce    = "open-nonce-g1-restart"
+	g1RotatedRunNonce     = "11223344556677889900aabbccddeeff"
+	g1RotatedOpenNonce    = "open-nonce-g1-rotated"
+	g1AfterCloseRunNonce  = "00112233445566778899aabbccddeeff"
+	g1AfterCloseOpenNonce = "open-nonce-g1-after-close"
+	g1ReopenOpenNonce     = "open-nonce-g1-reopen"
 )
 
 // baseTime fixes the timestamp floor for golden receipts. Each successive
@@ -73,10 +90,25 @@ func testSeed() [32]byte {
 	return sha256.Sum256([]byte(testSeedPhrase))
 }
 
+func testRotatedSeed() [32]byte {
+	return sha256.Sum256([]byte(testRotatedSeedPhrase))
+}
+
 // testKeyPair returns the deterministic test Ed25519 keypair.
 func testKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	seed := testSeed()
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("unexpected public key type %T", priv.Public())
+	}
+	return pub, priv
+}
+
+func testRotatedKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	seed := testRotatedSeed()
 	priv := ed25519.NewKeyFromSeed(seed[:])
 	pub, ok := priv.Public().(ed25519.PublicKey)
 	if !ok {
@@ -444,6 +476,355 @@ func buildG1LegacyOpenOnGenesisChain(t *testing.T, priv ed25519.PrivateKey) []re
 	return chain[:1]
 }
 
+func buildG1AmbiguousSessionControlChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	ar := chain[3].ActionRecord
+	open := *chain[0].ActionRecord.SessionControl.Open
+	ar.SessionControl = &receipt.SessionControl{
+		Kind:      receipt.SessionControlHeartbeat,
+		Open:      &open,
+		Heartbeat: ar.SessionControl.Heartbeat,
+	}
+	chain[3] = signReceipt(t, ar, priv)
+	return chain
+}
+
+func buildG1AmbiguousOpenCloseChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	ar := chain[3].ActionRecord
+	open := *chain[0].ActionRecord.SessionControl.Open
+	closeRecord := receipt.SessionClose{
+		RunNonce:         g1RunNonce,
+		OpenNonce:        g1OpenNonce,
+		FinalSeq:         ar.ChainSeq,
+		RootHash:         ar.ChainPrevHash,
+		ReceiptCount:     ar.ChainSeq + 1,
+		CloseReason:      "ambiguous-open-close",
+		FsyncErrorsGated: 3,
+		DurabilityBlocks: 4,
+	}
+	ar.SessionControl = &receipt.SessionControl{
+		Kind:  receipt.SessionControlClose,
+		Open:  &open,
+		Close: &closeRecord,
+	}
+	chain[3] = signReceipt(t, ar, priv)
+	return chain
+}
+
+func buildG1AmbiguousHeartbeatCloseChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	ar := chain[3].ActionRecord
+	heartbeat := *ar.SessionControl.Heartbeat
+	closeRecord := receipt.SessionClose{
+		RunNonce:         g1RunNonce,
+		OpenNonce:        g1OpenNonce,
+		FinalSeq:         ar.ChainSeq,
+		RootHash:         ar.ChainPrevHash,
+		ReceiptCount:     ar.ChainSeq + 1,
+		CloseReason:      "ambiguous-heartbeat-close",
+		FsyncErrorsGated: 3,
+		DurabilityBlocks: 4,
+	}
+	ar.SessionControl = &receipt.SessionControl{
+		Kind:      receipt.SessionControlClose,
+		Heartbeat: &heartbeat,
+		Close:     &closeRecord,
+	}
+	chain[3] = signReceipt(t, ar, priv)
+	return chain
+}
+
+func buildG1PlainAfterCloseChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	prevHash := mustReceiptHash(t, chain[len(chain)-1])
+	ar := fixedActionRecord(5, prevHash)
+	ar.ActionID = "g1-plain-after-close"
+	ar.Intent = "post_close_action"
+	ar.RunNonce = g1RunNonce
+	chain = append(chain, signReceipt(t, ar, priv))
+	return chain
+}
+
+func buildG1EmptyRunNonceAfterCloseChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	prevHash := mustReceiptHash(t, chain[len(chain)-1])
+	ar := fixedActionRecord(5, prevHash)
+	ar.ActionID = "g1-empty-run-nonce-after-close"
+	ar.Intent = "post_close_unbound_action"
+	chain = append(chain, signReceipt(t, ar, priv))
+	return chain
+}
+
+func buildG1HeartbeatAfterCloseChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	prevHash := mustReceiptHash(t, chain[len(chain)-1])
+	ar := fixedActionRecord(5, prevHash)
+	ar.ActionID = "g1-heartbeat-after-close"
+	ar.ActionType = receipt.ActionUnclassified
+	ar.Target = "receipt-session:heartbeat"
+	ar.Transport = "receipt_session"
+	ar.Method = ""
+	ar.Layer = "session_control"
+	ar.RunNonce = g1RunNonce
+	ar.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlHeartbeat,
+		Heartbeat: &receipt.SessionHeartbeat{
+			RunNonce:         g1RunNonce,
+			OpenNonce:        g1OpenNonce,
+			Beat:             2,
+			ChainHead:        prevHash,
+			ChainSeqHead:     4,
+			HeartbeatTime:    baseTime.Add(5 * time.Second).Format(time.RFC3339),
+			FsyncErrorsGated: 3,
+			DurabilityBlocks: 4,
+		},
+	}
+	chain = append(chain, signReceipt(t, ar, priv))
+	return chain
+}
+
+func buildG1CloseWithoutOpenChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	ar := fixedActionRecord(0, receipt.GenesisHash)
+	ar.ActionID = "g1-close-without-open"
+	ar.ActionType = receipt.ActionUnclassified
+	ar.Target = "receipt-session:close"
+	ar.Transport = "receipt_session"
+	ar.Method = ""
+	ar.Layer = "session_control"
+	ar.RunNonce = g1RunNonce
+	ar.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlClose,
+		Close: &receipt.SessionClose{
+			RunNonce:         g1RunNonce,
+			OpenNonce:        g1OpenNonce,
+			FinalSeq:         0,
+			RootHash:         receipt.GenesisHash,
+			ReceiptCount:     1,
+			CloseReason:      "close-without-open",
+			FsyncErrorsGated: 0,
+			DurabilityBlocks: 0,
+		},
+	}
+	return []receipt.Receipt{signReceipt(t, ar, priv)}
+}
+
+func buildG1NewSessionAfterCloseChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	prevHash := mustReceiptHash(t, chain[len(chain)-1])
+	priorSeq := chain[len(chain)-1].ActionRecord.ChainSeq
+
+	open := receipt.SessionOpen{
+		RunNonce:         g1AfterCloseRunNonce,
+		OpenNonce:        g1AfterCloseOpenNonce,
+		RecorderSession:  recorderSessionID,
+		PolicyHash:       "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		SignerKeyEpoch:   "epoch-2026-04-after-close",
+		HeartbeatSeconds: 30,
+		ChainOpenSeq:     5,
+		PriorChainHead:   prevHash,
+		PriorChainSeq:    priorSeq,
+	}
+	openAR := fixedActionRecord(5, prevHash)
+	openAR.ActionID = "g1-session-open-after-close"
+	openAR.ActionType = receipt.ActionUnclassified
+	openAR.Target = "receipt-session:open"
+	openAR.Transport = "receipt_session"
+	openAR.Method = ""
+	openAR.Layer = "session_control"
+	openAR.RunNonce = g1AfterCloseRunNonce
+	openAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlOpen,
+		Open: &open,
+	}
+	openReceipt := signReceipt(t, openAR, priv)
+	chain = append(chain, openReceipt)
+	prevHash = mustReceiptHash(t, openReceipt)
+
+	closeAR := fixedActionRecord(6, prevHash)
+	closeAR.ActionID = "g1-session-close-after-close"
+	closeAR.ActionType = receipt.ActionUnclassified
+	closeAR.Target = "receipt-session:close"
+	closeAR.Transport = "receipt_session"
+	closeAR.Method = ""
+	closeAR.Layer = "session_control"
+	closeAR.RunNonce = g1AfterCloseRunNonce
+	closeAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlClose,
+		Close: &receipt.SessionClose{
+			RunNonce:         g1AfterCloseRunNonce,
+			OpenNonce:        g1AfterCloseOpenNonce,
+			FinalSeq:         6,
+			RootHash:         prevHash,
+			ReceiptCount:     7,
+			CloseReason:      "after-close-normal",
+			FsyncErrorsGated: 3,
+			DurabilityBlocks: 4,
+		},
+	}
+	chain = append(chain, signReceipt(t, closeAR, priv))
+	return chain
+}
+
+func buildG1ReopenClosedRunChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	prevHash := mustReceiptHash(t, chain[len(chain)-1])
+	priorSeq := chain[len(chain)-1].ActionRecord.ChainSeq
+
+	open := receipt.SessionOpen{
+		RunNonce:         g1RunNonce,
+		OpenNonce:        g1ReopenOpenNonce,
+		RecorderSession:  recorderSessionID,
+		PolicyHash:       "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		SignerKeyEpoch:   "epoch-2026-04-reopen",
+		HeartbeatSeconds: 30,
+		ChainOpenSeq:     5,
+		PriorChainHead:   prevHash,
+		PriorChainSeq:    priorSeq,
+	}
+	openAR := fixedActionRecord(5, prevHash)
+	openAR.ActionID = "g1-session-reopen-closed-run"
+	openAR.ActionType = receipt.ActionUnclassified
+	openAR.Target = "receipt-session:open"
+	openAR.Transport = "receipt_session"
+	openAR.Method = ""
+	openAR.Layer = "session_control"
+	openAR.RunNonce = g1RunNonce
+	openAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlOpen,
+		Open: &open,
+	}
+	chain = append(chain, signReceipt(t, openAR, priv))
+	return chain
+}
+
+func buildG1RotatedChain(
+	t *testing.T,
+	pubA ed25519.PublicKey,
+	privA ed25519.PrivateKey,
+	pubB ed25519.PublicKey,
+	privB ed25519.PrivateKey,
+) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, privA)[:3]
+	priorTail := mustReceiptHash(t, chain[len(chain)-1])
+	priorSeq := chain[len(chain)-1].ActionRecord.ChainSeq
+	policyHash := "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+	open := receipt.SessionOpen{
+		RunNonce:         g1RotatedRunNonce,
+		OpenNonce:        g1RotatedOpenNonce,
+		RecorderSession:  recorderSessionID,
+		PolicyHash:       policyHash,
+		SignerKeyEpoch:   "epoch-2026-04-rotated",
+		HeartbeatSeconds: 60,
+		ChainOpenSeq:     0,
+		PriorChainHead:   priorTail,
+		PriorChainSeq:    priorSeq,
+	}
+	openAR := fixedActionRecord(0, priorTail)
+	openAR.ActionID = "g1-session-open-rotated"
+	openAR.ActionType = receipt.ActionUnclassified
+	openAR.Target = "receipt-session:open"
+	openAR.PolicyHash = policyHash
+	openAR.Transport = "receipt_session"
+	openAR.Method = ""
+	openAR.Layer = "session_control"
+	openAR.RunNonce = g1RotatedRunNonce
+	openAR.KeyTransition = &receipt.KeyTransition{
+		PriorSignerKey: hex.EncodeToString(pubA),
+		PriorChainSeq:  priorSeq,
+		PriorChainHash: priorTail,
+	}
+	openAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlOpen,
+		Open: &open,
+	}
+	openReceipt := signReceipt(t, openAR, privB)
+	chain = append(chain, openReceipt)
+	prevHash := mustReceiptHash(t, openReceipt)
+
+	heartbeatAR := fixedActionRecord(1, prevHash)
+	heartbeatAR.ActionID = "g1-session-heartbeat-rotated"
+	heartbeatAR.ActionType = receipt.ActionUnclassified
+	heartbeatAR.Target = "receipt-session:heartbeat"
+	heartbeatAR.PolicyHash = policyHash
+	heartbeatAR.Transport = "receipt_session"
+	heartbeatAR.Method = ""
+	heartbeatAR.Layer = "session_control"
+	heartbeatAR.RunNonce = g1RotatedRunNonce
+	heartbeatAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlHeartbeat,
+		Heartbeat: &receipt.SessionHeartbeat{
+			RunNonce:         g1RotatedRunNonce,
+			OpenNonce:        g1RotatedOpenNonce,
+			Beat:             1,
+			ChainHead:        prevHash,
+			ChainSeqHead:     0,
+			HeartbeatTime:    baseTime.Add(4 * time.Second).Format(time.RFC3339),
+			FsyncErrorsGated: 6,
+			DurabilityBlocks: 10,
+		},
+	}
+	heartbeatReceipt := signReceipt(t, heartbeatAR, privB)
+	chain = append(chain, heartbeatReceipt)
+	prevHash = mustReceiptHash(t, heartbeatReceipt)
+
+	closeAR := fixedActionRecord(2, prevHash)
+	closeAR.ActionID = "g1-session-close-rotated"
+	closeAR.ActionType = receipt.ActionUnclassified
+	closeAR.Target = "receipt-session:close"
+	closeAR.PolicyHash = policyHash
+	closeAR.Transport = "receipt_session"
+	closeAR.Method = ""
+	closeAR.Layer = "session_control"
+	closeAR.RunNonce = g1RotatedRunNonce
+	closeAR.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlClose,
+		Close: &receipt.SessionClose{
+			RunNonce:         g1RotatedRunNonce,
+			OpenNonce:        g1RotatedOpenNonce,
+			FinalSeq:         2,
+			RootHash:         prevHash,
+			ReceiptCount:     3,
+			CloseReason:      "rotated-normal",
+			FsyncErrorsGated: 7,
+			DurabilityBlocks: 11,
+		},
+	}
+	chain = append(chain, signReceipt(t, closeAR, privB))
+
+	result := receipt.VerifyChainTrusted(chain, []string{hex.EncodeToString(pubA), hex.EncodeToString(pubB)})
+	if !result.Valid {
+		t.Fatalf("rotated fixture VerifyChainTrusted: %s", result.Error)
+	}
+	return chain
+}
+
+func signReceipt(t *testing.T, ar receipt.ActionRecord, priv ed25519.PrivateKey) receipt.Receipt {
+	t.Helper()
+	r, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	return r
+}
+
+func cloneReceipts(in []receipt.Receipt) []receipt.Receipt {
+	out := make([]receipt.Receipt, len(in))
+	copy(out, in)
+	return out
+}
+
 type g1Vector struct {
 	Name     string              `json:"name"`
 	Open     receipt.SessionOpen `json:"open"`
@@ -531,13 +912,18 @@ func TestGenerateGoldenFiles(t *testing.T) {
 
 	pub, priv := testKeyPair(t)
 	seed := testSeed()
+	rotatedPub, rotatedPriv := testRotatedKeyPair(t)
+	rotatedSeed := testRotatedSeed()
 
 	// 1. Write the test key material so external verifiers can reproduce.
 	keyInfo := map[string]string{
-		"seed_phrase":    testSeedPhrase,
-		"seed_hex":       hex.EncodeToString(seed[:]),
-		"public_key_hex": hex.EncodeToString(pub),
-		"note":           "TEST KEY ONLY. Derived from sha256(seed_phrase). Never use for production signing.",
+		"seed_phrase":            testSeedPhrase,
+		"seed_hex":               hex.EncodeToString(seed[:]),
+		"public_key_hex":         hex.EncodeToString(pub),
+		"rotated_seed_phrase":    testRotatedSeedPhrase,
+		"rotated_seed_hex":       hex.EncodeToString(rotatedSeed[:]),
+		"rotated_public_key_hex": hex.EncodeToString(rotatedPub),
+		"note":                   "TEST KEYS ONLY. Derived from sha256(seed_phrase). Never use for production signing.",
 	}
 	writeJSONPretty(t, filepath.Join(testdataDir, goldenTestKey), keyInfo)
 
@@ -571,6 +957,39 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1BadHeartbeat), wrapInFlightRecorderEntries(t, g1BadHeartbeat))
 	g1BadClose := buildG1InconsistentCloseChain(t, priv)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1BadClose), wrapInFlightRecorderEntries(t, g1BadClose))
+	g1Ambiguous := buildG1AmbiguousSessionControlChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1AmbiguousCtrl), wrapInFlightRecorderEntries(t, g1Ambiguous))
+	g1AmbiguousOpenClose := buildG1AmbiguousOpenCloseChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1AmbiguousOC), wrapInFlightRecorderEntries(t, g1AmbiguousOpenClose))
+	g1AmbiguousHeartbeatClose := buildG1AmbiguousHeartbeatCloseChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1AmbiguousHC), wrapInFlightRecorderEntries(t, g1AmbiguousHeartbeatClose))
+	g1Rotated := buildG1RotatedChain(t, pub, priv, rotatedPub, rotatedPriv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RotatedValid), wrapInFlightRecorderEntries(t, g1Rotated))
+	// Deep-copy the mutated session_control payload so the "bad" fixture is
+	// fully independent of g1Rotated: cloneReceipts copies each Receipt by
+	// value, but ActionRecord.SessionControl (and its Close) are pointers, so a
+	// bare ReceiptCount++ would also mutate the valid fixture's close record.
+	g1RotatedBad := cloneReceipts(g1Rotated)
+	last := len(g1RotatedBad) - 1
+	ctrl := *g1RotatedBad[last].ActionRecord.SessionControl
+	closeCopy := *ctrl.Close
+	closeCopy.ReceiptCount++
+	ctrl.Close = &closeCopy
+	g1RotatedBad[last].ActionRecord.SessionControl = &ctrl
+	g1RotatedBad[last] = signReceipt(t, g1RotatedBad[last].ActionRecord, rotatedPriv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RotatedBad), wrapInFlightRecorderEntries(t, g1RotatedBad))
+	g1PlainAfterClose := buildG1PlainAfterCloseChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1PlainAfterClose), wrapInFlightRecorderEntries(t, g1PlainAfterClose))
+	g1EmptyRunNonceAfterClose := buildG1EmptyRunNonceAfterCloseChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1EmptyAfterClose), wrapInFlightRecorderEntries(t, g1EmptyRunNonceAfterClose))
+	g1HeartbeatAfterClose := buildG1HeartbeatAfterCloseChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1HeartbeatAfter), wrapInFlightRecorderEntries(t, g1HeartbeatAfterClose))
+	g1CloseWithoutOpen := buildG1CloseWithoutOpenChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1CloseNoOpen), wrapInFlightRecorderEntries(t, g1CloseWithoutOpen))
+	g1NewAfterClose := buildG1NewSessionAfterCloseChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1NewAfterClose), wrapInFlightRecorderEntries(t, g1NewAfterClose))
+	g1ReopenClosed := buildG1ReopenClosedRunChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1ReopenClosed), wrapInFlightRecorderEntries(t, g1ReopenClosed))
 
 	// 4. invalid-signature.json - tamper a signature byte. Individual verify
 	// MUST fail. Chain verification also fails on this receipt.
@@ -794,6 +1213,134 @@ func TestConformance_G1InconsistentCloseRejected(t *testing.T) {
 	}
 }
 
+func TestConformance_G1AmbiguousSessionControlRejected(t *testing.T) {
+	t.Parallel()
+
+	pub, _ := testKeyPair(t)
+	keyHex := hex.EncodeToString(pub)
+	for _, name := range []string{goldenG1AmbiguousCtrl, goldenG1AmbiguousOC, goldenG1AmbiguousHC} {
+		t.Run(name, func(t *testing.T) {
+			receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, name))
+			result := receipt.VerifyChain(receipts, keyHex)
+			if result.Valid {
+				t.Fatal("VerifyChain unexpectedly accepted ambiguous session_control")
+			}
+			if !strings.Contains(result.Error, "session_control must carry exactly one payload") {
+				t.Errorf("error = %q, want exactly-one payload rejection", result.Error)
+			}
+		})
+	}
+}
+
+func TestConformance_G1RotatedCloseCountValid(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1RotatedValid))
+	pub, _ := testKeyPair(t)
+	rotatedPub, _ := testRotatedKeyPair(t)
+	result := receipt.VerifyChainTrusted(receipts, []string{hex.EncodeToString(pub), hex.EncodeToString(rotatedPub)})
+	if !result.Valid {
+		t.Fatalf("VerifyChainTrusted: %s", result.Error)
+	}
+	closeRecord := receipts[len(receipts)-1].ActionRecord.SessionControl.Close
+	if closeRecord.ReceiptCount != 3 {
+		t.Fatalf("rotated close receipt_count = %d, want segment-local 3", closeRecord.ReceiptCount)
+	}
+}
+
+func TestConformance_G1RotatedCloseCountInvalidRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1RotatedBad))
+	pub, _ := testKeyPair(t)
+	rotatedPub, _ := testRotatedKeyPair(t)
+	result := receipt.VerifyChainTrusted(receipts, []string{hex.EncodeToString(pub), hex.EncodeToString(rotatedPub)})
+	if result.Valid {
+		t.Fatal("VerifyChainTrusted unexpectedly accepted rotated bad receipt_count")
+	}
+	if !strings.Contains(result.Error, "session_close receipt_count mismatch") {
+		t.Errorf("error = %q, want receipt_count mismatch", result.Error)
+	}
+}
+
+func TestConformance_G1PlainActionAfterCloseRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1PlainAfterClose))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if result.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted plain action after close")
+	}
+	if !strings.Contains(result.Error, "record observed after session_close") {
+		t.Errorf("error = %q, want record observed after session_close", result.Error)
+	}
+}
+
+func TestConformance_G1EmptyRunNonceAfterCloseAccepted(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1EmptyAfterClose))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if !result.Valid {
+		t.Fatalf("VerifyChain: %s", result.Error)
+	}
+}
+
+func TestConformance_G1HeartbeatAfterCloseRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1HeartbeatAfter))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if result.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted heartbeat after close")
+	}
+	if !strings.Contains(result.Error, "record observed after session_close") {
+		t.Errorf("error = %q, want record observed after session_close", result.Error)
+	}
+}
+
+func TestConformance_G1CloseWithoutOpenRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1CloseNoOpen))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if result.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted close without open")
+	}
+	if !strings.Contains(result.Error, "first receipt is not a matching session_open") {
+		t.Errorf("error = %q, want matching session_open rejection", result.Error)
+	}
+}
+
+func TestConformance_G1NewSessionAfterCloseAccepted(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1NewAfterClose))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if !result.Valid {
+		t.Fatalf("VerifyChain: %s", result.Error)
+	}
+}
+
+func TestConformance_G1ReopenClosedRunRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1ReopenClosed))
+	pub, _ := testKeyPair(t)
+	result := receipt.VerifyChain(receipts, hex.EncodeToString(pub))
+	if result.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted reopened run_nonce")
+	}
+	if !strings.Contains(result.Error, "duplicate session_open for run_nonce") {
+		t.Errorf("error = %q, want duplicate session_open rejection", result.Error)
+	}
+}
+
 func TestConformance_G1SignedFieldTamperingRejected(t *testing.T) {
 	t.Parallel()
 
@@ -929,6 +1476,18 @@ func TestConformance_TestKeyMatches(t *testing.T) {
 	}
 	if got := info["seed_phrase"]; got != testSeedPhrase {
 		t.Errorf("seed_phrase = %q, want %q", got, testSeedPhrase)
+	}
+	rotatedPub, _ := testRotatedKeyPair(t)
+	wantRotatedPubHex := hex.EncodeToString(rotatedPub)
+	if got := info["rotated_public_key_hex"]; got != wantRotatedPubHex {
+		t.Errorf("rotated_public_key_hex = %q, want %q", got, wantRotatedPubHex)
+	}
+	rotatedSeed := testRotatedSeed()
+	if got, want := info["rotated_seed_hex"], hex.EncodeToString(rotatedSeed[:]); got != want {
+		t.Errorf("rotated_seed_hex = %q, want %q", got, want)
+	}
+	if got := info["rotated_seed_phrase"]; got != testRotatedSeedPhrase {
+		t.Errorf("rotated_seed_phrase = %q, want %q", got, testRotatedSeedPhrase)
 	}
 }
 

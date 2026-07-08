@@ -453,6 +453,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			FileMode:           cfg.FlightRecorder.FileMode,
 			RawEscrow:          cfg.FlightRecorder.RawEscrow,
 			EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
+			Metrics:            m,
 		}
 
 		var redactFn recorder.RedactFunc

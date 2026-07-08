@@ -185,6 +185,135 @@ fn g1_inconsistent_close_fixture_is_rejected() {
 }
 
 #[test]
+fn g1_ambiguous_session_control_fixture_is_rejected() {
+    let root = common::repo_root();
+    let key = conformance_key();
+    for name in [
+        "g1-ambiguous-session-control.jsonl",
+        "g1-ambiguous-open-close.jsonl",
+        "g1-ambiguous-heartbeat-close.jsonl",
+    ] {
+        let receipts = extract_receipts(&root.join("sdk/conformance/testdata").join(name)).unwrap();
+        let result = verify_chain(&receipts, &key);
+        assert!(!result.valid, "{name} unexpectedly verified");
+        assert!(result
+            .error
+            .unwrap_or_default()
+            .contains("session_control must carry exactly one payload"));
+    }
+}
+
+#[test]
+fn g1_rotated_close_count_valid_fixture_verifies() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-rotated-close-count-valid.jsonl"))
+            .unwrap();
+    let result = verify_chain(&receipts, &conformance_trusted_keys());
+    assert!(result.valid, "{:?}", result.error);
+    assert_eq!(result.receipt_count, 6);
+    assert_eq!(result.final_seq, 2);
+}
+
+#[test]
+fn g1_rotated_close_count_invalid_fixture_is_rejected() {
+    let root = common::repo_root();
+    let receipts = extract_receipts(
+        &root.join("sdk/conformance/testdata/g1-rotated-close-count-invalid.jsonl"),
+    )
+    .unwrap();
+    let result = verify_chain(&receipts, &conformance_trusted_keys());
+    assert!(!result.valid);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_close receipt_count mismatch"));
+}
+
+#[test]
+fn g1_plain_action_after_close_fixture_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-plain-after-close.jsonl"))
+            .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("record observed after session_close"));
+}
+
+#[test]
+fn g1_empty_run_nonce_after_close_fixture_verifies() {
+    let root = common::repo_root();
+    let receipts = extract_receipts(
+        &root.join("sdk/conformance/testdata/g1-empty-run-nonce-after-close.jsonl"),
+    )
+    .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(result.valid, "{:?}", result.error);
+}
+
+#[test]
+fn g1_heartbeat_after_close_fixture_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-heartbeat-after-close.jsonl"))
+            .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("record observed after session_close"));
+}
+
+#[test]
+fn g1_close_without_open_fixture_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-close-without-open.jsonl"))
+            .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("first receipt is not a matching session_open"));
+}
+
+#[test]
+fn g1_new_session_after_close_fixture_verifies() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-new-session-after-close.jsonl"))
+            .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(result.valid, "{:?}", result.error);
+}
+
+#[test]
+fn g1_reopen_closed_run_fixture_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-reopen-closed-run.jsonl"))
+            .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("duplicate session_open for run_nonce"));
+}
+
+#[test]
 fn g1_genesis_chain_open_seq_mismatch_is_rejected_before_signature_check() {
     let root = common::repo_root();
     let key = conformance_key();
@@ -307,6 +436,20 @@ fn conformance_key() -> String {
         .as_str()
         .expect("public_key_hex")
         .to_string()
+}
+
+fn conformance_trusted_keys() -> String {
+    let root = common::repo_root();
+    let data =
+        fs::read_to_string(root.join("sdk/conformance/testdata/test-key.json")).expect("read key");
+    let value: Value = serde_json::from_str(&data).expect("parse key");
+    format!(
+        "{},{}",
+        value["public_key_hex"].as_str().expect("public_key_hex"),
+        value["rotated_public_key_hex"]
+            .as_str()
+            .expect("rotated_public_key_hex")
+    )
 }
 
 #[test]

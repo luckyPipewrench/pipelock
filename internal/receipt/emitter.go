@@ -43,6 +43,17 @@ type MetricsSink interface {
 	RecordEmitFailure(reason string)
 }
 
+// HealthSnapshot is a nil-safe, mutex-consistent read of the live receipt
+// emitter chain state for observability and self-audit consumers.
+type HealthSnapshot struct {
+	InitErr     bool
+	ChainSeq    uint64
+	PrevHash    string
+	LastEmit    time.Time
+	RootEmitted bool
+	RunNonce    string
+}
+
 // Emit-failure reason labels. Closed domain to keep metric cardinality bounded.
 const (
 	// FailReasonChainInit is the reason for failures that originate from a
@@ -211,6 +222,22 @@ func (e *Emitter) HealthError() error {
 	e.healthMu.RLock()
 	defer e.healthMu.RUnlock()
 	return e.healthErr
+}
+
+func (e *Emitter) HealthSnapshot() (HealthSnapshot, bool) {
+	if e == nil {
+		return HealthSnapshot{}, false
+	}
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	return HealthSnapshot{
+		InitErr:     e.initErr != nil,
+		ChainSeq:    e.chainSeq,
+		PrevHash:    e.chainPrevHash,
+		LastEmit:    e.chainEnd,
+		RootEmitted: e.rootEmitted,
+		RunNonce:    e.runNonce,
+	}, true
 }
 
 // SignerKeyHex returns the Ed25519 public key hex for receipts this emitter

@@ -730,6 +730,15 @@ func (c *Config) ApplyDefaults() {
 	if c.FlightRecorder.Completeness.HeartbeatInterval == "" {
 		c.FlightRecorder.Completeness.HeartbeatInterval = "60s"
 	}
+	if c.FlightRecorder.EvidenceHealth.Enabled == nil {
+		c.FlightRecorder.EvidenceHealth.Enabled = ptrBool(c.FlightRecorder.Enabled)
+	}
+	if c.FlightRecorder.EvidenceHealth.SelfAuditInterval == "" {
+		c.FlightRecorder.EvidenceHealth.SelfAuditInterval = "30s"
+	}
+	if c.FlightRecorder.EvidenceHealth.MaxAnchorLag == "" {
+		c.FlightRecorder.EvidenceHealth.MaxAnchorLag = "24h"
+	}
 
 	// MCP tool provenance defaults
 	if c.MCPToolProvenance.Enabled {

@@ -95,6 +95,9 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 				_, _ = fmt.Fprintln(stdout, "  signatures: not checked (self-consistency only; pass --key for provenance)")
 			}
 		}
+		if r.Scorecard != nil {
+			emitScorecard(stdout, *r.Scorecard)
+		}
 		return
 	}
 	if r.Unpinned {
@@ -108,6 +111,9 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 	}
 	if r.BrokenAtSeq != 0 || r.Error != "" {
 		_, _ = fmt.Fprintf(stderr, "  broken at:  seq %d\n", r.BrokenAtSeq)
+	}
+	if r.Scorecard != nil {
+		emitScorecard(stderr, *r.Scorecard)
 	}
 }
 

@@ -1,6 +1,9 @@
 {
-  "note": "TEST KEY ONLY. Derived from sha256(seed_phrase). Never use for production signing.",
+  "note": "TEST KEYS ONLY. Derived from sha256(seed_phrase). Never use for production signing.",
   "public_key_hex": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678",
+  "rotated_public_key_hex": "970955695494cf0fb3109671e673ecaeb0a161e834861a325b97b0656e3c9cd1",
+  "rotated_seed_hex": "0d9b4b8d28f13d4ab1081b398e7b9d5243629cb1c4173437a3f9826fc80ad2ce",
+  "rotated_seed_phrase": "pipelock-conformance-rotated-test-key-v1",
   "seed_hex": "c8ee65622000420b20ff7ec4e790006b7883ddfd3823ff9ccc2fc050c389bd48",
   "seed_phrase": "pipelock-conformance-test-key-v1"
 }

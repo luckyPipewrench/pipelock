@@ -238,11 +238,6 @@ func launchExecEnvLines(env *installEnv) []string {
 	for _, v := range runtimeContractVars(env) {
 		lines = append(lines, "    "+envAssign(v.name, v.value)+" \\")
 	}
-	// The installed wrapper always resolves the posture capsule at the default
-	// location (`contain run` writes it there); exporting it keeps the wrapper in
-	// lockstep with containLaunchEnv, which exports the run-resolved path.
-	lines = append(lines,
-		"    "+envAssign(posturebinding.RuntimeProofEnv, posturebinding.DefaultContainRunProofPath)+" \\")
 	lines = append(lines,
 		`    PATH="$AGENT_PATH" \`,
 		`    "$TARGET" "$@"`,

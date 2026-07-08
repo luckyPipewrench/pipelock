@@ -135,6 +135,9 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 			t.Errorf("launch exec env missing %q", want)
 		}
 	}
+	if strings.Contains(joined, posturebinding.RuntimeProofEnv+"=") {
+		t.Fatalf("launch wrapper must preserve caller-provided %s, got:\n%s", posturebinding.RuntimeProofEnv, joined)
+	}
 	// Every continuation line except the last must end with a backslash.
 	for i, l := range lines[:len(lines)-1] {
 		if !strings.HasSuffix(l, "\\") {

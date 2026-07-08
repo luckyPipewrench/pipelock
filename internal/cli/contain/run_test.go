@@ -47,6 +47,33 @@ func TestWarnCustomPostureOutput(t *testing.T) {
 	})
 }
 
+func TestContainRunPostureProofPath(t *testing.T) {
+	t.Run("absolute output remains absolute", func(t *testing.T) {
+		outDir := filepath.Join(t.TempDir(), "posture")
+		got, err := containRunPostureProofPath(outDir)
+		if err != nil {
+			t.Fatalf("containRunPostureProofPath: %v", err)
+		}
+		want := filepath.Join(outDir, posturepkg.ProofFilename)
+		if got != want {
+			t.Fatalf("proof path = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("relative output resolves against cwd", func(t *testing.T) {
+		cwd := t.TempDir()
+		t.Chdir(cwd)
+		got, err := containRunPostureProofPath("posture")
+		if err != nil {
+			t.Fatalf("containRunPostureProofPath: %v", err)
+		}
+		want := filepath.Join(cwd, "posture", posturepkg.ProofFilename)
+		if got != want {
+			t.Fatalf("proof path = %q, want %q", got, want)
+		}
+	})
+}
+
 func TestDefaultContainRunEnv_WiresRealOperations(t *testing.T) {
 	env := defaultContainRunEnv()
 	if env.probe == nil {

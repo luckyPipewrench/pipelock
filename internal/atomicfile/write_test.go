@@ -326,3 +326,7 @@ func TestWrite_EmptyData(t *testing.T) {
 		t.Errorf("content length = %d, want 0", len(got))
 	}
 }
+
+func TestSyncDir_MissingDirectoryIsBestEffort(t *testing.T) {
+	syncDir(filepath.Join(t.TempDir(), "missing"))
+}

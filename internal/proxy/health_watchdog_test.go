@@ -44,8 +44,9 @@ func callHealth(t *testing.T, p *Proxy) (int, healthRespParse) {
 
 // newWatchdogProxy builds a proxy with cfg.HealthWatchdog.Enabled defaulted
 // to true and a custom-constructed watchdog whose probe is supplied by the
-// caller. The interval is small (50ms) so tests can advance the watchdog
-// past staleness quickly. Returns the proxy plus a cleanup func that
+// caller. The interval stays comfortably above race-detector scheduler stalls;
+// tests force scanner staleness directly via AgeScannerForTest instead of
+// sleeping on this interval. Returns the proxy plus a cleanup func that
 // guarantees the watchdog goroutine exits.
 func newWatchdogProxy(t *testing.T, probe health.Probe) (*Proxy, func()) {
 	t.Helper()
@@ -56,7 +57,7 @@ func newWatchdogProxy(t *testing.T, probe health.Probe) (*Proxy, func()) {
 	cfg.HealthWatchdog.ExposeSubsystems = true // tests assert against subsystems map
 
 	wd, err := health.New(health.Config{
-		Interval: 50 * time.Millisecond,
+		Interval: 500 * time.Millisecond,
 		Probe:    probe,
 	})
 	if err != nil {

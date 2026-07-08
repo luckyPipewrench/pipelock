@@ -194,7 +194,7 @@ func (b *chainBuilder) heartbeatForWithMutation(runNonce, openNonce string, beat
 		OpenNonce:        openNonce,
 		Beat:             beat,
 		ChainHead:        b.prev,
-		ChainSeqHead:     previousSeq(b.seq),
+		ChainSeqHead:     receipt.PreviousChainSeq(b.seq),
 		HeartbeatTime:    b.base.Add(b.offset).Format(time.RFC3339Nano),
 		FsyncErrorsGated: fsync,
 		DurabilityBlocks: blocks,
@@ -306,13 +306,6 @@ func analyzeBuilt(chain []receipt.Receipt, keyHex string) Report {
 
 func analyzeBuiltIntegrityOnly(chain []receipt.Receipt, keyHex string) Report {
 	return Analyze(chain, receipt.VerifyChainIntegrity(chain, keyHex))
-}
-
-func previousSeq(seq uint64) uint64 {
-	if seq == 0 {
-		return 0
-	}
-	return seq - 1
 }
 
 func requireOneRun(t *testing.T, report Report, status Status, reason Reason) RunReport {

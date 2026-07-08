@@ -453,7 +453,7 @@ func applyClose(st *runState, ar receipt.ActionRecord, closeRecord *receipt.Sess
 	if closeRecord.ReceiptCount != ctx.prefixCount+1 {
 		return "session_close receipt_count does not match observed receipt count"
 	}
-	if ctx.hasPreCloseTail && closeRecord.FinalSeq != ar.ChainSeq {
+	if closeRecord.FinalSeq != ar.ChainSeq {
 		return "session_close final_seq mismatch"
 	}
 	snapshot := DurabilitySnapshot{

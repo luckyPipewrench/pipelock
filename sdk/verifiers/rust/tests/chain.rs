@@ -89,6 +89,23 @@ fn g1_restart_chain_verifies_with_prior_tail_fields() {
 }
 
 #[test]
+fn g1_restart_close_receipt_count_mismatch_is_rejected() {
+    let root = common::repo_root();
+    let mut receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-restart-chain.jsonl")).unwrap();
+    let key = conformance_key();
+    receipts[4]["action_record"]["session_control"]["close"]["receipt_count"] = json!(3);
+    sign_action_receipt_with_conformance_key(&mut receipts[4]);
+
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_close receipt_count mismatch"));
+}
+
+#[test]
 fn g1_genesis_vectors_match_go() {
     let root = common::repo_root();
     let vectors: Value = serde_json::from_str(

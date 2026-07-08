@@ -72,6 +72,7 @@ pub fn verify_chain_with_options(
     let mut prev_hash = String::new();
     let mut active_run_nonce: Option<String> = None;
     let mut active_open_nonce: Option<String> = None;
+    let mut segment_receipt_count = 0_u64;
     for (index, receipt) in receipts.iter().enumerate() {
         let Some(seq) = receipt
             .get("action_record")
@@ -100,6 +101,7 @@ pub fn verify_chain_with_options(
         } else if chain_prev_hash != Some(prev_hash.as_str()) {
             return broken(seq, format!("seq {seq}: chain_prev_hash mismatch"));
         }
+        segment_receipt_count += 1;
         if let Some(result) = validate_session_control_state(
             receipt,
             seq,
@@ -107,7 +109,7 @@ pub fn verify_chain_with_options(
             prev_hash.as_str(),
             active_run_nonce.as_deref(),
             active_open_nonce.as_deref(),
-            receipts.len() as u64,
+            segment_receipt_count,
         ) {
             return result;
         }
@@ -120,6 +122,9 @@ pub fn verify_chain_with_options(
                 .get("open_nonce")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
+        } else if session_close(receipt).is_some() {
+            active_run_nonce = None;
+            active_open_nonce = None;
         }
         prev_hash = receipt_hash(receipt);
     }
@@ -262,6 +267,14 @@ fn session_open(receipt: &Receipt) -> Option<&serde_json::Value> {
     ctrl.get("open").filter(|open| open.is_object())
 }
 
+fn session_close(receipt: &Receipt) -> Option<&serde_json::Value> {
+    let ctrl = receipt.get("action_record")?.get("session_control")?;
+    if ctrl.get("kind").and_then(serde_json::Value::as_str) != Some("session_close") {
+        return None;
+    }
+    ctrl.get("close").filter(|close| close.is_object())
+}
+
 fn validate_session_control_state(
     receipt: &Receipt,
     seq: u64,
@@ -269,7 +282,7 @@ fn validate_session_control_state(
     prev_hash: &str,
     active_run_nonce: Option<&str>,
     active_open_nonce: Option<&str>,
-    receipt_count: u64,
+    segment_receipt_count: u64,
 ) -> Option<ChainResult> {
     let ctrl = receipt.get("action_record")?.get("session_control")?;
     let kind = ctrl.get("kind").and_then(serde_json::Value::as_str);
@@ -433,12 +446,6 @@ fn validate_session_control_state(
                     format!("seq {seq}: session_close root_hash mismatch"),
                 ));
             }
-            if seq != receipt_count - 1 {
-                return Some(broken(
-                    seq,
-                    format!("seq {seq}: session_close must be final receipt"),
-                ));
-            }
             if close.get("final_seq").and_then(serde_json::Value::as_u64) != Some(seq) {
                 return Some(broken(
                     seq,
@@ -448,7 +455,7 @@ fn validate_session_control_state(
             if close
                 .get("receipt_count")
                 .and_then(serde_json::Value::as_u64)
-                != Some(receipt_count)
+                != Some(segment_receipt_count)
             {
                 return Some(broken(
                     seq,

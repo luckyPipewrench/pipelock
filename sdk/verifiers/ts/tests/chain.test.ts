@@ -84,6 +84,23 @@ test("g1 restart chain verifies with prior tail fields", async () => {
   assert.notEqual(open["prior_chain_head"], "");
 });
 
+test("g1 restart close receipt_count mismatch is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const receipts = extractReceipts(g1RestartChain);
+  (
+    (receipts[4]!.action_record!.session_control as Record<string, unknown>)["close"] as Record<
+      string,
+      unknown
+    >
+  )["receipt_count"] = 3;
+  await signActionReceiptWithTestKey(receipts[4]!);
+
+  const result = await verifyChain(receipts, key);
+  assert.equal(result.valid, false);
+  assert.match(result.error ?? "", /session_close receipt_count mismatch/u);
+});
+
 test("g1 genesis vectors match Go", () => {
   const vectors = JSON.parse(readFileSync(g1GenesisVectors, "utf8")) as Array<{
     open: Record<string, unknown>;

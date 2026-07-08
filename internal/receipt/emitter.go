@@ -327,10 +327,6 @@ func (e *Emitter) EmitHeartbeat() error {
 		Target:    sessionHeartbeatTarget,
 	}, false, func() (*SessionControl, error) {
 		e.heartbeatBeat++
-		chainSeqHead := uint64(0)
-		if e.chainSeq > 0 {
-			chainSeqHead = e.chainSeq - 1
-		}
 		return &SessionControl{
 			Kind: SessionControlHeartbeat,
 			Heartbeat: &SessionHeartbeat{
@@ -338,7 +334,7 @@ func (e *Emitter) EmitHeartbeat() error {
 				OpenNonce:        e.openNonce,
 				Beat:             e.heartbeatBeat,
 				ChainHead:        e.chainPrevHash,
-				ChainSeqHead:     chainSeqHead,
+				ChainSeqHead:     PreviousChainSeq(e.chainSeq),
 				HeartbeatTime:    time.Now().UTC().Format(time.RFC3339Nano),
 				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
 				DurabilityBlocks: e.DurabilityBlocks(),

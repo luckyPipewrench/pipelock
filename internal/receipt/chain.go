@@ -268,7 +268,7 @@ func (v *chainVerifier) run(receipts []Receipt) ChainResult {
 			return res
 		}
 		if !v.integrityOnly {
-			if res, ok := v.validateSessionControl(r, uint64(i), uint64(len(receipts))); !ok {
+			if res, ok := v.validateSessionControl(r); !ok {
 				return res
 			}
 		}
@@ -456,7 +456,7 @@ func (v *chainVerifier) validateRestartOpen(r Receipt, open *SessionOpen, priorH
 	return ChainResult{}, true
 }
 
-func (v *chainVerifier) validateSessionControl(r Receipt, index, receiptCount uint64) (ChainResult, bool) {
+func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 	ctrl := r.ActionRecord.SessionControl
 	open := sessionOpen(ctrl)
 	heartbeat := sessionHeartbeat(ctrl)
@@ -545,9 +545,6 @@ func (v *chainVerifier) validateSessionControl(r Receipt, index, receiptCount ui
 			if closeRecord.RootHash != v.prevHash {
 				return v.brokenAtKind(r, "session_close root_hash mismatch", ChainFailureLifecycle), false
 			}
-			if index != receiptCount-1 {
-				return v.brokenAtKind(r, "session_close must be final receipt", ChainFailureLifecycle), false
-			}
 			if closeRecord.FinalSeq != r.ActionRecord.ChainSeq {
 				return v.brokenAtKind(r, "session_close final_seq mismatch", ChainFailureLifecycle), false
 			}
@@ -558,6 +555,8 @@ func (v *chainVerifier) validateSessionControl(r Receipt, index, receiptCount ui
 			if closeRecord.ReceiptCount != segmentReceiptCount {
 				return v.brokenAtKind(r, "session_close receipt_count mismatch", ChainFailureLifecycle), false
 			}
+			v.activeRun = ""
+			v.activeOpen = ""
 		}
 		return ChainResult{}, true
 	}

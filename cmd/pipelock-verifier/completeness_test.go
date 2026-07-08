@@ -117,10 +117,6 @@ func (f *completenessFixture) open(runNonce, openNonce string) receipt.Receipt {
 func (f *completenessFixture) heartbeat(runNonce, openNonce string) receipt.Receipt {
 	f.t.Helper()
 	const beat = 1
-	chainSeqHead := uint64(0)
-	if f.seq > 0 {
-		chainSeqHead = f.seq - 1
-	}
 	return f.sign(receipt.ActionRecord{
 		ActionType: receipt.ActionUnclassified,
 		Target:     "pipelock://session/heartbeat",
@@ -133,7 +129,7 @@ func (f *completenessFixture) heartbeat(runNonce, openNonce string) receipt.Rece
 				OpenNonce:        openNonce,
 				Beat:             beat,
 				ChainHead:        f.prev,
-				ChainSeqHead:     chainSeqHead,
+				ChainSeqHead:     receipt.PreviousChainSeq(f.seq),
 				HeartbeatTime:    f.base.Add(f.offset).Format(time.RFC3339Nano),
 				DurabilityBlocks: beat,
 			},

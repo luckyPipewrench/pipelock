@@ -43,6 +43,7 @@ export async function verifyChain(
   let prevHash = "";
   let activeRunNonce: string | undefined;
   let activeOpenNonce: string | undefined;
+  let segmentReceiptCount = 0;
   for (let i = 0; i < receipts.length; i++) {
     const receipt = receipts[i] as Receipt;
     const seq = receipt.action_record?.chain_seq;
@@ -88,6 +89,7 @@ export async function verifyChain(
         error: `seq ${seq}: chain_prev_hash mismatch`,
       };
     }
+    segmentReceiptCount++;
     const sessionControlResult = validateSessionControlState(
       receipt,
       receipt.action_record?.chain_prev_hash ?? "",
@@ -96,13 +98,16 @@ export async function verifyChain(
       prevHash,
       activeRunNonce,
       activeOpenNonce,
-      receipts.length,
+      segmentReceiptCount,
     );
     if (sessionControlResult !== undefined) return sessionControlResult;
     const open = sessionOpen(receipt);
     if (open !== undefined) {
       activeRunNonce = typeof open["run_nonce"] === "string" ? open["run_nonce"] : undefined;
       activeOpenNonce = typeof open["open_nonce"] === "string" ? open["open_nonce"] : undefined;
+    } else if (sessionClose(receipt) !== undefined) {
+      activeRunNonce = undefined;
+      activeOpenNonce = undefined;
     }
     prevHash = receiptHash(receipt);
   }
@@ -207,6 +212,15 @@ function sessionOpen(receipt: Receipt): Record<string, unknown> | undefined {
   return open as Record<string, unknown>;
 }
 
+function sessionClose(receipt: Receipt): Record<string, unknown> | undefined {
+  const ctrl = receipt.action_record?.session_control;
+  if (typeof ctrl !== "object" || ctrl === null || Array.isArray(ctrl)) return undefined;
+  if ((ctrl as Record<string, unknown>)["kind"] !== "session_close") return undefined;
+  const close = (ctrl as Record<string, unknown>)["close"];
+  if (typeof close !== "object" || close === null || Array.isArray(close)) return undefined;
+  return close as Record<string, unknown>;
+}
+
 function validateSessionControlState(
   receipt: Receipt,
   chainPrevHash: string,
@@ -215,7 +229,7 @@ function validateSessionControlState(
   prevHash: string,
   activeRunNonce: string | undefined,
   activeOpenNonce: string | undefined,
-  receiptCount: number,
+  segmentReceiptCount: number,
 ): ChainResult | undefined {
   const ctrl = receipt.action_record?.session_control;
   if (typeof ctrl !== "object" || ctrl === null || Array.isArray(ctrl)) return undefined;
@@ -300,13 +314,10 @@ function validateSessionControlState(
     if (closeRecord["root_hash"] !== chainPrevHash) {
       return broken(seq, `seq ${seq}: session_close root_hash mismatch`);
     }
-    if (seq !== receiptCount - 1) {
-      return broken(seq, `seq ${seq}: session_close must be final receipt`);
-    }
     if (closeRecord["final_seq"] !== seq) {
       return broken(seq, `seq ${seq}: session_close final_seq mismatch`);
     }
-    if (closeRecord["receipt_count"] !== receiptCount) {
+    if (closeRecord["receipt_count"] !== segmentReceiptCount) {
       return broken(seq, `seq ${seq}: session_close receipt_count mismatch`);
     }
   }

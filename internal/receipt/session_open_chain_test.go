@@ -485,14 +485,14 @@ func TestVerifyChain_SessionControlClaimedValueRejections(t *testing.T) {
 			},
 			wantErr: "session_close root_hash mismatch",
 		},
-		"session_close_not_final_receipt": {
+		"heartbeat_after_session_close": {
 			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
 				chain := buildValidSessionControlChain(t, priv)
 				base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-				afterClose := signRunReceipt(t, priv, 3, mustHash(t, chain[2]), sessionOpenTestRunA, base.Add(3*time.Second))
+				afterClose := signHeartbeatReceipt(t, priv, 3, mustHash(t, chain[2]), "open-a", base.Add(3*time.Second))
 				return append(chain, afterClose)
 			},
-			wantErr: "session_close must be final receipt",
+			wantErr: "heartbeat has no active session_open",
 		},
 		"session_close_final_seq_mismatch": {
 			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
@@ -560,7 +560,7 @@ func TestValidateSessionControl_ActiveOpenNonceMismatchRejections(t *testing.T) 
 				prevHash:   prevHash,
 			}
 
-			res, ok := verifier.validateSessionControl(tc.receipt(t, priv, prevHash), 1, 2)
+			res, ok := verifier.validateSessionControl(tc.receipt(t, priv, prevHash))
 			if ok {
 				t.Fatal("mismatched active open_nonce was accepted")
 			}
@@ -568,6 +568,39 @@ func TestValidateSessionControl_ActiveOpenNonceMismatchRejections(t *testing.T) 
 				t.Fatalf("error = %q, want substring %q", res.Error, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestVerifyChain_AllowsSameKeyRestartAfterSessionClose(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := generateTestKey(t)
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	openA := signBoundOpen(t, priv, base)
+	closeA := signCloseReceipt(t, priv, 1, mustHash(t, openA), sessionOpenTestRunA, "open-a", base.Add(time.Second))
+	openB := signRestartOpen(
+		t,
+		priv,
+		2,
+		mustHash(t, closeA),
+		closeA.ActionRecord.ChainSeq,
+		sessionOpenTestRunB,
+		base.Add(2*time.Second),
+		nil,
+	)
+	closeB := signCloseReceipt(
+		t,
+		priv,
+		3,
+		mustHash(t, openB),
+		sessionOpenTestRunB,
+		"open-"+sessionOpenTestRunB,
+		base.Add(3*time.Second),
+	)
+
+	res := VerifyChain([]Receipt{openA, closeA, openB, closeB}, hex.EncodeToString(pub))
+	if !res.Valid {
+		t.Fatalf("same-key restart after session_close rejected: %s", res.Error)
 	}
 }
 

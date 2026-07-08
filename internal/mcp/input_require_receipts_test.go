@@ -5,6 +5,8 @@ package mcp
 
 import (
 	"bytes"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -132,6 +134,58 @@ func TestForwardScannedInput_RequireReceiptsBlocksEmissionFailure(t *testing.T) 
 	}
 	if !strings.Contains(string(blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
 		t.Fatalf("error data = %s, want %s", blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+}
+
+func TestForwardScannedInput_WarnRequireReceiptsDurabilityFailureDoesNotForward(t *testing.T) {
+	sc := testInputScanner(t)
+	msg := makeRequest(5, "tools/call", map[string]string{
+		"key": testSecretPrefix + strings.Repeat("e", 25),
+	}) + "\n"
+
+	emitter, rec, _, _ := newReceiptTestHarness(t)
+	rec.SetSyncForTest(func(*os.File) error {
+		return errors.New("injected durable sync failure")
+	})
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		MCPProxyOpts{
+			Scanner:         sc,
+			Transport:       transportMCPStdio,
+			ReceiptEmitter:  emitter,
+			RequireReceipts: true,
+		},
+	)
+
+	if strings.Contains(serverBuf.String(), "tools/call") {
+		t.Fatalf("warn-mode request forwarded despite required durable receipt failure: %s", serverBuf.String())
+	}
+	var blocked *BlockedRequest
+	for b := range blockedCh {
+		b := b
+		blocked = &b
+	}
+	if blocked == nil {
+		t.Fatal("expected warn-mode required receipt failure to block")
+	}
+	if blocked.ErrorCode != -32007 {
+		t.Fatalf("error code = %d, want -32007", blocked.ErrorCode)
+	}
+	if !strings.Contains(string(blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
+		t.Fatalf("error data = %s, want %s", blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+	if !strings.Contains(logBuf.String(), "receipt emission failed") {
+		t.Fatalf("expected receipt failure log, got: %s", logBuf.String())
 	}
 }
 

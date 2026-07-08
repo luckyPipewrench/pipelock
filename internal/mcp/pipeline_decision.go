@@ -97,14 +97,39 @@ func EmitMCPDecision(
 
 	v1Emitted := false
 	receiptRequired := d.RequireReceipt
-	durableIntent := receiptRequired && receipt.NormalizeVerdict(d.Receipt.Verdict) == config.ActionAllow
+	// A forwardable verdict is one whose request or response actually egresses to
+	// its peer: allow, warn, and forward carry a request upstream, and strip
+	// writes the redacted response back to the client. redirect goes to an
+	// audited handler and block/ask/defer do not egress. Every egressing required
+	// receipt is recorded DURABLY (fsync-confirmed) before those bytes leave, so a
+	// crash between the write and the next flush cannot lose the decision record
+	// for traffic that already went out. This closes the crash-durability window
+	// that previously applied to warn/forward/strip (only allow was durable
+	// before).
+	verdict := receipt.NormalizeVerdict(d.Receipt.Verdict)
+	durableReceipt := receiptRequired &&
+		(verdict == config.ActionAllow ||
+			verdict == config.ActionWarn ||
+			verdict == config.ActionForward ||
+			verdict == config.ActionStrip)
+	// Only allow carries the DecisionPhaseIntent label (it is paired with a
+	// downstream DecisionPhaseOutcome); warn/forward/strip stay single-phase
+	// durable decision receipts, which the completeness verifier counts as
+	// neither an intent nor an outcome, so broadening durability cannot create an
+	// unmatched-intent. The DecisionPhase=="" guard means a caller that already
+	// set a phase (e.g. a deferred-resolution receipt carrying
+	// DecisionPhaseResolution with a final allow verdict) keeps its phase instead
+	// of being overwritten to intent.
+	markIntent := receiptRequired && verdict == config.ActionAllow && d.Receipt.DecisionPhase == ""
 	if receiptRequired && d.Receipt.ActionID == "" {
 		err = fmt.Errorf("empty action id: %w", ErrReceiptRequired)
 	} else if receiptRequired && receiptEmitter == nil {
 		err = fmt.Errorf("%w: emitter unavailable", ErrReceiptRequired)
 	} else if receiptEmitter != nil && d.Receipt.ActionID != "" {
-		if durableIntent {
+		if markIntent {
 			d.Receipt.DecisionPhase = receipt.DecisionPhaseIntent
+		}
+		if durableReceipt {
 			err = receiptEmitter.EmitDurable(d.Receipt)
 		} else {
 			err = receiptEmitter.Emit(d.Receipt)

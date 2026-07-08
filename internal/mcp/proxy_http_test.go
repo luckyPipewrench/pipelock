@@ -5833,6 +5833,37 @@ func TestScanHTTPInputDecision_RequireReceiptsBlocksEmissionFailure(t *testing.T
 	}
 }
 
+func TestScanHTTPInputDecision_WarnRequireReceiptsDurabilityFailureBlocksForward(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	receiptEmitter, receiptRecorder, _ := newTestReceiptEmitter(t)
+	receiptRecorder.SetSyncForTest(func(*os.File) error {
+		return errors.New("injected durable sync failure")
+	})
+	policyCfg := &policy.Config{
+		Action: config.ActionWarn,
+		Rules: []*policy.CompiledRule{
+			{Name: "warn-dangerous", ToolPattern: regexp.MustCompile(`dangerous_tool`), Action: config.ActionWarn},
+		},
+	}
+
+	decision := scanHTTPInputDecision([]byte(jsonToolsCallDangerous), io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:         sc,
+		PolicyCfg:       policyCfg,
+		ReceiptEmitter:  receiptEmitter,
+		RequireReceipts: true,
+		Transport:       transportMCPHTTP,
+	})
+	if decision.Blocked == nil {
+		t.Fatal("expected warn-mode required durable receipt failure to block")
+	}
+	if decision.Blocked.ErrorCode != -32007 {
+		t.Fatalf("error code = %d, want -32007", decision.Blocked.ErrorCode)
+	}
+	if !strings.Contains(string(decision.Blocked.ErrorData), string(blockreason.ReceiptEmissionFailed)) {
+		t.Fatalf("error data = %s, want %s", decision.Blocked.ErrorData, blockreason.ReceiptEmissionFailed)
+	}
+}
+
 func TestScanHTTPInputDecision_BlockReceiptFailureLogsAuditGap(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	msg := []byte(jsonToolsCallDangerous)

@@ -317,6 +317,16 @@ def test_v1_g1_restart_chain_verifies_with_prior_tail_fields() -> None:
     assert restart_open["prior_chain_head"] != ""
 
 
+def test_v1_g1_restart_close_receipt_count_mismatch_rejects_valid_signature() -> None:
+    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-restart-chain.jsonl")))
+    receipts[4]["action_record"]["session_control"]["close"]["receipt_count"] = 3
+    _sign_v1_action_receipt(receipts[4])
+
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "session_close receipt_count mismatch" in report["error"]
+
+
 def test_v1_g1_genesis_vectors_match_go() -> None:
     vectors = json.loads((TESTDATA / "g1-genesis-vectors.json").read_text())
     assert len(vectors) >= 5
@@ -338,6 +348,22 @@ def test_v1_g1_legacy_session_open_on_genesis_is_rejected() -> None:
     assert report["valid"] is False
     assert report["broken_at_seq"] == 0
     assert "session_open on legacy genesis" in report["error"]
+
+
+def test_v1_g1_inconsistent_heartbeat_fixture_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-inconsistent-heartbeat.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert report["broken_at_seq"] == 3
+    assert "heartbeat chain_head mismatch" in report["error"]
+
+
+def test_v1_g1_inconsistent_close_fixture_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-inconsistent-close.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert report["broken_at_seq"] == 4
+    assert "session_close root_hash mismatch" in report["error"]
 
 
 def test_v1_g1_signed_field_tampering_is_rejected() -> None:
@@ -438,6 +464,17 @@ def test_v1_g1_close_root_hash_mismatch_rejects_valid_signature() -> None:
     assert "session_close root_hash mismatch" in report["error"]
 
 
+def test_v1_g1_session_control_missing_record_run_nonce_rejects_valid_signature() -> None:
+    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    del receipts[3]["action_record"]["run_nonce"]
+    _sign_v1_action_receipt(receipts[3])
+
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert report["broken_at_seq"] == 3
+    assert "session_control receipt missing run_nonce" in report["error"]
+
+
 def test_v1_g1_non_terminal_close_rejects_valid_signature() -> None:
     receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
 
@@ -445,7 +482,7 @@ def test_v1_g1_non_terminal_close_rejects_valid_signature() -> None:
     close = receipts[4]["action_record"]["session_control"]["close"]
     close["root_hash"] = receipts[3]["action_record"]["chain_prev_hash"]
     close["final_seq"] = 3
-    close["receipt_count"] = len(receipts)
+    close["receipt_count"] = 4
     receipts[3]["action_record"]["session_control"] = {
         "kind": "session_close",
         "close": close,
@@ -463,7 +500,7 @@ def test_v1_g1_non_terminal_close_rejects_valid_signature() -> None:
 
     report = verify_evidence_chain(receipts, TESTDATA_KEY)
     assert report["valid"] is False
-    assert "session_close must be final receipt" in report["error"]
+    assert "heartbeat has no active session_open" in report["error"]
 
 
 def test_mixed_action_and_evidence_chain_rejects_controlled(tmp_path: Path) -> None:

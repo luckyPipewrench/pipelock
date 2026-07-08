@@ -89,6 +89,23 @@ fn g1_restart_chain_verifies_with_prior_tail_fields() {
 }
 
 #[test]
+fn g1_restart_close_receipt_count_mismatch_is_rejected() {
+    let root = common::repo_root();
+    let mut receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-restart-chain.jsonl")).unwrap();
+    let key = conformance_key();
+    receipts[4]["action_record"]["session_control"]["close"]["receipt_count"] = json!(3);
+    sign_action_receipt_with_conformance_key(&mut receipts[4]);
+
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_close receipt_count mismatch"));
+}
+
+#[test]
 fn g1_genesis_vectors_match_go() {
     let root = common::repo_root();
     let vectors: Value = serde_json::from_str(
@@ -136,6 +153,38 @@ fn g1_legacy_session_open_on_genesis_is_rejected() {
 }
 
 #[test]
+fn g1_inconsistent_heartbeat_fixture_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-inconsistent-heartbeat.jsonl"))
+            .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(3));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("heartbeat chain_head mismatch"));
+}
+
+#[test]
+fn g1_inconsistent_close_fixture_is_rejected() {
+    let root = common::repo_root();
+    let receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-inconsistent-close.jsonl"))
+            .unwrap();
+    let key = conformance_key();
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(4));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_close root_hash mismatch"));
+}
+
+#[test]
 fn g1_genesis_chain_open_seq_mismatch_is_rejected_before_signature_check() {
     let root = common::repo_root();
     let key = conformance_key();
@@ -171,6 +220,26 @@ fn g1_genesis_prior_chain_tail_is_rejected_before_signature_check() {
         .error
         .unwrap_or_default()
         .contains("bound genesis session_open must not carry prior chain tail"));
+}
+
+#[test]
+fn g1_session_control_missing_record_run_nonce_is_rejected_with_valid_signature() {
+    let root = common::repo_root();
+    let key = conformance_key();
+    let mut receipts =
+        extract_receipts(&root.join("sdk/conformance/testdata/g1-valid-chain.jsonl")).unwrap();
+    if let Some(Value::Object(action_record)) = receipts[3].get_mut("action_record") {
+        action_record.remove("run_nonce");
+    }
+    sign_action_receipt_with_conformance_key(&mut receipts[3]);
+
+    let result = verify_chain(&receipts, &key);
+    assert!(!result.valid);
+    assert_eq!(result.broken_at_seq, Some(3));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("session_control receipt missing run_nonce"));
 }
 
 #[test]

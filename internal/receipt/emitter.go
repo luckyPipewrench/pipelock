@@ -354,7 +354,7 @@ func (e *Emitter) EmitHeartbeat() error {
 				OpenNonce:        e.openNonce,
 				Beat:             e.heartbeatBeat,
 				ChainHead:        e.chainPrevHash,
-				ChainSeqHead:     e.chainSeq,
+				ChainSeqHead:     PreviousChainSeq(e.chainSeq),
 				HeartbeatTime:    time.Now().UTC().Format(time.RFC3339Nano),
 				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
 				DurabilityBlocks: e.DurabilityBlocks(),
@@ -379,18 +379,14 @@ func (e *Emitter) EmitSessionClose(closeReason string) error {
 		if e.rootEmitted || e.closeEmitted || e.chainSeq == 0 {
 			return nil, nil
 		}
-		finalSeq := uint64(0)
-		if e.chainSeq > 0 {
-			finalSeq = e.chainSeq - 1
-		}
 		return &SessionControl{
 			Kind: SessionControlClose,
 			Close: &SessionClose{
 				RunNonce:         e.runNonce,
 				OpenNonce:        e.openNonce,
-				FinalSeq:         finalSeq,
+				FinalSeq:         e.chainSeq,
 				RootHash:         e.chainPrevHash,
-				ReceiptCount:     e.chainSeq,
+				ReceiptCount:     e.chainSeq + 1,
 				CloseReason:      closeReason,
 				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
 				DurabilityBlocks: e.DurabilityBlocks(),

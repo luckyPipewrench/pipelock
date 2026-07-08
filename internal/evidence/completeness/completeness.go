@@ -169,7 +169,8 @@ func Analyze(chain []receipt.Receipt, chainResult receipt.ChainResult) Report {
 	var segmentPrefixCount uint64
 	for i := range chain {
 		ar := chain[i].ActionRecord
-		// session_close carries the emitter's SEGMENT-LOCAL FinalSeq/ReceiptCount:
+		// session_close carries the emitter's SEGMENT-LOCAL FinalSeq/ReceiptCount,
+		// including the close receipt itself:
 		// a key rotation reopens a segment at chain_seq 0, so the observed prefix
 		// used to verify a close's claims must reset at each KeyTransition boundary.
 		// Counting from the whole file would falsely BROKEN a legitimate rotated
@@ -406,7 +407,7 @@ func applyHeartbeat(st *runState, ar receipt.ActionRecord, heartbeat *receipt.Se
 	if heartbeat.ChainHead != ar.ChainPrevHash {
 		return "heartbeat chain_head does not match observed pre-heartbeat chain hash"
 	}
-	if heartbeat.ChainSeqHead != ar.ChainSeq {
+	if heartbeat.ChainSeqHead != ar.ChainSeq-1 {
 		return "heartbeat chain_seq_head does not match observed pre-heartbeat chain seq"
 	}
 	st.report.Heartbeats++
@@ -449,11 +450,11 @@ func applyClose(st *runState, ar receipt.ActionRecord, closeRecord *receipt.Sess
 	if closeRecord.RootHash != ctx.preCloseRootHash {
 		return "session_close root_hash does not match sealed pre-close tail hash"
 	}
-	if closeRecord.ReceiptCount != ctx.prefixCount {
-		return "session_close receipt_count does not match observed pre-close receipt count"
+	if closeRecord.ReceiptCount != ctx.prefixCount+1 {
+		return "session_close receipt_count does not match observed receipt count"
 	}
-	if ctx.hasPreCloseTail && closeRecord.FinalSeq != ctx.preCloseFinalSeq {
-		return "session_close final_seq does not match observed pre-close tail seq"
+	if closeRecord.FinalSeq != ar.ChainSeq {
+		return "session_close final_seq mismatch"
 	}
 	snapshot := DurabilitySnapshot{
 		FsyncErrorsGated: closeRecord.FsyncErrorsGated,

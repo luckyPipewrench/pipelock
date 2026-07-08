@@ -750,6 +750,56 @@ func TestVerifyReceiptCmd_ReceiptWithMethodShowsFullRecord(t *testing.T) {
 	}
 }
 
+func TestVerifyReceiptCmd_FullRecordSanitizesAllStringFields(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	ar := receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        receipt.NewActionID(),
+		ActionType:      receipt.ActionRead,
+		Timestamp:       time.Now().UTC(),
+		Target:          "https://api.vendor.example/path",
+		Principal:       "operator\u202Etxt",
+		Verdict:         "block",
+		Transport:       "fetch",
+		Method:          "GET",
+		Layer:           "blocklist",
+		SideEffectClass: receipt.SideEffectExternalRead,
+		Reversibility:   receipt.ReversibilityFull,
+	}
+	r, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	data, err := receipt.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, buf.String())
+	}
+	output := buf.String()
+	if strings.Contains(output, "\u202E") {
+		t.Fatalf("output contains raw bidi control:\n%s", output)
+	}
+	if !strings.Contains(output, "operator‹U+202E RIGHT-TO-LEFT OVERRIDE›txt") {
+		t.Fatalf("output missing sanitized principal:\n%s", output)
+	}
+}
+
 // buildChainJSONL creates a JSONL file with a valid receipt chain using the
 // emitter, which handles chain state (prev_hash, seq) automatically.
 func buildChainJSONL(t *testing.T, count int) (string, ed25519.PublicKey) {

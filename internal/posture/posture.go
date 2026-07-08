@@ -220,6 +220,14 @@ func Emit(cfg *config.Config, opts Options) (*Capsule, error) {
 
 // Verify validates the capsule signature, expiration, and schema version.
 func Verify(capsule *Capsule, trustedKey ed25519.PublicKey) error {
+	return VerifyAt(capsule, trustedKey, time.Now().UTC())
+}
+
+// VerifyAt validates the capsule signature, expiration, and schema version at a
+// caller-supplied time. It is used by receipt verification so historical
+// receipts can be assessed against their signed time window instead of the
+// verifier's wall clock.
+func VerifyAt(capsule *Capsule, trustedKey ed25519.PublicKey, now time.Time) error {
 	if capsule == nil {
 		return fmt.Errorf("capsule is required")
 	}
@@ -232,7 +240,10 @@ func Verify(capsule *Capsule, trustedKey ed25519.PublicKey) error {
 	if capsule.GeneratedAt.IsZero() || capsule.ExpiresAt.IsZero() || !capsule.GeneratedAt.Before(capsule.ExpiresAt) {
 		return fmt.Errorf("invalid capsule window: generated_at=%s expires_at=%s", capsule.GeneratedAt.Format(time.RFC3339), capsule.ExpiresAt.Format(time.RFC3339))
 	}
-	if capsule.ExpiresAt.Before(time.Now().UTC()) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if capsule.ExpiresAt.Before(now.UTC()) {
 		return fmt.Errorf("capsule expired at %s", capsule.ExpiresAt.Format(time.RFC3339))
 	}
 	if capsule.Signature == "" {

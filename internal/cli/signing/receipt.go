@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -193,7 +194,9 @@ func verifySingleReceiptDetailed(out io.Writer, path, expectedKey string, opts v
 		if !opts.AllowUnpinned {
 			printReceiptDetails(out, r, opts.Print)
 			printReceiptLimits(out)
-			_ = printContainmentForReceipts(out, []receipt.Receipt{r}, opts.Posture)
+			if err := printContainmentForReceipts(out, []receipt.Receipt{r}, opts.Posture); err != nil {
+				return err
+			}
 			return fmt.Errorf("verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 		}
 		printReceiptDetails(out, r, opts.Print)
@@ -266,10 +269,7 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 }
 
 func resolvedLimitString(raw string) string {
-	if limit, ok := evidence.ByID(evidence.LimitID(raw)); ok {
-		return fmt.Sprintf("%s: %s", limit.ID, limit.Summary)
-	}
-	return raw
+	return evidence.MustSummary(evidence.LimitID(raw))
 }
 
 // fleetTrustedKeyMap builds the verifier's trusted-key map from the operator's
@@ -578,22 +578,63 @@ func printReceiptDetails(out io.Writer, r receipt.Receipt, opts receiptPrintOpti
 	printReceiptDisplayField(out, "  Chain prev:  ", r.ActionRecord.ChainPrevHash, opts)
 
 	if r.ActionRecord.Principal != "" {
-		_, _ = fmt.Fprintf(out, "  Principal:   %s\n", r.ActionRecord.Principal)
+		printReceiptDisplayField(out, "  Principal:   ", r.ActionRecord.Principal, opts)
 	}
 	if r.ActionRecord.Actor != "" {
-		_, _ = fmt.Fprintf(out, "  Actor:       %s\n", r.ActionRecord.Actor)
+		printReceiptDisplayField(out, "  Actor:       ", r.ActionRecord.Actor, opts)
 	}
 	if r.ActionRecord.PolicyHash != "" {
-		_, _ = fmt.Fprintf(out, "  Policy Hash: %s\n", r.ActionRecord.PolicyHash)
+		printReceiptDisplayField(out, "  Policy Hash: ", r.ActionRecord.PolicyHash, opts)
 	}
 
 	if r.ActionRecord.Method != "" || r.ActionRecord.Layer != "" {
-		record := r.ActionRecord
-		record.Target = display.Sanitize(record.Target).Safe
-		record.ChainPrevHash = display.Sanitize(record.ChainPrevHash).Safe
+		record, err := sanitizedActionRecordForDisplay(r.ActionRecord)
+		if err != nil {
+			return
+		}
 		pretty, err := json.MarshalIndent(record, "  ", "  ")
 		if err == nil {
 			_, _ = fmt.Fprintf(out, "\n  Full record:\n  %s\n", string(pretty))
+		}
+	}
+}
+
+func sanitizedActionRecordForDisplay(record receipt.ActionRecord) (receipt.ActionRecord, error) {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return receipt.ActionRecord{}, err
+	}
+	var out receipt.ActionRecord
+	if err := json.Unmarshal(data, &out); err != nil {
+		return receipt.ActionRecord{}, err
+	}
+	sanitizeDisplayStrings(reflect.ValueOf(&out).Elem())
+	return out, nil
+}
+
+func sanitizeDisplayStrings(v reflect.Value) {
+	if !v.IsValid() {
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			sanitizeDisplayStrings(v.Elem())
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if field.CanSet() || field.Kind() == reflect.Pointer || field.Kind() == reflect.Slice || field.Kind() == reflect.Struct {
+				sanitizeDisplayStrings(field)
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			sanitizeDisplayStrings(v.Index(i))
+		}
+	case reflect.String:
+		if v.CanSet() {
+			v.SetString(display.Sanitize(v.String()).Safe)
 		}
 	}
 }

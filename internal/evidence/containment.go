@@ -58,17 +58,17 @@ func AssessContainment(opts ContainmentAssessmentOptions) ContainmentAssessment 
 		out.Reasons = append(out.Reasons, "posture signer key is not trusted")
 		return out
 	}
-	if err := posture.Verify(opts.Capsule, opts.TrustedKey); err != nil {
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if err := posture.VerifyAt(opts.Capsule, opts.TrustedKey, now); err != nil {
 		out.Reasons = append(out.Reasons, "posture verification failed: "+err.Error())
 		return out
 	}
 	if opts.Capsule.GeneratedAt.IsZero() || opts.Capsule.ExpiresAt.IsZero() || !opts.Capsule.GeneratedAt.Before(opts.Capsule.ExpiresAt) {
 		out.Reasons = append(out.Reasons, "posture capsule window is invalid")
 		return out
-	}
-	now := opts.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
 	}
 	if now.After(opts.Capsule.ExpiresAt) {
 		out.Reasons = append(out.Reasons, "posture capsule expired")
@@ -116,6 +116,9 @@ func kernelContainmentBindingFailure(opts ContainmentAssessmentOptions, ev *post
 	if strings.TrimSpace(ev.KernelRuleHash) == "" {
 		return "containment kernel rule hash is missing"
 	}
+	if !isLowerSHA256Hex(ev.KernelRuleHash) {
+		return "containment kernel rule hash is not a lowercase SHA-256 hex digest"
+	}
 	if strings.TrimSpace(opts.CapsuleSHA256) == "" ||
 		strings.TrimSpace(opts.ReceiptCapsuleSHA256) == "" ||
 		opts.CapsuleSHA256 != opts.ReceiptCapsuleSHA256 {
@@ -126,6 +129,19 @@ func kernelContainmentBindingFailure(opts ContainmentAssessmentOptions, ev *post
 	}
 	return ""
 }
+
+func isLowerSHA256Hex(s string) bool {
+	if len(s) != sha256HexLen || strings.ToLower(s) != s {
+		return false
+	}
+	raw, err := hex.DecodeString(s)
+	return err == nil && len(raw) == sha256DigestLen
+}
+
+const (
+	sha256HexLen    = 64
+	sha256DigestLen = 32
+)
 
 func FormatContainmentAssessment(a ContainmentAssessment) string {
 	switch a.Grade {

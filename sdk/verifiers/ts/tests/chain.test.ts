@@ -19,6 +19,18 @@ const g1BrokenGenesis = "../../conformance/testdata/g1-broken-genesis.jsonl";
 const g1LegacyOpenGenesis = "../../conformance/testdata/g1-legacy-open-genesis.jsonl";
 const g1InconsistentHeartbeat = "../../conformance/testdata/g1-inconsistent-heartbeat.jsonl";
 const g1InconsistentClose = "../../conformance/testdata/g1-inconsistent-close.jsonl";
+const g1AmbiguousSessionControl = "../../conformance/testdata/g1-ambiguous-session-control.jsonl";
+const g1AmbiguousOpenClose = "../../conformance/testdata/g1-ambiguous-open-close.jsonl";
+const g1AmbiguousHeartbeatClose = "../../conformance/testdata/g1-ambiguous-heartbeat-close.jsonl";
+const g1RotatedCloseCountValid = "../../conformance/testdata/g1-rotated-close-count-valid.jsonl";
+const g1RotatedCloseCountInvalid =
+  "../../conformance/testdata/g1-rotated-close-count-invalid.jsonl";
+const g1PlainAfterClose = "../../conformance/testdata/g1-plain-after-close.jsonl";
+const g1EmptyRunNonceAfterClose = "../../conformance/testdata/g1-empty-run-nonce-after-close.jsonl";
+const g1HeartbeatAfterClose = "../../conformance/testdata/g1-heartbeat-after-close.jsonl";
+const g1CloseWithoutOpen = "../../conformance/testdata/g1-close-without-open.jsonl";
+const g1NewSessionAfterClose = "../../conformance/testdata/g1-new-session-after-close.jsonl";
+const g1ReopenClosedRun = "../../conformance/testdata/g1-reopen-closed-run.jsonl";
 const g1GenesisVectors = "../../conformance/testdata/g1-genesis-vectors.json";
 const testKey = "../../conformance/testdata/test-key.json";
 const validPlainV2 =
@@ -146,6 +158,75 @@ test("g1 inconsistent close fixture is rejected", async () => {
   assert.equal(result.valid, false);
   assert.equal(result.broken_at_seq, 4);
   assert.match(result.error ?? "", /session_close root_hash mismatch/u);
+});
+
+test("g1 ambiguous session_control fixture is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  for (const path of [g1AmbiguousSessionControl, g1AmbiguousOpenClose, g1AmbiguousHeartbeatClose]) {
+    const result = await verifyChain(extractReceipts(path), key);
+    assert.equal(result.valid, false, path);
+    assert.match(result.error ?? "", /session_control must carry exactly one payload/u);
+  }
+});
+
+test("g1 rotated close receipt_count valid fixture verifies", async () => {
+  const result = await verifyChain(extractReceipts(g1RotatedCloseCountValid), trustedKeys());
+  assert.equal(result.valid, true, result.error);
+  assert.equal(result.receipt_count, 6);
+  assert.equal(result.final_seq, 2);
+});
+
+test("g1 rotated close receipt_count invalid fixture is rejected", async () => {
+  const result = await verifyChain(extractReceipts(g1RotatedCloseCountInvalid), trustedKeys());
+  assert.equal(result.valid, false);
+  assert.match(result.error ?? "", /session_close receipt_count mismatch/u);
+});
+
+test("g1 plain action after close fixture is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1PlainAfterClose), key);
+  assert.equal(result.valid, false);
+  assert.match(result.error ?? "", /record observed after session_close/u);
+});
+
+test("g1 empty run_nonce action after close fixture verifies", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1EmptyRunNonceAfterClose), key);
+  assert.equal(result.valid, true, result.error);
+});
+
+test("g1 heartbeat after close fixture is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1HeartbeatAfterClose), key);
+  assert.equal(result.valid, false);
+  assert.match(result.error ?? "", /record observed after session_close/u);
+});
+
+test("g1 close without open fixture is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1CloseWithoutOpen), key);
+  assert.equal(result.valid, false);
+  assert.match(result.error ?? "", /first receipt is not a matching session_open/u);
+});
+
+test("g1 new session after close fixture verifies", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1NewSessionAfterClose), key);
+  assert.equal(result.valid, true, result.error);
+});
+
+test("g1 re-open closed run fixture is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1ReopenClosedRun), key);
+  assert.equal(result.valid, false);
+  assert.match(result.error ?? "", /duplicate session_open for run_nonce/u);
 });
 
 test("g1 session_control missing record run_nonce is rejected with valid signature", async () => {
@@ -364,4 +445,12 @@ async function signActionReceiptWithTestKey(receipt: Receipt): Promise<void> {
   const sig = await ed25519.signAsync(digest, Buffer.from(keyInfo.seed_hex, "hex"));
   receipt.signature = `ed25519:${Buffer.from(sig).toString("hex")}`;
   receipt.signer_key = keyInfo.public_key_hex;
+}
+
+function trustedKeys(): string {
+  const keyInfo = JSON.parse(readFileSync(testKey, "utf8")) as {
+    public_key_hex: string;
+    rotated_public_key_hex: string;
+  };
+  return `${keyInfo.public_key_hex},${keyInfo.rotated_public_key_hex}`;
 }

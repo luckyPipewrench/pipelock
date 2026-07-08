@@ -492,7 +492,7 @@ func TestVerifyChain_SessionControlClaimedValueRejections(t *testing.T) {
 				afterClose := signHeartbeatReceipt(t, priv, 3, mustHash(t, chain[2]), "open-a", base.Add(3*time.Second))
 				return append(chain, afterClose)
 			},
-			wantErr: "heartbeat has no active session_open",
+			wantErr: "record observed after session_close",
 		},
 		"session_close_final_seq_mismatch": {
 			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
@@ -601,6 +601,24 @@ func TestVerifyChain_AllowsSameKeyRestartAfterSessionClose(t *testing.T) {
 	res := VerifyChain([]Receipt{openA, closeA, openB, closeB}, hex.EncodeToString(pub))
 	if !res.Valid {
 		t.Fatalf("same-key restart after session_close rejected: %s", res.Error)
+	}
+}
+
+func TestVerifyChain_RejectsPlainActionAfterSessionClose(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := generateTestKey(t)
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	chain := buildValidSessionControlChain(t, priv)
+	afterClose := signRunReceipt(t, priv, 3, mustHash(t, chain[2]), sessionOpenTestRunA, base.Add(3*time.Second))
+	chain = append(chain, afterClose)
+
+	res := VerifyChain(chain, hex.EncodeToString(pub))
+	if res.Valid {
+		t.Fatal("plain action after session_close verified")
+	}
+	if !strings.Contains(res.Error, "record observed after session_close") {
+		t.Fatalf("error = %q, want record observed after session_close", res.Error)
 	}
 }
 

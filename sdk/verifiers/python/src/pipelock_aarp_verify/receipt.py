@@ -489,42 +489,84 @@ def _verify_v2_chain(
 def _verify_action_chain(
     receipts: list[dict[str, Any]], key_hex: str, allow_unpinned: bool
 ) -> dict[str, Any]:
-    signer_key = key_hex or _require_string(receipts[0].get("signer_key"), "signer_key")
-    prev_hash = ""
-    active_run_nonce: str | None = None
-    active_open_nonce: str | None = None
-    segment_receipt_count = 0
+    trusted_keys = _parse_trusted_keys(key_hex)
+    first_key = _require_string(receipts[0].get("signer_key"), "signer_key").lower()
+    if trusted_keys and first_key not in trusted_keys:
+        return _broken_chain(0, f"signer key {first_key} is not in the trusted set")
+    state: dict[str, Any] = {
+        "cur_key": first_key,
+        "segment_start_index": 0,
+        "segment_base_seq": 0,
+        "segment_receipt_count": 0,
+        "prev_hash": "",
+        "prior_segment_seq": None,
+        "active_run_nonce": None,
+        "active_open_nonce": None,
+        "opened_runs": set(),
+        "closed_runs": set(),
+    }
     for index, receipt in enumerate(receipts):
         action_record = _require_object(receipt.get("action_record"), "action_record")
         seq = action_record.get("chain_seq")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             raise ReceiptError(f"seq {index}: missing or invalid chain_seq")
-        try:
-            verify_action_receipt(receipt, signer_key)
-        except ReceiptError as exc:
-            return _broken_chain(seq, f"seq {seq}: signature: {exc}")
-        if seq != index:
-            return _broken_chain(seq, f"seq gap: expected {index}, got {seq}")
         chain_prev_hash = _require_string(
             action_record.get("chain_prev_hash"), "chain_prev_hash"
         )
         if index == 0:
+            if action_record.get("key_transition") is not None:
+                return _broken_chain(
+                    seq,
+                    f"seq {seq}: chain starts at a key_transition segment "
+                    "without the prior segment",
+                )
+            try:
+                verify_action_receipt(receipt, state["cur_key"])
+            except ReceiptError as exc:
+                return _broken_chain(seq, f"seq {seq}: signature: {exc}")
             result = _validate_action_genesis(action_record, chain_prev_hash, seq)
             if result is not None:
                 return result
-        elif chain_prev_hash != prev_hash:
-            return _broken_chain(seq, f"seq {seq}: chain_prev_hash mismatch")
-        segment_receipt_count += 1
-        result = _validate_session_control_state(
-            action_record,
-            chain_prev_hash,
-            seq,
-            index,
-            prev_hash,
-            active_run_nonce,
-            active_open_nonce,
-            segment_receipt_count,
+            state["segment_base_seq"] = seq
+        elif action_record.get("key_transition") is not None:
+            result = _start_rotated_segment(
+                receipt, action_record, seq, index, state, trusted_keys, allow_unpinned
+            )
+            if result is not None:
+                return result
+            try:
+                verify_action_receipt(receipt, state["cur_key"])
+            except ReceiptError as exc:
+                return _broken_chain(seq, f"seq {seq}: signature: {exc}")
+        else:
+            try:
+                verify_action_receipt(receipt, state["cur_key"])
+            except ReceiptError as exc:
+                return _broken_chain(seq, f"seq {seq}: signature: {exc}")
+            if seq == 0:
+                return _broken_chain(
+                    seq,
+                    f"seq {seq}: unexpected seq 0 without a key_transition boundary",
+                )
+            expected_seq = state["segment_base_seq"] + (
+                index - state["segment_start_index"]
+            )
+            if seq != expected_seq:
+                return _broken_chain(
+                    seq, f"seq gap: expected {expected_seq}, got {seq}"
+                )
+            if chain_prev_hash != state["prev_hash"]:
+                return _broken_chain(seq, f"seq {seq}: chain_prev_hash mismatch")
+        expected_seq = state["segment_base_seq"] + (
+            index - state["segment_start_index"]
         )
+        if seq != expected_seq:
+            return _broken_chain(seq, f"seq gap: expected {expected_seq}, got {seq}")
+        state["segment_receipt_count"] += 1
+        result = _validate_closed_run(action_record, seq, state)
+        if result is not None:
+            return result
+        result = _validate_session_control_state(action_record, seq, index, state)
         if result is not None:
             return result
         open_record = _session_open(action_record.get("session_control"))
@@ -535,16 +577,23 @@ def _verify_action_chain(
             active_open_nonce = _require_string(
                 open_record.get("open_nonce"), "session_control.open.open_nonce"
             )
+            state["active_run_nonce"] = active_run_nonce
+            state["active_open_nonce"] = active_open_nonce
+            state["opened_runs"].add(active_run_nonce)
+            state["closed_runs"].discard(active_run_nonce)
         elif _session_close(action_record.get("session_control")) is not None:
-            active_run_nonce = None
-            active_open_nonce = None
-        prev_hash = receipt_hash(receipt)
+            if state["active_run_nonce"] is not None:
+                state["closed_runs"].add(state["active_run_nonce"])
+            state["active_run_nonce"] = None
+            state["active_open_nonce"] = None
+        state["prev_hash"] = receipt_hash(receipt)
+        state["prior_segment_seq"] = seq
     return {
         "valid": True,
         "unpinned": (not key_hex and allow_unpinned) or None,
         "receipt_count": len(receipts),
         "final_seq": receipts[-1].get("action_record", {}).get("chain_seq", 0),
-        "root_hash": prev_hash,
+        "root_hash": state["prev_hash"],
     }
 
 
@@ -593,23 +642,106 @@ def _validate_action_genesis(
     return None
 
 
-def _validate_session_control_state(
+def _parse_trusted_keys(key_hex: str) -> set[str]:
+    return {key.strip().lower() for key in key_hex.split(",") if key.strip()}
+
+
+def _start_rotated_segment(
+    receipt: dict[str, Any],
     action_record: dict[str, Any],
-    chain_prev_hash: str,
     seq: int,
     index: int,
-    prev_hash: str,
-    active_run_nonce: str | None,
-    active_open_nonce: str | None,
-    segment_receipt_count: int,
+    state: dict[str, Any],
+    trusted_keys: set[str],
+    allow_unpinned: bool,
+) -> dict[str, Any] | None:
+    marker = _require_object(action_record.get("key_transition"), "key_transition")
+    if seq != 0:
+        return _broken_chain(
+            seq, f"seq {seq}: key_transition marker on a non-genesis receipt (seq != 0)"
+        )
+    if marker.get("prior_chain_hash") != state["prev_hash"]:
+        return _broken_chain(
+            seq,
+            f"seq {seq}: key_transition prior_chain_hash does not match actual "
+            "prior tail hash",
+        )
+    if action_record.get("chain_prev_hash") != state["prev_hash"]:
+        return _broken_chain(
+            seq,
+            f"seq {seq}: segment-genesis chain_prev_hash does not match prior "
+            "tail hash",
+        )
+    if marker.get("prior_signer_key") != state["cur_key"]:
+        return _broken_chain(
+            seq,
+            f"seq {seq}: key_transition prior_signer_key does not match prior "
+            "segment key",
+        )
+    if marker.get("prior_chain_seq") != state["prior_segment_seq"]:
+        return _broken_chain(
+            seq,
+            f"seq {seq}: key_transition prior_chain_seq does not match prior "
+            "segment final seq",
+        )
+    signer_key = _require_string(receipt.get("signer_key"), "signer_key").lower()
+    if trusted_keys:
+        if signer_key not in trusted_keys:
+            return _broken_chain(
+                seq, f"seq {seq}: signer key {signer_key} is not in the trusted set"
+            )
+    elif not allow_unpinned or signer_key != state["cur_key"]:
+        return _broken_chain(
+            seq, f"seq {seq}: signer key {signer_key} is not in the trusted set"
+        )
+    state["cur_key"] = signer_key
+    state["segment_start_index"] = index
+    state["segment_base_seq"] = 0
+    state["segment_receipt_count"] = 0
+    return None
+
+
+def _validate_closed_run(
+    action_record: dict[str, Any], seq: int, state: dict[str, Any]
+) -> dict[str, Any] | None:
+    if _session_open(action_record.get("session_control")) is not None:
+        return None
+    run_nonce = action_record.get("run_nonce")
+    if not isinstance(run_nonce, str) or run_nonce == "":
+        return None
+    if run_nonce not in state["opened_runs"]:
+        return _broken_chain(
+            seq, f"seq {seq}: run_nonce first receipt is not a matching session_open"
+        )
+    if run_nonce in state["closed_runs"]:
+        return _broken_chain(seq, f"seq {seq}: record observed after session_close")
+    return None
+
+
+def _validate_session_control_state(
+    action_record: dict[str, Any],
+    seq: int,
+    index: int,
+    state: dict[str, Any],
 ) -> dict[str, Any] | None:
     session_control = action_record.get("session_control")
     if not isinstance(session_control, dict):
         return None
     kind = session_control.get("kind")
+    payload_count = sum(
+        1
+        for name in ("open", "heartbeat", "close")
+        if session_control.get(name) is not None
+    )
+    if payload_count != 1:
+        return _broken_chain(
+            seq, f"seq {seq}: session_control must carry exactly one payload"
+        )
     action_run_nonce = action_record.get("run_nonce")
     if not isinstance(action_run_nonce, str) or action_run_nonce == "":
-        return _broken_chain(seq, f"seq {seq}: session_control receipt missing run_nonce")
+        return _broken_chain(
+            seq, f"seq {seq}: session_control receipt missing run_nonce"
+        )
     control_run_nonce = None
     if kind == "session_open" and isinstance(session_control.get("open"), dict):
         control_run_nonce = session_control["open"].get("run_nonce")
@@ -623,17 +755,23 @@ def _validate_session_control_state(
         open_record = _require_object(
             session_control.get("open"), "session_control.open"
         )
+        run_nonce = open_record.get("run_nonce")
+        if run_nonce in state["opened_runs"]:
+            return _broken_chain(
+                seq, f"seq {seq}: duplicate session_open for run_nonce"
+            )
         if open_record.get("chain_open_seq") != seq:
             return _broken_chain(
                 seq,
-                f"seq {seq}: session_open chain_open_seq does not match receipt chain_seq",
+                f"seq {seq}: session_open chain_open_seq does not match "
+                "receipt chain_seq",
             )
-        if open_record.get("prior_chain_head", "") != prev_hash:
+        if open_record.get("prior_chain_head", "") != state["prev_hash"]:
             return _broken_chain(
                 seq,
                 f"seq {seq}: session_open prior_chain_head does not match chain tail",
             )
-        if open_record.get("prior_chain_seq", 0) != seq - 1:
+        if open_record.get("prior_chain_seq", 0) != state["prior_segment_seq"]:
             return _broken_chain(
                 seq,
                 f"seq {seq}: session_open prior_chain_seq does not match previous seq",
@@ -643,30 +781,36 @@ def _validate_session_control_state(
         heartbeat = _require_object(
             session_control.get("heartbeat"), "session_control.heartbeat"
         )
-        if active_run_nonce is None or active_open_nonce is None:
-            return _broken_chain(seq, f"seq {seq}: heartbeat has no active session_open")
-        if heartbeat.get("run_nonce") != active_run_nonce:
+        if state["active_run_nonce"] is None or state["active_open_nonce"] is None:
+            return _broken_chain(
+                seq, f"seq {seq}: heartbeat has no active session_open"
+            )
+        if heartbeat.get("run_nonce") != state["active_run_nonce"]:
             return _broken_chain(seq, f"seq {seq}: heartbeat run_nonce mismatch")
-        if heartbeat.get("open_nonce") != active_open_nonce:
+        if heartbeat.get("open_nonce") != state["active_open_nonce"]:
             return _broken_chain(seq, f"seq {seq}: heartbeat open_nonce mismatch")
-        if heartbeat.get("chain_head") != chain_prev_hash:
+        if heartbeat.get("chain_head") != state["prev_hash"]:
             return _broken_chain(seq, f"seq {seq}: heartbeat chain_head mismatch")
         if heartbeat.get("chain_seq_head") != seq - 1:
             return _broken_chain(seq, f"seq {seq}: heartbeat chain_seq_head mismatch")
     elif kind == "session_close":
         close = _require_object(session_control.get("close"), "session_control.close")
-        if active_run_nonce is None or active_open_nonce is None:
-            return _broken_chain(seq, f"seq {seq}: session_close has no active session_open")
-        if close.get("run_nonce") != active_run_nonce:
+        if state["active_run_nonce"] is None or state["active_open_nonce"] is None:
+            return _broken_chain(
+                seq, f"seq {seq}: session_close has no active session_open"
+            )
+        if close.get("run_nonce") != state["active_run_nonce"]:
             return _broken_chain(seq, f"seq {seq}: session_close run_nonce mismatch")
-        if close.get("open_nonce") != active_open_nonce:
+        if close.get("open_nonce") != state["active_open_nonce"]:
             return _broken_chain(seq, f"seq {seq}: session_close open_nonce mismatch")
-        if close.get("root_hash") != chain_prev_hash:
+        if close.get("root_hash") != state["prev_hash"]:
             return _broken_chain(seq, f"seq {seq}: session_close root_hash mismatch")
         if close.get("final_seq") != seq:
             return _broken_chain(seq, f"seq {seq}: session_close final_seq mismatch")
-        if close.get("receipt_count") != segment_receipt_count:
-            return _broken_chain(seq, f"seq {seq}: session_close receipt_count mismatch")
+        if close.get("receipt_count") != state["segment_receipt_count"]:
+            return _broken_chain(
+                seq, f"seq {seq}: session_close receipt_count mismatch"
+            )
     return None
 
 
@@ -713,7 +857,11 @@ def compute_session_open_genesis(open_record: dict[str, Any]) -> str:
     frame(text_field("policy_hash"))
     frame(text_field("signer_key_epoch"))
     hb_secs_raw = open_record.get("heartbeat_seconds", 0)
-    if not isinstance(hb_secs_raw, int) or isinstance(hb_secs_raw, bool) or hb_secs_raw < 0:
+    if (
+        not isinstance(hb_secs_raw, int)
+        or isinstance(hb_secs_raw, bool)
+        or hb_secs_raw < 0
+    ):
         hb_secs = 0
     elif hb_secs_raw > MAX_UINT64:
         raise ReceiptError("session_control.open.heartbeat_seconds must be a uint64")
@@ -1063,7 +1211,9 @@ def _validate_session_heartbeat(value: Any) -> None:
     _reject_unknown(
         heartbeat, _field_names(_SESSION_HEARTBEAT_FIELDS), "session_control.heartbeat"
     )
-    _require_run_nonce(heartbeat.get("run_nonce"), "session_control.heartbeat.run_nonce")
+    _require_run_nonce(
+        heartbeat.get("run_nonce"), "session_control.heartbeat.run_nonce"
+    )
     _require_string(heartbeat.get("open_nonce"), "session_control.heartbeat.open_nonce")
     _require_uint64(heartbeat.get("beat"), "session_control.heartbeat.beat")
     _require_string(heartbeat.get("chain_head"), "session_control.heartbeat.chain_head")

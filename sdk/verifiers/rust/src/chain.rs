@@ -6,6 +6,7 @@ use crate::signing::{
 use crate::types::{ChainResult, Receipt, Totals};
 use crate::util::sha256_hex;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 
 pub const GENESIS_HASH: &str = "genesis";
 pub const GENESIS_SESSION_OPEN_PREFIX: &str = "g1:";
@@ -57,22 +58,43 @@ pub fn verify_chain_with_options(
         return verify_evidence_chain(receipts, expected_key_hex, allow_unpinned);
     }
 
-    let mut key_hex = expected_key_hex.to_string();
-    if key_hex.is_empty() && !allow_unpinned {
+    let trusted_keys = parse_trusted_keys(expected_key_hex);
+    if trusted_keys.is_empty() && !allow_unpinned {
         return broken(0, UNPINNED_RECEIPT_BANNER.to_string());
     }
-    if key_hex.is_empty() {
-        key_hex = receipts[0]
+
+    let first_key = receipts[0]
+        .get("signer_key")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !trusted_keys.is_empty() && !trusted_keys.contains(&first_key) {
+        return broken(
+            0,
+            format!("signer key {first_key} is not in the trusted set"),
+        );
+    }
+
+    let mut state = ChainWalkState {
+        cur_key: first_key,
+        segment_start_index: 0,
+        segment_base_seq: 0,
+        segment_receipt_count: 0,
+        prev_hash: String::new(),
+        prior_segment_seq: None,
+        active_run_nonce: None,
+        active_open_nonce: None,
+        opened_runs: HashSet::new(),
+        closed_runs: HashSet::new(),
+    };
+    if state.cur_key.is_empty() && allow_unpinned {
+        state.cur_key = receipts[0]
             .get("signer_key")
             .and_then(|value| value.as_str())
             .unwrap_or("")
-            .to_string();
+            .to_ascii_lowercase();
     }
 
-    let mut prev_hash = String::new();
-    let mut active_run_nonce: Option<String> = None;
-    let mut active_open_nonce: Option<String> = None;
-    let mut segment_receipt_count = 0_u64;
     for (index, receipt) in receipts.iter().enumerate() {
         let Some(seq) = receipt
             .get("action_record")
@@ -84,56 +106,104 @@ pub fn verify_chain_with_options(
                 format!("seq {index}: missing or invalid chain_seq"),
             );
         };
-        if let Err(err) = verify_receipt_with_options(receipt, &key_hex, allow_unpinned) {
-            return broken(seq, format!("seq {seq}: signature: {err}"));
-        }
-        if seq != index as u64 {
-            return broken(seq, format!("seq gap: expected {index}, got {seq}"));
-        }
         let chain_prev_hash = receipt
             .get("action_record")
             .and_then(|record| record.get("chain_prev_hash"))
             .and_then(|value| value.as_str());
         if index == 0 {
+            if receipt
+                .get("action_record")
+                .and_then(|record| record.get("key_transition"))
+                .is_some()
+            {
+                return broken(
+                    seq,
+                    format!("seq {seq}: chain starts at a key_transition segment without the prior segment"),
+                );
+            }
             if let Some(result) = validate_action_genesis(receipt, chain_prev_hash, seq) {
                 return result;
             }
-        } else if chain_prev_hash != Some(prev_hash.as_str()) {
-            return broken(seq, format!("seq {seq}: chain_prev_hash mismatch"));
+            state.segment_base_seq = seq;
+        } else if let Some(marker) = receipt
+            .get("action_record")
+            .and_then(|record| record.get("key_transition"))
+        {
+            if let Some(result) = state.start_rotated_segment(RotationContext {
+                receipt,
+                marker,
+                seq,
+                index,
+                chain_prev_hash,
+                trusted_keys: &trusted_keys,
+                allow_unpinned,
+            }) {
+                return result;
+            }
+        } else {
+            if seq == 0 {
+                return broken(
+                    seq,
+                    format!("seq {seq}: unexpected seq 0 without a key_transition boundary"),
+                );
+            }
+            let expected_seq = state.segment_base_seq + (index - state.segment_start_index) as u64;
+            if seq != expected_seq {
+                return broken(seq, format!("seq gap: expected {expected_seq}, got {seq}"));
+            }
+            if chain_prev_hash != Some(state.prev_hash.as_str()) {
+                return broken(seq, format!("seq {seq}: chain_prev_hash mismatch"));
+            }
         }
-        segment_receipt_count += 1;
-        if let Some(result) = validate_session_control_state(
-            receipt,
-            seq,
-            index as u64,
-            prev_hash.as_str(),
-            active_run_nonce.as_deref(),
-            active_open_nonce.as_deref(),
-            segment_receipt_count,
-        ) {
+        if let Err(err) = verify_receipt_with_options(receipt, &state.cur_key, allow_unpinned) {
+            return broken(seq, format!("seq {seq}: signature: {err}"));
+        }
+        let expected_seq = state.segment_base_seq + (index - state.segment_start_index) as u64;
+        if seq != expected_seq {
+            return broken(seq, format!("seq gap: expected {expected_seq}, got {seq}"));
+        }
+        state.segment_receipt_count += 1;
+        if let Some(result) = validate_closed_run(receipt, seq, &state) {
+            return result;
+        }
+        if let Some(result) = validate_session_control_state(receipt, seq, index as u64, &mut state)
+        {
             return result;
         }
         if let Some(open) = session_open(receipt) {
-            active_run_nonce = open
+            state.active_run_nonce = open
                 .get("run_nonce")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
-            active_open_nonce = open
+            state.active_open_nonce = open
                 .get("open_nonce")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
+            if let Some(run_nonce) = state.active_run_nonce.clone() {
+                state.opened_runs.insert(run_nonce.clone());
+                state.closed_runs.remove(&run_nonce);
+            }
         } else if session_close(receipt).is_some() {
-            active_run_nonce = None;
-            active_open_nonce = None;
+            if let Some(run_nonce) = state.active_run_nonce.clone() {
+                state.closed_runs.insert(run_nonce);
+            }
+            state.active_run_nonce = None;
+            state.active_open_nonce = None;
         }
-        prev_hash = receipt_hash(receipt);
+        state.prev_hash = receipt_hash(receipt);
+        state.prior_segment_seq = Some(seq);
     }
 
     ChainResult {
         valid: true,
         receipt_count: receipts.len(),
-        final_seq: (receipts.len() - 1) as u64,
-        root_hash: prev_hash,
+        final_seq: receipts
+            .last()
+            .and_then(|receipt| receipt.get("action_record"))
+            .and_then(|record| record.get("chain_seq"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        root_hash: state.prev_hash,
         error: None,
         broken_at_seq: None,
     }
@@ -275,17 +345,165 @@ fn session_close(receipt: &Receipt) -> Option<&serde_json::Value> {
     ctrl.get("close").filter(|close| close.is_object())
 }
 
+fn parse_trusted_keys(expected_key_hex: &str) -> HashSet<String> {
+    expected_key_hex
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn validate_closed_run(receipt: &Receipt, seq: u64, state: &ChainWalkState) -> Option<ChainResult> {
+    if session_open(receipt).is_some() {
+        return None;
+    }
+    let run_nonce = receipt
+        .get("action_record")
+        .and_then(|record| record.get("run_nonce"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if run_nonce.is_empty() {
+        return None;
+    }
+    if !state.opened_runs.contains(run_nonce) {
+        return Some(broken(
+            seq,
+            format!("seq {seq}: run_nonce first receipt is not a matching session_open"),
+        ));
+    }
+    if state.closed_runs.contains(run_nonce) {
+        return Some(broken(
+            seq,
+            format!("seq {seq}: record observed after session_close"),
+        ));
+    }
+    None
+}
+
+struct ChainWalkState {
+    cur_key: String,
+    segment_start_index: usize,
+    segment_base_seq: u64,
+    segment_receipt_count: u64,
+    prev_hash: String,
+    prior_segment_seq: Option<u64>,
+    active_run_nonce: Option<String>,
+    active_open_nonce: Option<String>,
+    opened_runs: HashSet<String>,
+    closed_runs: HashSet<String>,
+}
+
+struct RotationContext<'a> {
+    receipt: &'a Receipt,
+    marker: &'a serde_json::Value,
+    seq: u64,
+    index: usize,
+    chain_prev_hash: Option<&'a str>,
+    trusted_keys: &'a HashSet<String>,
+    allow_unpinned: bool,
+}
+
+impl ChainWalkState {
+    fn start_rotated_segment(&mut self, ctx: RotationContext<'_>) -> Option<ChainResult> {
+        let receipt = ctx.receipt;
+        let marker = ctx.marker;
+        let seq = ctx.seq;
+        if seq != 0 {
+            return Some(broken(
+                seq,
+                format!("seq {seq}: key_transition marker on a non-genesis receipt (seq != 0)"),
+            ));
+        }
+        if marker
+            .get("prior_chain_hash")
+            .and_then(serde_json::Value::as_str)
+            != Some(self.prev_hash.as_str())
+        {
+            return Some(broken(
+				seq,
+				format!("seq {seq}: key_transition prior_chain_hash does not match actual prior tail hash"),
+			));
+        }
+        if ctx.chain_prev_hash != Some(self.prev_hash.as_str()) {
+            return Some(broken(
+                seq,
+                format!(
+                    "seq {seq}: segment-genesis chain_prev_hash does not match prior tail hash"
+                ),
+            ));
+        }
+        if marker
+            .get("prior_signer_key")
+            .and_then(serde_json::Value::as_str)
+            != Some(self.cur_key.as_str())
+        {
+            return Some(broken(
+                seq,
+                format!(
+                    "seq {seq}: key_transition prior_signer_key does not match prior segment key"
+                ),
+            ));
+        }
+        if marker
+            .get("prior_chain_seq")
+            .and_then(serde_json::Value::as_u64)
+            != self.prior_segment_seq
+        {
+            return Some(broken(
+				seq,
+				format!("seq {seq}: key_transition prior_chain_seq does not match prior segment final seq"),
+			));
+        }
+        let signer_key = receipt
+            .get("signer_key")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ctx.trusted_keys.is_empty() {
+            if !ctx.allow_unpinned || signer_key != self.cur_key {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: signer key {signer_key} is not in the trusted set"),
+                ));
+            }
+        } else if !ctx.trusted_keys.contains(&signer_key) {
+            return Some(broken(
+                seq,
+                format!("seq {seq}: signer key {signer_key} is not in the trusted set"),
+            ));
+        }
+        self.cur_key = signer_key;
+        self.segment_start_index = ctx.index;
+        self.segment_base_seq = 0;
+        self.segment_receipt_count = 0;
+        None
+    }
+}
+
 fn validate_session_control_state(
     receipt: &Receipt,
     seq: u64,
     index: u64,
-    prev_hash: &str,
-    active_run_nonce: Option<&str>,
-    active_open_nonce: Option<&str>,
-    segment_receipt_count: u64,
+    state: &mut ChainWalkState,
 ) -> Option<ChainResult> {
     let ctrl = receipt.get("action_record")?.get("session_control")?;
     let kind = ctrl.get("kind").and_then(serde_json::Value::as_str);
+    // Count non-null payloads, matching the authoritative Go verifier (which
+    // counts non-nil pointer fields) and the TS/Python verifiers. An explicit
+    // JSON `null` payload is treated as absent, not present, so all four
+    // verifiers agree on `payloads != 1` for any input, not just Go-emitted
+    // receipts (Go's omitempty means it never serializes a null payload).
+    let payload_count = ["open", "heartbeat", "close"]
+        .iter()
+        .filter(|name| ctrl.get(*name).is_some_and(|value| !value.is_null()))
+        .count();
+    if payload_count != 1 {
+        return Some(broken(
+            seq,
+            format!("seq {seq}: session_control must carry exactly one payload"),
+        ));
+    }
     let action_run_nonce = receipt
         .get("action_record")
         .and_then(|record| record.get("run_nonce"))
@@ -321,6 +539,16 @@ fn validate_session_control_state(
     match kind {
         Some("session_open") if index > 0 => {
             let open = ctrl.get("open")?;
+            let run_nonce = open
+                .get("run_nonce")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if state.opened_runs.contains(run_nonce) {
+                return Some(broken(
+                    seq,
+                    format!("seq {seq}: duplicate session_open for run_nonce"),
+                ));
+            }
             if open
                 .get("chain_open_seq")
                 .and_then(serde_json::Value::as_u64)
@@ -337,7 +565,7 @@ fn validate_session_control_state(
                 .get("prior_chain_head")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("")
-                != prev_hash
+                != state.prev_hash
             {
                 return Some(broken(
                     seq,
@@ -348,7 +576,7 @@ fn validate_session_control_state(
                 .get("prior_chain_seq")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0)
-                != seq - 1
+                != state.prior_segment_seq.unwrap_or(0)
             {
                 return Some(broken(
                     seq,
@@ -358,13 +586,13 @@ fn validate_session_control_state(
         }
         Some("heartbeat") => {
             let heartbeat = ctrl.get("heartbeat")?;
-            let Some(active_run_nonce) = active_run_nonce else {
+            let Some(active_run_nonce) = state.active_run_nonce.as_deref() else {
                 return Some(broken(
                     seq,
                     format!("seq {seq}: heartbeat has no active session_open"),
                 ));
             };
-            let Some(active_open_nonce) = active_open_nonce else {
+            let Some(active_open_nonce) = state.active_open_nonce.as_deref() else {
                 return Some(broken(
                     seq,
                     format!("seq {seq}: heartbeat has no active session_open"),
@@ -393,7 +621,7 @@ fn validate_session_control_state(
             if heartbeat
                 .get("chain_head")
                 .and_then(serde_json::Value::as_str)
-                != Some(prev_hash)
+                != Some(state.prev_hash.as_str())
             {
                 return Some(broken(
                     seq,
@@ -413,13 +641,13 @@ fn validate_session_control_state(
         }
         Some("session_close") => {
             let close = ctrl.get("close")?;
-            let Some(active_run_nonce) = active_run_nonce else {
+            let Some(active_run_nonce) = state.active_run_nonce.as_deref() else {
                 return Some(broken(
                     seq,
                     format!("seq {seq}: session_close has no active session_open"),
                 ));
             };
-            let Some(active_open_nonce) = active_open_nonce else {
+            let Some(active_open_nonce) = state.active_open_nonce.as_deref() else {
                 return Some(broken(
                     seq,
                     format!("seq {seq}: session_close has no active session_open"),
@@ -440,7 +668,9 @@ fn validate_session_control_state(
                     format!("seq {seq}: session_close open_nonce mismatch"),
                 ));
             }
-            if close.get("root_hash").and_then(serde_json::Value::as_str) != Some(prev_hash) {
+            if close.get("root_hash").and_then(serde_json::Value::as_str)
+                != Some(state.prev_hash.as_str())
+            {
                 return Some(broken(
                     seq,
                     format!("seq {seq}: session_close root_hash mismatch"),
@@ -455,7 +685,7 @@ fn validate_session_control_state(
             if close
                 .get("receipt_count")
                 .and_then(serde_json::Value::as_u64)
-                != Some(segment_receipt_count)
+                != Some(state.segment_receipt_count)
             {
                 return Some(broken(
                     seq,

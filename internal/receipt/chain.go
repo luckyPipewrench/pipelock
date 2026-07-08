@@ -205,6 +205,7 @@ func verifyChainTrusted(receipts []Receipt, trustedKeys []string, integrityOnly 
 	v := &chainVerifier{
 		trusted:       trusted,
 		runNonces:     make(map[string]string),
+		closedRuns:    make(map[string]bool),
 		integrityOnly: integrityOnly,
 	}
 	return v.run(receipts)
@@ -240,6 +241,7 @@ type chainVerifier struct {
 	curSeg     *ChainSegment
 	index      int
 	runNonces  map[string]string
+	closedRuns map[string]bool
 	activeRun  string
 	activeOpen string
 
@@ -503,6 +505,9 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 		if !ok {
 			return v.brokenAtKind(r, "run_nonce first receipt is not a matching session_open", ChainFailureLifecycleOpen), false
 		}
+		if v.closedRuns[r.ActionRecord.RunNonce] {
+			return v.brokenAtKind(r, "record observed after session_close", ChainFailureLifecycle), false
+		}
 		if heartbeat != nil {
 			if heartbeat.RunNonce != r.ActionRecord.RunNonce {
 				return v.brokenAtKind(r, "heartbeat run_nonce does not match receipt run_nonce", ChainFailureLifecycle), false
@@ -557,6 +562,7 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 			}
 			v.activeRun = ""
 			v.activeOpen = ""
+			v.closedRuns[r.ActionRecord.RunNonce] = true
 		}
 		return ChainResult{}, true
 	}
@@ -570,6 +576,7 @@ func (v *chainVerifier) validateSessionControl(r Receipt) (ChainResult, bool) {
 		return v.brokenAtKind(r, "duplicate session_open for run_nonce", ChainFailureLifecycle), false
 	}
 	v.runNonces[r.ActionRecord.RunNonce] = open.OpenNonce
+	v.closedRuns[r.ActionRecord.RunNonce] = false
 	v.activeRun = open.RunNonce
 	v.activeOpen = open.OpenNonce
 	return ChainResult{}, true

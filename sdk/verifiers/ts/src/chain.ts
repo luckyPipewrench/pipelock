@@ -34,82 +34,100 @@ export async function verifyChain(
     return verifyEvidenceChain(receipts, expectedKeyHex, options);
   }
 
-  let keyHex = expectedKeyHex;
-  if (keyHex === "" && options.allowUnpinned !== true) {
+  const trustedKeys = parseTrustedKeys(expectedKeyHex);
+  if (trustedKeys.size === 0 && options.allowUnpinned !== true) {
     return unpinnedChainResult(0);
   }
-  if (keyHex === "") keyHex = receipts[0]?.signer_key ?? "";
+  const firstKey = (receipts[0]?.signer_key ?? "").toLowerCase();
+  if (trustedKeys.size > 0 && !trustedKeys.has(firstKey)) {
+    return broken(0, `signer key ${firstKey} is not in the trusted set`);
+  }
 
-  let prevHash = "";
-  let activeRunNonce: string | undefined;
-  let activeOpenNonce: string | undefined;
-  let segmentReceiptCount = 0;
+  const state: ChainWalkState = {
+    curKey: firstKey,
+    segmentStartIndex: 0,
+    segmentBaseSeq: 0,
+    segmentReceiptCount: 0,
+    prevHash: "",
+    priorSegmentSeq: undefined,
+    activeRunNonce: undefined,
+    activeOpenNonce: undefined,
+    openedRuns: new Set<string>(),
+    closedRuns: new Set<string>(),
+  };
   for (let i = 0; i < receipts.length; i++) {
     const receipt = receipts[i] as Receipt;
-    const seq = receipt.action_record?.chain_seq;
-    if (!Number.isInteger(seq) || (seq as number) < 0) {
+    const rawSeq = receipt.action_record?.chain_seq;
+    if (!Number.isInteger(rawSeq) || (rawSeq as number) < 0) {
       return broken(i, `seq ${i}: missing or invalid chain_seq`);
     }
-    try {
-      await verifyReceipt(receipt, keyHex, { allowUnpinned: options.allowUnpinned });
-    } catch (err) {
-      return {
-        valid: false,
-        receipt_count: 0,
-        final_seq: 0,
-        root_hash: "",
-        broken_at_seq: seq as number,
-        error: `seq ${seq as number}: signature: ${(err as Error).message}`,
-      };
-    }
-    if (seq !== i) {
-      return {
-        valid: false,
-        receipt_count: 0,
-        final_seq: 0,
-        root_hash: "",
-        broken_at_seq: seq as number,
-        error: `seq gap: expected ${i}, got ${seq}`,
-      };
-    }
+    const seq = rawSeq as number;
     if (i === 0) {
+      if (receipt.action_record?.key_transition !== undefined) {
+        return broken(
+          seq,
+          `seq ${seq}: chain starts at a key_transition segment without the prior segment`,
+        );
+      }
       const genesisResult = validateActionGenesis(
         receipt,
         receipt.action_record?.chain_prev_hash,
         seq,
       );
       if (genesisResult !== undefined) return genesisResult;
-    } else if (receipt.action_record?.chain_prev_hash !== prevHash) {
-      return {
-        valid: false,
-        receipt_count: 0,
-        final_seq: 0,
-        root_hash: "",
-        broken_at_seq: seq as number,
-        error: `seq ${seq}: chain_prev_hash mismatch`,
-      };
+      state.segmentBaseSeq = seq;
+    } else if (receipt.action_record?.key_transition !== undefined) {
+      const rotation = startRotatedSegment(
+        receipt,
+        seq,
+        i,
+        state,
+        trustedKeys,
+        options.allowUnpinned === true,
+      );
+      if (rotation !== undefined) return rotation;
+    } else {
+      if (seq === 0) {
+        return broken(seq, `seq ${seq}: unexpected seq 0 without a key_transition boundary`);
+      }
+      const expectedSeq = state.segmentBaseSeq + (i - state.segmentStartIndex);
+      if (seq !== expectedSeq) {
+        return broken(seq, `seq gap: expected ${expectedSeq}, got ${seq}`);
+      }
+      if (receipt.action_record?.chain_prev_hash !== state.prevHash) {
+        return broken(seq, `seq ${seq}: chain_prev_hash mismatch`);
+      }
     }
-    segmentReceiptCount++;
-    const sessionControlResult = validateSessionControlState(
-      receipt,
-      receipt.action_record?.chain_prev_hash ?? "",
-      seq,
-      i,
-      prevHash,
-      activeRunNonce,
-      activeOpenNonce,
-      segmentReceiptCount,
-    );
+    try {
+      await verifyReceipt(receipt, state.curKey, { allowUnpinned: options.allowUnpinned });
+    } catch (err) {
+      return broken(seq, `seq ${seq}: signature: ${(err as Error).message}`);
+    }
+    const expectedSeq = state.segmentBaseSeq + (i - state.segmentStartIndex);
+    if (seq !== expectedSeq) {
+      return broken(seq, `seq gap: expected ${expectedSeq}, got ${seq}`);
+    }
+    state.segmentReceiptCount++;
+    const closedRunResult = validateClosedRun(receipt, seq, state);
+    if (closedRunResult !== undefined) return closedRunResult;
+    const sessionControlResult = validateSessionControlState(receipt, seq, i, state);
     if (sessionControlResult !== undefined) return sessionControlResult;
     const open = sessionOpen(receipt);
     if (open !== undefined) {
-      activeRunNonce = typeof open["run_nonce"] === "string" ? open["run_nonce"] : undefined;
-      activeOpenNonce = typeof open["open_nonce"] === "string" ? open["open_nonce"] : undefined;
+      state.activeRunNonce = typeof open["run_nonce"] === "string" ? open["run_nonce"] : undefined;
+      state.activeOpenNonce =
+        typeof open["open_nonce"] === "string" ? open["open_nonce"] : undefined;
+      if (state.activeRunNonce !== undefined) {
+        state.openedRuns.add(state.activeRunNonce);
+        state.closedRuns.delete(state.activeRunNonce);
+      }
     } else if (sessionClose(receipt) !== undefined) {
-      activeRunNonce = undefined;
-      activeOpenNonce = undefined;
+      if (state.activeRunNonce !== undefined) state.closedRuns.add(state.activeRunNonce);
+      state.activeRunNonce = undefined;
+      state.activeOpenNonce = undefined;
     }
-    prevHash = receiptHash(receipt);
+    state.prevHash = receiptHash(receipt);
+    state.priorSegmentSeq = seq;
   }
 
   const last = receipts[receipts.length - 1] as Receipt;
@@ -117,7 +135,7 @@ export async function verifyChain(
     valid: true,
     receipt_count: receipts.length,
     final_seq: last.action_record?.chain_seq ?? 0,
-    root_hash: prevHash,
+    root_hash: state.prevHash,
   };
 }
 
@@ -221,20 +239,112 @@ function sessionClose(receipt: Receipt): Record<string, unknown> | undefined {
   return close as Record<string, unknown>;
 }
 
-function validateSessionControlState(
+function parseTrustedKeys(expectedKeyHex: string): Set<string> {
+  return new Set(
+    expectedKeyHex
+      .split(",")
+      .map((key) => key.trim().toLowerCase())
+      .filter((key) => key !== ""),
+  );
+}
+
+interface ChainWalkState {
+  curKey: string;
+  segmentStartIndex: number;
+  segmentBaseSeq: number;
+  segmentReceiptCount: number;
+  prevHash: string;
+  priorSegmentSeq: number | undefined;
+  activeRunNonce: string | undefined;
+  activeOpenNonce: string | undefined;
+  openedRuns: Set<string>;
+  closedRuns: Set<string>;
+}
+
+function startRotatedSegment(
   receipt: Receipt,
-  chainPrevHash: string,
   seq: number,
   index: number,
-  prevHash: string,
-  activeRunNonce: string | undefined,
-  activeOpenNonce: string | undefined,
-  segmentReceiptCount: number,
+  state: ChainWalkState,
+  trustedKeys: Set<string>,
+  allowUnpinned: boolean,
+): ChainResult | undefined {
+  const marker = receipt.action_record?.key_transition as Record<string, unknown> | undefined;
+  if (seq !== 0) {
+    return broken(seq, `seq ${seq}: key_transition marker on a non-genesis receipt (seq != 0)`);
+  }
+  if (marker?.["prior_chain_hash"] !== state.prevHash) {
+    return broken(
+      seq,
+      `seq ${seq}: key_transition prior_chain_hash does not match actual prior tail hash`,
+    );
+  }
+  if (receipt.action_record?.chain_prev_hash !== state.prevHash) {
+    return broken(
+      seq,
+      `seq ${seq}: segment-genesis chain_prev_hash does not match prior tail hash`,
+    );
+  }
+  if (marker?.["prior_signer_key"] !== state.curKey) {
+    return broken(
+      seq,
+      `seq ${seq}: key_transition prior_signer_key does not match prior segment key`,
+    );
+  }
+  if (marker?.["prior_chain_seq"] !== state.priorSegmentSeq) {
+    return broken(
+      seq,
+      `seq ${seq}: key_transition prior_chain_seq does not match prior segment final seq`,
+    );
+  }
+  const signerKey = (receipt.signer_key ?? "").toLowerCase();
+  if (trustedKeys.size === 0) {
+    if (!allowUnpinned || signerKey !== state.curKey) {
+      return broken(seq, `seq ${seq}: signer key ${signerKey} is not in the trusted set`);
+    }
+  } else if (!trustedKeys.has(signerKey)) {
+    return broken(seq, `seq ${seq}: signer key ${signerKey} is not in the trusted set`);
+  }
+  state.curKey = signerKey;
+  state.segmentStartIndex = index;
+  state.segmentBaseSeq = 0;
+  state.segmentReceiptCount = 0;
+  return undefined;
+}
+
+function validateClosedRun(
+  receipt: Receipt,
+  seq: number,
+  state: ChainWalkState,
+): ChainResult | undefined {
+  if (sessionOpen(receipt) !== undefined) return undefined;
+  const runNonce = receipt.action_record?.run_nonce;
+  if (typeof runNonce !== "string" || runNonce === "") return undefined;
+  if (!state.openedRuns.has(runNonce)) {
+    return broken(seq, `seq ${seq}: run_nonce first receipt is not a matching session_open`);
+  }
+  if (state.closedRuns.has(runNonce)) {
+    return broken(seq, `seq ${seq}: record observed after session_close`);
+  }
+  return undefined;
+}
+
+function validateSessionControlState(
+  receipt: Receipt,
+  seq: number,
+  index: number,
+  state: ChainWalkState,
 ): ChainResult | undefined {
   const ctrl = receipt.action_record?.session_control;
   if (typeof ctrl !== "object" || ctrl === null || Array.isArray(ctrl)) return undefined;
   const control = ctrl as Record<string, unknown>;
   const kind = control["kind"];
+  const payloadCount = ["open", "heartbeat", "close"].filter(
+    (name) => control[name] !== undefined && control[name] !== null,
+  ).length;
+  if (payloadCount !== 1) {
+    return broken(seq, `seq ${seq}: session_control must carry exactly one payload`);
+  }
   const actionRunNonce = receipt.action_record?.run_nonce;
   if (typeof actionRunNonce !== "string" || actionRunNonce === "") {
     return broken(seq, `seq ${seq}: session_control receipt missing run_nonce`);
@@ -263,16 +373,20 @@ function validateSessionControlState(
     const open = control["open"];
     if (typeof open !== "object" || open === null || Array.isArray(open)) return undefined;
     const openRecord = open as Record<string, unknown>;
+    const runNonce = typeof openRecord["run_nonce"] === "string" ? openRecord["run_nonce"] : "";
+    if (state.openedRuns.has(runNonce)) {
+      return broken(seq, `seq ${seq}: duplicate session_open for run_nonce`);
+    }
     if (openRecord["chain_open_seq"] !== seq) {
       return broken(
         seq,
         `seq ${seq}: session_open chain_open_seq does not match receipt chain_seq`,
       );
     }
-    if ((openRecord["prior_chain_head"] ?? "") !== prevHash) {
+    if ((openRecord["prior_chain_head"] ?? "") !== state.prevHash) {
       return broken(seq, `seq ${seq}: session_open prior_chain_head does not match chain tail`);
     }
-    if ((openRecord["prior_chain_seq"] ?? 0) !== seq - 1) {
+    if ((openRecord["prior_chain_seq"] ?? 0) !== (state.priorSegmentSeq ?? 0)) {
       return broken(seq, `seq ${seq}: session_open prior_chain_seq does not match previous seq`);
     }
     return undefined;
@@ -283,16 +397,16 @@ function validateSessionControlState(
       return undefined;
     }
     const heartbeatRecord = heartbeat as Record<string, unknown>;
-    if (activeRunNonce === undefined || activeOpenNonce === undefined) {
+    if (state.activeRunNonce === undefined || state.activeOpenNonce === undefined) {
       return broken(seq, `seq ${seq}: heartbeat has no active session_open`);
     }
-    if (heartbeatRecord["run_nonce"] !== activeRunNonce) {
+    if (heartbeatRecord["run_nonce"] !== state.activeRunNonce) {
       return broken(seq, `seq ${seq}: heartbeat run_nonce mismatch`);
     }
-    if (heartbeatRecord["open_nonce"] !== activeOpenNonce) {
+    if (heartbeatRecord["open_nonce"] !== state.activeOpenNonce) {
       return broken(seq, `seq ${seq}: heartbeat open_nonce mismatch`);
     }
-    if (heartbeatRecord["chain_head"] !== chainPrevHash) {
+    if (heartbeatRecord["chain_head"] !== state.prevHash) {
       return broken(seq, `seq ${seq}: heartbeat chain_head mismatch`);
     }
     if (heartbeatRecord["chain_seq_head"] !== seq - 1) {
@@ -302,22 +416,22 @@ function validateSessionControlState(
     const close = control["close"];
     if (typeof close !== "object" || close === null || Array.isArray(close)) return undefined;
     const closeRecord = close as Record<string, unknown>;
-    if (activeRunNonce === undefined || activeOpenNonce === undefined) {
+    if (state.activeRunNonce === undefined || state.activeOpenNonce === undefined) {
       return broken(seq, `seq ${seq}: session_close has no active session_open`);
     }
-    if (closeRecord["run_nonce"] !== activeRunNonce) {
+    if (closeRecord["run_nonce"] !== state.activeRunNonce) {
       return broken(seq, `seq ${seq}: session_close run_nonce mismatch`);
     }
-    if (closeRecord["open_nonce"] !== activeOpenNonce) {
+    if (closeRecord["open_nonce"] !== state.activeOpenNonce) {
       return broken(seq, `seq ${seq}: session_close open_nonce mismatch`);
     }
-    if (closeRecord["root_hash"] !== chainPrevHash) {
+    if (closeRecord["root_hash"] !== state.prevHash) {
       return broken(seq, `seq ${seq}: session_close root_hash mismatch`);
     }
     if (closeRecord["final_seq"] !== seq) {
       return broken(seq, `seq ${seq}: session_close final_seq mismatch`);
     }
-    if (closeRecord["receipt_count"] !== segmentReceiptCount) {
+    if (closeRecord["receipt_count"] !== state.segmentReceiptCount) {
       return broken(seq, `seq ${seq}: session_close receipt_count mismatch`);
     }
   }

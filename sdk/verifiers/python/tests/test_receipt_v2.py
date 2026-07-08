@@ -3,16 +3,16 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from pipelock_aarp_verify.cli import main
 from pipelock_aarp_verify.receipt import (
-    _canonicalize_action_record,
     ReceiptError,
+    _canonicalize_action_record,
     compute_session_open_genesis,
     load_evidence_chain,
     receipt_hash,
@@ -24,7 +24,9 @@ ROOT = Path(__file__).resolve().parents[4]
 CORPUS = ROOT / "sdk/conformance/testdata/corpus"
 CORPUS_KEY = json.loads((CORPUS / "test-key.json").read_text())["public_key_hex"]
 TESTDATA = ROOT / "sdk/conformance/testdata"
-TESTDATA_KEY = json.loads((TESTDATA / "test-key.json").read_text())["public_key_hex"]
+TESTDATA_KEY_INFO = json.loads((TESTDATA / "test-key.json").read_text())
+TESTDATA_KEY = TESTDATA_KEY_INFO["public_key_hex"]
+TESTDATA_TRUSTED_KEYS = f"{TESTDATA_KEY_INFO['public_key_hex']},{TESTDATA_KEY_INFO['rotated_public_key_hex']}"
 VALID_SPANNED_V2 = (
     ROOT
     / "internal/contract/testdata/golden/"
@@ -41,19 +43,8 @@ V2_GOLDEN_PUBLIC_KEY = (
 V2_GOLDEN_POLICY_HASH = (
     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
-V2_PRIVATE_SEED_HEX = (
-    "9d61b19d"
-    "effd5a60"
-    "ba844af4"
-    "92ec2cc4"
-    "4449c569"
-    "7b326919"
-    "703bac03"
-    "1cae7f60"
-)
-TESTDATA_PRIVATE_SEED_HEX = json.loads((TESTDATA / "test-key.json").read_text())[
-    "seed_hex"
-]
+V2_PRIVATE_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+TESTDATA_PRIVATE_SEED_HEX = TESTDATA_KEY_INFO["seed_hex"]
 
 
 def test_valid_spanned_v2_receipt_verifies() -> None:
@@ -318,7 +309,9 @@ def test_v1_g1_restart_chain_verifies_with_prior_tail_fields() -> None:
 
 
 def test_v1_g1_restart_close_receipt_count_mismatch_rejects_valid_signature() -> None:
-    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-restart-chain.jsonl")))
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-restart-chain.jsonl"))
+    )
     receipts[4]["action_record"]["session_control"]["close"]["receipt_count"] = 3
     _sign_v1_action_receipt(receipts[4])
 
@@ -366,6 +359,73 @@ def test_v1_g1_inconsistent_close_fixture_is_rejected() -> None:
     assert "session_close root_hash mismatch" in report["error"]
 
 
+def test_v1_g1_ambiguous_session_control_fixture_is_rejected() -> None:
+    for name in (
+        "g1-ambiguous-session-control.jsonl",
+        "g1-ambiguous-open-close.jsonl",
+        "g1-ambiguous-heartbeat-close.jsonl",
+    ):
+        receipts = load_evidence_chain(TESTDATA / name)
+        report = verify_evidence_chain(receipts, TESTDATA_KEY)
+        assert report["valid"] is False, name
+        assert "session_control must carry exactly one payload" in report["error"]
+
+
+def test_v1_g1_rotated_close_count_valid_fixture_verifies() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-rotated-close-count-valid.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_TRUSTED_KEYS)
+    assert report["valid"] is True, report.get("error")
+    assert report["receipt_count"] == 6
+    assert report["final_seq"] == 2
+
+
+def test_v1_g1_rotated_close_count_invalid_fixture_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-rotated-close-count-invalid.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_TRUSTED_KEYS)
+    assert report["valid"] is False
+    assert "session_close receipt_count mismatch" in report["error"]
+
+
+def test_v1_g1_plain_action_after_close_fixture_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-plain-after-close.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "record observed after session_close" in report["error"]
+
+
+def test_v1_g1_empty_run_nonce_after_close_fixture_verifies() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-empty-run-nonce-after-close.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is True, report.get("error")
+
+
+def test_v1_g1_heartbeat_after_close_fixture_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-heartbeat-after-close.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "record observed after session_close" in report["error"]
+
+
+def test_v1_g1_close_without_open_fixture_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-close-without-open.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "first receipt is not a matching session_open" in report["error"]
+
+
+def test_v1_g1_new_session_after_close_fixture_verifies() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-new-session-after-close.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is True, report.get("error")
+
+
+def test_v1_g1_reopen_closed_run_fixture_is_rejected() -> None:
+    receipts = load_evidence_chain(TESTDATA / "g1-reopen-closed-run.jsonl")
+    report = verify_evidence_chain(receipts, TESTDATA_KEY)
+    assert report["valid"] is False
+    assert "duplicate session_open for run_nonce" in report["error"]
+
+
 def test_v1_g1_signed_field_tampering_is_rejected() -> None:
     def tamper_open_posture_signer(receipts: list[dict[str, object]]) -> None:
         receipts[0]["action_record"]["session_control"]["open"][
@@ -384,9 +444,9 @@ def test_v1_g1_signed_field_tampering_is_rejected() -> None:
         ] = 99
 
     def tamper_close_root_hash(receipts: list[dict[str, object]]) -> None:
-        receipts[4]["action_record"]["session_control"]["close"][
-            "root_hash"
-        ] = "tampered-root"
+        receipts[4]["action_record"]["session_control"]["close"]["root_hash"] = (
+            "tampered-root"
+        )
 
     def tamper_close_durability(receipts: list[dict[str, object]]) -> None:
         receipts[4]["action_record"]["session_control"]["close"][
@@ -402,7 +462,9 @@ def test_v1_g1_signed_field_tampering_is_rejected() -> None:
         "close_durability_blocks": tamper_close_durability,
     }
     for name, mutate in cases.items():
-        receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+        receipts = json.loads(
+            json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl"))
+        )
         mutate(receipts)
         report = verify_evidence_chain(receipts, TESTDATA_KEY)
         assert report["valid"] is False, name
@@ -410,7 +472,9 @@ def test_v1_g1_signed_field_tampering_is_rejected() -> None:
 
 
 def test_v1_g1_missing_session_open_required_field_rejects() -> None:
-    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl"))
+    )
     del receipts[0]["action_record"]["session_control"]["open"]["open_nonce"]
 
     report = verify_evidence_chain(receipts, TESTDATA_KEY)
@@ -419,7 +483,9 @@ def test_v1_g1_missing_session_open_required_field_rejects() -> None:
 
 
 def test_v1_g1_oversized_heartbeat_seconds_rejects_controlled() -> None:
-    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl"))
+    )
     receipts[0]["action_record"]["session_control"]["open"]["heartbeat_seconds"] = 2**64
     _sign_v1_action_receipt(receipts[0])
 
@@ -429,7 +495,9 @@ def test_v1_g1_oversized_heartbeat_seconds_rejects_controlled() -> None:
 
 
 def test_v1_g1_restart_prior_tail_mismatch_rejects_valid_signature() -> None:
-    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-restart-chain.jsonl")))
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-restart-chain.jsonl"))
+    )
     receipts[2]["action_record"]["session_control"]["open"]["prior_chain_head"] = (
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
@@ -441,7 +509,9 @@ def test_v1_g1_restart_prior_tail_mismatch_rejects_valid_signature() -> None:
 
 
 def test_v1_g1_heartbeat_chain_head_mismatch_rejects_valid_signature() -> None:
-    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl"))
+    )
     receipts[3]["action_record"]["session_control"]["heartbeat"]["chain_head"] = (
         "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     )
@@ -453,7 +523,9 @@ def test_v1_g1_heartbeat_chain_head_mismatch_rejects_valid_signature() -> None:
 
 
 def test_v1_g1_close_root_hash_mismatch_rejects_valid_signature() -> None:
-    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl"))
+    )
     receipts[4]["action_record"]["session_control"]["close"]["root_hash"] = (
         "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     )
@@ -464,8 +536,12 @@ def test_v1_g1_close_root_hash_mismatch_rejects_valid_signature() -> None:
     assert "session_close root_hash mismatch" in report["error"]
 
 
-def test_v1_g1_session_control_missing_record_run_nonce_rejects_valid_signature() -> None:
-    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+def test_v1_g1_session_control_missing_record_run_nonce_rejects_valid_signature() -> (
+    None
+):
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl"))
+    )
     del receipts[3]["action_record"]["run_nonce"]
     _sign_v1_action_receipt(receipts[3])
 
@@ -476,7 +552,9 @@ def test_v1_g1_session_control_missing_record_run_nonce_rejects_valid_signature(
 
 
 def test_v1_g1_non_terminal_close_rejects_valid_signature() -> None:
-    receipts = json.loads(json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl")))
+    receipts = json.loads(
+        json.dumps(load_evidence_chain(TESTDATA / "g1-valid-chain.jsonl"))
+    )
 
     heartbeat = receipts[3]["action_record"]["session_control"]["heartbeat"]
     close = receipts[4]["action_record"]["session_control"]["close"]
@@ -500,7 +578,7 @@ def test_v1_g1_non_terminal_close_rejects_valid_signature() -> None:
 
     report = verify_evidence_chain(receipts, TESTDATA_KEY)
     assert report["valid"] is False
-    assert "heartbeat has no active session_open" in report["error"]
+    assert "record observed after session_close" in report["error"]
 
 
 def test_mixed_action_and_evidence_chain_rejects_controlled(tmp_path: Path) -> None:

@@ -216,11 +216,15 @@ func TestRecordResponseScanExemptOverCapUnscanned_HelperBranches(t *testing.T) {
 	recordResponseScanExemptOverCapUnscanned(m, logger, audit.LogContext{}, "", TransportForward, 2048, 1024)
 	// Nil logger, over cap: metric still records, the logger block is skipped.
 	recordResponseScanExemptOverCapUnscanned(m, nil, audit.LogContext{}, "host", TransportConnect, 2048, 1024)
-	// Under cap: short-circuits before recording anything.
-	recordResponseScanExemptOverCapUnscanned(m, logger, audit.LogContext{}, "host", TransportForward, 512, 1024)
+	// Under cap: short-circuits before recording anything. Use a fresh metrics
+	// instance so the short-circuit is actually verified (absence), rather than
+	// aliasing the over-cap TransportForward record above.
+	mUnder := metrics.New()
+	recordResponseScanExemptOverCapUnscanned(mUnder, logger, audit.LogContext{}, "host", TransportForward, 512, 1024)
 
 	assertResponseScanExemptOverCapMetric(t, m, TransportForward, true)
 	assertResponseScanExemptOverCapMetric(t, m, TransportConnect, true)
+	assertResponseScanExemptOverCapMetric(t, mUnder, TransportForward, false)
 }
 
 func mustURLHostname(t *testing.T, rawURL string) string {

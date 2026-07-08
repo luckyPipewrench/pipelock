@@ -965,9 +965,18 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1AmbiguousHC), wrapInFlightRecorderEntries(t, g1AmbiguousHeartbeatClose))
 	g1Rotated := buildG1RotatedChain(t, pub, priv, rotatedPub, rotatedPriv)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RotatedValid), wrapInFlightRecorderEntries(t, g1Rotated))
+	// Deep-copy the mutated session_control payload so the "bad" fixture is
+	// fully independent of g1Rotated: cloneReceipts copies each Receipt by
+	// value, but ActionRecord.SessionControl (and its Close) are pointers, so a
+	// bare ReceiptCount++ would also mutate the valid fixture's close record.
 	g1RotatedBad := cloneReceipts(g1Rotated)
-	g1RotatedBad[len(g1RotatedBad)-1].ActionRecord.SessionControl.Close.ReceiptCount++
-	g1RotatedBad[len(g1RotatedBad)-1] = signReceipt(t, g1RotatedBad[len(g1RotatedBad)-1].ActionRecord, rotatedPriv)
+	last := len(g1RotatedBad) - 1
+	ctrl := *g1RotatedBad[last].ActionRecord.SessionControl
+	closeCopy := *ctrl.Close
+	closeCopy.ReceiptCount++
+	ctrl.Close = &closeCopy
+	g1RotatedBad[last].ActionRecord.SessionControl = &ctrl
+	g1RotatedBad[last] = signReceipt(t, g1RotatedBad[last].ActionRecord, rotatedPriv)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1RotatedBad), wrapInFlightRecorderEntries(t, g1RotatedBad))
 	g1PlainAfterClose := buildG1PlainAfterCloseChain(t, priv)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1PlainAfterClose), wrapInFlightRecorderEntries(t, g1PlainAfterClose))

@@ -66,6 +66,35 @@ func TestLoadFileDerivesContainmentBinding(t *testing.T) {
 	}
 }
 
+func TestLoadFileNoContainmentReturnsZeroBinding(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	capsule, err := posture.Emit(config.Defaults(), posture.Options{
+		SigningKey: priv,
+	})
+	if err != nil {
+		t.Fatalf("posture.Emit: %v", err)
+	}
+	data, err := json.Marshal(capsule)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "proof.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if got.CapsuleSHA256 != "" || got.SignerKeyID != "" || got.ContainmentNonce != "" || got.ContainedUID != "" {
+		t.Fatalf("binding = %+v, want zero (no containment evidence)", got)
+	}
+}
+
 func TestLoadFileMalformedReturnsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proof.json")
 	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {

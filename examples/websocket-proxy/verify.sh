@@ -84,7 +84,13 @@ wait_for_health() {
 health_field() {
   local port="$1"
   local field="$2"
-  curl -sf "http://127.0.0.1:${port}/health" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1],""))' "$field"
+  # Stage the local health response in a variable rather than piping curl
+  # directly into python3: the response is JSON data from a localhost endpoint,
+  # not remote code, and keeping the download separate from the interpreter
+  # avoids a download-then-run supply-chain pattern.
+  local body
+  body=$(curl -sf "http://127.0.0.1:${port}/health") || return 1
+  printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1],""))' "$field"
 }
 
 # -- Test 0: Binary available -------------------------------------------------

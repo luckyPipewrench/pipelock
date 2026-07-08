@@ -680,12 +680,26 @@
             <details class="evidence-group">
                 <summary>
                     <span>
-                        <span style="color: {{severityColor (eventSeverity .)}};">{{.Event}}</span>
-                        {{if .Scanner}} <span style="color: var(--text-dim);">({{.Scanner}})</span>{{end}}
-                        {{if .Reason}}: {{.Reason}}{{end}}
+                        <span style="color: {{severityColor (eventSeverity .)}};">{{eventField . "Event"}}</span>
+                        {{if .Scanner}} <span style="color: var(--text-dim);">({{eventField . "Scanner"}})</span>{{end}}
+                        {{if .Reason}}: {{eventField . "Reason"}}{{end}}
                     </span>
                     <span class="event-time">{{formatTime .Time}}</span>
                 </summary>
+                {{$anomalies := eventAnomalies .}}
+                {{if $anomalies}}
+                <div class="event-detail">
+Display anomalies:
+{{range $anomalies}}- {{.Field}}: {{.Safe}}
+  {{.Detail}}{{if .Punycode}}
+  {{.Punycode}}{{end}}
+  <details>
+    <summary>hexdump</summary>
+{{.Hexdump}}
+  </details>
+{{end}}
+                </div>
+                {{end}}
                 <div class="event-detail">{{eventJSON .}}</div>
             </details>
             {{end}}

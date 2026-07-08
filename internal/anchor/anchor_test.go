@@ -132,6 +132,123 @@ func TestBundleFileRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteBundleRejectsBadFilesystemTargets(t *testing.T) {
+	bundle := NewBundle(Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64)}, Proof{Backend: LocalBackend})
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+	if err := WriteBundle(filepath.Join(blocker, "bundle.json"), bundle); err == nil || !strings.Contains(err.Error(), "create anchor bundle directory") {
+		t.Fatalf("WriteBundle through file parent err = %v, want create directory failure", err)
+	}
+	if err := WriteBundle(dir, bundle); err == nil || !strings.Contains(err.Error(), "write anchor bundle") {
+		t.Fatalf("WriteBundle to directory err = %v, want write failure", err)
+	}
+}
+
+func TestWriteStateMarkerWritesCanonicalPrivateJSON(t *testing.T) {
+	dir := t.TempDir()
+	anchoredAt := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	marker := StateMarker{
+		SessionID:    "proxy",
+		FinalSeq:     17,
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		LogIndex:     99,
+		AnchoredAt:   anchoredAt,
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   filepath.Join(dir, "bundle.json"),
+	}
+
+	if err := WriteStateMarker(dir, marker); err != nil {
+		t.Fatalf("WriteStateMarker: %v", err)
+	}
+
+	path := filepath.Join(dir, "anchor-state.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat anchor-state: %v", err)
+	}
+	if got := info.Mode().Perm(); got != filePermissions {
+		t.Fatalf("anchor-state permissions = %#o, want %#o", got, filePermissions)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".anchor-state-*.tmp"))
+	if err != nil {
+		t.Fatalf("Glob temp markers: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary marker files remained: %v", matches)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("ReadFile anchor-state: %v", err)
+	}
+	if !strings.HasSuffix(string(data), "\n") {
+		t.Fatalf("anchor-state did not end with newline: %q", data)
+	}
+	var got StateMarker
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal anchor-state: %v", err)
+	}
+	if got.Schema != "pipelock.anchorstate.v1" ||
+		got.SessionID != marker.SessionID ||
+		got.FinalSeq != marker.FinalSeq ||
+		got.RootHash != marker.RootHash ||
+		got.Backend != marker.Backend ||
+		got.LogIndex != marker.LogIndex ||
+		!got.AnchoredAt.Equal(marker.AnchoredAt) ||
+		got.BundleSHA256 != marker.BundleSHA256 ||
+		got.BundlePath != marker.BundlePath {
+		t.Fatalf("anchor-state marker = %+v, want fields from %+v with canonical schema", got, marker)
+	}
+}
+
+func TestWriteStateMarkerRejectsBadFilesystemTarget(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+	err := WriteStateMarker(filepath.Join(blocker, "child"), StateMarker{
+		SessionID:    "proxy",
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   filepath.Join(dir, "bundle.json"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "create anchor-state directory") {
+		t.Fatalf("WriteStateMarker err = %v, want create directory failure", err)
+	}
+}
+
+func TestWriteStateMarkerRejectsDirectoryAtFinalPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "anchor-state.json"), 0o750); err != nil {
+		t.Fatalf("Mkdir final path: %v", err)
+	}
+	err := WriteStateMarker(dir, StateMarker{
+		SessionID:    "proxy",
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   filepath.Join(dir, "bundle.json"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "rename anchor-state marker") {
+		t.Fatalf("WriteStateMarker err = %v, want rename failure", err)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".anchor-state-*.tmp"))
+	if globErr != nil {
+		t.Fatalf("Glob temp markers: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary marker files remained after rename failure: %v", matches)
+	}
+}
+
 func TestLoadBundleRejectsStrictJSONViolations(t *testing.T) {
 	for name, data := range map[string]string{
 		"duplicate": `{"version":1,"version":1}`,

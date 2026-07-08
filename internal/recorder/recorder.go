@@ -70,6 +70,7 @@ type Config struct {
 	FileMode           os.FileMode `yaml:"file_mode"`
 	RawEscrow          bool        `yaml:"raw_escrow"`
 	EscrowPublicKey    string      `yaml:"escrow_public_key"`
+	Metrics            MetricsSink `yaml:"-"`
 }
 
 func safeEvidenceFileMode(mode os.FileMode) bool {
@@ -105,6 +106,10 @@ type EntryObserver interface {
 	ObserveRecorderEntry(Entry)
 }
 
+type MetricsSink interface {
+	RecordFsyncError(gated bool, n int)
+}
+
 // ErrDurability means a durable recorder write reached the userspace flush
 // stage but could not be confirmed with File.Sync.
 var ErrDurability = errors.New("recorder durability confirmation failed")
@@ -136,6 +141,7 @@ type Recorder struct {
 	privKey   ed25519.PrivateKey
 	escrowPub *[x25519KeySize]byte
 	observer  EntryObserver
+	metrics   MetricsSink
 
 	mu             sync.Mutex
 	seq            uint64
@@ -206,6 +212,7 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 		cfg:                 cfg,
 		redactFn:            redactFn,
 		privKey:             privKey,
+		metrics:             cfg.Metrics,
 		prevHash:            GenesisHash,
 		checkpointThreshold: safeUint64(cfg.CheckpointInterval, 1),
 		fileSync:            func(f *os.File) error { return f.Sync() },
@@ -542,6 +549,9 @@ func (r *Recorder) runDurabilitySync(batch *durableBatch) {
 		batch.err = err
 		if err != nil {
 			r.fsyncErrorsGated.Add(1)
+			if r.metrics != nil {
+				r.metrics.RecordFsyncError(true, len(batch.entries))
+			}
 		}
 		if syncStarted {
 			r.durableSyncing = false

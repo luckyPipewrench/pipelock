@@ -106,6 +106,34 @@ func TestEmitAndVerifyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestContainmentEvidenceOmitEmptyOldCapsuleVerifies(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	capsule, err := Emit(config.Defaults(), Options{
+		SigningKey:     priv,
+		EvidenceBundle: &EvidenceBundle{},
+	})
+	if err != nil {
+		t.Fatalf("Emit(): %v", err)
+	}
+	data, err := json.Marshal(capsule)
+	if err != nil {
+		t.Fatalf("json.Marshal(): %v", err)
+	}
+	if bytes.Contains(data, []byte(`"containment"`)) {
+		t.Fatalf("empty containment evidence should be omitted: %s", data)
+	}
+	var decoded Capsule
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(): %v", err)
+	}
+	if err := Verify(&decoded, pub); err != nil {
+		t.Fatalf("Verify(decoded): %v", err)
+	}
+}
+
 func TestVerifyExpiration(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -141,8 +169,41 @@ func TestVerifyExpiration(t *testing.T) {
 			name: "expired",
 			mutate: func(c *Capsule) {
 				c.ExpiresAt = time.Now().UTC().Add(-1 * time.Second)
+				c.GeneratedAt = c.ExpiresAt.Add(-time.Hour)
 			},
 			wantErr: "expired",
+		},
+		{
+			name: "zero generated_at",
+			mutate: func(c *Capsule) {
+				c.GeneratedAt = time.Time{}
+				c.ExpiresAt = time.Now().UTC().Add(time.Hour)
+			},
+			wantErr: "invalid capsule window",
+		},
+		{
+			name: "zero expires_at",
+			mutate: func(c *Capsule) {
+				c.GeneratedAt = time.Now().UTC()
+				c.ExpiresAt = time.Time{}
+			},
+			wantErr: "invalid capsule window",
+		},
+		{
+			name: "equal window",
+			mutate: func(c *Capsule) {
+				c.GeneratedAt = time.Now().UTC()
+				c.ExpiresAt = c.GeneratedAt
+			},
+			wantErr: "invalid capsule window",
+		},
+		{
+			name: "reversed window",
+			mutate: func(c *Capsule) {
+				c.GeneratedAt = time.Now().UTC().Add(time.Hour)
+				c.ExpiresAt = time.Now().UTC()
+			},
+			wantErr: "invalid capsule window",
 		},
 	}
 

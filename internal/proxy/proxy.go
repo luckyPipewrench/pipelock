@@ -45,6 +45,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -1206,13 +1207,18 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 		}, nil
 	}
 
+	postureBinding, bindErr := posturebinding.LoadRuntime()
+	if bindErr != nil {
+		return receiptEmitterStage{}, fmt.Errorf("loading posture binding: %w", bindErr)
+	}
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder:   p.recorder,
-		PrivKey:    privKey,
-		ConfigHash: cfg.Hash(),
-		Principal:  "local",
-		Actor:      "pipelock",
-		Metrics:    p.metrics,
+		Recorder:       p.recorder,
+		PrivKey:        privKey,
+		ConfigHash:     cfg.Hash(),
+		Principal:      "local",
+		Actor:          "pipelock",
+		Metrics:        p.metrics,
+		PostureBinding: postureBinding,
 	})
 	if emitter != nil {
 		if initErr := emitter.InitError(); initErr != nil {

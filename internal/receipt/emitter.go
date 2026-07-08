@@ -43,6 +43,17 @@ type MetricsSink interface {
 	RecordEmitFailure(reason string)
 }
 
+// HealthSnapshot is a nil-safe, mutex-consistent read of the live receipt
+// emitter chain state for observability and self-audit consumers.
+type HealthSnapshot struct {
+	InitErr     bool
+	ChainSeq    uint64
+	PrevHash    string
+	LastEmit    time.Time
+	RootEmitted bool
+	RunNonce    string
+}
+
 // Emit-failure reason labels. Closed domain to keep metric cardinality bounded.
 const (
 	// FailReasonChainInit is the reason for failures that originate from a
@@ -93,6 +104,8 @@ type Emitter struct {
 	openNonce     string
 	heartbeatBeat uint64
 
+	postureBinding PostureBinding
+
 	// pendingTransition is set by resumeChain when the on-disk tail was
 	// signed by a DIFFERENT (but self-valid) key, meaning a legitimate key
 	// rotation occurred. It is stamped onto the first receipt of the new
@@ -130,6 +143,19 @@ type EmitterConfig struct {
 	// The default (nil) is a no-op, so the batch evidence path is unchanged.
 	// Used by the live playground stream to surface decisions in real time.
 	OnReceipt func(rcpt *Receipt)
+	// PostureBinding, when set, is copied into session_open so offline
+	// containment assessment can bind a receipt chain to a signed posture
+	// capsule and contained UID.
+	PostureBinding PostureBinding
+}
+
+// PostureBinding carries the signed posture-capsule fields that session_open
+// records need for offline containment assessment.
+type PostureBinding struct {
+	CapsuleSHA256    string
+	SignerKeyID      string
+	ContainmentNonce string
+	ContainedUID     string
 }
 
 // NewEmitter creates a receipt emitter. Returns nil if the recorder is nil
@@ -143,14 +169,15 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 	}
 	runNonce, nonceErr := newRunNonce()
 	e := &Emitter{
-		recorder:      cfg.Recorder,
-		privKey:       cfg.PrivKey,
-		principal:     cfg.Principal,
-		actor:         cfg.Actor,
-		metrics:       cfg.Metrics,
-		onReceipt:     cfg.OnReceipt,
-		runNonce:      runNonce,
-		chainPrevHash: GenesisHash,
+		recorder:       cfg.Recorder,
+		privKey:        cfg.PrivKey,
+		principal:      cfg.Principal,
+		actor:          cfg.Actor,
+		metrics:        cfg.Metrics,
+		onReceipt:      cfg.OnReceipt,
+		runNonce:       runNonce,
+		chainPrevHash:  GenesisHash,
+		postureBinding: cfg.PostureBinding,
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	if nonceErr != nil {
@@ -195,6 +222,22 @@ func (e *Emitter) HealthError() error {
 	e.healthMu.RLock()
 	defer e.healthMu.RUnlock()
 	return e.healthErr
+}
+
+func (e *Emitter) HealthSnapshot() (HealthSnapshot, bool) {
+	if e == nil {
+		return HealthSnapshot{}, false
+	}
+	e.chainMu.Lock()
+	defer e.chainMu.Unlock()
+	return HealthSnapshot{
+		InitErr:     e.initErr != nil,
+		ChainSeq:    e.chainSeq,
+		PrevHash:    e.chainPrevHash,
+		LastEmit:    e.chainEnd,
+		RootEmitted: e.rootEmitted,
+		RunNonce:    e.runNonce,
+	}, true
 }
 
 // SignerKeyHex returns the Ed25519 public key hex for receipts this emitter
@@ -292,11 +335,15 @@ func (e *Emitter) EmitSessionOpen() error {
 		SessionControl: &SessionControl{
 			Kind: SessionControlOpen,
 			Open: &SessionOpen{
-				RunNonce:        e.runNonce,
-				OpenNonce:       openNonce,
-				RecorderSession: recorderSessionID,
-				PolicyHash:      configHashString(e.configHash.Load()),
-				SignerKeyEpoch:  fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey)),
+				RunNonce:             e.runNonce,
+				OpenNonce:            openNonce,
+				RecorderSession:      recorderSessionID,
+				PolicyHash:           configHashString(e.configHash.Load()),
+				SignerKeyEpoch:       fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey)),
+				PostureCapsuleSHA256: e.postureBinding.CapsuleSHA256,
+				PostureSignerKeyID:   e.postureBinding.SignerKeyID,
+				ContainmentNonce:     e.postureBinding.ContainmentNonce,
+				ContainedUID:         e.postureBinding.ContainedUID,
 			},
 		},
 	})

@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -435,6 +437,17 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	if capsule.Evidence.ContainLaunch == nil {
 		t.Fatalf("proof missing signed contain launch evidence: %s", data)
 	}
+	if capsule.Evidence.Containment == nil {
+		t.Fatalf("proof missing signed containment evidence: %s", data)
+	}
+	if capsule.Evidence.Containment.KernelRuleHash == "" {
+		t.Fatalf("proof containment evidence missing kernel rule hash: %+v", capsule.Evidence.Containment)
+	}
+	rules := renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)
+	expectedRuleHash := sha256.Sum256([]byte(rules))
+	if got, want := capsule.Evidence.Containment.KernelRuleHash, hex.EncodeToString(expectedRuleHash[:]); got != want {
+		t.Fatalf("kernel rule hash = %q, want %q", got, want)
+	}
 	launch := capsule.Evidence.ContainLaunch
 	if launch.Tool != "claude" || launch.CWD != "/home/"+testAgentUser || launch.Argc != 2 {
 		t.Fatalf("launch evidence = %+v, want claude argc=2 cwd=/home/%s", launch, testAgentUser)
@@ -444,6 +457,66 @@ func TestEmitContainRunPosture_WritesSignedProof(t *testing.T) {
 	}
 	if launch.ArgvSHA256 == "" || launch.EnvSHA256 == "" {
 		t.Fatalf("launch evidence missing privacy-preserving hashes: %+v", launch)
+	}
+}
+
+func TestContainRunContainmentEvidence_RejectsProbeFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*probeEnv)
+		want   string
+	}{
+		{
+			name: "nft boundary fails",
+			mutate: func(env *probeEnv) {
+				env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+					if name == testNFT {
+						return "table missing", 1, nil
+					}
+					return defaultRunForAllPass(name, args)
+				}
+			},
+			want: "nft boundary probe did not pass: fail",
+		},
+		{
+			name: "direct egress succeeds",
+			mutate: func(env *probeEnv) {
+				env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+					if name == testSudoCmd && containsArg(args, testAgentUser) {
+						return "200", 0, nil
+					}
+					return defaultRunForAllPass(name, args)
+				}
+			},
+			want: "direct-egress probe did not pass: fail",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := allPassEnv(t)
+			tt.mutate(env)
+
+			_, err := containRunContainmentEvidence(env, "987")
+			if err == nil {
+				t.Fatal("expected containment evidence error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainRunContainmentEvidence_RejectsMissingRuleHash(t *testing.T) {
+	env := allPassEnv(t)
+	env.nftRulesPath = ""
+
+	_, err := containRunContainmentEvidence(env, "987")
+	if err == nil {
+		t.Fatal("expected containment evidence error")
+	}
+	if !strings.Contains(err.Error(), "nftables rules path is required") {
+		t.Fatalf("error = %v, want missing rules path", err)
 	}
 }
 

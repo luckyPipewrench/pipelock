@@ -3006,6 +3006,24 @@ func (c *Config) validateFlightRecorder() error {
 			return fmt.Errorf("flight_recorder.completeness.heartbeat_interval must be <= 24h")
 		}
 	}
+	if c.FlightRecorder.EvidenceHealth.SelfAuditInterval != "" {
+		interval, err := time.ParseDuration(c.FlightRecorder.EvidenceHealth.SelfAuditInterval)
+		if err != nil {
+			return fmt.Errorf("flight_recorder.evidence_health.self_audit_interval must parse as a duration: %w", err)
+		}
+		if interval < 5*time.Second || interval > 10*time.Minute {
+			return fmt.Errorf("flight_recorder.evidence_health.self_audit_interval must be between 5s and 10m")
+		}
+	}
+	if c.FlightRecorder.EvidenceHealth.MaxAnchorLag != "" {
+		lag, err := time.ParseDuration(c.FlightRecorder.EvidenceHealth.MaxAnchorLag)
+		if err != nil {
+			return fmt.Errorf("flight_recorder.evidence_health.max_anchor_lag must parse as a duration: %w", err)
+		}
+		if lag < 0 {
+			return fmt.Errorf("flight_recorder.evidence_health.max_anchor_lag must be non-negative")
+		}
+	}
 	switch c.FlightRecorder.FileMode {
 	case 0, 0o600, 0o640, 0o660:
 	default:

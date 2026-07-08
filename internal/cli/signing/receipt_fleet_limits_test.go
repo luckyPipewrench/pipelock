@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 )
 
@@ -107,6 +108,7 @@ func TestVerifyReceiptCmd_FleetReportPrintsLimits(t *testing.T) {
 	stmt := fleetReportStatementWithLimits(fleetreceipt.VerificationLevelL1, []string{
 		"L1 verifies the signed report, source-batch anchors, ordering, summary arithmetic, and completeness arithmetic.",
 		fleetLimitL1NoReplay,
+		string(evidence.LimitMetadataPrivacy),
 	})
 	pub, path := writeFleetReportStatement(t, stmt)
 
@@ -127,6 +129,9 @@ func TestVerifyReceiptCmd_FleetReportPrintsLimits(t *testing.T) {
 	}
 	if !strings.Contains(output, fleetLimitL1NoReplay) {
 		t.Errorf("verifier output omitted the L1 non-replay limit %q:\n%s", fleetLimitL1NoReplay, output)
+	}
+	if !strings.Contains(output, string(evidence.LimitMetadataPrivacy)+": Fingerprints/headers/session-id/timestamps/signer-keys") {
+		t.Errorf("verifier output did not resolve canonical evidence limit id:\n%s", output)
 	}
 }
 

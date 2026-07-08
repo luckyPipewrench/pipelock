@@ -63,7 +63,7 @@ The matrix below compares Pipelock to earlier-generation tools (AIP, agentsh, sr
 | **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes |
 | **Testing depth** | Thousands of tests, 88%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
 | **Independent verifier SDKs** | First-party Go, TypeScript, Rust verifiers + standalone `pipelock-verifier` CLI + Python companion. Auditors verify signed receipts without running the firewall. | Not applicable | Not applicable | Not applicable |
-| **Host containment lifecycle** | `pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` — 3-UID kernel-enforced separation with nftables owner-match, workspace ACL lifecycle, and TOFU binary-integrity pinning | No | Kernel-level, no install lifecycle | OS sandbox per session |
+| **Host containment lifecycle** | `pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` — 3-UID nftables owner-match separation with kernel-observed posture attestation, workspace ACL lifecycle, and TOFU binary-integrity pinning | No | Kernel-level, no install lifecycle | OS sandbox per session |
 | **Cross-org federation** | Inbound mediation-envelope verification, strict-default SPIFFE actors, RFC 9421 well-known signing-key directory, replay-protected nonce cache, operator trust CLI | No | No | No |
 
 ## When to Use What

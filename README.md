@@ -500,7 +500,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Federation](docs/guides/federation.md) | Inbound mediation envelope verification, SPIFFE actor format, RFC 9421 well-known directory (v2.4) |
 | [Block-Reason Header](docs/guides/block-reason-header.md) | `X-Pipelock-Block-Reason` schema, reason vocabulary, retry hints (v2.4) |
 | [Health Endpoint](docs/guides/health.md) | `/health` 503 wedge detection, subsystem heartbeats, operator dashboard config (v2.4) |
-| [Host Containment](docs/contain-cli.md) | `pipelock contain install / run / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` for 3-UID kernel-enforced agent containment (v2.5) |
+| [Host Containment](docs/contain-cli.md) | `pipelock contain install / run / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh` for 3-UID nftables owner-match containment with kernel-observed posture attestation (v2.5) |
 | [MCP Integrity Manifests](docs/cli/mcp-integrity.md) | Generate, verify, sign, and require trusted MCP binary-integrity manifests (v2.5) |
 | [Adaptive CLI](docs/cli/adaptive.md) | Inspect and flush adaptive-enforcement runtime state through the admin API (v2.5) |
 | [Conductor](docs/guides/conductor.md) | The Enterprise fleet control plane: policy distribution, audit sink, remote kill, rollback, mTLS/SPIFFE trust, licensing (v2.7, GA) |

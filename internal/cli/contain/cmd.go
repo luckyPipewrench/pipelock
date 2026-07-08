@@ -12,7 +12,7 @@ func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "contain",
 		Short: "Host containment for AI coding agents",
-		Long: `Install, verify, and roll back a kernel-enforced containment model
+		Long: `Install, verify, and roll back a kernel-level nftables containment model
 for AI coding agents on Linux hosts.
 
 The model splits a single host into three system users

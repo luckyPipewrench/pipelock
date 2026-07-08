@@ -1,6 +1,6 @@
 # `pipelock contain` — host containment lifecycle
 
-`pipelock contain` is the operator CLI for installing, verifying, and rolling back a kernel-enforced containment model on a single Linux host. It splits one workstation into three roles — the operator account, `pipelock-proxy`, and `pipelock-agent` — and uses nftables owner-match rules to force processes running as the contained agent user through the Pipelock proxy. The install is idempotent and rolls back applied steps to a known state on any failed step.
+`pipelock contain` is the operator CLI for installing, verifying, and rolling back a kernel-level (nftables owner-match) containment model on a single Linux host. It splits one workstation into three roles — the operator account, `pipelock-proxy`, and `pipelock-agent` — and uses nftables owner-match rules to force processes running as the contained agent user through the Pipelock proxy. The install is idempotent and rolls back applied steps to a known state on any failed step.
 
 The subcommands are:
 
@@ -27,7 +27,7 @@ Single-user containment can't enforce egress at the kernel: the same user who ru
 - **`pipelock-proxy`** — runs `pipelock` itself. Owns the config, the CA bundle, the binary-integrity pin. The agent user cannot read its state directory.
 - **`pipelock-agent`** — runs the AI agent process. Cannot reach the internet directly: nftables owner-match denies its outbound TCP except to loopback. All egress goes through `pipelock-proxy` on 127.0.0.1.
 
-The agent runs with reduced capabilities (no privileged ports, no raw sockets, no NET_ADMIN). It cannot bypass the proxy because the kernel refuses to forward its packets anywhere else.
+The agent runs with reduced capabilities (no privileged ports, no raw sockets, no NET_ADMIN). Traffic owned by the agent UID cannot bypass the proxy: the kernel owner-match refuses to forward those packets anywhere else. The rule keys on the socket owner (UID), so keeping host setuid/sudo policy tight is still an operator responsibility — a setuid or file-capability helper reachable by the agent could egress under a different UID (see "Remaining operator responsibilities"). This is why a signed posture capsule grades `kernel_observed` (the boundary was kernel-refused at attestation time) rather than an airtight continuous `kernel_enforced`, which is reserved for a future eBPF/LSM kernel-gate.
 
 ## `pipelock contain run`
 

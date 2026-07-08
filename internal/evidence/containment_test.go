@@ -49,11 +49,27 @@ func TestAssessContainmentGradesAndFailClosed(t *testing.T) {
 		Now:                  base.GeneratedAt.Add(2 * time.Second),
 	}
 	kernel := AssessContainment(opts)
-	if kernel.Grade != ContainKernelEnforced || !kernel.AllowClaim {
+	if kernel.Grade != ContainKernelObserved || !kernel.AllowClaim {
 		t.Fatalf("kernel assessment = %+v", kernel)
 	}
-	if !strings.Contains(FormatContainmentAssessment(kernel), "direct egress by the contained UID was kernel-refused") {
-		t.Fatalf("kernel line missing gated claim: %s", FormatContainmentAssessment(kernel))
+	kernelLine := FormatContainmentAssessment(kernel)
+	if !strings.Contains(kernelLine, "direct egress by the contained UID was kernel-refused") {
+		t.Fatalf("kernel line missing gated claim: %s", kernelLine)
+	}
+	// The point-in-time nft owner-match tier must render as KERNEL-OBSERVED and
+	// must NOT overclaim continuous enforcement (kernel_enforced is reserved for
+	// the future eBPF/LSM gate). It must disclose the point-in-time nature.
+	if !strings.Contains(kernelLine, "KERNEL-OBSERVED") {
+		t.Fatalf("observed tier not labelled KERNEL-OBSERVED: %s", kernelLine)
+	}
+	if strings.Contains(kernelLine, "KERNEL-ENFORCED") {
+		t.Fatalf("point-in-time tier overclaims KERNEL-ENFORCED: %s", kernelLine)
+	}
+	if !strings.Contains(kernelLine, "not continuous enforcement") {
+		t.Fatalf("observed tier does not disclose point-in-time nature: %s", kernelLine)
+	}
+	if kernel.Grade != "kernel_observed" {
+		t.Fatalf("observed grade string drifted: %q", kernel.Grade)
 	}
 
 	proxy := validContainmentCapsule(t, priv, posture.ContainmentEvidence{
@@ -198,8 +214,8 @@ func TestAssessContainmentUsesOptionNowForCapsuleExpiry(t *testing.T) {
 		Now:                  capsule.GeneratedAt.Add(2 * time.Hour),
 	}
 	got := AssessContainment(opts)
-	if got.Grade != ContainKernelEnforced || !got.AllowClaim {
-		t.Fatalf("assessment = %+v, want historical kernel-enforced pass", got)
+	if got.Grade != ContainKernelObserved || !got.AllowClaim {
+		t.Fatalf("assessment = %+v, want kernel-observed pass", got)
 	}
 }
 

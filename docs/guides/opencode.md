@@ -95,5 +95,5 @@ Verify receipts after the fact with the standalone `pipelock-verifier` CLI, or a
 - [Claude Code guide](claude-code.md) — same MCP-wrap pattern, different IDE
 - [Codex guide](codex.md) — coding agent integration
 - [Cline guide](cline.md) — VS Code coding agent integration
-- [Host Containment](../contain-cli.md) — kernel-enforced 3-UID isolation
+- [Host Containment](../contain-cli.md) — kernel-observed 3-UID host containment
 - [Receipt verification](receipt-verification.md) — independent audit of agent activity

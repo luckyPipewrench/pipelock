@@ -1510,13 +1510,8 @@ func (m *Manager) verifyPendingProfileIntegrityForRatify(agentKey string) error 
 	if m.cfg.enforces() {
 		return m.logIntegrityVerificationFailure("pending_profile_integrity_failed", fmt.Errorf("verifying pending baseline profile %q before ratify: %w", agentKey, err), "agent_key", agentKey)
 	}
-	slog.Warn("baseline pending profile integrity verification failed; continuing under non-enforcing deviation_action", sanitizeLogAttrs([]any{
-		"agent_key", agentKey,
-		"profile_dir", m.cfg.ProfileDir,
-		"manifest_path", m.integrityManifestPath(),
-		"deviation_action", m.cfg.DeviationAction,
-		"error", err,
-	})...)
+	slog.Warn("baseline pending profile integrity verification failed; continuing under non-enforcing deviation_action",
+		m.integrityLogAttrs("pending_profile_integrity_nonenforcing", err, "agent_key", agentKey)...)
 	return nil
 }
 

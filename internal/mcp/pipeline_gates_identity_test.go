@@ -84,34 +84,94 @@ func TestMCPFrameEnforcementIdentity_ReservedPrefixCollision(t *testing.T) {
 	}
 }
 
-func TestEvaluateMCPInputGates_HTTPBindingUsesRawToolInventoryForReservedPrefixTool(t *testing.T) {
-	const toolName = "a2a:message/send"
+func TestEvaluateMCPInputGates_HTTPBindingReservedPrefixIdentity(t *testing.T) {
+	const reservedTool = "a2a:message/send"
+	toolsCallMsg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a2a:message/send","arguments":{}}}`)
+	a2aMethodMsg := []byte(`{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"messageId":"m1","role":"user","parts":[{"kind":"text","text":"hello"}]}}}`)
 
-	baseline := tools.NewToolBaseline()
-	baseline.SetKnownTools([]string{toolName})
-
-	frame := MCPFrame{Method: methodToolsCall, ToolCallName: toolName}
-	eval := EvaluateMCPInputGates(
-		t.Context(),
-		frame,
-		[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a2a:message/send","arguments":{}}}`),
-		"session-1",
-		MCPProxyOpts{
-			ToolCfg: &tools.ToolScanConfig{
-				Baseline:                baseline,
-				BindingUnknownAction:    config.ActionBlock,
-				BindingNoBaselineAction: config.ActionBlock,
-			},
+	tests := []struct {
+		name          string
+		frame         MCPFrame
+		msg           []byte
+		baselineTools []string
+		wantIdentity  string
+		// wantReason is the expected BindingReason; "" means the call is
+		// accepted (no binding rejection).
+		wantReason string
+	}{
+		{
+			// Happy path: a reserved-prefix tool that IS in the raw tools/list
+			// baseline is recognized (binding checks the raw name), while its
+			// enforcement identity is escaped away from the A2A method space.
+			name:          "tools/call reserved-prefix tool present in baseline is accepted",
+			frame:         MCPFrame{Method: methodToolsCall, ToolCallName: reservedTool},
+			msg:           toolsCallMsg,
+			baselineTools: []string{reservedTool},
+			wantIdentity:  "tool:a2a:message/send",
+			wantReason:    "",
 		},
-		config.ActionBlock,
-		config.ActionBlock,
-		false,
-	)
-
-	if eval.EnforcementIdentity != "tool:a2a:message/send" {
-		t.Fatalf("EnforcementIdentity = %q, want escaped tool identity", eval.EnforcementIdentity)
+		{
+			// Attack path: an A2A method must fail closed as unknown even when
+			// the raw baseline literally contains "a2a:<method>" as a tool name.
+			// A2A methods are not members of the tools/list inventory, so the
+			// escaped enforcement identity must not let a real tool named
+			// "a2a:message/send" satisfy the A2A method binding.
+			name:          "a2a method fails closed even with a literal a2a: tool in baseline",
+			frame:         MCPFrame{Method: "message/send"},
+			msg:           a2aMethodMsg,
+			baselineTools: []string{reservedTool},
+			wantIdentity:  "a2a:message/send",
+			wantReason:    bindingReasonUnknownTool,
+		},
+		{
+			// Attack path: a reserved-prefix tools/call whose raw name is absent
+			// from the baseline is blocked as unknown (a regression to
+			// escaped-vs-raw matching would let it slip through).
+			name:          "tools/call reserved-prefix tool absent from baseline is blocked",
+			frame:         MCPFrame{Method: methodToolsCall, ToolCallName: reservedTool},
+			msg:           toolsCallMsg,
+			baselineTools: []string{"search"},
+			wantIdentity:  "tool:a2a:message/send",
+			wantReason:    bindingReasonUnknownTool,
+		},
 	}
-	if eval.BindingReason != "" || eval.BindingAction != "" {
-		t.Fatalf("reserved-prefix tool present in raw tools/list baseline was rejected by binding: action=%q reason=%q", eval.BindingAction, eval.BindingReason)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseline := tools.NewToolBaseline()
+			baseline.SetKnownTools(tt.baselineTools)
+			eval := EvaluateMCPInputGates(
+				t.Context(),
+				tt.frame,
+				tt.msg,
+				"session-1",
+				MCPProxyOpts{
+					ToolCfg: &tools.ToolScanConfig{
+						Baseline:                baseline,
+						BindingUnknownAction:    config.ActionBlock,
+						BindingNoBaselineAction: config.ActionBlock,
+					},
+				},
+				config.ActionBlock,
+				config.ActionBlock,
+				false,
+			)
+
+			if eval.EnforcementIdentity != tt.wantIdentity {
+				t.Fatalf("EnforcementIdentity = %q, want %q", eval.EnforcementIdentity, tt.wantIdentity)
+			}
+			if tt.wantReason == "" {
+				if eval.BindingReason != "" || eval.BindingAction != "" {
+					t.Fatalf("expected acceptance, got binding action=%q reason=%q", eval.BindingAction, eval.BindingReason)
+				}
+				return
+			}
+			if eval.BindingReason != tt.wantReason {
+				t.Fatalf("BindingReason = %q, want %q", eval.BindingReason, tt.wantReason)
+			}
+			if eval.BindingAction != config.ActionBlock {
+				t.Fatalf("BindingAction = %q, want %q", eval.BindingAction, config.ActionBlock)
+			}
+		})
 	}
 }

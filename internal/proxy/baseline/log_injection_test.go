@@ -26,6 +26,18 @@ func TestSanitizeLogValueStripsLogControls(t *testing.T) {
 	}
 }
 
+func TestSanitizeLogValueStripsAllUnicodeControls(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !unicode.IsControl(r) && r != '\u2028' && r != '\u2029' {
+			continue
+		}
+		got := sanitizeLogValue("safe" + string(r) + "tail")
+		if got != "safe tail" {
+			t.Fatalf("sanitizeLogValue(%U) = %q, want %q", r, got, "safe tail")
+		}
+	}
+}
+
 // sanitizeLogAttrs is the class-fix: every agent-influenced identifier logged
 // through integrityLogAttrs (agent_key, declared_agent_key, profile names) must
 // have log-control runes neutralized so it cannot forge or split a log line,

@@ -1257,6 +1257,8 @@ func sanitizeLogAttrValue(value any) any {
 // spaces so an attacker-influenced value cannot inject, split, or visually
 // rewrite a forged log line.
 func sanitizeLogValue(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 			return ' '

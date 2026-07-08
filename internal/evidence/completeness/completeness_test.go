@@ -194,7 +194,7 @@ func (b *chainBuilder) heartbeatForWithMutation(runNonce, openNonce string, beat
 		OpenNonce:        openNonce,
 		Beat:             beat,
 		ChainHead:        b.prev,
-		ChainSeqHead:     b.seq,
+		ChainSeqHead:     receipt.PreviousChainSeq(b.seq),
 		HeartbeatTime:    b.base.Add(b.offset).Format(time.RFC3339Nano),
 		FsyncErrorsGated: fsync,
 		DurabilityBlocks: blocks,
@@ -221,16 +221,12 @@ func (b *chainBuilder) close(fsync, blocks uint64) receipt.Receipt {
 
 func (b *chainBuilder) closeFor(runNonce, openNonce string, fsync, blocks uint64) receipt.Receipt {
 	b.t.Helper()
-	finalSeq := uint64(0)
-	if b.seq > 0 {
-		finalSeq = b.seq - 1
-	}
 	closeRecord := &receipt.SessionClose{
 		RunNonce:         runNonce,
 		OpenNonce:        openNonce,
-		FinalSeq:         finalSeq,
+		FinalSeq:         b.seq,
 		RootHash:         b.prev,
-		ReceiptCount:     b.seq,
+		ReceiptCount:     b.seq + 1,
 		CloseReason:      "normal",
 		FsyncErrorsGated: fsync,
 		DurabilityBlocks: blocks,
@@ -240,16 +236,12 @@ func (b *chainBuilder) closeFor(runNonce, openNonce string, fsync, blocks uint64
 
 func (b *chainBuilder) closeForWithMutation(runNonce, openNonce string, fsync, blocks uint64, mutate func(*receipt.SessionClose)) receipt.Receipt {
 	b.t.Helper()
-	finalSeq := uint64(0)
-	if b.seq > 0 {
-		finalSeq = b.seq - 1
-	}
 	closeRecord := &receipt.SessionClose{
 		RunNonce:         runNonce,
 		OpenNonce:        openNonce,
-		FinalSeq:         finalSeq,
+		FinalSeq:         b.seq,
 		RootHash:         b.prev,
-		ReceiptCount:     b.seq,
+		ReceiptCount:     b.seq + 1,
 		CloseReason:      "normal",
 		FsyncErrorsGated: fsync,
 		DurabilityBlocks: blocks,
@@ -310,6 +302,10 @@ func (b *chainBuilder) legacyAction() receipt.Receipt {
 
 func analyzeBuilt(chain []receipt.Receipt, keyHex string) Report {
 	return Analyze(chain, receipt.VerifyChain(chain, keyHex))
+}
+
+func analyzeBuiltIntegrityOnly(chain []receipt.Receipt, keyHex string) Report {
+	return Analyze(chain, receipt.VerifyChainIntegrity(chain, keyHex))
 }
 
 func requireOneRun(t *testing.T, report Report, status Status, reason Reason) RunReport {
@@ -462,7 +458,7 @@ func TestAnalyzeCloseClaimsMustMatchObservedPrefix(t *testing.T) {
 				}),
 			}
 
-			report := analyzeBuilt(chain, b.keyHex)
+			report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
 			run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
 			if run.StructuralViolation == "" {
 				t.Fatalf("structural violation not surfaced for %s: %#v", name, run)
@@ -484,13 +480,13 @@ func TestAnalyzeCloseClaimsUseCurrentSegmentPrefix(t *testing.T) {
 			b.closeFor("run-b", "open-b", 0, 2),
 		}
 
-		report := analyzeBuilt(chain, b.keyHex)
+		report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
 		if report.Status != StatusLimited || report.Reason != ReasonBoundedClosed {
 			t.Fatalf("same-key restart report = %s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
 		}
 		runB := requireRun(t, report, "run-b", StatusLimited, ReasonBoundedClosed)
-		if runB.CloseReceiptCount != 3 || runB.CloseFinalSeq != 2 {
-			t.Fatalf("restart close claims = count %d seq %d, want whole-segment prefix count 3 seq 2: %#v",
+		if runB.CloseReceiptCount != 4 || runB.CloseFinalSeq != 3 {
+			t.Fatalf("restart close claims = count %d seq %d, want whole-segment count 4 seq 3: %#v",
 				runB.CloseReceiptCount, runB.CloseFinalSeq, runB)
 		}
 	})
@@ -507,7 +503,7 @@ func TestAnalyzeCloseClaimsUseCurrentSegmentPrefix(t *testing.T) {
 			b.closeFor("run-b", "open-b", 0, 2),
 		}
 
-		res := receipt.VerifyChainTrusted(chain, []string{keyA, keyB.keyHex})
+		res := receipt.VerifyChainIntegrityTrusted(chain, []string{keyA, keyB.keyHex})
 		if !res.Valid {
 			t.Fatalf("rotated fixture must verify before completeness analysis: %s", res.Error)
 		}
@@ -516,8 +512,8 @@ func TestAnalyzeCloseClaimsUseCurrentSegmentPrefix(t *testing.T) {
 			t.Fatalf("rotated restart report = %s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
 		}
 		runB := requireRun(t, report, "run-b", StatusLimited, ReasonBoundedClosed)
-		if runB.CloseReceiptCount != 1 || runB.CloseFinalSeq != 0 {
-			t.Fatalf("rotated close claims = count %d seq %d, want segment prefix count 1 seq 0: %#v",
+		if runB.CloseReceiptCount != 2 || runB.CloseFinalSeq != 1 {
+			t.Fatalf("rotated close claims = count %d seq %d, want segment count 2 seq 1: %#v",
 				runB.CloseReceiptCount, runB.CloseFinalSeq, runB)
 		}
 	})
@@ -536,7 +532,7 @@ func TestAnalyzeCloseClaimsUseCurrentSegmentPrefix(t *testing.T) {
 			}),
 		}
 
-		res := receipt.VerifyChainTrusted(chain, []string{keyA, keyB.keyHex})
+		res := receipt.VerifyChainIntegrityTrusted(chain, []string{keyA, keyB.keyHex})
 		if !res.Valid {
 			t.Fatalf("rotated fixture must verify before completeness analysis: %s", res.Error)
 		}
@@ -560,7 +556,7 @@ func TestAnalyzeRecordAfterCloseIsBroken(t *testing.T) {
 		b.outcome(actionID),
 	}
 
-	report := analyzeBuilt(chain, b.keyHex)
+	report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
 	run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
 	if run.StructuralViolation != "action observed after session_close" {
 		t.Fatalf("structural_violation = %q, want action observed after session_close: %#v", run.StructuralViolation, run)
@@ -581,7 +577,7 @@ func TestAnalyzePostCloseGuardIsScopedToRun(t *testing.T) {
 			b.closeFor("run-b", "open-b", 0, 3),
 		}
 
-		report := analyzeBuilt(chain, b.keyHex)
+		report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
 		if report.Status != StatusLimited || report.Reason != ReasonBoundedClosed {
 			t.Fatalf("second run after close = %s/%s, want LIMITED/bounded_closed: %#v", report.Status, report.Reason, report)
 		}
@@ -598,7 +594,7 @@ func TestAnalyzePostCloseGuardIsScopedToRun(t *testing.T) {
 			b.heartbeat(1, 0, 2),
 		}
 
-		report := analyzeBuilt(chain, b.keyHex)
+		report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
 		run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
 		if run.StructuralViolation != "record observed after session_close" {
 			t.Fatalf("structural_violation = %q, want post-close guard: %#v", run.StructuralViolation, run)
@@ -614,7 +610,7 @@ func TestAnalyzePostCloseGuardIsScopedToRun(t *testing.T) {
 			b.close(0, 2),
 		}
 
-		report := analyzeBuilt(chain, b.keyHex)
+		report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
 		run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
 		if run.StructuralViolation != "record observed after session_close" {
 			t.Fatalf("structural_violation = %q, want post-close guard: %#v", run.StructuralViolation, run)
@@ -671,7 +667,7 @@ func TestAnalyzeLifecycleChainRejectsActionsOutsideOpenedRun(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			b := newChainBuilder(t)
-			report := analyzeBuilt(tc.build(b), b.keyHex)
+			report := analyzeBuiltIntegrityOnly(tc.build(b), b.keyHex)
 			run := requireRun(t, report, tc.wantRun, StatusBroken, ReasonChainBroken)
 			if run.StructuralViolation != tc.wantViolation {
 				t.Fatalf("structural_violation = %q, want %q: %#v", run.StructuralViolation, tc.wantViolation, run)
@@ -702,7 +698,7 @@ func TestAnalyzeHeartbeatClaimsMustMatchObservedPrefix(t *testing.T) {
 				b.close(0, 2),
 			}
 
-			report := analyzeBuilt(chain, b.keyHex)
+			report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
 			run := requireOneRun(t, report, StatusBroken, ReasonChainBroken)
 			if run.StructuralViolation == "" {
 				t.Fatalf("heartbeat prefix mutation did not surface a structural violation for %s: %#v", name, run)
@@ -724,7 +720,7 @@ func TestAnalyzeDurabilityCountersArePerRun(t *testing.T) {
 		b.closeFor("run-b", "open-b", 0, 1),
 	}
 
-	report := analyzeBuilt(chain, b.keyHex)
+	report := analyzeBuiltIntegrityOnly(chain, b.keyHex)
 	if report.Status != StatusLimited || report.Reason != ReasonBoundedClosed {
 		t.Fatalf("durability counter reset across run = %s/%s, want LIMITED/bounded_closed: %#v",
 			report.Status, report.Reason, report)

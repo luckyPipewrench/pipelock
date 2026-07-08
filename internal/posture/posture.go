@@ -77,6 +77,7 @@ type EvidenceBundle struct {
 	Simulate       audit.SimulateResult   `json:"simulate"`
 	FlightRecorder FlightRecorderCounts   `json:"flight_recorder"`
 	ContainLaunch  *ContainLaunchEvidence `json:"contain_launch,omitempty"`
+	Containment    *ContainmentEvidence   `json:"containment,omitempty"`
 }
 
 // ContainLaunchEvidence binds a signed posture capsule to the exact
@@ -96,6 +97,19 @@ type ContainLaunchEvidence struct {
 	ProxyPort    int      `json:"proxy_port"`
 	EnvVars      []string `json:"env_vars"`
 	EnvSHA256    string   `json:"env_sha256"`
+}
+
+const (
+	ContainmentModeKernelNFTOwnerMatch = "kernel_nft_owner_match"
+	ContainmentModeBestEffortProxyEnv  = "best_effort_proxy_env"
+)
+
+type ContainmentEvidence struct {
+	Mode                     string `json:"mode"`
+	BoundaryVerified         bool   `json:"boundary_verified"`
+	ProbeRefusedDirectEgress bool   `json:"probe_refused_direct_egress"`
+	KernelRuleHash           string `json:"kernel_rule_hash,omitempty"`
+	TargetUID                string `json:"target_uid"`
 }
 
 // DiscoverEvidence captures high-level MCP protection counts.
@@ -137,6 +151,7 @@ type Options struct {
 	SigningKey     ed25519.PrivateKey
 	EvidenceBundle *EvidenceBundle
 	ContainLaunch  *ContainLaunchEvidence
+	Containment    *ContainmentEvidence
 }
 
 type signableCapsule struct {
@@ -174,6 +189,9 @@ func Emit(cfg *config.Config, opts Options) (*Capsule, error) {
 	if opts.ContainLaunch != nil {
 		evidence.ContainLaunch = cloneContainLaunchEvidence(opts.ContainLaunch)
 	}
+	if opts.Containment != nil {
+		evidence.Containment = cloneContainmentEvidence(opts.Containment)
+	}
 
 	configHash, err := hashConfig(cfg)
 	if err != nil {
@@ -202,6 +220,14 @@ func Emit(cfg *config.Config, opts Options) (*Capsule, error) {
 
 // Verify validates the capsule signature, expiration, and schema version.
 func Verify(capsule *Capsule, trustedKey ed25519.PublicKey) error {
+	return VerifyAt(capsule, trustedKey, time.Now().UTC())
+}
+
+// VerifyAt validates the capsule signature, expiration, and schema version at a
+// caller-supplied time. It is used by receipt verification so historical
+// receipts can be assessed against their signed time window instead of the
+// verifier's wall clock.
+func VerifyAt(capsule *Capsule, trustedKey ed25519.PublicKey, now time.Time) error {
 	if capsule == nil {
 		return fmt.Errorf("capsule is required")
 	}
@@ -211,7 +237,13 @@ func Verify(capsule *Capsule, trustedKey ed25519.PublicKey) error {
 	if len(trustedKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("invalid trusted key length: got %d, want %d", len(trustedKey), ed25519.PublicKeySize)
 	}
-	if capsule.ExpiresAt.Before(time.Now().UTC()) {
+	if capsule.GeneratedAt.IsZero() || capsule.ExpiresAt.IsZero() || !capsule.GeneratedAt.Before(capsule.ExpiresAt) {
+		return fmt.Errorf("invalid capsule window: generated_at=%s expires_at=%s", capsule.GeneratedAt.Format(time.RFC3339), capsule.ExpiresAt.Format(time.RFC3339))
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if capsule.ExpiresAt.Before(now.UTC()) {
 		return fmt.Errorf("capsule expired at %s", capsule.ExpiresAt.Format(time.RFC3339))
 	}
 	if capsule.Signature == "" {
@@ -464,6 +496,9 @@ func cloneEvidenceBundle(bundle EvidenceBundle) EvidenceBundle {
 	if bundle.ContainLaunch != nil {
 		cloned.ContainLaunch = cloneContainLaunchEvidence(bundle.ContainLaunch)
 	}
+	if bundle.Containment != nil {
+		cloned.Containment = cloneContainmentEvidence(bundle.Containment)
+	}
 	return cloned
 }
 
@@ -474,6 +509,14 @@ func cloneContainLaunchEvidence(in *ContainLaunchEvidence) *ContainLaunchEvidenc
 	out := *in
 	out.TargetGroups = append([]string(nil), in.TargetGroups...)
 	out.EnvVars = append([]string(nil), in.EnvVars...)
+	return &out
+}
+
+func cloneContainmentEvidence(in *ContainmentEvidence) *ContainmentEvidence {
+	if in == nil {
+		return nil
+	}
+	out := *in
 	return &out
 }
 

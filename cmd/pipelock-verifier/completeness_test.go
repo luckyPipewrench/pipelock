@@ -129,7 +129,7 @@ func (f *completenessFixture) heartbeat(runNonce, openNonce string) receipt.Rece
 				OpenNonce:        openNonce,
 				Beat:             beat,
 				ChainHead:        f.prev,
-				ChainSeqHead:     f.seq,
+				ChainSeqHead:     receipt.PreviousChainSeq(f.seq),
 				HeartbeatTime:    f.base.Add(f.offset).Format(time.RFC3339Nano),
 				DurabilityBlocks: beat,
 			},
@@ -139,10 +139,6 @@ func (f *completenessFixture) heartbeat(runNonce, openNonce string) receipt.Rece
 
 func (f *completenessFixture) close(runNonce, openNonce string) receipt.Receipt {
 	f.t.Helper()
-	finalSeq := uint64(0)
-	if f.seq > 0 {
-		finalSeq = f.seq - 1
-	}
 	return f.sign(receipt.ActionRecord{
 		ActionType: receipt.ActionUnclassified,
 		Target:     "pipelock://session/close",
@@ -153,9 +149,9 @@ func (f *completenessFixture) close(runNonce, openNonce string) receipt.Receipt 
 			Close: &receipt.SessionClose{
 				RunNonce:         runNonce,
 				OpenNonce:        openNonce,
-				FinalSeq:         finalSeq,
+				FinalSeq:         f.seq,
 				RootHash:         f.prev,
-				ReceiptCount:     f.seq,
+				ReceiptCount:     f.seq + 1,
 				CloseReason:      "normal",
 				DurabilityBlocks: 1,
 			},

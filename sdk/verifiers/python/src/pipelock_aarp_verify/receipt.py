@@ -493,6 +493,7 @@ def _verify_action_chain(
     prev_hash = ""
     active_run_nonce: str | None = None
     active_open_nonce: str | None = None
+    segment_receipt_count = 0
     for index, receipt in enumerate(receipts):
         action_record = _require_object(receipt.get("action_record"), "action_record")
         seq = action_record.get("chain_seq")
@@ -513,6 +514,7 @@ def _verify_action_chain(
                 return result
         elif chain_prev_hash != prev_hash:
             return _broken_chain(seq, f"seq {seq}: chain_prev_hash mismatch")
+        segment_receipt_count += 1
         result = _validate_session_control_state(
             action_record,
             chain_prev_hash,
@@ -521,7 +523,7 @@ def _verify_action_chain(
             prev_hash,
             active_run_nonce,
             active_open_nonce,
-            len(receipts),
+            segment_receipt_count,
         )
         if result is not None:
             return result
@@ -533,6 +535,9 @@ def _verify_action_chain(
             active_open_nonce = _require_string(
                 open_record.get("open_nonce"), "session_control.open.open_nonce"
             )
+        elif _session_close(action_record.get("session_control")) is not None:
+            active_run_nonce = None
+            active_open_nonce = None
         prev_hash = receipt_hash(receipt)
     return {
         "valid": True,
@@ -596,12 +601,24 @@ def _validate_session_control_state(
     prev_hash: str,
     active_run_nonce: str | None,
     active_open_nonce: str | None,
-    receipt_count: int,
+    segment_receipt_count: int,
 ) -> dict[str, Any] | None:
     session_control = action_record.get("session_control")
     if not isinstance(session_control, dict):
         return None
     kind = session_control.get("kind")
+    action_run_nonce = action_record.get("run_nonce")
+    if not isinstance(action_run_nonce, str) or action_run_nonce == "":
+        return _broken_chain(seq, f"seq {seq}: session_control receipt missing run_nonce")
+    control_run_nonce = None
+    if kind == "session_open" and isinstance(session_control.get("open"), dict):
+        control_run_nonce = session_control["open"].get("run_nonce")
+    elif kind == "heartbeat" and isinstance(session_control.get("heartbeat"), dict):
+        control_run_nonce = session_control["heartbeat"].get("run_nonce")
+    elif kind == "session_close" and isinstance(session_control.get("close"), dict):
+        control_run_nonce = session_control["close"].get("run_nonce")
+    if control_run_nonce != action_run_nonce:
+        return _broken_chain(seq, f"seq {seq}: session_control run_nonce mismatch")
     if kind == "session_open" and index > 0:
         open_record = _require_object(
             session_control.get("open"), "session_control.open"
@@ -646,11 +663,9 @@ def _validate_session_control_state(
             return _broken_chain(seq, f"seq {seq}: session_close open_nonce mismatch")
         if close.get("root_hash") != chain_prev_hash:
             return _broken_chain(seq, f"seq {seq}: session_close root_hash mismatch")
-        if seq != receipt_count - 1:
-            return _broken_chain(seq, f"seq {seq}: session_close must be final receipt")
         if close.get("final_seq") != seq:
             return _broken_chain(seq, f"seq {seq}: session_close final_seq mismatch")
-        if close.get("receipt_count") != receipt_count:
+        if close.get("receipt_count") != segment_receipt_count:
             return _broken_chain(seq, f"seq {seq}: session_close receipt_count mismatch")
     return None
 
@@ -1092,6 +1107,15 @@ def _session_open(value: Any) -> dict[str, Any] | None:
         return None
     open_record = value.get("open")
     return open_record if isinstance(open_record, dict) else None
+
+
+def _session_close(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    if value.get("kind") != "session_close":
+        return None
+    close_record = value.get("close")
+    return close_record if isinstance(close_record, dict) else None
 
 
 def normalize_evidence_receipt(receipt: dict[str, Any]) -> None:

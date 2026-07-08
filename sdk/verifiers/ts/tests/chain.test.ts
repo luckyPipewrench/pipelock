@@ -1,10 +1,12 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as ed25519 from "@noble/ed25519";
 import { canonicalizeBytes } from "../src/aarp/canonical.js";
+import { canonicalizeActionRecord } from "../src/canonical.js";
 import { extractReceipts } from "../src/recorder.js";
 import { computeSessionOpenGenesis, receiptHash, verifyChain } from "../src/chain.js";
 import type { JSONObject, Receipt } from "../src/types.js";
@@ -15,6 +17,8 @@ const g1ValidChain = "../../conformance/testdata/g1-valid-chain.jsonl";
 const g1RestartChain = "../../conformance/testdata/g1-restart-chain.jsonl";
 const g1BrokenGenesis = "../../conformance/testdata/g1-broken-genesis.jsonl";
 const g1LegacyOpenGenesis = "../../conformance/testdata/g1-legacy-open-genesis.jsonl";
+const g1InconsistentHeartbeat = "../../conformance/testdata/g1-inconsistent-heartbeat.jsonl";
+const g1InconsistentClose = "../../conformance/testdata/g1-inconsistent-close.jsonl";
 const g1GenesisVectors = "../../conformance/testdata/g1-genesis-vectors.json";
 const testKey = "../../conformance/testdata/test-key.json";
 const validPlainV2 =
@@ -80,6 +84,23 @@ test("g1 restart chain verifies with prior tail fields", async () => {
   assert.notEqual(open["prior_chain_head"], "");
 });
 
+test("g1 restart close receipt_count mismatch is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const receipts = extractReceipts(g1RestartChain);
+  (
+    (receipts[4]!.action_record!.session_control as Record<string, unknown>)["close"] as Record<
+      string,
+      unknown
+    >
+  )["receipt_count"] = 3;
+  await signActionReceiptWithTestKey(receipts[4]!);
+
+  const result = await verifyChain(receipts, key);
+  assert.equal(result.valid, false);
+  assert.match(result.error ?? "", /session_close receipt_count mismatch/u);
+});
+
 test("g1 genesis vectors match Go", () => {
   const vectors = JSON.parse(readFileSync(g1GenesisVectors, "utf8")) as Array<{
     open: Record<string, unknown>;
@@ -107,6 +128,37 @@ test("g1 legacy session_open on genesis is rejected", async () => {
   assert.equal(result.valid, false);
   assert.equal(result.broken_at_seq, 0);
   assert.match(result.error ?? "", /session_open on legacy genesis/u);
+});
+
+test("g1 inconsistent heartbeat fixture is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1InconsistentHeartbeat), key);
+  assert.equal(result.valid, false);
+  assert.equal(result.broken_at_seq, 3);
+  assert.match(result.error ?? "", /heartbeat chain_head mismatch/u);
+});
+
+test("g1 inconsistent close fixture is rejected", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const result = await verifyChain(extractReceipts(g1InconsistentClose), key);
+  assert.equal(result.valid, false);
+  assert.equal(result.broken_at_seq, 4);
+  assert.match(result.error ?? "", /session_close root_hash mismatch/u);
+});
+
+test("g1 session_control missing record run_nonce is rejected with valid signature", async () => {
+  const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
+    .public_key_hex;
+  const receipts = JSON.parse(JSON.stringify(extractReceipts(g1ValidChain))) as Receipt[];
+  delete (receipts[3]!.action_record as Record<string, unknown>)["run_nonce"];
+  await signActionReceiptWithTestKey(receipts[3]!);
+
+  const result = await verifyChain(receipts, key);
+  assert.equal(result.valid, false);
+  assert.equal(result.broken_at_seq, 3);
+  assert.match(result.error ?? "", /session_control receipt missing run_nonce/u);
 });
 
 test("g1 signed field tampering is rejected", async () => {
@@ -299,4 +351,17 @@ async function signEvidenceReceipt(receipt: Receipt): Promise<void> {
     algorithm: "ed25519",
     signature: `ed25519:${Buffer.from(sig).toString("hex")}`,
   };
+}
+
+async function signActionReceiptWithTestKey(receipt: Receipt): Promise<void> {
+  const keyInfo = JSON.parse(readFileSync(testKey, "utf8")) as {
+    public_key_hex: string;
+    seed_hex: string;
+  };
+  const digest = createHash("sha256")
+    .update(canonicalizeActionRecord(receipt.action_record!))
+    .digest();
+  const sig = await ed25519.signAsync(digest, Buffer.from(keyInfo.seed_hex, "hex"));
+  receipt.signature = `ed25519:${Buffer.from(sig).toString("hex")}`;
+  receipt.signer_key = keyInfo.public_key_hex;
 }

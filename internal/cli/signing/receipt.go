@@ -5,17 +5,23 @@ package signing
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
+	"github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -30,6 +36,10 @@ func VerifyReceiptCmd() *cobra.Command {
 	var allowUnpinned bool
 	var fleetReport bool
 	var cleanReport string
+	var showRaw bool
+	var hexdump bool
+	var posturePath string
+	var postureKey string
 
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
@@ -72,6 +82,17 @@ Examples:
 			if len(expectedKeys) > 0 && len(trustedKeys) == 0 {
 				return fmt.Errorf("--key was provided but no valid signer keys were resolved")
 			}
+			verifyOpts := verifyReceiptOptions{
+				AllowUnpinned: allowUnpinned,
+				Print: receiptPrintOptions{
+					ShowRaw: showRaw,
+					Hexdump: hexdump,
+				},
+				Posture: receiptPostureOptions{
+					Path:   posturePath,
+					KeyHex: postureKey,
+				},
+			}
 			if fleetReport {
 				if chainDir != "" {
 					return fmt.Errorf("--fleet-report cannot be combined with --chain")
@@ -83,7 +104,7 @@ Examples:
 			}
 			if chainDir != "" {
 				if cleanReport == "" {
-					return verifyChainFromSessionDirWithOptions(out, chainDir, sessionID, trustedKeys, allowUnpinned)
+					return verifyChainFromSessionDirDetailed(out, chainDir, sessionID, trustedKeys, verifyOpts)
 				}
 				receipts, extractErr := receipt.ExtractReceiptsFromSessionDir(chainDir, sessionID)
 				if extractErr != nil {
@@ -104,7 +125,7 @@ Examples:
 					}
 					return verifyCleanReport(out, path, receipts, trustedKeys, allowUnpinned, cleanReport)
 				}
-				return verifyChainFromFileWithOptions(out, path, trustedKeys, allowUnpinned)
+				return verifyChainFromFileDetailed(out, path, trustedKeys, verifyOpts)
 			}
 
 			if cleanReport != "" {
@@ -112,7 +133,7 @@ Examples:
 			}
 			// Single receipt JSON file: a lone receipt has no chain to walk,
 			// so it verifies against the first supplied key (or its own).
-			return verifySingleReceiptWithOptions(out, path, firstOrEmpty(trustedKeys), allowUnpinned)
+			return verifySingleReceiptDetailed(out, path, firstOrEmpty(trustedKeys), verifyOpts)
 		},
 	}
 
@@ -122,6 +143,10 @@ Examples:
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
 	cmd.Flags().BoolVar(&fleetReport, "fleet-report", false, "verify a Fleet Receipt Report DSSE envelope")
 	cmd.Flags().StringVar(&cleanReport, "clean-report", "", "write minimal offline-verifiable action report after chain and defer-pair validation")
+	cmd.Flags().BoolVar(&showRaw, "show-raw", false, "append raw display fields in human output")
+	cmd.Flags().BoolVar(&hexdump, "hexdump", false, "append canonical raw field hexdumps in human output")
+	cmd.Flags().StringVar(&posturePath, "posture", "", "signed posture capsule JSON to assess containment")
+	cmd.Flags().StringVar(&postureKey, "posture-key", "", "trusted posture capsule public key (hex)")
 	return cmd
 }
 
@@ -132,7 +157,23 @@ func firstOrEmpty(keys []string) string {
 	return keys[0]
 }
 
-func verifySingleReceiptWithOptions(out io.Writer, path, expectedKey string, allowUnpinned bool) error {
+type receiptPrintOptions struct {
+	ShowRaw bool
+	Hexdump bool
+}
+
+type receiptPostureOptions struct {
+	Path   string
+	KeyHex string
+}
+
+type verifyReceiptOptions struct {
+	AllowUnpinned bool
+	Print         receiptPrintOptions
+	Posture       receiptPostureOptions
+}
+
+func verifySingleReceiptDetailed(out io.Writer, path, expectedKey string, opts verifyReceiptOptions) error {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return fmt.Errorf("reading receipt: %w", err)
@@ -150,11 +191,19 @@ func verifySingleReceiptWithOptions(out io.Writer, path, expectedKey string, all
 		}
 		_, _ = fmt.Fprintf(out, "UNPINNED: %s\n", path)
 		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
-		if !allowUnpinned {
-			printReceiptDetails(out, r)
+		if !opts.AllowUnpinned {
+			printReceiptDetails(out, r, opts.Print)
+			printReceiptLimits(out)
+			if err := printContainmentForReceipts(out, []receipt.Receipt{r}, opts.Posture); err != nil {
+				return err
+			}
 			return fmt.Errorf("verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 		}
-		printReceiptDetails(out, r)
+		printReceiptDetails(out, r, opts.Print)
+		printReceiptLimits(out)
+		if err := printContainmentForReceipts(out, []receipt.Receipt{r}, opts.Posture); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -164,7 +213,11 @@ func verifySingleReceiptWithOptions(out io.Writer, path, expectedKey string, all
 	}
 
 	_, _ = fmt.Fprintf(out, "OK: %s\n", path)
-	printReceiptDetails(out, r)
+	printReceiptDetails(out, r, opts.Print)
+	printReceiptLimits(out)
+	if err := printContainmentForReceipts(out, []receipt.Receipt{r}, opts.Posture); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -207,12 +260,16 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 	// Without this, a PASS looks like full replay verification when L1 only
 	// checks the signed report, anchors, ordering, and arithmetic.
 	for _, limit := range result.Statement.Predicate.Limits {
-		_, _ = fmt.Fprintf(out, "  Limit:            %s\n", limit)
+		_, _ = fmt.Fprintf(out, "  Limit:            %s\n", resolvedLimitString(limit))
 	}
 	if result.Unpinned && !allowUnpinned {
 		return fmt.Errorf("fleet receipt verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 	}
 	return nil
+}
+
+func resolvedLimitString(raw string) string {
+	return evidence.MustSummary(evidence.LimitID(raw))
 }
 
 // fleetTrustedKeyMap builds the verifier's trusted-key map from the operator's
@@ -260,20 +317,24 @@ func verifyChainFromFile(out io.Writer, path string, trustedKeys []string) error
 }
 
 func verifyChainFromFileWithOptions(out io.Writer, path string, trustedKeys []string, allowUnpinned bool) error {
+	return verifyChainFromFileDetailed(out, path, trustedKeys, verifyReceiptOptions{AllowUnpinned: allowUnpinned})
+}
+
+func verifyChainFromFileDetailed(out io.Writer, path string, trustedKeys []string, opts verifyReceiptOptions) error {
 	receipts, err := receipt.ExtractReceipts(path)
 	if err != nil {
 		return fmt.Errorf("extracting receipts: %w", err)
 	}
-	return verifyChainWithOptions(out, path, receipts, trustedKeys, allowUnpinned)
+	return verifyChainDetailed(out, path, receipts, trustedKeys, opts)
 }
 
-func verifyChainFromSessionDirWithOptions(out io.Writer, dir, sessionID string, trustedKeys []string, allowUnpinned bool) error {
+func verifyChainFromSessionDirDetailed(out io.Writer, dir, sessionID string, trustedKeys []string, opts verifyReceiptOptions) error {
 	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, sessionID)
 	if err != nil {
 		return fmt.Errorf("extracting session receipts: %w", err)
 	}
 	label := fmt.Sprintf("%s (session %s)", dir, sessionID)
-	return verifyChainWithOptions(out, label, receipts, trustedKeys, allowUnpinned)
+	return verifyChainDetailed(out, label, receipts, trustedKeys, opts)
 }
 
 func verifyChain(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string) error {
@@ -281,6 +342,10 @@ func verifyChain(out io.Writer, label string, receipts []receipt.Receipt, truste
 }
 
 func verifyChainWithOptions(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string, allowUnpinned bool) error {
+	return verifyChainDetailed(out, label, receipts, trustedKeys, verifyReceiptOptions{AllowUnpinned: allowUnpinned})
+}
+
+func verifyChainDetailed(out io.Writer, label string, receipts []receipt.Receipt, trustedKeys []string, opts verifyReceiptOptions) error {
 	if len(receipts) == 0 {
 		_, _ = fmt.Fprintf(out, "No receipts found in %s\n", label)
 		return fmt.Errorf("no receipts in %s", label)
@@ -310,9 +375,13 @@ func verifyChainWithOptions(out io.Writer, label string, receipts []receipt.Rece
 	_, _ = fmt.Fprintf(out, "  Start:     %s\n", result.StartTime.Format("2006-01-02T15:04:05Z"))
 	_, _ = fmt.Fprintf(out, "  End:       %s\n", result.EndTime.Format("2006-01-02T15:04:05Z"))
 	printSignerKeys(out, result)
+	printReceiptLimits(out)
+	if err := printContainmentForReceipts(out, receipts, opts.Posture); err != nil {
+		return err
+	}
 	if unpinned {
 		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
-		if !allowUnpinned {
+		if !opts.AllowUnpinned {
 			return fmt.Errorf("chain verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 		}
 	}
@@ -497,33 +566,203 @@ func boundaryNote(boundary bool) string {
 	return ""
 }
 
-func printReceiptDetails(out io.Writer, r receipt.Receipt) {
+func printReceiptDetails(out io.Writer, r receipt.Receipt, opts receiptPrintOptions) {
 	_, _ = fmt.Fprintf(out, "  Action ID:   %s\n", r.ActionRecord.ActionID)
 	_, _ = fmt.Fprintf(out, "  Action Type: %s\n", r.ActionRecord.ActionType)
 	_, _ = fmt.Fprintf(out, "  Verdict:     %s\n", r.ActionRecord.Verdict)
-	_, _ = fmt.Fprintf(out, "  Target:      %s\n", r.ActionRecord.Target)
+	printReceiptDisplayField(out, "  Target:      ", r.ActionRecord.Target, opts)
 	_, _ = fmt.Fprintf(out, "  Transport:   %s\n", r.ActionRecord.Transport)
 	_, _ = fmt.Fprintf(out, "  Timestamp:   %s\n", r.ActionRecord.Timestamp.Format("2006-01-02T15:04:05Z"))
 	_, _ = fmt.Fprintf(out, "  Signer:      %s\n", r.SignerKey)
 	_, _ = fmt.Fprintf(out, "  Chain seq:   %d\n", r.ActionRecord.ChainSeq)
-	_, _ = fmt.Fprintf(out, "  Chain prev:  %s\n", r.ActionRecord.ChainPrevHash)
+	printReceiptDisplayField(out, "  Chain prev:  ", r.ActionRecord.ChainPrevHash, opts)
 
 	if r.ActionRecord.Principal != "" {
-		_, _ = fmt.Fprintf(out, "  Principal:   %s\n", r.ActionRecord.Principal)
+		printReceiptDisplayField(out, "  Principal:   ", r.ActionRecord.Principal, opts)
 	}
 	if r.ActionRecord.Actor != "" {
-		_, _ = fmt.Fprintf(out, "  Actor:       %s\n", r.ActionRecord.Actor)
+		printReceiptDisplayField(out, "  Actor:       ", r.ActionRecord.Actor, opts)
 	}
 	if r.ActionRecord.PolicyHash != "" {
-		_, _ = fmt.Fprintf(out, "  Policy Hash: %s\n", r.ActionRecord.PolicyHash)
+		printReceiptDisplayField(out, "  Policy Hash: ", r.ActionRecord.PolicyHash, opts)
 	}
 
 	if r.ActionRecord.Method != "" || r.ActionRecord.Layer != "" {
-		pretty, err := json.MarshalIndent(r.ActionRecord, "  ", "  ")
+		record, err := sanitizedActionRecordForDisplay(r.ActionRecord)
+		if err != nil {
+			return
+		}
+		pretty, err := json.MarshalIndent(record, "  ", "  ")
 		if err == nil {
 			_, _ = fmt.Fprintf(out, "\n  Full record:\n  %s\n", string(pretty))
 		}
 	}
+}
+
+func sanitizedActionRecordForDisplay(record receipt.ActionRecord) (receipt.ActionRecord, error) {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return receipt.ActionRecord{}, err
+	}
+	var out receipt.ActionRecord
+	if err := json.Unmarshal(data, &out); err != nil {
+		return receipt.ActionRecord{}, err
+	}
+	sanitizeDisplayStrings(reflect.ValueOf(&out).Elem())
+	return out, nil
+}
+
+func sanitizeDisplayStrings(v reflect.Value) {
+	if !v.IsValid() {
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			sanitizeDisplayStrings(v.Elem())
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if field.CanSet() || field.Kind() == reflect.Pointer || field.Kind() == reflect.Slice || field.Kind() == reflect.Struct {
+				sanitizeDisplayStrings(field)
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			sanitizeDisplayStrings(v.Index(i))
+		}
+	case reflect.String:
+		if v.CanSet() {
+			v.SetString(display.Sanitize(v.String()).Safe)
+		}
+	}
+}
+
+func printReceiptDisplayField(out io.Writer, prefix, raw string, opts receiptPrintOptions) {
+	res := display.Sanitize(raw)
+	_, _ = fmt.Fprintf(out, "%s%s\n", prefix, res.Safe)
+	if res.Suspicious {
+		for _, ann := range res.Annotations {
+			_, _ = fmt.Fprintf(out, "    ⚠ display anomaly: %s at byte %d: %s\n", ann.Class, ann.Offset, ann.Detail)
+		}
+	}
+	if opts.ShowRaw {
+		_, _ = fmt.Fprintf(out, "    raw: %q\n", raw)
+	}
+	if opts.Hexdump {
+		_, _ = fmt.Fprintf(out, "    hexdump:\n%s\n", display.Hexdump(raw))
+	}
+}
+
+func printReceiptLimits(out io.Writer) {
+	for _, id := range []evidence.LimitID{
+		evidence.LimitKeyholderOmit,
+		evidence.LimitForgedKey,
+		evidence.LimitRecorderBinary,
+		evidence.LimitRecorderDisabled,
+		evidence.LimitVerifierDrift,
+		evidence.LimitContainmentUnproven,
+	} {
+		limit, _ := evidence.ByID(id)
+		_, _ = fmt.Fprintf(out, "  Limit:      %s: %s\n", limit.ID, limit.Summary)
+	}
+}
+
+func printContainmentForReceipts(out io.Writer, receipts []receipt.Receipt, opts receiptPostureOptions) error {
+	assessment, err := containmentAssessmentForReceipts(receipts, opts)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(out, evidence.FormatContainmentAssessment(assessment))
+	for _, reason := range assessment.Reasons {
+		_, _ = fmt.Fprintf(out, "  containment reason: %s\n", reason)
+	}
+	return nil
+}
+
+func containmentAssessmentForReceipts(receipts []receipt.Receipt, opts receiptPostureOptions) (evidence.ContainmentAssessment, error) {
+	if opts.Path == "" {
+		return evidence.AssessContainment(evidence.ContainmentAssessmentOptions{}), nil
+	}
+	if strings.TrimSpace(opts.KeyHex) == "" {
+		return evidence.ContainmentAssessment{}, fmt.Errorf("--posture-key is required when --posture is supplied")
+	}
+	data, err := os.ReadFile(filepath.Clean(opts.Path))
+	if err != nil {
+		return evidence.ContainmentAssessment{}, fmt.Errorf("reading posture capsule: %w", err)
+	}
+	var capsule posture.Capsule
+	if err := json.Unmarshal(data, &capsule); err != nil {
+		return evidence.ContainmentAssessment{}, fmt.Errorf("parsing posture capsule: %w", err)
+	}
+	key, err := evidence.DecodePostureKey(opts.KeyHex)
+	if err != nil {
+		return evidence.ContainmentAssessment{}, fmt.Errorf("decode posture key: %w", err)
+	}
+	from, to := receiptWindow(receipts)
+	binding := receiptPostureBinding(receipts)
+	capsuleHash, err := postureCapsuleSHA256(&capsule)
+	if err != nil {
+		return evidence.ContainmentAssessment{}, fmt.Errorf("hash posture capsule: %w", err)
+	}
+	return evidence.AssessContainment(evidence.ContainmentAssessmentOptions{
+		Capsule:              &capsule,
+		TrustedKey:           key,
+		ReceiptFrom:          from,
+		ReceiptTo:            to,
+		ActorUID:             binding.containedUID,
+		CapsuleSHA256:        capsuleHash,
+		ReceiptCapsuleSHA256: binding.postureCapsuleSHA256,
+		ReceiptSignerKeyID:   binding.postureSignerKeyID,
+	}), nil
+}
+
+func receiptWindow(receipts []receipt.Receipt) (time.Time, time.Time) {
+	if len(receipts) == 0 {
+		return time.Time{}, time.Time{}
+	}
+	start := receipts[0].ActionRecord.Timestamp
+	end := receipts[0].ActionRecord.Timestamp
+	for _, r := range receipts[1:] {
+		ts := r.ActionRecord.Timestamp
+		if ts.Before(start) {
+			start = ts
+		}
+		if ts.After(end) {
+			end = ts
+		}
+	}
+	return start, end
+}
+
+type receiptPostureBindingInfo struct {
+	containedUID         string
+	postureCapsuleSHA256 string
+	postureSignerKeyID   string
+}
+
+func receiptPostureBinding(receipts []receipt.Receipt) receiptPostureBindingInfo {
+	for _, r := range receipts {
+		if r.ActionRecord.SessionControl != nil && r.ActionRecord.SessionControl.Open != nil {
+			open := r.ActionRecord.SessionControl.Open
+			return receiptPostureBindingInfo{
+				containedUID:         open.ContainedUID,
+				postureCapsuleSHA256: open.PostureCapsuleSHA256,
+				postureSignerKeyID:   open.PostureSignerKeyID,
+			}
+		}
+	}
+	return receiptPostureBindingInfo{}
+}
+
+func postureCapsuleSHA256(capsule *posture.Capsule) (string, error) {
+	data, err := json.Marshal(capsule)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // TranscriptRootCmd returns the "transcript-root" cobra command.

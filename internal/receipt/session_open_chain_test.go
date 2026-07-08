@@ -337,6 +337,26 @@ func TestVerifyChain_SessionOpenAdversarialRejections(t *testing.T) {
 			},
 			wantErr: "heartbeat open_nonce does not match session_open",
 		},
+		"heartbeat_missing_record_run_nonce": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				open := signBoundOpen(t, priv, base)
+				return []Receipt{
+					open,
+					signSessionReceipt(t, priv, 1, mustHash(t, open), base.Add(time.Second), "", &SessionControl{
+						Kind: SessionControlHeartbeat,
+						Heartbeat: &SessionHeartbeat{
+							RunNonce:     sessionOpenTestRunA,
+							OpenNonce:    "open-a",
+							Beat:         1,
+							ChainHead:    mustHash(t, open),
+							ChainSeqHead: 0,
+						},
+					}, nil),
+				}
+			},
+			wantErr: "session_control receipt missing run_nonce",
+		},
 		"close_run_nonce_mismatch": {
 			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
 				base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
@@ -372,6 +392,282 @@ func TestVerifyChain_SessionOpenAdversarialRejections(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVerifyChain_SessionControlClaimedValueRejections(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		build   func(t *testing.T, priv ed25519.PrivateKey) []Receipt
+		wantErr string
+	}{
+		"heartbeat_run_nonce_active_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				return buildStaleSessionControlHeartbeatAfterRestart(t, priv)
+			},
+			wantErr: "heartbeat run_nonce does not match active session_open",
+		},
+		"heartbeat_run_nonce_receipt_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[1].ActionRecord.SessionControl.Heartbeat.RunNonce = sessionOpenTestRunB
+				chain[1] = resignSessionReceipt(t, priv, chain[1])
+				return chain
+			},
+			wantErr: "heartbeat run_nonce does not match receipt run_nonce",
+		},
+		"heartbeat_open_nonce_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[1].ActionRecord.SessionControl.Heartbeat.OpenNonce = "wrong-open"
+				chain[1] = resignSessionReceipt(t, priv, chain[1])
+				return chain
+			},
+			wantErr: "heartbeat open_nonce does not match session_open",
+		},
+		"heartbeat_chain_head_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[1].ActionRecord.SessionControl.Heartbeat.ChainHead = "wrong-chain-head"
+				chain[1] = resignSessionReceipt(t, priv, chain[1])
+				return chain
+			},
+			wantErr: "heartbeat chain_head mismatch",
+		},
+		"heartbeat_chain_seq_head_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[1].ActionRecord.SessionControl.Heartbeat.ChainSeqHead = chain[1].ActionRecord.ChainSeq
+				chain[1] = resignSessionReceipt(t, priv, chain[1])
+				return chain
+			},
+			wantErr: "heartbeat chain_seq_head mismatch",
+		},
+		"heartbeat_missing_record_run_nonce": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[1].ActionRecord.RunNonce = ""
+				chain[1] = resignSessionReceipt(t, priv, chain[1])
+				return chain
+			},
+			wantErr: "session_control receipt missing run_nonce",
+		},
+		"session_close_run_nonce_receipt_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[2].ActionRecord.SessionControl.Close.RunNonce = sessionOpenTestRunB
+				chain[2] = resignSessionReceipt(t, priv, chain[2])
+				return chain
+			},
+			wantErr: "session_close run_nonce does not match receipt run_nonce",
+		},
+		"session_close_run_nonce_active_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				return buildStaleSessionControlCloseAfterRestart(t, priv)
+			},
+			wantErr: "session_close run_nonce does not match active session_open",
+		},
+		"session_close_open_nonce_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[2].ActionRecord.SessionControl.Close.OpenNonce = "wrong-open"
+				chain[2] = resignSessionReceipt(t, priv, chain[2])
+				return chain
+			},
+			wantErr: "session_close open_nonce does not match session_open",
+		},
+		"session_close_root_hash_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[2].ActionRecord.SessionControl.Close.RootHash = "wrong-root-hash"
+				chain[2] = resignSessionReceipt(t, priv, chain[2])
+				return chain
+			},
+			wantErr: "session_close root_hash mismatch",
+		},
+		"heartbeat_after_session_close": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+				afterClose := signHeartbeatReceipt(t, priv, 3, mustHash(t, chain[2]), "open-a", base.Add(3*time.Second))
+				return append(chain, afterClose)
+			},
+			wantErr: "heartbeat has no active session_open",
+		},
+		"session_close_final_seq_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[2].ActionRecord.SessionControl.Close.FinalSeq = chain[2].ActionRecord.ChainSeq - 1
+				chain[2] = resignSessionReceipt(t, priv, chain[2])
+				return chain
+			},
+			wantErr: "session_close final_seq mismatch",
+		},
+		"session_close_receipt_count_mismatch": {
+			build: func(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+				chain := buildValidSessionControlChain(t, priv)
+				chain[2].ActionRecord.SessionControl.Close.ReceiptCount++
+				chain[2] = resignSessionReceipt(t, priv, chain[2])
+				return chain
+			},
+			wantErr: "session_close receipt_count mismatch",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			pub, priv := generateTestKey(t)
+			res := VerifyChain(tc.build(t, priv), hex.EncodeToString(pub))
+			if res.Valid {
+				t.Fatal("malformed session_control chain verified")
+			}
+			if !strings.Contains(res.Error, tc.wantErr) {
+				t.Fatalf("error = %q, want substring %q", res.Error, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateSessionControl_ActiveOpenNonceMismatchRejections(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		receipt func(t *testing.T, priv ed25519.PrivateKey, prevHash string) Receipt
+		wantErr string
+	}{
+		"heartbeat": {
+			receipt: func(t *testing.T, priv ed25519.PrivateKey, prevHash string) Receipt {
+				return signHeartbeatReceipt(t, priv, 1, prevHash, "open-a", time.Now().UTC())
+			},
+			wantErr: "heartbeat open_nonce does not match active session_open",
+		},
+		"session_close": {
+			receipt: func(t *testing.T, priv ed25519.PrivateKey, prevHash string) Receipt {
+				return signCloseReceipt(t, priv, 1, prevHash, sessionOpenTestRunA, "open-a", time.Now().UTC())
+			},
+			wantErr: "session_close open_nonce does not match active session_open",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, priv := generateTestKey(t)
+			prevHash := strings.Repeat("a", 64)
+			verifier := &chainVerifier{
+				runNonces:  map[string]string{sessionOpenTestRunA: "open-a"},
+				activeRun:  sessionOpenTestRunA,
+				activeOpen: "open-active",
+				prevHash:   prevHash,
+			}
+
+			res, ok := verifier.validateSessionControl(tc.receipt(t, priv, prevHash))
+			if ok {
+				t.Fatal("mismatched active open_nonce was accepted")
+			}
+			if !strings.Contains(res.Error, tc.wantErr) {
+				t.Fatalf("error = %q, want substring %q", res.Error, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestVerifyChain_AllowsSameKeyRestartAfterSessionClose(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := generateTestKey(t)
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	openA := signBoundOpen(t, priv, base)
+	closeA := signCloseReceipt(t, priv, 1, mustHash(t, openA), sessionOpenTestRunA, "open-a", base.Add(time.Second))
+	openB := signRestartOpen(
+		t,
+		priv,
+		2,
+		mustHash(t, closeA),
+		closeA.ActionRecord.ChainSeq,
+		sessionOpenTestRunB,
+		base.Add(2*time.Second),
+		nil,
+	)
+	closeB := signCloseReceipt(
+		t,
+		priv,
+		3,
+		mustHash(t, openB),
+		sessionOpenTestRunB,
+		"open-"+sessionOpenTestRunB,
+		base.Add(3*time.Second),
+	)
+
+	res := VerifyChain([]Receipt{openA, closeA, openB, closeB}, hex.EncodeToString(pub))
+	if !res.Valid {
+		t.Fatalf("same-key restart after session_close rejected: %s", res.Error)
+	}
+}
+
+func buildValidSessionControlChain(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+	t.Helper()
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	open := signBoundOpen(t, priv, base)
+	heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), "open-a", base.Add(time.Second))
+	closeReceipt := signCloseReceipt(t, priv, 2, mustHash(t, heartbeat), sessionOpenTestRunA, "open-a", base.Add(2*time.Second))
+	return []Receipt{open, heartbeat, closeReceipt}
+}
+
+func buildStaleSessionControlHeartbeatAfterRestart(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+	t.Helper()
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	open := signBoundOpen(t, priv, base)
+	heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), "open-a", base.Add(time.Second))
+	restart := signRestartOpen(
+		t,
+		priv,
+		2,
+		mustHash(t, heartbeat),
+		heartbeat.ActionRecord.ChainSeq,
+		sessionOpenTestRunB,
+		base.Add(2*time.Second),
+		nil,
+	)
+	staleHeartbeat := signHeartbeatReceipt(t, priv, 3, mustHash(t, restart), "open-a", base.Add(3*time.Second))
+	return []Receipt{open, heartbeat, restart, staleHeartbeat}
+}
+
+func buildStaleSessionControlCloseAfterRestart(t *testing.T, priv ed25519.PrivateKey) []Receipt {
+	t.Helper()
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	open := signBoundOpen(t, priv, base)
+	heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), "open-a", base.Add(time.Second))
+	restart := signRestartOpen(
+		t,
+		priv,
+		2,
+		mustHash(t, heartbeat),
+		heartbeat.ActionRecord.ChainSeq,
+		sessionOpenTestRunB,
+		base.Add(2*time.Second),
+		nil,
+	)
+	staleClose := signSessionReceipt(t, priv, 3, mustHash(t, restart), base.Add(3*time.Second), sessionOpenTestRunA, &SessionControl{
+		Kind: SessionControlClose,
+		Close: &SessionClose{
+			RunNonce:     sessionOpenTestRunA,
+			OpenNonce:    "open-a",
+			FinalSeq:     3,
+			RootHash:     mustHash(t, restart),
+			ReceiptCount: 4,
+			CloseReason:  "normal",
+		},
+	}, nil)
+	return []Receipt{open, heartbeat, restart, staleClose}
+}
+
+func resignSessionReceipt(t *testing.T, priv ed25519.PrivateKey, r Receipt) Receipt {
+	t.Helper()
+	signed, err := Sign(r.ActionRecord, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	return signed
 }
 
 func TestVerifyChain_SessionOpenDeletionAndReorderRejected(t *testing.T) {

@@ -47,6 +47,8 @@ const (
 	goldenG1RestartChain   = "g1-restart-chain.jsonl"
 	goldenG1BrokenGenesis  = "g1-broken-genesis.jsonl"
 	goldenG1LegacyOpen     = "g1-legacy-open-genesis.jsonl"
+	goldenG1BadHeartbeat   = "g1-inconsistent-heartbeat.jsonl"
+	goldenG1BadClose       = "g1-inconsistent-close.jsonl"
 	goldenG1Vectors        = "g1-genesis-vectors.json"
 	goldenInvalidSignature = "invalid-signature.json"
 	goldenBrokenChain      = "broken-chain.jsonl"
@@ -369,6 +371,61 @@ func buildG1BrokenGenesisChain(t *testing.T, priv ed25519.PrivateKey) []receipt.
 	return chain
 }
 
+func buildG1InconsistentHeartbeatChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+
+	heartbeatAR := chain[3].ActionRecord
+	heartbeat := *heartbeatAR.SessionControl.Heartbeat
+	heartbeat.ChainHead = "signed-lie-heartbeat-chain-head"
+	heartbeat.ChainSeqHead = 99
+	heartbeatAR.SessionControl = &receipt.SessionControl{
+		Kind:      receipt.SessionControlHeartbeat,
+		Heartbeat: &heartbeat,
+	}
+	heartbeatReceipt, err := receipt.Sign(heartbeatAR, priv)
+	if err != nil {
+		t.Fatalf("Sign inconsistent heartbeat: %v", err)
+	}
+	chain[3] = heartbeatReceipt
+	heartbeatHash := mustReceiptHash(t, heartbeatReceipt)
+
+	closeAR := chain[4].ActionRecord
+	closeAR.ChainPrevHash = heartbeatHash
+	closeRecord := *closeAR.SessionControl.Close
+	closeRecord.RootHash = heartbeatHash
+	closeAR.SessionControl = &receipt.SessionControl{
+		Kind:  receipt.SessionControlClose,
+		Close: &closeRecord,
+	}
+	closeReceipt, err := receipt.Sign(closeAR, priv)
+	if err != nil {
+		t.Fatalf("Sign close after inconsistent heartbeat: %v", err)
+	}
+	chain[4] = closeReceipt
+	return chain
+}
+
+func buildG1InconsistentCloseChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	chain := buildG1ValidChain(t, priv)
+	closeAR := chain[4].ActionRecord
+	closeRecord := *closeAR.SessionControl.Close
+	closeRecord.RootHash = "signed-lie-close-root"
+	closeRecord.FinalSeq = 99
+	closeRecord.ReceiptCount = 99
+	closeAR.SessionControl = &receipt.SessionControl{
+		Kind:  receipt.SessionControlClose,
+		Close: &closeRecord,
+	}
+	closeReceipt, err := receipt.Sign(closeAR, priv)
+	if err != nil {
+		t.Fatalf("Sign inconsistent close: %v", err)
+	}
+	chain[4] = closeReceipt
+	return chain
+}
+
 func buildG1LegacyOpenOnGenesisChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
 	t.Helper()
 	chain := buildG1ValidChain(t, priv)
@@ -510,6 +567,10 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1BrokenGenesis), wrapInFlightRecorderEntries(t, g1Broken))
 	g1LegacyOpen := buildG1LegacyOpenOnGenesisChain(t, priv)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1LegacyOpen), wrapInFlightRecorderEntries(t, g1LegacyOpen))
+	g1BadHeartbeat := buildG1InconsistentHeartbeatChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1BadHeartbeat), wrapInFlightRecorderEntries(t, g1BadHeartbeat))
+	g1BadClose := buildG1InconsistentCloseChain(t, priv)
+	writeEntryJSONL(t, filepath.Join(testdataDir, goldenG1BadClose), wrapInFlightRecorderEntries(t, g1BadClose))
 
 	// 4. invalid-signature.json - tamper a signature byte. Individual verify
 	// MUST fail. Chain verification also fails on this receipt.
@@ -682,6 +743,54 @@ func TestConformance_G1LegacyOpenOnGenesisRejected(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "session_open on legacy genesis") {
 		t.Errorf("error = %q, want substring 'session_open on legacy genesis'", result.Error)
+	}
+}
+
+func TestConformance_G1InconsistentHeartbeatRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1BadHeartbeat))
+	pub, _ := testKeyPair(t)
+	keyHex := hex.EncodeToString(pub)
+	for i, r := range receipts {
+		if err := receipt.VerifyWithKey(r, keyHex); err != nil {
+			t.Fatalf("receipt[%d] individual sig invalid: %v", i, err)
+		}
+	}
+
+	result := receipt.VerifyChain(receipts, keyHex)
+	if result.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted inconsistent heartbeat")
+	}
+	if result.BrokenAtSeq != 3 {
+		t.Errorf("broken_at_seq = %d, want 3", result.BrokenAtSeq)
+	}
+	if !strings.Contains(result.Error, "heartbeat chain_head") {
+		t.Errorf("error = %q, want heartbeat chain_head mismatch", result.Error)
+	}
+}
+
+func TestConformance_G1InconsistentCloseRejected(t *testing.T) {
+	t.Parallel()
+
+	receipts := readReceiptsJSONL(t, filepath.Join(testdataDir, goldenG1BadClose))
+	pub, _ := testKeyPair(t)
+	keyHex := hex.EncodeToString(pub)
+	for i, r := range receipts {
+		if err := receipt.VerifyWithKey(r, keyHex); err != nil {
+			t.Fatalf("receipt[%d] individual sig invalid: %v", i, err)
+		}
+	}
+
+	result := receipt.VerifyChain(receipts, keyHex)
+	if result.Valid {
+		t.Fatal("VerifyChain unexpectedly accepted inconsistent close")
+	}
+	if result.BrokenAtSeq != 4 {
+		t.Errorf("broken_at_seq = %d, want 4", result.BrokenAtSeq)
+	}
+	if !strings.Contains(result.Error, "session_close root_hash") {
+		t.Errorf("error = %q, want session_close root_hash mismatch", result.Error)
 	}
 }
 

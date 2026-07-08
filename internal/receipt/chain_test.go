@@ -320,7 +320,7 @@ func TestVerifyChainFailureKindsDoNotOverDowngrade(t *testing.T) {
 		t.Parallel()
 		pub, priv := generateTestKey(t)
 		open := signBoundOpen(t, priv, base)
-		heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), sessionOpenTestRunA, "open-a", base.Add(time.Second))
+		heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), "open-a", base.Add(time.Second))
 		heartbeat.ActionRecord.Target = "https://api.vendor.example/forged-heartbeat"
 
 		requireChainFailure(t, VerifyChain([]Receipt{open, heartbeat}, hex.EncodeToString(pub)), ChainFailureIntegrity)
@@ -373,7 +373,7 @@ func TestVerifyChainFailureKindsDoNotOverDowngrade(t *testing.T) {
 		t.Parallel()
 		pub, priv := generateTestKey(t)
 		open := signBoundOpen(t, priv, base)
-		heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), sessionOpenTestRunA, "wrong-open", base.Add(time.Second))
+		heartbeat := signHeartbeatReceipt(t, priv, 1, mustHash(t, open), "wrong-open", base.Add(time.Second))
 
 		requireChainFailure(t, VerifyChain([]Receipt{open, heartbeat}, hex.EncodeToString(pub)), ChainFailureLifecycle)
 		if integrity := VerifyChainIntegrity([]Receipt{open, heartbeat}, hex.EncodeToString(pub)); !integrity.Valid {
@@ -382,14 +382,16 @@ func TestVerifyChainFailureKindsDoNotOverDowngrade(t *testing.T) {
 	})
 }
 
-func signHeartbeatReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, prevHash, runNonce, openNonce string, ts time.Time) Receipt {
+func signHeartbeatReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, prevHash, openNonce string, ts time.Time) Receipt {
 	t.Helper()
-	return signSessionReceipt(t, priv, seq, prevHash, ts, runNonce, &SessionControl{
+	return signSessionReceipt(t, priv, seq, prevHash, ts, sessionOpenTestRunA, &SessionControl{
 		Kind: SessionControlHeartbeat,
 		Heartbeat: &SessionHeartbeat{
-			RunNonce:         runNonce,
+			RunNonce:         sessionOpenTestRunA,
 			OpenNonce:        openNonce,
 			Beat:             1,
+			ChainHead:        prevHash,
+			ChainSeqHead:     seq - 1,
 			HeartbeatTime:    ts.Format(time.RFC3339Nano),
 			DurabilityBlocks: 1,
 		},
@@ -403,9 +405,9 @@ func signCloseReceipt(t *testing.T, priv ed25519.PrivateKey, seq uint64, prevHas
 		Close: &SessionClose{
 			RunNonce:         runNonce,
 			OpenNonce:        openNonce,
-			FinalSeq:         seq - 1,
+			FinalSeq:         seq,
 			RootHash:         prevHash,
-			ReceiptCount:     seq,
+			ReceiptCount:     seq + 1,
 			CloseReason:      "normal",
 			DurabilityBlocks: 1,
 		},

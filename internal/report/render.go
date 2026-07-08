@@ -9,9 +9,26 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"reflect"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
 )
+
+type displayAnomaly struct {
+	Field       string
+	Safe        string
+	Detail      string
+	Hexdump     string
+	Punycode    string
+	Annotations []display.Annotation
+}
+
+var eventHostFields = map[string]struct{}{
+	"ConnectHost": {},
+	"SNIHost":     {},
+}
 
 //go:embed template.html
 var templateHTML string
@@ -60,6 +77,12 @@ func RenderHTML(w io.Writer, r *Report) error {
 		"eventSeverity": func(ev Event) string {
 			return eventSeverity(&ev)
 		},
+		"eventField": func(ev Event, name string) string {
+			return sanitizedEventField(ev, name)
+		},
+		"eventAnomalies": func(ev Event) []displayAnomaly {
+			return eventDisplayAnomalies(ev)
+		},
 		"execSummary": func(r Report) string {
 			return generateExecSummary(&r)
 		},
@@ -75,13 +98,13 @@ func RenderHTML(w io.Writer, r *Report) error {
 			return buildTimelineBars(buckets)
 		},
 		"eventJSON": func(ev Event) template.HTML {
-			b, err := json.MarshalIndent(ev, "", "  ")
+			b, err := json.MarshalIndent(sanitizeEventForDisplay(ev), "", "  ")
 			if err != nil {
 				return "{}"
 			}
-			// Safe to mark as HTML: json.Marshal escapes special chars,
-			// and the data originates from parsed JSONL (no user HTML).
-			return template.HTML(b) //nolint:gosec // G203: data from json.Marshal is safe
+			// Safe to mark as HTML: this is display-sanitized JSON; raw
+			// evidence bytes are verified elsewhere and are not mutated here.
+			return template.HTML(b) //nolint:gosec // G203: display-sanitized JSON; raw bytes are verified elsewhere
 		},
 	}
 
@@ -90,6 +113,114 @@ func RenderHTML(w io.Writer, r *Report) error {
 		return fmt.Errorf("parsing template: %w", err)
 	}
 	return tmpl.Execute(w, r)
+}
+
+func sanitizeEventForDisplay(ev Event) Event {
+	out := ev
+	rv := reflect.ValueOf(&out).Elem()
+	rt := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		field := rt.Field(i)
+		if rv.Field(i).Kind() != reflect.String {
+			continue
+		}
+		raw := rv.Field(i).String()
+		if raw == "" {
+			continue
+		}
+		rv.Field(i).SetString(sanitizeDisplayField(field.Name, raw).Safe)
+	}
+	// Copy slice fields onto fresh backing arrays before sanitizing their
+	// elements: `out := ev` is a shallow copy, so mutating out.Patterns /
+	// out.BundleRules in place would also mutate the caller's original Event
+	// (the raw values other code still reads).
+	out.Patterns = append([]string(nil), ev.Patterns...)
+	for i := range out.Patterns {
+		out.Patterns[i] = display.Sanitize(out.Patterns[i]).Safe
+	}
+	out.BundleRules = append([]BundleRuleHit(nil), ev.BundleRules...)
+	for i := range out.BundleRules {
+		out.BundleRules[i].RuleID = display.Sanitize(out.BundleRules[i].RuleID).Safe
+		out.BundleRules[i].Bundle = display.Sanitize(out.BundleRules[i].Bundle).Safe
+		out.BundleRules[i].BundleVersion = display.Sanitize(out.BundleRules[i].BundleVersion).Safe
+	}
+	return out
+}
+
+func sanitizedEventField(ev Event, name string) string {
+	rv := reflect.ValueOf(ev)
+	field := rv.FieldByName(name)
+	if !field.IsValid() || field.Kind() != reflect.String {
+		return ""
+	}
+	return sanitizeDisplayField(name, field.String()).Safe
+}
+
+func eventDisplayAnomalies(ev Event) []displayAnomaly {
+	var out []displayAnomaly
+	rv := reflect.ValueOf(ev)
+	rt := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		field := rt.Field(i)
+		if rv.Field(i).Kind() != reflect.String {
+			continue
+		}
+		raw := rv.Field(i).String()
+		if raw == "" {
+			continue
+		}
+		res := sanitizeDisplayField(field.Name, raw)
+		if res.Suspicious {
+			out = append(out, anomalyFromResult(field.Name, res))
+		}
+	}
+	for i, pattern := range ev.Patterns {
+		res := display.Sanitize(pattern)
+		if res.Suspicious {
+			out = append(out, anomalyFromResult(fmt.Sprintf("Patterns[%d]", i), res))
+		}
+	}
+	for i, rule := range ev.BundleRules {
+		for _, item := range []struct {
+			name string
+			raw  string
+		}{
+			{fmt.Sprintf("BundleRules[%d].RuleID", i), rule.RuleID},
+			{fmt.Sprintf("BundleRules[%d].Bundle", i), rule.Bundle},
+			{fmt.Sprintf("BundleRules[%d].BundleVersion", i), rule.BundleVersion},
+		} {
+			res := display.Sanitize(item.raw)
+			if res.Suspicious {
+				out = append(out, anomalyFromResult(item.name, res))
+			}
+		}
+	}
+	return out
+}
+
+func sanitizeDisplayField(name, raw string) display.Result {
+	if _, ok := eventHostFields[name]; ok {
+		return display.SanitizeHost(raw)
+	}
+	return display.Sanitize(raw)
+}
+
+func anomalyFromResult(field string, res display.Result) displayAnomaly {
+	annDetails := make([]string, 0, len(res.Annotations))
+	for _, ann := range res.Annotations {
+		annDetails = append(annDetails, fmt.Sprintf("%s at byte %d: %s", ann.Class, ann.Offset, ann.Detail))
+	}
+	anom := displayAnomaly{
+		Field:       field,
+		Safe:        res.Safe,
+		Detail:      strings.Join(annDetails, "; "),
+		Hexdump:     display.Hexdump(res.Raw),
+		Annotations: res.Annotations,
+	}
+	if res.PunycodeASCII != "" && res.PunycodeASCII != res.PunycodeUnicode {
+		anom.Punycode = fmt.Sprintf("ASCII %s / Unicode %s", res.PunycodeASCII, res.PunycodeUnicode)
+	}
+	return anom
 }
 
 // generateExecSummary creates a human-readable executive summary paragraph.

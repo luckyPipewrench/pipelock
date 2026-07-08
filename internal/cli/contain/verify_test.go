@@ -2250,6 +2250,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 	t.Helper()
 	env := makeProbeEnv(t)
 	env.operatorUser = testOperatorUser
+	env.nftRulesPath = filepath.Join(t.TempDir(), "50-pipelock-containment.nft")
 
 	// Probe 1: both users present.
 	env.lookupUser = func(name string) (*user.User, error) {
@@ -2305,6 +2306,9 @@ func allPassEnv(t *testing.T) *probeEnv {
 		}
 		if path == env.toolsListPath {
 			return []byte("claude\t" + toolTarget + "\n"), nil
+		}
+		if path == env.nftRulesPath {
+			return []byte(renderNFTRules(1000, 988, 987, env.port, env.nftTable, env.nftChain)), nil
 		}
 		return nil, fmt.Errorf("unexpected readFile %s", path)
 	}

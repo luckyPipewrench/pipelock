@@ -605,3 +605,125 @@ func TestMCPV2DecisionFromReceipt_ProvenanceBranches(t *testing.T) {
 		t.Fatalf("contract source duplicated: %v", withContractSource.PolicySources)
 	}
 }
+
+// The durable pre-egress guarantee must cover every forwardable verdict, not
+// just allow: warn, forward, and strip all egress upstream, so their required
+// decision receipt must be fsync-confirmed before the bytes leave. Only the
+// durable (RecordDurable) path calls File.Sync, so an injected Sync failure
+// makes a required forwardable verdict fail closed with recorder.ErrDurability
+// while a non-forwardable verdict (no Sync call) is unaffected.
+func TestEmitMCPDecision_ForwardableVerdictsEmitDurable(t *testing.T) {
+	for _, verdict := range []string{config.ActionWarn, config.ActionForward, config.ActionStrip} {
+		t.Run(verdict, func(t *testing.T) {
+			recEmitter, rec, _, _ := newReceiptTestHarness(t)
+			syncErr := errors.New("injected durable sync failure")
+			rec.SetSyncForTest(func(*os.File) error { return syncErr })
+
+			_, err := EmitMCPDecision(recEmitter, nil, nil, MCPDecision{
+				Receipt: receipt.EmitOpts{
+					ActionID:  "required-" + verdict,
+					Verdict:   verdict,
+					Transport: transportMCPStdio,
+					Target:    "fetch",
+					MCPMethod: methodToolsCall,
+					ToolName:  "fetch",
+				},
+				RequireReceipt: true,
+			})
+			if !errors.Is(err, ErrReceiptRequired) {
+				t.Fatalf("err = %v, want ErrReceiptRequired (forwardable %q must be durable)", err, verdict)
+			}
+			if !errors.Is(err, recorder.ErrDurability) {
+				t.Fatalf("err = %v, want recorder.ErrDurability (forwardable %q took the non-durable path)", err, verdict)
+			}
+		})
+	}
+}
+
+// A required block receipt does not egress upstream, so it stays on the
+// non-durable Emit path: an injected Sync failure must NOT block it (no
+// RecordDurable call means no Sync call). This proves broadening durability to
+// the forwardable set did not accidentally make every verdict durable.
+func TestEmitMCPDecision_NonForwardableVerdictStaysNonDurable(t *testing.T) {
+	recEmitter, rec, _, _ := newReceiptTestHarness(t)
+	rec.SetSyncForTest(func(*os.File) error {
+		return errors.New("Sync must not be called for a non-durable verdict")
+	})
+
+	_, err := EmitMCPDecision(recEmitter, nil, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:  "required-block",
+			Verdict:   config.ActionBlock,
+			Transport: transportMCPStdio,
+			Target:    "fetch",
+			MCPMethod: methodToolsCall,
+			ToolName:  "fetch",
+		},
+		RequireReceipt: true,
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil (non-forwardable block must not take the durable/Sync path)", err)
+	}
+}
+
+// Only allow carries DecisionPhaseIntent (paired with a downstream outcome);
+// warn/forward/strip must stay single-phase so the completeness verifier counts
+// them as neither an intent nor an outcome (no unmatched-intent).
+func TestEmitMCPDecision_ForwardableVerdictsStaySinglePhase(t *testing.T) {
+	for _, verdict := range []string{config.ActionWarn, config.ActionForward, config.ActionStrip} {
+		t.Run(verdict, func(t *testing.T) {
+			recEmitter, _, dir, _ := newReceiptTestHarness(t)
+			_, err := EmitMCPDecision(recEmitter, nil, nil, MCPDecision{
+				Receipt: receipt.EmitOpts{
+					ActionID:  "single-phase-" + verdict,
+					Verdict:   verdict,
+					Transport: transportMCPStdio,
+					Target:    "fetch",
+					MCPMethod: methodToolsCall,
+					ToolName:  "fetch",
+				},
+				RequireReceipt: true,
+			})
+			if err != nil {
+				t.Fatalf("EmitMCPDecision(%s): %v", verdict, err)
+			}
+			receipts := decisionReceiptLogFor(t, dir)
+			if len(receipts) != 1 {
+				t.Fatalf("expected 1 receipt, got %d", len(receipts))
+			}
+			if phase := receipts[0].ActionRecord.DecisionPhase; phase == receipt.DecisionPhaseIntent {
+				t.Fatalf("forwardable %q was marked DecisionPhaseIntent; want single-phase", verdict)
+			}
+		})
+	}
+}
+
+// A deferred-resolution receipt carries DecisionPhaseResolution with a final
+// allow verdict and a fresh ActionID (no paired outcome). It must keep its
+// resolution phase, not be overwritten to intent — otherwise the completeness
+// verifier would miscount it as an unmatched intent. Guards the phase-overwrite.
+func TestEmitMCPDecision_RequiredResolutionAllowKeepsResolutionPhase(t *testing.T) {
+	recEmitter, _, dir, _ := newReceiptTestHarness(t)
+	_, err := EmitMCPDecision(recEmitter, nil, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:      "resolution-allow-1",
+			Verdict:       config.ActionAllow,
+			Transport:     transportMCPStdio,
+			Target:        "fetch",
+			MCPMethod:     methodToolsCall,
+			ToolName:      "fetch",
+			DecisionPhase: receipt.DecisionPhaseResolution,
+		},
+		RequireReceipt: true,
+	})
+	if err != nil {
+		t.Fatalf("EmitMCPDecision: %v", err)
+	}
+	receipts := decisionReceiptLogFor(t, dir)
+	if len(receipts) != 1 {
+		t.Fatalf("expected 1 receipt, got %d", len(receipts))
+	}
+	if phase := receipts[0].ActionRecord.DecisionPhase; phase != receipt.DecisionPhaseResolution {
+		t.Fatalf("decision_phase = %q, want %q (resolution phase overwritten to intent)", phase, receipt.DecisionPhaseResolution)
+	}
+}

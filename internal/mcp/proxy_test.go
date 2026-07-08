@@ -599,6 +599,46 @@ func TestForwardScanned_StripAction(t *testing.T) {
 	}
 }
 
+func TestForwardScanned_StripRequireReceiptsDurabilityFailureBlocksResponse(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionStrip)
+	var out, log bytes.Buffer
+	emitter, rec, _, _ := newReceiptTestHarness(t)
+	rec.SetSyncForTest(func(*os.File) error {
+		return errors.New("injected durable sync failure")
+	})
+
+	tracker := NewRequestTracker()
+	tracker.Track(json.RawMessage(`42`))
+
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(injectionResponse+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		tracker,
+		MCPProxyOpts{
+			Scanner:         sc,
+			ReceiptEmitter:  emitter,
+			Transport:       transportMCPStdio,
+			RequireReceipts: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+	if strings.Contains(out.String(), "Ignore all previous") || strings.Contains(out.String(), "[REDACTED:") {
+		t.Fatalf("strip response egressed despite required durable receipt failure: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "receipt emission failed") {
+		t.Fatalf("expected fail-closed receipt error response, got: %s", out.String())
+	}
+	if !strings.Contains(log.String(), "receipt emission failed") {
+		t.Fatalf("expected receipt failure log, got: %s", log.String())
+	}
+}
+
 func TestForwardScanned_Notification(t *testing.T) {
 	sc := testScannerWithAction(t, "block")
 	var out, log bytes.Buffer

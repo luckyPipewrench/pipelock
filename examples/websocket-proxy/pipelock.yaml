@@ -1,0 +1,44 @@
+# WebSocket proxy example config.
+# Used by verify.sh from a temp copy so listen addresses can be customized.
+
+version: 1
+mode: balanced
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  monitoring:
+    max_url_length: 4096
+    entropy_threshold: 4.5
+
+websocket_proxy:
+  enabled: true
+  max_message_bytes: 1048576
+  max_concurrent_connections: 32
+  scan_text_frames: true
+  allow_binary_frames: false
+  strip_compression: true
+  max_connection_seconds: 60
+  idle_timeout_seconds: 30
+  origin_policy: rewrite
+
+dlp:
+  include_defaults: true
+
+request_body_scanning:
+  enabled: true
+  action: block
+
+response_scanning:
+  enabled: true
+  action: block
+  include_defaults: true
+
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"
+    - "::1/128"
+
+internal:
+  - "127.0.0.0/8"
+  - "::1/128"

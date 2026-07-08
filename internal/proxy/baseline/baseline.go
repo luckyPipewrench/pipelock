@@ -1199,7 +1199,38 @@ func (m *Manager) integrityLogAttrs(failureClass string, err error, attrs ...any
 		"deviation_action", m.cfg.DeviationAction,
 		"error", err,
 	}
-	return append(fields, attrs...)
+	// Caller-supplied attrs carry agent-influenced identifiers (agent_key,
+	// declared_agent_key, profile names). Neutralize CR/LF in every string value
+	// before it reaches the log sink so a crafted identifier cannot forge or
+	// split a log line. slog handlers already quote attribute values; this is
+	// defense-in-depth (and clears the CodeQL go/log-injection check).
+	return append(fields, sanitizeLogAttrs(attrs)...)
+}
+
+// sanitizeLogAttrs returns a copy of a slog key/value attr slice with CR and LF
+// replaced by spaces in every string element. Attr keys are string literals
+// with no line breaks, so sanitizing them is a no-op; the effect is on
+// caller-supplied values.
+func sanitizeLogAttrs(attrs []any) []any {
+	if len(attrs) == 0 {
+		return attrs
+	}
+	out := make([]any, len(attrs))
+	copy(out, attrs)
+	for i, a := range out {
+		if s, ok := a.(string); ok {
+			out[i] = sanitizeLogValue(s)
+		}
+	}
+	return out
+}
+
+// sanitizeLogValue replaces CR and LF with spaces so an attacker-influenced
+// value cannot inject or split a forged log line.
+func sanitizeLogValue(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
 }
 
 func (m *Manager) logIntegrityVerificationFailure(failureClass string, err error, attrs ...any) error {
@@ -1448,7 +1479,7 @@ func (m *Manager) verifyPendingProfileIntegrityForRatify(agentKey string) error 
 		return m.logIntegrityVerificationFailure("pending_profile_integrity_failed", fmt.Errorf("verifying pending baseline profile %q before ratify: %w", agentKey, err), "agent_key", agentKey)
 	}
 	slog.Warn("baseline pending profile integrity verification failed; continuing under non-enforcing deviation_action",
-		"agent_key", agentKey,
+		"agent_key", sanitizeLogValue(agentKey),
 		"profile_dir", m.cfg.ProfileDir,
 		"manifest_path", m.integrityManifestPath(),
 		"deviation_action", m.cfg.DeviationAction,

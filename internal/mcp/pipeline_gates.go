@@ -94,8 +94,9 @@ type MCPInputEvaluation struct {
 	A2AEffectiveAction string
 
 	// EnforcementIdentity is the per-action key used by DoW and
-	// chain detection: raw tool name for tools/call, or the
-	// namespaced A2A method identity for A2A methods.
+	// chain detection: raw tool name for ordinary tools/call, escaped
+	// tool identity for reserved-prefix tools/call, or the namespaced
+	// A2A method identity for A2A methods.
 	EnforcementIdentity string
 
 	// DoW fields are populated when DoWCheck is non-nil and the
@@ -167,13 +168,11 @@ type MCPInputEvaluation struct {
 }
 
 func mcpFrameEnforcementIdentity(frame MCPFrame, method string) string {
-	if frame.IsToolsCall() {
-		return strings.TrimSpace(frame.ToolCallName)
-	}
-	if method == "" {
-		method = frame.Method
-	}
-	return a2aBaselineIdentity(method)
+	// The DoW/chain/budget enforcement identity is the collision-safe callable
+	// identity: a tool literally named with a reserved prefix (a2a:/tool:) is
+	// namespaced away from A2A method identities, while ordinary tool names stay
+	// raw so existing raw-name budget/chain configs keep matching (no fail-open).
+	return mcpFrameCollisionSafeCallableIdentity(frame, method)
 }
 
 func mcpFrameCollisionSafeCallableIdentity(frame MCPFrame, method string) string {
@@ -365,6 +364,10 @@ func EvaluateMCPInputGates(
 	// they fail closed as unknown rather than letting a real tool named
 	// "a2a:<method>" satisfy the method binding.
 	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.Baseline != nil && toolCfg.BindingUnknownAction != "" && (enforcementIdentity != "" || frame.IsToolsCall()) {
+		bindingIdentity := enforcementIdentity
+		if frame.IsToolsCall() {
+			bindingIdentity = frame.ToolCallName
+		}
 		switch {
 		case frame.IsToolsCall() && frame.ToolCallName == "":
 			eval.BindingAction = toolCfg.BindingUnknownAction
@@ -372,7 +375,7 @@ func EvaluateMCPInputGates(
 		case !toolCfg.Baseline.HasBaseline():
 			eval.BindingAction = toolCfg.BindingNoBaselineAction
 			eval.BindingReason = bindingReasonNoBaseline
-		case !frame.IsToolsCall() || !toolCfg.Baseline.IsKnownTool(enforcementIdentity):
+		case !frame.IsToolsCall() || !toolCfg.Baseline.IsKnownTool(bindingIdentity):
 			eval.BindingAction = toolCfg.BindingUnknownAction
 			eval.BindingReason = bindingReasonUnknownTool
 		}

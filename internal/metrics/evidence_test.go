@@ -26,6 +26,7 @@ func TestEvidenceCurrentAELTable(t *testing.T) {
 		want int
 	}{
 		{name: "recorder_disabled", in: EvidenceAELInput{}, want: 0},
+		{name: "recorder_only", in: EvidenceAELInput{RecorderEnabled: true}, want: 0},
 		{name: "selfaudit_latched_bad", in: EvidenceAELInput{RecorderEnabled: true, EmitterHealthy: true}, want: 0},
 		{name: "best_effort", in: base, want: 1},
 		{name: "durable_heartbeat", in: withEvidenceAEL(base, func(in *EvidenceAELInput) {
@@ -53,6 +54,16 @@ func TestEvidenceCurrentAELTable(t *testing.T) {
 				t.Fatalf("EvidenceCurrentAEL = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEvidenceAELRungZeroIsNarrowerThanRungOne(t *testing.T) {
+	recorderOnly := EvidenceAELInput{RecorderEnabled: true}
+	if !evidenceAELRules[0].ok(recorderOnly) {
+		t.Fatal("rung 0 rejected recorder-only evidence")
+	}
+	if evidenceAELRules[1].ok(recorderOnly) {
+		t.Fatal("rung 1 accepted recorder-only evidence")
 	}
 }
 

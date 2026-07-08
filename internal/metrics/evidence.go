@@ -120,7 +120,7 @@ type evidenceAELRule struct {
 
 var evidenceAELRules = []evidenceAELRule{
 	{rung: 0, ok: func(in EvidenceAELInput) bool {
-		return in.RecorderEnabled && in.EmitterHealthy && in.SelfAuditOK && !in.UngatedFsyncFail
+		return in.RecorderEnabled
 	}},
 	{rung: 1, ok: func(in EvidenceAELInput) bool {
 		return in.RecorderEnabled && in.EmitterHealthy && in.SelfAuditOK && !in.UngatedFsyncFail

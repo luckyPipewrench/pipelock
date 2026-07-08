@@ -132,6 +132,22 @@ func TestNewActionScorecardStatusMapping(t *testing.T) {
 			wantBrokenSeq:  2,
 			wantReason:     "hash link mismatch",
 		},
+		{
+			name: "broken_chain_unpinned_authentic_unverified",
+			res: actionreceipt.ChainResult{
+				ReceiptCount:  3,
+				BrokenAtSeq:   2,
+				Error:         "hash link mismatch",
+				FailureKind:   actionreceipt.ChainFailureIntegrity,
+				BrokenAtIndex: 2,
+			},
+			keyPinned:         false,
+			wantAuthentic:     "UNVERIFIED",
+			wantAuthenticNote: "no trusted signer key pinned",
+			wantUntampered:    "FAIL",
+			wantBrokenSeq:     2,
+			wantReason:        "hash link mismatch",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -6,6 +6,7 @@
 package anchor
 
 import (
+	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -48,5 +49,29 @@ func TestWriteStateMarkerRejectsTempFileWriteFailure(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temporary marker files remained after write failure: %v", matches)
+	}
+}
+
+func TestWriteStateMarkerRejectsUnwritableDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("test requires non-root user")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatalf("Chmod unwritable dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Chmod(dir, 0o700)
+	})
+	err := WriteStateMarker(dir, StateMarker{
+		SessionID:    "proxy",
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   filepath.Join(dir, "bundle.json"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "create anchor-state temp file") {
+		t.Fatalf("WriteStateMarker err = %v, want create temp file failure", err)
 	}
 }

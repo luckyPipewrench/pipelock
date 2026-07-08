@@ -232,6 +232,8 @@ func TestEvidenceHealthAnchorStateMalformedMarkersFailClosed(t *testing.T) {
 
 			assertEvidenceHealthLatched(t, h)
 			assertSelfAuditFailures(t, m, "sampler_error", 1)
+			h.runPass()
+			assertSelfAuditFailures(t, m, "sampler_error", 1)
 			stats, ok := h.stats()
 			if !ok {
 				t.Fatal("stats unavailable")
@@ -520,6 +522,25 @@ func TestEvidenceHealthAnchorStateValidMarkerCanOnlyUseAcceptedFreshness(t *test
 	}
 	if afterOlder.Anchor == nil || afterOlder.Anchor.LastTimestampSeconds != stats.Anchor.LastTimestampSeconds {
 		t.Fatalf("older marker replaced newer anchor: before=%+v after=%+v", stats.Anchor, afterOlder.Anchor)
+	}
+
+	stale := validEvidenceHealthAnchorState()
+	stale.FinalSeq = 1
+	stale.AnchoredAt = time.Now().UTC().Add(-(config.DefaultEvidenceHealthMaxAnchorLag + time.Second))
+	writeEvidenceHealthAnchorState(t, h.recorder.Dir(), stale)
+	h.runPass()
+	afterStale, ok := h.stats()
+	if !ok {
+		t.Fatal("stats unavailable after stale marker")
+	}
+	if afterStale.Anchor == nil {
+		t.Fatal("valid stale marker did not produce anchor stats")
+	}
+	if afterStale.Requirements[metrics.EvidenceRequirementAnchoringFresh] {
+		t.Fatal("valid stale marker set anchoring_fresh")
+	}
+	if afterStale.CurrentAEL != 2 {
+		t.Fatalf("current AEL = %d, want 2 for stale marker", afterStale.CurrentAEL)
 	}
 }
 

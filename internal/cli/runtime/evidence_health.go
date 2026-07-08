@@ -156,12 +156,19 @@ func (h *evidenceHealthMonitor) checkTail() {
 		}
 		return
 	}
-	wantSeq := snap.ChainSeq - 1
-	if tail.seq != wantSeq || tail.hash != snap.PrevHash {
+	stable, ok := e.HealthSnapshot()
+	if !ok || stable.ChainSeq == 0 {
+		return
+	}
+	if stable.ChainSeq != snap.ChainSeq || stable.PrevHash != snap.PrevHash {
+		return
+	}
+	wantSeq := stable.ChainSeq - 1
+	if tail.seq != wantSeq || tail.hash != stable.PrevHash {
 		if h.metrics != nil {
 			h.metrics.RecordEvidenceSequenceGap("self_audit")
 		}
-		h.fail("tail_divergence", fmt.Errorf("tail divergence: disk seq/hash=%d/%s memory seq/hash=%d/%s", tail.seq, tail.hash, wantSeq, snap.PrevHash))
+		h.fail("tail_divergence", fmt.Errorf("tail divergence: disk seq/hash=%d/%s memory seq/hash=%d/%s", tail.seq, tail.hash, wantSeq, stable.PrevHash))
 	}
 }
 
@@ -364,7 +371,12 @@ func (h *evidenceHealthMonitor) gapStats() metrics.EvidenceGapStats {
 }
 
 func (h *evidenceHealthMonitor) fail(check string, err error) {
-	h.selfAuditOK.Store(false)
+	if !h.selfAuditOK.CompareAndSwap(true, false) {
+		if h.metrics != nil {
+			h.metrics.SetEvidenceSelfAuditOK(false)
+		}
+		return
+	}
 	if h.metrics != nil {
 		h.metrics.SetEvidenceSelfAuditOK(false)
 		h.metrics.RecordSelfAuditFailure(check)

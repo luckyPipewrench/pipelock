@@ -54,6 +54,8 @@ func TestValidateFlightRecorderEvidenceHealthDurations(t *testing.T) {
 		{name: "too_short", mut: func(c *Config) { c.FlightRecorder.EvidenceHealth.SelfAuditInterval = "1s" }},
 		{name: "too_long", mut: func(c *Config) { c.FlightRecorder.EvidenceHealth.SelfAuditInterval = "11m" }},
 		{name: "negative_anchor_lag", mut: func(c *Config) { c.FlightRecorder.EvidenceHealth.MaxAnchorLag = "-1s" }},
+		{name: "unparseable_self_audit_interval", mut: func(c *Config) { c.FlightRecorder.EvidenceHealth.SelfAuditInterval = "not-a-duration" }},
+		{name: "unparseable_max_anchor_lag", mut: func(c *Config) { c.FlightRecorder.EvidenceHealth.MaxAnchorLag = "not-a-duration" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

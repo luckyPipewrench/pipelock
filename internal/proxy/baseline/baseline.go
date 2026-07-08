@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	appconfig "github.com/luckyPipewrench/pipelock/internal/config"
@@ -1190,7 +1191,7 @@ func integrityManifestAlreadyCommitted(err error) bool {
 }
 
 func (m *Manager) integrityLogAttrs(failureClass string, err error, attrs ...any) []any {
-	fields := []any{
+	fields := sanitizeLogAttrs([]any{
 		"failure_class", failureClass,
 		"profile_dir", m.cfg.ProfileDir,
 		"manifest_path", m.integrityManifestPath(),
@@ -1198,39 +1199,70 @@ func (m *Manager) integrityLogAttrs(failureClass string, err error, attrs ...any
 		"high_water_path", m.integrityHighWaterPath(),
 		"deviation_action", m.cfg.DeviationAction,
 		"error", err,
-	}
+	})
 	// Caller-supplied attrs carry agent-influenced identifiers (agent_key,
-	// declared_agent_key, profile names). Neutralize CR/LF in every string value
-	// before it reaches the log sink so a crafted identifier cannot forge or
-	// split a log line. slog handlers already quote attribute values; this is
-	// defense-in-depth (and clears the CodeQL go/log-injection check).
+	// declared_agent_key, profile names). Neutralize log-control characters in
+	// every value before it reaches the log sink so a crafted identifier cannot
+	// forge or split a log line. slog handlers already quote attribute values;
+	// this adds a concrete sanitizer for static analysis and defense-in-depth.
 	return append(fields, sanitizeLogAttrs(attrs)...)
 }
 
-// sanitizeLogAttrs returns a copy of a slog key/value attr slice with CR and LF
-// replaced by spaces in every string element. Attr keys are string literals
-// with no line breaks, so sanitizing them is a no-op; the effect is on
-// caller-supplied values.
+// sanitizeLogAttrs returns a copy of a slog key/value attr slice with
+// log-control characters replaced by spaces in every value. Attr keys are
+// preserved exactly because callers provide literal keys.
 func sanitizeLogAttrs(attrs []any) []any {
 	if len(attrs) == 0 {
 		return attrs
 	}
 	out := make([]any, len(attrs))
-	copy(out, attrs)
-	for i, a := range out {
-		if s, ok := a.(string); ok {
-			out[i] = sanitizeLogValue(s)
+	for i := 0; i < len(attrs); i++ {
+		if attr, ok := attrs[i].(slog.Attr); ok {
+			out[i] = sanitizeLogAttr(attr)
+			continue
+		}
+		out[i] = attrs[i]
+		if _, ok := attrs[i].(string); ok && i+1 < len(attrs) {
+			i++
+			out[i] = sanitizeLogAttrValue(attrs[i])
 		}
 	}
 	return out
 }
 
-// sanitizeLogValue replaces CR and LF with spaces so an attacker-influenced
-// value cannot inject or split a forged log line.
+func sanitizeLogAttr(attr slog.Attr) slog.Attr {
+	switch attr.Value.Kind() {
+	case slog.KindString:
+		attr.Value = slog.StringValue(sanitizeLogValue(attr.Value.String()))
+	case slog.KindAny:
+		attr.Value = slog.AnyValue(sanitizeLogAttrValue(attr.Value.Any()))
+	}
+	return attr
+}
+
+func sanitizeLogAttrValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		return sanitizeLogValue(v)
+	case error:
+		return sanitizeLogValue(v.Error())
+	case slog.Attr:
+		return sanitizeLogAttr(v)
+	default:
+		return value
+	}
+}
+
+// sanitizeLogValue replaces terminal and line-breaking control characters with
+// spaces so an attacker-influenced value cannot inject, split, or visually
+// rewrite a forged log line.
 func sanitizeLogValue(s string) string {
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	return s
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 func (m *Manager) logIntegrityVerificationFailure(failureClass string, err error, attrs ...any) error {
@@ -1478,12 +1510,13 @@ func (m *Manager) verifyPendingProfileIntegrityForRatify(agentKey string) error 
 	if m.cfg.enforces() {
 		return m.logIntegrityVerificationFailure("pending_profile_integrity_failed", fmt.Errorf("verifying pending baseline profile %q before ratify: %w", agentKey, err), "agent_key", agentKey)
 	}
-	slog.Warn("baseline pending profile integrity verification failed; continuing under non-enforcing deviation_action",
-		"agent_key", sanitizeLogValue(agentKey),
+	slog.Warn("baseline pending profile integrity verification failed; continuing under non-enforcing deviation_action", sanitizeLogAttrs([]any{
+		"agent_key", agentKey,
 		"profile_dir", m.cfg.ProfileDir,
 		"manifest_path", m.integrityManifestPath(),
 		"deviation_action", m.cfg.DeviationAction,
-		"error", err)
+		"error", err,
+	})...)
 	return nil
 }
 
@@ -1680,10 +1713,11 @@ func (m *Manager) loadProfiles() error {
 					err := fmt.Errorf("reading persisted baseline profile %q under enforcing deviation_action %q (refusing to start without it; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
 					return m.logIntegrityVerificationFailure("profile_read_failed", err, "profile", entry.Name())
 				}
-				slog.Warn("skipping unreadable persisted baseline profile",
+				slog.Warn("skipping unreadable persisted baseline profile", sanitizeLogAttrs([]any{
 					"profile", entry.Name(),
 					"deviation_action", m.cfg.DeviationAction,
-					"error", err)
+					"error", err,
+				})...)
 				continue
 			}
 
@@ -1692,10 +1726,11 @@ func (m *Manager) loadProfiles() error {
 					err := fmt.Errorf("parsing persisted baseline profile %q under enforcing deviation_action %q (refusing to start with a corrupt profile; fix or restore the file): %w", entry.Name(), m.cfg.DeviationAction, err)
 					return m.logIntegrityVerificationFailure("profile_parse_failed", err, "profile", entry.Name())
 				}
-				slog.Warn("skipping corrupt persisted baseline profile",
+				slog.Warn("skipping corrupt persisted baseline profile", sanitizeLogAttrs([]any{
 					"profile", entry.Name(),
 					"deviation_action", m.cfg.DeviationAction,
-					"error", err)
+					"error", err,
+				})...)
 				continue
 			}
 			if m.cfg.enforces() && profileStateIsIntegrityBound(profile.State) {

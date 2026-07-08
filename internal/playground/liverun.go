@@ -383,12 +383,13 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	}
 
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder:   lr.rec,
-		PrivKey:    lr.pipelockPriv,
-		ConfigHash: lr.policyHash,
-		Principal:  liveRunPrincipal,
-		Actor:      liveRunActor,
-		OnReceipt:  opts.OnReceipt,
+		Recorder:       lr.rec,
+		PrivKey:        lr.pipelockPriv,
+		ConfigHash:     lr.policyHash,
+		Principal:      liveRunPrincipal,
+		Actor:          liveRunActor,
+		OnReceipt:      opts.OnReceipt,
+		PostureBinding: receipt.PostureBinding{},
 	})
 	if emitter == nil {
 		err = fmt.Errorf("emitter construction failed")

@@ -163,11 +163,12 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 
 	policyHash := configHash(cfg)
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder:   rec,
-		PrivKey:    privKey,
-		ConfigHash: policyHash,
-		Principal:  labPrincipal,
-		Actor:      labActor,
+		Recorder:       rec,
+		PrivKey:        privKey,
+		ConfigHash:     policyHash,
+		Principal:      labPrincipal,
+		Actor:          labActor,
+		PostureBinding: receipt.PostureBinding{},
 	})
 	if emitter == nil {
 		return nil, fmt.Errorf("scenario %s: emitter construction failed", s.ID)

@@ -710,11 +710,30 @@ func TestPrintExplainReport_WarnMatches(t *testing.T) {
 		Remediation: &explainRemediation{Knob: "do the thing", Broader: "broad thing"},
 		Notes:       []string{"a note"},
 	}
-	printExplainReport(&buf, report)
+	printExplainReport(&buf, report, explainPrintOptions{})
 	out := buf.String()
 	for _, want := range []string{"Warn matches:", "Some Warn Pattern (info)", "broader: broad thing", "note: a note"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("warn-match render missing %q\noutput:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintExplainReport_DisplayAnomalyAndHexdump(t *testing.T) {
+	report := explainReport{
+		URL:        "https://xn--pple-43d.com/p\u0430th",
+		ConfigFile: explainConfigLabelDefaults,
+		Mode:       "balanced",
+		Allowed:    true,
+		Host:       "xn--pple-43d.com",
+		Score:      0,
+	}
+	var buf bytes.Buffer
+	printExplainReport(&buf, report, explainPrintOptions{Hexdump: true})
+	output := buf.String()
+	for _, want := range []string{"⚠ display anomaly:", "punycode: ASCII", "hexdump:", "00000000"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
 		}
 	}
 }

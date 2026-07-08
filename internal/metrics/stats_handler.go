@@ -47,6 +47,7 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 			},
 		}
 		ceeFunc := m.CEEStatsFunc
+		evidenceFunc := m.evidenceHealthFunc
 		if total > 0 {
 			stats.Requests.BlockRate = float64(m.blockedCount) / float64(total)
 		}
@@ -66,6 +67,11 @@ func (m *Metrics) StatsHandler() http.HandlerFunc {
 		if ceeFunc != nil {
 			stats.CEE = ceeFunc()
 		}
+		if evidenceFunc != nil {
+			if evidence, ok := evidenceFunc(); ok {
+				stats.EvidenceHealth = &evidence
+			}
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(stats)
@@ -82,6 +88,7 @@ type statsResponse struct {
 	Sessions          sessionStats             `json:"sessions"`
 	Receipts          receiptStats             `json:"receipts"`
 	CEE               CEEStats                 `json:"cross_request_detection"`
+	EvidenceHealth    *EvidenceHealthStats     `json:"evidence_health"`
 	Agents            map[string]agentStatsOut `json:"agents,omitempty"`
 }
 

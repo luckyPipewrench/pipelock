@@ -4,11 +4,14 @@
 package anchor
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -108,6 +111,9 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	if err := anchorpkg.WriteBundle(opts.output, bundle); err != nil {
 		return err
 	}
+	if err := writeAnchorStateMarker(target, opts, checkpoint, proof); err != nil {
+		return err
+	}
 
 	_, _ = fmt.Fprintf(out, "ANCHOR BUNDLE WRITTEN: %s\n", filepath.Clean(opts.output))
 	_, _ = fmt.Fprintf(out, "  Backend:       %s\n", proof.Backend)
@@ -123,6 +129,28 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 		_, _ = fmt.Fprintf(out, "  Limit:         %s\n", limit)
 	}
 	return nil
+}
+
+func writeAnchorStateMarker(target string, opts receiptsOptions, checkpoint anchorpkg.Checkpoint, proof anchorpkg.Proof) error {
+	bundleBytes, err := os.ReadFile(filepath.Clean(opts.output))
+	if err != nil {
+		return fmt.Errorf("read anchor bundle for state marker: %w", err)
+	}
+	sum := sha256.Sum256(bundleBytes)
+	dir := filepath.Dir(filepath.Clean(target))
+	if opts.asDir {
+		dir = filepath.Clean(target)
+	}
+	return anchorpkg.WriteStateMarker(dir, anchorpkg.StateMarker{
+		SessionID:    checkpoint.SessionID,
+		FinalSeq:     checkpoint.FinalSeq,
+		RootHash:     checkpoint.RootHash,
+		Backend:      proof.Backend,
+		LogIndex:     proof.LogIndex,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: hex.EncodeToString(sum[:]),
+		BundlePath:   filepath.Clean(opts.output),
+	})
 }
 
 func resolveBackend(opts receiptsOptions) (anchorpkg.Backend, error) {

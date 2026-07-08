@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
+	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
@@ -76,6 +77,222 @@ func TestVerifyReceiptCmd_ValidReceipt(t *testing.T) {
 	}
 	if !strings.Contains(output, ar.ActionID) {
 		t.Errorf("expected action_id in output, got: %s", output)
+	}
+}
+
+func TestVerifyReceiptCmd_DisplaySanitizesTargetAndHexdump(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	ar := receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        receipt.NewActionID(),
+		ActionType:      receipt.ActionRead,
+		Timestamp:       time.Now().UTC(),
+		Target:          "https://api.vendor.example/\u202Etxt",
+		Verdict:         "block",
+		Transport:       "fetch",
+		SideEffectClass: receipt.SideEffectExternalRead,
+		Reversibility:   receipt.ReversibilityFull,
+	}
+	r, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	data, err := receipt.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", hex.EncodeToString(pub), "--hexdump"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, buf.String())
+	}
+	output := buf.String()
+	for _, want := range []string{"OK:", "‹U+202E RIGHT-TO-LEFT OVERRIDE›", "⚠ display anomaly:", "hexdump:", "00000000"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestVerifyReceiptCmd_PostureKernelEnforced(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey receipt: %v", err)
+	}
+	posturePub, posturePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey posture: %v", err)
+	}
+	capsule, err := posturepkg.Emit(config.Defaults(), posturepkg.Options{
+		SigningKey: posturePriv,
+		EvidenceBundle: &posturepkg.EvidenceBundle{
+			Containment: &posturepkg.ContainmentEvidence{
+				Mode:                     posturepkg.ContainmentModeKernelNFTOwnerMatch,
+				BoundaryVerified:         true,
+				ProbeRefusedDirectEgress: true,
+				KernelRuleHash:           strings.Repeat("a", 64),
+				TargetUID:                "966",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("posture.Emit: %v", err)
+	}
+	capsuleHash, err := postureCapsuleSHA256(capsule)
+	if err != nil {
+		t.Fatalf("postureCapsuleSHA256: %v", err)
+	}
+	ar := receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        receipt.NewActionID(),
+		ActionType:      receipt.ActionRead,
+		Timestamp:       capsule.GeneratedAt.Add(time.Second),
+		Target:          "https://api.vendor.example/data",
+		Verdict:         "allow",
+		Transport:       "fetch",
+		SideEffectClass: receipt.SideEffectExternalRead,
+		Reversibility:   receipt.ReversibilityFull,
+		SessionControl: &receipt.SessionControl{
+			Kind: receipt.SessionControlOpen,
+			Open: &receipt.SessionOpen{
+				PostureCapsuleSHA256: capsuleHash,
+				PostureSignerKeyID:   capsule.SignerKeyID,
+				ContainedUID:         "966",
+			},
+		},
+	}
+	r, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "receipt.json")
+	data, err := receipt.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal receipt: %v", err)
+	}
+	if err := os.WriteFile(receiptPath, data, 0o600); err != nil {
+		t.Fatalf("Write receipt: %v", err)
+	}
+	posturePath := filepath.Join(dir, "posture.json")
+	postureData, err := json.Marshal(capsule)
+	if err != nil {
+		t.Fatalf("Marshal posture: %v", err)
+	}
+	if err := os.WriteFile(posturePath, postureData, 0o600); err != nil {
+		t.Fatalf("Write posture: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{
+		receiptPath,
+		"--key", hex.EncodeToString(pub),
+		"--posture", posturePath,
+		"--posture-key", hex.EncodeToString(posturePub),
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, buf.String())
+	}
+	output := buf.String()
+	if !strings.Contains(output, "Containment: KERNEL-ENFORCED") || !strings.Contains(output, "direct egress by the contained UID was kernel-refused") {
+		t.Fatalf("missing kernel-enforced containment line:\n%s", output)
+	}
+}
+
+func TestVerifyReceiptCmd_PostureRequiresSignedSessionBinding(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey receipt: %v", err)
+	}
+	posturePub, posturePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey posture: %v", err)
+	}
+	capsule, err := posturepkg.Emit(config.Defaults(), posturepkg.Options{
+		SigningKey: posturePriv,
+		EvidenceBundle: &posturepkg.EvidenceBundle{
+			Containment: &posturepkg.ContainmentEvidence{
+				Mode:                     posturepkg.ContainmentModeKernelNFTOwnerMatch,
+				BoundaryVerified:         true,
+				ProbeRefusedDirectEgress: true,
+				KernelRuleHash:           strings.Repeat("a", 64),
+				TargetUID:                "966",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("posture.Emit: %v", err)
+	}
+	ar := receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        receipt.NewActionID(),
+		ActionType:      receipt.ActionRead,
+		Timestamp:       capsule.GeneratedAt.Add(time.Second),
+		Target:          "https://api.vendor.example/data",
+		Verdict:         "allow",
+		Transport:       "fetch",
+		SideEffectClass: receipt.SideEffectExternalRead,
+		Reversibility:   receipt.ReversibilityFull,
+	}
+	r, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "receipt.json")
+	data, err := receipt.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal receipt: %v", err)
+	}
+	if err := os.WriteFile(receiptPath, data, 0o600); err != nil {
+		t.Fatalf("Write receipt: %v", err)
+	}
+	posturePath := filepath.Join(dir, "posture.json")
+	postureData, err := json.Marshal(capsule)
+	if err != nil {
+		t.Fatalf("Marshal posture: %v", err)
+	}
+	if err := os.WriteFile(posturePath, postureData, 0o600); err != nil {
+		t.Fatalf("Write posture: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{
+		receiptPath,
+		"--key", hex.EncodeToString(pub),
+		"--posture", posturePath,
+		"--posture-key", hex.EncodeToString(posturePub),
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, buf.String())
+	}
+	output := buf.String()
+	if strings.Contains(output, "KERNEL-ENFORCED") || strings.Contains(output, "kernel-refused") {
+		t.Fatalf("unbound receipt over-claimed containment:\n%s", output)
+	}
+	if !strings.Contains(output, "Containment: UNKNOWN") ||
+		!strings.Contains(output, "receipt actor/principal binding has no contained uid") {
+		t.Fatalf("missing fail-closed containment reason:\n%s", output)
 	}
 }
 
@@ -530,6 +747,56 @@ func TestVerifyReceiptCmd_ReceiptWithMethodShowsFullRecord(t *testing.T) {
 	// When method/layer are present, full record JSON is printed
 	if !strings.Contains(output, "Full record:") {
 		t.Errorf("expected full record in output, got: %s", output)
+	}
+}
+
+func TestVerifyReceiptCmd_FullRecordSanitizesAllStringFields(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	ar := receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        receipt.NewActionID(),
+		ActionType:      receipt.ActionRead,
+		Timestamp:       time.Now().UTC(),
+		Target:          "https://api.vendor.example/path",
+		Principal:       "operator\u202Etxt",
+		Verdict:         "block",
+		Transport:       "fetch",
+		Method:          "GET",
+		Layer:           "blocklist",
+		SideEffectClass: receipt.SideEffectExternalRead,
+		Reversibility:   receipt.ReversibilityFull,
+	}
+	r, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	data, err := receipt.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, buf.String())
+	}
+	output := buf.String()
+	if strings.Contains(output, "\u202E") {
+		t.Fatalf("output contains raw bidi control:\n%s", output)
+	}
+	if !strings.Contains(output, "operator‹U+202E RIGHT-TO-LEFT OVERRIDE›txt") {
+		t.Fatalf("output missing sanitized principal:\n%s", output)
 	}
 }
 

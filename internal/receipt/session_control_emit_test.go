@@ -87,6 +87,53 @@ func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 	}
 }
 
+func TestEmitter_EmitSessionOpenPopulatesPostureBinding(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	binding := PostureBinding{
+		CapsuleSHA256:    strings.Repeat("a", 64),
+		SignerKeyID:      strings.Repeat("b", 64),
+		ContainmentNonce: "nonce-1",
+		ContainedUID:     "966",
+	}
+	e := NewEmitter(EmitterConfig{
+		Recorder:       rec,
+		PrivKey:        priv,
+		ConfigHash:     testConfigHash,
+		Principal:      testPrincipal,
+		Actor:          testActor,
+		PostureBinding: binding,
+	})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if len(receipts) != 1 {
+		t.Fatalf("receipts = %d, want 1", len(receipts))
+	}
+	open := receipts[0].ActionRecord.SessionControl.Open
+	if open == nil {
+		t.Fatalf("session_open missing: %#v", receipts[0].ActionRecord.SessionControl)
+	}
+	if open.PostureCapsuleSHA256 != binding.CapsuleSHA256 ||
+		open.PostureSignerKeyID != binding.SignerKeyID ||
+		open.ContainmentNonce != binding.ContainmentNonce ||
+		open.ContainedUID != binding.ContainedUID {
+		t.Fatalf("posture binding = %+v, want %+v", open, binding)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+}
+
 func TestEmitter_EmitSessionCloseFinalReceiptAndRoot(t *testing.T) {
 	t.Parallel()
 

@@ -44,8 +44,8 @@ Field reference:
 |-------|----------|-------------|
 | `enabled` | yes | Master switch. Must be `true` with at least one token. |
 | `tokens[].name` | yes | Unique name (case-insensitive). Used in event pattern names. |
-| `tokens[].value` | yes | The canary value to watch for. Minimum 8 characters. |
-| `tokens[].env_var` | no | Environment variable to inject the value into. Optional. |
+| `tokens[].value` | yes | The literal canary value to watch for. Minimum 8 characters. Environment variables are not expanded at config load time. |
+| `tokens[].env_var` | no | Optional metadata naming the agent environment variable that carries this canary. Pipelock does not inject or expand it. |
 
 Token names must be unique. Token values must be unique. Both are validated at startup.
 
@@ -68,7 +68,11 @@ canary_tokens:
       env_var: "AWS_CANARY_KEY"
 ```
 
-By default, the value field contains an env var placeholder (`${AWS_CANARY_KEY}`). This keeps the actual token value out of your config file. At startup, pipelock reads the env var and uses the real value for matching.
+By default, the value field contains an env var placeholder (`${AWS_CANARY_KEY}`).
+That placeholder is for your deployment templating step. Pipelock treats
+`tokens[].value` as a literal string when it loads config, so render the real
+canary into `value:` before starting Pipelock, or use `--literal` for a direct
+copy/paste snippet.
 
 Options:
 
@@ -107,30 +111,33 @@ Do not reuse values across tokens. Each token value must be unique.
 
 ## Injecting Canary Values
 
-The most reliable deployment pattern is to inject the canary as an environment variable into the agent, then reference it from your config:
+The most reliable deployment pattern is to inject the canary as an environment
+variable into the agent, and render the same literal value into Pipelock's config
+before startup:
 
 ```bash
-# Inject into the agent at startup
+# Inject into the agent at startup.
 export AWS_CANARY_KEY="canary-aws-trap-value-0x42a7"
 
-# pipelock.yaml references it
+# Render pipelock.yaml so value contains the literal canary.
 canary_tokens:
   enabled: true
   tokens:
     - name: aws_canary
-      value: "${AWS_CANARY_KEY}"
+      value: "canary-aws-trap-value-0x42a7"
       env_var: AWS_CANARY_KEY
 ```
 
 For agents in containers or Kubernetes:
 
 ```yaml
-# pipelock configmap
+# Rendered pipelock config. Use your deployment tooling to source this value
+# from the same secret used by the agent environment.
 canary_tokens:
   enabled: true
   tokens:
     - name: aws_canary
-      value: "${AWS_CANARY_KEY}"
+      value: "canary-aws-trap-value-0x42a7"
       env_var: AWS_CANARY_KEY
 
 # Agent deployment env
@@ -142,7 +149,9 @@ env:
         key: aws_canary_key
 ```
 
-The goal is for the agent to see the value in its environment (making it realistic bait) while pipelock knows to block any request that exfiltrates it.
+The goal is for the agent to see the value in its environment, making it
+realistic bait, while Pipelock also knows the exact literal value to block if it
+appears in outbound content.
 
 For canary tokens that represent secrets the agent doesn't legitimately need in its environment (e.g., a database password injected to simulate a compromised secret store), you can skip `env_var` and just set `value` directly in the config. The token still works; pipelock will match it in any outbound content.
 

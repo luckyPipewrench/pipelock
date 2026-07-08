@@ -1,0 +1,22 @@
+# Canary token example config template.
+# verify.sh copies this into a temp file and injects a runtime-generated token.
+
+version: 1
+mode: balanced
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  monitoring:
+    max_url_length: 4096
+
+dlp:
+  include_defaults: true
+
+# Offline check URLs should not fail closed on DNS for api.vendor.example.
+internal: []
+
+canary_tokens:
+  enabled: true
+  tokens:
+    - name: demo_canary
+      value: "canary-REPLACE_ME"

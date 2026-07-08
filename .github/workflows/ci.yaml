@@ -325,14 +325,16 @@ jobs:
         with:
           # Pin the exact patched release. govulncheck analyzes the active
           # toolchain's stdlib (go env GOVERSION), so the setup-go version is the
-          # lever, not the go.mod directive. go1.26.4 (2026-05-29) fixes
-          # GO-2026-5039 net/textproto + GO-2026-5037 crypto/x509, but it is not
-          # yet in the actions/go-versions manifest, so a float to '1.26' resolves
-          # to the stale 1.26.3 and the scan stays red. An EXACT version makes
-          # setup-go fall back to a direct download from the official Go
-          # distribution, bypassing the manifest. Revert to '1.26' + check-latest
-          # for steady-state self-healing once the manifest includes 1.26.4.
-          go-version: '1.26.4'
+          # lever, not the go.mod directive. go1.26.5 (2026-07-07) fixes
+          # GO-2026-5856 crypto/tls + GO-2026-4970 os after go1.26.4 fixed
+          # GO-2026-5039 net/textproto + GO-2026-5037 crypto/x509. A float to
+          # '1.26' can lag on the actions/go-versions manifest, so the scan stays
+          # red until the manifest publishes the patched toolchain. An EXACT
+          # version makes setup-go fall back to a direct download from the
+          # official Go distribution, bypassing the manifest. Revert to '1.26'
+          # + check-latest for steady-state self-healing once the manifest
+          # includes 1.26.5.
+          go-version: '1.26.5'
           check-latest: true
 
       - name: Verify Go version
@@ -341,7 +343,7 @@ jobs:
         run: |
           got="$(go env GOVERSION)"
           echo "GOVERSION=$got"
-          test "$got" = "go1.26.4"
+          test "$got" = "go1.26.5"
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4

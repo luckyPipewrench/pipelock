@@ -245,7 +245,14 @@ func emitContainRunPosture(configFile, outputDir string, env *probeEnv, args []s
 	if err != nil {
 		return "", fmt.Errorf("build launch evidence: %w", err)
 	}
-	capsule, err := posturepkg.Emit(cfg, posturepkg.Options{ContainLaunch: &launchEvidence})
+	containmentEvidence, err := containRunContainmentEvidence(env, launchEvidence.TargetUID)
+	if err != nil {
+		return "", fmt.Errorf("build containment evidence: %w", err)
+	}
+	capsule, err := posturepkg.Emit(cfg, posturepkg.Options{
+		ContainLaunch: &launchEvidence,
+		Containment:   &containmentEvidence,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -323,6 +330,43 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 		EnvVars:      envVars,
 		EnvSHA256:    envHash,
 	}, nil
+}
+
+func containRunContainmentEvidence(env *probeEnv, targetUID string) (posturepkg.ContainmentEvidence, error) {
+	if env == nil {
+		return posturepkg.ContainmentEvidence{}, errors.New("probe environment is missing")
+	}
+	nftStatus, nftDetail := probeNFTContainment(context.Background(), env)
+	egressStatus, egressDetail := probeCCAgentEgressDenied(context.Background(), env)
+	if nftStatus == statusPass && egressStatus == statusPass {
+		ruleHash, err := containmentRuleHash(env)
+		if err != nil {
+			return posturepkg.ContainmentEvidence{}, err
+		}
+		return posturepkg.ContainmentEvidence{
+			Mode:                     posturepkg.ContainmentModeKernelNFTOwnerMatch,
+			BoundaryVerified:         true,
+			ProbeRefusedDirectEgress: true,
+			KernelRuleHash:           ruleHash,
+			TargetUID:                targetUID,
+		}, nil
+	}
+	if nftStatus != statusPass {
+		return posturepkg.ContainmentEvidence{}, fmt.Errorf("nft boundary probe did not pass: %s: %s", nftStatus, nftDetail)
+	}
+	return posturepkg.ContainmentEvidence{}, fmt.Errorf("direct-egress probe did not pass: %s: %s", egressStatus, egressDetail)
+}
+
+func containmentRuleHash(env *probeEnv) (string, error) {
+	if env.nftRulesPath == "" {
+		return "", errors.New("nftables rules path is required for kernel containment evidence")
+	}
+	data, err := env.readFile(env.nftRulesPath)
+	if err != nil {
+		return "", fmt.Errorf("read nftables rules file %s: %w", env.nftRulesPath, err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func groupIDsForEnv(env *probeEnv, u *user.User) ([]string, error) {

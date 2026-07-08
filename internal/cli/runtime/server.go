@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -475,6 +476,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 		s.recorder = rec
 		proxyOpts = append(proxyOpts, proxy.WithRecorder(rec))
+		postureBinding, bindErr := posturebinding.LoadRuntime()
+		if bindErr != nil {
+			s.cleanup()
+			return nil, fmt.Errorf("loading posture binding: %w", bindErr)
+		}
 
 		// Action receipt emitter: ConfigHash uses cfg.Hash() (raw YAML
 		// bytes) because the receipt is a point-in-time audit
@@ -486,12 +492,13 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		// effective policy should produce identical envelope ph
 		// regardless of YAML formatting.
 		s.receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
-			Recorder:   rec,
-			PrivKey:    recPrivKey,
-			ConfigHash: cfg.Hash(),
-			Principal:  "local",
-			Actor:      "pipelock",
-			Metrics:    m,
+			Recorder:       rec,
+			PrivKey:        recPrivKey,
+			ConfigHash:     cfg.Hash(),
+			Principal:      "local",
+			Actor:          "pipelock",
+			Metrics:        m,
+			PostureBinding: postureBinding,
 		})
 		if s.receiptEmitter != nil {
 			// Loud, one-time startup signal when the chain could not be

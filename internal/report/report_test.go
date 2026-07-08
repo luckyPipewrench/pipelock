@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1330,6 +1331,59 @@ func TestRenderHTML_WithEvidence(t *testing.T) {
 	}
 }
 
+func TestRenderHTML_DisplayAnomalyBlock(t *testing.T) {
+	r := &Report{
+		Title:     "Test Report",
+		Generated: time.Now(),
+		Risk:      RiskYellow,
+		TimeRange: TimeRange{Start: time.Now().Add(-time.Minute), End: time.Now()},
+		Evidence: []Event{{
+			Time:    time.Now(),
+			Event:   "blocked",
+			Scanner: "dlp",
+			Reason:  "spoof\u202Etxt",
+			URL:     "https://api.vendor.example/path",
+		}},
+	}
+	var buf bytes.Buffer
+	if err := RenderHTML(&buf, r); err != nil {
+		t.Fatalf("RenderHTML error: %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{"Display anomalies:", "‹U+202E RIGHT-TO-LEFT OVERRIDE›", "hexdump", "00000000"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("rendered HTML missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestSanitizeEventForDisplayCoversAllEventStringFields(t *testing.T) {
+	raw := "spoof\u202Etxt"
+	ev := Event{}
+	rv := reflect.ValueOf(&ev).Elem()
+	for i := 0; i < rv.NumField(); i++ {
+		if rv.Field(i).Kind() == reflect.String {
+			rv.Field(i).SetString(raw)
+		}
+	}
+
+	got := sanitizeEventForDisplay(ev)
+	out := reflect.ValueOf(got)
+	for i := 0; i < out.NumField(); i++ {
+		field := out.Type().Field(i)
+		value := out.Field(i)
+		if value.Kind() != reflect.String {
+			continue
+		}
+		if strings.Contains(value.String(), "\u202E") {
+			t.Fatalf("%s rendered raw bidi control: %q", field.Name, value.String())
+		}
+		if !strings.Contains(value.String(), "U+202E") {
+			t.Fatalf("%s was not display-sanitized: %q", field.Name, value.String())
+		}
+	}
+}
+
 func TestRenderHTML_WithDomainStats(t *testing.T) {
 	r := makeTestReport()
 	r.Domains = []DomainStats{
@@ -1583,5 +1637,28 @@ func TestEventBundleRulesOmittedWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(data), "bundle_rules") {
 		t.Error("bundle_rules should be omitted when empty")
+	}
+}
+
+func TestSanitizeEventForDisplayDoesNotMutateOriginalSlices(t *testing.T) {
+	const bidi = "\u202eevil"
+	ev := Event{
+		Patterns:    []string{bidi},
+		BundleRules: []BundleRuleHit{{RuleID: bidi, Bundle: bidi, BundleVersion: bidi}},
+	}
+	out := sanitizeEventForDisplay(ev)
+	// The display copy must be sanitized (raw bidi replaced by a visible sentinel).
+	if out.Patterns[0] == bidi {
+		t.Fatalf("display copy Patterns not sanitized: %q", out.Patterns[0])
+	}
+	if out.BundleRules[0].RuleID == bidi {
+		t.Fatalf("display copy BundleRules.RuleID not sanitized: %q", out.BundleRules[0].RuleID)
+	}
+	// The original must be untouched: other code still reads the raw values.
+	if ev.Patterns[0] != bidi {
+		t.Fatalf("original Patterns was mutated: %q", ev.Patterns[0])
+	}
+	if ev.BundleRules[0].RuleID != bidi || ev.BundleRules[0].Bundle != bidi || ev.BundleRules[0].BundleVersion != bidi {
+		t.Fatalf("original BundleRules was mutated: %+v", ev.BundleRules[0])
 	}
 }

@@ -42,6 +42,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -955,6 +956,10 @@ Key-free evidence capture:
 					return fmt.Errorf("creating flight recorder: %w", recErr)
 				}
 				defer func() { _ = rec.Close() }()
+				postureBinding, bindErr := posturebinding.LoadRuntime()
+				if bindErr != nil {
+					return fmt.Errorf("loading posture binding: %w", bindErr)
+				}
 
 				// ConfigHash here uses cfg.Hash() (raw YAML bytes) - the
 				// receipt is a point-in-time audit fingerprint of the
@@ -969,12 +974,13 @@ Key-free evidence capture:
 				// nil MetricsSink is a safe no-op in the emitter, so emit-
 				// failure counters are wired opportunistically here.
 				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
-					Recorder:   rec,
-					PrivKey:    recPrivKey,
-					ConfigHash: cfg.Hash(),
-					Principal:  "local",
-					Actor:      "pipelock",
-					Metrics:    mcpMetrics,
+					Recorder:       rec,
+					PrivKey:        recPrivKey,
+					ConfigHash:     cfg.Hash(),
+					Principal:      "local",
+					Actor:          "pipelock",
+					Metrics:        mcpMetrics,
+					PostureBinding: postureBinding,
 				})
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)

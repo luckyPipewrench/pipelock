@@ -48,7 +48,7 @@ func installCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install the containment model (creates users, unit, nft rules, wrappers)",
-		Long: `Install the kernel-enforced workstation containment model.
+		Long: `Install the kernel-level nftables workstation containment model.
 
 Creates the pipelock-proxy and pipelock-agent system users, migrates the
 user-mode systemd unit to a system unit, installs nftables owner-match

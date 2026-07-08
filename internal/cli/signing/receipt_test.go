@@ -126,7 +126,7 @@ func TestVerifyReceiptCmd_DisplaySanitizesTargetAndHexdump(t *testing.T) {
 	}
 }
 
-func TestVerifyReceiptCmd_PostureKernelEnforced(t *testing.T) {
+func TestVerifyReceiptCmd_PostureKernelObserved(t *testing.T) {
 	t.Parallel()
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -210,8 +210,13 @@ func TestVerifyReceiptCmd_PostureKernelEnforced(t *testing.T) {
 		t.Fatalf("Execute: %v\n%s", err, buf.String())
 	}
 	output := buf.String()
-	if !strings.Contains(output, "Containment: KERNEL-ENFORCED") || !strings.Contains(output, "direct egress by the contained UID was kernel-refused") {
-		t.Fatalf("missing kernel-enforced containment line:\n%s", output)
+	if !strings.Contains(output, "Containment: KERNEL-OBSERVED") ||
+		!strings.Contains(output, "direct egress by the contained UID was kernel-refused") ||
+		!strings.Contains(output, "not continuous enforcement") {
+		t.Fatalf("missing kernel-observed containment line:\n%s", output)
+	}
+	if strings.Contains(output, "Containment: KERNEL-ENFORCED") {
+		t.Fatalf("point-in-time posture overclaimed kernel-enforced containment:\n%s", output)
 	}
 }
 
@@ -287,7 +292,7 @@ func TestVerifyReceiptCmd_PostureRequiresSignedSessionBinding(t *testing.T) {
 		t.Fatalf("Execute: %v\n%s", err, buf.String())
 	}
 	output := buf.String()
-	if strings.Contains(output, "KERNEL-ENFORCED") || strings.Contains(output, "kernel-refused") {
+	if strings.Contains(output, "KERNEL-OBSERVED") || strings.Contains(output, "KERNEL-ENFORCED") || strings.Contains(output, "kernel-refused") {
 		t.Fatalf("unbound receipt over-claimed containment:\n%s", output)
 	}
 	if !strings.Contains(output, "Containment: UNKNOWN") ||

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Fleet Overview</title>
+  <style>
+    :root {
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .topbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border-strong);
+      background: #08080a;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .brand { font-weight: 650; }
+    .brand span { color: var(--text-muted); font-weight: 500; }
+    .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; flex-wrap: wrap; }
+    .nav a { color: var(--text-muted); text-decoration: none; }
+    .nav a:hover { color: var(--text); }
+    main { min-width: 0; padding: 24px; }
+    .panel { max-width: 1320px; margin: 0 auto; }
+    .heading {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 20px;
+      margin-bottom: 18px;
+    }
+    h1, h2 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 16px; margin-bottom: 12px; }
+    .muted { color: var(--text-muted); }
+    .dim { color: var(--text-dim); }
+    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .callout {
+      border: 1px solid var(--border-strong);
+      background: #0b0f0e;
+      padding: 14px;
+      border-radius: 8px;
+      margin-bottom: 18px;
+    }
+    .absence {
+      border: 1px solid rgba(245,158,11,0.7);
+      background: rgba(245,158,11,0.10);
+      padding: 18px;
+      border-radius: 8px;
+    }
+    .absence h2 { color: #fde68a; font-size: 20px; }
+    .scope {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .scope-item {
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+    table {
+      width: 100%;
+      min-width: 1260px;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 11px 12px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--text-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: #0b0b0e;
+      white-space: nowrap;
+    }
+    tr:last-child td { border-bottom: 0; }
+    .value { overflow-wrap: anywhere; }
+    .sub { color: var(--text-dim); margin-top: 4px; }
+    .chip {
+      display: inline-flex;
+      justify-content: center;
+      min-width: 122px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      color: #050507;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .chip.verified { background: var(--accent); }
+    .chip.signed-unverified { background: var(--warn); }
+    .chip.unsigned { background: #64748b; color: #f8fafc; }
+    .chip.missing { background: var(--danger); color: white; }
+    .empty {
+      color: var(--text-muted);
+      padding: 26px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+    @media (max-width: 900px) {
+      main { padding: 16px; }
+      .heading { display: block; }
+      .topbar { align-items: flex-start; height: auto; padding: 14px 16px; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Pipelock <span>- Operator Console / Fleet</span></div>
+    <div class="nav"><a href="/">Evidence</a><a href="/exemptions">Exemptions</a><a href="/agents">Agents</a><span class="mono">read-only</span></div>
+  </header>
+  <main>
+    <div class="panel">
+      <div class="heading">
+        <div>
+          <h1>Fleet Overview</h1>
+          <div class="muted">{{.Claim}}</div>
+          <div class="scope">
+            <span class="scope-item">org <span class="mono">{{if .OrgID}}{{.OrgID}}{{else}}any{{end}}</span></span>
+            <span class="scope-item">fleet <span class="mono">{{if .FleetID}}{{.FleetID}}{{else}}any{{end}}</span></span>
+          </div>
+        </div>
+        <div class="dim mono">{{len .Followers}} followers</div>
+      </div>
+
+      <div class="callout muted">
+        This view shows signed applied-state only after the conductor has accepted and verified a follower audit batch. Unsigned rows are self-reported runtime status from enrolled followers, not cryptographic proof. It {{.NonClaim}}.
+      </div>
+
+      {{if not .RawAllowed}}
+        <div class="callout muted">
+          Metadata view: instance IDs are hashed and raw batch, envelope, build, commit, and apply-error message values are hidden. Raw access is required to view those fields.
+        </div>
+      {{end}}
+
+      {{if not .SourceConfigured}}
+        <section class="absence">
+          <h2>No conductor fleet source configured</h2>
+          <p class="muted">Fleet data requires the dashboard to be wired to a conductor read source. Evidence and exemption views still work without that source.</p>
+        </section>
+      {{else if not .Followers}}
+        <section class="empty">No enrolled followers matched this fleet scope.</section>
+      {{else}}
+        <section class="table-wrap" aria-label="Fleet follower overview">
+          <table>
+            <thead>
+              <tr>
+                <th>Follower</th>
+                <th>Enrollment</th>
+                <th>Status</th>
+                <th>Applied state</th>
+                <th>Runtime</th>
+                <th>Build</th>
+                <th>Signed audit</th>
+                <th>Apply error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range .Followers}}
+                <tr>
+                  <td>
+                    <div class="value mono">{{.InstanceDisplay}}</div>
+                    <div class="sub">{{.EnvironmentDisplay}}</div>
+                    <div class="sub mono">org {{.OrgID}} / fleet {{.FleetID}}</div>
+                  </td>
+                  <td>
+                    <div>{{.EnrollmentLabel}}</div>
+                    <div class="sub mono">key {{.AuditKeyDisplay}}</div>
+                    <div class="sub">enrolled {{.EnrolledAtDisplay}}</div>
+                  </td>
+                  <td>
+                    <div><span class="chip {{.SourceClass}}">{{.SourceLabel}}</span></div>
+                    <div class="sub">health {{.HealthDisplay}}</div>
+                    <div class="sub">drift {{.DriftDisplay}}</div>
+                  </td>
+                  <td>
+                    <div>active v<span class="mono">{{.ActiveBundleVersionDisplay}}</span></div>
+                    <div class="sub value mono">{{.ActiveBundleDisplay}}</div>
+                    <div class="sub">min {{.MinVersionDisplay}}</div>
+                    <div class="sub">expected v<span class="mono">{{.ExpectedBundleVersionDisplay}}</span></div>
+                    <div class="sub value mono">{{.ExpectedBundleDisplay}}</div>
+                    <div class="sub">expected min {{.ExpectedMinVersionDisplay}}</div>
+                  </td>
+                  <td>
+                    <div>observed {{.ObservedAtDisplay}}</div>
+                    <div class="sub">runtime seen {{.RuntimeSeenDisplay}}</div>
+                    <div class="sub">policy poll {{.LastPolicyPollDisplay}}</div>
+                    <div class="sub">last apply {{.LastSuccessfulApplyDisplay}}</div>
+                  </td>
+                  <td>
+                    <div>{{.PipelockVersionDisplay}}</div>
+                    <div class="sub mono">commit {{.GitCommitDisplay}}</div>
+                    <div class="sub">build {{.BuildDateDisplay}}</div>
+                  </td>
+                  <td>
+                    <div>verified at {{.VerifiedAtDisplay}}</div>
+                    <div class="sub mono">signer {{.SignerKeyDisplay}}</div>
+                    <div class="sub mono">batch {{.BatchIDDisplay}}</div>
+                    <div class="sub value mono">envelope {{.EnvelopeHashDisplay}}</div>
+                  </td>
+                  <td>
+                    <div>{{.LastApplyErrorCodeDisplay}}</div>
+                    <div class="sub value">{{.LastApplyErrorMessageDisplay}}</div>
+                  </td>
+                </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </section>
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>

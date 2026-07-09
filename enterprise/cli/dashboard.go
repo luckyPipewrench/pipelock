@@ -82,7 +82,7 @@ because the operator token would transit in cleartext.`,
 			// License gate: the dashboard is a paid surface. Fail closed before
 			// any listener bind or file IO so an unlicensed invocation produces
 			// a clear entitlement error instead of a half-started server.
-			lic, err := license.VerifyAgentsWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile})
+			lic, err := verifyDashboardLicenseWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile})
 			if err != nil {
 				return err
 			}
@@ -109,6 +109,18 @@ because the operator token would transit in cleartext.`,
 	_ = cmd.MarkFlagRequired("receipt-dir")
 	_ = cmd.MarkFlagRequired("auth-token-file")
 	return cmd
+}
+
+func verifyDashboardLicenseWithOptions(in license.FleetVerifyInputs) (license.License, error) {
+	lic, agentsErr := license.VerifyAgentsWithOptions(in)
+	if agentsErr == nil {
+		return lic, nil
+	}
+	lic, fleetErr := license.VerifyFleetWithOptions(in)
+	if fleetErr == nil {
+		return lic, nil
+	}
+	return license.License{}, agentsErr
 }
 
 func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic license.License) error {
@@ -181,6 +193,10 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		AuthorizeRaw: dashboardAuthorizeFunc(rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
 		AuditWriter: cmd.ErrOrStderr(),
+		// TODO(DASH-3A): wire live conductor source when dashboard serve owns a
+		// conductor audit/status store handle. Until then /fleet renders the
+		// read-only empty state instead of inventing a fake conductor client.
+		FleetSource: nil,
 	})
 	handler := dashboardAuthHandler(metaAuthorized, inner)
 

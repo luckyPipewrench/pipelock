@@ -30,14 +30,15 @@ const (
 	auditSessionMaxBytes  = 128
 )
 
-//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html
+//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html
 var templateFS embed.FS
 
 var (
-	evidenceTemplate     = template.Must(template.ParseFS(templateFS, "evidence.tmpl.html"))
-	exemptionsTemplate   = template.Must(template.ParseFS(templateFS, "exemptions.tmpl.html"))
-	agentsTemplate       = template.Must(template.ParseFS(templateFS, "agents.tmpl.html"))
-	investigatorTemplate = template.Must(template.ParseFS(templateFS, "investigator.tmpl.html"))
+	evidenceTemplate      = template.Must(template.ParseFS(templateFS, "evidence.tmpl.html"))
+	exemptionsTemplate    = template.Must(template.ParseFS(templateFS, "exemptions.tmpl.html"))
+	agentsTemplate        = template.Must(template.ParseFS(templateFS, "agents.tmpl.html"))
+	investigatorTemplate  = template.Must(template.ParseFS(templateFS, "investigator.tmpl.html"))
+	fleetoverviewTemplate = template.Must(template.ParseFS(templateFS, "fleetoverview.tmpl.html"))
 )
 
 type pageData struct {
@@ -76,6 +77,7 @@ func New(opts Options) http.Handler {
 	mux.Handle("/session/", d.gate(http.HandlerFunc(d.handleSession)))
 	mux.Handle("/agents", d.gate(http.HandlerFunc(d.handleAgents)))
 	mux.Handle("/agent/", d.gate(http.HandlerFunc(d.handleAgent)))
+	mux.Handle("/fleet", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
 	return mux
 }
 
@@ -161,15 +163,23 @@ func auditSessionField(session string) (display, hash string) {
 }
 
 func (d *dashboardHandler) gate(next http.Handler) http.Handler {
+	return d.featureGate(license.FeatureAgents, "Pipelock Enterprise agents feature required\n", next)
+}
+
+func (d *dashboardHandler) fleetGate(next http.Handler) http.Handler {
+	return d.featureGate(license.FeatureFleet, "Pipelock Enterprise fleet feature required\n", next)
+}
+
+func (d *dashboardHandler) featureGate(feature, forbiddenMessage string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if d.hasFeature == nil || !d.hasFeature(license.FeatureAgents) {
+		if d.hasFeature == nil || !d.hasFeature(feature) {
 			w.Header().Set("Content-Type", contentTypeText)
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte("Pipelock Enterprise agents feature required\n"))
+			_, _ = w.Write([]byte(forbiddenMessage))
 			return
 		}
 		// Authentication boundary. The license check above is entitlement, not
@@ -315,6 +325,29 @@ func (d *dashboardHandler) handleAgent(w http.ResponseWriter, r *http.Request) {
 	var buf bytes.Buffer
 	if err := agentsTemplate.Execute(&buf, data); err != nil {
 		http.Error(w, "could not render agent view", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (d *dashboardHandler) handleFleetOverview(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/fleet" {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	q := r.URL.Query()
+	overview, err := d.model.FleetOverview(r.Context(), q.Get("org_id"), q.Get("fleet_id"), rawAllowedFromContext(r))
+	if err != nil {
+		http.Error(w, "could not read fleet overview", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := fleetoverviewTemplate.Execute(&buf, overview); err != nil {
+		http.Error(w, "could not render fleet overview", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeHTML)

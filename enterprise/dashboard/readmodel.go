@@ -62,6 +62,7 @@ type Options struct {
 	// request (role, method, path, session, remote address). Viewing evidence is
 	// itself an audited action. Nil disables the access log.
 	AuditWriter      io.Writer
+	FleetSource      FleetDataSource
 	ReceiptReadLimit int
 	TimelineLimit    int
 	// FilterPresets maps named presets to bounded filter specs. Loaded from
@@ -78,6 +79,7 @@ type ReadModel struct {
 	receiptReadLimit int
 	timelineLimit    int
 	filterPresets    map[string]FilterSpec
+	fleetSource      FleetDataSource
 }
 
 // NewReadModel creates a dashboard read model from Options.
@@ -97,6 +99,7 @@ func NewReadModel(opts Options) *ReadModel {
 		receiptReadLimit: receiptReadLimit,
 		timelineLimit:    timelineLimit,
 		filterPresets:    opts.FilterPresets,
+		fleetSource:      opts.FleetSource,
 	}
 }
 

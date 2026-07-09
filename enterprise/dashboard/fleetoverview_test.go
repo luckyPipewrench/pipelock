@@ -239,8 +239,6 @@ func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 		fleetTestInstanceID,
 		fleetTestEnvironment,
 		fleetTestAuditKeyID,
-		fleetTestHealth,
-		fleetTestDrift,
 		fleetTestExpectedID,
 		fleetTestExpectedHash,
 		fleetTestExpectedMin,
@@ -263,8 +261,10 @@ func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 	for _, want := range []string{
 		hashedFleetValue(fleetTestInstanceID),
 		"Metadata view: instance IDs are hashed and raw follower",
-		"health redacted",
-		"drift redacted",
+		// FleetHealth and Drift are computed status enums, not identifiers, so
+		// they stay visible in the metadata view (see redactFleetFollowers).
+		"health " + fleetTestHealth,
+		"drift " + fleetTestDrift,
 		"active v<span class=\"mono\">7</span>",
 		"observed 2026-07-09T12:00:00Z",
 		"verified at 2026-07-09T12:01:00Z",

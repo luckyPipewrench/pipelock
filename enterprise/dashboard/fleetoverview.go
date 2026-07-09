@@ -110,11 +110,15 @@ func (m *ReadModel) FleetOverview(ctx context.Context, orgID, fleetID string, ra
 func redactFleetFollowers(in []FleetFollowerView) []FleetFollowerView {
 	out := make([]FleetFollowerView, len(in))
 	for i, follower := range in {
+		// FleetHealth and Drift are server-computed status enums (ok/stale/
+		// apply_failed/unsupported/unknown, in_sync/drift) with no follower-
+		// controlled content or infra identifiers. They are the category labels
+		// the metadata view exists to show (the same way the exemptions view
+		// keeps the scanner category while redacting the value), so they stay
+		// visible; only identifiers, hashes, versions, and error text are redacted.
 		follower.InstanceID = hashedFleetValue(follower.InstanceID)
 		follower.Environment = redactedFleetString(follower.Environment)
 		follower.AuditKeyID = redactedFleetString(follower.AuditKeyID)
-		follower.FleetHealth = redactedFleetString(follower.FleetHealth)
-		follower.Drift = redactedFleetString(follower.Drift)
 		follower.ExpectedBundleID = redactedFleetString(follower.ExpectedBundleID)
 		follower.ExpectedBundleHash = redactedFleetString(follower.ExpectedBundleHash)
 		follower.ExpectedMinPipelockVersion = redactedFleetString(follower.ExpectedMinPipelockVersion)

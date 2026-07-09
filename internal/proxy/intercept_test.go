@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -106,6 +107,58 @@ func TestInterceptEmitReceiptOrBlockRequiresReceipt(t *testing.T) {
 	})
 	if !blocked {
 		t.Fatal("receipt emission failure did not fail closed")
+	}
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+	if got := rr.Header().Get(blockreason.HeaderReason); got != string(blockreason.ReceiptEmissionFailed) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ReceiptEmissionFailed)
+	}
+	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="intercept"} 1`)
+}
+
+func TestInterceptEmitReceiptOrBlockRequiresReceiptBlocksV2Failure(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ApplyDefaults()
+	cfg.Internal = nil
+
+	m := metrics.New()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	p.v2EmitterPtr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  failingProxyV2Recorder{},
+		Signer:    proxydecision.NewKeyedSigner(rph.priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+
+	ic := &InterceptContext{
+		Proxy:     p,
+		Config:    cfg,
+		Logger:    audit.NewNop(),
+		RequestID: "req-intercept-v2-receipt",
+		Agent:     "agent",
+	}
+	rr := httptest.NewRecorder()
+	blocked := interceptEmitReceiptOrBlock(ic, rr, audit.NewRequestLogContext(ic.RequestID), receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "intercept",
+		Method:    http.MethodGet,
+		Target:    "https://example.test/",
+		RequestID: ic.RequestID,
+		Agent:     ic.Agent,
+	})
+	if !blocked {
+		t.Fatal("v2 receipt emission failure did not fail closed")
 	}
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)

@@ -687,16 +687,26 @@ func TestForwardScanned_ResponseReceiptFailureEmitsReplacementBlockReceipt(t *te
 		t.Fatalf("recorder.Close: %v", err)
 	}
 	receipts := readActionReceipts(t, dir)
-	var foundBlock bool
+	var originalActionID string
+	var replacement receipt.Receipt
 	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Layer == "mcp_response_scan" {
+			originalActionID = rcpt.ActionRecord.ActionID
+		}
 		if rcpt.ActionRecord.Verdict == config.ActionBlock &&
 			rcpt.ActionRecord.Layer == "receipt_emission_failed" &&
 			strings.Contains(rcpt.ActionRecord.Pattern, "mcp_response_scan receipt emission failed") {
-			foundBlock = true
+			replacement = rcpt
 		}
 	}
-	if !foundBlock {
+	if replacement.ActionRecord.ActionID == "" {
 		t.Fatalf("missing replacement block receipt in %d receipts", len(receipts))
+	}
+	if originalActionID == "" {
+		t.Fatalf("missing original mcp_response_scan receipt in %d receipts", len(receipts))
+	}
+	if replacement.ActionRecord.ParentActionID != originalActionID {
+		t.Fatalf("replacement parent_action_id = %q, want original action_id %q", replacement.ActionRecord.ParentActionID, originalActionID)
 	}
 }
 

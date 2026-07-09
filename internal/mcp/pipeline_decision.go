@@ -97,6 +97,15 @@ func EmitMCPDecision(
 
 	v1Emitted := false
 	receiptRequired := d.RequireReceipt
+	escalateReceiptError := func() (bool, error) {
+		if !receiptRequired || err == nil {
+			return false, nil
+		}
+		if !errors.Is(err, ErrReceiptRequired) {
+			err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)
+		}
+		return true, err
+	}
 	// A forwardable verdict is one whose request or response actually egresses to
 	// its peer: allow, warn, and forward carry a request upstream, and strip
 	// writes the redacted response back to the client. redirect goes to an
@@ -139,11 +148,8 @@ func EmitMCPDecision(
 		// RequireReceipt gate below upgrades errors to fail-closed before
 		// envelope mutation.
 	}
-	if receiptRequired && err != nil && !errors.Is(err, ErrReceiptRequired) {
-		err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)
-	}
-	if receiptRequired && err != nil {
-		return outbound, err
+	if done, escalateErr := escalateReceiptError(); done {
+		return outbound, escalateErr
 	}
 	if v1Emitted && v2Emitter != nil {
 		if v2Decision, ok := mcpV2DecisionFromReceipt(d.Receipt); ok {
@@ -152,11 +158,8 @@ func EmitMCPDecision(
 			}
 		}
 	}
-	if receiptRequired && err != nil && !errors.Is(err, ErrReceiptRequired) {
-		err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)
-	}
-	if receiptRequired && err != nil {
-		return outbound, err
+	if done, escalateErr := escalateReceiptError(); done {
+		return outbound, escalateErr
 	}
 
 	if envelopeEmitter != nil && d.Envelope != nil && d.InboundMsg != nil {

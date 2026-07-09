@@ -150,11 +150,25 @@ func emitV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.EmitOpts, l
 	return nil
 }
 
+func recordV2ReceiptEmitFailure(metrics receipt.MetricsSink) {
+	if metrics != nil {
+		metrics.RecordEmitFailure(receipt.FailReasonRecord)
+	}
+}
+
+func logV2EmitFailure(logger *audit.Logger, opts receipt.EmitOpts, err error) {
+	if logger == nil {
+		return
+	}
+	logger.LogError(audit.NewRequestLogContext(opts.RequestID),
+		fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s layer=%s transport=%s: %w",
+			opts.ActionID, opts.Verdict, opts.Layer, opts.Transport, err))
+}
+
 // emitV2Receipt dual-emits the v2 proxy_decision for opts on the main proxy.
 func (p *Proxy) emitV2Receipt(opts receipt.EmitOpts) error {
 	return emitV2(&p.v2EmitterPtr, opts, func(err error) {
-		p.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-			fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s layer=%s transport=%s: %w",
-				opts.ActionID, opts.Verdict, opts.Layer, opts.Transport, err))
+		recordV2ReceiptEmitFailure(p.metrics)
+		logV2EmitFailure(p.logger, opts, err)
 	})
 }

@@ -663,9 +663,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if len(names) > 0 {
 			pattern = names[0]
 		}
+		originalActionID := receipt.NewActionID()
 		if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
 			Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  originalActionID,
 				Verdict:   effectiveAction,
 				Transport: opts.Transport,
 				Target:    target,
@@ -683,14 +684,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				writeContext = "writing block response"
 				if _, blockEmitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
 					Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
-						ActionID:  receipt.NewActionID(),
-						Verdict:   config.ActionBlock,
-						Transport: opts.Transport,
-						Target:    target,
-						RequestID: requestID,
-						Layer:     "receipt_emission_failed",
-						Pattern:   "mcp_response_scan receipt emission failed",
-						Severity:  config.SeverityHigh,
+						ActionID:       receipt.NewActionID(),
+						ParentActionID: originalActionID,
+						Verdict:        config.ActionBlock,
+						Transport:      opts.Transport,
+						Target:         target,
+						RequestID:      requestID,
+						Layer:          "receipt_emission_failed",
+						Pattern:        "mcp_response_scan receipt emission failed",
+						Severity:       config.SeverityHigh,
 					}),
 					RequireReceipt: true,
 				}); blockEmitErr != nil {

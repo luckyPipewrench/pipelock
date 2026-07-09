@@ -989,6 +989,11 @@ func TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T
 	if !strings.Contains(marker.ActionRecord.Pattern, "outcome receipt emission failed") {
 		t.Fatalf("marker pattern = %q, want outcome receipt emission failed", marker.ActionRecord.Pattern)
 	}
+	if marker.ActionRecord.Verdict != config.ActionAllow {
+		t.Fatalf("marker verdict = %q, want %q for post-response outcome gap", marker.ActionRecord.Verdict, config.ActionAllow)
+	}
+	assertMetricsContain(t, handler.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsNotContain(t, handler.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="reverse"} 1`)
 }
 
 func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsSingleIntentOutcomePair(t *testing.T) {

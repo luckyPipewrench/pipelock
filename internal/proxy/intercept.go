@@ -205,11 +205,12 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 	}
 	// Dual-emit the v2 proxy_decision receipt. The atomic load is current at
 	// call time so long-lived tunnels pick up the post-reload emitter.
-	_ = emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
-		if ic.Logger != nil {
-			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
-		}
-	})
+	if err := emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
+		recordV2ReceiptEmitFailure(ic.Proxy.metrics)
+		logV2EmitFailure(ic.Logger, opts, err)
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -259,11 +260,12 @@ func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) e
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
-	_ = emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
-		if ic.Logger != nil {
-			ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
-		}
-	})
+	if err := emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
+		recordV2ReceiptEmitFailure(ic.Proxy.metrics)
+		logV2EmitFailure(ic.Logger, opts, err)
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 

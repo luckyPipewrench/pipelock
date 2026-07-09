@@ -579,6 +579,13 @@ func TestEmitter_ForgedHeartbeatAndCloseFieldsAreRecomputed(t *testing.T) {
 	if heartbeat.HeartbeatTime == "2099-01-01T00:00:00Z" {
 		t.Fatalf("heartbeat_time preserved forged value")
 	}
+	hbControl := afterHeartbeatReceipts[len(afterHeartbeatReceipts)-1].ActionRecord.SessionControl
+	if hbControl.Open != nil {
+		t.Fatalf("forged Open sub-struct persisted in heartbeat receipt")
+	}
+	if hbControl.Close != nil {
+		t.Fatalf("forged Close sub-struct persisted in heartbeat receipt")
+	}
 
 	preCloseReceipts := readAllReceiptsFromDir(t, dir, pub)
 	preCloseTail := mustHash(t, preCloseReceipts[len(preCloseReceipts)-1])
@@ -629,6 +636,13 @@ func TestEmitter_ForgedHeartbeatAndCloseFieldsAreRecomputed(t *testing.T) {
 	}
 	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
 		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+	closeControl := receipts[len(receipts)-1].ActionRecord.SessionControl
+	if closeControl.Open != nil {
+		t.Fatalf("forged Open sub-struct persisted in close receipt")
+	}
+	if closeControl.Heartbeat != nil {
+		t.Fatalf("forged Heartbeat sub-struct persisted in close receipt")
 	}
 }
 

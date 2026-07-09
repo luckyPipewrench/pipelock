@@ -1198,14 +1198,15 @@ func (m *Manager) integrityLogAttrs(failureClass string, err error, attrs ...any
 		"key_path", m.cfg.IntegrityKeyPath,
 		"high_water_path", m.integrityHighWaterPath(),
 		"deviation_action", m.cfg.DeviationAction,
-		"error", err,
 	})
+	if err != nil {
+		fields = append(fields, "error_sha256", logValueFingerprint("baseline-integrity-error-v1", err.Error()))
+	}
 	// Caller-supplied attrs carry agent-influenced identifiers (agent_key,
-	// declared_agent_key, profile names). Neutralize log-control characters in
-	// every value before it reaches the log sink so a crafted identifier cannot
-	// forge or split a log line. slog handlers already quote attribute values;
-	// this adds a concrete sanitizer for static analysis and defense-in-depth.
-	return append(fields, sanitizeLogAttrs(attrs)...)
+	// declared_agent_key, profile names). Preserve correlation through stable
+	// fingerprints instead of logging attacker-influenced strings in the generic
+	// integrity failure sinks.
+	return append(fields, integrityDiagnosticLogAttrs(attrs)...)
 }
 
 func (m *Manager) pendingProfileIntegrityNonEnforcingLogAttrs(agentKey string) []any {
@@ -1218,6 +1219,40 @@ func (m *Manager) pendingProfileIntegrityNonEnforcingLogAttrs(agentKey string) [
 		"deviation_action", m.cfg.DeviationAction,
 		"agent_key_sha256", logValueFingerprint("baseline-agent-key-v1", agentKey),
 	})
+}
+
+func integrityDiagnosticLogAttrs(attrs []any) []any {
+	if len(attrs) == 0 {
+		return attrs
+	}
+	out := make([]any, 0, len(attrs))
+	for i := 0; i < len(attrs); i++ {
+		if attr, ok := attrs[i].(slog.Attr); ok {
+			appendIntegrityDiagnosticLogAttr(&out, attr.Key, attr.Value.Any())
+			continue
+		}
+		key, ok := attrs[i].(string)
+		if !ok || i+1 >= len(attrs) {
+			continue
+		}
+		i++
+		appendIntegrityDiagnosticLogAttr(&out, key, attrs[i])
+	}
+	return out
+}
+
+func appendIntegrityDiagnosticLogAttr(out *[]any, key string, value any) {
+	key = sanitizeLogValue(key)
+	switch v := value.(type) {
+	case string:
+		*out = append(*out, key+"_sha256", logValueFingerprint("baseline-integrity-"+key+"-v1", v))
+	case error:
+		*out = append(*out, key+"_sha256", logValueFingerprint("baseline-integrity-"+key+"-v1", v.Error()))
+	case slog.Attr:
+		appendIntegrityDiagnosticLogAttr(out, v.Key, v.Value.Any())
+	default:
+		*out = append(*out, key, value)
+	}
 }
 
 func logValueFingerprint(scope, value string) string {

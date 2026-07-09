@@ -230,6 +230,7 @@ Pipelock keeps its direct dependency set intentionally small. Any new dependency
 - **Bugs**: Open a GitHub issue with steps to reproduce
 - **Features**: Open a GitHub issue describing the use case
 - **Scanner bypasses**: Use the security bypass issue template
+- **Questions and community discussion**: Join the Discord community at https://discord.gg/badNfhGKTc
 
 ## Contributor License Agreement
 

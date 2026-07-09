@@ -147,7 +147,7 @@ changelog:
       regexp: '^.*?perf(\(.+\))??!?:.+$'
       order: 3
     - title: '📦 Dependencies'
-      regexp: '^.*?deps(\(.+\))??!?:.+$'
+      regexp: '^.*?((build|chore)\(deps.*?\)|deps(\(.+\))?)!?:.+$'
       order: 4
     - title: 'Other Changes'
       order: 999

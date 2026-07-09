@@ -8,7 +8,6 @@
 package evidence
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,7 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
+	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -208,46 +207,10 @@ if the signature is invalid.`,
 }
 
 func runVerifyCert(cmd *cobra.Command, opts verifyCertOptions) error {
-	data, err := os.ReadFile(filepath.Clean(opts.certFile))
-	if err != nil {
-		return fmt.Errorf("--cert: %w", err)
-	}
-
-	cert, err := coveragecert.Unmarshal(data)
-	if err != nil {
-		return err
-	}
-
-	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
-	if err != nil {
-		return err
-	}
-
-	// Convert trusted-signer map to the set format Verify expects.
-	trustedKeySet := make(map[string]struct{}, len(trusted))
-	for keyHex := range trusted {
-		trustedKeySet[keyHex] = struct{}{}
-	}
-
-	result, verErr := coveragecert.Verify(cert, trustedKeySet)
-	if verErr != nil {
-		return verErr
-	}
-
-	w := cmd.OutOrStdout()
-	for _, line := range result.Lines {
-		_, _ = fmt.Fprintln(w, line)
-	}
-
-	if !result.SignatureValid {
-		return errors.New("coverage certificate signature is INVALID")
-	}
-	if !result.AggregateValid {
-		return errors.New("coverage certificate aggregate counts do not match sessions")
-	}
-	if !result.SignerTrusted && len(trustedKeySet) > 0 {
-		_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-			"pipelock: warning: the certificate signer is not in the trusted-signer set")
-	}
-	return nil
+	return coveragecertverify.Run(coveragecertverify.Options{
+		CertFile:       opts.certFile,
+		TrustedSigners: opts.trustedSigners,
+		Out:            cmd.OutOrStdout(),
+		Err:            cmd.ErrOrStderr(),
+	})
 }

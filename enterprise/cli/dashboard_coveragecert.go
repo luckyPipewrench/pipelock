@@ -15,13 +15,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
+	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
-	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
+
+const coverageCertReceiptReadLimit = 100000
 
 // coverageCertCmd returns the `coverage-cert` command group with generate + verify.
 func coverageCertCmd() *cobra.Command {
@@ -132,9 +134,13 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	var chainsIntact, chainsBroken int
 
 	for _, sid := range sessions {
-		receipts, _, extractErr := receipt.ExtractReceiptsFromSessionDirBounded(cleanDir, sid, 100000)
+		receipts, extractErr := loadCoverageCertSessionReceipts(cleanDir, sid, coverageCertReceiptReadLimit)
 		if extractErr != nil {
-			return fmt.Errorf("reading receipts for session %q: %w", sid, extractErr)
+			return extractErr
+		}
+		receipts = filterReceiptsToWindow(receipts, windowStart, windowEnd)
+		if len(receipts) == 0 {
+			continue
 		}
 		include, filterErr := sessionBelongsToAgent(sid, receipts, opts.agent)
 		if filterErr != nil {
@@ -209,6 +215,29 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 	return nil
 }
 
+func loadCoverageCertSessionReceipts(dir, sessionID string, limit int) ([]receipt.Receipt, error) {
+	receipts, readLimited, err := receipt.ExtractReceiptsFromSessionDirBounded(dir, sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("reading receipts for session %q: %w", sessionID, err)
+	}
+	if readLimited {
+		return nil, fmt.Errorf("reading receipts for session %q: receipt read limit %d reached; refusing partial coverage certificate", sessionID, limit)
+	}
+	return receipts, nil
+}
+
+func filterReceiptsToWindow(receipts []receipt.Receipt, start, end time.Time) []receipt.Receipt {
+	filtered := receipts[:0]
+	for _, r := range receipts {
+		ts := r.ActionRecord.Timestamp
+		if ts.Before(start) || !ts.Before(end) {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	return filtered
+}
+
 func sessionBelongsToAgent(sessionID string, receipts []receipt.Receipt, agent string) (bool, error) {
 	if len(receipts) == 0 {
 		return false, nil
@@ -260,46 +289,10 @@ and flags any mismatch. Fully offline: no license, no server.`,
 }
 
 func runCoverageCertVerify(cmd *cobra.Command, opts coverageCertVerifyOptions) error {
-	data, err := os.ReadFile(filepath.Clean(opts.certFile))
-	if err != nil {
-		return fmt.Errorf("--cert: %w", err)
-	}
-
-	cert, err := coveragecert.Unmarshal(data)
-	if err != nil {
-		return err
-	}
-
-	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
-	if err != nil {
-		return err
-	}
-
-	// Convert the trusted-signer map to the format Verify expects.
-	trustedKeySet := make(map[string]struct{}, len(trusted))
-	for keyHex := range trusted {
-		trustedKeySet[keyHex] = struct{}{}
-	}
-
-	result, err := coveragecert.Verify(cert, trustedKeySet)
-	if err != nil {
-		return err
-	}
-
-	w := cmd.OutOrStdout()
-	for _, line := range result.Lines {
-		_, _ = fmt.Fprintln(w, line)
-	}
-
-	if !result.SignatureValid {
-		return fmt.Errorf("coverage certificate signature is INVALID")
-	}
-	if !result.AggregateValid {
-		return fmt.Errorf("coverage certificate aggregate counts do not match sessions")
-	}
-	if !result.SignerTrusted && len(trustedKeySet) > 0 {
-		_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
-			"pipelock: warning: the certificate signer is not in the trusted-signer set")
-	}
-	return nil
+	return coveragecertverify.Run(coveragecertverify.Options{
+		CertFile:       opts.certFile,
+		TrustedSigners: opts.trustedSigners,
+		Out:            cmd.OutOrStdout(),
+		Err:            cmd.ErrOrStderr(),
+	})
 }

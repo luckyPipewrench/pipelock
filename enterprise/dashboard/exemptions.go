@@ -370,7 +370,7 @@ func joinSemanticFindings(entries []ExemptionEntry, findings []diag.ConfigSemant
 // "not tracked" defaults.
 func overlayExemptionLifecycle(entries []ExemptionEntry, store *ExemptionStore, now time.Time) {
 	for i := range entries {
-		rec, ok := store.Find(entries[i].Scope)
+		rec, ok := store.Find(entries[i].Scope, now)
 		if !ok {
 			continue
 		}

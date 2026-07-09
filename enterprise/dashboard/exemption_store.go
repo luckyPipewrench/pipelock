@@ -242,17 +242,35 @@ func (s *ExemptionStore) Remove(id string) error {
 	return fmt.Errorf("exemption record: id %q not found", id)
 }
 
-// Find returns the first record matching the given scope, or false if none.
-func (s *ExemptionStore) Find(scope string) (ExemptionRecord, bool) {
+// Find returns the preferred record matching the given scope, or false if none.
+// Active records are preferred over expired historical records; when several
+// records have the same lifecycle state, the latest-created record wins.
+func (s *ExemptionStore) Find(scope string, now time.Time) (ExemptionRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	var found ExemptionRecord
+	ok := false
 	for _, rec := range s.records {
-		if rec.Scope == scope {
-			return rec, true
+		if rec.Scope != scope {
+			continue
+		}
+		if !ok {
+			found = rec
+			ok = true
+			continue
+		}
+		foundExpired := found.Status(now) == lifecycleExpired
+		recExpired := rec.Status(now) == lifecycleExpired
+		if foundExpired && !recExpired {
+			found = rec
+			continue
+		}
+		if foundExpired == recExpired && rec.Created.After(found.Created) {
+			found = rec
 		}
 	}
-	return ExemptionRecord{}, false
+	return found, ok
 }
 
 func validateExemptionRecordForAdd(rec ExemptionRecord) error {

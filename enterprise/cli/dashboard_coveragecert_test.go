@@ -71,9 +71,13 @@ func writeCoverageCertSession(t *testing.T, dir string, priv ed25519.PrivateKey,
 
 func writeCoverageCertEvidenceSession(t *testing.T, dir string, priv ed25519.PrivateKey, sessionID, actor string, count int) {
 	t.Helper()
+	writeCoverageCertEvidenceSessionAt(t, dir, priv, sessionID, actor, count, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+}
+
+func writeCoverageCertEvidenceSessionAt(t *testing.T, dir string, priv ed25519.PrivateKey, sessionID, actor string, count int, base time.Time) {
+	t.Helper()
 	path := filepath.Join(dir, fmt.Sprintf("evidence-%s-000000.jsonl", sessionID))
 	prevHash := receipt.GenesisHash
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	var lines []byte
 	for i := range count {
 		ar := receipt.ActionRecord{
@@ -140,7 +144,7 @@ func TestRunCoverageCertGenerate_RoundTrip(t *testing.T) {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
 	const actor = "agent-a"
-	writeCoverageCertSession(t, dir, priv, 3)
+	writeCoverageCertEvidenceSession(t, dir, priv, "roundtrip", actor, 3)
 
 	keyFile := filepath.Join(t.TempDir(), "signing.key")
 	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
@@ -254,6 +258,78 @@ func TestRunCoverageCertGenerate_FiltersDeclaredAgent(t *testing.T) {
 	}
 }
 
+func TestRunCoverageCertGenerate_FiltersDeclaredWindow(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	windowStart := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(time.Hour)
+	writeCoverageCertEvidenceSessionAt(t, dir, priv, "before", "agent-a", 2, windowStart.Add(-2*time.Hour))
+	writeCoverageCertEvidenceSessionAt(t, dir, priv, "inside", "agent-a", 2, windowStart.Add(10*time.Minute))
+	writeCoverageCertEvidenceSessionAt(t, dir, priv, "after", "agent-a", 2, windowEnd.Add(time.Minute))
+
+	keyFile := filepath.Join(t.TempDir(), "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := runCoverageCertGenerate(cmd, coverageCertGenerateOptions{
+		agent:          "agent-a",
+		receiptDir:     dir,
+		signingKeyFile: keyFile,
+		windowStart:    windowStart.Format(time.RFC3339),
+		windowEnd:      windowEnd.Format(time.RFC3339),
+		outFile:        certFile,
+	}); err != nil {
+		t.Fatalf("runCoverageCertGenerate: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(certFile))
+	if err != nil {
+		t.Fatalf("read cert: %v", err)
+	}
+	cert, err := coveragecert.Unmarshal(data)
+	if err != nil {
+		t.Fatalf("Unmarshal cert: %v", err)
+	}
+	res, err := coveragecert.Verify(cert, map[string]struct{}{hex.EncodeToString(pub): {}})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !res.SignatureValid || !res.SignerTrusted || !res.AggregateValid {
+		t.Fatalf("generated cert verification = signature:%v trusted:%v aggregate:%v", res.SignatureValid, res.SignerTrusted, res.AggregateValid)
+	}
+	if cert.Body.TotalReceipts != 2 || cert.Body.SessionsCovered != 1 {
+		t.Fatalf("window cert summarized total=%d sessions=%d, want total=2 sessions=1", cert.Body.TotalReceipts, cert.Body.SessionsCovered)
+	}
+	if cert.Body.Sessions[0].ID != "inside" {
+		t.Fatalf("cert session = %q, want inside", cert.Body.Sessions[0].ID)
+	}
+}
+
+func TestLoadCoverageCertSessionReceipts_FailsClosedOnTruncation(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	writeCoverageCertEvidenceSession(t, dir, priv, "limited", "agent-a", 2)
+
+	_, err = loadCoverageCertSessionReceipts(dir, "limited", 1)
+	if err == nil {
+		t.Fatal("loadCoverageCertSessionReceipts should reject truncated reads")
+	}
+	if !strings.Contains(err.Error(), "receipt read limit 1 reached") {
+		t.Fatalf("error = %q, want read-limit rejection", err.Error())
+	}
+}
+
 // genCoverageCertForTest generates a signed cert file for agent-a and returns
 // its path plus the signer public-key hex.
 func genCoverageCertForTest(t *testing.T) (certFile, pubHex string) {
@@ -263,7 +339,7 @@ func genCoverageCertForTest(t *testing.T) (certFile, pubHex string) {
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
-	writeCoverageCertSession(t, dir, priv, 2)
+	writeCoverageCertEvidenceSession(t, dir, priv, "verify", "agent-a", 2)
 	keyFile := filepath.Join(t.TempDir(), "signing.key")
 	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
 		t.Fatalf("SavePrivateKey: %v", err)

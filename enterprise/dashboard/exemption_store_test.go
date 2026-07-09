@@ -106,6 +106,22 @@ func TestExemptionStore_MissingFileIsEmpty(t *testing.T) {
 	}
 }
 
+func TestExemptionStore_CorruptedJSONReturnsError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "exemptions.json")
+	if err := os.WriteFile(storePath, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := OpenExemptionStore(storePath); err == nil {
+		t.Fatal("OpenExemptionStore should fail on corrupted JSON")
+	} else if !strings.Contains(err.Error(), "parse") {
+		t.Fatalf("OpenExemptionStore error = %q, want containing %q", err.Error(), "parse")
+	}
+}
+
 func TestExemptionStore_ValidationRejects(t *testing.T) {
 	t.Parallel()
 
@@ -493,7 +509,7 @@ func TestExemptionStore_FindByScope(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	found, ok := store.Find("find-me.example")
+	found, ok := store.Find("find-me.example", now)
 	if !ok {
 		t.Fatal("Find: not found")
 	}
@@ -501,9 +517,52 @@ func TestExemptionStore_FindByScope(t *testing.T) {
 		t.Fatalf("Find: ID = %q, want %q", found.ID, "exm_find")
 	}
 
-	_, ok = store.Find("not-there.example")
+	_, ok = store.Find("not-there.example", now)
 	if ok {
 		t.Fatal("Find: should not find nonexistent scope")
+	}
+}
+
+func TestExemptionStore_FindPrefersActiveRenewal(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "exemptions.json")
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	store, err := OpenExemptionStore(storePath)
+	if err != nil {
+		t.Fatalf("OpenExemptionStore: %v", err)
+	}
+
+	expired := ExemptionRecord{
+		ID:      "exm_old",
+		Scope:   "renewed.example",
+		Owner:   "old-owner",
+		Reason:  "old reason",
+		Created: now.Add(-60 * 24 * time.Hour),
+		Expiry:  now.Add(-24 * time.Hour),
+	}
+	if err := store.Add(expired, now); err != nil {
+		t.Fatalf("Add expired: %v", err)
+	}
+	renewed := ExemptionRecord{
+		ID:      "exm_new",
+		Scope:   "renewed.example",
+		Owner:   "new-owner",
+		Reason:  "renewed reason",
+		Created: now.Add(-time.Hour),
+		Expiry:  now.Add(30 * 24 * time.Hour),
+	}
+	if err := store.Add(renewed, now); err != nil {
+		t.Fatalf("Add renewed: %v", err)
+	}
+
+	found, ok := store.Find("renewed.example", now)
+	if !ok {
+		t.Fatal("Find: not found")
+	}
+	if found.ID != renewed.ID {
+		t.Fatalf("Find ID = %q, want active renewal %q", found.ID, renewed.ID)
 	}
 }
 
@@ -738,7 +797,7 @@ func TestExemptions_OverlayMetadataRedactsOwnerReason(t *testing.T) {
 	}
 
 	// Metadata (non-raw) view: owner and reason must be redacted.
-	metaBody := serveExemptionsBody(t, cfg, false)
+	metaBody := serveExemptionsBodyWithStore(t, cfg, store, false)
 	if strings.Contains(metaBody, "secret-internal-team") {
 		t.Fatal("metadata view leaked owner value")
 	}

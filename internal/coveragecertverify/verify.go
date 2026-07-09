@@ -1,0 +1,78 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+// Package coveragecertverify contains the shared CLI verification flow for
+// offline coverage certificates.
+package coveragecertverify
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
+	"github.com/luckyPipewrench/pipelock/internal/signingflag"
+)
+
+// Options configures one offline certificate verification run.
+type Options struct {
+	CertFile       string
+	TrustedSigners []string
+	Out            io.Writer
+	Err            io.Writer
+}
+
+// Run reads and verifies a coverage certificate, prints bounded verification
+// lines, and fails closed on invalid signatures or aggregate mismatches.
+func Run(opts Options) error {
+	data, err := os.ReadFile(filepath.Clean(opts.CertFile))
+	if err != nil {
+		return fmt.Errorf("--cert: %w", err)
+	}
+
+	cert, err := coveragecert.Unmarshal(data)
+	if err != nil {
+		return err
+	}
+
+	trusted, err := signingflag.ParseTrustedSigners(opts.TrustedSigners)
+	if err != nil {
+		return err
+	}
+
+	trustedKeySet := make(map[string]struct{}, len(trusted))
+	for keyHex := range trusted {
+		trustedKeySet[keyHex] = struct{}{}
+	}
+
+	result, err := coveragecert.Verify(cert, trustedKeySet)
+	if err != nil {
+		return err
+	}
+
+	out := opts.Out
+	if out == nil {
+		out = io.Discard
+	}
+	for _, line := range result.Lines {
+		_, _ = fmt.Fprintln(out, line)
+	}
+
+	if !result.SignatureValid {
+		return errors.New("coverage certificate signature is INVALID")
+	}
+	if !result.AggregateValid {
+		return errors.New("coverage certificate aggregate counts do not match sessions")
+	}
+	if !result.SignerTrusted && len(trustedKeySet) > 0 {
+		errOut := opts.Err
+		if errOut == nil {
+			errOut = io.Discard
+		}
+		_, _ = fmt.Fprintln(errOut,
+			"pipelock: warning: the certificate signer is not in the trusted-signer set")
+	}
+	return nil
+}

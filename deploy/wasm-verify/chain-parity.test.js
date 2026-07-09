@@ -146,6 +146,23 @@ if (!isMainThread) {
       }
       waiting.resolve(message.result);
     });
+    // A worker that crashes or exits AFTER startup emits an error/exit event,
+    // not a message, so without these handlers any in-flight verify calls would
+    // hang until the after() cleanup. Reject them promptly instead.
+    const failPending = (err) => {
+      for (const { reject } of pending.values()) {
+        reject(err);
+      }
+      pending.clear();
+    };
+    worker.on("error", (err) => {
+      failPending(err instanceof Error ? err : new Error(String(err)));
+    });
+    worker.on("exit", (code) => {
+      if (code !== 0) {
+        failPending(new Error(`wasm worker exited with code ${code}`));
+      }
+    });
   });
 
   after(async () => {
@@ -246,6 +263,30 @@ if (!isMainThread) {
     );
     assert.equal(wrongTypedChain.valid, false);
     assert.match(wrongTypedChain.error || "", /chain must be/u);
+
+    // A valid chain must not verify when a non-receipt line is appended or
+    // spliced in: the extractor rejects the malformed record rather than
+    // silently skipping it and certifying the surrounding chain.
+    const validBytes = readFileSync(path.join(testdata, "g1-valid-chain.jsonl"));
+    const garbage = Buffer.from('{"not":"a receipt","x":123}\n');
+    const trailingGarbage = await verifyBytes(
+      Buffer.concat([validBytes, Buffer.from("\n"), garbage]),
+      primaryKey,
+      "uint8array",
+    );
+    assert.equal(trailingGarbage.valid, false, trailingGarbage.error);
+
+    const firstNewline = validBytes.indexOf(0x0a);
+    const middleGarbage = await verifyBytes(
+      Buffer.concat([
+        validBytes.subarray(0, firstNewline + 1),
+        garbage,
+        validBytes.subarray(firstNewline + 1),
+      ]),
+      primaryKey,
+      "uint8array",
+    );
+    assert.equal(middleGarbage.valid, false, middleGarbage.error);
   });
 
   async function verifyFixture(name, mode) {
@@ -361,22 +402,26 @@ function assertCaseListCoversTopLevelJSONLFixtures(cases, testdata) {
 }
 
 function comparableChainResult(result) {
+  // Default ONLY missing (null/undefined) fields with `??`, never `||`: a
+  // present-but-falsey value (e.g. a drifted `receiptCount: false` or an
+  // `integrityVerified: 0`) must survive into the comparison so deepEqual
+  // catches wasm/Go schema or type drift instead of masking it to the default.
   return {
     valid: result.valid,
-    observed: result.observed || 0,
-    error: result.error || "",
-    reason: result.reason || "",
-    integrityVerified: result.integrityVerified || false,
-    receiptCount: result.receiptCount || 0,
-    finalSeq: result.finalSeq || 0,
-    rootHash: result.rootHash || "",
-    startTime: result.startTime || "",
-    endTime: result.endTime || "",
-    failureKind: result.failureKind || "",
+    observed: result.observed ?? 0,
+    error: result.error ?? "",
+    reason: result.reason ?? "",
+    integrityVerified: result.integrityVerified ?? false,
+    receiptCount: result.receiptCount ?? 0,
+    finalSeq: result.finalSeq ?? 0,
+    rootHash: result.rootHash ?? "",
+    startTime: result.startTime ?? "",
+    endTime: result.endTime ?? "",
+    failureKind: result.failureKind ?? "",
     brokenAtSeq: result.brokenAtSeq ?? null,
     brokenAtIndex: result.brokenAtIndex ?? null,
-    signerKeys: result.signerKeys || [],
-    segments: result.segments || [],
-    untrustedSignerKey: result.untrustedSignerKey || "",
+    signerKeys: result.signerKeys ?? [],
+    segments: result.segments ?? [],
+    untrustedSignerKey: result.untrustedSignerKey ?? "",
   };
 }

@@ -124,14 +124,12 @@ func (s *FileEmergencyStore) PublishRemoteKill(_ context.Context, msg conductor.
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.remoteKillHashes[hash]; ok {
+	existing, idempotent, err := s.remoteKillDecisionLocked(msg, hash)
+	if err != nil {
+		return StoredRemoteKill{}, false, err
+	}
+	if idempotent {
 		return existing, false, nil
-	}
-	if existingHash, ok := s.remoteKillIDs[msg.MessageID]; ok && existingHash != hash {
-		return StoredRemoteKill{}, false, ErrEmergencyConflict
-	}
-	if maxCounter, ok := s.maxRemoteKillCounterForOrgFleetLocked(msg.OrgID, msg.FleetID); ok && msg.Counter <= maxCounter {
-		return StoredRemoteKill{}, false, fmt.Errorf("%w: counter=%d max=%d", ErrEmergencyStaleCounter, msg.Counter, maxCounter)
 	}
 	s.remoteKills = append(s.remoteKills, record)
 	s.remoteKillHashes[hash] = record
@@ -201,14 +199,12 @@ func (s *FileEmergencyStore) PublishRollbackAuthorization(_ context.Context, aut
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.rollbackHashes[hash]; ok {
+	existing, idempotent, err := s.rollbackAuthDecisionLocked(auth, hash)
+	if err != nil {
+		return StoredRollbackAuthorization{}, false, err
+	}
+	if idempotent {
 		return existing, false, nil
-	}
-	if existingHash, ok := s.rollbackAuthIDMap[auth.AuthorizationID]; ok && existingHash != hash {
-		return StoredRollbackAuthorization{}, false, ErrEmergencyConflict
-	}
-	if maxCounter, ok := s.maxRollbackCounterForOrgFleetLocked(auth.OrgID, auth.FleetID); ok && auth.Counter <= maxCounter {
-		return StoredRollbackAuthorization{}, false, fmt.Errorf("%w: counter=%d max=%d", ErrEmergencyStaleCounter, auth.Counter, maxCounter)
 	}
 	s.rollbacks = append(s.rollbacks, record)
 	s.rollbackHashes[hash] = record
@@ -533,6 +529,42 @@ func (s *FileEmergencyStore) ClearRollbackAuthorization(_ context.Context, autho
 		return false, fmt.Errorf("conductor emergency store write after clear: %w", err)
 	}
 	return true, nil
+}
+
+// remoteKillDecisionLocked runs the read-only remote-kill conflict decision under
+// the caller's lock and performs NO writes. It returns (existing, true, nil) for
+// an idempotent re-publish of an identical stored message, (zero, false, err) for
+// an id conflict (ErrEmergencyConflict) or a stale counter (ErrEmergencyStaleCounter),
+// or (zero, false, nil) when the message would be newly stored. PublishRemoteKill
+// (write lock) and PreviewRemoteKill (read lock) share it so a dry-run's conflict
+// verdict matches the real apply exactly.
+func (s *FileEmergencyStore) remoteKillDecisionLocked(msg conductor.RemoteKillMessage, hash string) (StoredRemoteKill, bool, error) {
+	if existing, ok := s.remoteKillHashes[hash]; ok {
+		return existing, true, nil
+	}
+	if existingHash, ok := s.remoteKillIDs[msg.MessageID]; ok && existingHash != hash {
+		return StoredRemoteKill{}, false, ErrEmergencyConflict
+	}
+	if maxCounter, ok := s.maxRemoteKillCounterForOrgFleetLocked(msg.OrgID, msg.FleetID); ok && msg.Counter <= maxCounter {
+		return StoredRemoteKill{}, false, fmt.Errorf("%w: counter=%d max=%d", ErrEmergencyStaleCounter, msg.Counter, maxCounter)
+	}
+	return StoredRemoteKill{}, false, nil
+}
+
+// rollbackAuthDecisionLocked is the read-only conflict decision counterpart for
+// rollback authorizations. Same contract as remoteKillDecisionLocked; shared by
+// PublishRollbackAuthorization and PreviewRollbackAuthorization.
+func (s *FileEmergencyStore) rollbackAuthDecisionLocked(auth conductor.RollbackAuthorization, hash string) (StoredRollbackAuthorization, bool, error) {
+	if existing, ok := s.rollbackHashes[hash]; ok {
+		return existing, true, nil
+	}
+	if existingHash, ok := s.rollbackAuthIDMap[auth.AuthorizationID]; ok && existingHash != hash {
+		return StoredRollbackAuthorization{}, false, ErrEmergencyConflict
+	}
+	if maxCounter, ok := s.maxRollbackCounterForOrgFleetLocked(auth.OrgID, auth.FleetID); ok && auth.Counter <= maxCounter {
+		return StoredRollbackAuthorization{}, false, fmt.Errorf("%w: counter=%d max=%d", ErrEmergencyStaleCounter, auth.Counter, maxCounter)
+	}
+	return StoredRollbackAuthorization{}, false, nil
 }
 
 func (s *FileEmergencyStore) maxRemoteKillCounterForOrgFleetLocked(orgID, fleetID string) (uint64, bool) {

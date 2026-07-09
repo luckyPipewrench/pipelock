@@ -322,31 +322,69 @@ func (s *FileBundleStore) Publish(_ context.Context, bundle conductor.PolicyBund
 	if opts.Rollback {
 		return PublishedBundle{}, false, ErrUnsupportedRollback
 	}
-	if err := validatePublishableBundle(bundle, now); err != nil {
-		return PublishedBundle{}, false, err
-	}
-	hash, err := bundle.CanonicalHash()
+	record, err := buildPublishRecord(bundle, now)
 	if err != nil {
 		return PublishedBundle{}, false, err
-	}
-	streamKey, err := streamKey(bundle)
-	if err != nil {
-		return PublishedBundle{}, false, err
-	}
-	record := PublishedBundle{
-		Bundle:      bundle,
-		BundleHash:  hash,
-		StreamKey:   streamKey,
-		PublishedAt: now,
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.records[hash]; ok {
+	existing, idempotent, err := s.publishDecisionLocked(record)
+	if err != nil {
+		return PublishedBundle{}, false, err
+	}
+	if idempotent {
 		s.maybeResolveRollbackHeadLocked(existing)
 		return existing, false, nil
 	}
-	if existing, err := s.bundleByIDVersionLocked(bundle.BundleID, bundle.Version); err == nil {
+	if err := writeBundleRecord(s.bundlesDir, record); err != nil {
+		return PublishedBundle{}, false, err
+	}
+	s.records[record.BundleHash] = record
+	if current, ok := s.streams[record.StreamKey]; !ok || newerRecord(record, current) {
+		s.maybeResolveRollbackHeadLocked(record)
+		s.streams[record.StreamKey] = record
+	}
+	return record, true, nil
+}
+
+// buildPublishRecord validates a bundle and derives the PublishedBundle wrapper
+// (canonical hash + stream key) without touching store state. It is the shared
+// pre-lock step for both the mutating Publish and the read-only PreviewPublish so
+// a dry-run derives the exact same record — and hits the exact same validation
+// errors — as a real apply.
+func buildPublishRecord(bundle conductor.PolicyBundle, now time.Time) (PublishedBundle, error) {
+	if err := validatePublishableBundle(bundle, now); err != nil {
+		return PublishedBundle{}, err
+	}
+	hash, err := bundle.CanonicalHash()
+	if err != nil {
+		return PublishedBundle{}, err
+	}
+	sk, err := streamKey(bundle)
+	if err != nil {
+		return PublishedBundle{}, err
+	}
+	return PublishedBundle{
+		Bundle:      bundle,
+		BundleHash:  hash,
+		StreamKey:   sk,
+		PublishedAt: now,
+	}, nil
+}
+
+// publishDecisionLocked runs the read-only publish conflict decision under the
+// caller's lock and performs NO writes. It returns (existing, true, nil) when the
+// record is an idempotent re-publish of an already-stored identical bundle,
+// (zero, false, nil) when a forward publish would be accepted, or (zero, false,
+// err) with the exact conflict/validation error a real publish would surface.
+// Both Publish (write lock) and PreviewPublish (read lock) call it so the dry-run
+// conflict verdict can never diverge from the real apply.
+func (s *FileBundleStore) publishDecisionLocked(record PublishedBundle) (PublishedBundle, bool, error) {
+	if existing, ok := s.records[record.BundleHash]; ok {
+		return existing, true, nil
+	}
+	if existing, err := s.bundleByIDVersionLocked(record.Bundle.BundleID, record.Bundle.Version); err == nil {
 		return PublishedBundle{}, false, fmt.Errorf("%w: bundle_id/version already published as %s", ErrBundleConflict, existing.BundleHash)
 	} else if !errors.Is(err, ErrBundleNotFound) {
 		return PublishedBundle{}, false, err
@@ -354,15 +392,7 @@ func (s *FileBundleStore) Publish(_ context.Context, bundle conductor.PolicyBund
 	if err := s.authorizeForwardLocked(record); err != nil {
 		return PublishedBundle{}, false, err
 	}
-	if err := writeBundleRecord(s.bundlesDir, record); err != nil {
-		return PublishedBundle{}, false, err
-	}
-	s.records[hash] = record
-	if current, ok := s.streams[streamKey]; !ok || newerRecord(record, current) {
-		s.maybeResolveRollbackHeadLocked(record)
-		s.streams[streamKey] = record
-	}
-	return record, true, nil
+	return PublishedBundle{}, false, nil
 }
 
 func (s *FileBundleStore) Latest(_ context.Context, follower FollowerIdentity, now time.Time) (PublishedBundle, error) {
@@ -410,42 +440,14 @@ func (s *FileBundleStore) ApplyRollbackHead(_ context.Context, auth conductor.Ro
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	target, err := s.bundleByIDVersionLocked(auth.TargetBundleID, auth.TargetVersion)
+	target, action, err := s.rollbackHeadDecisionLocked(auth)
 	if err != nil {
 		return err
 	}
-	if auth.CurrentVersion <= target.Bundle.Version {
-		return fmt.Errorf("%w: rollback current version must exceed target version", conductor.ErrInvalidRollback)
-	}
-	currentRecord, err := s.bundleByIDVersionLocked(auth.CurrentBundleID, auth.CurrentVersion)
-	if err != nil {
-		if errors.Is(err, ErrBundleNotFound) {
-			return fmt.Errorf("%w: rollback current bundle is not present in target stream", conductor.ErrInvalidRollback)
-		}
-		return err
-	}
-	if currentRecord.StreamKey != target.StreamKey {
-		return fmt.Errorf("%w: rollback current bundle is not present in target stream", conductor.ErrInvalidRollback)
-	}
-	head, ok := s.streams[target.StreamKey]
-	if !ok {
-		return fmt.Errorf("%w: rollback target stream has no head", conductor.ErrInvalidRollback)
-	}
-	switch {
-	case head.BundleHash == target.BundleHash:
-		// Idempotent retry after the authorized rollback already moved the
-		// effective head backward. Re-write the marker if needed so retries
-		// converge after a partial previous failure.
-	case head.Bundle.Version > auth.CurrentVersion:
+	if action == rollbackHeadNoop {
 		// A later forward publish has superseded this rollback; do not move the
 		// head backward again on an idempotent operator retry.
 		return nil
-	case head.Bundle.Version == auth.CurrentVersion && head.Bundle.BundleID == auth.CurrentBundleID:
-		// A 2-of-N-signed rollback is the only path that may move the effective
-		// stream head backward. Normal publish remains forward-only in
-		// authorizeForwardLocked.
-	default:
-		return fmt.Errorf("%w: rollback authorization does not match current stream head", conductor.ErrInvalidRollback)
 	}
 	marker := streamHeadRecord{
 		Version:           streamHeadRecordVersion,
@@ -462,6 +464,65 @@ func (s *FileBundleStore) ApplyRollbackHead(_ context.Context, auth conductor.Ro
 	s.rollbackHeads[target.StreamKey] = marker
 	s.streams[target.StreamKey] = target
 	return nil
+}
+
+// rollbackHeadAction is the outcome of the read-only rollback-head decision:
+// either the effective head would move to the target (apply, including the
+// idempotent re-write case) or the rollback is a no-op because a later forward
+// publish already superseded it.
+type rollbackHeadAction int
+
+const (
+	rollbackHeadApply rollbackHeadAction = iota
+	rollbackHeadNoop
+)
+
+// rollbackHeadDecisionLocked runs the read-only rollback-head decision under the
+// caller's lock and performs NO writes. It resolves the target and current
+// bundles, enforces the same stream-membership and head-match invariants
+// ApplyRollbackHead requires, and reports whether applying the authorization
+// would move the head to the target or is a superseded no-op. ApplyRollbackHead
+// (write lock) and PreviewRollbackHead (read lock) share it so a dry-run's
+// "would roll to" verdict matches the real apply exactly. The caller is
+// responsible for auth.Validate() before locking.
+func (s *FileBundleStore) rollbackHeadDecisionLocked(auth conductor.RollbackAuthorization) (PublishedBundle, rollbackHeadAction, error) {
+	target, err := s.bundleByIDVersionLocked(auth.TargetBundleID, auth.TargetVersion)
+	if err != nil {
+		return PublishedBundle{}, rollbackHeadApply, err
+	}
+	if auth.CurrentVersion <= target.Bundle.Version {
+		return PublishedBundle{}, rollbackHeadApply, fmt.Errorf("%w: rollback current version must exceed target version", conductor.ErrInvalidRollback)
+	}
+	currentRecord, err := s.bundleByIDVersionLocked(auth.CurrentBundleID, auth.CurrentVersion)
+	if err != nil {
+		if errors.Is(err, ErrBundleNotFound) {
+			return PublishedBundle{}, rollbackHeadApply, fmt.Errorf("%w: rollback current bundle is not present in target stream", conductor.ErrInvalidRollback)
+		}
+		return PublishedBundle{}, rollbackHeadApply, err
+	}
+	if currentRecord.StreamKey != target.StreamKey {
+		return PublishedBundle{}, rollbackHeadApply, fmt.Errorf("%w: rollback current bundle is not present in target stream", conductor.ErrInvalidRollback)
+	}
+	head, ok := s.streams[target.StreamKey]
+	if !ok {
+		return PublishedBundle{}, rollbackHeadApply, fmt.Errorf("%w: rollback target stream has no head", conductor.ErrInvalidRollback)
+	}
+	switch {
+	case head.BundleHash == target.BundleHash:
+		// Idempotent retry after the authorized rollback already moved the
+		// effective head backward. Re-write the marker if needed so retries
+		// converge after a partial previous failure.
+		return target, rollbackHeadApply, nil
+	case head.Bundle.Version > auth.CurrentVersion:
+		return target, rollbackHeadNoop, nil
+	case head.Bundle.Version == auth.CurrentVersion && head.Bundle.BundleID == auth.CurrentBundleID:
+		// A 2-of-N-signed rollback is the only path that may move the effective
+		// stream head backward. Normal publish remains forward-only in
+		// authorizeForwardLocked.
+		return target, rollbackHeadApply, nil
+	default:
+		return PublishedBundle{}, rollbackHeadApply, fmt.Errorf("%w: rollback authorization does not match current stream head", conductor.ErrInvalidRollback)
+	}
 }
 
 func (s *FileBundleStore) BundleByIDVersion(_ context.Context, bundleID string, version uint64) (PublishedBundle, error) {

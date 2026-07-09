@@ -328,9 +328,18 @@ func TestHandler_Investigator(t *testing.T) {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(
 			context.Background(), http.MethodGet, "/session/../receipt/0", nil))
-		// Go's ServeMux cleans .. paths and returns 301 redirect; either 301 or 404 is acceptable.
-		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMovedPermanently {
-			t.Fatalf("path traversal status = %d, want 301 or 404", rec.Code)
+		// The security property: a "../" path must never be served as a valid
+		// investigator page (never 200 with receipt content). Go's ServeMux
+		// cleans the path and redirects it away (301 on Go <=1.25, 307 on Go
+		// >=1.26); a 404 is also acceptable. Assert the property, not one exact
+		// redirect code, so a future net/http redirect-code change cannot flip
+		// this from green to red.
+		if rec.Code == http.StatusOK {
+			t.Fatalf("path traversal was served (200); must be redirected away or 404. body=%s", rec.Body.String())
+		}
+		isRedirect := rec.Code >= 300 && rec.Code < 400
+		if !isRedirect && rec.Code != http.StatusNotFound {
+			t.Fatalf("path traversal status = %d, want a 3xx redirect or 404", rec.Code)
 		}
 	})
 

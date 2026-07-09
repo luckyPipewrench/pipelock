@@ -121,7 +121,7 @@ signs:
     output: true
 
 changelog:
-  use: github
+  use: git
   sort: asc
   filters:
     exclude:

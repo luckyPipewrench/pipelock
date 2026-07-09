@@ -1526,6 +1526,72 @@ func TestReplayEmergency_RejectsSnapshotTimeOverride(t *testing.T) {
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("replay expired kill code=%d body=%s, want 422", w.Code, w.Body.String())
 	}
+
+	store := mustStore(t)
+	current, target := seedRollbackReplayBundles(t, store, "rb-replay-expired")
+	auth, rollbackResolver := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-expired", current, target, testNow.Add(-2*time.Hour))
+	rollbackHandler := newTestHandlerWithOptions(t, store, nil, rollbackResolver)
+	snapshot = &decisionReplaySnapshot{Now: auth.CreatedAt.Add(30 * time.Minute)}
+
+	w = replayJSON(t, rollbackHandler, decisionReplayRequest{Rollback: &auth, Snapshot: snapshot}, true, false)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("replay rollback with snapshot code=%d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	w = replayJSON(t, rollbackHandler, decisionReplayRequest{Rollback: &auth}, true, false)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("replay expired rollback code=%d body=%s, want 422", w.Code, w.Body.String())
+	}
+}
+
+func TestReplayEmergency_EnforcesPublishValidation(t *testing.T) {
+	t.Run("remote kill max validity", func(t *testing.T) {
+		msg, resolver := signedRemoteKillMessageWithTTL(t, "kill-replay-long", 1, conductor.KillSwitchActive, testNow, DefaultRemoteKillMaxValidity+time.Minute)
+		handler := newTestHandlerWithOptions(t, mustStore(t), nil, resolver)
+
+		w := replayJSON(t, handler, decisionReplayRequest{RemoteKill: &msg}, true, false)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("replay overlong remote kill code=%d body=%s, want 422", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("rollback max validity", func(t *testing.T) {
+		store := mustStore(t)
+		current, target := seedRollbackReplayBundles(t, store, "rb-replay-long")
+		auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-long", current, target, testNow)
+		auth.ExpiresAt = auth.CreatedAt.Add(DefaultRollbackMaxValidity + time.Minute)
+		resolver := resignRollbackAuthorization(t, &auth)
+		handler := newTestHandlerWithOptions(t, store, nil, resolver)
+
+		w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("replay overlong rollback code=%d body=%s, want 422", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("rollback audience", func(t *testing.T) {
+		store := mustStore(t)
+		current, target := seedRollbackReplayBundles(t, store, "rb-replay-audience")
+		auth, _ := signedRollbackAuthorizationForBundlesWithResolver(t, "rb-replay-audience", current, target, testNow)
+		auth.Audience = conductor.Audience{InstanceIDs: []string{"pl-prod-1"}}
+		resolver := resignRollbackAuthorization(t, &auth)
+		handler := newTestHandlerWithOptions(t, store, nil, resolver)
+
+		w := replayJSON(t, handler, decisionReplayRequest{Rollback: &auth}, true, false)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("replay rollback with audience code=%d body=%s, want 422", w.Code, w.Body.String())
+		}
+	})
+}
+
+func resignRollbackAuthorization(t *testing.T, auth *conductor.RollbackAuthorization) conductor.SignatureKeyResolver {
+	t.Helper()
+	var resolver conductor.SignatureKeyResolver
+	auth.Signatures, resolver = signConductorPreimage(t, auth.SignablePreimage, signing.PurposePolicyBundleRollback, "rollback-signer-1", "rollback-signer-2")
+	if err := auth.VerifySignaturesAt(auth.CreatedAt, resolver); err != nil {
+		t.Fatalf("rollback authorization VerifySignaturesAt() error = %v", err)
+	}
+	return resolver
 }
 
 // TestDryRunReplay_NoSecretsInResponsesOrLogs proves invariant 6: no signing

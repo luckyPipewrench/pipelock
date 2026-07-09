@@ -982,7 +982,7 @@ func (h *Handler) handlePublishRemoteKill(w http.ResponseWriter, r *http.Request
 		return
 	}
 	now := h.now()
-	if err := validateMaxValidity(req.Message.NotBefore, req.Message.ExpiresAt, h.remoteKillMaxTTL); err != nil {
+	if err := validateRemoteKillPublishInput(req.Message, h.remoteKillMaxTTL); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -991,7 +991,7 @@ func (h *Handler) handlePublishRemoteKill(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if req.DryRun {
-		h.respondRemoteKillDryRun(w, r, req.Message)
+		h.respondRemoteKillDryRun(w, r, req.Message, now)
 		return
 	}
 	record, created, err := h.emergencyControls.PublishRemoteKill(r.Context(), req.Message, now)
@@ -1070,12 +1070,8 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if len(req.Authorization.Audience.InstanceIDs) != 0 || len(req.Authorization.Audience.Labels) != 0 {
-		writeStoreError(w, fmt.Errorf("%w: rollback audience must be empty", conductor.ErrInvalidRollback))
-		return
-	}
 	now := h.now()
-	if err := validateMaxValidity(req.Authorization.CreatedAt, req.Authorization.ExpiresAt, h.rollbackMaxTTL); err != nil {
+	if err := validateRollbackPublishInput(req.Authorization, h.rollbackMaxTTL); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -1088,7 +1084,7 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		return
 	}
 	if req.DryRun {
-		h.respondRollbackDryRun(w, r, req.Authorization)
+		h.respondRollbackDryRun(w, r, req.Authorization, now)
 		return
 	}
 	record, created, err := h.emergencyControls.PublishRollbackAuthorization(r.Context(), req.Authorization, now)
@@ -1245,6 +1241,17 @@ func validateMaxValidity(start, expires time.Time, maxTTL time.Duration) error {
 		return fmt.Errorf("%w: validity %s exceeds max %s", conductor.ErrInvalidValidityWindow, expires.Sub(start), maxTTL)
 	}
 	return nil
+}
+
+func validateRemoteKillPublishInput(msg conductor.RemoteKillMessage, maxTTL time.Duration) error {
+	return validateMaxValidity(msg.NotBefore, msg.ExpiresAt, maxTTL)
+}
+
+func validateRollbackPublishInput(auth conductor.RollbackAuthorization, maxTTL time.Duration) error {
+	if len(auth.Audience.InstanceIDs) != 0 || len(auth.Audience.Labels) != 0 {
+		return fmt.Errorf("%w: rollback audience must be empty", conductor.ErrInvalidRollback)
+	}
+	return validateMaxValidity(auth.CreatedAt, auth.ExpiresAt, maxTTL)
 }
 
 func ifNoneMatchMatches(raw, etag string) bool {

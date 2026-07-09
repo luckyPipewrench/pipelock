@@ -200,13 +200,13 @@ func publishEvaluationFrom(preview PublishPreview, preflight PublishPreflightSum
 // respondRemoteKillDryRun previews a remote-kill publish without writing. It runs
 // after the same admin authorization, validity-window, and signature checks the
 // real publish runs (the handler performs those before calling here).
-func (h *Handler) respondRemoteKillDryRun(w http.ResponseWriter, r *http.Request, msg conductor.RemoteKillMessage) {
+func (h *Handler) respondRemoteKillDryRun(w http.ResponseWriter, r *http.Request, msg conductor.RemoteKillMessage, now time.Time) {
 	previewer, ok := h.emergencyControls.(remoteKillPreviewer)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, ErrEmergencyPreviewUnsupported)
 		return
 	}
-	preview, err := previewer.PreviewRemoteKill(r.Context(), msg, h.now())
+	preview, err := previewer.PreviewRemoteKill(r.Context(), msg, now)
 	if err != nil {
 		if errors.Is(err, ErrEmergencyConflict) || errors.Is(err, ErrEmergencyStaleCounter) {
 			writeJSON(w, http.StatusOK, RemoteKillEvaluation{
@@ -240,7 +240,7 @@ func remoteKillEvaluationFrom(preview RemoteKillPreview, dryRun bool) RemoteKill
 // without writing either. The handler has already run admin authorization,
 // audience validation, the validity-window check, signature verification, and
 // the target-bundle-exists read before calling here.
-func (h *Handler) respondRollbackDryRun(w http.ResponseWriter, r *http.Request, auth conductor.RollbackAuthorization) {
+func (h *Handler) respondRollbackDryRun(w http.ResponseWriter, r *http.Request, auth conductor.RollbackAuthorization, now time.Time) {
 	authPreviewer, ok := h.emergencyControls.(rollbackAuthPreviewer)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, ErrEmergencyPreviewUnsupported)
@@ -251,7 +251,7 @@ func (h *Handler) respondRollbackDryRun(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, ErrDryRunUnsupported)
 		return
 	}
-	authPreview, err := authPreviewer.PreviewRollbackAuthorization(r.Context(), auth, h.now())
+	authPreview, err := authPreviewer.PreviewRollbackAuthorization(r.Context(), auth, now)
 	if err != nil {
 		if errors.Is(err, ErrEmergencyConflict) || errors.Is(err, ErrEmergencyStaleCounter) {
 			writeJSON(w, http.StatusOK, RollbackEvaluation{
@@ -478,6 +478,10 @@ func (h *Handler) replayRemoteKill(w http.ResponseWriter, r *http.Request, msg c
 		writeError(w, http.StatusInternalServerError, ErrEmergencyPreviewUnsupported)
 		return
 	}
+	if err := validateRemoteKillPublishInput(msg, h.remoteKillMaxTTL); err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	if err := msg.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
 		writeStoreError(w, err)
 		return
@@ -562,6 +566,10 @@ func (h *Handler) replayRollback(w http.ResponseWriter, r *http.Request, auth co
 	headPreviewer, ok := h.store.(rollbackHeadPreviewer)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, ErrDryRunUnsupported)
+		return
+	}
+	if err := validateRollbackPublishInput(auth, h.rollbackMaxTTL); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	if err := auth.VerifySignaturesAt(now, h.emergencyKeys); err != nil {

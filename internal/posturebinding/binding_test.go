@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,9 +76,12 @@ func writeMutatedCapsule(t *testing.T, data []byte, mutate map[string]string) st
 
 func TestLoadFileTamperedBodyRejected(t *testing.T) {
 	_, data := mintContainmentCapsule(t)
-	// Mutate a signed field (config_hash) but keep the original signature: the
-	// load-time self-consistency verify must reject it fail-closed.
-	path := writeMutatedCapsule(t, data, map[string]string{"config_hash": "tampered-config-hash"})
+	// Mutate a signed field (config_hash) to a well-formed but different value,
+	// keeping the original signature: the load-time self-consistency verify must
+	// reject it fail-closed on the signature, not on field shape.
+	path := writeMutatedCapsule(t, data, map[string]string{
+		"config_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+	})
 	if _, err := LoadFile(path); err == nil {
 		t.Fatal("LoadFile error = nil, want signature verification failure on tampered body")
 	}
@@ -93,8 +97,25 @@ func TestLoadFileExpiredCapsuleRejected(t *testing.T) {
 		"generated_at": now.Add(-48 * time.Hour).Format(time.RFC3339Nano),
 		"expires_at":   now.Add(-24 * time.Hour).Format(time.RFC3339Nano),
 	})
-	if _, err := LoadFile(path); err == nil {
+	_, err := LoadFile(path)
+	if err == nil {
 		t.Fatal("LoadFile error = nil, want expiry rejection")
+	}
+	// VerifyAt checks the expiry window BEFORE the signature, so this must fail
+	// specifically on expiry rather than passing on the (now-stale) signature -
+	// otherwise the test would prove signature rejection, not expiry rejection.
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("LoadFile error = %v, want an expiry rejection", err)
+	}
+}
+
+func TestLoadFileNonHexSignerKeyRejected(t *testing.T) {
+	_, data := mintContainmentCapsule(t)
+	// A signer_key_id that is not valid hex must fail closed at the key-decode
+	// step, before any signature verification.
+	path := writeMutatedCapsule(t, data, map[string]string{"signer_key_id": "not-hex-zz"})
+	if _, err := LoadFile(path); err == nil {
+		t.Fatal("LoadFile error = nil, want signer-key decode rejection")
 	}
 }
 
@@ -141,8 +162,12 @@ func TestLoadRuntimeAbsoluteOverrideWorks(t *testing.T) {
 }
 
 func TestLoadRuntimeUnsetUsesDefaultPath(t *testing.T) {
-	// The default path almost certainly does not exist in the test environment;
-	// a missing proof returns the zero binding with no error.
+	// With no override, LoadRuntime reads DefaultContainRunProofPath. Skip if a
+	// real proof exists on the host so the test never depends on (or reads) live
+	// local state; the missing-default case is what we assert here.
+	if _, err := os.Stat(DefaultContainRunProofPath); err == nil {
+		t.Skipf("host has a real proof at %s; skipping missing-default assertion", DefaultContainRunProofPath)
+	}
 	t.Setenv(RuntimeProofEnv, "")
 	got, err := LoadRuntime()
 	if err != nil {

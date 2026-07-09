@@ -44,30 +44,10 @@ jobs:
           go-version: '1.25'
 
       - name: Verify dependencies
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if go mod verify; then
-              exit 0
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            sleep $((attempt * 5))
-          done
+        run: bash scripts/ci-retry.sh go mod verify
 
       - name: Download dependencies
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if go mod download; then
-              exit 0
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            sleep $((attempt * 5))
-          done
+        run: bash scripts/ci-retry.sh go mod download
 
       - name: Run runtime-critical packages
         run: make test-runtime-critical

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -89,8 +90,9 @@ func TestReadModel_IntegrationRealReadPathAndZeroReceiptSession(t *testing.T) {
 	if zero.ReceiptsEnabled {
 		t.Fatal("zero-receipt session should be marked receipts disabled")
 	}
-	if zero.Scorecard.Authentic.Chip != chipAbsent {
-		t.Fatalf("zero Authentic.Chip = %q, want %q", zero.Scorecard.Authentic.Chip, chipAbsent)
+	wantChip := evidenceview.AbsentScorecard().Authentic.Chip
+	if zero.Scorecard.Authentic.Chip != wantChip {
+		t.Fatalf("zero Authentic.Chip = %q, want %q", zero.Scorecard.Authentic.Chip, wantChip)
 	}
 }
 

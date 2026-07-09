@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Evidence - Receipt Detail</title>
+  <style>
+    :root {
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .topbar {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border-strong);
+      background: #08080a;
+    }
+    .brand { font-weight: 650; }
+    .brand span { color: var(--text-muted); font-weight: 500; }
+    .mode { color: var(--text-dim); font-size: 13px; }
+    .mode a { color: var(--text-muted); text-decoration: none; margin-right: 14px; }
+    .mode a:hover { color: var(--text); }
+    main { padding: 24px; max-width: 900px; margin: 0 auto; }
+    h1, h2 { margin: 0; }
+    h1 { font-size: 24px; margin-bottom: 6px; }
+    .muted { color: var(--text-muted); }
+    .dim { color: var(--text-dim); }
+    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .back-link { color: var(--accent); text-decoration: none; font-size: 13px; display: inline-block; margin-bottom: 14px; }
+    .back-link:hover { text-decoration: underline; }
+    .verdict-banner {
+      padding: 14px;
+      border-radius: 8px;
+      margin-bottom: 18px;
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .verdict-allow { background: rgba(0,229,160,0.12); border: 1px solid rgba(0,229,160,0.3); color: var(--accent); }
+    .verdict-block { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); color: var(--danger); }
+    .verdict-warn { background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.3); color: var(--warn); }
+    .verdict-defer { background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.3); color: var(--text-muted); }
+    .field-grid {
+      display: grid;
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .field-row {
+      display: grid;
+      grid-template-columns: 200px minmax(0, 1fr);
+      background: var(--bg-elevated);
+    }
+    .field-label {
+      padding: 10px 14px;
+      color: var(--text-muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-right: 1px solid var(--border);
+    }
+    .field-value {
+      padding: 10px 14px;
+      overflow-wrap: anywhere;
+    }
+    .field-absent { color: var(--text-dim); font-style: italic; }
+    .callout {
+      border: 1px solid var(--border-strong);
+      background: #0b0f0e;
+      padding: 14px;
+      border-radius: 8px;
+      margin-top: 18px;
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Pipelock <span>· Operator Console / Investigator</span></div>
+    <div class="mode"><a href="/">Evidence</a><a href="/agents">Agents</a><a href="/exemptions">Exemptions</a>air-gapped · self-hosted</div>
+  </header>
+  <main>
+    <a class="back-link" href="/session/{{.SessionID}}">← Back to session</a>
+    <h1>Receipt Detail</h1>
+    <div class="muted mono" style="margin-bottom:18px">Session {{.SessionID}} · Seq {{.Seq}}</div>
+
+    {{if not .RawAllowed}}
+      <div class="callout" style="margin-bottom:18px">
+        <strong>Metadata view</strong> — Raw receipt details are redacted. Raw access requires the raw operator token.
+      </div>
+    {{end}}
+
+    {{if .Explanation.Verdict.Present}}
+      <div class="verdict-banner verdict-{{.Explanation.Verdict.Detail}}">{{.Explanation.Verdict.Detail}}</div>
+    {{end}}
+
+    <div class="field-grid">
+      {{if .Explanation.DecisionPhase.Present}}
+      <div class="field-row">
+        <div class="field-label">{{.Explanation.DecisionPhase.Label}}</div>
+        <div class="field-value">{{.Explanation.DecisionPhase.Detail}}</div>
+      </div>
+      {{end}}
+      {{range .Explanation.Fields}}
+      <div class="field-row">
+        <div class="field-label">{{.Label}}</div>
+        <div class="field-value{{if not .Present}} field-absent{{end}}">{{.Detail}}</div>
+      </div>
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>

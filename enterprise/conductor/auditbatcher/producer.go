@@ -43,24 +43,26 @@ const (
 // emit.Emitter: enqueue failures need durable drop accounting rather than
 // fire-and-forget sink behavior.
 type Producer struct {
-	queue               *Queue
-	metrics             MetricsSink
-	orgID               string
-	fleetID             string
-	instanceID          string
-	auditSignerKeyID    string
-	recorderKeyID       string
-	followerPubHex      string
-	auditSigner         ed25519.PrivateKey
-	now                 func() time.Time
-	entries             chan recorder.Entry
-	done                chan struct{}
-	closeOnce           sync.Once
-	sendMu              sync.RWMutex
-	closed              atomic.Bool
-	dropMu              sync.Mutex
-	dropped             map[string]uint64
-	previousSegmentTail string
+	queue                *Queue
+	metrics              MetricsSink
+	orgID                string
+	fleetID              string
+	instanceID           string
+	auditSignerKeyID     string
+	recorderKeyID        string
+	followerPubHex       string
+	auditSigner          ed25519.PrivateKey
+	now                  func() time.Time
+	entries              chan recorder.Entry
+	done                 chan struct{}
+	closeOnce            sync.Once
+	sendMu               sync.RWMutex
+	closed               atomic.Bool
+	dropMu               sync.Mutex
+	dropped              map[string]uint64
+	previousSegmentTail  string
+	emitAppliedState     bool
+	appliedStateProvider func() (conductor.FollowerAppliedState, bool)
 }
 
 type ProducerConfig struct {
@@ -75,6 +77,19 @@ type ProducerConfig struct {
 	RecorderPublicKey ed25519.PublicKey
 	BufferSize        int
 	Now               func() time.Time
+
+	// EmitAppliedState gates whether each signed batch carries a
+	// FollowerAppliedState statement. It must only be true when capability
+	// negotiation confirmed the conductor accepts audit-envelope schema v2 (see
+	// conductor.AuditEnvelopeSchemaVersion); against a v1 conductor it stays
+	// false so the wire form is byte-identical to v1 and passes the conductor's
+	// strict unknown-field decoder. Default false = do not emit (fail-safe).
+	EmitAppliedState bool
+	// AppliedStateProvider supplies the current applied-state snapshot when
+	// EmitAppliedState is true. It is a callback so the producer stays decoupled
+	// from applycache/policysync; returning ok=false leaves applied-state off
+	// the batch (best-effort) while the batch itself still flows.
+	AppliedStateProvider func() (conductor.FollowerAppliedState, bool)
 }
 
 func NewProducer(cfg ProducerConfig) (*Producer, error) {
@@ -108,19 +123,21 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
 	p := &Producer{
-		queue:            cfg.Queue,
-		metrics:          cfg.Metrics,
-		orgID:            cfg.OrgID,
-		fleetID:          cfg.FleetID,
-		instanceID:       cfg.InstanceID,
-		auditSignerKeyID: cfg.AuditSignerKeyID,
-		recorderKeyID:    cfg.RecorderKeyID,
-		followerPubHex:   hex.EncodeToString(cfg.RecorderPublicKey),
-		auditSigner:      append(ed25519.PrivateKey(nil), cfg.AuditSigner...),
-		now:              cfg.Now,
-		entries:          make(chan recorder.Entry, cfg.BufferSize),
-		done:             make(chan struct{}),
-		dropped:          map[string]uint64{},
+		queue:                cfg.Queue,
+		metrics:              cfg.Metrics,
+		orgID:                cfg.OrgID,
+		fleetID:              cfg.FleetID,
+		instanceID:           cfg.InstanceID,
+		auditSignerKeyID:     cfg.AuditSignerKeyID,
+		recorderKeyID:        cfg.RecorderKeyID,
+		followerPubHex:       hex.EncodeToString(cfg.RecorderPublicKey),
+		auditSigner:          append(ed25519.PrivateKey(nil), cfg.AuditSigner...),
+		now:                  cfg.Now,
+		entries:              make(chan recorder.Entry, cfg.BufferSize),
+		done:                 make(chan struct{}),
+		dropped:              map[string]uint64{},
+		emitAppliedState:     cfg.EmitAppliedState,
+		appliedStateProvider: cfg.AppliedStateProvider,
 	}
 	go p.run()
 	return p, nil
@@ -239,7 +256,7 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 
 func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry, cp recorder.CheckpointDetail, payload []byte, dropped conductor.DroppedAccounting) conductor.AuditBatchEnvelope {
 	sum := sha256.Sum256(payload)
-	return conductor.AuditBatchEnvelope{
+	env := conductor.AuditBatchEnvelope{
 		SchemaVersion:      conductor.SchemaVersion,
 		BatchID:            p.nextBatchID(),
 		OrgID:              p.orgID,
@@ -269,6 +286,20 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 			FollowerRecorderPubHex: p.followerPubHex,
 		},
 	}
+	// Attach the signed applied-state only when the negotiated conductor
+	// audit-envelope schema allows it (emitAppliedState) AND a provider is
+	// wired. A provider ok=false leaves it off (best-effort); the pointer stays
+	// nil so the canonical preimage is v1-identical. ObservedAt is stamped here
+	// if the provider left it zero, so the field always satisfies Validate.
+	if p.emitAppliedState && p.appliedStateProvider != nil {
+		if state, ok := p.appliedStateProvider(); ok {
+			if state.ObservedAt.IsZero() {
+				state.ObservedAt = p.now().UTC()
+			}
+			env.AppliedState = &state
+		}
+	}
+	return env
 }
 
 func (p *Producer) nextBatchID() string {

@@ -172,6 +172,7 @@ func TestWriteAuditIngestErrorMapping(t *testing.T) {
 		{name: "too_large", err: conductor.ErrPayloadTooLarge, want: http.StatusRequestEntityTooLarge, body: conductor.ErrPayloadTooLarge.Error()},
 		{name: "skew", err: conductor.ErrSkewExceeded, want: http.StatusUnprocessableEntity, body: conductor.ErrSkewExceeded.Error()},
 		{name: "invalid_hash", err: conductor.ErrInvalidHash, want: http.StatusBadRequest, body: conductor.ErrInvalidHash.Error()},
+		{name: "invalid_applied_state", err: conductor.ErrInvalidAppliedState, want: http.StatusBadRequest, body: conductor.ErrInvalidAppliedState.Error()},
 		{name: "internal", err: internalErr, want: http.StatusInternalServerError, body: "internal server error", mustNotSee: internalErr.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -215,6 +216,30 @@ func TestAuditIngestRejectsSkewExceeded(t *testing.T) {
 				t.Fatalf("skew %s sink batch count = %d, want 0", tc.name, len(sink.batches))
 			}
 		})
+	}
+}
+
+func TestAuditIngestRejectsFutureAppliedStateObservedAt(t *testing.T) {
+	payload := []byte(`{"entry":"ok"}`)
+	pub, priv := testAuditSigner(t)
+	sink := &captureAuditSink{}
+	handler := newAuditIngestTestHandler(t, sink, auditKeyResolverFor(pub), 0)
+	req := signedAuditIngestRequest(t, defaultFollowerIdentity(), payload, priv, testNow)
+	applied := validTestAppliedState(testNow.Add(conductor.DefaultAuditMaxSkew + time.Second))
+	req.Envelope.AppliedState = &applied
+	req.Envelope.Signatures = nil
+	signed, err := auditbatcher.SignEnvelope(req.Envelope, "audit-key-1", priv)
+	if err != nil {
+		t.Fatalf("SignEnvelope() error = %v", err)
+	}
+	req.Envelope = signed
+
+	w := postAuditBatch(t, handler, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("future applied-state observed_at status = %d body=%s, want 422", w.Code, w.Body.String())
+	}
+	if len(sink.batches) != 0 {
+		t.Fatal("sink received future-dated applied-state batch")
 	}
 }
 

@@ -304,6 +304,11 @@ func TestVerifyDashboardLicenseWithOptionsAcceptsAgentsOrFleet(t *testing.T) {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("error = %v, want %v", err, tt.wantErr)
 				}
+				for _, want := range []string{"dashboard", license.FeatureAgents, license.FeatureFleet} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %v, want message containing %q", err, want)
+					}
+				}
 				return
 			}
 			if err != nil {

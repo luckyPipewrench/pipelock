@@ -326,6 +326,48 @@ func TestFleetOverview_SourceErrorReturnsServerError(t *testing.T) {
 	}
 }
 
+func TestFleetOverview_RejectsNonGet(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		ReceiptDir:  t.TempDir(),
+		HasFeature:  allowFleetFeature,
+		FleetSource: &fakeFleetSource{},
+	})
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), method, "/fleet", nil))
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "method not allowed") {
+				t.Fatalf("body = %q, want method guard error", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestFleetOverview_RejectsNonExactPath(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		ReceiptDir:  t.TempDir(),
+		HasFeature:  allowFleetFeature,
+		FleetSource: &fakeFleetSource{},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet/extra", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not found") {
+		t.Fatalf("body = %q, want exact-path guard error", rec.Body.String())
+	}
+}
+
 func TestFleetOverview_DisplayHelperBranches(t *testing.T) {
 	t.Parallel()
 

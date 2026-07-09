@@ -78,6 +78,7 @@ func New(opts Options) http.Handler {
 	mux.Handle("/agents", d.gate(http.HandlerFunc(d.handleAgents)))
 	mux.Handle("/agent/", d.gate(http.HandlerFunc(d.handleAgent)))
 	mux.Handle("/fleet", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
+	mux.Handle("/fleet/", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
 	return mux
 }
 

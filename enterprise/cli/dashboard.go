@@ -120,7 +120,12 @@ func verifyDashboardLicenseWithOptions(in license.FleetVerifyInputs) (license.Li
 	if fleetErr == nil {
 		return lic, nil
 	}
-	return license.License{}, agentsErr
+	return license.License{}, fmt.Errorf(
+		"dashboard requires a license that grants either the %q or %q feature: %w",
+		license.FeatureAgents,
+		license.FeatureFleet,
+		errors.Join(agentsErr, fleetErr),
+	)
 }
 
 func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic license.License) error {

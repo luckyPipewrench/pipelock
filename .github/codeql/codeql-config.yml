@@ -1,8 +1,0 @@
-name: "Pipelock CodeQL config"
-
-packs:
-  go:
-    - pipelock/log-sanitizer-models
-
-queries:
-  - uses: security-and-quality

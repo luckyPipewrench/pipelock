@@ -1,7 +1,0 @@
-name: pipelock/log-sanitizer-models
-version: 0.0.1
-library: true
-extensionTargets:
-  codeql/go-all: "*"
-dataExtensions:
-  - models/**/*.yml

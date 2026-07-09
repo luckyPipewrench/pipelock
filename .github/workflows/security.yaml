@@ -26,7 +26,7 @@ jobs:
       - uses: github/codeql-action/init@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4
         with:
           languages: go
-          config-file: ./.github/codeql/codeql-config.yml
+          queries: security-and-quality
 
       - uses: github/codeql-action/autobuild@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4
 

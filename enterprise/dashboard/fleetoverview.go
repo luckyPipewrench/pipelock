@@ -6,28 +6,40 @@ package dashboard
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
 
 const (
-	fleetCompletenessClaim    = "mediated fleet state as reported by enrolled followers"
-	fleetCompletenessNonClaim = "does not prove no bypass occurred outside Pipelock, outside enrolled followers, or outside the report window"
-	fleetStatusVerified       = "Verified"
-	fleetStatusSignedOnly     = "Signed, not verified"
-	fleetStatusUnsigned       = "Unsigned/self-reported"
-	fleetRedacted             = "redacted"
-	fleetEmptyDash            = "-"
+	fleetCompletenessClaim     = "mediated fleet state as reported by enrolled followers"
+	fleetCompletenessNonClaim  = "does not prove no bypass occurred outside Pipelock, outside enrolled followers, or outside the report window"
+	fleetStatusVerified        = "Verified"
+	fleetStatusSignedOnly      = "Signed, not verified"
+	fleetStatusUnsigned        = "Unsigned/self-reported"
+	fleetRedacted              = "redacted"
+	fleetEmptyDash             = "-"
+	fleetOverviewFollowerLimit = 500
+	fleetHealthUnknown         = "unknown"
+	fleetDriftUnknown          = "unknown"
+)
+
+var (
+	errInvalidFleetScope = errors.New("invalid fleet scope")
+	fleetScopePattern    = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 )
 
 // FleetDataSource is the dashboard-local read seam for conductor fleet state.
 // Implementations must be read-only: the Fleet Overview route has no write or
-// control authority.
+// control authority. The limit is a hard maximum requested by the dashboard;
+// implementations should apply it at the backing query boundary.
 type FleetDataSource interface {
-	ListFleetFollowers(ctx context.Context, orgID, fleetID string) ([]FleetFollowerView, error)
+	ListFleetFollowers(ctx context.Context, orgID, fleetID string, limit int) ([]FleetFollowerView, error)
 }
 
 // FleetFollowerView is the dashboard-local follower row. It intentionally
@@ -82,13 +94,19 @@ type FleetOverview struct {
 	NonClaim         string
 	RawAllowed       bool
 	Followers        []FleetFollowerView
+	Truncated        bool
 }
 
 func (m *ReadModel) FleetOverview(ctx context.Context, orgID, fleetID string, rawAllowed bool) (FleetOverview, error) {
+	orgID = strings.TrimSpace(orgID)
+	fleetID = strings.TrimSpace(fleetID)
+	if err := validateFleetScope(orgID, fleetID, m.fleetSource != nil); err != nil {
+		return FleetOverview{}, err
+	}
 	overview := FleetOverview{
 		SourceConfigured: m.fleetSource != nil,
-		OrgID:            strings.TrimSpace(orgID),
-		FleetID:          strings.TrimSpace(fleetID),
+		OrgID:            orgID,
+		FleetID:          fleetID,
 		Claim:            fleetCompletenessClaim,
 		NonClaim:         fleetCompletenessNonClaim,
 		RawAllowed:       rawAllowed,
@@ -96,27 +114,69 @@ func (m *ReadModel) FleetOverview(ctx context.Context, orgID, fleetID string, ra
 	if m.fleetSource == nil {
 		return overview, nil
 	}
-	followers, err := m.fleetSource.ListFleetFollowers(ctx, overview.OrgID, overview.FleetID)
+	followers, err := m.fleetSource.ListFleetFollowers(ctx, overview.OrgID, overview.FleetID, fleetOverviewFollowerLimit+1)
 	if err != nil {
 		return FleetOverview{}, fmt.Errorf("list fleet followers: %w", err)
 	}
+	if len(followers) > fleetOverviewFollowerLimit {
+		followers = followers[:fleetOverviewFollowerLimit]
+		overview.Truncated = true
+	}
+	followers = normalizeFleetFollowers(followers)
 	if !rawAllowed {
-		followers = redactFleetFollowers(followers)
+		followers = m.redactFleetFollowers(followers)
 	}
 	overview.Followers = followers
 	return overview, nil
 }
 
-func redactFleetFollowers(in []FleetFollowerView) []FleetFollowerView {
+func validateFleetScope(orgID, fleetID string, sourceConfigured bool) error {
+	if sourceConfigured && (orgID == "" || fleetID == "") {
+		return fmt.Errorf("%w: org_id and fleet_id are required", errInvalidFleetScope)
+	}
+	for name, value := range map[string]string{"org_id": orgID, "fleet_id": fleetID} {
+		if value == "" {
+			continue
+		}
+		if !fleetScopePattern.MatchString(value) {
+			return fmt.Errorf("%w: %s must match [A-Za-z0-9._:-]{1,128}", errInvalidFleetScope, name)
+		}
+	}
+	return nil
+}
+
+func normalizeFleetFollowers(in []FleetFollowerView) []FleetFollowerView {
 	out := make([]FleetFollowerView, len(in))
 	for i, follower := range in {
-		// FleetHealth and Drift are server-computed status enums (ok/stale/
-		// apply_failed/unsupported/unknown, in_sync/drift) with no follower-
-		// controlled content or infra identifiers. They are the category labels
-		// the metadata view exists to show (the same way the exemptions view
-		// keeps the scanner category while redacting the value), so they stay
-		// visible; only identifiers, hashes, versions, and error text are redacted.
-		follower.InstanceID = hashedFleetValue(follower.InstanceID)
+		follower.FleetHealth = normalizeFleetHealth(follower.FleetHealth)
+		follower.Drift = normalizeFleetDrift(follower.Drift)
+		out[i] = follower
+	}
+	return out
+}
+
+func normalizeFleetHealth(value string) string {
+	switch strings.TrimSpace(value) {
+	case "ok", "stale", "apply_failed", "unsupported", fleetHealthUnknown:
+		return strings.TrimSpace(value)
+	default:
+		return fleetHealthUnknown
+	}
+}
+
+func normalizeFleetDrift(value string) string {
+	switch strings.TrimSpace(value) {
+	case "in_sync", "drift", fleetDriftUnknown:
+		return strings.TrimSpace(value)
+	default:
+		return fleetDriftUnknown
+	}
+}
+
+func (m *ReadModel) redactFleetFollowers(in []FleetFollowerView) []FleetFollowerView {
+	out := make([]FleetFollowerView, len(in))
+	for i, follower := range in {
+		follower.InstanceID = m.hashedFleetValue(follower.OrgID, follower.FleetID, follower.InstanceID)
 		follower.Environment = redactedFleetString(follower.Environment)
 		follower.AuditKeyID = redactedFleetString(follower.AuditKeyID)
 		follower.ExpectedBundleID = redactedFleetString(follower.ExpectedBundleID)
@@ -138,13 +198,18 @@ func redactFleetFollowers(in []FleetFollowerView) []FleetFollowerView {
 	return out
 }
 
-func hashedFleetValue(value string) string {
+func (m *ReadModel) hashedFleetValue(orgID, fleetID, value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return fleetEmptyDash
 	}
-	sum := sha256.Sum256([]byte(value))
-	return "sha256:" + hex.EncodeToString(sum[:])[:12]
+	mac := hmac.New(sha256.New, m.fleetRedactionKey[:])
+	_, _ = mac.Write([]byte(strings.TrimSpace(orgID)))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(strings.TrimSpace(fleetID)))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(value))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))[:16]
 }
 
 func redactedFleetString(value string) string {

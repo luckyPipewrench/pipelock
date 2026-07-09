@@ -178,6 +178,9 @@
       {{else if not .Followers}}
         <section class="empty">No enrolled followers matched this fleet scope.</section>
       {{else}}
+        {{if .Truncated}}
+          <div class="callout muted">Showing the first {{len .Followers}} followers returned by this scoped query. Narrow the fleet scope in the conductor source to inspect additional rows.</div>
+        {{end}}
         <section class="table-wrap" aria-label="Fleet follower overview">
           <table>
             <thead>

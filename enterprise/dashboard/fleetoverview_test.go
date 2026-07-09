@@ -45,11 +45,13 @@ type fakeFleetSource struct {
 	err       error
 	gotOrgID  string
 	gotFleet  string
+	gotLimit  int
 }
 
-func (f *fakeFleetSource) ListFleetFollowers(_ context.Context, orgID, fleetID string) ([]FleetFollowerView, error) {
+func (f *fakeFleetSource) ListFleetFollowers(_ context.Context, orgID, fleetID string, limit int) ([]FleetFollowerView, error) {
 	f.gotOrgID = orgID
 	f.gotFleet = fleetID
+	f.gotLimit = limit
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -105,7 +107,7 @@ func TestFleetOverview_Gating(t *testing.T) {
 				AuthorizeRaw: allowRawAccess,
 			})
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.wantStatus, rec.Body.String())
 			}
@@ -199,6 +201,9 @@ func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 	if source.gotOrgID != fleetTestOrgID || source.gotFleet != fleetTestFleetID {
 		t.Fatalf("source scope = (%q, %q), want (%q, %q)", source.gotOrgID, source.gotFleet, fleetTestOrgID, fleetTestFleetID)
 	}
+	if source.gotLimit != fleetOverviewFollowerLimit+1 {
+		t.Fatalf("source limit = %d, want %d", source.gotLimit, fleetOverviewFollowerLimit+1)
+	}
 
 	body := rec.Body.String()
 	for _, want := range []string{
@@ -230,7 +235,7 @@ func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 		// No AuthorizeRaw: metadata view must fail closed.
 	})
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -253,18 +258,18 @@ func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 		fleetTestBuildDate,
 		fleetTestApplyErrorCode,
 		fleetTestApplyError,
+		fleetTestHealth,
+		fleetTestDrift,
 	} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("metadata view leaked %q in body: %s", secret, body)
 		}
 	}
 	for _, want := range []string{
-		hashedFleetValue(fleetTestInstanceID),
+		"hmac-sha256:",
 		"Metadata view: instance IDs are hashed and raw follower",
-		// FleetHealth and Drift are computed status enums, not identifiers, so
-		// they stay visible in the metadata view (see redactFleetFollowers).
-		"health " + fleetTestHealth,
-		"drift " + fleetTestDrift,
+		"health unknown",
+		"drift unknown",
 		"active v<span class=\"mono\">7</span>",
 		"observed 2026-07-09T12:00:00Z",
 		"verified at 2026-07-09T12:01:00Z",
@@ -294,7 +299,7 @@ func TestFleetOverview_RawViewEscapesFollowerStrings(t *testing.T) {
 		AuthorizeRaw: allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -320,9 +325,67 @@ func TestFleetOverview_SourceErrorReturnsServerError(t *testing.T) {
 		FleetSource: &fakeFleetSource{err: errors.New("source unavailable")},
 	})
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+}
+
+func TestFleetOverview_RejectsInvalidScope(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		ReceiptDir:  t.TempDir(),
+		HasFeature:  allowFleetFeature,
+		FleetSource: &fakeFleetSource{},
+	})
+	for _, target := range []string{
+		"/fleet",
+		"/fleet?org_id=" + fleetTestOrgID,
+		"/fleet?org_id=../prod&fleet_id=" + fleetTestFleetID,
+		"/fleet?org_id=" + fleetTestOrgID + "&fleet_id=fleet%0Aaudit",
+	} {
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, nil))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "invalid fleet scope") {
+				t.Fatalf("body = %q, want invalid scope error", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestFleetOverview_TruncatesFollowerRows(t *testing.T) {
+	t.Parallel()
+
+	followers := make([]FleetFollowerView, fleetOverviewFollowerLimit+2)
+	for i := range followers {
+		followers[i] = FleetFollowerView{
+			OrgID:       fleetTestOrgID,
+			FleetID:     fleetTestFleetID,
+			InstanceID:  "instance",
+			FleetHealth: "ok",
+			Drift:       "in_sync",
+		}
+	}
+	handler := New(Options{
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   allowFleetFeature,
+		FleetSource:  &fakeFleetSource{followers: followers},
+		AuthorizeRaw: allowRawAccess,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Showing the first 500 followers") {
+		t.Fatalf("body missing truncation warning: %s", rec.Body.String())
 	}
 }
 
@@ -384,8 +447,21 @@ func TestFleetOverview_DisplayHelperBranches(t *testing.T) {
 	if got := redactedFleetString(" "); got != fleetEmptyDash {
 		t.Fatalf("redactedFleetString(empty) = %q, want %q", got, fleetEmptyDash)
 	}
-	if got := hashedFleetValue(" "); got != fleetEmptyDash {
+	model := NewReadModel(Options{ReceiptDir: t.TempDir()})
+	if got := model.hashedFleetValue(fleetTestOrgID, fleetTestFleetID, " "); got != fleetEmptyDash {
 		t.Fatalf("hashedFleetValue(empty) = %q, want %q", got, fleetEmptyDash)
+	}
+	if got := model.hashedFleetValue(fleetTestOrgID, fleetTestFleetID, "instance-alpha"); !strings.HasPrefix(got, "hmac-sha256:") {
+		t.Fatalf("hashedFleetValue(non-empty) = %q, want hmac prefix", got)
+	}
+	if got, other := model.hashedFleetValue(fleetTestOrgID, fleetTestFleetID, "instance-alpha"), model.hashedFleetValue("other-org", fleetTestFleetID, "instance-alpha"); got == other {
+		t.Fatalf("scoped hashedFleetValue matched across orgs: %q", got)
+	}
+	if got := normalizeFleetHealth("host-sensitive"); got != fleetHealthUnknown {
+		t.Fatalf("normalizeFleetHealth(host-sensitive) = %q, want %q", got, fleetHealthUnknown)
+	}
+	if got := normalizeFleetDrift("runtime-only"); got != fleetDriftUnknown {
+		t.Fatalf("normalizeFleetDrift(runtime-only) = %q, want %q", got, fleetDriftUnknown)
 	}
 
 	tests := []struct {

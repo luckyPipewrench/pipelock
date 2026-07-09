@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -343,6 +344,10 @@ func (d *dashboardHandler) handleFleetOverview(w http.ResponseWriter, r *http.Re
 	q := r.URL.Query()
 	overview, err := d.model.FleetOverview(r.Context(), q.Get("org_id"), q.Get("fleet_id"), rawAllowedFromContext(r))
 	if err != nil {
+		if errors.Is(err, errInvalidFleetScope) {
+			http.Error(w, "invalid fleet scope", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "could not read fleet overview", http.StatusInternalServerError)
 		return
 	}

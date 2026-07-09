@@ -43,6 +43,8 @@ func DashboardCmd() *cobra.Command {
 		Short: "Web dashboard over Pipelock evidence (Pro/Enterprise)",
 	}
 	cmd.AddCommand(dashboardServeCmd())
+	cmd.AddCommand(coverageCertCmd())
+	cmd.AddCommand(exemptionCmd())
 	return cmd
 }
 
@@ -56,6 +58,7 @@ type dashboardServeOptions struct {
 	licenseCRLFile string
 	tlsCert        string
 	tlsKey         string
+	exemptionStore string
 }
 
 func dashboardServeCmd() *cobra.Command {
@@ -95,6 +98,8 @@ because the operator token would transit in cleartext.`,
 		"flight-recorder evidence directory holding action receipts (flight_recorder.dir)")
 	cmd.Flags().StringVar(&opts.configFile, "config", "",
 		"optional Pipelock config file for the read-only exemptions inventory")
+	cmd.Flags().StringVar(&opts.exemptionStore, "exemption-store", "",
+		"optional exemption lifecycle store file; overlays owner/reason/expiry/status onto the read-only exemptions inventory")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
 		"file containing the operator token required on every dashboard request (redacted metadata view)")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
@@ -158,6 +163,13 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return fmt.Errorf("--config: %w", err)
 		}
 	}
+	var exemptionStore *dashboard.ExemptionStore
+	if strings.TrimSpace(opts.exemptionStore) != "" {
+		exemptionStore, err = dashboard.OpenExemptionStore(opts.exemptionStore)
+		if err != nil {
+			return fmt.Errorf("--exemption-store: %w", err)
+		}
+	}
 
 	// metaAuthorized gates all access: the metadata token OR the raw token (a
 	// raw holder is also a valid operator). rawAuthorized gates only the
@@ -173,12 +185,13 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	}
 
 	inner := dashboard.New(dashboard.Options{
-		ReceiptDir:   opts.receiptDir,
-		TrustedKeys:  trusted,
-		Config:       loadedConfig,
-		HasFeature:   dashboardRuntimeHasFeature(lic),
-		Authorize:    dashboardAuthorizeFunc(metaAuthorized),
-		AuthorizeRaw: dashboardAuthorizeFunc(rawAuthorized),
+		ReceiptDir:     opts.receiptDir,
+		TrustedKeys:    trusted,
+		Config:         loadedConfig,
+		ExemptionStore: exemptionStore,
+		HasFeature:     dashboardRuntimeHasFeature(lic),
+		Authorize:      dashboardAuthorizeFunc(metaAuthorized),
+		AuthorizeRaw:   dashboardAuthorizeFunc(rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
 		AuditWriter: cmd.ErrOrStderr(),
 	})

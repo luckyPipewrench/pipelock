@@ -8,6 +8,7 @@
 package evidence
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -28,6 +30,7 @@ func Cmd() *cobra.Command {
 		Short: "Offline evidence viewer for a single agent (Free)",
 	}
 	cmd.AddCommand(viewCmd())
+	cmd.AddCommand(verifyCertCmd())
 	return cmd
 }
 
@@ -168,4 +171,83 @@ func resolveSession(cmd *cobra.Command, dir, explicit string) (string, error) {
 			"is available in Pipelock Pro.\n",
 		len(sessions), sessions[0])
 	return sessions[0], nil
+}
+
+// verify-cert subcommand: free offline verification of coverage certificates.
+
+type verifyCertOptions struct {
+	certFile       string
+	trustedSigners []string
+}
+
+func verifyCertCmd() *cobra.Command {
+	opts := verifyCertOptions{}
+	cmd := &cobra.Command{
+		Use:   "verify-cert",
+		Short: "Verify a coverage certificate offline (Free)",
+		Long: `Verify a coverage certificate's Ed25519 signature and check the signer
+against the trusted-signer set. Re-derives aggregate counts from the
+per-session data and flags any mismatch with the signed aggregates.
+
+Fully offline: no license, no server, no network. The Free viewer
+VERIFIES a Pro-issued certificate; only Pro issues one.
+
+An untrusted signer is reported (never silently accepted). Non-zero exit
+if the signature is invalid.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runVerifyCert(cmd, opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.certFile, "cert", "", "coverage certificate JSON file")
+	cmd.Flags().StringArrayVar(&opts.trustedSigners, "trusted-signer", nil,
+		"trusted signing key as comma-separated kv pairs: "+
+			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
+	_ = cmd.MarkFlagRequired("cert")
+	return cmd
+}
+
+func runVerifyCert(cmd *cobra.Command, opts verifyCertOptions) error {
+	data, err := os.ReadFile(filepath.Clean(opts.certFile))
+	if err != nil {
+		return fmt.Errorf("--cert: %w", err)
+	}
+
+	cert, err := coveragecert.Unmarshal(data)
+	if err != nil {
+		return err
+	}
+
+	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
+	if err != nil {
+		return err
+	}
+
+	// Convert trusted-signer map to the set format Verify expects.
+	trustedKeySet := make(map[string]struct{}, len(trusted))
+	for keyHex := range trusted {
+		trustedKeySet[keyHex] = struct{}{}
+	}
+
+	result, verErr := coveragecert.Verify(cert, trustedKeySet)
+	if verErr != nil {
+		return verErr
+	}
+
+	w := cmd.OutOrStdout()
+	for _, line := range result.Lines {
+		_, _ = fmt.Fprintln(w, line)
+	}
+
+	if !result.SignatureValid {
+		return errors.New("coverage certificate signature is INVALID")
+	}
+	if !result.AggregateValid {
+		return errors.New("coverage certificate aggregate counts do not match sessions")
+	}
+	if !result.SignerTrusted && len(trustedKeySet) > 0 {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+			"pipelock: warning: the certificate signer is not in the trusted-signer set")
+	}
+	return nil
 }

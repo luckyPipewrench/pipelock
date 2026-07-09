@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -484,4 +485,300 @@ func TestViewCmd_NoLicenseRequired(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Authentic") {
 		t.Error("output missing scorecard — free viewer failed")
 	}
+}
+
+// --- verify-cert tests ---
+
+func signTestCert(t *testing.T, pub ed25519.PublicKey, priv ed25519.PrivateKey) []byte {
+	t.Helper()
+	now := time.Now().UTC()
+	body := coveragecert.Body{
+		Schema:      coveragecert.Schema,
+		KeyPurpose:  coveragecert.KeyPurpose,
+		Agent:       "agent-alpha",
+		WindowStart: now.Add(-1 * time.Hour),
+		WindowEnd:   now,
+		Sessions: []coveragecert.SessionCoverage{
+			{
+				ID:                 "session-001",
+				ReceiptCount:       10,
+				ChainIntact:        true,
+				Anchored:           "local",
+				CompletenessStatus: "LIMITED",
+				CompletenessReason: "bounded_closed",
+			},
+		},
+		TotalReceipts:      10,
+		ChainGaps:          0,
+		SessionsCovered:    1,
+		ChainsIntact:       1,
+		ChainsBroken:       0,
+		TrustedSignerKey:   hex.EncodeToString(pub),
+		Boundary:           coveragecert.DefaultBoundary(),
+		StandingExclusions: coveragecert.DefaultStandingExclusions(),
+	}
+
+	cert, err := coveragecert.Sign(body, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	data, err := coveragecert.Marshal(cert)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return data
+}
+
+func signUncheckedTestCert(t *testing.T, body coveragecert.Body, pub ed25519.PublicKey, priv ed25519.PrivateKey) []byte {
+	t.Helper()
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	cert := coveragecert.Certificate{
+		Body:      body,
+		Signature: hex.EncodeToString(ed25519.Sign(priv, preimage)),
+		SignerKey: hex.EncodeToString(pub),
+	}
+	data, err := coveragecert.Marshal(cert)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return data
+}
+
+func TestVerifyCertCmd_TrustedSigner_Success(t *testing.T) {
+	t.Parallel()
+	pub, priv := genKey(t)
+	certData := signTestCert(t, pub, priv)
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	if err := os.WriteFile(certFile, certData, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	keyHex := hex.EncodeToString(pub)
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"verify-cert",
+		"--cert", certFile,
+		"--trusted-signer", "inline=" + keyHex + ",source=test-signer",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	out := stdout.String()
+	// Must contain bounded per-fact lines.
+	if !strings.Contains(out, "Signature: valid") {
+		t.Error("output missing 'Signature: valid' line")
+	}
+	if !strings.Contains(out, "Signer: TRUSTED") {
+		t.Error("output missing 'Signer: TRUSTED' line")
+	}
+	if !strings.Contains(out, "Agent: agent-alpha") {
+		t.Error("output missing Agent line")
+	}
+	if !strings.Contains(out, "Boundary:") {
+		t.Error("output missing Boundary line")
+	}
+	if !strings.Contains(out, "Exclusion:") {
+		t.Error("output missing Exclusion line")
+	}
+}
+
+func TestVerifyCertCmd_UntrustedSigner_Reported(t *testing.T) {
+	t.Parallel()
+	pub, priv := genKey(t)
+	certData := signTestCert(t, pub, priv)
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	if err := os.WriteFile(certFile, certData, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Use a different key as trusted.
+	otherPub, _ := genKey(t)
+	otherKeyHex := hex.EncodeToString(otherPub)
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"verify-cert",
+		"--cert", certFile,
+		"--trusted-signer", "inline=" + otherKeyHex,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "Signer: NOT TRUSTED") {
+		t.Error("output should report untrusted signer")
+	}
+	// Stderr should warn.
+	if !strings.Contains(stderr.String(), "not in the trusted-signer set") {
+		t.Error("stderr should warn about untrusted signer")
+	}
+}
+
+func TestVerifyCertCmd_Tampered_NonZero(t *testing.T) {
+	t.Parallel()
+	pub, priv := genKey(t)
+	certData := signTestCert(t, pub, priv)
+
+	// Tamper the cert JSON: replace agent name.
+	tampered := strings.Replace(string(certData), "agent-alpha", "agent-tampered", 1)
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	if err := os.WriteFile(certFile, []byte(tampered), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	keyHex := hex.EncodeToString(pub)
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"verify-cert",
+		"--cert", certFile,
+		"--trusted-signer", "inline=" + keyHex,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected non-zero exit for tampered cert")
+	}
+	if !strings.Contains(err.Error(), "INVALID") {
+		t.Errorf("error should mention INVALID, got: %v", err)
+	}
+}
+
+func TestVerifyCertCmd_SignedAggregateMismatch_NonZero(t *testing.T) {
+	t.Parallel()
+	pub, priv := genKey(t)
+	now := time.Now().UTC()
+	body := coveragecert.Body{
+		Schema:      coveragecert.Schema,
+		KeyPurpose:  coveragecert.KeyPurpose,
+		Agent:       "agent-alpha",
+		WindowStart: now.Add(-1 * time.Hour),
+		WindowEnd:   now,
+		Sessions: []coveragecert.SessionCoverage{
+			{
+				ID:                 "session-001",
+				ReceiptCount:       10,
+				ChainIntact:        true,
+				Anchored:           "local",
+				CompletenessStatus: "LIMITED",
+				CompletenessReason: "bounded_closed",
+			},
+		},
+		TotalReceipts:      999,
+		ChainGaps:          0,
+		SessionsCovered:    1,
+		ChainsIntact:       1,
+		ChainsBroken:       0,
+		TrustedSignerKey:   hex.EncodeToString(pub),
+		Boundary:           coveragecert.DefaultBoundary(),
+		StandingExclusions: coveragecert.DefaultStandingExclusions(),
+	}
+	certData := signUncheckedTestCert(t, body, pub, priv)
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	if err := os.WriteFile(certFile, certData, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"verify-cert",
+		"--cert", certFile,
+		"--trusted-signer", "inline=" + hex.EncodeToString(pub),
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected non-zero exit for signed aggregate mismatch")
+	}
+	if !strings.Contains(err.Error(), "aggregate") {
+		t.Fatalf("error = %q, want aggregate mismatch", err.Error())
+	}
+	if !strings.Contains(stdout.String(), "MISMATCH") {
+		t.Fatalf("stdout = %q, want MISMATCH line", stdout.String())
+	}
+}
+
+func TestVerifyCertCmd_NoLicenseRequired(t *testing.T) {
+	// Explicit gate test: the free verify-cert must work without any
+	// license infrastructure. If someone adds a license check, this
+	// test name makes the violation obvious.
+	t.Parallel()
+	pub, priv := genKey(t)
+	certData := signTestCert(t, pub, priv)
+	certFile := filepath.Join(t.TempDir(), "cert.json")
+	if err := os.WriteFile(certFile, certData, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{
+		"verify-cert",
+		"--cert", certFile,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("free verify-cert should work without a license: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Signature: valid") {
+		t.Error("output missing 'Signature: valid' line")
+	}
+}
+
+func TestVerifyCertCmd_BadCertFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nonexistent", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		cmd := Cmd()
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs([]string{
+			"verify-cert",
+			"--cert", filepath.Join(t.TempDir(), "nope.json"),
+		})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error for nonexistent cert file")
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		t.Parallel()
+		certFile := filepath.Join(t.TempDir(), "bad.json")
+		if err := os.WriteFile(certFile, []byte("not json"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		var buf bytes.Buffer
+		cmd := Cmd()
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs([]string{
+			"verify-cert",
+			"--cert", certFile,
+		})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error for invalid JSON cert file")
+		}
+	})
 }

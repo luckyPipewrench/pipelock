@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
 
 const (
@@ -132,17 +133,59 @@ func runContainRun(
 		return err
 	}
 
+	// Resolve the posture proof path this run writes, and thread it into the
+	// contained launch env so an in-child emitter binds the exact capsule rather
+	// than fall back to the default path and grade containment UNKNOWN. The child
+	// starts with its cwd set to the agent home, so relative --posture-output
+	// values must become absolute before they are hashed into launch evidence.
+	proofPath, err := containRunPostureProofPath(opts.postureOutput)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
+	env.probe.postureProofPath = proofPath
+
 	posturePath, err := env.emitPosture(opts.configFile, opts.postureOutput, env.probe, args)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("emit contain-run posture capsule: %w", err))
 	}
 	_, _ = fmt.Fprintf(stdout, "  [PASS] signed posture capsule: %s\n", posturePath)
+	warnCustomPostureOutput(stderr, opts.postureOutput, proofPath)
 	_, _ = fmt.Fprintf(stdout, "pipelock contain run: launching %s as %s\n", tool, env.probe.agentUserName)
 
 	if err := env.launch(ctx, env.probe, args, stdin, stdout, stderr); err != nil {
 		return err
 	}
 	return nil
+}
+
+func containRunPostureProofPath(postureOutput string) (string, error) {
+	proofPath := filepath.Join(filepath.Clean(postureOutput), posturepkg.ProofFilename)
+	if filepath.IsAbs(proofPath) {
+		return proofPath, nil
+	}
+	abs, err := filepath.Abs(proofPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve posture proof path: %w", err)
+	}
+	return abs, nil
+}
+
+// warnCustomPostureOutput tells the operator that a non-default --posture-output
+// is only read automatically by an emitter running in the contained child this
+// command launches. A separately-running proxy/runtime (e.g. the systemd
+// pipelock service) reads the default proof path and will grade containment
+// UNKNOWN for this capsule unless PIPELOCK_POSTURE_PROOF is set in its own
+// environment.
+func warnCustomPostureOutput(stderr io.Writer, postureOutput, posturePath string) {
+	if filepath.Clean(postureOutput) == defaultContainPostureDir {
+		return
+	}
+	_, _ = fmt.Fprintf(stderr,
+		"  [WARN] --posture-output is not the default (%s). The tool launched here binds this\n"+
+			"         capsule automatically, but a separately-running pipelock proxy/runtime reads\n"+
+			"         %s. Set %s=%s in that service's environment for it to bind this capsule.\n",
+		defaultContainPostureDir, posturebinding.DefaultContainRunProofPath,
+		posturebinding.RuntimeProofEnv, posturePath)
 }
 
 func containRunPreflight(ctx context.Context, out io.Writer, env *probeEnv, tool string) error {
@@ -298,7 +341,7 @@ func containRunLaunchEvidence(env *probeEnv, args []string) (posturepkg.ContainL
 		return posturepkg.ContainLaunchEvidence{}, err
 	}
 
-	launchEnv := containLaunchEnv(env.agentUserName, homeDir, env.port)
+	launchEnv := containLaunchEnv(env.agentUserName, homeDir, env.port, env.postureProofPath)
 	envVars := make([]string, 0, len(launchEnv))
 	for _, entry := range launchEnv {
 		name, _, ok := strings.Cut(entry, "=")

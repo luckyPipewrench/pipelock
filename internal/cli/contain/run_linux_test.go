@@ -303,18 +303,20 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	groups := []uint32{966, 1001}
 
+	const customProof = "/custom/posture/proof.json"
 	cmd := containedAgentCommand(containedAgentCommandOptions{
-		ctx:           context.Background(),
-		agentUserName: testAgentUser,
-		homeDir:       "/home/" + testAgentUser,
-		proxyPort:     defaultProxyPort,
-		uid:           966,
-		gid:           966,
-		groups:        groups,
-		args:          []string{"claude", "--help"},
-		stdin:         stdin,
-		stdout:        &stdout,
-		stderr:        &stderr,
+		ctx:              context.Background(),
+		agentUserName:    testAgentUser,
+		homeDir:          "/home/" + testAgentUser,
+		proxyPort:        defaultProxyPort,
+		postureProofPath: customProof,
+		uid:              966,
+		gid:              966,
+		groups:           groups,
+		args:             []string{"claude", "--help"},
+		stdin:            stdin,
+		stdout:           &stdout,
+		stderr:           &stderr,
 	})
 
 	if cmd.Path != defaultLaunchScript {
@@ -329,7 +331,7 @@ func TestContainedAgentCommand_UsesFixedLauncherAndAgentIdentity(t *testing.T) {
 	if cmd.Dir != "/home/"+testAgentUser {
 		t.Fatalf("dir = %q, want contained agent home", cmd.Dir)
 	}
-	wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort)
+	wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, customProof)
 	if got, want := strings.Join(cmd.Env, "\n"), strings.Join(wantEnv, "\n"); got != want {
 		t.Fatalf("env =\n%s\nwant:\n%s", got, want)
 	}

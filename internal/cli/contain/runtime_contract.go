@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
 
 // The runtime contract is the complete set of proxy + CA configuration the
@@ -156,7 +158,14 @@ func runtimeContractVars(env *installEnv) []contractVar {
 // run` when it execs plk-launch directly, bypassing sudo's env filtering. Keep
 // this in lockstep with launchExecEnvLines so the verified run launcher and the
 // installed wrapper do not drift.
-func containLaunchEnv(agentUserName, homeDir string, proxyPort int) []string {
+//
+// postureProofPath is the resolved path this run wrote its signed posture
+// capsule to; it is exported as PIPELOCK_POSTURE_PROOF so an emitter running in
+// the contained child binds the exact capsule this run produced instead of
+// silently falling back to the default path (and grading containment UNKNOWN)
+// when --posture-output points elsewhere. An empty value falls back to the
+// default proof path.
+func containLaunchEnv(agentUserName, homeDir string, proxyPort int, postureProofPath string) []string {
 	env := []string{
 		"HOME=" + homeDir,
 		"USER=" + agentUserName,
@@ -170,8 +179,18 @@ func containLaunchEnv(agentUserName, homeDir string, proxyPort int) []string {
 	}) {
 		env = append(env, v.name+"="+v.value)
 	}
+	env = append(env, posturebinding.RuntimeProofEnv+"="+resolvedPostureProofPath(postureProofPath))
 	env = append(env, "PATH="+agentExecPath(agentUserName))
 	return env
+}
+
+// resolvedPostureProofPath returns the posture proof path to export, defaulting
+// to the canonical contain-run proof location when no explicit path is set.
+func resolvedPostureProofPath(postureProofPath string) string {
+	if strings.TrimSpace(postureProofPath) == "" {
+		return posturebinding.DefaultContainRunProofPath
+	}
+	return postureProofPath
 }
 
 // shellSafeValue reports whether v can appear unquoted after `env NAME=` in a

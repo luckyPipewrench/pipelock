@@ -316,8 +316,14 @@ const (
 )
 
 // EmitSessionOpen emits the signed session_open control receipt for this
-// emitter process run through the normal Emit/Record path. It is intentionally
-// non-durable in this build unit; the durable receipt gate lands later.
+// emitter process run. It is emitted DURABLY (fsync-confirmed before returning)
+// because session_open is the run anchor that opens the chain and carries the
+// posture-binding fields: the "durable evidence before mediated action"
+// property must hold at least as strongly at the anchor as at the actions it
+// precedes. On a durability failure the caller decides posture: under
+// flight_recorder.require_receipts it fails closed (startup aborts / reload
+// keeps the old config); otherwise the run continues with receipts marked
+// UNVERIFIED, matching the existing session_open error handling.
 func (e *Emitter) EmitSessionOpen() error {
 	if e == nil {
 		return nil
@@ -327,7 +333,7 @@ func (e *Emitter) EmitSessionOpen() error {
 		e.recordFailure(FailReasonSign)
 		return fmt.Errorf("generate open nonce: %w", err)
 	}
-	return e.Emit(EmitOpts{
+	return e.EmitDurable(EmitOpts{
 		ActionID:  NewActionID(),
 		Verdict:   config.ActionAllow,
 		Transport: sessionControlTransport,

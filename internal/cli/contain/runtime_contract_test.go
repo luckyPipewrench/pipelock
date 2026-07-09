@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 )
 
 // contractEnvMap collapses the ordered contract into name->value for lookup.
@@ -133,6 +135,9 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 			t.Errorf("launch exec env missing %q", want)
 		}
 	}
+	if strings.Contains(joined, posturebinding.RuntimeProofEnv+"=") {
+		t.Fatalf("launch wrapper must preserve caller-provided %s, got:\n%s", posturebinding.RuntimeProofEnv, joined)
+	}
 	// Every continuation line except the last must end with a backslash.
 	for i, l := range lines[:len(lines)-1] {
 		if !strings.HasSuffix(l, "\\") {
@@ -142,7 +147,8 @@ func TestLaunchExecEnvLines_Shape(t *testing.T) {
 }
 
 func TestContainLaunchEnv_UsesCompleteRuntimeContract(t *testing.T) {
-	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort)
+	const customProof = "/custom/posture/proof.json"
+	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, customProof)
 	want := []string{
 		"HOME=/home/" + testAgentUser,
 		"USER=" + testAgentUser,
@@ -156,9 +162,27 @@ func TestContainLaunchEnv_UsesCompleteRuntimeContract(t *testing.T) {
 	}) {
 		want = append(want, v.name+"="+v.value)
 	}
+	// The resolved posture proof path is exported so an in-child emitter binds
+	// this run's capsule instead of falling back to the default path.
+	want = append(want, posturebinding.RuntimeProofEnv+"="+customProof)
 	want = append(want, "PATH="+agentExecPath(testAgentUser))
 	if gotJoined, wantJoined := strings.Join(got, "\n"), strings.Join(want, "\n"); gotJoined != wantJoined {
 		t.Fatalf("contain launch env =\n%s\nwant:\n%s", gotJoined, wantJoined)
+	}
+}
+
+func TestContainLaunchEnv_EmptyPostureProofFallsBackToDefault(t *testing.T) {
+	got := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, defaultProxyPort, "")
+	want := posturebinding.RuntimeProofEnv + "=" + posturebinding.DefaultContainRunProofPath
+	found := false
+	for _, e := range got {
+		if e == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("empty posture proof path did not fall back to default; env = %v", got)
 	}
 }
 

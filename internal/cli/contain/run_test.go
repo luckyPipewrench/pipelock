@@ -20,8 +20,59 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
+	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func TestWarnCustomPostureOutput(t *testing.T) {
+	t.Run("default output is silent", func(t *testing.T) {
+		var stderr bytes.Buffer
+		warnCustomPostureOutput(&stderr, defaultContainPostureDir,
+			filepath.Join(defaultContainPostureDir, posturepkg.ProofFilename))
+		if stderr.Len() != 0 {
+			t.Fatalf("default posture output warned: %q", stderr.String())
+		}
+	})
+	t.Run("custom output warns with the env var and resolved path", func(t *testing.T) {
+		var stderr bytes.Buffer
+		custom := "/custom/posture"
+		proof := filepath.Join(custom, posturepkg.ProofFilename)
+		warnCustomPostureOutput(&stderr, custom, proof)
+		out := stderr.String()
+		for _, want := range []string{"[WARN]", posturebinding.RuntimeProofEnv, proof, posturebinding.DefaultContainRunProofPath} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("warning missing %q; got:\n%s", want, out)
+			}
+		}
+	})
+}
+
+func TestContainRunPostureProofPath(t *testing.T) {
+	t.Run("absolute output remains absolute", func(t *testing.T) {
+		outDir := filepath.Join(t.TempDir(), "posture")
+		got, err := containRunPostureProofPath(outDir)
+		if err != nil {
+			t.Fatalf("containRunPostureProofPath: %v", err)
+		}
+		want := filepath.Join(outDir, posturepkg.ProofFilename)
+		if got != want {
+			t.Fatalf("proof path = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("relative output resolves against cwd", func(t *testing.T) {
+		cwd := t.TempDir()
+		t.Chdir(cwd)
+		got, err := containRunPostureProofPath("posture")
+		if err != nil {
+			t.Fatalf("containRunPostureProofPath: %v", err)
+		}
+		want := filepath.Join(cwd, "posture", posturepkg.ProofFilename)
+		if got != want {
+			t.Fatalf("proof path = %q, want %q", got, want)
+		}
+	})
+}
 
 func TestDefaultContainRunEnv_WiresRealOperations(t *testing.T) {
 	env := defaultContainRunEnv()
@@ -106,6 +157,67 @@ func TestRunContainRun_VerifiesEmitsPostureThenLaunches(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "signed posture capsule") {
 		t.Fatalf("output missing posture line:\n%s", out.String())
+	}
+}
+
+func TestRunContainRun_RelativePostureOutputExportsAbsoluteProofPath(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	env := allPassEnv(t)
+	opts := containRunOptions{
+		configFile:    "/etc/pipelock/pipelock.yaml",
+		postureOutput: "relative-posture",
+	}
+	wantProof := filepath.Join(cwd, opts.postureOutput, posturepkg.ProofFilename)
+	var launchProof string
+	runEnv := containRunEnv{
+		probe: env,
+		launch: func(_ context.Context, probe *probeEnv, _ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
+			launchProof = probe.postureProofPath
+			return nil
+		},
+		emitPosture: func(_ string, outputDir string, probe *probeEnv, postureArgs []string) (string, error) {
+			if outputDir != opts.postureOutput {
+				t.Fatalf("posture output = %q, want %q", outputDir, opts.postureOutput)
+			}
+			if probe.postureProofPath != wantProof {
+				t.Fatalf("probe posture proof path = %q, want absolute %q", probe.postureProofPath, wantProof)
+			}
+			launch, err := containRunLaunchEvidence(probe, postureArgs)
+			if err != nil {
+				t.Fatalf("containRunLaunchEvidence: %v", err)
+			}
+			wantEnv := containLaunchEnv(testAgentUser, "/home/"+testAgentUser, env.port, wantProof)
+			wantHash, err := stringSliceSHA256(wantEnv)
+			if err != nil {
+				t.Fatalf("hash wanted env: %v", err)
+			}
+			if launch.EnvSHA256 != wantHash {
+				t.Fatalf("launch EnvSHA256 = %q, want hash of absolute proof env %q", launch.EnvSHA256, wantHash)
+			}
+			foundName := false
+			for _, name := range launch.EnvVars {
+				if name == posturebinding.RuntimeProofEnv {
+					foundName = true
+					break
+				}
+			}
+			if !foundName {
+				t.Fatalf("launch env vars missing %s: %v", posturebinding.RuntimeProofEnv, launch.EnvVars)
+			}
+			return filepath.Join(outputDir, posturepkg.ProofFilename), nil
+		},
+	}
+	var stderr bytes.Buffer
+	if err := runContainRun(context.Background(), strings.NewReader(""), io.Discard, &stderr, runEnv, opts, []string{"claude"}); err != nil {
+		t.Fatalf("runContainRun: %v", err)
+	}
+	if launchProof != wantProof {
+		t.Fatalf("launch posture proof path = %q, want absolute %q", launchProof, wantProof)
+	}
+	if !strings.Contains(stderr.String(), posturebinding.RuntimeProofEnv+"="+wantProof) {
+		t.Fatalf("warning did not carry absolute proof env path %q:\n%s", wantProof, stderr.String())
 	}
 }
 

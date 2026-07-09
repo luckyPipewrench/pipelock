@@ -121,12 +121,43 @@ signs:
     output: true
 
 changelog:
+  use: git
   sort: asc
   filters:
     exclude:
       - '^docs:'
       - '^test:'
       - '^chore:'
+      - '^ci:'
+      - '^style:'
+      - '^build:'
+      - '^Merge '
+      - 'go mod tidy'
+  groups:
+    - title: '🚀 Features'
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: '🐛 Bug Fixes'
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: '🔒 Security'
+      regexp: '^.*?sec(urity)?(\(.+\))??!?:.+$'
+      order: 2
+    - title: '⚡ Performance'
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 3
+    - title: '📦 Dependencies'
+      regexp: '^.*?((build|chore)\(deps.*?\)|deps(\(.+\))?)!?:.+$'
+      order: 4
+    - title: 'Other Changes'
+      order: 999
+
+release:
+  footer: |
+    ---
+    📚 Docs: https://pipelab.org  •  💬 Community: https://discord.gg/badNfhGKTc
+
+    Pipelock is an open-source agent firewall. Come poke holes in it.
 
 brews:
   - ids: [pipelock]

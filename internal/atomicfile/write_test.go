@@ -17,6 +17,7 @@ type faultFile struct {
 	*os.File
 	writeErr error
 	chmodErr error
+	syncErr  error
 	closeErr error
 }
 
@@ -32,6 +33,13 @@ func (f *faultFile) Chmod(mode os.FileMode) error {
 		return f.chmodErr
 	}
 	return f.File.Chmod(mode)
+}
+
+func (f *faultFile) Sync() error {
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	return f.File.Sync()
 }
 
 func (f *faultFile) Close() error {
@@ -208,6 +216,37 @@ func TestFinalize_CloseError(t *testing.T) {
 	}
 }
 
+func TestFinalize_SyncError(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	injected := errors.New("fsync failed")
+
+	ff := newFaultFile(t, dir)
+	ff.syncErr = injected
+	tmpPath := ff.Name()
+
+	err := finalize(ff, target, []byte("data"), 0o600)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "syncing temp file") {
+		t.Errorf("error = %q, want it to contain %q", err, "syncing temp file")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("error should wrap injected error")
+	}
+
+	// Temp file must be cleaned up.
+	if _, err := os.Stat(tmpPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("temp file %s still exists after sync error", tmpPath)
+	}
+
+	// Target must not exist: a non-durable write must not become visible.
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("target %s should not exist after sync error", target)
+	}
+}
+
 func TestWrite_RenameError(t *testing.T) {
 	dir := t.TempDir()
 	// Target is a directory, so Rename will fail.
@@ -286,4 +325,8 @@ func TestWrite_EmptyData(t *testing.T) {
 	if len(got) != 0 {
 		t.Errorf("content length = %d, want 0", len(got))
 	}
+}
+
+func TestSyncDir_MissingDirectoryIsBestEffort(t *testing.T) {
+	syncDir(filepath.Join(t.TempDir(), "missing"))
 }

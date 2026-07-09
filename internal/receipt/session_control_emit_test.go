@@ -87,6 +87,45 @@ func TestEmitter_EmitHeartbeatSignedSnapshotCountersAndNonce(t *testing.T) {
 	}
 }
 
+func TestEmitter_EmitSessionOpenIsDurableAndGatesOnFsync(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	// session_open is the run anchor: if it cannot be durably persisted, the
+	// emit must surface ErrDurability so the caller can fail closed under
+	// require_receipts. A non-durable open would swallow the fsync failure.
+	syncErr := errors.New("injected sync failure")
+	rec.SetSyncForTest(func(*os.File) error { return syncErr })
+	err := e.EmitSessionOpen()
+	if !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("EmitSessionOpen error = %v, want ErrDurability (session_open must be emitted durably)", err)
+	}
+	if e.DurabilityBlocks() != 1 {
+		t.Fatalf("DurabilityBlocks = %d, want 1 after gated session_open", e.DurabilityBlocks())
+	}
+	rec.SetSyncForTest(nil)
+
+	// The bytes still reached disk (fsync failed, not the write), so the chain
+	// opens correctly and a heartbeat can snapshot it.
+	if err := e.EmitHeartbeat(); err != nil {
+		t.Fatalf("EmitHeartbeat after gated open: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if len(receipts) == 0 || !isSessionOpenControl(receipts[0].ActionRecord.SessionControl) {
+		t.Fatalf("first receipt is not session_open: %#v", receipts)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+}
+
 func TestEmitter_EmitSessionOpenPopulatesPostureBinding(t *testing.T) {
 	t.Parallel()
 

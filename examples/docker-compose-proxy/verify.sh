@@ -32,8 +32,7 @@ mkdir -p "$WORK"
 install -m 600 "$CONFIG_SRC" "$CONFIG"
 
 wait_for_health() {
-  local i
-  for i in $(seq 1 80); do
+  for _ in $(seq 1 80); do
     if curl -sf "http://127.0.0.1:8888/health" >/dev/null 2>&1; then
       return 0
     fi
@@ -63,16 +62,18 @@ fi
 
 # -- Test 1: build and start ---------------------------------------------------
 step "Test 1: build and start docker compose"
-(
+if (
   cd "$EXAMPLE_DIR"
   docker compose build >/dev/null
   docker compose up -d >/dev/null
-) && pass "compose started" || {
+) >/dev/null 2>&1; then
+  pass "compose started"
+else
   fail "compose failed to start"
   (cd "$EXAMPLE_DIR" && docker compose logs --no-color) >&2 || true
   printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAIL"
   exit 1
-}
+fi
 
 if wait_for_health; then
   pass "pipelock healthy on 127.0.0.1:8888"

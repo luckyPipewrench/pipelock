@@ -1,5 +1,4 @@
 # Docker Compose proxy example config.
-# verify.sh copies this into a temp file (chmod 600) before running checks.
 
 version: 1
 mode: balanced
@@ -24,4 +23,3 @@ dlp:
 # hostname-based trust entry instead.
 trusted_domains:
   - upstream
-

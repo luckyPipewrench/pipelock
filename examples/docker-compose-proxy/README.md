@@ -32,9 +32,12 @@ Exit code `0` means all checks passed. The script:
 
 1. Builds a local `pipelock` Docker image from the repo’s `Dockerfile`
 2. Starts `docker compose` (Pipelock + upstream service)
-3. Waits for `http://127.0.0.1:8888/health`
+3. Waits for `http://127.0.0.1:${PIPELOCK_PROXY_PORT:-18088}/health`
 4. Uses `HTTP_PROXY` to fetch `http://upstream:8080/` through the proxy
 5. Sends a runtime-generated secret-shaped value and confirms it is blocked
+
+The host port defaults to `18088` so the example does not conflict with a local
+Pipelock service on `8888`. Override it with `PIPELOCK_PROXY_PORT=18888 ./verify.sh`.
 
 ## Manual Try
 
@@ -48,18 +51,19 @@ docker compose up --build
 In another terminal, route a request through the proxy:
 
 ```bash
-HTTP_PROXY="http://127.0.0.1:8888" curl -sS http://upstream:8080/
+HTTP_PROXY="http://127.0.0.1:18088" curl -sS http://upstream:8080/
 ```
 
 ## Config Notes
 
 `pipelock.yaml` enables `forward_proxy` and binds the listener on `0.0.0.0:8888`
-so the host can reach it via the compose port mapping. The upstream container is
+inside the container; `docker-compose.yml` maps that to host port `18088` by
+default, or the value of `PIPELOCK_PROXY_PORT` when set. The upstream container is
 on a private Docker subnet; this would normally be blocked by SSRF protections,
 so the config uses `trusted_domains: ["upstream"]` to explicitly trust the
-internal service hostname for this example.
+internal service hostname for this example. The config bind mount includes `:Z`
+so it works on SELinux-enabled Docker hosts.
 
 ## Related Docs
 
 See `../../docs/guides/transport-modes.md` for the full transport matrix.
-

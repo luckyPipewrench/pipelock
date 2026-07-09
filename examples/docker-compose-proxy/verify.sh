@@ -2,7 +2,7 @@
 # Docker Compose proxy verification for examples/docker-compose-proxy/
 #
 # Starts docker-compose (local upstream + pipelock) and verifies:
-# - proxy is healthy on 127.0.0.1:8888
+# - proxy is healthy on 127.0.0.1:${PIPELOCK_PROXY_PORT:-18088}
 # - HTTP_PROXY routes traffic through pipelock to the upstream service
 # - DLP blocks a runtime-generated secret-shaped string
 #
@@ -11,10 +11,11 @@
 set -euo pipefail
 
 EXAMPLE_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$EXAMPLE_DIR/../.." && pwd)"
 WORK="$EXAMPLE_DIR/work"
-CONFIG_SRC="$EXAMPLE_DIR/pipelock.yaml"
-CONFIG="$WORK/pipelock.yaml"
+PIPELOCK_PROXY_HOST="127.0.0.1"
+PIPELOCK_PROXY_PORT="${PIPELOCK_PROXY_PORT:-18088}"
+PIPELOCK_PROXY_URL="http://${PIPELOCK_PROXY_HOST}:${PIPELOCK_PROXY_PORT}"
+export PIPELOCK_PROXY_PORT
 
 PASS=0
 FAIL=0
@@ -29,11 +30,10 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$WORK"
-install -m 600 "$CONFIG_SRC" "$CONFIG"
 
 wait_for_health() {
   for _ in $(seq 1 80); do
-    if curl -sf "http://127.0.0.1:8888/health" >/dev/null 2>&1; then
+    if curl -sf "${PIPELOCK_PROXY_URL}/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.25
@@ -76,7 +76,7 @@ else
 fi
 
 if wait_for_health; then
-  pass "pipelock healthy on 127.0.0.1:8888"
+  pass "pipelock healthy on ${PIPELOCK_PROXY_HOST}:${PIPELOCK_PROXY_PORT}"
 else
   fail "pipelock did not become healthy"
   (cd "$EXAMPLE_DIR" && docker compose logs --no-color pipelock) >&2 || true
@@ -87,7 +87,7 @@ fi
 # -- Test 2: HTTP_PROXY routes to upstream -------------------------------------
 step "Test 2: HTTP_PROXY routes request through pipelock"
 OUT="$(
-  curl -x "http://127.0.0.1:8888" --noproxy "" -fsS --max-time 10 "http://upstream:8080/" 2>&1
+  curl -x "$PIPELOCK_PROXY_URL" --noproxy "" -fsS --max-time 10 "http://upstream:8080/" 2>&1
 )" && true
 if [ "$OUT" = "hello-from-upstream" ]; then
   pass "upstream response reached via HTTP_PROXY"
@@ -107,7 +107,7 @@ PY
 )"
 BLOCK_BODY="$WORK/blocked-body.txt"
 HTTP_CODE="$(
-  curl -x "http://127.0.0.1:8888" --noproxy "" -sS --max-time 10 \
+  curl -x "$PIPELOCK_PROXY_URL" --noproxy "" -sS --max-time 10 \
     -H "Authorization: Bearer ${SECRET}" \
     -o "$BLOCK_BODY" \
     -w '%{http_code}' \
@@ -127,4 +127,3 @@ printf '\n\033[1m=== Results: %s passed, %s failed ===\033[0m\n\n' "$PASS" "$FAI
 if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
-

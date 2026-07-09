@@ -16,6 +16,8 @@ import (
 
 var ErrReceiptRequired = errors.New("receipt required but not emitted")
 
+var errMCPV2ReceiptEmit = errors.New("mcp v2 proxydecision receipt emit failed")
+
 // MCPDecision bundles the per-decision state a gate in the inbound
 // MCP pipeline needs to emit. Today each gate calls
 // receiptEmitter.Emit(...) and (for allow/warn tool calls) the
@@ -154,7 +156,7 @@ func EmitMCPDecision(
 	if v1Emitted && v2Emitter != nil {
 		if v2Decision, ok := mcpV2DecisionFromReceipt(d.Receipt); ok {
 			if v2Err := v2Emitter.Emit(v2Decision); v2Err != nil && err == nil {
-				err = v2Err
+				err = fmt.Errorf("%w: %w", errMCPV2ReceiptEmit, v2Err)
 			}
 		}
 	}

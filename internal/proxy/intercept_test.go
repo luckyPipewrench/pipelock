@@ -168,6 +168,22 @@ func TestInterceptEmitReceiptOrBlockRequiresReceiptBlocksV2Failure(t *testing.T)
 	}
 	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="intercept"} 1`)
+	receipts := rph.findReceipts(t)
+	var marker receipt.Receipt
+	layers := make([]string, 0, len(receipts))
+	for _, rcpt := range receipts {
+		layers = append(layers, rcpt.ActionRecord.Layer+":"+rcpt.ActionRecord.Verdict)
+		if rcpt.ActionRecord.Layer == receiptEmissionFailedLayer {
+			marker = rcpt
+			break
+		}
+	}
+	if marker.ActionRecord.ActionID == "" {
+		t.Fatalf("missing %q marker in %d receipts: %v", receiptEmissionFailedLayer, len(receipts), layers)
+	}
+	if marker.ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("failure marker verdict = %q, want %q", marker.ActionRecord.Verdict, config.ActionBlock)
+	}
 }
 
 func TestInterceptEmitReceiptOrBlockRequireReceiptsEmitsIntent(t *testing.T) {

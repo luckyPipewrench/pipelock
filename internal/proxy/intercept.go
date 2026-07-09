@@ -264,6 +264,9 @@ func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) e
 		recordV2ReceiptEmitFailure(ic.Proxy.metrics)
 		logV2EmitFailure(ic.Logger, opts, err)
 	}); err != nil {
+		if markerErr := ic.Proxy.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock); markerErr != nil {
+			return errors.Join(err, markerErr)
+		}
 		return err
 	}
 	return nil

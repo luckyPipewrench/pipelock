@@ -1044,7 +1044,7 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 	}
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
 	if err := p.emitV2Receipt(opts); err != nil {
-		p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)
+		_ = p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)
 		return err
 	}
 	return nil
@@ -1081,7 +1081,7 @@ func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, st
 	if err := p.emitReceipt(opts); err != nil {
 		if errors.Is(err, errV2ReceiptEmit) {
 			e := p.receiptEmitterPtr.Load()
-			p.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
+			_ = p.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
 		}
 	}
 }
@@ -1119,20 +1119,22 @@ func receiptEmissionFailureMarkerOpts(opts receipt.EmitOpts, pattern, verdict st
 	return marker
 }
 
-func emitReceiptFailureMarkerWithLogger(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string, logErr func(receipt.EmitOpts, error)) {
+func emitReceiptFailureMarkerWithLogger(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string, logErr func(receipt.EmitOpts, error)) error {
 	if e == nil {
-		return
+		return nil
 	}
 	marker := receiptEmissionFailureMarkerOpts(opts, pattern, verdict)
 	if err := e.EmitDurable(marker); err != nil {
 		if logErr != nil {
 			logErr(marker, err)
 		}
+		return err
 	}
+	return nil
 }
 
-func (p *Proxy) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string) {
-	emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, p.logReceiptEmissionFailure)
+func (p *Proxy) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string) error {
+	return emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, p.logReceiptEmissionFailure)
 }
 
 func (p *Proxy) recordReceiptEmitterUnavailable(opts receipt.EmitOpts) error {

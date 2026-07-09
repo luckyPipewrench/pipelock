@@ -340,7 +340,7 @@ func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *
 }
 
 func (rp *ReverseProxyHandler) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string) {
-	emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, rp.logReceiptEmissionFailure)
+	_ = emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, rp.logReceiptEmissionFailure)
 }
 
 func (rp *ReverseProxyHandler) recordReceiptEmitterUnavailable(opts receipt.EmitOpts) error {

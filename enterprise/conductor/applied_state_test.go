@@ -160,8 +160,14 @@ func TestAuditBatchEnvelope_PreimageIncludesAppliedState(t *testing.T) {
 		{"active_bundle_id", func(s *FollowerAppliedState) { s.ActiveBundleID = "other" }},
 		{"active_bundle_version", func(s *FollowerAppliedState) { s.ActiveBundleVersion = 999 }},
 		{"active_bundle_hash", func(s *FollowerAppliedState) { s.ActiveBundleHash = testHash("cd") }},
+		{"active_bundle_min_pipelock_version", func(s *FollowerAppliedState) { s.ActiveBundleMinPipelockVersion = "9.9.9" }},
 		{"pipelock_version", func(s *FollowerAppliedState) { s.PipelockVersion = "9.9.9" }},
+		{"git_commit", func(s *FollowerAppliedState) { s.GitCommit = "deadbeef" }},
+		{"build_date", func(s *FollowerAppliedState) { s.BuildDate = "2099-01-01" }},
+		{"last_policy_poll_at", func(s *FollowerAppliedState) { s.LastPolicyPollAt = testNow.Add(time.Hour) }},
+		{"last_successful_apply_at", func(s *FollowerAppliedState) { s.LastSuccessfulApplyAt = testNow.Add(time.Hour) }},
 		{"last_apply_error_code", func(s *FollowerAppliedState) { s.LastApplyErrorCode = "apply_failed" }},
+		{"last_apply_error_message", func(s *FollowerAppliedState) { s.LastApplyErrorMessage = "boom" }},
 		{"observed_at", func(s *FollowerAppliedState) { s.ObservedAt = testNow.Add(time.Hour) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -178,6 +184,33 @@ func TestAuditBatchEnvelope_PreimageIncludesAppliedState(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuditBatchEnvelope_ValidateForConductor_AppliedStateObservedAt covers the
+// fail-closed clock-skew gate on applied-state ObservedAt directly: a value
+// within skew passes, and a future value beyond skew is rejected with
+// ErrSkewExceeded even when EmittedAt itself is within skew.
+func TestAuditBatchEnvelope_ValidateForConductor_AppliedStateObservedAt(t *testing.T) {
+	t.Run("within_skew_passes", func(t *testing.T) {
+		batch := testAuditBatch()
+		batch.EmittedAt = testNow
+		applied := testAppliedState()
+		applied.ObservedAt = testNow
+		batch.AppliedState = &applied
+		if err := batch.ValidateForConductor(testNow, DefaultAuditMaxSkew); err != nil {
+			t.Fatalf("ValidateForConductor() = %v, want nil", err)
+		}
+	})
+	t.Run("future_observed_at_rejected", func(t *testing.T) {
+		batch := testAuditBatch()
+		batch.EmittedAt = testNow // keep EmittedAt in-skew so ObservedAt is the isolated cause
+		applied := testAppliedState()
+		applied.ObservedAt = testNow.Add(2 * DefaultAuditMaxSkew)
+		batch.AppliedState = &applied
+		if err := batch.ValidateForConductor(testNow, DefaultAuditMaxSkew); !errors.Is(err, ErrSkewExceeded) {
+			t.Fatalf("ValidateForConductor() = %v, want ErrSkewExceeded for future observed_at", err)
+		}
+	})
 }
 
 // TestAuditBatchEnvelope_AppliedStateTamperBreaksSignature pins invariant #4:

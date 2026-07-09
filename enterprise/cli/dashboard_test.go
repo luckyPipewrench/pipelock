@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -901,14 +902,14 @@ func TestParseTrustedSigners(t *testing.T) {
 	}
 
 	t.Run("empty returns nil", func(t *testing.T) {
-		got, err := parseTrustedSigners(nil)
+		got, err := signingflag.ParseTrustedSigners(nil)
 		if err != nil || got != nil {
 			t.Fatalf("got (%v, %v), want (nil, nil)", got, err)
 		}
 	})
 
 	t.Run("inline hex with source", func(t *testing.T) {
-		got, err := parseTrustedSigners([]string{"inline=" + keyHex + ",source=ops runbook"})
+		got, err := signingflag.ParseTrustedSigners([]string{"inline=" + keyHex + ",source=ops runbook"})
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
@@ -918,7 +919,7 @@ func TestParseTrustedSigners(t *testing.T) {
 	})
 
 	t.Run("empty parts from trailing comma are skipped", func(t *testing.T) {
-		got, err := parseTrustedSigners([]string{"inline=" + keyHex + ","})
+		got, err := signingflag.ParseTrustedSigners([]string{"inline=" + keyHex + ","})
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
@@ -928,11 +929,11 @@ func TestParseTrustedSigners(t *testing.T) {
 	})
 
 	t.Run("file key with default source", func(t *testing.T) {
-		got, err := parseTrustedSigners([]string{"file=" + keyFile})
+		got, err := signingflag.ParseTrustedSigners([]string{"file=" + keyFile})
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
-		if got[keyHex] != (dashboard.TrustedKey{Source: trustedSignerDefaultSource}) {
+		if got[keyHex] != (dashboard.TrustedKey{Source: signingflag.DefaultSource}) {
 			t.Fatalf("got %+v", got)
 		}
 	})
@@ -956,7 +957,7 @@ func TestParseTrustedSigners(t *testing.T) {
 	}
 	for _, tc := range errCases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseTrustedSigners([]string{tc.in})
+			_, err := signingflag.ParseTrustedSigners([]string{tc.in})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want error containing %q, got %v", tc.want, err)
 			}
@@ -964,7 +965,7 @@ func TestParseTrustedSigners(t *testing.T) {
 	}
 
 	t.Run("duplicate key rejected", func(t *testing.T) {
-		_, err := parseTrustedSigners([]string{"inline=" + keyHex, "file=" + keyFile})
+		_, err := signingflag.ParseTrustedSigners([]string{"inline=" + keyHex, "file=" + keyFile})
 		if err == nil || !strings.Contains(err.Error(), "duplicate key") {
 			t.Fatalf("want duplicate-key error, got %v", err)
 		}

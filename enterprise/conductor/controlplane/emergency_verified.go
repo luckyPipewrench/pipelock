@@ -371,6 +371,30 @@ func (v *verifiedEmergencyStore) ClearRollbackAuthorization(ctx context.Context,
 	return clearer.ClearRollbackAuthorization(ctx, authorizationID)
 }
 
+// PreviewRemoteKill forwards a remote-kill dry-run preview to the underlying
+// store if it supports previewing. Signature verification already happens at the
+// handler ingress before the preview is reached (same as PublishRemoteKill), so
+// the pass-through is verification-parity-safe. A store that cannot preview fails
+// closed with ErrEmergencyPreviewUnsupported rather than pretending a dry-run
+// succeeded.
+func (v *verifiedEmergencyStore) PreviewRemoteKill(ctx context.Context, msg conductor.RemoteKillMessage, now time.Time) (RemoteKillPreview, error) {
+	previewer, ok := v.inner.(remoteKillPreviewer)
+	if !ok {
+		return RemoteKillPreview{}, ErrEmergencyPreviewUnsupported
+	}
+	return previewer.PreviewRemoteKill(ctx, msg, now)
+}
+
+// PreviewRollbackAuthorization mirrors PreviewRemoteKill for rollback
+// authorizations.
+func (v *verifiedEmergencyStore) PreviewRollbackAuthorization(ctx context.Context, auth conductor.RollbackAuthorization, now time.Time) (RollbackAuthPreview, error) {
+	previewer, ok := v.inner.(rollbackAuthPreviewer)
+	if !ok {
+		return RollbackAuthPreview{}, ErrEmergencyPreviewUnsupported
+	}
+	return previewer.PreviewRollbackAuthorization(ctx, auth, now)
+}
+
 // classifyQuarantine picks the audit event + reason for a verification failure.
 // A resolver MISS (a signer key id not in the trusted set) is the key-rotation
 // case: the record may be legitimate but signed by a rotated-out key, which can

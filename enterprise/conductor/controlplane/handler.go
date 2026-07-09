@@ -190,6 +190,10 @@ type publishPolicyBundleRequest struct {
 	Bundle          conductor.PolicyBundle `json:"bundle"`
 	AllowFleetSkew  bool                   `json:"allow_fleet_skew,omitempty"`
 	FleetSkewReason string                 `json:"fleet_skew_reason,omitempty"`
+	// DryRun requests a read-only evaluation: run the same authorization,
+	// validation, preflight, and store publish decision a real apply runs, report
+	// what it WOULD do, and mutate nothing.
+	DryRun bool `json:"dry_run,omitempty"`
 }
 
 type publishPolicyBundleResponse struct {
@@ -233,6 +237,7 @@ type enrollResponse struct {
 
 type publishRemoteKillRequest struct {
 	Message conductor.RemoteKillMessage `json:"message"`
+	DryRun  bool                        `json:"dry_run,omitempty"`
 }
 
 type publishRemoteKillResponse struct {
@@ -245,6 +250,7 @@ type publishRemoteKillResponse struct {
 
 type publishRollbackAuthorizationRequest struct {
 	Authorization conductor.RollbackAuthorization `json:"authorization"`
+	DryRun        bool                            `json:"dry_run,omitempty"`
 }
 
 type publishRollbackAuthorizationResponse struct {
@@ -495,6 +501,8 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRemoteKill(w, r)
 	case RollbackAuthorizationsPath:
 		h.handleRollbackAuthorizations(w, r)
+	case DecisionReplayPath:
+		h.handleDecisionReplay(w, r)
 	case PublishPolicyBundlePath:
 		h.handlePublishPolicyBundle(w, r)
 	case LatestPolicyBundlePath:
@@ -565,7 +573,7 @@ func conductorRoute(path string) string {
 		return AuditBatchesPath
 	}
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, FollowerRuntimeStatusPath, StreamStatusPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, DecisionReplayPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath, FollowersPath, FollowerRuntimeStatusPath, StreamStatusPath:
 		return path
 	default:
 		return "unknown"
@@ -722,6 +730,10 @@ func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 			return
 		}
+	}
+	if req.DryRun {
+		h.respondPublishDryRun(w, r, req.Bundle, req.AllowFleetSkew, fleetSkewReason)
+		return
 	}
 	preflight, err := h.publishPreflight(r, req.Bundle, req.AllowFleetSkew, fleetSkewReason)
 	if err != nil {
@@ -970,12 +982,16 @@ func (h *Handler) handlePublishRemoteKill(w http.ResponseWriter, r *http.Request
 		return
 	}
 	now := h.now()
-	if err := validateMaxValidity(req.Message.NotBefore, req.Message.ExpiresAt, h.remoteKillMaxTTL); err != nil {
+	if err := validateRemoteKillPublishInput(req.Message, h.remoteKillMaxTTL); err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if err := req.Message.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
 		writeStoreError(w, err)
+		return
+	}
+	if req.DryRun {
+		h.respondRemoteKillDryRun(w, r, req.Message, now)
 		return
 	}
 	record, created, err := h.emergencyControls.PublishRemoteKill(r.Context(), req.Message, now)
@@ -1054,12 +1070,8 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if len(req.Authorization.Audience.InstanceIDs) != 0 || len(req.Authorization.Audience.Labels) != 0 {
-		writeStoreError(w, fmt.Errorf("%w: rollback audience must be empty", conductor.ErrInvalidRollback))
-		return
-	}
 	now := h.now()
-	if err := validateMaxValidity(req.Authorization.CreatedAt, req.Authorization.ExpiresAt, h.rollbackMaxTTL); err != nil {
+	if err := validateRollbackPublishInput(req.Authorization, h.rollbackMaxTTL); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -1069,6 +1081,10 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 	}
 	if _, err := h.store.BundleByIDVersion(r.Context(), req.Authorization.TargetBundleID, req.Authorization.TargetVersion); err != nil {
 		writeStoreError(w, err)
+		return
+	}
+	if req.DryRun {
+		h.respondRollbackDryRun(w, r, req.Authorization, now)
 		return
 	}
 	record, created, err := h.emergencyControls.PublishRollbackAuthorization(r.Context(), req.Authorization, now)
@@ -1225,6 +1241,17 @@ func validateMaxValidity(start, expires time.Time, maxTTL time.Duration) error {
 		return fmt.Errorf("%w: validity %s exceeds max %s", conductor.ErrInvalidValidityWindow, expires.Sub(start), maxTTL)
 	}
 	return nil
+}
+
+func validateRemoteKillPublishInput(msg conductor.RemoteKillMessage, maxTTL time.Duration) error {
+	return validateMaxValidity(msg.NotBefore, msg.ExpiresAt, maxTTL)
+}
+
+func validateRollbackPublishInput(auth conductor.RollbackAuthorization, maxTTL time.Duration) error {
+	if len(auth.Audience.InstanceIDs) != 0 || len(auth.Audience.Labels) != 0 {
+		return fmt.Errorf("%w: rollback audience must be empty", conductor.ErrInvalidRollback)
+	}
+	return validateMaxValidity(auth.CreatedAt, auth.ExpiresAt, maxTTL)
 }
 
 func ifNoneMatchMatches(raw, etag string) bool {

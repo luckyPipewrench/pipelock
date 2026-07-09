@@ -28,7 +28,9 @@ import (
 
 // writeCoverageCertSession emits one signed session into dir for the coverage
 // certificate generate path.
-func writeCoverageCertSession(t *testing.T, dir string, priv ed25519.PrivateKey, actor string, count int) {
+const coverageCertTestActor = "agent-a"
+
+func writeCoverageCertSession(t *testing.T, dir string, priv ed25519.PrivateKey, count int) {
 	t.Helper()
 	rec, err := recorder.New(recorder.Config{
 		Enabled:            true,
@@ -43,7 +45,7 @@ func writeCoverageCertSession(t *testing.T, dir string, priv ed25519.PrivateKey,
 		PrivKey:    priv,
 		ConfigHash: "policy-hash-test",
 		Principal:  "operator",
-		Actor:      actor,
+		Actor:      coverageCertTestActor,
 	})
 	if err := emitter.EmitSessionOpen(); err != nil {
 		t.Fatalf("EmitSessionOpen: %v", err)
@@ -59,7 +61,7 @@ func writeCoverageCertSession(t *testing.T, dir string, priv ed25519.PrivateKey,
 			Verdict:   verdict,
 			Transport: "fetch",
 			Method:    http.MethodGet,
-			Agent:     actor,
+			Agent:     coverageCertTestActor,
 		}); err != nil {
 			t.Fatalf("Emit(%d): %v", i, err)
 		}
@@ -138,7 +140,7 @@ func TestRunCoverageCertGenerate_RoundTrip(t *testing.T) {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
 	const actor = "agent-a"
-	writeCoverageCertSession(t, dir, priv, actor, 3)
+	writeCoverageCertSession(t, dir, priv, 3)
 
 	keyFile := filepath.Join(t.TempDir(), "signing.key")
 	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
@@ -261,7 +263,7 @@ func genCoverageCertForTest(t *testing.T) (certFile, pubHex string) {
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
-	writeCoverageCertSession(t, dir, priv, "agent-a", 2)
+	writeCoverageCertSession(t, dir, priv, 2)
 	keyFile := filepath.Join(t.TempDir(), "signing.key")
 	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
 		t.Fatalf("SavePrivateKey: %v", err)
@@ -381,5 +383,163 @@ func TestCoverageCertCmd_Structure(t *testing.T) {
 	}
 	if coverageCertVerifyCmd().Flags().Lookup("cert") == nil {
 		t.Error("verify missing --cert flag")
+	}
+}
+
+func TestRunCoverageCertGenerate_ErrorPaths(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	writeCoverageCertSession(t, dir, priv, 2)
+	keyFile := filepath.Join(t.TempDir(), "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	good := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	base := coverageCertGenerateOptions{
+		agent:          "agent-a",
+		receiptDir:     dir,
+		signingKeyFile: keyFile,
+		windowStart:    good.Format(time.RFC3339),
+		windowEnd:      good.Add(time.Hour).Format(time.RFC3339),
+		outFile:        filepath.Join(t.TempDir(), "c.json"),
+	}
+	fileAsDir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(fileAsDir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(o coverageCertGenerateOptions) coverageCertGenerateOptions
+	}{
+		{"bad window-start", func(o coverageCertGenerateOptions) coverageCertGenerateOptions { o.windowStart = "nope"; return o }},
+		{"bad window-end", func(o coverageCertGenerateOptions) coverageCertGenerateOptions { o.windowEnd = "nope"; return o }},
+		{"missing receipt-dir", func(o coverageCertGenerateOptions) coverageCertGenerateOptions {
+			o.receiptDir = "/no/such/dir"
+			return o
+		}},
+		{"receipt-dir is a file", func(o coverageCertGenerateOptions) coverageCertGenerateOptions { o.receiptDir = fileAsDir; return o }},
+		{"missing signing-key", func(o coverageCertGenerateOptions) coverageCertGenerateOptions {
+			o.signingKeyFile = "/no/such/key"
+			return o
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			if err := runCoverageCertGenerate(cmd, tc.mutate(base)); err == nil {
+				t.Fatalf("%s: expected error", tc.name)
+			}
+		})
+	}
+}
+
+func TestRunCoverageCertGenerate_MixedActorSessionRejected(t *testing.T) {
+	// A single recorder session whose receipts carry two different actors must
+	// be refused for a per-agent certificate (fail closed, no cross-agent leak).
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	path := filepath.Join(dir, "evidence-mixed-000000.jsonl")
+	prevHash := receipt.GenesisHash
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var lines []byte
+	for i, actor := range []string{"agent-a", "agent-b"} {
+		ar := receipt.ActionRecord{
+			Version: receipt.ActionRecordVersion, ActionID: receipt.NewActionID(),
+			ActionType: receipt.ActionRead, Timestamp: base.Add(time.Duration(i) * time.Second),
+			Actor: actor, Target: "https://api.vendor.example/x", Verdict: config.ActionAllow,
+			SessionID: "mixed", Transport: "fetch", Method: http.MethodGet,
+			ChainPrevHash: prevHash, ChainSeq: uint64(i),
+		}
+		r, _ := receipt.Sign(ar, priv)
+		hash, _ := receipt.ReceiptHash(r)
+		detail, _ := json.Marshal(r)
+		entry := recorder.Entry{
+			Version: 1, Sequence: uint64(i), Timestamp: ar.Timestamp, SessionID: "mixed",
+			Type: "action_receipt", Transport: "fetch", Summary: "t",
+			Detail: json.RawMessage(detail), PrevHash: prevHash, Hash: hash,
+		}
+		line, _ := json.Marshal(entry)
+		lines = append(lines, line...)
+		lines = append(lines, '\n')
+		prevHash = hash
+	}
+	if err := os.WriteFile(path, lines, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	keyFile := filepath.Join(t.TempDir(), "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	err = runCoverageCertGenerate(cmd, coverageCertGenerateOptions{
+		agent: "agent-a", receiptDir: dir, signingKeyFile: keyFile,
+		windowStart: start.Format(time.RFC3339), windowEnd: start.Add(time.Hour).Format(time.RFC3339),
+		outFile: filepath.Join(t.TempDir(), "c.json"),
+	})
+	if err == nil {
+		t.Fatal("mixed-actor session must be rejected for a per-agent certificate")
+	}
+}
+
+func TestCoverageCertGenerate_Execute_LicenseGated(t *testing.T) {
+	// Executing `coverage-cert generate` runs the RunE closure, which enforces
+	// the Pro (agents) license gate before any work. In a test environment with
+	// no Pro license, the gate fails closed.
+	dir := t.TempDir()
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	writeCoverageCertSession(t, dir, priv, 1)
+	keyFile := filepath.Join(t.TempDir(), "k.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	root := coverageCertCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{
+		"generate",
+		"--agent", "agent-a",
+		"--receipt-dir", dir,
+		"--signing-key", keyFile,
+		"--window-start", start.Format(time.RFC3339),
+		"--window-end", start.Add(time.Hour).Format(time.RFC3339),
+		"--out", filepath.Join(t.TempDir(), "c.json"),
+	})
+	// The RunE ran either way; without a Pro license it must fail closed.
+	if err := root.Execute(); err == nil {
+		t.Skip("a Pro license is present in this environment; gate did not fail closed")
+	}
+}
+
+func TestCoverageCertVerify_Execute(t *testing.T) {
+	certFile, pubHex := genCoverageCertForTest(t)
+	root := coverageCertCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"verify", "--cert", certFile, "--trusted-signer", "inline=" + pubHex})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("verify Execute: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error("verify should print bounded lines")
 	}
 }

@@ -126,6 +126,110 @@ func TestEmitter_EmitSessionOpenIsDurableAndGatesOnFsync(t *testing.T) {
 	}
 }
 
+func TestEmitter_EmitSessionCloseIsDurableAndGatesOnFsync(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+		Target:    "https://api.vendor.example/pre-close",
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	// session_close is the seal over the pre-close tail: if it cannot be durably
+	// persisted, the emit must surface ErrDurability so the caller can fail
+	// closed under require_receipts. A non-durable close would swallow the fsync
+	// failure. The write itself still succeeds (only fsync is injected to fail),
+	// so the close receipt reaches disk and the chain still verifies.
+	syncErr := errors.New("injected sync failure")
+	rec.SetSyncForTest(func(*os.File) error { return syncErr })
+	err := e.EmitSessionClose("graceful_shutdown")
+	if !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("EmitSessionClose error = %v, want ErrDurability (session_close must be emitted durably)", err)
+	}
+	if e.DurabilityBlocks() != 1 {
+		t.Fatalf("DurabilityBlocks = %d, want 1 after gated session_close", e.DurabilityBlocks())
+	}
+	rec.SetSyncForTest(nil)
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	if len(receipts) == 0 || !isSessionCloseControl(receipts[len(receipts)-1].ActionRecord.SessionControl) {
+		t.Fatalf("last receipt is not session_close: %#v", receipts)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+}
+
+func TestEmitter_EmitSessionCloseDurabilityFailureRetrySurfacesError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+		Target:    "https://api.vendor.example/pre-close",
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	syncErr := errors.New("injected sync failure")
+	rec.SetSyncForTest(func(*os.File) error { return syncErr })
+	err := e.EmitSessionClose("graceful_shutdown")
+	if !errors.Is(err, recorder.ErrDurability) {
+		t.Fatalf("EmitSessionClose error = %v, want ErrDurability", err)
+	}
+	rec.SetSyncForTest(nil)
+
+	retryErr := e.EmitSessionClose("retry")
+	if !errors.Is(retryErr, recorder.ErrDurability) {
+		t.Fatalf("retry EmitSessionClose error = %v, want sticky ErrDurability", retryErr)
+	}
+	if !errors.Is(retryErr, syncErr) {
+		t.Fatalf("retry EmitSessionClose error = %v, want original sync error", retryErr)
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	closeCount := 0
+	for _, r := range receipts {
+		if isSessionCloseControl(r.ActionRecord.SessionControl) {
+			closeCount++
+		}
+	}
+	if closeCount != 1 {
+		t.Fatalf("session_close receipts = %d, want 1", closeCount)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+}
+
 func TestEmitter_EmitSessionOpenPopulatesPostureBinding(t *testing.T) {
 	t.Parallel()
 

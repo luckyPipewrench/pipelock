@@ -101,6 +101,7 @@ type Emitter struct {
 	chainEnd      time.Time // timestamp of most recent receipt
 	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
 	closeEmitted  bool      // true after session_close; prevents duplicate closes
+	closeErr      error     // sticky error for a written session_close whose durability confirmation failed
 	openNonce     string
 	heartbeatBeat uint64
 
@@ -369,6 +370,14 @@ func (e *Emitter) DurabilityBlocks() uint64 {
 // heartbeat snapshots the current chain head under chainMu via emitWithControl,
 // before the heartbeat receipt itself advances the chain, so ChainHead and
 // ChainSeqHead are a race-free pair.
+//
+// Heartbeats are intentionally NON-durable (emitWithControl durable=false).
+// They are periodic liveness telemetry, not chain-integrity anchors: the durable
+// session_open anchor and durable action receipts carry the integrity load, and
+// the next heartbeat re-establishes liveness after a crash. An fsync per
+// heartbeat interval would add I/O cost with no integrity benefit — losing a
+// single heartbeat on crash is acceptable because the resulting gap is
+// detectable in the chain and self-heals on the next beat.
 func (e *Emitter) EmitHeartbeat() error {
 	if e == nil {
 		return nil
@@ -389,6 +398,18 @@ func (e *Emitter) EmitHeartbeat() error {
 // EmitSessionClose emits a signed session_close control receipt that seals the
 // current pre-close chain tail. The compat transcript_root remains separate and
 // should be emitted after this method so it anchors the chain including close.
+//
+// It is emitted DURABLY (fsync-confirmed before returning), mirroring
+// EmitSessionOpen: session_close is the seal over the pre-close tail, so the
+// "durable evidence before the chain is sealed" property must hold at least as
+// strongly at the seal as at the actions it covers. The durable path composes
+// with the buildControl closure — buildControl runs first under chainMu (and may
+// return a nil control to no-op when the chain is empty or already
+// sealed/closed), then the durable branch fsync-confirms the recorded receipt
+// and surfaces recorder.ErrDurability on a confirmation failure exactly as
+// EmitSessionOpen does. On such a failure the caller decides posture (fail
+// closed under require_receipts, otherwise continue with the run marked
+// UNVERIFIED).
 func (e *Emitter) EmitSessionClose(closeReason string) error {
 	if e == nil {
 		return nil
@@ -398,7 +419,10 @@ func (e *Emitter) EmitSessionClose(closeReason string) error {
 		Verdict:   config.ActionAllow,
 		Transport: sessionControlTransport,
 		Target:    sessionCloseTarget,
-	}, false, func() (*SessionControl, error) {
+	}, true, func() (*SessionControl, error) {
+		if e.closeEmitted && e.closeErr != nil {
+			return nil, e.closeErr
+		}
 		if e.rootEmitted || e.closeEmitted || e.chainSeq == 0 {
 			return nil, nil
 		}
@@ -601,6 +625,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		recordErr = e.recorder.Record(entry)
 	}
 	if recordErr != nil {
+		emitErr := fmt.Errorf("recording receipt: %w", recordErr)
 		// Persist failed AFTER the chain state advanced (advance-before-persist,
 		// above). For the single-shot control receipts (open/close) mark the guard
 		// "emitted" only when the receipt bytes actually reached disk — i.e. the
@@ -617,6 +642,9 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		}
 		if closeControl && e.receiptHashRecorded(receiptHash) {
 			e.closeEmitted = true
+			if durable && errors.Is(recordErr, recorder.ErrDurability) {
+				e.closeErr = emitErr
+			}
 		}
 		if durable && errors.Is(recordErr, recorder.ErrDurability) {
 			e.durabilityBlocks.Add(1)
@@ -624,7 +652,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		} else {
 			e.recordFailure(FailReasonRecord)
 		}
-		return fmt.Errorf("recording receipt: %w", recordErr)
+		return emitErr
 	}
 	if openControl {
 		e.sessionOpenEmitted = true

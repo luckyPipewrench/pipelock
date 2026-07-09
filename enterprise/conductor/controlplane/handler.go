@@ -451,7 +451,7 @@ func DefaultCapabilities(conductorID string) conductor.CapabilitiesResponse {
 		ConductorBundle:        conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.SchemaVersion},
 		RemoteKill:             conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.SchemaVersion},
 		RollbackAuthorization:  conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.SchemaVersion},
-		AuditBatch:             conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.SchemaVersion},
+		AuditBatch:             conductor.SchemaRange{Min: conductor.SchemaVersion, Max: conductor.AuditEnvelopeSchemaVersion},
 		ReceiptEntryVersions:   []int{2},
 		MaxCreatedSkewSeconds:  int(conductor.DefaultAuditMaxSkew / time.Second),
 		EmergencyStream:        false,

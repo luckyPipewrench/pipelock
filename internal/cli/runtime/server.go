@@ -115,9 +115,15 @@ type Server struct {
 	// constructed needs this handle; stash it on the server so the two
 	// build-tagged init methods can share state without touching server.go.
 	conductorAuditQueue any
-	conductorAudit      conductorRunner
-	conductorRemoteKill conductorRunner
-	conductorBundle     conductorRunner
+	// conductorStatusReporter holds *conductorPolicyStatusReporter in the
+	// enterprise build. It is created with the bundle poller but also feeds the
+	// audit producer's signed applied-state provider (built in a later init
+	// phase), so it is stashed here as any for the two build-tagged methods to
+	// share, same pattern as conductorAuditQueue.
+	conductorStatusReporter any
+	conductorAudit          conductorRunner
+	conductorRemoteKill     conductorRunner
+	conductorBundle         conductorRunner
 	// conductorRollback holds *policysync.RollbackPoller in the enterprise build.
 	// It polls the leader for a signed rollback authorization matching the
 	// follower's active->prior bundle pair and drives the existing apply boundary

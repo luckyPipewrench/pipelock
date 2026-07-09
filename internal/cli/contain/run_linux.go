@@ -79,17 +79,18 @@ func launchContainedAgent(
 	}
 
 	cmd := containedAgentCommand(containedAgentCommandOptions{
-		ctx:           ctx,
-		agentUserName: env.agentUserName,
-		homeDir:       homeDir,
-		proxyPort:     env.port,
-		uid:           uint32(uid),
-		gid:           uint32(gid),
-		groups:        groups,
-		args:          args,
-		stdin:         stdin,
-		stdout:        stdout,
-		stderr:        stderr,
+		ctx:              ctx,
+		agentUserName:    env.agentUserName,
+		homeDir:          homeDir,
+		proxyPort:        env.port,
+		postureProofPath: env.postureProofPath,
+		uid:              uint32(uid),
+		gid:              uint32(gid),
+		groups:           groups,
+		args:             args,
+		stdin:            stdin,
+		stdout:           stdout,
+		stderr:           stderr,
 	})
 
 	if err := runContainedAgentCommand(cmd); err != nil {
@@ -111,17 +112,18 @@ func launchContainedAgent(
 }
 
 type containedAgentCommandOptions struct {
-	ctx           context.Context
-	agentUserName string
-	homeDir       string
-	proxyPort     int
-	uid           uint32
-	gid           uint32
-	groups        []uint32
-	args          []string
-	stdin         io.Reader
-	stdout        io.Writer
-	stderr        io.Writer
+	ctx              context.Context
+	agentUserName    string
+	homeDir          string
+	proxyPort        int
+	postureProofPath string
+	uid              uint32
+	gid              uint32
+	groups           []uint32
+	args             []string
+	stdin            io.Reader
+	stdout           io.Writer
+	stderr           io.Writer
 }
 
 func containedAgentCommand(opts containedAgentCommandOptions) *exec.Cmd {
@@ -131,7 +133,7 @@ func containedAgentCommand(opts containedAgentCommandOptions) *exec.Cmd {
 	cmd.Stdout = opts.stdout
 	cmd.Stderr = opts.stderr
 	cmd.Dir = opts.homeDir
-	cmd.Env = containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort)
+	cmd.Env = containLaunchEnv(opts.agentUserName, opts.homeDir, opts.proxyPort, opts.postureProofPath)
 	cmd.SysProcAttr = agentSysProcAttr(opts.uid, opts.gid, opts.groups)
 	return cmd
 }

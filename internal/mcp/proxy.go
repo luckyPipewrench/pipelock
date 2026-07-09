@@ -681,6 +681,21 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				outbound = blockResponseReason(verdict.ID, "receipt emission failed")
 				effectiveAction = config.ActionBlock
 				writeContext = "writing block response"
+				if _, blockEmitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+					Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
+						ActionID:  receipt.NewActionID(),
+						Verdict:   config.ActionBlock,
+						Transport: opts.Transport,
+						Target:    target,
+						RequestID: requestID,
+						Layer:     "receipt_emission_failed",
+						Pattern:   "mcp_response_scan receipt emission failed",
+						Severity:  config.SeverityHigh,
+					}),
+					RequireReceipt: true,
+				}); blockEmitErr != nil {
+					logReceiptEmitFailure(logW, blockEmitErr, true, config.ActionBlock)
+				}
 			}
 		}
 		if err := writer.WriteMessage(outbound); err != nil {

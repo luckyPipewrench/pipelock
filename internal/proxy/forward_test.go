@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -48,6 +49,71 @@ type readerConn struct {
 
 func (c readerConn) Read(p []byte) (int, error) {
 	return c.Reader.Read(p)
+}
+
+type fixedBudgetEdition struct {
+	cfg    *config.Config
+	sc     *scanner.Scanner
+	budget edition.BudgetChecker
+}
+
+func (e fixedBudgetEdition) ResolveAgent(context.Context, *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity) {
+	return &edition.ResolvedAgent{
+		Name:    edition.ProfileDefault,
+		Config:  e.cfg,
+		Scanner: e.sc,
+		Budget:  e.budget,
+	}, edition.AgentIdentity{Name: edition.ProfileDefault, Profile: edition.ProfileDefault}
+}
+
+func (e fixedBudgetEdition) LookupProfile(string) (*edition.ResolvedAgent, bool) {
+	return &edition.ResolvedAgent{
+		Name:    edition.ProfileDefault,
+		Config:  e.cfg,
+		Scanner: e.sc,
+		Budget:  e.budget,
+	}, true
+}
+
+func (fixedBudgetEdition) Reload(*config.Config, *scanner.Scanner) (edition.Edition, error) {
+	return nil, nil
+}
+
+func (fixedBudgetEdition) KnownProfiles() map[string]bool {
+	return map[string]bool{edition.ProfileDefault: true}
+}
+
+func (fixedBudgetEdition) Ports() map[string]string {
+	return nil
+}
+
+func (fixedBudgetEdition) Close() {}
+
+type fixedRemainingBudget struct {
+	remaining atomic.Int64
+}
+
+func newFixedRemainingBudget(remaining int64) *fixedRemainingBudget {
+	b := &fixedRemainingBudget{}
+	b.remaining.Store(remaining)
+	return b
+}
+
+func (b *fixedRemainingBudget) CheckAdmission(string) error {
+	return nil
+}
+
+func (b *fixedRemainingBudget) RecordBytes(n int64) error {
+	b.remaining.Add(-n)
+	return nil
+}
+
+func (b *fixedRemainingBudget) RecordRequest(string, int64) error {
+	return nil
+}
+
+func (b *fixedRemainingBudget) RemainingBytes() int64 {
+	return b.remaining.Load()
 }
 
 // setupForwardProxy creates a running pipelock proxy with forward_proxy enabled
@@ -962,6 +1028,55 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T)
 	}
 	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=200") {
 		t.Fatalf("outcome pattern = %q, want status=200", receipts[1].ActionRecord.Pattern)
+	}
+}
+
+func TestForwardProxy_BudgetTruncatedResponseStillEmitsAllowReceipt(t *testing.T) {
+	const budgetBytes = 32
+	body := strings.Repeat("x", 128)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = false
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	p.editionPtr.Store(&editionSnapshot{fixedBudgetEdition{
+		cfg:    p.cfgPtr.Load(),
+		sc:     p.scannerPtr.Load(),
+		budget: newFixedRemainingBudget(budgetBytes),
+	}})
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(got) != budgetBytes {
+		t.Fatalf("body length = %d, want budget-truncated %d", len(got), budgetBytes)
+	}
+
+	receipts := rph.findReceipts(t)
+	var allowCount int
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Verdict == config.ActionAllow &&
+			rcpt.ActionRecord.Transport == "forward" &&
+			rcpt.ActionRecord.DecisionPhase == "" {
+			allowCount++
+		}
+	}
+	if allowCount != 1 {
+		t.Fatalf("allow receipt count = %d, want 1 after budget-truncated egress (receipts: %d)", allowCount, len(receipts))
 	}
 }
 

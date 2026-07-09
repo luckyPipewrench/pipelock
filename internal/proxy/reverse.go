@@ -1461,6 +1461,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 
 	// Skip remaining binary content types (non-media application/*, etc.).
 	if isBinaryMIME(mediaCT) {
+		binaryOutcomeReason := "binary_passthrough"
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
 			limited := io.LimitReader(resp.Body, int64(reverseProxyMaxBodyBytes)+1)
 			body, err := io.ReadAll(limited)
@@ -1499,6 +1500,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 					rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
 					emitUnscannablePassthrough(reason)
+					binaryOutcomeReason = "unscannable_passthrough"
 				}
 				resp.Body = readCloserWithClose{
 					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
@@ -1512,7 +1514,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
-		recordReverseOutcome(resp.StatusCode, resp.ContentLength, "binary_passthrough")
+		recordReverseOutcome(resp.StatusCode, resp.ContentLength, binaryOutcomeReason)
 		return nil
 	}
 

@@ -152,6 +152,12 @@ func EmitMCPDecision(
 			}
 		}
 	}
+	if receiptRequired && err != nil && !errors.Is(err, ErrReceiptRequired) {
+		err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)
+	}
+	if receiptRequired && err != nil {
+		return outbound, err
+	}
 
 	if envelopeEmitter != nil && d.Envelope != nil && d.InboundMsg != nil {
 		var envelopeErr error

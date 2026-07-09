@@ -910,6 +910,55 @@ func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsSingleIntentOutc
 	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=unscannable_passthrough")
 }
 
+func TestReverseProxy_BinaryUnscannablePassthroughOutcomeReason(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	mediaPolicyDisabled := false
+	cfg.MediaPolicy.Enabled = &mediaPolicyDisabled
+	cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
+	cfg.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+		Host:         "127.0.0.1",
+		Paths:        []string{"/clip.mp3"},
+		ContentTypes: []string{"audio/mpeg"},
+		Reason:       "opaque audio artifact",
+		Expires:      "2099-01-01",
+	}}
+	cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
+	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes
+
+	body := bytes.Repeat([]byte{0x42}, reverseProxyMaxBodyBytes+1)
+	proxySrv, dir, closeRec := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Disposition", "attachment; filename=clip.mp3")
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clip.mp3", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("response body close: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=unscannable_passthrough")
+}
+
 // findReceiptByLayer returns the first receipt whose ActionRecord.Layer
 // matches the wanted label. Tests use this instead of indexing
 // receipts[0] so they cannot silently validate a different receipt if a

@@ -1208,6 +1208,23 @@ func (m *Manager) integrityLogAttrs(failureClass string, err error, attrs ...any
 	return append(fields, sanitizeLogAttrs(attrs)...)
 }
 
+func (m *Manager) pendingProfileIntegrityNonEnforcingLogAttrs(agentKey string) []any {
+	return sanitizeLogAttrs([]any{
+		"failure_class", "pending_profile_integrity_nonenforcing",
+		"profile_dir", m.cfg.ProfileDir,
+		"manifest_path", m.integrityManifestPath(),
+		"key_path", m.cfg.IntegrityKeyPath,
+		"high_water_path", m.integrityHighWaterPath(),
+		"deviation_action", m.cfg.DeviationAction,
+		"agent_key_sha256", logValueFingerprint("baseline-agent-key-v1", agentKey),
+	})
+}
+
+func logValueFingerprint(scope, value string) string {
+	sum := sha256.Sum256([]byte(scope + "\x00" + value))
+	return hex.EncodeToString(sum[:])
+}
+
 // sanitizeLogAttrs returns a copy of a slog key/value attr slice with
 // log-control characters replaced by spaces in every value. Attr keys are
 // preserved exactly because callers provide literal keys.
@@ -1513,7 +1530,7 @@ func (m *Manager) verifyPendingProfileIntegrityForRatify(agentKey string) error 
 		return m.logIntegrityVerificationFailure("pending_profile_integrity_failed", fmt.Errorf("verifying pending baseline profile %q before ratify: %w", agentKey, err), "agent_key", agentKey)
 	}
 	slog.Warn("baseline pending profile integrity verification failed; continuing under non-enforcing deviation_action",
-		m.integrityLogAttrs("pending_profile_integrity_nonenforcing", err, "agent_key", agentKey)...)
+		m.pendingProfileIntegrityNonEnforcingLogAttrs(agentKey)...)
 	return nil
 }
 

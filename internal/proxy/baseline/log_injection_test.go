@@ -16,6 +16,8 @@ import (
 	"unicode"
 )
 
+const sha256HexLength = 64
+
 func TestSanitizeLogValueStripsLogControls(t *testing.T) {
 	got := sanitizeLogValue("agent\r\n\t\x1b[31m\x7f\u0085\u2028\u2029Injected: forged log line")
 	if containsUnsafeLogRune(got) {
@@ -110,6 +112,48 @@ func TestIntegrityLogAttrsSanitizesErrors(t *testing.T) {
 			t.Fatalf("attr %q retained a log-control rune: %q", key, got)
 		}
 	}
+}
+
+func TestPendingProfileIntegrityNonEnforcingWarningUsesFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	rawAgentKey := "evil\n\x1b[31mforged=true"
+	mgr := &Manager{cfg: Config{
+		ProfileDir:       dir,
+		IntegrityKeyPath: filepath.Join(dir, "integrity.key"),
+		DeviationAction:  deviationActionWarn,
+	}}
+
+	var handler captureLogHandler
+	previous := slog.Default()
+	slog.SetDefault(slog.New(&handler))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	if err := mgr.verifyPendingProfileIntegrityForRatify(rawAgentKey); err != nil {
+		t.Fatalf("verifyPendingProfileIntegrityForRatify should continue under warn: %v", err)
+	}
+
+	for _, record := range handler.recordsSnapshot() {
+		if record.message != "baseline pending profile integrity verification failed; continuing under non-enforcing deviation_action" {
+			continue
+		}
+		if _, ok := record.attrs["agent_key"]; ok {
+			t.Fatalf("warning logged raw agent_key attr: %#v", record.attrs["agent_key"])
+		}
+		if _, ok := record.attrs["error"]; ok {
+			t.Fatalf("warning logged raw error attr: %#v", record.attrs["error"])
+		}
+		fingerprint, ok := record.attrs["agent_key_sha256"].(string)
+		if !ok {
+			t.Fatalf("agent_key_sha256 attr = %#v, want string", record.attrs["agent_key_sha256"])
+		}
+		if len(fingerprint) != sha256HexLength || strings.Contains(fingerprint, rawAgentKey) || containsUnsafeLogRune(fingerprint) {
+			t.Fatalf("agent_key_sha256 is not a safe fingerprint: %q", fingerprint)
+		}
+		return
+	}
+	t.Fatal("did not capture non-enforcing pending-profile warning")
 }
 
 func TestBaselineWarningsSanitizeProfileNames(t *testing.T) {

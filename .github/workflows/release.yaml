@@ -32,7 +32,17 @@ jobs:
           test "$got" = "go1.25.12"
 
       - name: Verify dependencies
-        run: go mod verify
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if go mod verify; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep

@@ -1,0 +1,4 @@
+name: "Pipelock CodeQL config"
+
+queries:
+  - uses: security-and-quality

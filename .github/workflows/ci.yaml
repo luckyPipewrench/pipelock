@@ -93,10 +93,30 @@ jobs:
           go-version: ${{ matrix.go-version }}
 
       - name: Verify dependencies
-        run: go mod verify
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if go mod verify; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Download dependencies
-        run: go mod download
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if go mod download; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Replay harness (deterministic regression)
         run: make test-replay-harness
@@ -137,10 +157,30 @@ jobs:
           go-version: ${{ matrix.go-version }}
 
       - name: Verify dependencies
-        run: go mod verify
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if go mod verify; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Download dependencies
-        run: go mod download
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if go mod download; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Run tests (enterprise with coverage)
         if: matrix.go-version == '1.25'

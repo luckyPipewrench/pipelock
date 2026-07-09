@@ -1,0 +1,16 @@
+services:
+  upstream:
+    image: hashicorp/http-echo:1.0
+    command: ["-listen", ":8080", "-text", "hello-from-upstream"]
+
+  pipelock:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["run", "--config", "/etc/pipelock/pipelock.yaml"]
+    ports:
+      - "127.0.0.1:${PIPELOCK_PROXY_PORT:-18088}:8888"
+    volumes:
+      - ./pipelock.yaml:/etc/pipelock/pipelock.yaml:ro,Z
+    depends_on:
+      - upstream

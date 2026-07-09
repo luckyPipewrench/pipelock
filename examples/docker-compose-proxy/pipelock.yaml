@@ -1,0 +1,25 @@
+# Docker Compose proxy example config.
+
+version: 1
+mode: balanced
+
+fetch_proxy:
+  # Bind to all interfaces inside the container; docker-compose maps it to host.
+  listen: "0.0.0.0:8888"
+  timeout_seconds: 30
+  monitoring:
+    max_url_length: 4096
+
+forward_proxy:
+  enabled: true
+  max_tunnel_seconds: 60
+  idle_timeout_seconds: 30
+
+dlp:
+  include_defaults: true
+
+# The upstream service runs on a private Docker subnet. Allowing private
+# networks broadly defeats SSRF protections, so this example uses a narrow,
+# hostname-based trust entry instead.
+trusted_domains:
+  - upstream

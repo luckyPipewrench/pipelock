@@ -253,7 +253,9 @@
                     <th>Attributes</th>
                     <th>State</th>
                     <th>Owner</th>
+                    <th>Reason</th>
                     <th>Expiry</th>
+                    <th>Lifecycle</th>
                     <th>Last matched</th>
                     <th>Suppressed</th>
                   </tr>
@@ -277,7 +279,9 @@
                       </td>
                       <td><span class="chip {{.State}}">{{.State}}</span></td>
                       <td>{{.Owner}}</td>
+                      <td>{{.Reason}}</td>
                       <td>{{.Expiry}}</td>
+                      <td>{{if .LifecycleExpired}}<span class="chip inert">{{.Lifecycle}}</span>{{else if .LifecycleStale}}<span class="chip misdirected">{{.Lifecycle}}</span>{{else}}{{.Lifecycle}}{{end}}</td>
                       <td>{{.LastMatched}}</td>
                       <td>{{.Suppressed}}</td>
                     </tr>

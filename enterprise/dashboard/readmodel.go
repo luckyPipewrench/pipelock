@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
@@ -72,6 +73,12 @@ type Options struct {
 	// --filter-presets-file at startup. A preset name in the "preset" query
 	// param pre-fills the same bounded params; explicit query params override.
 	FilterPresets map[string]FilterSpec
+	// ExemptionStore, when non-nil, is a durable lifecycle store overlaid
+	// onto the read-only exemptions inventory. Its records add
+	// owner/reason/expiry/status/last-matched to matching entries.
+	ExemptionStore *ExemptionStore
+	// Now supplies the current time for lifecycle rendering. Nil uses time.Now.
+	Now func() time.Time
 }
 
 // ReadModel builds dashboard views over recorder sessions and receipts.
@@ -84,6 +91,8 @@ type ReadModel struct {
 	filterPresets     map[string]FilterSpec
 	fleetSource       FleetDataSource
 	fleetRedactionKey [fleetRedactionKeySize]byte
+	exemptionStore    *ExemptionStore
+	now               func() time.Time
 }
 
 // NewReadModel creates a dashboard read model from Options.
@@ -100,6 +109,10 @@ func NewReadModel(opts Options) *ReadModel {
 	if _, err := rand.Read(fleetRedactionKey[:]); err != nil {
 		panic(fmt.Errorf("generate dashboard fleet redaction key: %w", err))
 	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &ReadModel{
 		receiptDir:        opts.ReceiptDir,
 		trustedKeys:       cloneTrustedKeys(opts.TrustedKeys),
@@ -109,6 +122,8 @@ func NewReadModel(opts Options) *ReadModel {
 		filterPresets:     opts.FilterPresets,
 		fleetSource:       opts.FleetSource,
 		fleetRedactionKey: fleetRedactionKey,
+		exemptionStore:    opts.ExemptionStore,
+		now:               now,
 	}
 }
 

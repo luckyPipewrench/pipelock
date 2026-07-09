@@ -150,6 +150,35 @@ func emitV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.EmitOpts, l
 	return nil
 }
 
+// emitRequiredV2 is the fail-closed variant for RequireReceipts paths. Once a
+// v1 sibling has been durably recorded, a configured v2 emitter must either
+// record the proxy_decision or surface why it could not.
+func emitRequiredV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.EmitOpts, logErr func(error)) error {
+	if ptr == nil {
+		return nil
+	}
+	e := ptr.Load()
+	if e == nil {
+		return nil
+	}
+	d, ok := v2DecisionFromOpts(opts)
+	if !ok {
+		err := fmt.Errorf("%w: could not derive v2 decision action_id=%s transport=%s target=%q",
+			errV2ReceiptEmit, opts.ActionID, opts.Transport, opts.Target)
+		if logErr != nil {
+			logErr(err)
+		}
+		return err
+	}
+	if err := e.Emit(d); err != nil {
+		if logErr != nil {
+			logErr(err)
+		}
+		return fmt.Errorf("%w: %w", errV2ReceiptEmit, err)
+	}
+	return nil
+}
+
 func recordV2ReceiptEmitFailure(metrics receipt.MetricsSink) {
 	if metrics != nil {
 		metrics.RecordEmitFailure(receipt.FailReasonRecord)
@@ -168,6 +197,13 @@ func logV2EmitFailure(logger *audit.Logger, opts receipt.EmitOpts, err error) {
 // emitV2Receipt dual-emits the v2 proxy_decision for opts on the main proxy.
 func (p *Proxy) emitV2Receipt(opts receipt.EmitOpts) error {
 	return emitV2(&p.v2EmitterPtr, opts, func(err error) {
+		recordV2ReceiptEmitFailure(p.metrics)
+		logV2EmitFailure(p.logger, opts, err)
+	})
+}
+
+func (p *Proxy) emitRequiredV2Receipt(opts receipt.EmitOpts) error {
+	return emitRequiredV2(&p.v2EmitterPtr, opts, func(err error) {
 		recordV2ReceiptEmitFailure(p.metrics)
 		logV2EmitFailure(p.logger, opts, err)
 	})

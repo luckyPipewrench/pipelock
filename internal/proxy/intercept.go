@@ -203,14 +203,12 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
-	// Dual-emit the v2 proxy_decision receipt. The atomic load is current at
-	// call time so long-lived tunnels pick up the post-reload emitter.
-	if err := emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
+	// Dual-emit the v2 proxy_decision receipt best-effort. The atomic load is
+	// current at call time so long-lived tunnels pick up the post-reload emitter.
+	_ = emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
 		recordV2ReceiptEmitFailure(ic.Proxy.metrics)
 		logV2EmitFailure(ic.Logger, opts, err)
-	}); err != nil {
-		return err
-	}
+	})
 	return nil
 }
 
@@ -260,7 +258,7 @@ func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) e
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
-	if err := emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
+	if err := emitRequiredV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
 		recordV2ReceiptEmitFailure(ic.Proxy.metrics)
 		logV2EmitFailure(ic.Logger, opts, err)
 	}); err != nil {
@@ -280,7 +278,28 @@ func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, ve
 	opts.Verdict = verdict
 	opts.Layer = receiptOutcomeLayer
 	opts.Pattern = receiptOutcomePattern(strconv.Itoa(status), bytesTransferred, reason)
-	_ = interceptEmitReceipt(ic, opts)
+	if ic.Proxy == nil {
+		return
+	}
+	if ic.Config != nil {
+		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
+	}
+	ic.Proxy.reloadMu.RLock()
+	e := ic.Proxy.receiptEmitterPtr.Load()
+	ic.Proxy.reloadMu.RUnlock()
+	if e == nil {
+		return
+	}
+	if err := e.Emit(opts); err != nil {
+		ic.Proxy.logReceiptEmissionFailure(opts, err)
+		return
+	}
+	if err := emitV2(&ic.Proxy.v2EmitterPtr, opts, func(err error) {
+		recordV2ReceiptEmitFailure(ic.Proxy.metrics)
+		logV2EmitFailure(ic.Logger, opts, err)
+	}); err != nil {
+		_ = ic.Proxy.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
+	}
 }
 
 func interceptReceiptMetrics(ic *InterceptContext) *metrics.Metrics {

@@ -1043,7 +1043,7 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 		return err
 	}
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
-	if err := p.emitV2Receipt(opts); err != nil {
+	if err := p.emitRequiredV2Receipt(opts); err != nil {
 		if markerErr := p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock); markerErr != nil {
 			return errors.Join(err, markerErr)
 		}
@@ -1080,11 +1080,16 @@ func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, st
 	opts.Layer = receiptOutcomeLayer
 	opts.Pattern = receiptOutcomePattern(status, bytesTransferred, reason)
 	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
-	if err := p.emitReceipt(opts); err != nil {
-		if errors.Is(err, errV2ReceiptEmit) {
-			e := p.receiptEmitterPtr.Load()
-			_ = p.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
-		}
+	e := p.receiptEmitterPtr.Load()
+	if e == nil {
+		return
+	}
+	if err := e.Emit(opts); err != nil {
+		p.logReceiptEmissionFailure(opts, err)
+		return
+	}
+	if err := p.emitV2Receipt(opts); err != nil {
+		_ = p.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
 	}
 }
 
@@ -1098,10 +1103,9 @@ func (p *Proxy) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter
 		// proxy_decision never outlives its action_receipt sibling.
 		return err
 	}
-	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
-	if err := p.emitV2Receipt(opts); err != nil {
-		return err
-	}
+	// Dual-emit the v2 proxy_decision receipt best-effort. Optional v2 outages
+	// are logged/metriced by emitV2Receipt but do not affect traffic.
+	_ = p.emitV2Receipt(opts)
 	return nil
 }
 

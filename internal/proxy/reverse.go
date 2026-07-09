@@ -289,7 +289,7 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
-	if err := emitV2(rp.v2EmitterPtr, opts, func(err error) {
+	if err := emitRequiredV2(rp.v2EmitterPtr, opts, func(err error) {
 		recordV2ReceiptEmitFailure(rp.metrics)
 		logV2EmitFailure(rp.logger, opts, err)
 	}); err != nil {
@@ -310,11 +310,19 @@ func (rp *ReverseProxyHandler) emitOutcomeReceipt(cfg *config.Config, opts recei
 	opts.Layer = receiptOutcomeLayer
 	opts.Pattern = receiptOutcomePattern(status, bytesTransferred, reason)
 	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
-	if err := rp.emitReceipt(opts); err != nil {
-		if errors.Is(err, errV2ReceiptEmit) {
-			e := rp.receiptEmitter()
-			_ = rp.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
-		}
+	e := rp.receiptEmitter()
+	if e == nil {
+		return
+	}
+	if err := e.Emit(opts); err != nil {
+		rp.logReceiptEmissionFailure(opts, err)
+		return
+	}
+	if err := emitV2(rp.v2EmitterPtr, opts, func(err error) {
+		recordV2ReceiptEmitFailure(rp.metrics)
+		logV2EmitFailure(rp.logger, opts, err)
+	}); err != nil {
+		_ = rp.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
 	}
 }
 
@@ -332,12 +340,10 @@ func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
-	if err := emitV2(rp.v2EmitterPtr, opts, func(err error) {
+	_ = emitV2(rp.v2EmitterPtr, opts, func(err error) {
 		recordV2ReceiptEmitFailure(rp.metrics)
 		logV2EmitFailure(rp.logger, opts, err)
-	}); err != nil {
-		return err
-	}
+	})
 	return nil
 }
 

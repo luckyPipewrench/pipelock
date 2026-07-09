@@ -556,6 +556,34 @@ func TestEmitMCPDecision_RequiredV2EmitErrorFailsClosed(t *testing.T) {
 	}
 }
 
+func TestEmitMCPV2Decision_RequiredDerivationFailureFailsClosed(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: failingMCPV2Recorder{},
+		Signer:   proxydecision.NewKeyedSigner(priv),
+	})
+	if v2 == nil {
+		t.Fatal("expected v2 emitter")
+	}
+
+	err = emitMCPV2Decision(v2, receipt.EmitOpts{
+		ActionID:  "mcp-required-missing-target",
+		Verdict:   config.ActionAllow,
+		Transport: transportMCPStdio,
+		// Target intentionally empty: v1 currently rejects this too, but the
+		// required v2 helper must not silently skip configured v2 emission.
+	}, true)
+	if !errors.Is(err, errMCPV2ReceiptEmit) {
+		t.Fatalf("emitMCPV2Decision error = %v, want errMCPV2ReceiptEmit", err)
+	}
+	if !strings.Contains(err.Error(), "could not derive v2 decision") {
+		t.Fatalf("emitMCPV2Decision error = %v, want derivation failure detail", err)
+	}
+}
+
 func TestEmitMCPDecision_OptionalV2EmitErrorStillInjectsEnvelope(t *testing.T) {
 	h := newMCPDecisionReceiptHarness(t)
 	_, priv, err := ed25519.GenerateKey(rand.Reader)

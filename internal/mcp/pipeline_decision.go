@@ -154,10 +154,8 @@ func EmitMCPDecision(
 		return outbound, escalateErr
 	}
 	if v1Emitted && v2Emitter != nil {
-		if v2Decision, ok := mcpV2DecisionFromReceipt(d.Receipt); ok {
-			if v2Err := v2Emitter.Emit(v2Decision); v2Err != nil && err == nil {
-				err = fmt.Errorf("%w: %w", errMCPV2ReceiptEmit, v2Err)
-			}
+		if v2Err := emitMCPV2Decision(v2Emitter, d.Receipt, receiptRequired); v2Err != nil && err == nil {
+			err = v2Err
 		}
 	}
 	if done, escalateErr := escalateReceiptError(); done {
@@ -173,6 +171,24 @@ func EmitMCPDecision(
 	}
 
 	return outbound, err
+}
+
+func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, required bool) error {
+	if v2Emitter == nil {
+		return nil
+	}
+	v2Decision, ok := mcpV2DecisionFromReceipt(opts)
+	if !ok {
+		if required {
+			return fmt.Errorf("%w: could not derive v2 decision action_id=%s transport=%s target=%q",
+				errMCPV2ReceiptEmit, opts.ActionID, opts.Transport, opts.Target)
+		}
+		return nil
+	}
+	if err := v2Emitter.Emit(v2Decision); err != nil {
+		return fmt.Errorf("%w: %w", errMCPV2ReceiptEmit, err)
+	}
+	return nil
 }
 
 func emitMCPOutcomeReceipt(

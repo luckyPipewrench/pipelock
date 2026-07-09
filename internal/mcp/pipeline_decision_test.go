@@ -515,6 +515,116 @@ func TestEmitMCPDecision_V2EmitErrorSurfacesAfterV1(t *testing.T) {
 	}
 }
 
+func TestEmitMCPDecision_RequiredV2EmitErrorFailsClosed(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: failingMCPV2Recorder{},
+		Signer:   proxydecision.NewKeyedSigner(priv),
+	})
+	if v2 == nil {
+		t.Fatal("expected v2 emitter")
+	}
+
+	_, err = EmitMCPDecision(h.v1, v2, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:   "mcp-v2-required-error",
+			Verdict:    config.ActionAllow,
+			Transport:  transportMCPStdio,
+			Target:     "fetch",
+			MCPMethod:  methodToolsCall,
+			ToolName:   "fetch",
+			PolicyHash: mcpTestPolicyHash,
+		},
+		RequireReceipt: true,
+	})
+	if !errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("EmitMCPDecision error = %v, want ErrReceiptRequired", err)
+	}
+	if !strings.Contains(err.Error(), "v2 record failed") {
+		t.Fatalf("EmitMCPDecision error = %v, want v2 record failure", err)
+	}
+	receipts := decisionReceiptLogFor(t, h.dir)
+	if len(receipts) != 1 {
+		t.Fatalf("got %d v1 receipts, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("decision_phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+}
+
+func TestEmitMCPV2Decision_RequiredDerivationFailureFailsClosed(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: failingMCPV2Recorder{},
+		Signer:   proxydecision.NewKeyedSigner(priv),
+	})
+	if v2 == nil {
+		t.Fatal("expected v2 emitter")
+	}
+
+	err = emitMCPV2Decision(v2, receipt.EmitOpts{
+		ActionID:  "mcp-required-missing-target",
+		Verdict:   config.ActionAllow,
+		Transport: transportMCPStdio,
+		// Target intentionally empty: v1 currently rejects this too, but the
+		// required v2 helper must not silently skip configured v2 emission.
+	}, true)
+	if !errors.Is(err, errMCPV2ReceiptEmit) {
+		t.Fatalf("emitMCPV2Decision error = %v, want errMCPV2ReceiptEmit", err)
+	}
+	if !strings.Contains(err.Error(), "could not derive v2 decision") {
+		t.Fatalf("emitMCPV2Decision error = %v, want derivation failure detail", err)
+	}
+}
+
+func TestEmitMCPDecision_OptionalV2EmitErrorStillInjectsEnvelope(t *testing.T) {
+	h := newMCPDecisionReceiptHarness(t)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: failingMCPV2Recorder{},
+		Signer:   proxydecision.NewKeyedSigner(priv),
+	})
+	envEmitter := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "policy-h"})
+	inbound := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"fetch","arguments":{}}}`)
+
+	out, err := EmitMCPDecision(h.v1, v2, envEmitter, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:   "mcp-v2-optional-error",
+			Verdict:    config.ActionAllow,
+			Transport:  transportMCPStdio,
+			Target:     "fetch",
+			MCPMethod:  methodToolsCall,
+			ToolName:   "fetch",
+			PolicyHash: mcpTestPolicyHash,
+		},
+		Envelope: &envelope.BuildOpts{
+			ActionID: "mcp-v2-optional-error",
+			Action:   "tool_call",
+			Verdict:  config.ActionAllow,
+		},
+		InboundMsg: inbound,
+	})
+	if err == nil || !strings.Contains(err.Error(), "v2 record failed") {
+		t.Fatalf("EmitMCPDecision error = %v, want surfaced v2 record failure", err)
+	}
+	if errors.Is(err, ErrReceiptRequired) {
+		t.Fatalf("optional v2 error = %v, must not be ErrReceiptRequired", err)
+	}
+	if bytes.Equal(out, inbound) || !strings.Contains(string(out), "com.pipelock/mediation") {
+		t.Fatalf("optional v2 failure did not preserve envelope injection: %s", out)
+	}
+}
+
 // TestMCPV2DecisionFromReceipt_SkipsEmptyTarget proves the helper refuses to
 // build a v2 payload without a target, mirroring the forward proxy's
 // v2DecisionFromOpts. The v2 emitter's validator requires a non-empty target,

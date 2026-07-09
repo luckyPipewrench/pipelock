@@ -549,6 +549,142 @@ func TestEmitter_HeartbeatAndCloseWithoutSessionOpenUseEmptyOpenNonce(t *testing
 	}
 }
 
+func TestEmitter_ForgedHeartbeatAndCloseFieldsAreRecomputed(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash, Principal: testPrincipal, Actor: testActor})
+
+	if err := e.EmitSessionOpen(); err != nil {
+		t.Fatalf("EmitSessionOpen: %v", err)
+	}
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+		Target:    "https://api.vendor.example/pre-forge",
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	preHeartbeatReceipts := readAllReceiptsFromDir(t, dir, pub)
+	preHeartbeatTail := mustHash(t, preHeartbeatReceipts[len(preHeartbeatReceipts)-1])
+	preHeartbeatSeqHead := uint64(len(preHeartbeatReceipts)) - 1
+	openNonce := preHeartbeatReceipts[0].ActionRecord.SessionControl.Open.OpenNonce
+
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: sessionControlTransport,
+		Target:    sessionHeartbeatTarget,
+		SessionControl: &SessionControl{
+			Kind: SessionControlHeartbeat,
+			Open: &SessionOpen{
+				RunNonce: "forged-open",
+			},
+			Heartbeat: &SessionHeartbeat{
+				RunNonce:         "forged-run",
+				OpenNonce:        "forged-open",
+				Beat:             999,
+				ChainHead:        "forged-chain-head",
+				ChainSeqHead:     999,
+				HeartbeatTime:    "2099-01-01T00:00:00Z",
+				FsyncErrorsGated: 999,
+				DurabilityBlocks: 999,
+			},
+			Close: &SessionClose{
+				RootHash: "forged-close",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("forged heartbeat Emit: %v", err)
+	}
+	afterHeartbeatReceipts := readAllReceiptsFromDir(t, dir, pub)
+	heartbeat := afterHeartbeatReceipts[len(afterHeartbeatReceipts)-1].ActionRecord.SessionControl.Heartbeat
+	if heartbeat == nil {
+		t.Fatalf("tail receipt is not heartbeat: %#v", afterHeartbeatReceipts[len(afterHeartbeatReceipts)-1].ActionRecord.SessionControl)
+	}
+	if heartbeat.RunNonce != e.runNonce ||
+		heartbeat.OpenNonce != openNonce ||
+		heartbeat.Beat != 1 ||
+		heartbeat.ChainHead != preHeartbeatTail ||
+		heartbeat.ChainSeqHead != preHeartbeatSeqHead ||
+		heartbeat.FsyncErrorsGated != 0 ||
+		heartbeat.DurabilityBlocks != 0 {
+		t.Fatalf("heartbeat was not recomputed from chain state: %+v", heartbeat)
+	}
+	if heartbeat.HeartbeatTime == "2099-01-01T00:00:00Z" {
+		t.Fatalf("heartbeat_time preserved forged value")
+	}
+	hbControl := afterHeartbeatReceipts[len(afterHeartbeatReceipts)-1].ActionRecord.SessionControl
+	if hbControl.Open != nil {
+		t.Fatalf("forged Open sub-struct persisted in heartbeat receipt")
+	}
+	if hbControl.Close != nil {
+		t.Fatalf("forged Close sub-struct persisted in heartbeat receipt")
+	}
+
+	preCloseReceipts := readAllReceiptsFromDir(t, dir, pub)
+	preCloseTail := mustHash(t, preCloseReceipts[len(preCloseReceipts)-1])
+	if err := e.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: sessionControlTransport,
+		Target:    sessionCloseTarget,
+		SessionControl: &SessionControl{
+			Kind: SessionControlClose,
+			Open: &SessionOpen{
+				RunNonce: "forged-open",
+			},
+			Heartbeat: &SessionHeartbeat{
+				ChainHead: "forged-heartbeat",
+			},
+			Close: &SessionClose{
+				RunNonce:         "forged-run",
+				OpenNonce:        "forged-open",
+				FinalSeq:         999,
+				RootHash:         "forged-root",
+				ReceiptCount:     999,
+				CloseReason:      "operator_shutdown",
+				FsyncErrorsGated: 999,
+				DurabilityBlocks: 999,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("forged close Emit: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	receipts := readAllReceiptsFromDir(t, dir, pub)
+	closeRecord := receipts[len(receipts)-1].ActionRecord.SessionControl.Close
+	if closeRecord == nil {
+		t.Fatalf("tail receipt is not session_close: %#v", receipts[len(receipts)-1].ActionRecord.SessionControl)
+	}
+	if closeRecord.RunNonce != e.runNonce ||
+		closeRecord.OpenNonce != openNonce ||
+		closeRecord.FinalSeq != uint64(len(preCloseReceipts)) ||
+		closeRecord.RootHash != preCloseTail ||
+		closeRecord.ReceiptCount != uint64(len(preCloseReceipts))+1 ||
+		closeRecord.FsyncErrorsGated != 0 ||
+		closeRecord.DurabilityBlocks != 0 ||
+		closeRecord.CloseReason != "operator_shutdown" {
+		t.Fatalf("close was not recomputed from chain state: %+v", closeRecord)
+	}
+	if res := VerifyChain(receipts, hex.EncodeToString(pub)); !res.Valid {
+		t.Fatalf("VerifyChain: %s", res.Error)
+	}
+	closeControl := receipts[len(receipts)-1].ActionRecord.SessionControl
+	if closeControl.Open != nil {
+		t.Fatalf("forged Open sub-struct persisted in close receipt")
+	}
+	if closeControl.Heartbeat != nil {
+		t.Fatalf("forged Heartbeat sub-struct persisted in close receipt")
+	}
+}
+
 func readTranscriptRootFromDir(t *testing.T, dir string) TranscriptRoot {
 	t.Helper()
 	entries := readAllEntriesFromDir(t, dir)

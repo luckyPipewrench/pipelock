@@ -30,8 +30,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -48,6 +50,71 @@ type readerConn struct {
 
 func (c readerConn) Read(p []byte) (int, error) {
 	return c.Reader.Read(p)
+}
+
+type fixedBudgetEdition struct {
+	cfg    *config.Config
+	sc     *scanner.Scanner
+	budget edition.BudgetChecker
+}
+
+func (e fixedBudgetEdition) ResolveAgent(context.Context, *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity) {
+	return &edition.ResolvedAgent{
+		Name:    edition.ProfileDefault,
+		Config:  e.cfg,
+		Scanner: e.sc,
+		Budget:  e.budget,
+	}, edition.AgentIdentity{Name: edition.ProfileDefault, Profile: edition.ProfileDefault}
+}
+
+func (e fixedBudgetEdition) LookupProfile(string) (*edition.ResolvedAgent, bool) {
+	return &edition.ResolvedAgent{
+		Name:    edition.ProfileDefault,
+		Config:  e.cfg,
+		Scanner: e.sc,
+		Budget:  e.budget,
+	}, true
+}
+
+func (fixedBudgetEdition) Reload(*config.Config, *scanner.Scanner) (edition.Edition, error) {
+	return nil, nil
+}
+
+func (fixedBudgetEdition) KnownProfiles() map[string]bool {
+	return map[string]bool{edition.ProfileDefault: true}
+}
+
+func (fixedBudgetEdition) Ports() map[string]string {
+	return nil
+}
+
+func (fixedBudgetEdition) Close() {}
+
+type fixedRemainingBudget struct {
+	remaining atomic.Int64
+}
+
+func newFixedRemainingBudget(remaining int64) *fixedRemainingBudget {
+	b := &fixedRemainingBudget{}
+	b.remaining.Store(remaining)
+	return b
+}
+
+func (b *fixedRemainingBudget) CheckAdmission(string) error {
+	return nil
+}
+
+func (b *fixedRemainingBudget) RecordBytes(n int64) error {
+	b.remaining.Add(-n)
+	return nil
+}
+
+func (b *fixedRemainingBudget) RecordRequest(string, int64) error {
+	return nil
+}
+
+func (b *fixedRemainingBudget) RemainingBytes() int64 {
+	return b.remaining.Load()
 }
 
 // setupForwardProxy creates a running pipelock proxy with forward_proxy enabled
@@ -612,6 +679,41 @@ func TestForwardProxy_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T)
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="forward"} 1`)
 }
 
+func TestForwardProxy_RequireReceiptsV2FailureBlocksBeforeEgress(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	p.v2EmitterPtr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  failingProxyV2Recorder{},
+		Signer:    proxydecision.NewKeyedSigner(rph.priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (required v2 receipt failure must block before egress)", got)
+	}
+	receipts := rph.findReceipts(t)
+	requireReceiptEmissionFailedLayer(t, receipts)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
+}
+
 func TestForwardProxy_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -639,6 +741,60 @@ func TestForwardProxy_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t
 	}
 	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="forward"} 1`)
+}
+
+func TestForwardProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	p.v2EmitterPtr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  &failAfterProxyV2Recorder{allowed: 1},
+		Signer:    proxydecision.NewKeyedSigner(rph.priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+
+	testwait.For(t, 2*time.Second, func() bool {
+		for _, rcpt := range extractReceiptsFromDir(t, rph.dir) {
+			if rcpt.ActionRecord.Layer == receiptEmissionFailedLayer {
+				return true
+			}
+		}
+		return false
+	}, "forward outcome receipt failure marker")
+	receipts := rph.findReceipts(t)
+	marker := requireReceiptEmissionFailedLayer(t, receipts)
+	if !strings.Contains(marker.ActionRecord.Pattern, "outcome receipt emission failed") {
+		t.Fatalf("marker pattern = %q, want outcome receipt emission failed", marker.ActionRecord.Pattern)
+	}
+	if marker.ActionRecord.Verdict != config.ActionAllow {
+		t.Fatalf("marker verdict = %q, want %q for post-response outcome gap", marker.ActionRecord.Verdict, config.ActionAllow)
+	}
+	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsNotContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
 }
 
 func TestConnect_RequireReceiptsBlocksEmissionFailure(t *testing.T) {
@@ -962,6 +1118,55 @@ func TestForwardProxy_RequireReceiptsSuccessEmitsIntentOutcomePair(t *testing.T)
 	}
 	if !strings.Contains(receipts[1].ActionRecord.Pattern, "status=200") {
 		t.Fatalf("outcome pattern = %q, want status=200", receipts[1].ActionRecord.Pattern)
+	}
+}
+
+func TestForwardProxy_BudgetTruncatedResponseStillEmitsAllowReceipt(t *testing.T) {
+	const budgetBytes = 32
+	body := strings.Repeat("x", 128)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = false
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	p.editionPtr.Store(&editionSnapshot{fixedBudgetEdition{
+		cfg:    p.cfgPtr.Load(),
+		sc:     p.scannerPtr.Load(),
+		budget: newFixedRemainingBudget(budgetBytes),
+	}})
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(got) != budgetBytes {
+		t.Fatalf("body length = %d, want budget-truncated %d", len(got), budgetBytes)
+	}
+
+	receipts := rph.findReceipts(t)
+	var allowCount int
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Verdict == config.ActionAllow &&
+			rcpt.ActionRecord.Transport == "forward" &&
+			rcpt.ActionRecord.DecisionPhase == "" {
+			allowCount++
+		}
+	}
+	if allowCount != 1 {
+		t.Fatalf("allow receipt count = %d, want 1 after budget-truncated egress (receipts: %d)", allowCount, len(receipts))
 	}
 }
 

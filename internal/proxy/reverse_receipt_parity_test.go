@@ -855,6 +855,147 @@ func TestReverseProxy_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T)
 	}
 }
 
+func TestReverseProxy_RequireReceiptsV2FailureBlocksBeforeEgress(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	m := metrics.New()
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), m, killswitch.New(cfg), nil, nil)
+	rph := newReceiptProxyHelperWithMetrics(t, m)
+	var emPtr atomic.Pointer[receipt.Emitter]
+	emPtr.Store(rph.emitter)
+	handler.SetReceiptEmitter(&emPtr)
+	var v2Ptr atomic.Pointer[proxydecision.Emitter]
+	v2Ptr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  failingProxyV2Recorder{},
+		Signer:    proxydecision.NewKeyedSigner(rph.priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+	handler.SetV2ReceiptEmitter(&v2Ptr)
+
+	proxySrv := newIPv4Server(t, handler)
+	t.Cleanup(proxySrv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clean", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (required v2 receipt failure must block before reverse egress)", got)
+	}
+	requireReceiptEmissionFailedLayer(t, rph.findReceipts(t))
+	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="reverse"} 1`)
+}
+
+func TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+	rph := newReceiptProxyHelper(t)
+	var emPtr atomic.Pointer[receipt.Emitter]
+	emPtr.Store(rph.emitter)
+	handler.SetReceiptEmitter(&emPtr)
+	var v2Ptr atomic.Pointer[proxydecision.Emitter]
+	v2Ptr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  &failAfterProxyV2Recorder{allowed: 1},
+		Signer:    proxydecision.NewKeyedSigner(rph.priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+	handler.SetV2ReceiptEmitter(&v2Ptr)
+
+	proxySrv := newIPv4Server(t, handler)
+	t.Cleanup(proxySrv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clean", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+	marker := requireReceiptEmissionFailedLayer(t, rph.findReceipts(t))
+	if !strings.Contains(marker.ActionRecord.Pattern, "outcome receipt emission failed") {
+		t.Fatalf("marker pattern = %q, want outcome receipt emission failed", marker.ActionRecord.Pattern)
+	}
+	if marker.ActionRecord.Verdict != config.ActionAllow {
+		t.Fatalf("marker verdict = %q, want %q for post-response outcome gap", marker.ActionRecord.Verdict, config.ActionAllow)
+	}
+	assertMetricsContain(t, handler.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
+	assertMetricsNotContain(t, handler.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="reverse"} 1`)
+}
+
 func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsSingleIntentOutcomePair(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.FlightRecorder.RequireReceipts = true
@@ -902,6 +1043,55 @@ func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsSingleIntentOutc
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("body length = %d, want %d", len(got), len(body))
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=unscannable_passthrough")
+}
+
+func TestReverseProxy_BinaryUnscannablePassthroughOutcomeReason(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	mediaPolicyDisabled := false
+	cfg.MediaPolicy.Enabled = &mediaPolicyDisabled
+	cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
+	cfg.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+		Host:         "127.0.0.1",
+		Paths:        []string{"/clip.mp3"},
+		ContentTypes: []string{"audio/mpeg"},
+		Reason:       "opaque audio artifact",
+		Expires:      "2099-01-01",
+	}}
+	cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
+	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes
+
+	body := bytes.Repeat([]byte{0x42}, reverseProxyMaxBodyBytes+1)
+	proxySrv, dir, closeRec := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Disposition", "attachment; filename=clip.mp3")
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clip.mp3", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("response body close: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
 	waitForReceiptOrTimeout(t, dir)

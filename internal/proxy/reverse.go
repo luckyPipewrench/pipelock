@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -288,14 +289,15 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
-	emitV2(rp.v2EmitterPtr, opts, func(err error) {
-		if rp.logger == nil {
-			return
+	if err := emitRequiredV2(rp.v2EmitterPtr, opts, func(err error) {
+		recordV2ReceiptEmitFailure(rp.metrics)
+		logV2EmitFailure(rp.logger, opts, err)
+	}); err != nil {
+		if markerErr := rp.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock); markerErr != nil {
+			return errors.Join(err, markerErr)
 		}
-		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-			fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s transport=%s: %w",
-				opts.ActionID, opts.Verdict, opts.Transport, err))
-	})
+		return err
+	}
 	return nil
 }
 
@@ -307,7 +309,21 @@ func (rp *ReverseProxyHandler) emitOutcomeReceipt(cfg *config.Config, opts recei
 	opts.Verdict = config.ActionAllow
 	opts.Layer = receiptOutcomeLayer
 	opts.Pattern = receiptOutcomePattern(status, bytesTransferred, reason)
-	_ = rp.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	e := rp.receiptEmitter()
+	if e == nil {
+		return
+	}
+	if err := e.Emit(opts); err != nil {
+		rp.logReceiptEmissionFailure(opts, err)
+		return
+	}
+	if err := emitV2(rp.v2EmitterPtr, opts, func(err error) {
+		recordV2ReceiptEmitFailure(rp.metrics)
+		logV2EmitFailure(rp.logger, opts, err)
+	}); err != nil {
+		_ = rp.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
+	}
 }
 
 func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
@@ -324,15 +340,15 @@ func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
-	emitV2(rp.v2EmitterPtr, opts, func(err error) {
-		if rp.logger == nil {
-			return
-		}
-		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
-			fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s transport=%s: %w",
-				opts.ActionID, opts.Verdict, opts.Transport, err))
+	_ = emitV2(rp.v2EmitterPtr, opts, func(err error) {
+		recordV2ReceiptEmitFailure(rp.metrics)
+		logV2EmitFailure(rp.logger, opts, err)
 	})
 	return nil
+}
+
+func (rp *ReverseProxyHandler) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string) error {
+	return emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, rp.logReceiptEmissionFailure)
 }
 
 func (rp *ReverseProxyHandler) recordReceiptEmitterUnavailable(opts receipt.EmitOpts) error {
@@ -1461,6 +1477,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 
 	// Skip remaining binary content types (non-media application/*, etc.).
 	if isBinaryMIME(mediaCT) {
+		binaryOutcomeReason := "binary_passthrough"
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
 			limited := io.LimitReader(resp.Body, int64(reverseProxyMaxBodyBytes)+1)
 			body, err := io.ReadAll(limited)
@@ -1499,6 +1516,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 					rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
 					emitUnscannablePassthrough(reason)
+					binaryOutcomeReason = "unscannable_passthrough"
 				}
 				resp.Body = readCloserWithClose{
 					Reader: io.MultiReader(bytes.NewReader(body), resp.Body),
@@ -1512,7 +1530,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
-		recordReverseOutcome(resp.StatusCode, resp.ContentLength, "binary_passthrough")
+		recordReverseOutcome(resp.StatusCode, resp.ContentLength, binaryOutcomeReason)
 		return nil
 	}
 

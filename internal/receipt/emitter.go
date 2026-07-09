@@ -379,19 +379,9 @@ func (e *Emitter) EmitHeartbeat() error {
 		Transport: sessionControlTransport,
 		Target:    sessionHeartbeatTarget,
 	}, false, func() (*SessionControl, error) {
-		e.heartbeatBeat++
 		return &SessionControl{
-			Kind: SessionControlHeartbeat,
-			Heartbeat: &SessionHeartbeat{
-				RunNonce:         e.runNonce,
-				OpenNonce:        e.openNonce,
-				Beat:             e.heartbeatBeat,
-				ChainHead:        e.chainPrevHash,
-				ChainSeqHead:     PreviousChainSeq(e.chainSeq),
-				HeartbeatTime:    time.Now().UTC().Format(time.RFC3339Nano),
-				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
-				DurabilityBlocks: e.DurabilityBlocks(),
-			},
+			Kind:      SessionControlHeartbeat,
+			Heartbeat: &SessionHeartbeat{},
 		}, nil
 	})
 }
@@ -413,17 +403,8 @@ func (e *Emitter) EmitSessionClose(closeReason string) error {
 			return nil, nil
 		}
 		return &SessionControl{
-			Kind: SessionControlClose,
-			Close: &SessionClose{
-				RunNonce:         e.runNonce,
-				OpenNonce:        e.openNonce,
-				FinalSeq:         e.chainSeq,
-				RootHash:         e.chainPrevHash,
-				ReceiptCount:     e.chainSeq + 1,
-				CloseReason:      closeReason,
-				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
-				DurabilityBlocks: e.DurabilityBlocks(),
-			},
+			Kind:  SessionControlClose,
+			Close: &SessionClose{CloseReason: closeReason},
 		}, nil
 	})
 }
@@ -670,6 +651,41 @@ func (e *Emitter) prepareSessionControlLocked(in *SessionControl) (*SessionContr
 	chainPrevHash := e.chainPrevHash
 	if in == nil {
 		return nil, chainPrevHash, nil
+	}
+	if in.Kind == SessionControlHeartbeat {
+		e.heartbeatBeat++
+		return &SessionControl{
+			Kind: SessionControlHeartbeat,
+			Heartbeat: &SessionHeartbeat{
+				RunNonce:         e.runNonce,
+				OpenNonce:        e.openNonce,
+				Beat:             e.heartbeatBeat,
+				ChainHead:        e.chainPrevHash,
+				ChainSeqHead:     PreviousChainSeq(e.chainSeq),
+				HeartbeatTime:    time.Now().UTC().Format(time.RFC3339Nano),
+				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
+				DurabilityBlocks: e.DurabilityBlocks(),
+			},
+		}, chainPrevHash, nil
+	}
+	if in.Kind == SessionControlClose {
+		closeReason := ""
+		if in.Close != nil {
+			closeReason = in.Close.CloseReason
+		}
+		return &SessionControl{
+			Kind: SessionControlClose,
+			Close: &SessionClose{
+				RunNonce:         e.runNonce,
+				OpenNonce:        e.openNonce,
+				FinalSeq:         e.chainSeq,
+				RootHash:         e.chainPrevHash,
+				ReceiptCount:     e.chainSeq + 1,
+				CloseReason:      closeReason,
+				FsyncErrorsGated: e.recorder.FsyncErrorsGated(),
+				DurabilityBlocks: e.DurabilityBlocks(),
+			},
+		}, chainPrevHash, nil
 	}
 	if !isSessionOpenControl(in) {
 		return cloneSessionControl(in), chainPrevHash, nil

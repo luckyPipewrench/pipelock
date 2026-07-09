@@ -7,9 +7,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -22,6 +24,39 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+type failingProxyV2Recorder struct{}
+
+func (failingProxyV2Recorder) Record(recorder.Entry) error {
+	return errors.New("v2 record failed")
+}
+
+type failAfterProxyV2Recorder struct {
+	allowed int64
+	count   atomic.Int64
+}
+
+func (r *failAfterProxyV2Recorder) Record(recorder.Entry) error {
+	if r.count.Add(1) > r.allowed {
+		return errors.New("v2 record failed")
+	}
+	return nil
+}
+
+func requireReceiptEmissionFailedLayer(t *testing.T, receipts []receipt.Receipt) receipt.Receipt {
+	t.Helper()
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Layer == receiptEmissionFailedLayer {
+			return rcpt
+		}
+	}
+	var layers []string
+	for _, rcpt := range receipts {
+		layers = append(layers, rcpt.ActionRecord.Layer)
+	}
+	t.Fatalf("missing receipt layer %q in layers %v", receiptEmissionFailedLayer, layers)
+	return receipt.Receipt{}
+}
 
 // --- Unit tests for the EmitOpts -> v2 Decision derivation ---
 

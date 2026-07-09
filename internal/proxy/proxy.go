@@ -1043,11 +1043,17 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 		return err
 	}
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
-	p.emitV2Receipt(opts)
+	if err := p.emitV2Receipt(opts); err != nil {
+		p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed")
+		return err
+	}
 	return nil
 }
 
-const receiptOutcomeLayer = "outcome"
+const (
+	receiptOutcomeLayer        = "outcome"
+	receiptEmissionFailedLayer = "receipt_emission_failed"
+)
 
 func receiptOutcomePattern(status string, bytesTransferred int64, reason string) string {
 	if status == "" {
@@ -1071,7 +1077,14 @@ func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, st
 	opts.Verdict = config.ActionAllow
 	opts.Layer = receiptOutcomeLayer
 	opts.Pattern = receiptOutcomePattern(status, bytesTransferred, reason)
-	_ = p.emitReceipt(withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash()))
+	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	if err := p.emitReceipt(opts); err != nil {
+		p.recordRequiredReceiptBlock(err, opts.Transport)
+		if errors.Is(err, errV2ReceiptEmit) {
+			e := p.receiptEmitterPtr.Load()
+			p.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed")
+		}
+	}
 }
 
 func (p *Proxy) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter) error {
@@ -1085,8 +1098,36 @@ func (p *Proxy) emitReceiptWithEmitter(opts receipt.EmitOpts, e *receipt.Emitter
 		return err
 	}
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
-	p.emitV2Receipt(opts)
+	if err := p.emitV2Receipt(opts); err != nil {
+		return err
+	}
 	return nil
+}
+
+func receiptEmissionFailureMarkerOpts(opts receipt.EmitOpts, pattern string) receipt.EmitOpts {
+	marker := opts
+	marker.ActionID = receipt.NewActionID()
+	marker.ParentActionID = opts.ActionID
+	marker.Verdict = config.ActionBlock
+	marker.Layer = receiptEmissionFailedLayer
+	marker.Pattern = pattern
+	marker.Severity = config.SeverityHigh
+	marker.DecisionPhase = ""
+	marker.DeferID = ""
+	marker.ResolutionPolicy = ""
+	marker.ResolutionSource = ""
+	marker.SessionControl = nil
+	return marker
+}
+
+func (p *Proxy) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern string) {
+	if e == nil {
+		return
+	}
+	marker := receiptEmissionFailureMarkerOpts(opts, pattern)
+	if err := e.EmitDurable(marker); err != nil {
+		p.logReceiptEmissionFailure(marker, err)
+	}
 }
 
 func (p *Proxy) recordReceiptEmitterUnavailable(opts receipt.EmitOpts) error {

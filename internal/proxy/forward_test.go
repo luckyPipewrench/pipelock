@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -678,6 +679,41 @@ func TestForwardProxy_RequireReceiptsSyncFailureBlocksBeforeEgress(t *testing.T)
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="durability",transport="forward"} 1`)
 }
 
+func TestForwardProxy_RequireReceiptsV2FailureBlocksBeforeEgress(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	p.v2EmitterPtr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  failingProxyV2Recorder{},
+		Signer:    proxydecision.NewKeyedSigner(rph.priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0 (required v2 receipt failure must block before egress)", got)
+	}
+	receipts := rph.findReceipts(t)
+	requireReceiptEmissionFailedLayer(t, receipts)
+	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="forward"} 1`)
+}
+
 func TestForwardProxy_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -705,6 +741,55 @@ func TestForwardProxy_RequireReceiptsUnavailableEmitterBlocksAndRecordsMetrics(t
 	}
 	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="unavailable"} 1`)
 	assertMetricsContain(t, p.metrics, `pipelock_required_receipt_blocks_total{reason="unavailable",transport="forward"} 1`)
+}
+
+func TestForwardProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.FlightRecorder.RequireReceipts = true
+		cfg.ResponseScanning.Enabled = false
+	})
+	defer cleanup()
+	rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	p.v2EmitterPtr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  &failAfterProxyV2Recorder{allowed: 1},
+		Signer:    proxydecision.NewKeyedSigner(rph.priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+
+	resp := doGet(t, forwardHTTPClient(t, proxyAddr), upstream.URL)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+
+	testwait.For(t, 2*time.Second, func() bool {
+		for _, rcpt := range extractReceiptsFromDir(t, rph.dir) {
+			if rcpt.ActionRecord.Layer == receiptEmissionFailedLayer {
+				return true
+			}
+		}
+		return false
+	}, "forward outcome receipt failure marker")
+	receipts := rph.findReceipts(t)
+	marker := requireReceiptEmissionFailedLayer(t, receipts)
+	if !strings.Contains(marker.ActionRecord.Pattern, "outcome receipt emission failed") {
+		t.Fatalf("marker pattern = %q, want outcome receipt emission failed", marker.ActionRecord.Pattern)
+	}
 }
 
 func TestConnect_RequireReceiptsBlocksEmissionFailure(t *testing.T) {

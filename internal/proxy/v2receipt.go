@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"sync/atomic"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
+
+var errV2ReceiptEmit = errors.New("v2 proxydecision receipt emit failed")
 
 // v2 action_type labels for the proxy_decision payload. They classify the
 // action surface and are distinct from the v1 ActionRecord's semantic action
@@ -123,30 +126,33 @@ func ensureSource(sources []string, want string) []string {
 }
 
 // emitV2 loads the v2 emitter from ptr and dual-emits a proxy_decision receipt
-// for opts. Safe when the emitter is nil (no-op). v2 emission failures are
-// logged via logErr and never propagate; the v1 receipt is the authoritative
-// audit record during the expand phase, so a v2 hiccup must not affect the
-// proxy decision.
-func emitV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.EmitOpts, logErr func(error)) {
+// for opts. Safe when the emitter is nil (no-op). Callers that run in
+// best-effort mode may ignore the returned error; required-receipt callers use
+// it to fail closed after the v1 sibling has been durably recorded.
+func emitV2(ptr *atomic.Pointer[proxydecision.Emitter], opts receipt.EmitOpts, logErr func(error)) error {
 	if ptr == nil {
-		return
+		return nil
 	}
 	e := ptr.Load()
 	if e == nil {
-		return
+		return nil
 	}
 	d, ok := v2DecisionFromOpts(opts)
 	if !ok {
-		return
+		return nil
 	}
-	if err := e.Emit(d); err != nil && logErr != nil {
-		logErr(err)
+	if err := e.Emit(d); err != nil {
+		if logErr != nil {
+			logErr(err)
+		}
+		return fmt.Errorf("%w: %w", errV2ReceiptEmit, err)
 	}
+	return nil
 }
 
 // emitV2Receipt dual-emits the v2 proxy_decision for opts on the main proxy.
-func (p *Proxy) emitV2Receipt(opts receipt.EmitOpts) {
-	emitV2(&p.v2EmitterPtr, opts, func(err error) {
+func (p *Proxy) emitV2Receipt(opts receipt.EmitOpts) error {
+	return emitV2(&p.v2EmitterPtr, opts, func(err error) {
 		p.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
 			fmt.Errorf("emit v2 proxy_decision action_id=%s verdict=%s layer=%s transport=%s: %w",
 				opts.ActionID, opts.Verdict, opts.Layer, opts.Transport, err))

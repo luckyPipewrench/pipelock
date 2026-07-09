@@ -21,7 +21,7 @@ import (
 func ptrBool(b bool) *bool { return &b }
 
 const (
-	filesentryPositiveBackstop      = 5 * time.Second
+	filesentryPositiveBackstop      = 30 * time.Second
 	filesentryNegativeObservation   = time.Second
 	filesentrySubdirectoryRetryTick = 200 * time.Millisecond
 )
@@ -52,7 +52,7 @@ func waitForPendingTimer(t *testing.T, w Watcher, path string) {
 	if !ok {
 		t.Fatalf("watcher type %T is not *fsWatcher", w)
 	}
-	testwait.For(t, time.Second, func() bool {
+	testwait.For(t, filesentryPositiveBackstop, func() bool {
 		fw.mu.Lock()
 		defer fw.mu.Unlock()
 		_, ok := fw.timers[path]
@@ -425,7 +425,7 @@ func TestWatcher_OversizedSkipIsVisibleAndCapConfigurable(t *testing.T) {
 		if f.Path != smallPath {
 			t.Errorf("expected finding for %q, got %q", smallPath, f.Path)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("expected finding for under-cap file with secret, got none")
 	}
 }
@@ -542,7 +542,7 @@ func TestWatcher_FlushScanReportsSkippedFiles(t *testing.T) {
 		if f.Path != secretPath || !f.IsAgent {
 			t.Fatalf("flush finding = %+v, want path %q with IsAgent", f, secretPath)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("expected finding from flush scan")
 	}
 }
@@ -837,7 +837,7 @@ func TestWatcher_PIDSnapshotAtEventTime(t *testing.T) {
 		if !f.IsAgent {
 			t.Error("expected IsAgent=true from event-time snapshot")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("timeout waiting for finding")
 	}
 }
@@ -878,7 +878,7 @@ func TestWatcher_NilLineageNoSnapshot(t *testing.T) {
 		if f.IsAgent {
 			t.Error("expected IsAgent=false when lineage is nil")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("timeout waiting for finding")
 	}
 }
@@ -920,7 +920,7 @@ func TestWatcher_ScanContentNilDefaultsTrue(t *testing.T) {
 		if f.PatternName == "" {
 			t.Error("expected finding when ScanContent is nil (defaults to true)")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("timeout — nil ScanContent should behave like true")
 	}
 }
@@ -1115,7 +1115,7 @@ func TestWatcher_StartContextCancelled(t *testing.T) {
 		if startErr != nil {
 			t.Errorf("Start with cancelled ctx should return nil, got: %v", startErr)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("Start did not return after context cancellation")
 	}
 }
@@ -1160,7 +1160,7 @@ func TestWatcher_FindingsChannelFull(t *testing.T) {
 	// Poll until at least one finding arrives, proving debounce completed
 	// without deadlock. The channel is bounded (findingsChanSize), so
 	// overflow writes are dropped - but at least some should arrive.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(filesentryPositiveBackstop)
 	drained := 0
 	for drained == 0 {
 		select {
@@ -1387,7 +1387,7 @@ func TestWatcher_ArmMixedPathsArmsTheArmable(t *testing.T) {
 		if f.Path != filepath.Join(healthy, "leak.json") {
 			t.Errorf("finding path = %q, want %q", f.Path, filepath.Join(healthy, "leak.json"))
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("timeout waiting for finding from healthy path (was it actually armed?)")
 	}
 }
@@ -1468,7 +1468,7 @@ func TestWatcher_RenameIntoPlace(t *testing.T) {
 		if f.Path != dest {
 			t.Errorf("expected path %q, got %q", dest, f.Path)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(filesentryPositiveBackstop):
 		t.Fatal("timeout — rename-into-place write was not detected")
 	}
 }

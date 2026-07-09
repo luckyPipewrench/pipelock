@@ -356,12 +356,10 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		RequireReceipt: opts.RequireReceipt,
 	}); err != nil {
 		logReceiptEmitFailure(opts.Log, err, opts.RequireReceipts, opts.Verdict)
-		// Only a failure of the authoritative v1 action receipt under
-		// RequireReceipt escalates to a block (ErrReceiptRequired). A
-		// best-effort emit failure (require off) or a v2-only failure
-		// stays non-blocking, preserving the default warn-and-forward
-		// posture and matching the forward proxy, which fails closed on
-		// v1 emission only.
+		// RequireReceipt escalates v1 or v2 decision-receipt failures to a
+		// block (ErrReceiptRequired). A best-effort emit failure with require
+		// off stays non-blocking, preserving the default warn-and-forward
+		// posture.
 		if errors.Is(err, ErrReceiptRequired) {
 			return err
 		}

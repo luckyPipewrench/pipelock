@@ -6,6 +6,8 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,10 +20,12 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -636,6 +640,130 @@ func TestForwardScanned_StripRequireReceiptsDurabilityFailureBlocksResponse(t *t
 	}
 	if !strings.Contains(log.String(), "receipt emission failed") {
 		t.Fatalf("expected receipt failure log, got: %s", log.String())
+	}
+}
+
+func TestForwardScanned_ResponseReceiptFailureEmitsReplacementBlockReceipt(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	var out, log bytes.Buffer
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder: failingMCPV2Recorder{},
+		Signer:   proxydecision.NewKeyedSigner(priv),
+	})
+
+	tracker := NewRequestTracker()
+	tracker.Track(json.RawMessage(`42`))
+
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(injectionResponse+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		tracker,
+		MCPProxyOpts{
+			Scanner:          sc,
+			ReceiptEmitter:   emitter,
+			V2ReceiptEmitter: v2,
+			Transport:        transportMCPStdio,
+			RequireReceipts:  true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+	if !strings.Contains(out.String(), "receipt emission failed") {
+		t.Fatalf("expected fail-closed receipt error response, got: %s", out.String())
+	}
+	if !strings.Contains(log.String(), "audit_gap=true") {
+		t.Fatalf("expected v2 block receipt audit-gap log, got: %s", log.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	var originalActionID string
+	var replacement receipt.Receipt
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Layer == "mcp_response_scan" {
+			originalActionID = rcpt.ActionRecord.ActionID
+		}
+		if rcpt.ActionRecord.Verdict == config.ActionBlock &&
+			rcpt.ActionRecord.Layer == "receipt_emission_failed" &&
+			strings.Contains(rcpt.ActionRecord.Pattern, "mcp_response_scan receipt emission failed") {
+			replacement = rcpt
+		}
+	}
+	if replacement.ActionRecord.ActionID == "" {
+		t.Fatalf("missing replacement block receipt in %d receipts", len(receipts))
+	}
+	if originalActionID == "" {
+		t.Fatalf("missing original mcp_response_scan receipt in %d receipts", len(receipts))
+	}
+	if replacement.ActionRecord.ParentActionID != originalActionID {
+		t.Fatalf("replacement parent_action_id = %q, want original action_id %q", replacement.ActionRecord.ParentActionID, originalActionID)
+	}
+}
+
+func TestForwardScanned_ResponseReceiptFailureOmitsParentWhenOriginalNotDurable(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	var out, log bytes.Buffer
+	emitter, rec, dir, _ := newReceiptTestHarness(t)
+	var syncCalls atomic.Int32
+	rec.SetSyncForTest(func(*os.File) error {
+		if syncCalls.Add(1) == 1 {
+			return errors.New("injected first durable sync failure")
+		}
+		return nil
+	})
+
+	tracker := NewRequestTracker()
+	tracker.Track(json.RawMessage(`42`))
+
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(injectionResponse+"\n")),
+		transport.NewStdioWriter(&out),
+		&log,
+		tracker,
+		MCPProxyOpts{
+			Scanner:         sc,
+			ReceiptEmitter:  emitter,
+			Transport:       transportMCPStdio,
+			RequireReceipts: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if !found {
+		t.Fatal("expected injection detected")
+	}
+	if !strings.Contains(out.String(), "receipt emission failed") {
+		t.Fatalf("expected fail-closed receipt error response, got: %s", out.String())
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	receipts := readActionReceipts(t, dir)
+	var replacement receipt.Receipt
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Verdict == config.ActionBlock &&
+			rcpt.ActionRecord.Layer == "receipt_emission_failed" &&
+			strings.Contains(rcpt.ActionRecord.Pattern, "mcp_response_scan receipt emission failed") {
+			replacement = rcpt
+		}
+	}
+	if replacement.ActionRecord.ActionID == "" {
+		t.Fatalf("missing replacement block receipt in %d receipts", len(receipts))
+	}
+	if replacement.ActionRecord.ParentActionID != "" {
+		t.Fatalf("replacement parent_action_id = %q, want empty after original durable failure", replacement.ActionRecord.ParentActionID)
 	}
 }
 

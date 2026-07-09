@@ -90,10 +90,14 @@ func TestSanitizeLogAttrsNeutralizesStringValues(t *testing.T) {
 	}
 }
 
-func TestIntegrityLogAttrsSanitizesErrors(t *testing.T) {
+func TestIntegrityLogAttrsFingerprintsUserInfluencedDiagnostics(t *testing.T) {
 	mgr := &Manager{cfg: Config{ProfileDir: "profiles\n", DeviationAction: deviationActionBlock}}
 	err := fmt.Errorf("wrapping raw failure: %w", errors.New("disk\nforged=true\x1b[31m"))
-	attrs := mgr.integrityLogAttrs("failure\nclass", err, "agent_key", "evil\ragent")
+	attrs := mgr.integrityLogAttrs("failure\nclass", err,
+		"agent_key", "evil\ragent",
+		"generation", uint64(7),
+		slog.String("declared_agent_key", "declared\nagent"),
+	)
 
 	attrValues := map[string]any{}
 	for i := 0; i < len(attrs)-1; i += 2 {
@@ -103,7 +107,7 @@ func TestIntegrityLogAttrsSanitizesErrors(t *testing.T) {
 		}
 		attrValues[key] = attrs[i+1]
 	}
-	for _, key := range []string{"failure_class", "profile_dir", "error", "agent_key"} {
+	for _, key := range []string{"failure_class", "profile_dir"} {
 		got, ok := attrValues[key].(string)
 		if !ok {
 			t.Fatalf("attr %q = %#v, want sanitized string", key, attrValues[key])
@@ -111,6 +115,23 @@ func TestIntegrityLogAttrsSanitizesErrors(t *testing.T) {
 		if containsUnsafeLogRune(got) {
 			t.Fatalf("attr %q retained a log-control rune: %q", key, got)
 		}
+	}
+	for _, key := range []string{"error", "agent_key", "declared_agent_key"} {
+		if _, ok := attrValues[key]; ok {
+			t.Fatalf("attr %q must not expose raw user-influenced text: %#v", key, attrValues[key])
+		}
+	}
+	for _, key := range []string{"error_sha256", "agent_key_sha256", "declared_agent_key_sha256"} {
+		got, ok := attrValues[key].(string)
+		if !ok {
+			t.Fatalf("attr %q = %#v, want string fingerprint", key, attrValues[key])
+		}
+		if len(got) != sha256HexLength || containsUnsafeLogRune(got) {
+			t.Fatalf("attr %q is not a safe fingerprint: %q", key, got)
+		}
+	}
+	if attrValues["generation"] != uint64(7) {
+		t.Fatalf("generation attr = %#v, want 7", attrValues["generation"])
 	}
 }
 

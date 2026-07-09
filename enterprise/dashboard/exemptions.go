@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -67,6 +68,15 @@ func redactExemptionEntries(entries []ExemptionEntry) []ExemptionEntry {
 		if e.Next != "" {
 			e.Next = redactedDestination
 		}
+		// Owner and Reason can name internal systems; redact them under the
+		// metadata (non-raw) view. Keep the lifecycle status (bounded string)
+		// and expiry date visible since they carry no sensitive content.
+		if e.Owner != notTracked {
+			e.Owner = redactedDestination
+		}
+		if e.Reason != notTracked {
+			e.Reason = redactedDestination
+		}
 		if len(e.Attributes) > 0 {
 			redactedAttrs := make([]ExemptionAttribute, len(e.Attributes))
 			for j, a := range e.Attributes {
@@ -81,15 +91,24 @@ func redactExemptionEntries(entries []ExemptionEntry) []ExemptionEntry {
 
 // ExemptionEntry is one configured exemption-like knob value.
 type ExemptionEntry struct {
-	Scanner     string
-	Knob        string
-	Scope       string
-	Attributes  []ExemptionAttribute
-	State       string
-	Detail      string
-	Next        string
-	Owner       string
-	Expiry      string
+	Scanner    string
+	Knob       string
+	Scope      string
+	Attributes []ExemptionAttribute
+	State      string
+	Detail     string
+	Next       string
+	// Lifecycle fields populated by the exemption store overlay.
+	Owner     string
+	Reason    string
+	Expiry    string
+	Lifecycle string // bounded: "active" | "EXPIRED ..." | "stale ..." | "not observed" | "not tracked"
+	// LifecycleExpired / LifecycleStale drive the loud template styling without
+	// the template comparing raw status strings (which would drift if the store
+	// constants change).
+	LifecycleExpired bool
+	LifecycleStale   bool
+	// LastMatched display string (from the store or "not tracked").
 	LastMatched string
 	Suppressed  string
 
@@ -122,11 +141,22 @@ func (m *ReadModel) Exemptions() ExemptionInventory {
 		return entries[i].Scope < entries[j].Scope
 	})
 
+	// Overlay the exemption lifecycle store onto the inventory entries.
+	if m.exemptionStore != nil {
+		now := m.now()
+		overlayExemptionLifecycle(entries, m.exemptionStore, now)
+	}
+
+	trackingNote := "owner/expiry/last-matched/suppressed-count telemetry is not tracked"
+	if m.exemptionStore != nil {
+		trackingNote = "lifecycle tracked via exemption store"
+	}
+
 	inventory := ExemptionInventory{
 		ConfigLoaded:    true,
 		Entries:         entries,
 		ConfiguredCount: len(entries),
-		TrackingNote:    "owner/expiry/last-matched/suppressed-count telemetry is not tracked",
+		TrackingNote:    trackingNote,
 	}
 	for _, entry := range entries {
 		switch entry.State {
@@ -271,7 +301,9 @@ func newExemptionEntry(scanner, knob, scope, matchValue string, attributes ...Ex
 		Attributes:      compactAttributes(attributes),
 		State:           ExemptionStateActive,
 		Owner:           notTracked,
+		Reason:          notTracked,
 		Expiry:          notTracked,
+		Lifecycle:       notTracked,
 		LastMatched:     notTracked,
 		Suppressed:      notTracked,
 		semanticSubject: normalizeExemptionSemanticSubject(knob, matchValue),
@@ -327,6 +359,31 @@ func joinSemanticFindings(entries []ExemptionEntry, findings []diag.ConfigSemant
 			entries[i].State = finding.Kind
 			entries[i].Detail = finding.Detail
 			entries[i].Next = finding.Next
+		}
+	}
+}
+
+// overlayExemptionLifecycle joins lifecycle records from the store onto the
+// inventory entries. For each entry, if a record with matching Scope exists
+// in the store, its Owner, Reason, Expiry, Lifecycle status, and
+// LastMatched are populated. Entries without a matching record keep their
+// "not tracked" defaults.
+func overlayExemptionLifecycle(entries []ExemptionEntry, store *ExemptionStore, now time.Time) {
+	for i := range entries {
+		rec, ok := store.Find(entries[i].Scope, now)
+		if !ok {
+			continue
+		}
+		entries[i].Owner = rec.Owner
+		entries[i].Reason = rec.Reason
+		entries[i].Expiry = rec.Expiry.Format(time.RFC3339)
+		entries[i].Lifecycle = rec.Status(now)
+		entries[i].LifecycleExpired = entries[i].Lifecycle == lifecycleExpired
+		entries[i].LifecycleStale = entries[i].Lifecycle == lifecycleStale
+		if rec.LastMatched != nil {
+			entries[i].LastMatched = rec.LastMatched.Format(time.RFC3339)
+		} else {
+			entries[i].LastMatched = lifecycleUnobserved
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -22,12 +23,15 @@ type oracleCase struct {
 type oracleResult struct {
 	Name               string               `json:"name"`
 	Valid              bool                 `json:"valid"`
+	Observed           int                  `json:"observed"`
 	Error              string               `json:"error,omitempty"`
 	Reason             string               `json:"reason,omitempty"`
 	IntegrityVerified  bool                 `json:"integrityVerified,omitempty"`
 	ReceiptCount       uint64               `json:"receiptCount,omitempty"`
 	FinalSeq           uint64               `json:"finalSeq,omitempty"`
 	RootHash           string               `json:"rootHash,omitempty"`
+	StartTime          string               `json:"startTime,omitempty"`
+	EndTime            string               `json:"endTime,omitempty"`
 	FailureKind        string               `json:"failureKind,omitempty"`
 	BrokenAtSeq        *uint64              `json:"brokenAtSeq,omitempty"`
 	BrokenAtIndex      *int                 `json:"brokenAtIndex,omitempty"`
@@ -40,6 +44,7 @@ type oracleChainSegment struct {
 	SignerKey string `json:"signerKey"`
 	FirstSeq  uint64 `json:"firstSeq"`
 	FinalSeq  uint64 `json:"finalSeq"`
+	Count     uint64 `json:"count"`
 	Boundary  bool   `json:"boundary"`
 }
 
@@ -81,13 +86,14 @@ func runCase(tc oracleCase) (oracleResult, error) {
 			Error: "no receipts found in chain",
 		}, nil
 	}
-	return chainResult(tc.Name, receipt.VerifyChainTrusted(receipts, tc.Keys)), nil
+	return chainResult(tc.Name, receipt.VerifyChainTrusted(receipts, tc.Keys), len(receipts)), nil
 }
 
-func chainResult(name string, result receipt.ChainResult) oracleResult {
+func chainResult(name string, result receipt.ChainResult, observed int) oracleResult {
 	out := oracleResult{
 		Name:               name,
 		Valid:              result.Valid,
+		Observed:           observed,
 		Error:              result.Error,
 		Reason:             result.Error,
 		IntegrityVerified:  result.IntegrityVerified,
@@ -104,6 +110,12 @@ func chainResult(name string, result receipt.ChainResult) oracleResult {
 		out.BrokenAtSeq = &brokenAtSeq
 		out.BrokenAtIndex = &brokenAtIndex
 	}
+	if !result.StartTime.IsZero() {
+		out.StartTime = result.StartTime.Format(time.RFC3339Nano)
+	}
+	if !result.EndTime.IsZero() {
+		out.EndTime = result.EndTime.Format(time.RFC3339Nano)
+	}
 	if len(result.Segments) > 0 {
 		out.Segments = make([]oracleChainSegment, 0, len(result.Segments))
 		for _, segment := range result.Segments {
@@ -111,6 +123,7 @@ func chainResult(name string, result receipt.ChainResult) oracleResult {
 				SignerKey: segment.SignerKey,
 				FirstSeq:  segment.FirstSeq,
 				FinalSeq:  segment.FinalSeq,
+				Count:     segment.Count,
 				Boundary:  segment.Boundary,
 			})
 		}

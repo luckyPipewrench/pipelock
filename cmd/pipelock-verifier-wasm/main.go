@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"syscall/js"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -46,6 +47,7 @@ type wasmChainSegment struct {
 	SignerKey string `json:"signerKey"`
 	FirstSeq  uint64 `json:"firstSeq"`
 	FinalSeq  uint64 `json:"finalSeq"`
+	Count     uint64 `json:"count"`
 	Boundary  bool   `json:"boundary"`
 }
 
@@ -266,10 +268,10 @@ func chainResult(result receipt.ChainResult, observed int) wasmResult {
 		out.BrokenAtIndex = &brokenAtIndex
 	}
 	if !result.StartTime.IsZero() {
-		out.StartTime = result.StartTime.Format("2006-01-02T15:04:05Z")
+		out.StartTime = result.StartTime.Format(time.RFC3339Nano)
 	}
 	if !result.EndTime.IsZero() {
-		out.EndTime = result.EndTime.Format("2006-01-02T15:04:05Z")
+		out.EndTime = result.EndTime.Format(time.RFC3339Nano)
 	}
 	if len(result.Segments) > 0 {
 		out.Segments = make([]wasmChainSegment, 0, len(result.Segments))
@@ -278,6 +280,7 @@ func chainResult(result receipt.ChainResult, observed int) wasmResult {
 				SignerKey: segment.SignerKey,
 				FirstSeq:  segment.FirstSeq,
 				FinalSeq:  segment.FinalSeq,
+				Count:     segment.Count,
 				Boundary:  segment.Boundary,
 			})
 		}

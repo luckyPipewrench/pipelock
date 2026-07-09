@@ -3,7 +3,7 @@
 
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
-const { existsSync, mkdtempSync, readFileSync, rmSync } = require("node:fs");
+const { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const path = require("node:path");
 const { after, before, test } = require("node:test");
@@ -191,9 +191,18 @@ if (!isMainThread) {
   });
 
   test("all raw JSONL golden fixtures match the Go receipt verifier", async () => {
+    assertCaseListCoversTopLevelJSONLFixtures(cases, testdata);
     for (const tc of cases) {
       const result = await verifyFixture(tc.name, "uint8array");
       assertChainParity(result, oracleByName.get(tc.name), tc.name);
+      assert.deepEqual(
+        result.checks || [],
+        [
+          { name: "raw_receipts_extracted", pass: true },
+          { name: "receipt_chain_verified", pass: tc.valid },
+        ],
+        `${tc.name}: chain checks`,
+      );
       assert.equal(result.valid, tc.valid, `${tc.name}: ${result.error || "unexpected result"}`);
       if (tc.reason) {
         assert.match(result.error || "", tc.reason, tc.name);
@@ -213,6 +222,30 @@ if (!isMainThread) {
     );
     assert.equal(badKey.valid, false);
     assert.match(badKey.error || "", /at least one trusted key is required/u);
+
+    const missingKey = await verifyBytes(
+      readFileSync(path.join(testdata, "g1-valid-chain.jsonl")),
+      undefined,
+      "uint8array",
+    );
+    assert.equal(missingKey.valid, false);
+    assert.match(missingKey.error || "", /trusted keys must be/u);
+
+    const wrongTypedKey = await verifyBytes(
+      readFileSync(path.join(testdata, "g1-valid-chain.jsonl")),
+      [primaryKey, 7],
+      "uint8array",
+    );
+    assert.equal(wrongTypedKey.valid, false);
+    assert.match(wrongTypedKey.error || "", /trusted key at index 1/u);
+
+    const wrongTypedChain = await verifyBytes(
+      readFileSync(path.join(testdata, "g1-valid-chain.jsonl")),
+      primaryKey,
+      "plainobject",
+    );
+    assert.equal(wrongTypedChain.valid, false);
+    assert.match(wrongTypedChain.error || "", /chain must be/u);
   });
 
   async function verifyFixture(name, mode) {
@@ -270,6 +303,8 @@ function wasmInput(bytes, mode) {
       return Buffer.from(bytes).toString("utf8");
     case "uint8array":
       return bytes;
+    case "plainobject":
+      return { bytes: Array.from(bytes) };
     default:
       throw new Error(`unknown wasm input mode ${mode}`);
   }
@@ -317,15 +352,26 @@ function assertChainParity(actual, expected, name) {
   assert.deepEqual(comparableChainResult(actual), comparableChainResult(expected), name);
 }
 
+function assertCaseListCoversTopLevelJSONLFixtures(cases, testdata) {
+  const expected = readdirSync(testdata)
+    .filter((name) => name.endsWith(".jsonl"))
+    .sort();
+  const actual = cases.map((tc) => tc.name).sort();
+  assert.deepEqual(actual, expected, "raw JSONL fixture case list drifted");
+}
+
 function comparableChainResult(result) {
   return {
     valid: result.valid,
+    observed: result.observed || 0,
     error: result.error || "",
     reason: result.reason || "",
     integrityVerified: result.integrityVerified || false,
     receiptCount: result.receiptCount || 0,
     finalSeq: result.finalSeq || 0,
     rootHash: result.rootHash || "",
+    startTime: result.startTime || "",
+    endTime: result.endTime || "",
     failureKind: result.failureKind || "",
     brokenAtSeq: result.brokenAtSeq ?? null,
     brokenAtIndex: result.brokenAtIndex ?? null,

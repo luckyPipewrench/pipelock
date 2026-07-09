@@ -90,10 +90,16 @@ type ExpectedBundle struct {
 
 type FollowerFleetStatus struct {
 	FollowerSummary
-	RuntimeStatus  *FollowerRuntimeStatus `json:"runtime_status,omitempty"`
-	Health         FleetHealth            `json:"health"`
-	Drift          string                 `json:"drift,omitempty"`
-	ExpectedBundle ExpectedBundle         `json:"expected_bundle,omitempty"`
+	RuntimeStatus *FollowerRuntimeStatus `json:"runtime_status,omitempty"`
+	// SignedAppliedState is the cryptographically verified applied-state from the
+	// follower's signed audit-batch path, when available. It is the trustworthy
+	// source of what the follower is running; RuntimeStatus (the unsigned POST)
+	// remains for followers that predate signed applied-state. Consumers should
+	// prefer SignedAppliedState when present.
+	SignedAppliedState *VerifiedAppliedState `json:"signed_applied_state,omitempty"`
+	Health             FleetHealth           `json:"health"`
+	Drift              string                `json:"drift,omitempty"`
+	ExpectedBundle     ExpectedBundle        `json:"expected_bundle,omitempty"`
 }
 
 type PublishPreflightSummary struct {

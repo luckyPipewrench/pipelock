@@ -14,10 +14,12 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
@@ -28,12 +30,14 @@ const (
 	auditSessionMaxBytes  = 128
 )
 
-//go:embed evidence.tmpl.html exemptions.tmpl.html
+//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html
 var templateFS embed.FS
 
 var (
-	evidenceTemplate   = template.Must(template.ParseFS(templateFS, "evidence.tmpl.html"))
-	exemptionsTemplate = template.Must(template.ParseFS(templateFS, "exemptions.tmpl.html"))
+	evidenceTemplate     = template.Must(template.ParseFS(templateFS, "evidence.tmpl.html"))
+	exemptionsTemplate   = template.Must(template.ParseFS(templateFS, "exemptions.tmpl.html"))
+	agentsTemplate       = template.Must(template.ParseFS(templateFS, "agents.tmpl.html"))
+	investigatorTemplate = template.Must(template.ParseFS(templateFS, "investigator.tmpl.html"))
 )
 
 type pageData struct {
@@ -70,6 +74,8 @@ func New(opts Options) http.Handler {
 	mux.Handle("/", d.gate(http.HandlerFunc(d.handleIndex)))
 	mux.Handle("/exemptions", d.gate(http.HandlerFunc(d.handleExemptions)))
 	mux.Handle("/session/", d.gate(http.HandlerFunc(d.handleSession)))
+	mux.Handle("/agents", d.gate(http.HandlerFunc(d.handleAgents)))
+	mux.Handle("/agent/", d.gate(http.HandlerFunc(d.handleAgent)))
 	return mux
 }
 
@@ -108,7 +114,14 @@ func (d *dashboardHandler) recordAudit(r *http.Request, raw bool) {
 	}
 	session := r.URL.Query().Get("session")
 	if session == "" {
-		session = strings.TrimPrefix(r.URL.Path, "/session/")
+		// Trim to the session ID for the audit field. The investigator path is
+		// /session/<id>/receipt/<seq>, so cut at the first "/" to log <id>
+		// rather than the full sub-path.
+		rest := strings.TrimPrefix(r.URL.Path, "/session/")
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			rest = rest[:i]
+		}
+		session = rest
 	}
 	if session == "" {
 		session = "-"
@@ -197,24 +210,6 @@ func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	d.render(w, sessions, selected, rawAllowedFromContext(r))
 }
 
-func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request) {
-	if !requireGet(w, r) {
-		return
-	}
-
-	selected := strings.TrimPrefix(r.URL.Path, "/session/")
-	if selected == "" || strings.Contains(selected, "/") {
-		http.NotFound(w, r)
-		return
-	}
-	sessions, err := d.model.Sessions()
-	if err != nil {
-		http.Error(w, "could not read evidence sessions", http.StatusInternalServerError)
-		return
-	}
-	d.render(w, sessions, selected, rawAllowedFromContext(r))
-}
-
 func (d *dashboardHandler) handleExemptions(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/exemptions" {
 		http.NotFound(w, r)
@@ -249,6 +244,151 @@ func requireGet(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Allow", http.MethodGet)
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	return false
+}
+
+type agentsPageData struct {
+	Groups     []evidenceview.AgentGroup
+	Filter     FilterSpec
+	RawAllowed bool
+}
+
+type investigatorPageData struct {
+	SessionID   string
+	Seq         uint64
+	Explanation evidenceview.DecisionExplanation
+	RawAllowed  bool
+}
+
+func (d *dashboardHandler) handleAgents(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/agents" {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	filter := d.model.ResolveFilter(r)
+	groups, err := d.model.Agents(filter)
+	if err != nil {
+		http.Error(w, "could not read agent evidence", http.StatusInternalServerError)
+		return
+	}
+	data := agentsPageData{
+		Groups:     groups,
+		Filter:     filter,
+		RawAllowed: rawAllowedFromContext(r),
+	}
+	var buf bytes.Buffer
+	if err := agentsTemplate.Execute(&buf, data); err != nil {
+		http.Error(w, "could not render agents view", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (d *dashboardHandler) handleAgent(w http.ResponseWriter, r *http.Request) {
+	if !requireGet(w, r) {
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/agent/")
+	if rest == "" || strings.Contains(rest, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	agentID := rest
+	filter := d.model.ResolveFilter(r)
+	group, found, err := d.model.Agent(agentID, filter)
+	if err != nil {
+		http.Error(w, "could not read agent evidence", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	data := agentsPageData{
+		Groups:     []evidenceview.AgentGroup{group},
+		Filter:     filter,
+		RawAllowed: rawAllowedFromContext(r),
+	}
+	var buf bytes.Buffer
+	if err := agentsTemplate.Execute(&buf, data); err != nil {
+		http.Error(w, "could not render agent view", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request) {
+	if !requireGet(w, r) {
+		return
+	}
+
+	rest := strings.TrimPrefix(r.URL.Path, "/session/")
+	if rest == "" {
+		http.NotFound(w, r)
+		return
+	}
+	// Handle /session/<id>/receipt/<seq> — the investigator route.
+	if strings.Contains(rest, "/") {
+		d.handleSessionReceipt(w, r, rest)
+		return
+	}
+	selected := rest
+	sessions, err := d.model.Sessions()
+	if err != nil {
+		http.Error(w, "could not read evidence sessions", http.StatusInternalServerError)
+		return
+	}
+	d.render(w, sessions, selected, rawAllowedFromContext(r))
+}
+
+func (d *dashboardHandler) handleSessionReceipt(w http.ResponseWriter, r *http.Request, rest string) {
+	// Expected: <sessionID>/receipt/<seq>
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) != 3 || parts[1] != "receipt" || parts[0] == "" || parts[2] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	sessionID := parts[0]
+	// Reject path traversal.
+	if strings.Contains(sessionID, "..") || strings.Contains(sessionID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	seq, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	explanation, found, err := d.model.ReceiptDetail(sessionID, seq)
+	if err != nil {
+		http.Error(w, "could not read receipt detail", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	raw := rawAllowedFromContext(r)
+	if !raw {
+		explanation = evidenceview.RedactExplanation(explanation)
+	}
+	data := investigatorPageData{
+		SessionID:   sessionID,
+		Seq:         seq,
+		Explanation: explanation,
+		RawAllowed:  raw,
+	}
+	var buf bytes.Buffer
+	if err := investigatorTemplate.Execute(&buf, data); err != nil {
+		http.Error(w, "could not render investigator view", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func (d *dashboardHandler) render(w http.ResponseWriter, sessions []SessionSummary, selected string, raw bool) {

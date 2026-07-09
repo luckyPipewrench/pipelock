@@ -57,6 +57,25 @@ const (
 	MaxDropReasonBytes     = 128
 	MaxCapabilityThreshold = 7
 
+	// AuditEnvelopeSchemaVersion is the highest audit-batch envelope schema a
+	// follower in this build can emit. It is DISTINCT from the top-level
+	// SchemaVersion (control-message schema, still 1): it governs which optional
+	// audit-batch fields (e.g. AppliedState) a follower may put on the wire, and
+	// is negotiated against the conductor's advertised AuditBatch SchemaRange.
+	// v1 = original signed audit batch; v2 = adds the signed applied_state
+	// statement. A follower emits at min(this, server AuditBatch.Max) so a new
+	// follower talking to an old (v1-only) conductor omits applied_state and
+	// stays wire-identical to v1.
+	AuditEnvelopeSchemaVersion = 2
+
+	// MaxRuntimeStringBytes bounds each short applied-state / runtime-status
+	// string field (versions, bundle ids, error code). MaxApplyErrorMessageRunes
+	// bounds the free-form apply error message. Both live here so the signed
+	// applied-state validation (this package) and the unsigned runtime-status
+	// normalization (controlplane) share one source of truth for the caps.
+	MaxRuntimeStringBytes     = 256
+	MaxApplyErrorMessageRunes = 512
+
 	// DefaultStreamSwitchMaxValidity bounds a stream-switch authorization
 	// window, mirroring DefaultRollbackMaxValidity (controlplane), so a
 	// compromised operator CLI cannot mint a long-lived cross-stream retarget
@@ -99,6 +118,7 @@ var (
 	ErrInvalidIdentifier         = errors.New("invalid conductor identifier")
 	ErrSignatureVerification     = errors.New("conductor signature verification failed")
 	ErrInvalidDroppedAccounting  = errors.New("invalid conductor dropped accounting")
+	ErrInvalidAppliedState       = errors.New("invalid conductor follower applied state")
 )
 
 // allowedPolicyBundleSections is the default-deny allowlist of top-level config
@@ -345,22 +365,49 @@ type EvidenceChain struct {
 	FollowerRecorderPubHex string `json:"follower_recorder_public_key_hex"`
 }
 
+// FollowerAppliedState is the follower's signed statement of what it is
+// actually running: the active policy bundle, the last apply outcome, and the
+// binary version. It rides inside the audit-batch envelope so it is covered by
+// the follower audit-batch signature (no side channel) and verified at ingest.
+// It is OPTIONAL (a v2 addition): a nil AppliedState pointer serializes to
+// nothing, keeping a v1 batch's canonical preimage byte-identical.
+//
+// Identity is NOT repeated here: the enclosing envelope's OrgID/FleetID/
+// InstanceID are the bound, verified identity. Adding a second identity inside
+// this struct would create a spoofable divergence, so callers read the
+// follower identity from the envelope, never from applied-state.
+type FollowerAppliedState struct {
+	ActiveBundleID                 string    `json:"active_bundle_id,omitempty"`
+	ActiveBundleVersion            uint64    `json:"active_bundle_version,omitempty"`
+	ActiveBundleHash               string    `json:"active_bundle_hash,omitempty"`
+	ActiveBundleMinPipelockVersion string    `json:"active_bundle_min_pipelock_version,omitempty"`
+	PipelockVersion                string    `json:"pipelock_version,omitempty"`
+	GitCommit                      string    `json:"git_commit,omitempty"`
+	BuildDate                      string    `json:"build_date,omitempty"`
+	LastPolicyPollAt               time.Time `json:"last_policy_poll_at,omitempty"`
+	LastSuccessfulApplyAt          time.Time `json:"last_successful_apply_at,omitempty"`
+	LastApplyErrorCode             string    `json:"last_apply_error_code,omitempty"`
+	LastApplyErrorMessage          string    `json:"last_apply_error_message,omitempty"`
+	ObservedAt                     time.Time `json:"observed_at"`
+}
+
 type AuditBatchEnvelope struct {
-	SchemaVersion      int               `json:"schema_version"`
-	BatchID            string            `json:"batch_id"`
-	OrgID              string            `json:"org_id"`
-	FleetID            string            `json:"fleet_id"`
-	InstanceID         string            `json:"instance_id"`
-	AuditSchemaVersion int               `json:"audit_schema_version"`
-	EmittedAt          time.Time         `json:"emitted_at"`
-	SeqStart           uint64            `json:"seq_start"`
-	SeqEnd             uint64            `json:"seq_end"`
-	EventCount         uint64            `json:"event_count"`
-	PayloadSHA256      string            `json:"payload_sha256"`
-	PayloadBytes       uint64            `json:"payload_bytes"`
-	Dropped            DroppedAccounting `json:"dropped"`
-	Chain              EvidenceChain     `json:"chain"`
-	Signatures         []SignatureProof  `json:"signatures,omitempty"`
+	SchemaVersion      int                   `json:"schema_version"`
+	BatchID            string                `json:"batch_id"`
+	OrgID              string                `json:"org_id"`
+	FleetID            string                `json:"fleet_id"`
+	InstanceID         string                `json:"instance_id"`
+	AuditSchemaVersion int                   `json:"audit_schema_version"`
+	EmittedAt          time.Time             `json:"emitted_at"`
+	SeqStart           uint64                `json:"seq_start"`
+	SeqEnd             uint64                `json:"seq_end"`
+	EventCount         uint64                `json:"event_count"`
+	PayloadSHA256      string                `json:"payload_sha256"`
+	PayloadBytes       uint64                `json:"payload_bytes"`
+	Dropped            DroppedAccounting     `json:"dropped"`
+	Chain              EvidenceChain         `json:"chain"`
+	AppliedState       *FollowerAppliedState `json:"applied_state,omitempty"`
+	Signatures         []SignatureProof      `json:"signatures,omitempty"`
 }
 
 type SchemaRange struct {
@@ -943,6 +990,18 @@ func (a AuditBatchEnvelope) SignablePreimage() ([]byte, error) {
 	unsigned := a
 	unsigned.Signatures = nil
 	unsigned.EmittedAt = unsigned.EmittedAt.UTC()
+	// Force UTC on the applied-state timestamps too, mirroring the top-level
+	// EmittedAt normalization, so two producers in different timezones
+	// canonicalize identically. Copy the pointed-to struct first: `unsigned` is
+	// a shallow copy that still shares the AppliedState pointer, and mutating it
+	// through the pointer would rewrite the caller's applied-state.
+	if unsigned.AppliedState != nil {
+		applied := *unsigned.AppliedState
+		applied.LastPolicyPollAt = applied.LastPolicyPollAt.UTC()
+		applied.LastSuccessfulApplyAt = applied.LastSuccessfulApplyAt.UTC()
+		applied.ObservedAt = applied.ObservedAt.UTC()
+		unsigned.AppliedState = &applied
+	}
 	return canonicalPreimage(unsigned, "audit_batch")
 }
 
@@ -990,7 +1049,47 @@ func (a AuditBatchEnvelope) Validate() error {
 	if err := a.Chain.Validate(a.SeqStart, a.SeqEnd); err != nil {
 		return err
 	}
+	if a.AppliedState != nil {
+		if err := a.AppliedState.Validate(); err != nil {
+			return err
+		}
+	}
 	return validateSignatureThreshold(a.Signatures, signing.PurposeAuditBatchSigning, RequiredStandardSigners)
+}
+
+// Validate enforces the applied-state field bounds. It runs as part of
+// AuditBatchEnvelope.Validate (so it is checked at both sign time and ingest),
+// and because the whole struct is inside the signed preimage a malformed
+// applied-state fails the ENTIRE batch closed rather than being silently
+// dropped or stored unverified.
+func (s FollowerAppliedState) Validate() error {
+	if s.ObservedAt.IsZero() {
+		return fmt.Errorf("%w: observed_at", ErrMissingField)
+	}
+	for _, f := range []struct {
+		name  string
+		value string
+	}{
+		{"applied_state.active_bundle_id", s.ActiveBundleID},
+		{"applied_state.active_bundle_min_pipelock_version", s.ActiveBundleMinPipelockVersion},
+		{"applied_state.pipelock_version", s.PipelockVersion},
+		{"applied_state.git_commit", s.GitCommit},
+		{"applied_state.build_date", s.BuildDate},
+		{"applied_state.last_apply_error_code", s.LastApplyErrorCode},
+	} {
+		if err := validateAppliedStateString(f.name, f.value); err != nil {
+			return err
+		}
+	}
+	if err := validateAppliedStateMessage("applied_state.last_apply_error_message", s.LastApplyErrorMessage); err != nil {
+		return err
+	}
+	if s.ActiveBundleHash != "" {
+		if err := validateLowerHexHash("applied_state.active_bundle_hash", s.ActiveBundleHash); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ValidateForConductor extends Validate with skew enforcement against Conductor's clock.
@@ -1015,6 +1114,13 @@ func (a AuditBatchEnvelope) ValidateForConductor(now time.Time, maxSkew time.Dur
 	}
 	if delta > maxSkew {
 		return fmt.Errorf("%w: |now-emitted_at|=%s max_skew=%s", ErrSkewExceeded, delta, maxSkew)
+	}
+	if a.AppliedState != nil {
+		observedAt := a.AppliedState.ObservedAt.UTC()
+		latestAllowed := now.UTC().Add(maxSkew)
+		if observedAt.After(latestAllowed) {
+			return fmt.Errorf("%w: applied_state.observed_at=%s latest_allowed=%s", ErrSkewExceeded, observedAt.Format(time.RFC3339Nano), latestAllowed.Format(time.RFC3339Nano))
+		}
 	}
 	return nil
 }
@@ -1361,6 +1467,65 @@ func validateReason(field, reason string) error {
 	for _, r := range reason {
 		if unicode.IsControl(r) {
 			return fmt.Errorf("%w: %s contains control character U+%04X", ErrInvalidReason, field, r)
+		}
+	}
+	return nil
+}
+
+// validateAppliedStateString bounds a short applied-state field. Empty is
+// allowed (optional field); non-empty must be valid UTF-8, free of control
+// characters, and within MaxRuntimeStringBytes. Rejecting rather than
+// sanitizing is required here: the value is inside the signed preimage, so
+// silently rewriting it would break signature verification.
+func validateAppliedStateString(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > MaxRuntimeStringBytes {
+		return fmt.Errorf("%w: %s (%d bytes > cap %d)", ErrPayloadTooLarge, field, len(value), MaxRuntimeStringBytes)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: %s contains invalid utf-8", ErrInvalidAppliedState, field)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s contains control character U+%04X", ErrInvalidAppliedState, field, r)
+		}
+	}
+	return nil
+}
+
+// validateAppliedStateMessage bounds the free-form apply error message by rune
+// count (MaxApplyErrorMessageRunes), with the same control-character and UTF-8
+// rejection as validateAppliedStateString.
+func validateAppliedStateMessage(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%w: %s contains invalid utf-8", ErrInvalidAppliedState, field)
+	}
+	if n := utf8.RuneCountInString(value); n > MaxApplyErrorMessageRunes {
+		return fmt.Errorf("%w: %s (%d runes > cap %d)", ErrPayloadTooLarge, field, n, MaxApplyErrorMessageRunes)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s contains control character U+%04X", ErrInvalidAppliedState, field, r)
+		}
+	}
+	return nil
+}
+
+// validateLowerHexHash requires a canonical lowercase 64-char hex SHA-256. The
+// applied-state producer lowercases the bundle hash, so an uppercase or
+// wrong-length value signals corruption/tampering and is rejected closed.
+func validateLowerHexHash(field, value string) error {
+	if len(value) != sha256.Size*2 {
+		return fmt.Errorf("%w: %s", ErrInvalidHash, field)
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return fmt.Errorf("%w: %s", ErrInvalidHash, field)
 		}
 	}
 	return nil

@@ -173,18 +173,54 @@ func TestCapabilitiesClientRejectsMalformedResponses(t *testing.T) {
 func TestNegotiateCapabilitiesCapsAuditSchemaAtFollowerSupported(t *testing.T) {
 	// Conductor advertises a forward-compat audit envelope range that exceeds
 	// what the follower can produce. The negotiated AuditSchemaVersion must
-	// equal the local SchemaVersion constant, not the server-advertised max,
-	// otherwise the audit batcher (next PR) will emit envelopes claiming a
-	// schema version it cannot actually produce.
+	// equal the local AuditEnvelopeSchemaVersion cap, not the server-advertised
+	// max, otherwise the audit batcher would emit envelopes claiming a schema
+	// version it cannot actually produce.
 	resp := validHandshakeCapabilitiesResponse()
-	resp.AuditBatch = SchemaRange{Min: SchemaVersion, Max: SchemaVersion + 5}
+	resp.AuditBatch = SchemaRange{Min: SchemaVersion, Max: AuditEnvelopeSchemaVersion + 5}
+
+	got, err := NegotiateCapabilities(resp, LocalFollowerCapabilities{})
+	if err != nil {
+		t.Fatalf("NegotiateCapabilities() error = %v", err)
+	}
+	if got.AuditSchemaVersion != AuditEnvelopeSchemaVersion {
+		t.Fatalf("AuditSchemaVersion = %d, want %d (capped at local supported)", got.AuditSchemaVersion, AuditEnvelopeSchemaVersion)
+	}
+}
+
+// TestNegotiateCapabilitiesAuditSchemaAgainstV1Conductor pins the cross-version
+// gate: a v2-capable follower talking to an old conductor that advertises only
+// AuditBatch {1,1} negotiates audit schema 1, so it must omit the v2-only
+// applied_state field and stay wire-identical to v1.
+func TestNegotiateCapabilitiesAuditSchemaAgainstV1Conductor(t *testing.T) {
+	resp := validHandshakeCapabilitiesResponse()
+	resp.AuditBatch = SchemaRange{Min: SchemaVersion, Max: SchemaVersion}
 
 	got, err := NegotiateCapabilities(resp, LocalFollowerCapabilities{})
 	if err != nil {
 		t.Fatalf("NegotiateCapabilities() error = %v", err)
 	}
 	if got.AuditSchemaVersion != SchemaVersion {
-		t.Fatalf("AuditSchemaVersion = %d, want %d (capped at local supported)", got.AuditSchemaVersion, SchemaVersion)
+		t.Fatalf("AuditSchemaVersion = %d, want %d (v1 conductor)", got.AuditSchemaVersion, SchemaVersion)
+	}
+	if got.AuditSchemaVersion >= AuditEnvelopeSchemaVersion {
+		t.Fatalf("v1 conductor must not negotiate applied-state-capable schema (got %d)", got.AuditSchemaVersion)
+	}
+}
+
+// TestNegotiateCapabilitiesAuditSchemaAgainstV2Conductor pins the other side:
+// against a v2 conductor the follower negotiates AuditEnvelopeSchemaVersion and
+// is allowed to emit applied_state.
+func TestNegotiateCapabilitiesAuditSchemaAgainstV2Conductor(t *testing.T) {
+	resp := validHandshakeCapabilitiesResponse()
+	resp.AuditBatch = SchemaRange{Min: SchemaVersion, Max: AuditEnvelopeSchemaVersion}
+
+	got, err := NegotiateCapabilities(resp, LocalFollowerCapabilities{})
+	if err != nil {
+		t.Fatalf("NegotiateCapabilities() error = %v", err)
+	}
+	if got.AuditSchemaVersion != AuditEnvelopeSchemaVersion {
+		t.Fatalf("AuditSchemaVersion = %d, want %d (v2 conductor)", got.AuditSchemaVersion, AuditEnvelopeSchemaVersion)
 	}
 }
 

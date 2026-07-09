@@ -22,6 +22,7 @@ func (s *Server) touchConductorCoreFields() {
 		return
 	}
 	_ = s.conductorAuditQueue
+	_ = s.conductorStatusReporter
 	_ = &s.conductorApplyMu
 }
 

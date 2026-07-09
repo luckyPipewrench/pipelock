@@ -15,7 +15,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
 
-.PHONY: all build build-verifier test bench bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check \
+.PHONY: all build build-verifier test test-wasm-verifier bench bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check \
 	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check hermes-e2e test-liveproof
 
 all: build
@@ -38,6 +38,9 @@ install:
 
 test:
 	go test -race -count=1 ./...
+
+test-wasm-verifier:
+	node --test deploy/wasm-verify/chain-parity.test.js
 
 test-runtime-critical:
 	go test -race -count=1 ./internal/config ./internal/cli ./internal/mcp ./internal/proxy

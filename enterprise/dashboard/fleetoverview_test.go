@@ -169,7 +169,7 @@ func TestFleetOverview_NilSourceRendersEmptyState(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"No conductor fleet source configured", "Fleet data requires the dashboard to be wired to a conductor read source"} {
+	for _, want := range []string{"No conductor fleet source configured", "Other dashboard views do not depend on that source"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q: %s", want, body)
 		}

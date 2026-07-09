@@ -173,7 +173,7 @@
       {{if not .SourceConfigured}}
         <section class="absence">
           <h2>No conductor fleet source configured</h2>
-          <p class="muted">Fleet data requires the dashboard to be wired to a conductor read source. Evidence and exemption views still work without that source.</p>
+          <p class="muted">Fleet data requires the dashboard to be wired to a conductor read source. Other dashboard views do not depend on that source.</p>
         </section>
       {{else if not .Followers}}
         <section class="empty">No enrolled followers matched this fleet scope.</section>

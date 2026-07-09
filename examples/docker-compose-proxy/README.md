@@ -1,7 +1,7 @@
 # Docker Compose Proxy Example
 
 Runnable docker-compose walkthrough for running Pipelock as an HTTP forward proxy
-and sending traffic through it using standard `HTTP_PROXY` / `HTTPS_PROXY` env vars.
+and sending traffic through it using curl's explicit proxy flag.
 
 This example is fully local: it starts a local upstream HTTP service inside the
 compose network and configures Pipelock to allow that service via `trusted_domains`.
@@ -10,7 +10,7 @@ compose network and configures Pipelock to allow that service via `trusted_domai
 
 | Check | What it proves |
 |------|----------------|
-| Proxy env vars | `curl` routes via Pipelock using `HTTP_PROXY` |
+| Proxy routing | `curl` routes via Pipelock using `-x` |
 | Local upstream reachability | Proxy can reach `http://upstream:8080/` on the compose network |
 | DLP on URL/header | Secret-shaped payload is blocked |
 
@@ -33,7 +33,7 @@ Exit code `0` means all checks passed. The script:
 1. Builds a local `pipelock` Docker image from the repo’s `Dockerfile`
 2. Starts `docker compose` (Pipelock + upstream service)
 3. Waits for `http://127.0.0.1:${PIPELOCK_PROXY_PORT:-18088}/health`
-4. Uses `HTTP_PROXY` to fetch `http://upstream:8080/` through the proxy
+4. Uses `curl -x` to fetch `http://upstream:8080/` through the proxy
 5. Sends a runtime-generated secret-shaped value and confirms it is blocked
 
 The host port defaults to `18088` so the example does not conflict with a local
@@ -51,7 +51,7 @@ docker compose up --build
 In another terminal, route a request through the proxy:
 
 ```bash
-HTTP_PROXY="http://127.0.0.1:18088" curl -sS http://upstream:8080/
+curl -x "http://127.0.0.1:18088" -sS http://upstream:8080/
 ```
 
 ## Config Notes

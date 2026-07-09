@@ -3,7 +3,7 @@
 #
 # Starts docker-compose (local upstream + pipelock) and verifies:
 # - proxy is healthy on 127.0.0.1:${PIPELOCK_PROXY_PORT:-18088}
-# - HTTP_PROXY routes traffic through pipelock to the upstream service
+# - curl routes traffic through pipelock to the upstream service
 # - DLP blocks a runtime-generated secret-shaped string
 #
 # Usage:
@@ -84,13 +84,13 @@ else
   exit 1
 fi
 
-# -- Test 2: HTTP_PROXY routes to upstream -------------------------------------
-step "Test 2: HTTP_PROXY routes request through pipelock"
+# -- Test 2: curl proxy flag routes to upstream --------------------------------
+step "Test 2: curl proxy flag routes request through pipelock"
 OUT="$(
   curl -x "$PIPELOCK_PROXY_URL" --noproxy "" -fsS --max-time 10 "http://upstream:8080/" 2>&1
 )" && true
 if [ "$OUT" = "hello-from-upstream" ]; then
-  pass "upstream response reached via HTTP_PROXY"
+  pass "upstream response reached via proxy"
 else
   fail "unexpected upstream response via proxy"
   printf '%s\n' "$OUT" >&2

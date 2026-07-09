@@ -663,9 +663,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		if len(names) > 0 {
 			pattern = names[0]
 		}
-		if _, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+		originalActionID := receipt.NewActionID()
+		_, emitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
 			Receipt: opts.withReceiptPolicyHash(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  originalActionID,
 				Verdict:   effectiveAction,
 				Transport: opts.Transport,
 				Target:    target,
@@ -675,12 +676,33 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				Severity:  config.SeverityHigh,
 			}),
 			RequireReceipt: opts.requireReceipts() && effectiveAction != config.ActionBlock,
-		}); emitErr != nil {
+		})
+		originalReceiptPersisted := emitErr != nil && errors.Is(emitErr, errMCPV2ReceiptEmit)
+		if emitErr != nil {
 			logReceiptEmitFailure(logW, emitErr, opts.requireReceipts(), effectiveAction)
 			if opts.requireReceipts() && effectiveAction != config.ActionBlock {
 				outbound = blockResponseReason(verdict.ID, "receipt emission failed")
 				effectiveAction = config.ActionBlock
 				writeContext = "writing block response"
+				replacementOpts := opts.withReceiptPolicyHash(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Transport: opts.Transport,
+					Target:    target,
+					RequestID: requestID,
+					Layer:     "receipt_emission_failed",
+					Pattern:   "mcp_response_scan receipt emission failed",
+					Severity:  config.SeverityHigh,
+				})
+				if originalReceiptPersisted {
+					replacementOpts.ParentActionID = originalActionID
+				}
+				if _, blockEmitErr := EmitMCPDecision(receiptEmitter, v2ReceiptEmitter, nil, MCPDecision{
+					Receipt:        replacementOpts,
+					RequireReceipt: true,
+				}); blockEmitErr != nil {
+					logReceiptEmitFailure(logW, blockEmitErr, true, config.ActionBlock)
+				}
 			}
 		}
 		if err := writer.WriteMessage(outbound); err != nil {

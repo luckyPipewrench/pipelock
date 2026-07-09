@@ -7,9 +7,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -22,6 +25,39 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+type failingProxyV2Recorder struct{}
+
+func (failingProxyV2Recorder) Record(recorder.Entry) error {
+	return errors.New("v2 record failed")
+}
+
+type failAfterProxyV2Recorder struct {
+	allowed int64
+	count   atomic.Int64
+}
+
+func (r *failAfterProxyV2Recorder) Record(recorder.Entry) error {
+	if r.count.Add(1) > r.allowed {
+		return errors.New("v2 record failed")
+	}
+	return nil
+}
+
+func requireReceiptEmissionFailedLayer(t *testing.T, receipts []receipt.Receipt) receipt.Receipt {
+	t.Helper()
+	for _, rcpt := range receipts {
+		if rcpt.ActionRecord.Layer == receiptEmissionFailedLayer {
+			return rcpt
+		}
+	}
+	var layers []string
+	for _, rcpt := range receipts {
+		layers = append(layers, rcpt.ActionRecord.Layer)
+	}
+	t.Fatalf("missing receipt layer %q in layers %v", receiptEmissionFailedLayer, layers)
+	return receipt.Receipt{}
+}
 
 // --- Unit tests for the EmitOpts -> v2 Decision derivation ---
 
@@ -357,6 +393,65 @@ func TestDualEmit_DisabledWhenNoV2Emitter(t *testing.T) {
 			t.Error("v2 proxy_decision emitted despite no v2 emitter configured")
 		}
 	}
+}
+
+func TestEmitRequiredV2_DerivationFailureSurfaces(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  failingProxyV2Recorder{},
+		Signer:    proxydecision.NewKeyedSigner(priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	})
+	var ptr atomic.Pointer[proxydecision.Emitter]
+	ptr.Store(v2)
+	logged := false
+
+	err = emitRequiredV2(&ptr, receipt.EmitOpts{
+		ActionID:  "required-missing-target",
+		Transport: TransportFetch,
+		Verdict:   config.ActionAllow,
+		// Target intentionally empty: v1 currently rejects this too, but the
+		// required v2 helper must be self-defending if that coupling changes.
+	}, func(error) { logged = true })
+	if !errors.Is(err, errV2ReceiptEmit) {
+		t.Fatalf("emitRequiredV2 error = %v, want errV2ReceiptEmit", err)
+	}
+	if !strings.Contains(err.Error(), "could not derive v2 decision") {
+		t.Fatalf("emitRequiredV2 error = %v, want derivation failure detail", err)
+	}
+	if !logged {
+		t.Fatal("required v2 derivation failure was not logged")
+	}
+}
+
+func TestEmitReceipt_OptionalV2FailureDoesNotPropagate(t *testing.T) {
+	f := newDualEmitFixture(t, false)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	f.p.v2EmitterPtr.Store(proxydecision.NewEmitter(proxydecision.EmitterConfig{
+		Recorder:  failingProxyV2Recorder{},
+		Signer:    proxydecision.NewKeyedSigner(priv),
+		Principal: "local",
+		Actor:     "pipelock",
+	}))
+
+	if err := f.p.emitReceipt(receipt.EmitOpts{
+		ActionID:  "optional-v2-failure",
+		Transport: TransportForward,
+		Method:    http.MethodGet,
+		Target:    "https://x.example/a",
+		Verdict:   config.ActionAllow,
+		RequestID: "r1",
+	}); err != nil {
+		t.Fatalf("optional emitReceipt returned v2 error = %v, want nil", err)
+	}
+	assertMetricsContain(t, f.p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 }
 
 // TestDualEmit_HotReloadPreservesV2Chain proves the v2 proxy_decision chain

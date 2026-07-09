@@ -293,7 +293,9 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 		recordV2ReceiptEmitFailure(rp.metrics)
 		logV2EmitFailure(rp.logger, opts, err)
 	}); err != nil {
-		rp.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)
+		if markerErr := rp.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock); markerErr != nil {
+			return errors.Join(err, markerErr)
+		}
 		return err
 	}
 	return nil
@@ -311,7 +313,7 @@ func (rp *ReverseProxyHandler) emitOutcomeReceipt(cfg *config.Config, opts recei
 	if err := rp.emitReceipt(opts); err != nil {
 		if errors.Is(err, errV2ReceiptEmit) {
 			e := rp.receiptEmitter()
-			rp.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
+			_ = rp.emitReceiptFailureMarker(e, opts, "outcome receipt emission failed", config.ActionAllow)
 		}
 	}
 }
@@ -339,8 +341,8 @@ func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *
 	return nil
 }
 
-func (rp *ReverseProxyHandler) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string) {
-	_ = emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, rp.logReceiptEmissionFailure)
+func (rp *ReverseProxyHandler) emitReceiptFailureMarker(e *receipt.Emitter, opts receipt.EmitOpts, pattern, verdict string) error {
+	return emitReceiptFailureMarkerWithLogger(e, opts, pattern, verdict, rp.logReceiptEmissionFailure)
 }
 
 func (rp *ReverseProxyHandler) recordReceiptEmitterUnavailable(opts receipt.EmitOpts) error {

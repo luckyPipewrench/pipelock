@@ -1044,7 +1044,9 @@ func (p *Proxy) emitRequiredReceiptWithEmitter(opts receipt.EmitOpts, e *receipt
 	}
 	// Dual-emit the v2 proxy_decision receipt (expand phase; v1 stays live).
 	if err := p.emitV2Receipt(opts); err != nil {
-		_ = p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock)
+		if markerErr := p.emitReceiptFailureMarker(e, opts, "proxydecision receipt emission failed", config.ActionBlock); markerErr != nil {
+			return errors.Join(err, markerErr)
+		}
 		return err
 	}
 	return nil

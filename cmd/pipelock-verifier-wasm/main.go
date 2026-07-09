@@ -157,6 +157,21 @@ func bytesValue(v js.Value, label string, stringFn func(string) ([]byte, error))
 	}
 }
 
+// tryDecodeBase64 attempts standard then raw (unpadded) base64 decoding of an
+// already-whitespace-compacted string. Shared by the bundle and chain string
+// paths so the two decode attempts cannot drift; only the non-base64 fallback
+// differs between callers (bundle compacts whitespace, chain preserves it for
+// JSONL parsing).
+func tryDecodeBase64(compact string) ([]byte, bool) {
+	if decoded, err := base64.StdEncoding.DecodeString(compact); err == nil {
+		return decoded, true
+	}
+	if decoded, err := base64.RawStdEncoding.DecodeString(compact); err == nil {
+		return decoded, true
+	}
+	return nil, false
+}
+
 func stringBundleBytes(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, ','); strings.HasPrefix(s, "data:") && i >= 0 {
@@ -166,10 +181,7 @@ func stringBundleBytes(s string) ([]byte, error) {
 	if s == "" {
 		return nil, fmt.Errorf("bundle string is empty")
 	}
-	if decoded, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return decoded, nil
-	}
-	if decoded, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+	if decoded, ok := tryDecodeBase64(s); ok {
 		return decoded, nil
 	}
 	return []byte(s), nil
@@ -183,11 +195,7 @@ func stringChainBytes(s string) ([]byte, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("chain string is empty")
 	}
-	compact := compactASCIIWhitespace(raw)
-	if decoded, err := base64.StdEncoding.DecodeString(compact); err == nil {
-		return decoded, nil
-	}
-	if decoded, err := base64.RawStdEncoding.DecodeString(compact); err == nil {
+	if decoded, ok := tryDecodeBase64(compactASCIIWhitespace(raw)); ok {
 		return decoded, nil
 	}
 	return []byte(raw), nil

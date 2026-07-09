@@ -86,14 +86,16 @@ func TestGroupByAgent(t *testing.T) {
 		}
 	})
 
-	t.Run("rollup counts broken, unverified, and externally anchored", func(t *testing.T) {
+	t.Run("rollup counts broken, unverified, limited, and externally anchored", func(t *testing.T) {
 		// Exercise the counters the happy-path case above does not:
-		// ChainsBroken (U=Fail), Unverified (A=Warn), AnchoredExternal (N=Verify).
+		// ChainsBroken (U=Fail), ChainsIntact for read-limited chains
+		// (U=Limited), Unverified (A=Warn), AnchoredExternal (N=Verify).
 		summaries := []SessionSummary{
 			{ID: "s1", Agent: "agent-x", ReceiptsEnabled: true, Pips: []SummaryPip{
-				{State: StateWarn, Label: "A"},   // Unverified
-				{State: StateFail, Label: "U"},   // ChainsBroken
-				{State: StateVerify, Label: "N"}, // AnchoredExternal
+				{State: StateWarn, Label: "A"},    // Unverified
+				{State: StateFail, Label: "U"},    // ChainsBroken
+				{State: StateLimited, Label: "U"}, // ChainsIntact
+				{State: StateVerify, Label: "N"},  // AnchoredExternal
 				{State: StateLimited, Label: "C"},
 			}},
 		}
@@ -107,7 +109,10 @@ func TestGroupByAgent(t *testing.T) {
 		if r.AnchoredExternal != 1 {
 			t.Errorf("AnchoredExternal = %d, want 1", r.AnchoredExternal)
 		}
-		if r.ChainsIntact != 0 || r.TrustedKeyPresent != 0 || r.NotAnchored != 0 || r.NotReported != 0 {
+		if r.ChainsIntact != 1 {
+			t.Errorf("ChainsIntact = %d, want 1", r.ChainsIntact)
+		}
+		if r.TrustedKeyPresent != 0 || r.NotAnchored != 0 || r.NotReported != 0 {
 			t.Errorf("unexpected non-zero counter: %+v", r)
 		}
 	})

@@ -255,8 +255,12 @@ func TestViewCmd_NonexistentSession_Errors(t *testing.T) {
 		"--session", "does-not-exist",
 		"--trusted-signer", "inline=" + keyHex,
 	})
-	if err := cmd.Execute(); err == nil {
+	err := cmd.Execute()
+	if err == nil {
 		t.Fatal("view --session <nonexistent> must error, not render empty evidence")
+	}
+	if !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("error should mention session ID, got: %v", err)
 	}
 }
 

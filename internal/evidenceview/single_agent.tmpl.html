@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem; color: #1a1a2e; background: #fafafa; }
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.2rem; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+.meta { color: #555; font-size: 0.85rem; margin-bottom: 1.5rem; }
+.scorecard { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+.line { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; background: #fff; }
+.line .chip { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.8rem; font-weight: 600; }
+.chip-verify { background: #d4edda; color: #155724; }
+.chip-warn { background: #fff3cd; color: #856404; }
+.chip-fail { background: #f8d7da; color: #721c24; }
+.chip-limited { background: #e2e3e5; color: #383d41; }
+.line .detail { margin-top: 0.5rem; font-size: 0.9rem; }
+.line .sub { margin-top: 0.3rem; font-size: 0.8rem; color: #666; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; font-size: 0.85rem; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #eee; }
+th { background: #f0f0f0; font-weight: 600; }
+tr.unverifiable { background: #fff5f5; }
+.explanation { border: 1px solid #e0e0e0; border-radius: 6px; padding: 1rem; margin-bottom: 1rem; background: #fff; }
+.explanation h3 { margin-top: 0; font-size: 1rem; }
+.field { margin: 0.3rem 0; font-size: 0.85rem; }
+.field .label { font-weight: 600; color: #444; }
+.field .absent { color: #999; font-style: italic; }
+</style>
+</head>
+<body>
+<h1>{{.Title}}</h1>
+<div class="meta">
+  Agent: {{.Evidence.Agent}} |
+  Session: {{.Evidence.ID}} |
+  Receipts: {{.Evidence.ReceiptCount}} |
+  Generated: {{.GeneratedAt}}
+</div>
+
+<h2>Evidence Scorecard</h2>
+<p style="font-size:0.85rem;color:#666;">Each line is independently evaluated. There is no aggregate status.</p>
+<div class="scorecard">
+  {{with .Evidence.Scorecard.Authentic}}
+  <div class="line">
+    <span class="chip chip-{{.State}}">{{.Chip}}</span>
+    <strong>Authentic</strong>
+    <div class="detail">{{.Detail}}</div>
+    <div class="sub">{{.Sub}}</div>
+  </div>
+  {{end}}
+  {{with .Evidence.Scorecard.Untampered}}
+  <div class="line">
+    <span class="chip chip-{{.State}}">{{.Chip}}</span>
+    <strong>Untampered</strong>
+    <div class="detail">{{.Detail}}</div>
+    <div class="sub">{{.Sub}}</div>
+  </div>
+  {{end}}
+  {{with .Evidence.Scorecard.Anchored}}
+  <div class="line">
+    <span class="chip chip-{{.State}}">{{.Chip}}</span>
+    <strong>Anchored</strong>
+    <div class="detail">{{.Detail}}</div>
+    <div class="sub">{{.Sub}}</div>
+  </div>
+  {{end}}
+  {{with .Evidence.Scorecard.Completeness}}
+  <div class="line">
+    <span class="chip chip-{{.State}}">{{.Chip}}</span>
+    <strong>Completeness</strong>
+    <div class="detail">{{.Detail}}</div>
+    <div class="sub">{{.Sub}}</div>
+  </div>
+  {{end}}
+</div>
+
+{{if .Evidence.ReceiptsEnabled}}
+<h2>Timeline ({{len .Evidence.Timeline}} entries{{if .Evidence.TimelineLimited}}, {{.Evidence.TimelineWindow}} window{{end}})</h2>
+<table>
+<thead><tr><th>Seq</th><th>Time</th><th>Verdict</th><th>Reason</th><th>Prev</th><th>Hash</th></tr></thead>
+<tbody>
+{{range .Evidence.Timeline}}
+<tr{{if .Unverifiable}} class="unverifiable"{{end}}>
+  <td>{{.Seq}}</td>
+  <td>{{.Time.Format "15:04:05"}}</td>
+  <td>{{.Verdict}}</td>
+  <td>{{.Reason}}</td>
+  <td><code>{{.PrevShort}}</code></td>
+  <td><code>{{.HashShort}}</code></td>
+</tr>
+{{end}}
+</tbody>
+</table>
+
+{{if .Explanations}}
+<h2>Decision Detail</h2>
+{{range .Explanations}}
+<div class="explanation">
+  <h3>Seq {{.ChainSeq.Detail}} — {{.Verdict.Detail}}</h3>
+  {{range $f := .Fields}}
+  <div class="field">
+    <span class="label">{{$f.Label}}:</span>
+    {{if $f.Present}}<span>{{$f.Detail}}</span>{{else}}<span class="absent">{{$f.Detail}}</span>{{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+{{end}}
+</body>
+</html>

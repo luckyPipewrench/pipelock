@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	clienvelope "github.com/luckyPipewrench/pipelock/internal/cli/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/cli/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
 	"github.com/luckyPipewrench/pipelock/internal/cli/hermes"
@@ -94,6 +95,8 @@ Quick start:
 		contain.Cmd(),
 		// Mediation envelope trust management
 		clienvelope.Cmd(),
+		// Evidence viewer (Free, single-agent)
+		evidence.Cmd(),
 		// Diagnostics
 		diag.DoctorCmd(),
 		diag.DiagnoseCmd(),

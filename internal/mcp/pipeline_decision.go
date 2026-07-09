@@ -16,6 +16,8 @@ import (
 
 var ErrReceiptRequired = errors.New("receipt required but not emitted")
 
+var errMCPV2ReceiptEmit = errors.New("mcp v2 proxydecision receipt emit failed")
+
 // MCPDecision bundles the per-decision state a gate in the inbound
 // MCP pipeline needs to emit. Today each gate calls
 // receiptEmitter.Emit(...) and (for allow/warn tool calls) the
@@ -97,6 +99,15 @@ func EmitMCPDecision(
 
 	v1Emitted := false
 	receiptRequired := d.RequireReceipt
+	escalateReceiptError := func() (bool, error) {
+		if !receiptRequired || err == nil {
+			return false, nil
+		}
+		if !errors.Is(err, ErrReceiptRequired) {
+			err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)
+		}
+		return true, err
+	}
 	// A forwardable verdict is one whose request or response actually egresses to
 	// its peer: allow, warn, and forward carry a request upstream, and strip
 	// writes the redacted response back to the client. redirect goes to an
@@ -139,18 +150,16 @@ func EmitMCPDecision(
 		// RequireReceipt gate below upgrades errors to fail-closed before
 		// envelope mutation.
 	}
-	if receiptRequired && err != nil && !errors.Is(err, ErrReceiptRequired) {
-		err = fmt.Errorf("%w: %w", ErrReceiptRequired, err)
-	}
-	if receiptRequired && err != nil {
-		return outbound, err
+	if done, escalateErr := escalateReceiptError(); done {
+		return outbound, escalateErr
 	}
 	if v1Emitted && v2Emitter != nil {
-		if v2Decision, ok := mcpV2DecisionFromReceipt(d.Receipt); ok {
-			if v2Err := v2Emitter.Emit(v2Decision); v2Err != nil && err == nil {
-				err = v2Err
-			}
+		if v2Err := emitMCPV2Decision(v2Emitter, d.Receipt, receiptRequired); v2Err != nil && err == nil {
+			err = v2Err
 		}
+	}
+	if done, escalateErr := escalateReceiptError(); done {
+		return outbound, escalateErr
 	}
 
 	if envelopeEmitter != nil && d.Envelope != nil && d.InboundMsg != nil {
@@ -162,6 +171,24 @@ func EmitMCPDecision(
 	}
 
 	return outbound, err
+}
+
+func emitMCPV2Decision(v2Emitter *proxydecision.Emitter, opts receipt.EmitOpts, required bool) error {
+	if v2Emitter == nil {
+		return nil
+	}
+	v2Decision, ok := mcpV2DecisionFromReceipt(opts)
+	if !ok {
+		if required {
+			return fmt.Errorf("%w: could not derive v2 decision action_id=%s transport=%s target=%q",
+				errMCPV2ReceiptEmit, opts.ActionID, opts.Transport, opts.Target)
+		}
+		return nil
+	}
+	if err := v2Emitter.Emit(v2Decision); err != nil {
+		return fmt.Errorf("%w: %w", errMCPV2ReceiptEmit, err)
+	}
+	return nil
 }
 
 func emitMCPOutcomeReceipt(

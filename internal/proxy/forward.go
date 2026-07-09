@@ -1697,6 +1697,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			emitForwardReceipt(forwardAllowReceipt)
 		}
 	}
+	responseBudgetTruncated := false
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
@@ -2436,10 +2437,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if budgetRemaining >= 0 && written >= budgetRemaining {
 			reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
 			p.logger.LogAnomaly(actx, "budget_truncated", reason, 0)
-			outcomeStatus = strconv.Itoa(resp.StatusCode)
-			outcomeBytes = written
-			outcomeReason = "budget_truncated"
-			return
+			responseBudgetTruncated = true
 		}
 
 		duration := time.Since(start)
@@ -2449,6 +2447,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		outcomeStatus = strconv.Itoa(resp.StatusCode)
 		outcomeBytes = written
 		outcomeReason = "complete"
+		if responseBudgetTruncated {
+			outcomeReason = "budget_truncated"
+		}
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
@@ -2476,10 +2477,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if budgetRemaining >= 0 && written >= budgetRemaining {
 		reason := fmt.Sprintf("response truncated at byte budget: %d bytes written", written)
 		p.logger.LogAnomaly(actx, "budget_truncated", reason, 0)
-		outcomeStatus = strconv.Itoa(resp.StatusCode)
-		outcomeBytes = written
-		outcomeReason = "budget_truncated"
-		return
+		responseBudgetTruncated = true
 	}
 
 	duration := time.Since(start)
@@ -2489,6 +2487,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outcomeStatus = strconv.Itoa(resp.StatusCode)
 	outcomeBytes = written
 	outcomeReason = "complete"
+	if responseBudgetTruncated {
+		outcomeReason = "budget_truncated"
+	}
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		recordCleanForAdaptiveScope(forwardRec, adaptiveScopeForHost(r.URL.Hostname()), cfg.AdaptiveEnforcement.DecayPerCleanRequest)
 	}

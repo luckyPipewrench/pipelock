@@ -15,7 +15,10 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
@@ -33,6 +36,11 @@ type conductorPolicyStatusReporter struct {
 	cfg      config.Conductor
 	identity conductorEnrollmentMarker
 	cache    *applycache.Cache
+	// latest holds the most recent StatusEvent so the audit producer's
+	// applied-state provider (invoked asynchronously off recorder-entry
+	// observation) can read the same poll/apply outcome the unsigned status POST
+	// reports, without coupling the producer to the poller.
+	latest atomic.Pointer[policysync.StatusEvent]
 }
 
 func newConductorPolicyStatusReporter(cfg *config.Config, client policysync.HTTPDoer, cache *applycache.Cache) (*conductorPolicyStatusReporter, error) {
@@ -87,6 +95,11 @@ func (r *conductorPolicyStatusReporter) ReportPolicyStatus(ctx context.Context, 
 	if r == nil {
 		return nil
 	}
+	// Publish the latest poll outcome for the signed applied-state provider
+	// before doing the (potentially slow) unsigned POST, so the two views track
+	// the same event.
+	evCopy := ev
+	r.latest.Store(&evCopy)
 	status := r.status(ev)
 	body, err := json.Marshal(struct {
 		Status controlplane.FollowerRuntimeStatus `json:"status"`
@@ -113,45 +126,115 @@ func (r *conductorPolicyStatusReporter) ReportPolicyStatus(ctx context.Context, 
 }
 
 func (r *conductorPolicyStatusReporter) status(ev policysync.StatusEvent) controlplane.FollowerRuntimeStatus {
+	applied := r.buildAppliedState(ev)
+	return controlplane.FollowerRuntimeStatus{
+		OrgID:                          r.cfg.OrgID,
+		FleetID:                        r.cfg.FleetID,
+		InstanceID:                     r.cfg.InstanceID,
+		Environment:                    r.identity.Environment,
+		PipelockVersion:                applied.PipelockVersion,
+		GitCommit:                      applied.GitCommit,
+		BuildDate:                      applied.BuildDate,
+		SchemaVersion:                  conductor.SchemaVersion,
+		ActiveBundleID:                 applied.ActiveBundleID,
+		ActiveBundleVersion:            applied.ActiveBundleVersion,
+		ActiveBundleHash:               applied.ActiveBundleHash,
+		ActiveBundleMinPipelockVersion: applied.ActiveBundleMinPipelockVersion,
+		LastPolicyPollAt:               applied.LastPolicyPollAt,
+		LastSuccessfulApplyAt:          applied.LastSuccessfulApplyAt,
+		LastApplyErrorCode:             applied.LastApplyErrorCode,
+		LastApplyErrorMessage:          applied.LastApplyErrorMessage,
+		LastSeenAt:                     applied.ObservedAt,
+	}
+}
+
+// buildAppliedState is the SINGLE derivation of what this follower is running,
+// shared by the unsigned runtime-status POST and the signed audit-batch
+// applied-state so the two views never drift. It reads the same source the
+// status POST always used (applycache.Cache.Active + the poll StatusEvent) and
+// produces already-sanitized, bounds-satisfying values so conductor-side
+// FollowerAppliedState.Validate never fails a legitimate batch closed.
+func (r *conductorPolicyStatusReporter) buildAppliedState(ev policysync.StatusEvent) conductor.FollowerAppliedState {
 	pollAt := ev.PollAt
 	if pollAt.IsZero() {
 		pollAt = time.Now().UTC()
 	}
-	status := controlplane.FollowerRuntimeStatus{
-		OrgID:            r.cfg.OrgID,
-		FleetID:          r.cfg.FleetID,
-		InstanceID:       r.cfg.InstanceID,
-		Environment:      r.identity.Environment,
-		PipelockVersion:  cliutil.Version,
-		GitCommit:        cliutil.GitCommit,
-		BuildDate:        cliutil.BuildDate,
-		SchemaVersion:    conductor.SchemaVersion,
+	applied := conductor.FollowerAppliedState{
+		PipelockVersion:  boundAppliedStateString(cliutil.Version),
+		GitCommit:        boundAppliedStateString(cliutil.GitCommit),
+		BuildDate:        boundAppliedStateString(cliutil.BuildDate),
 		LastPolicyPollAt: pollAt.UTC(),
-		LastSeenAt:       pollAt.UTC(),
+		ObservedAt:       pollAt.UTC(),
 	}
 	if ev.ApplyError != nil {
-		status.LastApplyErrorCode = applyErrorCode(ev.ApplyError)
-		status.LastApplyErrorMessage = ev.ApplyError.Error()
+		applied.LastApplyErrorCode = boundAppliedStateString(applyErrorCode(ev.ApplyError))
+		applied.LastApplyErrorMessage = sanitizeAppliedStateMessage(ev.ApplyError.Error())
 	}
 	if ev.AppliedBundle != nil {
-		status.LastSuccessfulApplyAt = pollAt.UTC()
+		applied.LastSuccessfulApplyAt = pollAt.UTC()
 	}
-	r.fillActiveBundle(&status)
-	return status
+	if r.cache != nil {
+		if active, err := r.cache.Active(); err == nil {
+			applied.ActiveBundleID = boundAppliedStateString(active.Bundle.BundleID)
+			applied.ActiveBundleVersion = active.Bundle.Version
+			applied.ActiveBundleHash = strings.ToLower(active.BundleHash)
+			applied.ActiveBundleMinPipelockVersion = boundAppliedStateString(active.Bundle.MinPipelockVersion)
+		}
+	}
+	return applied
 }
 
-func (r *conductorPolicyStatusReporter) fillActiveBundle(status *controlplane.FollowerRuntimeStatus) {
-	if r.cache == nil || status == nil {
-		return
+// appliedStateProvider returns the callback the audit producer calls to attach
+// applied-state to a signed batch. It reads the latest observed poll outcome
+// (or a zero event, before the first poll) and derives applied-state from the
+// live cache. It always reports ok=true: even with no active bundle yet the
+// version/timestamps are worth signing, and ObservedAt is always set.
+func (r *conductorPolicyStatusReporter) appliedStateProvider() func() (conductor.FollowerAppliedState, bool) {
+	if r == nil {
+		return nil
 	}
-	active, err := r.cache.Active()
-	if err != nil {
-		return
+	return func() (conductor.FollowerAppliedState, bool) {
+		var ev policysync.StatusEvent
+		if latest := r.latest.Load(); latest != nil {
+			ev = *latest
+		}
+		return r.buildAppliedState(ev), true
 	}
-	status.ActiveBundleID = active.Bundle.BundleID
-	status.ActiveBundleVersion = active.Bundle.Version
-	status.ActiveBundleHash = active.BundleHash
-	status.ActiveBundleMinPipelockVersion = active.Bundle.MinPipelockVersion
+}
+
+// boundAppliedStateString truncates a short applied-state field to the shared
+// byte cap so a pathological build string can never fail the whole batch. It is
+// the producer-side complement to conductor.validateAppliedStateString (the
+// ingest-side backstop). Truncation is byte-safe: it trims back to a rune
+// boundary so it never emits invalid UTF-8.
+func boundAppliedStateString(s string) string {
+	if len(s) <= conductor.MaxRuntimeStringBytes {
+		return s
+	}
+	cut := conductor.MaxRuntimeStringBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// sanitizeAppliedStateMessage strips control characters and bounds the free-form
+// apply error message to the shared rune cap, so it always satisfies
+// conductor.FollowerAppliedState.Validate without dropping the batch over a
+// cosmetic error string.
+func sanitizeAppliedStateMessage(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == utf8.RuneError || unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) <= conductor.MaxApplyErrorMessageRunes {
+		return s
+	}
+	runes := []rune(s)
+	return strings.TrimSpace(string(runes[:conductor.MaxApplyErrorMessageRunes]))
 }
 
 func applyErrorCode(err error) string {

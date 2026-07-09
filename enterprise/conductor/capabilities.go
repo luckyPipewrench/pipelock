@@ -142,13 +142,16 @@ func NegotiateCapabilities(c CapabilitiesResponse, local LocalFollowerCapabiliti
 	if local.MaxCreatedSkew < createdSkew {
 		createdSkew = local.MaxCreatedSkew
 	}
-	// Audit envelope schema must be the highest version the FOLLOWER
-	// supports, capped by the server's advertised range. Using c.AuditBatch.Max
-	// directly would have the follower claim a version it cannot actually
-	// emit when Conductor advertises a forward-compat upper bound. Validation
-	// already ensures SchemaVersion ∈ [Min, Max], so the local constant is
-	// always inside the server's range.
-	auditSchemaVersion := SchemaVersion
+	// Audit envelope schema = min(highest the FOLLOWER can emit, highest the
+	// server accepts). The follower cap is AuditEnvelopeSchemaVersion, NOT the
+	// top-level SchemaVersion: they are different axes (control-message schema
+	// vs audit-batch envelope schema). Validation only guarantees SchemaVersion
+	// (1) ∈ the server's range, so the cap below is what keeps a v2-capable
+	// follower from claiming v2 against an old (v1-only, AuditBatch.Max == 1)
+	// conductor: it negotiates 1 and omits the v2-only applied_state field,
+	// staying wire-identical to v1 and safe past the conductor's strict
+	// unknown-field decoder.
+	auditSchemaVersion := AuditEnvelopeSchemaVersion
 	if c.AuditBatch.Max < auditSchemaVersion {
 		auditSchemaVersion = c.AuditBatch.Max
 	}

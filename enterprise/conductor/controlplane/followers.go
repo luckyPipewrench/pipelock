@@ -113,6 +113,10 @@ func (h *Handler) enrichFollowerStatus(r *http.Request, query FollowerListQuery,
 		}
 		statusByID = runtimeStatusMap(statuses)
 	}
+	signedByID, err := h.verifiedAppliedStateMap(r, query)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]FollowerFleetStatus, 0, len(followers))
 	for _, follower := range followers {
 		var statusPtr *FollowerRuntimeStatus
@@ -127,17 +131,56 @@ func (h *Handler) enrichFollowerStatus(r *http.Request, query FollowerListQuery,
 				statusPtr = &statusCopy
 			}
 		}
+		var signedPtr *VerifiedAppliedState
+		if signed, ok := signedByID[verifiedAppliedStateKey(follower.OrgID, follower.FleetID, follower.InstanceID)]; ok {
+			signedCopy := signed
+			signedPtr = &signedCopy
+		}
 		expected := expectedBundleForFollower(streams, follower, now)
 		health, drift := classifyFollowerHealth(follower, statusPtr, expected, now, defaultRuntimeStatusStaleAfter)
 		out = append(out, FollowerFleetStatus{
-			FollowerSummary: follower,
-			RuntimeStatus:   statusPtr,
-			Health:          health,
-			Drift:           drift,
-			ExpectedBundle:  expected,
+			FollowerSummary:    follower,
+			RuntimeStatus:      statusPtr,
+			SignedAppliedState: signedPtr,
+			Health:             health,
+			Drift:              drift,
+			ExpectedBundle:     expected,
 		})
 	}
 	return out, nil
+}
+
+// verifiedAppliedStateMap loads the signed, verified applied-state for the
+// queried scope keyed by (org, fleet, instance). It is best-effort: a
+// deployment whose audit sink does not implement the reader (or has no rows)
+// simply yields no signed state, and followers fall back to unsigned runtime
+// status.
+func (h *Handler) verifiedAppliedStateMap(r *http.Request, query FollowerListQuery) (map[string]VerifiedAppliedState, error) {
+	reader, ok := h.auditSink.(VerifiedAppliedStateReader)
+	if !ok || reader == nil {
+		return nil, nil
+	}
+	states, err := reader.ListVerifiedAppliedState(r.Context(), VerifiedAppliedStateQuery{
+		OrgID:      query.OrgID,
+		FleetID:    query.FleetID,
+		InstanceID: query.InstanceID,
+		Limit:      maxFollowerListLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]VerifiedAppliedState, len(states))
+	for _, state := range states {
+		out[verifiedAppliedStateKey(state.OrgID, state.FleetID, state.InstanceID)] = state
+	}
+	return out, nil
+}
+
+// verifiedAppliedStateKey keys signed applied-state by the audit-path identity
+// (org, fleet, instance). The audit envelope carries no environment, so unlike
+// followerEnrollmentKey this identity is environment-independent.
+func verifiedAppliedStateKey(orgID, fleetID, instanceID string) string {
+	return orgID + "\x00" + fleetID + "\x00" + instanceID
 }
 
 type removeFollowerRequest struct {

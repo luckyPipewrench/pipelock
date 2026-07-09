@@ -228,6 +228,18 @@ func (s *SQLiteAuditStore) migrate(ctx context.Context) error {
 		ON audit_batches(org_id, fleet_id, instance_id, received_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_conductor_audit_batches_namespace_sequence
 		ON audit_batches(org_id, fleet_id, instance_id, seq_start, seq_end);
+	CREATE TABLE IF NOT EXISTS verified_applied_state (
+		org_id             TEXT NOT NULL,
+		fleet_id           TEXT NOT NULL,
+		instance_id        TEXT NOT NULL,
+		applied_state_json BLOB NOT NULL,
+		signer_key_id      TEXT NOT NULL,
+		batch_id           TEXT NOT NULL,
+		envelope_hash      TEXT NOT NULL,
+		observed_at        DATETIME NOT NULL,
+		verified_at        DATETIME NOT NULL,
+		PRIMARY KEY (org_id, fleet_id, instance_id)
+	);
 	`
 	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("migrate conductor audit store: %w", err)
@@ -254,6 +266,9 @@ func (s *SQLiteAuditStore) putResult(ctx context.Context, batch AcceptedAuditBat
 	if err := ctx.Err(); err != nil {
 		return AuditIngestResult{}, err
 	}
+	if batch.ReceivedAt.IsZero() {
+		batch.ReceivedAt = time.Now().UTC()
+	}
 	if err := validateAcceptedAuditBatch(batch); err != nil {
 		return AuditIngestResult{}, err
 	}
@@ -264,9 +279,6 @@ func (s *SQLiteAuditStore) putResult(ctx context.Context, batch AcceptedAuditBat
 	keyIDsJSON, err := json.Marshal(signatureKeyIDs(batch.Envelope.Signatures))
 	if err != nil {
 		return AuditIngestResult{}, fmt.Errorf("marshal conductor audit signature key ids: %w", err)
-	}
-	if batch.ReceivedAt.IsZero() {
-		batch.ReceivedAt = time.Now().UTC()
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -310,6 +322,13 @@ func (s *SQLiteAuditStore) putResult(ctx context.Context, batch AcceptedAuditBat
 		}
 		status = AuditIngestStatusDuplicate
 	}
+	// Record the signed applied-state in the SAME transaction as the batch, so
+	// an accepted batch always has its cryptographically verified applied-state
+	// persisted (or none, if the batch carried none). Byte-identical retries are
+	// idempotent via the monotonic observed_at guard inside the upsert.
+	if err := upsertVerifiedAppliedStateTx(ctx, tx, batch); err != nil {
+		return AuditIngestResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return AuditIngestResult{}, fmt.Errorf("commit conductor audit store transaction: %w", err)
 	}
@@ -328,10 +347,7 @@ func validateAcceptedAuditBatch(batch AcceptedAuditBatch) error {
 		batch.Envelope.InstanceID != batch.Identity.InstanceID {
 		return conductor.ErrAudienceMismatch
 	}
-	if err := batch.Envelope.Validate(); err != nil {
-		return err
-	}
-	if err := batch.Envelope.ValidatePayload(batch.Payload); err != nil {
+	if err := batch.Envelope.ValidateForConductorWithPayload(batch.ReceivedAt, conductor.DefaultAuditMaxSkew, batch.Payload); err != nil {
 		return err
 	}
 	hash, err := batch.Envelope.CanonicalHash()
@@ -540,6 +556,178 @@ func detectAuditFork(ctx context.Context, tx *sql.Tx, env conductor.AuditBatchEn
 		return fmt.Errorf("scan conductor audit overlaps: %w", err)
 	}
 	return nil
+}
+
+// VerifiedAppliedState is a follower's applied-state statement AFTER the
+// enclosing audit batch passed identity, skew, payload, and signature
+// verification. Provenance (signer key, batch, envelope hash, verified-at) ties
+// it to the exact verified batch it came from. Verified is always true for a
+// value returned by the store; the field exists so a consumer can carry an
+// explicitly-unverified placeholder (e.g. an unsigned-only follower) in the
+// same shape without conflating the two.
+type VerifiedAppliedState struct {
+	OrgID        string                         `json:"org_id"`
+	FleetID      string                         `json:"fleet_id"`
+	InstanceID   string                         `json:"instance_id"`
+	AppliedState conductor.FollowerAppliedState `json:"applied_state"`
+	SignerKeyID  string                         `json:"signer_key_id"`
+	BatchID      string                         `json:"batch_id"`
+	EnvelopeHash string                         `json:"envelope_hash"`
+	ObservedAt   time.Time                      `json:"observed_at"`
+	VerifiedAt   time.Time                      `json:"verified_at"`
+	Verified     bool                           `json:"verified"`
+}
+
+type VerifiedAppliedStateQuery struct {
+	OrgID      string
+	FleetID    string
+	InstanceID string
+	Limit      int
+}
+
+// VerifiedAppliedStateReader is the read side used by the fleet-overview
+// enrichment. The SQLite audit store implements it; the fleet handler treats it
+// as optional so a deployment without an audit store still serves unsigned
+// runtime status.
+type VerifiedAppliedStateReader interface {
+	ListVerifiedAppliedState(context.Context, VerifiedAppliedStateQuery) ([]VerifiedAppliedState, error)
+}
+
+// upsertVerifiedAppliedStateTx persists the verified applied-state within the
+// ingest transaction. The ON CONFLICT ... WHERE guard only advances the stored
+// row when the incoming ObservedAt is strictly newer, so an out-of-order,
+// replayed older, or same-timestamp divergent batch never rolls the
+// fleet-overview view backward. A byte-identical retry is a harmless no-op.
+func upsertVerifiedAppliedStateTx(ctx context.Context, tx *sql.Tx, batch AcceptedAuditBatch) error {
+	applied := batch.Envelope.AppliedState
+	if applied == nil {
+		return nil
+	}
+	appliedJSON, err := json.Marshal(applied)
+	if err != nil {
+		return fmt.Errorf("marshal conductor verified applied state: %w", err)
+	}
+	verifiedAt := batch.ReceivedAt
+	if verifiedAt.IsZero() {
+		verifiedAt = time.Now().UTC()
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO verified_applied_state (
+			org_id, fleet_id, instance_id, applied_state_json,
+			signer_key_id, batch_id, envelope_hash, observed_at, verified_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(org_id, fleet_id, instance_id) DO UPDATE SET
+			applied_state_json = excluded.applied_state_json,
+			signer_key_id      = excluded.signer_key_id,
+			batch_id           = excluded.batch_id,
+			envelope_hash      = excluded.envelope_hash,
+			observed_at        = excluded.observed_at,
+			verified_at        = excluded.verified_at
+		WHERE excluded.observed_at > verified_applied_state.observed_at
+	`, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, appliedJSON,
+		firstSignerKeyID(batch.Envelope.Signatures), batch.Envelope.BatchID, batch.EnvelopeHash,
+		applied.ObservedAt.UTC(), verifiedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("upsert conductor verified applied state: %w", err)
+	}
+	return nil
+}
+
+// GetVerifiedAppliedState returns the latest verified applied-state for one
+// follower, or ok=false when none is recorded.
+func (s *SQLiteAuditStore) GetVerifiedAppliedState(ctx context.Context, orgID, fleetID, instanceID string) (VerifiedAppliedState, bool, error) {
+	if s == nil || s.db == nil {
+		return VerifiedAppliedState{}, false, ErrAuditSinkRequired
+	}
+	if ctx == nil {
+		return VerifiedAppliedState{}, false, fmt.Errorf("%w: context", ErrAuditSinkRequired)
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT org_id, fleet_id, instance_id, applied_state_json,
+			signer_key_id, batch_id, envelope_hash, observed_at, verified_at
+		FROM verified_applied_state
+		WHERE org_id = ? AND fleet_id = ? AND instance_id = ?
+	`, strings.TrimSpace(orgID), strings.TrimSpace(fleetID), strings.TrimSpace(instanceID))
+	state, err := scanVerifiedAppliedState(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return VerifiedAppliedState{}, false, nil
+	}
+	if err != nil {
+		return VerifiedAppliedState{}, false, err
+	}
+	return state, true, nil
+}
+
+// ListVerifiedAppliedState returns verified applied-state rows for the scope
+// (org required; fleet/instance optional filters).
+func (s *SQLiteAuditStore) ListVerifiedAppliedState(ctx context.Context, q VerifiedAppliedStateQuery) ([]VerifiedAppliedState, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrAuditSinkRequired
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("%w: context", ErrAuditSinkRequired)
+	}
+	orgID := strings.TrimSpace(q.OrgID)
+	if orgID == "" {
+		return nil, fmt.Errorf("%w: org_id required", ErrInvalidStoreRecord)
+	}
+	query := `
+		SELECT org_id, fleet_id, instance_id, applied_state_json,
+			signer_key_id, batch_id, envelope_hash, observed_at, verified_at
+		FROM verified_applied_state
+		WHERE org_id = ?`
+	args := []any{orgID}
+	if fleetID := strings.TrimSpace(q.FleetID); fleetID != "" {
+		query += " AND fleet_id = ?"
+		args = append(args, fleetID)
+	}
+	if instanceID := strings.TrimSpace(q.InstanceID); instanceID != "" {
+		query += " AND instance_id = ?"
+		args = append(args, instanceID)
+	}
+	query += " ORDER BY org_id, fleet_id, instance_id LIMIT ?"
+	args = append(args, normalizeAuditLimit(q.Limit))
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query conductor verified applied state: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []VerifiedAppliedState
+	for rows.Next() {
+		state, err := scanVerifiedAppliedState(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan conductor verified applied state rows: %w", err)
+	}
+	return out, nil
+}
+
+func scanVerifiedAppliedState(row auditSummaryScanner) (VerifiedAppliedState, error) {
+	var state VerifiedAppliedState
+	var appliedJSON []byte
+	if err := row.Scan(
+		&state.OrgID, &state.FleetID, &state.InstanceID, &appliedJSON,
+		&state.SignerKeyID, &state.BatchID, &state.EnvelopeHash,
+		&state.ObservedAt, &state.VerifiedAt,
+	); err != nil {
+		return VerifiedAppliedState{}, err
+	}
+	if err := json.Unmarshal(appliedJSON, &state.AppliedState); err != nil {
+		return VerifiedAppliedState{}, fmt.Errorf("decode conductor verified applied state: %w", err)
+	}
+	state.Verified = true
+	return state, nil
+}
+
+func firstSignerKeyID(signatures []conductor.SignatureProof) string {
+	if len(signatures) == 0 {
+		return ""
+	}
+	return signatures[0].SignerKeyID
 }
 
 func signatureKeyIDs(signatures []conductor.SignatureProof) []string {

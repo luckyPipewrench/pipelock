@@ -280,9 +280,17 @@ func shortHash(hash string) string {
 func RedactRaw(ev SessionEvidence) SessionEvidence {
 	ev.RawRedacted = true
 	ev.Receipts = nil
-	for i := range ev.Timeline {
-		ev.Timeline[i].Destination = RedactedDestination
-		ev.Timeline[i].RawJSON = ""
+	// ev is passed by value, but ev.Timeline shares its backing array with the
+	// caller's slice. Copy it before redacting so this never mutates the
+	// caller's (possibly raw) evidence in place.
+	if len(ev.Timeline) > 0 {
+		timeline := make([]TimelineItem, len(ev.Timeline))
+		copy(timeline, ev.Timeline)
+		for i := range timeline {
+			timeline[i].Destination = RedactedDestination
+			timeline[i].RawJSON = ""
+		}
+		ev.Timeline = timeline
 	}
 	return ev
 }

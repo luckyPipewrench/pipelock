@@ -138,6 +138,14 @@ func TestRedactRaw(t *testing.T) {
 	if redacted.Timeline[0].RawJSON != "" {
 		t.Errorf("RawJSON should be empty after redaction, got %q", redacted.Timeline[0].RawJSON)
 	}
+	// RedactRaw must NOT mutate the caller's evidence: the original timeline
+	// entry keeps its raw destination and payload (they share a backing array).
+	if ev.Timeline[0].Destination != "https://api.vendor.example/with-cap-tok" {
+		t.Errorf("RedactRaw mutated the caller's Destination: %q", ev.Timeline[0].Destination)
+	}
+	if ev.Timeline[0].RawJSON != `{"key":"value"}` {
+		t.Errorf("RedactRaw mutated the caller's RawJSON: %q", ev.Timeline[0].RawJSON)
+	}
 }
 
 func TestCloneTrustedKeys(t *testing.T) {

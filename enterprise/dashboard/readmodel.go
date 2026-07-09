@@ -18,10 +18,10 @@ import (
 
 // Bounded filter value constants.
 const (
-	verdictAllow   = "allow"
-	verdictBlock   = "block"
-	verdictWarn    = "warn"
-	verdictDefer   = "defer"
+	verdictAllow   = config.ActionAllow
+	verdictBlock   = config.ActionBlock
+	verdictWarn    = config.ActionWarn
+	verdictDefer   = config.ActionDefer
 	verdictNoMatch = "__invalid_verdict__"
 
 	chainIntact  = "intact"

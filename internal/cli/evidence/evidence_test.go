@@ -238,6 +238,28 @@ func TestViewCmd_SingleSession_RendersHTML(t *testing.T) {
 	}
 }
 
+func TestViewCmd_NonexistentSession_Errors(t *testing.T) {
+	t.Parallel()
+	pub, priv := genKey(t)
+	keyHex := hex.EncodeToString(pub)
+	dir := t.TempDir()
+	emitSingleSession(t, dir, priv, 2)
+
+	var stdout, stderr bytes.Buffer
+	cmd := Cmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"view",
+		"--receipt-dir", dir,
+		"--session", "does-not-exist",
+		"--trusted-signer", "inline=" + keyHex,
+	})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("view --session <nonexistent> must error, not render empty evidence")
+	}
+}
+
 func TestViewCmd_MultiSession_OnlySelectedAgent(t *testing.T) {
 	t.Parallel()
 	_, priv := genKey(t)

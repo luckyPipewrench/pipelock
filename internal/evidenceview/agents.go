@@ -13,7 +13,6 @@ type AgentRollup struct {
 	ChainsBroken      int
 	NotReported       int
 	AnchoredExternal  int
-	AnchoredLocal     int
 	NotAnchored       int
 	TrustedKeyPresent int
 	Unverified        int

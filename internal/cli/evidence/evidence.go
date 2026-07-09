@@ -141,12 +141,19 @@ func runView(cmd *cobra.Command, opts viewOptions) error {
 // pick the first alphabetically and print a note that multi-agent console
 // is available in Pro.
 func resolveSession(cmd *cobra.Command, dir, explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
 	sessions, err := recorder.ListSessions(dir)
 	if err != nil {
 		return "", fmt.Errorf("listing sessions: %w", err)
+	}
+	if explicit != "" {
+		// Verify the requested session actually exists rather than silently
+		// rendering an empty report for a typo'd or nonexistent session ID.
+		for _, s := range sessions {
+			if s == explicit {
+				return explicit, nil
+			}
+		}
+		return "", fmt.Errorf("session %q not found in %q", explicit, dir)
 	}
 	if len(sessions) == 0 {
 		return "", fmt.Errorf("no sessions found in %q", dir)

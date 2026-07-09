@@ -110,11 +110,5 @@ func TestGroupByAgent(t *testing.T) {
 		if r.ChainsIntact != 0 || r.TrustedKeyPresent != 0 || r.NotAnchored != 0 || r.NotReported != 0 {
 			t.Errorf("unexpected non-zero counter: %+v", r)
 		}
-		// AnchoredLocal is a forward-compat counter: the MVP scorecard never
-		// emits a "local anchor" pip state, so it stays zero until local
-		// inclusion proofs are wired.
-		if r.AnchoredLocal != 0 {
-			t.Errorf("AnchoredLocal = %d, want 0 (not yet populated by the MVP scorecard)", r.AnchoredLocal)
-		}
 	})
 }

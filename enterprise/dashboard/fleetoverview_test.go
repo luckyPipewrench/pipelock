@@ -17,14 +17,27 @@ import (
 )
 
 const (
-	fleetTestOrgID        = "org-test"
-	fleetTestFleetID      = "fleet-test"
-	fleetTestInstanceID   = "instance-sensitive-alpha"
-	fleetTestEnvelopeHash = "envelope-sensitive-hash"
-	fleetTestBatchID      = "batch-sensitive-id"
-	fleetTestGitCommit    = "git-sensitive-commit"
-	fleetTestBuildDate    = "build-sensitive-date"
-	fleetTestApplyError   = "apply failed on internal host"
+	fleetTestOrgID          = "org-test"
+	fleetTestFleetID        = "fleet-test"
+	fleetTestInstanceID     = "instance-sensitive-alpha"
+	fleetTestEnvironment    = "env-sensitive-prod"
+	fleetTestAuditKeyID     = "audit-key-sensitive"
+	fleetTestHealth         = "health-sensitive"
+	fleetTestDrift          = "drift-sensitive"
+	fleetTestExpectedID     = "expected-bundle-sensitive"
+	fleetTestExpectedHash   = "expected-hash-sensitive"
+	fleetTestExpectedMin    = "expected-min-sensitive"
+	fleetTestActiveID       = "active-bundle-sensitive"
+	fleetTestActiveHash     = "active-hash-sensitive"
+	fleetTestActiveMin      = "active-min-sensitive"
+	fleetTestVersion        = "pipelock-version-sensitive"
+	fleetTestSignerKeyID    = "signer-key-sensitive"
+	fleetTestEnvelopeHash   = "envelope-sensitive-hash"
+	fleetTestBatchID        = "batch-sensitive-id"
+	fleetTestGitCommit      = "git-sensitive-commit"
+	fleetTestBuildDate      = "build-sensitive-date"
+	fleetTestApplyErrorCode = "apply-code-sensitive"
+	fleetTestApplyError     = "apply failed on internal host"
 )
 
 type fakeFleetSource struct {
@@ -103,6 +116,46 @@ func TestFleetOverview_Gating(t *testing.T) {
 	}
 }
 
+func TestFleetOverview_CrossTierGating(t *testing.T) {
+	t.Parallel()
+
+	agentTierPaths := []string{
+		"/",
+		"/exemptions",
+		"/agents",
+		"/agent/example",
+		"/session/example",
+		"/session/example/receipt/0",
+	}
+	fleetOnly := New(Options{
+		ReceiptDir: t.TempDir(),
+		HasFeature: func(feature string) bool {
+			return feature == license.FeatureFleet
+		},
+		FleetSource: &fakeFleetSource{},
+	})
+	for _, path := range agentTierPaths {
+		rec := httptest.NewRecorder()
+		fleetOnly.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil))
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("fleet-only path %s status = %d, want %d; body=%s", path, rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+	}
+
+	agentsOnly := New(Options{
+		ReceiptDir: t.TempDir(),
+		HasFeature: func(feature string) bool {
+			return feature == license.FeatureAgents
+		},
+		FleetSource: &fakeFleetSource{},
+	})
+	rec := httptest.NewRecorder()
+	agentsOnly.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("agents-only /fleet status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
 func TestFleetOverview_NilSourceRendersEmptyState(t *testing.T) {
 	t.Parallel()
 
@@ -156,7 +209,7 @@ func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 		`<span class="chip unsigned">Unsigned/self-reported</span>`,
 		"Unsigned rows are self-reported runtime status",
 		"active v<span class=\"mono\">7</span>",
-		"pipelock/1.2.3",
+		fleetTestVersion,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q: %s", want, body)
@@ -184,10 +237,23 @@ func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 	body := rec.Body.String()
 	for _, secret := range []string{
 		fleetTestInstanceID,
+		fleetTestEnvironment,
+		fleetTestAuditKeyID,
+		fleetTestHealth,
+		fleetTestDrift,
+		fleetTestExpectedID,
+		fleetTestExpectedHash,
+		fleetTestExpectedMin,
+		fleetTestActiveID,
+		fleetTestActiveHash,
+		fleetTestActiveMin,
+		fleetTestVersion,
+		fleetTestSignerKeyID,
 		fleetTestEnvelopeHash,
 		fleetTestBatchID,
 		fleetTestGitCommit,
 		fleetTestBuildDate,
+		fleetTestApplyErrorCode,
 		fleetTestApplyError,
 	} {
 		if strings.Contains(body, secret) {
@@ -196,17 +262,51 @@ func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 	}
 	for _, want := range []string{
 		hashedFleetValue(fleetTestInstanceID),
-		"Metadata view: instance IDs are hashed",
-		"health ok",
-		"drift none",
+		"Metadata view: instance IDs are hashed and raw follower",
+		"health redacted",
+		"drift redacted",
 		"active v<span class=\"mono\">7</span>",
-		"pipelock/1.2.3",
 		"observed 2026-07-09T12:00:00Z",
 		"verified at 2026-07-09T12:01:00Z",
 		fleetRedacted,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metadata body missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestFleetOverview_RawViewEscapesFollowerStrings(t *testing.T) {
+	t.Parallel()
+
+	follower := testFleetFollowers()[0]
+	follower.InstanceID = hostileScript
+	follower.Environment = hostileImage
+	follower.ActiveBundleID = hostileScript
+	follower.ActiveBundleHash = hostileImage
+	follower.PipelockVersion = hostileScript
+	follower.BatchID = hostileImage
+	follower.LastApplyErrorMessage = hostileScript
+	handler := New(Options{
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   allowFleetFeature,
+		FleetSource:  &fakeFleetSource{followers: []FleetFollowerView{follower}},
+		AuthorizeRaw: allowRawAccess,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, raw := range []string{hostileScript, hostileImage} {
+		if strings.Contains(body, raw) {
+			t.Fatalf("raw view rendered unescaped hostile value %q in body: %s", raw, body)
+		}
+	}
+	for _, escaped := range []string{"&lt;script&gt;alert(1)&lt;/script&gt;", "&#34;&gt;&lt;img src=x onerror=alert(1)&gt;"} {
+		if !strings.Contains(body, escaped) {
+			t.Fatalf("body missing escaped value %q: %s", escaped, body)
 		}
 	}
 }
@@ -278,35 +378,35 @@ func testFleetFollowers() []FleetFollowerView {
 			OrgID:                          fleetTestOrgID,
 			FleetID:                        fleetTestFleetID,
 			InstanceID:                     fleetTestInstanceID,
-			Environment:                    "prod",
-			AuditKeyID:                     "audit-key-alpha",
+			Environment:                    fleetTestEnvironment,
+			AuditKeyID:                     fleetTestAuditKeyID,
 			EnrolledAt:                     base.Add(-24 * time.Hour),
 			Active:                         true,
-			FleetHealth:                    "ok",
-			Drift:                          "none",
-			ExpectedBundleID:               "bundle-expected",
+			FleetHealth:                    fleetTestHealth,
+			Drift:                          fleetTestDrift,
+			ExpectedBundleID:               fleetTestExpectedID,
 			ExpectedBundleVersion:          7,
-			ExpectedBundleHash:             "hash-expected",
-			ExpectedMinPipelockVersion:     "1.2.0",
+			ExpectedBundleHash:             fleetTestExpectedHash,
+			ExpectedMinPipelockVersion:     fleetTestExpectedMin,
 			RuntimeReported:                true,
 			RuntimeSeenAt:                  base.Add(2 * time.Minute),
 			SignedStatePresent:             true,
 			Verified:                       true,
-			SignerKeyID:                    "signer-alpha",
+			SignerKeyID:                    fleetTestSignerKeyID,
 			BatchID:                        fleetTestBatchID,
 			EnvelopeHash:                   fleetTestEnvelopeHash,
 			ObservedAt:                     base,
 			VerifiedAt:                     base.Add(time.Minute),
-			ActiveBundleID:                 "bundle-active",
+			ActiveBundleID:                 fleetTestActiveID,
 			ActiveBundleVersion:            7,
-			ActiveBundleHash:               "hash-active",
-			ActiveBundleMinPipelockVersion: "1.2.0",
-			PipelockVersion:                "pipelock/1.2.3",
+			ActiveBundleHash:               fleetTestActiveHash,
+			ActiveBundleMinPipelockVersion: fleetTestActiveMin,
+			PipelockVersion:                fleetTestVersion,
 			GitCommit:                      fleetTestGitCommit,
 			BuildDate:                      fleetTestBuildDate,
 			LastPolicyPollAt:               base.Add(-time.Minute),
 			LastSuccessfulApplyAt:          base.Add(-2 * time.Minute),
-			LastApplyErrorCode:             "apply_failed",
+			LastApplyErrorCode:             fleetTestApplyErrorCode,
 			LastApplyErrorMessage:          fleetTestApplyError,
 		},
 		{

@@ -111,10 +111,23 @@ func redactFleetFollowers(in []FleetFollowerView) []FleetFollowerView {
 	out := make([]FleetFollowerView, len(in))
 	for i, follower := range in {
 		follower.InstanceID = hashedFleetValue(follower.InstanceID)
+		follower.Environment = redactedFleetString(follower.Environment)
+		follower.AuditKeyID = redactedFleetString(follower.AuditKeyID)
+		follower.FleetHealth = redactedFleetString(follower.FleetHealth)
+		follower.Drift = redactedFleetString(follower.Drift)
+		follower.ExpectedBundleID = redactedFleetString(follower.ExpectedBundleID)
+		follower.ExpectedBundleHash = redactedFleetString(follower.ExpectedBundleHash)
+		follower.ExpectedMinPipelockVersion = redactedFleetString(follower.ExpectedMinPipelockVersion)
 		follower.BatchID = redactedFleetString(follower.BatchID)
 		follower.EnvelopeHash = redactedFleetString(follower.EnvelopeHash)
+		follower.SignerKeyID = redactedFleetString(follower.SignerKeyID)
+		follower.ActiveBundleID = redactedFleetString(follower.ActiveBundleID)
+		follower.ActiveBundleHash = redactedFleetString(follower.ActiveBundleHash)
+		follower.ActiveBundleMinPipelockVersion = redactedFleetString(follower.ActiveBundleMinPipelockVersion)
+		follower.PipelockVersion = redactedFleetString(follower.PipelockVersion)
 		follower.GitCommit = redactedFleetString(follower.GitCommit)
 		follower.BuildDate = redactedFleetString(follower.BuildDate)
+		follower.LastApplyErrorCode = redactedFleetString(follower.LastApplyErrorCode)
 		follower.LastApplyErrorMessage = redactedFleetString(follower.LastApplyErrorMessage)
 		out[i] = follower
 	}

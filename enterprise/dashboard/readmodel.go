@@ -5,26 +5,40 @@
 package dashboard
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
-// redactedDestination replaces a receipt Destination in the metadata view. A
-// destination URL can carry a capability token or secret in its query string,
-// so it is only shown to a request that authenticated with raw access.
-const redactedDestination = "[redacted — raw access required]"
-
+// Bounded filter value constants.
 const (
-	dashboardReceiptReadLimit = 5000
-	dashboardTimelineLimit    = 500
+	verdictAllow   = config.ActionAllow
+	verdictBlock   = config.ActionBlock
+	verdictWarn    = config.ActionWarn
+	verdictDefer   = config.ActionDefer
+	verdictNoMatch = "__invalid_verdict__"
+
+	chainIntact  = "intact"
+	chainBroken  = "broken"
+	chainAny     = "any"
+	chainNoMatch = "__invalid_chain__"
+
+	pipUntampered = "U"
 )
+
+// FilterSpec describes a bounded filter for the agent/session list. Unknown
+// non-empty enum values fail closed to no matches.
+type FilterSpec struct {
+	Verdict string // "allow", "block", "warn", "defer", or "" (any)
+	Agent   string // case-insensitive substring of the agent name, or "" (any)
+	Chain   string // "intact", "broken", "any", or "" (any)
+}
 
 // Options configures the read-only Evidence dashboard.
 type Options struct {
@@ -50,6 +64,10 @@ type Options struct {
 	AuditWriter      io.Writer
 	ReceiptReadLimit int
 	TimelineLimit    int
+	// FilterPresets maps named presets to bounded filter specs. Loaded from
+	// --filter-presets-file at startup. A preset name in the "preset" query
+	// param pre-fills the same bounded params; explicit query params override.
+	FilterPresets map[string]FilterSpec
 }
 
 // ReadModel builds dashboard views over recorder sessions and receipts.
@@ -59,58 +77,7 @@ type ReadModel struct {
 	cfg              *config.Config
 	receiptReadLimit int
 	timelineLimit    int
-}
-
-// SessionSummary is the left-nav row for one recorder session.
-type SessionSummary struct {
-	ID              string
-	Agent           string
-	ReceiptCount    int
-	ReadLimited     bool
-	StartTime       time.Time
-	EndTime         time.Time
-	ReceiptsEnabled bool
-	Pips            []SummaryPip
-}
-
-// SummaryPip is a compact state indicator for one scorecard line.
-type SummaryPip struct {
-	State string
-	Label string
-}
-
-// SessionEvidence is the full Evidence view for one session.
-type SessionEvidence struct {
-	ID              string
-	Agent           string
-	ReceiptsEnabled bool
-	ReceiptCount    int
-	Receipts        []receipt.Receipt
-	ReadLimited     bool
-	ReadLimit       int
-	TimelineLimited bool
-	TimelineLimit   int
-	TimelineWindow  string
-	Chain           receipt.ChainResult
-	Scorecard       Scorecard
-	Timeline        []TimelineItem
-	TrustedKeyText  string
-	// RawRedacted is true when this view was rendered without raw access, so the
-	// template shows a "raw access required" note instead of the signed payload.
-	RawRedacted bool
-}
-
-// TimelineItem is one rendered receipt row.
-type TimelineItem struct {
-	Seq          uint64
-	Time         time.Time
-	Verdict      string
-	Reason       string
-	Destination  string
-	PrevShort    string
-	HashShort    string
-	Unverifiable bool
-	RawJSON      string
+	filterPresets    map[string]FilterSpec
 }
 
 // NewReadModel creates a dashboard read model from Options.
@@ -129,21 +96,8 @@ func NewReadModel(opts Options) *ReadModel {
 		cfg:              opts.Config,
 		receiptReadLimit: receiptReadLimit,
 		timelineLimit:    timelineLimit,
+		filterPresets:    opts.FilterPresets,
 	}
-}
-
-// redactRaw strips the raw exfil surface from an evidence view: every receipt's
-// destination and full signed payload. It operates on the freshly built value
-// from Session, so callers hand the redacted copy to the template and the raw
-// bytes never reach the response. Idempotent and safe on a zero value.
-func redactRaw(ev SessionEvidence) SessionEvidence {
-	ev.RawRedacted = true
-	ev.Receipts = nil
-	for i := range ev.Timeline {
-		ev.Timeline[i].Destination = redactedDestination
-		ev.Timeline[i].RawJSON = ""
-	}
-	return ev
 }
 
 // Sessions lists available recorder sessions and computes their compact state.
@@ -173,162 +127,131 @@ func (m *ReadModel) Session(id string) (SessionEvidence, error) {
 	return sessionEvidence(id, receipts, m.trustedKeys, readLimited, m.receiptReadLimit, m.timelineLimit), nil
 }
 
-func sessionSummary(id string, receipts []receipt.Receipt, trustedKeys map[string]TrustedKey, readLimited bool, readLimit int) SessionSummary {
-	if len(receipts) == 0 {
-		return SessionSummary{
-			ID:              id,
-			Agent:           id,
-			ReceiptsEnabled: false,
-			Pips:            scorecardPips(absentScorecard()),
+// Agents lists sessions grouped by agent with bounded rollup counts,
+// optionally filtered by the given FilterSpec.
+func (m *ReadModel) Agents(filter FilterSpec) ([]evidenceview.AgentGroup, error) {
+	sessions, err := m.Sessions()
+	if err != nil {
+		return nil, err
+	}
+	sessions = applyFilter(sessions, normalizeFilter(filter))
+	return evidenceview.GroupByAgent(sessions), nil
+}
+
+// Agent returns one agent's group (its sessions + rollup), optionally filtered.
+func (m *ReadModel) Agent(id string, filter FilterSpec) (evidenceview.AgentGroup, bool, error) {
+	groups, err := m.Agents(filter)
+	if err != nil {
+		return evidenceview.AgentGroup{}, false, err
+	}
+	for _, g := range groups {
+		if g.Agent == id {
+			return g, true, nil
 		}
 	}
-
-	var scorecard Scorecard
-	if readLimited {
-		scorecard = readLimitedScorecard(len(receipts), readLimit)
-	} else {
-		scorecard = computeScorecard(receipts, trustedKeys, id).Scorecard
-	}
-	return SessionSummary{
-		ID:              id,
-		Agent:           agentLabel(id, receipts),
-		ReceiptCount:    len(receipts),
-		ReadLimited:     readLimited,
-		StartTime:       receipts[0].ActionRecord.Timestamp,
-		EndTime:         receipts[len(receipts)-1].ActionRecord.Timestamp,
-		ReceiptsEnabled: true,
-		Pips:            scorecardPips(scorecard),
-	}
+	return evidenceview.AgentGroup{}, false, nil
 }
 
-func sessionEvidence(id string, receipts []receipt.Receipt, trustedKeys map[string]TrustedKey, readLimited bool, readLimit, timelineLimit int) SessionEvidence {
-	if len(receipts) == 0 {
-		return SessionEvidence{
-			ID:              id,
-			Agent:           id,
-			ReceiptsEnabled: false,
-			Scorecard:       absentScorecard(),
-			TrustedKeyText:  "none",
+// ReceiptDetail loads one receipt by session ID and chain sequence number,
+// returning a DecisionExplanation. The CALLER redacts per RBAC.
+func (m *ReadModel) ReceiptDetail(sessionID string, seq uint64) (evidenceview.DecisionExplanation, bool, error) {
+	receipts, _, err := receipt.ExtractReceiptsFromSessionDirBounded(m.receiptDir, sessionID, m.receiptReadLimit)
+	if err != nil {
+		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
+	}
+	for _, r := range receipts {
+		if r.ActionRecord.ChainSeq == seq {
+			return evidenceview.ExplainReceipt(r), true, nil
 		}
 	}
-
-	result := computeScorecard(receipts, trustedKeys, id)
-	scorecard := result.Scorecard
-	if readLimited {
-		scorecard = readLimitedScorecard(len(receipts), readLimit)
-	}
-	timelineReceipts, timelineStartIndex, timelineLimited, timelineWindow := selectTimelineReceipts(receipts, readLimited, timelineLimit)
-	return SessionEvidence{
-		ID:              id,
-		Agent:           agentLabel(id, receipts),
-		ReceiptsEnabled: true,
-		ReceiptCount:    len(receipts),
-		Receipts:        append([]receipt.Receipt(nil), receipts...),
-		ReadLimited:     readLimited,
-		ReadLimit:       readLimit,
-		TimelineLimited: timelineLimited,
-		TimelineLimit:   timelineLimit,
-		TimelineWindow:  timelineWindow,
-		Chain:           result.Chain,
-		Scorecard:       scorecard,
-		Timeline:        buildTimeline(timelineReceipts, timelineStartIndex, result.Chain),
-		TrustedKeyText:  formatKeyList(trustedKeysForSession(signerKeys(receipts), trustedKeys)),
-	}
+	return evidenceview.DecisionExplanation{}, false, nil
 }
 
-func scorecardPips(scorecard Scorecard) []SummaryPip {
-	return []SummaryPip{
-		{State: scorecard.Authentic.State, Label: "A"},
-		{State: scorecard.Untampered.State, Label: "U"},
-		{State: scorecard.Anchored.State, Label: "N"},
-		{State: scorecard.Completeness.State, Label: "C"},
-	}
-}
+// ResolveFilter resolves a FilterSpec from query params, falling back to a
+// named preset if no explicit params are given.
+func (m *ReadModel) ResolveFilter(r *http.Request) FilterSpec {
+	q := r.URL.Query()
+	verdict := q.Get("verdict")
+	agent := q.Get("agent")
+	chain := q.Get("chain")
+	preset := q.Get("preset")
 
-func agentLabel(id string, receipts []receipt.Receipt) string {
-	if len(receipts) == 0 {
-		return id
-	}
-	first := receipts[0].ActionRecord
-	if first.Actor != "" {
-		return first.Actor
-	}
-	if first.SessionID != "" {
-		return first.SessionID
-	}
-	return id
-}
-
-func buildTimeline(receipts []receipt.Receipt, startIndex int, chain receipt.ChainResult) []TimelineItem {
-	items := make([]TimelineItem, 0, len(receipts))
-	for i, r := range receipts {
-		ar := r.ActionRecord
-		hash, err := receipt.ReceiptHash(r)
-		if err != nil {
-			hash = "hash-error"
+	// If no explicit params, try a named preset.
+	if verdict == "" && agent == "" && chain == "" && preset != "" && m.filterPresets != nil {
+		if p, ok := m.filterPresets[preset]; ok {
+			// Explicit query params override the preset.
+			return FilterSpec{
+				Verdict: overrideIfSet(verdict, p.Verdict),
+				Agent:   overrideIfSet(agent, p.Agent),
+				Chain:   overrideIfSet(chain, p.Chain),
+			}
 		}
-		raw, err := json.MarshalIndent(r, "", "  ")
-		if err != nil {
-			raw = []byte(`{"error":"receipt marshal failed"}`)
-		}
-		items = append(items, TimelineItem{
-			Seq:          ar.ChainSeq,
-			Time:         ar.Timestamp,
-			Verdict:      ar.Verdict,
-			Reason:       reasonLabel(ar.Layer, ar.Pattern, ar.ActionType),
-			Destination:  ar.Target,
-			PrevShort:    shortHash(ar.ChainPrevHash),
-			HashShort:    shortHash(hash),
-			Unverifiable: !chain.Valid && startIndex+i >= chain.BrokenAtIndex,
-			RawJSON:      string(raw),
-		})
 	}
-	return items
+	return FilterSpec{Verdict: verdict, Agent: agent, Chain: chain}
 }
 
-func selectTimelineReceipts(receipts []receipt.Receipt, readLimited bool, timelineLimit int) ([]receipt.Receipt, int, bool, string) {
-	if timelineLimit <= 0 {
-		timelineLimit = dashboardTimelineLimit
+func overrideIfSet(explicit, preset string) string {
+	if explicit != "" {
+		return explicit
 	}
-	if len(receipts) <= timelineLimit {
-		return receipts, 0, false, "all"
-	}
-	if readLimited {
-		return receipts[:timelineLimit], 0, true, "first"
-	}
-	start := len(receipts) - timelineLimit
-	return receipts[start:], start, true, "latest"
+	return preset
 }
 
-func reasonLabel(layer, pattern string, actionType receipt.ActionType) string {
-	switch {
-	case layer != "" && pattern != "":
-		return layer + " / " + pattern
-	case layer != "":
-		return layer
-	case pattern != "":
-		return pattern
-	case actionType != "":
-		return string(actionType)
+// normalizeFilter clamps filter values to the enumerated bounded set.
+// Unknown non-empty enum values become no-match sentinels.
+func normalizeFilter(f FilterSpec) FilterSpec {
+	switch f.Verdict {
+	case "", verdictAllow, verdictBlock, verdictWarn, verdictDefer:
+		// valid
 	default:
-		return "policy decision"
+		f.Verdict = verdictNoMatch
 	}
+	switch f.Chain {
+	case "", chainIntact, chainBroken, chainAny:
+		// valid
+	default:
+		f.Chain = chainNoMatch
+	}
+	return f
 }
 
-func shortHash(hash string) string {
-	if len(hash) <= 12 {
-		return hash
-	}
-	return hash[:12]
-}
-
-func cloneTrustedKeys(in map[string]TrustedKey) map[string]TrustedKey {
-	if len(in) == 0 {
+func applyFilter(sessions []SessionSummary, f FilterSpec) []SessionSummary {
+	if f.Verdict == verdictNoMatch || f.Chain == chainNoMatch {
 		return nil
 	}
-	out := make(map[string]TrustedKey, len(in))
-	for key, trusted := range in {
-		out[key] = trusted
+	if f.Verdict == "" && f.Agent == "" && f.Chain == "" {
+		return sessions
 	}
-	return out
+	agentQuery := strings.ToLower(strings.TrimSpace(f.Agent))
+	filtered := make([]SessionSummary, 0, len(sessions))
+	for _, s := range sessions {
+		if agentQuery != "" && !strings.Contains(strings.ToLower(s.Agent), agentQuery) {
+			continue
+		}
+		if f.Chain != "" && f.Chain != chainAny {
+			match := false
+			for _, pip := range s.Pips {
+				if pip.Label == pipUntampered {
+					switch f.Chain {
+					case chainIntact:
+						match = pip.State == StateVerify || pip.State == StateLimited
+					case chainBroken:
+						match = pip.State == StateFail
+					}
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		// Verdict filter: keep sessions that carried at least one receipt with
+		// the requested verdict. This is a session-level filter (an agent is
+		// shown if any of its receipts matched), not a per-receipt filter.
+		if f.Verdict != "" && !s.HasVerdict(f.Verdict) {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	return filtered
 }

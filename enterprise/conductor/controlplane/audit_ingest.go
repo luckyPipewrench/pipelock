@@ -203,6 +203,7 @@ func writeAuditIngestError(w http.ResponseWriter, err error) {
 		errors.Is(err, conductor.ErrInvalidHash),
 		errors.Is(err, conductor.ErrInvalidSequenceRange),
 		errors.Is(err, conductor.ErrInvalidDroppedAccounting),
+		errors.Is(err, conductor.ErrInvalidAppliedState),
 		errors.Is(err, conductor.ErrInvalidIdentifier):
 		writeError(w, http.StatusBadRequest, err)
 	default:

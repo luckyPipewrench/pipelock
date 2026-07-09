@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Evidence - Agents</title>
+  <style>
+    :root {
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .topbar {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border-strong);
+      background: #08080a;
+    }
+    .brand { font-weight: 650; }
+    .brand span { color: var(--text-muted); font-weight: 500; }
+    .mode { color: var(--text-dim); font-size: 13px; }
+    .mode a { color: var(--text-muted); text-decoration: none; margin-right: 14px; }
+    .mode a:hover { color: var(--text); }
+    main { padding: 24px; max-width: 1180px; margin: 0 auto; }
+    h1, h2 { margin: 0; }
+    h1 { font-size: 24px; margin-bottom: 18px; }
+    h2 { font-size: 16px; margin-bottom: 10px; }
+    .muted { color: var(--text-muted); }
+    .dim { color: var(--text-dim); }
+    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .filter-form {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 24px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+    .filter-form label { color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .filter-form select, .filter-form input[type="text"] {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    .filter-form button {
+      background: var(--accent);
+      color: #050507;
+      border: none;
+      border-radius: 4px;
+      padding: 6px 16px;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .agent-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+      padding: 18px;
+      margin-bottom: 14px;
+    }
+    .agent-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+    }
+    .agent-name { font-weight: 700; font-size: 16px; }
+    .agent-name a { color: var(--text); text-decoration: none; }
+    .agent-name a:hover { color: var(--accent); }
+    .rollup { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+    .rollup-item { font-size: 13px; }
+    .rollup-count { font-weight: 700; }
+    .rollup-label { color: var(--text-muted); }
+    .session-list { margin-top: 12px; }
+    .session-link {
+      display: block;
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 6px 0;
+      font-size: 13px;
+    }
+    .session-link:hover { color: var(--accent); }
+    .pips { display: inline-flex; gap: 5px; align-items: center; }
+    .pip {
+      width: 18px;
+      height: 18px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 50%;
+      color: #050507;
+      font-size: 10px;
+      font-weight: 800;
+    }
+    .verify { background: var(--accent); }
+    .warn, .limited { background: var(--warn); }
+    .fail { background: var(--danger); color: white; }
+    .empty {
+      color: var(--text-muted);
+      padding: 26px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Pipelock <span>· Operator Console / Agents</span></div>
+    <div class="mode"><a href="/">Evidence</a><a href="/exemptions">Exemptions</a>air-gapped · self-hosted</div>
+  </header>
+  <main>
+    <h1>Cross-Agent Evidence Explorer</h1>
+
+    <form class="filter-form" method="get" action="/agents">
+      <div>
+        <label for="f-agent">Agent</label><br>
+        <input type="text" id="f-agent" name="agent" value="{{.Filter.Agent}}">
+      </div>
+      <div>
+        <label for="f-chain">Chain</label><br>
+        <select id="f-chain" name="chain">
+          <option value="">any</option>
+          <option value="intact" {{if eq .Filter.Chain "intact"}}selected{{end}}>intact</option>
+          <option value="broken" {{if eq .Filter.Chain "broken"}}selected{{end}}>broken</option>
+        </select>
+      </div>
+      <div>
+        <label for="f-verdict">Verdict</label><br>
+        <select id="f-verdict" name="verdict">
+          <option value="">any</option>
+          <option value="allow" {{if eq .Filter.Verdict "allow"}}selected{{end}}>allow</option>
+          <option value="block" {{if eq .Filter.Verdict "block"}}selected{{end}}>block</option>
+          <option value="warn" {{if eq .Filter.Verdict "warn"}}selected{{end}}>warn</option>
+          <option value="defer" {{if eq .Filter.Verdict "defer"}}selected{{end}}>defer</option>
+        </select>
+      </div>
+      <div style="align-self:flex-end"><button type="submit">Filter</button></div>
+    </form>
+
+    {{range .Groups}}
+      <div class="agent-card">
+        <div class="agent-header">
+          <div class="agent-name"><a href="/agent/{{.Agent}}">{{.Agent}}</a></div>
+          <div class="dim">{{.SessionCount}} sessions</div>
+        </div>
+        <div class="rollup">
+          <span class="rollup-item"><span class="rollup-count">{{.Rollup.ChainsIntact}}</span> <span class="rollup-label">chains intact</span></span>
+          <span class="rollup-item"><span class="rollup-count">{{.Rollup.ChainsBroken}}</span> <span class="rollup-label">chains broken</span></span>
+          <span class="rollup-item"><span class="rollup-count">{{.Rollup.NotReported}}</span> <span class="rollup-label">not reported</span></span>
+          <span class="rollup-item"><span class="rollup-count">{{.Rollup.AnchoredExternal}}</span> <span class="rollup-label">externally anchored</span></span>
+          <span class="rollup-item"><span class="rollup-count">{{.Rollup.NotAnchored}}</span> <span class="rollup-label">not anchored</span></span>
+          <span class="rollup-item"><span class="rollup-count">{{.Rollup.TrustedKeyPresent}}</span> <span class="rollup-label">trusted-key present</span></span>
+          <span class="rollup-item"><span class="rollup-count">{{.Rollup.Unverified}}</span> <span class="rollup-label">unverified</span></span>
+        </div>
+        <div class="session-list">
+          {{range .Summaries}}
+            <a class="session-link" href="/session/{{.ID}}">
+              <span class="mono">{{.ID}}</span>
+              · {{.ReceiptCount}}{{if .ReadLimited}}+{{end}} receipts
+              <span class="pips">{{range .Pips}}<span class="pip {{.State}}" title="{{.Label}}">{{.Label}}</span>{{end}}</span>
+            </a>
+          {{end}}
+        </div>
+      </div>
+    {{else}}
+      <div class="empty">No agents found matching the current filter.</div>
+    {{end}}
+  </main>
+</body>
+</html>

@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -25,7 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
-	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
 
 const (
@@ -35,9 +34,6 @@ const (
 	// kill_switch.api_listen).
 	dashboardDefaultListen  = "127.0.0.1:8896"
 	dashboardShutdownPeriod = 5 * time.Second
-	// trustedSignerDefaultSource labels a trusted key whose --trusted-signer
-	// value did not carry an explicit source= reason.
-	trustedSignerDefaultSource = "--trusted-signer flag"
 )
 
 // DashboardCmd returns the `pipelock dashboard` command tree (Pro/Enterprise).
@@ -133,7 +129,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return errors.New("--raw-token-file must differ from --auth-token-file")
 		}
 	}
-	trusted, err := parseTrustedSigners(opts.trustedSigners)
+	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
 	if err != nil {
 		return err
 	}
@@ -331,97 +327,6 @@ func dashboardRuntimeHasFeature(lic license.License) func(string) bool {
 		}
 		return lic.HasFeature(feature)
 	}
-}
-
-// parseTrustedSigners parses repeated --trusted-signer values into the
-// operator trusted-key set. An empty flag list returns nil: the dashboard then
-// honestly renders every signer as Unverified (never trust-on-first-use).
-func parseTrustedSigners(values []string) (map[string]dashboard.TrustedKey, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-	out := make(map[string]dashboard.TrustedKey, len(values))
-	for _, raw := range values {
-		keyHex, source, err := parseTrustedSignerSpec(raw)
-		if err != nil {
-			return nil, fmt.Errorf("--trusted-signer %q: %w", raw, err)
-		}
-		if _, dup := out[keyHex]; dup {
-			return nil, fmt.Errorf("--trusted-signer %q: duplicate key %s", raw, keyHex)
-		}
-		out[keyHex] = dashboard.TrustedKey{Source: source}
-	}
-	return out, nil
-}
-
-// parseTrustedSignerSpec parses one --trusted-signer value: comma-separated
-// kv pairs with exactly one key source, '(inline=<hex-or-versioned>|file=/path)',
-// plus an optional 'source=LABEL' shown in the UI as the reason the key is
-// trusted.
-func parseTrustedSignerSpec(raw string) (keyHex, source string, err error) {
-	var inline, file string
-	var hasInline, hasFile, hasSource bool
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		k, v, ok := strings.Cut(part, "=")
-		if !ok {
-			return "", "", fmt.Errorf("expected key=value, got %q", part)
-		}
-		v = strings.TrimSpace(v)
-		switch strings.TrimSpace(k) {
-		case "inline":
-			if hasInline {
-				return "", "", errors.New("inline= may appear only once")
-			}
-			if v == "" {
-				return "", "", errors.New("inline= value is empty")
-			}
-			hasInline = true
-			inline = v
-		case "file":
-			if hasFile {
-				return "", "", errors.New("file= may appear only once")
-			}
-			if v == "" {
-				return "", "", errors.New("file= value is empty")
-			}
-			hasFile = true
-			file = v
-		case "source":
-			if hasSource {
-				return "", "", errors.New("source= may appear only once")
-			}
-			hasSource = true
-			source = v
-		default:
-			return "", "", fmt.Errorf("unknown key %q", k)
-		}
-	}
-	switch {
-	case inline != "" && file != "":
-		return "", "", errors.New("inline= and file= are mutually exclusive")
-	case inline == "" && file == "":
-		return "", "", errors.New("one of inline= or file= is required")
-	case file != "":
-		data, readErr := os.ReadFile(filepath.Clean(file))
-		if readErr != nil {
-			return "", "", fmt.Errorf("read key file: %w", readErr)
-		}
-		inline = strings.TrimSpace(string(data))
-	}
-	// signing.ParsePublicKey enforces the Ed25519 key size on both the
-	// versioned and raw-hex paths, so a parsed key is always well-formed.
-	pub, err := signing.ParsePublicKey(inline)
-	if err != nil {
-		return "", "", fmt.Errorf("parse public key: %w", err)
-	}
-	if source == "" {
-		source = trustedSignerDefaultSource
-	}
-	return hex.EncodeToString(pub), source, nil
 }
 
 // loadDashboardTokenFile reads and validates a required operator token file.

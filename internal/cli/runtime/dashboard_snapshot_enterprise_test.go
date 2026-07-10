@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard/runtimesnapshot"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type fakeAgentBudgetSnapshotProvider struct {
@@ -148,21 +149,14 @@ func TestStartDashboardRuntimeSnapshotEnterpriseWritesAndStops(t *testing.T) {
 		Stderr:         &stderr,
 	})
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.For(t, 2*time.Second, func() bool {
 		if _, err := os.Stat(cfg.DashboardSnapshot.Path); err == nil {
-			break
+			return true
 		} else if !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stat runtime snapshot: %v", err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("runtime snapshot was not written; stderr=%q", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// Let the ticker fire once so the periodic lane is covered in addition to
-	// the immediate startup write.
-	time.Sleep(1100 * time.Millisecond)
+		return false
+	}, "runtime snapshot to be written; stderr=%s", stderr.String())
 	cancel()
 	wg.Wait()
 

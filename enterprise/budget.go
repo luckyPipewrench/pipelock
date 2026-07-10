@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 )
 
 // BudgetTracker enforces per-agent request budgets within a rolling window.
@@ -199,5 +200,28 @@ func (b *BudgetTracker) maybeResetWindow() {
 		b.byteCount = 0
 		b.uniqueDomains = make(map[string]struct{})
 		b.windowStart = b.now()
+	}
+}
+
+// Snapshot returns a read-only, point-in-time view of the tracker's
+// consumption and configured limits for observability surfaces. It never
+// affects enforcement. Thread-safe. A nil tracker returns a zero snapshot.
+// BudgetTracker implements edition.BudgetSnapshotProvider.
+func (b *BudgetTracker) Snapshot() edition.BudgetSnapshot {
+	if b == nil {
+		return edition.BudgetSnapshot{}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.maybeResetWindow()
+	return edition.BudgetSnapshot{
+		RequestCount:      b.requestCount,
+		ByteCount:         b.byteCount,
+		UniqueDomainCount: len(b.uniqueDomains),
+		WindowStart:       b.windowStart,
+		MaxRequests:       b.cfg.MaxRequestsPerSession,
+		MaxBytes:          b.cfg.MaxBytesPerSession,
+		MaxUniqueDomains:  b.cfg.MaxUniqueDomainsPerSession,
+		WindowMinutes:     b.cfg.WindowMinutes,
 	}
 }

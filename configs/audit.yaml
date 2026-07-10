@@ -609,3 +609,10 @@ flight_recorder:
     max_anchor_lag: 24h
   # dir: /var/lib/pipelock/recorder
   # signing_key_path: /etc/pipelock/keys/flight-recorder-signing.key
+
+# ---- dashboard_snapshot (read-only dashboard runtime view) ----
+# Writes counts/limits only to <flight_recorder.dir>/dashboard/runtime-snapshot.json
+# when flight_recorder.dir is configured. The dashboard reads this file; it is
+# point-in-time observability, not enforcement proof.
+dashboard_snapshot:
+  interval: 10s

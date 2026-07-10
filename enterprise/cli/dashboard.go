@@ -49,16 +49,17 @@ func DashboardCmd() *cobra.Command {
 }
 
 type dashboardServeOptions struct {
-	listen         string
-	receiptDir     string
-	configFile     string
-	authTokenFile  string
-	rawTokenFile   string
-	trustedSigners []string
-	licenseCRLFile string
-	tlsCert        string
-	tlsKey         string
-	exemptionStore string
+	listen              string
+	receiptDir          string
+	configFile          string
+	authTokenFile       string
+	rawTokenFile        string
+	runtimeSnapshotFile string
+	trustedSigners      []string
+	licenseCRLFile      string
+	tlsCert             string
+	tlsKey              string
+	exemptionStore      string
 }
 
 func dashboardServeCmd() *cobra.Command {
@@ -104,6 +105,8 @@ because the operator token would transit in cleartext.`,
 		"file containing the operator token required on every dashboard request (redacted metadata view)")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
 		"optional file containing a higher-privilege token that unlocks raw destinations and signed payloads; must differ from --auth-token-file")
+	cmd.Flags().StringVar(&opts.runtimeSnapshotFile, "runtime-snapshot-file", "",
+		"read-only proxy runtime snapshot file for live dashboard budget data; defaults under --receipt-dir/dashboard/runtime-snapshot.json")
 	cmd.Flags().StringArrayVar(&opts.trustedSigners, "trusted-signer", nil,
 		"trusted receipt signing key as comma-separated kv pairs: "+
 			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
@@ -169,6 +172,10 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	if !info.IsDir() {
 		return fmt.Errorf("--receipt-dir %q is not a directory", opts.receiptDir)
 	}
+	runtimeSnapshotFile := strings.TrimSpace(opts.runtimeSnapshotFile)
+	if runtimeSnapshotFile == "" {
+		runtimeSnapshotFile = filepath.Join(opts.receiptDir, "dashboard", "runtime-snapshot.json")
+	}
 	if len(trusted) == 0 {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
 			"pipelock: warning: no --trusted-signer configured; the Authentic line will render every signer as Unverified")
@@ -179,6 +186,10 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		if err != nil {
 			return fmt.Errorf("--config: %w", err)
 		}
+	}
+	runtimeSnapshotMaxAge := 3 * config.DefaultDashboardSnapshotInterval
+	if loadedConfig != nil {
+		runtimeSnapshotMaxAge = 3 * loadedConfig.DashboardSnapshot.IntervalDuration()
 	}
 	var exemptionStore *dashboard.ExemptionStore
 	if strings.TrimSpace(opts.exemptionStore) != "" {
@@ -224,13 +235,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		// method), so the dashboard holds no fleet-control authority even once
 		// wired.
 		ConductorSource: nil,
-		// TODO(DASH-2D): wire the live budget source once the dashboard process
-		// can read per-agent budget state. Budget consumption (BudgetTracker,
-		// DoW trackers) lives in the proxy process's memory; dashboard serve is
-		// a separate process, so it needs the same persisted-store handle the
-		// FleetSource TODO above describes. Until then /budgets renders the
-		// read-only empty state instead of inventing budget numbers.
-		BudgetSource: nil,
+		BudgetSource:    dashboard.NewSnapshotBudgetSource(runtimeSnapshotFile, runtimeSnapshotMaxAge),
 	})
 	handler := dashboardAuthHandler(metaAuthorized, inner)
 

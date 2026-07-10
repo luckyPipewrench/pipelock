@@ -159,6 +159,22 @@ func TestValidateReload_ReverseProxyProfileUnchanged_NoWarning(t *testing.T) {
 	}
 }
 
+func TestValidateReload_DashboardSnapshotChanged(t *testing.T) {
+	t.Parallel()
+
+	old := Defaults()
+	updated := Defaults()
+	updated.DashboardSnapshot.Path = "/tmp/other-runtime-snapshot.json"
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "dashboard_snapshot" {
+			return
+		}
+	}
+	t.Fatal("expected dashboard_snapshot restart-only warning")
+}
+
 func TestValidateReload_QueryEntropyParamExclusionsAdded(t *testing.T) {
 	old := Defaults()
 	updated := Defaults()

@@ -739,6 +739,9 @@ func (c *Config) ApplyDefaults() {
 	if c.FlightRecorder.EvidenceHealth.MaxAnchorLag == "" {
 		c.FlightRecorder.EvidenceHealth.MaxAnchorLag = "24h"
 	}
+	if c.DashboardSnapshot.Interval == "" {
+		c.DashboardSnapshot.Interval = "10s"
+	}
 
 	// MCP tool provenance defaults
 	if c.MCPToolProvenance.Enabled {

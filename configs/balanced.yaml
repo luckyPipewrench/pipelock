@@ -535,6 +535,16 @@ mcp_session_binding:
 #     min_severity: warn
 #     facility: local0
 #     tag: pipelock
+#   # Enterprise durable HTTP forwarding. Exact-host allowlist; no wildcards.
+#   forwarder:
+#     url: "https://api.vendor.example/events"
+#     destination_allowlist: ["api.vendor.example"]
+#     spool_file: "/var/lib/pipelock/siem-forward.spool"
+#     cursor_file: "/var/lib/pipelock/siem-forward.cursor"
+#     auth_token: ""
+#     min_severity: warn
+#     timeout_seconds: 5
+#     queue_size: 256
 
 logging:
   format: json

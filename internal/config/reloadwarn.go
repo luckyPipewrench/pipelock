@@ -522,6 +522,12 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "OTLP log emission disabled",
 		})
 	}
+	if old.Emit.Forwarder.URL != "" && updated.Emit.Forwarder.URL == "" {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "emit.forwarder.url",
+			Message: "durable SIEM forwarding disabled",
+		})
+	}
 
 	// Kill switch API listen address changed (requires restart)
 	if old.KillSwitch.APIListen != updated.KillSwitch.APIListen {

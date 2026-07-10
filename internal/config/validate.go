@@ -2488,6 +2488,38 @@ func (c *Config) validateEmit() error {
 			return fmt.Errorf("emit.otlp.queue_size must be positive")
 		}
 	}
+	if c.Emit.Forwarder.URL != "" {
+		u, forwardErr := url.Parse(c.Emit.Forwarder.URL)
+		if forwardErr != nil || u.Host == "" || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) {
+			return fmt.Errorf("invalid emit.forwarder.url %q: must be http:// or https:// with a host", c.Emit.Forwarder.URL)
+		}
+		if u.User != nil || u.Fragment != "" {
+			return fmt.Errorf("emit.forwarder.url must not contain userinfo or a fragment")
+		}
+		host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+		allowed := false
+		for _, entry := range c.Emit.Forwarder.DestinationAllowlist {
+			normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(entry), "."))
+			if normalized == "" || (net.ParseIP(normalized) == nil && strings.ContainsAny(normalized, "*/:@[]")) {
+				return fmt.Errorf("invalid emit.forwarder.destination_allowlist entry %q: exact hostnames only", entry)
+			}
+			allowed = allowed || normalized == host
+		}
+		if !allowed {
+			return fmt.Errorf("emit.forwarder.url host %q must be exactly present in destination_allowlist", host)
+		}
+		if c.Emit.Forwarder.SpoolFile == "" || c.Emit.Forwarder.CursorFile == "" {
+			return fmt.Errorf("emit.forwarder.spool_file and cursor_file are required when forwarding is configured")
+		}
+		switch c.Emit.Forwarder.MinSeverity {
+		case SeverityInfo, SeverityWarn, SeverityCritical:
+		default:
+			return fmt.Errorf("invalid emit.forwarder.min_severity %q: must be info, warn, or critical", c.Emit.Forwarder.MinSeverity)
+		}
+		if c.Emit.Forwarder.TimeoutSeconds <= 0 || c.Emit.Forwarder.QueueSize <= 0 {
+			return fmt.Errorf("emit.forwarder.timeout_seconds and queue_size must be positive")
+		}
+	}
 	return nil
 }
 

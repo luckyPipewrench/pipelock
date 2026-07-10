@@ -303,7 +303,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	}
 	s.logger = logger
 
-	emitSinks, emitErr := BuildEmitSinks(cfg)
+	m := metrics.New()
+	s.metrics = m
+	emitSinks, emitErr := BuildEmitSinks(cfg, m)
 	if emitErr != nil {
 		s.cleanup()
 		return nil, fmt.Errorf("creating emit sinks: %w", emitErr)
@@ -313,6 +315,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		instanceID = emit.DefaultInstanceID()
 	}
 	emitter := emit.NewEmitter(instanceID, emitSinks...)
+	activateEmitSinks(emitSinks)
 	logger.SetEmitter(emitter)
 	s.emitter = emitter
 	emitLicenseExpiryWarning(cfg, logger, sentryClient, opts.Stderr)
@@ -348,8 +351,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	sc := scanner.New(cfg)
 	s.scanner = sc
-	m := metrics.New()
-	s.metrics = m
 	// License gate for the follower-side Conductor runtime. When
 	// conductor.enabled is true the operator has explicitly opted into
 	// central governance (remote kill, audit ingest, policy distribution);

@@ -371,7 +371,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 
 	// Reload emit sinks: build new sinks from config, swap into
 	// emitter, close old sinks.
-	newSinks, sinkErr := BuildEmitSinks(newCfg)
+	newSinks, sinkErr := BuildEmitSinks(newCfg, s.metrics)
 	if sinkErr != nil {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
 			fmt.Errorf("emit sink rebuild failed: %w", sinkErr))
@@ -383,6 +383,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 					fmt.Errorf("closing old emit sink: %w", closeErr))
 			}
 		}
+		activateEmitSinks(newSinks)
 	}
 
 	if needsHITLApprover(newCfg) && !s.hasApprover {

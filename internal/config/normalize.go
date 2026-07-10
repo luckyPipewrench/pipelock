@@ -486,6 +486,15 @@ func (c *Config) ApplyDefaults() {
 	if c.Emit.OTLP.QueueSize <= 0 {
 		c.Emit.OTLP.QueueSize = 256
 	}
+	if c.Emit.Forwarder.MinSeverity == "" {
+		c.Emit.Forwarder.MinSeverity = SeverityWarn
+	}
+	if c.Emit.Forwarder.TimeoutSeconds <= 0 {
+		c.Emit.Forwarder.TimeoutSeconds = 5
+	}
+	if c.Emit.Forwarder.QueueSize <= 0 {
+		c.Emit.Forwarder.QueueSize = 256
+	}
 	if c.Emit.Syslog.Facility == "" {
 		c.Emit.Syslog.Facility = "local0"
 	}

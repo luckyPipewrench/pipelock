@@ -1252,11 +1252,25 @@ func (h HealthWatchdog) IntervalDuration() time.Duration {
 
 // EmitConfig configures external event emission (webhook, syslog, and OTLP).
 type EmitConfig struct {
-	InstanceID string        `yaml:"instance_id"` // defaults to hostname
-	Filter     EmitFilter    `yaml:"filter" json:"-"`
-	Webhook    WebhookConfig `yaml:"webhook"`
-	Syslog     SyslogConfig  `yaml:"syslog"`
-	OTLP       OTLPConfig    `yaml:"otlp"`
+	InstanceID string          `yaml:"instance_id"` // defaults to hostname
+	Filter     EmitFilter      `yaml:"filter" json:"-"`
+	Webhook    WebhookConfig   `yaml:"webhook"`
+	Syslog     SyslogConfig    `yaml:"syslog"`
+	OTLP       OTLPConfig      `yaml:"otlp"`
+	Forwarder  ForwarderConfig `yaml:"forwarder" json:"-"`
+}
+
+// ForwarderConfig configures the Enterprise durable SIEM HTTP forwarder.
+// An empty URL disables it. DestinationAllowlist accepts exact hosts only.
+type ForwarderConfig struct {
+	URL                  string   `yaml:"url"`
+	DestinationAllowlist []string `yaml:"destination_allowlist"`
+	SpoolFile            string   `yaml:"spool_file"`
+	CursorFile           string   `yaml:"cursor_file"`
+	AuthToken            string   `yaml:"auth_token" json:"-"`
+	MinSeverity          string   `yaml:"min_severity"`
+	TimeoutSeconds       int      `yaml:"timeout_seconds"`
+	QueueSize            int      `yaml:"queue_size"`
 }
 
 // EmitFilter configures additive export filtering across all emit sinks.

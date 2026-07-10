@@ -2,6 +2,8 @@
 
 Pipelock pushes structured security events to external systems via webhook
 (HTTP POST), syslog (RFC 5424), and OTLP (OpenTelemetry HTTP/protobuf) sinks.
+Enterprise builds also provide a durable HTTP forwarder for at-least-once
+delivery from a local append-only spool.
 This guide covers the event schema, forwarding setup for common SIEM
 platforms, detection rule examples, and automated kill switch response.
 
@@ -105,6 +107,92 @@ emit:
     facility: "local0"                # local0-local7, auth, daemon, etc.
     tag: "pipelock"
 ```
+
+### Durable HTTP forwarding (Enterprise)
+
+Use `emit.forwarder` when delivery must resume after a restart. This is a
+narrow forwarding pipe into an operator-owned endpoint; it is not a SIEM,
+search index, or second evidence database.
+
+```yaml
+emit:
+  forwarder:
+    url: "https://api.vendor.example/events"
+    destination_allowlist: ["api.vendor.example"]
+    spool_file: "/var/lib/pipelock/siem-forward.spool"
+    cursor_file: "/var/lib/pipelock/siem-forward.cursor"
+    auth_token: "" # optional Bearer token
+    min_severity: "warn"
+    timeout_seconds: 5
+    queue_size: 256
+```
+
+The destination allowlist is mandatory and matches exact hostnames only. The
+forwarder resolves and rejects loopback, private, link-local, multicast, and
+cloud-metadata addresses at startup and again in the connection path. The
+connection uses the already-checked address, which closes the DNS-rebinding
+gap. Redirects are refused. An empty allowlist or invalid destination prevents
+startup; there is no forward-anywhere default.
+
+An operator may deliberately target an internal service only by using that IP
+literal as the URL host and listing the same literal exactly. An allowlisted
+hostname that later resolves to an internal address is still denied.
+If DNS is unavailable at startup, Pipelock starts with forwarding degraded
+rather than taking down the mediation proxy. No event is sent until a later
+dial-time resolution succeeds and passes the same SSRF checks.
+
+Accepted events are appended to `spool_file` with mode `0600`. After the
+endpoint returns a 2xx response, `cursor_file` advances atomically with the
+source path, byte offset, and SHA-256 hash of the acknowledged record. A
+restart verifies that binding before replay. A corrupt cursor fails closed
+instead of silently skipping evidence. Delivery is at least once, so a remote
+receiver should deduplicate if a response is lost after it accepted an event.
+
+The producer-facing queue remains bounded and non-blocking. A full queue drops
+the new event and increments `pipelock_siem_forwarder_dropped_total`; it does
+not stall proxy traffic. The durable guarantee begins after an event reaches
+the spool. Health is exposed through these Prometheus series:
+
+- `pipelock_siem_forwarder_queued`
+- `pipelock_siem_forwarder_delivered_total`
+- `pipelock_siem_forwarder_failed_total`
+- `pipelock_siem_forwarder_dropped_total`
+- `pipelock_siem_forwarder_last_success_timestamp_seconds`
+
+The durable wire envelope is versioned:
+
+```json
+{
+  "schema": "pipelock.siem.event.v1",
+  "event": {
+    "severity": "warn",
+    "type": "blocked",
+    "timestamp": "2026-02-25T12:34:56.789Z",
+    "pipelock_instance": "agent-a",
+    "fields": {"scanner": "dlp", "action": "block"}
+  }
+}
+```
+
+The existing syslog sink remains the CEF option (`format: cef`) for receivers
+that require CEF, but it is best-effort and does not use the durable cursor.
+
+Operator lifecycle:
+
+- Create: configure both state paths; Pipelock creates parent directories and
+  files with restrictive permissions. Give every Pipelock process its own
+  spool/cursor pair; the files are not a shared multi-process queue.
+- Inspect: watch the forwarder metrics and the cursor's offset/hash while
+  treating the spool as the delivery source of truth.
+- Rotate: stop Pipelock, confirm the cursor offset equals the spool size,
+  archive the pair, then restart with new paths. Never rotate only one file.
+- Recover: restore a matching spool/cursor pair. If only the cursor is corrupt,
+  moving it aside replays the spool from offset zero (duplicates, but no silent
+  skip). Preserve the corrupt pair for investigation first.
+- Revoke: remove `emit.forwarder.url` and reload; Pipelock closes the worker and
+  leaves state files for operator-controlled retention or deletion.
+- Approve changes: destination or state-path changes are config-controlled and
+  revalidated before the replacement worker starts.
 
 **Severity filtering:** Events below `min_severity` are silently dropped before
 reaching the sink. Set to `warn` for all security events (recommended), or

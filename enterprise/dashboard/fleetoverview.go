@@ -105,16 +105,21 @@ func (m *ReadModel) FleetOverview(ctx context.Context, orgID, fleetID string, ra
 	}
 	overview := FleetOverview{
 		SourceConfigured: m.fleetSource != nil,
-		OrgID:            orgID,
-		FleetID:          fleetID,
-		Claim:            fleetCompletenessClaim,
-		NonClaim:         fleetCompletenessNonClaim,
-		RawAllowed:       rawAllowed,
+		// Display labels are redacted in metadata mode; the real scope is kept
+		// in the orgID/fleetID locals below for the source query. Rendering the
+		// raw scope here would leak operator infra identifiers to a
+		// metadata-only viewer (the same RBAC class as the workbench/incident
+		// scope labels).
+		OrgID:      metadataScopeDisplay(orgID, rawAllowed),
+		FleetID:    metadataScopeDisplay(fleetID, rawAllowed),
+		Claim:      fleetCompletenessClaim,
+		NonClaim:   fleetCompletenessNonClaim,
+		RawAllowed: rawAllowed,
 	}
 	if m.fleetSource == nil {
 		return overview, nil
 	}
-	followers, err := m.fleetSource.ListFleetFollowers(ctx, overview.OrgID, overview.FleetID, fleetOverviewFollowerLimit+1)
+	followers, err := m.fleetSource.ListFleetFollowers(ctx, orgID, fleetID, fleetOverviewFollowerLimit+1)
 	if err != nil {
 		return FleetOverview{}, fmt.Errorf("list fleet followers: %w", err)
 	}
@@ -193,6 +198,11 @@ func (m *ReadModel) redactFleetFollowers(in []FleetFollowerView) []FleetFollower
 		follower.BuildDate = redactedFleetString(follower.BuildDate)
 		follower.LastApplyErrorCode = redactedFleetString(follower.LastApplyErrorCode)
 		follower.LastApplyErrorMessage = redactedFleetString(follower.LastApplyErrorMessage)
+		// Redact the per-follower scope labels too. These are the same org/fleet
+		// infra identifiers redacted at the page level; the InstanceID hash above
+		// consumes the raw values as salt first, so this must run after it.
+		follower.OrgID = redactedFleetString(follower.OrgID)
+		follower.FleetID = redactedFleetString(follower.FleetID)
 		out[i] = follower
 	}
 	return out

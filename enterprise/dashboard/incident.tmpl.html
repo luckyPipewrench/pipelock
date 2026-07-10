@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Incident Cockpit</title>
+  <style>
+    :root {
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .topbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border-strong);
+      background: #08080a;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .brand { font-weight: 650; }
+    .brand span { color: var(--text-muted); font-weight: 500; }
+    .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; flex-wrap: wrap; }
+    .nav a { color: var(--text-muted); text-decoration: none; }
+    .nav a:hover { color: var(--text); }
+    main { min-width: 0; padding: 24px; }
+    .panel { max-width: 1100px; margin: 0 auto; }
+    h1, h2 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 16px; margin: 24px 0 12px; }
+    .muted { color: var(--text-muted); }
+    .dim { color: var(--text-dim); }
+    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .scope { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+    .scope-item { border: 1px solid var(--border); background: var(--bg-elevated); border-radius: 8px; padding: 8px 10px; }
+    .callout {
+      border: 1px solid var(--border-strong);
+      background: #0b0f0e;
+      padding: 14px;
+      border-radius: 8px;
+      margin: 14px 0;
+    }
+    .card {
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .kv { display: grid; grid-template-columns: 220px 1fr; gap: 6px 16px; margin-top: 8px; }
+    .kv dt { color: var(--text-muted); }
+    .kv dd { margin: 0; overflow-wrap: anywhere; }
+    .counts { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+    .count { border: 1px solid var(--border); background: #0b0b0e; border-radius: 8px; padding: 8px 12px; min-width: 120px; }
+    .count .n { font-size: 20px; font-weight: 700; }
+    .count .l { color: var(--text-muted); font-size: 12px; }
+    .chip {
+      display: inline-flex;
+      justify-content: center;
+      min-width: 122px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      color: #050507;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .chip.verified { background: var(--accent); }
+    .chip.signed-unverified { background: var(--warn); }
+    .chip.unsigned { background: #64748b; color: #f8fafc; }
+    .chip.missing { background: var(--danger); color: white; }
+    .empty { color: var(--text-muted); padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated); }
+    .absence { border: 1px solid rgba(245,158,11,0.7); background: rgba(245,158,11,0.10); padding: 16px; border-radius: 8px; }
+    .absence h2 { color: #fde68a; font-size: 18px; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Pipelock <span>- Operator Console / Incident</span></div>
+    <div class="nav"><a href="/">Evidence</a><a href="/fleet">Fleet</a><a href="/workbench">Workbench</a><a href="/exemptions">Exemptions</a><span class="mono">read-only</span></div>
+  </header>
+  <main>
+    <div class="panel">
+      <h1>Incident Cockpit</h1>
+      <div class="muted">{{.Claim}}</div>
+      <div class="scope">
+        <span class="scope-item">org <span class="mono">{{if .OrgID}}{{.OrgID}}{{else}}-{{end}}</span></span>
+        <span class="scope-item">fleet <span class="mono">{{if .FleetID}}{{.FleetID}}{{else}}-{{end}}</span></span>
+      </div>
+
+      <div class="callout muted">This cockpit reads and correlates; it never kills an agent, publishes, or mutates fleet state. It {{.NonClaim}}.</div>
+      {{if not .RawAllowed}}
+        <div class="callout muted">Metadata view: decision hashes and versions are hidden. Fleet applied-state counts are always shown; they carry no follower identifiers.</div>
+      {{end}}
+
+      {{if not .ScopeProvided}}
+        <section class="empty">Supply <span class="mono">?org_id=&lt;org&gt;&amp;fleet_id=&lt;fleet&gt;&amp;artifact_hash=&lt;hash&gt;</span> to correlate a conductor decision with its fleet applied state.</section>
+      {{else}}
+        <h2>Conductor decision</h2>
+        {{if not .DecisionSourceConfigured}}
+          <section class="absence"><h2>No conductor decision source configured</h2><p class="muted">Decision replay requires the dashboard to be wired to a conductor read source.</p></section>
+        {{else if .DecisionMissing}}
+          <section class="empty">No recorded decision matched this artifact hash.</section>
+        {{else if .HasDecision}}
+          {{with .Decision}}
+          <section class="card">
+            <div>
+              <span class="chip {{.VerdictClass}}">{{.VerdictLabel}}</span>
+              <span class="chip {{.DivergenceClass}}">{{.DivergenceLabel}}</span>
+            </div>
+            <dl class="kv">
+              <dt>Action kind</dt><dd>{{.KindLabel}}</dd>
+              <dt>Recorded</dt><dd>{{.RecordedLabel}}</dd>
+              <dt>Replayed at</dt><dd>{{.ReplayedAtDisplay}}</dd>
+              <dt>Conflict code</dt><dd>{{.ConflictDisplay}}</dd>
+              <dt>Divergence reason</dt><dd>{{.DivergenceReasonDisplay}}</dd>
+              <dt>Result version</dt><dd class="mono">{{.ResultVersionDisplay}}</dd>
+              <dt>Artifact hash</dt><dd class="mono">{{.ArtifactHashDisplay}}</dd>
+              <dt>Recorded hash</dt><dd class="mono">{{.RecordedHashDisplay}}</dd>
+            </dl>
+          </section>
+          {{end}}
+        {{end}}
+
+        <h2>Fleet applied state</h2>
+        {{if not .FleetSourceConfigured}}
+          <section class="absence"><h2>No conductor fleet source configured</h2><p class="muted">Applied-state correlation requires the dashboard to be wired to a conductor read source.</p></section>
+        {{else if .HasFleet}}
+          {{with .Applied}}
+          {{if .Truncated}}<div class="callout muted">Showing counts for the first 500 followers returned by this scoped query.</div>{{end}}
+          <section class="card">
+            <div class="counts">
+              <div class="count"><div class="n">{{.Total}}</div><div class="l">followers</div></div>
+              <div class="count"><div class="n">{{.Verified}}</div><div class="l">verified applied</div></div>
+              <div class="count"><div class="n">{{.SignedUnverified}}</div><div class="l">signed, unverified</div></div>
+              <div class="count"><div class="n">{{.Unsigned}}</div><div class="l">unsigned/self-reported</div></div>
+              <div class="count"><div class="n">{{.NoReport}}</div><div class="l">no applied-state report</div></div>
+              <div class="count"><div class="n">{{.Drift}}</div><div class="l">drift</div></div>
+              <div class="count"><div class="n">{{.ApplyFailed}}</div><div class="l">apply failed</div></div>
+            </div>
+          </section>
+          {{end}}
+        {{end}}
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>

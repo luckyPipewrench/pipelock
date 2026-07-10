@@ -31,7 +31,7 @@ const (
 	auditSessionMaxBytes  = 128
 )
 
-//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html
+//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html
 var templateFS embed.FS
 
 var (
@@ -40,6 +40,8 @@ var (
 	agentsTemplate        = template.Must(template.ParseFS(templateFS, "agents.tmpl.html"))
 	investigatorTemplate  = template.Must(template.ParseFS(templateFS, "investigator.tmpl.html"))
 	fleetoverviewTemplate = template.Must(template.ParseFS(templateFS, "fleetoverview.tmpl.html"))
+	workbenchTemplate     = template.Must(template.ParseFS(templateFS, "workbench.tmpl.html"))
+	incidentTemplate      = template.Must(template.ParseFS(templateFS, "incident.tmpl.html"))
 )
 
 type pageData struct {
@@ -67,11 +69,12 @@ func New(opts Options) http.Handler {
 	model := NewReadModel(opts)
 	mux := http.NewServeMux()
 	d := &dashboardHandler{
-		model:        model,
-		hasFeature:   opts.HasFeature,
-		authorize:    opts.Authorize,
-		authorizeRaw: opts.AuthorizeRaw,
-		auditWriter:  opts.AuditWriter,
+		model:               model,
+		hasFeature:          opts.HasFeature,
+		authorize:           opts.Authorize,
+		authorizeRaw:        opts.AuthorizeRaw,
+		authorizeFleetScope: opts.AuthorizeFleetScope,
+		auditWriter:         opts.AuditWriter,
 	}
 	mux.Handle("/", d.gate(http.HandlerFunc(d.handleIndex)))
 	mux.Handle("/exemptions", d.gate(http.HandlerFunc(d.handleExemptions)))
@@ -80,16 +83,25 @@ func New(opts Options) http.Handler {
 	mux.Handle("/agent/", d.gate(http.HandlerFunc(d.handleAgent)))
 	mux.Handle("/fleet", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
 	mux.Handle("/fleet/", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
+	// DASH-3B: the Signed Action Workbench and Incident Cockpit are Enterprise
+	// fleet-tier, prepare/verify/replay-only surfaces. They are GET-only and
+	// reach no write path; the trailing-slash routes exist only to reject
+	// deeper paths with 404, never to add a mutating handler.
+	mux.Handle("/workbench", d.fleetGate(http.HandlerFunc(d.handleWorkbench)))
+	mux.Handle("/workbench/", d.fleetGate(http.HandlerFunc(d.handleWorkbench)))
+	mux.Handle("/incident", d.fleetGate(http.HandlerFunc(d.handleIncident)))
+	mux.Handle("/incident/", d.fleetGate(http.HandlerFunc(d.handleIncident)))
 	return mux
 }
 
 type dashboardHandler struct {
-	model        *ReadModel
-	hasFeature   func(string) bool
-	authorize    func(*http.Request) error
-	authorizeRaw func(*http.Request) error
-	auditWriter  io.Writer
-	auditMu      sync.Mutex
+	model               *ReadModel
+	hasFeature          func(string) bool
+	authorize           func(*http.Request) error
+	authorizeRaw        func(*http.Request) error
+	authorizeFleetScope func(*http.Request, DecisionScope, bool) error
+	auditWriter         io.Writer
+	auditMu             sync.Mutex
 }
 
 type rawAllowedContextKey struct{}
@@ -133,8 +145,10 @@ func (d *dashboardHandler) recordAudit(r *http.Request, raw bool) {
 	sessionDisplay, sessionHash := auditSessionField(session)
 	d.auditMu.Lock()
 	defer d.auditMu.Unlock()
-	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s method=%s path=%q session=%q session_sha256=%s remote=%s\n",
-		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path, sessionDisplay, sessionHash, r.RemoteAddr)
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard access role=%s method=%s path=%q session=%q session_sha256=%s org_sha256=%s fleet_sha256=%s artifact_sha256=%s remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path, sessionDisplay, sessionHash,
+		auditHashField(r.URL.Query().Get("org_id")), auditHashField(r.URL.Query().Get("fleet_id")),
+		auditHashField(r.URL.Query().Get("artifact_hash")), r.RemoteAddr)
 }
 
 func auditSessionField(session string) (display, hash string) {
@@ -162,6 +176,66 @@ func auditSessionField(session string) (display, hash string) {
 		display = "-"
 	}
 	return display, hash
+}
+
+func auditHashField(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func (d *dashboardHandler) recordDecisionScopeAudit(r *http.Request, raw bool, scope DecisionScope, page any) {
+	if d.auditWriter == nil {
+		return
+	}
+	role := "metadata"
+	if raw {
+		role = "raw"
+	}
+	var decisionSource, fleetSource, decisionFound, fleetFound, divergence bool
+	conflict := "-"
+	switch p := page.(type) {
+	case WorkbenchPage:
+		decisionSource = p.SourceConfigured
+		decisionFound = p.HasReplay
+		divergence = p.HasReplay && p.Replay.Divergence
+		if p.HasReplay && p.Replay.Conflict != "" {
+			conflict = p.Replay.Conflict
+		}
+	case IncidentPage:
+		decisionSource = p.DecisionSourceConfigured
+		fleetSource = p.FleetSourceConfigured
+		decisionFound = p.HasDecision
+		fleetFound = p.HasFleet
+		divergence = p.HasDecision && p.Decision.Divergence
+		if p.HasDecision && p.Decision.Conflict != "" {
+			conflict = p.Decision.Conflict
+		}
+	}
+	d.auditMu.Lock()
+	defer d.auditMu.Unlock()
+	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard scope role=%s method=%s path=%q org_sha256=%s fleet_sha256=%s artifact_sha256=%s decision_source=%t fleet_source=%t decision_found=%t fleet_found=%t divergence=%t conflict=%q remote=%s\n",
+		time.Now().UTC().Format(time.RFC3339), role, r.Method, r.URL.Path,
+		auditHashField(scope.OrgID), auditHashField(scope.FleetID), auditHashField(scope.ArtifactHash),
+		decisionSource, fleetSource, decisionFound, fleetFound, divergence, conflict, r.RemoteAddr)
+}
+
+func (d *dashboardHandler) authorizeFleetScopeRequest(w http.ResponseWriter, r *http.Request, scope DecisionScope, sourceConfigured bool, raw bool) bool {
+	if !sourceConfigured {
+		return true
+	}
+	if d.authorizeFleetScope == nil {
+		http.Error(w, "fleet scope authorization required", http.StatusForbidden)
+		return false
+	}
+	if err := d.authorizeFleetScope(r, normalizeDecisionScope(scope), raw); err != nil {
+		http.Error(w, "fleet scope not authorized", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 func (d *dashboardHandler) gate(next http.Handler) http.Handler {
@@ -342,6 +416,13 @@ func (d *dashboardHandler) handleFleetOverview(w http.ResponseWriter, r *http.Re
 		return
 	}
 	q := r.URL.Query()
+	if err := validateFleetScope(q.Get("org_id"), q.Get("fleet_id"), d.model.fleetSource != nil); err != nil {
+		http.Error(w, "invalid fleet scope", http.StatusBadRequest)
+		return
+	}
+	if !d.authorizeFleetScopeRequest(w, r, DecisionScope{OrgID: q.Get("org_id"), FleetID: q.Get("fleet_id")}, d.model.fleetSource != nil, rawAllowedFromContext(r)) {
+		return
+	}
 	overview, err := d.model.FleetOverview(r.Context(), q.Get("org_id"), q.Get("fleet_id"), rawAllowedFromContext(r))
 	if err != nil {
 		if errors.Is(err, errInvalidFleetScope) {
@@ -358,6 +439,96 @@ func (d *dashboardHandler) handleFleetOverview(w http.ResponseWriter, r *http.Re
 	}
 	w.Header().Set("Content-Type", contentTypeHTML)
 	_, _ = w.Write(buf.Bytes())
+}
+
+type decisionScopePageOptions struct {
+	path             string
+	tmpl             *template.Template
+	buildErr         string
+	renderErr        string
+	sourceConfigured func(*ReadModel) bool
+	build            func(context.Context, DecisionScope, bool) (any, error)
+}
+
+func (d *dashboardHandler) serveDecisionScopePage(w http.ResponseWriter, r *http.Request, opts decisionScopePageOptions) {
+	if r.URL.Path != opts.path {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	scope := decisionScopeFromRequest(r)
+	if err := validateDecisionScope(scope); err != nil {
+		http.Error(w, "invalid decision scope", http.StatusBadRequest)
+		return
+	}
+	raw := rawAllowedFromContext(r)
+	sourceConfigured := scope.ArtifactHash != "" && opts.sourceConfigured != nil && opts.sourceConfigured(d.model)
+	if !d.authorizeFleetScopeRequest(w, r, scope, sourceConfigured, raw) {
+		return
+	}
+	page, err := opts.build(r.Context(), scope, raw)
+	if err != nil {
+		http.Error(w, opts.buildErr, http.StatusInternalServerError)
+		return
+	}
+	if scope.ArtifactHash != "" {
+		d.recordDecisionScopeAudit(r, raw, scope, page)
+	}
+	var buf bytes.Buffer
+	if err := opts.tmpl.Execute(&buf, page); err != nil {
+		http.Error(w, opts.renderErr, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// handleWorkbench serves the read-only Signed Action Workbench. It is GET-only
+// and reaches no write path: it renders static prepare guidance and, when a
+// conductor decision source is wired and an artifact hash is supplied, the
+// read-only replay of that past decision.
+func (d *dashboardHandler) handleWorkbench(w http.ResponseWriter, r *http.Request) {
+	d.serveDecisionScopePage(w, r, decisionScopePageOptions{
+		path:      "/workbench",
+		tmpl:      workbenchTemplate,
+		buildErr:  "could not build workbench view",
+		renderErr: "could not render workbench",
+		sourceConfigured: func(m *ReadModel) bool {
+			return m.conductorSource != nil
+		},
+		build: func(ctx context.Context, scope DecisionScope, raw bool) (any, error) {
+			return d.model.Workbench(ctx, scope, raw)
+		},
+	})
+}
+
+// handleIncident serves the read-only Incident Cockpit. It is GET-only and
+// reaches no write path: it correlates a conductor decision replay with the
+// bounded fleet applied-state summary.
+func (d *dashboardHandler) handleIncident(w http.ResponseWriter, r *http.Request) {
+	d.serveDecisionScopePage(w, r, decisionScopePageOptions{
+		path:      "/incident",
+		tmpl:      incidentTemplate,
+		buildErr:  "could not build incident view",
+		renderErr: "could not render incident view",
+		sourceConfigured: func(m *ReadModel) bool {
+			return m.conductorSource != nil || m.fleetSource != nil
+		},
+		build: func(ctx context.Context, scope DecisionScope, raw bool) (any, error) {
+			return d.model.Incident(ctx, scope, raw)
+		},
+	})
+}
+
+func decisionScopeFromRequest(r *http.Request) DecisionScope {
+	q := r.URL.Query()
+	return DecisionScope{
+		OrgID:        q.Get("org_id"),
+		FleetID:      q.Get("fleet_id"),
+		ArtifactHash: q.Get("artifact_hash"),
+	}
 }
 
 func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request) {

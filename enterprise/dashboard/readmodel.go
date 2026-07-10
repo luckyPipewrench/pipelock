@@ -62,9 +62,15 @@ type Options struct {
 	// (fail closed): a destination URL can carry a capability token, and the raw
 	// payload is the largest exfil surface, so raw is least-privilege by default.
 	AuthorizeRaw func(*http.Request) error
-	// AuditWriter, when non-nil, receives one line per authenticated dashboard
-	// request (role, method, path, session, remote address). Viewing evidence is
-	// itself an audited action. Nil disables the access log.
+	// AuthorizeFleetScope gates reads keyed by an operator-supplied org/fleet
+	// scope before any conductor replay or fleet source is called. Nil is
+	// fail-closed when a read source is configured for the requested page.
+	AuthorizeFleetScope func(*http.Request, DecisionScope, bool) error
+	// AuditWriter, when non-nil, receives access lines for authenticated
+	// dashboard requests and scope lines for replay/fleet correlation lookups.
+	// Scope values are logged as stable hashes, not raw org/fleet/artifact
+	// identifiers. Viewing evidence is itself an audited action. Nil disables
+	// the access log.
 	AuditWriter io.Writer
 	FleetSource FleetDataSource
 	// ConductorSource, when non-nil, is the read-only conductor decision

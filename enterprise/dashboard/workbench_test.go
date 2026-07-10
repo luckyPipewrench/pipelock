@@ -124,11 +124,12 @@ func TestWorkbench_NoStateMutatingRoute(t *testing.T) {
 
 	source := &fakeConductorSource{view: testReplayView(), found: true}
 	handler := New(Options{
-		ReceiptDir:      t.TempDir(),
-		HasFeature:      allowFleetFeature,
-		ConductorSource: source,
-		FleetSource:     &fakeFleetSource{},
-		AuthorizeRaw:    allowRawAccess,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		ConductorSource:     source,
+		FleetSource:         &fakeFleetSource{},
+		AuthorizeRaw:        allowRawAccess,
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	paths := []string{"/workbench", wbReplayTarget(), "/incident", "/incident?org_id=" + wbTestOrgID + "&fleet_id=" + wbTestFleetID + "&artifact_hash=" + wbTestArtifactHash}
 	mutating := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}
@@ -144,6 +145,79 @@ func TestWorkbench_NoStateMutatingRoute(t *testing.T) {
 	}
 	if got := source.calls.Load(); got != 0 {
 		t.Fatalf("read-only source was invoked %d times by mutating requests; a mutating method reached the model", got)
+	}
+}
+
+func TestWorkbench_FailClosedScopeAuthorization(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name      string
+		authorize func(*http.Request, DecisionScope, bool) error
+	}{
+		{name: "missing_authorizer", authorize: nil},
+		{name: "denied_authorizer", authorize: func(*http.Request, DecisionScope, bool) error {
+			return errors.New("wrong fleet")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := &fakeConductorSource{view: testReplayView(), found: true}
+			handler := New(Options{
+				ReceiptDir:          t.TempDir(),
+				HasFeature:          allowFleetFeature,
+				ConductorSource:     source,
+				AuthorizeFleetScope: tt.authorize,
+			})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+			}
+			if got := source.calls.Load(); got != 0 {
+				t.Fatalf("source calls = %d, want 0 before scope authorization", got)
+			}
+		})
+	}
+}
+
+func TestWorkbench_ScopeAuditRedactsIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	var audit strings.Builder
+	source := &fakeConductorSource{view: testReplayView(), found: true}
+	handler := New(Options{
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		ConductorSource:     source,
+		AuthorizeFleetScope: allowFleetScope,
+		AuditWriter:         &audit,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	log := audit.String()
+	for _, secret := range []string{wbTestOrgID, wbTestFleetID, wbTestArtifactHash, wbSensitiveReason} {
+		if strings.Contains(log, secret) {
+			t.Fatalf("scope audit leaked %q: %s", secret, log)
+		}
+	}
+	for _, want := range []string{
+		"pipelock-dashboard scope",
+		"org_sha256=",
+		"fleet_sha256=",
+		"artifact_sha256=",
+		"decision_source=true",
+		"decision_found=true",
+		"divergence=true",
+		`conflict="-"`,
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("scope audit missing %q: %s", want, log)
+		}
 	}
 }
 
@@ -218,10 +292,11 @@ func TestWorkbench_ReplayRawView(t *testing.T) {
 
 	source := &fakeConductorSource{view: testReplayView(), found: true}
 	handler := New(Options{
-		ReceiptDir:      t.TempDir(),
-		HasFeature:      allowFleetFeature,
-		ConductorSource: source,
-		AuthorizeRaw:    allowRawAccess,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		ConductorSource:     source,
+		AuthorizeRaw:        allowRawAccess,
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
@@ -251,6 +326,7 @@ func TestWorkbench_ReplayMetadataViewRedacts(t *testing.T) {
 		HasFeature:      allowFleetFeature,
 		ConductorSource: source,
 		// No AuthorizeRaw: metadata view must fail closed.
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
@@ -280,10 +356,11 @@ func TestWorkbench_ReplayRawEscapesHostileStrings(t *testing.T) {
 	view.DivergenceReason = hostileScript
 	source := &fakeConductorSource{view: view, found: true}
 	handler := New(Options{
-		ReceiptDir:      t.TempDir(),
-		HasFeature:      allowFleetFeature,
-		ConductorSource: source,
-		AuthorizeRaw:    allowRawAccess,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		ConductorSource:     source,
+		AuthorizeRaw:        allowRawAccess,
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
@@ -305,7 +382,7 @@ func TestWorkbench_ReplayNotFound(t *testing.T) {
 	t.Parallel()
 
 	source := &fakeConductorSource{found: false}
-	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source})
+	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
 	if rec.Code != http.StatusOK {
@@ -320,7 +397,7 @@ func TestWorkbench_ReplayNotFoundMetadataRedactsScope(t *testing.T) {
 	t.Parallel()
 
 	source := &fakeConductorSource{found: false}
-	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source})
+	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
 	if rec.Code != http.StatusOK {
@@ -341,7 +418,7 @@ func TestWorkbench_SourceErrorReturnsServerError(t *testing.T) {
 	t.Parallel()
 
 	source := &fakeConductorSource{err: errors.New("source unavailable")}
-	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source})
+	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, wbReplayTarget(), nil))
 	if rec.Code != http.StatusInternalServerError {
@@ -352,7 +429,7 @@ func TestWorkbench_SourceErrorReturnsServerError(t *testing.T) {
 func TestWorkbench_RejectsInvalidScope(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: &fakeConductorSource{}})
+	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: &fakeConductorSource{}, AuthorizeFleetScope: allowFleetScope})
 	for _, target := range []string{
 		"/workbench?artifact_hash=" + wbTestArtifactHash,                            // hash without org/fleet
 		"/workbench?org_id=" + wbTestOrgID + "&artifact_hash=" + wbTestArtifactHash, // missing fleet

@@ -333,12 +333,14 @@ func TestHandler_RoutePermissionUsesSpecificPermission(t *testing.T) {
 		{path: "/incident", want: PermissionIncidentRead},
 	}
 	for _, tc := range tests {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tc.path, nil)
-		handler.ServeHTTP(rec, req)
-		if len(got) == 0 || got[len(got)-1] != tc.want {
-			t.Fatalf("%s permission = %v, want last permission %q", tc.path, got, tc.want)
-		}
+		t.Run(tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tc.path, nil)
+			handler.ServeHTTP(rec, req)
+			if len(got) == 0 || got[len(got)-1] != tc.want {
+				t.Fatalf("%s permission = %v, want last permission %q", tc.path, got, tc.want)
+			}
+		})
 	}
 }
 

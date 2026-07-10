@@ -847,7 +847,7 @@ func extractReceiptsFromEntries(entries []recorder.Entry) ([]Receipt, error) {
 		if e.Type == recorderEntryType {
 			r, err := receiptFromEntry(e)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("receipt at seq %d: %w", e.Sequence, err)
 			}
 			receipts = append(receipts, *r)
 			continue

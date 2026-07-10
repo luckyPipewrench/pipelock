@@ -122,6 +122,45 @@ func TestUnmarshal_RejectsUnknownFieldInActionRecord(t *testing.T) {
 	}
 }
 
+// TestUnmarshal_RejectsTrailingTokens proves that valid receipt JSON followed
+// by anything else fails closed with ErrTrailingTokens, covering both the
+// trailing-valid-JSON branch and the trailing-garbage branch. Accepting
+// trailing tokens would let a producer smuggle a second document past a
+// verifier that only reads the first.
+func TestUnmarshal_RejectsTrailingTokens(t *testing.T) {
+	t.Parallel()
+	r, _ := signTestReceipt(t)
+	data, err := Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	// Sanity: the untampered receipt unmarshals cleanly.
+	if _, err := Unmarshal(data); err != nil {
+		t.Fatalf("Unmarshal rejected a clean receipt: %v", err)
+	}
+
+	withTrailer := func(trailer string) []byte {
+		out := make([]byte, 0, len(data)+len(trailer))
+		out = append(out, data...)
+		out = append(out, trailer...)
+		return out
+	}
+	cases := map[string]string{
+		"trailing_json_object": `{"vendor":"acme"}`,
+		"trailing_json_number": " 42",
+		"trailing_garbage":     "garbage",
+	}
+	for name, trailer := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := Unmarshal(withTrailer(trailer)); !errors.Is(err, ErrTrailingTokens) {
+				t.Fatalf("Unmarshal did not reject trailing tokens with ErrTrailingTokens: %v", err)
+			}
+		})
+	}
+}
+
 // TestExtractReceiptsBytes_RejectsUnexpectedRecorderType proves AF-37: a
 // recorder file mixing a valid receipt with an entry whose type is outside the
 // taxonomy fails closed rather than certifying a "valid receipt subsequence".

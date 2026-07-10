@@ -41,6 +41,72 @@ func writeServerTestConfig(t *testing.T, content string) string {
 	return path
 }
 
+func TestNeedsHITLApprover(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+		want   bool
+	}{
+		{
+			name: "default taint policy can ask",
+			want: true,
+		},
+		{
+			name: "permissive taint observes only",
+			mutate: func(cfg *config.Config) {
+				cfg.Taint.Policy = config.ModePermissive
+			},
+			want: false,
+		},
+		{
+			name: "disabled taint with response warn does not need approver",
+			mutate: func(cfg *config.Config) {
+				cfg.Taint.Enabled = false
+			},
+			want: false,
+		},
+		{
+			name: "response ask needs approver even when taint permissive",
+			mutate: func(cfg *config.Config) {
+				cfg.Taint.Policy = config.ModePermissive
+				cfg.ResponseScanning.Action = config.ActionAsk
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			if tt.mutate != nil {
+				tt.mutate(cfg)
+			}
+			if got := needsHITLApprover(cfg); got != tt.want {
+				t.Fatalf("needsHITLApprover() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	if needsHITLApprover(nil) {
+		t.Fatal("needsHITLApprover(nil) = true, want false")
+	}
+	if got := newRuntimeApprover(nil); got != nil {
+		t.Fatal("newRuntimeApprover(nil) returned approver, want nil")
+	}
+
+	permissive := config.Defaults()
+	permissive.Taint.Policy = config.ModePermissive
+	if got := newRuntimeApprover(permissive); got != nil {
+		t.Fatal("newRuntimeApprover(permissive taint) returned approver, want nil")
+	}
+
+	approver := newRuntimeApprover(config.Defaults())
+	if approver == nil {
+		t.Fatal("newRuntimeApprover(defaults) = nil, want approver")
+	}
+	approver.Close()
+}
+
 // newTestServer builds a Server with an in-memory stderr sink and no
 // listener bindings yet. Defaults() provides a populated api_allowlist so
 // strict-mode overrides stay valid through cfg.Validate. The returned
@@ -903,6 +969,34 @@ func TestServer_Reload_MCPResponseScanningFallbackEmitsNotice(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "for reload mode") {
 		t.Fatalf("reload stderr used reload as a runtime mode label:\n%s", buf.String())
+	}
+}
+
+func TestServer_ReloadWarnsWhenHITLAskEnabledWithoutStartupApprover(t *testing.T) {
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"taint:",
+		"  enabled: true",
+		"  policy: permissive",
+		"",
+	}, "\n"))
+
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+	})
+	if s.hasApprover {
+		t.Fatal("permissive taint startup unexpectedly initialized HITL approver")
+	}
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.Taint.Policy = config.ModeBalanced
+	buf.reset()
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !buf.contains("HITL ask mode but approver was not initialized") {
+		t.Fatalf("stderr missing HITL reload warning:\n%s", buf.String())
 	}
 }
 

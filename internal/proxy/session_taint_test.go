@@ -112,6 +112,26 @@ func TestEvaluateHTTPTaint_ExternalPublishAfterUntrustedExposureAsks(t *testing.
 	}
 }
 
+func TestEvaluateHTTPTaint_PermissiveObservesWithoutAsk(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Taint.Policy = config.ModePermissive
+	sess := &SessionState{}
+
+	observeHTTPResponseTaint(sess, cfg, "http://llm-gateway.vendor.example:4000/v1/chat/completions", "application/json", "forward_response", false)
+
+	targetURL, err := url.Parse("http://llm-gateway.vendor.example:4000/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	if decision.Result.Decision != session.PolicyAllow {
+		t.Fatalf("decision = %v, want allow", decision.Result.Decision)
+	}
+	if decision.Result.Reason != "taint_permissive_observe_only" {
+		t.Fatalf("reason = %q", decision.Result.Reason)
+	}
+}
+
 func TestEvaluateHTTPTaint_TrustOverrideHonorsScope(t *testing.T) {
 	cfg := config.Defaults()
 	sess := &SessionState{}

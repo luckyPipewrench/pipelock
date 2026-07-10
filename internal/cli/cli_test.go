@@ -1432,7 +1432,8 @@ func TestRunCmd_ReloadToAskMode(t *testing.T) {
 
 		dir := t.TempDir()
 		cfgPath := filepath.Join(dir, "test.yaml")
-		// Start with balanced mode (no HITL approver created)
+		// Start with default balanced taint policy, which initializes a HITL
+		// approver because taint decisions can ask.
 		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
@@ -1516,7 +1517,7 @@ func TestRunCmd_WithAskModeApprover(t *testing.T) {
 
 		dir := t.TempDir()
 		cfgPath := filepath.Join(dir, "test.yaml")
-		// Start with ask mode so hasApprover=true and approver is created
+		// Start with response ask mode so hasApprover=true and approver is created.
 		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:

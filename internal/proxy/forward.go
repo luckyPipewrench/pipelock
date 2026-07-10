@@ -1062,7 +1062,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	case session.PolicyAsk:
 		forwardRequiresReauth = true
 		decision := hitl.DecisionBlock
-		if p.approver != nil {
+		blockReason := forwardTaint.Result.Reason
+		switch {
+		case p.approver == nil:
+			blockReason += " (no HITL approver)"
+		case !p.approver.IsTerminal():
+			blockReason += " (HITL stdin is not a terminal)"
+		default:
 			decision = p.approver.Ask(&hitl.Request{
 				Agent:   agent,
 				URL:     targetURL,
@@ -1075,7 +1081,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               "taint_policy",
-				Pattern:             forwardTaint.Result.Reason,
+				Pattern:             blockReason,
 				Transport:           "forward",
 				Method:              r.Method,
 				Target:              targetURL,
@@ -1094,7 +1100,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
 			writeBlockedError(w,
 				blockInfoFor(blockreason.AuthorityMismatch, "taint_policy"),
-				"blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
+				"blocked: "+blockReason, http.StatusForbidden)
 			return
 		}
 		forwardTaint.Authority = session.AuthorityOperatorOverride

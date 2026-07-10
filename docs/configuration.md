@@ -2648,6 +2648,50 @@ taint:
 | `elevated_paths` | []string | `*/config/*`, `*/middleware*` | Globs that trigger warn/ask rather than block. |
 | `trust_overrides` | []object | empty | Narrow exemptions (see below). |
 
+### Common taint decisions
+
+`external_publish_after_untrusted_external_exposure` means the session consumed
+untrusted external content, then attempted a publish-like operation such as
+`POST`, `PUT`, `PATCH`, or `DELETE` without exact user authority or an operator
+override. This is separate from DLP: DLP answers "does this request contain a
+secret?", while taint policy answers "did untrusted content influence a later
+outbound side effect?"
+
+For local model gateways such as LiteLLM, a log line like this can appear when
+the agent sends chat requests through the forward proxy:
+
+```json
+{"event":"taint_decision","method":"POST","url":"http://litellm:4000/v1/chat/completions","decision":"ask","reason":"external_publish_after_untrusted_external_exposure","source_url":"http://litellm:4000/v1/chat/completions"}
+```
+
+If that gateway is operator-trusted and clean model responses from it should not
+taint the session, add its hostname (not URL or port) to
+`taint.allowlisted_domains`:
+
+```yaml
+taint:
+  allowlisted_domains:
+    - "litellm"
+```
+
+Only do this for a model gateway you operate and trust as part of the agent's
+reasoning path. If the gateway injects web search, retrieval, or tool output
+that Pipelock cannot separately observe, leave it untrusted so taint still
+follows that external content.
+
+This affects future observations only. A session that is already tainted remains
+tainted until a new task/session boundary clears the taint state. To observe
+taint without any taint-policy enforcement while tuning a deployment, set
+`taint.policy: permissive`; other scanners such as DLP and response scanning
+keep their configured enforcement behavior.
+
+When taint policy returns `decision: "ask"`, Pipelock can only prompt an
+operator if it was started with an interactive terminal. The prompt appears in
+the terminal running Pipelock and accepts allow/block input. In headless
+deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask`
+fails closed and blocks; configure an allowlist, a narrow trust override, or
+`taint.policy: permissive` during tuning, then retry the request.
+
 ### Trust overrides
 
 `trust_overrides` grants a scoped, time-limited exemption that lets a tainted session perform an otherwise-blocked action.

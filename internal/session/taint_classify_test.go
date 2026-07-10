@@ -20,6 +20,7 @@ func TestClassifyURLSource(t *testing.T) {
 		{name: "localhost is trusted", rawURL: "http://localhost:3000/docs", want: session.TaintTrusted},
 		{name: "loopback is trusted", rawURL: "http://127.0.0.1:8080/health", want: session.TaintTrusted},
 		{name: "allowlisted docs are references", rawURL: testGitHubCopilotDocs, want: session.TaintAllowlistedReference},
+		{name: "allowlisted single-label gateway is reference", rawURL: "http://litellm:4000/v1/chat/completions", want: session.TaintAllowlistedReference},
 		{name: "random site is untrusted", rawURL: "https://evil.example/backdoor", want: session.TaintExternalUntrusted},
 		{name: "bad url is untrusted", rawURL: "://not-a-url", want: session.TaintExternalUntrusted},
 	}
@@ -27,7 +28,7 @@ func TestClassifyURLSource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := session.ClassifyURLSource(tt.rawURL, []string{"docs.github.com"})
+			got := session.ClassifyURLSource(tt.rawURL, []string{"docs.github.com", "litellm"})
 			if got != tt.want {
 				t.Fatalf("ClassifyURLSource(%q) = %v, want %v", tt.rawURL, got, tt.want)
 			}

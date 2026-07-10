@@ -182,6 +182,68 @@ func TestPolicyMatrixEvaluate(t *testing.T) {
 	}
 }
 
+func TestPolicyMatrixEvaluate_PermissiveObserveOnly(t *testing.T) {
+	pm := session.PolicyMatrix{Profile: "permissive"}
+
+	tests := []struct {
+		name        string
+		taint       session.TaintLevel
+		action      session.ActionClass
+		sensitivity session.ActionSensitivity
+		authority   session.AuthorityKind
+		opts        session.PolicyEvaluateOptions
+	}{
+		{
+			name:      "publish after untrusted exposure allows",
+			taint:     session.TaintExternalUntrusted,
+			action:    session.ActionClassPublish,
+			authority: session.AuthorityPolicy,
+		},
+		{
+			name:      "secret use after untrusted exposure allows",
+			taint:     session.TaintExternalUntrusted,
+			action:    session.ActionClassSecret,
+			authority: session.AuthorityUserBroad,
+		},
+		{
+			name:      "exec after untrusted exposure allows",
+			taint:     session.TaintExternalUntrusted,
+			action:    session.ActionClassExec,
+			authority: session.AuthorityUserExact,
+		},
+		{
+			name:        "hostile sensitive action allows",
+			taint:       session.TaintExternalHostile,
+			action:      session.ActionClassWrite,
+			sensitivity: session.SensitivityProtected,
+			authority:   session.AuthorityUnknown,
+		},
+		{
+			name:        "fail safe low confidence read allows",
+			taint:       session.TaintExternalHostile,
+			action:      session.ActionClassRead,
+			sensitivity: session.SensitivityProtected,
+			authority:   session.AuthorityUserBroad,
+			opts: session.PolicyEvaluateOptions{
+				FailSafeClassification:  true,
+				ClassificationConfident: false,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pm.EvaluateWithOptions(tt.taint, tt.action, tt.sensitivity, tt.authority, tt.opts)
+			if got.Decision != session.PolicyAllow {
+				t.Fatalf("decision = %s, want allow", got.Decision)
+			}
+			if got.Reason != "taint_permissive_observe_only" {
+				t.Fatalf("reason = %q, want permissive observe-only", got.Reason)
+			}
+		})
+	}
+}
+
 func TestPolicyMatrixEvaluateWithOptions_FailSafeLowConfidenceRead(t *testing.T) {
 	t.Parallel()
 

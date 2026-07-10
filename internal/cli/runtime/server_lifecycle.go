@@ -797,8 +797,8 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 
 		var mcpApprover *hitl.Approver
-		if s.scanner.ResponseAction() == config.ActionAsk {
-			mcpApprover = hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
+		if needsHITLApprover(cfg) {
+			mcpApprover = newRuntimeApprover(cfg)
 			// Closed inside the MCP listener goroutine below, after
 			// RunHTTPListenerProxy returns, so the approver outlives every
 			// request the listener hands it. A function-scoped defer would

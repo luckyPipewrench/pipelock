@@ -49,6 +49,8 @@ const (
 
 	// scanDirectionResponse labels an injection finding on the response body.
 	scanDirectionResponse = "response"
+
+	mediaUnscannedOutcome = "media_passthrough_unscanned"
 )
 
 // ReverseProxyBlockResponse is the JSON error body returned when the reverse
@@ -1386,7 +1388,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// run the content-sniffing fallback for generic types
 			// (application/octet-stream, empty, etc.) that might
 			// actually be images.
-			outcomeReason := "media_passthrough_unscanned"
+			outcomeReason := mediaUnscannedOutcome
 			maxRead := cfg.MediaPolicy.EffectiveMaxImageBytes()
 			if maxRead <= 0 {
 				maxRead = config.DefaultMaxImageBytes
@@ -1483,11 +1485,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// boundary-limited label media_passthrough_unscanned - never
 	// scanned/clean/complete coverage. An upstream can serve instruction-bearing
 	// text under an audio/* or video/* Content-Type, and this label makes clear
-	// Pipelock did not inspect the streamed bytes. (Matched inline like the
-	// sibling passthrough reasons; a named const trips gosec G101 on
-	// "passthrough".)
+	// Pipelock did not inspect the streamed bytes.
 	if isBinaryMIME(mediaCT) {
-		binaryOutcomeReason := "media_passthrough_unscanned"
+		binaryOutcomeReason := mediaUnscannedOutcome
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
 			limited := io.LimitReader(resp.Body, int64(reverseProxyMaxBodyBytes)+1)
 			body, err := io.ReadAll(limited)

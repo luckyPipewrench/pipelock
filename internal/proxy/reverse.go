@@ -534,7 +534,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	ctx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 		Method: r.Method, URL: targetURL, ClientIP: clientIP,
-		RequestID: requestID, Agent: agent, Transport: "reverse",
+		RequestID: requestID, Agent: agent, Transport: "reverse", PolicyHash: cfg.CanonicalPolicyHash(),
 	})
 	ctx = context.WithValue(ctx, ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)

@@ -285,8 +285,13 @@ type EmitOpts struct {
 	ContractSelectorID    string
 	ContractGeneration    uint64
 	// PolicyHash is the canonical policy hash for the resolved runtime config
-	// that produced this decision. V2 EvidenceReceipt emission consumes this;
-	// v1 action receipts keep using the emitter's config hash snapshot.
+	// snapshot that produced this decision. Both v1 action receipts and V2
+	// EvidenceReceipt emission consume it: when non-empty it is stamped on the
+	// receipt in preference to the emitter's mutable config-hash atomic, binding
+	// the receipt to the policy that decided the request even if a hot reload
+	// has since advanced the live policy. Callers with no request snapshot
+	// (session_open, non-proxy emitters) leave it empty and fall back to the
+	// emitter's atomic.
 	PolicyHash string
 
 	DecisionPhase     string
@@ -499,6 +504,20 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		return err
 	}
 
+	// PolicyHash precedence: a non-empty per-emission opts.PolicyHash is the
+	// canonical policy hash of the config snapshot that actually decided this
+	// request, so it wins over the emitter's mutable configHash atomic. The
+	// atomic is updated on hot reload and can advance to the NEW policy while an
+	// in-flight request decided under the OLD policy is still being receipted;
+	// preferring the per-emission hash binds the receipt to the policy that made
+	// the decision. Callers with no request snapshot (session_open, non-proxy
+	// emitters) leave opts.PolicyHash empty and fall back to the atomic exactly
+	// as before.
+	policyHash := configHashString(e.configHash.Load())
+	if opts.PolicyHash != "" {
+		policyHash = opts.PolicyHash
+	}
+
 	// Sanitize secret-bearing fields BEFORE signing. When redaction is enabled
 	// the recorder would otherwise redact target/pattern AFTER signing,
 	// desyncing the on-disk canonical bytes from both the signature and the
@@ -528,7 +547,7 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 		Target:                target,
 		SideEffectClass:       sideEffect,
 		Reversibility:         reversibility,
-		PolicyHash:            configHashString(e.configHash.Load()),
+		PolicyHash:            policyHash,
 		Verdict:               NormalizeVerdict(opts.Verdict),
 		DecisionPhase:         opts.DecisionPhase,
 		DeferID:               opts.DeferID,

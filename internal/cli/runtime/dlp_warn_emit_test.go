@@ -59,12 +59,13 @@ func TestEmitDLPWarnWritesReceiptAndMetric(t *testing.T) {
 
 	m := metrics.New()
 	ctx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
-		Method:    http.MethodGet,
-		URL:       "https://example.com/api",
-		ClientIP:  "10.0.0.1",
-		RequestID: "req-warn-1",
-		Agent:     "agent-1",
-		Transport: "fetch",
+		Method:     http.MethodGet,
+		URL:        "https://example.com/api",
+		ClientIP:   "10.0.0.1",
+		RequestID:  "req-warn-1",
+		Agent:      "agent-1",
+		Transport:  "fetch",
+		PolicyHash: "snapshot-policy-hash",
 	})
 
 	emitDLPWarn(audit.NewNop(), m, emitter, ctx, "warn-url", "high")
@@ -99,6 +100,9 @@ func TestEmitDLPWarnWritesReceiptAndMetric(t *testing.T) {
 	}
 	if rcpt.ActionRecord.Target != "https://example.com/api" {
 		t.Fatalf("receipt target = %q, want https://example.com/api", rcpt.ActionRecord.Target)
+	}
+	if rcpt.ActionRecord.PolicyHash != "snapshot-policy-hash" {
+		t.Fatalf("receipt policy_hash = %q, want snapshot-policy-hash", rcpt.ActionRecord.PolicyHash)
 	}
 
 	recorderBody := httptest.NewRecorder()

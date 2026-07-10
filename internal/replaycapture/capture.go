@@ -9,9 +9,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -60,7 +58,7 @@ type CapturedScenario struct {
 	Receipts     []receipt.Receipt
 	EvidenceFile string // recorder JSONL the verifier reads (evidence-proxy-0.jsonl)
 	SignerKeyHex string // ed25519 public key hex
-	PolicyHash   string // config hash; equals each receipt's policy_hash
+	PolicyHash   string // "sha256:"-labeled canonical policy hash; action receipts carry the raw form of the same digest
 	RootHash     string // chain root hash after the final receipt
 	FinalSeq     uint64
 	ReceiptCount int
@@ -161,6 +159,11 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 		afterRecorderConstructedForTest(rec)
 	}
 
+	// policyHash is the "sha256:"-labeled canonical policy hash. It is stamped on
+	// the session_open control receipt (via the emitter's config-hash atomic)
+	// and reported as the packet/launch-manifest policy hash, so those all agree
+	// and the public-gallery allowlist sees a labeled hash. Proxy action
+	// receipts carry the raw (unlabeled) canonical form of the same digest.
 	policyHash := configHash(cfg)
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:       rec,
@@ -400,18 +403,14 @@ func singleEvidenceFile(dir string) (string, error) {
 	return matches[0], nil
 }
 
-// configHash returns a deterministic "sha256:<hex>" digest of the lab config
-// that produced the receipts. Stamped as the receipt policy hash so the packet
-// policy hash honestly reflects the policy in force.
+// configHash returns the "sha256:<hex>" labeled canonical policy hash of the lab
+// config that produced the receipts. This is the same policy view the proxy
+// binds to action receipts (cfg.CanonicalPolicyHash()), labeled for the
+// session_open control receipt so the packet honestly reflects the policy in
+// force. Action receipts carry the raw (unlabeled) form; the label only marks
+// the session_open policy hash for the public-gallery allowlist.
 func configHash(cfg *config.Config) string {
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		// config.Config marshals cleanly; a failure here is a programming error,
-		// not runtime input. Fall back to a stable sentinel rather than panic.
-		data = []byte(cfg.Mode)
-	}
-	sum := sha256.Sum256(data)
-	return policyHashLabelPrefix + hex.EncodeToString(sum[:])
+	return policyHashLabelPrefix + cfg.CanonicalPolicyHash()
 }
 
 // labPrincipal / labActor are the synthetic, public-safe identity stamped into

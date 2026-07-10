@@ -152,8 +152,11 @@ func TestProxy_ReceiptEmission_FetchBlock(t *testing.T) {
 	if r.ActionRecord.Transport != "fetch" {
 		t.Errorf("expected transport fetch, got %q", r.ActionRecord.Transport)
 	}
-	if r.ActionRecord.PolicyHash != "test-config-hash" {
-		t.Errorf("expected policy_hash test-config-hash, got %q", r.ActionRecord.PolicyHash)
+	// The receipt binds to the deciding config's canonical policy hash (the
+	// per-emission PolicyHash the proxy stamps), not the emitter's mutable
+	// config-hash atomic.
+	if want := cfg.CanonicalPolicyHash(); r.ActionRecord.PolicyHash != want {
+		t.Errorf("expected policy_hash %q, got %q", want, r.ActionRecord.PolicyHash)
 	}
 
 	if err := receipt.VerifyWithKey(r, r.SignerKey); err != nil {
@@ -736,8 +739,8 @@ fetch_proxy:
 	}
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	if cfg.Hash() == reloadCfg.Hash() {
-		t.Fatal("expected distinct raw config hashes for aborted-reload receipt test")
+	if cfg.CanonicalPolicyHash() == reloadCfg.CanonicalPolicyHash() {
+		t.Fatal("expected distinct canonical policy hashes for aborted-reload receipt test")
 	}
 	reloadSc := scanner.New(reloadCfg)
 
@@ -776,10 +779,10 @@ fetch_proxy:
 		if uErr != nil {
 			t.Fatalf("unmarshal receipt: %v", uErr)
 		}
-		if r.ActionRecord.PolicyHash != cfg.Hash() {
-			t.Fatalf("expected aborted reload to preserve receipt policy hash %q, got %q", cfg.Hash(), r.ActionRecord.PolicyHash)
+		if want := cfg.CanonicalPolicyHash(); r.ActionRecord.PolicyHash != want {
+			t.Fatalf("expected aborted reload to preserve receipt policy hash %q, got %q", want, r.ActionRecord.PolicyHash)
 		}
-		if r.ActionRecord.PolicyHash == reloadCfg.Hash() {
+		if r.ActionRecord.PolicyHash == reloadCfg.CanonicalPolicyHash() {
 			t.Fatal("receipt unexpectedly attested the aborted reload config hash")
 		}
 		return
@@ -893,8 +896,8 @@ fetch_proxy:
 	}
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	if cfg.Hash() == reloadCfg.Hash() {
-		t.Fatal("expected distinct config hashes for failed reload")
+	if cfg.CanonicalPolicyHash() == reloadCfg.CanonicalPolicyHash() {
+		t.Fatal("expected distinct canonical policy hashes for failed reload")
 	}
 
 	if err := os.Chmod(recDir, 0o500); err != nil { // #nosec G302 -- deliberately read-only dir to force raw-escrow write failure
@@ -960,11 +963,11 @@ fetch_proxy:
 		t.Fatalf("post-failure request unexpectedly carried session_control: %+v",
 			receipts[1].ActionRecord.SessionControl)
 	}
-	if receipts[1].ActionRecord.PolicyHash != cfg.Hash() {
+	if want := cfg.CanonicalPolicyHash(); receipts[1].ActionRecord.PolicyHash != want {
 		t.Fatalf("post-failure receipt policy hash = %q, want old hash %q",
-			receipts[1].ActionRecord.PolicyHash, cfg.Hash())
+			receipts[1].ActionRecord.PolicyHash, want)
 	}
-	if receipts[1].ActionRecord.PolicyHash == reloadCfg.Hash() {
+	if receipts[1].ActionRecord.PolicyHash == reloadCfg.CanonicalPolicyHash() {
 		t.Fatal("post-failure receipt unexpectedly attested failed reload config")
 	}
 	result := receipt.VerifyChainTrusted(receipts, []string{hex.EncodeToString(pub)})
@@ -1115,8 +1118,8 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 			if uErr != nil {
 				t.Fatalf("unmarshal receipt: %v", uErr)
 			}
-			if r.ActionRecord.PolicyHash != reloadCfg.Hash() {
-				t.Errorf("expected policy hash %q, got %q", reloadCfg.Hash(), r.ActionRecord.PolicyHash)
+			if want := reloadCfg.CanonicalPolicyHash(); r.ActionRecord.PolicyHash != want {
+				t.Errorf("expected policy hash %q, got %q", want, r.ActionRecord.PolicyHash)
 			}
 			return
 		}

@@ -277,10 +277,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// scans share the same DLPWarnContext.
 	inputScanCtx := opts.warnContext()
 	wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
+	if wc.PolicyHash == "" {
+		wc.PolicyHash = opts.receiptPolicyHash()
+	}
 	if wc.Transport == "" {
 		wc.Transport = transportMCPHTTP
-		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, wc)
 	}
+	inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, wc)
 
 	if pendingToolName := frame.ToolCallName; pendingToolName != "" {
 		toolName = pendingToolName
@@ -868,6 +871,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			wc.Method = mcpWarnMethod
 			wc.Resource = mcpWarnResource(verdict.Method, msg)
+			if wc.PolicyHash == "" {
+				wc.PolicyHash = opts.receiptPolicyHash()
+			}
 			httpWarnCtx := scanner.WithDLPWarnContext(inputScanCtx, wc)
 			dlpResult := sc.ScanTextForDLP(httpWarnCtx, string(redirectResult.Response))
 			if !scanVerdict.Clean {

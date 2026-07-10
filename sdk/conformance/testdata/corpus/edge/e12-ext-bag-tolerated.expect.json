@@ -1,0 +1,10 @@
+{
+  "fixture_id": "e12-ext-bag-tolerated",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "The single tolerated unsigned top-level ext bag carries forward-compat metadata; the verifier accepts and the ext content never affects the verdict.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "notes": "Verifier MUST accept. ext is the only tolerated unknown top-level surface on a v1 receipt; it is unsigned, ignored by verification, and identical in content to the rejected top-level sidecar in m16-unknown-top-level-field."
+}

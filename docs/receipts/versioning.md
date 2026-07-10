@@ -31,6 +31,58 @@ from `ReceiptVersion` with the error "unsupported receipt version N (expected 1)
 Likewise `ActionRecord.Validate` rejects records whose inner `version` differs from
 `ActionRecordVersion`.
 
+#### Strict unknown-field contract
+
+The verify-side parser (`receipt.Unmarshal`) is **fail-closed on unknown fields**. A v1
+receipt, and every signed object nested inside it (`action_record`, `session_control` and
+its `open`/`heartbeat`/`close` payloads, `key_transition`, `redaction`, `shield`, and each
+`recent_taint_sources` element), may carry ONLY the fields the schema defines. An
+unrecognized field at any nesting depth is rejected, not accept-and-ignored, because an
+ignored sidecar field lets a downstream consumer trust content the signature never covered.
+Duplicate object keys (at any depth) and trailing tokens after the receipt are rejected for
+the same parser-differential reasons.
+
+All five reference verifiers — Go (`internal/receipt`), Rust, TypeScript, Python, and the
+in-browser wasm verifier — enforce this identically, and the cross-language conformance gate
+(`sdk/conformance/corpus-gate.sh`) fails if any of them disagree on accept/reject.
+
+#### The `ext` forward-compat bag
+
+The single, deliberate exception is a top-level `ext` object:
+
+```json
+{
+  "version": 1,
+  "action_record": { "version": 1, ... },
+  "signature": "ed25519:<128 hex chars>",
+  "signer_key": "<64 hex chars>",
+  "ext": { "vendor": "example", "note": "advisory metadata" }
+}
+```
+
+`ext` is **unsigned** (the signature covers only the canonical action record), **ignored by
+verification**, and **never contributes to a verified claim**. It is the ONLY tolerated
+unknown top-level surface; anything else unknown is rejected. Producers that need to attach
+non-authoritative forward-compat metadata put it here; consumers must treat it as untrusted.
+The same escape-hatch/`crit`-guard shape is used by the AARP assurance envelope (below).
+
+#### Two-mode recorder extraction
+
+Reading receipts out of a flight-recorder evidence file has two explicit modes, both
+fail-closed on an entry whose `type` is outside the recorder taxonomy
+(`action_receipt`, `evidence_receipt`, `checkpoint`, `transcript_root`, `decision`,
+`capture`, `capture_drop`):
+
+- **Receipt-chain mode** (`receipt.ExtractReceiptsBytes`) returns the receipt subsequence,
+  skipping the known operational entry types. A success certifies the *receipt subsequence*,
+  not whole-file integrity.
+- **Whole-recorder mode** (`receipt.ExtractAndVerifyWholeRecorderBytes`) additionally
+  verifies the recorder hash chain over every entry, so a success certifies whole-file
+  integrity.
+
+An unknown record type is rejected in both modes rather than silently skipped, so a file
+that mixes a valid receipt chain with an unexpected record cannot be reported as valid.
+
 ### AARP v0.1 assurance envelope
 
 Every AARP assurance envelope carries `"profile": "aarp/v0.1"` in both the top-level
@@ -64,10 +116,13 @@ require a bump:
 - Changing the signing input (currently `SHA-256(canonical JSON of action_record)`).
 - Changing the signature wire format (currently `"ed25519:<hex>"`).
 
-Adding NEW optional fields to `action_record` that a v1 verifier ignores does NOT require a
-bump (JSON unknown-field tolerance is the mechanism — `receipt.Unmarshal` uses `json.Unmarshal`
-which ignores unknown fields by design). Removing or renaming existing required fields
-requires a bump.
+Adding a NEW field to a signed object (`action_record` or any nested signed object) is a
+**coordinated schema change**, not a silently-tolerated addition: because verifiers reject
+unknown fields (see "Strict unknown-field contract" above), a new signed field must be added
+to all five reference verifiers' schemas in lockstep, and it enters the canonical signing
+projection. Purely advisory, non-authoritative metadata that must NOT be signed goes in the
+top-level `ext` bag instead and needs no verifier change. Removing or renaming existing
+required fields requires a version bump.
 
 ### AARP assurance envelope
 
@@ -98,5 +153,8 @@ extensions are listed in `crit_ext`; an unknown entry in `crit_ext` causes the e
 be rejected (fail-closed). New critical extension names are a protocol change and require
 community coordination before deployment.
 
-ActionReceipt v1 has no extension mechanism; new optional fields are added directly and
-ignored by prior verifiers via JSON unknown-field tolerance.
+ActionReceipt v1's extension mechanism is the top-level `ext` bag described under "The `ext`
+forward-compat bag" above: unsigned, ignored by verification, and the only tolerated unknown
+top-level surface. Unlike the pre-strict behavior, unrecognized fields outside `ext` are
+rejected fail-closed rather than accept-and-ignored, so a new *signed* field is a coordinated
+cross-verifier schema change, not a silent addition.

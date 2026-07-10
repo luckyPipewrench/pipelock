@@ -321,6 +321,16 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
+# AF-37 receipt-chain mode: the known non-receipt operational entry types that
+# extraction legitimately skips. Any entry whose type is outside the union of
+# the receipt types and this set is REJECTED (fail-closed) rather than silently
+# skipped, so a file mixing a valid chain with an unknown record type cannot be
+# reported as a valid receipt subsequence.
+_SKIPPABLE_ENTRY_TYPES = frozenset(
+    {"checkpoint", "transcript_root", "decision", "capture", "capture_drop"}
+)
+
+
 def load_receipt(path: str | Path) -> dict[str, Any]:
     data = Path(path).read_text(encoding="utf-8")
     try:
@@ -421,7 +431,14 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
             raise ReceiptError(f"line {index}: recorder entry must be an object")
         entry_type = entry.get("type")
         if entry_type not in {ACTION_ENTRY_TYPE, EVIDENCE_ENTRY_TYPE}:
-            continue
+            # AF-37: skip only the known operational entry types; a type outside
+            # the recorder taxonomy fails closed rather than being silently
+            # dropped from a "valid receipt subsequence".
+            if entry_type in _SKIPPABLE_ENTRY_TYPES:
+                continue
+            raise ReceiptError(
+                f"line {index}: unexpected recorder entry type {entry_type!r}"
+            )
         if chain_type is None:
             chain_type = entry_type
         elif entry_type != chain_type:
@@ -1040,7 +1057,12 @@ def verify_action_receipt(receipt: dict[str, Any], expected_key_hex: str = "") -
 
 
 def normalize_action_receipt(receipt: dict[str, Any]) -> None:
-    _reject_unknown(receipt, _field_names(_RECEIPT_FIELDS), "receipt")
+    # EV2-FU-1: the single tolerated unknown top-level surface is the advisory
+    # ext bag. It is unsigned (the signature covers only the canonical action
+    # record) and never consulted, so it is accepted here but deliberately kept
+    # out of _RECEIPT_FIELDS (the canonical/hash preimage) rather than added to
+    # it. Every other unrecognized field is rejected by _reject_unknown.
+    _reject_unknown(receipt, _field_names(_RECEIPT_FIELDS) | {"ext"}, "receipt")
     if receipt.get("version") != 1:
         raise ReceiptError(
             f"unsupported receipt version {receipt.get('version')} (expected 1)"

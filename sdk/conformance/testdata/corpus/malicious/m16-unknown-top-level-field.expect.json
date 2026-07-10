@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m16-unknown-top-level-field",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "unknown_field",
+  "description": "A receipt carries an unrecognized top-level field (sidecar) outside the signed schema. Accept-and-ignore would let a consumer trust content the signature never covered.",
+  "notes": "Verifier MUST reject unknown fields on a signed v1 receipt object. The only tolerated unknown top-level surface is the ext bag; the same content under ext (e12-ext-bag-tolerated) is accepted."
+}

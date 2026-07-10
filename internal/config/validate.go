@@ -1140,7 +1140,7 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {
 		*warnings = append(*warnings, Warning{
 			Field:   "response_scanning.exempt_domains",
-			Message: "configured but response_scanning is disabled — these will take effect when enabled",
+			Message: "configured while response_scanning is disabled — the full-trust streaming bypass is inactive, but immutable core response findings may still be treated as warn-only for matching hosts, and the full-trust bypass activates for ALL responses from these hosts once scanning is enabled",
 		})
 	}
 	seenMCPServers := make(map[string]struct{}, len(c.ResponseScanning.MCPServers))

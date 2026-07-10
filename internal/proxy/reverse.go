@@ -1386,7 +1386,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// run the content-sniffing fallback for generic types
 			// (application/octet-stream, empty, etc.) that might
 			// actually be images.
-			outcomeReason := "media_policy"
+			outcomeReason := "media_passthrough_unscanned"
 			maxRead := cfg.MediaPolicy.EffectiveMaxImageBytes()
 			if maxRead <= 0 {
 				maxRead = config.DefaultMaxImageBytes
@@ -1475,9 +1475,19 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 	}
 
-	// Skip remaining binary content types (non-media application/*, etc.).
+	// Stream declared media (image/audio/video) without text-injection
+	// scanning. isBinaryMIME matches only image/audio/video, so every response
+	// reaching here is media: declared audio/video that passed media policy
+	// above, or any declared media type when media policy is disabled. The body
+	// is NOT scanned for injection, so the outcome is recorded with the honest
+	// boundary-limited label media_passthrough_unscanned - never
+	// scanned/clean/complete coverage. An upstream can serve instruction-bearing
+	// text under an audio/* or video/* Content-Type, and this label makes clear
+	// Pipelock did not inspect the streamed bytes. (Matched inline like the
+	// sibling passthrough reasons; a named const trips gosec G101 on
+	// "passthrough".)
 	if isBinaryMIME(mediaCT) {
-		binaryOutcomeReason := "binary_passthrough"
+		binaryOutcomeReason := "media_passthrough_unscanned"
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
 			limited := io.LimitReader(resp.Body, int64(reverseProxyMaxBodyBytes)+1)
 			body, err := io.ReadAll(limited)
@@ -1710,7 +1720,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
 					TransformKind:     capture.TransformRaw,
 					EffectiveAction:   config.ActionAllow,
-					Outcome:           captureOutcome(config.ActionAllow, true),
+					Outcome:           capture.OutcomeSkipped,
 				})
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 				recordReverseOutcome(resp.StatusCode, resp.ContentLength, "unscannable_passthrough")

@@ -49,7 +49,7 @@ type AgentBudgetView struct {
 	UniqueDomainCount int
 	WindowStart       time.Time
 	MaxRequests       int
-	MaxBytes          int
+	MaxBytes          int64
 	MaxUniqueDomains  int
 	WindowMinutes     int
 
@@ -152,6 +152,10 @@ func redactAgentBudgets(in []AgentBudgetView) []AgentBudgetView {
 // --- display helpers (used by budgets.tmpl.html) ---
 
 func consumedOfLimit(consumed int, limit int) string {
+	return consumedOfLimit64(int64(consumed), int64(limit))
+}
+
+func consumedOfLimit64(consumed int64, limit int64) string {
 	if limit <= 0 {
 		return fmt.Sprintf("%d / %s", consumed, budgetUnlimited)
 	}
@@ -163,10 +167,7 @@ func (a AgentBudgetView) RequestsDisplay() string {
 }
 
 func (a AgentBudgetView) BytesDisplay() string {
-	if a.MaxBytes <= 0 {
-		return fmt.Sprintf("%d / %s", a.ByteCount, budgetUnlimited)
-	}
-	return fmt.Sprintf("%d / %d", a.ByteCount, a.MaxBytes)
+	return consumedOfLimit64(a.ByteCount, a.MaxBytes)
 }
 
 func (a AgentBudgetView) DomainsDisplay() string {

@@ -7,6 +7,7 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -344,6 +345,11 @@ func TestAgentBudgetView_Displays(t *testing.T) {
 	limited := AgentBudgetView{RequestCount: 3, MaxRequests: 10, TotalToolCalls: 4, MaxToolCallsPerSession: 50}
 	if got := limited.RequestsDisplay(); got != "3 / 10" {
 		t.Fatalf("RequestsDisplay = %q, want %q", got, "3 / 10")
+	}
+	limited.ByteCount = math.MaxInt32 + 1
+	limited.MaxBytes = math.MaxInt32 + 2
+	if got := limited.BytesDisplay(); got != "2147483648 / 2147483649" {
+		t.Fatalf("BytesDisplay = %q, want %q", got, "2147483648 / 2147483649")
 	}
 	if got := limited.ToolCallsDisplay(); got != "4 / 50 per session" {
 		t.Fatalf("ToolCallsDisplay = %q, want %q", got, "4 / 50 per session")

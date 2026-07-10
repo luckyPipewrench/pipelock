@@ -65,8 +65,14 @@ type Options struct {
 	// AuditWriter, when non-nil, receives one line per authenticated dashboard
 	// request (role, method, path, session, remote address). Viewing evidence is
 	// itself an audited action. Nil disables the access log.
-	AuditWriter      io.Writer
-	FleetSource      FleetDataSource
+	AuditWriter io.Writer
+	FleetSource FleetDataSource
+	// ConductorSource, when non-nil, is the read-only conductor decision
+	// dry-run/replay seam (BE-2) consumed by the Signed Action Workbench and
+	// Incident Cockpit. It exposes no publish/kill/rollback method, so no write
+	// path to fleet state is reachable through it. Nil renders the explicit
+	// unconfigured-replay state, exactly like FleetSource.
+	ConductorSource  ConductorDecisionSource
 	ReceiptReadLimit int
 	TimelineLimit    int
 	// FilterPresets maps named presets to bounded filter specs. Loaded from
@@ -90,6 +96,7 @@ type ReadModel struct {
 	timelineLimit     int
 	filterPresets     map[string]FilterSpec
 	fleetSource       FleetDataSource
+	conductorSource   ConductorDecisionSource
 	fleetRedactionKey [fleetRedactionKeySize]byte
 	exemptionStore    *ExemptionStore
 	now               func() time.Time
@@ -121,6 +128,7 @@ func NewReadModel(opts Options) *ReadModel {
 		timelineLimit:     timelineLimit,
 		filterPresets:     opts.FilterPresets,
 		fleetSource:       opts.FleetSource,
+		conductorSource:   opts.ConductorSource,
 		fleetRedactionKey: fleetRedactionKey,
 		exemptionStore:    opts.ExemptionStore,
 		now:               now,

@@ -228,10 +228,11 @@ func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 	t.Parallel()
 
+	source := &fakeFleetSource{followers: testFleetFollowers()[:1]}
 	handler := New(Options{
 		ReceiptDir:  t.TempDir(),
 		HasFeature:  allowFleetFeature,
-		FleetSource: &fakeFleetSource{followers: testFleetFollowers()[:1]},
+		FleetSource: source,
 		// No AuthorizeRaw: metadata view must fail closed.
 	})
 	rec := httptest.NewRecorder()
@@ -239,8 +240,16 @@ func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	// The real scope must still reach the source query even though the
+	// page-level scope labels are redacted in metadata mode.
+	if source.gotOrgID != fleetTestOrgID || source.gotFleet != fleetTestFleetID {
+		t.Fatalf("source scope = (%q, %q), want (%q, %q); redaction must not corrupt the query",
+			source.gotOrgID, source.gotFleet, fleetTestOrgID, fleetTestFleetID)
+	}
 	body := rec.Body.String()
 	for _, secret := range []string{
+		fleetTestOrgID,
+		fleetTestFleetID,
 		fleetTestInstanceID,
 		fleetTestEnvironment,
 		fleetTestAuditKeyID,

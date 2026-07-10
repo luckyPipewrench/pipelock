@@ -11,5 +11,6 @@ for attempt in 1 2 3; do
   if [ "$attempt" -eq 3 ]; then
     exit 1
   fi
+  echo "ci-retry: attempt ${attempt} of 3 failed for '$*'; retrying in $((attempt * 5))s" >&2
   sleep $((attempt * 5))
 done

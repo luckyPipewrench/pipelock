@@ -117,9 +117,9 @@ func TestEvaluateHTTPTaint_PermissiveObservesWithoutAsk(t *testing.T) {
 	cfg.Taint.Policy = config.ModePermissive
 	sess := &SessionState{}
 
-	observeHTTPResponseTaint(sess, cfg, "http://litellm:4000/v1/chat/completions", "application/json", "forward_response", false)
+	observeHTTPResponseTaint(sess, cfg, "http://llm-gateway.vendor.example:4000/v1/chat/completions", "application/json", "forward_response", false)
 
-	targetURL, err := url.Parse("http://litellm:4000/v1/chat/completions")
+	targetURL, err := url.Parse("http://llm-gateway.vendor.example:4000/v1/chat/completions")
 	if err != nil {
 		t.Fatalf("url.Parse() error = %v", err)
 	}

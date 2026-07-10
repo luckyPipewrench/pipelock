@@ -168,6 +168,13 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	if err := validateDashboardListen(opts); err != nil {
 		return err
 	}
+	info, err := os.Stat(filepath.Clean(opts.receiptDir))
+	if err != nil {
+		return fmt.Errorf("--receipt-dir: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("--receipt-dir %q is not a directory", opts.receiptDir)
+	}
 	anchorResolver, err := dashboard.NewFileAnchorResolver(
 		opts.receiptDir, opts.anchorLocalLog, opts.rekorLogKeys, opts.anchorExpected,
 	)
@@ -181,13 +188,6 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	tlsConfig, err := dashboardTLSConfig(opts)
 	if err != nil {
 		return err
-	}
-	info, err := os.Stat(filepath.Clean(opts.receiptDir))
-	if err != nil {
-		return fmt.Errorf("--receipt-dir: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("--receipt-dir %q is not a directory", opts.receiptDir)
 	}
 	if len(trusted) == 0 {
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
@@ -366,12 +366,12 @@ func dashboardAuthorizePermissionFunc(
 			dashboard.PermissionBudgetsRead,
 			dashboard.PermissionFleetRead,
 			dashboard.PermissionSignedActionRead,
-			dashboard.PermissionIncidentRead,
-			dashboard.PermissionTrustKeysRead:
+			dashboard.PermissionIncidentRead:
 			if metaAuthorized(r) {
 				return nil
 			}
-		case dashboard.PermissionRawRead:
+		case dashboard.PermissionRawRead,
+			dashboard.PermissionTrustKeysRead:
 			if rawAuthorized(r) {
 				return nil
 			}

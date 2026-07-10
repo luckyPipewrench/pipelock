@@ -36,6 +36,9 @@ const (
 	RevocationNotConfigured = "CRL not configured"
 	RevocationFailure       = "FAILURE: CRL could not be verified"
 	RevocationUnbound       = "FAILURE: receipt key has no verified CRL serial binding"
+
+	maxAnchorMarkerBytes = 64 * 1024
+	maxAnchorBundleBytes = 1024 * 1024
 )
 
 // ChainAuditInput contains the evidence and explicit trust material needed for
@@ -63,12 +66,37 @@ func NewFileAnchorResolver(
 	rekorLogKeyInputs []string,
 	expected bool,
 ) (AnchorResolver, error) {
+	return newFileAnchorResolver(receiptDir, localLogPath, rekorLogKeyInputs, expected, anchor.LoadBundleBytes)
+}
+
+func newFileAnchorResolver(
+	receiptDir string,
+	localLogPath string,
+	rekorLogKeyInputs []string,
+	expected bool,
+	loadBundle func([]byte) (anchor.Bundle, error),
+) (AnchorResolver, error) {
 	rekorKeys, err := anchor.LoadRekorPublicKeys(rekorLogKeyInputs)
 	if err != nil {
 		return nil, fmt.Errorf("load Rekor log keys: %w", err)
 	}
+	baseDir, err := filepath.Abs(filepath.Clean(receiptDir))
+	if err != nil {
+		return nil, fmt.Errorf("resolve receipt directory: %w", err)
+	}
+	baseDir, err = filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve receipt directory: %w", err)
+	}
+	baseInfo, err := os.Stat(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("inspect receipt directory: %w", err)
+	}
+	if !baseInfo.IsDir() {
+		return nil, errors.New("receipt directory is not a directory")
+	}
 	return func(sessionID string) (*anchor.Bundle, anchor.Backend, bool, error) {
-		marker, found, loadErr := loadAnchorMarker(filepath.Join(receiptDir, "anchor-state.json"))
+		marker, found, loadErr := loadAnchorMarker(baseDir)
 		if loadErr != nil {
 			return nil, nil, true, loadErr
 		}
@@ -83,15 +111,17 @@ func NewFileAnchorResolver(
 			// expected" when the global policy flag is false.
 			return nil, nil, true, nil
 		}
-		bundleBytes, readErr := os.ReadFile(filepath.Clean(marker.BundlePath))
+		bundleBytes, readErr := readConfinedRegularFile(
+			baseDir, marker.BundlePath, maxAnchorBundleBytes, "anchor bundle",
+		)
 		if readErr != nil {
-			return nil, nil, true, fmt.Errorf("read anchor bundle: %w", readErr)
+			return nil, nil, true, readErr
 		}
 		sum := sha256.Sum256(bundleBytes)
 		if hex.EncodeToString(sum[:]) != marker.BundleSHA256 {
 			return nil, nil, true, errors.New("anchor bundle hash does not match anchor-state marker")
 		}
-		bundle, loadErr := anchor.LoadBundle(marker.BundlePath)
+		bundle, loadErr := loadBundle(bundleBytes)
 		if loadErr != nil {
 			return nil, nil, true, loadErr
 		}
@@ -120,13 +150,13 @@ type anchorStateMarker struct {
 	BundlePath   string    `json:"bundle_path"`
 }
 
-func loadAnchorMarker(path string) (anchorStateMarker, bool, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+func loadAnchorMarker(baseDir string) (anchorStateMarker, bool, error) {
+	data, err := readConfinedRegularFile(baseDir, "anchor-state.json", maxAnchorMarkerBytes, "anchor-state marker")
 	if errors.Is(err, os.ErrNotExist) {
 		return anchorStateMarker{}, false, nil
 	}
 	if err != nil {
-		return anchorStateMarker{}, false, fmt.Errorf("read anchor-state marker: %w", err)
+		return anchorStateMarker{}, false, err
 	}
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
 		return anchorStateMarker{}, false, fmt.Errorf("parse anchor-state marker: %w", err)
@@ -148,6 +178,60 @@ func loadAnchorMarker(path string) (anchorStateMarker, bool, error) {
 		return anchorStateMarker{}, false, errors.New("anchor-state marker has invalid required fields")
 	}
 	return marker, true, nil
+}
+
+func readConfinedRegularFile(baseDir, relativePath string, maxBytes int64, label string) ([]byte, error) {
+	if filepath.IsAbs(relativePath) {
+		return nil, fmt.Errorf("read %s: path must be relative to receipt directory", label)
+	}
+	candidate := filepath.Join(baseDir, filepath.Clean(relativePath))
+	rel, err := filepath.Rel(baseDir, candidate)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("read %s: path escapes receipt directory", label)
+	}
+	pathInfo, err := os.Lstat(candidate)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, err)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("read %s: symlink is not allowed", label)
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: resolve path: %w", label, err)
+	}
+	resolvedRel, err := filepath.Rel(baseDir, resolved)
+	if err != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("read %s: resolved path escapes receipt directory", label)
+	}
+	if resolved != candidate {
+		return nil, fmt.Errorf("read %s: symlink is not allowed", label)
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("read %s: not a regular file", label)
+	}
+	file, err := os.Open(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("read %s: inspect opened file: %w", label, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return nil, fmt.Errorf("read %s: file changed during validation", label)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("read %s: exceeds size limit of %d bytes", label, maxBytes)
+	}
+	return data, nil
 }
 
 func anchorBackend(bundle anchor.Bundle, localLogPath string, rekorKeys []crypto.PublicKey) (anchor.Backend, error) {
@@ -228,14 +312,14 @@ func classifyContinuity(receipts []receipt.Receipt) (string, int, int) {
 			return fmt.Sprintf("gap detected before chain_seq %d", current.ActionRecord.ChainSeq), 1, 0
 		}
 		if current.ActionRecord.ChainSeq < prev.ActionRecord.ChainSeq {
-			return fmt.Sprintf("fork or out-of-order chain_seq %d", current.ActionRecord.ChainSeq), 0, 1
+			return fmt.Sprintf("fork or out-of-order chain_seq %d", current.ActionRecord.ChainSeq), 0, 0
 		}
 		prevHash, err := receipt.ReceiptHash(prev)
 		if err != nil {
-			return fmt.Sprintf("could not hash receipt before chain_seq %d: %v", current.ActionRecord.ChainSeq, err), 1, 0
+			return fmt.Sprintf("could not hash receipt before chain_seq %d: %v", current.ActionRecord.ChainSeq, err), 0, 0
 		}
 		if current.ActionRecord.ChainPrevHash != prevHash {
-			return fmt.Sprintf("prev_hash mismatch at chain_seq %d", current.ActionRecord.ChainSeq), 1, 0
+			return fmt.Sprintf("prev_hash mismatch at chain_seq %d", current.ActionRecord.ChainSeq), 0, 0
 		}
 	}
 	return "", 0, 0

@@ -935,11 +935,16 @@ func TestDashboardAuthorizePermissionFunc(t *testing.T) {
 		dashboard.PermissionFleetRead,
 		dashboard.PermissionSignedActionRead,
 		dashboard.PermissionIncidentRead,
-		dashboard.PermissionTrustKeysRead,
 	} {
 		if err := authorize(metaReq, permission); err != nil {
 			t.Fatalf("metadata token denied %s: %v", permission, err)
 		}
+	}
+	if err := authorize(metaReq, dashboard.PermissionTrustKeysRead); err == nil {
+		t.Fatal("metadata token unexpectedly granted trust and keys permission")
+	}
+	if err := authorize(rawReq, dashboard.PermissionTrustKeysRead); err != nil {
+		t.Fatalf("raw token denied trust and keys permission: %v", err)
 	}
 	if err := authorize(metaReq, dashboard.PermissionRawRead); err == nil {
 		t.Fatal("metadata token unexpectedly granted raw permission")

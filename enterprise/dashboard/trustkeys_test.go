@@ -10,6 +10,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+)
+
+const (
+	anchorTestFileMode = 0o600
+	anchorTestDirMode  = 0o750
 )
 
 func TestAuditReceiptChain_BrokenCasesFailClosed(t *testing.T) {
@@ -41,17 +47,22 @@ func TestAuditReceiptChain_BrokenCasesFailClosed(t *testing.T) {
 	fork = append(fork, signDashboardReceipt(t, priv, 1, mustReceiptHash(t, good[0]), base.Add(2*time.Second)))
 
 	outOfOrder := []receipt.Receipt{good[1], good[0]}
+	hashError := append([]receipt.Receipt(nil), good...)
+	hashError[0].Ext = json.RawMessage(`{`)
 	otherPub, _ := generateDashboardKey(t)
 
 	tests := []struct {
-		name string
-		in   ChainAuditInput
-		want string
+		name      string
+		in        ChainAuditInput
+		want      string
+		wantGaps  int
+		wantForks int
 	}{
-		{name: "sequence gap", in: ChainAuditInput{SessionID: testSessionID, Receipts: gap, TrustedKeys: []string{keyHex}}, want: "gap"},
+		{name: "sequence gap", in: ChainAuditInput{SessionID: testSessionID, Receipts: gap, TrustedKeys: []string{keyHex}}, want: "gap", wantGaps: 1},
 		{name: "mutated prev hash", in: ChainAuditInput{SessionID: testSessionID, Receipts: badPrev, TrustedKeys: []string{keyHex}}, want: "prev_hash"},
-		{name: "fork", in: ChainAuditInput{SessionID: testSessionID, Receipts: fork, TrustedKeys: []string{keyHex}}, want: "fork"},
+		{name: "fork", in: ChainAuditInput{SessionID: testSessionID, Receipts: fork, TrustedKeys: []string{keyHex}}, want: "fork", wantForks: 1},
 		{name: "out of order", in: ChainAuditInput{SessionID: testSessionID, Receipts: outOfOrder, TrustedKeys: []string{keyHex}}, want: "out-of-order"},
+		{name: "previous receipt hash error", in: ChainAuditInput{SessionID: testSessionID, Receipts: hashError, TrustedKeys: []string{keyHex}}, want: "could not hash"},
 		{name: "empty chain", in: ChainAuditInput{SessionID: testSessionID, TrustedKeys: []string{keyHex}}, want: "no receipts"},
 		{name: "missing expected anchor", in: ChainAuditInput{SessionID: testSessionID, Receipts: good, TrustedKeys: []string{keyHex}, AnchorExpected: true}, want: "missing anchor"},
 		{name: "unknown key", in: ChainAuditInput{SessionID: testSessionID, Receipts: good}, want: "unknown signer key"},
@@ -66,6 +77,9 @@ func TestAuditReceiptChain_BrokenCasesFailClosed(t *testing.T) {
 			}
 			if !strings.Contains(strings.ToLower(got.Detail), tc.want) {
 				t.Fatalf("detail = %q, want %q", got.Detail, tc.want)
+			}
+			if got.Gaps != tc.wantGaps || got.Forks != tc.wantForks {
+				t.Fatalf("gaps/forks = %d/%d, want %d/%d", got.Gaps, got.Forks, tc.wantGaps, tc.wantForks)
 			}
 		})
 	}
@@ -164,7 +178,7 @@ func TestFileAnchorResolver_VerifiesExistingMarkerMaterial(t *testing.T) {
 	if err := anchor.WriteStateMarker(dir, anchor.StateMarker{
 		SessionID: testSessionID, FinalSeq: checkpoint.FinalSeq, RootHash: checkpoint.RootHash,
 		Backend: proof.Backend, LogIndex: proof.LogIndex, AnchoredAt: time.Now().Add(-time.Minute),
-		BundleSHA256: hex.EncodeToString(bundleSum[:]), BundlePath: bundlePath,
+		BundleSHA256: hex.EncodeToString(bundleSum[:]), BundlePath: filepath.Base(bundlePath),
 	}); err != nil {
 		t.Fatalf("WriteStateMarker: %v", err)
 	}
@@ -243,7 +257,7 @@ func TestFileAnchorResolver_FailsClosedOnMalformedState(t *testing.T) {
 
 	t.Run("missing bundle", func(t *testing.T) {
 		dir := t.TempDir()
-		missing := filepath.Join(dir, "missing-bundle.json")
+		missing := "missing-bundle.json"
 		if err := anchor.WriteStateMarker(dir, anchor.StateMarker{
 			SessionID: testSessionID, FinalSeq: 1, RootHash: strings.Repeat("a", 64), Backend: anchor.LocalBackend,
 			AnchoredAt: time.Now().Add(-time.Minute), BundleSHA256: strings.Repeat("b", 64), BundlePath: missing,
@@ -260,6 +274,223 @@ func TestFileAnchorResolver_FailsClosedOnMalformedState(t *testing.T) {
 	})
 }
 
+func TestFileAnchorResolver_ConfinesAndBoundsEvidenceFiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		arrange func(t *testing.T, dir string, bundleBytes []byte, marker anchor.StateMarker)
+		wantErr string
+	}{
+		{
+			name: "bundle path escapes receipt directory",
+			arrange: func(t *testing.T, dir string, bundleBytes []byte, marker anchor.StateMarker) {
+				t.Helper()
+				outside := filepath.Join(filepath.Dir(dir), "outside-bundle.json")
+				if err := os.WriteFile(outside, bundleBytes, anchorTestFileMode); err != nil {
+					t.Fatalf("WriteFile outside bundle: %v", err)
+				}
+				marker.BundlePath = filepath.Join("..", filepath.Base(outside))
+				writeResolverMarker(t, dir, marker)
+			},
+			wantErr: "escapes receipt directory",
+		},
+		{
+			name: "absolute bundle path",
+			arrange: func(t *testing.T, dir string, _ []byte, marker anchor.StateMarker) {
+				t.Helper()
+				marker.BundlePath = filepath.Join(dir, "bundle.json")
+				writeResolverMarker(t, dir, marker)
+			},
+			wantErr: "must be relative",
+		},
+		{
+			name: "bundle symlink",
+			arrange: func(t *testing.T, dir string, bundleBytes []byte, marker anchor.StateMarker) {
+				t.Helper()
+				target := filepath.Join(dir, "bundle-target.json")
+				if err := os.WriteFile(target, bundleBytes, anchorTestFileMode); err != nil {
+					t.Fatalf("WriteFile bundle target: %v", err)
+				}
+				if err := os.Symlink(filepath.Base(target), filepath.Join(dir, marker.BundlePath)); err != nil {
+					t.Fatalf("Symlink bundle: %v", err)
+				}
+				writeResolverMarker(t, dir, marker)
+			},
+			wantErr: "symlink",
+		},
+		{
+			name: "bundle is not regular",
+			arrange: func(t *testing.T, dir string, _ []byte, marker anchor.StateMarker) {
+				t.Helper()
+				if err := os.Mkdir(filepath.Join(dir, marker.BundlePath), anchorTestDirMode); err != nil {
+					t.Fatalf("Mkdir bundle path: %v", err)
+				}
+				writeResolverMarker(t, dir, marker)
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "bundle is oversized",
+			arrange: func(t *testing.T, dir string, _ []byte, marker anchor.StateMarker) {
+				t.Helper()
+				oversized := make([]byte, maxAnchorBundleBytes+1)
+				if err := os.WriteFile(filepath.Join(dir, marker.BundlePath), oversized, anchorTestFileMode); err != nil {
+					t.Fatalf("WriteFile oversized bundle: %v", err)
+				}
+				sum := sha256.Sum256(oversized)
+				marker.BundleSHA256 = hex.EncodeToString(sum[:])
+				writeResolverMarker(t, dir, marker)
+			},
+			wantErr: "exceeds size limit",
+		},
+		{
+			name: "marker symlink",
+			arrange: func(t *testing.T, dir string, bundleBytes []byte, marker anchor.StateMarker) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, marker.BundlePath), bundleBytes, anchorTestFileMode); err != nil {
+					t.Fatalf("WriteFile bundle: %v", err)
+				}
+				markerPath := filepath.Join(dir, "marker-target.json")
+				writeResolverMarkerAt(t, markerPath, marker)
+				if err := os.Symlink(filepath.Base(markerPath), filepath.Join(dir, "anchor-state.json")); err != nil {
+					t.Fatalf("Symlink marker: %v", err)
+				}
+			},
+			wantErr: "symlink",
+		},
+		{
+			name: "marker is not regular",
+			arrange: func(t *testing.T, dir string, bundleBytes []byte, marker anchor.StateMarker) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, marker.BundlePath), bundleBytes, anchorTestFileMode); err != nil {
+					t.Fatalf("WriteFile bundle: %v", err)
+				}
+				if err := os.Mkdir(filepath.Join(dir, "anchor-state.json"), anchorTestDirMode); err != nil {
+					t.Fatalf("Mkdir marker path: %v", err)
+				}
+			},
+			wantErr: "not a regular file",
+		},
+		{
+			name: "marker is oversized",
+			arrange: func(t *testing.T, dir string, bundleBytes []byte, marker anchor.StateMarker) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, marker.BundlePath), bundleBytes, anchorTestFileMode); err != nil {
+					t.Fatalf("WriteFile bundle: %v", err)
+				}
+				data, err := json.Marshal(marker)
+				if err != nil {
+					t.Fatalf("Marshal marker: %v", err)
+				}
+				data = append(data, make([]byte, maxAnchorMarkerBytes+1-len(data))...)
+				if err := os.WriteFile(filepath.Join(dir, "anchor-state.json"), data, anchorTestFileMode); err != nil {
+					t.Fatalf("WriteFile oversized marker: %v", err)
+				}
+			},
+			wantErr: "exceeds size limit",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			_, bundleBytes, marker := resolverFixture(t)
+			tc.arrange(t, dir, bundleBytes, marker)
+			resolver, err := NewFileAnchorResolver(dir, "", nil, false)
+			if err != nil {
+				t.Fatalf("NewFileAnchorResolver: %v", err)
+			}
+			if _, _, _, err := resolver(testSessionID); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("resolver error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestFileAnchorResolver_ParsesExactlyHashedBytes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	original, originalBytes, marker := resolverFixture(t)
+	bundlePath := filepath.Join(dir, marker.BundlePath)
+	if err := os.WriteFile(bundlePath, originalBytes, anchorTestFileMode); err != nil {
+		t.Fatalf("WriteFile original bundle: %v", err)
+	}
+	writeResolverMarker(t, dir, marker)
+
+	replacement := original
+	replacement.Checkpoint.SessionID = "swapped-session"
+	replacementBytes, err := json.Marshal(replacement)
+	if err != nil {
+		t.Fatalf("Marshal replacement: %v", err)
+	}
+	resolver, err := newFileAnchorResolver(dir, filepath.Join(dir, "anchors.jsonl"), nil, false, func(hashedBytes []byte) (anchor.Bundle, error) {
+		if err := os.WriteFile(bundlePath, replacementBytes, anchorTestFileMode); err != nil {
+			t.Fatalf("swap bundle: %v", err)
+		}
+		return anchor.LoadBundleBytes(hashedBytes)
+	})
+	if err != nil {
+		t.Fatalf("newFileAnchorResolver: %v", err)
+	}
+	got, _, _, err := resolver(testSessionID)
+	if err != nil {
+		t.Fatalf("resolve after swap: %v", err)
+	}
+	if got == nil || got.Checkpoint.SessionID != original.Checkpoint.SessionID {
+		t.Fatalf("parsed session = %v, want hashed session %q", got, original.Checkpoint.SessionID)
+	}
+}
+
+func resolverFixture(t *testing.T) (anchor.Bundle, []byte, anchor.StateMarker) {
+	t.Helper()
+	bundle := anchor.Bundle{
+		Version:   anchor.BundleVersion,
+		Backend:   anchor.LocalBackend,
+		CreatedAt: time.Now().Add(-time.Minute),
+		Checkpoint: anchor.Checkpoint{
+			SessionID: testSessionID,
+			FinalSeq:  1,
+			RootHash:  strings.Repeat("a", 64),
+		},
+		Proof: anchor.Proof{Backend: anchor.LocalBackend, LogIndex: 7},
+	}
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("Marshal bundle: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	marker := anchor.StateMarker{
+		Schema:       "pipelock.anchorstate.v1",
+		SessionID:    bundle.Checkpoint.SessionID,
+		FinalSeq:     bundle.Checkpoint.FinalSeq,
+		RootHash:     bundle.Checkpoint.RootHash,
+		Backend:      bundle.Backend,
+		LogIndex:     bundle.Proof.LogIndex,
+		AnchoredAt:   time.Now().Add(-time.Minute),
+		BundleSHA256: hex.EncodeToString(sum[:]),
+		BundlePath:   "bundle.json",
+	}
+	return bundle, data, marker
+}
+
+func writeResolverMarker(t *testing.T, dir string, marker anchor.StateMarker) {
+	t.Helper()
+	writeResolverMarkerAt(t, filepath.Join(dir, "anchor-state.json"), marker)
+}
+
+func writeResolverMarkerAt(t *testing.T, path string, marker anchor.StateMarker) {
+	t.Helper()
+	data, err := json.Marshal(marker)
+	if err != nil {
+		t.Fatalf("Marshal marker: %v", err)
+	}
+	if err := os.WriteFile(path, data, anchorTestFileMode); err != nil {
+		t.Fatalf("WriteFile marker: %v", err)
+	}
+}
+
 func TestLoadAnchorMarkerAndBackendFailures(t *testing.T) {
 	t.Parallel()
 
@@ -273,11 +504,12 @@ func TestLoadAnchorMarkerAndBackendFailures(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "anchor-state.json")
+			dir := t.TempDir()
+			path := filepath.Join(dir, "anchor-state.json")
 			if err := os.WriteFile(path, []byte(tc.data), 0o600); err != nil {
 				t.Fatalf("WriteFile: %v", err)
 			}
-			if _, _, err := loadAnchorMarker(path); err == nil {
+			if _, _, err := loadAnchorMarker(dir); err == nil {
 				t.Fatal("malformed marker unexpectedly accepted")
 			}
 		})

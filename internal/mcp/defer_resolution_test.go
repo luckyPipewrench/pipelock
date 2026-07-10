@@ -18,10 +18,11 @@ import (
 func TestEmitDeferredResolutionReceiptCarriesCascadePolicy(t *testing.T) {
 	emitter, rec, dir := newTestReceiptEmitter(t)
 	t.Cleanup(func() { _ = rec.Close() })
+	wantPolicyHash := strings.TrimPrefix(mcpTestPolicyHash, "sha256:")
 
 	opts := MCPProxyOpts{
 		ReceiptEmitter:  emitter,
-		PolicyHash:      "policy-hash",
+		PolicyHash:      mcpTestPolicyHash,
 		RequireReceipts: true,
 		Transport:       deferred.SurfaceMCPStdio,
 	}
@@ -75,15 +76,19 @@ func TestEmitDeferredResolutionReceiptCarriesCascadePolicy(t *testing.T) {
 		policy.Bounds.MaxCascadeDepth != 8 {
 		t.Fatalf("resolution_policy = %+v", policy)
 	}
+	if recorded.PolicyHash != wantPolicyHash {
+		t.Fatalf("policy_hash = %q, want %q", recorded.PolicyHash, wantPolicyHash)
+	}
 }
 
 func TestEmitDeferredResolutionReceiptNonCascadeCarriesBounds(t *testing.T) {
 	emitter, rec, dir := newTestReceiptEmitter(t)
 	t.Cleanup(func() { _ = rec.Close() })
+	wantPolicyHash := strings.TrimPrefix(mcpTestPolicyHash, "sha256:")
 
 	opts := MCPProxyOpts{
 		ReceiptEmitter:  emitter,
-		PolicyHash:      "policy-hash",
+		PolicyHash:      mcpTestPolicyHash,
 		RequireReceipts: true,
 		Transport:       deferred.SurfaceMCPStdio,
 	}
@@ -132,6 +137,9 @@ func TestEmitDeferredResolutionReceiptNonCascadeCarriesBounds(t *testing.T) {
 	if policy.Bounds.MaxCascadeDepth != 8 || policy.Bounds.MaxPending != 64 {
 		t.Fatalf("resolution_policy bounds = %+v", policy.Bounds)
 	}
+	if recorded.PolicyHash != wantPolicyHash {
+		t.Fatalf("policy_hash = %q, want %q", recorded.PolicyHash, wantPolicyHash)
+	}
 }
 
 func TestEmitDeferredResolutionReceiptBlockFailureLogsAuditGap(t *testing.T) {
@@ -142,7 +150,7 @@ func TestEmitDeferredResolutionReceiptBlockFailureLogsAuditGap(t *testing.T) {
 
 	opts := MCPProxyOpts{
 		ReceiptEmitter:  emitter,
-		PolicyHash:      "policy-hash",
+		PolicyHash:      mcpTestPolicyHash,
 		RequireReceipts: true,
 		Transport:       deferred.SurfaceMCPStdio,
 	}

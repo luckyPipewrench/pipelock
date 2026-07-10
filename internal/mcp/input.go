@@ -309,6 +309,9 @@ func ForwardScannedInput(
 		rpcID := frame.ID
 		warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
 		warnCtx.Transport = transportMCPStdio
+		if policyHash != "" {
+			warnCtx.PolicyHash = policyHash
+		}
 		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
 		if redactionCfg.Matcher != nil {
 			originalVerdict := scanRequestForAgent(stdioInputCtx, line, sc, action, onParseError, opts.addressProtectionAgent())
@@ -1025,6 +1028,9 @@ func ForwardScannedInput(
 				stdioWarnCtxMeta.Transport = transportMCPStdio
 				stdioWarnCtxMeta.Method = mcpWarnMethod
 				stdioWarnCtxMeta.Resource = mcpWarnResource(verdict.Method, line)
+				if policyHash != "" {
+					stdioWarnCtxMeta.PolicyHash = policyHash
+				}
 				stdioWarnCtx := scanner.WithDLPWarnContext(stdioInputCtx, stdioWarnCtxMeta)
 				dlpResult := sc.ScanTextForDLP(stdioWarnCtx, string(result.Response))
 				// Capture: record redirect output scan verdict.

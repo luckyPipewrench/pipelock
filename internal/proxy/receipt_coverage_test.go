@@ -980,6 +980,10 @@ type receiptProxyHelper struct {
 	emitter *receipt.Emitter
 	priv    ed25519.PrivateKey
 	pubHex  string
+	// cfg is the resolved config the proxy was built with, captured at
+	// construction so tests can assert a receipt carries the deciding config's
+	// canonical policy hash (what the per-emission PolicyHash now binds to).
+	cfg *config.Config
 }
 
 func newReceiptProxyHelper(t *testing.T) *receiptProxyHelper {
@@ -1095,6 +1099,7 @@ func setupFetchProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod f
 	}
 
 	logger := audit.NewNop()
+	rph.cfg = cfg
 	sc := scanner.New(cfg)
 	p, err := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rph.rec),
@@ -1131,6 +1136,7 @@ func setupWSProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod func
 	}
 
 	logger := audit.NewNop()
+	rph.cfg = cfg
 	sc := scanner.New(cfg)
 	p, err := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rph.rec),
@@ -1201,6 +1207,7 @@ func setupForwardProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod
 	cfg.Internal = savedInternal
 
 	logger := audit.NewNop()
+	rph.cfg = cfg
 	sc := scanner.New(cfg)
 	p, err := New(cfg, logger, sc, metrics.New(),
 		WithRecorder(rph.rec),
@@ -1386,8 +1393,9 @@ func TestReceiptCoverage_FetchHeaderDLP_EmitsReceipt(t *testing.T) {
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
 	}
-	if r.ActionRecord.PolicyHash != coverageTestConfigHash {
-		t.Errorf("policy_hash = %q, want %q", r.ActionRecord.PolicyHash, coverageTestConfigHash)
+	wantPolicyHash := rph.cfg.CanonicalPolicyHash()
+	if r.ActionRecord.PolicyHash != wantPolicyHash {
+		t.Errorf("policy_hash = %q, want %q", r.ActionRecord.PolicyHash, wantPolicyHash)
 	}
 }
 

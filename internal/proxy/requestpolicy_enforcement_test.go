@@ -4,6 +4,10 @@
 package proxy
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -692,6 +697,88 @@ func TestRequestPolicy_RedirectHopReportsRequestPolicyReason(t *testing.T) {
 	}
 	if got := w.Header().Get("X-Pipelock-Block-Reason-Retry"); got != "policy" {
 		t.Errorf("retry hint = %q, want policy", got)
+	}
+}
+
+func TestRequestPolicy_RedirectHopReceiptUsesRedirectSnapshotPolicyHash(t *testing.T) {
+	t.Parallel()
+
+	oldCfg := reqPolicyConfig(blockRule(http.MethodGet))
+	newCfg := reqPolicyConfig(blockRule(http.MethodPost))
+	if oldCfg.CanonicalPolicyHash() == newCfg.CanonicalPolicyHash() {
+		t.Fatal("expected distinct policy hashes")
+	}
+
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: oldCfg.Hash(),
+		Principal:  "test-principal",
+		Actor:      "test-actor",
+	})
+	oldSc := scanner.New(oldCfg)
+	t.Cleanup(oldSc.Close)
+	p, err := New(oldCfg, audit.NewNop(), oldSc, metrics.New(), WithRecorder(rec), WithReceiptEmitter(emitter))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	p.cfgPtr.Store(newCfg)
+	ctx := context.WithValue(t.Context(), ctxKeyAgentConfig, oldCfg)
+	ctx = context.WithValue(ctx, ctxKeyAgentScanner, oldSc)
+	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
+	ctx = context.WithValue(ctx, ctxKeyRequestID, "req-redirect-policy-hash")
+	ctx = context.WithValue(ctx, ctxKeyAgent, "agent-a")
+	redirectReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://"+rpTestHost+"/v1/secret", nil)
+	originalReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://origin.example/start", nil)
+
+	if err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq}); err == nil {
+		t.Fatal("CheckRedirect unexpectedly allowed request_policy-blocked redirect")
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	var got *receipt.Receipt
+	for _, entry := range readAllEntries(t, dir) {
+		if entry.Type != receiptEntryType {
+			continue
+		}
+		detailJSON, marshalErr := json.Marshal(entry.Detail)
+		if marshalErr != nil {
+			t.Fatalf("marshal detail: %v", marshalErr)
+		}
+		r, unmarshalErr := receipt.Unmarshal(detailJSON)
+		if unmarshalErr != nil {
+			t.Fatalf("unmarshal receipt: %v", unmarshalErr)
+		}
+		if r.ActionRecord.Layer == blockLayerRequestPolicy {
+			got = &r
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("no request_policy receipt found")
+	}
+	if want := oldCfg.CanonicalPolicyHash(); got.ActionRecord.PolicyHash != want {
+		t.Fatalf("redirect request_policy policy_hash = %q, want redirect snapshot %q", got.ActionRecord.PolicyHash, want)
+	}
+	if got.ActionRecord.PolicyHash == newCfg.CanonicalPolicyHash() {
+		t.Fatal("redirect request_policy receipt used live post-reload config hash")
 	}
 }
 

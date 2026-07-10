@@ -682,7 +682,7 @@ func newInterceptHandler(
 		interceptScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 			Method: r.Method, URL: targetURL, Target: target,
 			ClientIP: ic.ClientIP, RequestID: ic.RequestID,
-			Agent: ic.Agent, Transport: "intercept",
+			Agent: ic.Agent, Transport: "intercept", PolicyHash: ic.Config.CanonicalPolicyHash(),
 		})
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)

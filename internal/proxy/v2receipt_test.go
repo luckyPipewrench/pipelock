@@ -725,8 +725,11 @@ func TestDualEmit_SameKeyReloadUsesUpdatedPolicyHash(t *testing.T) {
 			v2Policy = r.PolicyHash
 		}
 	}
-	if v1Policy != reloadCfg.Hash() {
-		t.Fatalf("v1 policy_hash = %q, want reload cfg.Hash %q", v1Policy, reloadCfg.Hash())
+	// v1 and v2 now bind to the SAME per-emission canonical policy hash of the
+	// deciding config; the v1 receipt no longer diverges onto the emitter's
+	// mutable config-hash atomic.
+	if want := reloadCfg.CanonicalPolicyHash(); v1Policy != want {
+		t.Fatalf("v1 policy_hash = %q, want reload canonical policy hash %q", v1Policy, want)
 	}
 	wantV2Policy := contractreceipt.NormalizePolicyHash(reloadCfg.CanonicalPolicyHash())
 	if v2Policy != wantV2Policy {

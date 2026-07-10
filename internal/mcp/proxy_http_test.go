@@ -4823,10 +4823,12 @@ func TestScanHTTPInput_RedirectOutputWarnPreservesWarnContext(t *testing.T) {
 	var logBuf bytes.Buffer
 	opts := testOpts(sc)
 	opts.PolicyCfg = policyCfg
+	opts.PolicyHash = mcpTestPolicyHash
 	opts.WarnContext = scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
-		Transport: testWarnContextHTTPTransport,
-		RequestID: testWarnContextRequestID,
-		Agent:     testWarnContextAgent,
+		Transport:  testWarnContextHTTPTransport,
+		RequestID:  testWarnContextRequestID,
+		Agent:      testWarnContextAgent,
+		PolicyHash: "stale-policy-hash",
 	})
 
 	blocked := scanHTTPInput(msg, &logBuf, "sess", "sess", opts)
@@ -4849,6 +4851,9 @@ func TestScanHTTPInput_RedirectOutputWarnPreservesWarnContext(t *testing.T) {
 	}
 	if got.Agent != testWarnContextAgent {
 		t.Fatalf("agent = %q, want %q", got.Agent, testWarnContextAgent)
+	}
+	if got.PolicyHash != mcpTestPolicyHash {
+		t.Fatalf("policyHash = %q, want authoritative %q", got.PolicyHash, mcpTestPolicyHash)
 	}
 }
 

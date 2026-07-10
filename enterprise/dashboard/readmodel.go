@@ -55,12 +55,21 @@ type Options struct {
 	// authentication/authorization seam, distinct from the license entitlement
 	// check. Nil means the surrounding router must own authentication.
 	Authorize func(*http.Request) error
+	// AuthorizePermission, when non-nil, gates route/action access after the
+	// request passes the coarse authentication boundary. It is the RBAC seam:
+	// callers can map local users, mTLS identities, or OIDC claims to the
+	// bounded dashboard permission vocabulary without changing handlers.
+	// Nil preserves the legacy token-only model where Authorize owns all
+	// metadata-route access.
+	AuthorizePermission func(*http.Request, Permission) error
 	// AuthorizeRaw gates the sensitive raw view (receipt destinations and full
 	// signed payloads). A request is shown raw detail only when AuthorizeRaw is
 	// non-nil AND returns nil for it; every other authenticated request gets the
 	// redacted metadata view. Nil means raw detail is redacted for everyone
 	// (fail closed): a destination URL can carry a capability token, and the raw
 	// payload is the largest exfil surface, so raw is least-privilege by default.
+	// When AuthorizePermission is configured, raw detail also requires
+	// PermissionRawRead.
 	AuthorizeRaw func(*http.Request) error
 	// AuthorizeFleetScope gates reads keyed by an operator-supplied org/fleet
 	// scope before any conductor replay or fleet source is called. Nil is

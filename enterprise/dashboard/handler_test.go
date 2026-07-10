@@ -242,6 +242,186 @@ func TestHandler_MethodAndPathRejection(t *testing.T) {
 	}
 }
 
+func TestHandler_RouteSpecsDeclarePermissions(t *testing.T) {
+	t.Parallel()
+
+	seen := map[string]struct{}{}
+	for _, spec := range dashboardRouteSpecs() {
+		if spec.pattern == "" {
+			t.Fatal("dashboard route spec has empty pattern")
+		}
+		if spec.feature == "" {
+			t.Fatalf("dashboard route %q has empty feature", spec.pattern)
+		}
+		if spec.forbiddenMessage == "" {
+			t.Fatalf("dashboard route %q has empty forbidden message", spec.pattern)
+		}
+		if spec.permission == "" {
+			t.Fatalf("dashboard route %q has empty permission", spec.pattern)
+		}
+		if spec.handler == nil {
+			t.Fatalf("dashboard route %q has nil handler", spec.pattern)
+		}
+		if _, ok := seen[spec.pattern]; ok {
+			t.Fatalf("dashboard route %q is registered twice", spec.pattern)
+		}
+		seen[spec.pattern] = struct{}{}
+	}
+}
+
+func TestHandler_RoutePermissionFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	handler := New(Options{
+		ReceiptDir:   t.TempDir(),
+		HasFeature:   allowAllDashboardFeatures,
+		Authorize:    func(*http.Request) error { return nil },
+		AuthorizeRaw: allowRawAccess,
+		AuthorizePermission: func(*http.Request, Permission) error {
+			return errors.New("permission denied")
+		},
+	})
+
+	for _, path := range []string{
+		"/",
+		"/exemptions",
+		"/session/" + testSessionID,
+		"/session/" + testSessionID + "/receipt/0",
+		"/agents",
+		"/agent/agent-one",
+		"/budgets",
+		"/fleet",
+		"/workbench",
+		"/incident",
+	} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s status = %d, want %d; body=%s", path, rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandler_RoutePermissionUsesSpecificPermission(t *testing.T) {
+	t.Parallel()
+
+	var got []Permission
+	handler := New(Options{
+		ReceiptDir: t.TempDir(),
+		HasFeature: allowAllDashboardFeatures,
+		Authorize:  func(*http.Request) error { return nil },
+		AuthorizePermission: func(_ *http.Request, permission Permission) error {
+			got = append(got, permission)
+			return nil
+		},
+	})
+
+	tests := []struct {
+		path string
+		want Permission
+	}{
+		{path: "/", want: PermissionEvidenceRead},
+		{path: "/exemptions", want: PermissionExemptionsRead},
+		{path: "/session/" + testSessionID, want: PermissionEvidenceRead},
+		{path: "/agents", want: PermissionAgentsRead},
+		{path: "/budgets", want: PermissionBudgetsRead},
+		{path: "/fleet", want: PermissionFleetRead},
+		{path: "/workbench", want: PermissionSignedActionRead},
+		{path: "/incident", want: PermissionIncidentRead},
+	}
+	for _, tc := range tests {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, tc.path, nil)
+		handler.ServeHTTP(rec, req)
+		if len(got) == 0 || got[len(got)-1] != tc.want {
+			t.Fatalf("%s permission = %v, want last permission %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestHandler_RawViewShownWhenRawPermissionGranted(t *testing.T) {
+	t.Parallel()
+
+	dir, trusted := writeTrustedHandlerSession(t)
+	handler := New(Options{
+		ReceiptDir:          dir,
+		TrustedKeys:         trusted,
+		HasFeature:          allowAgentsFeature,
+		Authorize:           func(*http.Request) error { return nil },
+		AuthorizeRaw:        allowRawAccess,
+		AuthorizePermission: func(*http.Request, Permission) error { return nil },
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, testTarget) {
+		t.Fatalf("raw view should show the destination %q when %s is granted", testTarget, PermissionRawRead)
+	}
+	if strings.Contains(body, redactedDestination) {
+		t.Fatal("raw view should not show the redaction placeholder when raw permission is granted")
+	}
+}
+
+func TestHandler_AllPermissionsCoversRouteSpecs(t *testing.T) {
+	t.Parallel()
+
+	all := map[Permission]struct{}{}
+	for _, permission := range AllPermissions() {
+		if permission == "" {
+			t.Fatal("AllPermissions returned an empty permission")
+		}
+		if _, ok := all[permission]; ok {
+			t.Fatalf("AllPermissions returned duplicate permission %q", permission)
+		}
+		all[permission] = struct{}{}
+	}
+	if _, ok := all[PermissionRawRead]; !ok {
+		t.Fatalf("AllPermissions must include %s", PermissionRawRead)
+	}
+	for _, spec := range dashboardRouteSpecs() {
+		if _, ok := all[spec.permission]; !ok {
+			t.Fatalf("route %q permission %q missing from AllPermissions", spec.pattern, spec.permission)
+		}
+	}
+}
+
+func TestHandler_RawViewRequiresRawPermission(t *testing.T) {
+	t.Parallel()
+
+	dir, trusted := writeTrustedHandlerSession(t)
+	handler := New(Options{
+		ReceiptDir:   dir,
+		TrustedKeys:  trusted,
+		HasFeature:   allowAgentsFeature,
+		Authorize:    func(*http.Request) error { return nil },
+		AuthorizeRaw: allowRawAccess,
+		AuthorizePermission: func(_ *http.Request, permission Permission) error {
+			if permission == PermissionRawRead {
+				return errors.New("raw denied")
+			}
+			return nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, testTarget) {
+		t.Fatalf("raw destination leaked without %s", PermissionRawRead)
+	}
+	if !strings.Contains(body, redactedDestination) {
+		t.Fatal("metadata view should show the redaction placeholder when raw permission is denied")
+	}
+}
+
 func TestHandler_ReadLimitWarning(t *testing.T) {
 	t.Parallel()
 
@@ -342,6 +522,10 @@ func TestHandler_AuthorizeFailsClosed(t *testing.T) {
 
 func allowAgentsFeature(feature string) bool {
 	return feature == license.FeatureAgents
+}
+
+func allowAllDashboardFeatures(feature string) bool {
+	return feature == license.FeatureAgents || feature == license.FeatureFleet
 }
 
 // allowRawAccess is an AuthorizeRaw that grants every request the raw view.

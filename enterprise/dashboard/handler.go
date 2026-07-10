@@ -57,6 +57,166 @@ type exemptionsPageData struct {
 	Inventory ExemptionInventory
 }
 
+// Permission is the bounded dashboard route/action vocabulary consumed by the
+// RBAC seam. Keep these stable: external auth adapters map identities to these
+// strings, while handlers stay unaware of user/role storage.
+type Permission string
+
+const (
+	PermissionEvidenceRead     Permission = "dashboard:evidence:read"
+	PermissionRawRead          Permission = "dashboard:raw:read"
+	PermissionExemptionsRead   Permission = "dashboard:exemptions:read"
+	PermissionAgentsRead       Permission = "dashboard:agents:read"
+	PermissionBudgetsRead      Permission = "dashboard:budgets:read"
+	PermissionFleetRead        Permission = "dashboard:fleet:read"
+	PermissionSignedActionRead Permission = "dashboard:signed_action:read"
+	PermissionIncidentRead     Permission = "dashboard:incident:read"
+)
+
+const (
+	agentsFeatureForbidden = "Pipelock Enterprise agents feature required\n"
+	fleetFeatureForbidden  = "Pipelock Enterprise fleet feature required\n"
+)
+
+type routeSpec struct {
+	pattern          string
+	feature          string
+	forbiddenMessage string
+	permission       Permission
+	handler          func(*dashboardHandler) http.Handler
+}
+
+func dashboardRouteSpecs() []routeSpec {
+	return []routeSpec{
+		{
+			pattern:          "/",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionEvidenceRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleIndex)
+			},
+		},
+		{
+			pattern:          "/exemptions",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionExemptionsRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleExemptions)
+			},
+		},
+		{
+			pattern:          "/session/",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionEvidenceRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleSession)
+			},
+		},
+		{
+			pattern:          "/agents",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionAgentsRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleAgents)
+			},
+		},
+		{
+			pattern:          "/agent/",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionAgentsRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleAgent)
+			},
+		},
+		{
+			pattern:          "/budgets",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionBudgetsRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleBudgets)
+			},
+		},
+		{
+			pattern:          "/fleet",
+			feature:          license.FeatureFleet,
+			forbiddenMessage: fleetFeatureForbidden,
+			permission:       PermissionFleetRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleFleetOverview)
+			},
+		},
+		{
+			pattern:          "/fleet/",
+			feature:          license.FeatureFleet,
+			forbiddenMessage: fleetFeatureForbidden,
+			permission:       PermissionFleetRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleFleetOverview)
+			},
+		},
+		{
+			pattern:          "/workbench",
+			feature:          license.FeatureFleet,
+			forbiddenMessage: fleetFeatureForbidden,
+			permission:       PermissionSignedActionRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleWorkbench)
+			},
+		},
+		{
+			pattern:          "/workbench/",
+			feature:          license.FeatureFleet,
+			forbiddenMessage: fleetFeatureForbidden,
+			permission:       PermissionSignedActionRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleWorkbench)
+			},
+		},
+		{
+			pattern:          "/incident",
+			feature:          license.FeatureFleet,
+			forbiddenMessage: fleetFeatureForbidden,
+			permission:       PermissionIncidentRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleIncident)
+			},
+		},
+		{
+			pattern:          "/incident/",
+			feature:          license.FeatureFleet,
+			forbiddenMessage: fleetFeatureForbidden,
+			permission:       PermissionIncidentRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleIncident)
+			},
+		},
+	}
+}
+
+// AllPermissions returns the complete bounded permission vocabulary: every
+// permission referenced by a dashboard route plus the raw-view elevation.
+// Derived from the route specs so it cannot drift from what handlers actually
+// require; auth adapters use it to prove their mapping covers every permission
+// (an unmapped permission fails closed and disables its route).
+func AllPermissions() []Permission {
+	seen := map[Permission]struct{}{PermissionRawRead: {}}
+	all := []Permission{PermissionRawRead}
+	for _, spec := range dashboardRouteSpecs() {
+		if _, ok := seen[spec.permission]; ok {
+			continue
+		}
+		seen[spec.permission] = struct{}{}
+		all = append(all, spec.permission)
+	}
+	return all
+}
+
 // New returns a read-only HTTP handler for the Enterprise Evidence dashboard.
 //
 // SECURITY: this handler serves sensitive evidence (signed receipt payloads,
@@ -73,26 +233,14 @@ func New(opts Options) http.Handler {
 		model:               model,
 		hasFeature:          opts.HasFeature,
 		authorize:           opts.Authorize,
+		authorizePermission: opts.AuthorizePermission,
 		authorizeRaw:        opts.AuthorizeRaw,
 		authorizeFleetScope: opts.AuthorizeFleetScope,
 		auditWriter:         opts.AuditWriter,
 	}
-	mux.Handle("/", d.gate(http.HandlerFunc(d.handleIndex)))
-	mux.Handle("/exemptions", d.gate(http.HandlerFunc(d.handleExemptions)))
-	mux.Handle("/session/", d.gate(http.HandlerFunc(d.handleSession)))
-	mux.Handle("/agents", d.gate(http.HandlerFunc(d.handleAgents)))
-	mux.Handle("/agent/", d.gate(http.HandlerFunc(d.handleAgent)))
-	mux.Handle("/budgets", d.gate(http.HandlerFunc(d.handleBudgets)))
-	mux.Handle("/fleet", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
-	mux.Handle("/fleet/", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
-	// DASH-3B: the Signed Action Workbench and Incident Cockpit are Enterprise
-	// fleet-tier, prepare/verify/replay-only surfaces. They are GET-only and
-	// reach no write path; the trailing-slash routes exist only to reject
-	// deeper paths with 404, never to add a mutating handler.
-	mux.Handle("/workbench", d.fleetGate(http.HandlerFunc(d.handleWorkbench)))
-	mux.Handle("/workbench/", d.fleetGate(http.HandlerFunc(d.handleWorkbench)))
-	mux.Handle("/incident", d.fleetGate(http.HandlerFunc(d.handleIncident)))
-	mux.Handle("/incident/", d.fleetGate(http.HandlerFunc(d.handleIncident)))
+	for _, spec := range dashboardRouteSpecs() {
+		mux.Handle(spec.pattern, d.routeGate(spec, spec.handler(d)))
+	}
 	return mux
 }
 
@@ -100,6 +248,7 @@ type dashboardHandler struct {
 	model               *ReadModel
 	hasFeature          func(string) bool
 	authorize           func(*http.Request) error
+	authorizePermission func(*http.Request, Permission) error
 	authorizeRaw        func(*http.Request) error
 	authorizeFleetScope func(*http.Request, DecisionScope, bool) error
 	auditWriter         io.Writer
@@ -112,7 +261,13 @@ type rawAllowedContextKey struct{}
 // and full signed payloads). Fail closed: raw is shown only when an authorizer
 // is configured and accepts the request.
 func (d *dashboardHandler) rawAllowed(r *http.Request) bool {
-	return d.authorizeRaw != nil && d.authorizeRaw(r) == nil
+	if d.authorizeRaw == nil || d.authorizeRaw(r) != nil {
+		return false
+	}
+	if d.authorizePermission != nil {
+		return d.authorizePermission(r, PermissionRawRead) == nil
+	}
+	return true
 }
 
 func rawAllowedFromContext(r *http.Request) bool {
@@ -240,30 +395,30 @@ func (d *dashboardHandler) authorizeFleetScopeRequest(w http.ResponseWriter, r *
 	return true
 }
 
-func (d *dashboardHandler) gate(next http.Handler) http.Handler {
-	return d.featureGate(license.FeatureAgents, "Pipelock Enterprise agents feature required\n", next)
-}
-
-func (d *dashboardHandler) fleetGate(next http.Handler) http.Handler {
-	return d.featureGate(license.FeatureFleet, "Pipelock Enterprise fleet feature required\n", next)
-}
-
-func (d *dashboardHandler) featureGate(feature, forbiddenMessage string, next http.Handler) http.Handler {
+func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if d.hasFeature == nil || !d.hasFeature(feature) {
+		if d.hasFeature == nil || !d.hasFeature(spec.feature) {
 			w.Header().Set("Content-Type", contentTypeText)
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(forbiddenMessage))
+			_, _ = w.Write([]byte(spec.forbiddenMessage))
 			return
 		}
 		// Authentication boundary. The license check above is entitlement, not
 		// identity; fail closed when a configured authorizer rejects the request.
 		if d.authorize != nil {
 			if err := d.authorize(r); err != nil {
+				w.Header().Set("Content-Type", contentTypeText)
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("forbidden\n"))
+				return
+			}
+		}
+		if d.authorizePermission != nil {
+			if err := d.authorizePermission(r, spec.permission); err != nil {
 				w.Header().Set("Content-Type", contentTypeText)
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte("forbidden\n"))

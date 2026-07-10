@@ -908,6 +908,68 @@ func TestDashboardTokenMatches(t *testing.T) {
 	}
 }
 
+func TestDashboardAuthorizePermissionFunc(t *testing.T) {
+	metaReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest meta: %v", err)
+	}
+	metaReq.Header.Set("Authorization", "Bearer "+dashTestToken)
+
+	rawReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest raw: %v", err)
+	}
+	rawReq.Header.Set("Authorization", "Bearer raw-"+dashTestToken)
+
+	authorize := dashboardAuthorizePermissionFunc(
+		func(r *http.Request) bool { return dashboardTokenMatches(r, dashTestToken) },
+		func(r *http.Request) bool { return dashboardTokenMatches(r, "raw-"+dashTestToken) },
+	)
+
+	for _, permission := range []dashboard.Permission{
+		dashboard.PermissionEvidenceRead,
+		dashboard.PermissionExemptionsRead,
+		dashboard.PermissionAgentsRead,
+		dashboard.PermissionBudgetsRead,
+		dashboard.PermissionFleetRead,
+		dashboard.PermissionSignedActionRead,
+		dashboard.PermissionIncidentRead,
+	} {
+		if err := authorize(metaReq, permission); err != nil {
+			t.Fatalf("metadata token denied %s: %v", permission, err)
+		}
+	}
+	if err := authorize(metaReq, dashboard.PermissionRawRead); err == nil {
+		t.Fatal("metadata token unexpectedly granted raw permission")
+	}
+	if err := authorize(rawReq, dashboard.PermissionRawRead); err != nil {
+		t.Fatalf("raw token denied raw permission: %v", err)
+	}
+	if err := authorize(metaReq, dashboard.Permission("dashboard:unknown")); err == nil {
+		t.Fatal("unknown dashboard permission unexpectedly allowed")
+	}
+}
+
+// TestDashboardAuthorizePermissionFunc_MapsEveryPermission fails when a new
+// dashboard route permission is added without updating the CLI token mapping.
+// An unmapped permission fails closed in dashboardAuthorizePermissionFunc, so
+// forgetting the mapping would silently 403 the new route in `dashboard serve`.
+func TestDashboardAuthorizePermissionFunc_MapsEveryPermission(t *testing.T) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1/", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	authorize := dashboardAuthorizePermissionFunc(
+		func(*http.Request) bool { return true },
+		func(*http.Request) bool { return true },
+	)
+	for _, permission := range dashboard.AllPermissions() {
+		if err := authorize(req, permission); err != nil {
+			t.Errorf("dashboard permission %s has no CLI token mapping: %v", permission, err)
+		}
+	}
+}
+
 func TestValidateDashboardListen(t *testing.T) {
 	tests := []struct {
 		name    string

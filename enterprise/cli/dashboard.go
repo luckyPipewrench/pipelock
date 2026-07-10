@@ -202,13 +202,14 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	}
 
 	inner := dashboard.New(dashboard.Options{
-		ReceiptDir:     opts.receiptDir,
-		TrustedKeys:    trusted,
-		Config:         loadedConfig,
-		ExemptionStore: exemptionStore,
-		HasFeature:     dashboardRuntimeHasFeature(lic),
-		Authorize:      dashboardAuthorizeFunc(metaAuthorized),
-		AuthorizeRaw:   dashboardAuthorizeFunc(rawAuthorized),
+		ReceiptDir:          opts.receiptDir,
+		TrustedKeys:         trusted,
+		Config:              loadedConfig,
+		ExemptionStore:      exemptionStore,
+		HasFeature:          dashboardRuntimeHasFeature(lic),
+		Authorize:           dashboardAuthorizeFunc(metaAuthorized),
+		AuthorizePermission: dashboardAuthorizePermissionFunc(metaAuthorized, rawAuthorized),
+		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
 		AuditWriter: cmd.ErrOrStderr(),
 		// TODO(DASH-3A): wire live conductor source when dashboard serve owns a
@@ -328,6 +329,31 @@ func dashboardAuthorizeFunc(authorized func(*http.Request) bool) func(*http.Requ
 			return errors.New("dashboard request not authenticated")
 		}
 		return nil
+	}
+}
+
+func dashboardAuthorizePermissionFunc(
+	metaAuthorized func(*http.Request) bool,
+	rawAuthorized func(*http.Request) bool,
+) func(*http.Request, dashboard.Permission) error {
+	return func(r *http.Request, permission dashboard.Permission) error {
+		switch permission {
+		case dashboard.PermissionEvidenceRead,
+			dashboard.PermissionExemptionsRead,
+			dashboard.PermissionAgentsRead,
+			dashboard.PermissionBudgetsRead,
+			dashboard.PermissionFleetRead,
+			dashboard.PermissionSignedActionRead,
+			dashboard.PermissionIncidentRead:
+			if metaAuthorized(r) {
+				return nil
+			}
+		case dashboard.PermissionRawRead:
+			if rawAuthorized(r) {
+				return nil
+			}
+		}
+		return fmt.Errorf("dashboard permission %q denied", permission)
 	}
 }
 

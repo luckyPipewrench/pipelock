@@ -101,10 +101,11 @@ func TestFleetOverview_Gating(t *testing.T) {
 			t.Parallel()
 
 			handler := New(Options{
-				ReceiptDir:   t.TempDir(),
-				HasFeature:   tt.hasFeature,
-				FleetSource:  &fakeFleetSource{},
-				AuthorizeRaw: allowRawAccess,
+				ReceiptDir:          t.TempDir(),
+				HasFeature:          tt.hasFeature,
+				FleetSource:         &fakeFleetSource{},
+				AuthorizeRaw:        allowRawAccess,
+				AuthorizeFleetScope: allowFleetScope,
 			})
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
@@ -178,15 +179,50 @@ func TestFleetOverview_NilSourceRendersEmptyState(t *testing.T) {
 	}
 }
 
+func TestFleetOverview_FailClosedScopeAuthorization(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name      string
+		authorize func(*http.Request, DecisionScope, bool) error
+	}{
+		{name: "missing_authorizer", authorize: nil},
+		{name: "denied_authorizer", authorize: func(*http.Request, DecisionScope, bool) error {
+			return errors.New("wrong fleet")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := &fakeFleetSource{followers: testFleetFollowers()}
+			handler := New(Options{
+				ReceiptDir:          t.TempDir(),
+				HasFeature:          allowFleetFeature,
+				FleetSource:         source,
+				AuthorizeFleetScope: tt.authorize,
+			})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+			}
+			if source.gotOrgID != "" || source.gotFleet != "" {
+				t.Fatalf("source scope = (%q,%q), want no source call before authorization", source.gotOrgID, source.gotFleet)
+			}
+		})
+	}
+}
+
 func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 	t.Parallel()
 
 	source := &fakeFleetSource{followers: testFleetFollowers()}
 	handler := New(Options{
-		ReceiptDir:   t.TempDir(),
-		HasFeature:   allowFleetFeature,
-		FleetSource:  source,
-		AuthorizeRaw: allowRawAccess,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		FleetSource:         source,
+		AuthorizeRaw:        allowRawAccess,
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(
@@ -228,19 +264,29 @@ func TestFleetOverview_RendersSignedUnsignedAndHonestyWording(t *testing.T) {
 func TestFleetOverview_RedactsMetadataView(t *testing.T) {
 	t.Parallel()
 
+	source := &fakeFleetSource{followers: testFleetFollowers()[:1]}
 	handler := New(Options{
 		ReceiptDir:  t.TempDir(),
 		HasFeature:  allowFleetFeature,
-		FleetSource: &fakeFleetSource{followers: testFleetFollowers()[:1]},
+		FleetSource: source,
 		// No AuthorizeRaw: metadata view must fail closed.
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	// The real scope must still reach the source query even though the
+	// page-level scope labels are redacted in metadata mode.
+	if source.gotOrgID != fleetTestOrgID || source.gotFleet != fleetTestFleetID {
+		t.Fatalf("source scope = (%q, %q), want (%q, %q); redaction must not corrupt the query",
+			source.gotOrgID, source.gotFleet, fleetTestOrgID, fleetTestFleetID)
+	}
 	body := rec.Body.String()
 	for _, secret := range []string{
+		fleetTestOrgID,
+		fleetTestFleetID,
 		fleetTestInstanceID,
 		fleetTestEnvironment,
 		fleetTestAuditKeyID,
@@ -293,10 +339,11 @@ func TestFleetOverview_RawViewEscapesFollowerStrings(t *testing.T) {
 	follower.BatchID = hostileImage
 	follower.LastApplyErrorMessage = hostileScript
 	handler := New(Options{
-		ReceiptDir:   t.TempDir(),
-		HasFeature:   allowFleetFeature,
-		FleetSource:  &fakeFleetSource{followers: []FleetFollowerView{follower}},
-		AuthorizeRaw: allowRawAccess,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		FleetSource:         &fakeFleetSource{followers: []FleetFollowerView{follower}},
+		AuthorizeRaw:        allowRawAccess,
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
@@ -320,9 +367,10 @@ func TestFleetOverview_SourceErrorReturnsServerError(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		ReceiptDir:  t.TempDir(),
-		HasFeature:  allowFleetFeature,
-		FleetSource: &fakeFleetSource{err: errors.New("source unavailable")},
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		FleetSource:         &fakeFleetSource{err: errors.New("source unavailable")},
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))
@@ -335,9 +383,10 @@ func TestFleetOverview_RejectsInvalidScope(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		ReceiptDir:  t.TempDir(),
-		HasFeature:  allowFleetFeature,
-		FleetSource: &fakeFleetSource{},
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		FleetSource:         &fakeFleetSource{},
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	for _, target := range []string{
 		"/fleet",
@@ -374,10 +423,11 @@ func TestFleetOverview_TruncatesFollowerRows(t *testing.T) {
 		}
 	}
 	handler := New(Options{
-		ReceiptDir:   t.TempDir(),
-		HasFeature:   allowFleetFeature,
-		FleetSource:  &fakeFleetSource{followers: followers},
-		AuthorizeRaw: allowRawAccess,
+		ReceiptDir:          t.TempDir(),
+		HasFeature:          allowFleetFeature,
+		FleetSource:         &fakeFleetSource{followers: followers},
+		AuthorizeRaw:        allowRawAccess,
+		AuthorizeFleetScope: allowFleetScope,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/fleet?org_id="+fleetTestOrgID+"&fleet_id="+fleetTestFleetID, nil))

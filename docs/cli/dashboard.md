@@ -124,3 +124,65 @@ offline `pipelock-verifier verify-run` command that re-verifies the same
 receipts against the trusted key, so anything the dashboard claims can be
 independently re-checked against the signed evidence — without trusting this
 server.
+
+## Signed Action Workbench and Incident Cockpit (Enterprise fleet tier)
+
+The dashboard adds two Enterprise fleet-tier pages, `/workbench` and
+`/incident`. Both require a license that grants the `fleet` feature; a license
+with only the `agents` feature gets `403` on these routes while the agent-tier
+Evidence, Agents, and Exemptions views keep working. They are served by the same
+`pipelock dashboard serve` command and reuse its authentication,
+cleartext-refusal, audit-log, and redaction seams.
+
+Both pages are **prepare / verify / replay only**. Neither can execute, submit,
+or otherwise mutate fleet state:
+
+- Every route is GET-only; a mutating HTTP method returns `405`.
+- The only conductor seam these pages consume is read-only: it re-derives a
+  decision (dry-run / replay) and never publishes, kills, resumes, or rolls back
+  anything. There is no publish/kill/rollback method on that seam and no write
+  path reachable from the dashboard.
+- The operator prepares and submits an action with the shipped conductor CLI
+  **outside** the dashboard. The workbench's job ends at "here is the predicted
+  effect and the command template to run".
+
+### Signed Action Workbench (`/workbench`)
+
+The workbench has two parts. **Prepare and submit guidance** is a static,
+per-request-identical list of the shipped conductor commands an operator runs
+outside the dashboard: `pipelock conductor publish …`, `pipelock conductor kill …`
+(and `resume`), and `pipelock conductor rollback …`. The dashboard only displays
+these commands; it never runs them.
+
+**Verify / replay a past decision**: with a conductor decision source wired,
+supply `?org_id=<org>&fleet_id=<fleet>&artifact_hash=<hash>` to re-derive the
+conductor authorization and effect decision for a past signed action under the
+current fleet and policy state. The panel surfaces the re-derived verdict and a
+loud **Divergence** flag when the re-derived decision no longer matches what was
+recorded. Replay does not re-derive proxy content-scan verdicts, and does not
+prove any action executed or was prevented outside the conductor decision. Until
+the dashboard is wired to a conductor read source, the replay panel renders an
+explicit "no conductor decision source configured" state; the prepare guidance
+and the other views do not depend on that source.
+
+### Incident Cockpit (`/incident`)
+
+A read-only correlation lens. Supply
+`?org_id=<org>&fleet_id=<fleet>&artifact_hash=<hash>` to correlate one conductor
+decision with its **replay divergence** (from the read-only decision source) and
+a bounded **fleet applied-state summary** — counts of enrolled followers by
+applied-state source (verified / signed-but-unverified / unsigned / no report),
+plus drift and apply-failed counts. The cockpit never kills an agent, publishes,
+or mutates fleet state, and does not prove no bypass occurred outside Pipelock,
+outside enrolled followers, or outside the report window.
+
+### Redaction on these pages
+
+Like the other views, these pages redact by default. In the metadata view
+(`--auth-token-file`), decision artifact/result/recorded hashes, result
+versions, and the free-text divergence reason are hidden; the computed status —
+validity, the bounded conflict code, and the loud divergence flag — is always
+shown. The fleet applied-state summary is counts only, carries no follower
+identifiers, and is shown in full even in the metadata view. Raw detail is shown
+only to a request that authenticates with `--raw-token-file`. There is
+deliberately no aggregate "all clear".

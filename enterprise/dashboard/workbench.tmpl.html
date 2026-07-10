@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Signed Action Workbench</title>
+  <style>
+    :root {
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+      --danger:#ef4444;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .topbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border-strong);
+      background: #08080a;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .brand { font-weight: 650; }
+    .brand span { color: var(--text-muted); font-weight: 500; }
+    .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; flex-wrap: wrap; }
+    .nav a { color: var(--text-muted); text-decoration: none; }
+    .nav a:hover { color: var(--text); }
+    main { min-width: 0; padding: 24px; }
+    .panel { max-width: 1100px; margin: 0 auto; }
+    h1, h2 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 16px; margin: 24px 0 12px; }
+    .muted { color: var(--text-muted); }
+    .dim { color: var(--text-dim); }
+    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .banner {
+      border: 1px solid rgba(0,229,160,0.4);
+      background: rgba(0,229,160,0.06);
+      padding: 14px;
+      border-radius: 8px;
+      margin: 14px 0 8px;
+      color: #b9f6dc;
+    }
+    .callout {
+      border: 1px solid var(--border-strong);
+      background: #0b0f0e;
+      padding: 14px;
+      border-radius: 8px;
+      margin: 14px 0;
+    }
+    .step {
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .step h3 { margin: 0 0 4px; font-size: 14px; }
+    pre {
+      overflow-x: auto;
+      background: #08080a;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin: 8px 0 0;
+    }
+    code { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+    .kv { display: grid; grid-template-columns: 220px 1fr; gap: 6px 16px; margin-top: 8px; }
+    .kv dt { color: var(--text-muted); }
+    .kv dd { margin: 0; overflow-wrap: anywhere; }
+    .chip {
+      display: inline-flex;
+      justify-content: center;
+      min-width: 122px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      color: #050507;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .chip.verified { background: var(--accent); }
+    .chip.signed-unverified { background: var(--warn); }
+    .chip.unsigned { background: #64748b; color: #f8fafc; }
+    .chip.missing { background: var(--danger); color: white; }
+    .empty {
+      color: var(--text-muted);
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-elevated);
+    }
+    .absence {
+      border: 1px solid rgba(245,158,11,0.7);
+      background: rgba(245,158,11,0.10);
+      padding: 16px;
+      border-radius: 8px;
+    }
+    .absence h2 { color: #fde68a; font-size: 18px; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Pipelock <span>- Operator Console / Workbench</span></div>
+    <div class="nav"><a href="/">Evidence</a><a href="/fleet">Fleet</a><a href="/incident">Incident</a><a href="/exemptions">Exemptions</a><span class="mono">read-only</span></div>
+  </header>
+  <main>
+    <div class="panel">
+      <h1>Signed Action Workbench</h1>
+      <div class="banner">{{.NeverAuthority}}</div>
+
+      <h2>Prepare and submit (outside the dashboard)</h2>
+      <div class="callout muted">These are the shipped conductor commands you run yourself. The dashboard shows them; it does not run them and has no button that submits an action.</div>
+      {{range .PrepareSteps}}
+        <div class="step">
+          <h3>{{.Title}}</h3>
+          <div class="muted">{{.Description}}</div>
+          <pre><code>{{.Command}}</code></pre>
+        </div>
+      {{end}}
+
+      <h2>Verify / replay a past decision</h2>
+      <div class="callout muted">{{.ReplayClaim}} It {{.ReplayNonClaim}}.</div>
+      {{if not .RawAllowed}}
+        <div class="callout muted">Metadata view: artifact and result hashes and versions are hidden. Raw access is required to view those fields; computed validity and divergence are always shown.</div>
+      {{end}}
+
+      {{if not .SourceConfigured}}
+        <section class="absence">
+          <h2>No conductor decision source configured</h2>
+          <p class="muted">Replay requires the dashboard to be wired to a conductor read source. The prepare guidance above and the other dashboard views do not depend on that source.</p>
+        </section>
+      {{else if not .ScopeProvided}}
+        <section class="empty">Supply <span class="mono">?org_id=&lt;org&gt;&amp;fleet_id=&lt;fleet&gt;&amp;artifact_hash=&lt;hash&gt;</span> to replay a past signed action's decision.</section>
+      {{else if .ReplayNotFound}}
+        <section class="empty">No recorded decision matched artifact hash for org <span class="mono">{{.OrgID}}</span> / fleet <span class="mono">{{.FleetID}}</span>.</section>
+      {{else if .HasReplay}}
+        {{with .Replay}}
+        <section class="step">
+          <div>
+            <span class="chip {{.VerdictClass}}">{{.VerdictLabel}}</span>
+            <span class="chip {{.DivergenceClass}}">{{.DivergenceLabel}}</span>
+          </div>
+          <dl class="kv">
+            <dt>Action kind</dt><dd>{{.KindLabel}}</dd>
+            <dt>Recorded</dt><dd>{{.RecordedLabel}}</dd>
+            <dt>Used state snapshot</dt><dd>{{.UsedStateSnapshot}}</dd>
+            <dt>Replayed at</dt><dd>{{.ReplayedAtDisplay}}</dd>
+            <dt>Conflict code</dt><dd>{{.ConflictDisplay}}</dd>
+            <dt>Divergence reason</dt><dd>{{.DivergenceReasonDisplay}}</dd>
+            <dt>Result version</dt><dd class="mono">{{.ResultVersionDisplay}}</dd>
+            <dt>Artifact hash</dt><dd class="mono">{{.ArtifactHashDisplay}}</dd>
+            <dt>Result hash</dt><dd class="mono">{{.ResultHashDisplay}}</dd>
+            <dt>Recorded hash</dt><dd class="mono">{{.RecordedHashDisplay}}</dd>
+            <dt>Recorded at</dt><dd>{{.RecordedAtDisplay}}</dd>
+          </dl>
+        </section>
+        {{end}}
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>

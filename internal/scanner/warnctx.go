@@ -7,14 +7,15 @@ import "context"
 
 // DLPWarnContext carries per-request metadata for DLP warn emission.
 type DLPWarnContext struct {
-	Method    string
-	URL       string
-	Target    string
-	Resource  string
-	ClientIP  string
-	RequestID string
-	Agent     string
-	Transport string // "fetch", "forward", "connect", "intercept", "reverse", "websocket", "mcp_stdio", "mcp_http"
+	Method     string
+	URL        string
+	Target     string
+	Resource   string
+	ClientIP   string
+	RequestID  string
+	Agent      string
+	Transport  string // "fetch", "forward", "connect", "intercept", "reverse", "websocket", "mcp_stdio", "mcp_http"
+	PolicyHash string
 }
 
 type dlpWarnCtxKey struct{}

@@ -735,10 +735,10 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 	}
 }
 
-// LogResponseScanExempt logs when response injection scanning is skipped because
-// the destination host matched response_scanning.exempt_domains. This is a dedicated
-// event type (not "anomaly") so SIEM consumers can filter exemption events separately
-// from actual security anomalies.
+// LogResponseScanExempt logs response_scanning.exempt_domains handling for the
+// generic path, where scanning still runs but findings are pinned to warn. This
+// is a dedicated event type (not "anomaly") so SIEM consumers can filter
+// exemption events separately from actual security anomalies.
 func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 	l.logResponseScanExempt(ctx, hostname, "")
 }
@@ -750,6 +750,16 @@ func (l *Logger) LogResponseScanExemptFullTrust(ctx LogContext, hostname string)
 }
 
 func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) {
+	// The basic (non-full-trust) exemption still SCANS the response for
+	// visibility and pins any finding to warn with no adaptive scoring, so
+	// saying "skipped" would overstate the exemption. "Skipped" is reserved for
+	// the full-trust valve, where the body genuinely streams without scanning.
+	msg := "response scan pinned to warn: exempt domain"
+	reason := "exempt_domains match; findings pinned to warn (not scored)"
+	if effect != "" {
+		msg = "response scan skipped: exempt domain"
+		reason = "exempt_domains match"
+	}
 	event := l.zl.Info().
 		Str("event", string(EventResponseScanExempt)).
 		Str("method", ctx.method)
@@ -765,7 +775,7 @@ func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) 
 	event = event.
 		Str("hostname", hostname).
 		Str("enforcement_type", "response_scanning").
-		Str("reason", "exempt_domains match")
+		Str("reason", reason)
 	if effect != "" {
 		event = event.Str("effect", effect)
 	}
@@ -778,14 +788,14 @@ func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) 
 	if ctx.agent != "" {
 		event = event.Str("agent", sanitizeString(ctx.agent))
 	}
-	event.Msg("response scan skipped: exempt domain")
+	event.Msg(msg)
 
 	if l.emitter != nil {
 		fields := map[string]any{
 			"method":           ctx.method,
 			"hostname":         hostname,
 			"enforcement_type": "response_scanning",
-			"reason":           "exempt_domains match",
+			"reason":           reason,
 		}
 		if effect != "" {
 			fields["effect"] = effect

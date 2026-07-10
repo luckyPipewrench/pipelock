@@ -401,8 +401,11 @@ func TestLogResponseScanExempt_JSONFormat(t *testing.T) {
 	if entry["enforcement_type"] != "response_scanning" {
 		t.Errorf("expected enforcement_type=response_scanning, got %v", entry["enforcement_type"])
 	}
-	if entry["reason"] != "exempt_domains match" {
-		t.Errorf("expected reason=exempt_domains match, got %v", entry["reason"])
+	if entry["reason"] != "exempt_domains match; findings pinned to warn (not scored)" {
+		t.Errorf("expected pinned-to-warn reason, got %v", entry["reason"])
+	}
+	if entry["message"] != "response scan pinned to warn: exempt domain" {
+		t.Errorf("generic exempt log must say pinned to warn, not skipped: %v", entry["message"])
 	}
 	if _, ok := entry["effect"]; ok {
 		t.Errorf("generic response scan exempt log must not claim full-trust effect: %v", entry["effect"])
@@ -2467,8 +2470,8 @@ func TestEmit_LogResponseScanExempt(t *testing.T) {
 	if ev.Fields["enforcement_type"] != "response_scanning" {
 		t.Errorf("fields[enforcement_type] = %v, want response_scanning", ev.Fields["enforcement_type"])
 	}
-	if ev.Fields["reason"] != "exempt_domains match" {
-		t.Errorf("fields[reason] = %v, want exempt_domains match", ev.Fields["reason"])
+	if ev.Fields["reason"] != "exempt_domains match; findings pinned to warn (not scored)" {
+		t.Errorf("fields[reason] = %v, want pinned-to-warn reason", ev.Fields["reason"])
 	}
 	if _, ok := ev.Fields["effect"]; ok {
 		t.Errorf("generic response scan exempt event must not claim full-trust effect: %v", ev.Fields["effect"])

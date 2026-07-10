@@ -236,7 +236,7 @@ func TestRecoverDeferredActionsBlocksPendingJournal(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	if err := recoverDeferredActions(manager, manager.JournalPath(), emitter, nil, "policy-hash", &log); err != nil {
+	if err := recoverDeferredActions(manager, manager.JournalPath(), emitter, nil, runtimeTestPolicyHash, &log); err != nil {
 		t.Fatalf("recoverDeferredActions: %v", err)
 	}
 	pending, err = deferred.PendingJournal(manager.JournalPath())
@@ -248,6 +248,13 @@ func TestRecoverDeferredActionsBlocksPendingJournal(t *testing.T) {
 	}
 	if log.String() != "" {
 		t.Fatalf("recovery log = %q, want empty", log.String())
+	}
+	records := readRuntimeActionRecords(t, filepath.Join(dir, "receipts"))
+	if len(records) != 1 {
+		t.Fatalf("recovery receipt count = %d, want 1", len(records))
+	}
+	if records[0].PolicyHash != runtimeTestPolicyHash {
+		t.Fatalf("recovery policy_hash = %q, want %q", records[0].PolicyHash, runtimeTestPolicyHash)
 	}
 }
 
@@ -302,7 +309,7 @@ func TestRecoverDeferredActionsRunsWithoutLiveManager(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	if err := recoverDeferredActions(nil, manager.JournalPath(), emitter, nil, "policy-hash", &log); err != nil {
+	if err := recoverDeferredActions(nil, manager.JournalPath(), emitter, nil, runtimeTestPolicyHash, &log); err != nil {
 		t.Fatalf("recoverDeferredActions without manager: %v", err)
 	}
 	if err := rec.Close(); err != nil {
@@ -325,6 +332,9 @@ func TestRecoverDeferredActionsRunsWithoutLiveManager(t *testing.T) {
 	for _, record := range records {
 		if record.ResolutionSource != deferred.SourceRestartRecovery {
 			t.Fatalf("resolution_source = %q, want restart_recovery", record.ResolutionSource)
+		}
+		if record.PolicyHash != runtimeTestPolicyHash {
+			t.Fatalf("recovery policy_hash = %q, want %q", record.PolicyHash, runtimeTestPolicyHash)
 		}
 	}
 	var childPolicy deferred.ReceiptPolicy

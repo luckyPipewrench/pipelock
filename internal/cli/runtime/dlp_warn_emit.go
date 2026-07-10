@@ -50,14 +50,15 @@ func dlpWarnReceiptOpts(
 	patternName, severity, transport string,
 ) receipt.EmitOpts {
 	opts := receipt.EmitOpts{
-		ActionID:  receipt.NewActionID(),
-		Verdict:   config.ActionWarn,
-		Layer:     scanner.ScannerDLP,
-		Pattern:   patternName,
-		Severity:  severity,
-		Transport: transport,
-		RequestID: wc.RequestID,
-		Agent:     wc.Agent,
+		ActionID:   receipt.NewActionID(),
+		Verdict:    config.ActionWarn,
+		Layer:      scanner.ScannerDLP,
+		Pattern:    patternName,
+		Severity:   severity,
+		Transport:  transport,
+		RequestID:  wc.RequestID,
+		Agent:      wc.Agent,
+		PolicyHash: wc.PolicyHash,
 	}
 
 	switch {

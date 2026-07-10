@@ -924,6 +924,7 @@ func TestDashboardAuthorizePermissionFunc(t *testing.T) {
 	authorize := dashboardAuthorizePermissionFunc(
 		func(r *http.Request) bool { return dashboardTokenMatches(r, dashTestToken) },
 		func(r *http.Request) bool { return dashboardTokenMatches(r, "raw-"+dashTestToken) },
+		func(*http.Request) bool { return false },
 	)
 
 	for _, permission := range []dashboard.Permission{
@@ -950,6 +951,30 @@ func TestDashboardAuthorizePermissionFunc(t *testing.T) {
 	}
 }
 
+func TestDashboardAuthorizePermissionFunc_ComplianceAuditorIsReadOnly(t *testing.T) {
+	auditorReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1/compliance", nil)
+	if err != nil {
+		t.Fatalf("NewRequest auditor: %v", err)
+	}
+	auditorReq.Header.Set("Authorization", "Bearer auditor-token")
+	authorize := dashboardAuthorizePermissionFunc(
+		func(*http.Request) bool { return false },
+		func(*http.Request) bool { return false },
+		func(r *http.Request) bool { return dashboardTokenMatches(r, "auditor-token") },
+	)
+	if err := authorize(auditorReq, dashboard.PermissionComplianceRead); err != nil {
+		t.Fatalf("auditor denied compliance read: %v", err)
+	}
+	for _, permission := range dashboard.AllPermissions() {
+		if permission == dashboard.PermissionComplianceRead {
+			continue
+		}
+		if err := authorize(auditorReq, permission); err == nil {
+			t.Fatalf("auditor unexpectedly granted %s", permission)
+		}
+	}
+}
+
 // TestDashboardAuthorizePermissionFunc_MapsEveryPermission fails when a new
 // dashboard route permission is added without updating the CLI token mapping.
 // An unmapped permission fails closed in dashboardAuthorizePermissionFunc, so
@@ -962,6 +987,7 @@ func TestDashboardAuthorizePermissionFunc_MapsEveryPermission(t *testing.T) {
 	authorize := dashboardAuthorizePermissionFunc(
 		func(*http.Request) bool { return true },
 		func(*http.Request) bool { return true },
+		func(*http.Request) bool { return false },
 	)
 	for _, permission := range dashboard.AllPermissions() {
 		if err := authorize(req, permission); err != nil {

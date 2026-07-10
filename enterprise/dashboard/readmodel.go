@@ -102,6 +102,10 @@ type Options struct {
 	// onto the read-only exemptions inventory. Its records add
 	// owner/reason/expiry/status/last-matched to matching entries.
 	ExemptionStore *ExemptionStore
+	// LegalHoldStore, when non-nil, supplies operator-authored retention hold
+	// metadata for read-only display on the compliance console. Dashboard HTTP
+	// handlers never mutate it; operators use the dashboard legal-hold CLI.
+	LegalHoldStore *LegalHoldStore
 	// Now supplies the current time for lifecycle rendering. Nil uses time.Now.
 	Now func() time.Time
 }
@@ -119,6 +123,7 @@ type ReadModel struct {
 	budgetSource      BudgetDataSource
 	fleetRedactionKey [fleetRedactionKeySize]byte
 	exemptionStore    *ExemptionStore
+	legalHoldStore    *LegalHoldStore
 	now               func() time.Time
 }
 
@@ -152,6 +157,7 @@ func NewReadModel(opts Options) *ReadModel {
 		budgetSource:      opts.BudgetSource,
 		fleetRedactionKey: fleetRedactionKey,
 		exemptionStore:    opts.ExemptionStore,
+		legalHoldStore:    opts.LegalHoldStore,
 		now:               now,
 	}
 }

@@ -31,7 +31,7 @@ const (
 	auditSessionMaxBytes  = 128
 )
 
-//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html
+//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html compliance.tmpl.html
 var templateFS embed.FS
 
 var (
@@ -43,6 +43,7 @@ var (
 	workbenchTemplate     = template.Must(template.ParseFS(templateFS, "workbench.tmpl.html"))
 	incidentTemplate      = template.Must(template.ParseFS(templateFS, "incident.tmpl.html"))
 	budgetsTemplate       = template.Must(template.ParseFS(templateFS, "budgets.tmpl.html"))
+	complianceTemplate    = template.Must(template.ParseFS(templateFS, "compliance.tmpl.html"))
 )
 
 type pageData struct {
@@ -71,6 +72,7 @@ const (
 	PermissionFleetRead        Permission = "dashboard:fleet:read"
 	PermissionSignedActionRead Permission = "dashboard:signed_action:read"
 	PermissionIncidentRead     Permission = "dashboard:incident:read"
+	PermissionComplianceRead   Permission = "dashboard:compliance:read"
 )
 
 const (
@@ -140,6 +142,15 @@ func dashboardRouteSpecs() []routeSpec {
 			permission:       PermissionBudgetsRead,
 			handler: func(d *dashboardHandler) http.Handler {
 				return http.HandlerFunc(d.handleBudgets)
+			},
+		},
+		{
+			pattern:          "/compliance",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionComplianceRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleCompliance)
 			},
 		},
 		{
@@ -401,6 +412,12 @@ func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Han
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if !knownPermission(spec.permission) {
+			w.Header().Set("Content-Type", contentTypeText)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("forbidden\n"))
+			return
+		}
 		if d.hasFeature == nil || !d.hasFeature(spec.feature) {
 			w.Header().Set("Content-Type", contentTypeText)
 			w.WriteHeader(http.StatusForbidden)
@@ -429,6 +446,44 @@ func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Han
 		d.recordAudit(r, raw)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), rawAllowedContextKey{}, raw)))
 	})
+}
+
+func knownPermission(permission Permission) bool {
+	for _, known := range AllPermissions() {
+		if permission == known {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *dashboardHandler) handleCompliance(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/compliance" {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	orgID := r.URL.Query().Get("org_id")
+	fleetID := r.URL.Query().Get("fleet_id")
+	_, sourceConfigured := d.model.complianceFleetSource()
+	if !d.authorizeFleetScopeRequest(w, r, DecisionScope{OrgID: orgID, FleetID: fleetID}, sourceConfigured, false) {
+		return
+	}
+	page, err := d.model.Compliance(r.Context(), orgID, fleetID)
+	if err != nil {
+		if errors.Is(err, errInvalidFleetScope) {
+			http.Error(w, "invalid fleet scope", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "could not build compliance read model", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	if err := complianceTemplate.Execute(w, page); err != nil {
+		http.Error(w, "could not render compliance console", http.StatusInternalServerError)
+	}
 }
 
 func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {

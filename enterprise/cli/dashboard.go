@@ -45,20 +45,23 @@ func DashboardCmd() *cobra.Command {
 	cmd.AddCommand(dashboardServeCmd())
 	cmd.AddCommand(coverageCertCmd())
 	cmd.AddCommand(exemptionCmd())
+	cmd.AddCommand(legalHoldCmd())
 	return cmd
 }
 
 type dashboardServeOptions struct {
-	listen         string
-	receiptDir     string
-	configFile     string
-	authTokenFile  string
-	rawTokenFile   string
-	trustedSigners []string
-	licenseCRLFile string
-	tlsCert        string
-	tlsKey         string
-	exemptionStore string
+	listen              string
+	receiptDir          string
+	configFile          string
+	authTokenFile       string
+	rawTokenFile        string
+	trustedSigners      []string
+	licenseCRLFile      string
+	tlsCert             string
+	tlsKey              string
+	exemptionStore      string
+	legalHoldStore      string
+	complianceTokenFile string
 }
 
 func dashboardServeCmd() *cobra.Command {
@@ -100,10 +103,14 @@ because the operator token would transit in cleartext.`,
 		"optional Pipelock config file for the read-only exemptions inventory")
 	cmd.Flags().StringVar(&opts.exemptionStore, "exemption-store", "",
 		"optional exemption lifecycle store file; overlays owner/reason/expiry/status onto the read-only exemptions inventory")
+	cmd.Flags().StringVar(&opts.legalHoldStore, "legal-hold-store", "",
+		"optional legal-hold metadata store file for read-only compliance display")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
 		"file containing the operator token required on every dashboard request (redacted metadata view)")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
 		"optional file containing a higher-privilege token that unlocks raw destinations and signed payloads; must differ from --auth-token-file")
+	cmd.Flags().StringVar(&opts.complianceTokenFile, "compliance-token-file", "",
+		"optional auditor token file granting only dashboard:compliance:read")
 	cmd.Flags().StringArrayVar(&opts.trustedSigners, "trusted-signer", nil,
 		"trusted receipt signing key as comma-separated kv pairs: "+
 			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
@@ -151,6 +158,17 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return errors.New("--raw-token-file must differ from --auth-token-file")
 		}
 	}
+	var complianceToken string
+	if strings.TrimSpace(opts.complianceTokenFile) != "" {
+		complianceToken, err = loadDashboardTokenFile("--compliance-token-file", opts.complianceTokenFile)
+		if err != nil {
+			return err
+		}
+		if subtle.ConstantTimeCompare([]byte(complianceToken), []byte(token)) == 1 ||
+			(rawToken != "" && subtle.ConstantTimeCompare([]byte(complianceToken), []byte(rawToken)) == 1) {
+			return errors.New("--compliance-token-file must differ from operator and raw token files")
+		}
+	}
 	trusted, err := signingflag.ParseTrustedSigners(opts.trustedSigners)
 	if err != nil {
 		return err
@@ -187,6 +205,13 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 			return fmt.Errorf("--exemption-store: %w", err)
 		}
 	}
+	var legalHoldStore *dashboard.LegalHoldStore
+	if strings.TrimSpace(opts.legalHoldStore) != "" {
+		legalHoldStore, err = dashboard.OpenLegalHoldStore(opts.legalHoldStore)
+		if err != nil {
+			return fmt.Errorf("--legal-hold-store: %w", err)
+		}
+	}
 
 	// metaAuthorized gates all access: the metadata token OR the raw token (a
 	// raw holder is also a valid operator). rawAuthorized gates only the
@@ -197,6 +222,12 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		}
 		return rawToken != "" && dashboardTokenMatches(r, rawToken)
 	}
+	complianceAuthorized := func(r *http.Request) bool {
+		return complianceToken != "" && dashboardTokenMatches(r, complianceToken)
+	}
+	authenticated := func(r *http.Request) bool {
+		return metaAuthorized(r) || complianceAuthorized(r)
+	}
 	rawAuthorized := func(r *http.Request) bool {
 		return rawToken != "" && dashboardTokenMatches(r, rawToken)
 	}
@@ -206,9 +237,10 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		TrustedKeys:         trusted,
 		Config:              loadedConfig,
 		ExemptionStore:      exemptionStore,
+		LegalHoldStore:      legalHoldStore,
 		HasFeature:          dashboardRuntimeHasFeature(lic),
-		Authorize:           dashboardAuthorizeFunc(metaAuthorized),
-		AuthorizePermission: dashboardAuthorizePermissionFunc(metaAuthorized, rawAuthorized),
+		Authorize:           dashboardAuthorizeFunc(authenticated),
+		AuthorizePermission: dashboardAuthorizePermissionFunc(metaAuthorized, rawAuthorized, complianceAuthorized),
 		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
 		AuditWriter: cmd.ErrOrStderr(),
@@ -232,7 +264,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		// read-only empty state instead of inventing budget numbers.
 		BudgetSource: nil,
 	})
-	handler := dashboardAuthHandler(metaAuthorized, inner)
+	handler := dashboardAuthHandler(authenticated, inner)
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -335,6 +367,7 @@ func dashboardAuthorizeFunc(authorized func(*http.Request) bool) func(*http.Requ
 func dashboardAuthorizePermissionFunc(
 	metaAuthorized func(*http.Request) bool,
 	rawAuthorized func(*http.Request) bool,
+	complianceAuthorized func(*http.Request) bool,
 ) func(*http.Request, dashboard.Permission) error {
 	return func(r *http.Request, permission dashboard.Permission) error {
 		switch permission {
@@ -346,6 +379,10 @@ func dashboardAuthorizePermissionFunc(
 			dashboard.PermissionSignedActionRead,
 			dashboard.PermissionIncidentRead:
 			if metaAuthorized(r) {
+				return nil
+			}
+		case dashboard.PermissionComplianceRead:
+			if metaAuthorized(r) || (complianceAuthorized != nil && complianceAuthorized(r)) {
 				return nil
 			}
 		case dashboard.PermissionRawRead:

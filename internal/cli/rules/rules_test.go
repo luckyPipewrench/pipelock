@@ -152,8 +152,21 @@ func setupUnsignedBundle(t *testing.T, rulesDir, bundleName string, bundleData [
 
 // Tests in this file that call testRootCmd() are intentionally NOT parallel
 // because cobra commands share global state during execution.
-// Tests that mutate domrules.KeyringHex or httpsOnlyClient are also
+// Tests that mutate domrules keyring globals or httpsOnlyClient are also
 // sequential to avoid data races.
+
+func setRulesKeyringHexForTest(t *testing.T, keyringHex string) {
+	t.Helper()
+
+	origDefault := domrules.DefaultKeyringHex
+	origKeyring := domrules.KeyringHex
+	domrules.DefaultKeyringHex = ""
+	domrules.KeyringHex = keyringHex
+	t.Cleanup(func() {
+		domrules.DefaultKeyringHex = origDefault
+		domrules.KeyringHex = origKeyring
+	})
+}
 
 // ---------- rules list tests ----------
 
@@ -386,9 +399,7 @@ func TestRulesInstall_RemoteSigned(t *testing.T) {
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
 	// Set up embedded keyring.
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	// HTTP test server serving bundle.yaml and bundle.yaml.sig.
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -495,9 +506,7 @@ func TestRulesVerify_Valid(t *testing.T) {
 	}
 
 	// Set embedded keyring.
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	bundleDir := filepath.Join(rulesDir, testBundleName)
 	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
@@ -561,9 +570,7 @@ func TestRulesVerify_Tampered(t *testing.T) {
 	}
 
 	// Set embedded keyring.
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	bundleDir := filepath.Join(rulesDir, testBundleName)
 	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
@@ -694,9 +701,7 @@ func TestRulesUpdate_RemoteUpToDate(t *testing.T) {
 	sig := ed25519.Sign(priv, bundleData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -783,9 +788,7 @@ func TestRulesUpdate_NewerVersion(t *testing.T) {
 	newSig := ed25519.Sign(priv, newData)
 	newSigEncoded := base64.StdEncoding.EncodeToString(newSig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1330,9 +1333,7 @@ func TestVerifyRemoteSignature_NoMatchingSigner(t *testing.T) {
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
 	// Empty embedded keyring, no trusted keys.
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = ""
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, "")
 
 	_, err = verifyRemoteSignature(bundleData, []byte(sigEncoded), nil)
 	if err == nil {
@@ -1353,9 +1354,7 @@ func TestVerifyRemoteSignature_TrustedKeyBadHex(t *testing.T) {
 	sig := ed25519.Sign(priv, bundleData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = ""
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, "")
 
 	// Invalid hex and wrong-size key -- both should be skipped, not panic.
 	trustedKeys := []config.TrustedKey{
@@ -1596,9 +1595,7 @@ func TestRulesUpdate_UpdateAll(t *testing.T) {
 	sig := ed25519.Sign(priv, newData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sig") {
@@ -1668,9 +1665,7 @@ func TestRulesUpdate_RepublishAttack(t *testing.T) {
 	sig := ed25519.Sign(priv, newData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sig") {
@@ -1736,9 +1731,7 @@ func TestRulesUpdate_DowngradeRejected(t *testing.T) {
 	sig := ed25519.Sign(priv, newData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sig") {
@@ -1802,9 +1795,7 @@ func TestRulesInstall_RemoteNameMismatch(t *testing.T) {
 	sig := ed25519.Sign(priv, bundleData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sig") {
@@ -2042,9 +2033,7 @@ func TestUpdateBundle_NameChangeRejected(t *testing.T) {
 	newSig := ed25519.Sign(priv, newData)
 	newSigEncoded := base64.StdEncoding.EncodeToString(newSig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sig") {
@@ -2106,9 +2095,7 @@ func TestUpdateBundle_ReservedPrefixRecheckOnUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating official key: %v", err)
 	}
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(officialPub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(officialPub))
 
 	// Remote bundle has pipelock-community name, signed by third-party.
 	pipelockYAML := strings.Replace(secondVersionBundleYAML, "name: test-bundle", "name: pipelock-community", 1)
@@ -2277,7 +2264,7 @@ func TestStageBundle_BackupAndRestore(t *testing.T) {
 }
 
 func TestRulesUpdate_AllWithFailures(t *testing.T) {
-	// NOT parallel: mutates httpsOnlyClient and domrules.KeyringHex.
+	// NOT parallel: mutates httpsOnlyClient and domrules keyring globals.
 
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -2288,9 +2275,7 @@ func TestRulesUpdate_AllWithFailures(t *testing.T) {
 	sig := ed25519.Sign(priv, newData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Serve the good bundle for test-bundle, 404 for other-bundle.
@@ -2381,7 +2366,7 @@ func TestRulesUpdate_AllWithFailures(t *testing.T) {
 }
 
 func TestInstallRemote_PipelockPrefixNonOfficial(t *testing.T) {
-	// NOT parallel: mutates httpsOnlyClient and domrules.KeyringHex.
+	// NOT parallel: mutates httpsOnlyClient and domrules keyring globals.
 
 	// Third-party key signs a bundle with pipelock- prefix.
 	thirdPub, thirdPriv, err := ed25519.GenerateKey(nil)
@@ -2394,9 +2379,7 @@ func TestInstallRemote_PipelockPrefixNonOfficial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating official key: %v", err)
 	}
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(officialPub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(officialPub))
 
 	pipelockYAML := strings.Replace(validBundleYAML, "name: test-bundle", "name: pipelock-evil", 1)
 	bundleData := []byte(pipelockYAML)
@@ -2502,7 +2485,7 @@ func TestRulesUpdate_AllNoBundles(t *testing.T) {
 
 func TestRulesUpdate_WithConfigFile(t *testing.T) {
 	// Tests the config loading path in rulesUpdateCmd.
-	// NOT parallel: mutates httpsOnlyClient and domrules.KeyringHex.
+	// NOT parallel: mutates httpsOnlyClient and domrules keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
@@ -2512,9 +2495,7 @@ func TestRulesUpdate_WithConfigFile(t *testing.T) {
 	sig := ed25519.Sign(priv, bundleData)
 	sigEncoded := base64.StdEncoding.EncodeToString(sig) + "\n"
 
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(pub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sig") {
@@ -2628,9 +2609,7 @@ func TestRulesInstall_RemoteSignatureFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating other key: %v", err)
 	}
-	orig := domrules.KeyringHex
-	domrules.KeyringHex = hex.EncodeToString(otherPub)
-	t.Cleanup(func() { domrules.KeyringHex = orig })
+	setRulesKeyringHexForTest(t, hex.EncodeToString(otherPub))
 
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sig") {

@@ -162,13 +162,11 @@ func writeSignedBundle(t *testing.T, dir string, b *Bundle, pub ed25519.PublicKe
 	}
 }
 
-// setupKeyring sets KeyringHex to the given public key and returns a cleanup function.
+// setupKeyring sets the test keyring to the given public key.
 // Must NOT be used in parallel tests.
 func setupKeyring(t *testing.T, pub ed25519.PublicKey) {
 	t.Helper()
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 }
 
 func TestLoadBundles_NonExistentDir(t *testing.T) {
@@ -314,7 +312,7 @@ func TestLoadBundles_ValidUnsignedBundle(t *testing.T) {
 }
 
 func TestLoadBundles_ValidSignedBundle(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
@@ -349,7 +347,7 @@ func TestLoadBundles_ValidSignedBundle(t *testing.T) {
 }
 
 func TestLoadBundles_SignedBundleThirdPartyKey(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 
 	// Official key in keyring (not the signer).
 	officialPub, _, err := ed25519.GenerateKey(nil)
@@ -762,7 +760,7 @@ func TestLoadBundles_MultipleBundlesAlphabetical(t *testing.T) {
 }
 
 func TestLoadBundles_PipelockPrefixNonOfficialSigner(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 
 	// Official key in keyring.
 	officialPub, _, err := ed25519.GenerateKey(nil)
@@ -805,7 +803,7 @@ func TestLoadBundles_PipelockPrefixNonOfficialSigner(t *testing.T) {
 }
 
 func TestLoadBundles_PipelockPrefixOfficialSigner(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -1113,7 +1111,7 @@ func TestIsDisabled(t *testing.T) {
 }
 
 func TestIsOfficialFingerprint(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	pub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
@@ -1338,7 +1336,7 @@ func TestLoadBundles_V2UnsignedRejected(t *testing.T) {
 }
 
 func TestLoadBundles_V2RequiredFeaturesKnown(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
@@ -1372,7 +1370,7 @@ func TestLoadBundles_V2RequiredFeaturesKnown(t *testing.T) {
 }
 
 func TestLoadBundles_V2RequiredFeaturesUnknown(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)

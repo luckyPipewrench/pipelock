@@ -739,6 +739,9 @@ func TestCheckMinPipelock(t *testing.T) {
 		{"major above", "1.0.0", "2.0.0", false},
 		{"pre-release stripped from current", "1.3.0", "1.3.0-rc1", false},
 		{"pre-release stripped from min", "1.3.0-beta", "1.3.0", false},
+		{"build metadata stripped from current", "1.3.0", "1.3.0+incompatible", false},
+		{"build metadata stripped from min", "1.3.0+metadata", "1.3.0", false},
+		{"pseudo-version below normal release", "1.0.0", "0.0.0-20260709120000-abcdefabcdef", true},
 		{"patch comparison", "1.3.1", "1.3.0", true},
 		{"patch meets", "1.3.0", "1.3.1", false},
 	}

@@ -16,7 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-// Tests in this file that mutate the package-level KeyringHex variable
+// Tests in this file that mutate the package-level keyring variables
 // are intentionally not parallel to avoid data races.
 
 const testBundleFilename = "bundle.yaml"
@@ -27,9 +27,7 @@ func TestVerifyBundleSignature_Official(t *testing.T) {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, testBundleFilename)
@@ -66,9 +64,7 @@ func TestVerifyBundleSignature_ThirdParty(t *testing.T) {
 		t.Fatalf("generating official key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(officialPub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(officialPub))
 
 	// Third-party key signs the bundle.
 	thirdPub, thirdPriv, err := ed25519.GenerateKey(nil)
@@ -135,9 +131,7 @@ func TestVerifyBundleSignature_WrongSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating other key: %v", err)
 	}
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(otherPub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(otherPub))
 
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, testBundleFilename)
@@ -209,9 +203,7 @@ func TestVerifyIntegrity_SignedValid(t *testing.T) {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, testBundleFilename)
@@ -244,9 +236,7 @@ func TestVerifyIntegrity_SignedTampered(t *testing.T) {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, testBundleFilename)
@@ -333,15 +323,13 @@ func TestVerifyIntegrityBytes_UnsignedSHAMismatch(t *testing.T) {
 }
 
 func TestVerifyIntegrityBytes_SignedSHAMismatch(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 
 	data := []byte("name: signed-bundle\n")
 	dir := t.TempDir()
@@ -373,15 +361,13 @@ func TestVerifyIntegrityBytes_SignedSHAMismatch(t *testing.T) {
 }
 
 func TestVerifyIntegrityBytes_SignedHappyPath(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 
 	data := []byte("name: signed-bundle\n")
 	dir := t.TempDir()
@@ -411,16 +397,14 @@ func TestVerifyIntegrityBytes_SignedHappyPath(t *testing.T) {
 // ---------- verifySignedIntegrity SHA-256 mismatch ----------
 
 func TestVerifyIntegrity_SignedSHA256Mismatch(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	// Signature is valid but the lock file has a different SHA-256 digest.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, testBundleFilename)
@@ -453,15 +437,13 @@ func TestVerifyIntegrity_SignedSHA256Mismatch(t *testing.T) {
 // ---------- VerifyIntegrityBytes signer fingerprint mismatch ----------
 
 func TestVerifyIntegrityBytes_SignerFingerprintMismatch(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 
 	data := []byte("name: signer-fp-mismatch\n")
 	dir := t.TempDir()
@@ -494,15 +476,13 @@ func TestVerifyIntegrityBytes_SignerFingerprintMismatch(t *testing.T) {
 // ---------- verifySignedIntegrity signer fingerprint mismatch ----------
 
 func TestVerifyIntegrity_SignerFingerprintMismatch(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generating key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(pub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(pub))
 
 	dir := t.TempDir()
 	bundlePath := filepath.Join(dir, testBundleFilename)
@@ -535,7 +515,7 @@ func TestVerifyIntegrity_SignerFingerprintMismatch(t *testing.T) {
 // ---------- findSigner coverage tests ----------
 
 func TestFindSigner_TrustedKeyPath(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 
 	// Official key in keyring (NOT the signer).
 	officialPub, _, err := ed25519.GenerateKey(nil)
@@ -543,9 +523,7 @@ func TestFindSigner_TrustedKeyPath(t *testing.T) {
 		t.Fatalf("generating official key: %v", err)
 	}
 
-	orig := KeyringHex
-	KeyringHex = hex.EncodeToString(officialPub)
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", hex.EncodeToString(officialPub))
 
 	// Third-party key signs the data.
 	thirdPub, thirdPriv, err := ed25519.GenerateKey(nil)

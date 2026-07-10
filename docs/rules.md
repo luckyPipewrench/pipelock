@@ -17,7 +17,7 @@ pipelock rules install --path /path/to/bundle/ --allow-unsigned
 
 Bundles are stored in `$XDG_DATA_HOME/pipelock/rules/` by default (typically `~/.local/share/pipelock/rules/`). Override with the `--rules-dir` flag or the `rules_dir` config field.
 
-> **Note:** Official bundle verification requires the embedded keyring, which is present in release binaries (Homebrew, GitHub Releases, Docker). Source builds via `go install` do not include the keyring unless built with the release ldflags. Source-build users must add the official public key to `trusted_keys` in their config for remote installs, or download the bundle manually and use `--path` with `--allow-unsigned`.
+> **Note:** Official bundle verification works in source builds because the official rules signing public key is compiled into the source. Release binaries additionally embed the rules keyring via ldflags. Use `trusted_keys` for third-party bundles signed by keys outside the official keyring.
 
 ## Updating and Removing
 
@@ -123,7 +123,7 @@ Bundles are Ed25519-signed YAML files. Pipelock verifies signatures against a ke
 
 ### Official bundles
 
-Official bundles (like `pipelock-community`) are signed with the production key embedded in the binary at build time. No additional configuration is needed.
+Official bundles (like `pipelock-community`) are signed with the production key compiled into the source and also embedded in release binaries at build time. No additional configuration is needed.
 
 ### Third-party bundles
 

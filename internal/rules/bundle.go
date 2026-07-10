@@ -395,7 +395,7 @@ func NamespacedID(bundleName, ruleID string) string {
 // CheckMinPipelock verifies that currentVersion meets the minimum required
 // pipelock version. If minVersion is empty, the check always passes.
 // Both versions are parsed as semver (major.minor.patch), with any
-// pre-release suffix (after first "-") stripped before comparison.
+// pre-release/build suffix (after first "-" or "+") stripped before comparison.
 func CheckMinPipelock(minVersion, currentVersion string) error {
 	if minVersion == "" {
 		return nil
@@ -419,12 +419,12 @@ func CheckMinPipelock(minVersion, currentVersion string) error {
 }
 
 // parseSemver parses a semver string into major, minor, patch integers.
-// Pre-release suffixes (anything after the first "-") are stripped.
+// Pre-release/build suffixes (anything after the first "-" or "+") are stripped.
 func parseSemver(s string) (major, minor, patch int, err error) {
 	// Strip "v" prefix (e.g. "v2.1.0" → "2.1.0").
 	s = strings.TrimPrefix(s, "v")
-	// Strip pre-release suffix.
-	if idx := strings.IndexByte(s, '-'); idx >= 0 {
+	// Strip pre-release/build suffix.
+	if idx := strings.IndexAny(s, "-+"); idx >= 0 {
 		s = s[:idx]
 	}
 

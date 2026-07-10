@@ -12,12 +12,10 @@ import (
 )
 
 func TestFindSigner_InvalidTrustedKeyHex(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 
 	// No official keys.
-	orig := KeyringHex
-	KeyringHex = ""
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", "")
 
 	data := []byte("test-data")
 	// Sign with some key.
@@ -39,12 +37,10 @@ func TestFindSigner_InvalidTrustedKeyHex(t *testing.T) {
 }
 
 func TestFindSigner_WrongKeySize(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 
 	// No official keys.
-	orig := KeyringHex
-	KeyringHex = ""
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", "")
 
 	data := []byte("test-data")
 	_, priv, err := ed25519.GenerateKey(nil)
@@ -66,11 +62,9 @@ func TestFindSigner_WrongKeySize(t *testing.T) {
 }
 
 func TestFindSigner_NoKeysAtAll(t *testing.T) {
-	// Non-parallel: mutates KeyringHex.
+	// Non-parallel: mutates keyring globals.
 
-	orig := KeyringHex
-	KeyringHex = ""
-	t.Cleanup(func() { KeyringHex = orig })
+	setEmbeddedKeyringHexForTest(t, "", "")
 
 	data := []byte("test-data")
 	sig := make([]byte, ed25519.SignatureSize)

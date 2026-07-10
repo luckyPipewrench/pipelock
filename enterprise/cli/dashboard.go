@@ -215,6 +215,14 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		// conductor audit/status store handle. Until then /fleet renders the
 		// read-only empty state instead of inventing a fake conductor client.
 		FleetSource: nil,
+		// TODO(DASH-3B): wire the read-only conductor decision replay/dry-run
+		// source when dashboard serve owns a conductor read handle. Until then
+		// /workbench renders its prepare guidance plus the unconfigured-replay
+		// state, and /incident renders the unconfigured-decision-source state.
+		// The seam is read-only by construction (no publish/kill/rollback
+		// method), so the dashboard holds no fleet-control authority even once
+		// wired.
+		ConductorSource: nil,
 	})
 	handler := dashboardAuthHandler(metaAuthorized, inner)
 

@@ -33,6 +33,10 @@ func generateDashboardKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) 
 	return pub, priv
 }
 
+func allowFleetScope(*http.Request, DecisionScope, bool) error {
+	return nil
+}
+
 func buildDashboardChain(t *testing.T, priv ed25519.PrivateKey, count int) []receipt.Receipt {
 	t.Helper()
 	chain := make([]receipt.Receipt, 0, count)

@@ -189,6 +189,212 @@ func TestEmitter_Emit_HappyPath(t *testing.T) {
 	}
 }
 
+// TestEmitter_InFlightReceiptStampsSnapshotPolicyHashAcrossReload proves that a
+// request decided under the OLD policy but emitted AFTER a same-key hot reload
+// advanced the emitter's config-hash atomic is still stamped with the policy
+// that actually decided it. Before the per-emission PolicyHash preference, the
+// in-flight receipt inherited the mutated atomic (the NEW policy), so a shown
+// receipt could claim a policy that never evaluated the request. The test is
+// deterministic: it drives Emit directly with two config snapshots and does not
+// depend on a live reload goroutine.
+func TestEmitter_InFlightReceiptStampsSnapshotPolicyHashAcrossReload(t *testing.T) {
+	t.Parallel()
+
+	const (
+		oldPolicyHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		newPolicyHash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	)
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+
+	// The emitter starts with the OLD policy in its config-hash atomic.
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: oldPolicyHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+	if e == nil {
+		t.Fatal("NewEmitter() returned nil")
+	}
+
+	// A hot reload advances the live config-hash atomic to the NEW policy. This
+	// is the mutation that historically restamped an in-flight receipt.
+	inFlightID := NewActionID()
+	e.UpdateConfigHash(newPolicyHash)
+
+	// The in-flight request (decided under the OLD policy, so it captured the
+	// OLD snapshot hash in EmitOpts.PolicyHash) emits AFTER the atomic advanced.
+	// It must still carry the OLD policy hash.
+	if err := e.Emit(EmitOpts{
+		ActionID:   inFlightID,
+		Target:     testTarget,
+		Verdict:    config.ActionBlock,
+		Transport:  testTransport,
+		Method:     http.MethodGet,
+		PolicyHash: oldPolicyHash,
+	}); err != nil {
+		t.Fatalf("in-flight Emit: %v", err)
+	}
+
+	// A request decided AFTER the reload carries the NEW snapshot hash.
+	postReloadID := NewActionID()
+	if err := e.Emit(EmitOpts{
+		ActionID:   postReloadID,
+		Target:     testTarget,
+		Verdict:    config.ActionAllow,
+		Transport:  testTransport,
+		Method:     http.MethodGet,
+		PolicyHash: newPolicyHash,
+	}); err != nil {
+		t.Fatalf("post-reload Emit: %v", err)
+	}
+
+	// A caller with no request snapshot (empty PolicyHash) falls back to the
+	// live atomic, exactly as before this change.
+	fallbackID := NewActionID()
+	if err := e.Emit(EmitOpts{
+		ActionID:  fallbackID,
+		Target:    testTarget,
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+	}); err != nil {
+		t.Fatalf("fallback Emit: %v", err)
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	byID := make(map[string]string)
+	for _, r := range readAllReceiptsFromDir(t, dir, pub) {
+		byID[r.ActionRecord.ActionID] = r.ActionRecord.PolicyHash
+	}
+
+	if got := byID[inFlightID]; got != oldPolicyHash {
+		t.Errorf("in-flight receipt policy_hash = %q, want OLD %q (a reload must not restamp an in-flight decision)", got, oldPolicyHash)
+	}
+	if got := byID[postReloadID]; got != newPolicyHash {
+		t.Errorf("post-reload receipt policy_hash = %q, want NEW %q", got, newPolicyHash)
+	}
+	if got := byID[fallbackID]; got != newPolicyHash {
+		t.Errorf("fallback receipt policy_hash = %q, want live atomic NEW %q", got, newPolicyHash)
+	}
+}
+
+func TestEmitter_NormalizesLabeledPolicyHashOverride(t *testing.T) {
+	t.Parallel()
+
+	const rawPolicyHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+	if e == nil {
+		t.Fatal("NewEmitter() returned nil")
+	}
+
+	actionID := NewActionID()
+	if err := e.Emit(EmitOpts{
+		ActionID:   actionID,
+		Target:     testTarget,
+		Verdict:    config.ActionBlock,
+		Transport:  testTransport,
+		Method:     http.MethodGet,
+		PolicyHash: "sha256:" + rawPolicyHash,
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	for _, r := range readAllReceiptsFromDir(t, dir, pub) {
+		if r.ActionRecord.ActionID == actionID {
+			if r.ActionRecord.PolicyHash != rawPolicyHash {
+				t.Fatalf("policy_hash = %q, want normalized raw %q", r.ActionRecord.PolicyHash, rawPolicyHash)
+			}
+			return
+		}
+	}
+	t.Fatalf("receipt for action_id %q not found", actionID)
+}
+
+func TestEmitter_RejectsMalformedPolicyHashOverride(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		hash string
+	}{
+		{name: "short", hash: "sha256:abc"},
+		{name: "unlabeled junk", hash: "not-a-policy-hash"},
+		{name: "uppercase", hash: "sha256:0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{name: "leading whitespace", hash: " sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{name: "trailing newline", hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"},
+		{name: "control character", hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\x00"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			_, priv := generateTestKey(t)
+			rec := newTestRecorder(t, dir, priv)
+			defer func() { _ = rec.Close() }()
+			e := NewEmitter(EmitterConfig{
+				Recorder:   rec,
+				PrivKey:    priv,
+				ConfigHash: testConfigHash,
+				Principal:  testPrincipal,
+				Actor:      testActor,
+			})
+			if e == nil {
+				t.Fatal("NewEmitter() returned nil")
+			}
+
+			err := e.Emit(EmitOpts{
+				ActionID:   NewActionID(),
+				Target:     testTarget,
+				Verdict:    config.ActionBlock,
+				Transport:  testTransport,
+				Method:     http.MethodGet,
+				PolicyHash: tc.hash,
+			})
+			if err == nil {
+				t.Fatal("Emit succeeded with malformed policy hash")
+			}
+			if !strings.Contains(err.Error(), "policy hash override") {
+				t.Fatalf("error = %v, want policy hash override context", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeCanonicalPolicyHash_EmptyValue(t *testing.T) {
+	t.Parallel()
+
+	got, err := normalizeCanonicalPolicyHash("")
+	if err != nil {
+		t.Fatalf("normalizeCanonicalPolicyHash empty error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("normalizeCanonicalPolicyHash empty = %q, want empty", got)
+	}
+}
+
 func TestEmitter_RunNoncePerProcessRun(t *testing.T) {
 	t.Parallel()
 

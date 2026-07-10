@@ -650,6 +650,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			redirectWarnCtx.ClientIP = clientIP
 			redirectWarnCtx.RequestID = requestID
 			redirectWarnCtx.Agent = agentName
+			redirectWarnCtx.PolicyHash = currentCfg.CanonicalPolicyHash()
 			// Derive transport from the original request context so
 			// forward-proxy redirects log and audit as "forward" and
 			// fetch-proxy redirects log as "fetch". Hard-coding
@@ -696,7 +697,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				Agent:       agentName,
 				AuditCtx:    newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName),
 				Emit: func(opts receipt.EmitOpts) {
-					_ = p.emitReceipt(opts)
+					_ = p.emitReceipt(withReceiptPolicyHash(opts, currentCfg.CanonicalPolicyHash()))
 				},
 			}); rpRes.Block {
 				return newRedirectBlockedRequest(blockLayerRequestPolicy, rpRes.Reason)
@@ -3520,7 +3521,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Scan URL through all scanners
 	scanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 		Method: http.MethodGet, URL: targetURL, ClientIP: clientIP,
-		RequestID: requestID, Agent: agent, Transport: "fetch",
+		RequestID: requestID, Agent: agent, Transport: "fetch", PolicyHash: cfg.CanonicalPolicyHash(),
 	})
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)

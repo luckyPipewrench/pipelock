@@ -2166,9 +2166,11 @@ func TestForwardScannedInput_PolicyRedirectOutputWarnPreservesWarnContext(t *tes
 
 	opts := testOpts(sc)
 	opts.PolicyCfg = policyCfg
+	opts.PolicyHash = mcpTestPolicyHash
 	opts.WarnContext = scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
-		RequestID: testWarnContextRequestID,
-		Agent:     testWarnContextAgent,
+		RequestID:  testWarnContextRequestID,
+		Agent:      testWarnContextAgent,
+		PolicyHash: "stale-policy-hash",
 	})
 
 	ForwardScannedInput(
@@ -2202,6 +2204,9 @@ func TestForwardScannedInput_PolicyRedirectOutputWarnPreservesWarnContext(t *tes
 	}
 	if got.Agent != testWarnContextAgent {
 		t.Fatalf("agent = %q, want %q", got.Agent, testWarnContextAgent)
+	}
+	if got.PolicyHash != mcpTestPolicyHash {
+		t.Fatalf("policyHash = %q, want authoritative %q", got.PolicyHash, mcpTestPolicyHash)
 	}
 }
 

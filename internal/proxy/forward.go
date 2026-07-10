@@ -174,7 +174,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Scan through all layers (URL pipeline).
 	connectScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 		Method: http.MethodConnect, URL: syntheticURL, Target: target,
-		ClientIP: clientIP, RequestID: requestID, Agent: agent, Transport: "connect",
+		ClientIP: clientIP, RequestID: requestID, Agent: agent, Transport: "connect", PolicyHash: cfg.CanonicalPolicyHash(),
 	})
 	r = r.WithContext(connectScanCtx)
 	result := sc.Scan(connectScanCtx, syntheticURL)
@@ -824,7 +824,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Scan through all layers (URL pipeline)
 	fwdScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 		Method: r.Method, URL: targetURL, ClientIP: clientIP,
-		RequestID: requestID, Agent: agent, Transport: "forward",
+		RequestID: requestID, Agent: agent, Transport: "forward", PolicyHash: cfg.CanonicalPolicyHash(),
 	})
 	r = r.WithContext(fwdScanCtx)
 	result := sc.Scan(fwdScanCtx, targetURL)

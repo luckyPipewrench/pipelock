@@ -257,7 +257,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Run through all 9 scanner layers.
 	wsScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 		Method: "WS", URL: scanURL, ClientIP: clientIP,
-		RequestID: requestID, Agent: agent, Transport: TransportWS,
+		RequestID: requestID, Agent: agent, Transport: TransportWS, PolicyHash: cfg.CanonicalPolicyHash(),
 	})
 	r = r.WithContext(wsScanCtx)
 	result := sc.Scan(wsScanCtx, scanURL)

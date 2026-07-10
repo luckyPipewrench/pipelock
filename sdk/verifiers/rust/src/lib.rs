@@ -8,5 +8,6 @@ pub mod receipt;
 pub mod recorder;
 pub mod schema;
 pub mod signing;
+pub mod strict;
 pub mod types;
 pub mod util;

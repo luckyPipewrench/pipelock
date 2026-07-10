@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m17-unknown-field-in-action-record",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "unknown_field",
+  "description": "An unrecognized field (sidecar_field) is nested inside the signed action_record. The ext escape hatch is top-level only; nested signed objects reject unknown fields.",
+  "notes": "Verifier MUST reject unknown fields at any nesting depth within a signed v1 object (action_record, session_control and its payloads, key_transition, redaction, shield). ext is tolerated only at the receipt top level."
+}

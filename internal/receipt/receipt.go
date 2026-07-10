@@ -4,11 +4,15 @@
 package receipt
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
@@ -26,6 +30,16 @@ type Receipt struct {
 	ActionRecord ActionRecord `json:"action_record"`
 	Signature    string       `json:"signature"`
 	SignerKey    string       `json:"signer_key"`
+
+	// Ext is the single, UNSIGNED, advisory forward-compat metadata bag. It is
+	// the ONLY tolerated unknown top-level surface on a v1 receipt: every other
+	// unrecognized field, at any nesting depth, is rejected (fail-closed) by
+	// Unmarshal. Ext is captured verbatim, NEVER covered by the receipt
+	// signature (the signature covers only the canonical action record), and
+	// NEVER consulted by verification — so no verified claim can rest on it.
+	// A producer that needs to attach non-authoritative metadata puts it here;
+	// a consumer must treat it as untrusted. Absent on stock receipts.
+	Ext json.RawMessage `json:"ext,omitempty"`
 }
 
 // Sign creates a receipt by signing the canonical action record with Ed25519.
@@ -142,23 +156,56 @@ func Marshal(r Receipt) ([]byte, error) {
 	return json.Marshal(r)
 }
 
-// Unmarshal parses a JSON-encoded receipt.
+// ErrUnknownField is returned when a v1 receipt (or any of its signed nested
+// objects: action_record, session_control and its payloads, key_transition,
+// redaction, shield, recent_taint_sources) carries a field the schema does not
+// define. The only tolerated unknown surface is the top-level advisory ext bag.
+var ErrUnknownField = errors.New("unknown field on signed v1 receipt object")
+
+// ErrTrailingTokens is returned when valid receipt JSON is followed by
+// additional non-whitespace tokens. Trailing tokens are a parser-differential
+// smuggling surface, so the verify path rejects them.
+var ErrTrailingTokens = errors.New("trailing tokens after receipt")
+
+// Unmarshal parses a JSON-encoded receipt under the strict v1 verify contract.
 //
-// Before decoding, it rejects any input that contains a duplicate object key at
-// any nesting depth. encoding/json silently keeps the last value for a
-// duplicate key, so {"verdict":"allow","verdict":"block"} would decode as
-// "block" with no error. That is a parser-differential smuggling vector: a
-// display, log, or summary layer that reads the first occurrence sees a
-// different value than the one the signature was checked against. The verify
-// path runs through Unmarshal, so this closes the gap on the verify side
-// without touching the signing input (Sign uses Marshal, not Unmarshal).
+// It fails closed on three parser-differential surfaces:
+//
+//   - Duplicate object keys at any nesting depth. encoding/json silently keeps
+//     the last value for a duplicate key, so {"verdict":"allow","verdict":"block"}
+//     would decode as "block" with no error, letting a display, log, or summary
+//     layer that reads the first occurrence see a different value than the one
+//     the signature was checked against.
+//   - Unknown fields on any signed v1 object. A verifier that accept-and-ignores
+//     an unrecognized sidecar field lets a downstream consumer trust content the
+//     signature never covered. The single, deliberate exception is the top-level
+//     ext bag (see Receipt.Ext), which is unsigned and never affects a verdict.
+//   - Trailing tokens after the receipt value.
+//
+// Stock producers emit no unknown v1 fields, so no legitimate receipt breaks.
+// The verify path runs through Unmarshal, so this closes the gaps on the verify
+// side without touching the signing input (Sign uses Marshal, not Unmarshal).
 func Unmarshal(data []byte) (Receipt, error) {
 	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
 		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", err)
 	}
 	var r Receipt
-	if err := json.Unmarshal(data, &r); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&r); err != nil {
+		// encoding/json reports a disallowed field as "json: unknown field
+		// ...". Wrap it with the ErrUnknownField sentinel so callers can match
+		// the strict-schema rejection with errors.Is.
+		if strings.Contains(err.Error(), "unknown field") {
+			return Receipt{}, fmt.Errorf("unmarshal receipt: %w: %w", ErrUnknownField, err)
+		}
 		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", err)
+	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return Receipt{}, fmt.Errorf("unmarshal receipt: %w: %w", ErrTrailingTokens, err)
+		}
+		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", ErrTrailingTokens)
 	}
 	return r, nil
 }

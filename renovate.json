@@ -6,7 +6,7 @@
   ],
   "minimumReleaseAge": "10 days",
   "internalChecksFilter": "strict",
-  "prCreation": "not-pending",
+  "dependencyDashboard": false,
   "schedule": ["* * * * 1"],
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,

@@ -17,8 +17,9 @@ OpenCode runs long sessions across multiple repos, calls many MCP tools, and fre
 ## Quick Start
 
 ```bash
-# 1. Install pipelock
-brew install luckyPipewrench/tap/pipelock
+# 1. Install pipelock (requires Go 1.25+)
+go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+# or (macOS): brew install luckyPipewrench/tap/pipelock
 
 # 2. Wrap every OpenCode MCP server with pipelock in one shot
 pipelock opencode install

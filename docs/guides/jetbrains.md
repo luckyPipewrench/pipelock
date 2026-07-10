@@ -7,9 +7,9 @@ WebStorm, GoLand, and any JetBrains IDE that uses Junie.
 ## Quick Start
 
 ```bash
-# 1. Install pipelock
-brew install luckyPipewrench/tap/pipelock
-# or: go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+# 1. Install pipelock (requires Go 1.25+)
+go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+# or (macOS): brew install luckyPipewrench/tap/pipelock
 
 # 2. Wrap all Junie MCP servers (user-level)
 pipelock jetbrains install

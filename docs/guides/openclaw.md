@@ -19,12 +19,15 @@ Pipelock blocks the post-compromise steps of this chain: tool policy blocks dang
 **1. Install pipelock:**
 
 ```bash
-# Homebrew (macOS / Linux)
-brew install luckyPipewrench/tap/pipelock
+# From source (Go 1.25+)
+go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
 # Or download binary
 curl -fsSL https://github.com/luckyPipewrench/pipelock/releases/latest/download/pipelock_linux_amd64.tar.gz | tar xz
 sudo mv pipelock /usr/local/bin/
+
+# Or Homebrew (macOS)
+brew install luckyPipewrench/tap/pipelock
 ```
 
 **2. Generate a wrapped config:**

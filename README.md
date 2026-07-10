@@ -46,8 +46,8 @@ Every machine action your agent takes (HTTP requests, tool calls, browser sessio
 ## Quick Start
 
 ```bash
-# Install
-brew install luckyPipewrench/tap/pipelock
+# Install (Go 1.25+; binary, Docker, and Homebrew options below)
+go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
 
 # Set up (discovers IDE configs, generates config, verifies detection)
 pipelock init
@@ -67,8 +67,8 @@ pipelock check --url "https://docs.python.org/3/"                # allowed
 # Docker
 docker pull ghcr.io/luckypipewrench/pipelock:latest
 
-# From source (requires Go 1.25+)
-go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+# Homebrew (macOS)
+brew install luckyPipewrench/tap/pipelock
 ```
 
 </details>

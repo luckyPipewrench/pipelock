@@ -25,8 +25,9 @@
 ## Quick Start
 
 ```bash
-# 1. Install pipelock
-brew install luckyPipewrench/tap/pipelock
+# 1. Install pipelock (requires Go 1.25+)
+go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+# or (macOS): brew install luckyPipewrench/tap/pipelock
 
 # 2. Full coverage (default): plugin-visible tool surfaces + terminal env passthrough
 pipelock hermes install --mode full --pipelock-config ~/.config/pipelock/pipelock.yaml

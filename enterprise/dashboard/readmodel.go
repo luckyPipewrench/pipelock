@@ -78,7 +78,11 @@ type Options struct {
 	// Incident Cockpit. It exposes no publish/kill/rollback method, so no write
 	// path to fleet state is reachable through it. Nil renders the explicit
 	// unconfigured-replay state, exactly like FleetSource.
-	ConductorSource  ConductorDecisionSource
+	ConductorSource ConductorDecisionSource
+	// BudgetSource, when non-nil, is the read-only per-agent budget seam for
+	// the Pro budgets panel. Nil-degrades to an empty "no source configured"
+	// panel.
+	BudgetSource     BudgetDataSource
 	ReceiptReadLimit int
 	TimelineLimit    int
 	// FilterPresets maps named presets to bounded filter specs. Loaded from
@@ -103,6 +107,7 @@ type ReadModel struct {
 	filterPresets     map[string]FilterSpec
 	fleetSource       FleetDataSource
 	conductorSource   ConductorDecisionSource
+	budgetSource      BudgetDataSource
 	fleetRedactionKey [fleetRedactionKeySize]byte
 	exemptionStore    *ExemptionStore
 	now               func() time.Time
@@ -135,6 +140,7 @@ func NewReadModel(opts Options) *ReadModel {
 		filterPresets:     opts.FilterPresets,
 		fleetSource:       opts.FleetSource,
 		conductorSource:   opts.ConductorSource,
+		budgetSource:      opts.BudgetSource,
 		fleetRedactionKey: fleetRedactionKey,
 		exemptionStore:    opts.ExemptionStore,
 		now:               now,

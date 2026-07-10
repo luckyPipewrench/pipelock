@@ -31,7 +31,7 @@ const (
 	auditSessionMaxBytes  = 128
 )
 
-//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html
+//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html
 var templateFS embed.FS
 
 var (
@@ -42,6 +42,7 @@ var (
 	fleetoverviewTemplate = template.Must(template.ParseFS(templateFS, "fleetoverview.tmpl.html"))
 	workbenchTemplate     = template.Must(template.ParseFS(templateFS, "workbench.tmpl.html"))
 	incidentTemplate      = template.Must(template.ParseFS(templateFS, "incident.tmpl.html"))
+	budgetsTemplate       = template.Must(template.ParseFS(templateFS, "budgets.tmpl.html"))
 )
 
 type pageData struct {
@@ -81,6 +82,7 @@ func New(opts Options) http.Handler {
 	mux.Handle("/session/", d.gate(http.HandlerFunc(d.handleSession)))
 	mux.Handle("/agents", d.gate(http.HandlerFunc(d.handleAgents)))
 	mux.Handle("/agent/", d.gate(http.HandlerFunc(d.handleAgent)))
+	mux.Handle("/budgets", d.gate(http.HandlerFunc(d.handleBudgets)))
 	mux.Handle("/fleet", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
 	mux.Handle("/fleet/", d.fleetGate(http.HandlerFunc(d.handleFleetOverview)))
 	// DASH-3B: the Signed Action Workbench and Incident Cockpit are Enterprise
@@ -529,6 +531,28 @@ func decisionScopeFromRequest(r *http.Request) DecisionScope {
 		FleetID:      q.Get("fleet_id"),
 		ArtifactHash: q.Get("artifact_hash"),
 	}
+}
+
+func (d *dashboardHandler) handleBudgets(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/budgets" {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	overview, err := d.model.Budgets(r.Context(), rawAllowedFromContext(r))
+	if err != nil {
+		http.Error(w, "could not read agent budgets", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := budgetsTemplate.Execute(&buf, overview); err != nil {
+		http.Error(w, "could not render budgets", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func (d *dashboardHandler) handleSession(w http.ResponseWriter, r *http.Request) {

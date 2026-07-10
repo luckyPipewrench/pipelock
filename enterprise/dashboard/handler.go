@@ -51,6 +51,7 @@ type pageData struct {
 	Evidence        SessionEvidence
 	HasEvidence     bool
 	RawAllowed      bool
+	Operability     OperabilityHealth
 }
 
 type exemptionsPageData struct {
@@ -785,6 +786,7 @@ func (d *dashboardHandler) render(w http.ResponseWriter, sessions []SessionSumma
 		Sessions:        sessions,
 		SelectedSession: selected,
 		RawAllowed:      raw,
+		Operability:     d.model.OperabilityHealth(),
 	}
 	if selected != "" {
 		evidence, err := d.model.Session(selected)

@@ -1,0 +1,172 @@
+//go:build enterprise
+
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
+
+package dashboard
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
+)
+
+const (
+	ReadModelIndexFile = "read-model-index.json"
+	rebuildVersion     = 1
+)
+
+type RebuildOptions struct {
+	SourceDir string
+	Output    string
+	Now       func() time.Time
+}
+
+type ReadModelIndex struct {
+	RebuildVersion int             `json:"rebuild_version"`
+	RebuiltAt      time.Time       `json:"rebuilt_at"`
+	Sources        []IndexSource   `json:"sources"`
+	SourceRange    IndexRange      `json:"source_range"`
+	EntryCount     int             `json:"entry_count"`
+	Staleness      StalenessMarker `json:"staleness"`
+}
+
+type IndexSource struct {
+	File       string    `json:"file"`
+	SHA256     string    `json:"sha256"`
+	FirstSeq   uint64    `json:"first_seq"`
+	LastSeq    uint64    `json:"last_seq"`
+	FirstTime  time.Time `json:"first_time"`
+	LastTime   time.Time `json:"last_time"`
+	EntryCount int       `json:"entry_count"`
+	SessionID  string    `json:"session_id"`
+}
+
+type IndexRange struct {
+	FirstTime time.Time `json:"first_time"`
+	LastTime  time.Time `json:"last_time"`
+	FirstSeq  uint64    `json:"first_seq"`
+	LastSeq   uint64    `json:"last_seq"`
+}
+
+type StalenessMarker struct {
+	CheckedAt  time.Time `json:"checked_at"`
+	SourceHash string    `json:"source_hash"`
+	Status     string    `json:"status"`
+}
+
+func RebuildReadModel(opts RebuildOptions) error {
+	paths, err := evidencePaths(opts.SourceDir)
+	if err != nil {
+		return fmt.Errorf("NO SOURCE EVIDENCE: read recorder directory: %w", err)
+	}
+	if len(paths) == 0 {
+		return errors.New("NO SOURCE EVIDENCE: recorder directory contains no evidence JSONL files; no index was written")
+	}
+	now := time.Now
+	if opts.Now != nil {
+		now = opts.Now
+	}
+	index, err := buildReadModelIndex(paths, now().UTC())
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal read-model index: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(filepath.Clean(opts.Output)), 0o750); err != nil {
+		return fmt.Errorf("create read-model directory: %w", err)
+	}
+	if err := atomicfile.Write(opts.Output, data, 0o600); err != nil {
+		return fmt.Errorf("write read-model index: %w", err)
+	}
+	return nil
+}
+
+func evidencePaths(sourceDir string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Clean(sourceDir))
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "evidence-") && strings.HasSuffix(entry.Name(), ".jsonl") {
+			paths = append(paths, filepath.Join(sourceDir, entry.Name()))
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func buildReadModelIndex(paths []string, rebuiltAt time.Time) (ReadModelIndex, error) {
+	if rebuiltAt.IsZero() {
+		return ReadModelIndex{}, errors.New("read-model rebuild time must not be zero")
+	}
+	index := ReadModelIndex{RebuildVersion: rebuildVersion, RebuiltAt: rebuiltAt}
+	combined := sha256.New()
+	for _, path := range paths {
+		data, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			return ReadModelIndex{}, fmt.Errorf("read source evidence %s: %w", filepath.Base(path), err)
+		}
+		parsed, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
+		if err != nil {
+			return ReadModelIndex{}, fmt.Errorf("parse source evidence %s: %w", filepath.Base(path), err)
+		}
+		if len(parsed) == 0 {
+			return ReadModelIndex{}, fmt.Errorf("source evidence %s contains no entries; no index was written", filepath.Base(path))
+		}
+		sum := sha256.Sum256(data)
+		_, _ = combined.Write([]byte(filepath.Base(path)))
+		_, _ = combined.Write(sum[:])
+		source := IndexSource{File: filepath.Base(path), SHA256: hex.EncodeToString(sum[:]), EntryCount: len(parsed), FirstSeq: parsed[0].Sequence, LastSeq: parsed[len(parsed)-1].Sequence, FirstTime: parsed[0].Timestamp, LastTime: parsed[len(parsed)-1].Timestamp, SessionID: parsed[0].SessionID}
+		for _, entry := range parsed {
+			if entry.SessionID != source.SessionID {
+				return ReadModelIndex{}, fmt.Errorf("source evidence %s mixes session IDs; no index was written", source.File)
+			}
+			if entry.Sequence < source.FirstSeq {
+				source.FirstSeq = entry.Sequence
+			}
+			if entry.Sequence > source.LastSeq {
+				source.LastSeq = entry.Sequence
+			}
+			if entry.Timestamp.Before(source.FirstTime) {
+				source.FirstTime = entry.Timestamp
+			}
+			if entry.Timestamp.After(source.LastTime) {
+				source.LastTime = entry.Timestamp
+			}
+		}
+		index.Sources = append(index.Sources, source)
+		index.EntryCount += len(parsed)
+	}
+	first := index.Sources[0]
+	index.SourceRange = IndexRange{FirstTime: first.FirstTime, LastTime: first.LastTime, FirstSeq: first.FirstSeq, LastSeq: first.LastSeq}
+	for _, source := range index.Sources[1:] {
+		if source.FirstTime.Before(index.SourceRange.FirstTime) {
+			index.SourceRange.FirstTime = source.FirstTime
+		}
+		if source.LastTime.After(index.SourceRange.LastTime) {
+			index.SourceRange.LastTime = source.LastTime
+		}
+		if source.FirstSeq < index.SourceRange.FirstSeq {
+			index.SourceRange.FirstSeq = source.FirstSeq
+		}
+		if source.LastSeq > index.SourceRange.LastSeq {
+			index.SourceRange.LastSeq = source.LastSeq
+		}
+	}
+	index.Staleness = StalenessMarker{CheckedAt: index.RebuiltAt, SourceHash: hex.EncodeToString(combined.Sum(nil)), Status: "fresh_at_rebuild"}
+	return index, nil
+}

@@ -43,6 +43,9 @@ func DashboardCmd() *cobra.Command {
 		Short: "Web dashboard over Pipelock evidence (Pro/Enterprise)",
 	}
 	cmd.AddCommand(dashboardServeCmd())
+	cmd.AddCommand(dashboardBackupCmd())
+	cmd.AddCommand(dashboardRestoreCmd())
+	cmd.AddCommand(dashboardRebuildReadModelCmd())
 	cmd.AddCommand(coverageCertCmd())
 	cmd.AddCommand(exemptionCmd())
 	return cmd
@@ -59,6 +62,8 @@ type dashboardServeOptions struct {
 	tlsCert        string
 	tlsKey         string
 	exemptionStore string
+	deliveryInbox  string
+	readModelIndex string
 }
 
 func dashboardServeCmd() *cobra.Command {
@@ -100,6 +105,10 @@ because the operator token would transit in cleartext.`,
 		"optional Pipelock config file for the read-only exemptions inventory")
 	cmd.Flags().StringVar(&opts.exemptionStore, "exemption-store", "",
 		"optional exemption lifecycle store file; overlays owner/reason/expiry/status onto the read-only exemptions inventory")
+	cmd.Flags().StringVar(&opts.deliveryInbox, "delivery-inbox", "",
+		"optional alert delivery inbox file for read-only delivery health")
+	cmd.Flags().StringVar(&opts.readModelIndex, "read-model-index", "",
+		"optional rebuilt index metadata file for read-only freshness status")
 	cmd.Flags().StringVar(&opts.authTokenFile, "auth-token-file", "",
 		"file containing the operator token required on every dashboard request (redacted metadata view)")
 	cmd.Flags().StringVar(&opts.rawTokenFile, "raw-token-file", "",
@@ -206,6 +215,8 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		TrustedKeys:         trusted,
 		Config:              loadedConfig,
 		ExemptionStore:      exemptionStore,
+		DeliveryInboxPath:   opts.deliveryInbox,
+		ReadModelIndexPath:  opts.readModelIndex,
 		HasFeature:          dashboardRuntimeHasFeature(lic),
 		Authorize:           dashboardAuthorizeFunc(metaAuthorized),
 		AuthorizePermission: dashboardAuthorizePermissionFunc(metaAuthorized, rawAuthorized),

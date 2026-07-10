@@ -102,24 +102,30 @@ type Options struct {
 	// onto the read-only exemptions inventory. Its records add
 	// owner/reason/expiry/status/last-matched to matching entries.
 	ExemptionStore *ExemptionStore
+	// DeliveryInboxPath and ReadModelIndexPath are read-only health inputs.
+	// The dashboard does not mutate either store.
+	DeliveryInboxPath  string
+	ReadModelIndexPath string
 	// Now supplies the current time for lifecycle rendering. Nil uses time.Now.
 	Now func() time.Time
 }
 
 // ReadModel builds dashboard views over recorder sessions and receipts.
 type ReadModel struct {
-	receiptDir        string
-	trustedKeys       map[string]TrustedKey
-	cfg               *config.Config
-	receiptReadLimit  int
-	timelineLimit     int
-	filterPresets     map[string]FilterSpec
-	fleetSource       FleetDataSource
-	conductorSource   ConductorDecisionSource
-	budgetSource      BudgetDataSource
-	fleetRedactionKey [fleetRedactionKeySize]byte
-	exemptionStore    *ExemptionStore
-	now               func() time.Time
+	receiptDir         string
+	trustedKeys        map[string]TrustedKey
+	cfg                *config.Config
+	receiptReadLimit   int
+	timelineLimit      int
+	filterPresets      map[string]FilterSpec
+	fleetSource        FleetDataSource
+	conductorSource    ConductorDecisionSource
+	budgetSource       BudgetDataSource
+	fleetRedactionKey  [fleetRedactionKeySize]byte
+	exemptionStore     *ExemptionStore
+	deliveryInboxPath  string
+	readModelIndexPath string
+	now                func() time.Time
 }
 
 // NewReadModel creates a dashboard read model from Options.
@@ -141,18 +147,20 @@ func NewReadModel(opts Options) *ReadModel {
 		now = time.Now
 	}
 	return &ReadModel{
-		receiptDir:        opts.ReceiptDir,
-		trustedKeys:       cloneTrustedKeys(opts.TrustedKeys),
-		cfg:               opts.Config,
-		receiptReadLimit:  receiptReadLimit,
-		timelineLimit:     timelineLimit,
-		filterPresets:     opts.FilterPresets,
-		fleetSource:       opts.FleetSource,
-		conductorSource:   opts.ConductorSource,
-		budgetSource:      opts.BudgetSource,
-		fleetRedactionKey: fleetRedactionKey,
-		exemptionStore:    opts.ExemptionStore,
-		now:               now,
+		receiptDir:         opts.ReceiptDir,
+		trustedKeys:        cloneTrustedKeys(opts.TrustedKeys),
+		cfg:                opts.Config,
+		receiptReadLimit:   receiptReadLimit,
+		timelineLimit:      timelineLimit,
+		filterPresets:      opts.FilterPresets,
+		fleetSource:        opts.FleetSource,
+		conductorSource:    opts.ConductorSource,
+		budgetSource:       opts.BudgetSource,
+		fleetRedactionKey:  fleetRedactionKey,
+		exemptionStore:     opts.ExemptionStore,
+		deliveryInboxPath:  opts.DeliveryInboxPath,
+		readModelIndexPath: opts.ReadModelIndexPath,
+		now:                now,
 	}
 }
 

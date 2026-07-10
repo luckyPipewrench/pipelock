@@ -106,6 +106,19 @@ func writeDashTokenFile(t *testing.T) string {
 
 func TestDashboardCmd_Tree(t *testing.T) {
 	cmd := DashboardCmd()
+	wantCommands := map[string]bool{
+		"backup": false, "restore": false, "rebuild-read-model": false,
+	}
+	for _, child := range cmd.Commands() {
+		if _, ok := wantCommands[child.Name()]; ok {
+			wantCommands[child.Name()] = true
+		}
+	}
+	for name, found := range wantCommands {
+		if !found {
+			t.Errorf("dashboard command missing %q", name)
+		}
+	}
 	if cmd.Use != "dashboard" {
 		t.Fatalf("Use = %q, want dashboard", cmd.Use)
 	}

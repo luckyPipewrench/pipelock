@@ -3039,8 +3039,9 @@ func (c *Config) validateFlightRecorder() error {
 }
 
 func (c *Config) validateDashboardSnapshot() error {
-	if strings.TrimSpace(c.DashboardSnapshot.Interval) != "" {
-		interval, err := time.ParseDuration(c.DashboardSnapshot.Interval)
+	raw := strings.TrimSpace(c.DashboardSnapshot.Interval)
+	if raw != "" {
+		interval, err := time.ParseDuration(raw)
 		if err != nil {
 			return fmt.Errorf("dashboard_snapshot.interval must parse as a duration: %w", err)
 		}

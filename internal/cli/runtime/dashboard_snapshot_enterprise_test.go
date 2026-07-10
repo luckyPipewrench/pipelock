@@ -9,12 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard/runtimesnapshot"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 )
 
@@ -123,5 +126,115 @@ func TestBuildDashboardRuntimeSnapshotPropagatesProviderError(t *testing.T) {
 	_, err := buildDashboardRuntimeSnapshot(context.Background(), &fakeAgentBudgetSnapshotProvider{err: want}, time.Now(), "producer-1", "")
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v, want provider error", err)
+	}
+}
+
+func TestStartDashboardRuntimeSnapshotEnterpriseWritesAndStops(t *testing.T) {
+	cfg := config.Defaults()
+	enabled := true
+	cfg.DashboardSnapshot.Enabled = &enabled
+	cfg.DashboardSnapshot.Path = filepath.Join(t.TempDir(), "dashboard", "runtime-snapshot.json")
+	cfg.DashboardSnapshot.Interval = "1s"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	var stderr strings.Builder
+	startDashboardRuntimeSnapshotEnterprise(dashboardRuntimeSnapshotOptions{
+		Context:        ctx,
+		WaitGroup:      &wg,
+		BudgetProvider: &fakeAgentBudgetSnapshotProvider{},
+		StartupConfig:  cfg,
+		CurrentConfig:  func() *config.Config { return cfg },
+		Stderr:         &stderr,
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(cfg.DashboardSnapshot.Path); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stat runtime snapshot: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("runtime snapshot was not written; stderr=%q", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Let the ticker fire once so the periodic lane is covered in addition to
+	// the immediate startup write.
+	time.Sleep(1100 * time.Millisecond)
+	cancel()
+	wg.Wait()
+
+	snap, _, err := runtimesnapshot.Read(cfg.DashboardSnapshot.Path, time.Minute, time.Now())
+	if err != nil {
+		t.Fatalf("Read runtime snapshot: %v", err)
+	}
+	if snap.ProducerID != dashboardRuntimeSnapshotProducerID() {
+		t.Fatalf("producer ID = %q", snap.ProducerID)
+	}
+	if snap.PolicyHash != cfg.CanonicalPolicyHash() {
+		t.Fatalf("policy hash = %q, want current config hash", snap.PolicyHash)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+}
+
+func TestStartDashboardRuntimeSnapshotEnterpriseGuards(t *testing.T) {
+	t.Parallel()
+
+	startDashboardRuntimeSnapshotEnterprise(dashboardRuntimeSnapshotOptions{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var wg sync.WaitGroup
+	cfg := config.Defaults()
+	startDashboardRuntimeSnapshotEnterprise(dashboardRuntimeSnapshotOptions{
+		Context:       ctx,
+		WaitGroup:     &wg,
+		StartupConfig: cfg,
+	})
+	wg.Wait()
+
+	enabled := true
+	cfg.DashboardSnapshot.Enabled = &enabled
+	cfg.DashboardSnapshot.Path = ""
+	startDashboardRuntimeSnapshotEnterprise(dashboardRuntimeSnapshotOptions{
+		Context:        context.Background(),
+		WaitGroup:      &wg,
+		StartupConfig:  cfg,
+		BudgetProvider: &fakeAgentBudgetSnapshotProvider{},
+	})
+	wg.Wait()
+
+	writeDashboardRuntimeSnapshotTick(dashboardRuntimeSnapshotOptions{}, filepath.Join(t.TempDir(), "unused.json"), "producer")
+}
+
+func TestWriteDashboardRuntimeSnapshotTickReportsWriteFailure(t *testing.T) {
+	var stderr strings.Builder
+	path := t.TempDir()
+	writeDashboardRuntimeSnapshotTick(dashboardRuntimeSnapshotOptions{
+		Context:        context.Background(),
+		BudgetProvider: &fakeAgentBudgetSnapshotProvider{},
+		CurrentConfig:  func() *config.Config { return nil },
+		Stderr:         &stderr,
+	}, path, "producer")
+	if !strings.Contains(stderr.String(), "dashboard runtime snapshot write failed") {
+		t.Fatalf("stderr = %q, want write failure", stderr.String())
+	}
+}
+
+func TestWriteDashboardRuntimeSnapshotTickReportsProviderFailure(t *testing.T) {
+	var stderr strings.Builder
+	writeDashboardRuntimeSnapshotTick(dashboardRuntimeSnapshotOptions{
+		Context: context.Background(),
+		BudgetProvider: &fakeAgentBudgetSnapshotProvider{
+			err: errors.New("provider unavailable"),
+		},
+		Stderr: &stderr,
+	}, filepath.Join(t.TempDir(), "runtime-snapshot.json"), "producer")
+	if !strings.Contains(stderr.String(), "dashboard runtime snapshot unavailable") {
+		t.Fatalf("stderr = %q, want provider failure", stderr.String())
 	}
 }

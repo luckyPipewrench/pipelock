@@ -1744,6 +1744,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 		"flight_recorder.signing_key_path changed",
 		"reverse_proxy settings changed",
 		"file_sentry settings changed",
+		"dashboard_snapshot settings changed",
 	} {
 		if !buf.contains(want) {
 			t.Fatalf("stderr missing %q:\n%s", want, buf.String())

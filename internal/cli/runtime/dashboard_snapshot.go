@@ -9,16 +9,18 @@ import (
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
 
 type dashboardRuntimeSnapshotOptions struct {
-	Context       context.Context
-	WaitGroup     *sync.WaitGroup
-	Proxy         *proxy.Proxy
-	StartupConfig *config.Config
-	CurrentConfig func() *config.Config
-	Stderr        io.Writer
+	Context        context.Context
+	WaitGroup      *sync.WaitGroup
+	Proxy          *proxy.Proxy
+	BudgetProvider edition.AgentBudgetSnapshotProvider
+	StartupConfig  *config.Config
+	CurrentConfig  func() *config.Config
+	Stderr         io.Writer
 }
 
 var startDashboardRuntimeSnapshotHook func(dashboardRuntimeSnapshotOptions)

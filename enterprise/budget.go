@@ -213,12 +213,22 @@ func (b *BudgetTracker) Snapshot() edition.BudgetSnapshot {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.maybeResetWindow()
+	requestCount := b.requestCount
+	byteCount := b.byteCount
+	uniqueDomainCount := len(b.uniqueDomains)
+	windowStart := b.windowStart
+	now := b.now()
+	if b.cfg.WindowMinutes > 0 && now.Sub(windowStart) > time.Duration(b.cfg.WindowMinutes)*time.Minute {
+		requestCount = 0
+		byteCount = 0
+		uniqueDomainCount = 0
+		windowStart = now
+	}
 	return edition.BudgetSnapshot{
-		RequestCount:      b.requestCount,
-		ByteCount:         b.byteCount,
-		UniqueDomainCount: len(b.uniqueDomains),
-		WindowStart:       b.windowStart,
+		RequestCount:      requestCount,
+		ByteCount:         byteCount,
+		UniqueDomainCount: uniqueDomainCount,
+		WindowStart:       windowStart,
 		MaxRequests:       b.cfg.MaxRequestsPerSession,
 		MaxBytes:          b.cfg.MaxBytesPerSession,
 		MaxUniqueDomains:  b.cfg.MaxUniqueDomainsPerSession,

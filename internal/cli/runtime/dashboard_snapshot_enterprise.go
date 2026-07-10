@@ -18,7 +18,7 @@ func init() {
 }
 
 func startDashboardRuntimeSnapshotEnterprise(opts dashboardRuntimeSnapshotOptions) {
-	if opts.Context == nil || opts.WaitGroup == nil || opts.Proxy == nil || opts.StartupConfig == nil {
+	if opts.Context == nil || opts.WaitGroup == nil || opts.StartupConfig == nil {
 		return
 	}
 	cfg := opts.StartupConfig
@@ -30,7 +30,7 @@ func startDashboardRuntimeSnapshotEnterprise(opts dashboardRuntimeSnapshotOption
 		return
 	}
 	interval := cfg.DashboardSnapshot.IntervalDuration()
-	if _, ok := opts.Proxy.Edition().(edition.AgentBudgetSnapshotProvider); !ok {
+	if dashboardRuntimeSnapshotProvider(opts) == nil {
 		return
 	}
 
@@ -53,8 +53,8 @@ func startDashboardRuntimeSnapshotEnterprise(opts dashboardRuntimeSnapshotOption
 }
 
 func writeDashboardRuntimeSnapshotTick(opts dashboardRuntimeSnapshotOptions, path, producerID string) {
-	provider, ok := opts.Proxy.Edition().(edition.AgentBudgetSnapshotProvider)
-	if !ok {
+	provider := dashboardRuntimeSnapshotProvider(opts)
+	if provider == nil {
 		return
 	}
 	policyHash := ""
@@ -72,6 +72,17 @@ func writeDashboardRuntimeSnapshotTick(opts dashboardRuntimeSnapshotOptions, pat
 	if err := runtimesnapshot.Write(path, snap); err != nil {
 		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: dashboard runtime snapshot write failed: %v\n", err)
 	}
+}
+
+func dashboardRuntimeSnapshotProvider(opts dashboardRuntimeSnapshotOptions) edition.AgentBudgetSnapshotProvider {
+	if opts.BudgetProvider != nil {
+		return opts.BudgetProvider
+	}
+	if opts.Proxy == nil {
+		return nil
+	}
+	provider, _ := opts.Proxy.Edition().(edition.AgentBudgetSnapshotProvider)
+	return provider
 }
 
 func buildDashboardRuntimeSnapshot(

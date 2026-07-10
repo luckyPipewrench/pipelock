@@ -740,7 +740,7 @@ func (c *Config) ApplyDefaults() {
 		c.FlightRecorder.EvidenceHealth.MaxAnchorLag = "24h"
 	}
 	if c.DashboardSnapshot.Interval == "" {
-		c.DashboardSnapshot.Interval = "10s"
+		c.DashboardSnapshot.Interval = DefaultDashboardSnapshotInterval.String()
 	}
 
 	// MCP tool provenance defaults

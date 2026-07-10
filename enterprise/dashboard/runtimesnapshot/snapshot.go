@@ -121,6 +121,9 @@ func Write(path string, snap Envelope) error {
 	if err != nil {
 		return fmt.Errorf("marshal runtime snapshot: %w", err)
 	}
+	if len(data) > MaxFileBytes {
+		return fmt.Errorf("%w: %d bytes > %d", ErrOversized, len(data), MaxFileBytes)
+	}
 	return atomicfile.Write(path, data, 0o600)
 }
 

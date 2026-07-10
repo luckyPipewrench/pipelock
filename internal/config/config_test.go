@@ -10715,6 +10715,81 @@ func TestLoad_DashboardSnapshotEnabledStates(t *testing.T) {
 	}
 }
 
+func TestLoad_DashboardSnapshotImplicitlyDisabledWithoutRecorderDir(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		section string
+	}{
+		{name: "omitted", section: ""},
+		{name: "blank_enabled", section: "dashboard_snapshot:\n  enabled: \n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "cfg.yaml")
+			if err := os.WriteFile(path, []byte("mode: balanced\n"+tt.section), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.DashboardSnapshot.EnabledWithRecorderDir(cfg.FlightRecorder.Dir) {
+				t.Fatal("dashboard snapshot enabled without explicit opt-in or recorder dir")
+			}
+			if got := cfg.DashboardSnapshot.PathWithRecorderDir(cfg.FlightRecorder.Dir); got != "" {
+				t.Fatalf("derived path = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestDashboardSnapshotDerivedValues(t *testing.T) {
+	t.Parallel()
+
+	explicitPath := filepath.Join(t.TempDir(), "explicit.json")
+	dash := DashboardSnapshot{Path: explicitPath}
+	if got := dash.PathWithRecorderDir("/ignored/recorder"); got != explicitPath {
+		t.Fatalf("PathWithRecorderDir() = %q, want explicit %q", got, explicitPath)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		interval string
+	}{
+		{name: "invalid", interval: "soon"},
+		{name: "subsecond", interval: "500ms"},
+		{name: "empty", interval: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := (DashboardSnapshot{Interval: tt.interval}).IntervalDuration(); got != DefaultDashboardSnapshotInterval {
+				t.Fatalf("IntervalDuration() = %s, want %s", got, DefaultDashboardSnapshotInterval)
+			}
+		})
+	}
+}
+
+func TestLoad_DashboardSnapshotTrimsInterval(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	content := "mode: balanced\ndashboard_snapshot:\n  enabled: false\n  interval: ' 10s '\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.DashboardSnapshot.IntervalDuration(); got != 10*time.Second {
+		t.Fatalf("IntervalDuration() = %s, want 10s", got)
+	}
+}
+
 func TestValidateDashboardSnapshot(t *testing.T) {
 	t.Parallel()
 

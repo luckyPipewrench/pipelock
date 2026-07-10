@@ -6,6 +6,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -133,5 +134,50 @@ func TestSnapshotBudgetSourceMissingFileUnavailable(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "missing.json") {
 		t.Fatalf("unavailable error leaked path through Error(): %q", err.Error())
+	}
+}
+
+func TestSnapshotBudgetSourceHelpersAndLimit(t *testing.T) {
+	t.Parallel()
+
+	if got := NewSnapshotBudgetSource("", time.Minute); got != nil {
+		t.Fatalf("NewSnapshotBudgetSource(empty) = %T, want nil", got)
+	}
+	if budgetUnavailable(nil) {
+		t.Fatal("budgetUnavailable(nil) = true")
+	}
+	if budgetUnavailable(errors.New("ordinary error")) {
+		t.Fatal("ordinary error marked unavailable")
+	}
+	if got := (BudgetSnapshotFreshness{Age: -time.Second}).AgeDisplay(); got != budgetEmptyDash {
+		t.Fatalf("negative freshness age display = %q, want %q", got, budgetEmptyDash)
+	}
+
+	now := time.Now().UTC()
+	path := filepath.Join(t.TempDir(), "runtime-snapshot.json")
+	if err := runtimesnapshot.Write(path, runtimesnapshot.Envelope{
+		ProducedAt: now,
+		Budgets: []runtimesnapshot.AgentBudgetRow{
+			{Agent: "alpha"},
+			{Agent: "bravo"},
+		},
+	}); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+	source, ok := NewSnapshotBudgetSource(path, time.Minute).(*snapshotBudgetSource)
+	if !ok {
+		t.Fatal("NewSnapshotBudgetSource returned unexpected implementation")
+	}
+	rows, err := source.AllAgentBudgets(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("AllAgentBudgets: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Agent != "alpha" {
+		t.Fatalf("limited rows = %+v", rows)
+	}
+
+	wrapped := snapshotBudgetUnavailableError{err: errors.New("root cause")}
+	if wrapped.Error() != "runtime snapshot budget source unavailable" || wrapped.Unwrap() == nil || !wrapped.BudgetSourceUnavailable() {
+		t.Fatalf("unavailable wrapper contract failed: %+v", wrapped)
 	}
 }

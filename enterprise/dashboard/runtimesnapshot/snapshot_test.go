@@ -6,8 +6,10 @@ package runtimesnapshot
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +71,41 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteRejectsOversizedSnapshotWithoutReplacingTarget(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime-snapshot.json")
+	original := []byte("known-good-snapshot")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write original target: %v", err)
+	}
+
+	err := Write(path, Envelope{
+		ProducedAt: time.Now(),
+		ProducerID: strings.Repeat("x", MaxFileBytes),
+	})
+	if !errors.Is(err, ErrOversized) {
+		t.Fatalf("Write error = %v, want errors.Is(ErrOversized)", err)
+	}
+	got, readErr := fs.ReadFile(os.DirFS(dir), "runtime-snapshot.json")
+	if readErr != nil {
+		t.Fatalf("read preserved target: %v", readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("target replaced on oversized write: got %q", got)
+	}
+
+	missingPath := filepath.Join(dir, "missing-target.json")
+	err = Write(missingPath, Envelope{ProducerID: strings.Repeat("x", MaxFileBytes)})
+	if !errors.Is(err, ErrOversized) {
+		t.Fatalf("Write missing target error = %v, want errors.Is(ErrOversized)", err)
+	}
+	if _, statErr := os.Stat(missingPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("oversized write left target behind: %v", statErr)
+	}
+}
+
 func TestReadFailClosed(t *testing.T) {
 	t.Parallel()
 
@@ -93,6 +130,22 @@ func TestReadFailClosed(t *testing.T) {
 			write: func(t *testing.T) string {
 				t.Helper()
 				return writeSnapshotBytes(t, dir, "bad.json", []byte(`{"version":`))
+			},
+			wantErr: ErrMalformed,
+		},
+		{
+			name: "directory",
+			write: func(t *testing.T) string {
+				t.Helper()
+				return t.TempDir()
+			},
+			wantErr: ErrMalformed,
+		},
+		{
+			name: "trailing_data",
+			write: func(t *testing.T) string {
+				t.Helper()
+				return writeSnapshotBytes(t, dir, "trailing.json", []byte(`{"version":1,"produced_at":"2026-07-10T12:00:00Z"} {}`))
 			},
 			wantErr: ErrMalformed,
 		},
@@ -188,6 +241,17 @@ func TestReadFailClosed(t *testing.T) {
 			},
 			wantErr: ErrMalformed,
 		},
+		{
+			name: "empty_budget_agent",
+			write: func(t *testing.T) string {
+				t.Helper()
+				return writeTestSnapshot(t, dir, "empty-agent.json", Envelope{
+					ProducedAt: now,
+					Budgets:    []AgentBudgetRow{{RequestCount: 1}},
+				})
+			},
+			wantErr: ErrMalformed,
+		},
 	}
 
 	for _, tt := range tests {
@@ -220,6 +284,25 @@ func TestReadCapsBudgetRows(t *testing.T) {
 	}
 	if !snap.Truncated.Budgets {
 		t.Fatal("Truncated.Budgets = false, want true")
+	}
+}
+
+func TestBudgetRowsFromSnapshotsCapsInput(t *testing.T) {
+	t.Parallel()
+
+	snapshots := make([]edition.AgentBudgetSnapshot, MaxBudgetRows+1)
+	rows, truncated := BudgetRowsFromSnapshots(snapshots)
+	if len(rows) != MaxBudgetRows || !truncated {
+		t.Fatalf("rows=%d truncated=%v, want %d/true", len(rows), truncated, MaxBudgetRows)
+	}
+}
+
+func TestReadUsesDefaultFreshnessInputs(t *testing.T) {
+	t.Parallel()
+
+	path := writeTestSnapshot(t, t.TempDir(), "defaults.json", Envelope{ProducedAt: time.Now().UTC()})
+	if _, fresh, err := Read(path, 0, time.Time{}); err != nil {
+		t.Fatalf("Read with default freshness inputs: %v (freshness=%+v)", err, fresh)
 	}
 }
 

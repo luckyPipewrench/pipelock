@@ -4,6 +4,6 @@
   "input_format": "receipt",
   "verdict": "reject",
   "reject_reason": "duplicate_key",
-  "description": "Ignored top-level probe contains an array element with duplicate keys \"a\" and \"\\u0061\".",
-  "notes": "Verifier MUST reject duplicate object keys at any nesting depth, including unicode-escaped key equivalents inside arrays and fields ignored by signature canonicalization."
+  "description": "The tolerated top-level ext bag contains an array element with duplicate keys \"a\" and \"\\u0061\".",
+  "notes": "Verifier MUST reject duplicate object keys at any nesting depth, including unicode-escaped key equivalents inside arrays and inside the unsigned ext bag. Duplicate-key detection is not suspended for the tolerated ext surface."
 }

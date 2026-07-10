@@ -41,6 +41,15 @@ pub fn run_receipt(
         return Ok(report);
     }
     let receipt: Value = parse_json_text(&text, "malformed JSON")?;
+    // EV2-FU-1: reject unknown fields on a signed v1 receipt (the v2 evidence
+    // receipt has its own schema). The only tolerated unknown surface is the
+    // top-level ext bag.
+    if string_at(&receipt, &["record_type"]) != Some("evidence_receipt_v2") {
+        if let Err(err) = crate::strict::validate_v1_receipt(&receipt) {
+            report.error = Some(err.to_string());
+            return Ok(report);
+        }
+    }
     if string_at(&receipt, &["record_type"]) == Some("evidence_receipt_v2") {
         report.action_id = string_at(&receipt, &["event_id"]).map(str::to_string);
         report.verdict = string_at(&receipt, &["payload", "verdict"]).map(str::to_string);

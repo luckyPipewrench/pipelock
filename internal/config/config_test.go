@@ -57,7 +57,7 @@ const (
 	testProfileDir  = "/tmp/profiles"
 	testRecorderDir = "/tmp/recorder"
 
-	warnResponseExemptDisabled = "response_scanning.exempt_domains configured but response_scanning is disabled"
+	warnResponseExemptDisabled = "response_scanning.exempt_domains configured while response_scanning is disabled"
 	warnAdaptiveExemptDisabled = "adaptive_enforcement.exempt_domains configured but adaptive_enforcement is disabled"
 	warnCrossReqExemptDisabled = "cross_request_detection.entropy_budget.exempt_domains configured but cross_request_detection is disabled"
 

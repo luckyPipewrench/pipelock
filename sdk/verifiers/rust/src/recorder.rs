@@ -6,6 +6,19 @@ use std::path::Path;
 const ACTION_RECEIPT_TYPE: &str = "action_receipt";
 const EVIDENCE_RECEIPT_TYPE: &str = "evidence_receipt";
 
+// AF-37 receipt-chain mode: the known non-receipt operational entry types that
+// extraction legitimately skips. Any entry whose type is outside the union of
+// the receipt types and this set is REJECTED (fail-closed) rather than silently
+// skipped, so a file mixing a valid chain with an unknown record type cannot be
+// reported as a valid receipt subsequence.
+const SKIPPABLE_ENTRY_TYPES: &[&str] = &[
+    "checkpoint",
+    "transcript_root",
+    "decision",
+    "capture",
+    "capture_drop",
+];
+
 pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
     let text = fs::read_to_string(path)
         .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", path.display())))?;
@@ -31,8 +44,20 @@ pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
     let mut receipts = Vec::new();
     for entry in read_entries(path)? {
         let entry_type = entry.get("type").and_then(serde_json::Value::as_str);
-        if entry_type != Some(ACTION_RECEIPT_TYPE) && entry_type != Some(EVIDENCE_RECEIPT_TYPE) {
-            continue;
+        let is_receipt =
+            entry_type == Some(ACTION_RECEIPT_TYPE) || entry_type == Some(EVIDENCE_RECEIPT_TYPE);
+        if !is_receipt {
+            let known = entry_type.is_some_and(|t| SKIPPABLE_ENTRY_TYPES.contains(&t));
+            if known {
+                continue;
+            }
+            return Err(VerifierError::Invalid(format!(
+                "unexpected recorder entry type {:?} at seq {}",
+                entry_type.unwrap_or("null"),
+                entry
+                    .get("seq")
+                    .map_or_else(|| "null".to_string(), serde_json::Value::to_string)
+            )));
         }
         let detail = entry.get("detail").ok_or_else(|| {
             VerifierError::Runtime(format!(
@@ -49,6 +74,18 @@ pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
                     .get("seq")
                     .map_or_else(|| "null".to_string(), serde_json::Value::to_string)
             )));
+        }
+        // EV2-FU-1: an extracted v1 action receipt must satisfy the strict
+        // unknown-field contract (evidence_receipt v2 has its own schema).
+        if entry_type == Some(ACTION_RECEIPT_TYPE) {
+            crate::strict::validate_v1_receipt(detail).map_err(|err| {
+                VerifierError::Invalid(format!(
+                    "entry seq {}: {err}",
+                    entry
+                        .get("seq")
+                        .map_or_else(|| "null".to_string(), serde_json::Value::to_string)
+                ))
+            })?;
         }
         receipts.push(detail.clone());
     }

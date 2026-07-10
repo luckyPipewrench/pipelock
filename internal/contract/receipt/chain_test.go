@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,6 +309,31 @@ func TestExtractEvidenceReceipts(t *testing.T) {
 	res := receipt.VerifyChain(got, receipt.ChainVerifyOptions{PinnedKey: pub})
 	if !res.Valid {
 		t.Fatalf("extracted chain failed verification: %q", res.Error)
+	}
+}
+
+func TestExtractEvidenceReceipts_RejectsUnexpectedRecorderType(t *testing.T) {
+	priv, _ := testKey(t, 1)
+	chain := buildChain(t, priv, 1)
+	detail, err := json.Marshal(chain[0])
+	if err != nil {
+		t.Fatalf("marshal receipt: %v", err)
+	}
+	good, err := json.Marshal(map[string]json.RawMessage{
+		"type":   json.RawMessage(`"evidence_receipt"`),
+		"detail": detail,
+	})
+	if err != nil {
+		t.Fatalf("marshal evidence entry: %v", err)
+	}
+	unknown := []byte(`{"type":"surprise","detail":{"ignored":true}}`)
+
+	path := filepath.Join(t.TempDir(), "evidence.jsonl")
+	if err := os.WriteFile(path, append(append(good, '\n'), append(unknown, '\n')...), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := receipt.ExtractEvidenceReceipts(path); err == nil || !strings.Contains(err.Error(), "unexpected recorder entry type") {
+		t.Fatalf("ExtractEvidenceReceipts error = %v, want unexpected recorder entry type", err)
 	}
 }
 

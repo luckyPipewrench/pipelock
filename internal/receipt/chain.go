@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,12 @@ import (
 
 // GenesisHash is the chain_prev_hash of the first receipt in a session.
 const GenesisHash = "genesis"
+
+// ErrUnexpectedRecorderEntryType is returned when a recorder evidence file
+// contains an entry whose Type is outside the known recorder taxonomy. Both
+// extraction modes fail closed on it rather than silently skipping it, so an
+// unknown record type cannot ride inside a file that otherwise verifies.
+var ErrUnexpectedRecorderEntryType = errors.New("unexpected recorder entry type")
 
 // TranscriptRoot summarizes a receipt chain for a session.
 type TranscriptRoot struct {
@@ -731,6 +738,30 @@ func ExtractReceiptsBytes(data []byte) ([]Receipt, error) {
 	return extractRawReceiptsJSONLBytes(data)
 }
 
+// ExtractAndVerifyWholeRecorderBytes is the WHOLE-RECORDER mode of the two-mode
+// extraction contract. Where ExtractReceiptsBytes (receipt-chain mode) returns
+// only the receipt subsequence, this mode additionally verifies the recorder
+// hash chain over EVERY entry (recorder.VerifyChain) and rejects any entry
+// whose Type is outside the recorder taxonomy. A nil error therefore certifies
+// whole-file integrity, not merely that the extracted receipts form a valid
+// chain. It does not use the raw-receipt-JSONL compatibility fallback: whole
+// recorder verification requires real recorder entries.
+func ExtractAndVerifyWholeRecorderBytes(data []byte) ([]Receipt, error) {
+	entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("reading entries: %w", err)
+	}
+	for _, e := range entries {
+		if !knownRecorderEntryType(e.Type) {
+			return nil, fmt.Errorf("%w: %q at seq %d", ErrUnexpectedRecorderEntryType, e.Type, e.Sequence)
+		}
+	}
+	if err := recorder.VerifyChain(entries); err != nil {
+		return nil, fmt.Errorf("recorder hash chain: %w", err)
+	}
+	return extractReceiptsFromEntries(entries)
+}
+
 // ExtractReceiptsWithSessionID reads a flight recorder JSONL file and returns
 // both the receipts and the session ID from the first entry. The session ID
 // comes from the recorder entry metadata, which is lost in plain ExtractReceipts.
@@ -760,7 +791,6 @@ func ExtractReceiptsFromSessionDir(dir, sessionID string) ([]Receipt, error) {
 // true when the ceiling was reached before the full session was loaded.
 func ExtractReceiptsFromSessionDirBounded(dir, sessionID string, maxEntriesRead int) ([]Receipt, bool, error) {
 	result, err := recorder.QuerySession(filepath.Clean(dir), sessionID, &recorder.QueryFilter{
-		Type:           recorderEntryType,
 		MaxEntriesRead: maxEntriesRead,
 	})
 	if err != nil {
@@ -770,17 +800,61 @@ func ExtractReceiptsFromSessionDirBounded(dir, sessionID string, maxEntriesRead 
 	return receipts, result.Truncated, err
 }
 
+// evidenceReceiptEntryType is the recorder entry type for v2 evidence receipts.
+// Go's receipt-chain extraction is action-receipt based, so evidence_receipt is
+// a KNOWN operational type it skips rather than extracts (it is not a v1
+// receipt); it stays in the taxonomy so a mixed recorder log is not rejected.
+const evidenceReceiptEntryType = "evidence_receipt"
+
+// receiptChainSkippableTypes is the allowlist of KNOWN non-extracted recorder
+// entry types that receipt-chain extraction legitimately skips. It is the
+// complement, within the recorder taxonomy, of the extracted receipt type
+// (action_receipt). Any entry whose Type is outside {action_receipt} ∪ this set
+// is REJECTED (fail-closed) rather than silently skipped, so a file that mixes
+// a valid receipt chain with an unknown record type cannot be reported as a
+// "valid receipt subsequence". The set is the confirmed-complete operational
+// taxonomy: evidence_receipt, checkpoint, transcript_root, decision, capture,
+// capture_drop.
+var receiptChainSkippableTypes = map[string]struct{}{
+	evidenceReceiptEntryType: {},
+	"checkpoint":             {},
+	"transcript_root":        {},
+	"decision":               {},
+	"capture":                {},
+	"capture_drop":           {},
+}
+
+// knownRecorderEntryType reports whether t is inside the recorder taxonomy
+// (the extracted receipt type plus the skippable operational types).
+func knownRecorderEntryType(t string) bool {
+	if t == recorderEntryType {
+		return true
+	}
+	_, ok := receiptChainSkippableTypes[t]
+	return ok
+}
+
+// extractReceiptsFromEntries is the RECEIPT-CHAIN mode of the two-mode
+// extraction contract: it returns the receipt subsequence (action_receipt
+// entries), skips the known operational entry types, and REJECTS any entry
+// whose Type is outside the recorder taxonomy. The result certifies the
+// receipt subsequence, NOT whole-file integrity — for that, use
+// ExtractAndVerifyWholeRecorderBytes, which additionally verifies the recorder
+// hash chain over every entry.
 func extractReceiptsFromEntries(entries []recorder.Entry) ([]Receipt, error) {
 	var receipts []Receipt
 	for _, e := range entries {
-		if e.Type != recorderEntryType {
+		if e.Type == recorderEntryType {
+			r, err := receiptFromEntry(e)
+			if err != nil {
+				return nil, fmt.Errorf("receipt at seq %d: %w", e.Sequence, err)
+			}
+			receipts = append(receipts, *r)
 			continue
 		}
-		r, err := receiptFromEntry(e)
-		if err != nil {
-			return nil, err
+		if !knownRecorderEntryType(e.Type) {
+			return nil, fmt.Errorf("%w: %q at seq %d", ErrUnexpectedRecorderEntryType, e.Type, e.Sequence)
 		}
-		receipts = append(receipts, *r)
 	}
 	return receipts, nil
 }

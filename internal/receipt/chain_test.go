@@ -785,9 +785,9 @@ func TestExtractReceipts_RecorderFileWithoutReceipts(t *testing.T) {
 		Sequence:  0,
 		Timestamp: time.Now().UTC(),
 		SessionID: "session-no-receipts",
-		Type:      "request",
+		Type:      "decision",
 		Transport: "fetch",
-		Summary:   "request entry only",
+		Summary:   "operational entry only",
 		PrevHash:  recorder.GenesisHash,
 	}
 	entry.Hash = recorder.ComputeHash(entry)

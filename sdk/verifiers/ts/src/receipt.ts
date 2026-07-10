@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt } from "./types.js";
 import { normalizeEvidenceReceipt, unpinnedReceiptBanner, verifyReceipt } from "./signing.js";
+import { validateV1Receipt } from "./strict.js";
 import { parseJSON, rejectDuplicateKeys, resolveSignerKey } from "./util.js";
 
 export interface ReceiptReport {
@@ -39,6 +40,17 @@ export async function runReceipt(
     return report;
   }
   const receipt = parseJSON<Receipt>(text, "receipt json");
+  // EV2-FU-1: reject unknown fields on a signed v1 receipt (the v2 evidence
+  // receipt has its own schema). The only tolerated unknown surface is the
+  // top-level ext bag.
+  if (receipt.record_type !== "evidence_receipt_v2") {
+    try {
+      validateV1Receipt(receipt);
+    } catch (err) {
+      report.error = (err as Error).message;
+      return report;
+    }
+  }
   if (receipt.record_type === "evidence_receipt_v2") {
     const payload = receipt.payload as { verdict?: string; transport?: string } | undefined;
     report.action_id = receipt.event_id;

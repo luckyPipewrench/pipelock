@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Agent Budgets</title>
+  <style>
+    :root {
+      --accent:#00e5a0;
+      --bg:#09090b;
+      --bg-elevated:#0e0e11;
+      --border:rgba(255,255,255,0.07);
+      --border-strong:rgba(255,255,255,0.13);
+      --text:#e2e8f0;
+      --text-muted:#94a3b8;
+      --text-dim:#64748b;
+      --warn:#f59e0b;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .topbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border-strong);
+      background: #08080a;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .brand { font-weight: 650; }
+    .brand span { color: var(--text-muted); font-weight: 500; }
+    .nav { display: flex; align-items: center; gap: 14px; color: var(--text-dim); font-size: 13px; flex-wrap: wrap; }
+    .nav a { color: var(--text-muted); text-decoration: none; }
+    .nav a:hover { color: var(--text); }
+    main { min-width: 0; padding: 24px; }
+    .panel { max-width: 1320px; margin: 0 auto; }
+    h1 { margin: 0 0 4px; font-size: 20px; }
+    h2 { margin: 0; font-size: 15px; color: var(--text-muted); }
+    .claim { color: var(--text-muted); font-size: 12.5px; margin: 6px 0 2px; }
+    .nonclaim { color: var(--text-dim); font-size: 12px; margin: 0 0 18px; }
+    .note { color: var(--text-dim); font-size: 12px; margin: 10px 0 0; }
+    .empty {
+      border: 1px dashed var(--border-strong);
+      border-radius: 10px;
+      padding: 28px;
+      text-align: center;
+      color: var(--text-muted);
+    }
+    .agent {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg-elevated);
+      padding: 16px 18px;
+      margin-bottom: 16px;
+    }
+    .agent-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+    .agent-name { font-weight: 600; font-size: 15px; }
+    .tag {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      color: var(--text-muted);
+    }
+    .cols { display: flex; flex-wrap: wrap; gap: 24px; }
+    .col { min-width: 260px; flex: 1; }
+    .col h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { text-align: left; padding: 4px 10px 4px 0; font-size: 13px; vertical-align: top; }
+    th { color: var(--text-dim); font-weight: 500; }
+    .metric td:first-child { color: var(--text-muted); width: 42%; }
+    .metric td:last-child { font-variant-numeric: tabular-nums; }
+    .sessions { margin-top: 10px; overflow-x: auto; }
+    .sessions table { min-width: 420px; }
+    .sessions th, .sessions td { border-bottom: 1px solid var(--border); }
+    .none { color: var(--text-dim); font-size: 12.5px; }
+    code { color: var(--text-muted); }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">Pipelock <span>Agent Budgets</span></div>
+    <nav class="nav">
+      <a href="/agents">Agents</a>
+      <a href="/budgets">Budgets</a>
+      <a href="/">Evidence</a>
+    </nav>
+  </div>
+  <main>
+    <div class="panel">
+      <h1>Per-agent budgets</h1>
+      <p class="claim">Scope: {{ .Claim }}.</p>
+      <p class="nonclaim">This {{ .NonClaim }}.</p>
+
+      {{ if not .SourceConfigured }}
+        <div class="empty">No budget source is configured for this dashboard.</div>
+      {{ else if not .Agents }}
+        <div class="empty">No agents have a configured forward-proxy budget or live MCP sessions.</div>
+      {{ else }}
+        {{ range .Agents }}
+          <div class="agent">
+            <div class="agent-head">
+              <span class="agent-name">{{ .Agent }}</span>
+              {{ if .ForwardConfigured }}<span class="tag">forward budget</span>{{ end }}
+              {{ if .DoWConfigured }}<span class="tag">MCP denial-of-wallet</span>{{ end }}
+            </div>
+            <div class="cols">
+              <div class="col">
+                <h3>Forward proxy</h3>
+                {{ if .ForwardConfigured }}
+                  <table class="metric">
+                    <tr><td>Requests (used / limit)</td><td>{{ .RequestsDisplay }}</td></tr>
+                    <tr><td>Bytes (used / limit)</td><td>{{ .BytesDisplay }}</td></tr>
+                    <tr><td>Unique domains (used / limit)</td><td>{{ .DomainsDisplay }}</td></tr>
+                    <tr><td>Window</td><td>{{ .WindowDisplay }}</td></tr>
+                    <tr><td>Window started</td><td>{{ .WindowStartDisplay }}</td></tr>
+                  </table>
+                {{ else }}
+                  <p class="none">No forward-proxy budget configured.</p>
+                {{ end }}
+              </div>
+              <div class="col">
+                <h3>MCP denial-of-wallet</h3>
+                {{ if .DoWConfigured }}
+                  <table class="metric">
+                    <tr><td>Active sessions</td><td>{{ .ActiveSessions }}</td></tr>
+                    <tr><td>Tool calls (sum / per-session limit)</td><td>{{ .ToolCallsDisplay }}</td></tr>
+                    <tr><td>In flight (sum / per-session limit)</td><td>{{ .InflightDisplay }}</td></tr>
+                    <tr><td>Wall-clock limit (min/session)</td><td>{{ if gt .MaxWallClockMinutes 0 }}{{ .MaxWallClockMinutes }}{{ else }}unlimited{{ end }}</td></tr>
+                  </table>
+                  {{ if .Sessions }}
+                    <div class="sessions">
+                      <table>
+                        <thead><tr><th>Session</th><th>Tool calls</th><th>In flight</th><th>Started</th></tr></thead>
+                        <tbody>
+                          {{ range .Sessions }}
+                            <tr>
+                              <td><code>{{ .SessionIDDisplay }}</code></td>
+                              <td>{{ .TotalToolCalls }}</td>
+                              <td>{{ .Inflight }}</td>
+                              <td>{{ .StartedAtDisplay }}</td>
+                            </tr>
+                          {{ end }}
+                        </tbody>
+                      </table>
+                    </div>
+                    {{ if .SessionsTruncated }}
+                      <p class="note">Session rows truncated to the first {{ len .Sessions }} sessions for this agent.</p>
+                    {{ end }}
+                  {{ end }}
+                {{ else }}
+                  <p class="none">No live MCP sessions.</p>
+                {{ end }}
+              </div>
+            </div>
+          </div>
+        {{ end }}
+        {{ if .Truncated }}<p class="note">Output truncated to the first {{ len .Agents }} agents.</p>{{ end }}
+      {{ end }}
+
+      {{ if not .RawAllowed }}
+        <p class="note">Session identifiers are redacted in this view. Authorize the raw view to see them.</p>
+      {{ end }}
+    </div>
+  </main>
+</body>
+</html>

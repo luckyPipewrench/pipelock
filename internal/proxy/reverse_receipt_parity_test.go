@@ -24,6 +24,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
@@ -45,6 +46,11 @@ func reverseReceiptParitySetup(t *testing.T, cfg *config.Config, upstreamHandler
 }
 
 func reverseReceiptParitySetupWithShield(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc, se *shield.Engine) (proxySrv *httptest.Server, dir string, closeRecorder func()) {
+	t.Helper()
+	return reverseReceiptParitySetupWithCaptureAndShield(t, cfg, upstreamHandler, nil, se)
+}
+
+func reverseReceiptParitySetupWithCaptureAndShield(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc, obs capture.CaptureObserver, se *shield.Engine) (proxySrv *httptest.Server, dir string, closeRecorder func()) {
 	t.Helper()
 
 	upstream := newIPv4Server(t, upstreamHandler)
@@ -69,7 +75,7 @@ func reverseReceiptParitySetupWithShield(t *testing.T, cfg *config.Config, upstr
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, se)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, obs, se)
 
 	dir = t.TempDir()
 	emitter, rec, _ := newCoverageEmitter(t, dir)
@@ -648,6 +654,131 @@ func TestReverseProxy_RequireReceiptsMediaBlockEmitsOutcome(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_RequireReceiptsMediaPassthroughLabeledUnscanned proves the
+// honesty label: when a declared media response, or a generic response sniffed
+// as media, is ALLOWED by media policy, the reverse proxy does not run text-
+// injection scanning and the outcome receipt records
+// reason=media_passthrough_unscanned. It must NOT claim the response was
+// scanned/clean/complete. This uses inert media bytes so the test proves the
+// boundary-limited label without treating an instruction-bearing payload as a
+// successful passthrough oracle.
+//
+// Neutralization check: reverting reverse.go's
+//
+//	mediaUnscannedOutcome = "media_passthrough_unscanned"
+//
+// back to the old "binary_passthrough" literal (or "complete") makes this test
+// fail, so the honest label is what the guard actually asserts.
+func TestReverseProxy_RequireReceiptsMediaPassthroughLabeledUnscanned(t *testing.T) {
+	inertMP3 := []byte("ID3\x04\x00\x00\x00\x00\x00\x00")
+	inertMP4 := []byte{
+		0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p',
+		'i', 's', 'o', 'm', 0x00, 0x00, 0x00, 0x01,
+		'i', 's', 'o', 'm', 'm', 'p', '4', '1',
+	}
+	inertJPEG := buildValidJPEG([]byte("Exif\x00\x00receipt-media-label"))
+	cases := []struct {
+		name        string
+		contentType string
+		path        string
+		body        []byte
+	}{
+		{
+			name:        "audio",
+			contentType: "audio/mpeg",
+			path:        "/clip.mp3",
+			body:        inertMP3,
+		},
+		{
+			name:        "video",
+			contentType: "video/mp4",
+			path:        "/clip.mp4",
+			body:        inertMP4,
+		},
+		{
+			name:        "declared image",
+			contentType: "image/jpeg",
+			path:        "/image.jpg",
+			body:        inertJPEG,
+		},
+		{
+			name:        "generic sniffed image",
+			contentType: "application/octet-stream",
+			path:        "/image.bin",
+			body:        inertJPEG,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			cfg := reverseTestConfig()
+			cfg.FlightRecorder.RequireReceipts = true
+			// Allow media through media policy so the declared audio/video
+			// streams unscanned instead of being blocked. Response scanning
+			// stays enabled to prove the passthrough is the reason the bytes
+			// are unscanned, not a globally disabled scanner.
+			allow := false
+			cfg.MediaPolicy.StripAudio = &allow
+			cfg.MediaPolicy.StripVideo = &allow
+			cfg.ApplyDefaults()
+
+			ct := tc.contentType
+			proxySrv, dir, closeRec := reverseReceiptParitySetup(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.Header().Set("Content-Type", ct)
+				_, _ = w.Write(tc.body)
+			})
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+tc.path, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET reverse proxy: %v", err)
+			}
+			defer func() {
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					t.Errorf("response body close: %v", closeErr)
+				}
+			}()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (media passthrough is allowed, not blocked)", resp.StatusCode)
+			}
+			if got := hits.Load(); got != 1 {
+				t.Fatalf("upstream hits = %d, want 1", got)
+			}
+
+			waitForReceiptOrTimeout(t, dir)
+			closeRec()
+			receipts := extractReceiptsFromDir(t, dir)
+			var outcome receipt.Receipt
+			var outcomeCount int
+			for _, rcpt := range receipts {
+				if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseOutcome &&
+					rcpt.ActionRecord.Transport == TransportReverse {
+					outcome = rcpt
+					outcomeCount++
+				}
+			}
+			if outcomeCount != 1 {
+				t.Fatalf("reverse outcome receipt count = %d, want 1", outcomeCount)
+			}
+			if !strings.Contains(outcome.ActionRecord.Pattern, "reason=media_passthrough_unscanned") {
+				t.Fatalf("reverse outcome pattern = %q, want reason=media_passthrough_unscanned", outcome.ActionRecord.Pattern)
+			}
+			// Must NOT claim scanned/clean/complete coverage or the stale
+			// binary_passthrough label for an unscanned media stream.
+			for _, forbidden := range []string{"reason=complete", "reason=binary_passthrough", "reason=response_scan"} {
+				if strings.Contains(outcome.ActionRecord.Pattern, forbidden) {
+					t.Fatalf("reverse outcome pattern = %q, must not contain %q for an unscanned media passthrough", outcome.ActionRecord.Pattern, forbidden)
+				}
+			}
+		})
+	}
+}
+
 func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 	type reverseOutcomeCase struct {
 		name        string
@@ -1049,6 +1180,59 @@ func TestReverseProxy_UnscannablePassthroughRequireReceiptsEmitsSingleIntentOutc
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=unscannable_passthrough")
+}
+
+func TestReverseProxy_UnscannablePassthroughCaptureOutcomeSkipped(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.ResponseScanning.SizeExemptDomains = []string{"127.0.0.1"}
+	cfg.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+		Host:         "127.0.0.1",
+		Paths:        []string{"/manual.pdf"},
+		ContentTypes: []string{"application/pdf"},
+		Reason:       "operator-approved PDF artifact",
+		Expires:      "2099-01-01",
+	}}
+	cfg.ResponseScanning.SizeExemptScanMaxBytes = reverseProxyMaxBodyBytes
+	cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = 2 * reverseProxyMaxBodyBytes
+
+	obs := newCaptureMetadataObserver()
+	body := bytes.Repeat([]byte("%PDF-opaque\n"), reverseProxyMaxBodyBytes/12+1)
+	proxySrv, dir, closeRec := reverseReceiptParitySetupWithCaptureAndShield(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", "attachment; filename=manual.pdf")
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}, obs, nil)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/manual.pdf", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("response body close: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+	receipts := extractReceiptsFromDir(t, dir)
+	assertReverseIntentOutcomePair(t, receipts, "status=200", "reason=unscannable_passthrough")
+
+	got := waitCaptureRecord(t, obs, capture.SurfaceResponse, "response_reverse")
+	if got.Outcome != capture.OutcomeSkipped {
+		t.Fatalf("capture outcome = %q, want %q for unscannable passthrough", got.Outcome, capture.OutcomeSkipped)
+	}
 }
 
 func TestReverseProxy_BinaryUnscannablePassthroughOutcomeReason(t *testing.T) {

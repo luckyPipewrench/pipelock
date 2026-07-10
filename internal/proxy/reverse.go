@@ -49,6 +49,8 @@ const (
 
 	// scanDirectionResponse labels an injection finding on the response body.
 	scanDirectionResponse = "response"
+
+	mediaUnscannedOutcome = "media_passthrough_unscanned"
 )
 
 // ReverseProxyBlockResponse is the JSON error body returned when the reverse
@@ -534,7 +536,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	ctx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 		Method: r.Method, URL: targetURL, ClientIP: clientIP,
-		RequestID: requestID, Agent: agent, Transport: "reverse",
+		RequestID: requestID, Agent: agent, Transport: "reverse", PolicyHash: cfg.CanonicalPolicyHash(),
 	})
 	ctx = context.WithValue(ctx, ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
@@ -1386,7 +1388,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// run the content-sniffing fallback for generic types
 			// (application/octet-stream, empty, etc.) that might
 			// actually be images.
-			outcomeReason := "media_policy"
+			outcomeReason := mediaUnscannedOutcome
 			maxRead := cfg.MediaPolicy.EffectiveMaxImageBytes()
 			if maxRead <= 0 {
 				maxRead = config.DefaultMaxImageBytes
@@ -1475,9 +1477,17 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 	}
 
-	// Skip remaining binary content types (non-media application/*, etc.).
+	// Stream declared media (image/audio/video) without text-injection
+	// scanning. isBinaryMIME matches only image/audio/video, so every response
+	// reaching here is media: declared audio/video that passed media policy
+	// above, or any declared media type when media policy is disabled. The body
+	// is NOT scanned for injection, so the outcome is recorded with the honest
+	// boundary-limited label media_passthrough_unscanned - never
+	// scanned/clean/complete coverage. An upstream can serve instruction-bearing
+	// text under an audio/* or video/* Content-Type, and this label makes clear
+	// Pipelock did not inspect the streamed bytes.
 	if isBinaryMIME(mediaCT) {
-		binaryOutcomeReason := "binary_passthrough"
+		binaryOutcomeReason := mediaUnscannedOutcome
 		if cfg.FlightRecorder.RequireReceipts && cfg.ResponseScanning.Enabled && revRespSizeExempt {
 			limited := io.LimitReader(resp.Body, int64(reverseProxyMaxBodyBytes)+1)
 			body, err := io.ReadAll(limited)
@@ -1710,7 +1720,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
 					TransformKind:     capture.TransformRaw,
 					EffectiveAction:   config.ActionAllow,
-					Outcome:           captureOutcome(config.ActionAllow, true),
+					Outcome:           capture.OutcomeSkipped,
 				})
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 				recordReverseOutcome(resp.StatusCode, resp.ContentLength, "unscannable_passthrough")

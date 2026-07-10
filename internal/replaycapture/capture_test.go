@@ -106,10 +106,16 @@ func TestCapture_AllScenarios(t *testing.T) {
 					s.ExpectedVerdict, verdictsOf(got.Receipts))
 			}
 
-			// Policy hash on the receipt must equal the config hash we stamped.
-			if decisive.ActionRecord.PolicyHash != got.PolicyHash {
-				t.Errorf("policy hash mismatch: receipt=%q engine=%q",
-					decisive.ActionRecord.PolicyHash, got.PolicyHash)
+			// The decisive action receipt carries the raw canonical policy hash the
+			// proxy binds per-emission; the packet reports the "sha256:"-labeled
+			// form of the same digest. Compare after stripping the label.
+			if !strings.HasPrefix(got.PolicyHash, "sha256:") {
+				t.Fatalf("packet policy_hash = %q, want sha256-labeled hash", got.PolicyHash)
+			}
+			wantPolicyHash := strings.TrimPrefix(got.PolicyHash, "sha256:")
+			if decisive.ActionRecord.PolicyHash != wantPolicyHash {
+				t.Errorf("policy hash mismatch: receipt=%q engine(unlabeled)=%q (labeled=%q)",
+					decisive.ActionRecord.PolicyHash, wantPolicyHash, got.PolicyHash)
 			}
 			if s.ExpectedLayer != "" && decisive.ActionRecord.Layer != s.ExpectedLayer {
 				t.Errorf("decisive layer=%q want %q", decisive.ActionRecord.Layer, s.ExpectedLayer)
@@ -319,6 +325,13 @@ func TestCapture_RedactsSecretBeforeSign(t *testing.T) {
 
 func decisiveReceipt(receipts []receipt.Receipt, verdict string) *receipt.Receipt {
 	for i := range receipts {
+		// Skip session-control receipts (session_open/heartbeat/close): the
+		// decisive receipt is the request decision, not the run anchor. The
+		// session_open carries the labeled policy hash for the allowlist, while
+		// action receipts carry the raw canonical policy hash the proxy binds.
+		if receipts[i].ActionRecord.SessionControl != nil {
+			continue
+		}
 		if receipts[i].ActionRecord.Verdict == verdict {
 			return &receipts[i]
 		}

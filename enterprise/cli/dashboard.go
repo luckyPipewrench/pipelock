@@ -223,6 +223,13 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		// method), so the dashboard holds no fleet-control authority even once
 		// wired.
 		ConductorSource: nil,
+		// TODO(DASH-2D): wire the live budget source once the dashboard process
+		// can read per-agent budget state. Budget consumption (BudgetTracker,
+		// DoW trackers) lives in the proxy process's memory; dashboard serve is
+		// a separate process, so it needs the same persisted-store handle the
+		// FleetSource TODO above describes. Until then /budgets renders the
+		// read-only empty state instead of inventing budget numbers.
+		BudgetSource: nil,
 	})
 	handler := dashboardAuthHandler(metaAuthorized, inner)
 

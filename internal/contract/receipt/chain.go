@@ -29,6 +29,23 @@ const GenesisHash = "genesis"
 // runtime both record receipts under this type.
 const EvidenceEntryType = "evidence_receipt"
 
+var skippableRecorderEntryTypes = map[string]struct{}{
+	"action_receipt":  {},
+	"checkpoint":      {},
+	"transcript_root": {},
+	"decision":        {},
+	"capture":         {},
+	"capture_drop":    {},
+}
+
+func knownRecorderEntryType(t string) bool {
+	if t == EvidenceEntryType {
+		return true
+	}
+	_, ok := skippableRecorderEntryTypes[t]
+	return ok
+}
+
 // maxChainLineBytes bounds a single recorder JSONL line during extraction.
 // A receipt envelope with an aggregated shadow_delta payload is well under
 // this; the cap exists to reject a malicious oversized line rather than
@@ -173,8 +190,9 @@ type recorderLine struct {
 
 // ExtractEvidenceReceipts reads a recorder JSONL file and returns the v2
 // EvidenceReceipts embedded in the Detail field of every entry whose type is
-// EvidenceEntryType, in file order. Other entry types are ignored so a mixed
-// recorder stream (decision records, checkpoints) verifies cleanly.
+// EvidenceEntryType, in file order. Known operational entry types are skipped,
+// while unknown types fail closed so junk cannot ride beside a valid receipt
+// subsequence.
 func ExtractEvidenceReceipts(path string) ([]EvidenceReceipt, error) {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
@@ -237,7 +255,10 @@ func extractEvidenceReceiptsFromBytes(data []byte, label string) ([]EvidenceRece
 			return nil, fmt.Errorf("%s line %d: decode recorder entry: %w", label, line, err)
 		}
 		if entry.Type != EvidenceEntryType {
-			continue
+			if knownRecorderEntryType(entry.Type) {
+				continue
+			}
+			return nil, fmt.Errorf("%s line %d: unexpected recorder entry type %q", label, line, entry.Type)
 		}
 		// json.RawMessage("null") is non-nil and 4 bytes long, so a length
 		// check alone would let a null detail unmarshal to a zero receipt

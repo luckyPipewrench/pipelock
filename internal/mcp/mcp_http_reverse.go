@@ -355,8 +355,8 @@ func RunHTTPListenerProxy(
 		}
 		warnCtx.Method = mcpWarnMethod
 		warnCtx.Resource = r.URL.Path
-		if warnCtx.PolicyHash == "" {
-			warnCtx.PolicyHash = baseOpts.receiptPolicyHash()
+		if policyHash := baseOpts.receiptPolicyHash(); policyHash != "" {
+			warnCtx.PolicyHash = policyHash
 		}
 		if warnCtx.ClientIP == "" {
 			host, _, err := net.SplitHostPort(r.RemoteAddr)

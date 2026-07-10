@@ -201,8 +201,8 @@ func TestEmitter_InFlightReceiptStampsSnapshotPolicyHashAcrossReload(t *testing.
 	t.Parallel()
 
 	const (
-		oldPolicyHash = "old-policy-hash-1111111111111111"
-		newPolicyHash = "new-policy-hash-2222222222222222"
+		oldPolicyHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		newPolicyHash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	)
 
 	dir := t.TempDir()
@@ -283,6 +283,103 @@ func TestEmitter_InFlightReceiptStampsSnapshotPolicyHashAcrossReload(t *testing.
 	}
 	if got := byID[fallbackID]; got != newPolicyHash {
 		t.Errorf("fallback receipt policy_hash = %q, want live atomic NEW %q", got, newPolicyHash)
+	}
+}
+
+func TestEmitter_NormalizesLabeledPolicyHashOverride(t *testing.T) {
+	t.Parallel()
+
+	const rawPolicyHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+	if e == nil {
+		t.Fatal("NewEmitter() returned nil")
+	}
+
+	actionID := NewActionID()
+	if err := e.Emit(EmitOpts{
+		ActionID:   actionID,
+		Target:     testTarget,
+		Verdict:    config.ActionBlock,
+		Transport:  testTransport,
+		Method:     http.MethodGet,
+		PolicyHash: "sha256:" + rawPolicyHash,
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	for _, r := range readAllReceiptsFromDir(t, dir, pub) {
+		if r.ActionRecord.ActionID == actionID {
+			if r.ActionRecord.PolicyHash != rawPolicyHash {
+				t.Fatalf("policy_hash = %q, want normalized raw %q", r.ActionRecord.PolicyHash, rawPolicyHash)
+			}
+			return
+		}
+	}
+	t.Fatalf("receipt for action_id %q not found", actionID)
+}
+
+func TestEmitter_RejectsMalformedPolicyHashOverride(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		hash string
+	}{
+		{name: "short", hash: "sha256:abc"},
+		{name: "unlabeled junk", hash: "not-a-policy-hash"},
+		{name: "uppercase", hash: "sha256:0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{name: "leading whitespace", hash: " sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		{name: "trailing newline", hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"},
+		{name: "control character", hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\x00"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			_, priv := generateTestKey(t)
+			rec := newTestRecorder(t, dir, priv)
+			defer func() { _ = rec.Close() }()
+			e := NewEmitter(EmitterConfig{
+				Recorder:   rec,
+				PrivKey:    priv,
+				ConfigHash: testConfigHash,
+				Principal:  testPrincipal,
+				Actor:      testActor,
+			})
+			if e == nil {
+				t.Fatal("NewEmitter() returned nil")
+			}
+
+			err := e.Emit(EmitOpts{
+				ActionID:   NewActionID(),
+				Target:     testTarget,
+				Verdict:    config.ActionBlock,
+				Transport:  testTransport,
+				Method:     http.MethodGet,
+				PolicyHash: tc.hash,
+			})
+			if err == nil {
+				t.Fatal("Emit succeeded with malformed policy hash")
+			}
+			if !strings.Contains(err.Error(), "policy hash override") {
+				t.Fatalf("error = %v, want policy hash override context", err)
+			}
+		})
 	}
 }
 

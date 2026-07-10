@@ -21,7 +21,7 @@ func TestEmitDeferredResolutionReceiptCarriesCascadePolicy(t *testing.T) {
 
 	opts := MCPProxyOpts{
 		ReceiptEmitter:  emitter,
-		PolicyHash:      "policy-hash",
+		PolicyHash:      mcpTestPolicyHash,
 		RequireReceipts: true,
 		Transport:       deferred.SurfaceMCPStdio,
 	}
@@ -83,7 +83,7 @@ func TestEmitDeferredResolutionReceiptNonCascadeCarriesBounds(t *testing.T) {
 
 	opts := MCPProxyOpts{
 		ReceiptEmitter:  emitter,
-		PolicyHash:      "policy-hash",
+		PolicyHash:      mcpTestPolicyHash,
 		RequireReceipts: true,
 		Transport:       deferred.SurfaceMCPStdio,
 	}
@@ -142,7 +142,7 @@ func TestEmitDeferredResolutionReceiptBlockFailureLogsAuditGap(t *testing.T) {
 
 	opts := MCPProxyOpts{
 		ReceiptEmitter:  emitter,
-		PolicyHash:      "policy-hash",
+		PolicyHash:      mcpTestPolicyHash,
 		RequireReceipts: true,
 		Transport:       deferred.SurfaceMCPStdio,
 	}

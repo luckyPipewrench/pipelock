@@ -284,14 +284,14 @@ type EmitOpts struct {
 	ContractHash          string
 	ContractSelectorID    string
 	ContractGeneration    uint64
-	// PolicyHash is the canonical policy hash for the resolved runtime config
-	// snapshot that produced this decision. Both v1 action receipts and V2
-	// EvidenceReceipt emission consume it: when non-empty it is stamped on the
-	// receipt in preference to the emitter's mutable config-hash atomic, binding
-	// the receipt to the policy that decided the request even if a hot reload
-	// has since advanced the live policy. Callers with no request snapshot
-	// (session_open, non-proxy emitters) leave it empty and fall back to the
-	// emitter's atomic.
+	// PolicyHash is the canonical SHA-256 policy hash for the resolved runtime
+	// config snapshot that produced this decision. Both raw 64-character hex and
+	// "sha256:"-labeled forms are accepted; action receipts normalize it to raw
+	// hex. When non-empty it is stamped on the receipt in preference to the
+	// emitter's mutable config-hash atomic, binding the receipt to the policy
+	// that decided the request even if a hot reload has since advanced the live
+	// policy. Callers with no request snapshot (session_open, non-proxy
+	// emitters) leave it empty and fall back to the emitter's atomic.
 	PolicyHash string
 
 	DecisionPhase     string
@@ -515,7 +515,12 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	// as before.
 	policyHash := configHashString(e.configHash.Load())
 	if opts.PolicyHash != "" {
-		policyHash = opts.PolicyHash
+		normalizedPolicyHash, normalizeErr := normalizeCanonicalPolicyHash(opts.PolicyHash)
+		if normalizeErr != nil {
+			e.recordFailure(FailReasonHash)
+			return fmt.Errorf("policy hash override: %w", normalizeErr)
+		}
+		policyHash = normalizedPolicyHash
 	}
 
 	// Sanitize secret-bearing fields BEFORE signing. When redaction is enabled
@@ -942,6 +947,29 @@ func configHashString(v any) string {
 		return s
 	}
 	return ""
+}
+
+const canonicalPolicyHashLabel = "sha256:"
+
+func normalizeCanonicalPolicyHash(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	if strings.TrimSpace(value) != value {
+		return "", fmt.Errorf("must not contain leading or trailing whitespace")
+	}
+	value = strings.TrimPrefix(value, canonicalPolicyHashLabel)
+	if len(value) != sha256.Size*2 {
+		return "", fmt.Errorf("must be a %d-character SHA-256 hex digest", sha256.Size*2)
+	}
+	for i := range len(value) {
+		c := value[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
+			continue
+		}
+		return "", fmt.Errorf("must be lowercase SHA-256 hex")
+	}
+	return value, nil
 }
 
 func newRunNonce() (string, error) {

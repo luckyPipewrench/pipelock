@@ -309,7 +309,7 @@ func ForwardScannedInput(
 		rpcID := frame.ID
 		warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
 		warnCtx.Transport = transportMCPStdio
-		if warnCtx.PolicyHash == "" {
+		if policyHash != "" {
 			warnCtx.PolicyHash = policyHash
 		}
 		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
@@ -1028,7 +1028,7 @@ func ForwardScannedInput(
 				stdioWarnCtxMeta.Transport = transportMCPStdio
 				stdioWarnCtxMeta.Method = mcpWarnMethod
 				stdioWarnCtxMeta.Resource = mcpWarnResource(verdict.Method, line)
-				if stdioWarnCtxMeta.PolicyHash == "" {
+				if policyHash != "" {
 					stdioWarnCtxMeta.PolicyHash = policyHash
 				}
 				stdioWarnCtx := scanner.WithDLPWarnContext(stdioInputCtx, stdioWarnCtxMeta)

@@ -236,7 +236,7 @@ func TestRecoverDeferredActionsBlocksPendingJournal(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	if err := recoverDeferredActions(manager, manager.JournalPath(), emitter, nil, "policy-hash", &log); err != nil {
+	if err := recoverDeferredActions(manager, manager.JournalPath(), emitter, nil, runtimeTestPolicyHash, &log); err != nil {
 		t.Fatalf("recoverDeferredActions: %v", err)
 	}
 	pending, err = deferred.PendingJournal(manager.JournalPath())
@@ -302,7 +302,7 @@ func TestRecoverDeferredActionsRunsWithoutLiveManager(t *testing.T) {
 	}
 
 	var log bytes.Buffer
-	if err := recoverDeferredActions(nil, manager.JournalPath(), emitter, nil, "policy-hash", &log); err != nil {
+	if err := recoverDeferredActions(nil, manager.JournalPath(), emitter, nil, runtimeTestPolicyHash, &log); err != nil {
 		t.Fatalf("recoverDeferredActions without manager: %v", err)
 	}
 	if err := rec.Close(); err != nil {

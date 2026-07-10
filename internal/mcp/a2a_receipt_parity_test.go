@@ -153,8 +153,9 @@ func TestA2AHeaderBlock_EmitsReceiptWithPolicyHash(t *testing.T) {
 		t.Fatalf("receipt verify: %v", err)
 	}
 	ar := r.ActionRecord
-	if ar.PolicyHash != mcpTestPolicyHash {
-		t.Errorf("PolicyHash = %q, want non-empty %q", ar.PolicyHash, mcpTestPolicyHash)
+	wantV1PolicyHash := strings.TrimPrefix(mcpTestPolicyHash, "sha256:")
+	if ar.PolicyHash != wantV1PolicyHash {
+		t.Errorf("PolicyHash = %q, want raw %q", ar.PolicyHash, wantV1PolicyHash)
 	}
 	if ar.Transport != a2aReceiptListenerTrans {
 		t.Errorf("Transport = %q, want %q", ar.Transport, a2aReceiptListenerTrans)
@@ -212,8 +213,9 @@ func TestA2ABodyBlock_A2AGate_DualEmitsWithPolicyHash(t *testing.T) {
 		t.Fatalf("v1 verify: %v", err)
 	}
 	ar := v1s[0].ActionRecord
-	if ar.PolicyHash != mcpTestPolicyHash {
-		t.Errorf("v1 PolicyHash = %q, want %q", ar.PolicyHash, mcpTestPolicyHash)
+	wantV1PolicyHash := strings.TrimPrefix(mcpTestPolicyHash, "sha256:")
+	if ar.PolicyHash != wantV1PolicyHash {
+		t.Errorf("v1 PolicyHash = %q, want raw %q", ar.PolicyHash, wantV1PolicyHash)
 	}
 	if ar.Layer != mcpReceiptLayerA2A {
 		t.Errorf("v1 Layer = %q, want %q", ar.Layer, mcpReceiptLayerA2A)
@@ -273,8 +275,9 @@ func TestA2ABodyBlock_ContentScan_EmitsReceiptWithPolicyHash(t *testing.T) {
 		t.Fatalf("expected exactly 1 block receipt for A2A content-scan block, got %d", len(blocks))
 	}
 	ar := blocks[0].ActionRecord
-	if ar.PolicyHash != mcpTestPolicyHash {
-		t.Errorf("PolicyHash = %q, want %q", ar.PolicyHash, mcpTestPolicyHash)
+	wantV1PolicyHash := strings.TrimPrefix(mcpTestPolicyHash, "sha256:")
+	if ar.PolicyHash != wantV1PolicyHash {
+		t.Errorf("PolicyHash = %q, want raw %q", ar.PolicyHash, wantV1PolicyHash)
 	}
 	if ar.Verdict != config.ActionBlock {
 		t.Errorf("Verdict = %q, want %q", ar.Verdict, config.ActionBlock)
@@ -311,8 +314,9 @@ func TestA2ABodyBlock_PreRedaction_EmitsReceipt(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("expected exactly 1 block receipt for pre-redaction A2A block, got %d", len(blocks))
 	}
-	if blocks[0].ActionRecord.PolicyHash != mcpTestPolicyHash {
-		t.Errorf("PolicyHash = %q, want %q", blocks[0].ActionRecord.PolicyHash, mcpTestPolicyHash)
+	wantV1PolicyHash := strings.TrimPrefix(mcpTestPolicyHash, "sha256:")
+	if blocks[0].ActionRecord.PolicyHash != wantV1PolicyHash {
+		t.Errorf("PolicyHash = %q, want raw %q", blocks[0].ActionRecord.PolicyHash, wantV1PolicyHash)
 	}
 }
 

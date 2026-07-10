@@ -109,6 +109,9 @@ func TestCapture_AllScenarios(t *testing.T) {
 			// The decisive action receipt carries the raw canonical policy hash the
 			// proxy binds per-emission; the packet reports the "sha256:"-labeled
 			// form of the same digest. Compare after stripping the label.
+			if !strings.HasPrefix(got.PolicyHash, "sha256:") {
+				t.Fatalf("packet policy_hash = %q, want sha256-labeled hash", got.PolicyHash)
+			}
 			wantPolicyHash := strings.TrimPrefix(got.PolicyHash, "sha256:")
 			if decisive.ActionRecord.PolicyHash != wantPolicyHash {
 				t.Errorf("policy hash mismatch: receipt=%q engine(unlabeled)=%q (labeled=%q)",

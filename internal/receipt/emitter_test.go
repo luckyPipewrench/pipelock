@@ -383,6 +383,18 @@ func TestEmitter_RejectsMalformedPolicyHashOverride(t *testing.T) {
 	}
 }
 
+func TestNormalizeCanonicalPolicyHash_EmptyValue(t *testing.T) {
+	t.Parallel()
+
+	got, err := normalizeCanonicalPolicyHash("")
+	if err != nil {
+		t.Fatalf("normalizeCanonicalPolicyHash empty error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("normalizeCanonicalPolicyHash empty = %q, want empty", got)
+	}
+}
+
 func TestEmitter_RunNoncePerProcessRun(t *testing.T) {
 	t.Parallel()
 

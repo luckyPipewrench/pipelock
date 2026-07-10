@@ -370,12 +370,16 @@ func (d *dashboardHandler) handleFleetOverview(w http.ResponseWriter, r *http.Re
 	_, _ = w.Write(buf.Bytes())
 }
 
-// handleWorkbench serves the read-only Signed Action Workbench. It is GET-only
-// and reaches no write path: it renders static prepare guidance and, when a
-// conductor decision source is wired and an artifact hash is supplied, the
-// read-only replay of that past decision.
-func (d *dashboardHandler) handleWorkbench(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/workbench" {
+func (d *dashboardHandler) serveDecisionScopePage(
+	w http.ResponseWriter,
+	r *http.Request,
+	path string,
+	tmpl *template.Template,
+	buildErr string,
+	renderErr string,
+	build func(context.Context, DecisionScope, bool) (any, error),
+) {
+	if r.URL.Path != path {
 		http.NotFound(w, r)
 		return
 	}
@@ -387,48 +391,43 @@ func (d *dashboardHandler) handleWorkbench(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid decision scope", http.StatusBadRequest)
 		return
 	}
-	page, err := d.model.Workbench(r.Context(), scope, rawAllowedFromContext(r))
+	page, err := build(r.Context(), scope, rawAllowedFromContext(r))
 	if err != nil {
-		http.Error(w, "could not build workbench view", http.StatusInternalServerError)
+		http.Error(w, buildErr, http.StatusInternalServerError)
 		return
 	}
 	var buf bytes.Buffer
-	if err := workbenchTemplate.Execute(&buf, page); err != nil {
-		http.Error(w, "could not render workbench", http.StatusInternalServerError)
+	if err := tmpl.Execute(&buf, page); err != nil {
+		http.Error(w, renderErr, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeHTML)
 	_, _ = w.Write(buf.Bytes())
 }
 
+// handleWorkbench serves the read-only Signed Action Workbench. It is GET-only
+// and reaches no write path: it renders static prepare guidance and, when a
+// conductor decision source is wired and an artifact hash is supplied, the
+// read-only replay of that past decision.
+func (d *dashboardHandler) handleWorkbench(w http.ResponseWriter, r *http.Request) {
+	d.serveDecisionScopePage(w, r, "/workbench", workbenchTemplate,
+		"could not build workbench view",
+		"could not render workbench",
+		func(ctx context.Context, scope DecisionScope, raw bool) (any, error) {
+			return d.model.Workbench(ctx, scope, raw)
+		})
+}
+
 // handleIncident serves the read-only Incident Cockpit. It is GET-only and
 // reaches no write path: it correlates a conductor decision replay with the
 // bounded fleet applied-state summary.
 func (d *dashboardHandler) handleIncident(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/incident" {
-		http.NotFound(w, r)
-		return
-	}
-	if !requireGet(w, r) {
-		return
-	}
-	scope := decisionScopeFromRequest(r)
-	if err := validateDecisionScope(scope); err != nil {
-		http.Error(w, "invalid decision scope", http.StatusBadRequest)
-		return
-	}
-	page, err := d.model.Incident(r.Context(), scope, rawAllowedFromContext(r))
-	if err != nil {
-		http.Error(w, "could not build incident view", http.StatusInternalServerError)
-		return
-	}
-	var buf bytes.Buffer
-	if err := incidentTemplate.Execute(&buf, page); err != nil {
-		http.Error(w, "could not render incident view", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", contentTypeHTML)
-	_, _ = w.Write(buf.Bytes())
+	d.serveDecisionScopePage(w, r, "/incident", incidentTemplate,
+		"could not build incident view",
+		"could not render incident view",
+		func(ctx context.Context, scope DecisionScope, raw bool) (any, error) {
+			return d.model.Incident(ctx, scope, raw)
+		})
 }
 
 func decisionScopeFromRequest(r *http.Request) DecisionScope {

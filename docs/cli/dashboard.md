@@ -144,7 +144,7 @@ or otherwise mutate fleet state:
   path reachable from the dashboard.
 - The operator prepares and submits an action with the shipped conductor CLI
   **outside** the dashboard. The workbench's job ends at "here is the predicted
-  effect and the exact command to run".
+  effect and the command template to run".
 
 ### Signed Action Workbench (`/workbench`)
 

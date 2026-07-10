@@ -102,6 +102,15 @@ func TestIncident_AppliedSummaryCountsAreCorrect(t *testing.T) {
 		t.Fatalf("counts = verified %d / signed-unverified %d / unsigned %d, want 1/1/1",
 			summary.Verified, summary.SignedUnverified, summary.Unsigned)
 	}
+	if summary.NoReport != 0 {
+		t.Fatalf("NoReport = %d, want 0", summary.NoReport)
+	}
+	if summary.Drift != 0 {
+		t.Fatalf("Drift = %d, want 0", summary.Drift)
+	}
+	if summary.ApplyFailed != 0 {
+		t.Fatalf("ApplyFailed = %d, want 0", summary.ApplyFailed)
+	}
 }
 
 func TestIncident_MetadataViewRedactsDecision(t *testing.T) {

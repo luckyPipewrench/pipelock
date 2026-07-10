@@ -183,7 +183,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: luckyPipewrench/pipelock-verify-python
-          ref: dd900c05d6f1ea21e46cd01d3e1460d4c9a860c1
+          ref: 4f11c3e22c81a591bacfec752866b27f0deb5917
           path: _pyverify
           persist-credentials: false
 

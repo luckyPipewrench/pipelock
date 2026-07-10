@@ -19,7 +19,8 @@ Pipelock sits inline. It scans MCP `tools/call` arguments outbound for DLP, scan
 
 ```bash
 # 1. Install pipelock
-brew install luckyPipewrench/tap/pipelock
+go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest
+# or (macOS): brew install luckyPipewrench/tap/pipelock
 
 # 2. Wrap every Cline MCP server with pipelock in one shot
 pipelock cline install

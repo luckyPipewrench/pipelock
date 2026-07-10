@@ -19,5 +19,5 @@
 [1.501214, "o", "\u001b[0;36m$ pipelock check --url \"https://docs.anthropic.com/en/api\"\u001b[0m\r\n"]
 [0.810659, "o", "\r\nScanning URL: https://docs.anthropic.com/en/api\r\n"]
 [0.01952, "o", "  Result:  ALLOWED\r\n  Score:   0.00\r\n"]
-[1.504451, "o", "\r\n\u001b[0;32m11-layer scanner. DLP, DNS exfil, SSRF, blocklists, and more.\u001b[0m\r\n\u001b[0;32mbrew install luckyPipewrench/tap/pipelock\u001b[0m\r\n\r\n"]
+[1.504451, "o", "\r\n\u001b[0;32m11-layer scanner. DLP, DNS exfil, SSRF, blocklists, and more.\u001b[0m\r\n\u001b[0;32mgo install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest\u001b[0m\r\n\r\n"]
 [0.001146, "x", "0"]

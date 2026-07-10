@@ -69,5 +69,5 @@ pause
 # --- Done ---
 echo ""
 echo -e "${GREEN}Single binary. 11-layer scanner. DLP, DNS exfil, SSRF, and more.${RESET}"
-echo -e "${GREEN}brew install luckyPipewrench/tap/pipelock${RESET}"
+echo -e "${GREEN}go install github.com/luckyPipewrench/pipelock/cmd/pipelock@latest${RESET}"
 echo ""

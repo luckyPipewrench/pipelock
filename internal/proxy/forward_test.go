@@ -34,6 +34,8 @@ import (
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -602,6 +604,57 @@ func doGet(t *testing.T, client *http.Client, targetURL string) *http.Response {
 	return resp
 }
 
+func doPost(t *testing.T, client *http.Client, targetURL string, body string) *http.Response {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request to %s: %v", targetURL, err)
+	}
+	return resp
+}
+
+func forwardTaintAskPost(t *testing.T, approver *hitl.Approver) (int, string, int32) {
+	t.Helper()
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.ResponseScanning.Enabled = false
+		cfg.SessionProfiling.Enabled = true
+	})
+	defer cleanup()
+	if approver != nil {
+		p.approver = approver
+	}
+	installForwardTestDialer(p, upstream.Listener.Addr().String())
+
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("session manager is nil")
+	}
+	rec := sm.GetOrCreate(ceeSessionKey("", "127.0.0.1", envelope.ActorAuthSelfDeclared))
+	observeHTTPResponseTaint(rec, p.cfgPtr.Load(), "http://evil.example.com/source", "text/plain", "forward_response", false)
+
+	client := forwardHTTPClient(t, proxyAddr)
+	postResp := doPost(t, client, "http://evil.example.com/update", "payload")
+	defer func() { _ = postResp.Body.Close() }()
+	got, err := io.ReadAll(postResp.Body)
+	if err != nil {
+		t.Fatalf("read POST response: %v", err)
+	}
+	return postResp.StatusCode, string(got), hits.Load()
+}
+
 // proxyClient creates an http.Client that uses the given proxy address.
 func proxyClient(proxyAddr string) *http.Client {
 	proxyURL, _ := url.Parse("http://" + proxyAddr) //nolint:errcheck // test helper
@@ -610,6 +663,55 @@ func proxyClient(proxyAddr string) *http.Client {
 			Proxy: http.ProxyURL(proxyURL),
 		},
 		Timeout: 5 * time.Second,
+	}
+}
+
+func TestForwardProxy_TaintAskNoApproverBlocksWithReason(t *testing.T) {
+	status, body, hits := forwardTaintAskPost(t, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", status, body)
+	}
+	if hits != 0 {
+		t.Fatalf("upstream hits = %d, want blocked before egress", hits)
+	}
+	if !strings.Contains(body, "external_publish_after_untrusted_external_exposure (no HITL approver)") {
+		t.Fatalf("body missing no-approver taint reason:\n%s", body)
+	}
+}
+
+func TestForwardProxy_TaintAskNonTerminalApproverBlocksWithReason(t *testing.T) {
+	approver := hitl.New(1, hitl.WithTerminal(false))
+	t.Cleanup(approver.Close)
+
+	status, body, hits := forwardTaintAskPost(t, approver)
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", status, body)
+	}
+	if hits != 0 {
+		t.Fatalf("upstream hits = %d, want blocked before egress", hits)
+	}
+	if !strings.Contains(body, "external_publish_after_untrusted_external_exposure (HITL stdin is not a terminal)") {
+		t.Fatalf("body missing non-terminal taint reason:\n%s", body)
+	}
+}
+
+func TestForwardProxy_TaintAskTerminalApproverAllows(t *testing.T) {
+	approver := hitl.New(1,
+		hitl.WithInput(strings.NewReader("y\n")),
+		hitl.WithOutput(io.Discard),
+		hitl.WithTerminal(true),
+	)
+	t.Cleanup(approver.Close)
+
+	status, body, hits := forwardTaintAskPost(t, approver)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	if hits != 1 {
+		t.Fatalf("upstream hits = %d, want approved POST", hits)
+	}
+	if body != "ok" {
+		t.Fatalf("body = %q, want ok", body)
 	}
 }
 

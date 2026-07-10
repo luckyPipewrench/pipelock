@@ -187,6 +187,42 @@ func TestApprover_NonTerminalBlocks(t *testing.T) {
 	}
 }
 
+type readerFunc func(p []byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+// TestApprover_NonTerminalDoesNotReadInput proves a non-terminal approver never
+// touches its input stream. In MCP stdio proxy mode that stream is os.Stdin
+// carrying the JSON-RPC protocol; a background reader (spawned eagerly in New)
+// would steal the client's framing bytes and silently break the transport:
+// the issue #964 regression. Ask() already fails closed for non-terminal, so
+// no read is ever needed.
+func TestApprover_NonTerminalDoesNotReadInput(t *testing.T) {
+	readCalled := make(chan struct{}, 1)
+	r := readerFunc(func(_ []byte) (int, error) {
+		select {
+		case readCalled <- struct{}{}:
+		default:
+		}
+		return 0, io.EOF
+	})
+
+	a := New(1, WithInput(r), WithTerminal(false))
+	t.Cleanup(a.Close)
+
+	// Ask must still fail closed without ever reading input.
+	if d := a.Ask(&Request{URL: "https://evil.com", Reason: "test"}); d != DecisionBlock {
+		t.Fatalf("Ask() = %d, want DecisionBlock", d)
+	}
+
+	select {
+	case <-readCalled:
+		t.Fatal("non-terminal approver read its input stream; in MCP stdio mode this steals JSON-RPC protocol bytes (issue #964)")
+	case <-time.After(200 * time.Millisecond):
+		// No read occurred; correct.
+	}
+}
+
 func TestApprover_Close(t *testing.T) {
 	a, _ := testApprover(t, "", 5)
 	a.Close() // should not panic or hang

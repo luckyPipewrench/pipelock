@@ -381,8 +381,8 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		}
 	}
 
-	if newCfg.ResponseScanning.Action == config.ActionAsk && !s.hasApprover {
-		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
+	if needsHITLApprover(newCfg) && !s.hasApprover {
+		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reloaded to HITL ask mode but approver was not initialized at startup; detections will be blocked")
 	}
 	reloadHash := newCfg.Hash()
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)

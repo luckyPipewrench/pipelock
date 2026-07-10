@@ -8,8 +8,9 @@ import "time"
 const defaultTaintSourceLimit = 10
 
 const (
-	taintUnknownLabel  = "unknown"
-	taintProfileStrict = "strict"
+	taintUnknownLabel      = "unknown"
+	taintProfileStrict     = "strict"
+	taintProfilePermissive = "permissive"
 )
 
 // TaintLevel describes the trust level of content recently observed by a
@@ -311,6 +312,10 @@ func (pm PolicyMatrix) EvaluateWithOptions(
 		return PolicyDecisionResult{Decision: PolicyAllow, Reason: "trusted_or_allowlisted_context"}
 	}
 
+	if pm.profileMode() == taintProfilePermissive {
+		return PolicyDecisionResult{Decision: PolicyAllow, Reason: "taint_permissive_observe_only"}
+	}
+
 	if taint >= TaintExternalHostile && isSensitiveAction(action, sensitivity) {
 		return PolicyDecisionResult{Decision: PolicyBlock, Reason: "sensitive_action_after_hostile_external_exposure"}
 	}
@@ -318,8 +323,8 @@ func (pm PolicyMatrix) EvaluateWithOptions(
 	// Fail-safe classification (opt-in): a read/browse/summarize that only
 	// reached SensitivityProtected because it could NOT be confidently
 	// classified must not fall through to allow under untrusted exposure.
-	// Skipping the always-allow shortcut above is not enough — the untrusted
-	// switch has no read-class branch — so escalate to HITL here. Fires only
+	// Skipping the always-allow shortcut above is not enough: the untrusted
+	// switch has no read-class branch, so escalate to HITL here. Fires only
 	// when the toggle is on AND the classification was low-confidence, so
 	// confidently-normal reads are unaffected (regression-safe when off).
 	if opts.FailSafeClassification && !opts.ClassificationConfident &&
@@ -360,8 +365,8 @@ func (pm PolicyMatrix) profileMode() string {
 	switch pm.Profile {
 	case taintProfileStrict:
 		return taintProfileStrict
-	case "permissive":
-		return "permissive"
+	case taintProfilePermissive:
+		return taintProfilePermissive
 	default:
 		return "balanced"
 	}

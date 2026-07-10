@@ -407,9 +407,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	}
 
 	var proxyOpts []proxy.Option
-	s.hasApprover = cfg.ResponseScanning.Action == config.ActionAsk
+	s.hasApprover = needsHITLApprover(cfg)
 	if s.hasApprover {
-		approver := hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
+		approver := newRuntimeApprover(cfg)
 		s.approver = approver
 		proxyOpts = append(proxyOpts, proxy.WithApprover(approver))
 	}

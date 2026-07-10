@@ -150,6 +150,12 @@ func TestValidateTaint(t *testing.T) {
 			},
 		},
 		{
+			name: "valid single label allowlisted domain",
+			mutate: func(cfg *Config) {
+				cfg.Taint.AllowlistedDomains = []string{"litellm"}
+			},
+		},
+		{
 			name: "valid trust override",
 			mutate: func(cfg *Config) {
 				cfg.Taint.TrustOverrides = []TaintTrustOverride{{

@@ -791,8 +791,8 @@ Key-free evidence capture:
 			ks := killswitch.New(cfg)
 
 			var approver *hitl.Approver
-			if sc.ResponseAction() == config.ActionAsk {
-				approver = hitl.New(cfg.ResponseScanning.AskTimeoutSeconds)
+			if needsHITLApprover(cfg) {
+				approver = newRuntimeApprover(cfg)
 				defer approver.Close()
 			}
 

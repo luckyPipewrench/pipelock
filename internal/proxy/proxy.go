@@ -372,7 +372,7 @@ type Proxy struct {
 // Option configures optional Proxy behavior.
 type Option func(*Proxy)
 
-// WithApprover sets a HITL approver for the "ask" response scanning action.
+// WithApprover sets a HITL approver for response-scan and taint "ask" decisions.
 func WithApprover(a *hitl.Approver) Option {
 	return func(p *Proxy) { p.approver = a }
 }

@@ -31,7 +31,7 @@ const (
 	auditSessionMaxBytes  = 128
 )
 
-//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html
+//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html
 var templateFS embed.FS
 
 var (
@@ -43,6 +43,7 @@ var (
 	workbenchTemplate     = template.Must(template.ParseFS(templateFS, "workbench.tmpl.html"))
 	incidentTemplate      = template.Must(template.ParseFS(templateFS, "incident.tmpl.html"))
 	budgetsTemplate       = template.Must(template.ParseFS(templateFS, "budgets.tmpl.html"))
+	trustKeysTemplate     = template.Must(template.ParseFS(templateFS, "trustkeys.tmpl.html"))
 )
 
 type pageData struct {
@@ -71,6 +72,7 @@ const (
 	PermissionFleetRead        Permission = "dashboard:fleet:read"
 	PermissionSignedActionRead Permission = "dashboard:signed_action:read"
 	PermissionIncidentRead     Permission = "dashboard:incident:read"
+	PermissionTrustKeysRead    Permission = "dashboard:trust_keys:read"
 )
 
 const (
@@ -140,6 +142,15 @@ func dashboardRouteSpecs() []routeSpec {
 			permission:       PermissionBudgetsRead,
 			handler: func(d *dashboardHandler) http.Handler {
 				return http.HandlerFunc(d.handleBudgets)
+			},
+		},
+		{
+			pattern:          "/trust-keys",
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionTrustKeysRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleTrustKeys)
 			},
 		},
 		{
@@ -704,6 +715,28 @@ func (d *dashboardHandler) handleBudgets(w http.ResponseWriter, r *http.Request)
 	var buf bytes.Buffer
 	if err := budgetsTemplate.Execute(&buf, overview); err != nil {
 		http.Error(w, "could not render budgets", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (d *dashboardHandler) handleTrustKeys(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/trust-keys" {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	page, err := d.model.TrustKeys()
+	if err != nil {
+		http.Error(w, "could not audit trust and keys", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := trustKeysTemplate.Execute(&buf, page); err != nil {
+		http.Error(w, "could not render trust and keys", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeHTML)

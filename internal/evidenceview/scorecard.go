@@ -32,7 +32,9 @@ const (
 
 // TrustedKey describes why a signer key is trusted by the operator.
 type TrustedKey struct {
-	Source string
+	Source         string
+	ProvenanceKind string
+	Location       string
 }
 
 // Line is one independently evaluated scorecard fact. There is intentionally

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock Trust &amp; Keys</title>
+  <style>
+    :root { --bg:#09090b; --panel:#0e0e11; --border:rgba(255,255,255,.10); --text:#e2e8f0; --muted:#94a3b8; --dim:#64748b; --good:#00e5a0; --warn:#f59e0b; --bad:#fb7185; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 Inter,system-ui,sans-serif; }
+    .topbar { min-height:56px; display:flex; align-items:center; justify-content:space-between; padding:0 24px; border-bottom:1px solid var(--border); }
+    .brand { font-weight:650; } .brand span,.nav a { color:var(--muted); } .nav { display:flex; gap:14px; } .nav a { text-decoration:none; }
+    main { max-width:1400px; margin:0 auto; padding:24px; }
+    h1 { margin:0 0 4px; font-size:20px; } h2 { margin:26px 0 10px; font-size:15px; }
+    .honesty { color:var(--muted); margin:0 0 6px; } .limit { color:var(--dim); margin:0 0 18px; font-size:12px; }
+    .table { overflow-x:auto; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
+    table { width:100%; border-collapse:collapse; min-width:900px; } th,td { padding:10px 12px; text-align:left; vertical-align:top; border-bottom:1px solid var(--border); }
+    th { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.05em; } tr:last-child td { border-bottom:0; }
+    code { color:var(--muted); word-break:break-all; } .fail { color:var(--bad); font-weight:650; } .pass { color:var(--good); } .warn { color:var(--warn); }
+    .empty { padding:24px; color:var(--muted); border:1px dashed var(--border); border-radius:10px; }
+    ul { margin:0; padding-left:18px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">Pipelock <span>Trust &amp; Keys</span></div>
+    <nav class="nav"><a href="/">Evidence</a><a href="/agents">Agents</a><a href="/trust-keys">Trust &amp; Keys</a></nav>
+  </div>
+  <main>
+    <h1>Trust &amp; Keys</h1>
+    <p class="honesty">Read-only registry provenance and evidence-derived signing blast radius.</p>
+    <p class="limit">“Chain consistent” means signatures and recorded links verify against configured keys. It is tamper-evidence, not proof that an operator told the truth or that all activity was mediated.</p>
+
+    <h2>Trusted-key registry</h2>
+    <p class="{{ if eq .CRLStatus "FAILURE: CRL could not be verified" }}fail{{ else }}limit{{ end }}">Revocation source: {{ .CRLStatus }}{{ if .CRLDetail }} — {{ .CRLDetail }}{{ end }}</p>
+    {{ if not .Keys }}
+      <div class="empty">No trusted signer keys are configured. Receipt signers are not trusted on first use.</div>
+    {{ else }}
+      <div class="table"><table>
+        <thead><tr><th>Purpose / provenance</th><th>Fingerprint</th><th>Validity</th><th>Revocation</th><th>Evidence-derived blast radius</th></tr></thead>
+        <tbody>{{ range .Keys }}<tr>
+          <td>{{ .Purpose }}<br><span class="warn">static/imported:</span> {{ .Provenance }}</td>
+          <td><code>{{ .Fingerprint }}</code></td>
+          <td>{{ .ValidityWindow }}</td>
+          <td class="{{ if or (eq .RevocationStatus "FAILURE: CRL could not be verified") (eq .RevocationStatus "FAILURE: receipt key has no verified CRL serial binding") }}fail{{ end }}">{{ .RevocationStatus }}{{ if .RevocationReason }}<br>{{ .RevocationReason }}{{ end }}</td>
+          <td>{{ if .BlastRadius }}<ul>{{ range .BlastRadius }}<li>{{ . }}</li>{{ end }}</ul>{{ else }}none observed{{ end }}<br><span class="limit">{{ .VerifiedReceipts }} verified receipts; {{ .RejectedReceipts }} rejected signature claims</span></td>
+        </tr>{{ end }}</tbody>
+      </table></div>
+    {{ end }}
+
+    <h2>Anchor-consistency audit</h2>
+    {{ if not .Audits }}
+      <div class="empty">No receipt sessions were found. No chain-consistency claim is available.</div>
+    {{ else }}
+      <div class="table"><table>
+        <thead><tr><th>Session</th><th>Result</th><th>Gaps / forks</th><th>Anchor</th><th>Heads</th></tr></thead>
+        <tbody>{{ range .Audits }}<tr>
+          <td><code>{{ .SessionID }}</code></td>
+          <td class="{{ if .Consistent }}pass{{ else }}fail{{ end }}">{{ .Detail }}</td>
+          <td>{{ .Gaps }} gaps / {{ .Forks }} forks</td>
+          <td class="{{ if or (eq .AnchorStatus "failure") (eq .AnchorStatus "missing") (eq .AnchorStatus "stale") }}fail{{ end }}">{{ .AnchorStatus }}</td>
+          <td>local: <code>{{ if .LocalHead }}{{ .LocalHead }}{{ else }}unverified{{ end }}</code><br>anchored: <code>{{ if .AnchoredHead }}{{ .AnchoredHead }}{{ else }}absent{{ end }}</code></td>
+        </tr>{{ end }}</tbody>
+      </table></div>
+    {{ end }}
+  </main>
+</body>
+</html>

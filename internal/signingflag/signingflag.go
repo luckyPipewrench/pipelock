@@ -31,14 +31,14 @@ func ParseTrustedSigners(values []string) (map[string]evidenceview.TrustedKey, e
 	}
 	out := make(map[string]evidenceview.TrustedKey, len(values))
 	for _, raw := range values {
-		keyHex, source, err := ParseTrustedSignerSpec(raw)
+		keyHex, source, provenance, location, err := parseTrustedSignerSpec(raw)
 		if err != nil {
 			return nil, fmt.Errorf("--trusted-signer %q: %w", raw, err)
 		}
 		if _, dup := out[keyHex]; dup {
 			return nil, fmt.Errorf("--trusted-signer %q: duplicate key %s", raw, keyHex)
 		}
-		out[keyHex] = evidenceview.TrustedKey{Source: source}
+		out[keyHex] = evidenceview.TrustedKey{Source: source, ProvenanceKind: provenance, Location: location}
 	}
 	return out, nil
 }
@@ -48,6 +48,11 @@ func ParseTrustedSigners(values []string) (map[string]evidenceview.TrustedKey, e
 // plus an optional 'source=LABEL' shown in the UI as the reason the key is
 // trusted.
 func ParseTrustedSignerSpec(raw string) (keyHex, source string, err error) {
+	keyHex, source, _, _, err = parseTrustedSignerSpec(raw)
+	return keyHex, source, err
+}
+
+func parseTrustedSignerSpec(raw string) (keyHex, source, provenance, location string, err error) {
 	var inline, file string
 	var hasInline, hasFile, hasSource bool
 	for _, part := range strings.Split(raw, ",") {
@@ -57,58 +62,63 @@ func ParseTrustedSignerSpec(raw string) (keyHex, source string, err error) {
 		}
 		k, v, ok := strings.Cut(part, "=")
 		if !ok {
-			return "", "", fmt.Errorf("expected key=value, got %q", part)
+			return "", "", "", "", fmt.Errorf("expected key=value, got %q", part)
 		}
 		v = strings.TrimSpace(v)
 		switch strings.TrimSpace(k) {
 		case "inline":
 			if hasInline {
-				return "", "", errors.New("inline= may appear only once")
+				return "", "", "", "", errors.New("inline= may appear only once")
 			}
 			if v == "" {
-				return "", "", errors.New("inline= value is empty")
+				return "", "", "", "", errors.New("inline= value is empty")
 			}
 			hasInline = true
 			inline = v
 		case "file":
 			if hasFile {
-				return "", "", errors.New("file= may appear only once")
+				return "", "", "", "", errors.New("file= may appear only once")
 			}
 			if v == "" {
-				return "", "", errors.New("file= value is empty")
+				return "", "", "", "", errors.New("file= value is empty")
 			}
 			hasFile = true
 			file = v
 		case "source":
 			if hasSource {
-				return "", "", errors.New("source= may appear only once")
+				return "", "", "", "", errors.New("source= may appear only once")
 			}
 			hasSource = true
 			source = v
 		default:
-			return "", "", fmt.Errorf("unknown key %q", k)
+			return "", "", "", "", fmt.Errorf("unknown key %q", k)
 		}
 	}
 	switch {
 	case inline != "" && file != "":
-		return "", "", errors.New("inline= and file= are mutually exclusive")
+		return "", "", "", "", errors.New("inline= and file= are mutually exclusive")
 	case inline == "" && file == "":
-		return "", "", errors.New("one of inline= or file= is required")
+		return "", "", "", "", errors.New("one of inline= or file= is required")
 	case file != "":
+		provenance = "imported file"
+		location = filepath.Clean(file)
 		data, readErr := os.ReadFile(filepath.Clean(file))
 		if readErr != nil {
-			return "", "", fmt.Errorf("read key file: %w", readErr)
+			return "", "", "", "", fmt.Errorf("read key file: %w", readErr)
 		}
 		inline = strings.TrimSpace(string(data))
+	default:
+		provenance = "static inline"
+		location = "--trusted-signer"
 	}
 	// signing.ParsePublicKey enforces the Ed25519 key size on both the
 	// versioned and raw-hex paths, so a parsed key is always well-formed.
 	pub, err := signing.ParsePublicKey(inline)
 	if err != nil {
-		return "", "", fmt.Errorf("parse public key: %w", err)
+		return "", "", "", "", fmt.Errorf("parse public key: %w", err)
 	}
 	if source == "" {
 		source = DefaultSource
 	}
-	return hex.EncodeToString(pub), source, nil
+	return hex.EncodeToString(pub), source, provenance, location, nil
 }

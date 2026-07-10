@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/dashboard"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
 
@@ -56,6 +57,9 @@ type dashboardServeOptions struct {
 	rawTokenFile   string
 	trustedSigners []string
 	licenseCRLFile string
+	anchorExpected bool
+	anchorLocalLog string
+	rekorLogKeys   []string
 	tlsCert        string
 	tlsKey         string
 	exemptionStore string
@@ -109,6 +113,12 @@ because the operator token would transit in cleartext.`,
 			"'(inline=HEX_OR_VERSIONED_PUBLIC_KEY|file=/path)[,source=LABEL]'; repeatable")
 	cmd.Flags().StringVar(&opts.licenseCRLFile, "license-crl-file", "",
 		"signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
+	cmd.Flags().BoolVar(&opts.anchorExpected, "anchor-expected", false,
+		"fail the Trust & Keys audit when a receipt session has no anchor-state marker")
+	cmd.Flags().StringVar(&opts.anchorLocalLog, "anchor-local-log", "",
+		"local anchor log used to verify local-backend anchor bundles")
+	cmd.Flags().StringArrayVar(&opts.rekorLogKeys, "rekor-log-key", nil,
+		"pinned Rekor log public key used to verify SET, checkpoint, and inclusion proof; repeat for rotations")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "TLS server certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "TLS server private key file")
 	_ = cmd.MarkFlagRequired("receipt-dir")
@@ -158,6 +168,16 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	if err := validateDashboardListen(opts); err != nil {
 		return err
 	}
+	anchorResolver, err := dashboard.NewFileAnchorResolver(
+		opts.receiptDir, opts.anchorLocalLog, opts.rekorLogKeys, opts.anchorExpected,
+	)
+	if err != nil {
+		return fmt.Errorf("anchor verifier: %w", err)
+	}
+	trustCRLSource, err := dashboardTrustCRLSource(opts.licenseCRLFile)
+	if err != nil {
+		return err
+	}
 	tlsConfig, err := dashboardTLSConfig(opts)
 	if err != nil {
 		return err
@@ -204,6 +224,8 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          opts.receiptDir,
 		TrustedKeys:         trusted,
+		TrustCRLSource:      trustCRLSource,
+		AnchorResolver:      anchorResolver,
 		Config:              loadedConfig,
 		ExemptionStore:      exemptionStore,
 		HasFeature:          dashboardRuntimeHasFeature(lic),
@@ -344,7 +366,8 @@ func dashboardAuthorizePermissionFunc(
 			dashboard.PermissionBudgetsRead,
 			dashboard.PermissionFleetRead,
 			dashboard.PermissionSignedActionRead,
-			dashboard.PermissionIncidentRead:
+			dashboard.PermissionIncidentRead,
+			dashboard.PermissionTrustKeysRead:
 			if metaAuthorized(r) {
 				return nil
 			}
@@ -355,6 +378,36 @@ func dashboardAuthorizePermissionFunc(
 		}
 		return fmt.Errorf("dashboard permission %q denied", permission)
 	}
+}
+
+func dashboardTrustCRLSource(configuredPath string) (func() (*license.CRL, error), error) {
+	path := strings.TrimSpace(configuredPath)
+	if path == "" {
+		path = strings.TrimSpace(os.Getenv(license.EnvLicenseCRLFile))
+	}
+	if path == "" {
+		return nil, nil
+	}
+	root := license.EmbeddedPublicKey()
+	if root == nil {
+		publicKey := strings.TrimSpace(os.Getenv(license.EnvLicensePublicKey))
+		if publicKey == "" {
+			return nil, errors.New("license CRL configured but no license root public key is available")
+		}
+		parsed, err := signing.ParsePublicKey(publicKey)
+		if err != nil {
+			return nil, fmt.Errorf("parse license root public key for CRL audit: %w", err)
+		}
+		root = parsed
+	}
+	pinnedRoot := append([]byte(nil), root...)
+	return func() (*license.CRL, error) {
+		crl, err := license.LoadAndVerifyCRLMonotonic(path, pinnedRoot, time.Now())
+		if err != nil {
+			return nil, fmt.Errorf("verify license CRL for trust view: %w", err)
+		}
+		return &crl, nil
+	}, nil
 }
 
 // dashboardAuthHandler is the outer authentication boundary. It answers 401

@@ -83,6 +83,18 @@ func OpenLegalHoldStore(path string) (*LegalHoldStore, error) {
 	if strings.TrimSpace(path) == "" || cleanPath == "." {
 		return nil, errors.New("legal hold store: path is required")
 	}
+	info, err := os.Stat(cleanPath)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("legal hold store: path must be a regular file")
+		}
+		insecureModeMask := os.FileMode(0o077)
+		if info.Mode().Perm()&insecureModeMask != 0 {
+			return nil, fmt.Errorf("legal hold store: permissions must be 0600, got %#o", info.Mode().Perm())
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("legal hold store: stat: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o750); err != nil {
 		return nil, fmt.Errorf("legal hold store: create dir: %w", err)
 	}
@@ -116,6 +128,11 @@ func (s *LegalHoldStore) Snapshot() ([]LegalHold, error) {
 }
 
 func (s *LegalHoldStore) Add(hold LegalHold) error {
+	id, err := canonicalLegalHoldID(hold.ID)
+	if err != nil {
+		return err
+	}
+	hold.ID = id
 	if err := validateLegalHold(hold, false); err != nil {
 		return err
 	}
@@ -143,8 +160,13 @@ func (s *LegalHoldStore) Add(hold LegalHold) error {
 }
 
 func (s *LegalHoldStore) Release(id string, released time.Time) error {
-	if strings.TrimSpace(id) == "" || released.IsZero() {
-		return errors.New("legal hold: id and released time are required")
+	canonicalID, err := canonicalLegalHoldID(id)
+	if err != nil {
+		return err
+	}
+	id = canonicalID
+	if released.IsZero() {
+		return errors.New("legal hold: released time is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -178,6 +200,11 @@ func (s *LegalHoldStore) Release(id string, released time.Time) error {
 }
 
 func validateLegalHold(hold LegalHold, allowReleased bool) error {
+	canonicalID, err := canonicalLegalHoldID(hold.ID)
+	if err != nil {
+		return err
+	}
+	hold.ID = canonicalID
 	for name, value := range map[string]string{"id": hold.ID, "scope": hold.Scope, "reason": hold.Reason} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("legal hold: %s is required", name)
@@ -201,6 +228,17 @@ func validateLegalHold(hold LegalHold, allowReleased bool) error {
 		}
 	}
 	return nil
+}
+
+func canonicalLegalHoldID(value string) (string, error) {
+	id := strings.TrimSpace(value)
+	if id == "" {
+		return "", errors.New("legal hold: id is required")
+	}
+	if value != id {
+		return "", errors.New("legal hold: id must not contain surrounding whitespace")
+	}
+	return id, nil
 }
 
 func cloneLegalHolds(records []LegalHold) []LegalHold {

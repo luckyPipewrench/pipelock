@@ -183,6 +183,43 @@ func TestLegalHoldStoreCorruptFileFailsClosed(t *testing.T) {
 	}
 }
 
+func TestOpenLegalHoldStoreRejectsInsecureOrNonRegularFile(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{name: "group readable", mode: os.FileMode(0o640)},
+		{name: "world readable", mode: os.FileMode(0o644)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "holds.json")
+			secureMode := os.FileMode(0o600)
+			if err := os.WriteFile(path, []byte("[]"), secureMode); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatalf("Chmod: %v", err)
+			}
+			if _, err := OpenLegalHoldStore(path); err == nil {
+				t.Fatalf("OpenLegalHoldStore accepted mode %#o", tc.mode)
+			}
+		})
+	}
+
+	t.Run("directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "holds.json")
+		dirMode := os.FileMode(0o700)
+		if err := os.Mkdir(path, dirMode); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		if _, err := OpenLegalHoldStore(path); err == nil {
+			t.Fatal("OpenLegalHoldStore accepted a non-regular path")
+		}
+	})
+}
+
 func TestLegalHoldStoreSnapshotReloadsAndPostStartCorruptionFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -226,6 +263,8 @@ func TestLegalHoldStoreRejectsInvalidAndDuplicateEntries(t *testing.T) {
 		hold LegalHold
 	}{
 		{name: "empty", hold: LegalHold{}},
+		{name: "id leading whitespace", hold: LegalHold{ID: " hold-a", Scope: "agent-a", Reason: "review", Created: valid.Created}},
+		{name: "id trailing whitespace", hold: LegalHold{ID: "hold-a ", Scope: "agent-a", Reason: "review", Created: valid.Created}},
 		{name: "pre-released", hold: LegalHold{ID: "hold-b", Scope: "agent-b", Reason: "review", Created: valid.Created, Released: &valid.Created}},
 		{name: "terminal control", hold: LegalHold{ID: "hold-c", Scope: "agent-c", Reason: "review\x1b[2J", Created: valid.Created}},
 	} {

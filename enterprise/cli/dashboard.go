@@ -225,9 +225,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	complianceAuthorized := func(r *http.Request) bool {
 		return complianceToken != "" && dashboardTokenMatches(r, complianceToken)
 	}
-	authenticated := func(r *http.Request) bool {
-		return metaAuthorized(r) || complianceAuthorized(r)
-	}
+	authenticated := dashboardGlobalAuthorized(metaAuthorized, complianceAuthorized)
 	rawAuthorized := func(r *http.Request) bool {
 		return rawToken != "" && dashboardTokenMatches(r, rawToken)
 	}
@@ -361,6 +359,18 @@ func dashboardAuthorizeFunc(authorized func(*http.Request) bool) func(*http.Requ
 			return errors.New("dashboard request not authenticated")
 		}
 		return nil
+	}
+}
+
+func dashboardGlobalAuthorized(
+	operatorAuthorized func(*http.Request) bool,
+	complianceAuthorized func(*http.Request) bool,
+) func(*http.Request) bool {
+	return func(r *http.Request) bool {
+		if operatorAuthorized(r) {
+			return true
+		}
+		return r.URL.Path == "/compliance" && complianceAuthorized != nil && complianceAuthorized(r)
 	}
 }
 

@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out trusted review runner
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
           ref: refs/heads/main
@@ -34,7 +34,7 @@ jobs:
 
       - name: Check out PR for stats mode
         if: github.event.comment.body == '/review stats'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 1
           ref: refs/pull/${{ github.event.issue.number }}/merge

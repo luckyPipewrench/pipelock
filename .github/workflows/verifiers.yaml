@@ -54,7 +54,7 @@ jobs:
       run:
         working-directory: sdk/verifiers/ts
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
@@ -94,7 +94,7 @@ jobs:
       run:
         working-directory: sdk/verifiers/rust
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
@@ -167,12 +167,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout pipelock
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
       - name: Checkout agent-egress-bench (corpus master)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: luckyPipewrench/agent-egress-bench
           ref: 7f7601ce3c8eaa6182c01632ea7fb678fc0d2be9
@@ -180,7 +180,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout pipelock-verify-python (Python verifier)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: luckyPipewrench/pipelock-verify-python
           ref: dd900c05d6f1ea21e46cd01d3e1460d4c9a860c1
@@ -260,7 +260,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout pipelock
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
@@ -357,7 +357,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout pipelock
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 

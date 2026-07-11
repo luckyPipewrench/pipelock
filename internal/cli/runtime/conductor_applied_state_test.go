@@ -64,8 +64,28 @@ func TestAppliedStateProvider_ValidBeforeAnyPoll(t *testing.T) {
 	if state.ObservedAt.IsZero() {
 		t.Fatal("ObservedAt not set before first poll")
 	}
+	if state.ProvenanceAt.IsZero() {
+		t.Fatal("ProvenanceAt not set before first poll")
+	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("applied-state before first poll is invalid: %v", err)
+	}
+}
+
+func TestAppliedStateProvider_SeparatesPollObservationFromProvenanceTime(t *testing.T) {
+	reporter := newAppliedStateReporter(t)
+	pollAt := time.Date(2026, 5, 24, 12, 30, 0, 0, time.UTC)
+	before := time.Now().UTC()
+	state := reporter.buildAppliedState(policysync.StatusEvent{PollAt: pollAt})
+	after := time.Now().UTC()
+	if !state.ObservedAt.Equal(pollAt) {
+		t.Fatalf("ObservedAt = %v, want poll time %v", state.ObservedAt, pollAt)
+	}
+	if state.ProvenanceAt.Before(before) || state.ProvenanceAt.After(after) {
+		t.Fatalf("ProvenanceAt = %v, want construction time between %v and %v", state.ProvenanceAt, before, after)
+	}
+	if state.ProvenanceAt.Equal(state.ObservedAt) {
+		t.Fatalf("ProvenanceAt = ObservedAt = %v, want separate provenance freshness", state.ProvenanceAt)
 	}
 }
 

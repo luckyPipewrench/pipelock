@@ -20,6 +20,9 @@ var (
 	// ErrEmergencyPreviewUnsupported is the emergency-store counterpart of
 	// ErrDryRunUnsupported.
 	ErrEmergencyPreviewUnsupported = errors.New("conductor emergency store does not support dry-run preview")
+	// ErrRollbackHeadPreviewUnsupported is returned when live rollback cannot
+	// preflight the head mutation needed to avoid split-write orphan state.
+	ErrRollbackHeadPreviewUnsupported = errors.New("conductor bundle store does not support rollback head preview")
 )
 
 // Preview types are the read-only projections a dry-run reports. Each Preview*

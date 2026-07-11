@@ -316,6 +316,149 @@ func TestFleetStatusClassifiesRuntimeHealth(t *testing.T) {
 	}
 }
 
+func TestFleetStatusLabelsHealthAndDriftSource(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	auditStore := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = auditStore.Close() }()
+	store := mustStore(t)
+	signer := newTestSigner(t)
+	bundle := signedControlBundle(t, signer, bundleSpec{
+		id:       "bundle-source-expected",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"*"}},
+	})
+	published, _, err := store.Publish(context.Background(), bundle, PublishOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, enrollments, "tok-source", identity, "audit-key-source")
+	unsigned := runtimeStatus(identity, "1.2.3", published.BundleHash)
+	unsigned.ActiveBundleID = bundle.BundleID
+	unsigned.ActiveBundleVersion = bundle.Version
+	if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), unsigned); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+	applied := validTestAppliedState(testNow.Add(-time.Minute))
+	applied.ActiveBundleID = "bundle-source-signed"
+	applied.ActiveBundleVersion = 7
+	applied.ActiveBundleHash = strings.Repeat("b", 64)
+	applied.PipelockVersion = "1.2.3"
+	applied.ProvenanceAt = testNow.Add(-2 * time.Minute)
+	batch := appliedStateBatch(t, identity, "audit-batch-source", 10, 10, &applied, false)
+	batch.ReceivedAt = testNow.Add(-30 * time.Second)
+	if _, err := auditStore.put(context.Background(), batch); err != nil {
+		t.Fatalf("put(applied state) error = %v", err)
+	}
+	handler := newAppliedStateFleetHandler(t, enrollments, auditStore)
+	handler.store = store
+
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-main&fleet_id=prod&limit=10", followerAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fleet status code = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp listFollowersResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Followers) != 1 {
+		t.Fatalf("followers = %d, want 1", len(resp.Followers))
+	}
+	got := resp.Followers[0]
+	if got.Health != FleetHealthStale || got.Drift != "bundle_mismatch" {
+		t.Fatalf("health/drift = %q/%q, want signed stale/bundle_mismatch", got.Health, got.Drift)
+	}
+	if got.HealthSource.Source != FleetFieldSourceSignedAppliedState || !got.HealthSource.Verified {
+		t.Fatalf("health source = %+v, want verified signed_applied_state", got.HealthSource)
+	}
+	if got.DriftSource == nil || got.DriftSource.Source != FleetFieldSourceSignedAppliedState || !got.DriftSource.Verified {
+		t.Fatalf("drift source = %+v, want verified signed_applied_state", got.DriftSource)
+	}
+	if got.HealthSource.VerifiedAt == nil || !got.HealthSource.VerifiedAt.Equal(batch.ReceivedAt.UTC()) {
+		t.Fatalf("health verified_at = %v, want %v", got.HealthSource.VerifiedAt, batch.ReceivedAt.UTC())
+	}
+	if got.HealthSource.ObservedAt == nil || !got.HealthSource.ObservedAt.Equal(applied.ObservedAt.UTC()) {
+		t.Fatalf("health observed_at = %v, want %v", got.HealthSource.ObservedAt, applied.ObservedAt.UTC())
+	}
+	if got.HealthSource.ProvenanceAt == nil || !got.HealthSource.ProvenanceAt.Equal(applied.ProvenanceAt.UTC()) {
+		t.Fatalf("health provenance_at = %v, want %v", got.HealthSource.ProvenanceAt, applied.ProvenanceAt.UTC())
+	}
+	var raw struct {
+		Followers []map[string]any `json:"followers"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw response: %v", err)
+	}
+	healthSource, ok := raw.Followers[0]["health_source"].(map[string]any)
+	if !ok {
+		t.Fatalf("raw health_source = %#v, want object", raw.Followers[0]["health_source"])
+	}
+	for _, field := range []string{"observed_at", "verified_at", "provenance_at"} {
+		if _, ok := healthSource[field]; !ok {
+			t.Fatalf("signed health_source missing %q in raw response: %#v", field, healthSource)
+		}
+	}
+}
+
+func TestFleetStatusUnsignedRuntimeStatusDoesNotRenderVerifiedTimestamps(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	identity := defaultFollowerIdentity()
+	mustEnrollFollower(t, enrollments, "tok-unsigned-source", identity, "audit-key-unsigned-source")
+	unsigned := runtimeStatus(identity, "1.2.3", strings.Repeat("a", 64))
+	unsigned.LastSeenAt = testNow.Add(-30 * time.Second)
+	unsigned.LastPolicyPollAt = testNow.Add(-time.Minute)
+	if _, err := enrollments.UpsertFollowerRuntimeStatus(context.Background(), unsigned); err != nil {
+		t.Fatalf("UpsertFollowerRuntimeStatus() error = %v", err)
+	}
+	handler := newRuntimeStatusTestHandler(t, enrollments, identity)
+
+	w := getFollowers(t, handler, FollowersPath+"?org_id=org-main&fleet_id=prod&limit=10", followerAdminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fleet status code = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var resp listFollowersResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Followers) != 1 {
+		t.Fatalf("followers = %d, want 1", len(resp.Followers))
+	}
+	source := resp.Followers[0].HealthSource
+	if source.Source != FleetFieldSourceRuntimeStatus || source.Verified {
+		t.Fatalf("health source = %+v, want unverified runtime_status", source)
+	}
+	if source.ObservedAt == nil || !source.ObservedAt.Equal(unsigned.LastSeenAt.UTC()) {
+		t.Fatalf("observed_at = %v, want %v", source.ObservedAt, unsigned.LastSeenAt.UTC())
+	}
+	if source.VerifiedAt != nil || source.ProvenanceAt != nil {
+		t.Fatalf("unsigned source rendered verified/provenance timestamps: %+v", source)
+	}
+	var raw struct {
+		Followers []map[string]any `json:"followers"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw response: %v", err)
+	}
+	healthSource, ok := raw.Followers[0]["health_source"].(map[string]any)
+	if !ok {
+		t.Fatalf("raw health_source = %#v, want object", raw.Followers[0]["health_source"])
+	}
+	if _, ok := healthSource["observed_at"]; !ok {
+		t.Fatalf("unsigned health_source missing observed_at: %#v", healthSource)
+	}
+	for _, field := range []string{"verified_at", "provenance_at"} {
+		if _, ok := healthSource[field]; ok {
+			t.Fatalf("unsigned health_source rendered %q: %#v", field, healthSource)
+		}
+	}
+}
+
 func TestFleetStatusMarksLabelAudienceUnverifiableWithoutLabels(t *testing.T) {
 	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
 	if err != nil {
@@ -861,8 +1004,12 @@ func TestPublishPreflightRequiresRuntimeStatusStore(t *testing.T) {
 				enrollments: tc.enrollments,
 				now:         func() time.Time { return testNow },
 			}
-			if _, err := handler.publishPreflight(req, bundle, false, ""); !errors.Is(err, ErrRuntimeStatusStoreRequired) {
+			summary, err := handler.publishPreflight(req, bundle, false, "")
+			if !errors.Is(err, ErrRuntimeStatusStoreRequired) {
 				t.Fatalf("publishPreflight(%s) error = %v, want ErrRuntimeStatusStoreRequired", tc.name, err)
+			}
+			if !summary.Unavailable || summary.UnavailableReason == "" {
+				t.Fatalf("publishPreflight(%s) summary = %+v, want explicit unavailable signal", tc.name, summary)
 			}
 		})
 	}

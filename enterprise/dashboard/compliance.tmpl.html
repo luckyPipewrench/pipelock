@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelock compliance console</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e7edf7; }
+    body { margin: 0 auto; max-width: 1180px; padding: 2rem; }
+    h1, h2, h3 { color: #fff; } h2 { margin-top: 2.5rem; }
+    .notice { border: 1px solid #64748b; background: #111827; padding: 1rem; border-radius: .5rem; }
+    .warning { border-color: #d97706; color: #fde68a; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0 2rem; }
+    th, td { text-align: left; vertical-align: top; padding: .7rem; border-bottom: 1px solid #334155; }
+    th { color: #cbd5e1; }
+    .status { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-weight: 700; }
+    .covered { background: #14532d; color: #bbf7d0; }
+    .partial { background: #78350f; color: #fde68a; }
+    .not-covered { background: #7f1d1d; color: #fecaca; }
+    .backed { color: #bbf7d0; } .missing { color: #fecaca; }
+    .sub { color: #94a3b8; font-size: .9rem; margin-top: .25rem; }
+    code { color: #bfdbfe; }
+  </style>
+</head>
+<body>
+  <h1>Enterprise compliance console</h1>
+  <p class="notice warning"><strong>Mapping, not certification.</strong> This page renders Pipelock's mapping from observed evidence and loaded configuration to control requirements. It does not certify that an organization is compliant and is not an opinion from any framework body.</p>
+  <p class="notice warning"><strong>{{.Limitation}}</strong></p>
+
+  <h2>Framework mappings</h2>
+  {{range .Frameworks}}
+    <h3>{{.Name}}</h3>
+    <p class="sub">{{.Version}}</p>
+    <table>
+      <thead><tr><th>Control</th><th>Pipelock mapping</th><th>Status</th><th>Backing evidence</th></tr></thead>
+      <tbody>
+      {{range .Controls}}
+        <tr>
+          <td><strong>{{.ID}}</strong><div class="sub">{{.Title}}</div></td>
+          <td>{{.Description}}</td>
+          <td><span class="status {{.Status}}">{{.Status}}</span></td>
+          <td>
+            {{range .Evidence}}
+              <div class="{{if .Present}}backed{{else}}missing{{end}}"><strong>{{if .Present}}backed{{else}}missing{{end}}:</strong> {{.Kind}} — {{.Label}}</div>
+              <div class="sub">{{.Detail}}</div>
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{end}}
+
+  <h2>Fleet mediated-egress coverage rollup</h2>
+  {{if not .Fleet.SourceConfigured}}
+    <p class="notice">No live fleet coverage source is configured. <code>dashboard serve</code> does not fabricate fleet data from local receipts.</p>
+  {{else}}
+    <p class="notice warning">{{.Fleet.Limitation}}</p>
+    <p>Covered: {{.Fleet.Covered}} · Partial: {{.Fleet.Partial}} · Not covered: {{.Fleet.NotCovered}}</p>
+    {{if .Fleet.Truncated}}<p class="notice warning">The fleet source exceeded the bounded display limit; this rollup is truncated.</p>{{end}}
+    {{if .Fleet.Agents}}
+      <table>
+        <thead><tr><th>Agent</th><th>Mediated-egress status</th><th>Coverage certificate</th><th>Sessions</th><th>Chain gaps</th></tr></thead>
+        <tbody>{{range .Fleet.Agents}}<tr><td>{{.AgentID}}</td><td><span class="status {{.Status}}">{{.Status}}</span></td><td>{{.Certificate}}</td><td>{{.SessionsCovered}}</td><td>{{.ChainGaps}}</td></tr>{{end}}</tbody>
+      </table>
+    {{else}}<p class="notice">The live fleet source returned no per-agent coverage records for this scope.</p>{{end}}
+  {{end}}
+
+  <h2>Legal holds</h2>
+  <p class="sub">Read-only operator metadata. Set or release holds with <code>pipelock dashboard legal-hold</code>; this HTTP console has no mutation authority.</p>
+  {{if .LegalHolds}}
+    <table>
+      <thead><tr><th>ID</th><th>Scope</th><th>Reason</th><th>Created</th><th>Released</th><th>Status</th></tr></thead>
+      <tbody>{{range .LegalHolds}}<tr><td>{{.ID}}</td><td>{{.Scope}}</td><td>{{.Reason}}</td><td>{{.CreatedDisplay}}</td><td>{{.ReleasedDisplay}}</td><td>{{.Status}}</td></tr>{{end}}</tbody>
+    </table>
+  {{else}}<p class="notice">No legal-hold metadata store is configured, or the configured store contains no holds.</p>{{end}}
+</body>
+</html>

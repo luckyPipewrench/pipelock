@@ -40,7 +40,7 @@ func TestParseTrustedSigners_InlineWithSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	want := evidenceview.TrustedKey{Source: "ops runbook"}
+	want := evidenceview.TrustedKey{Source: "ops runbook", ProvenanceKind: "static inline", Location: "--trusted-signer"}
 	if got[keyHex] != want {
 		t.Fatalf("got %+v, want %+v", got[keyHex], want)
 	}
@@ -58,7 +58,7 @@ func TestParseTrustedSigners_FileKeyDefaultSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	want := evidenceview.TrustedKey{Source: DefaultSource}
+	want := evidenceview.TrustedKey{Source: DefaultSource, ProvenanceKind: "imported file", Location: keyFile}
 	if got[keyHex] != want {
 		t.Fatalf("got %+v, want %+v", got[keyHex], want)
 	}

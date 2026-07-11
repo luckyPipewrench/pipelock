@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -48,8 +49,16 @@ type FilterSpec struct {
 type Options struct {
 	ReceiptDir  string
 	TrustedKeys map[string]TrustedKey
-	Config      *config.Config
-	HasFeature  func(string) bool
+	// TrustCRLSource returns the currently verified signed CRL used only for
+	// read-side key revocation cross-reference. A non-nil error is rendered as
+	// a failure; it is never treated as an empty CRL.
+	TrustCRLSource func() (*license.CRL, error)
+	// AnchorResolver loads and selects verification material for one session.
+	// The resolver is read-only and must return a real anchor.Backend; labels or
+	// state-marker fields alone are not verification.
+	AnchorResolver AnchorResolver
+	Config         *config.Config
+	HasFeature     func(string) bool
 	// Authorize, when non-nil, runs per request after the license-feature check
 	// and fails the request closed (403) on a non-nil error. It is the handler's
 	// authentication/authorization seam, distinct from the license entitlement
@@ -106,6 +115,10 @@ type Options struct {
 	// The dashboard does not mutate either store.
 	DeliveryInboxPath  string
 	ReadModelIndexPath string
+	// LegalHoldStore, when non-nil, supplies operator-authored retention hold
+	// metadata for read-only display on the compliance console. Dashboard HTTP
+	// handlers never mutate it; operators use the dashboard legal-hold CLI.
+	LegalHoldStore *LegalHoldStore
 	// Now supplies the current time for lifecycle rendering. Nil uses time.Now.
 	Now func() time.Time
 }
@@ -114,6 +127,8 @@ type Options struct {
 type ReadModel struct {
 	receiptDir         string
 	trustedKeys        map[string]TrustedKey
+	trustCRLSource     func() (*license.CRL, error)
+	anchorResolver     AnchorResolver
 	cfg                *config.Config
 	receiptReadLimit   int
 	timelineLimit      int
@@ -123,6 +138,7 @@ type ReadModel struct {
 	budgetSource       BudgetDataSource
 	fleetRedactionKey  [fleetRedactionKeySize]byte
 	exemptionStore     *ExemptionStore
+	legalHoldStore     *LegalHoldStore
 	deliveryInboxPath  string
 	readModelIndexPath string
 	now                func() time.Time
@@ -149,6 +165,8 @@ func NewReadModel(opts Options) *ReadModel {
 	return &ReadModel{
 		receiptDir:         opts.ReceiptDir,
 		trustedKeys:        cloneTrustedKeys(opts.TrustedKeys),
+		trustCRLSource:     opts.TrustCRLSource,
+		anchorResolver:     opts.AnchorResolver,
 		cfg:                opts.Config,
 		receiptReadLimit:   receiptReadLimit,
 		timelineLimit:      timelineLimit,
@@ -158,6 +176,7 @@ func NewReadModel(opts Options) *ReadModel {
 		budgetSource:       opts.BudgetSource,
 		fleetRedactionKey:  fleetRedactionKey,
 		exemptionStore:     opts.ExemptionStore,
+		legalHoldStore:     opts.LegalHoldStore,
 		deliveryInboxPath:  opts.DeliveryInboxPath,
 		readModelIndexPath: opts.ReadModelIndexPath,
 		now:                now,

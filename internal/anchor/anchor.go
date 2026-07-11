@@ -214,6 +214,13 @@ func LoadBundle(path string) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, fmt.Errorf("read anchor bundle: %w", err)
 	}
+	return LoadBundleBytes(data)
+}
+
+// LoadBundleBytes strictly parses an anchor bundle from caller-supplied bytes.
+// Callers that authenticate or hash a bounded read can use this entry point to
+// ensure verification and parsing operate on the exact same evidence.
+func LoadBundleBytes(data []byte) (Bundle, error) {
 	var b Bundle
 	if err := decodeStrict(data, &b); err != nil {
 		return Bundle{}, fmt.Errorf("parse anchor bundle: %w", err)

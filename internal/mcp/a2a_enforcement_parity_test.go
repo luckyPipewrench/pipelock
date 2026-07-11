@@ -215,8 +215,8 @@ func TestScanHTTPInput_A2ASessionBindingDoesNotUseSameNamedTool(t *testing.T) {
 	if blocked == nil {
 		t.Fatal("same-named MCP tool baseline satisfied A2A binding")
 	}
-	if !strings.Contains(blocked.ErrorMessage, bindingReasonUnknownTool) {
-		t.Fatalf("ErrorMessage = %q, want %s", blocked.ErrorMessage, bindingReasonUnknownTool)
+	if !strings.Contains(blocked.ErrorMessage, bindingReasonNoBaseline) {
+		t.Fatalf("ErrorMessage = %q, want %s", blocked.ErrorMessage, bindingReasonNoBaseline)
 	}
 }
 
@@ -503,7 +503,7 @@ func TestForwardScannedInput_A2ASessionBindingDoesNotUseSameNamedTool(t *testing
 		if br.ErrorData != nil || br.ErrorCode != 0 {
 			gotBlock = true
 		}
-		if strings.Contains(br.ErrorMessage, bindingReasonUnknownTool) {
+		if strings.Contains(br.ErrorMessage, bindingReasonNoBaseline) {
 			gotReason = true
 		}
 	}

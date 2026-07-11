@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 )
 
 // FieldClass tells callers which scanner pipeline a leaf value needs.
@@ -274,44 +276,11 @@ func classifyKeyAsLeaf(key string) FieldClass {
 // --- A2A Detection ---
 
 // a2aMethods is the set of JSON-RPC method names used by A2A.
-var a2aMethods = map[string]bool{
-	"SendMessage":                      true,
-	"SendStreamingMessage":             true,
-	"GetTask":                          true,
-	"ListTasks":                        true,
-	"CancelTask":                       true,
-	"SubscribeToTask":                  true,
-	"CreateTaskPushNotificationConfig": true,
-	"GetTaskPushNotificationConfig":    true,
-	"ListTaskPushNotificationConfigs":  true,
-	"DeleteTaskPushNotificationConfig": true,
-	"GetExtendedAgentCard":             true,
-	// Current A2A JSON-RPC method names use slash-delimited lowercase
-	// verbs. Keep the legacy CamelCase names above for compatibility.
-	"message/send":                        true,
-	"message/stream":                      true,
-	"tasks/get":                           true,
-	"tasks/list":                          true,
-	"tasks/cancel":                        true,
-	"tasks/resubscribe":                   true,
-	"tasks/pushNotificationConfig/set":    true,
-	"tasks/pushNotificationConfig/get":    true,
-	"tasks/pushNotificationConfig/list":   true,
-	"tasks/pushNotificationConfig/delete": true,
-	"agent/getAuthenticatedExtendedCard":  true,
-}
-
-var normalizedA2AMethods = func() map[string]bool {
-	methods := make(map[string]bool, len(a2aMethods))
-	for method := range a2aMethods {
-		methods[strings.ToLower(method)] = true
-	}
-	return methods
-}()
+var a2aMethods = a2amethods.Known()
 
 // IsA2AMethod returns true if the JSON-RPC method name is an A2A method.
 func IsA2AMethod(method string) bool {
-	return a2aMethods[method] || normalizedA2AMethods[strings.ToLower(method)]
+	return a2amethods.Is(method)
 }
 
 // a2aPathRe matches A2A REST endpoint paths after version prefix stripping.

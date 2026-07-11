@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -103,7 +104,9 @@ type ToolBaseline struct {
 	descs       map[string]string   // tool name → last known description text
 	params      map[string][]string // tool name → last known parameter names (sorted)
 	knownTools  map[string]bool     // session binding: tool name set from first tools/list
+	knownA2A    map[string]bool     // session binding: A2A method identity set from trusted inventory
 	hasBaseline bool                // true after first SetKnownTools call
+	hasA2A      bool                // true after first SetKnownA2AMethods call
 }
 
 // NewToolBaseline creates a new empty tool baseline.
@@ -118,6 +121,15 @@ func NewToolBaseline() *ToolBaseline {
 // maxBaselineTools caps the number of tracked tools to prevent unbounded
 // memory growth from a malicious server sending unlimited unique tool names.
 const maxBaselineTools = 10000
+
+const a2aMethodIdentityPrefix = "a2a:"
+
+func baselineInventoryMapCapacity(n int) int {
+	if n > maxBaselineTools {
+		return maxBaselineTools
+	}
+	return n
+}
 
 // ShouldSkip returns true if the tool name is unknown and the baseline is at
 // capacity. Callers should skip expensive hash computation in this case to
@@ -358,7 +370,7 @@ func (tb *ToolBaseline) SetKnownTools(names []string) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	if tb.knownTools == nil {
-		tb.knownTools = make(map[string]bool, len(names))
+		tb.knownTools = make(map[string]bool, baselineInventoryMapCapacity(len(names)))
 	}
 	for _, n := range names {
 		if !tb.knownTools[n] && len(tb.knownTools) >= maxBaselineTools {
@@ -369,6 +381,32 @@ func (tb *ToolBaseline) SetKnownTools(names []string) {
 	tb.hasBaseline = true
 }
 
+// SetKnownA2AMethods sets the session baseline from a trusted response-derived
+// A2A method inventory. Methods are stored in the same namespaced identity form
+// used by the MCP input gates, case-folded to match A2A method detection.
+// Subsequent calls add newly seen methods. Respects maxBaselineTools to prevent
+// unbounded memory growth. Unknown method names and reserved-prefix tool
+// identities are ignored so an attacker-influenced inventory cannot create
+// arbitrary allowlist entries.
+func (tb *ToolBaseline) SetKnownA2AMethods(methods []string) {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	if tb.knownA2A == nil {
+		tb.knownA2A = make(map[string]bool, baselineInventoryMapCapacity(len(methods)))
+	}
+	for _, method := range methods {
+		identity := a2aInventoryMethodIdentity(method)
+		if identity == "" {
+			continue
+		}
+		if !tb.knownA2A[identity] && len(tb.knownA2A) >= maxBaselineTools {
+			break
+		}
+		tb.knownA2A[identity] = true
+	}
+	tb.hasA2A = true
+}
+
 // HasBaseline reports whether a tool inventory baseline has been established.
 func (tb *ToolBaseline) HasBaseline() bool {
 	tb.mu.Lock()
@@ -376,11 +414,27 @@ func (tb *ToolBaseline) HasBaseline() bool {
 	return tb.hasBaseline
 }
 
+// HasA2AMethodBaseline reports whether an A2A method inventory baseline has
+// been established.
+func (tb *ToolBaseline) HasA2AMethodBaseline() bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.hasA2A
+}
+
 // IsKnownTool reports whether the given tool name is in the session baseline.
 func (tb *ToolBaseline) IsKnownTool(name string) bool {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	return tb.knownTools[name]
+}
+
+// IsKnownA2AMethod reports whether the given A2A method identity is in the
+// session baseline.
+func (tb *ToolBaseline) IsKnownA2AMethod(method string) bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	return tb.knownA2A[a2aMethodIdentity(method)]
 }
 
 // CheckNewTools compares a list of tool names against the baseline and returns
@@ -400,6 +454,31 @@ func (tb *ToolBaseline) CheckNewTools(names []string) []string {
 		}
 	}
 	return added
+}
+
+func a2aMethodIdentity(method string) string {
+	method = strings.TrimSpace(method)
+	if method == "" {
+		return ""
+	}
+	if strings.HasPrefix(method, a2aMethodIdentityPrefix) {
+		method = strings.TrimSpace(strings.TrimPrefix(method, a2aMethodIdentityPrefix))
+	}
+	if !a2amethods.Is(method) {
+		return ""
+	}
+	return a2aMethodIdentityPrefix + strings.ToLower(method)
+}
+
+func a2aInventoryMethodIdentity(method string) string {
+	method = strings.TrimSpace(method)
+	if method == "" || strings.HasPrefix(method, a2aMethodIdentityPrefix) {
+		return ""
+	}
+	if !a2amethods.Is(method) {
+		return ""
+	}
+	return a2aMethodIdentityPrefix + strings.ToLower(method)
 }
 
 // compiledToolPattern is a precompiled regex for tool-specific poisoning detection.

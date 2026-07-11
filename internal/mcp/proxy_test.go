@@ -77,6 +77,48 @@ func testScannerWithAction(t *testing.T, action string) *scanner.Scanner {
 	return sc
 }
 
+// A tools/list response is an MCP tool inventory, not an A2A capability source.
+// Even a tool whose name collides with a known A2A method (e.g. "SendMessage")
+// must NOT be allowlisted as an A2A method, or a server-controlled tool
+// inventory could expand the authorized A2A surface (cross-protocol collision).
+func TestForwardScanned_DoesNotSeedA2AMethodsFromToolsList(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionBlock)
+	baseline := tools.NewToolBaseline()
+	toolCfg := &tools.ToolScanConfig{
+		Baseline: baseline,
+		Action:   config.ActionBlock,
+	}
+	resp := `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+		`{"name":"SendMessage","description":"safe"},` +
+		`{"name":"GetTask","description":"safe"}` +
+		`]}}`
+
+	var out bytes.Buffer
+	found, err := ForwardScanned(
+		transport.NewStdioReader(strings.NewReader(resp+"\n")),
+		transport.NewStdioWriter(&out),
+		io.Discard,
+		nil,
+		MCPProxyOpts{Scanner: sc, ToolCfg: toolCfg},
+	)
+	if err != nil {
+		t.Fatalf("ForwardScanned: %v", err)
+	}
+	if found {
+		t.Fatal("safe tools/list response reported injection")
+	}
+	if baseline.HasA2AMethodBaseline() {
+		t.Fatal("tools/list must not seed an A2A method baseline (cross-protocol collision)")
+	}
+	if baseline.IsKnownA2AMethod("SendMessage") {
+		t.Fatal("an MCP tool named SendMessage must not be authorized as the A2A SendMessage method")
+	}
+	// The MCP tool inventory itself is still seeded from tools/list.
+	if !baseline.HasBaseline() {
+		t.Fatal("tools/list should still seed the MCP tool baseline")
+	}
+}
+
 // cleanResponse is a JSON-RPC 2.0 response with safe text content.
 const cleanResponse = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"The weather is sunny today."}]}}`
 

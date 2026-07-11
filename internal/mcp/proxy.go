@@ -423,6 +423,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Runs after provenance so blocked responses don't poison the baseline.
 			toolInventoryDecision := ""
 			if toolResult.IsToolsList && toolCfg.Baseline != nil && len(toolResult.ToolNames) > 0 {
+				// Do NOT seed the A2A method inventory from tools/list: a
+				// tools/list response is an MCP tool inventory, not an A2A
+				// capability source, so an MCP tool named "SendMessage" would
+				// otherwise authorize the A2A SendMessage method (a cross-
+				// protocol namespace collision). A2A binding stays fail-closed
+				// until seeded from a validated A2A capability source.
 				hadBaseline := toolCfg.Baseline.HasBaseline()
 				if !hadBaseline {
 					toolCfg.Baseline.SetKnownTools(toolResult.ToolNames)

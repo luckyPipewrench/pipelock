@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -645,7 +646,7 @@ func canonicalStructuralValue(value interface{}) (string, bool) {
 }
 
 // CheckRequest evaluates a JSON-RPC request (single or batch) against policy.
-// Returns a clean verdict for non-tools/call methods and unparseable messages.
+// Returns a clean verdict for non-callable methods and unparseable messages.
 func (pc *Config) CheckRequest(line []byte) Verdict {
 	if pc == nil {
 		return Verdict{}
@@ -666,7 +667,7 @@ func (pc *Config) CheckRequest(line []byte) Verdict {
 
 // checkSingle parses one JSON-RPC request and checks it against policy.
 func (pc *Config) checkSingle(line []byte) Verdict {
-	tc := parseToolCall(line)
+	tc := parsePolicyCallable(line)
 	if tc == nil {
 		return Verdict{}
 	}
@@ -775,10 +776,11 @@ type toolCallParams struct {
 	Arguments json.RawMessage
 }
 
-// parseToolCall extracts tool name and arguments from a tools/call JSON-RPC request.
-// Returns nil if the method is not "tools/call", params don't contain a name field,
-// or the message can't be parsed.
-func parseToolCall(line []byte) *toolCallParams {
+// parsePolicyCallable extracts the callable name and arguments from a JSON-RPC
+// request. tools/call returns params.name and params.arguments; A2A methods
+// return the method name and params object. Returns nil when the method is not a
+// policy-scoped callable or the message cannot be parsed.
+func parsePolicyCallable(line []byte) *toolCallParams {
 	var rpc struct {
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
@@ -787,7 +789,14 @@ func parseToolCall(line []byte) *toolCallParams {
 		return nil
 	}
 	if rpc.Method != "tools/call" {
-		return nil
+		canonical, ok := a2amethods.Canonical(rpc.Method)
+		if !ok {
+			return nil
+		}
+		return &toolCallParams{
+			Name:      canonical,
+			Arguments: rpc.Params,
+		}
 	}
 	if len(rpc.Params) == 0 || string(rpc.Params) == jsonrpc.Null {
 		return nil
@@ -808,6 +817,10 @@ func parseToolCall(line []byte) *toolCallParams {
 		Name:      params.Name,
 		Arguments: params.Arguments,
 	}
+}
+
+func parseToolCall(line []byte) *toolCallParams {
+	return parsePolicyCallable(line)
 }
 
 // actionRank maps action strings to strictness levels for comparison.

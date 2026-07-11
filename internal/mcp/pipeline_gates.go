@@ -13,6 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -227,6 +228,71 @@ func mcpFrameDoWArgs(frame MCPFrame, msg []byte) string {
 	return string(msg)
 }
 
+type sessionBindingCheck struct {
+	Baseline            *tools.ToolBaseline
+	UnknownAction       string
+	NoBaselineAction    string
+	Frame               MCPFrame
+	Method              string
+	ToolName            string
+	EnforcementIdentity string
+}
+
+func evaluateSessionBinding(check sessionBindingCheck) (action, reason string) {
+	if check.Baseline == nil {
+		return "", ""
+	}
+	method := check.Method
+	if method == "" {
+		method = check.Frame.Method
+	}
+	isToolCall := method == methodToolsCall
+	isA2A := IsA2AMethod(method)
+	if !isToolCall && !isA2A {
+		return "", ""
+	}
+	// Gate each decision on its OWN configured action, never on UnknownAction:
+	// a pre-baseline block (NoBaselineAction=block) must still fail closed even
+	// when UnknownAction is unset.
+	if isToolCall && check.ToolName == "" {
+		if check.UnknownAction != "" {
+			return check.UnknownAction, bindingReasonMissingToolName
+		}
+		return "", ""
+	}
+	if isA2A {
+		// A2A binding is a separate namespace: the MCP tool baseline must not
+		// satisfy or downgrade the A2A baseline state, so the no-baseline
+		// decision depends only on whether an A2A method baseline exists.
+		if !check.Baseline.HasA2AMethodBaseline() {
+			if check.NoBaselineAction != "" {
+				return check.NoBaselineAction, bindingReasonNoBaseline
+			}
+			return "", ""
+		}
+		if !check.Baseline.IsKnownA2AMethod(check.EnforcementIdentity) {
+			if check.UnknownAction != "" {
+				return check.UnknownAction, bindingReasonUnknownTool
+			}
+			return "", ""
+		}
+		return "", ""
+	}
+	if !check.Baseline.HasBaseline() {
+		if check.NoBaselineAction != "" {
+			return check.NoBaselineAction, bindingReasonNoBaseline
+		}
+		return "", ""
+	}
+	if !check.Baseline.IsKnownTool(check.ToolName) {
+		if check.UnknownAction != "" {
+			return check.UnknownAction, bindingReasonUnknownTool
+		}
+		return "", ""
+	}
+	return "", ""
+}
+
 // EvaluateMCPInputGates runs the configured inbound gates for one
 // MCP request and returns their aggregated verdict. Each gate is
 // nil-safe: the helper skips gates whose config is nil or whose
@@ -356,29 +422,20 @@ func EvaluateMCPInputGates(
 		}
 	}
 
-	// session binding. HTTP listener traffic shares a listener-level
-	// baseline; apply the same callable inventory check as stdio before
-	// policy/chain/taint can treat the call as clean. Tools/call uses the raw
-	// tool name for compatibility with the tools/list baseline. A2A methods
-	// are not members of that MCP tool inventory; with an established baseline
-	// they fail closed as unknown rather than letting a real tool named
-	// "a2a:<method>" satisfy the method binding.
-	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.Baseline != nil && toolCfg.BindingUnknownAction != "" && (enforcementIdentity != "" || frame.IsToolsCall()) {
-		bindingIdentity := enforcementIdentity
-		if frame.IsToolsCall() {
-			bindingIdentity = frame.ToolCallName
-		}
-		switch {
-		case frame.IsToolsCall() && frame.ToolCallName == "":
-			eval.BindingAction = toolCfg.BindingUnknownAction
-			eval.BindingReason = bindingReasonMissingToolName
-		case !toolCfg.Baseline.HasBaseline():
-			eval.BindingAction = toolCfg.BindingNoBaselineAction
-			eval.BindingReason = bindingReasonNoBaseline
-		case !frame.IsToolsCall() || !toolCfg.Baseline.IsKnownTool(bindingIdentity):
-			eval.BindingAction = toolCfg.BindingUnknownAction
-			eval.BindingReason = bindingReasonUnknownTool
-		}
+	// session binding. HTTP listener traffic shares a listener-level baseline.
+	// tools/call checks the raw tool inventory captured from tools/list. A2A
+	// methods check a separate namespaced A2A method inventory so a real MCP
+	// tool named "a2a:<method>" cannot satisfy A2A method binding.
+	if toolCfg := opts.toolCfg(); toolCfg != nil {
+		eval.BindingAction, eval.BindingReason = evaluateSessionBinding(sessionBindingCheck{
+			Baseline:            toolCfg.Baseline,
+			UnknownAction:       toolCfg.BindingUnknownAction,
+			NoBaselineAction:    toolCfg.BindingNoBaselineAction,
+			Frame:               frame,
+			Method:              eval.ContentVerdict.Method,
+			ToolName:            frame.ToolCallName,
+			EnforcementIdentity: enforcementIdentity,
+		})
 	}
 
 	// policy.
@@ -611,22 +668,22 @@ func EvaluateMCPInputGatesStdio(
 	}
 
 	// session binding callable check. Overrides the batch pre-check when it
-	// fires. Tools/call uses the raw tool name for compatibility with the
-	// tools/list baseline. A2A methods are not members of that MCP tool
-	// inventory; with an established baseline they fail closed as unknown
-	// rather than letting a real tool named "a2a:<method>" satisfy the method
-	// binding. No short-circuit.
-	if bindingCfg != nil && bindingCfg.Baseline != nil && (enforcementIdentity != "" || eval.ContentVerdict.Method == methodToolsCall) {
-		switch {
-		case eval.ContentVerdict.Method == methodToolsCall && toolCallName == "":
-			eval.BindingAction = bindingCfg.UnknownToolAction
-			eval.BindingReason = bindingReasonMissingToolName
-		case !bindingCfg.Baseline.HasBaseline():
-			eval.BindingAction = bindingCfg.NoBaselineAction
-			eval.BindingReason = bindingReasonNoBaseline
-		case eval.ContentVerdict.Method != methodToolsCall || !bindingCfg.Baseline.IsKnownTool(toolCallName):
-			eval.BindingAction = bindingCfg.UnknownToolAction
-			eval.BindingReason = bindingReasonUnknownTool
+	// fires. tools/call checks the raw tool inventory captured from tools/list.
+	// A2A methods check a separate namespaced A2A method inventory so a real
+	// MCP tool named "a2a:<method>" cannot satisfy A2A method binding. No
+	// short-circuit.
+	if bindingCfg != nil {
+		if action, reason := evaluateSessionBinding(sessionBindingCheck{
+			Baseline:            bindingCfg.Baseline,
+			UnknownAction:       bindingCfg.UnknownToolAction,
+			NoBaselineAction:    bindingCfg.NoBaselineAction,
+			Frame:               frame,
+			Method:              eval.ContentVerdict.Method,
+			ToolName:            toolCallName,
+			EnforcementIdentity: enforcementIdentity,
+		}); reason != "" {
+			eval.BindingAction = action
+			eval.BindingReason = reason
 		}
 	}
 

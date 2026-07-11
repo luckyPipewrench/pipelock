@@ -12,10 +12,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
-// applyMCPToolCallRedaction rewrites tools/call params.arguments through the
-// shared redaction engine. A nil matcher disables the feature. Fail-closed:
-// malformed JSON-RPC envelopes or arguments that cannot be safely rewritten
-// return a *redact.BlockError.
+// applyMCPToolCallRedaction rewrites callable request params through the shared
+// redaction engine. tools/call rewrites params.arguments; A2A methods rewrite
+// params. A nil matcher disables the feature. Fail-closed: malformed JSON-RPC
+// envelopes or callable params that cannot be safely rewritten return a
+// *redact.BlockError.
 func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.Report, error) {
 	return applyMCPToolCallRedactionWithConfig(line, opts.redactionConfig())
 }
@@ -70,13 +71,50 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 	if err := json.Unmarshal(methodRaw, &method); err != nil {
 		return line, nil, nil
 	}
-	if method != methodToolsCall {
+	if method != methodToolsCall && !IsA2AMethod(method) {
 		return line, nil, nil
 	}
 
 	paramsRaw, ok := env["params"]
 	if !ok || len(paramsRaw) == 0 || string(paramsRaw) == jsonrpc.Null {
 		return line, nil, nil
+	}
+
+	if IsA2AMethod(method) {
+		if err := redact.NoDuplicateJSONKeys(paramsRaw); err != nil && isDuplicateKeyBlock(err) {
+			return nil, nil, err
+		}
+
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(paramsRaw, &params); err != nil {
+			return nil, nil, &redact.BlockError{
+				Reason: redact.ReasonBodyUnparseable,
+				Detail: fmt.Sprintf("invalid A2A params object: %v", err),
+			}
+		}
+
+		rewrittenParams, report, err := redact.RewriteJSON(paramsRaw, cfg.Matcher, redact.NewRedactor(), cfg.Limits)
+		if err != nil {
+			return nil, nil, err
+		}
+		env["params"] = rewrittenParams
+
+		rewrittenLine, err := marshalMCPMessage(env)
+		if err != nil {
+			return nil, nil, &redact.BlockError{
+				Reason:             redact.ReasonRemarshalFailed,
+				MatchesBeforeBlock: reportTotal(report),
+				Detail:             fmt.Sprintf("marshal rewritten A2A message: %v", err),
+			}
+		}
+		if len(prefix) == 0 && len(suffix) == 0 {
+			return rewrittenLine, report, nil
+		}
+		var rewritten bytes.Buffer
+		_, _ = rewritten.Write(prefix)
+		_, _ = rewritten.Write(rewrittenLine)
+		_, _ = rewritten.Write(suffix)
+		return rewritten.Bytes(), report, nil
 	}
 
 	// Same dup-key trap on params: a duplicate `arguments` could hide

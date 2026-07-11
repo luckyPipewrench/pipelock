@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
@@ -71,23 +72,30 @@ type RedirectResult struct {
 	LatencyMs int64
 }
 
-// extractToolCallFields extracts the tool name and arguments JSON from a
-// tools/call JSON-RPC request. Returns empty strings if parsing fails.
+// extractToolCallFields extracts the callable target and argument JSON from a
+// JSON-RPC request. tools/call returns params.name and params.arguments; A2A
+// methods return the method name and params object. Returns empty strings if
+// parsing fails.
 func extractToolCallFields(line []byte) (toolName string, argsJSON string) {
-	var rpc struct {
-		Params struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(line, &rpc); err != nil {
+	frame := ParseMCPFrame(line)
+	if frame.ParseErr != nil {
 		return "", ""
 	}
-	args := string(rpc.Params.Arguments)
-	if args == "" || args == jsonrpc.Null {
-		args = "{}"
+	if frame.IsToolsCall() {
+		args := string(frame.Args)
+		if args == "" || args == jsonrpc.Null {
+			args = "{}"
+		}
+		return frame.ToolCallName, args
 	}
-	return rpc.Params.Name, args
+	if canonical, ok := a2amethods.Canonical(frame.Method); ok {
+		args := mcpFrameCallableArgs(frame)
+		if args == "" || args == jsonrpc.Null {
+			args = "{}"
+		}
+		return canonical, args
+	}
+	return "", ""
 }
 
 // executeRedirect runs a redirect profile handler and returns a synthetic

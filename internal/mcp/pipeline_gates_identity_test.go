@@ -121,7 +121,10 @@ func TestEvaluateMCPInputGates_HTTPBindingReservedPrefixIdentity(t *testing.T) {
 			msg:           a2aMethodMsg,
 			baselineTools: []string{reservedTool},
 			wantIdentity:  "a2a:message/send",
-			wantReason:    bindingReasonUnknownTool,
+			// No A2A method baseline was ever established (only MCP tools were
+			// seeded), so the correct classification is no-baseline, not
+			// unknown: an MCP tool inventory does not satisfy the A2A namespace.
+			wantReason: bindingReasonNoBaseline,
 		},
 		{
 			// Attack path: a reserved-prefix tools/call whose raw name is absent
@@ -171,6 +174,103 @@ func TestEvaluateMCPInputGates_HTTPBindingReservedPrefixIdentity(t *testing.T) {
 			}
 			if eval.BindingAction != config.ActionBlock {
 				t.Fatalf("BindingAction = %q, want %q", eval.BindingAction, config.ActionBlock)
+			}
+		})
+	}
+}
+
+func TestEvaluateMCPInputGates_A2ABindingAllowsPinnedMethodOnly(t *testing.T) {
+	knownMsg := testA2ARequest(1, testA2AMethod)
+	unknownMsg := testA2ARequest(2, testA2ASecondMethod)
+
+	baseline := tools.NewToolBaseline()
+	baseline.SetKnownTools([]string{"read_file"})
+	baseline.SetKnownA2AMethods([]string{testA2AMethod})
+
+	tests := []struct {
+		name       string
+		msg        []byte
+		wantReason string
+	}{
+		{
+			name:       "pinned a2a method allowed",
+			msg:        knownMsg,
+			wantReason: "",
+		},
+		{
+			name:       "unknown a2a method fails closed",
+			msg:        unknownMsg,
+			wantReason: bindingReasonUnknownTool,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := ParseMCPFrame(tt.msg)
+			eval := EvaluateMCPInputGates(
+				t.Context(),
+				frame,
+				tt.msg,
+				"session-1",
+				MCPProxyOpts{
+					ToolCfg: &tools.ToolScanConfig{
+						Baseline:                baseline,
+						BindingUnknownAction:    config.ActionBlock,
+						BindingNoBaselineAction: config.ActionBlock,
+					},
+				},
+				config.ActionBlock,
+				config.ActionBlock,
+				false,
+			)
+
+			if tt.wantReason == "" {
+				if eval.BindingReason != "" || eval.BindingAction != "" {
+					t.Fatalf("expected acceptance, got binding action=%q reason=%q", eval.BindingAction, eval.BindingReason)
+				}
+				return
+			}
+			if eval.BindingReason != tt.wantReason {
+				t.Fatalf("BindingReason = %q, want %q", eval.BindingReason, tt.wantReason)
+			}
+			if eval.BindingAction != config.ActionBlock {
+				t.Fatalf("BindingAction = %q, want %q", eval.BindingAction, config.ActionBlock)
+			}
+		})
+	}
+}
+
+// Regression for two fail-open holes: NoBaselineAction must fire independently
+// of UnknownAction, and A2A no-baseline must be decided only by the A2A method
+// baseline (an MCP tool baseline must not downgrade it to "unknown").
+func TestEvaluateSessionBinding_NoBaselineFailClosed(t *testing.T) {
+	empty := tools.NewToolBaseline()
+	mcpOnly := tools.NewToolBaseline()
+	mcpOnly.SetKnownTools([]string{"search"})
+	cases := []struct {
+		name       string
+		check      sessionBindingCheck
+		wantAction string
+		wantReason string
+	}{
+		{
+			name:       "toolcall pre-baseline blocks even with UnknownAction unset",
+			check:      sessionBindingCheck{Baseline: empty, Method: methodToolsCall, ToolName: "x", NoBaselineAction: config.ActionBlock, UnknownAction: ""},
+			wantAction: config.ActionBlock,
+			wantReason: bindingReasonNoBaseline,
+		},
+		{
+			name:       "a2a with mcp baseline but no a2a baseline uses NoBaselineAction, not UnknownAction",
+			check:      sessionBindingCheck{Baseline: mcpOnly, Method: "message/send", EnforcementIdentity: "a2a:message/send", NoBaselineAction: config.ActionBlock, UnknownAction: config.ActionAllow},
+			wantAction: config.ActionBlock,
+			wantReason: bindingReasonNoBaseline,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, r := evaluateSessionBinding(tc.check)
+			if a != tc.wantAction || r != tc.wantReason {
+				t.Fatalf("evaluateSessionBinding = (%q,%q), want (%q,%q)", a, r, tc.wantAction, tc.wantReason)
 			}
 		})
 	}

@@ -412,12 +412,48 @@ func TestCheckRequest_SingleRequest_NoMatch(t *testing.T) {
 	}
 }
 
-func TestCheckRequest_NonToolsCall_Skipped(t *testing.T) {
+func TestCheckRequest_NonCallableMethodSkipped(t *testing.T) {
 	pc := testConfig(t)
 	line := `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///etc/shadow"}}`
 	v := pc.CheckRequest([]byte(line))
 	if v.Matched {
-		t.Error("non-tools/call should be skipped")
+		t.Error("non-callable method should be skipped")
+	}
+}
+
+func TestCheckRequest_A2AMethodPolicyMatch(t *testing.T) {
+	pc := New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		Rules: []config.ToolPolicyRule{{
+			Name:        "a2a-send-deploy",
+			ToolPattern: `^SendMessage$`,
+			ArgPattern:  `deploy`,
+		}},
+	})
+	requests := map[string][]byte{
+		"canonical": []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"kind":"text","text":"deploy now"}]}}}`),
+		"case-fold": []byte(`{"jsonrpc":"2.0","id":1,"method":"sendmessage","params":{"message":{"parts":[{"kind":"text","text":"deploy now"}]}}}`),
+	}
+
+	for name, req := range requests {
+		t.Run(name, func(t *testing.T) {
+			v := pc.CheckRequest(req)
+			if !v.Matched {
+				t.Fatal("A2A method policy did not match")
+			}
+			if v.Action != config.ActionWarn {
+				t.Fatalf("action = %q, want warn", v.Action)
+			}
+			if got := strings.Join(v.Rules, ","); got != "a2a-send-deploy" {
+				t.Fatalf("rules = %q, want a2a-send-deploy", got)
+			}
+		})
+	}
+
+	nonA2A := []byte(`{"jsonrpc":"2.0","id":1,"method":"not/a2a","params":{"message":{"parts":[{"kind":"text","text":"deploy now"}]}}}`)
+	if v := pc.CheckRequest(nonA2A); v.Matched {
+		t.Fatalf("non-A2A method matched policy: %+v", v)
 	}
 }
 

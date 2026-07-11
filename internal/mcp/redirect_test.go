@@ -221,6 +221,18 @@ func TestExtractToolCallFields_Valid(t *testing.T) {
 	}
 }
 
+func TestExtractToolCallFields_A2AParams(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"sendmessage","params":{"message":{"messageId":"msg-1","role":"user","parts":[{"kind":"text","text":"hello"}]}}}`)
+	name, args := extractToolCallFields(line)
+	if name != "SendMessage" {
+		t.Errorf("name = %q, want SendMessage", name)
+	}
+	want := `{"message":{"messageId":"msg-1","role":"user","parts":[{"kind":"text","text":"hello"}]}}`
+	if args != want {
+		t.Errorf("args = %q, want %s", args, want)
+	}
+}
+
 func TestExtractToolCallFields_InvalidJSON(t *testing.T) {
 	name, args := extractToolCallFields([]byte(`not json`))
 	if name != "" || args != "" {

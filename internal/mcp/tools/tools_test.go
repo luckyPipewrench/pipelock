@@ -2423,6 +2423,87 @@ func TestToolBaseline_KnownToolsCap(t *testing.T) {
 	}
 }
 
+func TestToolBaseline_A2AMethodInventory(t *testing.T) {
+	tb := NewToolBaseline()
+
+	if tb.HasA2AMethodBaseline() {
+		t.Error("expected no A2A baseline before SetKnownA2AMethods")
+	}
+	if tb.IsKnownA2AMethod("SendMessage") {
+		t.Error("expected unknown A2A method before baseline")
+	}
+
+	tb.SetKnownA2AMethods([]string{"SendMessage"})
+
+	if !tb.HasA2AMethodBaseline() {
+		t.Fatal("expected A2A baseline after SetKnownA2AMethods")
+	}
+	if !tb.IsKnownA2AMethod("SendMessage") {
+		t.Error("expected SendMessage to be known")
+	}
+	if !tb.IsKnownA2AMethod("a2a:SendMessage") {
+		t.Error("expected namespaced SendMessage identity to be known")
+	}
+	if !tb.IsKnownA2AMethod("sendmessage") {
+		t.Error("expected case-folded SendMessage to be known")
+	}
+	if tb.IsKnownA2AMethod("GetTask") {
+		t.Error("expected GetTask to be unknown")
+	}
+	tb.SetKnownA2AMethods([]string{"GetTask"})
+	if !tb.IsKnownA2AMethod("GetTask") {
+		t.Error("expected subsequent A2A inventory to add GetTask")
+	}
+
+	poisoned := NewToolBaseline()
+	poisoned.SetKnownA2AMethods([]string{"SendMessage", "StealEverything"})
+	if poisoned.IsKnownA2AMethod("StealEverything") {
+		t.Fatal("unknown A2A method was injected into the allowlist")
+	}
+
+	prefixed := NewToolBaseline()
+	prefixed.SetKnownA2AMethods([]string{"a2a:SendMessage"})
+	if prefixed.IsKnownA2AMethod("SendMessage") {
+		t.Fatal("reserved-prefix tool name was injected into the A2A allowlist")
+	}
+}
+
+func TestToolBaseline_A2AMethodInventoryCap(t *testing.T) {
+	tb := NewToolBaseline()
+
+	methods := make([]string, maxBaselineTools)
+	for i := range methods {
+		methods[i] = "SendMessage"
+	}
+	tb.SetKnownA2AMethods(methods)
+
+	if !tb.HasA2AMethodBaseline() {
+		t.Fatal("expected A2A baseline after SetKnownA2AMethods")
+	}
+	if len(tb.knownA2A) != 1 {
+		t.Fatalf("duplicate methods should collapse to one identity, got %d", len(tb.knownA2A))
+	}
+}
+
+func TestToolBaseline_InventoryMapCapacityClamped(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "below cap", in: 7, want: 7},
+		{name: "at cap", in: maxBaselineTools, want: maxBaselineTools},
+		{name: "above cap", in: maxBaselineTools + 1, want: maxBaselineTools},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := baselineInventoryMapCapacity(tt.in); got != tt.want {
+				t.Fatalf("baselineInventoryMapCapacity(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestToolScanResult_ToolNames(t *testing.T) {
 	// Verify ScanTools populates ToolNames from tools/list responses.
 	cfg := config.Defaults()

@@ -42,6 +42,70 @@ func TestApplyMCPToolCallRedaction_PreservesWhitespace(t *testing.T) {
 	}
 }
 
+func TestApplyMCPToolCallRedaction_RedactsA2AParams(t *testing.T) {
+	secret := mcpRedactionSecret()
+	line := []byte("  " +
+		`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"messageId":"msg-1","role":"user","parts":[{"kind":"text","text":"use ` +
+		secret + ` to deploy"}]}}}` + "\n")
+
+	rewritten, report, err := applyMCPToolCallRedaction(line, MCPProxyOpts{
+		RedactMatcher: testRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+	})
+	if err != nil {
+		t.Fatalf("applyMCPToolCallRedaction: %v", err)
+	}
+	if !bytes.HasPrefix(rewritten, []byte("  ")) {
+		t.Fatalf("rewritten line lost leading whitespace: %q", string(rewritten))
+	}
+	if !bytes.HasSuffix(rewritten, []byte("\n")) {
+		t.Fatalf("rewritten line lost trailing newline: %q", string(rewritten))
+	}
+	if bytes.Contains(rewritten, []byte(secret)) {
+		t.Fatalf("rewritten A2A line leaked secret: %s", rewritten)
+	}
+	if !bytes.Contains(rewritten, []byte(mcpPlaceholderAWS)) {
+		t.Fatalf("rewritten A2A line missing placeholder: %s", rewritten)
+	}
+	if reportTotal(report) != 1 {
+		t.Fatalf("report total = %d, want 1", reportTotal(report))
+	}
+}
+
+func TestApplyMCPToolCallRedaction_A2AMalformedParamsFailClosed(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":"oops"}`)
+
+	_, _, err := applyMCPToolCallRedaction(line, MCPProxyOpts{
+		RedactMatcher: testRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+	})
+	if err == nil {
+		t.Fatal("expected block error")
+	}
+	var blockErr *redact.BlockError
+	if !errors.As(err, &blockErr) {
+		t.Fatalf("expected BlockError, got %T", err)
+	}
+	if blockErr.Reason != redact.ReasonBodyUnparseable {
+		t.Fatalf("reason = %q, want %q", blockErr.Reason, redact.ReasonBodyUnparseable)
+	}
+}
+
+func TestApplyMCPToolCallRedaction_A2ADuplicateParamsFailClosed(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"kind":"text","text":"safe"}]},"message":{"parts":[{"kind":"text","text":"secret"}]}}}`)
+
+	_, _, err := applyMCPToolCallRedaction(line, MCPProxyOpts{
+		RedactMatcher: testRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+	})
+	if err == nil {
+		t.Fatal("expected duplicate-key block error")
+	}
+	if !isDuplicateKeyBlock(err) {
+		t.Fatalf("expected duplicate-key block error, got %T: %v", err, err)
+	}
+}
+
 func TestApplyMCPToolCallRedaction_NonToolsCallBypasses(t *testing.T) {
 	line := []byte(" " + jsonToolsList + "\n")
 

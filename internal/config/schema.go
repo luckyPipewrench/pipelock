@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -415,6 +416,7 @@ type Config struct {
 	FileSentry               FileSentry              `yaml:"file_sentry"`
 	Sandbox                  Sandbox                 `yaml:"sandbox"`
 	FlightRecorder           FlightRecorder          `yaml:"flight_recorder"`
+	DashboardSnapshot        DashboardSnapshot       `yaml:"dashboard_snapshot" json:"-"` // operational dashboard read-model snapshot, excluded from canonical policy hash
 	MCPBinaryIntegrity       MCPBinaryIntegrity      `yaml:"mcp_binary_integrity"`
 	MCPToolProvenance        MCPToolProvenance       `yaml:"mcp_tool_provenance"`
 	BehavioralBaseline       BehavioralBaseline      `yaml:"behavioral_baseline"`
@@ -1446,6 +1448,7 @@ const (
 	DefaultFlightRecorderHeartbeatInterval = 60 * time.Second
 	DefaultEvidenceHealthSelfAuditInterval = 30 * time.Second
 	DefaultEvidenceHealthMaxAnchorLag      = 24 * time.Hour
+	DefaultDashboardSnapshotInterval       = 10 * time.Second
 )
 
 func (f FlightRecorder) HeartbeatIntervalDuration() time.Duration {
@@ -1498,6 +1501,45 @@ func (f FlightRecorder) EvidenceMaxAnchorLagDuration() time.Duration {
 		return DefaultEvidenceHealthMaxAnchorLag
 	}
 	return lag
+}
+
+// DashboardSnapshot configures the proxy-produced, read-only dashboard runtime
+// snapshot. The enabled pointer preserves three states: omitted means "write
+// when flight_recorder.dir is configured", explicit false disables it, and
+// explicit true writes to the configured or derived path.
+type DashboardSnapshot struct {
+	Enabled  *bool  `yaml:"enabled,omitempty"`
+	Path     string `yaml:"path,omitempty"`
+	Interval string `yaml:"interval,omitempty"`
+}
+
+func (d DashboardSnapshot) EnabledWithRecorderDir(recorderDir string) bool {
+	if d.Enabled != nil {
+		return *d.Enabled
+	}
+	return strings.TrimSpace(recorderDir) != ""
+}
+
+func (d DashboardSnapshot) PathWithRecorderDir(recorderDir string) string {
+	if strings.TrimSpace(d.Path) != "" {
+		return d.Path
+	}
+	if strings.TrimSpace(recorderDir) == "" {
+		return ""
+	}
+	return filepath.Join(recorderDir, "dashboard", "runtime-snapshot.json")
+}
+
+func (d DashboardSnapshot) IntervalDuration() time.Duration {
+	raw := strings.TrimSpace(d.Interval)
+	if raw == "" {
+		return DefaultDashboardSnapshotInterval
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval < time.Second {
+		return DefaultDashboardSnapshotInterval
+	}
+	return interval
 }
 
 // MediationEnvelope configures sideband metadata on proxied requests.

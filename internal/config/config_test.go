@@ -10657,6 +10657,200 @@ func TestLoad_FlightRecorderDefaults(t *testing.T) {
 	}
 }
 
+func TestLoad_DashboardSnapshotDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "dash-snapshot.yaml")
+	content := "mode: balanced\nflight_recorder:\n  enabled: true\n  dir: " + filepath.Join(dir, "recorder") + "\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.DashboardSnapshot.EnabledWithRecorderDir(cfg.FlightRecorder.Dir) {
+		t.Fatal("dashboard snapshot should default enabled when flight_recorder.dir is set")
+	}
+	if got := cfg.DashboardSnapshot.PathWithRecorderDir(cfg.FlightRecorder.Dir); got != filepath.Join(cfg.FlightRecorder.Dir, "dashboard", "runtime-snapshot.json") {
+		t.Fatalf("snapshot path = %q, want derived recorder path", got)
+	}
+	if got := cfg.DashboardSnapshot.IntervalDuration(); got != DefaultDashboardSnapshotInterval {
+		t.Fatalf("snapshot interval = %s, want %s", got, DefaultDashboardSnapshotInterval)
+	}
+}
+
+func TestLoad_DashboardSnapshotEnabledStates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		section string
+		want    bool
+	}{
+		{name: "omitted", section: "", want: true},
+		{name: "key_null", section: "dashboard_snapshot:\n  enabled:\n", want: true},
+		{name: "key_blank", section: "dashboard_snapshot:\n  enabled: \n", want: true},
+		{name: "explicit_false", section: "dashboard_snapshot:\n  enabled: false\n", want: false},
+		{name: "explicit_true", section: "dashboard_snapshot:\n  enabled: true\n", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "cfg.yaml")
+			content := "mode: balanced\nflight_recorder:\n  dir: " + filepath.Join(dir, "recorder") + "\n" + tt.section
+			if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(cfgPath)
+			if err != nil {
+				t.Fatalf("Load() error: %v", err)
+			}
+			if got := cfg.DashboardSnapshot.EnabledWithRecorderDir(cfg.FlightRecorder.Dir); got != tt.want {
+				t.Fatalf("EnabledWithRecorderDir() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoad_DashboardSnapshotImplicitlyDisabledWithoutRecorderDir(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		section string
+	}{
+		{name: "omitted", section: ""},
+		{name: "blank_enabled", section: "dashboard_snapshot:\n  enabled: \n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "cfg.yaml")
+			if err := os.WriteFile(path, []byte("mode: balanced\n"+tt.section), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.DashboardSnapshot.EnabledWithRecorderDir(cfg.FlightRecorder.Dir) {
+				t.Fatal("dashboard snapshot enabled without explicit opt-in or recorder dir")
+			}
+			if got := cfg.DashboardSnapshot.PathWithRecorderDir(cfg.FlightRecorder.Dir); got != "" {
+				t.Fatalf("derived path = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestDashboardSnapshotDerivedValues(t *testing.T) {
+	t.Parallel()
+
+	explicitPath := filepath.Join(t.TempDir(), "explicit.json")
+	dash := DashboardSnapshot{Path: explicitPath}
+	if got := dash.PathWithRecorderDir("/ignored/recorder"); got != explicitPath {
+		t.Fatalf("PathWithRecorderDir() = %q, want explicit %q", got, explicitPath)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		interval string
+	}{
+		{name: "invalid", interval: "soon"},
+		{name: "subsecond", interval: "500ms"},
+		{name: "empty", interval: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := (DashboardSnapshot{Interval: tt.interval}).IntervalDuration(); got != DefaultDashboardSnapshotInterval {
+				t.Fatalf("IntervalDuration() = %s, want %s", got, DefaultDashboardSnapshotInterval)
+			}
+		})
+	}
+}
+
+func TestLoad_DashboardSnapshotTrimsInterval(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	content := "mode: balanced\ndashboard_snapshot:\n  enabled: false\n  interval: ' 10s '\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.DashboardSnapshot.IntervalDuration(); got != 10*time.Second {
+		t.Fatalf("IntervalDuration() = %s, want 10s", got)
+	}
+}
+
+func TestValidateDashboardSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "invalid_interval",
+			mutate: func(c *Config) {
+				c.DashboardSnapshot.Interval = "soon"
+			},
+			wantErr: "dashboard_snapshot.interval must parse as a duration",
+		},
+		{
+			name: "subsecond_interval",
+			mutate: func(c *Config) {
+				c.DashboardSnapshot.Interval = "500ms"
+			},
+			wantErr: "dashboard_snapshot.interval must be >= 1s",
+		},
+		{
+			name: "explicit_enabled_without_path",
+			mutate: func(c *Config) {
+				c.FlightRecorder.Dir = ""
+				c.DashboardSnapshot.Enabled = ptrBool(true)
+				c.DashboardSnapshot.Path = ""
+			},
+			wantErr: "dashboard_snapshot.path is required",
+		},
+		{
+			name: "explicit_disabled_without_path",
+			mutate: func(c *Config) {
+				c.FlightRecorder.Dir = ""
+				c.DashboardSnapshot.Enabled = ptrBool(false)
+				c.DashboardSnapshot.Path = ""
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			tt.mutate(cfg)
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want contains %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoad_FlightRecorderFileMode(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "fr-mode.yaml")

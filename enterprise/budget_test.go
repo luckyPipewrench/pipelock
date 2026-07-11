@@ -433,3 +433,57 @@ func TestBudgetWindowResetsAllCounters(t *testing.T) {
 		t.Fatalf("all counters should reset after window expiry: %v", err)
 	}
 }
+
+func TestBudgetSnapshotIsReadOnlyAcrossExpiredWindow(t *testing.T) {
+	budget := config.BudgetConfig{
+		MaxRequestsPerSession:      2,
+		MaxBytesPerSession:         300,
+		MaxUniqueDomainsPerSession: 2,
+		WindowMinutes:              5,
+	}
+	tracker := NewBudgetTracker(&budget)
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	tracker.now = func() time.Time { return now }
+	tracker.windowStart = now
+	if err := tracker.RecordRequest(testDomainA, testByteSize); err != nil {
+		t.Fatalf("RecordRequest: %v", err)
+	}
+
+	active := tracker.Snapshot()
+	if active.RequestCount != 1 || active.ByteCount != testByteSize || active.UniqueDomainCount != 1 {
+		t.Fatalf("active snapshot = %+v", active)
+	}
+	if active.WindowStart != now || active.MaxRequests != 2 || active.MaxBytes != 300 || active.MaxUniqueDomains != 2 || active.WindowMinutes != 5 {
+		t.Fatalf("active snapshot metadata = %+v", active)
+	}
+
+	originalWindowStart := tracker.windowStart
+	now = now.Add(6 * time.Minute)
+	expired := tracker.Snapshot()
+	if expired.RequestCount != 0 || expired.ByteCount != 0 || expired.UniqueDomainCount != 0 {
+		t.Fatalf("expired snapshot counters = %+v, want zeroed view", expired)
+	}
+	if expired.WindowStart != now {
+		t.Fatalf("expired snapshot window start = %s, want %s", expired.WindowStart, now)
+	}
+	if tracker.requestCount != 1 || tracker.byteCount != testByteSize || len(tracker.uniqueDomains) != 1 || tracker.windowStart != originalWindowStart {
+		t.Fatalf("Snapshot mutated enforcement state: requests=%d bytes=%d domains=%d start=%s",
+			tracker.requestCount, tracker.byteCount, len(tracker.uniqueDomains), tracker.windowStart)
+	}
+
+	// Enforcement, not observation, owns the actual reset.
+	if err := tracker.RecordRequest(testDomainB, testByteSize); err != nil {
+		t.Fatalf("RecordRequest after expired observational snapshot: %v", err)
+	}
+	if tracker.requestCount != 1 || tracker.byteCount != testByteSize || len(tracker.uniqueDomains) != 1 || tracker.windowStart != now {
+		t.Fatalf("enforcement reset state = requests=%d bytes=%d domains=%d start=%s",
+			tracker.requestCount, tracker.byteCount, len(tracker.uniqueDomains), tracker.windowStart)
+	}
+}
+
+func TestBudgetSnapshotNilTracker(t *testing.T) {
+	var tracker *BudgetTracker
+	if got := tracker.Snapshot(); got != (edition.BudgetSnapshot{}) {
+		t.Fatalf("nil tracker snapshot = %+v, want zero value", got)
+	}
+}

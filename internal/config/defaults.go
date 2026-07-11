@@ -403,6 +403,9 @@ func Defaults() *Config {
 				MaxAnchorLag:      "24h",
 			},
 		},
+		DashboardSnapshot: DashboardSnapshot{
+			Interval: "10s",
+		},
 		MCPToolProvenance: MCPToolProvenance{
 			Action:      ActionWarn,
 			Mode:        ProvenanceModePipelock,

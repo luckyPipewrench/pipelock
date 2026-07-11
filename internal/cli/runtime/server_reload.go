@@ -152,6 +152,10 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: file_sentry settings changed — watcher cannot rebind at runtime, ignoring (restart required)\n")
 			newCfg.FileSentry = oldCfg.FileSentry
 		}
+		if !reflect.DeepEqual(oldCfg.DashboardSnapshot, newCfg.DashboardSnapshot) {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: dashboard_snapshot settings changed — writer is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
+			newCfg.DashboardSnapshot = oldCfg.DashboardSnapshot
+		}
 
 		// Dedupe identical-hash reload EVENTS within a short window.
 		// fsnotify + SIGHUP stack up so a single `echo cfg > path;

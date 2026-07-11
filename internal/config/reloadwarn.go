@@ -548,6 +548,14 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "health_watchdog config changes require restart — ignored on reload",
 		})
 	}
+	if !boolPtrEqual(old.DashboardSnapshot.Enabled, updated.DashboardSnapshot.Enabled) ||
+		old.DashboardSnapshot.Path != updated.DashboardSnapshot.Path ||
+		old.DashboardSnapshot.Interval != updated.DashboardSnapshot.Interval {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "dashboard_snapshot",
+			Message: "dashboard_snapshot config changes require restart — ignored on reload",
+		})
+	}
 
 	// Secrets file changed or removed (security-relevant)
 	if old.DLP.SecretsFile != updated.DLP.SecretsFile {

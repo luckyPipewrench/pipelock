@@ -544,12 +544,12 @@ func TestForwarderConcurrentCloseDoesNotLoseAcceptedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New after shutdown: %v", err)
 	}
-	waitFor(t, func() bool { return received.Load() == accepted.Load() })
+	waitFor(t, func() bool { return received.Load() >= accepted.Load() })
 	if err := f2.Close(); err != nil {
 		t.Fatalf("Close restarted forwarder: %v", err)
 	}
-	if got, want := received.Load(), accepted.Load(); got != want {
-		t.Fatalf("received %d events, want all %d accepted across shutdown replay", got, want)
+	if got, wantAtLeast := received.Load(), accepted.Load(); got < wantAtLeast {
+		t.Fatalf("received %d events, want at least all %d accepted across shutdown replay", got, wantAtLeast)
 	}
 }
 

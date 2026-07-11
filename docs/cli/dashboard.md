@@ -104,6 +104,12 @@ the server is running stops serving.
 - **The license check is entitlement, not identity.** Every request must also
   carry the operator token (constant-time comparison), as a `Bearer` header or
   as the Basic-auth password. Requests without it get `401` and no evidence.
+- **Embedded handlers fail closed without an auth boundary.** The
+  `pipelock dashboard serve` command wires the token-auth boundary into the
+  dashboard handler. Go embedders that construct the dashboard handler directly
+  and authenticate in an outer router must explicitly set `TrustedOuterAuth`;
+  leaving both authorization callbacks nil now returns `403` for every route
+  instead of serving unauthenticated.
 - **Cleartext refusal.** Without TLS the listener only accepts loopback
   addresses; serving a non-loopback address over plain HTTP is refused at
   startup because the operator token would transit in cleartext.

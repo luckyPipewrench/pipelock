@@ -157,6 +157,14 @@ type Metrics struct {
 	evidenceHealthFunc          func() (EvidenceHealthStats, bool)
 	evidenceCollector           *evidenceCollector
 
+	// Enterprise durable SIEM forwarder (siem_forwarder.go).
+	siemForwarderQueued      prometheus.Gauge
+	siemForwarderDelivered   prometheus.Counter
+	siemForwarderFailed      prometheus.Counter
+	siemForwarderDropped     prometheus.Counter
+	siemForwarderLastSuccess prometheus.Gauge
+	siemForwarderSpoolBytes  prometheus.Gauge
+
 	// Stats endpoint state (stats_handler.go).
 	mu                     sync.Mutex
 	startTime              time.Time
@@ -227,6 +235,7 @@ func New() *Metrics {
 	m.registerEnvelopeMetrics(reg)
 	m.registerReceiptMetrics(reg)
 	m.registerEvidenceMetrics(reg)
+	m.registerSIEMForwarderMetrics(reg)
 
 	// Built-in Go runtime + process collectors. These expose
 	// go_memstats_heap_alloc_bytes, go_goroutines, process_resident_memory_bytes,

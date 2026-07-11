@@ -8,6 +8,68 @@ import (
 	"testing"
 )
 
+func TestValidateReload_ForwarderDestinationAllowlistExpanded(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		oldHosts []string
+		newHosts []string
+		want     bool
+	}{
+		{name: "expanded", oldHosts: []string{"old.example"}, newHosts: []string{"old.example", "new.example"}, want: true},
+		{name: "case and trailing dot are equivalent", oldHosts: []string{"SIEM.EXAMPLE."}, newHosts: []string{"siem.example"}},
+		{name: "contracted", oldHosts: []string{"old.example", "removed.example"}, newHosts: []string{"old.example"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := Defaults()
+			old.Emit.Forwarder.DestinationAllowlist = tc.oldHosts
+			updated := Defaults()
+			updated.Emit.Forwarder.DestinationAllowlist = tc.newHosts
+			got := false
+			for _, warning := range ValidateReload(old, updated) {
+				if warning.Field == "emit.forwarder.destination_allowlist" {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("allowlist expansion warning = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateReload_ForwarderInsecureHTTPEnabled(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		from bool
+		to   bool
+		want bool
+	}{
+		{name: "enabled", from: false, to: true, want: true},
+		{name: "already on", from: true, to: true},
+		{name: "disabled", from: true, to: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := Defaults()
+			old.Emit.Forwarder.AllowInsecureHTTP = tc.from
+			updated := Defaults()
+			updated.Emit.Forwarder.AllowInsecureHTTP = tc.to
+			got := false
+			for _, warning := range ValidateReload(old, updated) {
+				if warning.Field == "emit.forwarder.allow_insecure_http" {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("insecure http warning = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidateReload_AgentTrustedDomainsAdded covers the per-agent
 // trusted_domains expansion path: any agent profile whose trusted_domains
 // gains entries on reload should produce a deterministic ReloadWarning

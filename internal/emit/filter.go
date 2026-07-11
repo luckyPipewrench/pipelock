@@ -85,6 +85,12 @@ func (s *FilteringSink) Close() error {
 	return s.sink.Close()
 }
 
+func (s *FilteringSink) Start() {
+	if starter, ok := s.sink.(interface{ Start() }); ok {
+		starter.Start()
+	}
+}
+
 func containsFold(values []string, candidate string) bool {
 	candidate = strings.TrimSpace(candidate)
 	if candidate == "" {

@@ -149,6 +149,26 @@ func TestNewFilteringSinkDisabledOrNil(t *testing.T) {
 	}
 }
 
+type startableMockSink struct {
+	mockSink
+	started bool
+}
+
+func (s *startableMockSink) Start() { s.started = true }
+
+func TestFilteringSinkStartsWrappedSink(t *testing.T) {
+	inner := &startableMockSink{}
+	sink := NewFilteringSink(inner, Filter{Actions: []string{conventionActionBlock}})
+	starter, ok := sink.(interface{ Start() })
+	if !ok {
+		t.Fatal("filtered sink does not expose deferred startup")
+	}
+	starter.Start()
+	if !inner.started {
+		t.Fatal("wrapped sink was not started")
+	}
+}
+
 func TestNormalizeEventActionAliases(t *testing.T) {
 	tests := []struct {
 		name  string

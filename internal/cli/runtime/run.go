@@ -205,9 +205,30 @@ func agentArgsAfterDash(args []string, dashIdx int) []string {
 	return nil
 }
 
+type emitDeliveryObserver interface {
+	SetQueued(float64)
+	RecordDelivered()
+	RecordFailed()
+	RecordDropped()
+	SetLastSuccess(time.Time)
+	SetSpoolBytes(float64)
+}
+
 // BuildEmitSinks creates emit sinks from the current config.
 // Used at startup and during hot-reload.
-func BuildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
+func BuildEmitSinks(cfg *config.Config, observers ...emitDeliveryObserver) ([]emit.Sink, error) {
+	var observer emitDeliveryObserver
+	if len(observers) > 0 {
+		observer = observers[0]
+	}
+	return buildEmitSinks(cfg, observer, appendEnterpriseEmitSinks)
+}
+
+type enterpriseSinkAppender func(*config.Config, []emit.Sink, emitDeliveryObserver) ([]emit.Sink, error)
+
+// buildEmitSinks accepts the edition-specific appender as a seam so cleanup of
+// already-created sinks can be verified on Enterprise construction failures.
+func buildEmitSinks(cfg *config.Config, observer emitDeliveryObserver, appendEnterprise enterpriseSinkAppender) ([]emit.Sink, error) {
 	var sinks []emit.Sink
 
 	if cfg.Emit.Webhook.URL != "" {
@@ -264,6 +285,14 @@ func BuildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
 		}
 		sinks = append(sinks, otlpSink)
 	}
+	var err error
+	sinks, err = appendEnterprise(cfg, sinks, observer)
+	if err != nil {
+		for _, sink := range sinks {
+			_ = sink.Close()
+		}
+		return nil, err
+	}
 
 	return applyEmitFilter(sinks, cfg.Emit.Filter), nil
 }
@@ -282,6 +311,14 @@ func applyEmitFilter(sinks []emit.Sink, cfg config.EmitFilter) []emit.Sink {
 		wrapped = append(wrapped, emit.NewFilteringSink(sink, filter))
 	}
 	return wrapped
+}
+
+func activateEmitSinks(sinks []emit.Sink) {
+	for _, sink := range sinks {
+		if starter, ok := sink.(interface{ Start() }); ok {
+			starter.Start()
+		}
+	}
 }
 
 // RedactEndpoint strips userinfo, query, and fragment from an endpoint URL

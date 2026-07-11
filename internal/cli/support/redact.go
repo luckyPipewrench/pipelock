@@ -67,6 +67,13 @@ func redactConfig(cfg *config.Config) map[string]any {
 			"otlp_endpoint":  redactURL(cfg.Emit.OTLP.Endpoint),
 			"otlp_headers":   redactHeaders(cfg.Emit.OTLP.Headers),
 			"syslog_address": redactURL(cfg.Emit.Syslog.Address),
+			"forwarder_url":  redactURL(cfg.Emit.Forwarder.URL),
+			"forwarder_auth_token": func() string {
+				if cfg.Emit.Forwarder.AuthToken != "" {
+					return redactedPlaceholder
+				}
+				return ""
+			}(),
 		},
 		"kill_switch": map[string]any{
 			"enabled":       cfg.KillSwitch.Enabled,

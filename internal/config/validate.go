@@ -2488,7 +2488,59 @@ func (c *Config) validateEmit() error {
 			return fmt.Errorf("emit.otlp.queue_size must be positive")
 		}
 	}
+	if c.Emit.Forwarder.URL != "" {
+		u, forwardErr := url.Parse(c.Emit.Forwarder.URL)
+		if forwardErr != nil || u.Host == "" || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) {
+			return fmt.Errorf("invalid emit.forwarder.url %q: must be http:// or https:// with a host", c.Emit.Forwarder.URL)
+		}
+		if u.User != nil || u.Fragment != "" {
+			return fmt.Errorf("emit.forwarder.url must not contain userinfo or a fragment")
+		}
+		host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+		allowed := false
+		for _, entry := range c.Emit.Forwarder.DestinationAllowlist {
+			normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(entry), "."))
+			if normalized == "" || (net.ParseIP(normalized) == nil && strings.ContainsAny(normalized, "*/:@[]")) {
+				return fmt.Errorf("invalid emit.forwarder.destination_allowlist entry %q: exact hostnames only", entry)
+			}
+			allowed = allowed || normalized == host
+		}
+		if !allowed {
+			return fmt.Errorf("emit.forwarder.url host %q must be exactly present in destination_allowlist", host)
+		}
+		if c.Emit.Forwarder.SpoolFile == "" || c.Emit.Forwarder.CursorFile == "" {
+			return fmt.Errorf("emit.forwarder.spool_file and cursor_file are required when forwarding is configured")
+		}
+		switch c.Emit.Forwarder.MinSeverity {
+		case SeverityInfo, SeverityWarn, SeverityCritical:
+		default:
+			return fmt.Errorf("invalid emit.forwarder.min_severity %q: must be info, warn, or critical", c.Emit.Forwarder.MinSeverity)
+		}
+		if c.Emit.Forwarder.TimeoutSeconds <= 0 || c.Emit.Forwarder.QueueSize <= 0 {
+			return fmt.Errorf("emit.forwarder.timeout_seconds and queue_size must be positive")
+		}
+		if u.Scheme == schemeHTTP && !forwarderHostIsLoopback(host) {
+			if c.Emit.Forwarder.AuthToken != "" {
+				return fmt.Errorf("emit.forwarder.auth_token requires an https:// url: a plaintext http:// destination would expose the bearer token on the wire (loopback destinations are exempt)")
+			}
+			if !c.Emit.Forwarder.AllowInsecureHTTP {
+				return fmt.Errorf("emit.forwarder.url uses plaintext http:// to non-loopback host %q: use https://, or set emit.forwarder.allow_insecure_http: true to accept cleartext forwarding", host)
+			}
+		}
+	}
 	return nil
+}
+
+// forwarderHostIsLoopback reports whether an already-normalized forwarder host
+// refers to the local machine, where plaintext http is acceptable.
+func forwarderHostIsLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func validateEmitFilterValues(name string, values []string) error {

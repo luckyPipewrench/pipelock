@@ -148,6 +148,36 @@ func TestWriteBundleRejectsBadFilesystemTargets(t *testing.T) {
 	}
 }
 
+func TestWriteBundleUnderDirWritesNestedBundle(t *testing.T) {
+	root := t.TempDir()
+	bundle := NewBundle(Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64)}, Proof{Backend: LocalBackend})
+	rel := filepath.Join("nested", "deeper", "bundle.json")
+
+	if err := WriteBundleUnderDir(root, rel, bundle); err != nil {
+		t.Fatalf("WriteBundleUnderDir: %v", err)
+	}
+	loaded, err := LoadBundle(filepath.Join(root, rel))
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	if loaded.Checkpoint.SessionID != bundle.Checkpoint.SessionID || loaded.Checkpoint.RootHash != bundle.Checkpoint.RootHash {
+		t.Fatalf("loaded bundle = %+v, want %+v", loaded, bundle)
+	}
+}
+
+func TestWriteBundleUnderDirRejectsEscapes(t *testing.T) {
+	root := t.TempDir()
+	abs := filepath.Join(root, "bundle.json")
+	bundle := NewBundle(Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64)}, Proof{Backend: LocalBackend})
+	for _, rel := range []string{abs, ".", "..", filepath.Join("..", "bundle.json")} {
+		t.Run(rel, func(t *testing.T) {
+			if err := WriteBundleUnderDir(root, rel, bundle); err == nil || !strings.Contains(err.Error(), "stay under receipt directory") {
+				t.Fatalf("WriteBundleUnderDir(%q) err = %v, want escape rejection", rel, err)
+			}
+		})
+	}
+}
+
 func TestWriteBundleUnderDirRejectsSymlinkComponents(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation needs privileges on Windows")
@@ -168,6 +198,45 @@ func TestWriteBundleUnderDirRejectsSymlinkComponents(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("symlinked parent received bundle data: %v", entries)
 	}
+}
+
+func TestWriteBundleUnderDirRejectsSymlinkRootAndFinalPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	bundle := NewBundle(Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64)}, Proof{Backend: LocalBackend})
+
+	t.Run("root", func(t *testing.T) {
+		outside := t.TempDir()
+		root := filepath.Join(t.TempDir(), "root-link")
+		if err := os.Symlink(outside, root); err != nil {
+			t.Fatalf("Symlink root: %v", err)
+		}
+		if err := WriteBundleUnderDir(root, "bundle.json", bundle); err == nil || !strings.Contains(err.Error(), "open anchor bundle directory") {
+			t.Fatalf("WriteBundleUnderDir symlink root err = %v, want refusal", err)
+		}
+	})
+
+	t.Run("final path", func(t *testing.T) {
+		root := t.TempDir()
+		outside := filepath.Join(t.TempDir(), "outside-bundle.json")
+		if err := os.WriteFile(outside, []byte("do not overwrite"), 0o600); err != nil {
+			t.Fatalf("WriteFile outside: %v", err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, "bundle.json")); err != nil {
+			t.Fatalf("Symlink final path: %v", err)
+		}
+		if err := WriteBundleUnderDir(root, "bundle.json", bundle); err == nil || !strings.Contains(err.Error(), "write anchor bundle") {
+			t.Fatalf("WriteBundleUnderDir symlink final err = %v, want write refusal", err)
+		}
+		data, err := os.ReadFile(filepath.Clean(outside))
+		if err != nil {
+			t.Fatalf("ReadFile outside: %v", err)
+		}
+		if string(data) != "do not overwrite" {
+			t.Fatalf("symlink target was overwritten: %q", data)
+		}
+	})
 }
 
 func TestWriteStateMarkerWritesCanonicalPrivateJSON(t *testing.T) {
@@ -228,6 +297,25 @@ func TestWriteStateMarkerWritesCanonicalPrivateJSON(t *testing.T) {
 		got.BundleSHA256 != marker.BundleSHA256 ||
 		got.BundlePath != marker.BundlePath {
 		t.Fatalf("anchor-state marker = %+v, want fields from %+v with canonical schema", got, marker)
+	}
+}
+
+func TestIsStateMarkerTempName(t *testing.T) {
+	tests := map[string]bool{
+		".anchor-state-1.tmp":                                true,
+		".anchor-state-1234567890.tmp":                       true,
+		".anchor-state-0123456789abcdef0123456789abcdef.tmp": true,
+		".anchor-state-.tmp":                                 false,
+		".anchor-state-12345678901.tmp":                      false,
+		".anchor-state-0123456789abcdef0123456789abcdeg.tmp": false,
+		".anchor-state-leftover.tmp":                         false,
+		"anchor-state-123.tmp":                               false,
+		".anchor-state-123.json":                             false,
+	}
+	for name, want := range tests {
+		if got := IsStateMarkerTempName(name); got != want {
+			t.Fatalf("IsStateMarkerTempName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 
@@ -301,6 +389,76 @@ func TestLoadStateMarkersDiscoversIndependentSessions(t *testing.T) {
 	}
 	if len(got) != 2 || got[first.SessionID].RootHash != first.RootHash || got[second.SessionID].RootHash != second.RootHash {
 		t.Fatalf("markers = %+v, want both independent sessions", markers)
+	}
+}
+
+func TestLoadStateMarkersFailsClosedOnStrictIndexViolations(t *testing.T) {
+	valid := StateMarker{
+		Schema:       stateMarkerSchema,
+		SessionID:    "session-a",
+		FinalSeq:     1,
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   "bundle.json",
+	}
+	validData, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("Marshal valid marker: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		arrange func(t *testing.T, dir string)
+		want    string
+	}{
+		{
+			name: "directory entry",
+			arrange: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(dir, stateMarkerIndexDir, "bad.json"), 0o750); err != nil {
+					t.Fatalf("Mkdir bad marker dir: %v", err)
+				}
+			},
+			want: "not a regular marker",
+		},
+		{
+			name: "filename identity mismatch",
+			arrange: func(t *testing.T, dir string) {
+				t.Helper()
+				indexDir := filepath.Join(dir, stateMarkerIndexDir)
+				if err := os.MkdirAll(indexDir, 0o750); err != nil {
+					t.Fatalf("Mkdir index: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(indexDir, "wrong-name.json"), append(validData, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile wrong marker: %v", err)
+				}
+			},
+			want: "does not match marker identity",
+		},
+		{
+			name: "duplicate legacy and indexed marker",
+			arrange: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, legacyStateMarker), append(validData, '\n'), 0o600); err != nil {
+					t.Fatalf("WriteFile legacy marker: %v", err)
+				}
+				if err := WriteStateMarker(dir, valid); err != nil {
+					t.Fatalf("WriteStateMarker duplicate: %v", err)
+				}
+			},
+			want: "duplicates",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.arrange(t, dir)
+			if _, err := LoadStateMarkers(dir); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadStateMarkers err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

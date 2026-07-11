@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -138,7 +139,8 @@ func toolBaselineIdentity(toolName string) string {
 
 func a2aBaselineIdentity(method string) string {
 	method = strings.TrimSpace(method)
-	if method == "" || !IsA2AMethod(method) {
+	canonical, ok := a2amethods.Canonical(method)
+	if method == "" || !ok {
 		return ""
 	}
 	// A2A is method-based rather than params.name-based. Reusing the
@@ -146,7 +148,7 @@ func a2aBaselineIdentity(method string) string {
 	// ratification, locking, and persistence on one profile while preventing
 	// collisions with ordinary tools, including one literally named
 	// "a2a:SendMessage".
-	return a2aBaselineIdentityPrefix + method
+	return a2aBaselineIdentityPrefix + canonical
 }
 
 func sortedBaselineToolIdentities(tools map[string]struct{}) []string {

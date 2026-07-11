@@ -394,6 +394,7 @@ func (tb *ToolBaseline) SetKnownA2AMethods(methods []string) {
 	if tb.knownA2A == nil {
 		tb.knownA2A = make(map[string]bool, baselineInventoryMapCapacity(len(methods)))
 	}
+	added := false
 	for _, method := range methods {
 		identity := a2aInventoryMethodIdentity(method)
 		if identity == "" {
@@ -402,9 +403,14 @@ func (tb *ToolBaseline) SetKnownA2AMethods(methods []string) {
 		if !tb.knownA2A[identity] && len(tb.knownA2A) >= maxBaselineTools {
 			break
 		}
+		if !tb.knownA2A[identity] {
+			added = true
+		}
 		tb.knownA2A[identity] = true
 	}
-	tb.hasA2A = true
+	if added {
+		tb.hasA2A = true
+	}
 }
 
 // HasBaseline reports whether a tool inventory baseline has been established.

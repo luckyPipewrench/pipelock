@@ -2466,6 +2466,15 @@ func TestToolBaseline_A2AMethodInventory(t *testing.T) {
 	if prefixed.IsKnownA2AMethod("SendMessage") {
 		t.Fatal("reserved-prefix tool name was injected into the A2A allowlist")
 	}
+	if prefixed.HasA2AMethodBaseline() {
+		t.Fatal("invalid-only A2A inventory established a baseline")
+	}
+
+	invalidOnly := NewToolBaseline()
+	invalidOnly.SetKnownA2AMethods([]string{"", "StealEverything", "a2a:GetTask"})
+	if invalidOnly.HasA2AMethodBaseline() {
+		t.Fatal("invalid-only A2A inventory established a baseline")
+	}
 }
 
 func TestToolBaseline_A2AMethodInventoryCap(t *testing.T) {

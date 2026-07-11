@@ -1086,6 +1086,59 @@ func TestScanHTTPInputDecision_A2APolicyDeferStoresRedactedParams(t *testing.T) 
 	}
 }
 
+func TestScanHTTPInputDecision_A2AReceiptUsesCanonicalMethod(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(`{"jsonrpc":"2.0","id":72,"method":"sendmessage","params":{"message":{"parts":[{"kind":"text","text":"deploy"}]}}}`)
+	resolutionPolicy := config.DeferResolutionPolicy{
+		AllowOn: config.DeferAllowOn{PolicyPermits: true},
+	}
+	policyCfg := &policy.Config{
+		Action: config.ActionWarn,
+		Rules: []*policy.CompiledRule{{
+			Name:             "defer-canonical-a2a",
+			ToolPattern:      regexp.MustCompile(`^SendMessage$`),
+			Action:           config.ActionDefer,
+			ResolutionPolicy: resolutionPolicy,
+		}},
+	}
+	manager := deferred.NewManager(deferred.Config{
+		Enabled:              true,
+		Timeout:              time.Second,
+		MaxPending:           4,
+		MaxPendingPerSession: 4,
+		MaxPendingBytes:      4096,
+	})
+	receiptEmitter, receiptRecorder, receiptDir := newTestReceiptEmitter(t)
+
+	decision := scanHTTPInputDecision(msg, io.Discard, "sess", "orig", MCPProxyOpts{
+		Scanner:        sc,
+		PolicyCfg:      policyCfg,
+		DeferManager:   manager,
+		ReceiptEmitter: receiptEmitter,
+		Transport:      deferred.SurfaceMCPHTTPUpstream,
+	})
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	if decision.Blocked != nil {
+		t.Fatalf("A2A defer decision blocked: %+v", decision.Blocked)
+	}
+	if decision.Deferred == nil {
+		t.Fatal("expected deferred A2A request")
+	}
+	if decision.Deferred.Method != "SendMessage" {
+		t.Fatalf("deferred method = %q, want SendMessage", decision.Deferred.Method)
+	}
+	if decision.Deferred.BaselineIdentity != "a2a:SendMessage" {
+		t.Fatalf("deferred baseline identity = %q, want a2a:SendMessage", decision.Deferred.BaselineIdentity)
+	}
+
+	record := findActionReceiptHTTP(t, readReceiptEntriesHTTP(t, receiptDir)).ActionRecord
+	if record.Target != "SendMessage" {
+		t.Fatalf("receipt target = %q, want SendMessage", record.Target)
+	}
+}
+
 func TestScanHTTPInput_PolicyRedirectMissingProfileBlocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

@@ -673,9 +673,11 @@ func (pc *Config) CheckRequest(line []byte) Verdict {
 
 // checkSingle parses one JSON-RPC request and checks it against policy.
 func (pc *Config) checkSingle(line []byte) Verdict {
-	if err := redact.NoDuplicateJSONKeys(bytes.TrimSpace(line)); err != nil &&
-		errors.Is(err, &redact.BlockError{Reason: redact.ReasonDuplicateKey}) {
-		return duplicateJSONKeyVerdict()
+	if err := redact.NoDuplicateJSONKeys(bytes.TrimSpace(line)); err != nil {
+		var blockErr *redact.BlockError
+		if errors.As(err, &blockErr) && blockErr.Reason == redact.ReasonDuplicateKey {
+			return duplicateJSONKeyVerdict()
+		}
 	}
 	if hasMalformedA2AParams(line) {
 		return malformedA2AParamsVerdict()

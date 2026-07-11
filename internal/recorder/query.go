@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -162,7 +163,13 @@ func readDirectoryEntries(dir string, maxEntries int) ([]os.DirEntry, error) {
 		return nil, err
 	}
 	defer func() { _ = directory.Close() }()
-	entries, err := directory.ReadDir(maxEntries + 1)
+	// maxEntries+1 would overflow to a negative value at math.MaxInt, and a
+	// non-positive count makes ReadDir read the whole directory unbounded.
+	readLimit := maxEntries
+	if readLimit < math.MaxInt {
+		readLimit++
+	}
+	entries, err := directory.ReadDir(readLimit)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}

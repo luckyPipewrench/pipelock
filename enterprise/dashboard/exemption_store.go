@@ -329,11 +329,14 @@ func (s *ExemptionStore) reloadLocked() error {
 }
 
 func readBoundedExemptionStore(path string) ([]byte, error) {
-	file, _, err := openRegularDashboardFile(path, "exemption store")
+	file, info, err := openRegularDashboardFile(path, "exemption store")
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
+	if err := requireOwnerOnlyDashboardFile(info, "exemption store"); err != nil {
+		return nil, err
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maxExemptionStoreFileBytes+1))
 	if err != nil {
 		return nil, err

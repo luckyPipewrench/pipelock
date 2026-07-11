@@ -3,6 +3,7 @@
 package recorder
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,5 +39,22 @@ func TestReadDirectoryEntriesBounded(t *testing.T) {
 	// A missing directory surfaces the open error rather than silently succeeding.
 	if _, err := readDirectoryEntries(filepath.Join(dir, "missing"), 1); err == nil {
 		t.Fatal("readDirectoryEntries accepted a missing directory")
+	}
+}
+
+func TestReadDirectoryEntriesMaxIntNoOverflow(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for _, name := range []string{"a", "b"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("seed entry %q: %v", name, err)
+		}
+	}
+	// maxEntries at math.MaxInt must not overflow maxEntries+1 into a negative
+	// count (which would make ReadDir read the directory unbounded).
+	entries, err := readDirectoryEntries(dir, math.MaxInt)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("readDirectoryEntries(MaxInt) = %d entries, err %v; want 2 entries, nil", len(entries), err)
 	}
 }

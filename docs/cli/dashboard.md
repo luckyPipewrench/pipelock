@@ -178,8 +178,8 @@ the server is running stops serving.
   `pipelock dashboard serve` command wires its configured token, OIDC, or mTLS
   auth boundary into the dashboard handler. Go embedders that construct the
   dashboard handler directly and authenticate in an outer router must explicitly
-  set `TrustedOuterAuth`; leaving both authorization callbacks nil now returns
-  `403` for every route instead of serving unauthenticated.
+  set `TrustedOuterAuth`; otherwise, leaving both authorization callbacks nil
+  returns `403` for every route instead of serving unauthenticated.
 - **Cleartext refusal.** Without TLS the listener only accepts loopback
   addresses; serving a non-loopback address over plain HTTP is refused at
   startup because the operator token would transit in cleartext.

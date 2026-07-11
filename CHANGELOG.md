@@ -21,9 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enterprise Evidence dashboard redacts receipt destinations and signed payloads
   by default before template rendering.
 - Enterprise Evidence dashboard handlers constructed directly from Go now fail
-  closed when both authorization callbacks are nil. Embedders that rely on an
-  already-authenticated outer router must explicitly set `TrustedOuterAuth`;
-  `pipelock dashboard serve` wires its token auth boundary itself.
+  closed when both authorization callbacks are nil unless `TrustedOuterAuth` is
+  explicitly set. Embedders that rely on an already-authenticated outer router
+  must opt in to `TrustedOuterAuth`; `pipelock dashboard serve` wires its token
+  auth boundary itself.
 
 ### Fixed
 

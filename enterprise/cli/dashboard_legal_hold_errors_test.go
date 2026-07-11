@@ -48,8 +48,8 @@ func TestLegalHoldCmd_StoreErrorsPropagate(t *testing.T) {
 			t.Fatalf("first add: %v", err)
 		}
 		err := run(t, "add", "--store", store, "--id", "hold-a", "--scope", "agent-a", "--reason", "review")
-		if err == nil {
-			t.Fatal("duplicate add should propagate a store error")
+		if err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Fatalf("duplicate add = %v, want propagated duplicate-id store error", err)
 		}
 	})
 }

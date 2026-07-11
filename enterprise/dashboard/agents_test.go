@@ -41,7 +41,8 @@ func TestHandler_NewRouteGating(t *testing.T) {
 
 	t.Run("no_feature", func(t *testing.T) {
 		handler := New(Options{
-			ReceiptDir: dir,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir,
 			TrustedKeys: map[string]TrustedKey{
 				keyHex: {Source: trustedKeySource},
 			},
@@ -59,7 +60,8 @@ func TestHandler_NewRouteGating(t *testing.T) {
 
 	t.Run("nil_feature", func(t *testing.T) {
 		handler := New(Options{
-			ReceiptDir: dir,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir,
 			TrustedKeys: map[string]TrustedKey{
 				keyHex: {Source: trustedKeySource},
 			},
@@ -76,7 +78,8 @@ func TestHandler_NewRouteGating(t *testing.T) {
 
 	t.Run("authorize_rejects", func(t *testing.T) {
 		handler := New(Options{
-			ReceiptDir: dir,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir,
 			TrustedKeys: map[string]TrustedKey{
 				keyHex: {Source: trustedKeySource},
 			},
@@ -98,7 +101,8 @@ func TestHandler_NewRouteGating(t *testing.T) {
 
 	t.Run("wrong_tier", func(t *testing.T) {
 		handler := New(Options{
-			ReceiptDir: dir,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir,
 			TrustedKeys: map[string]TrustedKey{
 				keyHex: {Source: trustedKeySource},
 			},
@@ -125,9 +129,10 @@ func TestHandler_AgentsRendersGroups(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: trusted,
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(
@@ -170,9 +175,10 @@ func TestHandler_AgentsHostileEvidenceEscapedAndNoAggregateGreen(t *testing.T) {
 	writeReceiptsToDir(t, dir, []receipt.Receipt{resigned})
 
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: map[string]TrustedKey{keyHex: {Source: trustedKeySource}},
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      map[string]TrustedKey{keyHex: {Source: trustedKeySource}},
+		HasFeature:       allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(
@@ -201,9 +207,10 @@ func TestHandler_AgentDetail(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: trusted,
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
 	})
 
 	t.Run("found", func(t *testing.T) {
@@ -258,9 +265,10 @@ func TestHandler_Investigator(t *testing.T) {
 	trusted := map[string]TrustedKey{keyHex: {Source: trustedKeySource}}
 
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: trusted,
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
 	})
 
 	t.Run("found_seq_0", func(t *testing.T) {
@@ -376,10 +384,11 @@ func TestHandler_InvestigatorHostileEvidenceEscaped(t *testing.T) {
 
 	t.Run("raw_view_escapes", func(t *testing.T) {
 		handler := New(Options{
-			ReceiptDir:   dir,
-			TrustedKeys:  map[string]TrustedKey{keyHex: {Source: trustedKeySource}},
-			HasFeature:   allowAgentsFeature,
-			AuthorizeRaw: allowRawAccess,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir,
+			TrustedKeys:      map[string]TrustedKey{keyHex: {Source: trustedKeySource}},
+			HasFeature:       allowAgentsFeature,
+			AuthorizeRaw:     allowRawAccess,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(
@@ -405,9 +414,10 @@ func TestHandler_InvestigatorHostileEvidenceEscaped(t *testing.T) {
 
 	t.Run("metadata_view_redacts_target", func(t *testing.T) {
 		handler := New(Options{
-			ReceiptDir:  dir,
-			TrustedKeys: map[string]TrustedKey{keyHex: {Source: trustedKeySource}},
-			HasFeature:  allowAgentsFeature,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir,
+			TrustedKeys:      map[string]TrustedKey{keyHex: {Source: trustedKeySource}},
+			HasFeature:       allowAgentsFeature,
 			// No AuthorizeRaw => metadata view.
 		})
 		rec := httptest.NewRecorder()
@@ -477,9 +487,10 @@ func TestHandler_InvestigatorMetadataRedactsRawExplanationFields(t *testing.T) {
 	writeReceiptsToDir(t, dir, []receipt.Receipt{resigned})
 
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: map[string]TrustedKey{keyHex: {Source: trustedKeySource}},
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      map[string]TrustedKey{keyHex: {Source: trustedKeySource}},
+		HasFeature:       allowAgentsFeature,
 		// No AuthorizeRaw => metadata view.
 	})
 	rec := httptest.NewRecorder()
@@ -692,7 +703,9 @@ func TestHandler_NoLicenseAllRoutes(t *testing.T) {
 		"/exemptions",
 	}
 
-	handler := New(Options{ReceiptDir: dir})
+	handler := New(Options{
+		TrustedOuterAuth: true, ReceiptDir: dir,
+	})
 	for _, path := range allPaths {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(
@@ -774,9 +787,10 @@ func TestHandler_SessionPathStillWorks(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: trusted,
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
 	})
 
 	t.Run("direct_session", func(t *testing.T) {

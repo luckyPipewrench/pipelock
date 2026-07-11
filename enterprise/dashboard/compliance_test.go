@@ -169,9 +169,10 @@ func TestComplianceReadPrincipalReachesOnlyComplianceRoutes(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		ReceiptDir: t.TempDir(),
-		HasFeature: func(string) bool { return true },
-		Authorize:  func(*http.Request) error { return nil },
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       func(string) bool { return true },
+		Authorize:        func(*http.Request) error { return nil },
 		AuthorizeRaw: func(*http.Request) error {
 			return errors.New("raw denied")
 		},
@@ -228,7 +229,8 @@ func TestComplianceHTTPHasNoLegalHoldMutationAuthority(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 	handler := New(Options{
-		ReceiptDir: t.TempDir(), LegalHoldStore: store,
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(), LegalHoldStore: store,
 		HasFeature:          func(string) bool { return true },
 		Authorize:           func(*http.Request) error { return nil },
 		AuthorizePermission: func(*http.Request, Permission) error { return nil },
@@ -416,8 +418,8 @@ type complianceFleetFake struct {
 	err      error
 }
 
-func (f *complianceFleetFake) ListFleetFollowers(context.Context, string, string, int) ([]FleetFollowerView, error) {
-	return nil, nil
+func (f *complianceFleetFake) ListFleetFollowers(context.Context, string, string, int) (FleetFollowerPage, error) {
+	return FleetFollowerPage{CompletenessKnown: true}, nil
 }
 
 func (f *complianceFleetFake) ListFleetAgentCoverage(context.Context, string, string, int) ([]FleetAgentCoverage, error) {

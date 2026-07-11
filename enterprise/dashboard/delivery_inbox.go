@@ -112,7 +112,7 @@ func OpenDeliveryInbox(opts DeliveryInboxOptions) (*DeliveryInbox, error) {
 	state := deliveryInboxState{Version: deliveryInboxVersion}
 	data, err := readBoundedDeliveryInbox(path)
 	if err == nil {
-		if err := decodeStrictJSON(data, &state); err != nil || validateDeliveryState(state) != nil {
+		if err := decodeStrictJSON(data, &state); err != nil || normalizeDeliveryState(&state) != nil {
 			return nil, errors.New("delivery inbox: invalid persisted state")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -140,7 +140,7 @@ func (i *DeliveryInbox) Record(attempt DeliveryAttempt) bool {
 	case i.queue <- attempt:
 		return true
 	default:
-		i.pendingDrops.Add(1)
+		saturatingAddAtomicUint64(&i.pendingDrops, 1)
 		select {
 		case i.dropSignal <- struct{}{}:
 		default:
@@ -175,9 +175,6 @@ func validateDeliveryState(state deliveryInboxState) error {
 	if state.Version != deliveryInboxVersion {
 		return errors.New("unknown delivery inbox version")
 	}
-	if len(state.Attempts) > maxPersistedDeliveryAttempts || len(state.DeadLetters) > maxPersistedDeadLetters {
-		return errors.New("delivery inbox exceeds persisted sample limit")
-	}
 	var sampled deliveryTotals
 	for _, attempt := range state.Attempts {
 		if err := validateDeliveryAttempt(attempt); err != nil {
@@ -200,6 +197,40 @@ func validateDeliveryState(state deliveryInboxState) error {
 		}
 	}
 	return nil
+}
+
+func normalizeDeliveryState(state *deliveryInboxState) error {
+	if err := validateDeliveryState(*state); err != nil {
+		return err
+	}
+	trimDeliveryRetention(state)
+	return nil
+}
+
+func trimDeliveryRetention(state *deliveryInboxState) {
+	if len(state.Attempts) > maxPersistedDeliveryAttempts {
+		state.Attempts = append([]DeliveryAttempt(nil), state.Attempts[len(state.Attempts)-maxPersistedDeliveryAttempts:]...)
+	}
+	if len(state.DeadLetters) > maxPersistedDeadLetters {
+		state.DeadLetters = append([]DeliveryAttempt(nil), state.DeadLetters[len(state.DeadLetters)-maxPersistedDeadLetters:]...)
+	}
+}
+
+func saturatingAddUint64(value, delta uint64) uint64 {
+	if ^uint64(0)-value < delta {
+		return ^uint64(0)
+	}
+	return value + delta
+}
+
+func saturatingAddAtomicUint64(value *atomic.Uint64, delta uint64) {
+	for {
+		current := value.Load()
+		next := saturatingAddUint64(current, delta)
+		if value.CompareAndSwap(current, next) {
+			return
+		}
+	}
 }
 
 func truncateUTF8(value string, maxBytes int) string {
@@ -314,11 +345,11 @@ func (i *DeliveryInbox) apply(attempt DeliveryAttempt) {
 	}
 	i.state.UpdatedAt = attempt.AttemptedAt.UTC()
 	drops := i.pendingDrops.Swap(0)
-	i.state.Dropped += drops
+	i.state.Dropped = saturatingAddUint64(i.state.Dropped, drops)
 	if err := i.persistLocked(); err != nil {
 		i.workerErr = errors.Join(i.workerErr, err)
 		i.state = priorState
-		i.pendingDrops.Add(drops)
+		saturatingAddAtomicUint64(&i.pendingDrops, drops)
 	}
 	i.mu.Unlock()
 }
@@ -332,27 +363,29 @@ func (i *DeliveryInbox) flushDrops() {
 	release, err := i.acquireMutationLock()
 	if err != nil {
 		i.workerErr = errors.Join(i.workerErr, err)
-		i.pendingDrops.Add(drops)
+		saturatingAddAtomicUint64(&i.pendingDrops, drops)
 		i.mu.Unlock()
 		return
 	}
 	defer release()
 	if err := i.reloadLocked(); err != nil {
 		i.workerErr = errors.Join(i.workerErr, err)
-		i.pendingDrops.Add(drops)
+		saturatingAddAtomicUint64(&i.pendingDrops, drops)
 		i.mu.Unlock()
 		return
 	}
-	i.state.Dropped += drops
+	priorDropped := i.state.Dropped
+	i.state.Dropped = saturatingAddUint64(i.state.Dropped, drops)
 	if err := i.persistLocked(); err != nil {
 		i.workerErr = errors.Join(i.workerErr, err)
-		i.state.Dropped -= drops
-		i.pendingDrops.Add(drops)
+		i.state.Dropped = priorDropped
+		saturatingAddAtomicUint64(&i.pendingDrops, drops)
 	}
 	i.mu.Unlock()
 }
 
 func (i *DeliveryInbox) persistLocked() error {
+	trimDeliveryRetention(&i.state)
 	var data bytes.Buffer
 	encoder := json.NewEncoder(&data)
 	encoder.SetEscapeHTML(false)
@@ -390,7 +423,7 @@ func (i *DeliveryInbox) reloadLocked() error {
 		return fmt.Errorf("delivery inbox: reload: %w", err)
 	}
 	var state deliveryInboxState
-	if err := decodeStrictJSON(data, &state); err != nil || validateDeliveryState(state) != nil {
+	if err := decodeStrictJSON(data, &state); err != nil || normalizeDeliveryState(&state) != nil {
 		return errors.New("delivery inbox: reload invalid persisted state")
 	}
 	i.state = state
@@ -409,7 +442,7 @@ func (i *DeliveryInbox) Health() DeliveryHealth {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	health := deliveryHealthFromState(i.state)
-	health.Dropped += i.pendingDrops.Load()
+	health.Dropped = saturatingAddUint64(health.Dropped, i.pendingDrops.Load())
 	return health
 }
 
@@ -438,7 +471,7 @@ func deliveryHealthFromState(state deliveryInboxState) DeliveryHealth {
 }
 
 func readBoundedDeliveryInbox(path string) ([]byte, error) {
-	file, err := os.Open(filepath.Clean(path))
+	file, _, err := openRegularDashboardFile(path, "delivery inbox")
 	if err != nil {
 		return nil, err
 	}
@@ -455,6 +488,8 @@ func readBoundedDeliveryInbox(path string) ([]byte, error) {
 
 // Pending returns queued and failed attempts for a future forwarder. The
 // returned slice is detached from the store and cannot mutate durable state.
+// TODO: define the producer acknowledge/retry/archive/purge lifecycle before
+// delivery forwarding depends on this retention sample.
 func (i *DeliveryInbox) Pending() []DeliveryAttempt {
 	i.mu.RLock()
 	defer i.mu.RUnlock()

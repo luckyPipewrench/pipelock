@@ -7,6 +7,7 @@ package dashboard
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -144,6 +145,22 @@ func TestReadModel_ReadLimitDowngradesEvidence(t *testing.T) {
 	}
 	if evidence.TimelineWindow != "first" {
 		t.Fatalf("TimelineWindow = %q, want first", evidence.TimelineWindow)
+	}
+}
+
+func TestReadModelSessionsRejectsUnboundedEvidenceDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	for index := 0; index <= dashboardEvidenceDirectoryEntryLimit; index++ {
+		path := filepath.Join(dir, fmt.Sprintf("junk-%03d", index))
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := NewReadModel(Options{ReceiptDir: dir})
+	if _, err := model.Sessions(); err == nil {
+		t.Fatal("Sessions accepted an evidence directory beyond the request read bound")
 	}
 }
 

@@ -220,6 +220,23 @@ func TestOpenLegalHoldStoreRejectsInsecureOrNonRegularFile(t *testing.T) {
 	})
 }
 
+func TestOpenLegalHoldStoreRejectsSymlinkAfterOpen(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(`[]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "holds.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenLegalHoldStore(link); err == nil {
+		t.Fatal("OpenLegalHoldStore accepted a symlink")
+	}
+}
+
 func TestLegalHoldStoreSnapshotReloadsAndPostStartCorruptionFailsClosed(t *testing.T) {
 	t.Parallel()
 

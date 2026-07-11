@@ -100,13 +100,17 @@ func (m *ReadModel) Incident(ctx context.Context, scope DecisionScope, rawAllowe
 // counts. It reuses the fleet overview's read seam and its follower limit, and
 // it normalizes health/drift through the same bounded classifier.
 func (m *ReadModel) fleetAppliedSummary(ctx context.Context, orgID, fleetID string) (FleetAppliedSummary, error) {
-	followers, err := m.fleetSource.ListFleetFollowers(ctx, orgID, fleetID, fleetOverviewFollowerLimit+1)
+	page, err := m.fleetSource.ListFleetFollowers(ctx, orgID, fleetID, fleetOverviewFollowerLimit+1)
 	if err != nil {
 		return FleetAppliedSummary{}, fmt.Errorf("list fleet followers: %w", err)
 	}
+	followers := page.Followers
 	var summary FleetAppliedSummary
 	if len(followers) > fleetOverviewFollowerLimit {
 		followers = followers[:fleetOverviewFollowerLimit]
+		summary.Truncated = true
+	}
+	if !page.CompletenessKnown || page.HasMore {
 		summary.Truncated = true
 	}
 	followers = normalizeFleetFollowers(followers)

@@ -83,18 +83,6 @@ func OpenLegalHoldStore(path string) (*LegalHoldStore, error) {
 	if strings.TrimSpace(path) == "" || cleanPath == "." {
 		return nil, errors.New("legal hold store: path is required")
 	}
-	info, err := os.Stat(cleanPath)
-	if err == nil {
-		if !info.Mode().IsRegular() {
-			return nil, errors.New("legal hold store: path must be a regular file")
-		}
-		insecureModeMask := os.FileMode(0o077)
-		if info.Mode().Perm()&insecureModeMask != 0 {
-			return nil, fmt.Errorf("legal hold store: permissions must be 0600, got %#o", info.Mode().Perm())
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("legal hold store: stat: %w", err)
-	}
 	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o750); err != nil {
 		return nil, fmt.Errorf("legal hold store: create dir: %w", err)
 	}
@@ -270,7 +258,7 @@ func (s *LegalHoldStore) acquireMutationLock() (func(), error) {
 }
 
 func (s *LegalHoldStore) reloadLocked() error {
-	file, err := os.Open(s.path)
+	file, info, err := openRegularDashboardFile(s.path, "legal hold store")
 	if errors.Is(err, os.ErrNotExist) {
 		s.records = nil
 		return nil
@@ -279,6 +267,9 @@ func (s *LegalHoldStore) reloadLocked() error {
 		return fmt.Errorf("legal hold store: read: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	if err := requireOwnerOnlyDashboardFile(info, "legal hold store"); err != nil {
+		return err
+	}
 	data, err := io.ReadAll(io.LimitReader(file, legalHoldFileMaxBytes+1))
 	if err != nil {
 		return fmt.Errorf("legal hold store: read: %w", err)

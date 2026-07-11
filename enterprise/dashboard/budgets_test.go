@@ -101,10 +101,11 @@ func TestBudgets_Gating(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			handler := New(Options{
-				ReceiptDir:   t.TempDir(),
-				HasFeature:   tt.hasFeature,
-				BudgetSource: &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}},
-				AuthorizeRaw: allowRawAccess,
+				TrustedOuterAuth: true,
+				ReceiptDir:       t.TempDir(),
+				HasFeature:       tt.hasFeature,
+				BudgetSource:     &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}},
+				AuthorizeRaw:     allowRawAccess,
 			})
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
@@ -123,9 +124,10 @@ func TestBudgets_Gating(t *testing.T) {
 func TestBudgets_NilSourceDegrades(t *testing.T) {
 	t.Parallel()
 	handler := New(Options{
-		ReceiptDir:   t.TempDir(),
-		HasFeature:   func(f string) bool { return f == license.FeatureAgents },
-		AuthorizeRaw: allowRawAccess,
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       func(f string) bool { return f == license.FeatureAgents },
+		AuthorizeRaw:     allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
@@ -144,10 +146,11 @@ func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 		t.Parallel()
 		source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}}
 		handler := New(Options{
-			ReceiptDir:   t.TempDir(),
-			HasFeature:   func(f string) bool { return f == license.FeatureAgents },
-			BudgetSource: source,
-			AuthorizeRaw: allowRawAccess,
+			TrustedOuterAuth: true,
+			ReceiptDir:       t.TempDir(),
+			HasFeature:       func(f string) bool { return f == license.FeatureAgents },
+			BudgetSource:     source,
+			AuthorizeRaw:     allowRawAccess,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets/", nil))
@@ -163,10 +166,11 @@ func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 		t.Parallel()
 		source := &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}}
 		handler := New(Options{
-			ReceiptDir:   t.TempDir(),
-			HasFeature:   func(f string) bool { return f == license.FeatureAgents },
-			BudgetSource: source,
-			AuthorizeRaw: allowRawAccess,
+			TrustedOuterAuth: true,
+			ReceiptDir:       t.TempDir(),
+			HasFeature:       func(f string) bool { return f == license.FeatureAgents },
+			BudgetSource:     source,
+			AuthorizeRaw:     allowRawAccess,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/budgets", nil))
@@ -185,10 +189,11 @@ func TestBudgets_RouteExactMethodAndSourceError(t *testing.T) {
 		t.Parallel()
 		source := &fakeBudgetSource{err: fmt.Errorf("backend details should not leak")}
 		handler := New(Options{
-			ReceiptDir:   t.TempDir(),
-			HasFeature:   func(f string) bool { return f == license.FeatureAgents },
-			BudgetSource: source,
-			AuthorizeRaw: allowRawAccess,
+			TrustedOuterAuth: true,
+			ReceiptDir:       t.TempDir(),
+			HasFeature:       func(f string) bool { return f == license.FeatureAgents },
+			BudgetSource:     source,
+			AuthorizeRaw:     allowRawAccess,
 		})
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/budgets", nil))
@@ -208,10 +213,11 @@ func TestBudgets_SessionIDRedaction(t *testing.T) {
 
 	newHandler := func(raw func(*http.Request) error) http.Handler {
 		return New(Options{
-			ReceiptDir:   t.TempDir(),
-			HasFeature:   func(f string) bool { return f == license.FeatureAgents },
-			BudgetSource: &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}},
-			AuthorizeRaw: raw,
+			TrustedOuterAuth: true,
+			ReceiptDir:       t.TempDir(),
+			HasFeature:       func(f string) bool { return f == license.FeatureAgents },
+			BudgetSource:     &fakeBudgetSource{agents: []AgentBudgetView{budgetAgentWithSession()}},
+			AuthorizeRaw:     raw,
 		})
 	}
 

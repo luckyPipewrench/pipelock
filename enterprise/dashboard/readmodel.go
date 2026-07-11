@@ -37,6 +37,8 @@ const (
 
 const fleetRedactionKeySize = 32
 
+const dashboardEvidenceDirectoryEntryLimit = 256
+
 // FilterSpec describes a bounded filter for the agent/session list. Unknown
 // non-empty enum values fail closed to no matches.
 type FilterSpec struct {
@@ -71,6 +73,10 @@ type Options struct {
 	// Nil preserves the legacy token-only model where Authorize owns all
 	// metadata-route access.
 	AuthorizePermission func(*http.Request, Permission) error
+	// TrustedOuterAuth explicitly opts into mounting the dashboard behind an
+	// authentication boundary outside this handler. It is required when both
+	// Authorize and AuthorizePermission are nil; otherwise routes fail closed.
+	TrustedOuterAuth bool
 	// AuthorizeRaw gates the sensitive raw view (receipt destinations and full
 	// signed payloads). A request is shown raw detail only when AuthorizeRaw is
 	// non-nil AND returns nil for it; every other authenticated request gets the
@@ -185,14 +191,14 @@ func NewReadModel(opts Options) *ReadModel {
 
 // Sessions lists available recorder sessions and computes their compact state.
 func (m *ReadModel) Sessions() ([]SessionSummary, error) {
-	ids, err := recorder.ListSessions(m.receiptDir)
+	ids, err := recorder.ListSessionsBounded(m.receiptDir, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 
 	summaries := make([]SessionSummary, 0, len(ids))
 	for _, id := range ids {
-		receipts, readLimited, err := receipt.ExtractReceiptsFromSessionDirBounded(m.receiptDir, id, m.receiptReadLimit)
+		receipts, readLimited, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, id, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
 		if err != nil {
 			return nil, fmt.Errorf("read session %s receipts: %w", id, err)
 		}
@@ -203,7 +209,7 @@ func (m *ReadModel) Sessions() ([]SessionSummary, error) {
 
 // Session reads one session's complete evidence.
 func (m *ReadModel) Session(id string) (SessionEvidence, error) {
-	receipts, readLimited, err := receipt.ExtractReceiptsFromSessionDirBounded(m.receiptDir, id, m.receiptReadLimit)
+	receipts, readLimited, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, id, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
 		return SessionEvidence{}, fmt.Errorf("read session %s receipts: %w", id, err)
 	}
@@ -238,7 +244,7 @@ func (m *ReadModel) Agent(id string, filter FilterSpec) (evidenceview.AgentGroup
 // ReceiptDetail loads one receipt by session ID and chain sequence number,
 // returning a DecisionExplanation. The CALLER redacts per RBAC.
 func (m *ReadModel) ReceiptDetail(sessionID string, seq uint64) (evidenceview.DecisionExplanation, bool, error) {
-	receipts, _, err := receipt.ExtractReceiptsFromSessionDirBounded(m.receiptDir, sessionID, m.receiptReadLimit)
+	receipts, _, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, sessionID, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
 		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
 	}

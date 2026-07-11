@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 )
 
@@ -169,7 +168,7 @@ func validateReadModelIndex(index ReadModelIndex) error {
 }
 
 func readFileLimit(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(filepath.Clean(path))
+	file, _, err := openRegularDashboardFile(path, "read model index")
 	if err != nil {
 		return nil, err
 	}

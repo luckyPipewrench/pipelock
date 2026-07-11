@@ -122,6 +122,72 @@ func TestExemptionStore_CorruptedJSONReturnsError(t *testing.T) {
 	}
 }
 
+func TestOpenExemptionStoreRejectsAmbiguousOrInvalidDirectLoad(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	base := `{"id":"exm-a","scope":"api.vendor.example","owner":"ops-team","reason":"reviewed exemption","created":"` + now.Format(time.RFC3339) + `","expiry":"` + now.Add(time.Hour).Format(time.RFC3339) + `"}`
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "duplicate json key", data: `[` + strings.Replace(base, `"id":"exm-a"`, `"id":"exm-a","id":"exm-b"`, 1) + `]`},
+		{name: "unknown field", data: `[` + strings.Replace(base, `"scope":`, `"future":true,"scope":`, 1) + `]`},
+		{name: "invalid record", data: `[` + strings.Replace(base, `"owner":"ops-team"`, `"owner":""`, 1) + `]`},
+		{name: "duplicate id", data: `[` + base + `,` + base + `]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "exemptions.json")
+			if err := os.WriteFile(path, []byte(test.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenExemptionStore(path); err == nil {
+				t.Fatal("OpenExemptionStore accepted invalid direct-load JSON")
+			}
+		})
+	}
+}
+
+func TestOpenExemptionStoreRejectsOversizedDirectLoad(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "exemptions.json")
+	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- test file under t.TempDir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxExemptionStoreFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenExemptionStore(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("OpenExemptionStore oversized error = %v", err)
+	}
+}
+
+func TestOpenExemptionStoreRejectsSymlinkDirectLoad(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(`[]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "exemptions.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenExemptionStore(link); err == nil {
+		t.Fatal("OpenExemptionStore accepted a symlink")
+	}
+}
+
 func TestExemptionStore_ValidationRejects(t *testing.T) {
 	t.Parallel()
 

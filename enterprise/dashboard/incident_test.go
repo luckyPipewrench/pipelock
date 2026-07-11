@@ -20,7 +20,9 @@ func incidentTarget() string {
 func TestIncident_ScopePromptWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature})
+	handler := New(Options{
+		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
+	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/incident", nil))
 	if rec.Code != http.StatusOK {
@@ -37,7 +39,9 @@ func TestIncident_ScopePromptWhenEmpty(t *testing.T) {
 func TestIncident_UnconfiguredSourcesRenderAbsence(t *testing.T) {
 	t.Parallel()
 
-	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature})
+	handler := New(Options{
+		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature,
+	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, incidentTarget(), nil))
 	if rec.Code != http.StatusOK {
@@ -57,6 +61,7 @@ func TestIncident_CorrelatesDecisionAndAppliedSummary(t *testing.T) {
 	source := &fakeConductorSource{view: testReplayView(), found: true}
 	fleet := &fakeFleetSource{followers: testFleetFollowers()}
 	handler := New(Options{
+		TrustedOuterAuth:    true,
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     source,
@@ -122,10 +127,11 @@ func TestIncident_MetadataViewRedactsDecision(t *testing.T) {
 	view.Conflict = "source error for " + wbSensitiveHash
 	source := &fakeConductorSource{view: view, found: true}
 	handler := New(Options{
-		ReceiptDir:      t.TempDir(),
-		HasFeature:      allowFleetFeature,
-		ConductorSource: source,
-		FleetSource:     &fakeFleetSource{followers: testFleetFollowers()},
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowFleetFeature,
+		ConductorSource:  source,
+		FleetSource:      &fakeFleetSource{followers: testFleetFollowers()},
 		// No AuthorizeRaw: fail closed.
 		AuthorizeFleetScope: allowFleetScope,
 	})
@@ -157,7 +163,9 @@ func TestIncident_DecisionMissingRendersEmpty(t *testing.T) {
 	t.Parallel()
 
 	source := &fakeConductorSource{found: false}
-	handler := New(Options{ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope})
+	handler := New(Options{
+		TrustedOuterAuth: true, ReceiptDir: t.TempDir(), HasFeature: allowFleetFeature, ConductorSource: source, AuthorizeFleetScope: allowFleetScope,
+	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, incidentTarget(), nil))
 	if rec.Code != http.StatusOK {
@@ -172,6 +180,7 @@ func TestIncident_FleetSourceErrorReturnsServerError(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
+		TrustedOuterAuth:    true,
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     &fakeConductorSource{found: false},
@@ -189,6 +198,7 @@ func TestIncident_DecisionSourceErrorReturnsServerError(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
+		TrustedOuterAuth:    true,
 		ReceiptDir:          t.TempDir(),
 		HasFeature:          allowFleetFeature,
 		ConductorSource:     &fakeConductorSource{err: errors.New("replay unavailable")},

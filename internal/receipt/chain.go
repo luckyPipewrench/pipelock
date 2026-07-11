@@ -790,8 +790,15 @@ func ExtractReceiptsFromSessionDir(dir, sessionID string) ([]Receipt, error) {
 // an optional hard ceiling on parsed recorder entries. The returned boolean is
 // true when the ceiling was reached before the full session was loaded.
 func ExtractReceiptsFromSessionDirBounded(dir, sessionID string, maxEntriesRead int) ([]Receipt, bool, error) {
+	return ExtractReceiptsFromSessionDirWithLimits(dir, sessionID, maxEntriesRead, 0)
+}
+
+// ExtractReceiptsFromSessionDirWithLimits reads action receipts for a session
+// with hard ceilings on parsed recorder entries and evidence directory entries.
+func ExtractReceiptsFromSessionDirWithLimits(dir, sessionID string, maxEntriesRead, maxDirectoryEntries int) ([]Receipt, bool, error) {
 	result, err := recorder.QuerySession(filepath.Clean(dir), sessionID, &recorder.QueryFilter{
-		MaxEntriesRead: maxEntriesRead,
+		MaxEntriesRead:      maxEntriesRead,
+		MaxDirectoryEntries: maxDirectoryEntries,
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("querying session receipts: %w", err)

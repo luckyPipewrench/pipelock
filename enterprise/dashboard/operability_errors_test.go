@@ -271,6 +271,73 @@ func TestDeliveryValidationAndPending(t *testing.T) {
 	}
 }
 
+func TestDeliveryInbox_NormalizesRetentionAndSaturatesDrops(t *testing.T) {
+	t.Parallel()
+
+	when := time.Unix(100, 0).UTC()
+	attempts := make([]DeliveryAttempt, maxPersistedDeliveryAttempts+2)
+	for index := range attempts {
+		attempts[index] = DeliveryAttempt{ID: fmt.Sprintf("attempt-%04d", index), AlertID: "alert-a", Status: DeliveryQueued, AttemptedAt: when.Add(time.Duration(index) * time.Second)}
+	}
+	deadLetters := make([]DeliveryAttempt, maxPersistedDeadLetters+2)
+	for index := range deadLetters {
+		deadLetters[index] = DeliveryAttempt{ID: fmt.Sprintf("failed-%04d", index), AlertID: "alert-a", Status: DeliveryFailed, AttemptedAt: when.Add(time.Duration(index) * time.Second), Error: "provider-token unavailable"}
+	}
+	state := deliveryInboxState{
+		Version:     deliveryInboxVersion,
+		Attempts:    attempts,
+		DeadLetters: deadLetters,
+		Totals:      &deliveryTotals{Queued: uint64(len(attempts)), Failed: uint64(len(deadLetters)), DeadLetters: uint64(len(deadLetters))},
+		Dropped:     ^uint64(0) - 1,
+		UpdatedAt:   when,
+	}
+	if err := normalizeDeliveryState(&state); err != nil {
+		t.Fatalf("normalizeDeliveryState: %v", err)
+	}
+	if len(state.Attempts) != maxPersistedDeliveryAttempts || state.Attempts[0].ID != "attempt-0002" {
+		t.Fatalf("attempt retention = len %d first %q", len(state.Attempts), state.Attempts[0].ID)
+	}
+	if len(state.DeadLetters) != maxPersistedDeadLetters || state.DeadLetters[0].ID != "failed-0002" {
+		t.Fatalf("dead-letter retention = len %d first %q", len(state.DeadLetters), state.DeadLetters[0].ID)
+	}
+	inbox := &DeliveryInbox{state: state}
+	inbox.pendingDrops.Store(3)
+	if got := inbox.Health().Dropped; got != ^uint64(0) {
+		t.Fatalf("saturated dropped = %d, want max uint64", got)
+	}
+	full := &DeliveryInbox{queue: make(chan DeliveryAttempt), dropSignal: make(chan struct{}, 1)}
+	full.pendingDrops.Store(^uint64(0))
+	if full.Record(DeliveryAttempt{ID: "overflow-drop", AlertID: "alert-a", Status: DeliveryQueued, AttemptedAt: when}) {
+		t.Fatal("Record unexpectedly queued on a full inbox")
+	}
+	if got := full.pendingDrops.Load(); got != ^uint64(0) {
+		t.Fatalf("pending dropped wrapped to %d, want max uint64", got)
+	}
+
+	path := filepath.Join(t.TempDir(), DeliveryInboxStateFile)
+	persisted := deliveryInboxState{Version: deliveryInboxVersion, Dropped: ^uint64(0) - 1}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	flush := &DeliveryInbox{path: path, state: persisted}
+	flush.pendingDrops.Store(3)
+	flush.flushDrops()
+	if flush.workerErr != nil {
+		t.Fatalf("flushDrops: %v", flush.workerErr)
+	}
+	health, err := LoadDeliveryHealth(path)
+	if err != nil {
+		t.Fatalf("LoadDeliveryHealth: %v", err)
+	}
+	if health.Dropped != ^uint64(0) {
+		t.Fatalf("persisted dropped = %d, want max uint64", health.Dropped)
+	}
+}
+
 func TestDeliveryInboxApply_ErrorPaths(t *testing.T) {
 	attempt := DeliveryAttempt{ID: "delivery", AlertID: "alert", Status: DeliveryDelivered, AttemptedAt: time.Unix(100, 0).UTC()}
 
@@ -381,6 +448,20 @@ func TestLoadDeliveryHealth_ErrorPaths(t *testing.T) {
 			t.Fatalf("oversized delivery inbox error = %v", err)
 		}
 	})
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "outside.json")
+		if err := os.WriteFile(target, []byte(`{"version":1,"attempts":[],"dead_letters":[],"dropped":0,"updated_at":"0001-01-01T00:00:00Z"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "delivery-inbox-link.json")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadDeliveryHealth(link); err == nil {
+			t.Fatal("symlinked delivery inbox was accepted")
+		}
+	})
 }
 
 func TestInspectReadModelIndex_ErrorPaths(t *testing.T) {
@@ -396,6 +477,17 @@ func TestInspectReadModelIndex_ErrorPaths(t *testing.T) {
 		}
 		if _, _, err := InspectReadModelIndex(path, t.TempDir()); err == nil {
 			t.Fatal("invalid index was accepted")
+		}
+	})
+	t.Run("symlink index", func(t *testing.T) {
+		sourceDir := t.TempDir()
+		target := writeTestReadModel(t, sourceDir)
+		link := filepath.Join(t.TempDir(), ReadModelIndexFile)
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := InspectReadModelIndex(link, sourceDir); err == nil {
+			t.Fatal("symlinked read-model index was accepted")
 		}
 	})
 	t.Run("missing source directory", func(t *testing.T) {

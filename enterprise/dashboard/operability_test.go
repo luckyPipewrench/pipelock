@@ -655,7 +655,9 @@ func TestDashboardRendersDeliveryFailureAndStaleReadModelLoudly(t *testing.T) {
 	if err := os.WriteFile(indexPath, []byte(`{"rebuild_version":1,"sources":[{"file":"evidence-missing-0.jsonl","sha256":"00"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handler := New(Options{ReceiptDir: dir, DeliveryInboxPath: inboxPath, ReadModelIndexPath: indexPath, HasFeature: allowAgentsFeature})
+	handler := New(Options{
+		TrustedOuterAuth: true, ReceiptDir: dir, DeliveryInboxPath: inboxPath, ReadModelIndexPath: indexPath, HasFeature: allowAgentsFeature,
+	})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	body := recorder.Body.String()

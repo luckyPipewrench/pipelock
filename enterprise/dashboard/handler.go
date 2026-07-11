@@ -252,8 +252,9 @@ func AllPermissions() []Permission {
 // license-feature check is NOT authentication. Mount this handler ONLY on an
 // authenticated, admin-only listener, and never on the agent-reachable proxy
 // port. Set Options.Authorize to enforce an authenticated principal per
-// request; it fails closed when it returns an error. When Authorize is nil the
-// surrounding router MUST provide the authentication boundary.
+// request; it fails closed when it returns an error. When both Authorize and
+// AuthorizePermission are nil, set Options.TrustedOuterAuth only if the
+// surrounding router provides the authentication boundary.
 func New(opts Options) http.Handler {
 	model := NewReadModel(opts)
 	mux := http.NewServeMux()
@@ -264,6 +265,7 @@ func New(opts Options) http.Handler {
 		authorizePermission: opts.AuthorizePermission,
 		authorizeRaw:        opts.AuthorizeRaw,
 		authorizeFleetScope: opts.AuthorizeFleetScope,
+		trustedOuterAuth:    opts.TrustedOuterAuth,
 		auditWriter:         opts.AuditWriter,
 	}
 	for _, spec := range dashboardRouteSpecs() {
@@ -279,6 +281,7 @@ type dashboardHandler struct {
 	authorizePermission func(*http.Request, Permission) error
 	authorizeRaw        func(*http.Request) error
 	authorizeFleetScope func(*http.Request, DecisionScope, bool) error
+	trustedOuterAuth    bool
 	auditWriter         io.Writer
 	auditMu             sync.Mutex
 }
@@ -443,6 +446,12 @@ func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Han
 		}
 		// Authentication boundary. The license check above is entitlement, not
 		// identity; fail closed when a configured authorizer rejects the request.
+		if d.authorize == nil && d.authorizePermission == nil && !d.trustedOuterAuth {
+			w.Header().Set("Content-Type", contentTypeText)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("dashboard authentication required\n"))
+			return
+		}
 		if d.authorize != nil {
 			if err := d.authorize(r); err != nil {
 				w.Header().Set("Content-Type", contentTypeText)

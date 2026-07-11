@@ -218,21 +218,5 @@ func openRegularEvidence(path string) (*os.File, os.FileInfo, error) {
 	if err != nil || canonicalDir != filepath.Dir(cleanPath) {
 		return nil, nil, errors.New("source evidence is outside its canonical source directory")
 	}
-	before, err := os.Lstat(cleanPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
-		return nil, nil, errors.New("source evidence is non-regular")
-	}
-	file, err := os.OpenFile(cleanPath, os.O_RDONLY|evidenceNoFollowFlag, 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	after, err := file.Stat()
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
-		_ = file.Close()
-		return nil, nil, errors.New("source evidence changed or is non-regular")
-	}
-	return file, after, nil
+	return openRegularDashboardFile(cleanPath, "source evidence")
 }

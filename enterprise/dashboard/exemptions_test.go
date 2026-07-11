@@ -314,11 +314,12 @@ func TestExemptions_DefaultBaselinesDoNotBecomeAttentionWhenFeatureDisabled(t *t
 	}
 
 	handler := New(Options{
-		ReceiptDir:   t.TempDir(),
-		Config:       cfg,
-		HasFeature:   allowAgentsFeature,
-		Authorize:    func(*http.Request) error { return nil },
-		AuthorizeRaw: allowRawAccess,
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		Config:           cfg,
+		HasFeature:       allowAgentsFeature,
+		Authorize:        func(*http.Request) error { return nil },
+		AuthorizeRaw:     allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
@@ -451,10 +452,11 @@ func TestHandler_ExemptionsHostileConfigEscapes(t *testing.T) {
 		}},
 	}
 	handler := New(Options{
-		ReceiptDir: t.TempDir(),
-		Config:     cfg,
-		HasFeature: allowAgentsFeature,
-		Authorize:  func(*http.Request) error { return nil },
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		Config:           cfg,
+		HasFeature:       allowAgentsFeature,
+		Authorize:        func(*http.Request) error { return nil },
 		// Raw access so the hostile config values are actually rendered (and
 		// therefore html/template-escaped); the metadata-only path redacts them
 		// instead and is covered by TestHandler_ExemptionsMetadataViewRedactsRawValues.

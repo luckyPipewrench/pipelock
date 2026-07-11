@@ -32,7 +32,9 @@ func TestHandler_Gating(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	handler := New(Options{ReceiptDir: dir})
+	handler := New(Options{
+		TrustedOuterAuth: true, ReceiptDir: dir,
+	})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -44,7 +46,8 @@ func TestHandler_Gating(t *testing.T) {
 	}
 
 	handler = New(Options{
-		ReceiptDir: dir,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
 		HasFeature: func(string) bool {
 			return false
 		},
@@ -73,9 +76,10 @@ func TestHandler_AllowedRendersScorecard(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: trusted,
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
@@ -100,6 +104,86 @@ func TestHandler_AllowedRendersScorecard(t *testing.T) {
 	}
 }
 
+func TestHandler_RequiresExplicitAuthBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		opts       Options
+		wantStatus int
+	}{
+		{
+			name: "nil auth callbacks deny",
+			opts: Options{
+				ReceiptDir: t.TempDir(),
+				HasFeature: allowAgentsFeature,
+			},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "trusted outer auth explicit opt in",
+			opts: Options{
+				ReceiptDir:       t.TempDir(),
+				HasFeature:       allowAgentsFeature,
+				TrustedOuterAuth: true,
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "handler auth callback configured",
+			opts: Options{
+				ReceiptDir: t.TempDir(),
+				HasFeature: allowAgentsFeature,
+				Authorize:  func(*http.Request) error { return nil },
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "permission auth callback configured",
+			opts: Options{
+				ReceiptDir: t.TempDir(),
+				HasFeature: allowAgentsFeature,
+				AuthorizePermission: func(*http.Request, Permission) error {
+					return nil
+				},
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "raw callback alone denies",
+			opts: Options{
+				ReceiptDir:   t.TempDir(),
+				HasFeature:   allowAgentsFeature,
+				AuthorizeRaw: allowRawAccess,
+			},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "fleet scope callback alone denies",
+			opts: Options{
+				ReceiptDir: t.TempDir(),
+				HasFeature: allowAgentsFeature,
+				AuthorizeFleetScope: func(*http.Request, DecisionScope, bool) error {
+					return nil
+				},
+			},
+			wantStatus: http.StatusForbidden,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := New(test.opts)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+			if rec.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, test.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandler_ExemptionsAllowedRendersInventory(t *testing.T) {
 	t.Parallel()
 
@@ -111,12 +195,13 @@ func TestHandler_ExemptionsAllowedRendersInventory(t *testing.T) {
 	}
 	var audit strings.Builder
 	handler := New(Options{
-		ReceiptDir:   t.TempDir(),
-		Config:       cfg,
-		HasFeature:   allowAgentsFeature,
-		Authorize:    func(*http.Request) error { return nil },
-		AuditWriter:  &audit,
-		AuthorizeRaw: allowRawAccess,
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		Config:           cfg,
+		HasFeature:       allowAgentsFeature,
+		Authorize:        func(*http.Request) error { return nil },
+		AuditWriter:      &audit,
+		AuthorizeRaw:     allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
@@ -156,7 +241,8 @@ func TestHandler_HostileEvidenceRenderEscapesReceiptFields(t *testing.T) {
 	writeReceiptsToDir(t, dir, []receipt.Receipt{resigned})
 
 	handler := New(Options{
-		ReceiptDir: dir,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
 		TrustedKeys: map[string]TrustedKey{
 			keyHex: {Source: trustedKeySource},
 		},
@@ -213,8 +299,9 @@ func TestHandler_MethodAndPathRejection(t *testing.T) {
 
 	dir := t.TempDir()
 	handler := New(Options{
-		ReceiptDir: dir,
-		HasFeature: allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		HasFeature:       allowAgentsFeature,
 	})
 
 	tests := []struct {
@@ -273,10 +360,11 @@ func TestHandler_RoutePermissionFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	handler := New(Options{
-		ReceiptDir:   t.TempDir(),
-		HasFeature:   allowAllDashboardFeatures,
-		Authorize:    func(*http.Request) error { return nil },
-		AuthorizeRaw: allowRawAccess,
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAllDashboardFeatures,
+		Authorize:        func(*http.Request) error { return nil },
+		AuthorizeRaw:     allowRawAccess,
 		AuthorizePermission: func(*http.Request, Permission) error {
 			return errors.New("permission denied")
 		},
@@ -311,9 +399,10 @@ func TestHandler_RoutePermissionUsesSpecificPermission(t *testing.T) {
 
 	var got []Permission
 	handler := New(Options{
-		ReceiptDir: t.TempDir(),
-		HasFeature: allowAllDashboardFeatures,
-		Authorize:  func(*http.Request) error { return nil },
+		TrustedOuterAuth: true,
+		ReceiptDir:       t.TempDir(),
+		HasFeature:       allowAllDashboardFeatures,
+		Authorize:        func(*http.Request) error { return nil },
 		AuthorizePermission: func(_ *http.Request, permission Permission) error {
 			got = append(got, permission)
 			return nil
@@ -351,6 +440,7 @@ func TestHandler_RawViewShownWhenRawPermissionGranted(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
+		TrustedOuterAuth:    true,
 		ReceiptDir:          dir,
 		TrustedKeys:         trusted,
 		HasFeature:          allowAgentsFeature,
@@ -400,11 +490,12 @@ func TestHandler_RawViewRequiresRawPermission(t *testing.T) {
 
 	dir, trusted := writeTrustedHandlerSession(t)
 	handler := New(Options{
-		ReceiptDir:   dir,
-		TrustedKeys:  trusted,
-		HasFeature:   allowAgentsFeature,
-		Authorize:    func(*http.Request) error { return nil },
-		AuthorizeRaw: allowRawAccess,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
+		Authorize:        func(*http.Request) error { return nil },
+		AuthorizeRaw:     allowRawAccess,
 		AuthorizePermission: func(_ *http.Request, permission Permission) error {
 			if permission == PermissionRawRead {
 				return errors.New("raw denied")
@@ -435,6 +526,7 @@ func TestHandler_ReadLimitWarning(t *testing.T) {
 	writeReceiptsToDir(t, dir, buildDashboardChain(t, priv, 4))
 
 	handler := New(Options{
+		TrustedOuterAuth: true,
 		ReceiptDir:       dir,
 		ReceiptReadLimit: 2,
 		TimelineLimit:    1,
@@ -468,8 +560,9 @@ func TestHandler_AbsenceRender(t *testing.T) {
 	dir := t.TempDir()
 	writeZeroReceiptSessionFile(t, dir, zeroSessionID)
 	handler := New(Options{
-		ReceiptDir: dir,
-		HasFeature: allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		HasFeature:       allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+zeroSessionID, nil))
@@ -492,9 +585,10 @@ func TestHandler_AuthorizeFailsClosed(t *testing.T) {
 
 	// A rejecting authorizer must fail closed even when the feature is present.
 	denied := New(Options{
-		ReceiptDir: dir,
-		HasFeature: allowAgentsFeature,
-		Authorize:  func(*http.Request) error { return errors.New("no principal") },
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		HasFeature:       allowAgentsFeature,
+		Authorize:        func(*http.Request) error { return errors.New("no principal") },
 	})
 	rec := httptest.NewRecorder()
 	denied.ServeHTTP(rec, req)
@@ -507,9 +601,10 @@ func TestHandler_AuthorizeFailsClosed(t *testing.T) {
 
 	// An accepting authorizer reaches the handler.
 	allowed := New(Options{
-		ReceiptDir: dir,
-		HasFeature: allowAgentsFeature,
-		Authorize:  func(*http.Request) error { return nil },
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		HasFeature:       allowAgentsFeature,
+		Authorize:        func(*http.Request) error { return nil },
 	})
 	rec = httptest.NewRecorder()
 	allowed.ServeHTTP(rec, req)
@@ -541,9 +636,10 @@ func TestHandler_RedactsRawByDefault(t *testing.T) {
 
 	// No AuthorizeRaw configured => raw is redacted for everyone (fail closed).
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: trusted,
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
@@ -595,10 +691,11 @@ func TestHandler_RawAccessShowsDetail(t *testing.T) {
 	dir, trusted := writeTrustedHandlerSession(t)
 
 	handler := New(Options{
-		ReceiptDir:   dir,
-		TrustedKeys:  trusted,
-		HasFeature:   allowAgentsFeature,
-		AuthorizeRaw: allowRawAccess,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
+		AuthorizeRaw:     allowRawAccess,
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
@@ -627,9 +724,10 @@ func TestHandler_RawAccessDecisionIsCachedPerRequest(t *testing.T) {
 	var calls int
 	var audit strings.Builder
 	handler := New(Options{
-		ReceiptDir:  dir,
-		TrustedKeys: trusted,
-		HasFeature:  allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
 		AuthorizeRaw: func(*http.Request) error {
 			calls++
 			if calls == 1 {
@@ -662,7 +760,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("metadata_role_and_path_session", func(t *testing.T) {
 		var meta strings.Builder
 		metaHandler := New(Options{
-			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuditWriter: &meta,
 		})
 		metaHandler.ServeHTTP(httptest.NewRecorder(),
@@ -681,7 +780,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("query_param_session", func(t *testing.T) {
 		var q strings.Builder
 		qHandler := New(Options{
-			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuditWriter: &q,
 		})
 		qHandler.ServeHTTP(httptest.NewRecorder(),
@@ -694,7 +794,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("empty_session", func(t *testing.T) {
 		var none strings.Builder
 		noneHandler := New(Options{
-			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuditWriter: &none,
 		})
 		noneHandler.ServeHTTP(httptest.NewRecorder(),
@@ -707,7 +808,8 @@ func TestHandler_AuditWriterRecordsAccess(t *testing.T) {
 	t.Run("raw_role", func(t *testing.T) {
 		var raw strings.Builder
 		rawHandler := New(Options{
-			ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+			TrustedOuterAuth: true,
+			ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 			AuthorizeRaw: allowRawAccess, AuditWriter: &raw,
 		})
 		rawHandler.ServeHTTP(httptest.NewRecorder(),
@@ -751,11 +853,12 @@ func TestHandler_AuditWriterSerializesConcurrentRequests(t *testing.T) {
 
 	var audit strings.Builder
 	handler := New(Options{
-		ReceiptDir:   dir,
-		TrustedKeys:  trusted,
-		HasFeature:   allowAgentsFeature,
-		AuditWriter:  &audit,
-		AuthorizeRaw: allowRawAccess,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir,
+		TrustedKeys:      trusted,
+		HasFeature:       allowAgentsFeature,
+		AuditWriter:      &audit,
+		AuthorizeRaw:     allowRawAccess,
 	})
 
 	const requests = 25
@@ -785,7 +888,8 @@ func TestHandler_AuditNotWrittenForUnauthorized(t *testing.T) {
 
 	var buf strings.Builder
 	handler := New(Options{
-		ReceiptDir: dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
+		TrustedOuterAuth: true,
+		ReceiptDir:       dir, TrustedKeys: trusted, HasFeature: allowAgentsFeature,
 		Authorize:   func(*http.Request) error { return errors.New("denied") },
 		AuditWriter: &buf,
 	})

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,6 +21,8 @@ import (
 // Stale threshold for exemption records: if a record has a LastMatched
 // timestamp older than this duration before "now", it is considered stale.
 const staleThreshold = 30 * 24 * time.Hour // 30 days
+
+const maxExemptionStoreFileBytes = 8 << 20
 
 // Bounded lifecycle status strings returned by ExemptionRecord.Status.
 const (
@@ -91,7 +94,7 @@ func OpenExemptionStore(path string) (*ExemptionStore, error) {
 	}
 
 	s := &ExemptionStore{path: cleanPath}
-	data, err := os.ReadFile(cleanPath)
+	data, err := readBoundedExemptionStore(cleanPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
 	}
@@ -307,7 +310,7 @@ func (s *ExemptionStore) acquireMutationLock() (func(), error) {
 }
 
 func (s *ExemptionStore) reloadLocked() error {
-	data, err := os.ReadFile(s.path)
+	data, err := readBoundedExemptionStore(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		s.records = nil
 		return nil
@@ -325,10 +328,39 @@ func (s *ExemptionStore) reloadLocked() error {
 	return nil
 }
 
+func readBoundedExemptionStore(path string) ([]byte, error) {
+	file, _, err := openRegularDashboardFile(path, "exemption store")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxExemptionStoreFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxExemptionStoreFileBytes {
+		return nil, fmt.Errorf("exemption store exceeds %d bytes", maxExemptionStoreFileBytes)
+	}
+	return data, nil
+}
+
 func (s *ExemptionStore) decodeRecords(data []byte) error {
 	var records []ExemptionRecord
-	if err := json.Unmarshal(data, &records); err != nil {
+	if err := decodeStrictJSON(data, &records); err != nil {
 		return err
+	}
+	if records == nil {
+		return errors.New("exemption store: root must be a JSON array")
+	}
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if err := validateExemptionRecordForAdd(record); err != nil {
+			return err
+		}
+		if _, duplicate := seen[record.ID]; duplicate {
+			return fmt.Errorf("exemption store: duplicate id %q", record.ID)
+		}
+		seen[record.ID] = struct{}{}
 	}
 	s.records = records
 	return nil

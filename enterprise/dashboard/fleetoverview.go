@@ -37,9 +37,16 @@ var (
 // FleetDataSource is the dashboard-local read seam for conductor fleet state.
 // Implementations must be read-only: the Fleet Overview route has no write or
 // control authority. The limit is a hard maximum requested by the dashboard;
-// implementations should apply it at the backing query boundary.
+// implementations should apply it at the backing query boundary and must return
+// an explicit completeness signal. Unknown completeness is treated as truncated.
 type FleetDataSource interface {
-	ListFleetFollowers(ctx context.Context, orgID, fleetID string, limit int) ([]FleetFollowerView, error)
+	ListFleetFollowers(ctx context.Context, orgID, fleetID string, limit int) (FleetFollowerPage, error)
+}
+
+type FleetFollowerPage struct {
+	Followers         []FleetFollowerView
+	CompletenessKnown bool
+	HasMore           bool
 }
 
 // FleetFollowerView is the dashboard-local follower row. It intentionally
@@ -119,12 +126,16 @@ func (m *ReadModel) FleetOverview(ctx context.Context, orgID, fleetID string, ra
 	if m.fleetSource == nil {
 		return overview, nil
 	}
-	followers, err := m.fleetSource.ListFleetFollowers(ctx, orgID, fleetID, fleetOverviewFollowerLimit+1)
+	page, err := m.fleetSource.ListFleetFollowers(ctx, orgID, fleetID, fleetOverviewFollowerLimit+1)
 	if err != nil {
 		return FleetOverview{}, fmt.Errorf("list fleet followers: %w", err)
 	}
+	followers := page.Followers
 	if len(followers) > fleetOverviewFollowerLimit {
 		followers = followers[:fleetOverviewFollowerLimit]
+		overview.Truncated = true
+	}
+	if !page.CompletenessKnown || page.HasMore {
 		overview.Truncated = true
 	}
 	followers = normalizeFleetFollowers(followers)

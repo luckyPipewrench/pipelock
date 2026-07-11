@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 // dupkeyFakeAWSKey is split at build time so gosec G101 and the pipelock self-scan
@@ -54,7 +56,7 @@ func TestApplyMCPToolCallRedaction_DuplicateMethodEnvelopeFailsClosed(t *testing
 	if err == nil {
 		t.Fatalf("expected duplicate-key block, got nil and out=%q", string(out))
 	}
-	if !isDuplicateKeyBlock(err) {
+	if !redact.IsDuplicateKeyBlock(err) {
 		t.Fatalf("expected duplicate-key BlockError, got %v", err)
 	}
 }
@@ -68,7 +70,7 @@ func TestApplyMCPToolCallRedaction_DuplicateParamsFailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected duplicate-key block, got nil and out=%q", string(out))
 	}
-	if !isDuplicateKeyBlock(err) {
+	if !redact.IsDuplicateKeyBlock(err) {
 		t.Fatalf("expected duplicate-key BlockError, got %v", err)
 	}
 }

@@ -122,7 +122,7 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	// gates, so blocking here covers the gate-evaluation path. external review C-1.
 	// Only fail-closed on actual duplicate-key matches; let malformed-
 	// JSON errors flow through to the existing structural parse path.
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		frame.ParseErr = err
 		return frame
 	}

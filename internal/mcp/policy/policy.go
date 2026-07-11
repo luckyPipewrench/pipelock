@@ -8,7 +8,6 @@ package policy
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"math/big"
 	"regexp"
@@ -674,8 +673,7 @@ func (pc *Config) CheckRequest(line []byte) Verdict {
 // checkSingle parses one JSON-RPC request and checks it against policy.
 func (pc *Config) checkSingle(line []byte) Verdict {
 	if err := redact.NoDuplicateJSONKeys(bytes.TrimSpace(line)); err != nil {
-		var blockErr *redact.BlockError
-		if errors.As(err, &blockErr) && blockErr.Reason == redact.ReasonDuplicateKey {
+		if redact.IsDuplicateKeyBlock(err) {
 			return duplicateJSONKeyVerdict()
 		}
 	}
@@ -762,12 +760,7 @@ func hasMalformedA2AParams(line []byte) bool {
 	if len(rpc.Params) == 0 || bytes.Equal(bytes.TrimSpace(rpc.Params), []byte(jsonrpc.Null)) {
 		return false
 	}
-	return !rawMessageIsJSONObject(rpc.Params)
-}
-
-func rawMessageIsJSONObject(raw json.RawMessage) bool {
-	trimmed := bytes.TrimSpace(raw)
-	return len(trimmed) != 0 && trimmed[0] == '{'
+	return !redact.IsJSONObject(rpc.Params)
 }
 
 func uninspectableStructuralArgsVerdict(ruleName string) Verdict {

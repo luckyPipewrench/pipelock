@@ -86,7 +86,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	}
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil {
 		reason := fmt.Sprintf("a2a: invalid JSON: %v", err)
-		if isDuplicateKeyBlock(err) {
+		if redact.IsDuplicateKeyBlock(err) {
 			reason = fmt.Sprintf("a2a: duplicate JSON object key: %v", err)
 		}
 		return A2AScanResult{

@@ -275,3 +275,29 @@ func TestEvaluateSessionBinding_NoBaselineFailClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestEvaluateSessionBinding_A2AUnknownMethodWithBaseline(t *testing.T) {
+	baseline := tools.NewToolBaseline()
+	baseline.SetKnownA2AMethods([]string{"SendMessage"})
+
+	if !baseline.HasA2AMethodBaseline() {
+		t.Fatal("expected A2A baseline to be established")
+	}
+	if baseline.IsKnownA2AMethod("GetTask") {
+		t.Fatal("GetTask must not be known before exercising unknown-method path")
+	}
+
+	action, reason := evaluateSessionBinding(sessionBindingCheck{
+		Baseline:            baseline,
+		Method:              "GetTask",
+		EnforcementIdentity: a2aBaselineIdentity("GetTask"),
+		UnknownAction:       config.ActionWarn,
+		NoBaselineAction:    config.ActionBlock,
+	})
+	if action != config.ActionWarn {
+		t.Fatalf("action = %q, want %q", action, config.ActionWarn)
+	}
+	if reason != bindingReasonUnknownTool {
+		t.Fatalf("reason = %q, want %q", reason, bindingReasonUnknownTool)
+	}
+}

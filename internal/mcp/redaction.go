@@ -48,7 +48,7 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 	// differential. external review C-1. Only block on actual duplicate-key
 	// matches; let malformed-JSON errors flow through to the existing
 	// parse-error path so the BlockError reason stays attributable.
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return nil, nil, err
 	}
 
@@ -107,7 +107,7 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 
 	// Same dup-key trap on params: a duplicate `arguments` could hide
 	// secret-bearing args behind a benign sibling that wins last-wins.
-	if err := redact.NoDuplicateJSONKeys(paramsRaw); err != nil && isDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(paramsRaw); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return nil, nil, err
 	}
 
@@ -162,10 +162,10 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 }
 
 func rewriteRedactableJSON(raw json.RawMessage, cfg MCPRedactionConfig, objectKind string, skipOnNonObject bool) ([]byte, *redact.Report, bool, error) {
-	if err := redact.NoDuplicateJSONKeys(raw); err != nil && isDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(raw); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return nil, nil, false, err
 	}
-	if !isJSONObjectRawMessage(raw) {
+	if !redact.IsJSONObject(raw) {
 		if skipOnNonObject {
 			return raw, nil, false, nil
 		}
@@ -200,9 +200,4 @@ func reportTotal(report *redact.Report) int {
 
 func isNullRawMessage(raw json.RawMessage) bool {
 	return len(raw) != 0 && bytes.Equal(bytes.TrimSpace(raw), []byte(jsonrpc.Null))
-}
-
-func isJSONObjectRawMessage(raw json.RawMessage) bool {
-	trimmed := bytes.TrimSpace(raw)
-	return len(trimmed) != 0 && trimmed[0] == '{'
 }

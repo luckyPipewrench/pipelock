@@ -68,7 +68,7 @@ func ScanResponseOpts(line []byte, sc *scanner.Scanner, opts ResponseScanOptions
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		return scanBatch(trimmed, sc, opts)
 	}
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
 			ID:    recoverTopLevelJSONRPCID(trimmed),
 			Clean: false,
@@ -218,7 +218,7 @@ func isToolsListResponse(line []byte) bool {
 // like result.note or result.cursor, so those must be scanned.
 func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
 	trimmed := bytes.TrimSpace(line)
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return jsonrpc.ScanVerdict{
 			ID:    recoverTopLevelJSONRPCID(trimmed),
 			Clean: false,

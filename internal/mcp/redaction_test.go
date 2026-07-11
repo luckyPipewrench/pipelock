@@ -101,7 +101,7 @@ func TestApplyMCPToolCallRedaction_A2ADuplicateParamsFailClosed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected duplicate-key block error")
 	}
-	if !isDuplicateKeyBlock(err) {
+	if !redact.IsDuplicateKeyBlock(err) {
 		t.Fatalf("expected duplicate-key block error, got %T: %v", err, err)
 	}
 }

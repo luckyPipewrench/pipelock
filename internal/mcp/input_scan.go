@@ -124,7 +124,7 @@ func scanMCPResourceURI(ctx context.Context, method string, params json.RawMessa
 	if len(trimmed) == 0 || string(trimmed) == jsonrpc.Null {
 		return mcpResourceURIParserFinding("missing resources/read params")
 	}
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return []scanner.Result{{
 			Allowed: false,
 			Reason:  fmt.Sprintf("duplicate resource URI key: %v", err),
@@ -184,7 +184,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	// Only block on actual duplicate-key matches; let malformed-JSON
 	// errors flow through to the existing parse-error path below so
 	// telemetry stays attributable to the right cause.
-	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && redact.IsDuplicateKeyBlock(err) {
 		return InputVerdict{ID: recoveredID, Clean: false, Error: fmt.Sprintf("duplicate JSON object key: %v", err)}
 	}
 

@@ -41,4 +41,13 @@ func TestWindowsBaselineNoSymlinkReadsRegularFileAndRejectsSymlink(t *testing.T)
 	if _, err := readRegularFileNoSymlink(link, "baseline profile", integrityStateMaxSize); err == nil {
 		t.Fatal("readRegularFileNoSymlink(symlink) succeeded, want rejection")
 	}
+
+	// The read above rejects via the shared, cross-platform Lstat pre-check in
+	// readRegularFileNoSymlinkInRootWithOpenHook, which runs before the
+	// Windows-specific opener. Call the new opener directly so its own
+	// symlink-rejection logic is exercised, not just the outer guard.
+	if f, err := openRegularFileNoSymlinkBelowRoot(dir, "profile-link.json", link); err == nil {
+		_ = f.Close()
+		t.Fatal("openRegularFileNoSymlinkBelowRoot(symlink) succeeded, want rejection")
+	}
 }

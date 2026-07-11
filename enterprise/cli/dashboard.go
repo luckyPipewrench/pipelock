@@ -67,6 +67,9 @@ type dashboardServeOptions struct {
 	rekorLogKeys        []string
 	tlsCert             string
 	tlsKey              string
+	clientCAFile        string
+	clientCertRoleMap   string
+	requireClientCert   bool
 	exemptionStore      string
 	deliveryInbox       string
 	readModelIndex      string
@@ -81,9 +84,10 @@ func dashboardServeCmd() *cobra.Command {
 		Short: "Serve the read-only Evidence dashboard on a dedicated listener",
 		Long: `Serve the read-only Evidence dashboard over a flight-recorder evidence
 directory. Every request must authenticate with the operator token from
---auth-token-file, sent either as "Authorization: Bearer <token>" or as the
-password of an HTTP Basic prompt (any username). The license feature check is
-entitlement, not identity; the token is the authentication boundary.
+--auth-token-file or, when --require-client-cert is enabled, a verified client
+certificate mapped to a dashboard role. The license feature check is
+entitlement, not identity; the token and client certificate are authentication
+boundaries.
 
 By default the view is redacted: receipt destinations and signed payloads are
 hidden, because a destination URL can carry a capability token and the payload
@@ -140,6 +144,9 @@ because the operator token would transit in cleartext.`,
 		"pinned Rekor log public key used to verify SET, checkpoint, and inclusion proof; repeat for rotations")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "TLS server certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "TLS server private key file")
+	cmd.Flags().StringVar(&opts.clientCAFile, "client-ca-file", "", "PEM trust anchor bundle for dashboard client certificates")
+	cmd.Flags().BoolVar(&opts.requireClientCert, "require-client-cert", false, "require and verify a mapped dashboard client certificate")
+	cmd.Flags().StringVar(&opts.clientCertRoleMap, "client-cert-role-map", "", "YAML file mapping client certificate SPKI SHA-256 fingerprints to permission roles")
 	_ = cmd.MarkFlagRequired("receipt-dir")
 	_ = cmd.MarkFlagRequired("auth-token-file")
 	return cmd
@@ -198,6 +205,13 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 	if err := validateDashboardListen(opts); err != nil {
 		return err
 	}
+	var clientCertAuth *dashboardClientCertAuthorizer
+	if opts.requireClientCert {
+		clientCertAuth, err = loadDashboardClientCertRoleMap(opts.clientCertRoleMap)
+		if err != nil {
+			return err
+		}
+	}
 	info, err := os.Stat(filepath.Clean(opts.receiptDir))
 	if err != nil {
 		return fmt.Errorf("--receipt-dir: %w", err)
@@ -253,22 +267,30 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		}
 	}
 
-	// metaAuthorized gates all access: the metadata token OR the raw token (a
-	// raw holder is also a valid operator). rawAuthorized gates only the
-	// sensitive raw view and matches the raw token alone.
-	metaAuthorized := func(r *http.Request) bool {
+	// Token auth retains its metadata/raw split. When mTLS is enabled, the
+	// verified certificate's mapped role supplies both route and raw-view
+	// permissions and takes precedence over any token on the same request.
+	tokenMetaAuthorized := func(r *http.Request) bool {
 		if dashboardTokenMatches(r, token) {
 			return true
 		}
 		return rawToken != "" && dashboardTokenMatches(r, rawToken)
 	}
-	complianceAuthorized := func(r *http.Request) bool {
-		return complianceToken != "" && dashboardTokenMatches(r, complianceToken)
-	}
-	authenticated := dashboardGlobalAuthorized(metaAuthorized, complianceAuthorized)
-	rawAuthorized := func(r *http.Request) bool {
+	tokenRawAuthorized := func(r *http.Request) bool {
 		return rawToken != "" && dashboardTokenMatches(r, rawToken)
 	}
+	// The compliance token is a token-based authorizer scoped to the compliance
+	// path. When mTLS is authoritative it must not bypass the certificate
+	// requirement, so it applies only when client certificates are not required;
+	// a certificate operator that needs compliance access is granted
+	// dashboard:compliance:read directly through its role map.
+	complianceAuthorized := func(r *http.Request) bool {
+		return clientCertAuth == nil && complianceToken != "" && dashboardTokenMatches(r, complianceToken)
+	}
+	metaAuthorized, authorizePermission, rawAuthorized := dashboardClientCertAuthorizers(
+		clientCertAuth, tokenMetaAuthorized, tokenRawAuthorized, complianceAuthorized,
+	)
+	authenticated := dashboardGlobalAuthorized(metaAuthorized, complianceAuthorized)
 
 	inner := dashboard.New(dashboard.Options{
 		ReceiptDir:          opts.receiptDir,
@@ -282,7 +304,7 @@ func runDashboardServe(cmd *cobra.Command, opts dashboardServeOptions, lic licen
 		LegalHoldStore:      legalHoldStore,
 		HasFeature:          dashboardRuntimeHasFeature(lic),
 		Authorize:           dashboardAuthorizeFunc(authenticated),
-		AuthorizePermission: dashboardAuthorizePermissionFunc(metaAuthorized, rawAuthorized, complianceAuthorized),
+		AuthorizePermission: authorizePermission,
 		AuthorizeRaw:        dashboardAuthorizeFunc(rawAuthorized),
 		// Viewing evidence is itself audited; the access log goes to stderr.
 		AuditWriter: cmd.ErrOrStderr(),
@@ -360,10 +382,19 @@ func dashboardTLSConfig(opts dashboardServeOptions) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load dashboard TLS certificate: %w", err)
 	}
-	return &tls.Config{
+	config := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
-	}, nil
+	}
+	if opts.requireClientCert {
+		clientCAs, err := loadDashboardClientCAs(opts.clientCAFile)
+		if err != nil {
+			return nil, err
+		}
+		config.ClientAuth = tls.RequireAndVerifyClientCert
+		config.ClientCAs = clientCAs
+	}
+	return config, nil
 }
 
 // validateDashboardListen refuses configurations that would put the operator
@@ -372,6 +403,19 @@ func dashboardTLSConfig(opts dashboardServeOptions) (*tls.Config, error) {
 func validateDashboardListen(opts dashboardServeOptions) error {
 	if (opts.tlsCert == "") != (opts.tlsKey == "") {
 		return errors.New("--tls-cert and --tls-key must be set together")
+	}
+	if opts.requireClientCert {
+		if opts.tlsCert == "" {
+			return errors.New("--require-client-cert requires --tls-cert/--tls-key")
+		}
+		if strings.TrimSpace(opts.clientCAFile) == "" {
+			return errors.New("--require-client-cert requires --client-ca-file")
+		}
+		if strings.TrimSpace(opts.clientCertRoleMap) == "" {
+			return errors.New("--require-client-cert requires --client-cert-role-map")
+		}
+	} else if strings.TrimSpace(opts.clientCAFile) != "" || strings.TrimSpace(opts.clientCertRoleMap) != "" {
+		return errors.New("--client-ca-file and --client-cert-role-map require --require-client-cert")
 	}
 	if opts.tlsCert != "" {
 		return nil

@@ -6,6 +6,7 @@ package siemforward
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -501,10 +502,28 @@ func TestForwarderQueueFullDropsWithoutBlocking(t *testing.T) {
 	}
 }
 
-func TestForwarderConcurrentCloseDoesNotLoseAcceptedEvents(t *testing.T) {
+func TestForwarderConcurrentCloseReplaysAcceptedEventsAtLeastOnce(t *testing.T) {
 	t.Parallel()
 	var received atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var receivedMu sync.Mutex
+	receivedBySequence := make(map[int]int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { _ = r.Body.Close() }()
+		var envelope Envelope
+		if err := decodeEnvelope(r.Body, &envelope); err != nil {
+			t.Errorf("decode envelope: %v", err)
+			http.Error(w, "bad envelope", http.StatusBadRequest)
+			return
+		}
+		sequence, ok := envelope.Event.Fields["sequence"].(float64)
+		if !ok || envelope.Event.ID == "" {
+			t.Errorf("delivered event missing stable dedupe fields: %+v", envelope.Event)
+			http.Error(w, "bad envelope", http.StatusBadRequest)
+			return
+		}
+		receivedMu.Lock()
+		receivedBySequence[int(sequence)]++
+		receivedMu.Unlock()
 		received.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -519,6 +538,8 @@ func TestForwarderConcurrentCloseDoesNotLoseAcceptedEvents(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	var accepted atomic.Int32
+	var acceptedMu sync.Mutex
+	acceptedSequences := make(map[int]struct{})
 	var producers sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		producers.Add(1)
@@ -526,6 +547,9 @@ func TestForwarderConcurrentCloseDoesNotLoseAcceptedEvents(t *testing.T) {
 			defer producers.Done()
 			if err := f.Emit(t.Context(), testEvent(sequence)); err == nil {
 				accepted.Add(1)
+				acceptedMu.Lock()
+				acceptedSequences[sequence] = struct{}{}
+				acceptedMu.Unlock()
 			} else if !errors.Is(err, errClosed) {
 				t.Errorf("Emit: %v", err)
 			}
@@ -550,6 +574,51 @@ func TestForwarderConcurrentCloseDoesNotLoseAcceptedEvents(t *testing.T) {
 	}
 	if got, wantAtLeast := received.Load(), accepted.Load(); got < wantAtLeast {
 		t.Fatalf("received %d events, want at least all %d accepted across shutdown replay", got, wantAtLeast)
+	}
+	acceptedMu.Lock()
+	defer acceptedMu.Unlock()
+	receivedMu.Lock()
+	defer receivedMu.Unlock()
+	for sequence := range acceptedSequences {
+		if receivedBySequence[sequence] == 0 {
+			t.Fatalf("accepted sequence %d was not delivered; received=%v", sequence, receivedBySequence)
+		}
+	}
+}
+
+func TestDeliveryEventIDIsStableForDeduplication(t *testing.T) {
+	t.Parallel()
+
+	event := DeliveryEvent{
+		Severity:   "warn",
+		Type:       "blocked",
+		Timestamp:  time.Unix(42, 0).UTC().Format(time.RFC3339Nano),
+		InstanceID: "agent-a",
+		Fields:     map[string]any{"sequence": 7, "reason": "policy"},
+	}
+	first, err := deliveryEventID(event)
+	if err != nil {
+		t.Fatalf("deliveryEventID: %v", err)
+	}
+	event.ID = "ignored"
+	second, err := deliveryEventID(event)
+	if err != nil {
+		t.Fatalf("deliveryEventID with existing ID: %v", err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("deliveryEventID stability mismatch: first=%q second=%q", first, second)
+	}
+	event.ID = first
+	b, err := json.Marshal(Envelope{Schema: SchemaV1, Event: event})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var envelope Envelope
+	if err := decodeEnvelope(strings.NewReader(string(b)), &envelope); err != nil {
+		t.Fatalf("decodeEnvelope: %v", err)
+	}
+	if envelope.Event.ID != event.ID {
+		t.Fatalf("decoded event ID = %q, want %q", envelope.Event.ID, event.ID)
 	}
 }
 

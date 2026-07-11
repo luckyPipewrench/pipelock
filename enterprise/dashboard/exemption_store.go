@@ -334,7 +334,7 @@ func readBoundedExemptionStore(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	if err := requireOwnerOnlyDashboardFile(info, "exemption store"); err != nil {
+	if err := requireOwnerOnlyDashboardFile(file, info, "exemption store"); err != nil {
 		return nil, err
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxExemptionStoreFileBytes+1))

@@ -94,6 +94,7 @@ type Envelope struct {
 }
 
 type DeliveryEvent struct {
+	ID         string         `json:"id"`
 	Severity   string         `json:"severity"`
 	Type       string         `json:"type"`
 	Timestamp  string         `json:"timestamp"`
@@ -673,11 +674,17 @@ func isPermanentAppendErr(err error) bool {
 }
 
 func (f *Forwarder) append(event emit.Event) error {
-	envelope := Envelope{Schema: SchemaV1, Event: DeliveryEvent{
+	deliveryEvent := DeliveryEvent{
 		Severity: event.Severity.String(), Type: event.Type,
 		Timestamp:  event.Timestamp.UTC().Format(time.RFC3339Nano),
 		InstanceID: event.InstanceID, Fields: event.Fields,
-	}}
+	}
+	id, err := deliveryEventID(deliveryEvent)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errPermanentEncode, err)
+	}
+	deliveryEvent.ID = id
+	envelope := Envelope{Schema: SchemaV1, Event: deliveryEvent}
 	b, err := json.Marshal(envelope)
 	if err != nil {
 		// A serialization failure (NaN/Inf, unsupported type) is permanent:
@@ -821,6 +828,16 @@ func (f *Forwarder) deliver(record []byte) error {
 		return fmt.Errorf("siem forwarder endpoint returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func deliveryEventID(event DeliveryEvent) (string, error) {
+	event.ID = ""
+	b, err := json.Marshal(event)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func openRegularFile(path string, flags int, perm os.FileMode) (*os.File, error) {

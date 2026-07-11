@@ -13,7 +13,14 @@ import (
 
 func openRegularDashboardFile(path, label string) (*os.File, os.FileInfo, error) {
 	cleanPath := filepath.Clean(path)
-	file, err := os.OpenFile(cleanPath, os.O_RDONLY|evidenceNoFollowFlag, 0)
+	before, err := os.Lstat(cleanPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%s is symlinked or non-regular", label)
+	}
+	file, err := os.OpenFile(cleanPath, os.O_RDONLY|evidenceNoFollowFlag|evidenceNonblockFlag, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -22,26 +29,21 @@ func openRegularDashboardFile(path, label string) (*os.File, os.FileInfo, error)
 		_ = file.Close()
 		return nil, nil, err
 	}
-	pathInfo, err := os.Lstat(cleanPath)
-	if err != nil {
+	if !info.Mode().IsRegular() || !os.SameFile(before, info) {
 		_ = file.Close()
-		return nil, nil, err
-	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || !os.SameFile(pathInfo, info) {
-		_ = file.Close()
-		return nil, nil, fmt.Errorf("%s is symlinked, changed, or non-regular", label)
+		return nil, nil, fmt.Errorf("%s changed or is non-regular", label)
 	}
 	return file, info, nil
 }
 
-func requireOwnerOnlyDashboardFile(info os.FileInfo, label string) error {
+func requireOwnerOnlyDashboardFile(file *os.File, info os.FileInfo, label string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s must be a regular file", label)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%s permissions must be 0600, got %#o", label, info.Mode().Perm())
 	}
-	if !dashboardFileOwnedByCurrentUser(info) {
+	if !dashboardFileOwnedByCurrentUser(file, info) {
 		return errors.New(label + " must be owned by the current user")
 	}
 	return nil

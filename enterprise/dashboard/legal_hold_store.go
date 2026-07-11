@@ -267,7 +267,7 @@ func (s *LegalHoldStore) reloadLocked() error {
 		return fmt.Errorf("legal hold store: read: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	if err := requireOwnerOnlyDashboardFile(info, "legal hold store"); err != nil {
+	if err := requireOwnerOnlyDashboardFile(file, info, "legal hold store"); err != nil {
 		return err
 	}
 	data, err := io.ReadAll(io.LimitReader(file, legalHoldFileMaxBytes+1))

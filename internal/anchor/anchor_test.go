@@ -736,18 +736,18 @@ func TestLoadStateMarkerFileRejectsMalformedFiles(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "anchor-state.json")
 			tc.setup(t, path)
-			got, found, err := loadStateMarkerFile(path)
+			got, found, err := LoadStateMarkerFile(path)
 			if tc.wantErr != "" {
 				if err == nil || found || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("loadStateMarkerFile found=%v err=%v, want %q", found, err, tc.wantErr)
+					t.Fatalf("LoadStateMarkerFile found=%v err=%v, want %q", found, err, tc.wantErr)
 				}
 				return
 			}
 			if err != nil || !found {
-				t.Fatalf("loadStateMarkerFile found=%v err=%v, want valid marker", found, err)
+				t.Fatalf("LoadStateMarkerFile found=%v err=%v, want valid marker", found, err)
 			}
 			if got.SessionID != valid.SessionID || got.BundleSHA256 != valid.BundleSHA256 {
-				t.Fatalf("loadStateMarkerFile = %+v, want valid marker", got)
+				t.Fatalf("LoadStateMarkerFile = %+v, want valid marker", got)
 			}
 		})
 	}
@@ -1173,8 +1173,15 @@ func writeLocalLogEntries(t *testing.T, path string, entries []LocalLogEntry) {
 
 func TestWriteStateMarkerRejectsMarkerWithoutIdentity(t *testing.T) {
 	t.Parallel()
-	if err := WriteStateMarker(t.TempDir(), StateMarker{RootHash: "abc"}); err == nil {
-		t.Fatal("WriteStateMarker accepted marker with empty session id")
+	err := WriteStateMarker(t.TempDir(), StateMarker{
+		RootHash:     strings.Repeat("a", 64),
+		Backend:      LocalBackend,
+		AnchoredAt:   time.Now().UTC(),
+		BundleSHA256: strings.Repeat("b", 64),
+		BundlePath:   "bundle.json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "session_id is empty") {
+		t.Fatalf("WriteStateMarker err = %v, want session_id rejection", err)
 	}
 }
 

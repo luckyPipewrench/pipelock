@@ -22,7 +22,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -536,50 +535,14 @@ type anchorState struct {
 const maxEvidenceAnchorStateBytes = 64 * 1024
 
 func readAnchorState(path string) (anchorState, error) {
-	clean := filepath.Clean(path)
-	info, err := os.Lstat(clean)
+	marker, found, err := anchor.LoadStateMarkerFile(path)
 	if err != nil {
 		return anchorState{}, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return anchorState{}, errors.New("anchor-state is not a regular file")
+	if !found {
+		return anchorState{}, fmt.Errorf("read anchor-state: %w", os.ErrNotExist)
 	}
-	if info.Size() > maxEvidenceAnchorStateBytes {
-		return anchorState{}, fmt.Errorf("anchor-state exceeds size limit of %d bytes", maxEvidenceAnchorStateBytes)
-	}
-	file, err := os.Open(clean) // #nosec G304 -- lstat/fstat below fail closed on local replacement races.
-	if err != nil {
-		return anchorState{}, err
-	}
-	defer func() { _ = file.Close() }()
-	openedInfo, err := file.Stat()
-	if err != nil {
-		return anchorState{}, err
-	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		return anchorState{}, errors.New("anchor-state changed during validation")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxEvidenceAnchorStateBytes+1))
-	if err != nil {
-		return anchorState{}, err
-	}
-	if int64(len(data)) > maxEvidenceAnchorStateBytes {
-		return anchorState{}, fmt.Errorf("anchor-state exceeds size limit of %d bytes", maxEvidenceAnchorStateBytes)
-	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
-		return anchorState{}, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var state anchorState
-	if err := dec.Decode(&state); err != nil {
-		return anchorState{}, err
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return anchorState{}, errors.New("anchor-state has trailing JSON")
-	}
-	return state, nil
+	return anchorStateFromMarker(marker), nil
 }
 
 func readAnchorStateForSession(dir, sessionID string) (anchorState, bool, error) {
@@ -596,18 +559,19 @@ func readAnchorStateForSession(dir, sessionID string) (anchorState, bool, error)
 	}
 	var selected anchorState
 	found := false
+	seenSeq := map[uint64]string{}
 	for _, marker := range markers {
 		if marker.SessionID != sessionID {
 			continue
 		}
 		state := anchorStateFromMarker(marker)
+		if previousRoot, ok := seenSeq[state.FinalSeq]; ok && previousRoot != state.RootHash {
+			return anchorState{}, false, fmt.Errorf("ambiguous anchor-state markers for session %q at final_seq %d", sessionID, state.FinalSeq)
+		}
+		seenSeq[state.FinalSeq] = state.RootHash
 		if !found || state.FinalSeq > selected.FinalSeq {
 			selected = state
 			found = true
-			continue
-		}
-		if state.FinalSeq == selected.FinalSeq && state.RootHash != selected.RootHash {
-			return anchorState{}, false, fmt.Errorf("ambiguous anchor-state markers for session %q at final_seq %d", sessionID, state.FinalSeq)
 		}
 	}
 	return selected, found, nil

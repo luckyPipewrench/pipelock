@@ -406,6 +406,18 @@ func TestResolveBundleOutputRejectsHostilePaths(t *testing.T) {
 			wantErr: "must name an anchor bundle file",
 		},
 		{
+			name: "existing directory output",
+			setup: func(t *testing.T) string {
+				t.Helper()
+				dir := filepath.Join(receiptDir, "bundle-dir")
+				if err := os.Mkdir(dir, 0o750); err != nil {
+					t.Fatalf("Mkdir output dir: %v", err)
+				}
+				return dir
+			},
+			wantErr: "must be a regular file",
+		},
+		{
 			name: "missing parent chain",
 			setup: func(t *testing.T) string {
 				t.Helper()

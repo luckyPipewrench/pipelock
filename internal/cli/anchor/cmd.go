@@ -193,8 +193,13 @@ func receiptDirectory(target string, asDir bool) (string, error) {
 }
 
 func validateBundleOutputPath(receiptDir, bundlePath string) error {
-	if info, err := os.Lstat(bundlePath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("--out must not be a symlink")
+	if info, err := os.Lstat(bundlePath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("--out must not be a symlink")
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("--out must be a regular file")
+		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspect --out: %w", err)
 	}

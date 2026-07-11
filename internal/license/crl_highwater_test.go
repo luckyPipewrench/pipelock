@@ -370,6 +370,48 @@ func TestCRLHighWaterContextAndDigestMismatchFailClosed(t *testing.T) {
 		}
 	})
 
+	t.Run("state duplicate key failure", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		data := []byte(`{"generation":1,"generation":2,"context":"` + crlHighWaterContextID(crlFile) + `"}`)
+		if err := os.WriteFile(CRLHighWaterPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+
+		_, _, err := ReadCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "parse license CRL high-water") {
+			t.Fatalf("ReadCRLHighWater duplicate-key error = %v, want parse failure", err)
+		}
+	})
+
+	t.Run("state unknown field failure", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		data := []byte(`{"generation":1,"context":"` + crlHighWaterContextID(crlFile) + `","extra":true}`)
+		if err := os.WriteFile(CRLHighWaterPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+
+		_, _, err := ReadCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "parse license CRL high-water") {
+			t.Fatalf("ReadCRLHighWater unknown-field error = %v, want parse failure", err)
+		}
+	})
+
+	t.Run("context duplicate key failure", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.MkdirAll(filepath.Dir(crlHighWaterContextPath(crlFile)), 0o750); err != nil {
+			t.Fatalf("mkdir context dir: %v", err)
+		}
+		data := []byte(`{"context":"` + crlHighWaterContextID(crlFile) + `","context":"wrong"}`)
+		if err := os.WriteFile(crlHighWaterContextPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write context: %v", err)
+		}
+
+		_, _, err := readDurableCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "parse license CRL high-water context") {
+			t.Fatalf("readDurableCRLHighWater context duplicate-key error = %v, want parse failure", err)
+		}
+	})
+
 	t.Run("context identity mismatch", func(t *testing.T) {
 		crlFile := filepath.Join(t.TempDir(), "crl.json")
 		if err := os.MkdirAll(filepath.Dir(crlHighWaterContextPath(crlFile)), 0o750); err != nil {

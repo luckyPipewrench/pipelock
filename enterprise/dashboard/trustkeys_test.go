@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -588,7 +589,7 @@ func TestFileAnchorResolver_ConfinesAndBoundsEvidenceFiles(t *testing.T) {
 					t.Fatalf("Symlink marker: %v", err)
 				}
 			},
-			wantErr: "symlink",
+			wantErr: "not a regular file",
 		},
 		{
 			name: "marker is not regular",
@@ -1010,6 +1011,9 @@ func TestFileAnchorResolverRejectsHostileIndexEntries(t *testing.T) {
 		setup func(t *testing.T, dir string)
 	}{
 		{name: "symlinked index directory", setup: func(t *testing.T, dir string) {
+			if runtime.GOOS == "windows" {
+				t.Skip("symlink creation needs privileges on Windows")
+			}
 			if err := os.Symlink(t.TempDir(), filepath.Join(dir, "anchor-state.d")); err != nil {
 				t.Fatalf("symlink index dir: %v", err)
 			}
@@ -1021,6 +1025,9 @@ func TestFileAnchorResolverRejectsHostileIndexEntries(t *testing.T) {
 			}
 		}},
 		{name: "symlinked marker entry", setup: func(t *testing.T, dir string) {
+			if runtime.GOOS == "windows" {
+				t.Skip("symlink creation needs privileges on Windows")
+			}
 			mkIndexDir(t, dir)
 			target := filepath.Join(dir, "target.json")
 			if err := os.WriteFile(target, []byte("{}"), anchorTestFileMode); err != nil {

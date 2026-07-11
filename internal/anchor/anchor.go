@@ -295,7 +295,7 @@ func validateStateMarkerIndexDir(indexDir string) error {
 func LoadStateMarkers(dir string) ([]StateMarker, error) {
 	cleanDir := filepath.Clean(dir)
 	var markers []StateMarker
-	if marker, found, err := loadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker)); err != nil {
+	if marker, found, err := LoadStateMarkerFile(filepath.Join(cleanDir, legacyStateMarker)); err != nil {
 		return nil, err
 	} else if found {
 		markers = append(markers, marker)
@@ -340,7 +340,7 @@ func LoadStateMarkers(dir string) ([]StateMarker, error) {
 			return nil, fmt.Errorf("read anchor-state index: %s is not a regular marker", entry.Name())
 		}
 		path := filepath.Join(indexDir, entry.Name())
-		marker, found, err := loadStateMarkerFile(path)
+		marker, found, err := LoadStateMarkerFile(path)
 		if err != nil {
 			return nil, err
 		}
@@ -405,7 +405,10 @@ func stateMarkerTempName() (string, error) {
 	return ".anchor-state-" + hex.EncodeToString(raw[:]) + ".tmp", nil
 }
 
-func loadStateMarkerFile(path string) (StateMarker, bool, error) {
+// LoadStateMarkerFile strictly reads and validates one anchor-state marker file.
+// It rejects symlinks, non-regular files, oversized files, duplicate JSON keys,
+// unknown fields, trailing JSON, and local replacement races.
+func LoadStateMarkerFile(path string) (StateMarker, bool, error) {
 	clean := filepath.Clean(path)
 	info, err := os.Lstat(clean)
 	if errors.Is(err, os.ErrNotExist) {

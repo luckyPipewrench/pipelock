@@ -569,6 +569,31 @@ func TestReadAnchorStateForSessionFailsClosedOnConflicts(t *testing.T) {
 			},
 			wantErr: "ambiguous anchor-state markers",
 		},
+		{
+			name: "ambiguous lower sequence markers",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				first := anchorStateToMarker(validEvidenceHealthAnchorState())
+				first.FinalSeq = 1
+				if err := anchorpkg.WriteStateMarker(dir, first); err != nil {
+					t.Fatalf("WriteStateMarker first: %v", err)
+				}
+				higher := first
+				higher.FinalSeq = 2
+				higher.RootHash = strings.Repeat("c", 64)
+				higher.BundleSHA256 = strings.Repeat("d", 64)
+				if err := anchorpkg.WriteStateMarker(dir, higher); err != nil {
+					t.Fatalf("WriteStateMarker higher: %v", err)
+				}
+				conflictingLower := first
+				conflictingLower.RootHash = strings.Repeat("e", 64)
+				conflictingLower.BundleSHA256 = strings.Repeat("f", 64)
+				if err := anchorpkg.WriteStateMarker(dir, conflictingLower); err != nil {
+					t.Fatalf("WriteStateMarker conflicting lower: %v", err)
+				}
+			},
+			wantErr: "ambiguous anchor-state markers",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

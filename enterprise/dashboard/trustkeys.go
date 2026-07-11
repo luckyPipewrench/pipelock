@@ -5,11 +5,9 @@
 package dashboard
 
 import (
-	"bytes"
 	"crypto"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,7 +18,6 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
-	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -166,122 +163,17 @@ func loadAnchorMarker(baseDir string) (anchorStateMarker, bool, error) {
 }
 
 func loadAnchorMarkers(baseDir string) ([]anchorStateMarker, error) {
-	var markers []anchorStateMarker
-	legacy, found, err := loadAnchorMarkerFile(baseDir, "anchor-state.json")
+	markers, err := anchor.LoadStateMarkers(baseDir)
 	if err != nil {
 		return nil, err
 	}
-	if found {
-		markers = append(markers, legacy)
-	}
-	indexMarkers, err := loadAnchorIndexMarkers(baseDir)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[string]string, len(markers)+len(indexMarkers))
+	now := time.Now()
 	for _, marker := range markers {
-		seen[anchorStateIdentity(marker)] = "anchor-state.json"
-	}
-	for _, indexed := range indexMarkers {
-		key := anchorStateIdentity(indexed.marker)
-		if previous, ok := seen[key]; ok {
-			return nil, fmt.Errorf("anchor-state marker %q duplicates %q", indexed.name, previous)
+		if marker.AnchoredAt.IsZero() || marker.AnchoredAt.After(now) {
+			return nil, errors.New("anchor-state marker has invalid required fields")
 		}
-		seen[key] = indexed.name
-		markers = append(markers, indexed.marker)
 	}
 	return markers, nil
-}
-
-type indexedAnchorMarker struct {
-	name   string
-	marker anchorStateMarker
-}
-
-func loadAnchorIndexMarkers(baseDir string) ([]indexedAnchorMarker, error) {
-	indexDir := filepath.Join(baseDir, "anchor-state.d")
-	indexInfo, err := os.Lstat(indexDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("inspect anchor-state index: %w", err)
-	}
-	if indexInfo.Mode()&os.ModeSymlink != 0 || !indexInfo.IsDir() {
-		return nil, errors.New("anchor-state index is not a regular directory")
-	}
-	entries, err := os.ReadDir(indexDir)
-	if err != nil {
-		return nil, fmt.Errorf("read anchor-state index: %w", err)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	markers := make([]indexedAnchorMarker, 0, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if anchor.IsStateMarkerTempName(name) {
-			continue
-		}
-		if entry.IsDir() || filepath.Ext(name) != ".json" {
-			return nil, fmt.Errorf("read anchor-state index: unexpected marker %q", name)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, fmt.Errorf("inspect anchor-state marker %q: %w", name, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("read anchor-state marker %q: not a regular file", name)
-		}
-		marker, found, err := loadAnchorMarkerFile(baseDir, filepath.Join("anchor-state.d", name))
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			continue
-		}
-		wantPath, err := anchor.StateMarkerPath(baseDir, marker)
-		if err != nil {
-			return nil, err
-		}
-		if filepath.Base(wantPath) != name {
-			return nil, fmt.Errorf("anchor-state marker %q does not match marker identity", name)
-		}
-		markers = append(markers, indexedAnchorMarker{name: name, marker: marker})
-	}
-	return markers, nil
-}
-
-func loadAnchorMarkerFile(baseDir, relativePath string) (anchorStateMarker, bool, error) {
-	data, err := readConfinedRegularFile(baseDir, relativePath, maxAnchorMarkerBytes, "anchor-state marker")
-	if errors.Is(err, os.ErrNotExist) {
-		return anchorStateMarker{}, false, nil
-	}
-	if err != nil {
-		return anchorStateMarker{}, false, err
-	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
-		return anchorStateMarker{}, false, fmt.Errorf("parse anchor-state marker: %w", err)
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var marker anchorStateMarker
-	if err := dec.Decode(&marker); err != nil {
-		return anchorStateMarker{}, false, fmt.Errorf("parse anchor-state marker: %w", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return anchorStateMarker{}, false, errors.New("parse anchor-state marker: trailing JSON")
-	}
-	if marker.Schema != "pipelock.anchorstate.v1" || strings.TrimSpace(marker.SessionID) == "" ||
-		strings.TrimSpace(marker.BundlePath) == "" || marker.AnchoredAt.IsZero() || marker.AnchoredAt.After(time.Now()) ||
-		len(marker.RootHash) != sha256.Size*2 ||
-		len(marker.BundleSHA256) != sha256.Size*2 {
-		return anchorStateMarker{}, false, errors.New("anchor-state marker has invalid required fields")
-	}
-	return marker, true, nil
-}
-
-func anchorStateIdentity(marker anchorStateMarker) string {
-	return marker.SessionID + "\x00" + fmt.Sprint(marker.FinalSeq) + "\x00" + marker.RootHash
 }
 
 func readConfinedRegularFile(baseDir, relativePath string, maxBytes int64, label string) ([]byte, error) {

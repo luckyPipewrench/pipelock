@@ -4,6 +4,7 @@
 package license
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
@@ -141,8 +143,8 @@ func readCRLHighWaterFileForContext(path, label, crlFile string) (generation uin
 		return 0, false, nil
 	}
 	var state crlHighWaterState
-	if jsonErr := json.Unmarshal(data, &state); jsonErr != nil {
-		return 0, false, fmt.Errorf("parse %s: %w", label, jsonErr)
+	if err := decodeCRLHighWaterJSON(data, label, &state); err != nil {
+		return 0, false, err
 	}
 	if crlFile != "" {
 		if state.Context != "" && state.Context != crlHighWaterContextID(crlFile) {
@@ -251,13 +253,29 @@ func readCRLHighWaterContext(crlFile string) (bool, error) {
 		return false, nil
 	}
 	var ctx crlHighWaterContext
-	if err := json.Unmarshal(data, &ctx); err != nil {
-		return false, fmt.Errorf("parse license CRL high-water context: %w", err)
+	if err := decodeCRLHighWaterJSON(data, "license CRL high-water context", &ctx); err != nil {
+		return false, err
 	}
 	if ctx.Context != crlHighWaterContextID(crlFile) {
 		return false, fmt.Errorf("license CRL high-water context mismatch")
 	}
 	return true, nil
+}
+
+func decodeCRLHighWaterJSON(data []byte, label string, dst any) error {
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return fmt.Errorf("parse %s: %w", label, err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return fmt.Errorf("parse %s: %w", label, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("parse %s: trailing JSON", label)
+	}
+	return nil
 }
 
 func readCRLHighWaterStateBytes(path, label string) ([]byte, bool, error) {

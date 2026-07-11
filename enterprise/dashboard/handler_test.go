@@ -38,6 +38,7 @@ func TestAuditLogValue(t *testing.T) {
 		{"trimmed empty", " \t\n ", "-"},
 		{"printable", " operator-1 ", "operator-1"},
 		{"control characters", "operator\nadmin\trole", "operator?admin?role"},
+		{"only non printable", "\x01\x02", "??"},
 		{"non ascii", "role-\u2603", "role-?"},
 	}
 	for _, tc := range tests {
@@ -851,6 +852,42 @@ func TestHandler_AuditWrittenForPermissionDenied(t *testing.T) {
 		"auth_method=mtls",
 		"auth_subject=\"spki-sha256\"",
 		"auth_roles=\"metadata\"",
+		"reason=permission_denied",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("permission-denied audit missing %q: %s", want, log)
+		}
+	}
+	if strings.Contains(log, "pipelock-dashboard access") {
+		t.Fatalf("permission-denied request must not be audited as access: %s", log)
+	}
+}
+
+func TestHandler_AuditWrittenForPermissionDeniedWithoutAuthInfo(t *testing.T) {
+	t.Parallel()
+	dir, trusted := writeTrustedHandlerSession(t)
+
+	var buf strings.Builder
+	handler := New(Options{
+		ReceiptDir:  dir,
+		TrustedKeys: trusted,
+		HasFeature:  allowAgentsFeature,
+		AuthorizePermission: func(*http.Request, Permission) error {
+			return errors.New("permission denied")
+		},
+		AuditWriter: &buf,
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/session/"+testSessionID, nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	log := buf.String()
+	for _, want := range []string{
+		"pipelock-dashboard denied",
+		"auth_method=-",
+		"auth_subject=\"-\"",
+		"auth_roles=\"-\"",
 		"reason=permission_denied",
 	} {
 		if !strings.Contains(log, want) {

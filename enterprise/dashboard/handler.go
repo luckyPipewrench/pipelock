@@ -346,20 +346,7 @@ func (d *dashboardHandler) recordAudit(r *http.Request, raw bool, permission Per
 	if raw {
 		role = "raw"
 	}
-	session := r.URL.Query().Get("session")
-	if session == "" {
-		// Trim to the session ID for the audit field. The investigator path is
-		// /session/<id>/receipt/<seq>, so cut at the first "/" to log <id>
-		// rather than the full sub-path.
-		rest := strings.TrimPrefix(r.URL.Path, "/session/")
-		if i := strings.IndexByte(rest, '/'); i >= 0 {
-			rest = rest[:i]
-		}
-		session = rest
-	}
-	if session == "" {
-		session = "-"
-	}
+	session := sessionFromRequest(r)
 	sessionDisplay, sessionHash := auditSessionField(session)
 	auth := authAuditInfoFromRequest(r)
 	d.auditMu.Lock()
@@ -374,17 +361,7 @@ func (d *dashboardHandler) recordPermissionDeniedAudit(r *http.Request, permissi
 	if d.auditWriter == nil {
 		return
 	}
-	session := r.URL.Query().Get("session")
-	if session == "" {
-		rest := strings.TrimPrefix(r.URL.Path, "/session/")
-		if i := strings.IndexByte(rest, '/'); i >= 0 {
-			rest = rest[:i]
-		}
-		session = rest
-	}
-	if session == "" {
-		session = "-"
-	}
+	session := sessionFromRequest(r)
 	sessionDisplay, sessionHash := auditSessionField(session)
 	auth := authAuditInfoFromRequest(r)
 	d.auditMu.Lock()
@@ -392,6 +369,29 @@ func (d *dashboardHandler) recordPermissionDeniedAudit(r *http.Request, permissi
 	_, _ = fmt.Fprintf(d.auditWriter, "%s pipelock-dashboard denied permission=%q method=%s path=%q session=%q session_sha256=%s auth_method=%s auth_subject=%q auth_roles=%q reason=permission_denied remote=%s\n",
 		time.Now().UTC().Format(time.RFC3339), permission, r.Method, r.URL.Path,
 		sessionDisplay, sessionHash, auth.Method, auth.Subject, strings.Join(auth.Roles, ","), r.RemoteAddr)
+}
+
+func sessionFromRequest(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return "-"
+	}
+	if session := r.URL.Query().Get("session"); session != "" {
+		return session
+	}
+	if !strings.HasPrefix(r.URL.Path, "/session/") {
+		return "-"
+	}
+	// Trim to the session ID for the audit field. The investigator path is
+	// /session/<id>/receipt/<seq>, so cut at the first "/" to log <id>
+	// rather than the full sub-path.
+	rest := strings.TrimPrefix(r.URL.Path, "/session/")
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[:i]
+	}
+	if rest == "" {
+		return "-"
+	}
+	return rest
 }
 
 func auditSessionField(session string) (display, hash string) {

@@ -104,18 +104,7 @@ func evidencePaths(sourceDir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var paths []string
-	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), "evidence-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
-			return nil, fmt.Errorf("source evidence %s is non-regular", entry.Name())
-		}
-		paths = append(paths, filepath.Join(canonicalDir, entry.Name()))
-	}
-	sort.Strings(paths)
-	return paths, nil
+	return filterEvidenceEntries(canonicalDir, entries)
 }
 
 func boundedEvidencePaths(sourceDir string) ([]string, error) {
@@ -135,6 +124,10 @@ func boundedEvidencePaths(sourceDir string) ([]string, error) {
 	if len(entries) > maxEvidenceVerificationFiles {
 		return nil, errEvidenceVerificationTooLarge
 	}
+	return filterEvidenceEntries(canonicalDir, entries)
+}
+
+func filterEvidenceEntries(canonicalDir string, entries []os.DirEntry) ([]string, error) {
 	var paths []string
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Name(), "evidence-") || !strings.HasSuffix(entry.Name(), ".jsonl") {

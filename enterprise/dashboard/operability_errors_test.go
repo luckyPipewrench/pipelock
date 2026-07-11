@@ -458,6 +458,16 @@ func TestRebuildReadModel_ErrorPaths(t *testing.T) {
 		if err := os.Symlink(target, filepath.Join(sourceDir, "evidence-agent-0.jsonl")); err != nil {
 			t.Fatal(err)
 		}
+		for name, enumerate := range map[string]func(string) ([]string, error){
+			"rebuild":      evidencePaths,
+			"verification": boundedEvidencePaths,
+		} {
+			t.Run(name, func(t *testing.T) {
+				if _, err := enumerate(sourceDir); err == nil || !strings.Contains(err.Error(), "non-regular") {
+					t.Fatalf("symlinked evidence error = %v", err)
+				}
+			})
+		}
 		err := RebuildReadModel(RebuildOptions{SourceDir: sourceDir, Output: filepath.Join(t.TempDir(), ReadModelIndexFile)})
 		if err == nil || !strings.Contains(err.Error(), "non-regular") {
 			t.Fatalf("symlinked evidence error = %v", err)

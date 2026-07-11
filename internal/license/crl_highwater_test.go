@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +106,47 @@ func TestReadCRLHighWater(t *testing.T) {
 		}
 		if _, _, err := ReadCRLHighWater(crlFile); err == nil {
 			t.Fatal("corrupt high-water must error, got nil")
+		}
+	})
+
+	t.Run("symlink high-water fails closed", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation needs privileges on Windows")
+		}
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		target := filepath.Join(t.TempDir(), "target.highwater")
+		if err := writeCRLHighWaterFileForCRL(target, crlFile, 7); err != nil {
+			t.Fatalf("write target high-water: %v", err)
+		}
+		if err := os.Symlink(target, CRLHighWaterPath(crlFile)); err != nil {
+			t.Fatalf("symlink high-water: %v", err)
+		}
+		if _, _, err := ReadCRLHighWater(crlFile); err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("symlink high-water err = %v, want regular-file failure", err)
+		}
+	})
+
+	t.Run("symlink context file fails closed", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink creation needs privileges on Windows")
+		}
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		target := filepath.Join(t.TempDir(), "context.json")
+		data, err := json.Marshal(crlHighWaterContext{Context: crlHighWaterContextID(crlFile)})
+		if err != nil {
+			t.Fatalf("marshal context: %v", err)
+		}
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			t.Fatalf("write target context: %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(crlHighWaterContextPath(crlFile)), 0o750); err != nil {
+			t.Fatalf("mkdir context dir: %v", err)
+		}
+		if err := os.Symlink(target, crlHighWaterContextPath(crlFile)); err != nil {
+			t.Fatalf("symlink context: %v", err)
+		}
+		if _, err := readCRLHighWaterContext(crlFile); err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("symlink context err = %v, want regular-file failure", err)
 		}
 	})
 }
@@ -325,6 +367,48 @@ func TestCRLHighWaterContextAndDigestMismatchFailClosed(t *testing.T) {
 		_, _, err := readDurableCRLHighWater(crlFile)
 		if err == nil || !strings.Contains(err.Error(), "parse license CRL high-water context") {
 			t.Fatalf("readDurableCRLHighWater context error = %v, want parse failure", err)
+		}
+	})
+
+	t.Run("state duplicate key failure", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		data := []byte(`{"generation":1,"generation":2,"context":"` + crlHighWaterContextID(crlFile) + `"}`)
+		if err := os.WriteFile(CRLHighWaterPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+
+		_, _, err := ReadCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "parse license CRL high-water") {
+			t.Fatalf("ReadCRLHighWater duplicate-key error = %v, want parse failure", err)
+		}
+	})
+
+	t.Run("state unknown field failure", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		data := []byte(`{"generation":1,"context":"` + crlHighWaterContextID(crlFile) + `","extra":true}`)
+		if err := os.WriteFile(CRLHighWaterPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+
+		_, _, err := ReadCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "parse license CRL high-water") {
+			t.Fatalf("ReadCRLHighWater unknown-field error = %v, want parse failure", err)
+		}
+	})
+
+	t.Run("context duplicate key failure", func(t *testing.T) {
+		crlFile := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.MkdirAll(filepath.Dir(crlHighWaterContextPath(crlFile)), 0o750); err != nil {
+			t.Fatalf("mkdir context dir: %v", err)
+		}
+		data := []byte(`{"context":"` + crlHighWaterContextID(crlFile) + `","context":"wrong"}`)
+		if err := os.WriteFile(crlHighWaterContextPath(crlFile), data, 0o600); err != nil {
+			t.Fatalf("write context: %v", err)
+		}
+
+		_, _, err := readDurableCRLHighWater(crlFile)
+		if err == nil || !strings.Contains(err.Error(), "parse license CRL high-water context") {
+			t.Fatalf("readDurableCRLHighWater context duplicate-key error = %v, want parse failure", err)
 		}
 	})
 

@@ -4,18 +4,21 @@
 package license
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const (
@@ -132,26 +135,16 @@ func ReadCRLHighWater(crlFile string) (generation uint64, found bool, err error)
 }
 
 func readCRLHighWaterFileForContext(path, label, crlFile string) (generation uint64, found bool, err error) {
-	info, statErr := os.Stat(path)
-	if statErr != nil {
-		if errors.Is(statErr, os.ErrNotExist) {
-			return 0, false, nil
-		}
-		return 0, false, fmt.Errorf("stat %s: %w", label, statErr)
-	}
-	if !info.Mode().IsRegular() {
-		return 0, false, fmt.Errorf("%s must be a regular file", label)
-	}
-	if info.Size() > crlHighWaterMaxSize {
-		return 0, false, fmt.Errorf("%s exceeds maximum size", label)
-	}
-	data, readErr := os.ReadFile(path) // #nosec G304 -- path derives from operator-configured CRL file, cleaned and size-capped
+	data, found, readErr := readCRLHighWaterStateBytes(path, label)
 	if readErr != nil {
-		return 0, false, fmt.Errorf("read %s: %w", label, readErr)
+		return 0, false, readErr
+	}
+	if !found {
+		return 0, false, nil
 	}
 	var state crlHighWaterState
-	if jsonErr := json.Unmarshal(data, &state); jsonErr != nil {
-		return 0, false, fmt.Errorf("parse %s: %w", label, jsonErr)
+	if err := decodeCRLHighWaterJSON(data, label, &state); err != nil {
+		return 0, false, err
 	}
 	if crlFile != "" {
 		if state.Context != "" && state.Context != crlHighWaterContextID(crlFile) {
@@ -252,31 +245,76 @@ func writeCRLHighWater(crlFile string, generation uint64) error {
 
 func readCRLHighWaterContext(crlFile string) (bool, error) {
 	path := crlHighWaterContextPath(crlFile)
-	info, statErr := os.Stat(path)
-	if statErr != nil {
-		if errors.Is(statErr, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("stat license CRL high-water context: %w", statErr)
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("license CRL high-water context must be a regular file")
-	}
-	if info.Size() > crlHighWaterMaxSize {
-		return false, fmt.Errorf("license CRL high-water context exceeds maximum size")
-	}
-	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- path derives from operator-configured CRL file and protected state root
+	data, found, err := readCRLHighWaterStateBytes(path, "license CRL high-water context")
 	if err != nil {
-		return false, fmt.Errorf("read license CRL high-water context: %w", err)
+		return false, err
+	}
+	if !found {
+		return false, nil
 	}
 	var ctx crlHighWaterContext
-	if err := json.Unmarshal(data, &ctx); err != nil {
-		return false, fmt.Errorf("parse license CRL high-water context: %w", err)
+	if err := decodeCRLHighWaterJSON(data, "license CRL high-water context", &ctx); err != nil {
+		return false, err
 	}
 	if ctx.Context != crlHighWaterContextID(crlFile) {
 		return false, fmt.Errorf("license CRL high-water context mismatch")
 	}
 	return true, nil
+}
+
+func decodeCRLHighWaterJSON(data []byte, label string, dst any) error {
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return fmt.Errorf("parse %s: %w", label, err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return fmt.Errorf("parse %s: %w", label, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("parse %s: trailing JSON", label)
+	}
+	return nil
+}
+
+func readCRLHighWaterStateBytes(path, label string) ([]byte, bool, error) {
+	clean := filepath.Clean(path)
+	info, statErr := os.Lstat(clean)
+	if statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("stat %s: %w", label, statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s must be a regular file", label)
+	}
+	if info.Size() > crlHighWaterMaxSize {
+		return nil, false, fmt.Errorf("%s exceeds maximum size", label)
+	}
+	file, err := os.Open(clean) // #nosec G304 -- path derives from operator-configured CRL file; lstat/fstat fail closed on local replacement races.
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s: %w", label, err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, false, fmt.Errorf("stat opened %s: %w", label, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return nil, false, fmt.Errorf("%s changed during validation", label)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, crlHighWaterMaxSize+1))
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s: %w", label, err)
+	}
+	if len(data) > crlHighWaterMaxSize {
+		return nil, false, fmt.Errorf("%s exceeds maximum size", label)
+	}
+	return data, true, nil
 }
 
 func writeCRLHighWaterContext(crlFile string) error {

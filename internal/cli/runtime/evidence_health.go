@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -183,11 +183,13 @@ func (h *evidenceHealthMonitor) refreshAnchor() {
 		h.setAnchor(nil)
 		return
 	}
-	state, err := readAnchorState(filepath.Join(h.recorder.Dir(), evidenceAnchorStateFile))
+	state, found, err := readAnchorStateForSession(h.recorder.Dir(), transcriptRootSessionID)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			h.fail("sampler_error", err)
-		}
+		h.setAnchor(nil)
+		h.fail("sampler_error", err)
+		return
+	}
+	if !found {
 		h.setAnchor(nil)
 		return
 	}
@@ -530,25 +532,63 @@ type anchorState struct {
 	BundlePath   string    `json:"bundle_path"`
 }
 
+const maxEvidenceAnchorStateBytes = 64 * 1024
+
 func readAnchorState(path string) (anchorState, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	marker, found, err := anchor.LoadStateMarkerFile(path)
 	if err != nil {
 		return anchorState{}, err
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
-		return anchorState{}, err
+	if !found {
+		return anchorState{}, fmt.Errorf("read anchor-state: %w", os.ErrNotExist)
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var state anchorState
-	if err := dec.Decode(&state); err != nil {
-		return anchorState{}, err
+	return anchorStateFromMarker(marker), nil
+}
+
+func readAnchorStateForSession(dir, sessionID string) (anchorState, bool, error) {
+	legacy, err := readAnchorState(filepath.Join(dir, evidenceAnchorStateFile))
+	if err == nil && legacy.SessionID != sessionID {
+		return anchorState{}, false, fmt.Errorf("anchor-state session_id %q does not match %q", legacy.SessionID, sessionID)
 	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return anchorState{}, errors.New("anchor-state has trailing JSON")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return anchorState{}, false, err
 	}
-	return state, nil
+	markers, err := anchor.LoadStateMarkers(dir)
+	if err != nil {
+		return anchorState{}, false, err
+	}
+	var selected anchorState
+	found := false
+	seenSeq := map[uint64]string{}
+	for _, marker := range markers {
+		if marker.SessionID != sessionID {
+			continue
+		}
+		state := anchorStateFromMarker(marker)
+		if previousRoot, ok := seenSeq[state.FinalSeq]; ok && previousRoot != state.RootHash {
+			return anchorState{}, false, fmt.Errorf("ambiguous anchor-state markers for session %q at final_seq %d", sessionID, state.FinalSeq)
+		}
+		seenSeq[state.FinalSeq] = state.RootHash
+		if !found || state.FinalSeq > selected.FinalSeq {
+			selected = state
+			found = true
+		}
+	}
+	return selected, found, nil
+}
+
+func anchorStateFromMarker(marker anchor.StateMarker) anchorState {
+	return anchorState{
+		Schema:       marker.Schema,
+		SessionID:    marker.SessionID,
+		FinalSeq:     marker.FinalSeq,
+		RootHash:     marker.RootHash,
+		Backend:      marker.Backend,
+		LogIndex:     marker.LogIndex,
+		AnchoredAt:   marker.AnchoredAt,
+		BundleSHA256: marker.BundleSHA256,
+		BundlePath:   marker.BundlePath,
+	}
 }
 
 func validateAnchorStateMarker(state anchorState, now time.Time) error {

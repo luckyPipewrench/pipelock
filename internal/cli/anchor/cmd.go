@@ -95,6 +95,10 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	if err != nil {
 		return err
 	}
+	output, err := resolveBundleOutput(target, opts)
+	if err != nil {
+		return err
+	}
 	checkpoint, err := anchorpkg.BuildCheckpoint(sessionID, receipts, trustedKeys)
 	if err != nil {
 		return err
@@ -108,14 +112,15 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 		return err
 	}
 	bundle := anchorpkg.NewBundle(checkpoint, proof)
-	if err := anchorpkg.WriteBundle(opts.output, bundle); err != nil {
+	bundleBytes, err := anchorpkg.WriteBundleUnderDir(output.receiptDir, output.markerPath, bundle)
+	if err != nil {
 		return err
 	}
-	if err := writeAnchorStateMarker(target, opts, checkpoint, proof); err != nil {
+	if err := writeAnchorStateMarker(output, checkpoint, proof, bundleBytes); err != nil {
 		return err
 	}
 
-	_, _ = fmt.Fprintf(out, "ANCHOR BUNDLE WRITTEN: %s\n", filepath.Clean(opts.output))
+	_, _ = fmt.Fprintf(out, "ANCHOR BUNDLE WRITTEN: %s\n", output.bundlePath)
 	_, _ = fmt.Fprintf(out, "  Backend:       %s\n", proof.Backend)
 	if proof.Rekor != nil {
 		_, _ = fmt.Fprintf(out, "  Rekor URL:     %s\n", proof.Rekor.URL)
@@ -131,17 +136,108 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 	return nil
 }
 
-func writeAnchorStateMarker(target string, opts receiptsOptions, checkpoint anchorpkg.Checkpoint, proof anchorpkg.Proof) error {
-	bundleBytes, err := os.ReadFile(filepath.Clean(opts.output))
+type bundleOutput struct {
+	receiptDir string
+	bundlePath string
+	markerPath string
+}
+
+func resolveBundleOutput(target string, opts receiptsOptions) (bundleOutput, error) {
+	receiptDir, err := receiptDirectory(target, opts.asDir)
 	if err != nil {
-		return fmt.Errorf("read anchor bundle for state marker: %w", err)
+		return bundleOutput{}, err
 	}
+	requested := filepath.Clean(opts.output)
+	var bundlePath string
+	if filepath.IsAbs(requested) {
+		bundlePath = requested
+	} else {
+		bundlePath = filepath.Join(receiptDir, requested)
+	}
+	bundlePath, err = filepath.Abs(bundlePath)
+	if err != nil {
+		return bundleOutput{}, fmt.Errorf("resolve --out: %w", err)
+	}
+	rel, err := filepath.Rel(receiptDir, bundlePath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return bundleOutput{}, fmt.Errorf("--out must resolve under the receipt directory")
+	}
+	if rel == "." {
+		return bundleOutput{}, fmt.Errorf("--out must name an anchor bundle file under the receipt directory")
+	}
+	if err := validateBundleOutputPath(receiptDir, bundlePath); err != nil {
+		return bundleOutput{}, err
+	}
+	return bundleOutput{receiptDir: receiptDir, bundlePath: bundlePath, markerPath: filepath.ToSlash(rel)}, nil
+}
+
+func receiptDirectory(target string, asDir bool) (string, error) {
+	cleanTarget, err := filepath.Abs(filepath.Clean(target))
+	if err != nil {
+		return "", fmt.Errorf("resolve receipt directory: %w", err)
+	}
+	if !asDir {
+		cleanTarget = filepath.Dir(cleanTarget)
+	}
+	resolved, err := filepath.EvalSymlinks(cleanTarget)
+	if err != nil {
+		return "", fmt.Errorf("resolve receipt directory: %w", err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("inspect receipt directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("receipt directory is not a directory")
+	}
+	return resolved, nil
+}
+
+func validateBundleOutputPath(receiptDir, bundlePath string) error {
+	if info, err := os.Lstat(bundlePath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("--out must not be a symlink")
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("--out must be a regular file")
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect --out: %w", err)
+	}
+	parent := filepath.Dir(bundlePath)
+	for {
+		info, err := os.Lstat(parent)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("--out parent must not be a symlink")
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("--out parent is not a directory")
+			}
+			resolved, err := filepath.EvalSymlinks(parent)
+			if err != nil {
+				return fmt.Errorf("resolve --out parent: %w", err)
+			}
+			rel, err := filepath.Rel(receiptDir, resolved)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("--out parent resolves outside the receipt directory")
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect --out parent: %w", err)
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return fmt.Errorf("resolve --out parent: no existing parent directory")
+		}
+		parent = next
+	}
+}
+
+func writeAnchorStateMarker(output bundleOutput, checkpoint anchorpkg.Checkpoint, proof anchorpkg.Proof, bundleBytes []byte) error {
 	sum := sha256.Sum256(bundleBytes)
-	dir := filepath.Dir(filepath.Clean(target))
-	if opts.asDir {
-		dir = filepath.Clean(target)
-	}
-	return anchorpkg.WriteStateMarker(dir, anchorpkg.StateMarker{
+	return anchorpkg.WriteStateMarker(output.receiptDir, anchorpkg.StateMarker{
 		SessionID:    checkpoint.SessionID,
 		FinalSeq:     checkpoint.FinalSeq,
 		RootHash:     checkpoint.RootHash,
@@ -149,7 +245,7 @@ func writeAnchorStateMarker(target string, opts receiptsOptions, checkpoint anch
 		LogIndex:     proof.LogIndex,
 		AnchoredAt:   time.Now().UTC(),
 		BundleSHA256: hex.EncodeToString(sum[:]),
-		BundlePath:   filepath.Clean(opts.output),
+		BundlePath:   output.markerPath,
 	})
 }
 

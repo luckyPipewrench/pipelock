@@ -36,8 +36,9 @@ func TestLiveRun_CollectorBeat_AllowlistDoesNotBypassContentScanning(t *testing.
 
 	const runNonce = "collector-beat-run"
 	lr, err := StartLiveRun(context.Background(), LiveRunOpts{
-		ScenarioID: LiveDemoScenarioID,
-		RunNonce:   runNonce,
+		ScenarioID:         LiveDemoScenarioID,
+		RunNonce:           runNonce,
+		StrictLabAllowlist: true,
 	})
 	if err != nil {
 		t.Fatalf("StartLiveRun: %v", err)

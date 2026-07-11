@@ -91,6 +91,11 @@ type LiveRunOpts struct {
 	// bound port is signed into the HostContainmentWitness and the contained agent
 	// must reach EXACTLY it, so a port that does not match the nft rule fails closed.
 	ProxyPort int
+	// StrictLabAllowlist, when true for deterministic runs, makes the lab proxy
+	// enforce an exact allowlist containing only the safe target and collector. It
+	// keeps the collector content-scan beat reachable while making arbitrary-host
+	// negative probes fail before DNS.
+	StrictLabAllowlist bool
 	// OrchestratorKeyPath, when non-empty, loads the run's orchestrator
 	// (trust-root) signing key from disk instead of generating an ephemeral one.
 	OrchestratorKeyPath string
@@ -356,6 +361,9 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 			},
 			Reason: "benign lab read host is GET-only; a write method could carry a secret body",
 		})
+	} else if opts.StrictLabAllowlist {
+		cfg.Mode = config.ModeStrict
+		cfg.APIAllowlist = []string{liveRunSafeHost, liveRunExfilHost}
 	}
 
 	cfg.ApplyDefaults()

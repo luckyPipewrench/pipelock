@@ -31,7 +31,7 @@ const (
 	auditSessionMaxBytes  = 128
 )
 
-//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html
+//go:embed evidence.tmpl.html exemptions.tmpl.html agents.tmpl.html investigator.tmpl.html fleetoverview.tmpl.html workbench.tmpl.html incident.tmpl.html budgets.tmpl.html trustkeys.tmpl.html compliance.tmpl.html
 var templateFS embed.FS
 
 var (
@@ -44,6 +44,7 @@ var (
 	incidentTemplate      = template.Must(template.ParseFS(templateFS, "incident.tmpl.html"))
 	budgetsTemplate       = template.Must(template.ParseFS(templateFS, "budgets.tmpl.html"))
 	trustKeysTemplate     = template.Must(template.ParseFS(templateFS, "trustkeys.tmpl.html"))
+	complianceTemplate    = template.Must(template.ParseFS(templateFS, "compliance.tmpl.html"))
 )
 
 type pageData struct {
@@ -73,6 +74,7 @@ const (
 	PermissionSignedActionRead Permission = "dashboard:signed_action:read"
 	PermissionIncidentRead     Permission = "dashboard:incident:read"
 	PermissionTrustKeysRead    Permission = "dashboard:trust_keys:read"
+	PermissionComplianceRead   Permission = "dashboard:compliance:read"
 )
 
 const (
@@ -87,6 +89,11 @@ type routeSpec struct {
 	permission       Permission
 	handler          func(*dashboardHandler) http.Handler
 }
+
+// CompliancePath is the single source of truth for the compliance route, shared
+// by the route table and the auditor-token authorization gate so the auth
+// boundary cannot drift from the route if the path changes.
+const CompliancePath = "/compliance"
 
 func dashboardRouteSpecs() []routeSpec {
 	return []routeSpec{
@@ -151,6 +158,15 @@ func dashboardRouteSpecs() []routeSpec {
 			permission:       PermissionTrustKeysRead,
 			handler: func(d *dashboardHandler) http.Handler {
 				return http.HandlerFunc(d.handleTrustKeys)
+			},
+		},
+		{
+			pattern:          CompliancePath,
+			feature:          license.FeatureAgents,
+			forbiddenMessage: agentsFeatureForbidden,
+			permission:       PermissionComplianceRead,
+			handler: func(d *dashboardHandler) http.Handler {
+				return http.HandlerFunc(d.handleCompliance)
 			},
 		},
 		{
@@ -412,6 +428,12 @@ func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Han
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if !knownPermission(spec.permission) {
+			w.Header().Set("Content-Type", contentTypeText)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("forbidden\n"))
+			return
+		}
 		if d.hasFeature == nil || !d.hasFeature(spec.feature) {
 			w.Header().Set("Content-Type", contentTypeText)
 			w.WriteHeader(http.StatusForbidden)
@@ -440,6 +462,47 @@ func (d *dashboardHandler) routeGate(spec routeSpec, next http.Handler) http.Han
 		d.recordAudit(r, raw)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), rawAllowedContextKey{}, raw)))
 	})
+}
+
+func knownPermission(permission Permission) bool {
+	for _, known := range AllPermissions() {
+		if permission == known {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *dashboardHandler) handleCompliance(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != CompliancePath {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireGet(w, r) {
+		return
+	}
+	orgID := r.URL.Query().Get("org_id")
+	fleetID := r.URL.Query().Get("fleet_id")
+	_, sourceConfigured := d.model.complianceFleetSource()
+	if !d.authorizeFleetScopeRequest(w, r, DecisionScope{OrgID: orgID, FleetID: fleetID}, sourceConfigured, false) {
+		return
+	}
+	page, err := d.model.Compliance(r.Context(), orgID, fleetID)
+	if err != nil {
+		if errors.Is(err, errInvalidFleetScope) {
+			http.Error(w, "invalid fleet scope", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "could not build compliance read model", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := complianceTemplate.Execute(&buf, page); err != nil {
+		http.Error(w, "could not render compliance console", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {

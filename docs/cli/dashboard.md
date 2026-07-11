@@ -26,13 +26,23 @@ a license that grants the `agents` feature (Pro or Enterprise); without one it
 refuses to start. The dashboard is read-only: it renders evidence and never
 mutates policy, receipts, or runtime state.
 
+The Compliance console at `/compliance` is a source-grounded mapping view over
+the same receipt scorecards, loaded config, optional live fleet coverage source,
+and operator-authored legal-hold metadata. It renders Pipelock's mapping for
+AARM R1-R9 and an illustrative generic SOC 2-style control set. It is not a
+certification, an auditor opinion, or an endorsement by a framework body.
+Coverage labels are LIMITED to mediated egress inside the declared Pipelock
+boundary.
+
 ## `pipelock dashboard serve`
 
 ```bash
 pipelock dashboard serve \
   --receipt-dir /var/lib/pipelock/evidence \
   --config /etc/pipelock/pipelock.yaml \
+  --legal-hold-store /var/lib/pipelock/legal-holds.json \
   --auth-token-file /etc/pipelock/dashboard.token \
+  --compliance-token-file /etc/pipelock/dashboard-auditor.token \
   --trusted-signer 'file=/etc/pipelock/receipt-signing.pub,source=ops runbook'
 ```
 
@@ -60,6 +70,8 @@ openssl rand -hex 32 > /etc/pipelock/dashboard.token
 | `--config` | none | Optional Pipelock config file for the read-only Exemptions inventory. When omitted, `/exemptions` renders an explicit "no config loaded" state and the Evidence view still works. |
 | `--auth-token-file` | (required) | File containing the operator token required on every request. Grants the redacted metadata view. |
 | `--raw-token-file` | none | Optional second, higher-privilege token that unlocks raw destinations and signed payloads. Must differ from `--auth-token-file`. |
+| `--compliance-token-file` | none | Optional distinct auditor token granting only `dashboard:compliance:read`; it cannot reach evidence, raw, fleet-control preparation, or signed-action routes. |
+| `--legal-hold-store` | none | Optional atomic JSON legal-hold metadata store displayed read-only by `/compliance`. |
 | `--listen` | `127.0.0.1:8896` | Dashboard listener address. Non-loopback addresses require `--tls-cert`/`--tls-key`. |
 | `--trusted-signer` | none | Trusted receipt signing key: `(inline=HEX_OR_VERSIONED_PUBLIC_KEY\|file=/path)[,source=LABEL]`. Repeatable. `source` is shown in the UI as the reason the key is trusted. |
 | `--license-crl-file` | none | Signed license revocation list; falls back to `PIPELOCK_LICENSE_CRL_FILE`. |
@@ -113,6 +125,11 @@ the server is running stops serving.
 - **Exemptions is inventory only.** `/exemptions` is GET-only and reads the
   already-loaded config snapshot. It has no POST route, no apply/remove/renew
   controls, no config write path, and no hot-reload hook.
+- **Compliance is mapping only.** `/compliance` is GET-only. Its `covered`,
+  `partial`, and `not-covered` labels report whether the declared backing
+  evidence exists; they do not assert organizational compliance. With no live
+  fleet source, it renders an unconfigured empty state rather than local data
+  labeled as live fleet coverage.
 - **Sensitive by design.** Even the metadata view exposes reasons, signer
   fingerprints, and session IDs. Treat the listener like an admin API: keep it
   loopback or behind TLS on a network only operators reach.
@@ -124,6 +141,29 @@ offline `pipelock-verifier verify-run` command that re-verifies the same
 receipts against the trusted key, so anything the dashboard claims can be
 independently re-checked against the signed evidence — without trusting this
 server.
+
+## Legal-hold metadata
+
+The web dashboard never creates or releases a hold. An operator changes the
+durable metadata store through the licensed CLI, then points `dashboard serve`
+at the same file:
+
+```bash
+pipelock dashboard legal-hold add \
+  --store /var/lib/pipelock/legal-holds.json \
+  --id investigation-2026-07 \
+  --scope agent-a \
+  --reason 'preserve mediated-egress evidence for active review'
+
+pipelock dashboard legal-hold release \
+  --store /var/lib/pipelock/legal-holds.json \
+  --id investigation-2026-07
+```
+
+The store contains only metadata that cannot be reconstructed from receipts:
+ID, scope, reason, creation time, and optional release time. Writes are atomic;
+the file is mode `0600` and its directory is created as `0750`. A corrupt store
+fails closed at CLI or dashboard startup instead of silently showing no holds.
 
 ## Signed Action Workbench and Incident Cockpit (Enterprise fleet tier)
 

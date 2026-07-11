@@ -153,7 +153,7 @@ func TestWriteBundleUnderDirWritesNestedBundle(t *testing.T) {
 	bundle := NewBundle(Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64)}, Proof{Backend: LocalBackend})
 	rel := filepath.Join("nested", "deeper", "bundle.json")
 
-	if err := WriteBundleUnderDir(root, rel, bundle); err != nil {
+	if _, err := WriteBundleUnderDir(root, rel, bundle); err != nil {
 		t.Fatalf("WriteBundleUnderDir: %v", err)
 	}
 	loaded, err := LoadBundle(filepath.Join(root, rel))
@@ -171,7 +171,7 @@ func TestWriteBundleUnderDirRejectsEscapes(t *testing.T) {
 	bundle := NewBundle(Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64)}, Proof{Backend: LocalBackend})
 	for _, rel := range []string{abs, ".", "..", filepath.Join("..", "bundle.json")} {
 		t.Run(rel, func(t *testing.T) {
-			if err := WriteBundleUnderDir(root, rel, bundle); err == nil || !strings.Contains(err.Error(), "stay under receipt directory") {
+			if _, err := WriteBundleUnderDir(root, rel, bundle); err == nil || !strings.Contains(err.Error(), "stay under receipt directory") {
 				t.Fatalf("WriteBundleUnderDir(%q) err = %v, want escape rejection", rel, err)
 			}
 		})
@@ -188,7 +188,7 @@ func TestWriteBundleUnderDirRejectsSymlinkComponents(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 	bundle := NewBundle(Checkpoint{SessionID: "proxy", FinalSeq: 1, RootHash: strings.Repeat("a", 64)}, Proof{Backend: LocalBackend})
-	if err := WriteBundleUnderDir(root, filepath.Join("link", "bundle.json"), bundle); err == nil {
+	if _, err := WriteBundleUnderDir(root, filepath.Join("link", "bundle.json"), bundle); err == nil {
 		t.Fatal("WriteBundleUnderDir accepted a symlinked parent")
 	}
 	entries, err := os.ReadDir(outside)
@@ -212,7 +212,7 @@ func TestWriteBundleUnderDirRejectsSymlinkRootAndFinalPath(t *testing.T) {
 		if err := os.Symlink(outside, root); err != nil {
 			t.Fatalf("Symlink root: %v", err)
 		}
-		if err := WriteBundleUnderDir(root, "bundle.json", bundle); err == nil || !strings.Contains(err.Error(), "open anchor bundle directory") {
+		if _, err := WriteBundleUnderDir(root, "bundle.json", bundle); err == nil || !strings.Contains(err.Error(), "open anchor bundle directory") {
 			t.Fatalf("WriteBundleUnderDir symlink root err = %v, want refusal", err)
 		}
 	})
@@ -226,7 +226,7 @@ func TestWriteBundleUnderDirRejectsSymlinkRootAndFinalPath(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(root, "bundle.json")); err != nil {
 			t.Fatalf("Symlink final path: %v", err)
 		}
-		if err := WriteBundleUnderDir(root, "bundle.json", bundle); err == nil || !strings.Contains(err.Error(), "write anchor bundle") {
+		if _, err := WriteBundleUnderDir(root, "bundle.json", bundle); err == nil || !strings.Contains(err.Error(), "write anchor bundle") {
 			t.Fatalf("WriteBundleUnderDir symlink final err = %v, want write refusal", err)
 		}
 		data, err := os.ReadFile(filepath.Clean(outside))

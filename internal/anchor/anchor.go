@@ -238,26 +238,37 @@ func LoadBundleBytes(data []byte) (Bundle, error) {
 }
 
 func WriteBundle(path string, b Bundle) error {
-	data, err := json.MarshalIndent(b, "", "  ")
+	data, err := bundleBytes(b)
 	if err != nil {
-		return fmt.Errorf("marshal anchor bundle: %w", err)
+		return err
 	}
-	return writeBundleFile(filepath.Clean(path), append(data, '\n'))
+	return writeBundleFile(filepath.Clean(path), data)
 }
 
 // WriteBundleUnderDir writes an anchor bundle under root without trusting
 // pathnames after the caller has resolved policy. On Unix-like platforms it uses
 // descriptor-relative no-follow operations for every component.
-func WriteBundleUnderDir(root, rel string, b Bundle) error {
+func WriteBundleUnderDir(root, rel string, b Bundle) ([]byte, error) {
 	cleanRel := filepath.Clean(filepath.FromSlash(rel))
 	if filepath.IsAbs(cleanRel) || cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("anchor bundle path must stay under receipt directory")
+		return nil, fmt.Errorf("anchor bundle path must stay under receipt directory")
 	}
+	data, err := bundleBytes(b)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeBundleFileUnderDir(filepath.Clean(root), cleanRel, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func bundleBytes(b Bundle) ([]byte, error) {
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal anchor bundle: %w", err)
+		return nil, fmt.Errorf("marshal anchor bundle: %w", err)
 	}
-	return writeBundleFileUnderDir(filepath.Clean(root), cleanRel, append(data, '\n'))
+	return append(data, '\n'), nil
 }
 
 func WriteStateMarker(dir string, marker StateMarker) error {

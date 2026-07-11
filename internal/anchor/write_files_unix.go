@@ -94,7 +94,9 @@ func writeStateMarkerFile(cleanDir string, marker StateMarker, data []byte) erro
 	if err := unix.Renameat(indexFD, tempName, indexFD, name); err != nil {
 		return fmt.Errorf("rename anchor-state marker: %w", err)
 	}
-	_ = unix.Fsync(indexFD)
+	if err := unix.Fsync(indexFD); err != nil {
+		return fmt.Errorf("sync anchor-state directory: %w", err)
+	}
 	return nil
 }
 
@@ -131,11 +133,30 @@ func writeFileUnderDir(rootFD int, rel string, data []byte) error {
 	if name == "" || name == "." || name == ".." {
 		return fmt.Errorf("anchor bundle path must name a file")
 	}
-	fd, err := unix.Openat(dirFD, name, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_CLOEXEC|unix.O_NOFOLLOW, filePermissions)
-	if err != nil {
-		return fmt.Errorf("write anchor bundle: %w", err)
+	if err := validateBundleFinalAt(dirFD, name); err != nil {
+		return err
 	}
-	file := os.NewFile(uintptr(fd), name)
+	var tempName string
+	var err error
+	tempFD := -1
+	for attempts := 0; attempts < 16; attempts++ {
+		tempName, err = stateMarkerTempName()
+		if err != nil {
+			return err
+		}
+		tempFD, err = unix.Openat(dirFD, tempName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, filePermissions)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("create anchor bundle temp file: %w", err)
+		}
+	}
+	if tempFD < 0 {
+		return fmt.Errorf("create anchor bundle temp file: %w", err)
+	}
+	file := os.NewFile(uintptr(tempFD), tempName)
+	defer func() { _ = unix.Unlinkat(dirFD, tempName, 0) }()
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("write anchor bundle: %w", err)
@@ -146,6 +167,26 @@ func writeFileUnderDir(rootFD int, rel string, data []byte) error {
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close anchor bundle: %w", err)
+	}
+	if err := unix.Renameat(dirFD, tempName, dirFD, name); err != nil {
+		return fmt.Errorf("rename anchor bundle: %w", err)
+	}
+	if err := unix.Fsync(dirFD); err != nil {
+		return fmt.Errorf("sync anchor bundle directory: %w", err)
+	}
+	return nil
+}
+
+func validateBundleFinalAt(dirFD int, name string) error {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(dirFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return fmt.Errorf("inspect anchor bundle: %w", err)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("write anchor bundle: not a regular file")
 	}
 	return nil
 }

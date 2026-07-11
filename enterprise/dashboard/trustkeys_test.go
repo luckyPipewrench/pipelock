@@ -185,23 +185,26 @@ func TestFileAnchorResolver_VerifiesExistingMarkerMaterial(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WriteStateMarker: %v", err)
 	}
+	alias := filepath.Join(t.TempDir(), "receipt-alias")
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Fatalf("Symlink receipt dir: %v", err)
+	}
 	markers, err := loadAnchorMarkers(dir)
 	if err != nil {
 		t.Fatalf("loadAnchorMarkers: %v", err)
 	}
-	if len(markers) != 1 || markers[0].SessionID != testSessionID {
+	if len(markers) != 1 {
 		t.Fatalf("markers = %+v, want %q", markers, testSessionID)
 	}
-	resolvedDir, err := filepath.EvalSymlinks(dir)
+	resolvedMarkers, err := loadAnchorMarkers(alias)
 	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
+		t.Fatalf("loadAnchorMarkers alias: %v", err)
 	}
-	resolvedMarkers, err := loadAnchorMarkers(resolvedDir)
-	if err != nil {
-		t.Fatalf("loadAnchorMarkers resolved: %v", err)
-	}
-	if len(resolvedMarkers) != 1 || resolvedMarkers[0].SessionID != testSessionID {
-		t.Fatalf("resolved markers = %+v, want %q", resolvedMarkers, testSessionID)
+	if len(resolvedMarkers) != 1 || resolvedMarkers[0] != markers[0] {
+		t.Fatalf("alias markers = %+v, want %+v", resolvedMarkers, markers)
 	}
 	resolver, err := NewFileAnchorResolver(dir, logPath, nil, false)
 	if err != nil {

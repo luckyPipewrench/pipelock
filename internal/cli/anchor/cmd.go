@@ -112,10 +112,11 @@ func runReceipts(out io.Writer, target string, opts receiptsOptions) error {
 		return err
 	}
 	bundle := anchorpkg.NewBundle(checkpoint, proof)
-	if err := anchorpkg.WriteBundleUnderDir(output.receiptDir, output.markerPath, bundle); err != nil {
+	bundleBytes, err := anchorpkg.WriteBundleUnderDir(output.receiptDir, output.markerPath, bundle)
+	if err != nil {
 		return err
 	}
-	if err := writeAnchorStateMarker(output, checkpoint, proof); err != nil {
+	if err := writeAnchorStateMarker(output, checkpoint, proof, bundleBytes); err != nil {
 		return err
 	}
 
@@ -234,11 +235,7 @@ func validateBundleOutputPath(receiptDir, bundlePath string) error {
 	}
 }
 
-func writeAnchorStateMarker(output bundleOutput, checkpoint anchorpkg.Checkpoint, proof anchorpkg.Proof) error {
-	bundleBytes, err := os.ReadFile(filepath.Clean(output.bundlePath))
-	if err != nil {
-		return fmt.Errorf("read anchor bundle for state marker: %w", err)
-	}
+func writeAnchorStateMarker(output bundleOutput, checkpoint anchorpkg.Checkpoint, proof anchorpkg.Proof, bundleBytes []byte) error {
 	sum := sha256.Sum256(bundleBytes)
 	return anchorpkg.WriteStateMarker(output.receiptDir, anchorpkg.StateMarker{
 		SessionID:    checkpoint.SessionID,

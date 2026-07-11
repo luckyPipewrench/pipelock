@@ -115,6 +115,10 @@ func coreResponsePatternDefs() []coreResponsePattern {
 			regex: config.MarkdownLinkCredentialExfilRegex,
 		},
 		{
+			name:  "Markdown Link Credential Value Exfiltration",
+			regex: config.MarkdownLinkCredentialValueExfilRegex,
+		},
+		{
 			name:  "System Prompt Disclosure",
 			regex: `(?is)\b(output|print|reveal|show|display|dump|return|exfiltrate)\b.{0,80}\b(system\s+prompt|tool\s+definitions?|developer\s+instructions?)\b`,
 		},

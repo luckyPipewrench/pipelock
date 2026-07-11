@@ -27,6 +27,22 @@ const (
 	markdownLinkCredentialExfilLink    = `\[[^\n]{1,160}\]\(\s*https?://[^)\s]+|<\s*https?://[^>\s]+>|\[[^\n]{1,160}\]\s*\[[^\]\n]{1,80}\](?:[^\n]|\n[ \t]*){0,240}\[[^\]\n]{1,80}\]:\s*https?://[^\s]+`                                                                                                                                                                                                                                // #nosec G101 -- detection regex fragment, not a hardcoded credential
 	markdownLinkCredentialDestination  = `(?:the\s+following\s+|(?:(?:this|that|our|my|their|a|an|the)\s+)?(?:(?:secure|external|collection|upload|remote)\s+)*(?:link|url|endpoint|server|form|page|address)\b\s*[:,-]?\s*)?`
 	markdownLinkCredentialTerminalCue  = `(?:\s*(?:[.!?]|$)|\s+(?:here|there)\b)` // #nosec G101 -- detection regex fragment, not a hardcoded credential
+	// markdownLinkCredentialTransmitObjectAlt anchors the "collect/copy/include
+	// NOUN, then VERB ... link" branch so the transfer verb must act on the
+	// credential itself (a pronoun referring back to it, or the credential noun
+	// restated) rather than on some unrelated object introduced later in the
+	// same sentence (e.g. "copy your token, then send us a message via [link]",
+	// where "send" governs "a message", not the token).
+	markdownLinkCredentialTransmitObjectAlt = `it|them|that|those|these`
+
+	// MarkdownLinkCredentialValueExfilRegex covers the narrow antecedent form
+	// "copy/include/collect credential, then submit the value to [link]".
+	// Keeping it separate from MarkdownLinkCredentialExfilRegex preserves the
+	// preset YAML regex byte-for-byte while restoring core/default coverage for
+	// a real exfiltration object that the tightened object anchor no longer
+	// accepts. It intentionally only adds values? as the anaphoric object; broad
+	// nouns like "message" remain clean false-positive fixes.
+	MarkdownLinkCredentialValueExfilRegex = `(?is)\b(?:collect|copy|include)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:the\s+)?values?\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `(?:` + markdownLinkCredentialExfilLink + `)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
 
 	// MarkdownLinkCredentialExfilRegex detects injected instructions that pair
 	// credential transfer with an exfiltration-destination cue anchored directly
@@ -39,11 +55,71 @@ const (
 	// app. Credential nouns allow whitespace, underscore, and hyphen spacing
 	// between letters so normalized evasions still match; destination terms stay
 	// narrow so ordinary setup docs with benign links do not block.
+	// Every verb<->noun gap uses a clause-aware character class ([^\n.!?] or
+	// \.\S for abbreviations), never a bare DOTALL '.', so the transfer verb
+	// and the credential noun must co-occur in the SAME clause: a benign
+	// two-clause sentence like
+	// "Please send your invoice and include your account token in the email to
+	// [billing]" no longer matches, because "send" and "token" sit in different
+	// coordinated clauses split by "and". The "collect/copy/include NOUN, then
+	// VERB ... link" branch additionally requires the verb's object to be the
+	// credential itself (markdownLinkCredentialTransmitObjectAlt) so a second,
+	// unrelated action in the same sentence ("copy your token, then send us a
+	// message via [link]") does not match on the verb alone.
 	// Scanner response matching depends on the invariant that this regex can only
 	// match content containing a literal http:// or https:// link; broaden URL
 	// schemes only with matching updates to responsePatternRequiredLiterals and
 	// TestMarkdownLinkCredentialExfilRegexRequiresHTTPURL.
-	MarkdownLinkCredentialExfilRegex = `(?is)(?:(?:\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `|\b(?:collect|copy|include)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `)(?:` + markdownLinkCredentialExfilLink + `)|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,80}\bto\s+(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b` + markdownLinkCredentialTerminalCue + `|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b.{0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:here|there)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
+	// Deliberately has NO redaction-class mirror in internal/redact/classes.go.
+	// Redaction classes match a bare credential-secret SHAPE (a token/key value)
+	// so that shape can be placeholder-substituted on an allowlisted host. This
+	// pattern instead matches a whole exfiltration-instruction SENTENCE (a
+	// transfer verb, a credential noun, and a destination link, in varying
+	// order) with no single "secret value" span to redact — the match can
+	// include prose and a full markdown link, not a credential value. Every
+	// other response-scanning injection pattern in this file (Credential
+	// Solicitation, Credential Path Directive, Prompt Injection, etc.) is the
+	// same shape and likewise has no redaction mirror; only DLP/secret-value
+	// patterns (AWS keys, GitHub tokens, connection strings, ...) do. This
+	// pattern is block-only by design, not by omission.
+	MarkdownLinkCredentialExfilRegex = `(?is)(?:(?:\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `|\b(?:collect|copy|include)\b(?:[^\n.!?]|\.\S){0,80}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:` + markdownLinkCredentialTransmitObjectAlt + `|` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*` + markdownLinkCredentialDestination + `)(?:` + markdownLinkCredentialExfilLink + `)|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,80}\bto\s+(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b` + markdownLinkCredentialTerminalCue + `|(?:` + markdownLinkCredentialExfilLink + `)(?:[^\n.!?]|\.\S){0,120}\b(?:` + markdownLinkCredentialExfilVerbAlt + `)\b(?:[^\n.!?]|\.\S){0,20}\b(?:` + markdownLinkCredentialExfilNounAlt + `)\b(?:[^\n.!?]|\.\S){0,80}\b(?:here|there)\b)` // #nosec G101 -- detection regex: contains credential nouns to MATCH exfiltration instructions, not a hardcoded credential
+)
+
+const (
+	// authMaterialRequirementHandoverAlt is the direction-cue alternation that
+	// anchors AuthMaterialRequirementRegex to an actual hand-over request,
+	// mirroring the direction cues in CredentialSolicitationRegex. A bare
+	// "an API key is required" statement (ordinary setup/auth documentation)
+	// does not match on its own; the pattern additionally requires a
+	// solicitation verb aimed at the reader/agent handing the credential back
+	// (to the requester, in a reply, to a URL or email, etc.) in the same
+	// clause as the requirement statement.
+	authMaterialRequirementHandoverVerbAlt = `provide|enter|paste|type|submit|include|share|supply|send|give|hand|reply\s+with|respond\s+with`
+	authMaterialRequirementBareVerbAlt     = `provide|paste|submit|include|share|supply|send|give|hand|reply\s+with|respond\s+with`
+	authMaterialRequirementHandoverAlt     = `to\s+(?:verify|confirm|authenticate|validate|continue|proceed|complete)|so\s+(?:that\s+)?(?:i|we)\s+can|for\s+(?:this|the)\s+(?:request|operation|transaction|session|verification|authentication|step|action|call|task)|in\s+(?:your|the)\s+(?:reply|response|message|answer|chat)|(?:back\s+)?to\s+(?:me|us)\b|with\s+(?:me|us)\b|to\s+this\s+(?:chat|thread|conversation|agent|assistant)|to\s+the\s+(?:following|url|link|endpoint|address|server)|to\s+https?://|to\s+\S+@\S+|(?:here|there)\b`
+	authMaterialRequirementStatement       = `\bto\s+(complete|continue|finish|proceed|verify)\b(?:[^.!?]|\.\S){0,40}\b(authentication|credential|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key)\b(?:[^.!?]|\.\S){0,40}\b(required|needed|necessary|must be)\b`
+	authMaterialRequirementPronounAlt      = `it|them|that|this|those|these`
+	authMaterialRequirementPronounDirected = `\b(?:` + authMaterialRequirementPronounAlt + `)\b(?:[^.!?]|\.\S){0,40}?(?:` + authMaterialRequirementHandoverAlt + `)`
+	authMaterialRequirementPronounTerminal = `\b(?:` + authMaterialRequirementPronounAlt + `)\b\s*(?:[.!?]|$)`
+
+	// AuthMaterialRequirementRegex detects a stated credential requirement
+	// ("to complete/continue/finish/proceed/verify ... a credential is
+	// required/needed/necessary") ONLY when it is paired, in the same clause,
+	// with an explicit request that the reader/agent hand the credential back
+	// to the requester (authMaterialRequirementHandoverVerbAlt +
+	// authMaterialRequirementHandoverAlt). Ordinary documentation that merely
+	// states a precondition ("To complete registration, a valid API key is
+	// required. See the setup guide...") has no hand-over cue and stays clean.
+	// Every gap uses a clause-aware character class ([^.!?] or \.\S), never a
+	// bare DOTALL '.', so a requirement stated in one sentence and an
+	// unrelated later sentence cannot be bridged into a false match; newlines
+	// are still allowed to cross so a payload split across lines is caught.
+	// Deliberately has NO redaction-class mirror: like
+	// MarkdownLinkCredentialExfilRegex above, this matches a whole
+	// requirement-plus-handover SENTENCE, not a bare credential-secret shape,
+	// so there is no single value to placeholder-substitute. Block-only by
+	// design; see the redaction-mirror note on MarkdownLinkCredentialExfilRegex.
+	AuthMaterialRequirementRegex = `(?is)(?:` + authMaterialRequirementStatement + `(?:[^.!?]|\.\S){0,60}?\b(?:` + authMaterialRequirementHandoverVerbAlt + `)\b(?:[^.!?]|\.\S){0,40}?(?:` + authMaterialRequirementHandoverAlt + `)|` + authMaterialRequirementStatement + `(?:[^.!?]|\.\S){0,60}?\b(?:` + authMaterialRequirementHandoverVerbAlt + `)\b(?:[^.!?]|\.\S){0,20}?(?:` + authMaterialRequirementPronounDirected + `|` + authMaterialRequirementPronounTerminal + `)|` + authMaterialRequirementStatement + `\s*(?:[.!?]|\n)\s*\b(?:` + authMaterialRequirementHandoverVerbAlt + `)\b(?:[^.!?]|\.\S){0,20}?(?:` + authMaterialRequirementPronounDirected + `|` + authMaterialRequirementPronounTerminal + `)|` + authMaterialRequirementStatement + `\s*(?:[.!?]|\n)\s*\b(?:` + authMaterialRequirementBareVerbAlt + `)\b(?:[^.!?]|\.\S){0,20}?(?:` + authMaterialRequirementHandoverAlt + `))` // #nosec G101 -- detection regex: contains credential nouns to MATCH a requirement+handover statement, not a hardcoded credential
 )
 
 const (
@@ -244,8 +320,9 @@ func Defaults() *Config {
 				// core floor in internal/scanner/core.go.
 				{Name: "Credential Solicitation", Regex: CredentialSolicitationRegex},
 				{Name: "Markdown Link Credential Exfiltration", Regex: MarkdownLinkCredentialExfilRegex},
+				{Name: "Markdown Link Credential Value Exfiltration", Regex: MarkdownLinkCredentialValueExfilRegex},
 				{Name: "Credential Path Directive", Regex: CredentialPathDirectiveRegex},
-				{Name: "Auth Material Requirement", Regex: `(?is)\bto\s+(complete|continue|finish|proceed|verify)\b.{0,80}\b(authentication|credential|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key)\b.{0,40}\b(required|needed|necessary|must be)\b`},
+				{Name: "Auth Material Requirement", Regex: AuthMaterialRequirementRegex},
 				{Name: "Memory Persistence Directive", Regex: `(?is)\b(save|store|remember|retain|persist|record|cache)\b.{0,40}\b(this|these|that|it|the)\b.{0,60}\b(for future|for later|across sessions?|next session|next time|future tasks?|future sessions?|for all future|subsequent|permanently|from now on|going forward|in all future)\b`},
 				{Name: "Preference Poisoning", Regex: `(?is)\b(from now on|always|going forward|in future)\b.{0,80}\b(prefer|prioritize|trust|choose|use|default to)\b.{0,60}\b(this tool|that tool|my tool|the external|the remote)\b`},
 				{Name: "Silent Credential Handling", Regex: `(?is)\b(do not|don'?t|never)\s+(mention|display|show|tell|reveal|log|report)\b.{0,100}\b(password|token|secret|credential|private[_ -]?key|api[_ -]?key)\b`},

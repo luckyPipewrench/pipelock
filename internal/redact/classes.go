@@ -66,6 +66,16 @@ const (
 // classRegistry is the shipped set of structured secret classes.
 // Split across category helpers so no single function trips funlen and the
 // priority story stays scannable category by category.
+//
+// This registry deliberately mirrors only DLP/secret-VALUE patterns (a
+// token/key/connection-string shape that can be replaced with a placeholder
+// span). Response-scanning INJECTION patterns from internal/config/defaults.go
+// (Credential Solicitation, Credential Path Directive, Markdown Link
+// Credential Exfiltration, Auth Material Requirement, Prompt Injection, and
+// the rest) match whole instruction sentences, not a single secret value, so
+// there is nothing to placeholder-substitute; they have no mirror here and
+// stay block-only by design. See the redaction-mirror note on
+// config.MarkdownLinkCredentialExfilRegex for the full reasoning.
 func classRegistry() []classPattern {
 	out := make([]classPattern, 0, 41)
 	out = append(out, tokenClasses()...)

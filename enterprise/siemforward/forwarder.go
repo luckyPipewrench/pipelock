@@ -356,12 +356,20 @@ func validateResolvedHost(ctx context.Context, resolver scanner.Resolver, host s
 	if len(ips) == 0 {
 		return fmt.Errorf("%w: DNS returned no addresses for %s", errDestinationUnresolved, host)
 	}
+	return assertResolvedIPsSafe(host, ips, internal, allowPrivateLiteral)
+}
+
+// assertResolvedIPsSafe rejects a resolved address set that contains an
+// unparseable entry or an internal IP (unless allowPrivate). Startup validation
+// and connection-time pinning both call it so the resolved-IP SSRF rule stays
+// in lock-step and cannot drift between the two paths.
+func assertResolvedIPsSafe(host string, ips []string, internal func(net.IP) bool, allowPrivate bool) error {
 	for _, rawIP := range ips {
 		ip := net.ParseIP(stripZone(rawIP))
 		if ip == nil {
 			return fmt.Errorf("SSRF blocked: unparseable DNS address %q for %s", rawIP, host)
 		}
-		if internal(ip) {
+		if internal(ip) && !allowPrivate {
 			return fmt.Errorf("SSRF blocked: %s resolves to internal IP %s", host, rawIP)
 		}
 	}
@@ -880,11 +888,8 @@ func (f *Forwarder) safeDialContext(ctx context.Context, network, addr string) (
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("SSRF blocked: DNS returned no addresses for %s", host)
 	}
-	for _, rawIP := range ips {
-		ip := net.ParseIP(stripZone(rawIP))
-		if ip == nil || (f.isInternalIP(ip) && !f.allowPrivateLiteral) {
-			return nil, fmt.Errorf("SSRF blocked: %s resolved to unsafe IP %q", host, rawIP)
-		}
+	if err := assertResolvedIPsSafe(host, ips, f.isInternalIP, f.allowPrivateLiteral); err != nil {
+		return nil, err
 	}
 	return f.dial(ctx, network, net.JoinHostPort(stripZone(ips[0]), port))
 }

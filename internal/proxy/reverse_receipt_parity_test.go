@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1050,6 +1051,96 @@ func TestReverseProxy_RequireReceiptsV2FailureBlocksBeforeEgress(t *testing.T) {
 	}
 	requireReceiptEmissionFailedLayer(t, rph.findReceipts(t))
 	assertMetricsContain(t, m, `pipelock_required_receipt_blocks_total{reason="emit_error",transport="reverse"} 1`)
+}
+
+func TestReverseProxy_RequireReceiptsOutcomeV1FailureLogsReceiptChannelBroken(t *testing.T) {
+	var hits atomic.Int32
+	var rec *recorder.Recorder
+	var closed atomic.Bool
+	cfg := reverseTestConfig()
+	cfg.ResponseScanning.Enabled = false
+	cfg.FlightRecorder.RequireReceipts = true
+
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		if closed.CompareAndSwap(false, true) {
+			if err := rec.Close(); err != nil {
+				t.Errorf("recorder.Close: %v", err)
+			}
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, false)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	t.Cleanup(logger.Close)
+	m := metrics.New()
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, killswitch.New(cfg), nil, nil)
+	rph := newReceiptProxyHelperWithMetrics(t, m)
+	rec = rph.rec
+	var emPtr atomic.Pointer[receipt.Emitter]
+	emPtr.Store(rph.emitter)
+	handler.SetReceiptEmitter(&emPtr)
+
+	proxySrv := newIPv4Server(t, handler)
+	t.Cleanup(proxySrv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/clean", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET reverse proxy: %v", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("response body close: %v", closeErr)
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+	receipts := extractReceiptsFromDir(t, rph.dir)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count after outcome failure = %d, want durable intent only", len(receipts))
+	}
+	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
+		t.Fatalf("receipt phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	auditLog, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	for _, want := range []string{"event=receipt_channel_broken", "audit_gap=true", "phase=outcome", "layer=outcome"} {
+		if !strings.Contains(string(auditLog), want) {
+			t.Fatalf("audit log %q missing %q", string(auditLog), want)
+		}
+	}
+	assertMetricsContain(t, m, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 }
 
 func TestReverseProxy_RequireReceiptsOutcomeV2FailureEmitsGapMarker(t *testing.T) {

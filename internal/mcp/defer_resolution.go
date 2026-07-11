@@ -81,8 +81,9 @@ type holdFailureResolution struct {
 
 // emitHoldFailureResolution classifies a failed Hold (capacity vs cascade
 // limit), emits the blocking resolution receipt, and returns the client-facing
-// error message. Shared by the stdio and HTTP-forward defer paths.
-func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error, hf holdFailureResolution) string {
+// error message plus any receipt gap. Shared by the stdio and HTTP-forward
+// defer paths.
+func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error, hf holdFailureResolution) (string, error) {
 	source := deferred.HoldFailureSource(holdErr)
 	cascadeDepth := 0
 	parentDeferID := ""
@@ -93,7 +94,7 @@ func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error,
 		parentDeferID = limitErr.ParentDeferID
 		linkage = deferred.LinkageSessionPendingAncestor
 	}
-	_ = emitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
+	emitErr := emitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
 		DeferID:          hf.DeferID,
 		ParentActionID:   hf.DeferID,
 		FinalDecision:    config.ActionBlock,
@@ -108,7 +109,7 @@ func emitHoldFailureResolution(opts MCPProxyOpts, logW io.Writer, holdErr error,
 		Reason:           hf.Reason,
 	})
 	if source == deferred.SourceCascadeLimit {
-		return "pipelock: defer cascade depth exceeded"
+		return "pipelock: defer cascade depth exceeded", emitErr
 	}
-	return "pipelock: defer capacity exceeded"
+	return "pipelock: defer capacity exceeded", emitErr
 }

@@ -86,6 +86,112 @@ func TestManagerCapacityRejectsNewHold(t *testing.T) {
 	}
 }
 
+func TestManagerAdmissionRejectionsAreJournaled(t *testing.T) {
+	tests := []struct {
+		name        string
+		wantErr     error
+		wantSource  string
+		wantDeferID string
+		reject      func(t *testing.T, m *Manager, base HeldAction) error
+	}{
+		{
+			name:        "capacity",
+			wantErr:     ErrCapacity,
+			wantSource:  SourceCapacity,
+			wantDeferID: "d2",
+			reject: func(t *testing.T, m *Manager, base HeldAction) error {
+				t.Helper()
+				if err := m.Hold(base); err != nil {
+					t.Fatalf("first Hold: %v", err)
+				}
+				base.DeferID = "d2"
+				base.ActionID = "d2"
+				return m.Hold(base)
+			},
+		},
+		{
+			name:        "duplicate_defer_id",
+			wantSource:  SourceDuplicateDeferID,
+			wantDeferID: "d1",
+			reject: func(t *testing.T, m *Manager, base HeldAction) error {
+				t.Helper()
+				if err := m.Hold(base); err != nil {
+					t.Fatalf("first Hold: %v", err)
+				}
+				return m.Hold(base)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+			m := NewManager(Config{
+				Enabled:              true,
+				Timeout:              time.Hour,
+				MaxPending:           1,
+				MaxPendingPerSession: 1,
+				MaxPendingBytes:      1024,
+				JournalPath:          path,
+			})
+			base := HeldAction{
+				DeferID:   "d1",
+				ActionID:  "d1",
+				Target:    "tool",
+				Surface:   SurfaceMCPStdio,
+				Method:    "tools/call",
+				Reason:    "defer test",
+				SizeBytes: 1,
+				Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+				Resolve:   func(Resolution) {},
+			}
+			err := tc.reject(t, m, base)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Hold error = %v, want %v", err, tc.wantErr)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "already exists") {
+				t.Fatalf("Hold error = %v, want duplicate error", err)
+			}
+			entries := readJournalEntries(t, path)
+			gotDenials := 0
+			heldEntries := 0
+			for _, entry := range entries {
+				if entry.DeferID != tc.wantDeferID {
+					continue
+				}
+				switch entry.State {
+				case StateAdmissionRejected:
+					if entry.Source != tc.wantSource {
+						t.Fatalf("admission rejection has wrong source: %+v", entry)
+					}
+					gotDenials++
+					if entry.Target != base.Target || entry.Method != base.Method || entry.Surface != base.Surface {
+						t.Fatalf("rejection journal entry lost action fields: %+v", entry)
+					}
+				case StateHeld:
+					heldEntries++
+				case StateResolvedAllow, StateResolvedBlock, StateResolvedStepUp:
+					t.Fatalf("rejected id %q must not have a resolved lifecycle entry: %+v", tc.wantDeferID, entry)
+				default:
+					t.Fatalf("unexpected journal state for id %q: %+v", tc.wantDeferID, entry)
+				}
+			}
+			if gotDenials != 1 {
+				t.Fatalf("admission-rejected entries for id %q = %d, want 1; entries=%+v", tc.wantDeferID, gotDenials, entries)
+			}
+			// The duplicate case's rejected id is a live hold (one StateHeld);
+			// the capacity case's id was never held (zero).
+			wantHeld := 0
+			if tc.wantSource == SourceDuplicateDeferID {
+				wantHeld = 1
+			}
+			if heldEntries != wantHeld {
+				t.Fatalf("StateHeld entries for id %q = %d, want %d", tc.wantDeferID, heldEntries, wantHeld)
+			}
+		})
+	}
+}
+
 func TestManagerCapacityRejectsOverflowSize(t *testing.T) {
 	m := NewManager(Config{
 		Enabled:              true,
@@ -617,7 +723,7 @@ func TestManagerCascadeLimitDenialJournal(t *testing.T) {
 				if entry.State == StateHeld {
 					t.Fatalf("limit-denied action has held journal entry: %+v", entry)
 				}
-				if entry.State == StateResolvedBlock && entry.Source == SourceCascadeLimit {
+				if entry.State == StateAdmissionRejected && entry.Source == SourceCascadeLimit {
 					gotDenials++
 					if entry.ParentDeferID != "b" || entry.CascadeDepth != 3 || entry.Linkage != LinkageSessionPendingAncestor {
 						t.Fatalf("cascade-limit journal entry = %+v", entry)
@@ -1312,4 +1418,68 @@ func waitResolution(t *testing.T, ch <-chan Resolution) Resolution {
 		t.Fatal("timed out waiting for deferred resolution")
 	}
 	return Resolution{}
+}
+
+// A duplicate-defer_id rejection must NOT terminalize the live hold it collides
+// with: replaying the journal must still recover the original held action.
+func TestManagerDuplicateRejectionDoesNotDropLiveHoldOnReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+	m := NewManager(Config{
+		Enabled:              true,
+		Timeout:              time.Hour,
+		MaxPending:           8,
+		MaxPendingPerSession: 8,
+		MaxPendingBytes:      1024,
+		JournalPath:          path,
+	})
+	base := HeldAction{
+		DeferID:   "live-1",
+		ActionID:  "live-1",
+		Target:    "tool",
+		Surface:   SurfaceMCPStdio,
+		Method:    "tools/call",
+		Reason:    "defer test",
+		SizeBytes: 1,
+		Authority: AuthoritySnapshot{SessionID: "s1", SessionIDOriginal: "s1"},
+		Resolve:   func(Resolution) {},
+	}
+	if err := m.Hold(base); err != nil {
+		t.Fatalf("first Hold: %v", err)
+	}
+	// The duplicate carries DISTINCT metadata plus caller-supplied lineage, so
+	// the test proves recovery kept the ORIGINAL (not the rejection) and that
+	// the rejection cannot inject false ancestry into the journal.
+	duplicate := base
+	duplicate.ActionID = "rejected-attempt"
+	duplicate.Target = "rejected-tool"
+	duplicate.ParentDeferID = "attacker-parent"
+	duplicate.CascadeDepth = 99
+	duplicate.Linkage = "attacker-linkage"
+	if err := m.Hold(duplicate); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("duplicate Hold error = %v, want duplicate rejection", err)
+	}
+	pending, err := PendingJournal(path)
+	if err != nil {
+		t.Fatalf("PendingJournal: %v", err)
+	}
+	var recovered *HeldAction
+	for i := range pending {
+		if pending[i].DeferID == "live-1" {
+			recovered = &pending[i]
+		}
+	}
+	if recovered == nil {
+		t.Fatalf("live hold live-1 was dropped from recovery by the duplicate rejection; pending=%+v", pending)
+	}
+	if recovered.ActionID != "live-1" || recovered.Target != "tool" {
+		t.Fatalf("recovery returned the rejection's metadata, not the live hold: %+v", recovered)
+	}
+	// The admission-rejection entry must carry no caller-supplied lineage.
+	for _, entry := range readJournalEntries(t, path) {
+		if entry.State == StateAdmissionRejected {
+			if entry.ParentDeferID != "" || entry.CascadeDepth != 0 || entry.Linkage != "" {
+				t.Fatalf("admission rejection retained caller-supplied lineage: %+v", entry)
+			}
+		}
+	}
 }

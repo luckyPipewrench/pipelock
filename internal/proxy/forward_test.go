@@ -1390,6 +1390,13 @@ func TestForwardProxy_RequireReceiptsOutcomeEmitFailureDoesNotFailRequest(t *tes
 		cfg.ResponseScanning.Enabled = false
 	})
 	defer cleanup()
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, false)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	t.Cleanup(logger.Close)
+	p.logger = logger
 	rph = newReceiptProxyHelperWithMetrics(t, p.metrics)
 	p.receiptEmitterPtr.Store(rph.emitter)
 
@@ -1408,6 +1415,15 @@ func TestForwardProxy_RequireReceiptsOutcomeEmitFailureDoesNotFailRequest(t *tes
 	}
 	if receipts[0].ActionRecord.DecisionPhase != receipt.DecisionPhaseIntent {
 		t.Fatalf("receipt phase = %q, want %q", receipts[0].ActionRecord.DecisionPhase, receipt.DecisionPhaseIntent)
+	}
+	auditLog, err := os.ReadFile(filepath.Clean(auditPath))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	for _, want := range []string{"event=receipt_channel_broken", "audit_gap=true", "phase=outcome", "layer=outcome"} {
+		if !strings.Contains(string(auditLog), want) {
+			t.Fatalf("audit log %q missing %q", string(auditLog), want)
+		}
 	}
 	assertMetricsContain(t, p.metrics, `pipelock_receipt_emit_failures_total{reason="record"} 1`)
 }

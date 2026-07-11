@@ -287,7 +287,7 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseIntent
 	if err := e.EmitDurable(opts); err != nil {
-		rp.logReceiptEmissionFailure(opts, err)
+		rp.logReceiptChannelBroken(opts, err)
 		// v1 stays authoritative: skip v2 when v1 failed to record.
 		return err
 	}
@@ -317,7 +317,7 @@ func (rp *ReverseProxyHandler) emitOutcomeReceipt(cfg *config.Config, opts recei
 		return
 	}
 	if err := e.Emit(opts); err != nil {
-		rp.logReceiptEmissionFailure(opts, err)
+		rp.logReceiptChannelBroken(opts, err)
 		return
 	}
 	if err := emitV2(rp.v2EmitterPtr, opts, func(err error) {
@@ -375,6 +375,13 @@ func (rp *ReverseProxyHandler) logReceiptEmissionFailure(opts receipt.EmitOpts, 
 		return
 	}
 	rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID), receiptEmissionError(opts, err))
+}
+
+func (rp *ReverseProxyHandler) logReceiptChannelBroken(opts receipt.EmitOpts, err error) {
+	if rp == nil {
+		return
+	}
+	logReceiptChannelBrokenTo(rp.logger, opts, err)
 }
 
 func reverseTargetURL(upstream *url.URL, r *http.Request) string {

@@ -17,11 +17,17 @@ import (
 )
 
 const (
-	StateHeld                     = "deferred_held"
-	StateResolving                = "resolving"
-	StateResolvedAllow            = "resolved_allow"
-	StateResolvedBlock            = "resolved_block"
-	StateResolvedStepUp           = "resolved_step_up"
+	StateHeld           = "deferred_held"
+	StateResolving      = "resolving"
+	StateResolvedAllow  = "resolved_allow"
+	StateResolvedBlock  = "resolved_block"
+	StateResolvedStepUp = "resolved_step_up"
+	// StateAdmissionRejected records an action that was NEVER successfully
+	// held (duplicate defer_id, capacity, cascade-limit). It is an audit-only
+	// marker and must never be replayed as a hold-lifecycle transition: for a
+	// duplicate defer_id it shares the id of a live hold, so treating it as a
+	// resolution would delete that live hold from restart recovery.
+	StateAdmissionRejected        = "admission_rejected"
 	SourceContext                 = "context"
 	SourceTimeout                 = "timeout"
 	SourceCancel                  = "cancel"
@@ -30,6 +36,7 @@ const (
 	SourceCapacity                = "capacity"
 	SourceCascade                 = "cascade"
 	SourceCascadeLimit            = "cascade_limit"
+	SourceDuplicateDeferID        = "duplicate_defer_id"
 	SourcePolicyReload            = "policy_reload"
 	SourceApproval                = "approval"
 	SourceOperator                = "operator"
@@ -275,6 +282,7 @@ func (m *Manager) Hold(action HeldAction) error {
 	m.mu.Lock()
 	if _, exists := m.holds[action.DeferID]; exists {
 		m.mu.Unlock()
+		m.journalRejectedHold(action, SourceDuplicateDeferID)
 		return fmt.Errorf("defer hold %q already exists", action.DeferID)
 	}
 	if len(m.holds) >= m.cfg.MaxPending ||
@@ -282,6 +290,7 @@ func (m *Manager) Hold(action HeldAction) error {
 		action.SizeBytes > m.cfg.MaxPendingBytes ||
 		m.totalBytes > m.cfg.MaxPendingBytes-action.SizeBytes {
 		m.mu.Unlock()
+		m.journalRejectedHold(action, SourceCapacity)
 		return ErrCapacity
 	}
 	action.Linkage = LinkageSessionPendingAncestor
@@ -305,24 +314,26 @@ func (m *Manager) Hold(action HeldAction) error {
 			Limit:         m.cfg.MaxCascadeDepth,
 			ParentDeferID: action.ParentDeferID,
 		}
-		if err := m.appendJournal(journalEntryFromHeld(action, StateResolvedBlock, SourceCascadeLimit)); err != nil {
-			m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s parent_defer_id=%s cascade_depth=%d: %v\n",
-				SourceCascadeLimit, action.DeferID, action.ParentDeferID, action.CascadeDepth, err)
-		}
+		m.journalRejectedHold(action, SourceCascadeLimit)
 		return limitErr
 	}
 	journalAction := action
 	stored := action
 	held := &stored
+	// Commit the StateHeld journal entry BEFORE publishing the hold, while still
+	// holding m.mu. A concurrent admission rejection for a related id blocks on
+	// m.mu until this returns, so it cannot append its StateAdmissionRejected
+	// entry ahead of this hold's StateHeld and causally invert the audit trail.
+	// On journal failure nothing is published, so no rollback is needed.
+	if err := m.appendJournal(journalEntryFromHeld(journalAction, StateHeld, "")); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("journal defer hold: %w", err)
+	}
 	m.holds[action.DeferID] = held
 	m.sessionHolds[action.Authority.SessionID] = append(m.sessionHolds[action.Authority.SessionID], action.DeferID)
 	m.totalBytes += action.SizeBytes
 	m.mu.Unlock()
 
-	if err := m.appendJournal(journalEntryFromHeld(journalAction, StateHeld, "")); err != nil {
-		_ = m.Resolve(action.DeferID, "block", SourceCancel)
-		return fmt.Errorf("journal defer hold: %w", err)
-	}
 	m.mu.Lock()
 	if live := m.holds[action.DeferID]; live != nil && live.state == StateHeld {
 		live.timer = time.AfterFunc(m.cfg.Timeout, func() {
@@ -331,6 +342,22 @@ func (m *Manager) Hold(action HeldAction) error {
 	}
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *Manager) journalRejectedHold(action HeldAction, source string) {
+	// Duplicate and capacity rejections happen before Hold derives lineage, so
+	// the action still carries caller-supplied ParentDeferID/CascadeDepth/
+	// Linkage. Never let a caller inject false ancestry into the audit journal;
+	// only cascade-limit rejections have computed lineage worth preserving.
+	if source != SourceCascadeLimit {
+		action.ParentDeferID = ""
+		action.CascadeDepth = 0
+		action.Linkage = ""
+	}
+	if err := m.appendJournal(journalEntryFromHeld(action, StateAdmissionRejected, source)); err != nil {
+		m.warnf("pipelock: warning event=deferred_journal_write_failed audit_gap=true source=%s defer_id=%s parent_defer_id=%s cascade_depth=%d: %v\n",
+			source, action.DeferID, action.ParentDeferID, action.CascadeDepth, err)
+	}
 }
 
 // Resolve atomically transitions a held action and invokes its callback once.
@@ -704,6 +731,11 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		case StateResolvedAllow, StateResolvedBlock, StateResolvedStepUp:
 			delete(pending, entry.DeferID)
 			terminal[entry.DeferID] = struct{}{}
+		case StateAdmissionRejected:
+			// Audit-only marker for an action that was never held. It must not
+			// touch hold lifecycle: for a duplicate defer_id it shares a live
+			// hold's id, so resolving/terminalizing it here would drop that
+			// live hold from recovery.
 		default:
 			return nil, fmt.Errorf("defer journal integrity: unknown state %q for defer_id %q", entry.State, entry.DeferID)
 		}

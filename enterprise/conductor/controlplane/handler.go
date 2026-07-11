@@ -1056,8 +1056,19 @@ func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *h
 		writeError(w, http.StatusInternalServerError, ErrRollbackHeadPreviewUnsupported)
 		return
 	}
-	if _, err := headPreviewer.PreviewRollbackHead(r.Context(), req.Authorization); err != nil {
+	prePreview, err := headPreviewer.PreviewRollbackHead(r.Context(), req.Authorization)
+	if err != nil {
 		writeStoreError(w, err)
+		return
+	}
+	// Fail fast when the rollback is already superseded by a later forward
+	// publish at preview time. Noop is set only for that case (an already-at-
+	// target idempotent retry returns a non-noop apply verdict), and the
+	// hash-mismatch guard keeps the legitimate already-at-target case out. This
+	// avoids durably accepting then compensating-clearing an authorization that
+	// cannot move the head, mirroring the post-apply supersession check below.
+	if prePreview.Noop && prePreview.CurrentHeadHash != prePreview.WouldRollToHash {
+		writeStoreError(w, fmt.Errorf("%w: rollback superseded by current stream head", ErrBundleConflict))
 		return
 	}
 	if previewer, ok := h.emergencyControls.(rollbackAuthPreviewer); ok && previewer != nil {

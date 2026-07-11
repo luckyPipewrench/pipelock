@@ -88,6 +88,11 @@ type routeSpec struct {
 	handler          func(*dashboardHandler) http.Handler
 }
 
+// CompliancePath is the single source of truth for the compliance route, shared
+// by the route table and the auditor-token authorization gate so the auth
+// boundary cannot drift from the route if the path changes.
+const CompliancePath = "/compliance"
+
 func dashboardRouteSpecs() []routeSpec {
 	return []routeSpec{
 		{
@@ -145,7 +150,7 @@ func dashboardRouteSpecs() []routeSpec {
 			},
 		},
 		{
-			pattern:          "/compliance",
+			pattern:          CompliancePath,
 			feature:          license.FeatureAgents,
 			forbiddenMessage: agentsFeatureForbidden,
 			permission:       PermissionComplianceRead,
@@ -458,7 +463,7 @@ func knownPermission(permission Permission) bool {
 }
 
 func (d *dashboardHandler) handleCompliance(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/compliance" {
+	if r.URL.Path != CompliancePath {
 		http.NotFound(w, r)
 		return
 	}
@@ -480,10 +485,13 @@ func (d *dashboardHandler) handleCompliance(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "could not build compliance read model", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", contentTypeHTML)
-	if err := complianceTemplate.Execute(w, page); err != nil {
+	var buf bytes.Buffer
+	if err := complianceTemplate.Execute(&buf, page); err != nil {
 		http.Error(w, "could not render compliance console", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", contentTypeHTML)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func (d *dashboardHandler) handleIndex(w http.ResponseWriter, r *http.Request) {

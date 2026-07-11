@@ -370,7 +370,7 @@ func dashboardGlobalAuthorized(
 		if operatorAuthorized(r) {
 			return true
 		}
-		return r.URL.Path == "/compliance" && complianceAuthorized != nil && complianceAuthorized(r)
+		return r.URL.Path == dashboard.CompliancePath && complianceAuthorized != nil && complianceAuthorized(r)
 	}
 }
 

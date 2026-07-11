@@ -286,6 +286,28 @@ func TestInspectReadModelIndex_NewSourceIsStale(t *testing.T) {
 	}
 }
 
+func TestDashboardRender_OversizedEvidenceIsUnverified(t *testing.T) {
+	sourceDir := t.TempDir()
+	writeEvidence(t, sourceDir, testEvidence("agent-a"))
+	indexPath := filepath.Join(t.TempDir(), ReadModelIndexFile)
+	if err := RebuildReadModel(RebuildOptions{SourceDir: sourceDir, Output: indexPath}); err != nil {
+		t.Fatal(err)
+	}
+	evidencePath := filepath.Join(sourceDir, "evidence-agent-0.jsonl")
+	oversized := bytes.Repeat([]byte("x"), maxEvidenceVerificationFileBytes+1)
+	fileMode := os.FileMode(0o600)
+	if err := os.WriteFile(evidencePath, oversized, fileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &dashboardHandler{model: NewReadModel(Options{ReceiptDir: sourceDir, ReadModelIndexPath: indexPath})}
+	response := httptest.NewRecorder()
+	handler.render(response, nil, "", false)
+	if body := response.Body.String(); !strings.Contains(body, "READ MODEL UNVERIFIED — source too large") {
+		t.Fatalf("dashboard did not report bounded verification failure: %s", body)
+	}
+}
+
 func TestInspectReadModelIndex_RejectsForgedFreshnessMetadata(t *testing.T) {
 	sourceDir := t.TempDir()
 	line := []byte(`{"v":2,"seq":7,"ts":"2026-01-01T00:00:00Z","session_id":"agent-a","type":"request"}` + "\n")
@@ -442,6 +464,111 @@ func TestDeliveryInbox_TwoOpenStoresDoNotLoseWrites(t *testing.T) {
 	defer func() { _ = reopened.Close(context.Background()) }()
 	if got := reopened.Health().Delivered; got != 40 {
 		t.Fatalf("delivered after two-store writes = %d, want 40", got)
+	}
+}
+
+func TestDeliveryInbox_BoundsFieldsAndPersistedSamples(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DeliveryInboxStateFile)
+	when := time.Unix(100, 0).UTC()
+	seedState := deliveryInboxState{
+		Version: deliveryInboxVersion,
+		Totals:  &deliveryTotals{Delivered: maxPersistedDeliveryAttempts, Failed: maxPersistedDeadLetters, DeadLetters: maxPersistedDeadLetters},
+	}
+	for n := 0; n < maxPersistedDeliveryAttempts; n++ {
+		seedState.Attempts = append(seedState.Attempts, DeliveryAttempt{ID: strconv.Itoa(n), AlertID: "alert", Status: DeliveryDelivered, AttemptedAt: when})
+	}
+	for n := 0; n < maxPersistedDeadLetters; n++ {
+		seedState.DeadLetters = append(seedState.DeadLetters, DeliveryAttempt{ID: "failed-" + strconv.Itoa(n), AlertID: "alert", Status: DeliveryFailed, AttemptedAt: when, Error: "failed"})
+	}
+	seed := &DeliveryInbox{path: path, state: seedState}
+	if err := seed.persistLocked(); err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := OpenDeliveryInbox(DeliveryInboxOptions{Path: path, QueueSize: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fieldTests := []struct {
+		name    string
+		attempt DeliveryAttempt
+	}{
+		{name: "delivery ID", attempt: DeliveryAttempt{ID: strings.Repeat("i", maxDeliveryIDBytes+1), AlertID: "alert", Status: DeliveryDelivered, AttemptedAt: when}},
+		{name: "alert ID", attempt: DeliveryAttempt{ID: "delivery", AlertID: strings.Repeat("a", maxDeliveryAlertIDBytes+1), Status: DeliveryDelivered, AttemptedAt: when}},
+	}
+	for _, test := range fieldTests {
+		t.Run(test.name, func(t *testing.T) {
+			if inbox.Record(test.attempt) {
+				t.Fatal("overlong field was accepted")
+			}
+		})
+	}
+	for n := 0; n < 5; n++ {
+		attempt := DeliveryAttempt{ID: "rotated-" + strconv.Itoa(n), AlertID: "alert", Status: DeliveryFailed, AttemptedAt: when, Error: strings.Repeat("e", maxDeliveryErrorBytes+100)}
+		if !inbox.Record(attempt) {
+			t.Fatalf("attempt %d was dropped", n)
+		}
+	}
+	if err := inbox.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state deliveryInboxState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Attempts) != maxPersistedDeliveryAttempts || len(state.DeadLetters) != maxPersistedDeadLetters {
+		t.Fatalf("persisted samples attempts=%d dead_letters=%d", len(state.Attempts), len(state.DeadLetters))
+	}
+	for _, attempt := range state.DeadLetters {
+		if len(attempt.Error) > maxDeliveryErrorBytes {
+			t.Fatalf("persisted error length = %d", len(attempt.Error))
+		}
+	}
+	health, err := LoadDeliveryHealth(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Delivered != maxPersistedDeliveryAttempts || health.Failed != maxPersistedDeadLetters+5 {
+		t.Fatalf("cumulative health lost rotated attempts: %#v", health)
+	}
+}
+
+func TestDeliveryInbox_RemovedStateDoesNotResurrect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DeliveryInboxStateFile)
+	inbox, err := OpenDeliveryInbox(DeliveryInboxOptions{Path: path, QueueSize: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	when := time.Unix(100, 0).UTC()
+	if !inbox.Record(DeliveryAttempt{ID: "before-restore", AlertID: "alert", Status: DeliveryDelivered, AttemptedAt: when}) {
+		t.Fatal("initial attempt was dropped")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for inbox.Health().Delivered != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("initial attempt was not persisted before deadline")
+		}
+		runtime.Gosched()
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if !inbox.Record(DeliveryAttempt{ID: "after-restore", AlertID: "alert", Status: DeliveryDelivered, AttemptedAt: when.Add(time.Second)}) {
+		t.Fatal("post-restore attempt was dropped")
+	}
+	if err := inbox.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("before-restore")) || !bytes.Contains(data, []byte("after-restore")) {
+		t.Fatalf("removed state was resurrected: %s", data)
 	}
 }
 

@@ -371,6 +371,16 @@ func TestLoadDeliveryHealth_ErrorPaths(t *testing.T) {
 			t.Fatal("invalid delivery inbox was accepted")
 		}
 	})
+	t.Run("oversized", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "oversized.json")
+		fileMode := os.FileMode(0o600)
+		if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxDeliveryInboxFileBytes+1), fileMode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadDeliveryHealth(path); err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Fatalf("oversized delivery inbox error = %v", err)
+		}
+	})
 }
 
 func TestInspectReadModelIndex_ErrorPaths(t *testing.T) {
@@ -417,8 +427,8 @@ func TestInspectReadModelIndex_ErrorPaths(t *testing.T) {
 		if err := os.WriteFile(sourcePath, []byte("not-json\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := InspectReadModelIndex(indexPath, sourceDir); err == nil || !strings.Contains(err.Error(), "verify read model sources") {
-			t.Fatalf("InspectReadModelIndex error = %v", err)
+		if _, fresh, err := InspectReadModelIndex(indexPath, sourceDir); err != nil || fresh {
+			t.Fatalf("InspectReadModelIndex fresh = %t, error = %v", fresh, err)
 		}
 	})
 }
@@ -436,6 +446,21 @@ func TestRebuildReadModel_ErrorPaths(t *testing.T) {
 		err := RebuildReadModel(RebuildOptions{SourceDir: sourceDir, Output: filepath.Join(t.TempDir(), ReadModelIndexFile), Now: func() time.Time { return time.Time{} }})
 		if err == nil || !strings.Contains(err.Error(), "must not be zero") {
 			t.Fatalf("RebuildReadModel error = %v", err)
+		}
+	})
+	t.Run("symlinked evidence", func(t *testing.T) {
+		sourceDir := t.TempDir()
+		target := filepath.Join(t.TempDir(), "outside.jsonl")
+		fileMode := os.FileMode(0o600)
+		if err := os.WriteFile(target, []byte(testEvidence("agent-a")), fileMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(sourceDir, "evidence-agent-0.jsonl")); err != nil {
+			t.Fatal(err)
+		}
+		err := RebuildReadModel(RebuildOptions{SourceDir: sourceDir, Output: filepath.Join(t.TempDir(), ReadModelIndexFile)})
+		if err == nil || !strings.Contains(err.Error(), "non-regular") {
+			t.Fatalf("symlinked evidence error = %v", err)
 		}
 	})
 	t.Run("output parent is a file", func(t *testing.T) {

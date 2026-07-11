@@ -5,22 +5,34 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 )
 
-const deliveryInboxVersion = 1
+const (
+	deliveryInboxVersion         = 1
+	maxDeliveryInboxFileBytes    = 8 << 20
+	maxPersistedDeliveryAttempts = 1000
+	maxPersistedDeadLetters      = 250
+	maxDeliveryIDBytes           = 256
+	maxDeliveryAlertIDBytes      = 256
+	maxDeliveryErrorBytes        = 2 << 10
+)
 
 type DeliveryStatus string
 
@@ -51,8 +63,16 @@ type deliveryInboxState struct {
 	Version     int               `json:"version"`
 	Attempts    []DeliveryAttempt `json:"attempts"`
 	DeadLetters []DeliveryAttempt `json:"dead_letters"`
+	Totals      *deliveryTotals   `json:"totals,omitempty"`
 	Dropped     uint64            `json:"dropped"`
 	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+type deliveryTotals struct {
+	Queued      uint64 `json:"queued"`
+	Delivered   uint64 `json:"delivered"`
+	Failed      uint64 `json:"failed"`
+	DeadLetters uint64 `json:"dead_letters"`
 }
 
 type DeliveryInboxOptions struct {
@@ -90,7 +110,7 @@ func OpenDeliveryInbox(opts DeliveryInboxOptions) (*DeliveryInbox, error) {
 		return nil, fmt.Errorf("delivery inbox: create dir: %w", err)
 	}
 	state := deliveryInboxState{Version: deliveryInboxVersion}
-	data, err := os.ReadFile(path)
+	data, err := readBoundedDeliveryInbox(path)
 	if err == nil {
 		if err := decodeStrictJSON(data, &state); err != nil || validateDeliveryState(state) != nil {
 			return nil, errors.New("delivery inbox: invalid persisted state")
@@ -104,6 +124,7 @@ func OpenDeliveryInbox(opts DeliveryInboxOptions) (*DeliveryInbox, error) {
 }
 
 func (i *DeliveryInbox) Record(attempt DeliveryAttempt) bool {
+	attempt.Error = normalizeDeliveryError(attempt.Error)
 	if i == nil || validateDeliveryAttempt(attempt) != nil {
 		return false
 	}
@@ -132,6 +153,9 @@ func validateDeliveryAttempt(a DeliveryAttempt) error {
 	if a.ID == "" || a.AlertID == "" || a.AttemptedAt.IsZero() {
 		return errors.New("delivery attempt requires id, alert id, and attempted time")
 	}
+	if len(a.ID) > maxDeliveryIDBytes || len(a.AlertID) > maxDeliveryAlertIDBytes || len(a.Error) > maxDeliveryErrorBytes {
+		return errors.New("delivery attempt field exceeds persistence limit")
+	}
 	switch a.Status {
 	case DeliveryQueued, DeliveryDelivered:
 		if a.Error != "" {
@@ -151,17 +175,86 @@ func validateDeliveryState(state deliveryInboxState) error {
 	if state.Version != deliveryInboxVersion {
 		return errors.New("unknown delivery inbox version")
 	}
+	if len(state.Attempts) > maxPersistedDeliveryAttempts || len(state.DeadLetters) > maxPersistedDeadLetters {
+		return errors.New("delivery inbox exceeds persisted sample limit")
+	}
+	var sampled deliveryTotals
 	for _, attempt := range state.Attempts {
 		if err := validateDeliveryAttempt(attempt); err != nil {
 			return err
 		}
+		incrementDeliveryTotal(&sampled, attempt.Status)
 	}
 	for _, attempt := range state.DeadLetters {
 		if err := validateDeliveryAttempt(attempt); err != nil || attempt.Status != DeliveryFailed {
 			return errors.New("invalid dead-letter attempt")
 		}
 	}
+	if state.Totals != nil {
+		maxUint64 := ^uint64(0)
+		if state.Totals.Queued < sampled.Queued || state.Totals.Delivered < sampled.Delivered || state.Totals.Failed < sampled.Failed || state.Totals.DeadLetters < uint64(len(state.DeadLetters)) {
+			return errors.New("delivery inbox totals are below persisted samples")
+		}
+		if state.Totals.Queued == maxUint64 || state.Totals.Delivered == maxUint64 || state.Totals.Failed == maxUint64 || state.Totals.DeadLetters == maxUint64 || state.Totals.DeadLetters > uint64(^uint(0)>>1) {
+			return errors.New("delivery inbox total exceeds persistence limit")
+		}
+	}
 	return nil
+}
+
+func truncateUTF8(value string, maxBytes int) string {
+	if len(value) > maxBytes {
+		value = value[:maxBytes]
+	}
+	value = strings.ToValidUTF8(value, "�")
+	if len(value) <= maxBytes {
+		return value
+	}
+	value = value[:maxBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func normalizeDeliveryError(value string) string {
+	value = strings.Map(func(character rune) rune {
+		if character < 0x20 || character == 0x7f {
+			return '�'
+		}
+		return character
+	}, value)
+	return truncateUTF8(value, maxDeliveryErrorBytes)
+}
+
+func initializeDeliveryTotals(state *deliveryInboxState) {
+	if state.Totals != nil {
+		return
+	}
+	state.Totals = &deliveryTotals{DeadLetters: uint64(len(state.DeadLetters))}
+	for _, attempt := range state.Attempts {
+		incrementDeliveryTotal(state.Totals, attempt.Status)
+	}
+}
+
+func incrementDeliveryTotal(totals *deliveryTotals, status DeliveryStatus) {
+	switch status {
+	case DeliveryQueued:
+		totals.Queued++
+	case DeliveryDelivered:
+		totals.Delivered++
+	case DeliveryFailed:
+		totals.Failed++
+	}
+}
+
+func appendRecentAttempt(attempts []DeliveryAttempt, attempt DeliveryAttempt, limit int) []DeliveryAttempt {
+	if len(attempts) == limit {
+		copy(attempts, attempts[1:])
+		attempts[len(attempts)-1] = attempt
+		return attempts
+	}
+	return append(attempts, attempt)
 }
 
 func (i *DeliveryInbox) run() {
@@ -206,9 +299,18 @@ func (i *DeliveryInbox) apply(attempt DeliveryAttempt) {
 		return
 	}
 	priorState := i.state
-	i.state.Attempts = append(i.state.Attempts, attempt)
+	priorState.Attempts = append([]DeliveryAttempt(nil), i.state.Attempts...)
+	priorState.DeadLetters = append([]DeliveryAttempt(nil), i.state.DeadLetters...)
+	if i.state.Totals != nil {
+		priorTotals := *i.state.Totals
+		priorState.Totals = &priorTotals
+	}
+	initializeDeliveryTotals(&i.state)
+	incrementDeliveryTotal(i.state.Totals, attempt.Status)
+	i.state.Attempts = appendRecentAttempt(i.state.Attempts, attempt, maxPersistedDeliveryAttempts)
 	if attempt.Status == DeliveryFailed {
-		i.state.DeadLetters = append(i.state.DeadLetters, attempt)
+		i.state.Totals.DeadLetters++
+		i.state.DeadLetters = appendRecentAttempt(i.state.DeadLetters, attempt, maxPersistedDeadLetters)
 	}
 	i.state.UpdatedAt = attempt.AttemptedAt.UTC()
 	drops := i.pendingDrops.Swap(0)
@@ -251,11 +353,17 @@ func (i *DeliveryInbox) flushDrops() {
 }
 
 func (i *DeliveryInbox) persistLocked() error {
-	data, err := json.MarshalIndent(i.state, "", "  ")
-	if err != nil {
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(i.state); err != nil {
 		return err
 	}
-	return atomicfile.Write(i.path, data, 0o600)
+	if data.Len() > maxDeliveryInboxFileBytes {
+		return errors.New("delivery inbox encoded state exceeds file size limit")
+	}
+	return atomicfile.Write(i.path, data.Bytes(), 0o600)
 }
 
 func (i *DeliveryInbox) acquireMutationLock() (func(), error) {
@@ -273,8 +381,9 @@ func (i *DeliveryInbox) acquireMutationLock() (func(), error) {
 }
 
 func (i *DeliveryInbox) reloadLocked() error {
-	data, err := os.ReadFile(i.path)
+	data, err := readBoundedDeliveryInbox(i.path)
 	if errors.Is(err, os.ErrNotExist) {
+		i.state = deliveryInboxState{Version: deliveryInboxVersion}
 		return nil
 	}
 	if err != nil {
@@ -299,8 +408,23 @@ func (i *DeliveryInbox) DeadLetters() []DeliveryAttempt {
 func (i *DeliveryInbox) Health() DeliveryHealth {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	health := DeliveryHealth{Dropped: i.state.Dropped + i.pendingDrops.Load(), DeadLetters: len(i.state.DeadLetters), UpdatedAt: i.state.UpdatedAt}
-	for _, attempt := range i.state.Attempts {
+	health := deliveryHealthFromState(i.state)
+	health.Dropped += i.pendingDrops.Load()
+	return health
+}
+
+func deliveryHealthFromState(state deliveryInboxState) DeliveryHealth {
+	health := DeliveryHealth{Dropped: state.Dropped, DeadLetters: len(state.DeadLetters), UpdatedAt: state.UpdatedAt}
+	if state.Totals != nil {
+		health.Queued = state.Totals.Queued
+		health.Delivered = state.Totals.Delivered
+		health.Failed = state.Totals.Failed
+		if state.Totals.DeadLetters <= uint64(^uint(0)>>1) {
+			health.DeadLetters = int(state.Totals.DeadLetters)
+		}
+		return health
+	}
+	for _, attempt := range state.Attempts {
 		switch attempt.Status {
 		case DeliveryQueued:
 			health.Queued++
@@ -311,6 +435,22 @@ func (i *DeliveryInbox) Health() DeliveryHealth {
 		}
 	}
 	return health
+}
+
+func readBoundedDeliveryInbox(path string) ([]byte, error) {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxDeliveryInboxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxDeliveryInboxFileBytes {
+		return nil, errors.New("delivery inbox file too large")
+	}
+	return data, nil
 }
 
 // Pending returns queued and failed attempts for a future forwarder. The

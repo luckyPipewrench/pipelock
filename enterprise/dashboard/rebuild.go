@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -95,15 +96,54 @@ func RebuildReadModel(opts RebuildOptions) error {
 }
 
 func evidencePaths(sourceDir string) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Clean(sourceDir))
+	canonicalDir, err := filepath.EvalSymlinks(filepath.Clean(sourceDir))
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(canonicalDir)
 	if err != nil {
 		return nil, err
 	}
 	var paths []string
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "evidence-") && strings.HasSuffix(entry.Name(), ".jsonl") {
-			paths = append(paths, filepath.Join(sourceDir, entry.Name()))
+		if !strings.HasPrefix(entry.Name(), "evidence-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
 		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return nil, fmt.Errorf("source evidence %s is non-regular", entry.Name())
+		}
+		paths = append(paths, filepath.Join(canonicalDir, entry.Name()))
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func boundedEvidencePaths(sourceDir string) ([]string, error) {
+	canonicalDir, err := filepath.EvalSymlinks(filepath.Clean(sourceDir))
+	if err != nil {
+		return nil, err
+	}
+	directory, err := os.Open(canonicalDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = directory.Close() }()
+	entries, err := directory.ReadDir(maxEvidenceVerificationFiles + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(entries) > maxEvidenceVerificationFiles {
+		return nil, errEvidenceVerificationTooLarge
+	}
+	var paths []string
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "evidence-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return nil, fmt.Errorf("source evidence %s is non-regular", entry.Name())
+		}
+		paths = append(paths, filepath.Join(canonicalDir, entry.Name()))
 	}
 	sort.Strings(paths)
 	return paths, nil
@@ -116,9 +156,17 @@ func buildReadModelIndex(paths []string, rebuiltAt time.Time) (ReadModelIndex, e
 	index := ReadModelIndex{RebuildVersion: rebuildVersion, RebuiltAt: rebuiltAt}
 	combined := sha256.New()
 	for _, path := range paths {
-		data, err := os.ReadFile(filepath.Clean(path))
+		file, _, err := openRegularEvidence(path)
 		if err != nil {
 			return ReadModelIndex{}, fmt.Errorf("read source evidence %s: %w", filepath.Base(path), err)
+		}
+		data, readErr := io.ReadAll(file)
+		closeErr := file.Close()
+		if readErr != nil {
+			return ReadModelIndex{}, fmt.Errorf("read source evidence %s: %w", filepath.Base(path), readErr)
+		}
+		if closeErr != nil {
+			return ReadModelIndex{}, fmt.Errorf("close source evidence %s: %w", filepath.Base(path), closeErr)
 		}
 		parsed, err := recorder.ReadEntriesFromReader(bytes.NewReader(data))
 		if err != nil {
@@ -169,4 +217,29 @@ func buildReadModelIndex(paths []string, rebuiltAt time.Time) (ReadModelIndex, e
 	}
 	index.Staleness = StalenessMarker{CheckedAt: index.RebuiltAt, SourceHash: hex.EncodeToString(combined.Sum(nil)), Status: "fresh_at_rebuild"}
 	return index, nil
+}
+
+func openRegularEvidence(path string) (*os.File, os.FileInfo, error) {
+	cleanPath := filepath.Clean(path)
+	canonicalDir, err := filepath.EvalSymlinks(filepath.Dir(cleanPath))
+	if err != nil || canonicalDir != filepath.Dir(cleanPath) {
+		return nil, nil, errors.New("source evidence is outside its canonical source directory")
+	}
+	before, err := os.Lstat(cleanPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, nil, errors.New("source evidence is non-regular")
+	}
+	file, err := os.OpenFile(cleanPath, os.O_RDONLY|evidenceNoFollowFlag, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := file.Stat()
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		_ = file.Close()
+		return nil, nil, errors.New("source evidence changed or is non-regular")
+	}
+	return file, after, nil
 }
